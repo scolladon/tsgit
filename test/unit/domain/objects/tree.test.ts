@@ -48,13 +48,13 @@ describe('tree', () => {
           const content = buildTreeEntry('100644', 'hello.txt', sha);
 
           // Act
-          const sut = parseTreeContent(DUMMY_ID, content, SHA1_CONFIG);
+          const result = parseTreeContent(DUMMY_ID, content, SHA1_CONFIG);
 
           // Assert
-          expect(sut.entries).toHaveLength(1);
-          expect(sut.entries[0]!.mode).toBe('100644');
-          expect(sut.entries[0]!.name).toBe('hello.txt');
-          expect(sut.entries[0]!.id).toBe('ab'.repeat(20));
+          expect(result.entries).toHaveLength(1);
+          expect(result.entries[0]!.mode).toBe('100644');
+          expect(result.entries[0]!.name).toBe('hello.txt');
+          expect(result.entries[0]!.id).toBe('ab'.repeat(20));
         });
       });
     });
@@ -71,12 +71,12 @@ describe('tree', () => {
           );
 
           // Act
-          const sut = parseTreeContent(DUMMY_ID, content, SHA1_CONFIG);
+          const result = parseTreeContent(DUMMY_ID, content, SHA1_CONFIG);
 
           // Assert
-          expect(sut.entries).toHaveLength(2);
-          expect(sut.entries[0]!.name).toBe('a.txt');
-          expect(sut.entries[1]!.name).toBe('b.sh');
+          expect(result.entries).toHaveLength(2);
+          expect(result.entries[0]!.name).toBe('a.txt');
+          expect(result.entries[1]!.name).toBe('b.sh');
         });
       });
     });
@@ -89,10 +89,10 @@ describe('tree', () => {
           const content = buildTreeEntry('40000', 'subdir', sha);
 
           // Act
-          const sut = parseTreeContent(DUMMY_ID, content, SHA1_CONFIG);
+          const result = parseTreeContent(DUMMY_ID, content, SHA1_CONFIG);
 
           // Assert
-          expect(sut.entries[0]!.mode).toBe('40000');
+          expect(result.entries[0]!.mode).toBe('40000');
         });
       });
     });
@@ -112,10 +112,10 @@ describe('tree', () => {
           const content = buildTreeEntry('100644', name, sha);
 
           // Act
-          const sut = parseTreeContent(DUMMY_ID, content, SHA1_CONFIG);
+          const result = parseTreeContent(DUMMY_ID, content, SHA1_CONFIG);
 
           // Assert
-          expect(sut.entries[0]!.name).toBe(name);
+          expect(result.entries[0]!.name).toBe(name);
         });
       });
     });
@@ -128,10 +128,10 @@ describe('tree', () => {
           const content = buildTreeEntry('100644', 'file.txt', sha);
 
           // Act
-          const sut = parseTreeContent(DUMMY_ID, content, SHA256_CONFIG);
+          const result = parseTreeContent(DUMMY_ID, content, SHA256_CONFIG);
 
           // Assert
-          expect(sut.entries[0]!.id.length).toBe(64);
+          expect(result.entries[0]!.id.length).toBe(64);
         });
       });
     });
@@ -217,10 +217,10 @@ describe('tree', () => {
           const content = new Uint8Array(0);
 
           // Act
-          const sut = parseTreeContent(DUMMY_ID, content, SHA1_CONFIG);
+          const result = parseTreeContent(DUMMY_ID, content, SHA1_CONFIG);
 
           // Assert
-          expect(sut.entries).toEqual([]);
+          expect(result.entries).toEqual([]);
         });
       });
     });
@@ -273,10 +273,10 @@ describe('tree', () => {
           const tree = parseTreeContent(DUMMY_ID, content, SHA1_CONFIG);
 
           // Act
-          const sut = serializeTreeContent(tree, SHA1_CONFIG);
+          const result = serializeTreeContent(tree, SHA1_CONFIG);
 
           // Assert
-          expect(sut).toEqual(content);
+          expect(result).toEqual(content);
         });
       });
     });
@@ -297,15 +297,15 @@ describe('tree', () => {
           };
 
           // Act
-          const sut = parseTreeContent(
+          const result = parseTreeContent(
             DUMMY_ID,
             serializeTreeContent(tree, SHA1_CONFIG),
             SHA1_CONFIG,
           );
 
           // Assert
-          expect(sut.entries[0]!.name).toBe('a.txt');
-          expect(sut.entries[1]!.name).toBe('z.txt');
+          expect(result.entries[0]!.name).toBe('a.txt');
+          expect(result.entries[1]!.name).toBe('z.txt');
         });
       });
     });
@@ -325,10 +325,10 @@ describe('tree', () => {
           const tree = parseTreeContent(DUMMY_ID, content, SHA1_CONFIG);
 
           // Act
-          const sut = serializeTreeContent(tree, SHA1_CONFIG);
+          const result = serializeTreeContent(tree, SHA1_CONFIG);
 
           // Assert
-          expect(sut).toEqual(content);
+          expect(result).toEqual(content);
         });
       });
     });
@@ -372,11 +372,11 @@ describe('tree', () => {
             label: 'multiple directories sort by byte-level comparison with trailing "/"',
           },
         ])('Then $label', ({ entries, expected }) => {
-          // Arrange + Act
-          const sut = sortTreeEntries(entries);
+          // Arrange & Act
+          const result = sortTreeEntries(entries);
 
           // Assert
-          expect(sut.map((e) => e.name)).toEqual(expected);
+          expect(result.map((e) => e.name)).toEqual(expected);
         });
       });
     });
@@ -389,10 +389,10 @@ describe('tree', () => {
           const b: TreeEntry = { mode: '100644', name: 'xyz', id: DUMMY_ID };
 
           // Act
-          const sut = treeEntryCompare(a, b);
+          const result = treeEntryCompare(a, b);
 
           // Assert
-          expect(sut).toBeLessThan(0);
+          expect(result).toBeLessThan(0);
         });
       });
       describe('When comparing in reverse', () => {
@@ -402,10 +402,10 @@ describe('tree', () => {
           const b: TreeEntry = { mode: '100644', name: 'abc', id: DUMMY_ID };
 
           // Act
-          const sut = treeEntryCompare(a, b);
+          const result = treeEntryCompare(a, b);
 
           // Assert
-          expect(sut).toBeGreaterThan(0);
+          expect(result).toBeGreaterThan(0);
         });
       });
     });
@@ -418,10 +418,10 @@ describe('tree', () => {
           const b: TreeEntry = { mode: '100644', name: 'same', id: DUMMY_ID };
 
           // Act
-          const sut = treeEntryCompare(a, b);
+          const result = treeEntryCompare(a, b);
 
           // Assert
-          expect(sut).toBe(0);
+          expect(result).toBe(0);
         });
       });
     });
@@ -434,10 +434,10 @@ describe('tree', () => {
           const file: TreeEntry = { mode: '100644', name: 'abc', id: DUMMY_ID };
 
           // Act
-          const sut = treeEntryCompare(dir, file);
+          const result = treeEntryCompare(dir, file);
 
           // Assert
-          expect(sut).toBeGreaterThan(0);
+          expect(result).toBeGreaterThan(0);
         });
       });
     });
@@ -512,9 +512,9 @@ describe('tree', () => {
                 entries,
               };
               const serialized = serializeTreeContent(tree, SHA1_CONFIG);
-              const sut = parseTreeContent(DUMMY_ID, serialized, SHA1_CONFIG);
+              const result = parseTreeContent(DUMMY_ID, serialized, SHA1_CONFIG);
               const sorted = sortTreeEntries(entries);
-              expect(sut.entries).toEqual(sorted);
+              expect(result.entries).toEqual(sorted);
             }),
           );
         });

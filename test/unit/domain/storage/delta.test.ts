@@ -86,10 +86,10 @@ describe('delta', () => {
           ]);
 
           // Act
-          const sut = applyDelta(base, delta);
+          const result = applyDelta(base, delta);
 
           // Assert
-          expect(sut).toEqual(base);
+          expect(result).toEqual(base);
         });
       });
     });
@@ -132,10 +132,10 @@ describe('delta', () => {
           },
         ])('Then result decodes to $expected for $label', ({ base, delta, expected }) => {
           // Arrange + Act
-          const sut = applyDelta(base, delta);
+          const result = applyDelta(base, delta);
 
           // Assert
-          expect(new TextDecoder().decode(sut)).toBe(expected);
+          expect(new TextDecoder().decode(result)).toBe(expected);
         });
       });
     });
@@ -149,12 +149,12 @@ describe('delta', () => {
           const delta = buildDelta(0x10000, 0x10000, [{ type: 'copy', offset: 0, size: 0x10000 }]);
 
           // Act
-          const sut = applyDelta(base, delta);
+          const result = applyDelta(base, delta);
 
           // Assert
-          expect(sut.length).toBe(0x10000);
-          expect(sut[0]).toBe(0xaa);
-          expect(sut[0xffff]).toBe(0xaa);
+          expect(result.length).toBe(0x10000);
+          expect(result[0]).toBe(0xaa);
+          expect(result[0xffff]).toBe(0xaa);
         });
       });
     });
@@ -266,10 +266,10 @@ describe('delta', () => {
           const delta = buildDelta(0, 0, []);
 
           // Act
-          const sut = applyDelta(base, delta);
+          const result = applyDelta(base, delta);
 
           // Assert
-          expect(sut.length).toBe(0);
+          expect(result.length).toBe(0);
         });
       });
     });
@@ -289,10 +289,10 @@ describe('delta', () => {
           const delta = buildDelta(base.length, 1, [{ type: 'copy', offset: offsetVal, size: 1 }]);
 
           // Act
-          const sut = applyDelta(base, delta);
+          const result = applyDelta(base, delta);
 
           // Assert
-          expect(sut[0]).toBe(byteVal);
+          expect(result[0]).toBe(byteVal);
         });
       });
     });
@@ -308,11 +308,11 @@ describe('delta', () => {
           ]);
 
           // Act
-          const sut = applyDelta(base, delta);
+          const result = applyDelta(base, delta);
 
           // Assert
-          expect(sut.length).toBe(0x0100);
-          expect(sut[0]).toBe(0xee);
+          expect(result.length).toBe(0x0100);
+          expect(result[0]).toBe(0xee);
         });
       });
     });
@@ -328,10 +328,10 @@ describe('delta', () => {
           ]);
 
           // Act
-          const sut = applyDelta(base, delta);
+          const result = applyDelta(base, delta);
 
           // Assert
-          expect(sut.length).toBe(0x020000);
+          expect(result.length).toBe(0x020000);
         });
       });
     });
@@ -403,12 +403,12 @@ describe('delta', () => {
           ]);
 
           // Act
-          const sut = parseDelta(delta);
+          const result = parseDelta(delta);
 
           // Assert
-          expect(sut.sourceLength).toBe(10);
-          expect(sut.targetLength).toBe(8);
-          expect(sut.instructions).toHaveLength(2);
+          expect(result.sourceLength).toBe(10);
+          expect(result.targetLength).toBe(8);
+          expect(result.instructions).toHaveLength(2);
         });
       });
     });
@@ -420,10 +420,10 @@ describe('delta', () => {
           const delta = buildDelta(20, 5, [{ type: 'copy', offset: 3, size: 5 }]);
 
           // Act
-          const sut = parseDelta(delta);
+          const result = parseDelta(delta);
 
           // Assert
-          expect(sut.instructions[0]).toEqual({ type: 'copy', offset: 3, size: 5 });
+          expect(result.instructions[0]).toEqual({ type: 'copy', offset: 3, size: 5 });
         });
       });
     });
@@ -436,10 +436,10 @@ describe('delta', () => {
           const delta = buildDelta(0, 3, [{ type: 'insert', data: insertData }]);
 
           // Act
-          const sut = parseDelta(delta);
+          const result = parseDelta(delta);
 
           // Assert
-          const inst = sut.instructions[0]!;
+          const inst = result.instructions[0]!;
           expect(inst.type).toBe('insert');
           expect(inst.type === 'insert' && inst.data).toEqual(insertData);
         });
@@ -454,11 +454,11 @@ describe('delta', () => {
           const delta = buildDelta(0, 3, [{ type: 'insert', data: insertData }]);
 
           // Act
-          const sut = parseDelta(delta);
+          const result = parseDelta(delta);
           delta[delta.length - 1] = 0xff;
 
           // Assert
-          const inst = sut.instructions[0]!;
+          const inst = result.instructions[0]!;
           expect(inst.type).toBe('insert');
           expect(inst.type === 'insert' && inst.data[2]).not.toBe(0xff);
         });
@@ -520,15 +520,18 @@ describe('delta', () => {
     describe('Given any generated delta', () => {
       describe('When applying', () => {
         it('Then result matches expected output', () => {
-          // Arrange + Assert
+          // Arrange
           fc.assert(
             fc.property(arbDeltaTriple(), ({ base, instructions, expected }) => {
               fc.pre(instructions.length > 0 && expected.length > 0);
               const delta = buildDelta(base.length, expected.length, instructions);
-              const sut = applyDelta(base, delta);
 
-              expect(sut).toEqual(expected);
-              expect(sut.length).toBe(expected.length);
+              // Act
+              const result = applyDelta(base, delta);
+
+              // Assert
+              expect(result).toEqual(expected);
+              expect(result.length).toBe(expected.length);
             }),
             { numRuns: 50 },
           );
@@ -539,7 +542,7 @@ describe('delta', () => {
     describe('Given any valid delta', () => {
       describe('When applying', () => {
         it('Then result length equals targetLength', () => {
-          // Arrange + Assert
+          // Arrange
           fc.assert(
             fc.property(fc.uint8Array({ minLength: 1, maxLength: 100 }), (base) => {
               const insert = base.slice(0, Math.min(10, base.length));
@@ -547,9 +550,11 @@ describe('delta', () => {
                 { type: 'insert', data: insert },
               ]);
 
-              const sut = applyDelta(base, delta);
+              // Act
+              const result = applyDelta(base, delta);
 
-              expect(sut.length).toBe(insert.length);
+              // Assert
+              expect(result.length).toBe(insert.length);
             }),
           );
         });
@@ -595,10 +600,10 @@ describe('delta', () => {
           const delta = buildDelta(10, 300, [{ type: 'copy', offset: 0, size: 10 }]);
 
           // Act
-          const sut = readDeltaTargetSize(delta);
+          const result = readDeltaTargetSize(delta);
 
           // Assert
-          expect(sut).toBe(300);
+          expect(result).toBe(300);
         });
       });
     });
@@ -700,11 +705,11 @@ describe('delta', () => {
           const delta = buildDelta(0, insertData.length, [{ type: 'insert', data: insertData }]);
 
           // Act
-          const sut = applyDelta(new Uint8Array(0), delta);
+          const result = applyDelta(new Uint8Array(0), delta);
 
           // Assert
-          expect(new TextDecoder().decode(sut)).toBe('inserted');
-          expect(sut.length).toBe(8);
+          expect(new TextDecoder().decode(result)).toBe('inserted');
+          expect(result.length).toBe(8);
         });
       });
     });
@@ -739,8 +744,14 @@ describe('delta', () => {
     describe('Given the exported constant', () => {
       describe('When read', () => {
         it('Then equals 50 (git default)', () => {
-          // Arrange + Assert
-          expect(MAX_DELTA_CHAIN_DEPTH).toBe(50);
+          // Arrange
+          const expected = 50;
+
+          // Act
+          const result = MAX_DELTA_CHAIN_DEPTH;
+
+          // Assert
+          expect(result).toBe(expected);
         });
       });
     });

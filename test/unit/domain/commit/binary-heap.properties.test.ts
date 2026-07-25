@@ -52,7 +52,7 @@ const precedesProjection = (entry: Entry): readonly [number, ObjectId] => [-entr
 
 describe('Given an arbitrary sequence of entries, When pushed then fully drained', () => {
   it('Then the drain order matches the Array.sort oracle', () => {
-    // Arrange + Act + Assert
+    // Arrange
     fc.assert(
       fc.property(entriesArb, (entries) => {
         // Arrange
@@ -74,7 +74,7 @@ describe('Given an arbitrary sequence of entries, When pushed then fully drained
 
 describe('Given an arbitrary sequence of entries, When drained one at a time', () => {
   it('Then no popped element outranks its predecessor', () => {
-    // Arrange + Act + Assert
+    // Arrange
     fc.assert(
       fc.property(entriesArb, (entries) => {
         // Arrange
@@ -93,7 +93,7 @@ describe('Given an arbitrary sequence of entries, When drained one at a time', (
   });
 
   it('Then the drained multiset equals the pushed multiset', () => {
-    // Arrange + Act + Assert
+    // Arrange
     fc.assert(
       fc.property(entriesArb, (entries) => {
         // Arrange

@@ -358,6 +358,8 @@ describe('lru-cache', () => {
           // Arrange
           const sut = createLruCache<string>(100);
           sut.set('a', 'val-a', 50);
+
+          // Act
           sut.set('b', 'val-b', 50);
 
           // Assert — currentSize === maxSize, nothing evicted
@@ -386,8 +388,10 @@ describe('lru-cache', () => {
           expect(sut.get('a')).toBe('val-a');
           expect(sut.get('c')).toBe('val-c');
 
-          // Add entries to force eviction of 'a' (LRU after 'c' was promoted by get above)
+          // Act — force eviction of 'a' (LRU after 'c' was promoted by the get above)
           sut.set('d', 'val-d', 85);
+
+          // Assert
           expect(sut.get('a')).toBeUndefined();
           expect(sut.get('c')).toBe('val-c');
         });

@@ -33,10 +33,10 @@ describe('loose-path', () => {
       describe('When computing path', () => {
         it('Then first segment is 2 chars', () => {
           // Arrange
-          const sut = ('abcdef0123456789' + '0'.repeat(24)) as ObjectId;
+          const id = ('abcdef0123456789' + '0'.repeat(24)) as ObjectId;
 
           // Act
-          const result = computeLooseObjectPath(sut);
+          const result = computeLooseObjectPath(id);
 
           // Assert
           expect(result.split('/')[0]).toHaveLength(2);
@@ -46,20 +46,20 @@ describe('loose-path', () => {
           const id = ('abcdef0123456789' + '0'.repeat(24)) as ObjectId;
 
           // Act
-          const sut = computeLooseObjectPath(id);
+          const result = computeLooseObjectPath(id);
 
           // Assert
-          expect(sut.split('/')[1]).toHaveLength(38);
+          expect(result.split('/')[1]).toHaveLength(38);
         });
         it("Then contains exactly one '/'", () => {
           // Arrange
           const id = '0'.repeat(40) as ObjectId;
 
           // Act
-          const sut = computeLooseObjectPath(id);
+          const result = computeLooseObjectPath(id);
 
           // Assert
-          const slashCount = sut.split('/').length - 1;
+          const slashCount = result.split('/').length - 1;
           expect(slashCount).toBe(1);
         });
       });
@@ -74,10 +74,10 @@ describe('loose-path', () => {
           fc.assert(
             fc.property(arbObjectId(40), (id) => {
               // Act
-              const sut = computeLooseObjectPath(id);
+              const result = computeLooseObjectPath(id);
 
               // Assert
-              expect(sut.replace('/', '')).toBe(id);
+              expect(result.replace('/', '')).toBe(id);
             }),
           );
         });
@@ -91,10 +91,10 @@ describe('loose-path', () => {
           fc.assert(
             fc.property(arbObjectId(64), (id) => {
               // Act
-              const sut = computeLooseObjectPath(id);
+              const result = computeLooseObjectPath(id);
 
               // Assert
-              expect(sut.replace('/', '')).toBe(id);
+              expect(result.replace('/', '')).toBe(id);
             }),
           );
         });
@@ -108,10 +108,10 @@ describe('loose-path', () => {
           fc.assert(
             fc.property(arbObjectId(40), (id) => {
               // Act
-              const sut = computeLooseObjectPath(id);
+              const result = computeLooseObjectPath(id);
 
               // Assert
-              expect(sut.indexOf('/')).toBe(2);
+              expect(result.indexOf('/')).toBe(2);
             }),
           );
         });

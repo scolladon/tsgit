@@ -21,11 +21,11 @@ describe('validateWorkingTreePath', () => {
   describe('Given a plain relative path', () => {
     describe('When validated', () => {
       it('Then returns the branded FilePath', () => {
-        // Arrange
-        const sut = validateWorkingTreePath('a/b.txt');
+        // Arrange & Act
+        const result = validateWorkingTreePath('a/b.txt');
 
         // Assert
-        expect(sut).toBe('a/b.txt');
+        expect(result).toBe('a/b.txt');
       });
     });
   });
@@ -33,8 +33,10 @@ describe('validateWorkingTreePath', () => {
   describe('Given an empty input', () => {
     describe('When validated', () => {
       it('Then rejects with PATHSPEC_OUTSIDE_REPO carrying the empty input', () => {
-        // Arrange + Assert
+        // Arrange & Act
         const err = expectReject('');
+
+        // Assert
         expect((err.data as { path: string }).path).toBe('');
       });
     });
@@ -43,7 +45,7 @@ describe('validateWorkingTreePath', () => {
   describe('Given a path containing spaces', () => {
     describe('When validated', () => {
       it('Then accepts it as a valid relative path', () => {
-        // Arrange + Assert
+        // Arrange & Act + Assert
         // Kills the StringLiteral mutant on the empty-input guard
         // (`input === ''` -> `input === 'Stryker was here!'`): that string is a
         // legal relative path, so the mutated guard would wrongly reject it.
@@ -58,8 +60,11 @@ describe('validateWorkingTreePath', () => {
         // Arrange
         // 'a'.repeat(4097) — single-byte char, byteLength === length.
         const input = 'a'.repeat(4097);
-        // Assert
+
+        // Act
         const err = expectReject(input);
+
+        // Assert
         expect((err.data as { path: string }).path).toBe(input);
       });
     });
@@ -74,9 +79,12 @@ describe('validateWorkingTreePath', () => {
         // never fires; only the total-byte cap can reject this input.
         const segment = 'a'.repeat(200);
         const input = Array.from({ length: 25 }, () => segment).join('/');
-        // Assert
         expect(input.length).toBeGreaterThan(4096);
+
+        // Act
         const err = expectReject(input);
+
+        // Assert
         expect((err.data as { path: string }).path).toBe(input);
       });
     });
@@ -92,8 +100,9 @@ describe('validateWorkingTreePath', () => {
         const segment = 'a'.repeat(254);
         const head = Array.from({ length: 16 }, () => segment).join('/');
         const padded = `${head}/${'a'.repeat(16)}`;
-        // Assert
         expect(padded.length).toBe(4096);
+
+        // Act + Assert
         expect(validateWorkingTreePath(padded)).toBe(padded);
       });
     });
@@ -102,7 +111,7 @@ describe('validateWorkingTreePath', () => {
   describe('Given a leading `/` (absolute path)', () => {
     describe('When validated', () => {
       it('Then rejects', () => {
-        // Arrange + Assert
+        // Arrange & Act + Assert
         // Kills the MethodExpression mutant (startsWith → endsWith).
         expectReject('/etc/passwd');
       });
@@ -112,7 +121,7 @@ describe('validateWorkingTreePath', () => {
   describe('Given a path ending with `/` (trailing slash)', () => {
     describe('When validated', () => {
       it('Then rejects with empty-component reason (the endsWith mutant would let this through if startsWith→endsWith got applied)', () => {
-        // Arrange + Assert — `/etc/passwd` doesn't end with `/` so flipping
+        // Arrange & Act + Assert — `/etc/passwd` doesn't end with `/` so flipping
         // startsWith→endsWith would accept it. This test pins that the leaf
         // check is on the START, not the END.
         expectReject('foo/');
@@ -123,7 +132,7 @@ describe('validateWorkingTreePath', () => {
   describe('Given a backslash in the path', () => {
     describe('When validated', () => {
       it('Then rejects', () => {
-        // Arrange + Assert
+        // Arrange & Act + Assert
         expectReject('a\\b');
       });
     });
@@ -132,7 +141,7 @@ describe('validateWorkingTreePath', () => {
   describe('Given a NUL byte in the path', () => {
     describe('When validated', () => {
       it('Then rejects', () => {
-        // Arrange + Assert
+        // Arrange & Act + Assert
         expectReject('a\0b');
       });
     });
@@ -141,7 +150,7 @@ describe('validateWorkingTreePath', () => {
   describe('Given a `.` component', () => {
     describe('When validated', () => {
       it('Then rejects', () => {
-        // Arrange + Assert
+        // Arrange & Act + Assert
         expectReject('a/./b');
       });
     });
@@ -150,7 +159,7 @@ describe('validateWorkingTreePath', () => {
   describe('Given a `..` component', () => {
     describe('When validated', () => {
       it('Then rejects', () => {
-        // Arrange + Assert
+        // Arrange & Act + Assert
         expectReject('a/../b');
       });
     });
@@ -159,7 +168,7 @@ describe('validateWorkingTreePath', () => {
   describe('Given a component longer than 255 bytes', () => {
     describe('When validated', () => {
       it('Then rejects', () => {
-        // Arrange + Assert
+        // Arrange & Act + Assert
         expectReject(`a/${'b'.repeat(256)}/c`);
       });
     });
@@ -170,7 +179,8 @@ describe('validateWorkingTreePath', () => {
       it('Then accepts (boundary)', () => {
         // Arrange
         const long = 'b'.repeat(255);
-        // Assert
+
+        // Act + Assert
         expect(validateWorkingTreePath(`a/${long}/c`)).toBe(`a/${long}/c`);
       });
     });
@@ -179,7 +189,7 @@ describe('validateWorkingTreePath', () => {
   describe('Given a `:` character in a component', () => {
     describe('When validated', () => {
       it('Then rejects (NTFS ADS / drive-letter guard)', () => {
-        // Arrange + Assert
+        // Arrange & Act + Assert
         expectReject('a:b');
       });
     });
@@ -188,7 +198,7 @@ describe('validateWorkingTreePath', () => {
   describe('Given a `.git` component (lowercase)', () => {
     describe('When validated', () => {
       it('Then rejects', () => {
-        // Arrange + Assert
+        // Arrange & Act + Assert
         expectReject('a/.git/b');
       });
     });
@@ -197,7 +207,7 @@ describe('validateWorkingTreePath', () => {
   describe('Given a `.GIT` (uppercase) component', () => {
     describe('When validated', () => {
       it('Then rejects (case-insensitive)', () => {
-        // Arrange + Assert
+        // Arrange & Act + Assert
         expectReject('a/.GIT/b');
       });
     });
@@ -206,7 +216,7 @@ describe('validateWorkingTreePath', () => {
   describe('Given a `.git ` (trailing space) component', () => {
     describe('When validated', () => {
       it('Then rejects (NTFS hardening)', () => {
-        // Arrange + Assert
+        // Arrange & Act + Assert
         expectReject('a/.git /b');
       });
     });
@@ -217,7 +227,8 @@ describe('validateWorkingTreePath', () => {
       it.each([0x00, 0x01, 0x1f, 0x7f])('Then rejects', (code) => {
         // Arrange
         const input = `a/x${String.fromCharCode(code)}y/c`;
-        // Assert
+
+        // Act + Assert
         expectReject(input);
       });
     });
@@ -226,7 +237,7 @@ describe('validateWorkingTreePath', () => {
   describe('Given a component with the highest non-control byte 0x20 (space)', () => {
     describe('When validated', () => {
       it('Then accepts', () => {
-        // Arrange + Assert
+        // Arrange & Act + Assert
         // Kills the `<= 0x1f` → `<= 0x20` mutant. Space (0x20) is allowed.
         expect(validateWorkingTreePath('a/b c/d')).toBe('a/b c/d');
       });
@@ -236,7 +247,7 @@ describe('validateWorkingTreePath', () => {
   describe('Given a component with the boundary control byte 0x1f (unit separator)', () => {
     describe('When validated', () => {
       it('Then rejects', () => {
-        // Arrange + Assert
+        // Arrange & Act + Assert
         // Kills the `<= 0x1f` → `< 0x1f` mutant.
         expectReject(`a/b${String.fromCharCode(0x1f)}/c`);
       });
@@ -246,7 +257,7 @@ describe('validateWorkingTreePath', () => {
   describe('Given a path with NO `\\\\` and the backslash guard short-circuit', () => {
     describe('When validated', () => {
       it('Then accepts (kills the false-mutant on the backslash check)', () => {
-        // Arrange + Assert
+        // Arrange & Act + Assert
         // Direct positive that exercises the `if (input.includes('\\'))` branch
         // via the negative case — accepted path means the conditional was false.
         expect(validateWorkingTreePath('a/b')).toBe('a/b');
@@ -259,11 +270,11 @@ describe('isForbiddenGitComponent', () => {
   describe('Given the literal ".git"', () => {
     describe('When checked', () => {
       it('Then returns true', () => {
-        // Arrange
-        const sut = isForbiddenGitComponent('.git');
+        // Arrange & Act
+        const result = isForbiddenGitComponent('.git');
 
         // Assert
-        expect(sut).toBe(true);
+        expect(result).toBe(true);
       });
     });
   });
@@ -271,11 +282,11 @@ describe('isForbiddenGitComponent', () => {
   describe('Given an unrelated name', () => {
     describe('When checked', () => {
       it('Then returns false', () => {
-        // Arrange
-        const sut = isForbiddenGitComponent('src');
+        // Arrange & Act
+        const result = isForbiddenGitComponent('src');
 
         // Assert
-        expect(sut).toBe(false);
+        expect(result).toBe(false);
       });
     });
   });
@@ -283,11 +294,11 @@ describe('isForbiddenGitComponent', () => {
   describe('Given ".git." (trailing dot)', () => {
     describe('When checked', () => {
       it('Then returns true (NTFS variant)', () => {
-        // Arrange
-        const sut = isForbiddenGitComponent('.git.');
+        // Arrange & Act
+        const result = isForbiddenGitComponent('.git.');
 
         // Assert
-        expect(sut).toBe(true);
+        expect(result).toBe(true);
       });
     });
   });
@@ -295,11 +306,11 @@ describe('isForbiddenGitComponent', () => {
   describe('Given ".git " (trailing space)', () => {
     describe('When checked', () => {
       it('Then returns true (NTFS variant)', () => {
-        // Arrange
-        const sut = isForbiddenGitComponent('.git ');
+        // Arrange & Act
+        const result = isForbiddenGitComponent('.git ');
 
         // Assert
-        expect(sut).toBe(true);
+        expect(result).toBe(true);
       });
     });
   });
@@ -307,11 +318,11 @@ describe('isForbiddenGitComponent', () => {
   describe('Given ".GIT"', () => {
     describe('When checked', () => {
       it('Then returns true (case-insensitive)', () => {
-        // Arrange
-        const sut = isForbiddenGitComponent('.GIT');
+        // Arrange & Act
+        const result = isForbiddenGitComponent('.GIT');
 
         // Assert
-        expect(sut).toBe(true);
+        expect(result).toBe(true);
       });
     });
   });
@@ -319,11 +330,11 @@ describe('isForbiddenGitComponent', () => {
   describe('Given ".gitignore"', () => {
     describe('When checked', () => {
       it('Then returns false', () => {
-        // Arrange
-        const sut = isForbiddenGitComponent('.gitignore');
+        // Arrange & Act
+        const result = isForbiddenGitComponent('.gitignore');
 
         // Assert
-        expect(sut).toBe(false);
+        expect(result).toBe(false);
       });
     });
   });

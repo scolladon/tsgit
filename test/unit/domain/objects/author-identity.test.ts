@@ -15,10 +15,10 @@ describe('author-identity', () => {
           const line = 'Alice <alice@example.com> 1234567890 +0200';
 
           // Act
-          const sut = parseIdentity(line);
+          const result = parseIdentity(line);
 
           // Assert
-          expect(sut).toEqual({
+          expect(result).toEqual({
             name: 'Alice',
             email: 'alice@example.com',
             timestamp: 1234567890,
@@ -35,10 +35,10 @@ describe('author-identity', () => {
           const line = 'Bob <bob@test.com> -100 +0000';
 
           // Act
-          const sut = parseIdentity(line);
+          const result = parseIdentity(line);
 
           // Assert
-          expect(sut.timestamp).toBe(-100);
+          expect(result.timestamp).toBe(-100);
         });
       });
     });
@@ -51,10 +51,10 @@ describe('author-identity', () => {
           { line: 'Eve <eve@test.com> 0 -0000', expected: '-0000' },
         ])("Then timezoneOffset is '$expected'", ({ line, expected }) => {
           // Arrange & Act
-          const sut = parseIdentity(line);
+          const result = parseIdentity(line);
 
           // Assert
-          expect(sut.timezoneOffset).toBe(expected);
+          expect(result.timezoneOffset).toBe(expected);
         });
       });
     });
@@ -75,10 +75,10 @@ describe('author-identity', () => {
           },
         ])('Then $label', ({ line, expected }) => {
           // Arrange & Act
-          const sut = parseIdentity(line);
+          const result = parseIdentity(line);
 
           // Assert
-          expect(sut.name).toBe(expected);
+          expect(result.name).toBe(expected);
         });
       });
     });
@@ -90,10 +90,10 @@ describe('author-identity', () => {
           const line = 'A <B> C <real@email.com> 123 +0000';
 
           // Act
-          const sut = parseIdentity(line);
+          const result = parseIdentity(line);
 
           // Assert
-          expect(sut.email).toBe('real@email.com');
+          expect(result.email).toBe('real@email.com');
         });
       });
     });
@@ -205,11 +205,11 @@ describe('author-identity', () => {
           const line = 'Alice <a@a.com> 100  +0000';
 
           // Act
-          const sut = parseIdentity(line);
+          const result = parseIdentity(line);
 
           // Assert
-          expect(sut.timestamp).toBe(100);
-          expect(sut.timezoneOffset).toBe('+0000');
+          expect(result.timestamp).toBe(100);
+          expect(result.timezoneOffset).toBe('+0000');
         });
       });
     });
@@ -228,10 +228,10 @@ describe('author-identity', () => {
           };
 
           // Act
-          const sut = serializeIdentity(identity);
+          const result = serializeIdentity(identity);
 
           // Assert
-          expect(sut).toBe('Alice <alice@example.com> 1234567890 +0200');
+          expect(result).toBe('Alice <alice@example.com> 1234567890 +0200');
         });
       });
     });
@@ -248,10 +248,10 @@ describe('author-identity', () => {
           };
 
           // Act
-          const sut = serializeIdentity(identity);
+          const result = serializeIdentity(identity);
 
           // Assert
-          expect(sut).toBe(' <e@x.com> 0 +0000');
+          expect(result).toBe(' <e@x.com> 0 +0000');
         });
       });
     });
@@ -373,10 +373,10 @@ describe('author-identity', () => {
           'Then $label succeeds',
           ({ identity, expected }) => {
             // Arrange + Act
-            const sut = serializeIdentity(identity);
+            const result = serializeIdentity(identity);
 
             // Assert
-            expect(sut).toContain(expected);
+            expect(result).toContain(expected);
           },
         );
       });
@@ -495,10 +495,10 @@ describe('author-identity', () => {
           };
 
           // Act
-          const sut = parseIdentity(serializeIdentity(identity));
+          const result = parseIdentity(serializeIdentity(identity));
 
           // Assert
-          expect(sut).toEqual(identity);
+          expect(result).toEqual(identity);
         });
       });
     });
@@ -532,12 +532,14 @@ describe('author-identity', () => {
               ),
           });
 
-          // Assert
           fc.assert(
             fc.property(arbIdentity, (identity) => {
+              // Act
               const serialized = serializeIdentity(identity);
-              const sut = parseIdentity(serialized);
-              expect(sut).toEqual(identity);
+              const result = parseIdentity(serialized);
+
+              // Assert
+              expect(result).toEqual(identity);
             }),
           );
         });

@@ -31,15 +31,15 @@ describe('tag', () => {
           ]);
 
           // Act
-          const sut = parseTagContent(DUMMY_ID, content);
+          const result = parseTagContent(DUMMY_ID, content);
 
           // Assert
-          expect(sut.data.object).toBe('b'.repeat(40));
-          expect(sut.data.objectType).toBe('commit');
-          expect(sut.data.tagName).toBe('v1.0.0');
-          expect(sut.data.tagger?.name).toBe('Alice');
-          expect(sut.data.message).toBe('Release v1.0.0');
-          expect(sut.data.extraHeaders).toEqual([]);
+          expect(result.data.object).toBe('b'.repeat(40));
+          expect(result.data.objectType).toBe('commit');
+          expect(result.data.tagName).toBe('v1.0.0');
+          expect(result.data.tagger?.name).toBe('Alice');
+          expect(result.data.message).toBe('Release v1.0.0');
+          expect(result.data.extraHeaders).toEqual([]);
         });
       });
     });
@@ -57,10 +57,10 @@ describe('tag', () => {
           ]);
 
           // Act
-          const sut = parseTagContent(DUMMY_ID, content);
+          const result = parseTagContent(DUMMY_ID, content);
 
           // Assert
-          expect(sut.data.tagger).toBeUndefined();
+          expect(result.data.tagger).toBeUndefined();
         });
       });
     });
@@ -79,11 +79,11 @@ describe('tag', () => {
           ]);
 
           // Act
-          const sut = parseTagContent(DUMMY_ID, content);
+          const result = parseTagContent(DUMMY_ID, content);
 
           // Assert
-          expect(sut.data.tagger).toBeUndefined();
-          expect(sut.data.extraHeaders).toEqual([{ key: 'custom-key', value: 'value' }]);
+          expect(result.data.tagger).toBeUndefined();
+          expect(result.data.extraHeaders).toEqual([{ key: 'custom-key', value: 'value' }]);
         });
       });
     });
@@ -105,11 +105,11 @@ describe('tag', () => {
           ]);
 
           // Act
-          const sut = parseTagContent(DUMMY_ID, content);
+          const result = parseTagContent(DUMMY_ID, content);
 
           // Assert
-          expect(sut.data.gpgSignature).toBeUndefined();
-          expect(sut.data.extraHeaders).toEqual([
+          expect(result.data.gpgSignature).toBeUndefined();
+          expect(result.data.extraHeaders).toEqual([
             {
               key: 'gpgsig',
               value: '-----BEGIN PGP SIGNATURE-----\nsig-data\n-----END PGP SIGNATURE-----',
@@ -135,10 +135,10 @@ describe('tag', () => {
           ]);
 
           // Act
-          const sut = parseTagContent(DUMMY_ID, content);
+          const result = parseTagContent(DUMMY_ID, content);
 
           // Assert
-          expect(sut.data.extraHeaders).toEqual([
+          expect(result.data.extraHeaders).toEqual([
             { key: 'custom', value: 'header-value\ncontinuation' },
           ]);
         });
@@ -163,10 +163,10 @@ describe('tag', () => {
           ]);
 
           // Act
-          const sut = parseTagContent(DUMMY_ID, content);
+          const result = parseTagContent(DUMMY_ID, content);
 
           // Assert
-          expect(sut.data.objectType).toBe(type);
+          expect(result.data.objectType).toBe(type);
         });
       });
     });
@@ -183,11 +183,11 @@ describe('tag', () => {
           ]);
 
           // Act
-          const sut = parseTagContent(DUMMY_ID, content);
+          const result = parseTagContent(DUMMY_ID, content);
 
           // Assert
-          expect(sut.data.message).toBe('');
-          expect(sut.data.tagName).toBe('v1.0');
+          expect(result.data.message).toBe('');
+          expect(result.data.tagName).toBe('v1.0');
         });
       });
     });
@@ -207,10 +207,10 @@ describe('tag', () => {
           ]);
 
           // Act
-          const sut = parseTagContent(DUMMY_ID, content);
+          const result = parseTagContent(DUMMY_ID, content);
 
           // Assert
-          expect(sut.data.extraHeaders).toEqual([{ key: 'keyonly', value: '' }]);
+          expect(result.data.extraHeaders).toEqual([{ key: 'keyonly', value: '' }]);
         });
       });
     });
@@ -301,16 +301,16 @@ describe('tag', () => {
             const content = tagText(lines);
 
             // Act
-            let sut: unknown;
+            let result: unknown;
             try {
               parseTagContent(DUMMY_ID, content);
             } catch (e) {
-              sut = e;
+              result = e;
             }
 
             // Assert
-            expect(sut).toBeInstanceOf(TsgitError);
-            expect((sut as TsgitError).data).toEqual({
+            expect(result).toBeInstanceOf(TsgitError);
+            expect((result as TsgitError).data).toEqual({
               code: 'INVALID_TAG',
               reason: 'third line must be tag name',
             });
@@ -359,10 +359,10 @@ describe('tag', () => {
           ]);
 
           // Act
-          const sut = parseTagContent(DUMMY_ID, content);
+          const result = parseTagContent(DUMMY_ID, content);
 
           // Assert
-          expect(sut.data.extraHeaders).toEqual([
+          expect(result.data.extraHeaders).toEqual([
             { key: 'gpgsig', value: 'first-sig' },
             { key: 'gpgsig', value: 'second-sig' },
           ]);
@@ -395,13 +395,13 @@ describe('tag', () => {
           };
 
           // Act
-          const sut = new TextDecoder().decode(serializeTagContent(tag));
+          const result = new TextDecoder().decode(serializeTagContent(tag));
 
           // Assert
-          expect(sut).toContain(`object ${'b'.repeat(40)}\n`);
-          expect(sut).toContain('type commit\n');
-          expect(sut).toContain('tag v1.0\n');
-          expect(sut).toContain('tagger Alice <alice@test.com> 1000 +0000\n');
+          expect(result).toContain(`object ${'b'.repeat(40)}\n`);
+          expect(result).toContain('type commit\n');
+          expect(result).toContain('tag v1.0\n');
+          expect(result).toContain('tagger Alice <alice@test.com> 1000 +0000\n');
         });
       });
     });
@@ -423,10 +423,10 @@ describe('tag', () => {
           };
 
           // Act
-          const sut = new TextDecoder().decode(serializeTagContent(tag));
+          const result = new TextDecoder().decode(serializeTagContent(tag));
 
           // Assert
-          expect(sut).not.toContain('tagger');
+          expect(result).not.toContain('tagger');
         });
       });
     });
@@ -491,10 +491,10 @@ describe('tag', () => {
           };
 
           // Act
-          const sut = new TextDecoder().decode(serializeTagContent(tag));
+          const result = new TextDecoder().decode(serializeTagContent(tag));
 
           // Assert
-          expect(sut).toContain('tag release-1\n');
+          expect(result).toContain('tag release-1\n');
         });
       });
     });
@@ -522,10 +522,10 @@ describe('tag', () => {
           };
 
           // Act
-          const sut = new TextDecoder().decode(serializeTagContent(tag));
+          const result = new TextDecoder().decode(serializeTagContent(tag));
 
           // Assert
-          expect(sut).toContain('custom line1\n line2\n');
+          expect(result).toContain('custom line1\n line2\n');
         });
       });
     });
@@ -557,10 +557,10 @@ describe('tag', () => {
 
           // Act
           const bytes = serializeTagContent(tag);
-          const sut = parseTagContent(DUMMY_ID, bytes);
+          const result = parseTagContent(DUMMY_ID, bytes);
 
           // Assert
-          expect(sut.data).toEqual(tag.data);
+          expect(result.data).toEqual(tag.data);
         });
       });
     });
@@ -587,12 +587,12 @@ describe('tag', () => {
           };
 
           // Act
-          const sut = new TextDecoder().decode(serializeTagContent(tag));
+          const result = new TextDecoder().decode(serializeTagContent(tag));
 
           // Assert
-          expect(sut).not.toContain('gpgsig');
-          expect(sut).toContain('Release v1.0\n-----BEGIN PGP SIGNATURE-----');
-          expect(sut.endsWith('-----END PGP SIGNATURE-----\n')).toBe(true);
+          expect(result).not.toContain('gpgsig');
+          expect(result).toContain('Release v1.0\n-----BEGIN PGP SIGNATURE-----');
+          expect(result.endsWith('-----END PGP SIGNATURE-----\n')).toBe(true);
         });
       });
     });
@@ -618,11 +618,11 @@ describe('tag', () => {
           const bytes = serializeTagContent(tag);
 
           // Act
-          const sut = parseTagContent(DUMMY_ID, bytes);
+          const result = parseTagContent(DUMMY_ID, bytes);
 
           // Assert
-          expect(sut.data.gpgSignature).toBe(armor);
-          expect(sut.data.message).toBe('Release v1.0\n');
+          expect(result.data.gpgSignature).toBe(armor);
+          expect(result.data.message).toBe('Release v1.0\n');
         });
       });
     });
@@ -649,13 +649,13 @@ describe('tag', () => {
 
           // Act
           const bytes = serializeTagContent(tag);
-          const sut = parseTagContent(DUMMY_ID, bytes);
+          const result = parseTagContent(DUMMY_ID, bytes);
 
           // Assert
           expect(new TextDecoder().decode(bytes).endsWith('-----END SSH SIGNATURE-----\n')).toBe(
             true,
           );
-          expect(sut.data.gpgSignature).toBe(armor);
+          expect(result.data.gpgSignature).toBe(armor);
         });
       });
     });
@@ -679,11 +679,11 @@ describe('tag', () => {
 
           // Act
           const bytes = serializeTagContent(tag);
-          const sut = parseTagContent(DUMMY_ID, bytes);
+          const result = parseTagContent(DUMMY_ID, bytes);
 
           // Assert
-          expect(sut.data.gpgSignature).toBeUndefined();
-          expect(sut.data.message).toBe('Release v1.0\n');
+          expect(result.data.gpgSignature).toBeUndefined();
+          expect(result.data.message).toBe('Release v1.0\n');
         });
       });
     });
@@ -710,11 +710,11 @@ describe('tag', () => {
           ]);
 
           // Act
-          const sut = parseTagContent(DUMMY_ID, content);
+          const result = parseTagContent(DUMMY_ID, content);
 
           // Assert
-          expect(sut.data.gpgSignature).toBeUndefined();
-          expect(sut.data.message).toBe(message);
+          expect(result.data.gpgSignature).toBeUndefined();
+          expect(result.data.message).toBe(message);
         });
       });
     });
@@ -766,7 +766,7 @@ describe('tag', () => {
             ),
           });
 
-          // Assert
+          // Act + Assert
           fc.assert(
             fc.property(arbTagData, (data) => {
               const tagData =
@@ -792,8 +792,8 @@ describe('tag', () => {
                 data: tagData,
               };
               const bytes = serializeTagContent(tag);
-              const sut = parseTagContent(DUMMY_ID, bytes);
-              expect(sut.data).toEqual(tag.data);
+              const result = parseTagContent(DUMMY_ID, bytes);
+              expect(result.data).toEqual(tag.data);
             }),
           );
         });
