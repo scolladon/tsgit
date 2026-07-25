@@ -127,19 +127,23 @@ operator instance, a constructed object, a static method. The convention text is
 prescriptive: *"`sut` MUST bind the unit under test (the function reference, the
 constructed object, or the operator being exercised)."* Therefore:
 
-- **Function under test → `sut` = the function reference; `result` = its return.**
-  `const sut = crc32; const result = sut(data); expect(result).toBe(…)`
-  (mirrors `map.test.ts`'s `const sut = map(mapper)` — the invocable). See
-  Decision A for the pure-free-function form.
+**RESOLVED — Decision A/B (user): drop `sut` for function/static-factory invocations.**
+The rule is deliberately simple and uniform:
+
+- **Function under test (incl. `this`-free static factories) → NO `sut`; bind the
+  outcome to `result`.** `const result = crc32(data); expect(result).toBe(…)`,
+  `const result = ObjectId.from(hex); expect(result).toBe(hex)`,
+  `const result = await applyMergeToWorktree(ctx, {…}); expect(result.clean)…`. In
+  practice the anti-pattern `const sut = <function-call>(…)` becomes a near-pure
+  **rename `sut` → `result`** across that test — the callee self-names the unit, so no
+  intermediate `sut` binding is introduced. (`sutNaming` permits an absent `sut`.)
 - **Object/factory under test → `sut` = the object; `result` = a read/return.**
   `const sut = new NodeHashService('sha256'); expect(sut.digestLength)…` and
-  `const sut = openRepository(…); await sut.status()` are **already correct** —
-  `sut` IS the object exercised. Leave them.
-- **Outcome never binds to `sut`.** `const sut = await applyMergeToWorktree(…)`
-  then `expect(sut.clean)` → the unit is `applyMergeToWorktree`; rewrite to
-  `const sut = applyMergeToWorktree; const result = await sut(…); expect(result.clean)…`.
+  `const sut = openRepository(…); const result = await sut.status()` are **already
+  correct** — `sut` IS the object exercised. Leave the `sut`.
 - **Test *input* never binds to `sut`.** `const sut = new Uint8Array([1,2,3])`
-  fed to `crc32` is mis-named: the input is `data`, the `sut` is `crc32`.
+  fed to `crc32` is mis-named: rename the input to a descriptive name (`data`);
+  the outcome is `result`.
 - **Instance methods on a constructed object are NOT detached.** Never rewrite
   `const sut = openRepository(…); sut.status()` to `const sut = instance.method`
   — that strips `this` and is an object-under-test exclusion (§4). `sut` stays the
@@ -206,11 +210,16 @@ the When differs → separate zone. This mirrors ADR-498's "one accurate
 blocks; it never merges two leaves and never changes a leaf's body beyond the
 axis-1/axis-2 edits.
 
-**Count-preservation is the default.** Zone regrouping keeps **every** `it('Then
-…')` leaf — it clusters, it does not collapse. `it.each` parameterisation of
-same-act/same-oracle/different-input leaves is **permitted** (reusing ADR-498's
-KEEP/COLLAPSE guard-rails: matrix = union of inputs, no oracle weakened, one row
-per guard/boundary, no shared mutable state) but **not required**. See Decision C.
+**RESOLVED — Decision C (user): collapse to `it.each`, lossless, NO DELETE.**
+Zone regrouping clusters leaves into zones; within a zone, `it.each` parameterisation
+of same-act/same-oracle/different-input leaves is **applied** where 3+ siblings qualify
+(reusing ADR-498's KEEP/COLLAPSE guard-rails: matrix = union of inputs, no oracle
+weakened, one row per guard/boundary, no shared mutable state). Collapse is **lossless
+restructuring** — the number of cases *executed* is unchanged (each row runs); only the
+`it()`-block count drops, making the file lighter and clearer ("improved structure =
+improved meaning"). ADR-498's strict-subset **DELETE is excluded** — the user constraint
+"do not remove, change, add tests" forbids dropping any case, so every distinguishing
+input survives as a KEEP leaf or a COLLAPSE row; no case is added. See ADR-506.
 
 ## 4. Exclusions the criteria MUST protect (do NOT rewrite)
 
@@ -260,22 +269,21 @@ edit (advisory — ground truth is `check:types`/`validate`).
 
 ### Worked examples (all real files in scope)
 
-- **`crc32.test.ts`** — `const sut = crc32(data)` (property body) and
-  `const sut = new Uint8Array([1,2,3,4,5])` (input). Fix:
-  `const sut = crc32; const data = …; const result = sut(data); expect(result)…`.
-  The `// Arrange & Act` compound splits into `// Arrange`(`const sut = crc32`) /
-  `// Act`(`const result = sut(data)`).
+- **`crc32.test.ts`** — `const sut = crc32(data)` (result-in-sut) and
+  `const sut = new Uint8Array([1,2,3,4,5])` (input mis-named). Fix (drop-sut):
+  `const data = …; const result = crc32(data); expect(result)…`. The input becomes
+  `data`; `// Arrange`(`const data = …`) / `// Act`(`const result = crc32(data)`).
 - **`object-id.test.ts`** — `const sut = ObjectId.from(hex); expect(sut).toBe(hex)`.
-  Decision B: `const sut = ObjectId.from; const result = sut(hex);
+  Fix (drop-sut, `this`-free static factory): `const result = ObjectId.from(hex);
   expect(result).toBe(hex)`.
 - **`index-diff.test.ts`** — 20+ `const sut = diffIndexAgainstTree(idx, tree)` /
-  `const sut = conflictsToIndexEntries(…)`. Fix: `sut` = the function,
-  `result` = its return; then zone-regroup the many `conflictsToIndexEntries`
-  Whens into one zone per Given.
+  `const sut = conflictsToIndexEntries(…)`. Fix: rename `sut`→`result` (drop-sut);
+  then zone-regroup the many `conflictsToIndexEntries` Whens into one zone per Given
+  and **collapse** same-oracle input families into `it.each`.
 - **`apply-merge-to-worktree.test.ts`** — 18× `const sut = await
-  applyMergeToWorktree(ctx, {…})`. Fix: `const sut = applyMergeToWorktree;
-  const result = await sut(ctx, {…})`; regroup by stash/merge scenario (Given)
-  and "the merge is applied" (When).
+  applyMergeToWorktree(ctx, {…})`. Fix: rename to `const result = await
+  applyMergeToWorktree(ctx, {…})` (drop-sut); regroup by stash/merge scenario (Given)
+  and "the merge is applied" (When); collapse same-oracle scenarios into `it.each`.
 
 ## 6. Proof of behaviour preservation (and why mutation is zero-signal)
 
@@ -336,6 +344,14 @@ giants, same set ADR-498 identified): `application/primitives/config-read`,
   test deleted). A red gate localises to that batch's atomic commits (bisectable).
 
 ## 8. Decision candidates (for the ADR conversation)
+
+**RESOLVED (ADR-506, 2026-07-25).** 0 → **(A) new ADR-506**. A → **(B) drop `sut`** for
+pure functions & `this`-free static factories (bind outcome to `result`; objects keep
+`sut`) — *user judgment, deviates from the design recommendation*. B → **(A-equivalent)**
+folds into A's drop-`sut` rule. C → **(B) collapse to `it.each`**, lossless, under ADR-498
+guard-rails, **DELETE excluded** — *user judgment, deviates from the design recommendation*.
+D → **(A) per-subsystem-dir + giants, gated tiers first**. The bodies below are retained as
+the rationale of record.
 
 ### Decision 0 — standing ADR for the conformance-sweep methodology (top decision)
 
