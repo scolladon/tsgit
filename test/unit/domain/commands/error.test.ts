@@ -151,11 +151,11 @@ describe('domain commands error — factory data', () => {
     describe('When called with a merge commit oid', () => {
       it('Then data carries the code and the offending commit', () => {
         // Arrange + Act
-        const sut = cherryPickMergeNoMainline(OID1);
+        const result = cherryPickMergeNoMainline(OID1);
 
         // Assert
-        expect(sut.data).toEqual({ code: 'CHERRY_PICK_MERGE_NO_MAINLINE', commit: OID1 });
-        expect(sut.message).toBe(
+        expect(result.data).toEqual({ code: 'CHERRY_PICK_MERGE_NO_MAINLINE', commit: OID1 });
+        expect(result.message).toBe(
           `CHERRY_PICK_MERGE_NO_MAINLINE: commit ${OID1} is a merge but no -m option was given`,
         );
       });
@@ -166,11 +166,11 @@ describe('domain commands error — factory data', () => {
     describe('When called with a merge commit oid', () => {
       it('Then data carries the code and the offending commit', () => {
         // Arrange + Act
-        const sut = revertMergeNoMainline(OID1);
+        const result = revertMergeNoMainline(OID1);
 
         // Assert
-        expect(sut.data).toEqual({ code: 'REVERT_MERGE_NO_MAINLINE', commit: OID1 });
-        expect(sut.message).toBe(
+        expect(result.data).toEqual({ code: 'REVERT_MERGE_NO_MAINLINE', commit: OID1 });
+        expect(result.message).toBe(
           `REVERT_MERGE_NO_MAINLINE: commit ${OID1} is a merge but no -m option was given`,
         );
       });
@@ -181,11 +181,11 @@ describe('domain commands error — factory data', () => {
     describe('When called with the target oid', () => {
       it('Then data and message carry the code and oid', () => {
         // Arrange + Act
-        const sut = noNames(OID1);
+        const result = noNames(OID1);
 
         // Assert
-        expect(sut.data).toEqual({ code: 'NO_NAMES', oid: OID1 });
-        expect(sut.message).toBe(`NO_NAMES: no names found, cannot describe ${OID1}`);
+        expect(result.data).toEqual({ code: 'NO_NAMES', oid: OID1 });
+        expect(result.message).toBe(`NO_NAMES: no names found, cannot describe ${OID1}`);
       });
     });
   });
@@ -194,11 +194,11 @@ describe('domain commands error — factory data', () => {
     describe('When called with the target oid', () => {
       it('Then data and message carry the code and oid', () => {
         // Arrange + Act
-        const sut = noAnnotatedNames(OID1);
+        const result = noAnnotatedNames(OID1);
 
         // Assert
-        expect(sut.data).toEqual({ code: 'NO_ANNOTATED_NAMES', oid: OID1 });
-        expect(sut.message).toBe(
+        expect(result.data).toEqual({ code: 'NO_ANNOTATED_NAMES', oid: OID1 });
+        expect(result.message).toBe(
           `NO_ANNOTATED_NAMES: no annotated tags can describe ${OID1}; try tags: true`,
         );
       });
@@ -209,11 +209,11 @@ describe('domain commands error — factory data', () => {
     describe('When called with the target oid', () => {
       it('Then data and message carry the code and oid', () => {
         // Arrange + Act
-        const sut = noReachableNames(OID1);
+        const result = noReachableNames(OID1);
 
         // Assert
-        expect(sut.data).toEqual({ code: 'NO_REACHABLE_NAMES', oid: OID1 });
-        expect(sut.message).toBe(`NO_REACHABLE_NAMES: no tags can describe ${OID1}`);
+        expect(result.data).toEqual({ code: 'NO_REACHABLE_NAMES', oid: OID1 });
+        expect(result.message).toBe(`NO_REACHABLE_NAMES: no tags can describe ${OID1}`);
       });
     });
   });
@@ -222,11 +222,11 @@ describe('domain commands error — factory data', () => {
     describe('When called with the target oid', () => {
       it('Then data and message carry the code and oid', () => {
         // Arrange + Act
-        const sut = noExactMatch(OID1);
+        const result = noExactMatch(OID1);
 
         // Assert
-        expect(sut.data).toEqual({ code: 'NO_EXACT_MATCH', oid: OID1 });
-        expect(sut.message).toBe(`NO_EXACT_MATCH: no tag exactly matches ${OID1}`);
+        expect(result.data).toEqual({ code: 'NO_EXACT_MATCH', oid: OID1 });
+        expect(result.message).toBe(`NO_EXACT_MATCH: no tag exactly matches ${OID1}`);
       });
     });
   });
@@ -235,11 +235,11 @@ describe('domain commands error — factory data', () => {
     describe('When called with the target oid', () => {
       it('Then data and message carry the code and oid', () => {
         // Arrange + Act
-        const sut = cannotDescribe(OID1);
+        const result = cannotDescribe(OID1);
 
         // Assert
-        expect(sut.data).toEqual({ code: 'CANNOT_DESCRIBE', oid: OID1 });
-        expect(sut.message).toBe(`CANNOT_DESCRIBE: cannot describe ${OID1}`);
+        expect(result.data).toEqual({ code: 'CANNOT_DESCRIBE', oid: OID1 });
+        expect(result.message).toBe(`CANNOT_DESCRIBE: cannot describe ${OID1}`);
       });
     });
   });
@@ -260,10 +260,10 @@ describe('domain commands error — factory data', () => {
     describe('When called', () => {
       it('Then data matches expected shape', () => {
         // Arrange
-        const sut = nothingToCommit().data;
+        const result = nothingToCommit().data;
 
         // Assert
-        expect(sut).toEqual({ code: 'NOTHING_TO_COMMIT' });
+        expect(result).toEqual({ code: 'NOTHING_TO_COMMIT' });
       });
     });
   });
@@ -272,10 +272,10 @@ describe('domain commands error — factory data', () => {
     describe('When called', () => {
       it('Then data matches expected shape', () => {
         // Arrange
-        const sut = emptyCommitMessage().data;
+        const result = emptyCommitMessage().data;
 
         // Assert
-        expect(sut).toEqual({ code: 'EMPTY_COMMIT_MESSAGE' });
+        expect(result).toEqual({ code: 'EMPTY_COMMIT_MESSAGE' });
       });
     });
   });
@@ -284,10 +284,10 @@ describe('domain commands error — factory data', () => {
     describe('When called', () => {
       it('Then data matches expected shape', () => {
         // Arrange
-        const sut = authorUnconfigured().data;
+        const result = authorUnconfigured().data;
 
         // Assert
-        expect(sut).toEqual({ code: 'AUTHOR_UNCONFIGURED' });
+        expect(result).toEqual({ code: 'AUTHOR_UNCONFIGURED' });
       });
     });
   });
@@ -368,10 +368,10 @@ describe('domain commands error — factory data', () => {
     describe('When called', () => {
       it('Then data matches expected shape', () => {
         // Arrange
-        const sut = invalidUrl('bad').data;
+        const result = invalidUrl('bad').data;
 
         // Assert
-        expect(sut).toEqual({ code: 'INVALID_URL', reason: 'bad' });
+        expect(result).toEqual({ code: 'INVALID_URL', reason: 'bad' });
       });
     });
   });
@@ -393,10 +393,10 @@ describe('domain commands error — factory data', () => {
     describe('When called', () => {
       it('Then data matches expected shape', () => {
         // Arrange
-        const sut = tooManyRedirects(6).data;
+        const result = tooManyRedirects(6).data;
 
         // Assert
-        expect(sut).toEqual({ code: 'TOO_MANY_REDIRECTS', count: 6 });
+        expect(result).toEqual({ code: 'TOO_MANY_REDIRECTS', count: 6 });
       });
     });
   });
@@ -429,10 +429,10 @@ describe('domain commands error — factory data', () => {
     describe('When called', () => {
       it('Then data matches expected shape', () => {
         // Arrange
-        const sut = remoteAdvertisesNoRefs().data;
+        const result = remoteAdvertisesNoRefs().data;
 
         // Assert
-        expect(sut).toEqual({ code: 'REMOTE_ADVERTISES_NO_REFS' });
+        expect(result).toEqual({ code: 'REMOTE_ADVERTISES_NO_REFS' });
       });
     });
   });
@@ -600,10 +600,10 @@ describe('domain commands error — factory data', () => {
     describe('When called', () => {
       it('Then data matches expected shape', () => {
         // Arrange
-        const sut = emptyPathspec().data;
+        const result = emptyPathspec().data;
 
         // Assert
-        expect(sut).toEqual({ code: 'EMPTY_PATHSPEC' });
+        expect(result).toEqual({ code: 'EMPTY_PATHSPEC' });
       });
     });
   });
@@ -624,10 +624,10 @@ describe('domain commands error — factory data', () => {
     describe('When called', () => {
       it.each([['merge'], ['rebase']] as const)('Then data carries operation=%s', (operation) => {
         // Arrange + Act
-        const sut = noOperationInProgress(operation);
+        const result = noOperationInProgress(operation);
 
         // Assert
-        expect(sut.data).toEqual({
+        expect(result.data).toEqual({
           code: 'NO_OPERATION_IN_PROGRESS',
           operation,
         });
@@ -700,10 +700,10 @@ describe('domain commands error — factory data', () => {
         },
       ])('Then $label', ({ reason, expected }) => {
         // Arrange + Act
-        const sut = invalidOption('cwd', reason);
+        const result = invalidOption('cwd', reason);
 
         // Assert
-        expect(sut.data).toEqual({
+        expect(result.data).toEqual({
           code: 'INVALID_OPTION',
           option: 'cwd',
           reason: expected,
@@ -716,10 +716,10 @@ describe('domain commands error — factory data', () => {
     describe('When repositoryDisposed', () => {
       it('Then data has only the code', () => {
         // Arrange
-        const sut = repositoryDisposed().data;
+        const result = repositoryDisposed().data;
 
         // Assert
-        expect(sut).toEqual({ code: 'REPOSITORY_DISPOSED' });
+        expect(result).toEqual({ code: 'REPOSITORY_DISPOSED' });
       });
     });
   });
@@ -853,10 +853,10 @@ describe('sanitize helper', () => {
         },
       ])('Then $label', ({ input, expected }) => {
         // Arrange
-        const sut = sanitize(input);
+        const result = sanitize(input);
 
         // Assert
-        expect(sut).toBe(expected);
+        expect(result).toBe(expected);
       });
     });
   });
@@ -878,10 +878,10 @@ describe('sanitize helper', () => {
         },
       ])('Then $label', ({ input, expected }) => {
         // Arrange
-        const sut = sanitize(input);
+        const result = sanitize(input);
 
         // Assert
-        expect(sut).toBe(expected);
+        expect(result).toBe(expected);
       });
     });
   });
@@ -892,40 +892,40 @@ describe('domain commands error — config factory data', () => {
     describe('When called with reason="empty-section" and no position', () => {
       it('Then data omits the position field', () => {
         // Arrange + Act
-        const sut = configKeyInvalid('.name', 'empty-section');
+        const result = configKeyInvalid('.name', 'empty-section');
 
         // Assert
-        expect(sut.data).toEqual({
+        expect(result.data).toEqual({
           code: 'CONFIG_KEY_INVALID',
           key: '.name',
           reason: 'empty-section',
         });
-        expect(sut.data).not.toHaveProperty('position');
+        expect(result.data).not.toHaveProperty('position');
       });
     });
 
     describe('When called with reason="missing-name" and no position', () => {
       it('Then data omits the position field', () => {
         // Arrange + Act
-        const sut = configKeyInvalid('user.', 'missing-name');
+        const result = configKeyInvalid('user.', 'missing-name');
 
         // Assert
-        expect(sut.data).toEqual({
+        expect(result.data).toEqual({
           code: 'CONFIG_KEY_INVALID',
           key: 'user.',
           reason: 'missing-name',
         });
-        expect(sut.data).not.toHaveProperty('position');
+        expect(result.data).not.toHaveProperty('position');
       });
     });
 
     describe('When called with reason="bad-character" and a position', () => {
       it('Then data carries the exact position number', () => {
         // Arrange + Act
-        const sut = configKeyInvalid('1user.name', 'bad-character', 0);
+        const result = configKeyInvalid('1user.name', 'bad-character', 0);
 
         // Assert
-        expect(sut.data).toEqual({
+        expect(result.data).toEqual({
           code: 'CONFIG_KEY_INVALID',
           key: '1user.name',
           reason: 'bad-character',
@@ -937,10 +937,10 @@ describe('domain commands error — config factory data', () => {
     describe('When called with a key containing a control character', () => {
       it('Then the key is sanitized for display', () => {
         // Arrange + Act
-        const sut = configKeyInvalid('user.\x07name', 'bad-character', 5);
+        const result = configKeyInvalid('user.\x07name', 'bad-character', 5);
 
         // Assert
-        expect(sut.data).toEqual({
+        expect(result.data).toEqual({
           code: 'CONFIG_KEY_INVALID',
           key: 'user.\\x07name',
           reason: 'bad-character',
@@ -954,10 +954,10 @@ describe('domain commands error — config factory data', () => {
     describe('When called', () => {
       it('Then data carries the sanitized key, reason, and exact position', () => {
         // Arrange + Act
-        const sut = configValueInvalid('user.name', 3);
+        const result = configValueInvalid('user.name', 3);
 
         // Assert
-        expect(sut.data).toEqual({
+        expect(result.data).toEqual({
           code: 'CONFIG_VALUE_INVALID',
           key: 'user.name',
           reason: 'control-character',
@@ -971,26 +971,26 @@ describe('domain commands error — config factory data', () => {
     describe('When called without a scope and requested="read"', () => {
       it('Then data omits the scope field', () => {
         // Arrange + Act
-        const sut = configMultipleValues('remote.origin.fetch', 2, 'read');
+        const result = configMultipleValues('remote.origin.fetch', 2, 'read');
 
         // Assert
-        expect(sut.data).toEqual({
+        expect(result.data).toEqual({
           code: 'CONFIG_MULTIPLE_VALUES',
           key: 'remote.origin.fetch',
           count: 2,
           requested: 'read',
         });
-        expect(sut.data).not.toHaveProperty('scope');
+        expect(result.data).not.toHaveProperty('scope');
       });
     });
 
     describe('When called with a scope and requested="overwrite"', () => {
       it('Then data carries every field', () => {
         // Arrange + Act
-        const sut = configMultipleValues('remote.origin.fetch', 3, 'overwrite', 'local');
+        const result = configMultipleValues('remote.origin.fetch', 3, 'overwrite', 'local');
 
         // Assert
-        expect(sut.data).toEqual({
+        expect(result.data).toEqual({
           code: 'CONFIG_MULTIPLE_VALUES',
           key: 'remote.origin.fetch',
           count: 3,
@@ -1003,10 +1003,10 @@ describe('domain commands error — config factory data', () => {
     describe('When called with requested="remove"', () => {
       it('Then the requested literal round-trips', () => {
         // Arrange + Act
-        const sut = configMultipleValues('user.email', 4, 'remove');
+        const result = configMultipleValues('user.email', 4, 'remove');
 
         // Assert
-        expect(sut.data).toEqual({
+        expect(result.data).toEqual({
           code: 'CONFIG_MULTIPLE_VALUES',
           key: 'user.email',
           count: 4,
@@ -1020,10 +1020,10 @@ describe('domain commands error — config factory data', () => {
     describe('When called', () => {
       it('Then data carries the sanitized name and scope', () => {
         // Arrange + Act
-        const sut = configSectionNotFound('remote.\x07origin', 'global');
+        const result = configSectionNotFound('remote.\x07origin', 'global');
 
         // Assert
-        expect(sut.data).toEqual({
+        expect(result.data).toEqual({
           code: 'CONFIG_SECTION_NOT_FOUND',
           name: 'remote.\\x07origin',
           scope: 'global',
@@ -1036,10 +1036,10 @@ describe('domain commands error — config factory data', () => {
     describe('When called with reason="browser-adapter"', () => {
       it('Then data round-trips with the browser-adapter reason', () => {
         // Arrange + Act
-        const sut = configScopeNotAvailable('global', 'browser-adapter');
+        const result = configScopeNotAvailable('global', 'browser-adapter');
 
         // Assert
-        expect(sut.data).toEqual({
+        expect(result.data).toEqual({
           code: 'CONFIG_SCOPE_NOT_AVAILABLE',
           scope: 'global',
           reason: 'browser-adapter',
@@ -1050,10 +1050,10 @@ describe('domain commands error — config factory data', () => {
     describe('When called with reason="worktree-extension-unset"', () => {
       it('Then data round-trips with the worktree-extension-unset reason', () => {
         // Arrange + Act
-        const sut = configScopeNotAvailable('worktree', 'worktree-extension-unset');
+        const result = configScopeNotAvailable('worktree', 'worktree-extension-unset');
 
         // Assert
-        expect(sut.data).toEqual({
+        expect(result.data).toEqual({
           code: 'CONFIG_SCOPE_NOT_AVAILABLE',
           scope: 'worktree',
           reason: 'worktree-extension-unset',
@@ -1066,10 +1066,10 @@ describe('domain commands error — config factory data', () => {
     describe('When called', () => {
       it('Then data carries only the code', () => {
         // Arrange + Act
-        const sut = configSystemPathUnresolved();
+        const result = configSystemPathUnresolved();
 
         // Assert
-        expect(sut.data).toEqual({ code: 'CONFIG_SYSTEM_PATH_UNRESOLVED' });
+        expect(result.data).toEqual({ code: 'CONFIG_SYSTEM_PATH_UNRESOLVED' });
       });
     });
   });
@@ -1078,10 +1078,10 @@ describe('domain commands error — config factory data', () => {
     describe("When called with key='user.name', source='/abs/.git/config', line=2", () => {
       it('Then data carries code, key, source, and line individually', () => {
         // Arrange + Act
-        const sut = configMissingValue('user.name', '/abs/.git/config', 2);
+        const result = configMissingValue('user.name', '/abs/.git/config', 2);
 
         // Assert
-        const data = sut.data;
+        const data = result.data;
         expect(data.code).toBe('CONFIG_MISSING_VALUE');
         if (data.code !== 'CONFIG_MISSING_VALUE') return;
         expect(data.key).toBe('user.name');
@@ -1095,7 +1095,7 @@ describe('domain commands error — config factory data', () => {
     describe("When called with key='core.loosecompression', source='/abs/.git/config', value='', reason='invalid unit'", () => {
       it('Then data carries code, key, source, value, and reason individually', () => {
         // Arrange + Act
-        const sut = configBadNumericValue(
+        const result = configBadNumericValue(
           'core.loosecompression',
           '/abs/.git/config',
           '',
@@ -1103,7 +1103,7 @@ describe('domain commands error — config factory data', () => {
         );
 
         // Assert
-        const data = sut.data;
+        const data = result.data;
         expect(data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
         if (data.code !== 'CONFIG_BAD_NUMERIC_VALUE') return;
         expect(data.key).toBe('core.loosecompression');
@@ -1116,7 +1116,7 @@ describe('domain commands error — config factory data', () => {
     describe("When called with key='core.loosecompression', source='/abs/.git/config', value='2147483648', reason='out of range'", () => {
       it('Then data carries code, key, source, value, and reason individually', () => {
         // Arrange + Act
-        const sut = configBadNumericValue(
+        const result = configBadNumericValue(
           'core.loosecompression',
           '/abs/.git/config',
           '2147483648',
@@ -1124,7 +1124,7 @@ describe('domain commands error — config factory data', () => {
         );
 
         // Assert
-        const data = sut.data;
+        const data = result.data;
         expect(data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
         if (data.code !== 'CONFIG_BAD_NUMERIC_VALUE') return;
         expect(data.key).toBe('core.loosecompression');
@@ -1137,7 +1137,7 @@ describe('domain commands error — config factory data', () => {
     describe('When called with a value containing a control byte', () => {
       it('Then data.value is sanitized for display', () => {
         // Arrange + Act
-        const sut = configBadNumericValue(
+        const result = configBadNumericValue(
           'core.loosecompression',
           '/abs/.git/config',
           '\x01bad',
@@ -1145,7 +1145,7 @@ describe('domain commands error — config factory data', () => {
         );
 
         // Assert — control bytes are escaped so the rendered error cannot be injected
-        const data = sut.data;
+        const data = result.data;
         expect(data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
         if (data.code !== 'CONFIG_BAD_NUMERIC_VALUE') return;
         expect(data.value).toBe('\\x01bad');
@@ -1157,10 +1157,10 @@ describe('domain commands error — config factory data', () => {
     describe('When called', () => {
       it.each([[99], [-2]] as const)('Then data carries code and level=%i', (level) => {
         // Arrange + Act
-        const sut = configBadZlibLevel(level);
+        const result = configBadZlibLevel(level);
 
         // Assert
-        const data = sut.data;
+        const data = result.data;
         expect(data.code).toBe('CONFIG_BAD_ZLIB_LEVEL');
         if (data.code !== 'CONFIG_BAD_ZLIB_LEVEL') return;
         expect(data.level).toBe(level);
@@ -1482,10 +1482,10 @@ describe('domain commands error — extractDetail message formatting', () => {
     describe('When called', () => {
       it.each([['no-refs'], ['no-objects']] as const)('Then data carries reason=%s', (reason) => {
         // Arrange + Act
-        const sut = bundleEmpty(reason);
+        const result = bundleEmpty(reason);
 
         // Assert
-        expect(sut.data).toEqual({
+        expect(result.data).toEqual({
           code: 'BUNDLE_EMPTY',
           reason,
         });
@@ -1511,10 +1511,10 @@ describe('domain commands error — extractDetail message formatting', () => {
         'Then data carries reason=%s',
         (reason) => {
           // Arrange + Act
-          const sut = bundleBadHeader('/bad.bundle', reason);
+          const result = bundleBadHeader('/bad.bundle', reason);
 
           // Assert
-          expect(sut.data).toEqual({
+          expect(result.data).toEqual({
             code: 'BUNDLE_BAD_HEADER',
             path: '/bad.bundle',
             reason,
@@ -1540,10 +1540,8 @@ describe('domain commands error — extractDetail message formatting', () => {
   describe('Given the notesAlreadyExist error helper', () => {
     describe('When called with an object oid', () => {
       it('Then data contains the object oid and message contains oid', () => {
-        // Arrange
-        const sut = notesAlreadyExist;
-        // Act
-        const result = sut(OID1);
+        // Arrange & Act
+        const result = notesAlreadyExist(OID1);
         // Assert
         expect(result).toBeInstanceOf(TsgitError);
         expect(result.data).toEqual({ code: 'NOTES_ALREADY_EXIST', object: OID1 });
@@ -1557,10 +1555,8 @@ describe('domain commands error — extractDetail message formatting', () => {
   describe('Given the notesObjectHasNone error helper', () => {
     describe('When called with an object oid', () => {
       it('Then data contains the object oid and message contains oid', () => {
-        // Arrange
-        const sut = notesObjectHasNone;
-        // Act
-        const result = sut(OID1);
+        // Arrange & Act
+        const result = notesObjectHasNone(OID1);
         // Assert
         expect(result).toBeInstanceOf(TsgitError);
         expect(result.data).toEqual({ code: 'NOTES_OBJECT_HAS_NONE', object: OID1 });
@@ -1572,10 +1568,8 @@ describe('domain commands error — extractDetail message formatting', () => {
   describe('Given the notesRefOutside error helper', () => {
     describe('When called with a ref outside refs/notes/', () => {
       it('Then data carries the raw ref and the message names it', () => {
-        // Arrange
-        const sut = notesRefOutside;
-        // Act
-        const result = sut('refs/heads/main');
+        // Arrange & Act
+        const result = notesRefOutside('refs/heads/main');
         // Assert
         expect(result).toBeInstanceOf(TsgitError);
         expect(result.data).toEqual({ code: 'NOTES_REF_OUTSIDE', ref: 'refs/heads/main' });
@@ -1587,10 +1581,8 @@ describe('domain commands error — extractDetail message formatting', () => {
   describe('Given the signingFailed error helper', () => {
     describe('When called with reason "signer-failed" and a format', () => {
       it('Then data carries code, reason and format; message names both', () => {
-        // Arrange
-        const sut = signingFailed;
-        // Act
-        const result = sut('signer-failed', 'openpgp');
+        // Arrange & Act
+        const result = signingFailed('signer-failed', 'openpgp');
         // Assert
         expect(result).toBeInstanceOf(TsgitError);
         expect(result.data).toEqual({
@@ -1605,10 +1597,8 @@ describe('domain commands error — extractDetail message formatting', () => {
 
     describe('When called with reason "off-node" and no format', () => {
       it('Then data carries only code and reason — no format key', () => {
-        // Arrange
-        const sut = signingFailed;
-        // Act
-        const result = sut('off-node');
+        // Arrange & Act
+        const result = signingFailed('off-node');
         // Assert
         expect(result).toBeInstanceOf(TsgitError);
         expect(result.data).toEqual({ code: 'SIGNING_FAILED', reason: 'off-node' });
@@ -1618,10 +1608,8 @@ describe('domain commands error — extractDetail message formatting', () => {
 
     describe('When called with reason "unsupported-format" and format "x509"', () => {
       it('Then data carries reason "unsupported-format" and format "x509"', () => {
-        // Arrange
-        const sut = signingFailed;
-        // Act
-        const result = sut('unsupported-format', 'x509');
+        // Arrange & Act
+        const result = signingFailed('unsupported-format', 'x509');
         // Assert
         expect(result.data).toEqual({
           code: 'SIGNING_FAILED',
@@ -1635,10 +1623,8 @@ describe('domain commands error — extractDetail message formatting', () => {
   describe('Given the signedPushUnsupported error helper', () => {
     describe('When called with a remote name', () => {
       it('Then data carries code and remote', () => {
-        // Arrange
-        const sut = signedPushUnsupported;
-        // Act
-        const result = sut('origin');
+        // Arrange & Act
+        const result = signedPushUnsupported('origin');
         // Assert
         expect(result).toBeInstanceOf(TsgitError);
         expect(result.data).toEqual({ code: 'SIGNED_PUSH_UNSUPPORTED', remote: 'origin' });
@@ -1649,10 +1635,8 @@ describe('domain commands error — extractDetail message formatting', () => {
   describe('Given the pushDetachedNoRefspec error helper', () => {
     describe('When called', () => {
       it('Then data carries the code', () => {
-        // Arrange
-        const sut = pushDetachedNoRefspec;
-        // Act
-        const result = sut();
+        // Arrange & Act
+        const result = pushDetachedNoRefspec();
         // Assert
         expect(result).toBeInstanceOf(TsgitError);
         expect(result.data).toEqual({ code: 'PUSH_DETACHED_NO_REFSPEC' });
@@ -1663,10 +1647,8 @@ describe('domain commands error — extractDetail message formatting', () => {
   describe('Given the pushDefaultNothing error helper', () => {
     describe('When called', () => {
       it('Then data carries the code', () => {
-        // Arrange
-        const sut = pushDefaultNothing;
-        // Act
-        const result = sut();
+        // Arrange & Act
+        const result = pushDefaultNothing();
         // Assert
         expect(result).toBeInstanceOf(TsgitError);
         expect(result.data).toEqual({ code: 'PUSH_DEFAULT_NOTHING' });
@@ -1677,10 +1659,8 @@ describe('domain commands error — extractDetail message formatting', () => {
   describe('Given the pushRemoteNotUpstream error helper', () => {
     describe('When called with a remote name and the current branch ref', () => {
       it('Then data carries code, remote, and branch', () => {
-        // Arrange
-        const sut = pushRemoteNotUpstream;
-        // Act
-        const result = sut('pushdef', 'refs/heads/main' as RefName);
+        // Arrange & Act
+        const result = pushRemoteNotUpstream('pushdef', 'refs/heads/main' as RefName);
         // Assert
         expect(result).toBeInstanceOf(TsgitError);
         expect(result.data).toEqual({
@@ -1695,10 +1675,11 @@ describe('domain commands error — extractDetail message formatting', () => {
   describe('Given the pushUpstreamNameMismatch error helper', () => {
     describe('When called with the current branch ref and its differently-named upstream', () => {
       it('Then data carries code, branch, and upstream', () => {
-        // Arrange
-        const sut = pushUpstreamNameMismatch;
-        // Act
-        const result = sut('refs/heads/main' as RefName, 'refs/heads/other' as RefName);
+        // Arrange & Act
+        const result = pushUpstreamNameMismatch(
+          'refs/heads/main' as RefName,
+          'refs/heads/other' as RefName,
+        );
         // Assert
         expect(result).toBeInstanceOf(TsgitError);
         expect(result.data).toEqual({
@@ -1713,10 +1694,8 @@ describe('domain commands error — extractDetail message formatting', () => {
   describe('Given the invalidPushDefault error helper', () => {
     describe('When called with a bad value, its source, and its line', () => {
       it('Then data carries code, value, source, and line', () => {
-        // Arrange
-        const sut = invalidPushDefault;
-        // Act
-        const result = sut('bogus', '/abs/.git/config', 9);
+        // Arrange & Act
+        const result = invalidPushDefault('bogus', '/abs/.git/config', 9);
         // Assert
         expect(result).toBeInstanceOf(TsgitError);
         expect(result.data).toEqual({

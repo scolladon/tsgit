@@ -8,12 +8,12 @@ describe('parseConfigKey', () => {
     describe('When parsed', () => {
       it('Then section is "user", subsection is undefined, name is "name"', () => {
         // Arrange + Act
-        const sut = parseConfigKey('user.name');
+        const result = parseConfigKey('user.name');
 
         // Assert
-        expect(sut.section).toBe('user');
-        expect(sut.subsection).toBeUndefined();
-        expect(sut.name).toBe('name');
+        expect(result.section).toBe('user');
+        expect(result.subsection).toBeUndefined();
+        expect(result.name).toBe('name');
       });
     });
   });
@@ -22,11 +22,11 @@ describe('parseConfigKey', () => {
     describe('When parsed', () => {
       it('Then section and name are lower-cased', () => {
         // Arrange + Act
-        const sut = parseConfigKey('USER.NAME');
+        const result = parseConfigKey('USER.NAME');
 
         // Assert
-        expect(sut.section).toBe('user');
-        expect(sut.name).toBe('name');
+        expect(result.section).toBe('user');
+        expect(result.name).toBe('name');
       });
     });
   });
@@ -35,12 +35,12 @@ describe('parseConfigKey', () => {
     describe('When parsed', () => {
       it('Then subsection is "origin" (the slice between first and last dot)', () => {
         // Arrange + Act
-        const sut = parseConfigKey('remote.origin.url');
+        const result = parseConfigKey('remote.origin.url');
 
         // Assert
-        expect(sut.section).toBe('remote');
-        expect(sut.subsection).toBe('origin');
-        expect(sut.name).toBe('url');
+        expect(result.section).toBe('remote');
+        expect(result.subsection).toBe('origin');
+        expect(result.name).toBe('url');
       });
     });
   });
@@ -49,12 +49,12 @@ describe('parseConfigKey', () => {
     describe('When parsed', () => {
       it('Then subsection is "my.fork" (everything between first and last dot)', () => {
         // Arrange + Act
-        const sut = parseConfigKey('remote.my.fork.url');
+        const result = parseConfigKey('remote.my.fork.url');
 
         // Assert
-        expect(sut.section).toBe('remote');
-        expect(sut.subsection).toBe('my.fork');
-        expect(sut.name).toBe('url');
+        expect(result.section).toBe('remote');
+        expect(result.subsection).toBe('my.fork');
+        expect(result.name).toBe('url');
       });
     });
   });
@@ -63,12 +63,12 @@ describe('parseConfigKey', () => {
     describe('When parsed', () => {
       it('Then subsection preserves case while section and name are lower-cased', () => {
         // Arrange + Act
-        const sut = parseConfigKey('Branch.Feature/X.Remote');
+        const result = parseConfigKey('Branch.Feature/X.Remote');
 
         // Assert
-        expect(sut.section).toBe('branch');
-        expect(sut.subsection).toBe('Feature/X');
-        expect(sut.name).toBe('remote');
+        expect(result.section).toBe('branch');
+        expect(result.subsection).toBe('Feature/X');
+        expect(result.name).toBe('remote');
       });
     });
   });
@@ -293,12 +293,12 @@ describe('parseConfigKey', () => {
     describe('When parsed', () => {
       it('Then subsection is "a\\"b" (quote accepted by git)', () => {
         // Arrange + Act
-        const sut = parseConfigKey('remote.a"b.url');
+        const result = parseConfigKey('remote.a"b.url');
 
         // Assert — quote is now accepted in subsection names
-        expect(sut.section).toBe('remote');
-        expect(sut.subsection).toBe('a"b');
-        expect(sut.name).toBe('url');
+        expect(result.section).toBe('remote');
+        expect(result.subsection).toBe('a"b');
+        expect(result.name).toBe('url');
       });
     });
   });
@@ -307,12 +307,12 @@ describe('parseConfigKey', () => {
     describe('When parsed', () => {
       it('Then subsection is "a\\b" (backslash accepted by git)', () => {
         // Arrange + Act
-        const sut = parseConfigKey('remote.a\\b.url');
+        const result = parseConfigKey('remote.a\\b.url');
 
         // Assert — backslash is now accepted in subsection names
-        expect(sut.section).toBe('remote');
-        expect(sut.subsection).toBe('a\\b');
-        expect(sut.name).toBe('url');
+        expect(result.section).toBe('remote');
+        expect(result.subsection).toBe('a\\b');
+        expect(result.name).toBe('url');
       });
     });
   });
@@ -321,12 +321,12 @@ describe('parseConfigKey', () => {
     describe('When parsed', () => {
       it('Then subsection is "a]b" (bracket accepted by git)', () => {
         // Arrange + Act
-        const sut = parseConfigKey('remote.a]b.url');
+        const result = parseConfigKey('remote.a]b.url');
 
         // Assert — ] is now accepted in subsection names
-        expect(sut.section).toBe('remote');
-        expect(sut.subsection).toBe('a]b');
-        expect(sut.name).toBe('url');
+        expect(result.section).toBe('remote');
+        expect(result.subsection).toBe('a]b');
+        expect(result.name).toBe('url');
       });
     });
   });
@@ -335,12 +335,12 @@ describe('parseConfigKey', () => {
     describe('When parsed', () => {
       it('Then subsection is "a\\rb" (CR accepted by git)', () => {
         // Arrange + Act
-        const sut = parseConfigKey('remote.a\rb.url');
+        const result = parseConfigKey('remote.a\rb.url');
 
         // Assert — CR is now accepted in subsection names
-        expect(sut.section).toBe('remote');
-        expect(sut.subsection).toBe('a\rb');
-        expect(sut.name).toBe('url');
+        expect(result.section).toBe('remote');
+        expect(result.subsection).toBe('a\rb');
+        expect(result.name).toBe('url');
       });
     });
   });
@@ -419,11 +419,8 @@ describe('parseConfigKey', () => {
           label: 'the name is lower-cased',
         },
       ])('Then $label', ({ key, expected }) => {
-        // Arrange
-        const sut = parseConfigKey;
-
-        // Act
-        const result = sut(key);
+        // Arrange & Act
+        const result = parseConfigKey(key);
 
         // Assert
         expect(result).toEqual(expected);
@@ -435,12 +432,11 @@ describe('parseConfigKey', () => {
     describe('When parsed', () => {
       it('Then throws CONFIG_KEY_INVALID with reason "bad-character" at position 2', () => {
         // Arrange
-        const sut = parseConfigKey;
         let caught: TsgitError | undefined;
 
         // Act
         try {
-          sut('..9k');
+          parseConfigKey('..9k');
         } catch (err) {
           caught = err as TsgitError;
         }

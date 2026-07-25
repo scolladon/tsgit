@@ -10,13 +10,12 @@ describe('Given an arbitrary base, label, and reserved set', () => {
       fc.assert(
         fc.property(arbUniquePathInput(), ({ base, label, reserved }) => {
           // Arrange
-          const sut = uniquePath;
           const typedReserved = reserved as Set<FilePath>;
           const preSizeBefore = typedReserved.size;
           const snapshot = new Set(typedReserved);
 
           // Act
-          const result = sut(typedReserved, base as FilePath, label);
+          const result = uniquePath(typedReserved, base as FilePath, label);
 
           // Assert — result was not in the pre-call set
           expect(snapshot.has(result)).toBe(false);
@@ -32,12 +31,11 @@ describe('Given an arbitrary base, label, and reserved set', () => {
       fc.assert(
         fc.property(arbUniquePathInput(), ({ base, label, stem, reserved }) => {
           // Arrange
-          const sut = uniquePath;
           const typedReserved = reserved as Set<FilePath>;
           const snapshot = new Set(typedReserved);
 
           // Act
-          const result = sut(typedReserved, base as FilePath, label);
+          const result = uniquePath(typedReserved, base as FilePath, label);
 
           // Assert — oracle: the stem when free, else the smallest k ≥ 0 such
           // that `${stem}_${k}` is not in the pre-call set.

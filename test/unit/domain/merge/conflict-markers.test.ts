@@ -32,12 +32,12 @@ describe('writeConflictMarkers — positive', () => {
         const expected = enc('<<<<<<< HEAD\na\nb\n=======\na\nc\n>>>>>>> feature\n');
 
         // Act
-        const sut = writeConflictMarkers([enc('a\n'), enc('b\n')], [enc('a\n'), enc('c\n')], {
+        const result = writeConflictMarkers([enc('a\n'), enc('b\n')], [enc('a\n'), enc('c\n')], {
           labels: { ours: 'HEAD', theirs: 'feature' },
         });
 
         // Assert
-        expect(bytesEqual(sut, expected)).toBe(true);
+        expect(bytesEqual(result, expected)).toBe(true);
       });
     });
   });
@@ -46,12 +46,12 @@ describe('writeConflictMarkers — positive', () => {
     describe('When writeConflictMarkers called', () => {
       it('Then output ends with >>>>>>> <label>\\n (canonical)', () => {
         // Arrange & Act
-        const sut = writeConflictMarkers([enc('a\n')], [enc('a\n'), enc('b')], {
+        const result = writeConflictMarkers([enc('a\n')], [enc('a\n'), enc('b')], {
           labels: { ours: 'HEAD', theirs: 'feature' },
         });
 
         // Assert
-        const text = new TextDecoder().decode(sut);
+        const text = new TextDecoder().decode(result);
         expect(text.endsWith('>>>>>>> feature\n')).toBe(true);
         // Previous theirs content 'b' padded with a newline before the close marker
         expect(text).toContain('a\nb\n>>>>>>> feature\n');
@@ -63,10 +63,10 @@ describe('writeConflictMarkers — positive', () => {
     describe('When writeConflictMarkers called', () => {
       it('Then separator appears on its own line', () => {
         // Arrange & Act
-        const sut = writeConflictMarkers([enc('a\n'), enc('b')], [enc('c\n')]);
+        const result = writeConflictMarkers([enc('a\n'), enc('b')], [enc('c\n')]);
 
         // Assert
-        const text = new TextDecoder().decode(sut);
+        const text = new TextDecoder().decode(result);
         expect(text).toContain('a\nb\n=======\n');
       });
     });
@@ -76,10 +76,10 @@ describe('writeConflictMarkers — positive', () => {
     describe('When writeConflictMarkers called', () => {
       it('Then uses default ours/theirs labels', () => {
         // Arrange & Act
-        const sut = writeConflictMarkers([enc('a\n')], [enc('b\n')]);
+        const result = writeConflictMarkers([enc('a\n')], [enc('b\n')]);
 
         // Assert
-        const text = new TextDecoder().decode(sut);
+        const text = new TextDecoder().decode(result);
         expect(text).toContain('<<<<<<< ours\n');
         expect(text).toContain('>>>>>>> theirs\n');
       });
@@ -90,12 +90,12 @@ describe('writeConflictMarkers — positive', () => {
     describe('When writeConflictMarkers called', () => {
       it('Then it is not emitted (v1 two-way markers)', () => {
         // Arrange & Act
-        const sut = writeConflictMarkers([enc('a\n')], [enc('b\n')], {
+        const result = writeConflictMarkers([enc('a\n')], [enc('b\n')], {
           labels: { ours: 'HEAD', theirs: 'feature', base: 'main' },
         });
 
         // Assert — no base marker in v1 output
-        const text = new TextDecoder().decode(sut);
+        const text = new TextDecoder().decode(result);
         expect(text).not.toContain('|||||||');
       });
     });
@@ -105,10 +105,10 @@ describe('writeConflictMarkers — positive', () => {
     describe('When writeConflictMarkers called', () => {
       it('Then markers emit on consecutive lines', () => {
         // Arrange & Act
-        const sut = writeConflictMarkers([], []);
+        const result = writeConflictMarkers([], []);
 
         // Assert
-        const text = new TextDecoder().decode(sut);
+        const text = new TextDecoder().decode(result);
         expect(text).toBe('<<<<<<< ours\n=======\n>>>>>>> theirs\n');
       });
     });
@@ -124,13 +124,13 @@ describe('writeConflictMarkers — marker size', () => {
         { markerSize: undefined, repeat: 7, label: "it defaults to git's 7-character markers" },
       ])('Then $label', ({ markerSize, repeat }) => {
         // Arrange + Act
-        const sut = writeConflictMarkers([enc('a\n')], [enc('b\n')], {
+        const result = writeConflictMarkers([enc('a\n')], [enc('b\n')], {
           labels: { ours: 'HEAD', theirs: 'feature' },
           ...(markerSize === undefined ? {} : { markerSize }),
         });
 
         // Assert
-        const text = new TextDecoder().decode(sut);
+        const text = new TextDecoder().decode(result);
         expect(text).toBe(
           `${'<'.repeat(repeat)} HEAD\na\n${'='.repeat(repeat)}\nb\n${'>'.repeat(repeat)} feature\n`,
         );
@@ -167,12 +167,12 @@ describe('writeConflictMarkers — verbatim labels', () => {
         },
       ])('Then $label', ({ oursLabel, theirsLabel }) => {
         // Arrange & Act
-        const sut = writeConflictMarkers([enc('a\n')], [enc('b\n')], {
+        const result = writeConflictMarkers([enc('a\n')], [enc('b\n')], {
           labels: { ours: oursLabel, theirs: theirsLabel },
         });
 
         // Assert
-        const text = new TextDecoder().decode(sut);
+        const text = new TextDecoder().decode(result);
         expect(text).toContain(`<<<<<<< ${oursLabel}\n`);
         expect(text).toContain(`>>>>>>> ${theirsLabel}\n`);
       });
@@ -244,11 +244,8 @@ describe('MAX_CONFLICT_OUTPUT_BYTES — cap magnitude', () => {
   describe('Given the conflict output-size cap', () => {
     describe('When its value is read', () => {
       it('Then equals 256 MiB (268435456 bytes)', () => {
-        // Arrange
-        const sut = MAX_CONFLICT_OUTPUT_BYTES;
-
-        // Assert
-        expect(sut).toBe(256 * 1024 * 1024);
+        // Arrange + Act + Assert
+        expect(MAX_CONFLICT_OUTPUT_BYTES).toBe(256 * 1024 * 1024);
       });
     });
   });

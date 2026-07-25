@@ -54,10 +54,8 @@ describe('findBisection — properties over arbitrary candidate DAGs', () => {
       // Arrange + Act + Assert
       fc.assert(
         fc.property(arbCandidateDag, (candidates) => {
-          const sut = findBisection;
-
           // Act
-          const result = sut(candidates);
+          const result = findBisection(candidates);
 
           // Assert
           assert(result !== undefined, 'non-empty input must yield a result');
@@ -72,8 +70,7 @@ describe('findBisection — properties over arbitrary candidate DAGs', () => {
       // Arrange + Act + Assert
       fc.assert(
         fc.property(arbCandidateDag, (candidates) => {
-          const sut = findBisection;
-          expect(() => sut(candidates)).not.toThrow();
+          expect(() => findBisection(candidates)).not.toThrow();
         }),
         { numRuns: 100 },
       );
@@ -83,10 +80,8 @@ describe('findBisection — properties over arbitrary candidate DAGs', () => {
       // Arrange + Act + Assert
       fc.assert(
         fc.property(arbCandidateDag, (candidates) => {
-          const sut = findBisection;
-
           // Act
-          const result = sut(candidates);
+          const result = findBisection(candidates);
 
           // Assert
           assert(result !== undefined, 'non-empty input must yield a result');
@@ -101,10 +96,8 @@ describe('findBisection — properties over arbitrary candidate DAGs', () => {
       // Arrange + Act + Assert
       fc.assert(
         fc.property(arbCandidateDag, (candidates) => {
-          const sut = findBisection;
-
           // Act
-          const result = sut(candidates);
+          const result = findBisection(candidates);
 
           // Assert
           assert(result !== undefined, 'non-empty input must yield a result');
@@ -118,11 +111,10 @@ describe('findBisection — properties over arbitrary candidate DAGs', () => {
       // Arrange — distance = min(weight, all-weight); weight = reachable count from candidate.
       fc.assert(
         fc.property(arbCandidateDag, (candidates) => {
-          const sut = findBisection;
           const all = candidates.length;
 
           // Act
-          const result = sut(candidates);
+          const result = findBisection(candidates);
           assert(result !== undefined, 'non-empty input must yield a result');
 
           // Assert — compute each candidate's distance independently (oracle: reachableCount)
@@ -142,8 +134,7 @@ describe('findBisection — properties over arbitrary candidate DAGs', () => {
   describe('Given an empty candidate list, When finding bisection', () => {
     it('Then it returns undefined (total function over empty input)', () => {
       // Arrange + Act + Assert
-      const sut = findBisection;
-      expect(sut([])).toBeUndefined();
+      expect(findBisection([])).toBeUndefined();
     });
   });
 });

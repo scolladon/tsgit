@@ -41,10 +41,10 @@ describe('rebase todo grammar', () => {
         },
       ])('Then $label', ({ entries, expected }) => {
         // Arrange + Act
-        const sut = serializeRebaseTodo(entries);
+        const result = serializeRebaseTodo(entries);
 
         // Assert
-        expect(sut).toBe(expected);
+        expect(result).toBe(expected);
       });
     });
   });
@@ -86,10 +86,10 @@ describe('rebase todo grammar', () => {
         },
       ])('Then $label', ({ text, expected }) => {
         // Arrange + Act
-        const sut = parseRebaseTodo(text);
+        const result = parseRebaseTodo(text);
 
         // Assert
-        expect(sut).toEqual(expected);
+        expect(result).toEqual(expected);
       });
     });
 

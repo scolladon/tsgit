@@ -28,9 +28,9 @@ describe('Given the git operation-label vocabulary', () => {
       ['REBASE', REBASE, 'rebase'],
       ['CHERRY_PICK', CHERRY_PICK, 'cherry-pick'],
       ['REVERT', REVERT, 'revert'],
-    ])('Then %s is the %s operation label', (_name, sut, expected) => {
+    ])('Then %s is the %s operation label', (_name, actual, expected) => {
       // Arrange / Act / Assert
-      expect(sut).toBe(expected);
+      expect(actual).toBe(expected);
     });
   });
 
@@ -43,9 +43,9 @@ describe('Given the git operation-label vocabulary', () => {
       ['REVERT_CONTINUE', REVERT_CONTINUE, 'revert --continue'],
       ['REVERT_SKIP', REVERT_SKIP, 'revert --skip'],
       ['REVERT_ABORT', REVERT_ABORT, 'revert --abort'],
-    ])('Then %s is the %s label', (_name, sut, expected) => {
+    ])('Then %s is the %s label', (_name, actual, expected) => {
       // Arrange / Act / Assert
-      expect(sut).toBe(expected);
+      expect(actual).toBe(expected);
     });
   });
 });

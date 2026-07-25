@@ -17,11 +17,8 @@ describe('estimateSteps', () => {
       [8, 2],
       [9, 2],
     ])('Then estimateSteps(%i) is the canonical git value %i', (all, expected) => {
-      // Arrange
-      const sut = estimateSteps;
-
-      // Act
-      const result = sut(all);
+      // Arrange & Act
+      const result = estimateSteps(all);
 
       // Assert
       expect(result).toBe(expected);

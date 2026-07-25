@@ -9,14 +9,14 @@ describe('rebase squash combined-message properties', () => {
       // Arrange + Act + Assert
       fc.assert(
         fc.property(fc.array(arbSubject(), { minLength: 2, maxLength: 8 }), (messages) => {
-          const sut = buildCombinedMessage(messages.map((message) => ({ message })));
+          const result = buildCombinedMessage(messages.map((message) => ({ message })));
           const n = messages.length;
-          expect(sut.startsWith(`# This is a combination of ${n} commits.\n`)).toBe(true);
-          const numbered = sut
+          expect(result.startsWith(`# This is a combination of ${n} commits.\n`)).toBe(true);
+          const numbered = result
             .split('\n')
             .filter((line) => /^# This is the commit message #\d+:$/.test(line));
           expect(numbered).toHaveLength(n - 1);
-          expect(sut).toContain('# This is the 1st commit message:\n');
+          expect(result).toContain('# This is the 1st commit message:\n');
         }),
         { numRuns: 200 },
       );
