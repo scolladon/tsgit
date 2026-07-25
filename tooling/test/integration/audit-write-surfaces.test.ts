@@ -125,11 +125,11 @@ describe('tooling/audit-write-surfaces (integration)', () => {
         await writeInteropTest(tmpRoot, 'test/integration/tree-interop.test.ts', 'tree');
 
         // Act
-        const sut = await runScript(tmpRoot);
+        const result = await runScript(tmpRoot);
 
         // Assert
-        expect(sut.code).toBe(0);
-        expect(sut.stdout).toMatch(/clean/);
+        expect(result.code).toBe(0);
+        expect(result.stdout).toMatch(/clean/);
         const report = await readReport(tmpRoot);
         expect(report['summary']).toMatchObject({
           declared: 1,
@@ -148,12 +148,12 @@ describe('tooling/audit-write-surfaces (integration)', () => {
         await writeWritesSrc(tmpRoot, 'src/domain/tree.ts', 'tree');
 
         // Act
-        const sut = await runScript(tmpRoot);
+        const result = await runScript(tmpRoot);
 
         // Assert
-        expect(sut.code).toBe(0);
-        expect(sut.stderr).toContain('tree');
-        expect(sut.stderr).toContain('warn-only');
+        expect(result.code).toBe(0);
+        expect(result.stderr).toContain('tree');
+        expect(result.stderr).toContain('warn-only');
         const report = await readReport(tmpRoot);
         expect(report['summary']).toMatchObject({ declared: 1, gaps: 1 });
       });
@@ -165,12 +165,12 @@ describe('tooling/audit-write-surfaces (integration)', () => {
         await writeWritesSrc(tmpRoot, 'src/domain/tree.ts', 'tree');
 
         // Act
-        const sut = await runScript(tmpRoot, ['--blocking']);
+        const result = await runScript(tmpRoot, ['--blocking']);
 
         // Assert
-        expect(sut.code).toBe(1);
-        expect(sut.stderr).toContain('tree');
-        expect(sut.stderr).not.toContain('warn-only');
+        expect(result.code).toBe(1);
+        expect(result.stderr).toContain('tree');
+        expect(result.stderr).not.toContain('warn-only');
       });
     });
   });
@@ -189,10 +189,10 @@ describe('tooling/audit-write-surfaces (integration)', () => {
         await writeFile(path.join(tmpRoot, 'test/integration/bad.test.ts'), body);
 
         // Act
-        const sut = await runScript(tmpRoot);
+        const result = await runScript(tmpRoot);
 
         // Assert
-        expect(sut.code).toBe(0);
+        expect(result.code).toBe(0);
         const report = await readReport(tmpRoot);
         expect(report['summary']).toMatchObject({ malformed: 1 });
         const malformed = report['malformed'] as ReadonlyArray<{ detail: string }>;
@@ -210,12 +210,12 @@ describe('tooling/audit-write-surfaces (integration)', () => {
         });
 
         // Act
-        const sut = await runScript(tmpRoot);
+        const result = await runScript(tmpRoot);
 
         // Assert
         const report = await readReport(tmpRoot);
         expect(report['allowlistRot']).toEqual(['staleName']);
-        expect(sut.stderr).toContain('staleName');
+        expect(result.stderr).toContain('staleName');
       });
     });
   });
@@ -227,13 +227,13 @@ describe('tooling/audit-write-surfaces (integration)', () => {
         await writeInteropTest(tmpRoot, 'test/integration/orphan-interop.test.ts', 'unbacked');
 
         // Act
-        const sut = await runScript(tmpRoot);
+        const result = await runScript(tmpRoot);
 
         // Assert
         const report = await readReport(tmpRoot);
         const orphan = report['orphanCoverage'] as ReadonlyArray<{ surface: string }>;
         expect(orphan.map((o) => o.surface)).toContain('unbacked');
-        expect(sut.stderr).toContain('unbacked');
+        expect(result.stderr).toContain('unbacked');
       });
     });
   });
@@ -251,10 +251,10 @@ describe('tooling/audit-write-surfaces (integration)', () => {
         await writeFile(path.join(tmpRoot, 'src/domain/broken.ts'), body);
 
         // Act
-        const sut = await runScript(tmpRoot);
+        const result = await runScript(tmpRoot);
 
         // Assert
-        expect(sut.code).toBe(0);
+        expect(result.code).toBe(0);
         const report = await readReport(tmpRoot);
         const malformed = report['malformed'] as ReadonlyArray<{ kind: string; detail: string }>;
         expect(malformed[0]?.kind).toBe('src-malformed');

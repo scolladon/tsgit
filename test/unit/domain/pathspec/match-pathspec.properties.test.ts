@@ -16,8 +16,8 @@ describe('match-pathspec properties', () => {
         // Arrange + Act + Assert
         fc.assert(
           fc.property(arbCandidatePath(), (path) => {
-            const sut = matchesPathspec(compilePathspec([]), path);
-            expect(sut).toBe(false);
+            const result = matchesPathspec(compilePathspec([]), path);
+            expect(result).toBe(false);
           }),
           { numRuns: 50 },
         );
@@ -34,8 +34,8 @@ describe('match-pathspec properties', () => {
             fc.array(arbNegatedPattern, { minLength: 1, maxLength: 5 }),
             arbCandidatePath(),
             (negations, path) => {
-              const sut = matchesPathspec(compilePathspec(negations), path);
-              expect(sut).toBe(false);
+              const result = matchesPathspec(compilePathspec(negations), path);
+              expect(result).toBe(false);
             },
           ),
           { numRuns: 100 },
@@ -57,8 +57,8 @@ describe('match-pathspec properties', () => {
             arbLiteralPattern(),
             (prefix, literal) => {
               const spec = compilePathspec([...prefix, literal]);
-              const sut = matchesPathspec(spec, FilePath.from(literal));
-              expect(sut).toBe(true);
+              const result = matchesPathspec(spec, FilePath.from(literal));
+              expect(result).toBe(true);
             },
           ),
           { numRuns: 100 },
@@ -77,8 +77,8 @@ describe('match-pathspec properties', () => {
             arbLiteralPattern(),
             (prefix, literal) => {
               const spec = compilePathspec([...prefix, literal, `!${literal}`]);
-              const sut = matchesPathspec(spec, FilePath.from(literal));
-              expect(sut).toBe(false);
+              const result = matchesPathspec(spec, FilePath.from(literal));
+              expect(result).toBe(false);
             },
           ),
           { numRuns: 100 },

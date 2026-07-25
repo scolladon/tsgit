@@ -45,6 +45,7 @@ const okOutcome: AuditOutcome = {
     bareClassThrow: [],
     emptyAaaSection: [],
     integrationProof: { missing: [], duplicate: [], misplaced: [], accepted: [] },
+    sutBindsResult: [],
   },
   excludePaths: [],
 };
@@ -99,6 +100,14 @@ const outcomeWithFindings: AuditOutcome = {
       },
     ],
     integrationProof: { missing: [], duplicate: [], misplaced: [], accepted: [] },
+    sutBindsResult: [
+      {
+        path: 'test/unit/h.test.ts',
+        line: 19,
+        title: 'Given x, When y, Then z',
+        callee: 'crc32',
+      },
+    ],
   },
 };
 
@@ -195,6 +204,7 @@ describe('renderMarkdown', () => {
         bareClassThrow: [],
         emptyAaaSection: [],
         integrationProof: { missing: [], duplicate: [], misplaced: [], accepted: [] },
+        sutBindsResult: [],
       },
       excludePaths: [],
     };
@@ -282,6 +292,7 @@ describe('renderMarkdown', () => {
     expect(sut).toContain('### Banned SUT name synonyms');
     expect(sut).toContain('### Bare-class `.toThrow(Class)` calls');
     expect(sut).toContain('### Empty AAA sections');
+    expect(sut).toContain('### `sut` binds a call result (Axis 1, forward enforcement)');
   });
 
   it('Given a bad-title finding, When rendered, Then the row names the reason, the title, and the GWT ancestry', () => {
@@ -330,6 +341,15 @@ describe('renderMarkdown', () => {
     expect(sut).toContain('empty Arrange section');
   });
 
+  it('Given a sut-binds-result finding, When rendered, Then the row names the callee', () => {
+    // Arrange + Act
+    const sut = renderMarkdown(outcomeWithFindings);
+
+    // Assert
+    expect(sut).toContain('test/unit/h.test.ts:19');
+    expect(sut).toContain('`sut = crc32(…)` binds a call result');
+  });
+
   it('Given an outcome with empty new-finding arrays, When rendered, Then each new section renders as "_none_"', () => {
     // Arrange + Act
     const sut = renderMarkdown(okOutcome);
@@ -340,5 +360,6 @@ describe('renderMarkdown', () => {
     expect(sut).toMatch(/Banned SUT[\s\S]*_none_/);
     expect(sut).toMatch(/Bare-class[\s\S]*_none_/);
     expect(sut).toMatch(/Empty AAA sections[\s\S]*_none_/);
+    expect(sut).toMatch(/binds a call result[\s\S]*_none_/);
   });
 });

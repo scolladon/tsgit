@@ -12,10 +12,10 @@ describe('header properties', () => {
         fc.assert(
           fc.property(arbObjectType(), fc.nat({ max: 2 ** 31 - 1 }), (type, size) => {
             const serialized = serializeHeader(type, size);
-            const sut = parseHeader(serialized);
-            expect(sut.type).toBe(type);
-            expect(sut.size).toBe(size);
-            expect(sut.contentOffset).toBe(serialized.length);
+            const result = parseHeader(serialized);
+            expect(result.type).toBe(type);
+            expect(result.size).toBe(size);
+            expect(result.contentOffset).toBe(serialized.length);
           }),
           { numRuns: 200 },
         );

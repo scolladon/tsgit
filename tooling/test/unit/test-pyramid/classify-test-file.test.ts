@@ -10,10 +10,10 @@ describe('classifyTestFile', () => {
     describe("When classified", () => {
       it('Then returns "unit"', () => {
     // Arrange + Act
-    const sut = classifyTestFile(MANIFEST, 'test/unit/domain/blob.test.ts');
+    const result = classifyTestFile(MANIFEST, 'test/unit/domain/blob.test.ts');
 
     // Assert
-    expect(sut).toBe('unit');
+    expect(result).toBe('unit');
   });
     });
   });
@@ -22,10 +22,10 @@ describe('classifyTestFile', () => {
     describe("When classified", () => {
       it('Then returns "integration"', () => {
     // Arrange + Act
-    const sut = classifyTestFile(MANIFEST, 'test/integration/clone.test.ts');
+    const result = classifyTestFile(MANIFEST, 'test/integration/clone.test.ts');
 
     // Assert
-    expect(sut).toBe('integration');
+    expect(result).toBe('integration');
   });
     });
   });
@@ -34,10 +34,10 @@ describe('classifyTestFile', () => {
     describe("When classified", () => {
       it('Then returns "integration"', () => {
     // Arrange + Act
-    const sut = classifyTestFile(MANIFEST, 'test/integration/posix-only/file-mode.test.ts');
+    const result = classifyTestFile(MANIFEST, 'test/integration/posix-only/file-mode.test.ts');
 
     // Assert
-    expect(sut).toBe('integration');
+    expect(result).toBe('integration');
   });
     });
   });
@@ -46,10 +46,10 @@ describe('classifyTestFile', () => {
     describe("When classified", () => {
       it('Then returns "integration"', () => {
     // Arrange + Act
-    const sut = classifyTestFile(MANIFEST, 'test/integration/win-only/short-name.test.ts');
+    const result = classifyTestFile(MANIFEST, 'test/integration/win-only/short-name.test.ts');
 
     // Assert
-    expect(sut).toBe('integration');
+    expect(result).toBe('integration');
   });
     });
   });
@@ -58,10 +58,10 @@ describe('classifyTestFile', () => {
     describe("When classified", () => {
       it('Then returns "e2e"', () => {
     // Arrange + Act
-    const sut = classifyTestFile(MANIFEST, 'test/browser/surface-parity.spec.ts');
+    const result = classifyTestFile(MANIFEST, 'test/browser/surface-parity.spec.ts');
 
     // Assert
-    expect(sut).toBe('e2e');
+    expect(result).toBe('e2e');
   });
     });
   });
@@ -70,10 +70,10 @@ describe('classifyTestFile', () => {
     describe("When classified", () => {
       it('Then returns "unclassified"', () => {
     // Arrange + Act
-    const sut = classifyTestFile(MANIFEST, 'test/fixtures/repo.ts');
+    const result = classifyTestFile(MANIFEST, 'test/fixtures/repo.ts');
 
     // Assert
-    expect(sut).toBe('unclassified');
+    expect(result).toBe('unclassified');
   });
     });
   });
@@ -82,10 +82,10 @@ describe('classifyTestFile', () => {
     describe("When classified", () => {
       it('Then returns "unclassified"', () => {
     // Arrange + Act
-    const sut = classifyTestFile(MANIFEST, 'test/bench/log.bench.ts');
+    const result = classifyTestFile(MANIFEST, 'test/bench/log.bench.ts');
 
     // Assert
-    expect(sut).toBe('unclassified');
+    expect(result).toBe('unclassified');
   });
     });
   });
@@ -94,10 +94,10 @@ describe('classifyTestFile', () => {
     describe("When classified", () => {
       it('Then returns "unclassified"', () => {
     // Arrange + Act
-    const sut = classifyTestFile(MANIFEST, 'src/domain/blob.ts');
+    const result = classifyTestFile(MANIFEST, 'src/domain/blob.ts');
 
     // Assert
-    expect(sut).toBe('unclassified');
+    expect(result).toBe('unclassified');
   });
     });
   });
@@ -106,10 +106,10 @@ describe('classifyTestFile', () => {
     describe("When classified", () => {
       it('Then returns the correct tier', () => {
     // Arrange + Act
-    const sut = classifyTestFile(MANIFEST, 'test\\unit\\domain\\blob.test.ts');
+    const result = classifyTestFile(MANIFEST, 'test\\unit\\domain\\blob.test.ts');
 
     // Assert
-    expect(sut).toBe('unit');
+    expect(result).toBe('unit');
   });
     });
   });
@@ -127,10 +127,10 @@ describe('classifyTestFile', () => {
     };
 
     // Act
-    const sut = classifyTestFile(withParity, 'test/parity/node.test.ts');
+    const result = classifyTestFile(withParity, 'test/parity/node.test.ts');
 
     // Assert
-    expect(sut).toBe('parity');
+    expect(result).toBe('parity');
   });
     });
   });
@@ -154,10 +154,10 @@ describe('classifyTestFile', () => {
     };
 
     // Act
-    const sut = classifyTestFile(withRuntimeParity, 'test/runtime-parity/deno/parity-node.test.ts');
+    const result = classifyTestFile(withRuntimeParity, 'test/runtime-parity/deno/parity-node.test.ts');
 
     // Assert
-    expect(sut).toBe('runtime-parity');
+    expect(result).toBe('runtime-parity');
   });
     });
   });
@@ -175,10 +175,10 @@ describe('classifyTestFile', () => {
     };
 
     // Act
-    const sut = classifyTestFile(withPerf, 'test/perf/domain/pathspec/compile-glob.perf.test.ts');
+    const result = classifyTestFile(withPerf, 'test/perf/domain/pathspec/compile-glob.perf.test.ts');
 
     // Assert
-    expect(sut).toBe('perf');
+    expect(result).toBe('perf');
   });
     });
   });
@@ -197,10 +197,10 @@ describe('classifyTestFile', () => {
     };
 
     // Act
-    const sut = classifyTestFile(overlap, 'test/integration/clone.test.ts');
+    const result = classifyTestFile(overlap, 'test/integration/clone.test.ts');
 
     // Assert
-    expect(sut).toBe('unit');
+    expect(result).toBe('unit');
   });
     });
   });

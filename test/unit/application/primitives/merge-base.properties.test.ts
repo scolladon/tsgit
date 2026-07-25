@@ -48,9 +48,9 @@ describe('mergeBase properties', () => {
             const ids = await buildDag(ctx, spec);
             const a = ids[pick(spec, ra)]!;
 
-            const sut = await mergeBase(ctx, [a, a], { all: true });
+            const result = await mergeBase(ctx, [a, a], { all: true });
 
-            expect(sut).toEqual([a]);
+            expect(result).toEqual([a]);
           }),
           { numRuns: 100 },
         );

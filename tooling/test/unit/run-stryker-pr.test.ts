@@ -52,7 +52,7 @@ describe('runStrykerPr', () => {
     const calls: SpawnCall[] = [];
 
     // Act
-    const sut = await runStrykerPr({
+    const result = await runStrykerPr({
       argv: [],
       env: { TSGIT_MUTATE_PATHS_FILE: file },
       spawn: fakeSpawn(0, calls),
@@ -60,7 +60,7 @@ describe('runStrykerPr', () => {
     });
 
     // Assert
-    expect(sut).toBe(0);
+    expect(result).toBe(0);
     expect(calls).toEqual([{ command: 'stryker', args: ['run', '--mutate', 'src/a.ts,src/b.ts'] }]);
   });
     });
@@ -75,7 +75,7 @@ describe('runStrykerPr', () => {
     const calls: SpawnCall[] = [];
 
     // Act
-    const sut = await runStrykerPr({
+    const result = await runStrykerPr({
       argv: [],
       env: { TSGIT_MUTATE_PATHS_FILE: file },
       spawn: fakeSpawn(0, calls),
@@ -83,7 +83,7 @@ describe('runStrykerPr', () => {
     });
 
     // Assert
-    expect(sut).toBe(0);
+    expect(result).toBe(0);
     expect(calls).toHaveLength(0);
     expect(stdoutLines.join('\n')).toMatch(/No src\/ files in/);
   });
@@ -97,7 +97,7 @@ describe('runStrykerPr', () => {
     const calls: SpawnCall[] = [];
 
     // Act
-    const sut = await runStrykerPr({
+    const result = await runStrykerPr({
       argv: ['--mutate', 'src/foo.ts,src/bar.ts'],
       env: {},
       spawn: fakeSpawn(0, calls),
@@ -105,7 +105,7 @@ describe('runStrykerPr', () => {
     });
 
     // Assert
-    expect(sut).toBe(0);
+    expect(result).toBe(0);
     expect(calls).toEqual([
       { command: 'stryker', args: ['run', '--mutate', 'src/foo.ts,src/bar.ts'] },
     ]);
@@ -120,7 +120,7 @@ describe('runStrykerPr', () => {
     const calls: SpawnCall[] = [];
 
     // Act
-    const sut = await runStrykerPr({
+    const result = await runStrykerPr({
       argv: [],
       env: {},
       spawn: fakeSpawn(0, calls),
@@ -128,7 +128,7 @@ describe('runStrykerPr', () => {
     });
 
     // Assert
-    expect(sut).toBe(0);
+    expect(result).toBe(0);
     expect(calls).toEqual([{ command: 'stryker', args: ['run'] }]);
     expect(stdoutLines.join('\n')).toMatch(/full tree — local-dev fallback/);
   });
@@ -142,7 +142,7 @@ describe('runStrykerPr', () => {
     const calls: SpawnCall[] = [];
 
     // Act
-    const sut = await runStrykerPr({
+    const result = await runStrykerPr({
       argv: [],
       env: {},
       spawn: fakeSpawn(2, calls),
@@ -150,7 +150,7 @@ describe('runStrykerPr', () => {
     });
 
     // Assert
-    expect(sut).toBe(2);
+    expect(result).toBe(2);
   });
     });
   });
@@ -162,7 +162,7 @@ describe('runStrykerPr', () => {
     const calls: SpawnCall[] = [];
 
     // Act
-    const sut = await runStrykerPr({
+    const result = await runStrykerPr({
       argv: [],
       env: {},
       spawn: fakeSpawnError(new Error('ENOENT: stryker not found'), calls),
@@ -170,7 +170,7 @@ describe('runStrykerPr', () => {
     });
 
     // Assert
-    expect(sut).toBe(1);
+    expect(result).toBe(1);
     expect(stdoutLines.join('\n')).toMatch(/failed to spawn stryker: ENOENT: stryker not found/);
   });
     });
@@ -183,7 +183,7 @@ describe('runStrykerPr', () => {
     const calls: SpawnCall[] = [];
 
     // Act
-    const sut = await runStrykerPr({
+    const result = await runStrykerPr({
       argv: [],
       env: { TSGIT_MUTATE_PATHS_FILE: path.join(tmpDir, 'does-not-exist.txt') },
       spawn: fakeSpawn(0, calls),
@@ -191,7 +191,7 @@ describe('runStrykerPr', () => {
     });
 
     // Assert
-    expect(sut).toBe(0);
+    expect(result).toBe(0);
     expect(calls).toHaveLength(0);
   });
     });

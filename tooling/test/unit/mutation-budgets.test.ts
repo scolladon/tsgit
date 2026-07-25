@@ -157,11 +157,11 @@ describe('parseManifest', () => {
     const raw = structuredClone(VALID_MANIFEST);
 
     // Act
-    const sut = parseManifest(raw);
+    const result = parseManifest(raw);
 
     // Assert
-    expect(sut.buckets).toHaveLength(4);
-    expect(sut.buckets.map((b) => b.name)).toEqual(['domain', 'application', 'adapters', 'infra']);
+    expect(result.buckets).toHaveLength(4);
+    expect(result.buckets.map((b) => b.name)).toEqual(['domain', 'application', 'adapters', 'infra']);
   });
     });
   });
@@ -175,10 +175,10 @@ describe('parseReport', () => {
     const raw = { ...REPORT_BASE, files: {} };
 
     // Act
-    const sut = parseReport(raw);
+    const result = parseReport(raw);
 
     // Assert
-    expect(sut.schemaVersion).toBe('1.0');
+    expect(result.schemaVersion).toBe('1.0');
   });
     });
   });
@@ -263,10 +263,10 @@ describe('bucketForPath', () => {
     describe("When looked up", () => {
       it('Then returns domain', () => {
     // Arrange
-    const sut = bucketForPath('src/domain/objects/blob.ts', buckets);
+    const result = bucketForPath('src/domain/objects/blob.ts', buckets);
 
     // Assert
-    expect(sut).toBe('domain');
+    expect(result).toBe('domain');
   });
     });
   });
@@ -275,10 +275,10 @@ describe('bucketForPath', () => {
     describe("When looked up", () => {
       it('Then returns application', () => {
     // Arrange
-    const sut = bucketForPath('src/repository.ts', buckets);
+    const result = bucketForPath('src/repository.ts', buckets);
 
     // Assert
-    expect(sut).toBe('application');
+    expect(result).toBe('application');
   });
     });
   });
@@ -287,10 +287,10 @@ describe('bucketForPath', () => {
     describe("When looked up", () => {
       it('Then returns null', () => {
     // Arrange
-    const sut = bucketForPath('src/notabucket/foo.ts', buckets);
+    const result = bucketForPath('src/notabucket/foo.ts', buckets);
 
     // Assert
-    expect(sut).toBeNull();
+    expect(result).toBeNull();
   });
     });
   });
@@ -305,10 +305,10 @@ describe('bucketForPath', () => {
     ];
 
     // Act
-    const sut = bucketForPath('src/a/x.ts', overlapping);
+    const result = bucketForPath('src/a/x.ts', overlapping);
 
     // Assert
-    expect(sut).toBe('domain');
+    expect(result).toBe('domain');
   });
     });
   });
@@ -324,14 +324,14 @@ describe('evaluateBudgets', () => {
     const report = parseReport({ ...REPORT_BASE, files: {} });
 
     // Act
-    const sut = evaluateBudgets(report, manifest);
+    const result = evaluateBudgets(report, manifest);
 
     // Assert
-    expect(sut.ok).toBe(true);
-    expect(sut.results).toHaveLength(4);
-    expect(sut.results.every((r) => r.status === 'n/a')).toBe(true);
-    expect(sut.unassignedFiles).toEqual([]);
-    expect(sut.overlaps).toEqual([]);
+    expect(result.ok).toBe(true);
+    expect(result.results).toHaveLength(4);
+    expect(result.results.every((r) => r.status === 'n/a')).toBe(true);
+    expect(result.unassignedFiles).toEqual([]);
+    expect(result.overlaps).toEqual([]);
   });
     });
   });
@@ -348,14 +348,14 @@ describe('evaluateBudgets', () => {
     });
 
     // Act
-    const sut = evaluateBudgets(report, manifest);
+    const result = evaluateBudgets(report, manifest);
 
     // Assert
-    expect(sut.ok).toBe(true);
-    const domain = sut.results.find((r) => r.bucket === 'domain');
+    expect(result.ok).toBe(true);
+    const domain = result.results.find((r) => r.bucket === 'domain');
     expect(domain).toMatchObject({ status: 'pass', score: 100, fileCount: 1 });
     expect(domain?.mutants).toMatchObject({ total: 3, killed: 3, survived: 0 });
-    expect(sut.results.filter((r) => r.bucket !== 'domain').every((r) => r.status === 'n/a')).toBe(
+    expect(result.results.filter((r) => r.bucket !== 'domain').every((r) => r.status === 'n/a')).toBe(
       true,
     );
   });
@@ -380,11 +380,11 @@ describe('evaluateBudgets', () => {
     });
 
     // Act
-    const sut = evaluateBudgets(report, manifest);
+    const result = evaluateBudgets(report, manifest);
 
     // Assert
-    expect(sut.ok).toBe(false);
-    const adapters = sut.results.find((r) => r.bucket === 'adapters');
+    expect(result.ok).toBe(false);
+    const adapters = result.results.find((r) => r.bucket === 'adapters');
     expect(adapters).toMatchObject({ status: 'fail', score: 80, threshold: 85 });
   });
     });
@@ -406,11 +406,11 @@ describe('evaluateBudgets', () => {
     });
 
     // Act
-    const sut = evaluateBudgets(report, manifest);
+    const result = evaluateBudgets(report, manifest);
 
     // Assert
-    expect(sut.ok).toBe(true);
-    const adapters = sut.results.find((r) => r.bucket === 'adapters');
+    expect(result.ok).toBe(true);
+    const adapters = result.results.find((r) => r.bucket === 'adapters');
     expect(adapters).toMatchObject({ status: 'pass', score: 85, threshold: 85 });
   });
     });
@@ -426,11 +426,11 @@ describe('evaluateBudgets', () => {
     });
 
     // Act
-    const sut = evaluateBudgets(report, manifest);
+    const result = evaluateBudgets(report, manifest);
 
     // Assert
-    expect(sut.ok).toBe(false);
-    expect(sut.unassignedFiles).toEqual(['src/orphan/foo.ts']);
+    expect(result.ok).toBe(false);
+    expect(result.unassignedFiles).toEqual(['src/orphan/foo.ts']);
   });
     });
   });
@@ -451,11 +451,11 @@ describe('evaluateBudgets', () => {
     });
 
     // Act
-    const sut = evaluateBudgets(report, overlappingManifest);
+    const result = evaluateBudgets(report, overlappingManifest);
 
     // Assert
-    expect(sut.ok).toBe(false);
-    expect(sut.overlaps).toEqual([{ path: 'src/x/foo.ts', buckets: ['domain', 'application'] }]);
+    expect(result.ok).toBe(false);
+    expect(result.overlaps).toEqual([{ path: 'src/x/foo.ts', buckets: ['domain', 'application'] }]);
   });
     });
   });
@@ -484,15 +484,15 @@ describe('evaluateBudgets', () => {
     });
 
     // Act
-    const sut = evaluateBudgets(report, manifest);
+    const result = evaluateBudgets(report, manifest);
 
     // Assert — 8 / (8+1+1+0) = 80
-    const domain = sut.results.find((r) => r.bucket === 'domain');
+    const domain = result.results.find((r) => r.bucket === 'domain');
     expect(domain).toMatchObject({
       score: 80,
       mutants: { total: 12, killed: 8, survived: 1, noCoverage: 1, timeout: 0, ignored: 1 },
     });
-    expect(sut.ok).toBe(false); // 80 < 99 break for domain
+    expect(result.ok).toBe(false); // 80 < 99 break for domain
   });
     });
   });
@@ -511,24 +511,24 @@ describe('evaluateBudgets', () => {
     });
 
     // Act
-    const sut = evaluateBudgets(report, manifest);
+    const result = evaluateBudgets(report, manifest);
 
     // Assert
-    expect(sut.results.find((r) => r.bucket === 'domain')).toMatchObject({
+    expect(result.results.find((r) => r.bucket === 'domain')).toMatchObject({
       status: 'pass',
       score: 100,
     });
-    expect(sut.results.find((r) => r.bucket === 'application')).toMatchObject({
+    expect(result.results.find((r) => r.bucket === 'application')).toMatchObject({
       status: 'fail',
       score: 80,
       threshold: 95,
     });
-    expect(sut.results.find((r) => r.bucket === 'adapters')).toMatchObject({
+    expect(result.results.find((r) => r.bucket === 'adapters')).toMatchObject({
       status: 'pass',
       score: 100,
     });
-    expect(sut.results.find((r) => r.bucket === 'infra')).toMatchObject({ status: 'n/a' });
-    expect(sut.ok).toBe(false);
+    expect(result.results.find((r) => r.bucket === 'infra')).toMatchObject({ status: 'n/a' });
+    expect(result.ok).toBe(false);
   });
     });
   });

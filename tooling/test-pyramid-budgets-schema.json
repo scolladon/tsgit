@@ -23,7 +23,8 @@
         "sutNaming",
         "bareClassToThrow",
         "emptyAaaSection",
-        "integrationProof"
+        "integrationProof",
+        "sutBindsResult"
       ],
       "additionalProperties": false,
       "properties": {
@@ -34,7 +35,8 @@
         "sutNaming": { "$ref": "#/$defs/sutNamingHeuristic" },
         "bareClassToThrow": { "$ref": "#/$defs/regexHeuristic" },
         "emptyAaaSection": { "$ref": "#/$defs/structuralHeuristic" },
-        "integrationProof": { "$ref": "#/$defs/integrationProofHeuristic" }
+        "integrationProof": { "$ref": "#/$defs/integrationProofHeuristic" },
+        "sutBindsResult": { "$ref": "#/$defs/sutBindsResultHeuristic" }
       }
     },
     "gating": {
@@ -48,7 +50,8 @@
         "sutNaming": { "type": "boolean" },
         "bareClassToThrow": { "type": "boolean" },
         "emptyAaaSection": { "type": "boolean" },
-        "integrationProof": { "type": "boolean" }
+        "integrationProof": { "type": "boolean" },
+        "sutBindsResult": { "type": "boolean" }
       }
     },
     "excludePaths": {
@@ -161,6 +164,19 @@
       "additionalProperties": false,
       "properties": {
         "tiers": { "$ref": "#/$defs/tiersProp" }
+      }
+    },
+    "sutBindsResultHeuristic": {
+      "type": "object",
+      "required": ["tiers", "allowlist"],
+      "additionalProperties": false,
+      "properties": {
+        "tiers": { "$ref": "#/$defs/tiersProp" },
+        "allowlist": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[A-Za-z_$][A-Za-z0-9_$]*$" }
+        }
       }
     },
     "integrationProofHeuristic": {

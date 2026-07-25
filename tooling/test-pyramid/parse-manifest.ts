@@ -67,6 +67,13 @@ export interface EmptyAaaSectionHeuristic {
   readonly tiers: ReadonlyArray<TierName>;
 }
 
+export interface SutBindsResultHeuristic {
+  readonly tiers: ReadonlyArray<TierName>;
+  // Callees exempt from the bare-call check — factories that legitimately
+  // return the object under test (adapters, operators, resolvers, …).
+  readonly allowlist: ReadonlyArray<string>;
+}
+
 export const DIRECTORY_CLASSES = ['root', 'network/', 'posix-only/', 'win-only/'] as const;
 export type DirectoryClass = (typeof DIRECTORY_CLASSES)[number];
 
@@ -89,6 +96,7 @@ export const GATING_KEYS = [
   'bareClassToThrow',
   'emptyAaaSection',
   'integrationProof',
+  'sutBindsResult',
 ] as const;
 export type GatingKey = (typeof GATING_KEYS)[number];
 export type GatingConfig = Readonly<Record<GatingKey, boolean>>;
@@ -104,6 +112,7 @@ export interface PyramidManifest {
     readonly bareClassToThrow: BareClassThrowHeuristic;
     readonly emptyAaaSection: EmptyAaaSectionHeuristic;
     readonly integrationProof: IntegrationProofHeuristic;
+    readonly sutBindsResult: SutBindsResultHeuristic;
   };
   readonly gating: GatingConfig;
   readonly excludePaths: ReadonlyArray<string>;
@@ -364,6 +373,38 @@ const parseEmptyAaaSection = (
   return { tiers };
 };
 
+const IDENTIFIER_RE = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
+
+const parseSutBindsResult = (
+  raw: unknown,
+  tierNames: ReadonlySet<TierName>,
+): SutBindsResultHeuristic => {
+  if (!isObject(raw)) {
+    return fail('sutBindsResult must be an object');
+  }
+  const tiers = requireTiers(raw.tiers, 'sutBindsResult', tierNames);
+  const { allowlist } = raw;
+  if (!Array.isArray(allowlist)) {
+    return fail('sutBindsResult allowlist must be an array');
+  }
+  const seen = new Set<string>();
+  const callees: string[] = [];
+  for (const entry of allowlist) {
+    if (typeof entry !== 'string' || entry.length === 0) {
+      return fail('sutBindsResult allowlist entry must be a non-empty string');
+    }
+    if (!IDENTIFIER_RE.test(entry)) {
+      return fail(`sutBindsResult allowlist entry "${entry}" must be a valid identifier`);
+    }
+    if (seen.has(entry)) {
+      return fail(`sutBindsResult allowlist has duplicate "${entry}"`);
+    }
+    seen.add(entry);
+    callees.push(entry);
+  }
+  return { tiers, allowlist: callees };
+};
+
 const DIRECTORY_CLASS_SET: ReadonlySet<string> = new Set<string>(DIRECTORY_CLASSES);
 
 const requirePositiveInt = (raw: unknown, field: string): number => {
@@ -461,6 +502,7 @@ const DEFAULT_GATING: GatingConfig = Object.freeze<GatingConfig>({
   bareClassToThrow: false,
   emptyAaaSection: false,
   integrationProof: false,
+  sutBindsResult: false,
 });
 
 // `excludePaths` is reserved for the audit's own self-test fixtures — files
@@ -544,6 +586,7 @@ export const parseManifest = (raw: string): PyramidManifest => {
     'bareClassToThrow',
     'emptyAaaSection',
     'integrationProof',
+    'sutBindsResult',
   ] as const;
   for (const key of requiredHeuristicKeys) {
     if (heuristics[key] === undefined) {
@@ -563,6 +606,7 @@ export const parseManifest = (raw: string): PyramidManifest => {
       bareClassToThrow: parseBareClassThrow(heuristics.bareClassToThrow, tierNames),
       emptyAaaSection: parseEmptyAaaSection(heuristics.emptyAaaSection, tierNames),
       integrationProof: parseIntegrationProof(heuristics.integrationProof, tierNames),
+      sutBindsResult: parseSutBindsResult(heuristics.sutBindsResult, tierNames),
     },
     gating: parseGating(gating),
     excludePaths: parseExcludePaths(excludePaths),

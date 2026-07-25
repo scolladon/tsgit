@@ -86,6 +86,10 @@ const buildManifest = (overrides: ManifestOverrides = {}): Record<string, unknow
         'coverage-gap': ['root'],
       },
     },
+    sutBindsResult: {
+      tiers: ['unit', 'integration'],
+      allowlist: ['openRepository', 'createNodeContext', 'createMemoryContext'],
+    },
   },
   ...(overrides.gating === undefined ? {} : { gating: overrides.gating }),
 });
@@ -167,6 +171,7 @@ describe('tooling/audit-test-pyramid (integration)', () => {
     expect(json.findings.bannedSut).toEqual([]);
     expect(json.findings.bareClassThrow).toEqual([]);
     expect(json.findings.emptyAaaSection).toEqual([]);
+    expect(json.findings.sutBindsResult).toEqual([]);
     // The integration file written above (`b.test.ts`) has no @proves header,
     // so the new heuristic must flag it. Locks in that the heuristic ran at
     // all — without this, a regression where the detector silently dropped
@@ -381,6 +386,63 @@ describe('tooling/audit-test-pyramid (integration)', () => {
 
     // Assert
     expect(sut.code).toBe(0);
+  });
+
+  it('Given a unit test binding `sut` to a bare call result with no gating, When the script runs, Then the sutBindsResult finding is reported and exit is 0', async () => {
+    // Arrange
+    await writeManifest(tmpRoot, PASSING_MANIFEST);
+    await mkdir(path.join(tmpRoot, 'test', 'unit'), { recursive: true });
+    await writeFile(
+      path.join(tmpRoot, 'test', 'unit', 'binds-result.test.ts'),
+      "describe('Given x', () => {\n  describe('When y', () => {\n    it('Then z', () => {\n      // Arrange\n      // Act\n      const sut = crc32(data);\n      // Assert\n      expect(sut).toBe(1);\n    });\n  });\n});\n",
+    );
+
+    // Act
+    const sut = await runScript(tmpRoot);
+
+    // Assert
+    expect(sut.code).toBe(0);
+    const json = JSON.parse(await readFile(path.join(tmpRoot, 'out', 'test-pyramid.json'), 'utf8'));
+    expect(json.findings.sutBindsResult).toHaveLength(1);
+    expect(json.findings.sutBindsResult[0]).toMatchObject({
+      path: 'test/unit/binds-result.test.ts',
+      callee: 'crc32',
+    });
+  });
+
+  it('Given sutBindsResult gated on and a bare-call binding, When the script runs, Then exit is 1 and stderr names sutBindsResult', async () => {
+    // Arrange
+    await writeManifest(tmpRoot, buildManifest({ gating: { sutBindsResult: true } }));
+    await mkdir(path.join(tmpRoot, 'test', 'unit'), { recursive: true });
+    await writeFile(
+      path.join(tmpRoot, 'test', 'unit', 'binds-result.test.ts'),
+      "describe('Given x', () => {\n  describe('When y', () => {\n    it('Then z', () => {\n      // Arrange\n      // Act\n      const sut = crc32(data);\n      // Assert\n      expect(sut).toBe(1);\n    });\n  });\n});\n",
+    );
+
+    // Act
+    const sut = await runScript(tmpRoot);
+
+    // Assert
+    expect(sut.code).toBe(1);
+    expect(sut.stderr).toContain('sutBindsResult');
+  });
+
+  it('Given a unit test binding `sut` via an allowlisted factory, When the script runs, Then no sutBindsResult finding is reported', async () => {
+    // Arrange
+    await writeManifest(tmpRoot, PASSING_MANIFEST);
+    await mkdir(path.join(tmpRoot, 'test', 'unit'), { recursive: true });
+    await writeFile(
+      path.join(tmpRoot, 'test', 'unit', 'binds-allowlisted.test.ts'),
+      "describe('Given x', () => {\n  describe('When y', () => {\n    it('Then z', () => {\n      // Arrange\n      // Act\n      const sut = openRepository(adapters, dir);\n      // Assert\n      expect(sut).toBeDefined();\n    });\n  });\n});\n",
+    );
+
+    // Act
+    const sut = await runScript(tmpRoot);
+
+    // Assert
+    expect(sut.code).toBe(0);
+    const json = JSON.parse(await readFile(path.join(tmpRoot, 'out', 'test-pyramid.json'), 'utf8'));
+    expect(json.findings.sutBindsResult).toEqual([]);
   });
 
   describe('integrationProof heuristic — end-to-end', () => {

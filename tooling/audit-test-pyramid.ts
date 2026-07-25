@@ -27,6 +27,7 @@ import { detectEmptyAaaSection } from './test-pyramid/detect-empty-aaa-section.t
 import { detectIntegrationProof } from './test-pyramid/detect-integration-proof.ts';
 import { detectMissingAaa } from './test-pyramid/detect-missing-aaa.ts';
 import { detectOverMocked } from './test-pyramid/detect-over-mocked.ts';
+import { detectSutBindsResult } from './test-pyramid/detect-sut-binds-result.ts';
 import { detectUnderAsserted } from './test-pyramid/detect-under-asserted.ts';
 import {
   GATING_KEYS,
@@ -139,6 +140,7 @@ export const runAudit = async (args: CliArgs): Promise<{
       bareClassThrow: detectBareClassThrow(manifest, files),
       emptyAaaSection: detectEmptyAaaSection(manifest, files),
       integrationProof: detectIntegrationProof(manifest, files),
+      sutBindsResult: detectSutBindsResult(manifest, files),
     },
   };
   return { manifest, outcome };
@@ -193,6 +195,7 @@ const FINDING_PRESENT_BY_GATING: Readonly<
     f.integrationProof.missing.length > 0 ||
     f.integrationProof.duplicate.length > 0 ||
     f.integrationProof.misplaced.length > 0,
+  sutBindsResult: (f) => f.sutBindsResult.length > 0,
 };
 
 export const collectGatingViolations = (

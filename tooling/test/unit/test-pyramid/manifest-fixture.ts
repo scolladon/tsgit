@@ -39,6 +39,7 @@ interface ManifestOverrides {
   readonly sutBanned?: ReadonlyArray<string>;
   readonly bareClassRegex?: string;
   readonly integrationProof?: IntegrationProofOverrides;
+  readonly sutBindsResultAllowlist?: ReadonlyArray<string>;
   readonly gating?: Partial<GatingConfig>;
   readonly excludePaths?: ReadonlyArray<string>;
 }
@@ -87,6 +88,15 @@ const DEFAULT_INTEGRATION_BUCKETS: ReadonlyArray<string> = [
 
 const DEFAULT_SURFACE_REGEX_SOURCE = '^[a-z][a-zA-Z0-9.-]{1,40}$';
 
+const DEFAULT_SUT_BINDS_RESULT_ALLOWLIST: ReadonlyArray<string> = [
+  'openRepository',
+  'createNodeContext',
+  'createMemoryContext',
+  'map',
+  'filter',
+  'take',
+];
+
 const DEFAULT_DIRECTORY_RULES: ReadonlyMap<string, ReadonlyArray<DirectoryClass>> = new Map<
   string,
   ReadonlyArray<DirectoryClass>
@@ -109,6 +119,7 @@ const DEFAULT_GATING: GatingConfig = {
   bareClassToThrow: false,
   emptyAaaSection: false,
   integrationProof: false,
+  sutBindsResult: false,
 };
 
 export const makeManifest = (overrides: ManifestOverrides = {}): PyramidManifest => {
@@ -177,6 +188,10 @@ export const makeManifest = (overrides: ManifestOverrides = {}): PyramidManifest
           directoryRules: ip.directoryRules ?? DEFAULT_DIRECTORY_RULES,
         };
       })(),
+      sutBindsResult: {
+        tiers: ['unit', 'integration', 'parity', 'runtime-parity', 'perf'],
+        allowlist: overrides.sutBindsResultAllowlist ?? DEFAULT_SUT_BINDS_RESULT_ALLOWLIST,
+      },
     },
     gating: { ...DEFAULT_GATING, ...(overrides.gating ?? {}) },
     excludePaths: overrides.excludePaths ?? [],

@@ -254,11 +254,11 @@ describe('patch-serializer (properties)', () => {
             const input = [file];
 
             // Act
-            const sut = renderPatch(input);
+            const result = renderPatch(input);
 
             // Assert — invariants every file-class shares.
-            expect(sut.startsWith('diff --git ')).toBe(true);
-            expect(sut.endsWith('\n')).toBe(true);
+            expect(result.startsWith('diff --git ')).toBe(true);
+            expect(result.endsWith('\n')).toBe(true);
           }),
           { numRuns: 100 },
         );
@@ -275,16 +275,16 @@ describe('patch-serializer (properties)', () => {
             const input = [file];
 
             // Act
-            const sut = renderPatch(input);
+            const result = renderPatch(input);
 
             // Assert — rename grammar is fixed: similarity index 100% +
             // rename from + rename to. No --- / +++ / hunks.
-            expect(sut).toContain('similarity index 100%');
-            expect(sut).toContain('rename from ');
-            expect(sut).toContain('rename to ');
-            expect(sut).not.toContain('\n--- ');
-            expect(sut).not.toContain('\n+++ ');
-            expect(sut).not.toContain('@@ ');
+            expect(result).toContain('similarity index 100%');
+            expect(result).toContain('rename from ');
+            expect(result).toContain('rename to ');
+            expect(result).not.toContain('\n--- ');
+            expect(result).not.toContain('\n+++ ');
+            expect(result).not.toContain('@@ ');
           }),
           { numRuns: 100 },
         );
@@ -301,12 +301,12 @@ describe('patch-serializer (properties)', () => {
             const input = [file];
 
             // Act
-            const sut = renderPatch(input);
+            const result = renderPatch(input);
 
             // Assert — no hunk markers ever escape into a binary block.
-            expect(sut).toContain('Binary files /dev/null and b/');
-            expect(sut).toContain(' differ');
-            expect(sut).not.toContain('@@ ');
+            expect(result).toContain('Binary files /dev/null and b/');
+            expect(result).toContain(' differ');
+            expect(result).not.toContain('@@ ');
           }),
           { numRuns: 100 },
         );
@@ -323,13 +323,13 @@ describe('patch-serializer (properties)', () => {
             const input = [file];
 
             // Act
-            const sut = renderPatch(input);
+            const result = renderPatch(input);
 
             // Assert — git renders a type-change as a full deletion then a full
             // addition. Group lines into `diff --git ` blocks; content lines are
             // +/-/space-prefixed, so they never match a bare header/marker prefix.
             const blocks: string[][] = [];
-            for (const line of sut.split('\n')) {
+            for (const line of result.split('\n')) {
               if (line.startsWith('diff --git ')) blocks.push([]);
               blocks[blocks.length - 1]?.push(line);
             }

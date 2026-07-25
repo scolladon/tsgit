@@ -15,6 +15,7 @@ import type {
 } from './detect-integration-proof.ts';
 import type { MissingAaaFinding } from './detect-missing-aaa.ts';
 import type { OverMockedFinding } from './detect-over-mocked.ts';
+import type { SutBindsResultFinding } from './detect-sut-binds-result.ts';
 import type { UnderAssertedFinding } from './detect-under-asserted.ts';
 import type { TallyResult, TierStatus, TierTally } from './count-tier-files.ts';
 
@@ -27,6 +28,7 @@ export interface AuditFindings {
   readonly bareClassThrow: ReadonlyArray<BareClassThrowFinding>;
   readonly emptyAaaSection: ReadonlyArray<EmptyAaaSectionFinding>;
   readonly integrationProof: IntegrationProofFindings;
+  readonly sutBindsResult: ReadonlyArray<SutBindsResultFinding>;
 }
 
 export interface AuditOutcome {
@@ -123,6 +125,13 @@ const renderEmptyAaaSection = (
     .join('\n');
 };
 
+const renderSutBindsResult = (findings: ReadonlyArray<SutBindsResultFinding>): string => {
+  if (findings.length === 0) return '_none_';
+  return findings
+    .map((f) => `- \`${f.path}:${f.line}\` — \`sut = ${f.callee}(…)\` binds a call result (${f.title})`)
+    .join('\n');
+};
+
 const renderMissingProof = (findings: ReadonlyArray<MissingFinding>): string => {
   if (findings.length === 0) return '_none_';
   return findings
@@ -216,6 +225,12 @@ export const renderMarkdown = (outcome: AuditOutcome): string => {
     renderBareClassThrow(findings.bareClassThrow),
   );
   sections.push(renderIntegrationProof(findings.integrationProof));
+  sections.push(
+    '',
+    '### `sut` binds a call result (Axis 1, forward enforcement)',
+    '',
+    renderSutBindsResult(findings.sutBindsResult),
+  );
 
   const unclassified = renderUnclassified(tally.unclassified);
   if (unclassified.length > 0) sections.push(unclassified);

@@ -82,6 +82,10 @@ const VALID_MANIFEST = {
         'coverage-gap': ['root'],
       },
     },
+    sutBindsResult: {
+      tiers: ['unit', 'integration'],
+      allowlist: ['openRepository', 'createNodeContext', 'createMemoryContext'],
+    },
   },
 };
 
@@ -1232,6 +1236,7 @@ describe('parseManifest', () => {
         bareClassToThrow: false,
         emptyAaaSection: false,
         integrationProof: false,
+        sutBindsResult: false,
       });
     });
 
@@ -1684,6 +1689,177 @@ describe('parseManifest', () => {
       // Assert
       expect(caught?.message).toContain('real-fs');
       expect(caught?.message).toContain('directoryRules entry must be a non-empty array');
+    });
+  });
+
+  describe('sutBindsResult — happy path', () => {
+    it('Given a well-formed sutBindsResult block, When parsed, Then exposes tiers and allowlist', () => {
+      // Arrange
+      const raw = JSON.stringify(VALID_MANIFEST);
+
+      // Act
+      const sut = parseManifest(raw);
+
+      // Assert
+      expect(sut.heuristics.sutBindsResult.tiers).toEqual(['unit', 'integration']);
+      expect(sut.heuristics.sutBindsResult.allowlist).toEqual([
+        'openRepository',
+        'createNodeContext',
+        'createMemoryContext',
+      ]);
+    });
+
+    it('Given sutBindsResult with an empty allowlist, When parsed, Then allowlist is an empty array', () => {
+      // Arrange
+      const raw = JSON.stringify(
+        replaceHeuristic(VALID_MANIFEST, 'sutBindsResult', { tiers: ['unit'], allowlist: [] }),
+      );
+
+      // Act
+      const sut = parseManifest(raw);
+
+      // Assert
+      expect(sut.heuristics.sutBindsResult.allowlist).toEqual([]);
+    });
+
+    it('Given gating.sutBindsResult omitted from gating, When parsed, Then defaults to false', () => {
+      // Arrange
+      const raw = JSON.stringify({ ...VALID_MANIFEST, gating: { overMockedIntegration: true } });
+
+      // Act
+      const sut = parseManifest(raw);
+
+      // Assert
+      expect(sut.gating.sutBindsResult).toBe(false);
+    });
+
+    it('Given gating.sutBindsResult set to true, When parsed, Then exposes true', () => {
+      // Arrange
+      const raw = JSON.stringify({ ...VALID_MANIFEST, gating: { sutBindsResult: true } });
+
+      // Act
+      const sut = parseManifest(raw);
+
+      // Assert
+      expect(sut.gating.sutBindsResult).toBe(true);
+    });
+  });
+
+  describe('sutBindsResult — failure modes', () => {
+    it('Given sutBindsResult missing, When parsed, Then throws naming sutBindsResult', () => {
+      // Arrange
+      const raw = JSON.stringify(replaceHeuristic(VALID_MANIFEST, 'sutBindsResult', undefined));
+
+      // Act
+      let caught: Error | undefined;
+      try {
+        parseManifest(raw);
+      } catch (error) {
+        caught = error instanceof Error ? error : undefined;
+      }
+
+      // Assert
+      expect(caught?.message).toContain('heuristics.sutBindsResult is required');
+    });
+
+    it('Given sutBindsResult as a string instead of an object, When parsed, Then throws naming sutBindsResult', () => {
+      // Arrange
+      const raw = JSON.stringify(replaceHeuristic(VALID_MANIFEST, 'sutBindsResult', 'oops'));
+
+      // Act
+      let caught: Error | undefined;
+      try {
+        parseManifest(raw);
+      } catch (error) {
+        caught = error instanceof Error ? error : undefined;
+      }
+
+      // Assert
+      expect(caught?.message).toContain('sutBindsResult must be an object');
+    });
+
+    it('Given sutBindsResult with an unknown tier, When parsed, Then throws naming the tier', () => {
+      // Arrange
+      const raw = JSON.stringify(
+        replaceHeuristic(VALID_MANIFEST, 'sutBindsResult', {
+          tiers: ['ghost'],
+          allowlist: [],
+        }),
+      );
+
+      // Act
+      let caught: Error | undefined;
+      try {
+        parseManifest(raw);
+      } catch (error) {
+        caught = error instanceof Error ? error : undefined;
+      }
+
+      // Assert
+      expect(caught?.message).toContain('unknown tier "ghost"');
+    });
+
+    it('Given sutBindsResult allowlist as a non-array, When parsed, Then throws naming allowlist', () => {
+      // Arrange
+      const raw = JSON.stringify(
+        replaceHeuristic(VALID_MANIFEST, 'sutBindsResult', {
+          tiers: ['unit'],
+          allowlist: 'oops',
+        }),
+      );
+
+      // Act
+      let caught: Error | undefined;
+      try {
+        parseManifest(raw);
+      } catch (error) {
+        caught = error instanceof Error ? error : undefined;
+      }
+
+      // Assert
+      expect(caught?.message).toContain('sutBindsResult allowlist must be an array');
+    });
+
+    it('Given sutBindsResult allowlist with a non-identifier entry, When parsed, Then throws naming the bad entry', () => {
+      // Arrange
+      const raw = JSON.stringify(
+        replaceHeuristic(VALID_MANIFEST, 'sutBindsResult', {
+          tiers: ['unit'],
+          allowlist: ['ok', '1nope'],
+        }),
+      );
+
+      // Act
+      let caught: Error | undefined;
+      try {
+        parseManifest(raw);
+      } catch (error) {
+        caught = error instanceof Error ? error : undefined;
+      }
+
+      // Assert
+      expect(caught?.message).toContain('sutBindsResult allowlist entry "1nope"');
+    });
+
+    it('Given sutBindsResult allowlist with a duplicate, When parsed, Then throws naming the duplicate', () => {
+      // Arrange
+      const raw = JSON.stringify(
+        replaceHeuristic(VALID_MANIFEST, 'sutBindsResult', {
+          tiers: ['unit'],
+          allowlist: ['x', 'x'],
+        }),
+      );
+
+      // Act
+      let caught: Error | undefined;
+      try {
+        parseManifest(raw);
+      } catch (error) {
+        caught = error instanceof Error ? error : undefined;
+      }
+
+      // Assert
+      expect(caught?.message).toContain('sutBindsResult allowlist has duplicate "x"');
     });
   });
 });

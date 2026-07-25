@@ -33,12 +33,12 @@ describe('computeGaps', () => {
         const covered = [cover('tree', ['t/tree.ts']), cover('commit', ['t/commit.ts'])];
 
         // Act
-        const sut = computeGaps({ surfaces, covered, exempt: [] });
+        const result = computeGaps({ surfaces, covered, exempt: [] });
 
         // Assert
-        expect(sut.gaps).toHaveLength(0);
-        expect(sut.covered.map((c) => c.name)).toEqual(['commit', 'tree']);
-        expect(sut.covered[0]?.coveredBy).toEqual(['t/commit.ts']);
+        expect(result.gaps).toHaveLength(0);
+        expect(result.covered.map((c) => c.name)).toEqual(['commit', 'tree']);
+        expect(result.covered[0]?.coveredBy).toEqual(['t/commit.ts']);
       });
     });
   });
@@ -51,10 +51,10 @@ describe('computeGaps', () => {
         const covered = [cover('tree', ['t/tree.ts'])];
 
         // Act
-        const sut = computeGaps({ surfaces, covered, exempt: [] });
+        const result = computeGaps({ surfaces, covered, exempt: [] });
 
         // Assert
-        expect(sut.gaps.map((g) => g.name)).toEqual(['commit']);
+        expect(result.gaps.map((g) => g.name)).toEqual(['commit']);
       });
     });
   });
@@ -66,11 +66,11 @@ describe('computeGaps', () => {
         const surfaces = [surface('tree')];
 
         // Act
-        const sut = computeGaps({ surfaces, covered: [], exempt: [exempt('tree')] });
+        const result = computeGaps({ surfaces, covered: [], exempt: [exempt('tree')] });
 
         // Assert
-        expect(sut.gaps).toHaveLength(0);
-        expect(sut.exempt.map((e) => e.surface)).toEqual(['tree']);
+        expect(result.gaps).toHaveLength(0);
+        expect(result.exempt.map((e) => e.surface)).toEqual(['tree']);
       });
     });
   });
@@ -82,14 +82,14 @@ describe('computeGaps', () => {
         const surfaces = [surface('tree')];
 
         // Act
-        const sut = computeGaps({
+        const result = computeGaps({
           surfaces,
           covered: [],
           exempt: [exempt('tree'), exempt('removedSurface')],
         });
 
         // Assert
-        expect(sut.allowlistRot).toEqual(['removedSurface']);
+        expect(result.allowlistRot).toEqual(['removedSurface']);
       });
     });
   });
@@ -102,10 +102,10 @@ describe('computeGaps', () => {
         const covered = [cover('tree', ['t/tree.ts']), cover('strayName', ['t/stray.ts'])];
 
         // Act
-        const sut = computeGaps({ surfaces, covered, exempt: [] });
+        const result = computeGaps({ surfaces, covered, exempt: [] });
 
         // Assert
-        expect(sut.orphanCoverage.map((o) => o.surface)).toEqual(['strayName']);
+        expect(result.orphanCoverage.map((o) => o.surface)).toEqual(['strayName']);
       });
     });
   });
@@ -122,10 +122,10 @@ describe('computeGaps', () => {
         ];
 
         // Act
-        const sut = computeGaps({ surfaces, covered, exempt: [] });
+        const result = computeGaps({ surfaces, covered, exempt: [] });
 
         // Assert
-        expect(sut.covered.map((c) => c.name)).toEqual(['apple', 'mango', 'zebra']);
+        expect(result.covered.map((c) => c.name)).toEqual(['apple', 'mango', 'zebra']);
       });
     });
   });
@@ -138,10 +138,10 @@ describe('computeGaps', () => {
         const covered = [cover('tree', ['z.ts', 'a.ts', 'm.ts'])];
 
         // Act
-        const sut = computeGaps({ surfaces, covered, exempt: [] });
+        const result = computeGaps({ surfaces, covered, exempt: [] });
 
         // Assert
-        expect(sut.covered[0]?.coveredBy).toEqual(['a.ts', 'm.ts', 'z.ts']);
+        expect(result.covered[0]?.coveredBy).toEqual(['a.ts', 'm.ts', 'z.ts']);
       });
     });
   });

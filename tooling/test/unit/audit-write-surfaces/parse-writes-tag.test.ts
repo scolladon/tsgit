@@ -30,14 +30,14 @@ describe('parseWritesTag', () => {
         const source = HAPPY_SOURCE;
 
         // Act
-        const sut = parseWritesTag(source, sutConfig());
+        const result = parseWritesTag(source, sutConfig());
 
         // Assert
-        expect(sut.ok).toBe(true);
-        if (sut.ok) {
-          expect(sut.tag.surface).toBe('tree');
-          expect(sut.tag.kind).toBe('byte-identical');
-          expect(sut.tag.format).toBe('git-tree-object');
+        expect(result.ok).toBe(true);
+        if (result.ok) {
+          expect(result.tag.surface).toBe('tree');
+          expect(result.tag.kind).toBe('byte-identical');
+          expect(result.tag.format).toBe('git-tree-object');
         }
       });
     });
@@ -51,10 +51,10 @@ describe('parseWritesTag', () => {
 ${HAPPY_SOURCE}`;
 
         // Act
-        const sut = parseWritesTag(source, sutConfig());
+        const result = parseWritesTag(source, sutConfig());
 
         // Assert
-        expect(sut.ok).toBe(true);
+        expect(result.ok).toBe(true);
       });
     });
   });
@@ -66,11 +66,11 @@ ${HAPPY_SOURCE}`;
         const source = HAPPY_SOURCE.replace(/\n/g, '\r\n');
 
         // Act
-        const sut = parseWritesTag(source, sutConfig());
+        const result = parseWritesTag(source, sutConfig());
 
         // Assert
-        expect(sut.ok).toBe(true);
-        if (sut.ok) expect(sut.tag.surface).toBe('tree');
+        expect(result.ok).toBe(true);
+        if (result.ok) expect(result.tag.surface).toBe('tree');
       });
     });
   });
@@ -89,11 +89,11 @@ ${HAPPY_SOURCE}`;
 `;
 
         // Act
-        const sut = parseWritesTag(source, sutConfig());
+        const result = parseWritesTag(source, sutConfig());
 
         // Assert
-        expect(sut.ok).toBe(false);
-        if (!sut.ok) expect(sut.error.reason).toBe('duplicate-writes-block');
+        expect(result.ok).toBe(false);
+        if (!result.ok) expect(result.error.reason).toBe('duplicate-writes-block');
       });
     });
   });
@@ -106,11 +106,11 @@ ${HAPPY_SOURCE}`;
 ${HAPPY_SOURCE}`;
 
         // Act
-        const sut = parseWritesTag(source, sutConfig());
+        const result = parseWritesTag(source, sutConfig());
 
         // Assert
-        expect(sut.ok).toBe(false);
-        if (!sut.ok) expect(sut.error.reason).toBe('no-jsdoc-at-top');
+        expect(result.ok).toBe(false);
+        if (!result.ok) expect(result.error.reason).toBe('no-jsdoc-at-top');
       });
     });
   });
@@ -125,11 +125,11 @@ ${HAPPY_SOURCE}`;
 `;
 
         // Act
-        const sut = parseWritesTag(source, sutConfig());
+        const result = parseWritesTag(source, sutConfig());
 
         // Assert
-        expect(sut.ok).toBe(false);
-        if (!sut.ok) expect(sut.error.reason).toBe('no-writes-block');
+        expect(result.ok).toBe(false);
+        if (!result.ok) expect(result.error.reason).toBe('no-writes-block');
       });
     });
   });
@@ -146,13 +146,13 @@ ${HAPPY_SOURCE}`;
 `;
 
         // Act
-        const sut = parseWritesTag(source, sutConfig());
+        const result = parseWritesTag(source, sutConfig());
 
         // Assert
-        expect(sut.ok).toBe(false);
-        if (!sut.ok) {
-          expect(sut.error.reason).toBe('missing-key');
-          expect(sut.error.detail).toContain('kind');
+        expect(result.ok).toBe(false);
+        if (!result.ok) {
+          expect(result.error.reason).toBe('missing-key');
+          expect(result.error.detail).toContain('kind');
         }
       });
     });
@@ -169,14 +169,14 @@ ${HAPPY_SOURCE}`;
 `;
 
         // Act
-        const sut = parseWritesTag(source, sutConfig());
+        const result = parseWritesTag(source, sutConfig());
 
         // Assert
-        expect(sut.ok).toBe(false);
-        if (!sut.ok) {
-          expect(sut.error.reason).toBe('missing-key');
-          expect(sut.error.detail).toContain('surface');
-          expect(sut.error.detail).toContain('format');
+        expect(result.ok).toBe(false);
+        if (!result.ok) {
+          expect(result.error.reason).toBe('missing-key');
+          expect(result.error.detail).toContain('surface');
+          expect(result.error.detail).toContain('format');
         }
       });
     });
@@ -195,13 +195,13 @@ ${HAPPY_SOURCE}`;
 `;
 
         // Act
-        const sut = parseWritesTag(source, sutConfig());
+        const result = parseWritesTag(source, sutConfig());
 
         // Assert
-        expect(sut.ok).toBe(false);
-        if (!sut.ok) {
-          expect(sut.error.reason).toBe('bad-surface');
-          expect(sut.error.detail).toBe('NotKebab');
+        expect(result.ok).toBe(false);
+        if (!result.ok) {
+          expect(result.error.reason).toBe('bad-surface');
+          expect(result.error.detail).toBe('NotKebab');
         }
       });
     });
@@ -220,13 +220,13 @@ ${HAPPY_SOURCE}`;
 `;
 
         // Act
-        const sut = parseWritesTag(source, sutConfig());
+        const result = parseWritesTag(source, sutConfig());
 
         // Assert
-        expect(sut.ok).toBe(false);
-        if (!sut.ok) {
-          expect(sut.error.reason).toBe('bad-kind');
-          expect(sut.error.detail).toBe('snapshot');
+        expect(result.ok).toBe(false);
+        if (!result.ok) {
+          expect(result.error.reason).toBe('bad-kind');
+          expect(result.error.detail).toBe('snapshot');
         }
       });
     });
@@ -245,13 +245,13 @@ ${HAPPY_SOURCE}`;
 `;
 
         // Act
-        const sut = parseWritesTag(source, sutConfig());
+        const result = parseWritesTag(source, sutConfig());
 
         // Assert
-        expect(sut.ok).toBe(false);
-        if (!sut.ok) {
-          expect(sut.error.reason).toBe('bad-format');
-          expect(sut.error.detail).toContain('length out of range');
+        expect(result.ok).toBe(false);
+        if (!result.ok) {
+          expect(result.error.reason).toBe('bad-format');
+          expect(result.error.detail).toContain('length out of range');
         }
       });
     });
@@ -270,13 +270,13 @@ ${HAPPY_SOURCE}`;
 `;
 
         // Act
-        const sut = parseWritesTag(source, sutConfig());
+        const result = parseWritesTag(source, sutConfig());
 
         // Assert
-        expect(sut.ok).toBe(false);
-        if (!sut.ok) {
-          expect(sut.error.reason).toBe('bad-format');
-          expect(sut.error.detail).toBe('BadFormat');
+        expect(result.ok).toBe(false);
+        if (!result.ok) {
+          expect(result.error.reason).toBe('bad-format');
+          expect(result.error.detail).toBe('BadFormat');
         }
       });
     });
@@ -300,11 +300,11 @@ ${HAPPY_SOURCE}`;
 `;
 
         // Act
-        const sut = parseWritesTag(source, sutConfig());
+        const result = parseWritesTag(source, sutConfig());
 
         // Assert
-        expect(sut.ok).toBe(true);
-        if (sut.ok) expect(sut.tag.surface).toBe('tree');
+        expect(result.ok).toBe(true);
+        if (result.ok) expect(result.tag.surface).toBe('tree');
       });
     });
   });

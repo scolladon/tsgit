@@ -35,10 +35,10 @@ describe('parseRepositoryInterface', () => {
     ].join('\n');
 
     // Act
-    const sut = parseRepositoryInterface(source);
+    const result = parseRepositoryInterface(source);
 
     // Assert
-    expect(sut).toEqual({
+    expect(result).toEqual({
       commands: ['add', 'branch', 'clone'],
       primitives: ['readObject', 'walkCommits'],
     });
@@ -57,11 +57,11 @@ describe('parseRepositoryInterface', () => {
     ].join('\n');
 
     // Act
-    const sut = parseRepositoryInterface(source);
+    const result = parseRepositoryInterface(source);
 
     // Assert
-    expect(sut.primitives).toEqual([]);
-    expect(sut.commands).toEqual(['add']);
+    expect(result.primitives).toEqual([]);
+    expect(result.commands).toEqual(['add']);
   });
     });
   });
@@ -80,11 +80,11 @@ describe('parseRepositoryInterface', () => {
     ].join('\n');
 
     // Act
-    const sut = parseRepositoryInterface(source);
+    const result = parseRepositoryInterface(source);
 
     // Assert
-    expect(sut.commands).toEqual([]);
-    expect(sut.primitives).toEqual([]);
+    expect(result.commands).toEqual([]);
+    expect(result.primitives).toEqual([]);
   });
     });
   });
@@ -105,10 +105,10 @@ describe('parseRepositoryInterface', () => {
     ].join('\n');
 
     // Act
-    const sut = parseRepositoryInterface(source);
+    const result = parseRepositoryInterface(source);
 
     // Assert
-    expect(sut.commands).toEqual(['add']);
+    expect(result.commands).toEqual(['add']);
   });
     });
   });
@@ -128,10 +128,10 @@ describe('parseRepositoryInterface', () => {
         ].join('\n');
 
         // Act
-        const sut = parseRepositoryInterface(source);
+        const result = parseRepositoryInterface(source);
 
         // Assert
-        expect(sut.commands).toEqual(['add', 'config', 'remote']);
+        expect(result.commands).toEqual(['add', 'config', 'remote']);
       });
     });
   });
@@ -142,10 +142,10 @@ describe('kebabCase', () => {
     describe("When kebab-cased", () => {
       it('Then the same lower-case word is returned', () => {
     // Arrange + Act
-    const sut = kebabCase('clone');
+    const result = kebabCase('clone');
 
     // Assert
-    expect(sut).toBe('clone');
+    expect(result).toBe('clone');
   });
     });
   });
@@ -154,10 +154,10 @@ describe('kebabCase', () => {
     describe("When kebab-cased", () => {
       it('Then cat-file', () => {
     // Arrange + Act
-    const sut = kebabCase('catFile');
+    const result = kebabCase('catFile');
 
     // Assert
-    expect(sut).toBe('cat-file');
+    expect(result).toBe('cat-file');
   });
     });
   });
@@ -166,10 +166,10 @@ describe('kebabCase', () => {
     describe("When kebab-cased", () => {
       it('Then rev-parse', () => {
     // Arrange + Act
-    const sut = kebabCase('revParse');
+    const result = kebabCase('revParse');
 
     // Assert
-    expect(sut).toBe('rev-parse');
+    expect(result).toBe('rev-parse');
   });
     });
   });
@@ -178,10 +178,10 @@ describe('kebabCase', () => {
     describe("When kebab-cased", () => {
       it('Then fetch-missing', () => {
     // Arrange + Act
-    const sut = kebabCase('fetchMissing');
+    const result = kebabCase('fetchMissing');
 
     // Assert
-    expect(sut).toBe('fetch-missing');
+    expect(result).toBe('fetch-missing');
   });
     });
   });
@@ -190,10 +190,10 @@ describe('kebabCase', () => {
     describe("When kebab-cased", () => {
       it('Then sparse-checkout', () => {
     // Arrange + Act
-    const sut = kebabCase('sparseCheckout');
+    const result = kebabCase('sparseCheckout');
 
     // Assert
-    expect(sut).toBe('sparse-checkout');
+    expect(result).toBe('sparse-checkout');
   });
     });
   });
@@ -208,10 +208,10 @@ describe('checkDocsExist', () => {
     const fileExists = (p: string): boolean => p === expected;
 
     // Act
-    const sut = checkDocsExist('commands', ['clone'], '/docs', [], fileExists);
+    const result = checkDocsExist('commands', ['clone'], '/docs', [], fileExists);
 
     // Assert
-    expect(sut).toEqual([]);
+    expect(result).toEqual([]);
   });
     });
   });
@@ -223,10 +223,10 @@ describe('checkDocsExist', () => {
     const fileExists = (): boolean => false;
 
     // Act
-    const sut = checkDocsExist('commands', ['clone'], '/docs', [], fileExists);
+    const result = checkDocsExist('commands', ['clone'], '/docs', [], fileExists);
 
     // Assert
-    expect(sut).toEqual([
+    expect(result).toEqual([
       {
         kind: 'commands',
         name: 'clone',
@@ -245,10 +245,10 @@ describe('checkDocsExist', () => {
     const fileExists = (): boolean => false;
 
     // Act
-    const sut = checkDocsExist('commands', ['clone'], '/docs', ['clone'], fileExists);
+    const result = checkDocsExist('commands', ['clone'], '/docs', ['clone'], fileExists);
 
     // Assert
-    expect(sut).toEqual([]);
+    expect(result).toEqual([]);
   });
     });
   });
@@ -261,10 +261,10 @@ describe('checkDocsExist', () => {
     const fileExists = (p: string): boolean => p === expected;
 
     // Act
-    const sut = checkDocsExist('commands', ['clone', 'add', 'commit'], '/docs', [], fileExists);
+    const result = checkDocsExist('commands', ['clone', 'add', 'commit'], '/docs', [], fileExists);
 
     // Assert
-    expect(sut.map((g) => g.name)).toEqual(['add', 'commit']);
+    expect(result.map((g) => g.name)).toEqual(['add', 'commit']);
   });
     });
   });
@@ -278,10 +278,10 @@ describe('checkIndexRow', () => {
     const readFile = (): string => '| [`clone`](clone.md) | Clone a remote |';
 
     // Act
-    const sut = checkIndexRow('commands', ['clone'], '/docs', [], readFile);
+    const result = checkIndexRow('commands', ['clone'], '/docs', [], readFile);
 
     // Assert
-    expect(sut).toEqual([]);
+    expect(result).toEqual([]);
   });
     });
   });
@@ -293,10 +293,10 @@ describe('checkIndexRow', () => {
     const readFile = (): string => 'no entries here';
 
     // Act
-    const sut = checkIndexRow('commands', ['clone'], '/docs', [], readFile);
+    const result = checkIndexRow('commands', ['clone'], '/docs', [], readFile);
 
     // Assert
-    expect(sut).toEqual([
+    expect(result).toEqual([
       {
         kind: 'commands',
         name: 'clone',
@@ -317,11 +317,11 @@ describe('checkIndexRow', () => {
     };
 
     // Act
-    const sut = checkIndexRow('commands', ['clone', 'add'], '/docs', [], readFile);
+    const result = checkIndexRow('commands', ['clone', 'add'], '/docs', [], readFile);
 
     // Assert
-    expect(sut.map((g) => g.name)).toEqual(['clone', 'add']);
-    expect(sut.every((g) => g.missing === 'index-row')).toBe(true);
+    expect(result.map((g) => g.name)).toEqual(['clone', 'add']);
+    expect(result.every((g) => g.missing === 'index-row')).toBe(true);
   });
     });
   });
@@ -333,10 +333,10 @@ describe('checkIndexRow', () => {
     const readFile = (): string => '';
 
     // Act
-    const sut = checkIndexRow('commands', ['clone'], '/docs', ['clone'], readFile);
+    const result = checkIndexRow('commands', ['clone'], '/docs', ['clone'], readFile);
 
     // Assert
-    expect(sut).toEqual([]);
+    expect(result).toEqual([]);
   });
     });
   });
@@ -355,12 +355,12 @@ describe('formatGapStanza', () => {
     };
 
     // Act
-    const sut = formatGapStanza(gap);
+    const result = formatGapStanza(gap);
 
     // Assert
-    expect(sut).toContain('ERROR /repo/docs/use/commands/clone.md missing');
-    expect(sut).toContain('Surface symbol: repo.clone');
-    expect(sut).toContain('[`clone`](clone.md)');
+    expect(result).toContain('ERROR /repo/docs/use/commands/clone.md missing');
+    expect(result).toContain('Surface symbol: repo.clone');
+    expect(result).toContain('[`clone`](clone.md)');
   });
     });
   });
@@ -377,10 +377,10 @@ describe('formatGapStanza', () => {
     };
 
     // Act
-    const sut = formatGapStanza(gap);
+    const result = formatGapStanza(gap);
 
     // Assert
-    expect(sut).toContain('Surface symbol: repo.primitives.readObject');
+    expect(result).toContain('Surface symbol: repo.primitives.readObject');
   });
     });
   });
@@ -397,11 +397,11 @@ describe('formatGapStanza', () => {
     };
 
     // Act
-    const sut = formatGapStanza(gap);
+    const result = formatGapStanza(gap);
 
     // Assert
-    expect(sut).toContain('missing index row for `clone`');
-    expect(sut).toContain('/repo/docs/use/commands/clone.md');
+    expect(result).toContain('missing index row for `clone`');
+    expect(result).toContain('/repo/docs/use/commands/clone.md');
   });
     });
   });
@@ -412,10 +412,10 @@ describe('runCheck against the real repo', () => {
     describe("When runCheck runs", () => {
       it('Then no gaps are reported', () => {
     // Arrange + Act
-    const sut = runCheck(REPO_ROOT);
+    const result = runCheck(REPO_ROOT);
 
     // Assert
-    expect(sut).toEqual([]);
+    expect(result).toEqual([]);
   });
     });
   });
@@ -441,10 +441,10 @@ describe('parseAllowList', () => {
     const raw = JSON.stringify({ commands: ['clone'], primitives: ['readObject'] });
 
     // Act
-    const sut = parseAllowList(raw);
+    const result = parseAllowList(raw);
 
     // Assert
-    expect(sut).toEqual({ commands: ['clone'], primitives: ['readObject'] });
+    expect(result).toEqual({ commands: ['clone'], primitives: ['readObject'] });
   });
     });
   });
@@ -456,10 +456,10 @@ describe('parseAllowList', () => {
     const raw = JSON.stringify({ commands: 'oops', primitives: [] });
 
     // Act
-    const sut = parseAllowList(raw);
+    const result = parseAllowList(raw);
 
     // Assert
-    expect(sut.commands).toEqual([]);
+    expect(result.commands).toEqual([]);
   });
     });
   });
@@ -471,10 +471,10 @@ describe('parseAllowList', () => {
     const raw = JSON.stringify({ commands: ['clone', 42, null, 'add'], primitives: [] });
 
     // Act
-    const sut = parseAllowList(raw);
+    const result = parseAllowList(raw);
 
     // Assert
-    expect(sut.commands).toEqual(['clone', 'add']);
+    expect(result.commands).toEqual(['clone', 'add']);
   });
     });
   });
@@ -486,10 +486,10 @@ describe('parseAllowList', () => {
     const raw = '{ not valid json';
 
     // Act
-    const sut = parseAllowList(raw);
+    const result = parseAllowList(raw);
 
     // Assert
-    expect(sut).toEqual({ commands: [], primitives: [] });
+    expect(result).toEqual({ commands: [], primitives: [] });
   });
     });
   });
@@ -501,10 +501,10 @@ describe('parseAllowList', () => {
     const raw = JSON.stringify(['just', 'an', 'array']);
 
     // Act
-    const sut = parseAllowList(raw);
+    const result = parseAllowList(raw);
 
     // Assert
-    expect(sut).toEqual({ commands: [], primitives: [] });
+    expect(result).toEqual({ commands: [], primitives: [] });
   });
     });
   });
@@ -516,10 +516,10 @@ describe('parseAllowList', () => {
     const raw = 'null';
 
     // Act
-    const sut = parseAllowList(raw);
+    const result = parseAllowList(raw);
 
     // Assert
-    expect(sut).toEqual({ commands: [], primitives: [] });
+    expect(result).toEqual({ commands: [], primitives: [] });
   });
     });
   });
