@@ -29,57 +29,87 @@ All tests in this project **must** follow these conventions.
 
 ### Test Title Format: Given / When / Then
 
-Every test title describes the context, action, and expected outcome:
+Tests are **nested** so the describe tree carries the context and the action, and
+the `it` carries only the expectation:
 
 ```typescript
-it('Given <context>, When <action>, Then <expected result>', () => {
-  // ...
+describe('<module or symbol>', () => {
+  describe('Given <context>', () => {
+    describe('When <action>', () => {
+      it('Then <expected result>', () => {
+        // ...
+      });
+    });
+  });
 });
 ```
 
-Examples:
-- `'Given empty repository, When initializing, Then .git directory is created'`
-- `'Given packed object, When reading by id, Then content matches original'`
-- `'Given two conflicting trees, When merging, Then conflicts are reported'`
+Cluster every test sharing the **same Given and the same When** under one describe
+"zone". The 2-level shortcut `describe('Given <context>, When <action>')` >
+`it('Then <expected>')` is allowed only when a single expectation lives under that
+When. A flat `it('Given …, When …, Then …')` is **not** allowed.
+
+This is enforced by `check:test-pyramid` (the `gwtTitle` heuristic) on **all** test
+tiers — unit, integration, parity, runtime-parity, and perf (see ADR-506).
 
 ### Test Body Format: AAA (Arrange / Act / Assert)
 
-Every test body is structured in three sections with comments:
+Every test body is structured in three sections with comments (all three markers;
+the gate floor is `Arrange` + `Assert`, and a genuinely empty section uses a
+compound marker such as `// Arrange & Act`):
 
 ```typescript
-it('Given empty cart, When adding item, Then cart contains one item', () => {
-  // Arrange
-  const sut = new Cart();
-  const item = createItem('widget');
+describe('Cart', () => {
+  describe('Given an empty cart', () => {
+    describe('When an item is added', () => {
+      it('Then the cart contains one item', () => {
+        // Arrange
+        const sut = new Cart();
+        const item = createItem('widget');
 
-  // Act
-  sut.add(item);
+        // Act
+        sut.add(item);
 
-  // Assert
-  expect(sut.count).toBe(1);
-});
-```
-
-### System Under Test: `sut`
-
-The variable being tested **must** be named `sut` (System Under Test):
-
-```typescript
-it('Given a commit object, When serializing, Then output matches git format', () => {
-  // Arrange
-  const sut = createCommit({
-    tree: treeId,
-    parents: [parentId],
-    message: 'initial',
+        // Assert
+        expect(sut.count).toBe(1);
+      });
+    });
   });
-
-  // Act
-  const result = serializeCommit(sut);
-
-  // Assert
-  expect(result).toEqual(expectedBytes);
 });
 ```
+
+### System Under Test: `sut` / `result`
+
+`sut` names the **unit under test** — never a test input, never the outcome. The
+outcome binds to `result`:
+
+- **Object under test** → `sut` is the object; exercise it and bind the outcome to
+  `result`: `const sut = new NodeHashService('sha256'); const result = sut.digest(bytes)`.
+- **Free function (or `this`-free static factory)** → **drop `sut`**; the callee
+  self-names the unit, so bind the outcome directly to `result`.
+
+```typescript
+describe('serializeCommit', () => {
+  describe('Given a commit object', () => {
+    describe('When serializing', () => {
+      it('Then output matches git format', () => {
+        // Arrange
+        const commit = createCommit({ tree: treeId, parents: [parentId], message: 'initial' });
+
+        // Act
+        const result = serializeCommit(commit);
+
+        // Assert
+        expect(result).toEqual(expectedBytes);
+      });
+    });
+  });
+});
+```
+
+Enforced on all tiers by `sutNaming` (banned aliases `subject`/`objectUnderTest`/…
+are rejected) and `sutBindsResult` (a `const sut = <call>(…)` binding a call *result*
+is flagged — allowlisted object/operator factories aside). See ADR-506.
 
 ### Test Organization
 

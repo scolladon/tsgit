@@ -500,12 +500,12 @@ needs to define hot paths.
   only, or report upstream. Until fixed, the mutation gate under-counts kills,
   so per-file scores must be read with the known false survivors/NoCoverage in
   mind.
-- [ ] **27.6 `sut`/`result` naming sweep.** Legacy unit files (e.g.
+- [x] **27.6 `sut`/`result` naming sweep.** Legacy unit files (e.g.
   `apply-merge-to-worktree.test.ts`, `index-diff.test.ts`) bind the call
   result to `sut`; the convention is `sut` = the unit under test, with the
   outcome in `result`. Mechanical, file-by-file rename — new tests in those
   files currently follow the local (wrong) style for in-file consistency.
-  _(surfaced by 24.9f's review pass.)_
+  _(surfaced by 24.9f's review pass.)_ · ADR 506 · design/test-convention-sweep.md
 
 ADRs required before kick-off:
 - ADR-N: Phase 27 rework rationale + sequencing after Phase 26.
