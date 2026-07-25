@@ -124,86 +124,88 @@ describe.skipIf(SKIP_REASON !== false)(
       await server.close();
     });
 
-    it('Given a v2-negotiating server advertising filter as a fetch sub-feature, When tsgit clones with filter=blob:none, Then it configures the promisor remote, omits filtered blobs, and matches real git own v2 partial clone object set', async () => {
-      // Arrange
-      const url = `http://127.0.0.1:${server.port}/source.git`;
-      const workDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-pc-v2-'));
-      const peerDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-pc-v2-peer-'));
-      dirs.push(workDir, peerDir);
-      const repo = await openRepository({
-        cwd: workDir,
-        allowInsecureHttp: true,
-        config: SSRF_CONFIG,
-      });
+    describe('Given a v2-negotiating server advertising filter as a fetch sub-feature, When tsgit clones with filter=blob:none', () => {
+      it('Then it configures the promisor remote, omits filtered blobs, and matches real git own v2 partial clone object set', async () => {
+        // Arrange
+        const url = `http://127.0.0.1:${server.port}/source.git`;
+        const workDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-pc-v2-'));
+        const peerDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-pc-v2-peer-'));
+        dirs.push(workDir, peerDir);
+        const repo = await openRepository({
+          cwd: workDir,
+          allowInsecureHttp: true,
+          config: SSRF_CONFIG,
+        });
 
-      // Act — clone over v2 with a blob filter; must not throw
-      // REMOTE_FILTER_UNSUPPORTED now that `filter` is surfaced from the
-      // v2 fetch command's sub-features.
-      await repo.clone({ url, filter: 'blob:none', ...CLONE_GUARDS });
+        // Act — clone over v2 with a blob filter; must not throw
+        // REMOTE_FILTER_UNSUPPORTED now that `filter` is surfaced from the
+        // v2 fetch command's sub-features.
+        await repo.clone({ url, filter: 'blob:none', ...CLONE_GUARDS });
 
-      // Assert — config records the promisor remote, the same fields the
-      // v1 leg writes.
-      const config = await readFile(path.join(workDir, '.git', 'config'), 'utf8');
-      expect(config).toContain('partialClone = origin');
-      expect(config).toContain('promisor = true');
-      expect(config).toContain('partialclonefilter = blob:none');
-      const packEntries = await readdir(path.join(workDir, '.git', 'objects', 'pack'));
-      expect(packEntries.some((name) => name.endsWith('.promisor'))).toBe(true);
+        // Assert — config records the promisor remote, the same fields the
+        // v1 leg writes.
+        const config = await readFile(path.join(workDir, '.git', 'config'), 'utf8');
+        expect(config).toContain('partialClone = origin');
+        expect(config).toContain('promisor = true');
+        expect(config).toContain('partialclonefilter = blob:none');
+        const packEntries = await readdir(path.join(workDir, '.git', 'objects', 'pack'));
+        expect(packEntries.some((name) => name.endsWith('.promisor'))).toBe(true);
 
-      // Assert — a blob reachable from HEAD's tree was not downloaded.
-      const headOid = (await repo.primitives.resolveRef('HEAD')) as ObjectId;
-      const head = await repo.primitives.readObject(headOid);
-      if (head.type !== 'commit') throw new Error('expected HEAD to resolve to a commit');
-      let blobId: ObjectId | undefined;
-      for await (const entry of repo.primitives.walkTree((head as Commit).data.tree, {
-        recursive: true,
-      })) {
-        blobId = entry.id;
-        break;
-      }
-      if (blobId === undefined) throw new Error('fixture has no blob entries');
-      // GIT_NO_LAZY_FETCH: a promisor repo makes `cat-file -e` on a missing
-      // object lazily fetch it from the promisor remote — exactly the
-      // transparency partial clone promises interactively, but it would mask
-      // "was this blob actually filtered out?" behind a second network round
-      // trip. Disable it so this checks local presence only.
-      expect(
-        tryRunGit(['-C', workDir, 'cat-file', '-e', blobId], {
-          env: { ...runGitEnv(), GIT_NO_LAZY_FETCH: '1' },
-        }).ok,
-      ).toBe(false);
-      await repo.dispose();
+        // Assert — a blob reachable from HEAD's tree was not downloaded.
+        const headOid = (await repo.primitives.resolveRef('HEAD')) as ObjectId;
+        const head = await repo.primitives.readObject(headOid);
+        if (head.type !== 'commit') throw new Error('expected HEAD to resolve to a commit');
+        let blobId: ObjectId | undefined;
+        for await (const entry of repo.primitives.walkTree((head as Commit).data.tree, {
+          recursive: true,
+        })) {
+          blobId = entry.id;
+          break;
+        }
+        if (blobId === undefined) throw new Error('fixture has no blob entries');
+        // GIT_NO_LAZY_FETCH: a promisor repo makes `cat-file -e` on a missing
+        // object lazily fetch it from the promisor remote — exactly the
+        // transparency partial clone promises interactively, but it would mask
+        // "was this blob actually filtered out?" behind a second network round
+        // trip. Disable it so this checks local presence only.
+        expect(
+          tryRunGit(['-C', workDir, 'cat-file', '-e', blobId], {
+            env: { ...runGitEnv(), GIT_NO_LAZY_FETCH: '1' },
+          }).ok,
+        ).toBe(false);
+        await repo.dispose();
 
-      // Assert — byte-identical to real git: an independent real-git clone
-      // of the same URL, pinned to the same protocol version and filter,
-      // downloads exactly the same object set and lands on the same HEAD.
-      // `--bare` is required for a fair comparison — tsgit's clone never
-      // materializes a working tree, but a non-bare real-git clone would
-      // checkout HEAD and lazily re-fetch the exact blobs the filter just
-      // excluded, which would confound this parity check with an unrelated
-      // real-git checkout behaviour rather than the wire-level object set.
-      // An async spawn is required — a synchronous one would block the
-      // event loop the CGI response depends on, hanging forever.
-      await execFileAsync(
-        'git',
-        [
-          '-C',
-          peerDir,
-          '-c',
-          'protocol.version=2',
-          'clone',
-          '-q',
-          '--bare',
-          '--filter=blob:none',
-          url,
-          '.',
-        ],
-        { env: runGitEnv() },
-      );
-      expect(localObjectSet(workDir)).toEqual(localObjectSet(peerDir));
-      expect(runGit(['-C', workDir, 'rev-parse', 'HEAD']).trim()).toBe(
-        runGit(['-C', peerDir, 'rev-parse', 'HEAD']).trim(),
-      );
-    }, 60_000);
+        // Assert — byte-identical to real git: an independent real-git clone
+        // of the same URL, pinned to the same protocol version and filter,
+        // downloads exactly the same object set and lands on the same HEAD.
+        // `--bare` is required for a fair comparison — tsgit's clone never
+        // materializes a working tree, but a non-bare real-git clone would
+        // checkout HEAD and lazily re-fetch the exact blobs the filter just
+        // excluded, which would confound this parity check with an unrelated
+        // real-git checkout behaviour rather than the wire-level object set.
+        // An async spawn is required — a synchronous one would block the
+        // event loop the CGI response depends on, hanging forever.
+        await execFileAsync(
+          'git',
+          [
+            '-C',
+            peerDir,
+            '-c',
+            'protocol.version=2',
+            'clone',
+            '-q',
+            '--bare',
+            '--filter=blob:none',
+            url,
+            '.',
+          ],
+          { env: runGitEnv() },
+        );
+        expect(localObjectSet(workDir)).toEqual(localObjectSet(peerDir));
+        expect(runGit(['-C', workDir, 'rev-parse', 'HEAD']).trim()).toBe(
+          runGit(['-C', peerDir, 'rev-parse', 'HEAD']).trim(),
+        );
+      }, 60_000);
+    });
   },
 );

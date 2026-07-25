@@ -163,10 +163,10 @@ const runIncrementalFetchScenario = async (forwardGitProtocol: boolean): Promise
 
     // Act — the remote advances past what was cloned.
     const c1 = await commitAndPush(source.seedDir, 'f1.txt', 'C1');
-    const sut = await repo.fetch({ remote: 'origin' });
+    const result = await repo.fetch({ remote: 'origin' });
 
     // Assert — fetch delivers exactly the new commit.
-    const mainUpdate = sut.updatedRefs.find(
+    const mainUpdate = result.updatedRefs.find(
       (r) => r.name === ('refs/remotes/origin/main' as RefName),
     );
     expect(mainUpdate?.oldId).toBe(c0);
@@ -198,12 +198,14 @@ describe.skipIf(SKIP_REASON !== false)(
   () => {
     describe('Given a remote that advances after clone, When tsgit fetches over protocol v2', () => {
       it('Then it delivers exactly the new commit and checks out the tracked branch, matching real git', async () => {
+        // Arrange, Act & Assert — delegated to the shared scenario runner
         await runIncrementalFetchScenario(true);
       }, 60_000);
     });
 
     describe('Given a remote that advances after clone, When tsgit fetches over the corrected v1 fallback', () => {
       it('Then it delivers exactly the new commit, matching real git', async () => {
+        // Arrange, Act & Assert — delegated to the shared scenario runner
         await runIncrementalFetchScenario(false);
       }, 60_000);
     });

@@ -78,44 +78,46 @@ describe.skipIf(SKIP_REASON !== false)('clone — end-to-end against git-http-ba
     await server.close();
   });
 
-  it('Given a local git-http-backend, When clone runs, Then HEAD matches the fixture oid and walkCommits surfaces it', async () => {
-    // Arrange
-    workDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-clone-it-'));
-    const url = `http://127.0.0.1:${server.port}/source.git`;
-    const repo = await openRepository({
-      cwd: workDir,
-      allowInsecureHttp: true,
-      config: {
-        allowInsecure: true,
-        allowPrivateNetworks: true,
-        dnsResolver: async () => ['127.0.0.1'],
-      },
-    });
+  describe('Given a local git-http-backend, When clone runs', () => {
+    it('Then HEAD matches the fixture oid and walkCommits surfaces it', async () => {
+      // Arrange
+      workDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-clone-it-'));
+      const url = `http://127.0.0.1:${server.port}/source.git`;
+      const repo = await openRepository({
+        cwd: workDir,
+        allowInsecureHttp: true,
+        config: {
+          allowInsecure: true,
+          allowPrivateNetworks: true,
+          dnsResolver: async () => ['127.0.0.1'],
+        },
+      });
 
-    // Act — the SSRF policy (allowInsecure / allowPrivateNetworks / dnsResolver)
-    // is configured on openRepository above; clone needs only the url.
-    const result = await repo.clone({ url });
+      // Act — the SSRF policy (allowInsecure / allowPrivateNetworks / dnsResolver)
+      // is configured on openRepository above; clone needs only the url.
+      const result = await repo.clone({ url });
 
-    // Assert — clone result
-    expect(result.head).toBe('refs/heads/main');
-    expect(result.fetchedRefs.length).toBeGreaterThanOrEqual(1);
+      // Assert — clone result
+      expect(result.head).toBe('refs/heads/main');
+      expect(result.fetchedRefs.length).toBeGreaterThanOrEqual(1);
 
-    // Assert — walking HEAD yields every commit in the fixture's chain (newest first)
-    const expectedHead = (await readFile(HEAD_OID_FILE, 'utf8')).trim() as ObjectId;
-    const history = (await readFile(HEAD_HISTORY_FILE, 'utf8'))
-      .trim()
-      .split('\n')
-      .filter((line) => line.length > 0) as ObjectId[];
-    const walker = walkCommits(repo.ctx, { from: [expectedHead] });
-    const seen: ObjectId[] = [];
-    for await (const commit of walker) {
-      seen.push(commit.id);
-    }
-    // Walker yields newest-first; HEAD-history.txt is oldest → newest.
-    expect(seen[0]).toBe(expectedHead);
-    expect(seen.length).toBe(history.length);
-    expect([...seen].reverse()).toEqual(history);
+      // Assert — walking HEAD yields every commit in the fixture's chain (newest first)
+      const expectedHead = (await readFile(HEAD_OID_FILE, 'utf8')).trim() as ObjectId;
+      const history = (await readFile(HEAD_HISTORY_FILE, 'utf8'))
+        .trim()
+        .split('\n')
+        .filter((line) => line.length > 0) as ObjectId[];
+      const walker = walkCommits(repo.ctx, { from: [expectedHead] });
+      const seen: ObjectId[] = [];
+      for await (const commit of walker) {
+        seen.push(commit.id);
+      }
+      // Walker yields newest-first; HEAD-history.txt is oldest → newest.
+      expect(seen[0]).toBe(expectedHead);
+      expect(seen.length).toBe(history.length);
+      expect([...seen].reverse()).toEqual(history);
 
-    await repo.dispose();
-  }, 30_000);
+      await repo.dispose();
+    }, 30_000);
+  });
 });

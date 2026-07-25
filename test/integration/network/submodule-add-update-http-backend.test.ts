@@ -116,63 +116,67 @@ describe.skipIf(SKIP)('submodule add/update — interop over git-http-backend', 
     git(dir, 'commit', '-qm', 'super c1');
   };
 
-  it('Given two superprojects, When add runs (git file:// vs tsgit http), Then the absorbed layout + gitlink match', async () => {
-    // Arrange
-    const gitSuper = path.join(root, 'super-git');
-    const tsSuper = path.join(root, 'super-ts');
-    initSuper(gitSuper);
-    initSuper(tsSuper);
+  describe('Given two superprojects, When add runs (git file:// vs tsgit http)', () => {
+    it('Then the absorbed layout + gitlink match', async () => {
+      // Arrange
+      const gitSuper = path.join(root, 'super-git');
+      const tsSuper = path.join(root, 'super-ts');
+      initSuper(gitSuper);
+      initSuper(tsSuper);
 
-    // Act — git over file://, tsgit over http (same objects either way)
-    git(gitSuper, 'submodule', 'add', `file://${SOURCE_GIT}`, 'lib');
-    const repo = await openSuper(tsSuper);
-    const result = await repo.submodule.add({ url: subUrl, path: 'lib' });
-    await repo.dispose();
+      // Act — git over file://, tsgit over http (same objects either way)
+      git(gitSuper, 'submodule', 'add', `file://${SOURCE_GIT}`, 'lib');
+      const repo = await openSuper(tsSuper);
+      const result = await repo.submodule.add({ url: subUrl, path: 'lib' });
+      await repo.dispose();
 
-    // Assert — transport-independent structure is byte-identical to git
-    expect(result.id).toBe(subHead);
-    expect(gitlinkLine(tsSuper)).toBe(gitlinkLine(gitSuper));
-    expect(moduleWorktree(tsSuper)).toBe(moduleWorktree(gitSuper));
-    expect(await readFile(path.join(tsSuper, 'lib', '.git'), 'utf8')).toBe(
-      await readFile(path.join(gitSuper, 'lib', '.git'), 'utf8'),
-    );
-    // A fixture file was materialised into the submodule worktree, matching git
-    expect(await readFile(path.join(tsSuper, 'lib', 'file-1.txt'), 'utf8')).toBe(
-      await readFile(path.join(gitSuper, 'lib', 'file-1.txt'), 'utf8'),
-    );
-    // `.gitmodules` path line matches (the url line differs by transport, unit-proven)
-    const gm = await readFile(path.join(tsSuper, '.gitmodules'), 'utf8');
-    expect(gm).toContain('[submodule "lib"]\n\tpath = lib\n');
-    expect(gm).toContain(`url = ${subUrl}`);
-  }, 60_000);
+      // Assert — transport-independent structure is byte-identical to git
+      expect(result.id).toBe(subHead);
+      expect(gitlinkLine(tsSuper)).toBe(gitlinkLine(gitSuper));
+      expect(moduleWorktree(tsSuper)).toBe(moduleWorktree(gitSuper));
+      expect(await readFile(path.join(tsSuper, 'lib', '.git'), 'utf8')).toBe(
+        await readFile(path.join(gitSuper, 'lib', '.git'), 'utf8'),
+      );
+      // A fixture file was materialised into the submodule worktree, matching git
+      expect(await readFile(path.join(tsSuper, 'lib', 'file-1.txt'), 'utf8')).toBe(
+        await readFile(path.join(gitSuper, 'lib', 'file-1.txt'), 'utf8'),
+      );
+      // `.gitmodules` path line matches (the url line differs by transport, unit-proven)
+      const gm = await readFile(path.join(tsSuper, '.gitmodules'), 'utf8');
+      expect(gm).toContain('[submodule "lib"]\n\tpath = lib\n');
+      expect(gm).toContain(`url = ${subUrl}`);
+    }, 60_000);
+  });
 
-  it("Given a committed gitlink, When tsgit update --init runs, Then it checks out git's pinned commit", async () => {
-    // Arrange — a super pinning the submodule at `subHead` with an http url, built
-    // without cloning over http (git's http client can't use the test CGI helper).
-    const canon = path.join(root, 'canon');
-    initSuper(canon);
-    await writeFile(
-      path.join(canon, '.gitmodules'),
-      `[submodule "lib"]\n\tpath = lib\n\turl = ${subUrl}\n`,
-    );
-    git(canon, 'add', '.gitmodules');
-    git(canon, 'update-index', '--add', '--cacheinfo', `160000,${subHead},lib`);
-    git(canon, 'commit', '-qm', 'pin lib');
-    const tsClone = path.join(root, 'clone-ts');
-    git(root, 'clone', '-q', canon, tsClone);
+  describe('Given a committed gitlink, When tsgit update --init runs', () => {
+    it("Then it checks out git's pinned commit", async () => {
+      // Arrange — a super pinning the submodule at `subHead` with an http url, built
+      // without cloning over http (git's http client can't use the test CGI helper).
+      const canon = path.join(root, 'canon');
+      initSuper(canon);
+      await writeFile(
+        path.join(canon, '.gitmodules'),
+        `[submodule "lib"]\n\tpath = lib\n\turl = ${subUrl}\n`,
+      );
+      git(canon, 'add', '.gitmodules');
+      git(canon, 'update-index', '--add', '--cacheinfo', `160000,${subHead},lib`);
+      git(canon, 'commit', '-qm', 'pin lib');
+      const tsClone = path.join(root, 'clone-ts');
+      git(root, 'clone', '-q', canon, tsClone);
 
-    // Act — tsgit clones the submodule over http and checks out the pin
-    const repo = await openSuper(tsClone);
-    const result = await repo.submodule.update({ init: true });
-    await repo.dispose();
+      // Act — tsgit clones the submodule over http and checks out the pin
+      const repo = await openSuper(tsClone);
+      const result = await repo.submodule.update({ init: true });
+      await repo.dispose();
 
-    // Assert — detached HEAD at git's pinned oid, materialised worktree
-    expect(result.entries[0]?.id).toBe(subHead);
-    expect(git(tsClone, '-C', 'lib', 'rev-parse', 'HEAD').trim()).toBe(subHead);
-    expect(
-      (await readFile(path.join(tsClone, 'lib', 'file-1.txt'), 'utf8')).length,
-    ).toBeGreaterThan(0);
-    // name `lib` (one segment) ⇒ `.git/modules/lib` is three levels deep.
-    expect(moduleWorktree(tsClone)).toBe('../../../lib');
-  }, 60_000);
+      // Assert — detached HEAD at git's pinned oid, materialised worktree
+      expect(result.entries[0]?.id).toBe(subHead);
+      expect(git(tsClone, '-C', 'lib', 'rev-parse', 'HEAD').trim()).toBe(subHead);
+      expect(
+        (await readFile(path.join(tsClone, 'lib', 'file-1.txt'), 'utf8')).length,
+      ).toBeGreaterThan(0);
+      // name `lib` (one segment) ⇒ `.git/modules/lib` is three levels deep.
+      expect(moduleWorktree(tsClone)).toBe('../../../lib');
+    }, 60_000);
+  });
 });

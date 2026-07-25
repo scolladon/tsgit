@@ -20,23 +20,25 @@ import { describe, expect, it } from 'vitest';
 import { NodeFileSystem } from '../../../src/adapters/node/node-file-system.js';
 
 describe('NodeFileSystem.chmod (POSIX mode bits)', () => {
-  it('Given chmod on a valid contained file, When called, Then the file mode is updated', async () => {
-    // Arrange
-    const tempRoot = await fsPromises.mkdtemp(nodePath.join(os.tmpdir(), 'tsgit-chmod-'));
-    const rootDir = await fsPromises.realpath(tempRoot);
-    const sut = new NodeFileSystem(rootDir);
-    const path = nodePath.join(rootDir, 'perm.bin');
-    await fsPromises.writeFile(path, Buffer.from([1]));
+  describe('Given chmod on a valid contained file, When called', () => {
+    it('Then the file mode is updated', async () => {
+      // Arrange
+      const tempRoot = await fsPromises.mkdtemp(nodePath.join(os.tmpdir(), 'tsgit-chmod-'));
+      const rootDir = await fsPromises.realpath(tempRoot);
+      const sut = new NodeFileSystem(rootDir);
+      const path = nodePath.join(rootDir, 'perm.bin');
+      await fsPromises.writeFile(path, Buffer.from([1]));
 
-    try {
-      // Act
-      await sut.chmod(path, 0o600);
+      try {
+        // Act
+        await sut.chmod(path, 0o600);
 
-      // Assert
-      const stat = await fsPromises.stat(path);
-      expect(stat.mode & 0o777).toBe(0o600);
-    } finally {
-      await fsPromises.rm(rootDir, { recursive: true, force: true });
-    }
+        // Assert
+        const stat = await fsPromises.stat(path);
+        expect(stat.mode & 0o777).toBe(0o600);
+      } finally {
+        await fsPromises.rm(rootDir, { recursive: true, force: true });
+      }
+    });
   });
 });

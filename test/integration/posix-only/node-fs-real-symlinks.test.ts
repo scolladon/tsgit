@@ -45,82 +45,90 @@ describe('NodeFileSystem — real symlink behaviour (POSIX)', () => {
     await env.cleanup();
   });
 
-  it('Given broken in-root symlink leaf, When write, Then throws PERMISSION_DENIED', async () => {
-    // Arrange — broken symlink: realpath returns ENOENT for the leaf, parent
-    // resolves, then lstat sees the link itself and isSymbolicLink() is true.
-    const sut = env.fs;
-    const brokenLink = nodePath.join(env.rootDir, 'broken-link');
-    await fsPromises.symlink(nodePath.join(env.rootDir, 'missing-target'), brokenLink);
+  describe('Given broken in-root symlink leaf, When write', () => {
+    it('Then throws PERMISSION_DENIED', async () => {
+      // Arrange — broken symlink: realpath returns ENOENT for the leaf, parent
+      // resolves, then lstat sees the link itself and isSymbolicLink() is true.
+      const sut = env.fs;
+      const brokenLink = nodePath.join(env.rootDir, 'broken-link');
+      await fsPromises.symlink(nodePath.join(env.rootDir, 'missing-target'), brokenLink);
 
-    // Act
-    let caught: unknown;
-    try {
-      await sut.write(brokenLink, new Uint8Array([9]));
-    } catch (err) {
-      caught = err;
-    }
+      // Act
+      let caught: unknown;
+      try {
+        await sut.write(brokenLink, new Uint8Array([9]));
+      } catch (err) {
+        caught = err;
+      }
 
-    // Assert
-    expect(caught).toBeInstanceOf(TsgitError);
-    expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+    });
   });
 
-  it('Given valid symlink, When readlink, Then returns the target path', async () => {
-    // Arrange
-    const sut = env.fs;
-    const target = nodePath.join(env.rootDir, 'target.txt');
-    const link = nodePath.join(env.rootDir, 'link.txt');
-    await fsPromises.writeFile(target, Buffer.from([1]));
-    await fsPromises.symlink(target, link);
+  describe('Given valid symlink, When readlink', () => {
+    it('Then returns the target path', async () => {
+      // Arrange
+      const sut = env.fs;
+      const target = nodePath.join(env.rootDir, 'target.txt');
+      const link = nodePath.join(env.rootDir, 'link.txt');
+      await fsPromises.writeFile(target, Buffer.from([1]));
+      await fsPromises.symlink(target, link);
 
-    // Act
-    const result = await sut.readlink(link);
+      // Act
+      const result = await sut.readlink(link);
 
-    // Assert
-    expect(result).toBe(target);
+      // Assert
+      expect(result).toBe(target);
+    });
   });
 
-  it('Given symlink leaf, When openWithNoFollow(read), Then throws PERMISSION_DENIED (O_NOFOLLOW)', async () => {
-    // Arrange — POSIX open with O_NOFOLLOW errors with ELOOP on a symlink leaf;
-    // the adapter rewraps that as PERMISSION_DENIED for cross-adapter parity.
-    const sut = env.fs;
-    const target = nodePath.join(env.rootDir, 'target.txt');
-    const link = nodePath.join(env.rootDir, 'follow-link.txt');
-    await fsPromises.writeFile(target, Buffer.from([1]));
-    await fsPromises.symlink(target, link);
+  describe('Given symlink leaf, When openWithNoFollow(read)', () => {
+    it('Then throws PERMISSION_DENIED (O_NOFOLLOW)', async () => {
+      // Arrange — POSIX open with O_NOFOLLOW errors with ELOOP on a symlink leaf;
+      // the adapter rewraps that as PERMISSION_DENIED for cross-adapter parity.
+      const sut = env.fs;
+      const target = nodePath.join(env.rootDir, 'target.txt');
+      const link = nodePath.join(env.rootDir, 'follow-link.txt');
+      await fsPromises.writeFile(target, Buffer.from([1]));
+      await fsPromises.symlink(target, link);
 
-    // Act
-    let caught: unknown;
-    try {
-      await sut.openWithNoFollow(link, 'read');
-    } catch (err) {
-      caught = err;
-    }
+      // Act
+      let caught: unknown;
+      try {
+        await sut.openWithNoFollow(link, 'read');
+      } catch (err) {
+        caught = err;
+      }
 
-    // Assert
-    expect(caught).toBeInstanceOf(TsgitError);
-    expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+    });
   });
 
-  it('Given directory containing a symlink, When rmRecursive, Then symlink is removed but its target is untouched', async () => {
-    // Arrange — without lstat-based descent, fs.rm({recursive,force}) would
-    // walk the link. Plant a target file outside the doomed tree and assert
-    // it survives.
-    const sut = env.fs;
-    const doomed = nodePath.join(env.rootDir, 'doomed');
-    const survivor = nodePath.join(env.rootDir, 'survivor.txt');
-    await fsPromises.mkdir(doomed);
-    await fsPromises.writeFile(survivor, Buffer.from([42]));
-    const link = nodePath.join(doomed, 'link-to-survivor');
-    await fsPromises.symlink(survivor, link);
+  describe('Given directory containing a symlink, When rmRecursive', () => {
+    it('Then symlink is removed but its target is untouched', async () => {
+      // Arrange — without lstat-based descent, fs.rm({recursive,force}) would
+      // walk the link. Plant a target file outside the doomed tree and assert
+      // it survives.
+      const sut = env.fs;
+      const doomed = nodePath.join(env.rootDir, 'doomed');
+      const survivor = nodePath.join(env.rootDir, 'survivor.txt');
+      await fsPromises.mkdir(doomed);
+      await fsPromises.writeFile(survivor, Buffer.from([42]));
+      const link = nodePath.join(doomed, 'link-to-survivor');
+      await fsPromises.symlink(survivor, link);
 
-    // Act
-    await sut.rmRecursive(doomed);
+      // Act
+      await sut.rmRecursive(doomed);
 
-    // Assert
-    expect(await sut.exists(doomed)).toBe(false);
-    expect(await sut.exists(survivor)).toBe(true);
-    const survivorBytes = await sut.read(survivor);
-    expect(survivorBytes).toEqual(new Uint8Array([42]));
+      // Assert
+      expect(await sut.exists(doomed)).toBe(false);
+      expect(await sut.exists(survivor)).toBe(true);
+      const survivorBytes = await sut.read(survivor);
+      expect(survivorBytes).toEqual(new Uint8Array([42]));
+    });
   });
 });

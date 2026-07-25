@@ -181,77 +181,81 @@ describe.skipIf(SKIP_REASON !== false)('pull — end-to-end against git-http-bac
     });
   });
 
-  it('Given a clone whose remote has not moved, When pull, Then fetch + merge compose and report up-to-date', async () => {
-    // Arrange — clone the fixture; clone writes the upstream tracking config
-    // that the no-argument pull resolves.
-    const workDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-pull-it-'));
-    workDirs.push(workDir);
-    const url = `http://127.0.0.1:${port}/source.git`;
-    const repo = await openRepository({
-      cwd: workDir,
-      allowInsecureHttp: true,
-      config: {
-        allowInsecure: true,
-        allowPrivateNetworks: true,
-        dnsResolver: async () => ['127.0.0.1'],
-      },
+  describe('Given a clone whose remote has not moved, When pull', () => {
+    it('Then fetch + merge compose and report up-to-date', async () => {
+      // Arrange — clone the fixture; clone writes the upstream tracking config
+      // that the no-argument pull resolves.
+      const workDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-pull-it-'));
+      workDirs.push(workDir);
+      const url = `http://127.0.0.1:${port}/source.git`;
+      const repo = await openRepository({
+        cwd: workDir,
+        allowInsecureHttp: true,
+        config: {
+          allowInsecure: true,
+          allowPrivateNetworks: true,
+          dnsResolver: async () => ['127.0.0.1'],
+        },
+      });
+      await repo.clone({ url });
+
+      // Act
+      const result = await repo.pull();
+
+      // Assert — fetch ran against the real backend and merge integrated cleanly.
+      expect(result.fetch.remote).toBe('origin');
+      expect(result.fetch.url).toBe(url);
+      expect(result.merge.kind).toBe('up-to-date');
     });
-    await repo.clone({ url });
-
-    // Act
-    const sut = await repo.pull();
-
-    // Assert — fetch ran against the real backend and merge integrated cleanly.
-    expect(sut.fetch.remote).toBe('origin');
-    expect(sut.fetch.url).toBe(url);
-    expect(sut.merge.kind).toBe('up-to-date');
   });
 
-  it('Given a clone whose remote has advanced, When pull, Then fetch + merge compose and fast-forward', async () => {
-    // Arrange — clone the fixture at its current (pre-advance) state.
-    const workDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-pull-ff-it-'));
-    workDirs.push(workDir);
-    const url = `http://127.0.0.1:${port}/source.git`;
-    const repo = await openRepository({
-      cwd: workDir,
-      allowInsecureHttp: true,
-      config: {
-        allowInsecure: true,
-        allowPrivateNetworks: true,
-        dnsResolver: async () => ['127.0.0.1'],
-      },
-    });
-    await repo.clone({ url });
+  describe('Given a clone whose remote has advanced, When pull', () => {
+    it('Then fetch + merge compose and fast-forward', async () => {
+      // Arrange — clone the fixture at its current (pre-advance) state.
+      const workDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-pull-ff-it-'));
+      workDirs.push(workDir);
+      const url = `http://127.0.0.1:${port}/source.git`;
+      const repo = await openRepository({
+        cwd: workDir,
+        allowInsecureHttp: true,
+        config: {
+          allowInsecure: true,
+          allowPrivateNetworks: true,
+          dnsResolver: async () => ['127.0.0.1'],
+        },
+      });
+      await repo.clone({ url });
 
-    // Arrange — advance the served bare copy past what was cloned, via a
-    // real-git worktree pushed straight into it on the local filesystem (no
-    // HTTP involved in the advance itself, only in tsgit's later pull).
-    const seedDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-pull-ff-seed-'));
-    workDirs.push(seedDir);
-    const bareRepoPath = path.join(serverProjectRoot, 'source.git');
-    git(seedDir, 'clone', '-q', bareRepoPath, '.');
-    git(seedDir, 'config', 'user.name', 'Ada');
-    git(seedDir, 'config', 'user.email', 'ada@example.com');
-    await writeFile(path.join(seedDir, 'advance.txt'), 'advance\n');
-    git(seedDir, 'add', 'advance.txt');
-    git(seedDir, '-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'advance');
-    git(seedDir, 'push', '-q', 'origin', 'HEAD:main');
-    const c1 = git(seedDir, 'rev-parse', 'HEAD').trim() as ObjectId;
+      // Arrange — advance the served bare copy past what was cloned, via a
+      // real-git worktree pushed straight into it on the local filesystem (no
+      // HTTP involved in the advance itself, only in tsgit's later pull).
+      const seedDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-pull-ff-seed-'));
+      workDirs.push(seedDir);
+      const bareRepoPath = path.join(serverProjectRoot, 'source.git');
+      git(seedDir, 'clone', '-q', bareRepoPath, '.');
+      git(seedDir, 'config', 'user.name', 'Ada');
+      git(seedDir, 'config', 'user.email', 'ada@example.com');
+      await writeFile(path.join(seedDir, 'advance.txt'), 'advance\n');
+      git(seedDir, 'add', 'advance.txt');
+      git(seedDir, '-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'advance');
+      git(seedDir, 'push', '-q', 'origin', 'HEAD:main');
+      const c1 = git(seedDir, 'rev-parse', 'HEAD').trim() as ObjectId;
 
-    // Act
-    const sut = await repo.pull();
+      // Act
+      const result = await repo.pull();
 
-    // Assert — fetch delivered exactly the new commit and merge
-    // fast-forwarded the local branch onto it (no `pull` code change needed
-    // — it composes over the corrected fetch negotiation as-is).
-    const mainUpdate = sut.fetch.updatedRefs.find(
-      (r) => r.name === ('refs/remotes/origin/main' as RefName),
-    );
-    expect(mainUpdate?.newId).toBe(c1);
-    expect(sut.merge).toEqual({
-      kind: 'fast-forward',
-      id: c1,
-      branch: 'refs/heads/main' as RefName,
+      // Assert — fetch delivered exactly the new commit and merge
+      // fast-forwarded the local branch onto it (no `pull` code change needed
+      // — it composes over the corrected fetch negotiation as-is).
+      const mainUpdate = result.fetch.updatedRefs.find(
+        (r) => r.name === ('refs/remotes/origin/main' as RefName),
+      );
+      expect(mainUpdate?.newId).toBe(c1);
+      expect(result.merge).toEqual({
+        kind: 'fast-forward',
+        id: c1,
+        branch: 'refs/heads/main' as RefName,
+      });
     });
   });
 });
@@ -337,75 +341,77 @@ describe.skipIf(SKIP_REASON !== false)(
       });
     });
 
-    it('Given exactly one non-origin remote configured and no branch.main.remote, When pull runs with no explicit remote, Then it integrates from the same remote real git resolves to', async () => {
-      // Arrange — real-git twin: only "solo" configured, no branch.main.remote.
-      // Real git's `pull` porcelain refuses this exact shape outright — it
-      // requires a full branch.<name>.remote + branch.<name>.merge upstream
-      // pair and never falls back to a sole remote, unlike `fetch` (proven in
-      // fetch-http-backend.test.ts) — so the twin is built from the two
-      // plumbing steps `pull` composes: a real `git fetch` proves which
-      // remote git's shared default-remote resolution would pick (the same
-      // resolution chain `pull`'s fetch step reuses), then a local
-      // `--ff-only` merge of the fetched ref proves the integration outcome.
-      //
-      // `main` is seeded to "solo"'s pre-advance tip (not left unborn) via a
-      // real fetch + local `update-ref` — a merge target must already exist
-      // for a `--ff-only` merge to have something to fast-forward from.
-      const gitDir = await initGitRepo();
-      git(gitDir, 'remote', 'add', 'solo', bareUrl('solo'));
-      await gitAsync(gitDir, 'fetch', '-q');
-      git(gitDir, 'update-ref', 'refs/heads/main', 'refs/remotes/solo/main');
+    describe('Given exactly one non-origin remote configured and no branch.main.remote, When pull runs with no explicit remote', () => {
+      it('Then it integrates from the same remote real git resolves to', async () => {
+        // Arrange — real-git twin: only "solo" configured, no branch.main.remote.
+        // Real git's `pull` porcelain refuses this exact shape outright — it
+        // requires a full branch.<name>.remote + branch.<name>.merge upstream
+        // pair and never falls back to a sole remote, unlike `fetch` (proven in
+        // fetch-http-backend.test.ts) — so the twin is built from the two
+        // plumbing steps `pull` composes: a real `git fetch` proves which
+        // remote git's shared default-remote resolution would pick (the same
+        // resolution chain `pull`'s fetch step reuses), then a local
+        // `--ff-only` merge of the fetched ref proves the integration outcome.
+        //
+        // `main` is seeded to "solo"'s pre-advance tip (not left unborn) via a
+        // real fetch + local `update-ref` — a merge target must already exist
+        // for a `--ff-only` merge to have something to fast-forward from.
+        const gitDir = await initGitRepo();
+        git(gitDir, 'remote', 'add', 'solo', bareUrl('solo'));
+        await gitAsync(gitDir, 'fetch', '-q');
+        git(gitDir, 'update-ref', 'refs/heads/main', 'refs/remotes/solo/main');
 
-      // Arrange — tsgit twin: identical sole-remote + merge tracking config,
-      // seeded to the same pre-advance baseline the same way.
-      const repo = await initTsgitRepo();
-      await appendConfig(
-        repo,
-        [
-          '[remote "solo"]',
-          `  url = ${bareUrl('solo')}`,
-          '  fetch = +refs/heads/*:refs/remotes/solo/*',
-          '[branch "main"]',
-          '  merge = refs/heads/main',
-        ].join('\n'),
-      );
-      await repo.fetch({ remote: 'solo' });
-      runGit([
-        '--git-dir',
-        repo.ctx.layout.gitDir,
-        'update-ref',
-        'refs/heads/main',
-        'refs/remotes/solo/main',
-      ]);
+        // Arrange — tsgit twin: identical sole-remote + merge tracking config,
+        // seeded to the same pre-advance baseline the same way.
+        const repo = await initTsgitRepo();
+        await appendConfig(
+          repo,
+          [
+            '[remote "solo"]',
+            `  url = ${bareUrl('solo')}`,
+            '  fetch = +refs/heads/*:refs/remotes/solo/*',
+            '[branch "main"]',
+            '  merge = refs/heads/main',
+          ].join('\n'),
+        );
+        await repo.fetch({ remote: 'solo' });
+        runGit([
+          '--git-dir',
+          repo.ctx.layout.gitDir,
+          'update-ref',
+          'refs/heads/main',
+          'refs/remotes/solo/main',
+        ]);
 
-      // Arrange — advance "solo" past the seeded baseline so pull has
-      // something real to fast-forward onto (mirrors the ff scenario in the
-      // sibling describe above).
-      const advanceDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-pull-remote-advance-'));
-      workDirs.push(advanceDir);
-      git(advanceDir, 'clone', '-q', path.join(projectRoot, 'solo.git'), '.');
-      git(advanceDir, 'config', 'user.name', 'Ada');
-      git(advanceDir, 'config', 'user.email', 'ada@example.com');
-      await writeFile(path.join(advanceDir, 'advance.txt'), 'advance\n');
-      git(advanceDir, 'add', 'advance.txt');
-      git(advanceDir, '-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'advance');
-      git(advanceDir, 'push', '-q', 'origin', 'HEAD:main');
+        // Arrange — advance "solo" past the seeded baseline so pull has
+        // something real to fast-forward onto (mirrors the ff scenario in the
+        // sibling describe above).
+        const advanceDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-pull-remote-advance-'));
+        workDirs.push(advanceDir);
+        git(advanceDir, 'clone', '-q', path.join(projectRoot, 'solo.git'), '.');
+        git(advanceDir, 'config', 'user.name', 'Ada');
+        git(advanceDir, 'config', 'user.email', 'ada@example.com');
+        await writeFile(path.join(advanceDir, 'advance.txt'), 'advance\n');
+        git(advanceDir, 'add', 'advance.txt');
+        git(advanceDir, '-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'advance');
+        git(advanceDir, 'push', '-q', 'origin', 'HEAD:main');
 
-      // Act (real-git twin) — resolve the sole remote and fast-forward.
-      await gitAsync(gitDir, 'fetch', '-q');
-      git(gitDir, 'merge', '-q', '--ff-only', 'refs/remotes/solo/main');
-      const gitOid = git(gitDir, 'rev-parse', 'HEAD').trim();
+        // Act (real-git twin) — resolve the sole remote and fast-forward.
+        await gitAsync(gitDir, 'fetch', '-q');
+        git(gitDir, 'merge', '-q', '--ff-only', 'refs/remotes/solo/main');
+        const gitOid = git(gitDir, 'rev-parse', 'HEAD').trim();
 
-      // Act (tsgit twin)
-      const sut = await repo.pull();
+        // Act (tsgit twin)
+        const result = await repo.pull();
 
-      // Assert — tsgit fetched from the same remote real git resolved to,
-      // and the merge fast-forwarded onto the same commit.
-      expect(sut.fetch.remote).toBe('solo');
-      expect(sut.merge).toEqual({
-        kind: 'fast-forward',
-        id: gitOid as ObjectId,
-        branch: 'refs/heads/main' as RefName,
+        // Assert — tsgit fetched from the same remote real git resolved to,
+        // and the merge fast-forwarded onto the same commit.
+        expect(result.fetch.remote).toBe('solo');
+        expect(result.merge).toEqual({
+          kind: 'fast-forward',
+          id: gitOid as ObjectId,
+          branch: 'refs/heads/main' as RefName,
+        });
       });
     });
   },

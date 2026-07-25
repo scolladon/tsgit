@@ -77,60 +77,87 @@ describe('NodeHookRunner (POSIX real-process smoke)', () => {
   ];
 
   it.each(skippedCases)('Given $label, When run, Then it resolves skipped', async ({ setup }) => {
+    // Arrange
     await setup();
 
+    // Act
     const result = await new NodeHookRunner().run(request('pre-commit'));
 
+    // Assert
     expect(result).toEqual({ kind: 'skipped' });
   });
 
-  it('Given an executable hook that exits 0, When run, Then it resolves ran with exit code 0', async () => {
-    await writeHook('pre-commit', '#!/bin/sh\nexit 0\n');
+  describe('Given an executable hook that exits 0, When run', () => {
+    it('Then it resolves ran with exit code 0', async () => {
+      // Arrange
+      await writeHook('pre-commit', '#!/bin/sh\nexit 0\n');
 
-    const result = await new NodeHookRunner().run(request('pre-commit'));
+      // Act
+      const result = await new NodeHookRunner().run(request('pre-commit'));
 
-    expect(result).toMatchObject({ kind: 'ran', exitCode: 0 });
+      // Assert
+      expect(result).toMatchObject({ kind: 'ran', exitCode: 0 });
+    });
   });
 
-  it('Given a hook that exits non-zero and writes stderr, When run, Then the exit code and stderr are captured', async () => {
-    await writeHook('pre-commit', '#!/bin/sh\necho oops >&2\nexit 3\n');
+  describe('Given a hook that exits non-zero and writes stderr, When run', () => {
+    it('Then the exit code and stderr are captured', async () => {
+      // Arrange
+      await writeHook('pre-commit', '#!/bin/sh\necho oops >&2\nexit 3\n');
 
-    const result = ran(await new NodeHookRunner().run(request('pre-commit')));
+      // Act
+      const result = ran(await new NodeHookRunner().run(request('pre-commit')));
 
-    expect(result.exitCode).toBe(3);
-    expect(result.stderr).toContain('oops');
+      // Assert
+      expect(result.exitCode).toBe(3);
+      expect(result.stderr).toContain('oops');
+    });
   });
 
-  it('Given a stdin payload, When run, Then the hook receives it on stdin', async () => {
-    // `cat` echoes stdin straight back to stdout.
-    await writeHook('pre-push', '#!/bin/sh\ncat\n');
+  describe('Given a stdin payload, When run', () => {
+    it('Then the hook receives it on stdin', async () => {
+      // Arrange — `cat` echoes stdin straight back to stdout.
+      await writeHook('pre-push', '#!/bin/sh\ncat\n');
 
-    const result = ran(
-      await new NodeHookRunner().run(request('pre-push', { stdin: 'refs-line\n' })),
-    );
+      // Act
+      const result = ran(
+        await new NodeHookRunner().run(request('pre-push', { stdin: 'refs-line\n' })),
+      );
 
-    expect(result.stdout).toBe('refs-line\n');
+      // Assert
+      expect(result.stdout).toBe('refs-line\n');
+    });
   });
 
-  it('Given positional args, When run, Then the hook receives them in order', async () => {
-    await writeHook('commit-msg', '#!/bin/sh\nfor a in "$@"; do echo "$a"; done\n');
+  describe('Given positional args, When run', () => {
+    it('Then the hook receives them in order', async () => {
+      // Arrange
+      await writeHook('commit-msg', '#!/bin/sh\nfor a in "$@"; do echo "$a"; done\n');
 
-    const result = ran(
-      await new NodeHookRunner().run(request('commit-msg', { args: ['one', 'two'] })),
-    );
+      // Act
+      const result = ran(
+        await new NodeHookRunner().run(request('commit-msg', { args: ['one', 'two'] })),
+      );
 
-    expect(result.stdout).toBe('one\ntwo\n');
+      // Assert
+      expect(result.stdout).toBe('one\ntwo\n');
+    });
   });
 
-  it('Given a hook, When run, Then GIT_DIR and GIT_INDEX_FILE are set and cwd is the working tree', async () => {
-    await writeHook(
-      'pre-commit',
-      '#!/bin/sh\necho "$GIT_DIR"\necho "$GIT_INDEX_FILE"\ntouch cwd-marker\n',
-    );
+  describe('Given a hook, When run', () => {
+    it('Then GIT_DIR and GIT_INDEX_FILE are set and cwd is the working tree', async () => {
+      // Arrange
+      await writeHook(
+        'pre-commit',
+        '#!/bin/sh\necho "$GIT_DIR"\necho "$GIT_INDEX_FILE"\ntouch cwd-marker\n',
+      );
 
-    const result = ran(await new NodeHookRunner().run(request('pre-commit')));
+      // Act
+      const result = ran(await new NodeHookRunner().run(request('pre-commit')));
 
-    expect(result.stdout).toBe(`${gitDir}\n${gitDir}/index\n`);
-    await expect(fsPromises.stat(nodePath.join(workDir, 'cwd-marker'))).resolves.toBeDefined();
+      // Assert
+      expect(result.stdout).toBe(`${gitDir}\n${gitDir}/index\n`);
+      await expect(fsPromises.stat(nodePath.join(workDir, 'cwd-marker'))).resolves.toBeDefined();
+    });
   });
 });
