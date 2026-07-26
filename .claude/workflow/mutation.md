@@ -35,11 +35,21 @@ The engine preamble already probed the config and the engine invariants still bi
 
 - Filter survivors/no-coverage to the diff's lines only — pre-existing-line survivors
   are out of scope.
-- **vitest-4 false-survivor caveat** (stryker-js#5928): local Stryker under-reports
-  kills — false survivors AND false NoCoverage. Before writing any kill test:
-  hand-apply the mutant's replacement to the source, run the named unit test file
-  (`npx vitest run <file>`), restore. A FAILING run proves the mutant is already
-  killed — record it as a false survivor, no test needed. Only a genuinely passing
+- **vitest-4 phantom-survivor caveat** (stryker-js#6073, root-caused in
+  docs/spike/stryker-vitest-empty-run-survivors.md): under load the runner
+  occasionally scores a mutant run that executed ZERO of its filtered tests as
+  "survived" (hitCount 0). Any survivor may therefore be a phantom. Before
+  writing any kill test, hand-verify — with three traps to avoid:
+  1. **Apply the mutant's EXACT replacement** from the report (`replacement`
+     field), not a paraphrase: a guard line carries several `→ true` mutants
+     (whole condition + one per operand) and they have different verdicts.
+  2. **Run the full covering set**, not the same-named test file: resolve the
+     report's `coveredBy`/`killedBy` ids — killers often live in sibling files
+     (e.g. `*.characterization.test.ts`).
+  3. **Wrap the run in an external watchdog** (kill vitest after ~75 s): a
+     loop mutant hangs vitest synchronously; test timeouts cannot fire.
+  A FAILING (or watchdog-killed) run proves the mutant is killed — record it as
+  a phantom survivor, no test needed. Only a genuinely passing full-covering-set
   run makes the survivor real. For deeper checks, the sandbox honours
   `__STRYKER_ACTIVE_MUTANT__`.
 - Equivalent mutants: inline `// Stryker disable next-line <mutators>: equivalent — <why>`
