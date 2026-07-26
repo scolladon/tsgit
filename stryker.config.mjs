@@ -38,6 +38,15 @@ export default {
   // mutants with no tests to kill them and the report full of phantom survivors.
   vitest: { configFile: 'vitest.stryker.config.ts', related: false },
   coverageAnalysis: 'perTest',
+  // Without this, the runner passes `bail: 1` to vitest and the first failing
+  // test (a mutant being killed) triggers vitest's run-wide cancellation, which
+  // force-stops workers before their throttled result batch is applied — the
+  // kill evidence is destroyed and the runner scores the result-less run as
+  // "survived". Disabling bail removes the race entirely (verified: the flip
+  // repro becomes deterministic) at the cost of running every covering test
+  // per mutant instead of stopping at the first failure. Remove once the
+  // upstream guard ships.
+  disableBail: true,
   // The Regex mutator emits its variants as literals inline beside the original,
   // so all of them are parsed when the module loads. It generates case-flipped
   // escapes, and `\V` is invalid under the `u` flag: one such variant makes the
