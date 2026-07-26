@@ -63,7 +63,7 @@ const cellCost = (
   // Cells reaching this guard have `exactOldI !== j`; `<= 0` differs from `< 0` only at an
   // index-0 exact match, which pins column/row 0 to its exact partner (any other filler
   // costs COST_MAX), so the newly-finite forbidden re-pair is never chosen by the assignment.
-  // Stryker disable next-line EqualityOperator: equivalent — an index-0 exact match pins its partner to column/row 0, so widening `< 0` to `<= 0` only makes an already-forbidden re-pair finite; using it would force a COST_MAX elsewhere, leaving the min-cost matching unchanged.
+  // Stryker disable next-line EqualityOperator,ConditionalExpression: equivalent — an index-0 exact match pins its partner to column/row 0, so widening `< 0` to `<= 0` only makes an already-forbidden re-pair finite; forcing either operand true likewise only adds finite edges for a patch whose exact partner is pinned (the partner's other cells fail its own `< 0` operand and its dummy filler costs COST_MAX), so the min-cost matching never uses any newly-finite edge and the result is unchanged.
   if (exactOldI < 0 && exactNewJ < 0) return diffSize(oldPatch.diff, newPatch.diff);
   return COST_MAX;
 };
@@ -115,6 +115,7 @@ export const correspond = (
   const { columnToRow } = computeAssignment(total, cost);
   for (let i = 0; i < n; i++) {
     const j = columnToRow[i]!;
+    // Stryker disable next-line ConditionalExpression: equivalent — computeAssignment returns a complete assignment (its augmenting phase assigns every column a row in [0, total)), so `j >= 0` always holds and forcing that operand true cannot change behaviour; the `j < m` operand and the whole guard remain exercised by this line's EqualityOperator and LogicalOperator mutants, which tests kill.
     if (j >= 0 && j < m) {
       oldMatching[i] = j;
       newMatching[j] = i;

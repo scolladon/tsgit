@@ -479,27 +479,21 @@ needs to define hot paths.
   small / medium / large fixtures; non-hot paths keep medium only.
   Bench gating only on hot paths. · ADRs 501–505 ·
   design/bench-hot-path-rework.md
-- [ ] **27.5 Mutation runner — Stryker × vitest-4 test/mutant mis-pairing.**
-  Stryker 9.6.1's vitest-runner with vitest 4.1.8 (both latest) under-reports
-  killed mutants: for some source files it runs a *subset* of the covering
-  tests (false survivors) and for others finds *no* related tests at all
-  (false `NoCoverage`). Surfaced during 23.6's mutation grind — e.g.
-  `correspond.test.ts`'s pure-deletion test demonstrably kills the
-  `if (j >= 0 && j < m)` → `true` mutant (proven by activating it via
-  `__STRYKER_ACTIVE_MUTANT__` in the sandbox: baseline passes, mutant active
-  fails), yet Stryker reports it surviving under **every** config permutation
-  tried (`coverageAnalysis` perTest/all/off, `vitest.related` on/off, the
-  `projects` config vs a dedicated flat config, `ignoreStatic` on/off,
-  `mutantActivation` runtime/static, with/without `dir`, caches cleared) —
-  *including* `off` mode, which is supposed to run all tests per mutant.
-  `patch-text.test.ts` and the `range-diff` command test show the same as
-  all-`NoCoverage`. Not config-fixable and no newer versions exist. Options to
-  investigate: pin the Stryker vitest config to `pool: 'threads'`/`'vmThreads'`
-  (vitest 4 defaults to `forks`, whose process isolation may starve Stryker's
-  coverage/activation hooks), evaluate a vitest-3 line for the mutation job
-  only, or report upstream. Until fixed, the mutation gate under-counts kills,
-  so per-file scores must be read with the known false survivors/NoCoverage in
-  mind.
+- [x] **27.5 Mutation runner — Stryker × vitest-4 test/mutant mis-pairing.**
+  Root-caused: the vitest-runner scores a mutant run that executed **zero** of
+  its filtered tests as *survived* — under load, vitest 4 occasionally
+  completes a run with the tasks collected but never executed
+  (timing-dependent, clustered after bail-aborted runs), and the runner's
+  `.filter((test) => test.result)` misreads the wholly-unexecuted run as "all
+  bail-skipped". Verdicts on the files named here verified correct on vitest
+  4.1.10 (the historic "proven false survivor" was a mutant-identity mixup —
+  three `→ true` mutants share one guard line; the two genuine survivors are
+  documented equivalent). Not config-fixable (pool, `coverageAnalysis`,
+  `related`, `ignoreStatic` all refuted by experiment); a retry-guard fix in
+  the runner eliminates the phantom survivors (verified 5/5 on the published
+  repro) and is upstream PR material (stryker-js#6073). Local mitigation until
+  it lands: the triage procedure in `.claude/workflow/mutation.md`.
+  · ADR-507 · spike/stryker-vitest-empty-run-survivors.md
 - [x] **27.6 `sut`/`result` naming sweep.** Legacy unit files (e.g.
   `apply-merge-to-worktree.test.ts`, `index-diff.test.ts`) bind the call
   result to `sut`; the convention is `sut` = the unit under test, with the
