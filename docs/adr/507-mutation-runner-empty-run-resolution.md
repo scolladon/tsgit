@@ -1,6 +1,8 @@
 # 507 — Mutation-runner phantom survivors: no local config change; equivalence proofs + upstream fix
 
-- **Status:** accepted (user judgment — scope and contribution posture chosen directly)
+- **Status:** accepted (user judgment — scope and contribution posture chosen directly);
+  decision 1 ("no tsgit config change — none helps") superseded by ADR-508 after the
+  bail root cause was pinned
 - **Date:** 2026-07-26
 - **Design:** docs/spike/stryker-vitest-empty-run-survivors.md · **Refines/Supersedes:**
   none (closes backlog 27.5; complements the mutation-triage procedure in
