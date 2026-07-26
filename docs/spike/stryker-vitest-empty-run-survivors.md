@@ -95,3 +95,33 @@ That conflation is the defect that turns a lost run into a wrong verdict.
    maintainer sees the mechanism even before the PR.
 3. **vitest issue** — only once the sandbox-interior experiment yields a
    vitest-only repro; otherwise the claim isn't actionable for them.
+
+## Addendum (same day) — trigger pinned: bail cancellation racing the result flush
+
+Probes inside vitest's main chunk (`executeTests`, `cancelCurrentRun`, the
+worker→main `onCancel` RPC, `state.cancelFiles`) closed the remaining gap.
+The lost runs are **not** an external scheduler fault: they are the run's own
+`bail: 1` (which the runner always passes to vitest unless `disableBail`).
+
+Sequence, observed in 13/13 empty verdicts: a covering test fails (the mutant
+is being killed) → the worker immediately fires `rpc().onCancel("test-failure")`
+while the failing result is still in vitest's **throttled task-update batch** →
+main handles the cancel first → `pool.cancel()` force-stops the workers before
+the batch is applied (the kill evidence is destroyed) → `state.cancelFiles`
+registers the files as bare result-less tasks → the run resolves as complete →
+the runner scores "survived". **The phantom survivors were mutants being
+killed.** Whether the batch beats the force-stop is a main-event-loop timing
+race — which is why an idle isolation loop can never lose it (the batch always
+lands first) and only a loaded Stryker main process can.
+
+Two more corrections to the sections above:
+
+- "Not config-fixable" holds only for the levers enumerated there.
+  **`disableBail: true` removes the trigger entirely** — verified 5/5
+  deterministic reports on the repro (cost: all covering tests run per mutant,
+  ≈1.5× slower; loop mutants shift Killed→Timeout, both detected). Adopted in
+  `stryker.config.mjs` per ADR-508.
+- The "zero `ctx.onCancel` events" observation in experiment 13 was a probe
+  artifact: vitest **clears `_onCancelListeners` at every run start**, so a
+  listener registered once at init logs nothing from the second run on.
+  Cancels flow on every bail-kill.

@@ -488,12 +488,13 @@ needs to define hot paths.
   bail-skipped". Verdicts on the files named here verified correct on vitest
   4.1.10 (the historic "proven false survivor" was a mutant-identity mixup —
   three `→ true` mutants share one guard line; the two genuine survivors are
-  documented equivalent). Not config-fixable (pool, `coverageAnalysis`,
-  `related`, `ignoreStatic` all refuted by experiment); a retry-guard fix in
-  the runner eliminates the phantom survivors (verified 5/5 on the published
-  repro) and is upstream PR material (stryker-js#6073). Local mitigation until
-  it lands: the triage procedure in `.claude/workflow/mutation.md`.
-  · ADR-507 · spike/stryker-vitest-empty-run-survivors.md
+  documented equivalent). Trigger later pinned: **bail's own cancellation**
+  racing the throttled result flush — the phantom survivors were mutants being
+  killed, their kill evidence destroyed by the force-stop. `disableBail: true`
+  removes the race and is adopted locally; the retry-guard fix upstream
+  (stryker-js#6073 / #6146) remains defense-in-depth. The 507-era levers
+  (pool, `coverageAnalysis`, `related`, `ignoreStatic`) are all refuted.
+  · ADRs 507–508 · spike/stryker-vitest-empty-run-survivors.md
 - [x] **27.6 `sut`/`result` naming sweep.** Legacy unit files (e.g.
   `apply-merge-to-worktree.test.ts`, `index-diff.test.ts`) bind the call
   result to `sut`; the convention is `sut` = the unit under test, with the

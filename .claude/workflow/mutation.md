@@ -36,9 +36,12 @@ The engine preamble already probed the config and the engine invariants still bi
 - Filter survivors/no-coverage to the diff's lines only — pre-existing-line survivors
   are out of scope.
 - **vitest-4 phantom-survivor caveat** (stryker-js#6073, root-caused in
-  docs/spike/stryker-vitest-empty-run-survivors.md): under load the runner
-  occasionally scores a mutant run that executed ZERO of its filtered tests as
-  "survived" (hitCount 0). Any survivor may therefore be a phantom. Before
+  docs/spike/stryker-vitest-empty-run-survivors.md): with `bail` enabled the
+  runner occasionally scores a mutant run that executed ZERO of its filtered
+  tests as "survived" (hitCount 0) — bail's cancellation destroys the kill
+  evidence. `stryker.config.mjs` now sets `disableBail: true`, which removes
+  the race; phantoms should no longer occur locally. Until a full sweep
+  confirms, any survivor may still be a phantom. Before
   writing any kill test, hand-verify — with three traps to avoid:
   1. **Apply the mutant's EXACT replacement** from the report (`replacement`
      field), not a paraphrase: a guard line carries several `→ true` mutants
