@@ -278,6 +278,42 @@ describe('isEntryStatClean', () => {
     });
   });
 
+  describe('Given an entry whose recorded second equals the index mtime second but whose nanosecond strictly precedes it', () => {
+    describe('When checked against a matching stat', () => {
+      it('Then it is clean (not racy: the second-equal fallthrough compares nanoseconds, not the whole-second boundary)', () => {
+        // Arrange
+        const indexMtime: IndexMtime = {
+          seconds: BASE_ENTRY.mtimeSeconds,
+          nanoseconds: BASE_ENTRY.mtimeNanoseconds + 1,
+        };
+
+        // Act
+        const result = isEntryStatClean(BASE_ENTRY, BASE_STAT, indexMtime);
+
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+  });
+
+  describe('Given an entry whose recorded second is strictly newer than the index mtime second, with a nanosecond value that would read as non-racy on its own', () => {
+    describe('When checked against a matching stat', () => {
+      it('Then it is not clean (the strictly-newer-second short-circuit fires before nanoseconds are ever compared)', () => {
+        // Arrange
+        const indexMtime: IndexMtime = {
+          seconds: BASE_ENTRY.mtimeSeconds - 1,
+          nanoseconds: BASE_ENTRY.mtimeNanoseconds + 1,
+        };
+
+        // Act
+        const result = isEntryStatClean(BASE_ENTRY, BASE_STAT, indexMtime);
+
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+  });
+
   describe('Given a stat whose size differs from the entry (within 32 bits), isolated', () => {
     describe('When checked', () => {
       it('Then it is not clean', () => {

@@ -5,7 +5,11 @@ import {
   type PackOffsetTable,
 } from '../../../../src/application/primitives/pack-registry.js';
 import { REASON_PACK_IDX_EXCEEDS_MAX } from '../../../../src/application/primitives/validators.js';
-import { type TsgitError, unsupportedOperation } from '../../../../src/domain/error.js';
+import {
+  permissionDenied,
+  type TsgitError,
+  unsupportedOperation,
+} from '../../../../src/domain/error.js';
 import type { ObjectId } from '../../../../src/domain/objects/index.js';
 import type { DirEntry, FileStat } from '../../../../src/ports/file-system.js';
 import { buildSeededContext } from './fixtures.js';
@@ -550,6 +554,49 @@ describe('RegisteredPack.readSlice — persistent handle (A4)', () => {
   });
 });
 
+describe('RegisteredPack.readSlice — non-UNSUPPORTED_OPERATION failure', () => {
+  describe('Given a persistent handle whose read rejects with a non-UNSUPPORTED_OPERATION error (permission denied)', () => {
+    describe('When readSlice is called', () => {
+      it('Then the error propagates instead of silently falling back to the per-call read', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const content = new TextEncoder().encode('propagate-content');
+        await writeSyntheticPack(ctx, 'propagate-pack', [{ kind: 'base', type: 'blob', content }]);
+        const wrapped = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            openWithNoFollow: async (path: string, mode: 'read' | 'write') => {
+              const handle = await ctx.fs.openWithNoFollow(path, mode);
+              return {
+                ...handle,
+                read: async () => {
+                  throw permissionDenied(path);
+                },
+              };
+            },
+          },
+        };
+        const registry = createPackRegistry(wrapped);
+        const pack = (await registry.all())[0]!;
+
+        // Act
+        let caught: unknown;
+        try {
+          await pack.readSlice(0, 4);
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        const data = (caught as { data?: { code?: string } }).data;
+        expect(data?.code).toBe('PERMISSION_DENIED');
+      });
+    });
+  });
+});
+
 describe('RegisteredPack retired reads', () => {
   describe('Given a pack whose persistent handle was closed', () => {
     describe('When readSlice is called after close', () => {
@@ -742,6 +789,49 @@ describe('PackRegistry.dispose', () => {
 
         // Assert
         expect(closeCalls).toBe(2);
+      });
+    });
+  });
+
+  describe('Given a pack whose close() rejects', () => {
+    describe('When dispose is called', () => {
+      it('Then rethrows the rejection reason', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'dispose-fail', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('f') },
+        ]);
+        const failure = permissionDenied('/fake/pack/path');
+        const wrapped = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            openWithNoFollow: async (path: string, mode: 'read' | 'write') => {
+              const handle = await ctx.fs.openWithNoFollow(path, mode);
+              return {
+                ...handle,
+                close: async () => {
+                  throw failure;
+                },
+              };
+            },
+          },
+        };
+        const registry = createPackRegistry(wrapped);
+        const pack = (await registry.all())[0]!;
+        await pack.readSlice(0, 4);
+
+        // Act
+        let caught: unknown;
+        try {
+          await registry.dispose();
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBe(failure);
       });
     });
   });

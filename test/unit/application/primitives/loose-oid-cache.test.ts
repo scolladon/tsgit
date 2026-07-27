@@ -4,6 +4,7 @@ import {
   invalidateLooseOid,
   probeLooseOid,
 } from '../../../../src/application/primitives/internal/loose-oid-cache.js';
+import { fileNotFound, permissionDenied, TsgitError } from '../../../../src/domain/error.js';
 import type { ObjectId } from '../../../../src/domain/objects/index.js';
 
 const looseFilePath = (ctx: { layout: { gitDir: string } }, id: ObjectId): string =>
@@ -119,6 +120,63 @@ describe('loose-oid-cache', () => {
         // Assert
         expect(hitOnA).toBe(true);
         expect(missOnB).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a fanout readdir that throws a non-missing error (permission denied)', () => {
+    describe('When probeLooseOid is called', () => {
+      it('Then the error propagates instead of being swallowed as an empty set', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const wrapped = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            readdir: async (path: string) => {
+              throw permissionDenied(path);
+            },
+          },
+        };
+        const id = 'aa'.repeat(20) as ObjectId;
+
+        // Act
+        let caught: unknown;
+        try {
+          await probeLooseOid(wrapped, id);
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+      });
+    });
+  });
+
+  describe('Given a fanout readdir that throws FILE_NOT_FOUND specifically (not NOT_A_DIRECTORY)', () => {
+    describe('When probeLooseOid is called', () => {
+      it('Then it resolves false without throwing (treated the same as a missing dir)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const wrapped = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            readdir: async (path: string) => {
+              throw fileNotFound(path);
+            },
+          },
+        };
+        const id = 'bb'.repeat(20) as ObjectId;
+
+        // Act
+        const result = await probeLooseOid(wrapped, id);
+
+        // Assert
+        expect(result).toBe(false);
       });
     });
   });

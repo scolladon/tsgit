@@ -137,6 +137,7 @@ async function loadPack(ctx: Context, dir: string, entryName: string): Promise<R
       if (!isUnsupportedOperation(err)) throw err;
       handlePromise = undefined;
       return ctx.fs.readSlice(packPath, offset, length);
+      // Stryker disable next-line BlockStatement: equivalent — inFlight's only reader is close()'s `Promise.allSettled(inFlight)`, which settles identically whether or not already-settled entries remain (an already-settled promise adds no wait and its outcome is discarded), so dropping this deletion cannot change any observable return value or thrown error — only when the settled reference becomes eligible for GC.
     } finally {
       inFlight.delete(read);
     }
