@@ -877,6 +877,30 @@ describe('walkCommits', () => {
       });
     });
 
+    describe('Given a graph covering a 3-chain whose middle commit object was removed', () => {
+      describe('When walkCommits is called from the tip with ignoreMissing', () => {
+        it('Then the missing commit and its ancestors are not walked (stale header parents ignored)', async () => {
+          // Arrange — the graph still names B and its parent A, but B's body
+          // is gone; a header-driven early enqueue must not admit A
+          const ctx = await buildSeededContext();
+          const ids = await linearChain(ctx, 3);
+          await writeCommitGraph(ctx, [await asCommits(ctx, ids)]);
+          const missingId = ids[1]!;
+          const { computeLooseObjectPath } = await import(
+            '../../../../src/domain/storage/loose-path.js'
+          );
+          await ctx.fs.rm(`${ctx.layout.gitDir}/objects/${computeLooseObjectPath(missingId)}`);
+
+          // Act
+          const result = await collect(walkCommits(ctx, { from: [ids[2]!], ignoreMissing: true }));
+
+          // Assert — only the tip is yielded; neither the missing commit nor
+          // its graph-known ancestor enters the walk
+          expect(result.map((commit) => commit.id)).toEqual([ids[2]!]);
+        });
+      });
+    });
+
     describe('Given a chain/split graph whose most-recent layer file was deleted', () => {
       describe('When walkCommits is called', () => {
         it('Then it falls back to object reads and yields the correct result', async () => {

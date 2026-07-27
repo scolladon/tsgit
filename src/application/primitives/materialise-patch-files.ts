@@ -32,6 +32,13 @@ export interface MaterialisePatchFilesOptions {
    * range-diff inner diffs) must leave this unset.
    */
   readonly applyTextconv?: boolean;
+  /**
+   * Reuse an already-built attribute provider instead of building a fresh
+   * one — callers that resolve attributes themselves (the whitespace drop
+   * pass) thread theirs through so a K-change pass builds one provider, not
+   * K+1. Ignored unless `applyTextconv` is `true`.
+   */
+  readonly getProvider?: () => Promise<AttributeProvider>;
 }
 
 function synthesizeGitlink(oid: ObjectId): Uint8Array {
@@ -341,7 +348,8 @@ export async function materialisePatchFiles(
     options?.applyTextconv === true
       ? {
           runner: ctx.command,
-          getProvider: () => (providerPromise ??= buildAttributeProvider(ctx)),
+          getProvider:
+            options.getProvider ?? (() => (providerPromise ??= buildAttributeProvider(ctx))),
         }
       : undefined;
 

@@ -222,8 +222,9 @@ async function materialisedShouldDrop(
   change: DiffChange,
   lineKey: LineKey,
   ignoreBlankLines: boolean,
+  getProvider: () => Promise<AttributeProvider>,
 ): Promise<boolean> {
-  const files = await materialisePatchFiles(ctx, [change], { applyTextconv: true });
+  const files = await materialisePatchFiles(ctx, [change], { applyTextconv: true, getProvider });
   const file = files[0];
   if (file === undefined) return false;
   const stats = computeStatFields(
@@ -258,7 +259,7 @@ async function changeShouldDrop(
   if (isDirectoryModeChange(change)) return true;
   if (change.type !== 'modify') return false;
   if (await hasDiffAttribute(change, getProvider)) {
-    return materialisedShouldDrop(ctx, change, lineKey, ignoreBlankLines);
+    return materialisedShouldDrop(ctx, change, lineKey, ignoreBlankLines, getProvider);
   }
   return isWhitespaceOnlyModify(ctx, change, lineKey, ignoreBlankLines);
 }

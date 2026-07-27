@@ -764,6 +764,43 @@ describe('object-resolver', () => {
       });
     });
 
+    describe('Given a cached membership hit whose loose file was pruned out-of-band', () => {
+      describe('When resolveObject is called again for the pruned id', () => {
+        it('Then it degrades to a miss (OBJECT_NOT_FOUND), never a raw FILE_NOT_FOUND', async () => {
+          // Arrange — read once so the fanout set caches the object, then
+          // remove the file underneath the cache (an external `git gc` prune)
+          const blob: Blob = {
+            type: 'blob',
+            content: new TextEncoder().encode('pruned-under-cache'),
+            id: '' as ObjectId,
+          };
+          const ctx = await buildSeededContext({ objects: [blob] });
+          const { serializeObject } = await import('../../../../src/domain/objects/index.js');
+          const id = (await ctx.hash.hashHex(serializeObject(blob, ctx.hashConfig))) as ObjectId;
+          const registry = createPackRegistry(ctx);
+          await resolveObject(ctx, registry, id, true);
+          const { computeLooseObjectPath } = await import(
+            '../../../../src/domain/storage/loose-path.js'
+          );
+          await ctx.fs.rm(`${ctx.layout.gitDir}/objects/${computeLooseObjectPath(id)}`);
+
+          // Act
+          try {
+            await resolveObject(ctx, registry, id, true);
+            // Assert
+            expect.unreachable();
+          } catch (error) {
+            const data = (error as TsgitError).data;
+            expect(data.code).toBe('OBJECT_NOT_FOUND');
+            if (data.code !== 'OBJECT_NOT_FOUND') {
+              expect.fail(`expected OBJECT_NOT_FOUND, got ${data.code}`);
+            }
+            expect(data.id).toBe(id);
+          }
+        });
+      });
+    });
+
     describe('Given a seeded loose blob (membership hit)', () => {
       describe('When resolveObject resolves it', () => {
         it('Then the loose file is read via ctx.fs.read', async () => {

@@ -69,3 +69,12 @@ export async function probeLooseOid(ctx: Context, id: ObjectId): Promise<boolean
 export function invalidateLooseOid(ctx: Context, id: ObjectId): void {
   fanoutCache.get(ctx)?.get(prefixOf(id))?.add(suffixOf(id));
 }
+
+/**
+ * Drop the cached set for `id`'s prefix entirely. Called when a cached HIT
+ * turns out stale (the file vanished under us — an external pruner such as
+ * `git gc` removed it), so the next probe re-reads the directory.
+ */
+export function forgetLooseOidPrefix(ctx: Context, id: ObjectId): void {
+  fanoutCache.get(ctx)?.delete(prefixOf(id));
+}

@@ -108,7 +108,7 @@ export async function* walkCommits(
     if (ctx.signal?.aborted) throw operationAborted();
     // Caller guards `queue.length > 0`, so shift is guaranteed to return a value.
     const id = state.queue.shift() as ObjectId;
-    if (state.visited.has(id) || state.until.has(id)) continue;
+    if (state.visited.has(id) || state.missing.has(id) || state.until.has(id)) continue;
 
     const { commit, enqueuedFromHeader } = await resolveFrontierEntry(ctx, session, id);
     if (commit === undefined) continue;

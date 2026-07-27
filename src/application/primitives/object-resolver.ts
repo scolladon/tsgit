@@ -2,7 +2,7 @@
  * Internal object resolver — loose-first-then-pack, iterative delta walker.
  * Consumed only by readObject.
  */
-import { operationAborted } from '../../domain/error.js';
+import { operationAborted, TsgitError } from '../../domain/error.js';
 import { objectHashMismatch, objectNotFound, objectTooLarge } from '../../domain/objects/error.js';
 import {
   EMPTY_TREE_OID,
@@ -25,7 +25,7 @@ import {
   readDeltaTargetSize,
 } from '../../domain/storage/index.js';
 import type { Context } from '../../ports/context.js';
-import { probeLooseOid } from './internal/loose-oid-cache.js';
+import { forgetLooseOidPrefix, probeLooseOid } from './internal/loose-oid-cache.js';
 import { nextOffsetForEntry, type PackLookupHit, type PackRegistry } from './pack-registry.js';
 import { commonGitDir, looseObjectPath } from './path-layout.js';
 
@@ -175,10 +175,29 @@ function checkAborted(ctx: Context): void {
 }
 
 async function tryLoose(ctx: Context, id: ObjectId): Promise<Uint8Array | undefined> {
+  const compressed = await readLooseCompressed(ctx, id);
+  if (compressed === undefined) return undefined;
+  return ctx.compressor.inflate(compressed);
+}
+
+/**
+ * Membership-gated loose read. A cached HIT whose file has vanished (an
+ * external pruner — `git gc` — removed it between the readdir and this
+ * read) is git-faithfully a MISS: drop the stale set and fall through to
+ * the pack, exactly as git's loose-open ENOENT does.
+ */
+async function readLooseCompressed(ctx: Context, id: ObjectId): Promise<Uint8Array | undefined> {
   if (!(await probeLooseOid(ctx, id))) return undefined;
   const path = looseObjectPath(commonGitDir(ctx), id);
-  const compressed = await ctx.fs.read(path);
-  return ctx.compressor.inflate(compressed);
+  try {
+    return await ctx.fs.read(path);
+  } catch (error) {
+    if (error instanceof TsgitError && error.data.code === 'FILE_NOT_FOUND') {
+      forgetLooseOidPrefix(ctx, id);
+      return undefined;
+    }
+    throw error;
+  }
 }
 
 /**
@@ -190,9 +209,7 @@ export async function looseCompressedBytes(
   ctx: Context,
   id: ObjectId,
 ): Promise<Uint8Array | undefined> {
-  if (!(await probeLooseOid(ctx, id))) return undefined;
-  const path = looseObjectPath(commonGitDir(ctx), id);
-  return ctx.fs.read(path);
+  return readLooseCompressed(ctx, id);
 }
 
 async function finalize(

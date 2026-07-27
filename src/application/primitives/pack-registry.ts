@@ -112,27 +112,44 @@ async function loadPack(ctx: Context, dir: string, entryName: string): Promise<R
   // (browser OPFS), so `close()` never has to unwind a rejected memo and every
   // `readSlice` call after that point falls back cleanly.
   let handlePromise: Promise<FileHandle> | undefined;
+  // `refresh()` closes outgoing packs while sibling reads may still be
+  // mid-slice on this instance: in-flight reads are tracked so `close()`
+  // drains them first, and a read arriving after `close()` falls back to the
+  // per-call path instead of re-opening a handle nothing would ever close.
+  const inFlight = new Set<Promise<unknown>>();
+  let retired = false;
 
   const readSlice = async (offset: number, length: number): Promise<Uint8Array> => {
+    if (retired) return ctx.fs.readSlice(packPath, offset, length);
     if (handlePromise === undefined) {
       handlePromise = ctx.fs.openWithNoFollow(packPath, 'read');
     }
-    try {
+    const read = (async (): Promise<Uint8Array> => {
       const handle = await handlePromise;
       const buffer = new Uint8Array(length);
       const bytesRead = await handle.read(buffer, 0, length, offset);
       return buffer.subarray(0, bytesRead);
+    })();
+    inFlight.add(read);
+    try {
+      return await read;
     } catch (err) {
       if (!isUnsupportedOperation(err)) throw err;
       handlePromise = undefined;
       return ctx.fs.readSlice(packPath, offset, length);
+    } finally {
+      inFlight.delete(read);
     }
   };
 
   const close = async (): Promise<void> => {
+    retired = true;
     const pending = handlePromise;
     if (pending === undefined) return;
     handlePromise = undefined;
+    // Let sibling reads that already hold the handle finish before closing
+    // it under them (their own rejections surface to their callers).
+    await Promise.allSettled(inFlight);
     const handle = await pending;
     await handle.close();
   };
