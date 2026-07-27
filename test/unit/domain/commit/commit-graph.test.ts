@@ -295,6 +295,30 @@ describe('commit-graph', () => {
       });
     });
 
+    describe('Given three oids sharing one fanout bucket', () => {
+      describe('When calling positionOf for the smallest of them', () => {
+        it('Then the binary search narrows past a greater probe and resolves index 0', () => {
+          // Arrange — same first byte 0xaa, so the fanout range spans all
+          // three and the first midpoint probe (aa02…) is GREATER than the
+          // target (aa01…), exercising the upper-bound narrowing
+          const model: CommitGraphLayerModel = {
+            hashVersion: 1,
+            numBaseGraphs: 0,
+            baseGraphHashes: [],
+            includeGenerationData: false,
+            commits: [commit('aa01', []), commit('aa02', []), commit('aa03', [])],
+          };
+          const layer = parseCommitGraphLayer(buildCommitGraphBytes(model));
+
+          // Act
+          const result = positionOf(layer, oid('aa01'));
+
+          // Assert
+          expect(result).toBe(0);
+        });
+      });
+    });
+
     describe('Given an oid not present in the layer', () => {
       describe('When calling positionOf', () => {
         it('Then returns undefined', () => {
