@@ -225,14 +225,18 @@
       ]
     },
     "build:js": {
-      "command": "rollup -c rollup.config.ts --configPlugin @rollup/plugin-typescript",
+      "command": "rollup -c rollup.config.ts --configPlugin @rollup/plugin-typescript && node --experimental-strip-types tooling/truthful-dts.ts",
       "dependencies": [
         "check:types"
       ],
       "files": [
         "src/**/*.ts",
         "rollup.config.ts",
-        "tsconfig.build.json"
+        "tsconfig.build.json",
+        "package.json",
+        "tooling/dts-entries.ts",
+        "tooling/dts-value-exports.ts",
+        "tooling/truthful-dts.ts"
       ],
       "output": [
         "dist/esm/**",
@@ -349,7 +353,11 @@
       "files": [
         "src/**/*.ts",
         "test/integration/**/*.ts",
-        "vitest.config.ts"
+        "vitest.config.ts",
+        "tooling/dts-entries.ts",
+        "tooling/dts-value-exports.ts",
+        "tooling/truthful-dts.ts",
+        "package.json"
       ],
       "output": []
     },
@@ -798,7 +806,7 @@
     "@arethetypeswrong/cli": "0.18.5",
     "@biomejs/biome": "2.5.5",
     "@cloudflare/vitest-pool-workers": "0.18.8",
-    "@cloudflare/workers-types": "5.20260726.1",
+    "@cloudflare/workers-types": "5.20260727.1",
     "@commitlint/cli": "21.2.1",
     "@commitlint/config-conventional": "21.2.0",
     "@ls-lint/ls-lint": "2.3.1",
@@ -810,17 +818,17 @@
     "@stryker-mutator/core": "9.6.1",
     "@stryker-mutator/typescript-checker": "9.6.1",
     "@stryker-mutator/vitest-runner": "9.6.1",
-    "@types/node": "26.1.1",
+    "@types/node": "26.1.2",
     "@vitest/coverage-v8": "4.1.10",
     "cspell": "10.0.1",
     "dependency-cruiser": "18.1.0",
     "fast-check": "4.9.0",
     "husky": "9.1.7",
     "isomorphic-git": "1.40.0",
-    "jscpd": "5.0.12",
+    "jscpd": "5.0.14",
     "knip": "6.27.0",
     "lint-staged": "17.2.0",
-    "minimatch": "10.2.5",
+    "minimatch": "10.2.6",
     "rollup": "4.62.3",
     "rollup-plugin-dts": "6.4.1",
     "rollup-plugin-visualizer": "7.0.1",

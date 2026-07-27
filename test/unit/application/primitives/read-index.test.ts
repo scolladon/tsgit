@@ -251,6 +251,40 @@ describe('readIndex', () => {
     });
   });
 
+  describe('Given a backing stat with a known sub-second mtimeNs value', () => {
+    describe('When readIndex is called', () => {
+      it('Then indexMtime.nanoseconds is the nanosecond-of-second remainder (not the full ns value scaled up)', async () => {
+        // Arrange
+        // mtimeNs encodes whole seconds too: 1_700_000_100_222_000_000n is
+        // 1_700_000_100s + 222_000_000ns. The correct derivation is `% 1e9`,
+        // giving exactly the 222_000_000 sub-second remainder. A `*` mutant
+        // would produce an astronomically larger, clearly divergent number.
+        const ctx = await buildSeededContext();
+        const bytes = await serializeIndexFixtureAsync(
+          { version: 2, entries: [], extensions: [], trailerSha: new Uint8Array(0) },
+          ctx,
+        );
+        await ctx.fs.write('/repo/.git/index', bytes);
+        const wrapped = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            stat: async (p: string) => {
+              const s = await ctx.fs.stat(p);
+              return { ...s, mtimeNs: 1_700_000_100_222_000_000n };
+            },
+          },
+        };
+
+        // Act
+        const result = await readIndex(wrapped);
+
+        // Assert
+        expect(result.indexMtime?.nanoseconds).toBe(222_000_000);
+      });
+    });
+  });
+
   describe('Given a multi-gigabyte index stat size', () => {
     describe('When readIndex is called', () => {
       it('Then throws INVALID_INDEX_HEADER /exceeds 256 MiB/ (without materializing)', async () => {

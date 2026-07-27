@@ -479,9 +479,12 @@ export class NodeFileSystem implements FileSystem {
     try {
       return await runFs(async () => {
         handle = await this.fsOps.open(real, 'r');
-        const buf = Buffer.alloc(length);
+        // Exact-size unsafe allocation (no zero-fill) + a `bytesRead`-length
+        // view over the same backing buffer (no second copy) — this method
+        // sits on the pack delta-chain hot path.
+        const buf = Buffer.allocUnsafe(length);
         const { bytesRead } = await handle.read(buf, 0, length, offset);
-        return Uint8Array.from(buf.subarray(0, bytesRead));
+        return new Uint8Array(buf.buffer, buf.byteOffset, bytesRead);
       }, path);
     } finally {
       // Load-bearing: release the descriptor on every exit path so a

@@ -1,7 +1,14 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import type { LineKey, WhitespaceMode } from '../../../../src/domain/diff/whitespace.js';
-import { linesEqualUnder, normalizeLine } from '../../../../src/domain/diff/whitespace.js';
+import {
+  digestIsBlank,
+  digestNormalizedLine,
+  digestsEqual,
+  isBlankLine,
+  linesEqualUnder,
+  normalizeLine,
+} from '../../../../src/domain/diff/whitespace.js';
 import { bytesEqual } from '../../../../src/domain/objects/encoding.js';
 
 // Arbitrary: a UTF-8 line (ASCII printable, no space/tab) plus optional LF terminator
@@ -141,6 +148,68 @@ describe('whitespace normalizer properties', () => {
               expect(result).toBe(true);
             },
           ),
+          { numRuns: 100 },
+        );
+      });
+    });
+  });
+
+  describe('Given an arbitrary line x and key k', () => {
+    describe('When digestNormalizedLine(x, k) is applied twice (reflexivity)', () => {
+      it('Then digestsEqual reports the two digests equal', () => {
+        // Arrange
+        fc.assert(
+          fc.property(arbLineWithWhitespace(), arbLineKey(), (x, key) => {
+            // Act
+            const once = digestNormalizedLine(x, key);
+            const twice = digestNormalizedLine(x, key);
+            // Assert
+            expect(digestsEqual(once, twice)).toBe(true);
+          }),
+          { numRuns: 200 },
+        );
+      });
+    });
+  });
+
+  describe('Given arbitrary lines a and b and an arbitrary key k', () => {
+    describe('When digestsEqual(digest(a,k), digest(b,k)) is compared to linesEqualUnder(a,b,k)', () => {
+      it('Then the predicate digest and the stat-path normalizer agree', () => {
+        // Arrange
+        fc.assert(
+          fc.property(
+            arbLineWithWhitespace(),
+            arbLineWithWhitespace(),
+            arbLineKey(),
+            (a, b, key) => {
+              // Act
+              const digestVerdict = digestsEqual(
+                digestNormalizedLine(a, key),
+                digestNormalizedLine(b, key),
+              );
+              const normalizeVerdict = linesEqualUnder(a, b, key);
+              // Assert
+              expect(digestVerdict).toBe(normalizeVerdict);
+            },
+          ),
+          { numRuns: 100 },
+        );
+      });
+    });
+  });
+
+  describe('Given an arbitrary line x and key k', () => {
+    describe('When digestIsBlank(digest(x,k)) is compared to isBlankLine(x,k)', () => {
+      it('Then the digest blank flag agrees with the normalizer-derived blank check', () => {
+        // Arrange
+        fc.assert(
+          fc.property(arbLineWithWhitespace(), arbLineKey(), (x, key) => {
+            // Act
+            const digestBlank = digestIsBlank(digestNormalizedLine(x, key));
+            const normalizeBlank = isBlankLine(x, key);
+            // Assert
+            expect(digestBlank).toBe(normalizeBlank);
+          }),
           { numRuns: 100 },
         );
       });

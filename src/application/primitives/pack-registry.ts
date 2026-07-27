@@ -2,6 +2,7 @@
  * Lazy scan + cache of .idx files under .git/objects/pack/.
  * Returns a PackRegistry facade used by object-resolver and readObject.
  */
+import { TsgitError } from '../../domain/error.js';
 import type { ObjectId } from '../../domain/objects/index.js';
 import { invalidPackIndex } from '../../domain/storage/error.js';
 import {
@@ -11,8 +12,13 @@ import {
   parsePackIndex,
 } from '../../domain/storage/index.js';
 import type { Context } from '../../ports/context.js';
+import type { FileHandle } from '../../ports/file-system.js';
 import { commonGitDir, packsDir } from './path-layout.js';
 import { exceedsMaxPackIdxBytes, REASON_PACK_IDX_EXCEEDS_MAX } from './validators.js';
+
+function isUnsupportedOperation(err: unknown): boolean {
+  return err instanceof TsgitError && err.data.code === 'UNSUPPORTED_OPERATION';
+}
 
 export interface PackOffsetTable {
   readonly sortedOffsets: ReadonlyArray<number>;
@@ -27,6 +33,15 @@ export interface RegisteredPack {
   readonly idxPath: string;
   /** Lazily-built, cached sorted entry offsets + trailer bound for this pack. */
   readonly offsetTable: () => Promise<PackOffsetTable>;
+  /**
+   * Read `length` bytes at `offset` via a lazily-opened, memoised persistent
+   * `FileHandle` — one `open` per pack for its whole delta-chain walk, not one
+   * per step. Falls back to a per-call `ctx.fs.readSlice` on adapters that
+   * cannot open a handle (browser OPFS throws `UNSUPPORTED_OPERATION`).
+   */
+  readonly readSlice: (offset: number, length: number) => Promise<Uint8Array>;
+  /** Release the persistent handle, if one was ever opened. Idempotent. */
+  readonly close: () => Promise<void>;
 }
 
 export interface PackLookupHit {
@@ -40,6 +55,9 @@ export interface PackRegistry {
   /** Drop the cached `.idx` scan so the next `all`/`lookup` re-scans the
    *  pack directory — used after a lazy-fetch writes a new pack. */
   refresh(): void;
+  /** Close every loaded pack's persistent handle. Idempotent; a registry
+   *  that never scanned the pack directory disposes without touching `fs`. */
+  dispose(): Promise<void>;
 }
 
 function isSafePackName(name: string): boolean {
@@ -89,7 +107,65 @@ async function loadPack(ctx: Context, dir: string, entryName: string): Promise<R
     return cachedTable;
   };
 
-  return { name, index, packPath, idxPath, offsetTable };
+  // Lazily-opened, memoised persistent handle for this pack's slice reads.
+  // Cleared back to `undefined` whenever the open attempt is known-unsupported
+  // (browser OPFS), so `close()` never has to unwind a rejected memo and every
+  // `readSlice` call after that point falls back cleanly.
+  let handlePromise: Promise<FileHandle> | undefined;
+  // `refresh()` closes outgoing packs while sibling reads may still be
+  // mid-slice on this instance: in-flight reads are tracked so `close()`
+  // drains them first, and a read arriving after `close()` falls back to the
+  // per-call path instead of re-opening a handle nothing would ever close.
+  const inFlight = new Set<Promise<unknown>>();
+  let retired = false;
+
+  const readSlice = async (offset: number, length: number): Promise<Uint8Array> => {
+    if (retired) return ctx.fs.readSlice(packPath, offset, length);
+    if (handlePromise === undefined) {
+      handlePromise = ctx.fs.openWithNoFollow(packPath, 'read');
+    }
+    const read = (async (): Promise<Uint8Array> => {
+      const handle = await handlePromise;
+      const buffer = new Uint8Array(length);
+      const bytesRead = await handle.read(buffer, 0, length, offset);
+      return buffer.subarray(0, bytesRead);
+    })();
+    inFlight.add(read);
+    try {
+      return await read;
+    } catch (err) {
+      if (!isUnsupportedOperation(err)) throw err;
+      handlePromise = undefined;
+      return ctx.fs.readSlice(packPath, offset, length);
+    } finally {
+      // NOTE: this block's BlockStatement mutant (`{}`) is equivalent — inFlight's only
+      // reader is close()'s `Promise.allSettled(inFlight)`, which settles identically
+      // whether or not already-settled entries remain (an already-settled promise adds no
+      // wait and its outcome is discarded), so dropping this deletion cannot change any
+      // observable return value or thrown error — only when the settled reference becomes
+      // eligible for GC. No inline ignore-comment can attach here and stay equivalent-only,
+      // scoped: a comment placed before this block (outside the catch clause) would need
+      // `} finally {` split across lines, which the formatter always collapses back onto
+      // one line, and a comment placed inside the block (as here) attaches to the first
+      // STATEMENT's line, not the block's own line, so it can never target this exact
+      // mutant's reported location (verified against the instrumenter's comment handling).
+      inFlight.delete(read);
+    }
+  };
+
+  const close = async (): Promise<void> => {
+    retired = true;
+    const pending = handlePromise;
+    if (pending === undefined) return;
+    handlePromise = undefined;
+    // Let sibling reads that already hold the handle finish before closing
+    // it under them (their own rejections surface to their callers).
+    await Promise.allSettled(inFlight);
+    const handle = await pending;
+    await handle.close();
+  };
+
+  return { name, index, packPath, idxPath, offsetTable, readSlice, close };
 }
 
 function bisectLeft(arr: ReadonlyArray<number>, value: number): number {
@@ -142,7 +218,13 @@ export function createPackRegistry(ctx: Context): PackRegistry {
   return {
     all: loadAll,
     refresh(): void {
+      // The outgoing packs may hold open persistent handles; close them before
+      // dropping the references or every refresh leaks one fd per touched pack.
+      const outgoing = cache;
       cache = undefined;
+      if (outgoing !== undefined) {
+        void Promise.allSettled(outgoing.map((pack) => pack.close()));
+      }
     },
     async lookup(id: ObjectId): Promise<PackLookupHit | undefined> {
       const packs = await loadAll();
@@ -153,6 +235,18 @@ export function createPackRegistry(ctx: Context): PackRegistry {
         }
       }
       return undefined;
+    },
+    async dispose(): Promise<void> {
+      // A registry that never scanned the pack directory has no handles to
+      // close — skip the scan entirely rather than triggering one just to
+      // find nothing.
+      if (cache === undefined) return;
+      // Settle every close so one failing handle cannot strand the others.
+      const results = await Promise.allSettled(cache.map((pack) => pack.close()));
+      const failure = results.find(
+        (outcome): outcome is PromiseRejectedResult => outcome.status === 'rejected',
+      );
+      if (failure !== undefined) throw failure.reason;
     },
   };
 }

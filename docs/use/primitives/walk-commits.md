@@ -20,6 +20,7 @@ interface WalkCommitsOptions {
 - `excluding` cuts subtrees rooted at the given oids.
 - `firstParent: true` mirrors [`log`](../commands/log.md)'s semantics.
 - Back-pressure: only advances when the consumer pulls.
+- When `.git/objects/info/commit-graph` is present (single-file or chain/split form), parents and dates are served from it, falling back to object reads for any commit it doesn't cover. Results are identical with or without a graph; a corrupt or stale graph is treated as absent.
 
 ## Example
 

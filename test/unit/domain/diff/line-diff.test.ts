@@ -1,5 +1,5 @@
 import fc from 'fast-check';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { LineDiffOptions } from '../../../../src/domain/diff/line-diff.js';
 import {
   BINARY_DETECTION_BYTES,
@@ -592,6 +592,27 @@ describe('line-diff — diffLines', () => {
 });
 
 describe('line-diff — diffLines lineKey option', () => {
+  describe('Given a lineKey option and a line longer than the interning chunk size', () => {
+    describe('When the oversized line differs from its counterpart only in whitespace, mode all', () => {
+      it('Then the oversized line is common (chunked interning matches whole-line interning)', () => {
+        // Arrange — 9000 chars exceeds the 8192-byte fromCharCode chunk ceiling
+        const longLine = 'x'.repeat(9_000);
+        const ours = enc(`${longLine}\n`);
+        const theirs = enc(`  ${longLine}  \n`);
+        const options: LineDiffOptions = { lineKey: { mode: 'all', ignoreCrAtEol: false } };
+
+        // Act
+        const result = diffLines(ours, theirs, options);
+
+        // Assert — whitespace-only difference on the oversized line is common under mode all
+        expect(result.degraded).toBe(false);
+        expect(result.hunks).toEqual([
+          { kind: 'common', oursStart: 0, oursEnd: 1, theirsStart: 0, theirsEnd: 1 },
+        ]);
+      });
+    });
+  });
+
   describe('Given a lineKey option', () => {
     describe('When the file has a whitespace-only changed line and a real changed line, mode all', () => {
       it('Then the ws-only line is common, real line stays as ours-only/theirs-only, raw bytes preserved', () => {
@@ -638,6 +659,98 @@ describe('line-diff — diffLines lineKey option', () => {
         expect(
           resultNoOpts.hunks.some((h) => h.kind === 'ours-only' || h.kind === 'theirs-only'),
         ).toBe(true);
+      });
+    });
+  });
+});
+
+describe('line-diff — binaryStringOf chunking (interning across the 8192-byte fromCharCode boundary)', () => {
+  describe('Given two lines far longer than a single fromCharCode(...bytes) spread can take, sharing a long prefix but differing near the end', () => {
+    describe('When diffLines is called with an active lineKey', () => {
+      it('Then they are recognized as different lines without throwing (the chunk loop runs and every chunk is concatenated)', () => {
+        // Arrange — an unchunked `String.fromCharCode(...bytes)` throws "Maximum call
+        // stack size exceeded" long before 200000 args on this engine, so a correct
+        // chunked implementation is required just to avoid a crash; the shared
+        // 200000-byte prefix with a differing final byte also pins that every chunk
+        // (not just the first) is folded into the intern key.
+        const prefix = 'x'.repeat(200_000);
+        const ours = enc(`${prefix}A\n`);
+        const theirs = enc(`${prefix}B\n`);
+        const options: LineDiffOptions = { lineKey: { mode: 'none', ignoreCrAtEol: false } };
+
+        // Act
+        const result = diffLines(ours, theirs, options);
+
+        // Assert — recognized as different, never collapsed into one common line
+        expect(result.hunks.every((h) => h.kind !== 'common')).toBe(true);
+        expect(result.degraded).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a line of exactly the chunk size (8192 bytes) vs one byte over it', () => {
+    describe('When diffLines is called with an active lineKey', () => {
+      it.each([
+        { length: 8_192, expectedCalls: 1, label: 'takes the single fromCharCode fast path' },
+        { length: 8_193, expectedCalls: 2, label: 'takes the two-chunk loop path' },
+      ])('Then a $length-byte line $label', ({ length, expectedCalls }) => {
+        // Arrange — content length includes the trailing LF splitLines keeps, so
+        // `length - 1` 'x' characters plus '\n' lands exactly on the boundary.
+        const ours = enc(`${'x'.repeat(length - 1)}\n`);
+        const theirs = new Uint8Array(0);
+        const options: LineDiffOptions = { lineKey: { mode: 'none', ignoreCrAtEol: false } };
+        const spy = vi.spyOn(String, 'fromCharCode');
+
+        // Act
+        diffLines(ours, theirs, options);
+
+        // Assert
+        expect(spy).toHaveBeenCalledTimes(expectedCalls);
+        spy.mockRestore();
+      });
+    });
+  });
+
+  describe('Given a line that normalizes to zero bytes (an unterminated, all-whitespace final line under mode:all)', () => {
+    describe('When diffLines is called', () => {
+      it('Then binaryStringOf still takes the single (zero-argument) fast path, not the loop', () => {
+        // Arrange — dropAllWs strips every byte of an unterminated all-whitespace
+        // line (no trailing LF survives to anchor it), leaving a genuine 0-byte
+        // array; the fast path calls fromCharCode() once with zero arguments,
+        // while a forced loop path never enters its body at all (0 < 0 is false).
+        const ours = enc('   ');
+        const theirs = new Uint8Array(0);
+        const options: LineDiffOptions = { lineKey: { mode: 'all', ignoreCrAtEol: false } };
+        const spy = vi.spyOn(String, 'fromCharCode');
+
+        // Act
+        diffLines(ours, theirs, options);
+
+        // Assert
+        expect(spy).toHaveBeenCalledTimes(1);
+        spy.mockRestore();
+      });
+    });
+  });
+
+  describe('Given two lines exactly twice the chunk size (16384 bytes), sharing every byte', () => {
+    describe('When diffLines is called with an active lineKey', () => {
+      it('Then binaryStringOf makes exactly two fromCharCode calls (no extra empty chunk, no early stop)', () => {
+        // Arrange — 16384 is an exact multiple of BINARY_STRING_CHUNK; the loop's
+        // own bound (`i < bytes.length`) must produce exactly 2 iterations — not 3
+        // (an off-by-one `<=` appends a harmless-looking but call-count-visible
+        // empty chunk) and not 0 (an inverted `>=` never enters the loop at all).
+        const ours = enc(`${'x'.repeat(16_383)}\n`);
+        const theirs = new Uint8Array(0);
+        const options: LineDiffOptions = { lineKey: { mode: 'none', ignoreCrAtEol: false } };
+        const spy = vi.spyOn(String, 'fromCharCode');
+
+        // Act
+        diffLines(ours, theirs, options);
+
+        // Assert
+        expect(spy).toHaveBeenCalledTimes(2);
+        spy.mockRestore();
       });
     });
   });

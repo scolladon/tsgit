@@ -233,6 +233,8 @@ for await (const commit of blobs) {
 
 Back-pressure is native — walkers advance only when the consumer pulls. Memory stays bounded across arbitrarily large repos.
 
+Need a whole tree in memory rather than streaming it entry by entry? [`flattenTree`](primitives/flatten-tree.md) is the eager bulk-traversal path — one pass into a `Map<FilePath, FlatTreeEntry>`, no per-entry promise overhead.
+
 ## Render a patch
 
 `repo.diff({ format: 'patch' })` returns canonical unified-diff text plus

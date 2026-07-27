@@ -72,7 +72,7 @@ function dropTrailingWs(bytes: Uint8Array): Uint8Array {
     wsStart--;
   }
   // Stryker disable next-line EqualityOperator: equivalent — flipping `end === bytes.length` to `!==` only swaps which branch (early return vs. fallthrough copy) fires when nothing needs trimming; both produce byte-identical output (verified by hand).
-  // NOTE: this line's ConditionalExpression mutant forcing the whole test to `false` is equally equivalent (same reasoning — the fallthrough branch always reproduces `bytes` byte-for-byte when there's nothing to trim), but is left unannotated: the sibling ConditionalExpression mutant forcing the test to `true` breaks real trimming and is a killable mutant on this same line, and Stryker's next-line disable can't distinguish `true` from `false` variants of the same mutator.
+  // NOTE: two more ConditionalExpression variants on this line are equally equivalent but left unannotated (their sibling `true`-on-the-whole-test and `true`-on-the-left-operand variants are real, killable mutants on this same line, and Stryker's next-line disable can't distinguish sub-expression from sub-expression of the same mutator): forcing the WHOLE test to `false`, and forcing just the right operand (`end === bytes.length`) to `true` (reducing the guard to `wsStart === end`). Both reduce to the same reasoning: whenever `wsStart === end` (nothing to trim), the fallthrough branch reproduces `bytes` byte-for-byte regardless of `end`'s relation to `bytes.length`, so skipping the early return via either variant changes no observable output.
   if (wsStart === end && end === bytes.length) return bytes; // nothing to drop
   const out = new Uint8Array(wsStart + (end < bytes.length ? 1 : 0));
   out.set(bytes.subarray(0, wsStart));
@@ -147,4 +147,156 @@ export function isBlankLine(line: Uint8Array, key: LineKey): boolean {
 
 export function lineKeyIsActive(key: LineKey): boolean {
   return key.mode !== 'none' || key.ignoreCrAtEol;
+}
+
+/**
+ * A rolling-hash fingerprint of one line's normalized form — `length` (0 means
+ * blank), `terminated` (had a trailing LF), and a 32-bit FNV-1a `hash` folded
+ * over the normalized bytes. Lets a streaming predicate compare lines for
+ * equality under a `LineKey` without ever allocating the normalized
+ * `Uint8Array` (`normalizeLine` does, per line, on every comparison).
+ */
+export interface LineDigest {
+  readonly length: number;
+  readonly terminated: boolean;
+  readonly hash: number;
+}
+
+const FNV_OFFSET_BASIS = 0x811c9dc5;
+const FNV_PRIME = 0x01000193;
+
+function fnvMix(hash: number, byte: number): number {
+  return Math.imul(hash ^ byte, FNV_PRIME) >>> 0;
+}
+
+/** The CR-adjusted content boundary, mirroring `applyCrRule` without allocating. */
+function digestContentEnd(bytes: Uint8Array, end: number, key: LineKey): number {
+  const crApplies = key.ignoreCrAtEol || key.mode !== 'none';
+  if (!crApplies) return end;
+  const crPos = end - 1;
+  // NOTE: this line's ConditionalExpression mutant forcing the left operand (`crPos >= 0`) to `true` is equivalent — the only case it changes is crPos<0 (empty content, crPos===-1), where forcing it true just makes the right operand `bytes[crPos] === CR` evaluate instead of short-circuiting; `bytes[-1]` is `undefined` on a typed array, so that's `undefined === CR` = false either way, and the ternary still returns `end`. Left unannotated because the whole-condition and right-operand `true` variants on this same line are real, killed mutants, and Stryker's next-line disable can't distinguish sub-expression from sub-expression of the same mutator.
+  return crPos >= 0 && bytes[crPos] === CR ? crPos : end;
+}
+
+function digestVerbatim(bytes: Uint8Array, contentEnd: number, terminated: boolean): LineDigest {
+  let hash = FNV_OFFSET_BASIS;
+  for (let i = 0; i < contentEnd; i++) hash = fnvMix(hash, bytes[i]!);
+  if (terminated) hash = fnvMix(hash, LF);
+  return { length: contentEnd, terminated, hash };
+}
+
+// Mirrors dropAllWs: every space/tab byte is dropped, regardless of position.
+function digestDropAllWs(bytes: Uint8Array, contentEnd: number, terminated: boolean): LineDigest {
+  let hash = FNV_OFFSET_BASIS;
+  let length = 0;
+  for (let i = 0; i < contentEnd; i++) {
+    const b = bytes[i]!;
+    if (isWs(b)) continue;
+    hash = fnvMix(hash, b);
+    length++;
+  }
+  if (terminated) hash = fnvMix(hash, LF);
+  return { length, terminated, hash };
+}
+
+// Mirrors collapseRuns: each internal run collapses to one space; a run
+// touching the end (still pending when the loop ends) is dropped, not committed.
+function digestCollapseRuns(
+  bytes: Uint8Array,
+  contentEnd: number,
+  terminated: boolean,
+): LineDigest {
+  let hash = FNV_OFFSET_BASIS;
+  let length = 0;
+  let pendingSpace = false;
+  for (let i = 0; i < contentEnd; i++) {
+    const b = bytes[i]!;
+    if (isWs(b)) {
+      pendingSpace = true;
+      continue;
+    }
+    if (pendingSpace) {
+      hash = fnvMix(hash, SPACE);
+      length++;
+      pendingSpace = false;
+    }
+    hash = fnvMix(hash, b);
+    length++;
+  }
+  if (terminated) hash = fnvMix(hash, LF);
+  return { length, terminated, hash };
+}
+
+/** Commit a buffered (non-trailing) whitespace run's bytes verbatim into the digest. */
+function commitRun(
+  bytes: Uint8Array,
+  runStart: number,
+  runEnd: number,
+  hash: number,
+  length: number,
+): { readonly hash: number; readonly length: number } {
+  let h = hash;
+  let l = length;
+  for (let j = runStart; j < runEnd; j++) {
+    h = fnvMix(h, bytes[j]!);
+    l++;
+  }
+  return { hash: h, length: l };
+}
+
+// Mirrors dropTrailingWs: internal runs are preserved verbatim; only a run
+// still pending when the loop ends (touching the content boundary) is dropped.
+function digestDropTrailingWs(
+  bytes: Uint8Array,
+  contentEnd: number,
+  terminated: boolean,
+): LineDigest {
+  let hash = FNV_OFFSET_BASIS;
+  let length = 0;
+  let runStart = -1;
+  for (let i = 0; i < contentEnd; i++) {
+    const b = bytes[i]!;
+    if (isWs(b)) {
+      if (runStart === -1) runStart = i;
+      continue;
+    }
+    if (runStart !== -1) {
+      ({ hash, length } = commitRun(bytes, runStart, i, hash, length));
+      runStart = -1;
+    }
+    hash = fnvMix(hash, b);
+    length++;
+  }
+  if (terminated) hash = fnvMix(hash, LF);
+  return { length, terminated, hash };
+}
+
+/**
+ * Digest one line's normalized form under `key` — equality-preserving with
+ * `normalizeLine`/`bytesEqual` (`digestsEqual(digest(a,k), digest(b,k))` agrees
+ * with `linesEqualUnder(a,b,k)`) but without allocating the normalized array.
+ */
+export function digestNormalizedLine(bytes: Uint8Array, key: LineKey): LineDigest {
+  const end = lfIndex(bytes);
+  const terminated = end < bytes.length;
+  const contentEnd = digestContentEnd(bytes, end, key);
+  switch (key.mode) {
+    case 'all':
+      return digestDropAllWs(bytes, contentEnd, terminated);
+    case 'change':
+      return digestCollapseRuns(bytes, contentEnd, terminated);
+    case 'at-eol':
+      return digestDropTrailingWs(bytes, contentEnd, terminated);
+    case 'none':
+      return digestVerbatim(bytes, contentEnd, terminated);
+  }
+}
+
+export function digestsEqual(a: LineDigest, b: LineDigest): boolean {
+  return a.length === b.length && a.terminated === b.terminated && a.hash === b.hash;
+}
+
+/** A digest is blank when its normalized content (excluding a trailing LF) is empty. */
+export function digestIsBlank(digest: LineDigest): boolean {
+  return digest.length === 0;
 }

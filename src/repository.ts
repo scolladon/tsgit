@@ -8,6 +8,7 @@ import { createRawTreeResolver } from './adapters/snapshot-resolvers/raw-tree-re
 import { createSingleFlightIndexResolver } from './adapters/snapshot-resolvers/single-flight-index-resolver.js';
 import * as commands from './application/commands/index.js';
 import * as primitives from './application/primitives/index.js';
+import { disposePackRegistry } from './application/primitives/read-object.js';
 import {
   createSnapshotFactory,
   type SnapshotFactory,
@@ -261,13 +262,14 @@ export interface Repository {
   /** Nested `repo.worktree.{list,add,move,remove}` namespace. */
   readonly worktree: commands.WorktreeNamespace;
 
-  // Tier-2 primitives (23) — bound under .primitives.* to keep the top-level
+  // Tier-2 primitives (24) — bound under .primitives.* to keep the top-level
   // surface focused on user-facing commands.
   readonly primitives: {
     readonly bisectMidpoint: BindCtx<typeof primitives.bisectMidpoint>;
     readonly catFileBatch: BindCtx<typeof primitives.catFileBatch>;
     readonly createCommit: BindCtx<typeof primitives.createCommit>;
     readonly diffTrees: BindCtx<typeof primitives.diffTrees>;
+    readonly flattenTree: BindCtx<typeof primitives.flattenTree>;
     readonly getRepoRoot: BindCtx<typeof primitives.getRepoRoot>;
     readonly hashBlob: BindCtx<typeof primitives.hashBlob>;
     readonly isIgnored: BindCtx<typeof primitives.isIgnored>;
@@ -473,7 +475,14 @@ export const openRepository = async (
         if (typeof setImmediate === 'function') setImmediate(resolve);
         else setTimeout(resolve, 0);
       });
-      await disposeAdapters(ctx);
+      // Pack handles are FileHandles owned by ctx.fs — close them before the
+      // fs adapter itself is torn down.
+      // A failing pack-handle close must never skip adapter teardown.
+      try {
+        await disposePackRegistry(ctx);
+      } finally {
+        await disposeAdapters(ctx);
+      }
       state = 'DISPOSED';
     })();
     return disposePromise;
@@ -654,6 +663,10 @@ export const openRepository = async (
         guard();
         return primitives.diffTrees(ctx, a, b, options);
       }) as Repository['primitives']['diffTrees'],
+      flattenTree: ((treeIdOrObject) => {
+        guard();
+        return primitives.flattenTree(ctx, treeIdOrObject);
+      }) as Repository['primitives']['flattenTree'],
       getRepoRoot: (() => {
         guard();
         return primitives.getRepoRoot(ctx);

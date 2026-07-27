@@ -14,6 +14,7 @@ import { objectHashMismatch } from '../../domain/objects/error.js';
 import type { GitObject, ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import { readConfig, ZLIB_MAX_LEVEL, ZLIB_MIN_LEVEL } from './config-read.js';
+import { invalidateLooseOid } from './internal/loose-oid-cache.js';
 import { serializeAndHash } from './internal/serialize-and-hash.js';
 import { looseObjectPath, objectsDir } from './path-layout.js';
 import { hasDeclaredId } from './validators.js';
@@ -45,10 +46,12 @@ export async function writeObject(ctx: Context, object: GitObject): Promise<Obje
     await ctx.fs.writeExclusive(path, compressed);
   } catch (error) {
     if (isFileExists(error)) {
+      invalidateLooseOid(ctx, computed);
       return computed;
     }
     throw error;
   }
+  invalidateLooseOid(ctx, computed);
   return computed;
 }
 

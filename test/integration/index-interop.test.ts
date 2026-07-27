@@ -16,6 +16,7 @@ import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import { add } from '../../src/application/commands/add.js';
+import { readIndex } from '../../src/application/primitives/read-index.js';
 import {
   GIT_AVAILABLE,
   initBothRepos,
@@ -56,6 +57,27 @@ describe.skipIf(!GIT_AVAILABLE)('index interop', () => {
         const peerListing = runGit(['-C', pair.peer, 'ls-files', '--stage']);
         const oursListing = runGit(['-C', pair.ours, 'ls-files', '--stage']);
         expect(oursListing).toBe(peerListing);
+      });
+    });
+  });
+
+  describe('Given a file staged by tsgit, then re-staged untouched by canonical git', () => {
+    describe('When both index entries are read back', () => {
+      it('Then the nanosecond ctime/mtime fields agree (ns is populated, not hardcoded zero)', async () => {
+        // Arrange — tsgit stages the file first.
+        await writeFile(path.join(pair.ours, 'c.txt'), 'c\n');
+        const sut = createNodeContext({ workDir: pair.ours });
+        await add(sut, ['c.txt']);
+        const tsgitEntry = (await readIndex(sut)).entries.find((e) => e.path === 'c.txt');
+
+        // Act — canonical git re-stages the SAME untouched file (same inode,
+        // same real ctime/mtime) into the same repo, overwriting the index.
+        runGit(['-C', pair.ours, 'add', 'c.txt']);
+        const gitEntry = (await readIndex(sut)).entries.find((e) => e.path === 'c.txt');
+
+        // Assert — both writers derived ns from the identical underlying stat.
+        expect(gitEntry?.mtimeNanoseconds).toBe(tsgitEntry?.mtimeNanoseconds);
+        expect(gitEntry?.ctimeNanoseconds).toBe(tsgitEntry?.ctimeNanoseconds);
       });
     });
   });

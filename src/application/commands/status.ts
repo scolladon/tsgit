@@ -145,7 +145,13 @@ export const status = async (ctx: Context): Promise<StatusResult> => {
     // runner is wired. When absent, the provider is undefined and every
     // compareWorkingTreeDelta call takes the raw-bytes path (R11 guard).
     const provider = await maybeBuildAttributeProvider(ctx);
-    const workingMap = await scanWorkingTree(ctx, grouped.staged, tracker, provider);
+    const workingMap = await scanWorkingTree(
+      ctx,
+      grouped.staged,
+      tracker,
+      provider,
+      index.indexMtime,
+    );
     const untracked = await scanUntracked(ctx, trackedPaths);
     const headTree = await readHeadTree(ctx);
     const stagedKindMap = collectStagedKinds(index, headTree, grouped.unmerged);
@@ -163,19 +169,23 @@ export const status = async (ctx: Context): Promise<StatusResult> => {
  * skip-worktree entry is intentionally absent from disk (sparse), so it is not
  * compared — its staged column is still surfaced via `stage0Map`. Every entry
  * ticks the progress tracker. The optional provider enables clean-filter
- * re-application so smudged-then-unmodified files report unchanged (F1).
+ * re-application so smudged-then-unmodified files report unchanged (F1). The
+ * optional `indexMtime` (the `.git/index` file's own mtime) arms the
+ * stat-cache short-circuit in `compareWorkingTreeDelta` — `status` is the
+ * only consumer that supplies it today.
  */
 const scanWorkingTree = async (
   ctx: Context,
   stage0: ReadonlyArray<IndexEntry>,
   tracker: GranularityTracker,
   provider: AttributeProvider | undefined,
+  indexMtime: GitIndex['indexMtime'],
 ): Promise<Map<FilePath, WorkingTreeDelta>> => {
   const map = new Map<FilePath, WorkingTreeDelta>();
   await Promise.all(
     stage0.map(async (entry) => {
       if (!entry.flags.skipWorktree)
-        map.set(entry.path, await compareWorkingTreeDelta(ctx, entry, provider));
+        map.set(entry.path, await compareWorkingTreeDelta(ctx, entry, provider, indexMtime));
       tracker.tick();
     }),
   );

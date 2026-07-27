@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { resolveObject } from '../../../../src/application/primitives/object-resolver.js';
 import {
   createPackRegistry,
@@ -6,8 +7,9 @@ import {
   type PackRegistry,
   type RegisteredPack,
 } from '../../../../src/application/primitives/pack-registry.js';
+import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { TsgitError } from '../../../../src/domain/error.js';
-import type { Blob, ObjectId } from '../../../../src/domain/objects/index.js';
+import { type Blob, EMPTY_TREE_OID, type ObjectId } from '../../../../src/domain/objects/index.js';
 import {
   encodeOfsDistance,
   encodePackEntryHeader,
@@ -49,6 +51,24 @@ async function writeRawSingleEntryPack(
 }
 
 /**
+ * `readSlice`/`close` for a stub `RegisteredPack` that bypasses the
+ * persistent-handle machinery entirely — reads go straight through
+ * `ctx.fs.readSlice` against the file the test already wrote. Good enough
+ * for stubs that only need to satisfy the type and produce correct bytes.
+ */
+function stubPackHandle(
+  ctx: Context,
+  packPath: string,
+): Pick<RegisteredPack, 'readSlice' | 'close'> {
+  return {
+    readSlice: (offset, length) => ctx.fs.readSlice(packPath, offset, length),
+    close: async () => undefined,
+  };
+}
+
+const noopDispose = async (): Promise<void> => undefined;
+
+/**
  * A `PackRegistry` stub that resolves a fixed id to a fixed `{ packPath, offset }`
  * hit. `index` is a real (unrelated) `PackIndex` only to satisfy the type — the
  * object resolver never reads it. The entry at `offset` is whatever the caller
@@ -85,13 +105,102 @@ async function stubRegistry(
           trailerStart: packFileSize - 20,
         };
       },
+      ...stubPackHandle(ctx, packPath),
     };
     return { pack, offset: match.offset };
   };
-  return { all: async () => [], refresh: () => undefined, lookup };
+  return { all: async () => [], refresh: () => undefined, lookup, dispose: noopDispose };
 }
 
 describe('object-resolver', () => {
+  describe('Given the empty tree oid on a repo that never wrote it', () => {
+    describe('When resolveObject is called', () => {
+      it('Then returns a zero-entry tree', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const registry = createPackRegistry(ctx);
+        const sut = resolveObject;
+
+        // Act
+        const result = await sut(ctx, registry, EMPTY_TREE_OID, true, undefined);
+
+        // Assert
+        expect(result).toEqual({ type: 'tree', id: EMPTY_TREE_OID, entries: [] });
+      });
+    });
+  });
+
+  describe('Given the empty blob oid on a repo that never wrote it', () => {
+    describe('When resolveObject is called', () => {
+      it('Then throws OBJECT_NOT_FOUND (the empty-tree intercept is tree-only)', async () => {
+        // Arrange — e69de29b… is the empty BLOB, not the empty tree; it is
+        // NOT virtual and must still miss like any other absent object.
+        const ctx = await buildSeededContext();
+        const registry = createPackRegistry(ctx);
+        const emptyBlobId = 'e69de29bb2d1d6434b8b29ae775ad8c2e48c5391' as ObjectId;
+        const sut = resolveObject;
+
+        // Act
+        try {
+          await sut(ctx, registry, emptyBlobId, true);
+          // Assert
+          expect.unreachable();
+        } catch (error) {
+          const data = (error as TsgitError).data;
+          expect(data.code).toBe('OBJECT_NOT_FOUND');
+          if (data.code !== 'OBJECT_NOT_FOUND') {
+            expect.fail(`expected OBJECT_NOT_FOUND, got ${data.code}`);
+          }
+          expect(data.id).toBe(emptyBlobId);
+        }
+      });
+    });
+  });
+
+  describe('Given a SHA-256 repo and the SHA-256 empty-tree oid', () => {
+    describe('When resolveObject is called', () => {
+      it('Then returns a zero-entry tree', async () => {
+        // Arrange
+        const ctx = createMemoryContext({ algorithm: 'sha256' });
+        const registry = createPackRegistry(ctx);
+        const emptyTreeOidSha256 =
+          '6ef19b41225c5369f1c104d45d8d85efa9b057b53b14b4b9b939dd74decc5321' as ObjectId;
+        const sut = resolveObject;
+
+        // Act
+        const result = await sut(ctx, registry, emptyTreeOidSha256, true, undefined);
+
+        // Assert
+        expect(result).toEqual({ type: 'tree', id: emptyTreeOidSha256, entries: [] });
+      });
+    });
+  });
+
+  describe('Given a SHA-256 repo and the SHA-1 empty-tree oid', () => {
+    describe('When resolveObject is called', () => {
+      it('Then throws OBJECT_NOT_FOUND (not intercepted under a mismatched hash config)', async () => {
+        // Arrange — the SHA-1 empty-tree oid is the wrong length/value for a
+        // SHA-256 repo's `emptyTreeOid`, so the intercept must not fire.
+        const ctx = createMemoryContext({ algorithm: 'sha256' });
+        const registry = createPackRegistry(ctx);
+        const sut = resolveObject;
+
+        // Act
+        try {
+          await sut(ctx, registry, EMPTY_TREE_OID, true);
+          // Assert
+          expect.unreachable();
+        } catch (error) {
+          const data = (error as TsgitError).data;
+          expect(data.code).toBe('OBJECT_NOT_FOUND');
+          if (data.code !== 'OBJECT_NOT_FOUND') {
+            expect.fail(`expected OBJECT_NOT_FOUND, got ${data.code}`);
+          }
+        }
+      });
+    });
+  });
+
   describe('Given a seeded loose blob', () => {
     describe('When resolveObject is called', () => {
       it('Then returns the parsed Blob', async () => {
@@ -189,6 +298,7 @@ describe('object-resolver', () => {
         );
         const loosePath = `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(fakeId)}`;
         const rawBytes = new TextEncoder().encode('blob 3\0xyz');
+        const actualOid = await ctx.hash.hashHex(rawBytes);
         const compressed = await ctx.compressor.deflate(rawBytes);
         await ctx.fs.write(loosePath, compressed);
         const registry = createPackRegistry(ctx);
@@ -200,7 +310,13 @@ describe('object-resolver', () => {
           expect.unreachable();
         } catch (error) {
           expect(error).toBeInstanceOf(TsgitError);
-          expect((error as TsgitError).data.code).toBe('OBJECT_HASH_MISMATCH');
+          const data = (error as TsgitError).data;
+          expect(data.code).toBe('OBJECT_HASH_MISMATCH');
+          if (data.code !== 'OBJECT_HASH_MISMATCH') {
+            expect.fail(`expected OBJECT_HASH_MISMATCH, got ${data.code}`);
+          }
+          expect(data.expected).toBe(fakeId);
+          expect(data.actual).toBe(actualOid);
         }
       });
     });
@@ -489,6 +605,298 @@ describe('object-resolver', () => {
     });
   });
 
+  describe('deltaCache probe (A1 — warm delta-chain reads)', () => {
+    describe('Given a warm delta-chain read that already populated the cache', () => {
+      describe('When resolveObject is called again for the same id', () => {
+        it('Then returns byte-identical bytes with zero pack touches', async () => {
+          // Arrange — populate the cache with a real OFS_DELTA reconstruction,
+          // then spy the pack-touching surfaces before the second read.
+          const ctx = await buildSeededContext();
+          const baseContent = new TextEncoder().encode('warm base content');
+          const targetContent = new TextEncoder().encode('warm target content — different');
+          const ids = await writeSyntheticPack(ctx, 'warm-ofs', [
+            { kind: 'base', type: 'blob', content: baseContent },
+            { kind: 'ofs-delta', baseIndex: 0, targetContent },
+          ]);
+          const deltaId = ids[1]! as ObjectId;
+          const registry = createPackRegistry(ctx);
+          const first = await resolveObject(ctx, registry, deltaId, true);
+          const lookupSpy = vi.spyOn(registry, 'lookup');
+          const readSliceSpy = vi.spyOn(ctx.fs, 'readSlice');
+
+          // Act
+          const second = await resolveObject(ctx, registry, deltaId, true);
+
+          // Assert — no re-walk of the chain: neither the registry lookup nor
+          // any pack slice read fires on the warm path.
+          expect((second as Blob).content).toEqual((first as Blob).content);
+          expect(lookupSpy.mock.calls.length).toBe(0);
+          expect(readSliceSpy.mock.calls.length).toBe(0);
+        });
+      });
+    });
+
+    describe('Given a poisoned deltaCache entry whose bytes do not hash to its key', () => {
+      describe('When resolveObject is called with verifyHash true', () => {
+        it('Then throws OBJECT_HASH_MISMATCH carrying the actual computed oid', async () => {
+          // Arrange — no loose/pack copy exists for fakeId, so the only way to
+          // reach a result is the deltaCache probe.
+          const ctx = await buildSeededContext();
+          const fakeId = 'e'.repeat(40) as ObjectId;
+          const rawBytes = new TextEncoder().encode('blob 3\0xyz');
+          const actualOid = (await ctx.hash.hashHex(rawBytes)) as ObjectId;
+          ctx.deltaCache.set(fakeId, rawBytes, rawBytes.length);
+          const registry = createPackRegistry(ctx);
+
+          // Act
+          try {
+            await resolveObject(ctx, registry, fakeId, true);
+            // Assert
+            expect.unreachable();
+          } catch (error) {
+            const data = (error as TsgitError).data;
+            expect(data.code).toBe('OBJECT_HASH_MISMATCH');
+            if (data.code !== 'OBJECT_HASH_MISMATCH') {
+              expect.fail(`expected OBJECT_HASH_MISMATCH, got ${data.code}`);
+            }
+            expect(data.expected).toBe(fakeId);
+            expect(data.actual).toBe(actualOid);
+          }
+        });
+      });
+    });
+
+    describe('Given a deltaCache entry for id whose content exceeds maxBytes', () => {
+      describe('When resolveObject is called with a maxBytes cap', () => {
+        it('Then throws OBJECT_TOO_LARGE from the cache-hit path', async () => {
+          // Arrange — 10 content bytes cached under fakeId, cap = 5.
+          const ctx = await buildSeededContext();
+          const fakeId = 'c'.repeat(40) as ObjectId;
+          const header = new TextEncoder().encode('blob 10\0');
+          const content = new Uint8Array(10).fill(0x41);
+          const cached = new Uint8Array(header.length + content.length);
+          cached.set(header, 0);
+          cached.set(content, header.length);
+          ctx.deltaCache.set(fakeId, cached, cached.length);
+          const registry = createPackRegistry(ctx);
+
+          // Act
+          try {
+            await resolveObject(ctx, registry, fakeId, false, 5);
+            // Assert
+            expect.unreachable();
+          } catch (error) {
+            const data = (error as TsgitError).data;
+            expect(data.code).toBe('OBJECT_TOO_LARGE');
+            if (data.code !== 'OBJECT_TOO_LARGE') {
+              expect.fail(`expected OBJECT_TOO_LARGE, got ${data.code}`);
+            }
+            expect(data.id).toBe(fakeId);
+            expect(data.actualSize).toBe(10);
+            expect(data.limit).toBe(5);
+          }
+        });
+      });
+    });
+
+    describe('Given an empty deltaCache and a seeded loose blob', () => {
+      describe('When resolveObject is called', () => {
+        it('Then resolves via the loose path unchanged', async () => {
+          // Arrange
+          const blob: Blob = {
+            type: 'blob',
+            content: new TextEncoder().encode('cold miss loose content'),
+            id: '' as ObjectId,
+          };
+          const ctx = await buildSeededContext({ objects: [blob] });
+          const { serializeObject } = await import('../../../../src/domain/objects/index.js');
+          const id = (await ctx.hash.hashHex(serializeObject(blob, ctx.hashConfig))) as ObjectId;
+          const registry = createPackRegistry(ctx);
+          expect(ctx.deltaCache.get(id)).toBeUndefined();
+
+          // Act
+          const result = await resolveObject(ctx, registry, id, true);
+
+          // Assert
+          expect(result.type).toBe('blob');
+          expect((result as Blob).content).toEqual(blob.content);
+        });
+      });
+    });
+  });
+
+  describe('loose-oid probe (A2/B7b — per-fanout-dir cache)', () => {
+    describe('Given several seeded loose blobs', () => {
+      describe('When resolveObject reads each of them, then reads every one again', () => {
+        it('Then each touched fanout dir is readdir-ed at most once and exists is never called', async () => {
+          // Arrange
+          const blobs: Blob[] = Array.from({ length: 5 }, (_, i) => ({
+            type: 'blob',
+            content: new TextEncoder().encode(`loose-oid-probe-content-${i}`),
+            id: '' as ObjectId,
+          }));
+          const ctx = await buildSeededContext({ objects: blobs });
+          const { serializeObject } = await import('../../../../src/domain/objects/index.js');
+          const ids = await Promise.all(
+            blobs.map(
+              async (blob) =>
+                (await ctx.hash.hashHex(serializeObject(blob, ctx.hashConfig))) as ObjectId,
+            ),
+          );
+          const registry = createPackRegistry(ctx);
+          const readdirSpy = vi.spyOn(ctx.fs, 'readdir');
+          const existsSpy = vi.spyOn(ctx.fs, 'exists');
+
+          // Act — resolve every id, then resolve every id again.
+          for (const id of ids) {
+            await resolveObject(ctx, registry, id, true);
+          }
+          for (const id of ids) {
+            await resolveObject(ctx, registry, id, true);
+          }
+
+          // Assert — one readdir per DISTINCT touched prefix, never per object
+          // or per read; the old per-object exists/realpath probe is gone.
+          const touchedPrefixes = new Set(ids.map((id) => id.slice(0, 2)));
+          expect(readdirSpy.mock.calls.length).toBe(touchedPrefixes.size);
+          expect(existsSpy.mock.calls.length).toBe(0);
+        });
+      });
+    });
+
+    describe('Given a cached membership hit whose loose file was pruned out-of-band', () => {
+      describe('When resolveObject is called again for the pruned id', () => {
+        it('Then it degrades to a miss (OBJECT_NOT_FOUND), never a raw FILE_NOT_FOUND', async () => {
+          // Arrange — read once so the fanout set caches the object, then
+          // remove the file underneath the cache (an external `git gc` prune)
+          const blob: Blob = {
+            type: 'blob',
+            content: new TextEncoder().encode('pruned-under-cache'),
+            id: '' as ObjectId,
+          };
+          const ctx = await buildSeededContext({ objects: [blob] });
+          const { serializeObject } = await import('../../../../src/domain/objects/index.js');
+          const id = (await ctx.hash.hashHex(serializeObject(blob, ctx.hashConfig))) as ObjectId;
+          const registry = createPackRegistry(ctx);
+          await resolveObject(ctx, registry, id, true);
+          const { computeLooseObjectPath } = await import(
+            '../../../../src/domain/storage/loose-path.js'
+          );
+          await ctx.fs.rm(`${ctx.layout.gitDir}/objects/${computeLooseObjectPath(id)}`);
+
+          // Act
+          try {
+            await resolveObject(ctx, registry, id, true);
+            // Assert
+            expect.unreachable();
+          } catch (error) {
+            const data = (error as TsgitError).data;
+            expect(data.code).toBe('OBJECT_NOT_FOUND');
+            if (data.code !== 'OBJECT_NOT_FOUND') {
+              expect.fail(`expected OBJECT_NOT_FOUND, got ${data.code}`);
+            }
+            expect(data.id).toBe(id);
+          }
+
+          // Assert — the stale prefix set was dropped: a THIRD probe re-reads
+          // the directory, sees the object gone, and never touches the file
+          const readSpy = vi.spyOn(ctx.fs, 'read');
+          await resolveObject(ctx, registry, id, true).catch(() => {});
+          const loosePath = `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(id)}`;
+          expect(readSpy.mock.calls.map((call) => call[0])).not.toContain(loosePath);
+        });
+      });
+    });
+
+    describe('Given a seeded loose blob (membership hit)', () => {
+      describe('When resolveObject resolves it', () => {
+        it('Then the loose file is read via ctx.fs.read', async () => {
+          // Arrange
+          const blob: Blob = {
+            type: 'blob',
+            content: new TextEncoder().encode('membership-hit-content'),
+            id: '' as ObjectId,
+          };
+          const ctx = await buildSeededContext({ objects: [blob] });
+          const { serializeObject } = await import('../../../../src/domain/objects/index.js');
+          const id = (await ctx.hash.hashHex(serializeObject(blob, ctx.hashConfig))) as ObjectId;
+          const registry = createPackRegistry(ctx);
+          const readSpy = vi.spyOn(ctx.fs, 'read');
+
+          // Act
+          const result = await resolveObject(ctx, registry, id, true);
+
+          // Assert
+          expect(result.type).toBe('blob');
+          expect(readSpy.mock.calls.length).toBe(1);
+        });
+      });
+    });
+
+    describe('Given a missing id with no loose file and no pack copy (membership miss)', () => {
+      describe('When resolveObject is called', () => {
+        it('Then throws OBJECT_NOT_FOUND without ever reading or exists-probing the loose path', async () => {
+          // Arrange — the pack registry's own (unrelated) pack-dir existence
+          // check still fires once on a cold registry; what must NOT happen
+          // is a per-object exists/read probe against the loose object path.
+          const ctx = await buildSeededContext();
+          const registry = createPackRegistry(ctx);
+          const missingId = 'b'.repeat(40) as ObjectId;
+          const loosePathPattern = /\/objects\/[0-9a-f]{2}\/[0-9a-f]{38}$/;
+          const readSpy = vi.spyOn(ctx.fs, 'read');
+          const existsSpy = vi.spyOn(ctx.fs, 'exists');
+
+          // Act
+          try {
+            await resolveObject(ctx, registry, missingId, true);
+            // Assert
+            expect.unreachable();
+          } catch (error) {
+            expect((error as TsgitError).data.code).toBe('OBJECT_NOT_FOUND');
+          }
+
+          // Assert
+          expect(readSpy.mock.calls.length).toBe(0);
+          expect(existsSpy.mock.calls.some(([path]) => loosePathPattern.test(path))).toBe(false);
+        });
+      });
+    });
+
+    describe('Given a fanout dir already probed as empty for one id', () => {
+      describe('When writeObject adds a new object under the same prefix and resolveObject reads it', () => {
+        it('Then the write invalidates the stale cache and the new object resolves via the loose path', async () => {
+          // Arrange
+          const blob: Blob = {
+            type: 'blob',
+            content: new TextEncoder().encode('invalidation-after-write'),
+            id: '' as ObjectId,
+          };
+          const ctx = await buildSeededContext();
+          const { serializeObject } = await import('../../../../src/domain/objects/index.js');
+          const id = (await ctx.hash.hashHex(serializeObject(blob, ctx.hashConfig))) as ObjectId;
+          const prefix = id.slice(0, 2);
+          const decoyId = `${prefix}${'0'.repeat(38)}` as ObjectId;
+          const registry = createPackRegistry(ctx);
+          try {
+            // Primes the fanout-dir cache as empty for this prefix.
+            await resolveObject(ctx, registry, decoyId, true);
+            expect.unreachable();
+          } catch (error) {
+            expect((error as TsgitError).data.code).toBe('OBJECT_NOT_FOUND');
+          }
+
+          // Act
+          await writeObject(ctx, blob);
+          const result = await resolveObject(ctx, registry, id, true);
+
+          // Assert
+          expect(result.type).toBe('blob');
+          expect((result as Blob).content).toEqual(blob.content);
+        });
+      });
+    });
+  });
+
   describe('Given a synthetic pack with a 2-hop OFS_DELTA chain', () => {
     describe('When resolveObject is called on the tip', () => {
       it('Then applies deltas in reverse order', async () => {
@@ -710,7 +1118,7 @@ describe('object-resolver', () => {
           const table = await packs[0]!.offsetTable();
           const entryOffset = table.sortedOffsets[0]!;
           const expectedSliceLength = table.trailerStart - entryOffset;
-          const readSliceSpy = vi.spyOn(ctx.fs, 'readSlice');
+          const readSliceSpy = vi.spyOn(packs[0]!, 'readSlice');
 
           // Act
           const result = await sut(ctx, registry, id, false);
@@ -718,7 +1126,8 @@ describe('object-resolver', () => {
           // Assert — exact slice length = trailerStart - entryOffset
           expect(result.type).toBe('blob');
           expect(readSliceSpy.mock.calls.length).toBe(1);
-          const [, , sliceLength] = readSliceSpy.mock.calls[0]!;
+          const [offset, sliceLength] = readSliceSpy.mock.calls[0]!;
+          expect(offset).toBe(entryOffset);
           expect(sliceLength).toBe(expectedSliceLength);
         });
       });
@@ -755,6 +1164,7 @@ describe('object-resolver', () => {
             refresh: () => undefined,
             lookup: async (lookupId) =>
               lookupId === id ? { pack, offset: entryOffset } : undefined,
+            dispose: noopDispose,
           };
           const sut = resolveObject;
 
@@ -803,11 +1213,13 @@ describe('object-resolver', () => {
               packFileSize: entryOffset + 5,
               trailerStart: entryOffset + 5 - 20, // = entryOffset - 15 → next is trailerStart < entryOffset
             }),
+            ...stubPackHandle(ctx, packPath),
           };
           const registry: PackRegistry = {
             all: async () => [],
             refresh: () => undefined,
             lookup: async (id) => (id === targetId ? { pack, offset: entryOffset } : undefined),
+            dispose: noopDispose,
           };
           const sut = resolveObject;
 
@@ -862,11 +1274,13 @@ describe('object-resolver', () => {
               packFileSize: entryOffset + digestLength,
               trailerStart: entryOffset, // = entryOffset + digestLength - digestLength
             }),
+            ...stubPackHandle(ctx, packPath),
           };
           const registry: PackRegistry = {
             all: async () => [],
             refresh: () => undefined,
             lookup: async (id) => (id === targetId ? { pack, offset: entryOffset } : undefined),
+            dispose: noopDispose,
           };
           const sut = resolveObject;
 
@@ -917,11 +1331,13 @@ describe('object-resolver', () => {
               packFileSize: entryOffset + 500,
               trailerStart: entryOffset + 500 - 20,
             }),
+            ...stubPackHandle(ctx, packPath),
           };
           const registry: PackRegistry = {
             all: async () => [],
             refresh: () => undefined,
             lookup: async (id) => (id === targetId ? { pack, offset: entryOffset } : undefined),
+            dispose: noopDispose,
           };
           const sut = resolveObject;
 
@@ -963,7 +1379,7 @@ describe('object-resolver', () => {
           // delta entry (off1) is resolved first, then base (off0).
           const expectedDeltaSlice = table.trailerStart - off1!;
           const expectedBaseSlice = off1! - off0!;
-          const readSliceSpy = vi.spyOn(ctx.fs, 'readSlice');
+          const readSliceSpy = vi.spyOn(packs[0]!, 'readSlice');
           const streamInflateSpy = vi.spyOn(ctx.compressor, 'streamInflate');
 
           // Act
@@ -974,12 +1390,49 @@ describe('object-resolver', () => {
           expect((result as Blob).content).toEqual(targetContent);
           // streamInflate must never be called
           expect(streamInflateSpy.mock.calls.length).toBe(0);
-          // Each of the 2 chain steps called readSlice with exact lengths.
+          // Each of the 2 chain steps called readSlice with exact lengths, both
+          // against the SAME pack's persistent handle (not one open per step).
           expect(readSliceSpy.mock.calls.length).toBe(2);
           // First call: delta entry (tip of chain, resolved first)
-          expect(readSliceSpy.mock.calls[0]![2]).toBe(expectedDeltaSlice);
+          expect(readSliceSpy.mock.calls[0]![1]).toBe(expectedDeltaSlice);
           // Second call: base entry
-          expect(readSliceSpy.mock.calls[1]![2]).toBe(expectedBaseSlice);
+          expect(readSliceSpy.mock.calls[1]![1]).toBe(expectedBaseSlice);
+        });
+      });
+    });
+  });
+
+  describe('persistent per-pack handle (A4 — one open per pack, not per step)', () => {
+    describe('Given a synthetic pack with a 5-hop OFS_DELTA chain', () => {
+      describe('When resolveObject is called on the tip', () => {
+        it('Then ctx.fs.openWithNoFollow is called exactly once for the pack', async () => {
+          // Arrange — 5 sequential chain steps each used to open+read+close their
+          // own FileHandle before A4. The persistent handle must open the pack
+          // ONCE and serve every step's readSlice through it.
+          const ctx = await buildSeededContext();
+          const step0 = ENC.encode('step-0');
+          const step1 = ENC.encode('step-1-longer');
+          const step2 = ENC.encode('step-2-longer-still');
+          const step3 = ENC.encode('step-3-even-longer-again');
+          const step4 = ENC.encode('step-4-the-tip-of-the-chain');
+          const ids = await writeSyntheticPack(ctx, 'deep-ofs-chain', [
+            { kind: 'base', type: 'blob', content: step0 },
+            { kind: 'ofs-delta', baseIndex: 0, targetContent: step1 },
+            { kind: 'ofs-delta', baseIndex: 1, targetContent: step2 },
+            { kind: 'ofs-delta', baseIndex: 2, targetContent: step3 },
+            { kind: 'ofs-delta', baseIndex: 3, targetContent: step4 },
+          ]);
+          const tipId = ids[4]!;
+          const registry = createPackRegistry(ctx);
+          const openSpy = vi.spyOn(ctx.fs, 'openWithNoFollow');
+
+          // Act
+          const result = await resolveObject(ctx, registry, tipId as ObjectId, true);
+
+          // Assert — one open for the whole chain walk; byte-identical output.
+          expect(result.type).toBe('blob');
+          expect((result as Blob).content).toEqual(step4);
+          expect(openSpy.mock.calls.length).toBe(1);
         });
       });
     });

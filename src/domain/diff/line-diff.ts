@@ -1,5 +1,5 @@
 import { bytesEqual } from '../objects/encoding.js';
-import { type LineKey, linesEqualUnder } from './whitespace.js';
+import { type LineKey, normalizeLine } from './whitespace.js';
 
 export interface LineHunk {
   readonly kind: 'common' | 'ours-only' | 'theirs-only';
@@ -93,11 +93,14 @@ function chooseDown(v: ReadonlyArray<number>, offset: number, d: number, k: numb
   return k === -d || v[k - 1 + offset]! < v[k + 1 + offset]!;
 }
 
-type LineEq = (a: Uint8Array, b: Uint8Array) => boolean;
+// Positional equality over ours[i]/theirs[j] — a plain byte comparison for the
+// default (no lineKey) path, or an interned-int lookup for the lineKey-active
+// path (see buildLineEquality), so the Myers core never re-normalizes a line.
+type LineEq = (i: number, j: number) => boolean;
 
 function advanceSnake(
-  oursLines: ReadonlyArray<Uint8Array>,
-  theirsLines: ReadonlyArray<Uint8Array>,
+  oursLength: number,
+  theirsLength: number,
   v: ReadonlyArray<number>,
   offset: number,
   d: number,
@@ -107,7 +110,7 @@ function advanceSnake(
   const down = chooseDown(v, offset, d, k);
   let x = down ? v[k + 1 + offset]! : v[k - 1 + offset]! + 1;
   let y = x - k;
-  while (x < oursLines.length && y < theirsLines.length && eq(oursLines[x]!, theirsLines[y]!)) {
+  while (x < oursLength && y < theirsLength && eq(x, y)) {
     x++;
     y++;
   }
@@ -115,16 +118,15 @@ function advanceSnake(
 }
 
 function computeMyersTrace(
-  oursLines: ReadonlyArray<Uint8Array>,
-  theirsLines: ReadonlyArray<Uint8Array>,
+  oursLength: number,
+  theirsLength: number,
   eq: LineEq,
 ): MyersResult | undefined {
-  const M = oursLines.length;
-  const N = theirsLines.length;
-  // Each trace snapshot is 2*(M+N)+1 numbers (8 bytes each).
-  // At MAX_DIFF_EDIT_DISTANCE iterations, worst-case heap ~ 10K * 2*(M+N) * 8.
-  // Cap total lines to keep heap under ~800MB.
-  if (M + N > MAX_DIFF_LINES) return undefined;
+  const M = oursLength;
+  const N = theirsLength;
+  // M+N is already bounded by diffLines's MAX_DIFF_LINES pre-check (the sole
+  // caller returns the whole-file fallback before interning or tracing), so
+  // no size guard is repeated here.
   const maxD = M + N;
   const offset = maxD;
   const v = new Array<number>(2 * maxD + 1).fill(0);
@@ -132,7 +134,7 @@ function computeMyersTrace(
 
   const iterationBudget = maxD * MAX_DIFF_ITERATION_FACTOR;
   let iterations = 0;
-  // Iteration budget bounds total CPU. The MAX_DIFF_LINES pre-check above
+  // Iteration budget bounds total CPU. diffLines's MAX_DIFF_LINES pre-check
   // bounds M+N, which transitively caps D (edit distance ≤ M+N ≤ MAX_DIFF_LINES) and
   // trace memory (snapshots × v-array size). Together they subsume the design's
   // MAX_DIFF_EDIT_DISTANCE constant, which remains exported for documentation.
@@ -150,7 +152,7 @@ function computeMyersTrace(
     for (let k = -d; k <= d; k += 2) {
       iterations++;
       if (iterations > iterationBudget) return undefined;
-      const snake = advanceSnake(oursLines, theirsLines, v, offset, d, k, eq);
+      const snake = advanceSnake(oursLength, theirsLength, v, offset, d, k, eq);
       v[k + offset] = snake.x;
       if (snake.x >= M && snake.y >= N) {
         return { trace, totalD: d };
@@ -257,14 +259,81 @@ function wholeFileFallback(
   return { hunks, oursLines, theirsLines, degraded: true };
 }
 
+// String.fromCharCode chunk size — comfortably under every engine's per-call
+// argument-count ceiling, so a large normalized line never throws.
+const BINARY_STRING_CHUNK = 8_192;
+
+// A lossless byte->string projection (each byte maps 1:1 to a UTF-16 code
+// unit), used only as an exact Map key for line interning below.
+function binaryStringOf(bytes: Uint8Array): string {
+  // NOTE: this line's EqualityOperator mutant relaxing `<=` to `<` is equivalent at the boundary (bytes.length === BINARY_STRING_CHUNK): the fast path returns `String.fromCharCode(...bytes)` directly, while the mutated guard sends that exact input through the chunked loop below with a single BINARY_STRING_CHUNK-sized chunk (i=0 only), which builds the identical string via one `out += String.fromCharCode(...bytes.subarray(0, BINARY_STRING_CHUNK))`. Left unannotated because the sibling `>` variant on this same line is a real, killed mutant, and Stryker's next-line disable can't distinguish variant from variant of the same mutator.
+  if (bytes.length <= BINARY_STRING_CHUNK) return String.fromCharCode(...bytes);
+  // Stryker disable next-line StringLiteral: equivalent — the seed is a fixed
+  // literal `out` accumulates onto via `+=`; every call gets the identical
+  // corrupted prefix, so relative equality/inequality between any two interned
+  // keys (the only thing callers observe — the string itself is never surfaced)
+  // is unchanged. A length-based collision with a fast-path (uncorrupted, ≤8192-
+  // char) key is also impossible: a corrupted key is always strictly longer than
+  // BINARY_STRING_CHUNK + the placeholder text, so its length alone rules out
+  // matching any fast-path key.
+  let out = '';
+  for (let i = 0; i < bytes.length; i += BINARY_STRING_CHUNK) {
+    out += String.fromCharCode(...bytes.subarray(i, i + BINARY_STRING_CHUNK));
+  }
+  return out;
+}
+
+// Normalize once per line and assign a shared int id (exact-key, no hashing —
+// the Myers alignment for the withStat/patch path must be byte-identical to
+// the un-interned comparison, so an approximate key is not an option here).
+function internOne(line: Uint8Array, key: LineKey, table: Map<string, number>): number {
+  const signature = binaryStringOf(normalizeLine(line, key));
+  const existing = table.get(signature);
+  if (existing !== undefined) return existing;
+  const id = table.size;
+  table.set(signature, id);
+  return id;
+}
+
+function internLines(
+  oursLines: ReadonlyArray<Uint8Array>,
+  theirsLines: ReadonlyArray<Uint8Array>,
+  key: LineKey,
+): { readonly oursIds: Int32Array; readonly theirsIds: Int32Array } {
+  const table = new Map<string, number>();
+  const oursIds = new Int32Array(oursLines.length);
+  const theirsIds = new Int32Array(theirsLines.length);
+  for (let i = 0; i < oursLines.length; i++) oursIds[i] = internOne(oursLines[i]!, key, table);
+  for (let j = 0; j < theirsLines.length; j++)
+    theirsIds[j] = internOne(theirsLines[j]!, key, table);
+  return { oursIds, theirsIds };
+}
+
+/**
+ * Positional equality for the Myers core. Without a `lineKey`, a plain byte
+ * comparison is already cheap. With one active, every line is normalized and
+ * interned to an int ONCE up front (git's approach) instead of re-normalizing
+ * on every snake comparison Myers makes — collapsing the repeat-allocation/GC
+ * cost the string/byte-array path pays per comparison.
+ */
+function buildLineEquality(
+  oursLines: ReadonlyArray<Uint8Array>,
+  theirsLines: ReadonlyArray<Uint8Array>,
+  lineKey: LineKey | undefined,
+): LineEq {
+  if (lineKey === undefined) {
+    return (i, j) => bytesEqual(oursLines[i]!, theirsLines[j]!);
+  }
+  const { oursIds, theirsIds } = internLines(oursLines, theirsLines, lineKey);
+  return (i, j) => oursIds[i] === theirsIds[j];
+}
+
 export function diffLines(
   ours: Uint8Array,
   theirs: Uint8Array,
   options?: LineDiffOptions,
 ): LineDiff {
   const lineKey = options?.lineKey;
-  const eq: LineEq = lineKey ? (a, b) => linesEqualUnder(a, b, lineKey) : bytesEqual;
-
   const oursLines = splitLines(ours);
   const theirsLines = splitLines(theirs);
   const M = oursLines.length;
@@ -279,7 +348,14 @@ export function diffLines(
     };
   }
 
-  const myers = computeMyersTrace(oursLines, theirsLines, eq);
+  // Interning every line is O(M+N) work — skip it entirely when the trace
+  // computation would refuse the input anyway.
+  if (M + N > MAX_DIFF_LINES) {
+    return wholeFileFallback(oursLines, theirsLines);
+  }
+
+  const eq = buildLineEquality(oursLines, theirsLines, lineKey);
+  const myers = computeMyersTrace(M, N, eq);
   if (myers === undefined) {
     return wholeFileFallback(oursLines, theirsLines);
   }

@@ -2,11 +2,14 @@
  * Internal object resolver — loose-first-then-pack, iterative delta walker.
  * Consumed only by readObject.
  */
-import { operationAborted } from '../../domain/error.js';
+import { operationAborted, TsgitError } from '../../domain/error.js';
 import { objectHashMismatch, objectNotFound, objectTooLarge } from '../../domain/objects/error.js';
 import {
+  EMPTY_TREE_OID,
   type GitObject,
+  type HashConfig,
   type ObjectId,
+  ObjectId as ObjectIdFactory,
   parseHeader,
   parseObject,
   serializeObject,
@@ -22,8 +25,26 @@ import {
   readDeltaTargetSize,
 } from '../../domain/storage/index.js';
 import type { Context } from '../../ports/context.js';
+import { forgetLooseOidPrefix, probeLooseOid } from './internal/loose-oid-cache.js';
 import { nextOffsetForEntry, type PackLookupHit, type PackRegistry } from './pack-registry.js';
 import { commonGitDir, looseObjectPath } from './path-layout.js';
+
+/**
+ * Git treats the empty tree as a virtual, always-present object — resolvable
+ * anywhere a tree-ish is valid even though it was never written to disk. The
+ * loose-format content `tree 0\0` (7 bytes, zero content bytes) hashes to the
+ * empty-tree oid for the active algorithm by construction, so `verifyHash`
+ * holds trivially and no size cap can trip (content length is 0). Scope is
+ * ONLY the empty tree — the empty blob is not virtual and still misses.
+ */
+const EMPTY_TREE_BYTES = new TextEncoder().encode('tree 0\0');
+const EMPTY_TREE_OID_SHA256: ObjectId = ObjectIdFactory.from(
+  '6ef19b41225c5369f1c104d45d8d85efa9b057b53b14b4b9b939dd74decc5321',
+);
+
+function emptyTreeOid(hash: HashConfig): ObjectId {
+  return hash.digestLength === 32 ? EMPTY_TREE_OID_SHA256 : EMPTY_TREE_OID;
+}
 
 export async function resolveObject(
   ctx: Context,
@@ -33,6 +54,14 @@ export async function resolveObject(
   maxBytes?: number,
 ): Promise<GitObject> {
   checkAborted(ctx);
+  if (id === emptyTreeOid(ctx.hashConfig)) {
+    return parseObject(id, EMPTY_TREE_BYTES, ctx.hashConfig);
+  }
+  const cached = ctx.deltaCache.get(id);
+  if (cached !== undefined) {
+    enforceCachedCap(id, cached, maxBytes);
+    return finalize(ctx, id, cached, verifyHash);
+  }
   const loose = await tryLoose(ctx, id);
   if (loose !== undefined) {
     checkAborted(ctx);
@@ -146,10 +175,29 @@ function checkAborted(ctx: Context): void {
 }
 
 async function tryLoose(ctx: Context, id: ObjectId): Promise<Uint8Array | undefined> {
-  const path = looseObjectPath(commonGitDir(ctx), id);
-  if (!(await ctx.fs.exists(path))) return undefined;
-  const compressed = await ctx.fs.read(path);
+  const compressed = await readLooseCompressed(ctx, id);
+  if (compressed === undefined) return undefined;
   return ctx.compressor.inflate(compressed);
+}
+
+/**
+ * Membership-gated loose read. A cached HIT whose file has vanished (an
+ * external pruner — `git gc` — removed it between the readdir and this
+ * read) is git-faithfully a MISS: drop the stale set and fall through to
+ * the pack, exactly as git's loose-open ENOENT does.
+ */
+async function readLooseCompressed(ctx: Context, id: ObjectId): Promise<Uint8Array | undefined> {
+  if (!(await probeLooseOid(ctx, id))) return undefined;
+  const path = looseObjectPath(commonGitDir(ctx), id);
+  try {
+    return await ctx.fs.read(path);
+  } catch (error) {
+    if (error instanceof TsgitError && error.data.code === 'FILE_NOT_FOUND') {
+      forgetLooseOidPrefix(ctx, id);
+      return undefined;
+    }
+    throw error;
+  }
 }
 
 /**
@@ -161,9 +209,7 @@ export async function looseCompressedBytes(
   ctx: Context,
   id: ObjectId,
 ): Promise<Uint8Array | undefined> {
-  const path = looseObjectPath(commonGitDir(ctx), id);
-  if (!(await ctx.fs.exists(path))) return undefined;
-  return ctx.fs.read(path);
+  return readLooseCompressed(ctx, id);
 }
 
 async function finalize(
@@ -349,7 +395,9 @@ export async function readEntryHeaderWithChunk(
   }
   // Read exactly the bytes belonging to this entry: [entryOffset, nextOffset).
   // REF_DELTA base-id length follows the active hash algorithm (SHA-1=20, SHA-256=32).
-  const chunk = await ctx.fs.readSlice(hit.pack.packPath, hit.offset, sliceLength);
+  // Routed through the pack's persistent handle (A4) — one `open` per pack for
+  // the whole chain walk, not one per step.
+  const chunk = await hit.pack.readSlice(hit.offset, sliceLength);
   const header = parsePackEntryHeader(chunk, 0, ctx.hashConfig);
   // parsePackEntryHeader was invoked with offset=0, so dataOffset is already
   // the position within the chunk where the zlib stream starts.

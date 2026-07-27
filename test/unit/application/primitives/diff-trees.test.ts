@@ -1,11 +1,23 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { diffTrees } from '../../../../src/application/primitives/diff-trees.js';
+import * as flattenTreeMod from '../../../../src/application/primitives/flatten-tree.js';
+import * as materialisePatchFilesMod from '../../../../src/application/primitives/materialise-patch-files.js';
+import * as readObjectMod from '../../../../src/application/primitives/read-object.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../src/application/primitives/write-tree.js';
+import type { LineKey, WhitespaceMode } from '../../../../src/domain/diff/index.js';
 import { MAX_SCORE } from '../../../../src/domain/diff/similarity.js';
+import * as domainTreeDiffMod from '../../../../src/domain/diff/tree-diff.js';
+import * as encodingMod from '../../../../src/domain/objects/encoding.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
-import type { Blob, FileMode, ObjectId } from '../../../../src/domain/objects/index.js';
+import type {
+  Blob,
+  FileMode,
+  FilePath,
+  ObjectId,
+  Tree,
+} from '../../../../src/domain/objects/index.js';
 import type { CommandRunner } from '../../../../src/ports/command-runner.js';
 import { buildSeededContext, instrumentedContext } from './fixtures.js';
 
@@ -274,6 +286,92 @@ describe('diffTrees', () => {
             newMode: FILE_MODE.SYMLINK,
           },
         ]);
+      });
+    });
+  });
+
+  describe('Given recursive=true and an unchanged (TREESAME) sub-directory alongside a changed file', () => {
+    describe('When diffTrees is called', () => {
+      it('Then flattenTree is never invoked (the TREESAME subtree is pruned before any read)', async () => {
+        // Arrange — `big/` is byte-identical (same tree oid) on both sides;
+        // only the root-level file differs.
+        const ctx = await buildSeededContext();
+        const unchangedSubId = await subTree(
+          ctx,
+          'inner.txt',
+          await blob(ctx, 'inner'),
+          FILE_MODE.REGULAR,
+        );
+        const oldFileId = await blob(ctx, 'old');
+        const newFileId = await blob(ctx, 'new');
+        const before = await writeTree(ctx, [
+          { name: 'big', mode: FILE_MODE.DIRECTORY, id: unchangedSubId },
+          { name: 'root.txt', mode: FILE_MODE.REGULAR, id: oldFileId },
+        ]);
+        const after = await writeTree(ctx, [
+          { name: 'big', mode: FILE_MODE.DIRECTORY, id: unchangedSubId },
+          { name: 'root.txt', mode: FILE_MODE.REGULAR, id: newFileId },
+        ]);
+        const flattenSpy = vi.spyOn(flattenTreeMod, 'flattenTree');
+
+        // Act
+        const result = await diffTrees(ctx, before, after, { recursive: true });
+
+        // Assert — no subtree was ever flattened; only the differing file changed.
+        expect(flattenSpy).not.toHaveBeenCalled();
+        expect(result.changes).toEqual([
+          {
+            type: 'modify',
+            path: 'root.txt',
+            oldId: oldFileId,
+            newId: newFileId,
+            oldMode: FILE_MODE.REGULAR,
+            newMode: FILE_MODE.REGULAR,
+          },
+        ]);
+        flattenSpy.mockRestore();
+      });
+    });
+  });
+
+  describe('Given recursive=true and a large unchanged sub-directory alongside a small change', () => {
+    describe('When diffTrees is called', () => {
+      it('Then bytesToHex/decode calls scale with entries actually read, not the unchanged subtree size', async () => {
+        // Arrange — `big/` carries 20 unread entries; only `root.txt` differs.
+        const ctx = await buildSeededContext();
+        const manyEntries = [];
+        for (let i = 0; i < 20; i++) {
+          manyEntries.push({
+            name: `f${i}.txt`,
+            mode: FILE_MODE.REGULAR,
+            id: await blob(ctx, `content-${i}`),
+          });
+        }
+        const unchangedSubId = await writeTree(ctx, manyEntries);
+        const oldFileId = await blob(ctx, 'old');
+        const newFileId = await blob(ctx, 'new');
+        const before = await writeTree(ctx, [
+          { name: 'big', mode: FILE_MODE.DIRECTORY, id: unchangedSubId },
+          { name: 'root.txt', mode: FILE_MODE.REGULAR, id: oldFileId },
+        ]);
+        const after = await writeTree(ctx, [
+          { name: 'big', mode: FILE_MODE.DIRECTORY, id: unchangedSubId },
+          { name: 'root.txt', mode: FILE_MODE.REGULAR, id: newFileId },
+        ]);
+        const bytesToHexSpy = vi.spyOn(encodingMod, 'bytesToHex');
+        const decodeSpy = vi.spyOn(encodingMod, 'decode');
+
+        // Act
+        const result = await diffTrees(ctx, before, after, { recursive: true });
+
+        // Assert — well under the 20-entry unchanged subtree: only the two
+        // root-level trees (2 entries each side) were ever parsed (4 oid
+        // conversions; 10 decodes = 2 headers + 2 mode/name pairs per tree).
+        expect(result.changes).toHaveLength(1);
+        expect(bytesToHexSpy.mock.calls.length).toBeLessThanOrEqual(4);
+        expect(decodeSpy.mock.calls.length).toBeLessThanOrEqual(10);
+        bytesToHexSpy.mockRestore();
+        decodeSpy.mockRestore();
       });
     });
   });
@@ -587,6 +685,37 @@ describe('diffTrees', () => {
     });
   });
 
+  describe('Given copies:"on" (not "harder") with treeA defined', () => {
+    describe('When diffTrees is called with detectRenames:true and renameOptions:{copies:"on"}', () => {
+      it('Then buildPreimage never flattens treeA (the copies!=="harder" guard is checked, not just treeA===undefined)', async () => {
+        // Arrange — treeA IS defined here (unlike the sibling "treeA undefined" tests
+        // above), isolating the left operand of buildPreimage's guard: only the
+        // copies-mode check can short-circuit flattenTree for this input.
+        const ctx = await buildSeededContext();
+        const blobId = await blob(ctx, 'file content\n');
+        const treeA = await writeTree(ctx, [
+          { name: 'orig.txt', mode: FILE_MODE.REGULAR, id: blobId },
+        ]);
+        const treeB = await writeTree(ctx, [
+          { name: 'orig.txt', mode: FILE_MODE.REGULAR, id: blobId },
+          { name: 'new.txt', mode: FILE_MODE.REGULAR, id: await blob(ctx, 'new\n') },
+        ]);
+        const flattenSpy = vi.spyOn(flattenTreeMod, 'flattenTree');
+
+        // Act
+        const result = await diffTrees(ctx, treeA, treeB, {
+          detectRenames: true,
+          renameOptions: { copies: 'on' },
+        });
+
+        // Assert — no preimage was built for a non-'harder' copies mode
+        expect(flattenSpy).not.toHaveBeenCalled();
+        expect(result.changes.filter((c) => c.type === 'add')).toHaveLength(1);
+        flattenSpy.mockRestore();
+      });
+    });
+  });
+
   describe('Given withStat is omitted and a one-line blob added', () => {
     describe('When diffTrees is called', () => {
       it('Then the change carries no count fields (tree-level only)', async () => {
@@ -892,6 +1021,65 @@ describe('diffTrees', () => {
     });
   });
 
+  describe('Given a type-change with identical content, ignoreWhitespace:all, and withStat:true', () => {
+    describe('When diffTrees is called', () => {
+      it('Then the type-change is never dropped (shouldDrop is type-gated, not just added/deleted/binary)', async () => {
+        // Arrange — same content on both sides (added=0, deleted=0, binary=false),
+        // only the mode differs (regular -> symlink); withStat:true routes through
+        // applyStatPass, which calls shouldDrop directly for every file (unlike the
+        // streaming predicate path, which filters non-modify changes before ever
+        // reaching shouldDrop)
+        const ctx = await buildSeededContext();
+        const fileId = await blob(ctx, '   ');
+        const linkId = await blob(ctx, '   ');
+        const before = await writeTree(ctx, [{ name: 'x', mode: FILE_MODE.REGULAR, id: fileId }]);
+        const after = await writeTree(ctx, [{ name: 'x', mode: FILE_MODE.SYMLINK, id: linkId }]);
+
+        // Act
+        const result = await diffTrees(ctx, before, after, {
+          ignoreWhitespace: 'all',
+          withStat: true,
+        });
+
+        // Assert — type-change survives despite added===0 && deleted===0 && !binary
+        expect(result.changes).toHaveLength(1);
+        expect(result.changes[0]?.type).toBe('type-change');
+      });
+    });
+  });
+
+  describe('Given a pure-deletion modify (added=0, deleted>0), ignoreWhitespace:all, and withStat:true', () => {
+    describe('When diffTrees is called', () => {
+      it('Then the modify is kept (shouldDrop requires BOTH added===0 AND deleted===0)', async () => {
+        // Arrange — one line removed, nothing added; withStat:true routes through
+        // applyStatPass so shouldDrop's own deleted===0 check (not the streaming
+        // predicate) decides the verdict
+        const ctx = await buildSeededContext();
+        const oldId = await blob(ctx, 'a\nXYZ\n');
+        const newId = await blob(ctx, 'a\n');
+        const before = await writeTree(ctx, [
+          { name: 'f.txt', mode: FILE_MODE.REGULAR, id: oldId },
+        ]);
+        const after = await writeTree(ctx, [{ name: 'f.txt', mode: FILE_MODE.REGULAR, id: newId }]);
+
+        // Act
+        const result = await diffTrees(ctx, before, after, {
+          ignoreWhitespace: 'all',
+          withStat: true,
+        });
+
+        // Assert — kept, with the real deleted count intact
+        expect(result.changes).toHaveLength(1);
+        expect(result.changes[0]).toMatchObject({
+          type: 'modify',
+          added: 0,
+          deleted: 1,
+          binary: false,
+        });
+      });
+    });
+  });
+
   describe('Given no mode and no withStat and blobs in trees', () => {
     describe('When diffTrees is called', () => {
       it('Then no blob reads occur (OID-only fast path)', async () => {
@@ -1087,6 +1275,909 @@ describe('diffTrees', () => {
           deleted: 0,
           binary: true,
         });
+      });
+    });
+  });
+
+  describe('Given a whitespace-only modify with ignoreWhitespace:all and withStat omitted', () => {
+    describe('When diffTrees is called', () => {
+      it('Then the modify is dropped WITHOUT materialising blobs (streaming predicate)', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const oldId = await blob(ctx, 'hello world\n');
+        const newId = await blob(ctx, 'hello  world\n');
+        const before = await writeTree(ctx, [
+          { name: 'f.txt', mode: FILE_MODE.REGULAR, id: oldId },
+        ]);
+        const after = await writeTree(ctx, [{ name: 'f.txt', mode: FILE_MODE.REGULAR, id: newId }]);
+        const materialiseSpy = vi.spyOn(materialisePatchFilesMod, 'materialisePatchFiles');
+
+        // Act
+        const result = await diffTrees(ctx, before, after, { ignoreWhitespace: 'all' });
+
+        // Assert — dropped via the streaming predicate; the full materialise pass never ran
+        expect(result.changes).toHaveLength(0);
+        expect(materialiseSpy).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('Given a single unterminated line longer than the line cap, whitespace-only change', () => {
+    describe('When diffTrees is called with ignoreWhitespace:all and withStat omitted', () => {
+      it('Then the file is kept (binary via the incremental cap, never buffered whole)', async () => {
+        // Arrange — one 70,000-byte line with no LF: over MAX_LINE_BYTES, so
+        // the predicate must flag binary from the PENDING bytes and bail early
+        const ctx = await buildSeededContext();
+        const longLine = 'x'.repeat(70_000);
+        const oldId = await blob(ctx, `${longLine} a`);
+        const newId = await blob(ctx, `${longLine}  a`);
+        const before = await writeTree(ctx, [
+          { name: 'big.txt', mode: FILE_MODE.REGULAR, id: oldId },
+        ]);
+        const after = await writeTree(ctx, [
+          { name: 'big.txt', mode: FILE_MODE.REGULAR, id: newId },
+        ]);
+
+        // Act
+        const result = await diffTrees(ctx, before, after, { ignoreWhitespace: 'all' });
+
+        // Assert — a binary side is never dropped, matching the stat path
+        expect(result.changes).toHaveLength(1);
+      });
+    });
+  });
+
+  describe('Given a real (non-whitespace-only) modify with ignoreWhitespace:all and withStat omitted', () => {
+    describe('When diffTrees is called', () => {
+      it('Then the modify survives WITHOUT materialising blobs (streaming predicate)', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const oldId = await blob(ctx, 'hello\n');
+        const newId = await blob(ctx, 'world\n');
+        const before = await writeTree(ctx, [
+          { name: 'f.txt', mode: FILE_MODE.REGULAR, id: oldId },
+        ]);
+        const after = await writeTree(ctx, [{ name: 'f.txt', mode: FILE_MODE.REGULAR, id: newId }]);
+        const materialiseSpy = vi.spyOn(materialisePatchFilesMod, 'materialisePatchFiles');
+
+        // Act
+        const result = await diffTrees(ctx, before, after, { ignoreWhitespace: 'all' });
+
+        // Assert — real content change survives; the full materialise pass never ran
+        expect(result.changes).toHaveLength(1);
+        expect(materialiseSpy).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('Given a whitespace-only modify with ignoreWhitespace:all and withStat:true', () => {
+    describe('When diffTrees is called', () => {
+      it('Then materialisePatchFiles IS called (the stat path keeps the full pass)', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const oldId = await blob(ctx, 'hello world\n');
+        const newId = await blob(ctx, 'hello  world\n');
+        const before = await writeTree(ctx, [
+          { name: 'f.txt', mode: FILE_MODE.REGULAR, id: oldId },
+        ]);
+        const after = await writeTree(ctx, [{ name: 'f.txt', mode: FILE_MODE.REGULAR, id: newId }]);
+        const materialiseSpy = vi.spyOn(materialisePatchFilesMod, 'materialisePatchFiles');
+
+        // Act
+        await diffTrees(ctx, before, after, { ignoreWhitespace: 'all', withStat: true });
+
+        // Assert
+        expect(materialiseSpy).toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('Given the whitespace drop verdict across every LineKey × ignoreBlankLines combination', () => {
+    describe('When diffTrees is called with withStat omitted vs withStat:true', () => {
+      const enc = new TextEncoder();
+      const REAL_CHANGE = {
+        oldBytes: enc.encode('real one\n'),
+        newBytes: enc.encode('real two\n'),
+      };
+
+      const wsOnlyPairFor = (
+        mode: WhitespaceMode,
+        ignoreCrAtEol: boolean,
+      ): { readonly oldBytes: Uint8Array; readonly newBytes: Uint8Array } => {
+        if (mode === 'all')
+          return { oldBytes: enc.encode('a b\n'), newBytes: enc.encode('a  b\n') };
+        if (mode === 'change') {
+          return { oldBytes: enc.encode('a b\n'), newBytes: enc.encode('a    b\n') };
+        }
+        if (mode === 'at-eol')
+          return { oldBytes: enc.encode('a\n'), newBytes: enc.encode('a   \n') };
+        // mode 'none' only routes through the predicate when ignoreCrAtEol is active.
+        return ignoreCrAtEol
+          ? { oldBytes: enc.encode('a\r\n'), newBytes: enc.encode('a\n') }
+          : REAL_CHANGE;
+      };
+
+      const ACTIVE_KEYS: ReadonlyArray<LineKey> = [
+        { mode: 'all', ignoreCrAtEol: false },
+        { mode: 'all', ignoreCrAtEol: true },
+        { mode: 'change', ignoreCrAtEol: false },
+        { mode: 'change', ignoreCrAtEol: true },
+        { mode: 'at-eol', ignoreCrAtEol: false },
+        { mode: 'at-eol', ignoreCrAtEol: true },
+        { mode: 'none', ignoreCrAtEol: true },
+      ];
+
+      const matrix = ACTIVE_KEYS.flatMap((key) =>
+        [true, false].map((ignoreBlankLines) => ({ key, ignoreBlankLines })),
+      );
+
+      it.each(matrix)(
+        'Then the predicate path and the stat path agree ($key.mode/crAtEol=$key.ignoreCrAtEol/blank=$ignoreBlankLines)',
+        async ({ key, ignoreBlankLines }) => {
+          // Arrange
+          const wsOnly = wsOnlyPairFor(key.mode, key.ignoreCrAtEol);
+          const options = {
+            ...(key.mode !== 'none' ? { ignoreWhitespace: key.mode } : {}),
+            ...(key.ignoreCrAtEol ? { ignoreCrAtEol: true } : {}),
+            ...(ignoreBlankLines ? { ignoreBlankLines: true } : {}),
+          };
+
+          for (const pair of [wsOnly, REAL_CHANGE]) {
+            const ctx = await buildSeededContext();
+            const oldId = await writeObject(ctx, {
+              type: 'blob',
+              content: pair.oldBytes,
+              id: '' as ObjectId,
+            });
+            const newId = await writeObject(ctx, {
+              type: 'blob',
+              content: pair.newBytes,
+              id: '' as ObjectId,
+            });
+            const before = await writeTree(ctx, [
+              { name: 'f.txt', mode: FILE_MODE.REGULAR, id: oldId },
+            ]);
+            const after = await writeTree(ctx, [
+              { name: 'f.txt', mode: FILE_MODE.REGULAR, id: newId },
+            ]);
+
+            // Act
+            const predicateResult = await diffTrees(ctx, before, after, options);
+            const statResult = await diffTrees(ctx, before, after, { ...options, withStat: true });
+
+            // Assert — same survivor count from both paths
+            expect(predicateResult.changes.length).toBe(statResult.changes.length);
+          }
+        },
+      );
+    });
+  });
+
+  describe('Given a blank-only line insert under ignoreWhitespace:all with ignoreBlankLines', () => {
+    describe('When diffTrees is called with withStat omitted vs withStat:true', () => {
+      it('Then both paths drop the change (blank insert is insignificant under all four flags)', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const oldId = await blob(ctx, 'hello\n');
+        const newId = await blob(ctx, 'hello\n   \n');
+        const before = await writeTree(ctx, [
+          { name: 'f.txt', mode: FILE_MODE.REGULAR, id: oldId },
+        ]);
+        const after = await writeTree(ctx, [{ name: 'f.txt', mode: FILE_MODE.REGULAR, id: newId }]);
+        const options = { ignoreWhitespace: 'all' as const, ignoreBlankLines: true };
+
+        // Act
+        const predicateResult = await diffTrees(ctx, before, after, options);
+        const statResult = await diffTrees(ctx, before, after, { ...options, withStat: true });
+
+        // Assert
+        expect(predicateResult.changes).toHaveLength(0);
+        expect(statResult.changes).toHaveLength(0);
+      });
+    });
+  });
+
+  describe('Given a blank-only line insert under ignoreWhitespace:all WITHOUT ignoreBlankLines', () => {
+    describe('When diffTrees is called with withStat omitted vs withStat:true', () => {
+      it('Then both paths keep the change (blank-line count is significant without ignoreBlankLines)', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const oldId = await blob(ctx, 'hello\n');
+        const newId = await blob(ctx, 'hello\n\n');
+        const before = await writeTree(ctx, [
+          { name: 'f.txt', mode: FILE_MODE.REGULAR, id: oldId },
+        ]);
+        const after = await writeTree(ctx, [{ name: 'f.txt', mode: FILE_MODE.REGULAR, id: newId }]);
+        const options = { ignoreWhitespace: 'all' as const };
+
+        // Act
+        const predicateResult = await diffTrees(ctx, before, after, options);
+        const statResult = await diffTrees(ctx, before, after, { ...options, withStat: true });
+
+        // Assert
+        expect(predicateResult.changes).toHaveLength(1);
+        expect(statResult.changes).toHaveLength(1);
+      });
+    });
+  });
+
+  describe('Given a non-recursive diff where a sub-directory changed (tree-oid modify) and ignoreWhitespace is set', () => {
+    describe('When diffTrees is called without recursive', () => {
+      it('Then the tree-oid modify is dropped instead of crashing (directory pairs cannot be line-diffed, matching `git diff-tree -w`)', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const subBefore = await subTree(
+          ctx,
+          'inner.txt',
+          await blob(ctx, 'old content\n'),
+          FILE_MODE.REGULAR,
+        );
+        const subAfter = await subTree(
+          ctx,
+          'inner.txt',
+          await blob(ctx, 'new content\n'),
+          FILE_MODE.REGULAR,
+        );
+        const before = await writeTree(ctx, [
+          { name: 'sub', mode: FILE_MODE.DIRECTORY, id: subBefore },
+        ]);
+        const after = await writeTree(ctx, [
+          { name: 'sub', mode: FILE_MODE.DIRECTORY, id: subAfter },
+        ]);
+
+        // Act
+        const result = await diffTrees(ctx, before, after, { ignoreWhitespace: 'all' });
+
+        // Assert
+        expect(result.changes).toHaveLength(0);
+      });
+    });
+  });
+
+  describe('Given a non-recursive diff mixing a tree-oid modify (sub-directory) and a real top-level file change, with ignoreWhitespace set', () => {
+    describe('When diffTrees is called', () => {
+      it('Then only the tree-oid modify is dropped; the top-level file change survives', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const subBefore = await subTree(
+          ctx,
+          'inner.txt',
+          await blob(ctx, 'old\n'),
+          FILE_MODE.REGULAR,
+        );
+        const subAfter = await subTree(
+          ctx,
+          'inner.txt',
+          await blob(ctx, 'new\n'),
+          FILE_MODE.REGULAR,
+        );
+        const oldFileId = await blob(ctx, 'alpha\n');
+        const newFileId = await blob(ctx, 'beta\n');
+        const before = await writeTree(ctx, [
+          { name: 'root.txt', mode: FILE_MODE.REGULAR, id: oldFileId },
+          { name: 'sub', mode: FILE_MODE.DIRECTORY, id: subBefore },
+        ]);
+        const after = await writeTree(ctx, [
+          { name: 'root.txt', mode: FILE_MODE.REGULAR, id: newFileId },
+          { name: 'sub', mode: FILE_MODE.DIRECTORY, id: subAfter },
+        ]);
+
+        // Act
+        const result = await diffTrees(ctx, before, after, { ignoreWhitespace: 'all' });
+
+        // Assert
+        expect(result.changes).toEqual([
+          {
+            type: 'modify',
+            path: 'root.txt',
+            oldId: oldFileId,
+            newId: newFileId,
+            oldMode: FILE_MODE.REGULAR,
+            newMode: FILE_MODE.REGULAR,
+          },
+        ]);
+      });
+    });
+  });
+
+  describe('Given a non-recursive diff where a whole new sub-directory was added (tree-oid add) and ignoreWhitespace is set', () => {
+    describe('When diffTrees is called without recursive', () => {
+      it('Then the tree-oid add is dropped (matching `git diff-tree -w`, which never shows a directory-mode entry)', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const subId = await subTree(
+          ctx,
+          'inner.txt',
+          await blob(ctx, 'line1\n'),
+          FILE_MODE.REGULAR,
+        );
+        const empty = await writeTree(ctx, []);
+        const withSub = await writeTree(ctx, [
+          { name: 'sub', mode: FILE_MODE.DIRECTORY, id: subId },
+        ]);
+
+        // Act
+        const result = await diffTrees(ctx, empty, withSub, { ignoreWhitespace: 'all' });
+
+        // Assert
+        expect(result.changes).toHaveLength(0);
+      });
+    });
+  });
+
+  describe('Given a non-recursive diff where a whole sub-directory was deleted (tree-oid delete) and ignoreWhitespace is set', () => {
+    describe('When diffTrees is called without recursive', () => {
+      it('Then the tree-oid delete is dropped (matching `git diff-tree -w`, which never shows a directory-mode entry)', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const subId = await subTree(
+          ctx,
+          'inner.txt',
+          await blob(ctx, 'line1\n'),
+          FILE_MODE.REGULAR,
+        );
+        const withSub = await writeTree(ctx, [
+          { name: 'sub', mode: FILE_MODE.DIRECTORY, id: subId },
+        ]);
+        const empty = await writeTree(ctx, []);
+
+        // Act
+        const result = await diffTrees(ctx, withSub, empty, { ignoreWhitespace: 'all' });
+
+        // Assert
+        expect(result.changes).toHaveLength(0);
+      });
+    });
+  });
+
+  describe('Given a non-recursive diff where a sub-directory changed (tree-oid modify) and withStat:true', () => {
+    describe('When diffTrees is called without recursive', () => {
+      it('Then the tree-oid modify is expanded into the real full-path leaf change with line counts (matching `git diff-tree --numstat`, which auto-recurses)', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const subBefore = await subTree(
+          ctx,
+          'inner.txt',
+          await blob(ctx, 'old content\n'),
+          FILE_MODE.REGULAR,
+        );
+        const subAfter = await subTree(
+          ctx,
+          'inner.txt',
+          await blob(ctx, 'new content\n'),
+          FILE_MODE.REGULAR,
+        );
+        const before = await writeTree(ctx, [
+          { name: 'sub', mode: FILE_MODE.DIRECTORY, id: subBefore },
+        ]);
+        const after = await writeTree(ctx, [
+          { name: 'sub', mode: FILE_MODE.DIRECTORY, id: subAfter },
+        ]);
+
+        // Act
+        const result = await diffTrees(ctx, before, after, { withStat: true });
+
+        // Assert
+        expect(result.changes).toHaveLength(1);
+        expect(result.changes[0]).toMatchObject({
+          type: 'modify',
+          path: 'sub/inner.txt',
+          added: 1,
+          deleted: 1,
+          binary: false,
+        });
+      });
+    });
+  });
+
+  describe('Given a non-recursive diff where a whole new sub-directory was added and withStat:true', () => {
+    describe('When diffTrees is called without recursive', () => {
+      it('Then the tree-oid add is expanded into per-file leaf adds with line counts (matching `git diff-tree --numstat`)', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const aId = await blob(ctx, 'line1\n');
+        const bId = await blob(ctx, 'line2\n');
+        const subId = await writeTree(ctx, [
+          { name: 'a.txt', mode: FILE_MODE.REGULAR, id: aId },
+          { name: 'b.txt', mode: FILE_MODE.REGULAR, id: bId },
+        ]);
+        const empty = await writeTree(ctx, []);
+        const withSub = await writeTree(ctx, [
+          { name: 'sub', mode: FILE_MODE.DIRECTORY, id: subId },
+        ]);
+
+        // Act
+        const result = await diffTrees(ctx, empty, withSub, { withStat: true });
+
+        // Assert
+        expect(result.changes).toHaveLength(2);
+        expect(result.changes).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              type: 'add',
+              newPath: 'sub/a.txt',
+              added: 1,
+              deleted: 0,
+              binary: false,
+            }),
+            expect.objectContaining({
+              type: 'add',
+              newPath: 'sub/b.txt',
+              added: 1,
+              deleted: 0,
+              binary: false,
+            }),
+          ]),
+        );
+      });
+    });
+  });
+
+  describe('Given a non-recursive diff where a whole sub-directory was deleted and withStat:true', () => {
+    describe('When diffTrees is called without recursive', () => {
+      it('Then the tree-oid delete is expanded into per-file leaf deletes with line counts (matching `git diff-tree --numstat`)', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const aId = await blob(ctx, 'line1\n');
+        const bId = await blob(ctx, 'line2\n');
+        const subId = await writeTree(ctx, [
+          { name: 'a.txt', mode: FILE_MODE.REGULAR, id: aId },
+          { name: 'b.txt', mode: FILE_MODE.REGULAR, id: bId },
+        ]);
+        const withSub = await writeTree(ctx, [
+          { name: 'sub', mode: FILE_MODE.DIRECTORY, id: subId },
+        ]);
+        const empty = await writeTree(ctx, []);
+
+        // Act
+        const result = await diffTrees(ctx, withSub, empty, { withStat: true });
+
+        // Assert
+        expect(result.changes).toHaveLength(2);
+        expect(result.changes).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              type: 'delete',
+              oldPath: 'sub/a.txt',
+              added: 0,
+              deleted: 1,
+              binary: false,
+            }),
+            expect.objectContaining({
+              type: 'delete',
+              oldPath: 'sub/b.txt',
+              added: 0,
+              deleted: 1,
+              binary: false,
+            }),
+          ]),
+        );
+      });
+    });
+  });
+
+  describe('Given a non-recursive diff where a sub-directory changed with real content, ignoreWhitespace:all and withStat:true', () => {
+    describe('When diffTrees is called', () => {
+      it('Then the change survives expanded with real counts (matching `git diff-tree -w --numstat`, which recurses then keeps the real change)', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const subBefore = await subTree(
+          ctx,
+          'inner.txt',
+          await blob(ctx, 'old content\n'),
+          FILE_MODE.REGULAR,
+        );
+        const subAfter = await subTree(
+          ctx,
+          'inner.txt',
+          await blob(ctx, 'new content\n'),
+          FILE_MODE.REGULAR,
+        );
+        const before = await writeTree(ctx, [
+          { name: 'sub', mode: FILE_MODE.DIRECTORY, id: subBefore },
+        ]);
+        const after = await writeTree(ctx, [
+          { name: 'sub', mode: FILE_MODE.DIRECTORY, id: subAfter },
+        ]);
+
+        // Act
+        const result = await diffTrees(ctx, before, after, {
+          ignoreWhitespace: 'all',
+          withStat: true,
+        });
+
+        // Assert
+        expect(result.changes).toHaveLength(1);
+        expect(result.changes[0]).toMatchObject({
+          type: 'modify',
+          path: 'sub/inner.txt',
+          added: 1,
+          deleted: 1,
+          binary: false,
+        });
+      });
+    });
+  });
+
+  describe('Given a non-recursive diff where a sub-directory changed only by whitespace, ignoreWhitespace:all and withStat:true', () => {
+    describe('When diffTrees is called', () => {
+      it('Then the expanded leaf change is dropped (0 changes), not left as an unexpanded tree-oid entry', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const subBefore = await subTree(
+          ctx,
+          'inner.txt',
+          await blob(ctx, 'hello world\n'),
+          FILE_MODE.REGULAR,
+        );
+        const subAfter = await subTree(
+          ctx,
+          'inner.txt',
+          await blob(ctx, 'hello  world\n'),
+          FILE_MODE.REGULAR,
+        );
+        const before = await writeTree(ctx, [
+          { name: 'sub', mode: FILE_MODE.DIRECTORY, id: subBefore },
+        ]);
+        const after = await writeTree(ctx, [
+          { name: 'sub', mode: FILE_MODE.DIRECTORY, id: subAfter },
+        ]);
+
+        // Act
+        const result = await diffTrees(ctx, before, after, {
+          ignoreWhitespace: 'all',
+          withStat: true,
+        });
+
+        // Assert
+        expect(result.changes).toHaveLength(0);
+      });
+    });
+  });
+
+  // --- attribute-marked drop predicate, no withStat (materialisedShouldDrop unit coverage) ---
+
+  describe('Given a modify change with a -diff attribute, ignoreWhitespace:all and withStat omitted', () => {
+    describe('When diffTrees is called', () => {
+      it('Then the change is kept (materialised attribute verdict overrides the streaming whitespace-only drop)', async () => {
+        // Arrange — -diff forces binary on the numstat surface; shouldDrop only fires
+        // for non-binary content, so the materialised path must KEEP this pair even
+        // though its raw bytes are whitespace-only (which the streaming predicate,
+        // blind to attributes, would otherwise drop).
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, 'f.txt -diff\n');
+        const oldId = await blob(ctx, 'hello world\n');
+        const newId = await blob(ctx, 'hello  world\n');
+        const before = await writeTree(ctx, [
+          { name: 'f.txt', mode: FILE_MODE.REGULAR, id: oldId },
+        ]);
+        const after = await writeTree(ctx, [{ name: 'f.txt', mode: FILE_MODE.REGULAR, id: newId }]);
+
+        // Act
+        const result = await diffTrees(ctx, before, after, { ignoreWhitespace: 'all' });
+
+        // Assert — kept: -diff's binary override means shouldDrop's !stats.binary guard fails
+        expect(result.changes).toHaveLength(1);
+      });
+    });
+  });
+
+  describe('Given a bare-diff-attribute modify change whose whitespace-only verdict depends on lineKey normalization, withStat omitted', () => {
+    describe('When diffTrees is called with ignoreWhitespace:all', () => {
+      it('Then the change is dropped (materialisedShouldDrop forwards lineKeyActive into the stat pass)', async () => {
+        // Arrange — bare diff forces text (non-binary), so shouldDrop's verdict here
+        // hinges entirely on whether the lineKey normalization was actually applied.
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, 'f.txt diff\n');
+        const oldId = await blob(ctx, 'hello world\n');
+        const newId = await blob(ctx, 'hello  world\n');
+        const before = await writeTree(ctx, [
+          { name: 'f.txt', mode: FILE_MODE.REGULAR, id: oldId },
+        ]);
+        const after = await writeTree(ctx, [{ name: 'f.txt', mode: FILE_MODE.REGULAR, id: newId }]);
+
+        // Act
+        const result = await diffTrees(ctx, before, after, { ignoreWhitespace: 'all' });
+
+        // Assert — dropped: whitespace-only under normalization, forced non-binary
+        expect(result.changes).toHaveLength(0);
+      });
+    });
+  });
+
+  describe('Given a diff=collapse attribute with a textconv driver that converges divergent content, withStat omitted', () => {
+    describe('When diffTrees is called with ignoreWhitespace:all', () => {
+      it('Then the change is dropped (materialised textconv content is used, not the raw streaming bytes)', async () => {
+        // Arrange — raw content is a genuine difference (not whitespace-only); the
+        // textconv driver collapses BOTH sides to the identical bytes, so only the
+        // materialised (applyTextconv:true) path can conclude "dropped" here — the
+        // streaming predicate never applies textconv at all.
+        const collapsed = new TextEncoder().encode('same\n');
+        const runner: CommandRunner = { run: async () => ({ exitCode: 0, stdout: collapsed }) };
+        const ctx = createMemoryContext({ command: runner });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, '*.dat diff=collapse\n');
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[diff "collapse"]\n\ttextconv = collapse-cmd\n',
+        );
+        const oldId = await blob(ctx, 'apple\n');
+        const newId = await blob(ctx, 'banana\n');
+        const before = await writeTree(ctx, [
+          { name: 'file.dat', mode: FILE_MODE.REGULAR, id: oldId },
+        ]);
+        const after = await writeTree(ctx, [
+          { name: 'file.dat', mode: FILE_MODE.REGULAR, id: newId },
+        ]);
+
+        // Act
+        const result = await diffTrees(ctx, before, after, { ignoreWhitespace: 'all' });
+
+        // Assert — dropped: textconv output is byte-identical on both sides
+        expect(result.changes).toHaveLength(0);
+      });
+    });
+  });
+
+  // --- withPrefix identity short-circuit ---
+
+  describe('Given recursive=true and the domain diff yields a change at the root (prefix is empty)', () => {
+    describe('When diffTrees is called', () => {
+      it('Then the change is returned as the exact same object (withPrefix short-circuits, no reconstruction)', async () => {
+        // Arrange — mock the domain diff to return a known object reference; withPrefix('')
+        // is documented as a no-op, so the returned change must be THAT reference, not a
+        // structurally-equal `{...change}` copy.
+        const ctx = await buildSeededContext();
+        const before = await writeTree(ctx, []);
+        const after = await writeTree(ctx, []);
+        const sentinelChange = {
+          type: 'add' as const,
+          newPath: 'f.txt' as FilePath,
+          newId: 'a'.repeat(40) as ObjectId,
+          newMode: FILE_MODE.REGULAR,
+        };
+        const spy = vi
+          .spyOn(domainTreeDiffMod, 'diffTrees')
+          .mockReturnValue({ changes: [sentinelChange] });
+
+        // Act
+        const result = await diffTrees(ctx, before, after, { recursive: true });
+
+        // Assert
+        expect(result.changes[0]).toBe(sentinelChange);
+        spy.mockRestore();
+      });
+    });
+  });
+
+  // --- recursion safety rails: depth cap and cycle detection ---
+
+  describe('Given a recursive diff whose directory-modify chain is exactly 1025 levels deep', () => {
+    describe('When diffTrees is called with recursive:true', () => {
+      it('Then throws TREE_DEPTH_EXCEEDED (the guard fires before reading the 1026th level)', async () => {
+        // Arrange — build 1025 real nested directory-modify levels; the innermost one's
+        // entry points to a phantom (never-written) id on each side, so the depth guard
+        // must throw before diffChangedSubtree ever attempts to read it.
+        const ctx = await buildSeededContext();
+        const PHANTOM_OLD = 'b'.repeat(40) as ObjectId;
+        const PHANTOM_NEW = 'c'.repeat(40) as ObjectId;
+        let oldId: ObjectId = await subTree(ctx, 'sub', PHANTOM_OLD, FILE_MODE.DIRECTORY);
+        let newId: ObjectId = await subTree(ctx, 'sub', PHANTOM_NEW, FILE_MODE.DIRECTORY);
+        for (let i = 0; i < 1025; i++) {
+          oldId = await subTree(ctx, 'sub', oldId, FILE_MODE.DIRECTORY);
+          newId = await subTree(ctx, 'sub', newId, FILE_MODE.DIRECTORY);
+        }
+
+        // Act
+        let thrown: unknown;
+        try {
+          await diffTrees(ctx, oldId, newId, { recursive: true });
+          expect.unreachable();
+        } catch (error) {
+          thrown = error;
+        }
+
+        // Assert
+        const data = (thrown as { data: { code: string } }).data;
+        expect(data.code).toBe('TREE_DEPTH_EXCEEDED');
+      });
+    });
+  });
+
+  describe('Given a recursive diff whose old-side subtree, once read, points back to an id already on the recursion stack', () => {
+    describe('When diffTrees is called with recursive:true', () => {
+      it('Then throws TREE_CYCLE_DETECTED (mocking the one self-reference no real hash function can produce)', async () => {
+        // Arrange — LOOP_ID's tree content lies about itself (an entry pointing back to
+        // LOOP_ID). A genuine self-referential tree cannot exist in a real object store
+        // (its hash would have to be a fixed point of its own content, and reads are
+        // hash-verified — object-resolver.ts rejects any mismatch), so readObject is
+        // mocked for this one id only; every other id still resolves through the real
+        // implementation.
+        const ctx = await buildSeededContext();
+        const LOOP_ID = 'b'.repeat(40) as ObjectId;
+        const loopTree: Tree = {
+          type: 'tree',
+          id: LOOP_ID,
+          entries: [{ name: 'inner', mode: FILE_MODE.DIRECTORY, id: LOOP_ID }],
+        };
+        const realReadObject = readObjectMod.readObject;
+        const spy = vi
+          .spyOn(readObjectMod, 'readObject')
+          .mockImplementation(async (spyCtx, id, options) =>
+            id === LOOP_ID ? loopTree : realReadObject(spyCtx, id, options),
+          );
+        const distinctLeaf = await writeTree(ctx, []);
+        const newLevel0 = await subTree(ctx, 'inner', distinctLeaf, FILE_MODE.DIRECTORY);
+        const oldRoot = await subTree(ctx, 'sub', LOOP_ID, FILE_MODE.DIRECTORY);
+        const newRoot = await subTree(ctx, 'sub', newLevel0, FILE_MODE.DIRECTORY);
+
+        // Act
+        let thrown: unknown;
+        try {
+          await diffTrees(ctx, oldRoot, newRoot, { recursive: true });
+          expect.unreachable();
+        } catch (error) {
+          thrown = error;
+        } finally {
+          spy.mockRestore();
+        }
+
+        // Assert
+        const data = (thrown as { data: { code: string; id: string } }).data;
+        expect(data.code).toBe('TREE_CYCLE_DETECTED');
+        expect(data.id).toBe(LOOP_ID);
+      });
+    });
+  });
+
+  describe('Given a recursive diff whose new-side subtree, once read, points back to an id already on the recursion stack', () => {
+    describe('When diffTrees is called with recursive:true', () => {
+      it('Then throws TREE_CYCLE_DETECTED via the new-side guard specifically (old side never repeats)', async () => {
+        // Arrange — symmetric to the old-side case, but the mocked self-reference sits
+        // on the NEW side; the old side is real and non-repeating, so only the new-side
+        // guard (not the old-side one) can fire here.
+        const ctx = await buildSeededContext();
+        const LOOP_ID = 'c'.repeat(40) as ObjectId;
+        const loopTree: Tree = {
+          type: 'tree',
+          id: LOOP_ID,
+          entries: [{ name: 'inner', mode: FILE_MODE.DIRECTORY, id: LOOP_ID }],
+        };
+        const realReadObject = readObjectMod.readObject;
+        const spy = vi
+          .spyOn(readObjectMod, 'readObject')
+          .mockImplementation(async (spyCtx, id, options) =>
+            id === LOOP_ID ? loopTree : realReadObject(spyCtx, id, options),
+          );
+        const distinctLeaf = await writeTree(ctx, []);
+        const oldLevel0 = await subTree(ctx, 'inner', distinctLeaf, FILE_MODE.DIRECTORY);
+        const oldRoot = await subTree(ctx, 'sub', oldLevel0, FILE_MODE.DIRECTORY);
+        const newRoot = await subTree(ctx, 'sub', LOOP_ID, FILE_MODE.DIRECTORY);
+
+        // Act
+        let thrown: unknown;
+        try {
+          await diffTrees(ctx, oldRoot, newRoot, { recursive: true });
+          expect.unreachable();
+        } catch (error) {
+          thrown = error;
+        } finally {
+          spy.mockRestore();
+        }
+
+        // Assert
+        const data = (thrown as { data: { code: string; id: string } }).data;
+        expect(data.code).toBe('TREE_CYCLE_DETECTED');
+        expect(data.id).toBe(LOOP_ID);
+      });
+    });
+  });
+
+  describe('Given both sides of a recursive diff independently self-reference every level (neither ever converges to add/delete)', () => {
+    describe('When diffTrees is called with recursive:true', () => {
+      it('Then throws TREE_CYCLE_DETECTED via the old-side guard specifically (checked before the new-side guard)', async () => {
+        // Arrange — OLD_LOOP_ID and NEW_LOOP_ID each self-reference under the entry
+        // name 'x', so every level stays a directory-vs-directory 'modify' and NEITHER
+        // side ever degrades into an add/delete — the only route that would let
+        // flattenTree's own (redundant) cycle guard mask this one. Both stacks repeat
+        // at the SAME depth, so this isolates that the old-side check (checked first
+        // in source order) is what actually fires — not the new-side check alone.
+        const ctx = await buildSeededContext();
+        const OLD_LOOP_ID = 'd'.repeat(40) as ObjectId;
+        const NEW_LOOP_ID = 'e'.repeat(40) as ObjectId;
+        const oldLoopTree: Tree = {
+          type: 'tree',
+          id: OLD_LOOP_ID,
+          entries: [{ name: 'x', mode: FILE_MODE.DIRECTORY, id: OLD_LOOP_ID }],
+        };
+        const newLoopTree: Tree = {
+          type: 'tree',
+          id: NEW_LOOP_ID,
+          entries: [{ name: 'x', mode: FILE_MODE.DIRECTORY, id: NEW_LOOP_ID }],
+        };
+        const realReadObject = readObjectMod.readObject;
+        const spy = vi
+          .spyOn(readObjectMod, 'readObject')
+          .mockImplementation(async (spyCtx, id, options) => {
+            if (id === OLD_LOOP_ID) return oldLoopTree;
+            if (id === NEW_LOOP_ID) return newLoopTree;
+            return realReadObject(spyCtx, id, options);
+          });
+        const oldRoot = await subTree(ctx, 'sub', OLD_LOOP_ID, FILE_MODE.DIRECTORY);
+        const newRoot = await subTree(ctx, 'sub', NEW_LOOP_ID, FILE_MODE.DIRECTORY);
+
+        // Act
+        let thrown: unknown;
+        try {
+          await diffTrees(ctx, oldRoot, newRoot, { recursive: true });
+          expect.unreachable();
+        } catch (error) {
+          thrown = error;
+        } finally {
+          spy.mockRestore();
+        }
+
+        // Assert — old-side guard fires with the OLD id
+        const data = (thrown as { data: { code: string; id: string } }).data;
+        expect(data.code).toBe('TREE_CYCLE_DETECTED');
+        expect(data.id).toBe(OLD_LOOP_ID);
+      });
+    });
+  });
+
+  describe('Given the old side repeats one level later than the new side (staggered cycles)', () => {
+    describe('When diffTrees is called with recursive:true', () => {
+      it('Then throws TREE_CYCLE_DETECTED via the new-side guard specifically (the old side has not repeated yet)', async () => {
+        // Arrange — the old side is a genuine 2-cycle (OLD_A -> OLD_B -> OLD_A -> ...),
+        // so it does NOT repeat at the first re-entry into diffChangedSubtree; the new
+        // side self-references immediately every level. At the depth where the new
+        // side's stack first contains its own id, the old side's stack does not yet
+        // contain its own — isolating the new-side guard from the old-side one.
+        const ctx = await buildSeededContext();
+        const OLD_A = '1'.repeat(40) as ObjectId;
+        const OLD_B = '2'.repeat(40) as ObjectId;
+        const NEW_LOOP_ID = 'f'.repeat(40) as ObjectId;
+        const oldATree: Tree = {
+          type: 'tree',
+          id: OLD_A,
+          entries: [{ name: 'x', mode: FILE_MODE.DIRECTORY, id: OLD_B }],
+        };
+        const oldBTree: Tree = {
+          type: 'tree',
+          id: OLD_B,
+          entries: [{ name: 'x', mode: FILE_MODE.DIRECTORY, id: OLD_A }],
+        };
+        const newLoopTree: Tree = {
+          type: 'tree',
+          id: NEW_LOOP_ID,
+          entries: [{ name: 'x', mode: FILE_MODE.DIRECTORY, id: NEW_LOOP_ID }],
+        };
+        const realReadObject = readObjectMod.readObject;
+        const spy = vi
+          .spyOn(readObjectMod, 'readObject')
+          .mockImplementation(async (spyCtx, id, options) => {
+            if (id === OLD_A) return oldATree;
+            if (id === OLD_B) return oldBTree;
+            if (id === NEW_LOOP_ID) return newLoopTree;
+            return realReadObject(spyCtx, id, options);
+          });
+        const oldRoot = await subTree(ctx, 'sub', OLD_A, FILE_MODE.DIRECTORY);
+        const newRoot = await subTree(ctx, 'sub', NEW_LOOP_ID, FILE_MODE.DIRECTORY);
+
+        // Act
+        let thrown: unknown;
+        try {
+          await diffTrees(ctx, oldRoot, newRoot, { recursive: true });
+          expect.unreachable();
+        } catch (error) {
+          thrown = error;
+        } finally {
+          spy.mockRestore();
+        }
+
+        // Assert — new-side guard fires first (old side hasn't repeated at this depth)
+        const data = (thrown as { data: { code: string; id: string } }).data;
+        expect(data.code).toBe('TREE_CYCLE_DETECTED');
+        expect(data.id).toBe(NEW_LOOP_ID);
       });
     });
   });

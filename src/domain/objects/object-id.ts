@@ -18,7 +18,10 @@ export const ObjectId = {
     if (bytes.length !== 20 && bytes.length !== 32) {
       throw invalidObjectId(`raw bytes length ${bytes.length} is not 20 or 32`);
     }
-    return ObjectId.from(bytesToHex(bytes));
+    // Trusted path: bytesToHex emits only `[0-9a-f]` characters by construction
+    // on this length-checked slice, so the regex re-validation `.from` applies
+    // to untrusted API-boundary hex is provably vacuous here — skip it.
+    return bytesToHex(bytes) as ObjectId;
   },
 } as const;
 

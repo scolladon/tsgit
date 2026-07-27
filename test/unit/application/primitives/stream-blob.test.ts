@@ -435,7 +435,7 @@ describe('streamBlob', () => {
 
   describe('Given a packed base blob', () => {
     describe('When drained', () => {
-      it('Then readSlice was called and no loose-object read was called — pins the packed route', async () => {
+      it('Then the pack persistent handle was opened and no loose-object read was called — pins the packed route', async () => {
         // Arrange
         const content = ENC.encode('packed route pin test');
         const baseCtx = await buildSeededContext();
@@ -451,8 +451,9 @@ describe('streamBlob', () => {
 
         // Assert
         const log = calls();
-        // Packed base path must call readSlice (not whole-file read of the loose object)
-        expect(log.some((e) => e.method === 'readSlice')).toBe(true);
+        // Packed base path must open the pack's persistent handle (A4), not a
+        // whole-file read of the loose object.
+        expect(log.some((e) => e.method === 'openWithNoFollow')).toBe(true);
         // The loose path would call read on the loose object path (under /objects/XX/...)
         // Pack registry reads .idx files (under /objects/pack/) — those reads are expected.
         // The distinguishing check: no loose object path should be read (two-char dir prefix pattern).
@@ -555,7 +556,7 @@ describe('streamBlob', () => {
   // an offset whose compressed payload inflates to different bytes, so the
   // incremental hash built by yieldAndVerifyPackedBaseChunks never matches.
   describe('Given a genuinely-packed blob whose pack payload inflates to different content, When drained to completion', () => {
-    it('Then throws objectHashMismatch via yieldAndVerifyPackedBaseChunks (readSlice called, loose path skipped)', async () => {
+    it('Then throws objectHashMismatch via yieldAndVerifyPackedBaseChunks (pack handle opened, loose path skipped)', async () => {
       // Arrange
       // Build two separate packs in the same ctx so we share fs / hash service.
       // Pack A: "correct" content — its id goes into the idx.
@@ -585,7 +586,7 @@ describe('streamBlob', () => {
       const loosePath = `${ctxBase.layout.gitDir}/objects/${computeLooseObjectPath(id)}`;
       expect(await ctxBase.fs.exists(loosePath)).toBe(false);
 
-      // Spy routing: readSlice IS called (packed path), loose read IS NOT.
+      // Spy routing: the pack's persistent handle IS opened (packed path), loose read IS NOT.
       const { ctx, calls } = instrumentedContext(ctxBase);
 
       // Act + Assert
@@ -606,7 +607,7 @@ describe('streamBlob', () => {
 
       // Pin routing: packed path was taken, not the loose path.
       const log = calls();
-      expect(log.some((e) => e.method === 'readSlice')).toBe(true);
+      expect(log.some((e) => e.method === 'openWithNoFollow')).toBe(true);
       const looseObjectReadPattern = /\/objects\/[0-9a-f]{2}\//;
       expect(
         log.filter((e) => e.method === 'read').every((e) => !looseObjectReadPattern.test(e.path)),

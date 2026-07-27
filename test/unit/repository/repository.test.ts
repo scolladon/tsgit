@@ -9,11 +9,13 @@ import {
   MemoryHttpTransport,
 } from '../../../src/adapters/memory/index.js';
 import { TsgitError } from '../../../src/domain/error.js';
+import { FILE_MODE } from '../../../src/domain/objects/file-mode.js';
 import { SHA1_CONFIG } from '../../../src/domain/objects/hash-config.js';
-import type { Blob, ObjectId } from '../../../src/domain/objects/index.js';
+import type { Blob, FilePath, ObjectId } from '../../../src/domain/objects/index.js';
 import { createLruCache } from '../../../src/domain/storage/lru-cache.js';
 import type { FileSystem } from '../../../src/ports/file-system.js';
 import { openRepository, type Repository, type RuntimeFallback } from '../../../src/repository.js';
+import { writeSyntheticPack } from '../application/primitives/pack-fixture.js';
 
 const makeFallback = (): RuntimeFallback => ({
   fs: new MemoryFileSystem({ rootDir: '/repo' }),
@@ -297,6 +299,7 @@ describe('openRepository — Repository binding integrity', () => {
             'catFileBatch',
             'createCommit',
             'diffTrees',
+            'flattenTree',
             'getRepoRoot',
             'hashBlob',
             'isIgnored',
@@ -505,6 +508,77 @@ describe('openRepository — dispose state machine', () => {
     });
   });
 
+  describe('Given a repo whose pack was touched by a read (persistent handle opened)', () => {
+    describe('When dispose is called', () => {
+      it('Then closes the loaded pack handle', async () => {
+        // Arrange — A4's pack registry lazily opens a persistent FileHandle on
+        // the first slice read; dispose() must close it before the fs adapter
+        // itself is torn down.
+        const fallback = makeFallback();
+        const innerFs = fallback.fs;
+        let closeCalls = 0;
+        const wrappedFs: FileSystem = {
+          ...innerFs,
+          openWithNoFollow: async (path, mode) => {
+            const handle = await innerFs.openWithNoFollow(path, mode);
+            return {
+              ...handle,
+              close: async () => {
+                closeCalls += 1;
+                await handle.close();
+              },
+            };
+          },
+        };
+        const sut = await openRepository(
+          { cwd: '/repo', fs: wrappedFs, unsafeRawAdapters: true },
+          fallback,
+        );
+        await sut.init();
+        const [id] = await writeSyntheticPack(sut.ctx, 'dispose-pack', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('handle-close') },
+        ]);
+        await sut.primitives.readObject(id as ObjectId);
+
+        // Act
+        await sut.dispose();
+
+        // Assert
+        expect(closeCalls).toBe(1);
+      });
+    });
+  });
+
+  describe('Given a repo that never touched a pack', () => {
+    describe('When dispose is called', () => {
+      it('Then resolves without scanning the pack directory', async () => {
+        // Arrange — disposePackRegistry must not create a registry (and thus
+        // never scan objects/pack/) when no primitive ever read a pack.
+        const fallback = makeFallback();
+        const innerFs = fallback.fs;
+        let readdirCalls = 0;
+        const wrappedFs: FileSystem = {
+          ...innerFs,
+          readdir: async (path) => {
+            if (path === '/repo/.git/objects/pack') readdirCalls += 1;
+            return innerFs.readdir(path);
+          },
+        };
+        const sut = await openRepository(
+          { cwd: '/repo', fs: wrappedFs, unsafeRawAdapters: true },
+          fallback,
+        );
+        await sut.init();
+
+        // Act
+        await sut.dispose();
+
+        // Assert
+        expect(readdirCalls).toBe(0);
+      });
+    });
+  });
+
   describe('Given a Repository handle', () => {
     describe('When the merge namespace is accessed', () => {
       it('Then run / continue / abort are all functions', async () => {
@@ -706,6 +780,34 @@ describe('openRepository — round-trip via memory adapter', () => {
 
         // Assert
         expect(count).toBe(0);
+      });
+    });
+  });
+
+  describe('Given the bound flattenTree primitive', () => {
+    describe('When called on a single-file tree', () => {
+      it('Then it delegates and returns a FlatTree with one entry', async () => {
+        // Arrange
+        const fallback = makeFallback();
+        const sut = await openRepository({ cwd: '/repo' }, fallback);
+        await sut.init();
+        const blobId = await sut.primitives.writeObject({
+          type: 'blob',
+          id: '' as ObjectId,
+          content: new TextEncoder().encode('hi'),
+        } satisfies Blob);
+        const treeId = await sut.primitives.writeTree([
+          { name: 'a.txt' as FilePath, id: blobId, mode: FILE_MODE.REGULAR },
+        ]);
+
+        // Act
+        const result = await sut.primitives.flattenTree(treeId);
+
+        // Assert
+        expect(result.entries.get('a.txt' as FilePath)).toEqual({
+          id: blobId,
+          mode: FILE_MODE.REGULAR,
+        });
       });
     });
   });

@@ -1,6 +1,7 @@
 import fc from 'fast-check';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { diffTrees } from '../../../../src/domain/diff/tree-diff.js';
+import * as encodingMod from '../../../../src/domain/objects/encoding.js';
 import type { FileMode, ObjectId, Tree, TreeEntry } from '../../../../src/domain/objects/index.js';
 import { FILE_MODE } from '../../../../src/domain/objects/index.js';
 import { arbTree } from './arbitraries.js';
@@ -248,6 +249,54 @@ describe('diffTrees', () => {
         expect(result.changes).toHaveLength(2);
         expect(result.changes[0]?.type).toBe('delete');
         expect(result.changes[1]?.type).toBe('add');
+      });
+    });
+  });
+
+  describe('Given new-tree entries supplied out of byte-sort order', () => {
+    describe('When diffTrees is called', () => {
+      it('Then changes are still emitted in byte-sorted path order (entriesOf re-sorts, never trusts input array order)', () => {
+        // Arrange — entries deliberately scrambled; nothing upstream guarantees the
+        // caller's array order matches git's byte-sort order.
+        const newTree = tree([
+          entry('c', FILE_MODE.REGULAR, ID_C),
+          entry('a', FILE_MODE.REGULAR, ID_A),
+          entry('b', FILE_MODE.REGULAR, ID_B),
+        ]);
+
+        // Act
+        const result = diffTrees(undefined, newTree);
+
+        // Assert — sorted 'a' < 'b' < 'c', not the scrambled input order 'c','a','b'
+        const paths = result.changes.map((c) => (c.type === 'add' ? c.newPath : undefined));
+        expect(paths).toEqual(['a', 'b', 'c']);
+      });
+    });
+  });
+
+  describe('Given entries that participate in the merge-join', () => {
+    describe('When diffTrees is called', () => {
+      it('Then each entry name is encoded exactly once (no double TextEncoder pass)', () => {
+        // Arrange — 3 entries per side; 'a'/'b' match (TREESAME), 'c' deletes, 'd' adds.
+        const oldTree = tree([
+          entry('a', FILE_MODE.REGULAR, ID_A),
+          entry('b', FILE_MODE.REGULAR, ID_A),
+          entry('c', FILE_MODE.REGULAR, ID_A),
+        ]);
+        const newTree = tree([
+          entry('a', FILE_MODE.REGULAR, ID_A),
+          entry('b', FILE_MODE.REGULAR, ID_A),
+          entry('d', FILE_MODE.REGULAR, ID_A),
+        ]);
+        const encodeSpy = vi.spyOn(encodingMod, 'encode');
+
+        // Act
+        diffTrees(oldTree, newTree);
+
+        // Assert — 6 entries total (3 old + 3 new); each name is encoded once,
+        // sorted once, then compared via the precomputed key (no re-encode).
+        expect(encodeSpy).toHaveBeenCalledTimes(6);
+        encodeSpy.mockRestore();
       });
     });
   });

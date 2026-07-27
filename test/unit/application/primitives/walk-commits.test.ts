@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { createCommit } from '../../../../src/application/primitives/create-commit.js';
+import {
+  commitGraphChainPath,
+  commonGitDir,
+} from '../../../../src/application/primitives/path-layout.js';
+import { readObject } from '../../../../src/application/primitives/read-object.js';
 import { MAX_WALK_QUEUE_SIZE } from '../../../../src/application/primitives/types.js';
 import { walkCommits } from '../../../../src/application/primitives/walk-commits.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
@@ -10,7 +15,8 @@ import type {
   ObjectId,
   Tree,
 } from '../../../../src/domain/objects/index.js';
-import { buildSeededContext } from './fixtures.js';
+import type { Context } from '../../../../src/ports/context.js';
+import { buildSeededContext, instrumentedContext, writeCommitGraph } from './fixtures.js';
 
 const AUTHOR: AuthorIdentity = {
   name: 'Alice',
@@ -65,6 +71,16 @@ async function collect(iter: AsyncIterable<Commit>): Promise<Commit[]> {
   const out: Commit[] = [];
   for await (const c of iter) out.push(c);
   return out;
+}
+
+async function asCommits(ctx: Context, ids: ReadonlyArray<ObjectId>): Promise<Commit[]> {
+  const commits: Commit[] = [];
+  for (const id of ids) {
+    const object = await readObject(ctx, id);
+    if (object.type !== 'commit') throw new Error('expected a commit');
+    commits.push(object);
+  }
+  return commits;
 }
 
 describe('walkCommits', () => {
@@ -618,6 +634,86 @@ describe('walkCommits', () => {
         });
       });
     });
+
+    describe('Given a header-driven enqueue that runs its fallback a second time', () => {
+      describe('When the queue is already near MAX_WALK_QUEUE_SIZE from an unrelated seed', () => {
+        it('Then the redundant fallback enqueue overflows where a single enqueue would not', async () => {
+          // Arrange — resolveFrontierEntry's `enqueuedFromHeader` return value
+          // gates walkCommits' `!enqueuedFromHeader` fallback enqueue: it must
+          // be true whenever the header path already enqueued this id's
+          // parents, so the fallback is skipped. If that flag were forced
+          // false (or the fallback's own guard forced true), the SAME 30
+          // parents get pushed a second time.
+          //
+          // `filler`'s 65,500 distinct (never-read) parents bring the queue to
+          // 65,500. `head`'s 30 REAL, graph-covered parents push it to 65,530
+          // — under MAX_WALK_QUEUE_SIZE (65,536), so the correct single
+          // header-enqueue never overflows. A redundant second enqueue of the
+          // same 30 pushes past 65,536 partway through, throwing
+          // INVALID_WALK_INPUT — a different, killable outcome from the
+          // OPERATION_ABORTED this test forces once the correct code reaches
+          // the loop-top abort check.
+          const ctx = await buildSeededContext();
+          const tree: Tree = { type: 'tree', entries: [], id: '' as ObjectId };
+          const treeId = await writeObject(ctx, tree);
+          const parents: ObjectId[] = [];
+          for (let i = 0; i < 30; i += 1) {
+            parents.push(
+              await createCommit(ctx, {
+                tree: treeId,
+                parents: [],
+                author: { ...AUTHOR, timestamp: AUTHOR.timestamp + i },
+                committer: { ...AUTHOR, timestamp: AUTHOR.timestamp + i },
+                message: `root-${i}`,
+              }),
+            );
+          }
+          const head = await createCommit(ctx, {
+            tree: treeId,
+            parents,
+            author: { ...AUTHOR, timestamp: AUTHOR.timestamp + 100 },
+            committer: { ...AUTHOR, timestamp: AUTHOR.timestamp + 100 },
+            message: 'head',
+          });
+          await writeCommitGraph(ctx, [await asCommits(ctx, [...parents, head])]);
+          const fillerParents = Array.from(
+            { length: 65_500 },
+            (_, i) => i.toString(16).padStart(40, '0') as ObjectId,
+          );
+          const filler = await createCommit(ctx, {
+            tree: treeId,
+            parents: fillerParents,
+            author: AUTHOR,
+            committer: AUTHOR,
+            message: 'filler',
+          });
+          const controller = new AbortController();
+          const ctxWithSignal = { ...ctx, signal: controller.signal };
+          const iterator = walkCommits(ctxWithSignal, { from: [filler, head] })[
+            Symbol.asyncIterator
+          ]();
+
+          // Act
+          const first = await iterator.next();
+          const second = await iterator.next();
+          controller.abort();
+          let caught: unknown;
+          try {
+            await iterator.next();
+            expect.unreachable();
+          } catch (error) {
+            caught = error;
+          }
+
+          // Assert — filler then head are yielded in order; the abort (set
+          // only after head's enqueue already ran) is the walk's next stop —
+          // NOT a queue overflow from a redundant enqueue
+          expect(first.value?.id).toBe(filler);
+          expect(second.value?.id).toBe(head);
+          expect((caught as TsgitError).data.code).toBe('OPERATION_ABORTED');
+        });
+      });
+    });
   });
 
   describe('abort guard inside the walk loop', () => {
@@ -819,6 +915,196 @@ describe('walkCommits', () => {
 
           // Assert — c2 + c1 are yielded; c0 is NOT walked because c1 is shallow.
           expect(seen.map((c) => c.id)).toEqual([seed, boundary]);
+        });
+      });
+    });
+  });
+
+  describe('commit-graph integration', () => {
+    describe('Given a single-file commit-graph covering the whole diamond', () => {
+      describe('When walkCommits is called from the merge', () => {
+        it('Then the yielded set/order is identical to the graph-absent walk', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const { a, b, c, d } = await buildDiamond(ctx);
+          const baseline = await collect(walkCommits(ctx, { from: [d] }));
+          await writeCommitGraph(ctx, [await asCommits(ctx, [a, b, c, d])]);
+
+          // Act
+          const withGraph = await collect(walkCommits(ctx, { from: [d] }));
+
+          // Assert
+          expect(withGraph.map((commit) => commit.id)).toEqual(baseline.map((commit) => commit.id));
+        });
+      });
+    });
+
+    describe('Given a graph that only covers the OLDER prefix of a 5-commit chain', () => {
+      describe('When walkCommits is called from the tip (partly graph, partly fallback)', () => {
+        it('Then the result is identical to a fully object-read walk', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const ids = await linearChain(ctx, 5);
+          const baseline = await collect(walkCommits(ctx, { from: [ids.at(-1)!] }));
+          await writeCommitGraph(ctx, [await asCommits(ctx, ids.slice(0, 3))]);
+
+          // Act
+          const withGraph = await collect(walkCommits(ctx, { from: [ids.at(-1)!] }));
+
+          // Assert
+          expect(withGraph.map((commit) => commit.id)).toEqual(baseline.map((commit) => commit.id));
+        });
+      });
+    });
+
+    describe('Given a graph covering a 3-chain whose middle commit object was removed', () => {
+      describe('When walkCommits is called from the tip with ignoreMissing', () => {
+        it('Then the missing commit and its ancestors are not walked (stale header parents ignored)', async () => {
+          // Arrange — the graph still names B and its parent A, but B's body
+          // is gone; a header-driven early enqueue must not admit A
+          const ctx = await buildSeededContext();
+          const ids = await linearChain(ctx, 3);
+          await writeCommitGraph(ctx, [await asCommits(ctx, ids)]);
+          const missingId = ids[1]!;
+          const { computeLooseObjectPath } = await import(
+            '../../../../src/domain/storage/loose-path.js'
+          );
+          await ctx.fs.rm(`${ctx.layout.gitDir}/objects/${computeLooseObjectPath(missingId)}`);
+
+          // Act
+          const result = await collect(walkCommits(ctx, { from: [ids[2]!], ignoreMissing: true }));
+
+          // Assert — only the tip is yielded; neither the missing commit nor
+          // its graph-known ancestor enters the walk
+          expect(result.map((commit) => commit.id)).toEqual([ids[2]!]);
+        });
+      });
+    });
+
+    describe('Given a graph-covered linear chain, ignoreMissing=true, and every body present', () => {
+      describe('When walkCommits is called from the tip', () => {
+        it('Then the header-deferred enqueue still walks every ancestor', async () => {
+          // Arrange — ignoreMissing=true routes header-driven enqueue through
+          // the DEFERRED branch (guarded by `commit !== undefined`), never the
+          // early one (guarded by `!ignoreMissing`). With every body present,
+          // that guard's third conjunct is true for every popped id, so this
+          // kills both the `commit !== undefined` -> `=== undefined` flip and
+          // the block-drop: either mutant stops the deferred enqueue from ever
+          // running, leaving only the tip yielded instead of all three.
+          const ctx = await buildSeededContext();
+          const ids = await linearChain(ctx, 3);
+          await writeCommitGraph(ctx, [await asCommits(ctx, ids)]);
+
+          // Act
+          const result = await collect(walkCommits(ctx, { from: [ids[2]!], ignoreMissing: true }));
+
+          // Assert — tip, middle, and root all walked via the deferred path
+          expect(result.map((commit) => commit.id)).toEqual([ids[2]!, ids[1]!, ids[0]!]);
+        });
+      });
+    });
+
+    describe('Given a chain/split graph whose most-recent layer file was deleted', () => {
+      describe('When walkCommits is called', () => {
+        it('Then it falls back to object reads and yields the correct result', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const ids = await linearChain(ctx, 5);
+          const baseline = await collect(walkCommits(ctx, { from: [ids.at(-1)!] }));
+          const commits = await asCommits(ctx, ids);
+          await writeCommitGraph(ctx, [commits.slice(0, 3), commits.slice(3)]);
+          const gitDir = commonGitDir(ctx);
+          const chainText = await ctx.fs.readUtf8(commitGraphChainPath(gitDir));
+          const tipHash = chainText.trim().split('\n').at(-1)!;
+          await ctx.fs.rm(`${gitDir}/objects/info/commit-graphs/graph-${tipHash}.graph`);
+
+          // Act
+          const withStaleGraph = await collect(walkCommits(ctx, { from: [ids.at(-1)!] }));
+
+          // Assert
+          expect(withStaleGraph.map((commit) => commit.id)).toEqual(
+            baseline.map((commit) => commit.id),
+          );
+        });
+      });
+    });
+
+    describe('Given a commit-graph consulted across two separate walkCommits invocations', () => {
+      describe('When both walks target the same Context', () => {
+        it('Then the graph file is read only once', async () => {
+          // Arrange
+          const base = await buildSeededContext();
+          const ids = await linearChain(base, 3);
+          await writeCommitGraph(base, [await asCommits(base, ids)]);
+          const { ctx, calls } = instrumentedContext(base);
+
+          // Act
+          await collect(walkCommits(ctx, { from: [ids.at(-1)!] }));
+          await collect(walkCommits(ctx, { from: [ids.at(-1)!] }));
+
+          // Assert
+          const graphReads = calls().filter(
+            (call) => call.method === 'read' && call.path.includes('commit-graph'),
+          );
+          expect(graphReads.length).toBe(1);
+        });
+      });
+    });
+
+    describe('Given an octopus merge with 5 graph-covered parents and a concurrency bound of 2', () => {
+      describe('When walkCommits is called', () => {
+        it('Then concurrent loose-object body reads never exceed the bound', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const tree: Tree = { type: 'tree', entries: [], id: '' as ObjectId };
+          const treeId = await writeObject(ctx, tree);
+          const parents: ObjectId[] = [];
+          for (let i = 0; i < 5; i += 1) {
+            parents.push(
+              await createCommit(ctx, {
+                tree: treeId,
+                parents: [],
+                author: { ...AUTHOR, timestamp: 1700000000 + i },
+                committer: { ...AUTHOR, timestamp: 1700000000 + i },
+                message: `root-${i}`,
+              }),
+            );
+          }
+          const merge = await createCommit(ctx, {
+            tree: treeId,
+            parents,
+            author: { ...AUTHOR, timestamp: 1700000100 },
+            committer: { ...AUTHOR, timestamp: 1700000100 },
+            message: 'octopus',
+          });
+          await writeCommitGraph(ctx, [await asCommits(ctx, [...parents, merge])]);
+
+          let active = 0;
+          let maxActive = 0;
+          const LOOSE_OBJECT_PATH = /\/objects\/[0-9a-f]{2}\//;
+          const bounded: Context = {
+            ...ctx,
+            config: { parallelism: 2 },
+            fs: {
+              ...ctx.fs,
+              read: async (path: string) => {
+                if (!LOOSE_OBJECT_PATH.test(path)) return ctx.fs.read(path);
+                active += 1;
+                maxActive = Math.max(maxActive, active);
+                await new Promise<void>((resolve) => setTimeout(resolve, 5));
+                const result = await ctx.fs.read(path);
+                active -= 1;
+                return result;
+              },
+            },
+          };
+
+          // Act
+          const commits = await collect(walkCommits(bounded, { from: [merge] }));
+
+          // Assert
+          expect(commits.length).toBe(6);
+          expect(maxActive).toBeLessThanOrEqual(2);
         });
       });
     });

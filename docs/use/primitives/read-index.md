@@ -10,6 +10,7 @@ repo.primitives.readIndex(): Promise<GitIndex>;
 interface GitIndex {
   readonly version: 2 | 3;
   readonly entries: ReadonlyArray<IndexEntry>;
+  readonly indexMtime?: { seconds: number; nanoseconds: number };
   // …extensions
 }
 
@@ -22,6 +23,8 @@ interface IndexEntry {
   readonly stat?: StatFields;
 }
 ```
+
+`indexMtime` is the `.git/index` file's own mtime (seconds + nanoseconds), as observed at read time — `undefined` when the index is unborn or absent. `status` threads it into the working-tree comparator as the racy-clean guard's reference point: an entry not provably older than this mtime is re-hashed rather than trusted.
 
 ## Example
 

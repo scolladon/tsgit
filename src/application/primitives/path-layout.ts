@@ -50,4 +50,15 @@ export const reflogPath = (gitDir: string, ref: RefName): string => `${gitDir}/l
 
 export const sparseCheckoutPath = (gitDir: string): string => `${gitDir}/info/sparse-checkout`;
 
+/** The single-file commit-graph. Absent when the repo has no commit-graph or uses the chain form. */
+export const commitGraphPath = (gitDir: string): string => `${gitDir}/objects/info/commit-graph`;
+
+/** Chain manifest: one lowercase-hex layer hash per line, base→tip. */
+export const commitGraphChainPath = (gitDir: string): string =>
+  `${gitDir}/objects/info/commit-graphs/commit-graph-chain`;
+
+/** One chain layer's graph file, named by its content hash. */
+export const commitGraphLayerPath = (gitDir: string, hash: string): string =>
+  `${gitDir}/objects/info/commit-graphs/graph-${hash}.graph`;
+
 export const lockSuffix = '.lock';

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
+import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import type { TsgitError } from '../../../../src/domain/error.js';
 import type { Blob, ObjectId } from '../../../../src/domain/objects/index.js';
 import { serializeObject } from '../../../../src/domain/objects/index.js';
@@ -377,21 +378,26 @@ describe('readObject — lazy-fetch (partial clone)', () => {
     return computeLooseObjectPath(id);
   };
 
-  /** A promisor whose `fetch` writes `blob` loose so the retry resolves it. */
+  /**
+   * A promisor whose `fetch` writes `blob` loose via the real `writeObject`
+   * primitive (not a raw `ctx.fs.write`) so the loose-oid membership cache is
+   * invalidated exactly as it would be for any other loose write. `getCtx` is
+   * a deferred-binding thunk — mirroring the trick `openRepository` uses to
+   * wire a promisor closing over the very `Context` that carries it — since
+   * the final `ctx` (built as `{ ...base, promisor }`) does not exist yet at
+   * the point `supplyingPromisor` is called. Writing through `base` directly
+   * would invalidate a DIFFERENT cache entry (`base` and `ctx` are distinct
+   * objects, even though they share the same underlying `fs`), leaving the
+   * retry's cache stale.
+   */
   const supplyingPromisor = (
-    ctx: Context,
-    id: ObjectId,
     blob: Blob,
     calls: { count: number },
+    getCtx: () => Context,
   ): PromisorRemote => ({
     fetch: async (oids) => {
       calls.count += 1;
-      const bytes = serializeObject(blob, ctx.hashConfig);
-      const compressed = await ctx.compressor.deflate(bytes);
-      await ctx.fs.write(
-        `${ctx.layout.gitDir}/objects/${await computeLooseObjectPathOf(id)}`,
-        compressed,
-      );
+      await writeObject(getCtx(), blob);
       return { attempted: true, requested: oids.length, fetched: oids.length };
     },
   });
@@ -404,7 +410,8 @@ describe('readObject — lazy-fetch (partial clone)', () => {
         const blob: Blob = { type: 'blob', content: new Uint8Array([7, 8, 9]), id: '' as ObjectId };
         const id = (await base.hash.hashHex(serializeObject(blob, base.hashConfig))) as ObjectId;
         const calls = { count: 0 };
-        const ctx: Context = { ...base, promisor: supplyingPromisor(base, id, blob, calls) };
+        let ctx!: Context;
+        ctx = { ...base, promisor: supplyingPromisor(blob, calls, () => ctx) };
 
         // Act
         const result = await readObject(ctx, id);
@@ -425,19 +432,18 @@ describe('readObject — lazy-fetch (partial clone)', () => {
         const blob: Blob = { type: 'blob', content: new Uint8Array([4, 5, 6]), id: '' as ObjectId };
         const id = (await base.hash.hashHex(serializeObject(blob, base.hashConfig))) as ObjectId;
         const requested: ReadonlyArray<ObjectId>[] = [];
+        let ctx!: Context;
         const promisor: PromisorRemote = {
           fetch: async (oids) => {
             requested.push([...oids]);
-            const bytes = serializeObject(blob, base.hashConfig);
-            const compressed = await base.compressor.deflate(bytes);
-            await base.fs.write(
-              `${base.layout.gitDir}/objects/${await computeLooseObjectPathOf(id)}`,
-              compressed,
-            );
+            // Writes through `ctx` (not `base`) so the loose-oid cache the
+            // retry reads through is the one invalidated — see
+            // `supplyingPromisor`'s doc comment above for why.
+            await writeObject(ctx, blob);
             return { attempted: true, requested: oids.length, fetched: oids.length };
           },
         };
-        const ctx: Context = { ...base, promisor };
+        ctx = { ...base, promisor };
 
         // Act
         await readObject(ctx, id);
@@ -544,7 +550,8 @@ describe('readObject — lazy-fetch (partial clone)', () => {
         const blob: Blob = { type: 'blob', content: new Uint8Array([1, 1, 2]), id: '' as ObjectId };
         const id = (await base.hash.hashHex(serializeObject(blob, base.hashConfig))) as ObjectId;
         const calls = { count: 0 };
-        const ctx: Context = { ...base, promisor: supplyingPromisor(base, id, blob, calls) };
+        let ctx!: Context;
+        ctx = { ...base, promisor: supplyingPromisor(blob, calls, () => ctx) };
 
         // Act
         const [a, b] = await Promise.all([readObject(ctx, id), readObject(ctx, id)]);

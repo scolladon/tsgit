@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { flattenTree } from '../../../../src/application/primitives/flatten-tree.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
+import { walkTree } from '../../../../src/application/primitives/walk-tree.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../src/application/primitives/write-tree.js';
+import type { FlatTreeEntry } from '../../../../src/domain/diff/flat-tree.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import type { FilePath, ObjectId, Tree } from '../../../../src/domain/objects/index.js';
-import { buildSeededContext } from './fixtures.js';
+import { buildSeededContext, instrumentedContext } from './fixtures.js';
 
 const writeBlob = async (
   ctx: Awaited<ReturnType<typeof buildSeededContext>>,
@@ -179,6 +181,66 @@ describe('flattenTree', () => {
           id: submoduleOid,
           mode: FILE_MODE.GITLINK,
         });
+      });
+    });
+  });
+
+  describe('Given a multi-depth tree with several blob entries', () => {
+    describe('When flattenTree runs and a walkTree drain is compared over the same tree', () => {
+      it('Then flattenTree yields the same entry set as the walkTree drain', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const idA = await writeBlob(ctx, 'A');
+        const idB = await writeBlob(ctx, 'B');
+        const idC = await writeBlob(ctx, 'C');
+        const subId = await writeTree(ctx, [
+          { name: 'inner.txt' as FilePath, id: idB, mode: FILE_MODE.REGULAR },
+        ]);
+        const rootId = await writeTree(ctx, [
+          { name: 'a.txt' as FilePath, id: idA, mode: FILE_MODE.REGULAR },
+          { name: 'c.txt' as FilePath, id: idC, mode: FILE_MODE.REGULAR },
+          { name: 'sub' as FilePath, id: subId, mode: FILE_MODE.DIRECTORY },
+        ]);
+        const walked = new Map<FilePath, FlatTreeEntry>();
+        for await (const entry of walkTree(ctx, rootId)) {
+          if (entry.mode === FILE_MODE.DIRECTORY) continue;
+          walked.set(entry.path, { id: entry.id, mode: entry.mode });
+        }
+
+        // Act
+        const result = await flattenTree(ctx, rootId);
+
+        // Assert
+        expect([...result.entries]).toEqual([...walked]);
+      });
+
+      it('Then flattenTree performs no more object reads than the equivalent walkTree drain', async () => {
+        // Arrange — the bulk path must stay a zero-per-entry-promise route: it
+        // builds the Map eagerly off walkTree's own object reads, with no
+        // extra per-entry I/O of its own.
+        const base = await buildSeededContext();
+        const idA = await writeBlob(base, 'A');
+        const idB = await writeBlob(base, 'B');
+        const subId = await writeTree(base, [
+          { name: 'inner.txt' as FilePath, id: idB, mode: FILE_MODE.REGULAR },
+        ]);
+        const rootId = await writeTree(base, [
+          { name: 'a.txt' as FilePath, id: idA, mode: FILE_MODE.REGULAR },
+          { name: 'sub' as FilePath, id: subId, mode: FILE_MODE.DIRECTORY },
+        ]);
+        const walkInstrument = instrumentedContext(base);
+        for await (const _ of walkTree(walkInstrument.ctx, rootId)) {
+          // drain
+        }
+        const flattenInstrument = instrumentedContext(base);
+
+        // Act
+        await flattenTree(flattenInstrument.ctx, rootId);
+
+        // Assert
+        const readCount = (calls: ReturnType<typeof flattenInstrument.calls>): number =>
+          calls.filter((call) => call.method === 'read').length;
+        expect(readCount(flattenInstrument.calls())).toBe(readCount(walkInstrument.calls()));
       });
     });
   });

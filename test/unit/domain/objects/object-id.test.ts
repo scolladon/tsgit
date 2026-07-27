@@ -1,7 +1,7 @@
 import fc from 'fast-check';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
-import { hexToBytes } from '../../../../src/domain/objects/encoding.js';
+import { bytesToHex, hexToBytes } from '../../../../src/domain/objects/encoding.js';
 import { TsgitError } from '../../../../src/domain/objects/error.js';
 import {
   EMPTY_TREE_OID,
@@ -86,6 +86,23 @@ describe('object-id', () => {
               },
             }),
           );
+        });
+      });
+    });
+
+    describe('Given a length-checked 20-byte slice', () => {
+      describe('When calling ObjectId.fromRaw', () => {
+        it('Then it never revalidates via regex (bytesToHex output is provably [0-9a-f]-only)', () => {
+          // Arrange
+          const bytes = new Uint8Array(20).fill(0xab);
+          const testSpy = vi.spyOn(RegExp.prototype, 'test');
+
+          // Act
+          ObjectId.fromRaw(bytes);
+
+          // Assert
+          expect(testSpy).not.toHaveBeenCalled();
+          testSpy.mockRestore();
         });
       });
     });
@@ -266,6 +283,21 @@ describe('object-id', () => {
             fc.property(arbObjectId(width), (id) => {
               const result = ObjectId.fromRaw(hexToBytes(id));
               expect(result).toBe(id);
+            }),
+          );
+        });
+      });
+    });
+
+    describe('Given the property "fromRaw\'s trusted path equals the old regex-validated path" for any 20/32-byte input', () => {
+      describe('When sampled', () => {
+        it.each([20, 32] as const)('Then it holds for %i-byte raw slices', (size) => {
+          // Arrange + Assert
+          fc.assert(
+            fc.property(fc.uint8Array({ minLength: size, maxLength: size }), (bytes) => {
+              const result = ObjectId.fromRaw(bytes);
+              const expected = ObjectId.from(bytesToHex(bytes));
+              expect(result).toBe(expected);
             }),
           );
         });
