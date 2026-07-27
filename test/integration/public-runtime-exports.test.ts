@@ -152,12 +152,12 @@ describe('Given every published package entry', () => {
   describe("When auditing each entry's declared value exports against its own runtime bundle", () => {
     it('Then none of them are undefined in the matching runtime module', async () => {
       // Arrange
-      const sut = getPublishedEntries(ROOT);
+      const entries = getPublishedEntries(ROOT);
       const requireCjs = createRequire(import.meta.url);
-      const declaredByPath = analyzeDeclaredExports(sut.map((entry) => entry.dtsPath));
+      const declaredByPath = analyzeDeclaredExports(entries.map((entry) => entry.dtsPath));
 
       // Act
-      const result = await collectUndefinedDeclaredValues(sut, declaredByPath, requireCjs);
+      const result = await collectUndefinedDeclaredValues(entries, declaredByPath, requireCjs);
 
       // Assert
       expect(result).toStrictEqual([]);
@@ -167,12 +167,12 @@ describe('Given every published package entry', () => {
   describe("When auditing each entry's runtime value exports against its declaration file", () => {
     it('Then every runtime export is declared as a value (never downgraded or missing)', async () => {
       // Arrange
-      const sut = getPublishedEntries(ROOT);
+      const entries = getPublishedEntries(ROOT);
       const requireCjs = createRequire(import.meta.url);
-      const declaredByPath = analyzeDeclaredExports(sut.map((entry) => entry.dtsPath));
+      const declaredByPath = analyzeDeclaredExports(entries.map((entry) => entry.dtsPath));
 
       // Act
-      const result = await collectUndeclaredRuntimeValues(sut, declaredByPath, requireCjs);
+      const result = await collectUndeclaredRuntimeValues(entries, declaredByPath, requireCjs);
 
       // Assert — the reverse direction: an over-downgraded genuine runtime
       // export would vanish from the declared-value set and surface here
