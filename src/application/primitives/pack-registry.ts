@@ -190,7 +190,13 @@ export function createPackRegistry(ctx: Context): PackRegistry {
   return {
     all: loadAll,
     refresh(): void {
+      // The outgoing packs may hold open persistent handles; close them before
+      // dropping the references or every refresh leaks one fd per touched pack.
+      const outgoing = cache;
       cache = undefined;
+      if (outgoing !== undefined) {
+        void Promise.allSettled(outgoing.map((pack) => pack.close()));
+      }
     },
     async lookup(id: ObjectId): Promise<PackLookupHit | undefined> {
       const packs = await loadAll();
@@ -207,7 +213,12 @@ export function createPackRegistry(ctx: Context): PackRegistry {
       // close — skip the scan entirely rather than triggering one just to
       // find nothing.
       if (cache === undefined) return;
-      await Promise.all(cache.map((pack) => pack.close()));
+      // Settle every close so one failing handle cannot strand the others.
+      const results = await Promise.allSettled(cache.map((pack) => pack.close()));
+      const failure = results.find(
+        (outcome): outcome is PromiseRejectedResult => outcome.status === 'rejected',
+      );
+      if (failure !== undefined) throw failure.reason;
     },
   };
 }

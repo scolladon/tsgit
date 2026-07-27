@@ -527,13 +527,20 @@ describe('commit-graph', () => {
 
     describe('Given a GDA2 entry with its overflow bit set', () => {
       describe('When reading commit data', () => {
-        it('Then throws INVALID_COMMIT_GRAPH_CHUNK for the unsupported overflow chunk', () => {
+        it('Then falls back to the v1 topological generation instead of throwing', () => {
           // Arrange
-          const bytes = setGda2Overflow(buildCommitGraphBytes(fiveCommitModel()), 0);
+          const model = fiveCommitModel();
+          const bytes = setGda2Overflow(buildCommitGraphBytes(model), 0);
           const layer = parseCommitGraphLayer(bytes);
 
-          // Act & Assert
-          expectThrows(() => commitDataAt(layer, 0), 'INVALID_COMMIT_GRAPH_CHUNK', 'overflow');
+          // Act
+          const result = commitDataAt(layer, 0);
+
+          // Assert — the corrected date lives in the unparsed GDO2 chunk; the
+          // reader degrades to the CDAT v1 generation rather than failing a
+          // read git itself serves
+          expect(result.generation).toBe(model.commits[0]!.generationV1);
+          expect(result.committerDate).toBe(model.commits[0]!.committerDate);
         });
       });
     });

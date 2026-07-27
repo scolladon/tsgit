@@ -35,6 +35,7 @@ interface WalkSession {
   readonly state: WalkState;
   readonly bodies: CommitBodies;
   readonly order: Order;
+  readonly ignoreMissing: boolean;
 }
 
 function createWalkSession(ctx: Context, options: WalkCommitsOptions): WalkSession {
@@ -55,7 +56,7 @@ function createWalkSession(ctx: Context, options: WalkCommitsOptions): WalkSessi
   // Prime the initial seeds so their reads overlap instead of starting only
   // as each is individually popped.
   for (const seed of state.queue) bodies.start(seed);
-  return { state, bodies, order };
+  return { state, bodies, order, ignoreMissing };
 }
 
 interface FrontierEntry {
@@ -75,12 +76,23 @@ async function resolveFrontierEntry(
   session: WalkSession,
   id: ObjectId,
 ): Promise<FrontierEntry> {
-  const { state, bodies, order } = session;
+  const { state, bodies, order, ignoreMissing } = session;
   const header = state.shallow.has(id) ? undefined : await commitHeader(ctx, id);
-  if (header !== undefined) {
+  // Early enqueue is the parallelism lever, but under `ignoreMissing` a
+  // stale graph could name parents of a commit whose body is gone — and a
+  // missing commit's parents must NOT be walked. Defer to body-confirmed
+  // there; without `ignoreMissing` a missing body aborts the walk anyway,
+  // so the early enqueue is unobservable.
+  if (header !== undefined && !ignoreMissing) {
     enqueueIds(state, selectParentIds(header.parents, order), bodies);
   }
   const commit = await bodies.start(id);
+  // Consumed: drop the memo entry (the walk's visited/seen sets already stop
+  // any re-enqueue), or a full-history drain retains every body simultaneously.
+  bodies.forget(id);
+  if (header !== undefined && ignoreMissing && commit !== undefined) {
+    enqueueIds(state, selectParentIds(header.parents, order), bodies);
+  }
   return { commit, enqueuedFromHeader: header !== undefined };
 }
 

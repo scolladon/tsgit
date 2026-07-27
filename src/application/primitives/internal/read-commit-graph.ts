@@ -131,13 +131,27 @@ function computeLayerOffsets(layers: readonly CommitGraphLayer[]): readonly numb
 async function loadGraphUncached(ctx: Context): Promise<LoadedGraph | undefined> {
   const gitDir = commonGitDir(ctx);
 
-  const single = await tryRead(ctx, commitGraphPath(gitDir));
-  if (single !== undefined) {
-    const layer = parseCommitGraphLayer(single);
-    return { layers: [layer], layerOffsets: [0] };
+  try {
+    const single = await tryRead(ctx, commitGraphPath(gitDir));
+    if (single !== undefined) {
+      const layer = parseCommitGraphLayer(single);
+      return { layers: [layer], layerOffsets: [0] };
+    }
+    return loadChain(ctx, gitDir);
+  } catch (error) {
+    // A present-but-corrupt graph is git-faithfully treated as ABSENT (git
+    // warns and falls back to object reads, exit 0). Genuine fs failures
+    // still propagate.
+    if (isGraphDecodeFailure(error)) return undefined;
+    throw error;
   }
+}
 
-  return loadChain(ctx, gitDir);
+/** Decode failures (malformed graph bytes) — never fs errors. `RangeError`
+ *  covers out-of-range `DataView` reads from crafted chunk offsets. */
+function isGraphDecodeFailure(error: unknown): boolean {
+  if (error instanceof RangeError) return true;
+  return error instanceof TsgitError && error.data.code.startsWith('INVALID_COMMIT_GRAPH');
 }
 
 function loadGraph(ctx: Context): Promise<LoadedGraph | undefined> {
@@ -145,6 +159,9 @@ function loadGraph(ctx: Context): Promise<LoadedGraph | undefined> {
   if (cached === undefined) {
     cached = loadGraphUncached(ctx);
     graphCache.set(ctx, cached);
+    // Never memoize a rejection: a transient fs failure must not permanently
+    // poison every later commit walk for this repository.
+    cached.catch(() => graphCache.delete(ctx));
   }
   return cached;
 }
@@ -214,24 +231,39 @@ export async function commitHeader(ctx: Context, id: ObjectId): Promise<CommitHe
   const graph = await loadGraph(ctx);
   if (graph === undefined) return undefined;
 
-  const found = findOwnPosition(graph, id);
-  if (found === undefined) return undefined;
+  try {
+    const found = findOwnPosition(graph, id);
+    if (found === undefined) return undefined;
 
-  const data = commitDataAt(found.layer, found.localPos);
-  const header: CommitHeader = {
-    rootTree: data.rootTree,
-    parents: resolveParentIds(graph, data),
-    committerDate: data.committerDate,
-    generation: data.generation,
-  };
-  cache.set(id, header);
-  return header;
+    const data = commitDataAt(found.layer, found.localPos);
+    const header: CommitHeader = {
+      rootTree: data.rootTree,
+      parents: resolveParentIds(graph, data),
+      committerDate: data.committerDate,
+      generation: data.generation,
+    };
+    cache.set(id, header);
+    return header;
+  } catch (error) {
+    // A parsed-but-internally-inconsistent graph (out-of-range parent
+    // positions, truncated EDGE data) surfaces here; degrade to ABSENT for
+    // the rest of the repo lifetime, exactly like a corrupt file on disk.
+    if (isGraphDecodeFailure(error)) {
+      graphCache.set(ctx, Promise.resolve(undefined));
+      return undefined;
+    }
+    throw error;
+  }
 }
 
 /** A bounded, per-id-deduped reader — every id is read at most once, at most `bound` concurrently. */
 export interface BoundedReader<T> {
   /** Ensure a read for `id` is started; idempotent per id. Returns its (possibly still-pending) result. */
   readonly start: (id: ObjectId) => Promise<T>;
+  /** Drop `id`'s memo entry once its result has been consumed — the memo only
+   *  needs to dedup reads that are still in flight or enqueued; retaining every
+   *  resolved body would grow O(commits-walked) over a full history drain. */
+  readonly forget: (id: ObjectId) => void;
 }
 
 /**
@@ -288,5 +320,5 @@ export function createBoundedReader<T>(
     return pending;
   };
 
-  return { start };
+  return { start, forget: (id) => void promises.delete(id) };
 }

@@ -10,9 +10,9 @@
  * unchanged).
  *
  * Invalidation is local, not the (currently unwired) generation counter:
- * `writeObject` drops the cached set for a written oid's prefix so the
- * next probe re-reads the dir. tsgit never prunes loose objects, so write
- * is the only invalidation point.
+ * `writeObject` records the written oid into a present cached set (writes
+ * only ever ADD a loose object — tsgit never prunes them), so no re-readdir
+ * is forced on read/write-interleaved flows; an unprobed prefix stays lazy.
  */
 import { TsgitError } from '../../../domain/error.js';
 import type { ObjectId } from '../../../domain/objects/index.js';
@@ -59,10 +59,13 @@ export async function probeLooseOid(ctx: Context, id: ObjectId): Promise<boolean
 }
 
 /**
- * Drop the cached fanout-dir set for `id`'s prefix so the next
- * `probeLooseOid` re-reads the directory. Call after a loose object is
- * written under this Context.
+ * Record a just-written loose object into its prefix's cached set. A write
+ * only ever adds a member (tsgit never prunes loose objects), so inserting
+ * beats dropping the whole set — dropping would force an O(dir) re-readdir
+ * on the next same-prefix probe in read/write-interleaved flows. An
+ * unprobed prefix has no set yet and stays lazy. Call after a loose object
+ * is written under this Context.
  */
 export function invalidateLooseOid(ctx: Context, id: ObjectId): void {
-  fanoutCache.get(ctx)?.delete(prefixOf(id));
+  fanoutCache.get(ctx)?.get(prefixOf(id))?.add(suffixOf(id));
 }

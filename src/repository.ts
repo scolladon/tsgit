@@ -477,8 +477,12 @@ export const openRepository = async (
       });
       // Pack handles are FileHandles owned by ctx.fs — close them before the
       // fs adapter itself is torn down.
-      await disposePackRegistry(ctx);
-      await disposeAdapters(ctx);
+      // A failing pack-handle close must never skip adapter teardown.
+      try {
+        await disposePackRegistry(ctx);
+      } finally {
+        await disposeAdapters(ctx);
+      }
       state = 'DISPOSED';
     })();
     return disposePromise;

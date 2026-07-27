@@ -49,6 +49,7 @@ interface DateWalk {
   readonly until: Set<ObjectId>;
   readonly firstParent: boolean;
   readonly bodies: CommitBodies;
+  readonly ignoreMissing: boolean;
 }
 
 /**
@@ -96,14 +97,18 @@ export async function* commitDateWalk(
     bodies: createBoundedReader(bound, (id) =>
       readCommit(ctx, id, { verifyHash, ignoreMissing, missing }),
     ),
+    ignoreMissing,
   };
 
   await enqueueSeeds(ctx, walk);
 
   while (walk.heap.size() > 0) {
     if (ctx.signal?.aborted) throw operationAborted();
-    const { value: bodyPromise } = walk.heap.pop() as QueueEntry<Promise<Commit | undefined>>;
+    const { oid, value: bodyPromise } = walk.heap.pop() as QueueEntry<Promise<Commit | undefined>>;
     const commit = await bodyPromise;
+    // Consumed: drop the memo entry (`seen` already blocks re-enqueue), or a
+    // full-history drain retains every body simultaneously.
+    walk.bodies.forget(oid);
     if (commit === undefined) continue;
     yield {
       commit,
@@ -135,15 +140,20 @@ const enqueueParents = async (ctx: Context, walk: DateWalk, commit: Commit): Pro
 const enqueueCommit = async (ctx: Context, walk: DateWalk, id: ObjectId): Promise<void> => {
   const header = await commitHeader(ctx, id);
   const bodyPromise = walk.bodies.start(id);
-  if (header !== undefined) {
+  if (header !== undefined && !walk.ignoreMissing) {
     // Graph-confirmed: the date is known without awaiting the body, so the
     // push (and any downstream enqueue it enables) does not wait on I/O.
+    // (A missing body without `ignoreMissing` rejects at pop and aborts the
+    // walk, so pushing early is unobservable.)
     walk.heap.push({ oid: id, date: header.committerDate, value: bodyPromise });
     return;
   }
-  // Graph-absent fallback: the date can only come from the full body.
+  // Graph-absent fallback — and, under `ignoreMissing`, the stale-graph
+  // guard: a commit whose body is gone must never enter the heap (it would
+  // leak into `frontierEmpty`/`frontier()` snapshots the old walk never saw).
   const commit = await bodyPromise;
   if (commit !== undefined) {
-    walk.heap.push({ oid: id, date: commit.data.committer.timestamp, value: bodyPromise });
+    const date = header?.committerDate ?? commit.data.committer.timestamp;
+    walk.heap.push({ oid: id, date, value: bodyPromise });
   }
 };

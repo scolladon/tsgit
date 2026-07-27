@@ -103,7 +103,13 @@ export const compareWorkingTreeDelta = async (
   // supplies the index file's own mtime (the racy-guard reference point).
   // Absent — every non-`status` consumer — the fast path never fires and
   // behaviour is exactly as before.
-  if (indexMtime !== undefined && isEntryStatClean(entry, stat, indexMtime)) {
+  // Gitlinks are excluded from the stat cache too: git routes them through
+  // `ce_compare_gitlink` (submodule HEAD comparison), never the stat fields.
+  if (
+    entry.mode !== FILE_MODE.GITLINK &&
+    indexMtime !== undefined &&
+    isEntryStatClean(entry, stat, indexMtime)
+  ) {
     return { status: worktreeMode === entry.mode ? 'unchanged' : 'mode-changed', worktreeMode };
   }
   try {

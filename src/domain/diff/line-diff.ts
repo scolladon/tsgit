@@ -340,6 +340,12 @@ export function diffLines(
     };
   }
 
+  // Interning every line is O(M+N) work — skip it entirely when the trace
+  // computation would refuse the input anyway.
+  if (M + N > MAX_DIFF_LINES) {
+    return wholeFileFallback(oursLines, theirsLines);
+  }
+
   const eq = buildLineEquality(oursLines, theirsLines, lineKey);
   const myers = computeMyersTrace(M, N, eq);
   if (myers === undefined) {

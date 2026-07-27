@@ -299,9 +299,11 @@ function resolveGeneration(
   }
   const raw = layer._view.getUint32(layer._generationDataRange.start + localPos * 4);
   if ((raw & GENERATION_OVERFLOW_FLAG) !== 0) {
-    throw invalidCommitGraphChunk(
-      'GDA2 generation-data overflow requires the unsupported GDO2 chunk',
-    );
+    // The exact corrected date lives in the GDO2 overflow chunk, which is not
+    // parsed; degrade to the v1 topological generation instead of failing a
+    // read git itself serves — generation only accelerates pruning, never
+    // changes the visible commit set.
+    return generationV1;
   }
   return committerDate + raw;
 }
