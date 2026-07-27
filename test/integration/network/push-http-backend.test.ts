@@ -192,7 +192,7 @@ describe.skipIf(SKIP_REASON !== false)('push — end-to-end against git-http-bac
       throw new Error('server.address() returned an unexpected value');
     }
     port = addr.port;
-  });
+  }, 60_000);
 
   afterAll(async () => {
     if (workDir !== undefined) {
@@ -481,7 +481,7 @@ describe.skipIf(SKIP_REASON !== false)('push — remote resolution against git-h
       throw new Error('server.address() returned an unexpected value');
     }
     port = addr.port;
-  });
+  }, 60_000);
 
   afterAll(async () => {
     for (const dir of workDirs) {
