@@ -82,3 +82,19 @@ export const findUndefinedValueExports = (
   declaredExports
     .filter((exportEntry) => exportEntry.isValue && !runtimeNames.has(exportEntry.name))
     .map((exportEntry) => exportEntry.name);
+
+/**
+ * The reverse audit: runtime value exports that the declaration file fails to
+ * declare AS VALUES — either missing entirely or downgraded to `export type`.
+ * Guards against the postprocessor's worst failure mode (silently narrowing
+ * the public API by over-downgrading a genuine runtime export).
+ */
+export const findUndeclaredRuntimeExports = (
+  declaredExports: readonly DeclaredExport[],
+  runtimeNames: ReadonlySet<string>,
+): readonly string[] => {
+  const declaredValueNames = new Set(
+    declaredExports.filter((exportEntry) => exportEntry.isValue).map((entry) => entry.name),
+  );
+  return [...runtimeNames].filter((name) => name !== 'default' && !declaredValueNames.has(name));
+};

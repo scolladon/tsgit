@@ -37,7 +37,7 @@
 import { execFile } from 'node:child_process';
 import { createRequire } from 'node:module';
 import * as path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 
 import { beforeAll, describe, expect, it } from 'vitest';
@@ -46,6 +46,7 @@ import { getPublishedEntries, type PublishedEntry } from '../../tooling/dts-entr
 import {
   analyzeDeclaredExports,
   type EntryDeclarations,
+  findUndeclaredRuntimeExports,
   findUndefinedValueExports,
 } from '../../tooling/dts-value-exports.ts';
 
@@ -70,8 +71,25 @@ const loadRuntimeExportNames = async (
   requireCjs: RequireFn,
 ): Promise<ReadonlySet<string>> => {
   const runtimeModule =
-    entry.format === 'cjs' ? requireCjs(entry.runtimePath) : await import(entry.runtimePath);
+    entry.format === 'cjs'
+      ? requireCjs(entry.runtimePath)
+      : await import(pathToFileURL(entry.runtimePath).href);
   return new Set(Object.keys(runtimeModule as Record<string, unknown>));
+};
+
+const collectUndeclaredRuntimeValues = async (
+  entries: readonly PublishedEntry[],
+  declaredByPath: ReadonlyMap<string, EntryDeclarations>,
+  requireCjs: RequireFn,
+): Promise<readonly string[]> => {
+  const violations: string[] = [];
+  for (const entry of entries) {
+    const declarations = declaredByPath.get(entry.dtsPath);
+    const runtimeNames = await loadRuntimeExportNames(entry, requireCjs);
+    const undeclared = findUndeclaredRuntimeExports(declarations?.exports ?? [], runtimeNames);
+    violations.push(...undeclared.map((name) => `${entry.label}: ${name}`));
+  }
+  return violations;
 };
 
 const collectUndefinedDeclaredValues = async (
@@ -142,6 +160,22 @@ describe('Given every published package entry', () => {
       const result = await collectUndefinedDeclaredValues(sut, declaredByPath, requireCjs);
 
       // Assert
+      expect(result).toStrictEqual([]);
+    });
+  }, 600_000);
+
+  describe("When auditing each entry's runtime value exports against its declaration file", () => {
+    it('Then every runtime export is declared as a value (never downgraded or missing)', async () => {
+      // Arrange
+      const sut = getPublishedEntries(ROOT);
+      const requireCjs = createRequire(import.meta.url);
+      const declaredByPath = analyzeDeclaredExports(sut.map((entry) => entry.dtsPath));
+
+      // Act
+      const result = await collectUndeclaredRuntimeValues(sut, declaredByPath, requireCjs);
+
+      // Assert — the reverse direction: an over-downgraded genuine runtime
+      // export would vanish from the declared-value set and surface here
       expect(result).toStrictEqual([]);
     });
   }, 600_000);

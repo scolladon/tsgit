@@ -32,7 +32,9 @@ const requireCjs = createRequire(import.meta.url);
 
 const loadRuntimeExportNames = async (entry: PublishedEntry): Promise<ReadonlySet<string>> => {
   const runtimeModule =
-    entry.format === 'cjs' ? requireCjs(entry.runtimePath) : await import(entry.runtimePath);
+    entry.format === 'cjs'
+      ? requireCjs(entry.runtimePath)
+      : await import(url.pathToFileURL(entry.runtimePath).href);
   return new Set(Object.keys(runtimeModule as Record<string, unknown>));
 };
 

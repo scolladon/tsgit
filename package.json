@@ -4,7 +4,7 @@
   "description": "Lightning-fast git, pure TypeScript, everywhere.",
   "type": "module",
   "license": "MIT",
-  "author": "Sébastien Colladon",
+  "author": "S\u00e9bastien Colladon",
   "homepage": "https://github.com/scolladon/tsgit#readme",
   "repository": {
     "type": "git",
@@ -353,7 +353,11 @@
       "files": [
         "src/**/*.ts",
         "test/integration/**/*.ts",
-        "vitest.config.ts"
+        "vitest.config.ts",
+        "tooling/dts-entries.ts",
+        "tooling/dts-value-exports.ts",
+        "tooling/truthful-dts.ts",
+        "package.json"
       ],
       "output": []
     },
