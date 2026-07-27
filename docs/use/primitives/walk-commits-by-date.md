@@ -32,6 +32,7 @@ interface WalkCommitsByDateOptions {
   queue; the frontier is bounded by the reachable-commit count.
 - Throws `INVALID_WALK_INPUT` on an empty or over-cap `from`, and aborts at the
   next loop head when `ctx.signal` is aborted.
+- When `.git/objects/info/commit-graph` is present (single-file or chain/split form), parents and dates are served from it, falling back to object reads for any commit it doesn't cover. Results are identical with or without a graph; a corrupt or stale graph is treated as absent.
 
 ## Ordering scope
 
