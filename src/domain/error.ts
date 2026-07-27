@@ -1,4 +1,5 @@
 import type { CommandError } from './commands/error.js';
+import type { CommitGraphError } from './commit/error.js';
 import type { DiffError } from './diff/error.js';
 import type { IndexError } from './git-index/error.js';
 import type { MergeError } from './merge/error.js';
@@ -71,7 +72,8 @@ export type TsgitErrorData =
   | RepositoryError
   | CommandError
   | SubmoduleError
-  | WorktreeError;
+  | WorktreeError
+  | CommitGraphError;
 
 export class TsgitError extends Error {
   override readonly name = 'TsgitError';
@@ -175,6 +177,8 @@ function extractDetail(data: TsgitErrorData): string {
     case 'INVALID_PACKED_REFS':
     case 'INVALID_INDEX_HEADER':
     case 'INVALID_INDEX_ENTRY':
+    case 'INVALID_COMMIT_GRAPH_HEADER':
+    case 'INVALID_COMMIT_GRAPH_CHUNK':
       return data.reason;
     case 'FILE_NOT_FOUND':
       return `file not found: ${basename(data.path)}`;
