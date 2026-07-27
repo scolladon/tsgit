@@ -200,8 +200,10 @@ describe('Given a diamond history and frontier-aware steps', () => {
       expect(frontiers).toEqual([[], [b], [a], []]);
     });
   });
+});
 
-  describe('Given a graph-covered merge whose one parent object was pruned, under ignoreMissing', () => {
+describe('commitDateWalk — stale commit-graph under ignoreMissing', () => {
+  describe('Given a graph-covered merge whose one parent object was pruned, When walking by date under ignoreMissing', () => {
     it('Then the pruned commit never enters the heap or any frontier snapshot', async () => {
       // Arrange — pruned (ts1) sorts OLDER than kept (ts2): a header-dated
       // push of the pruned commit would still sit in the heap when `kept`

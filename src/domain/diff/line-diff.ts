@@ -124,10 +124,9 @@ function computeMyersTrace(
 ): MyersResult | undefined {
   const M = oursLength;
   const N = theirsLength;
-  // Each trace snapshot is 2*(M+N)+1 numbers (8 bytes each).
-  // At MAX_DIFF_EDIT_DISTANCE iterations, worst-case heap ~ 10K * 2*(M+N) * 8.
-  // Cap total lines to keep heap under ~800MB.
-  if (M + N > MAX_DIFF_LINES) return undefined;
+  // M+N is already bounded by diffLines's MAX_DIFF_LINES pre-check (the sole
+  // caller returns the whole-file fallback before interning or tracing), so
+  // no size guard is repeated here.
   const maxD = M + N;
   const offset = maxD;
   const v = new Array<number>(2 * maxD + 1).fill(0);
@@ -135,7 +134,7 @@ function computeMyersTrace(
 
   const iterationBudget = maxD * MAX_DIFF_ITERATION_FACTOR;
   let iterations = 0;
-  // Iteration budget bounds total CPU. The MAX_DIFF_LINES pre-check above
+  // Iteration budget bounds total CPU. diffLines's MAX_DIFF_LINES pre-check
   // bounds M+N, which transitively caps D (edit distance ≤ M+N ≤ MAX_DIFF_LINES) and
   // trace memory (snapshots × v-array size). Together they subsume the design's
   // MAX_DIFF_EDIT_DISTANCE constant, which remains exported for documentation.
