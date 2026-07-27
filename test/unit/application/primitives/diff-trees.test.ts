@@ -1,8 +1,10 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { diffTrees } from '../../../../src/application/primitives/diff-trees.js';
+import * as materialisePatchFilesMod from '../../../../src/application/primitives/materialise-patch-files.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../src/application/primitives/write-tree.js';
+import type { LineKey, WhitespaceMode } from '../../../../src/domain/diff/index.js';
 import { MAX_SCORE } from '../../../../src/domain/diff/similarity.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import type { Blob, FileMode, ObjectId } from '../../../../src/domain/objects/index.js';
@@ -1087,6 +1089,203 @@ describe('diffTrees', () => {
           deleted: 0,
           binary: true,
         });
+      });
+    });
+  });
+
+  describe('Given a whitespace-only modify with ignoreWhitespace:all and withStat omitted', () => {
+    describe('When diffTrees is called', () => {
+      it('Then the modify is dropped WITHOUT materialising blobs (streaming predicate)', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const oldId = await blob(ctx, 'hello world\n');
+        const newId = await blob(ctx, 'hello  world\n');
+        const before = await writeTree(ctx, [
+          { name: 'f.txt', mode: FILE_MODE.REGULAR, id: oldId },
+        ]);
+        const after = await writeTree(ctx, [{ name: 'f.txt', mode: FILE_MODE.REGULAR, id: newId }]);
+        const materialiseSpy = vi.spyOn(materialisePatchFilesMod, 'materialisePatchFiles');
+
+        // Act
+        const result = await diffTrees(ctx, before, after, { ignoreWhitespace: 'all' });
+
+        // Assert — dropped via the streaming predicate; the full materialise pass never ran
+        expect(result.changes).toHaveLength(0);
+        expect(materialiseSpy).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('Given a real (non-whitespace-only) modify with ignoreWhitespace:all and withStat omitted', () => {
+    describe('When diffTrees is called', () => {
+      it('Then the modify survives WITHOUT materialising blobs (streaming predicate)', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const oldId = await blob(ctx, 'hello\n');
+        const newId = await blob(ctx, 'world\n');
+        const before = await writeTree(ctx, [
+          { name: 'f.txt', mode: FILE_MODE.REGULAR, id: oldId },
+        ]);
+        const after = await writeTree(ctx, [{ name: 'f.txt', mode: FILE_MODE.REGULAR, id: newId }]);
+        const materialiseSpy = vi.spyOn(materialisePatchFilesMod, 'materialisePatchFiles');
+
+        // Act
+        const result = await diffTrees(ctx, before, after, { ignoreWhitespace: 'all' });
+
+        // Assert — real content change survives; the full materialise pass never ran
+        expect(result.changes).toHaveLength(1);
+        expect(materialiseSpy).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('Given a whitespace-only modify with ignoreWhitespace:all and withStat:true', () => {
+    describe('When diffTrees is called', () => {
+      it('Then materialisePatchFiles IS called (the stat path keeps the full pass)', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const oldId = await blob(ctx, 'hello world\n');
+        const newId = await blob(ctx, 'hello  world\n');
+        const before = await writeTree(ctx, [
+          { name: 'f.txt', mode: FILE_MODE.REGULAR, id: oldId },
+        ]);
+        const after = await writeTree(ctx, [{ name: 'f.txt', mode: FILE_MODE.REGULAR, id: newId }]);
+        const materialiseSpy = vi.spyOn(materialisePatchFilesMod, 'materialisePatchFiles');
+
+        // Act
+        await diffTrees(ctx, before, after, { ignoreWhitespace: 'all', withStat: true });
+
+        // Assert
+        expect(materialiseSpy).toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('Given the whitespace drop verdict across every LineKey × ignoreBlankLines combination', () => {
+    describe('When diffTrees is called with withStat omitted vs withStat:true', () => {
+      const enc = new TextEncoder();
+      const REAL_CHANGE = {
+        oldBytes: enc.encode('real one\n'),
+        newBytes: enc.encode('real two\n'),
+      };
+
+      const wsOnlyPairFor = (
+        mode: WhitespaceMode,
+        ignoreCrAtEol: boolean,
+      ): { readonly oldBytes: Uint8Array; readonly newBytes: Uint8Array } => {
+        if (mode === 'all')
+          return { oldBytes: enc.encode('a b\n'), newBytes: enc.encode('a  b\n') };
+        if (mode === 'change') {
+          return { oldBytes: enc.encode('a b\n'), newBytes: enc.encode('a    b\n') };
+        }
+        if (mode === 'at-eol')
+          return { oldBytes: enc.encode('a\n'), newBytes: enc.encode('a   \n') };
+        // mode 'none' only routes through the predicate when ignoreCrAtEol is active.
+        return ignoreCrAtEol
+          ? { oldBytes: enc.encode('a\r\n'), newBytes: enc.encode('a\n') }
+          : REAL_CHANGE;
+      };
+
+      const ACTIVE_KEYS: ReadonlyArray<LineKey> = [
+        { mode: 'all', ignoreCrAtEol: false },
+        { mode: 'all', ignoreCrAtEol: true },
+        { mode: 'change', ignoreCrAtEol: false },
+        { mode: 'change', ignoreCrAtEol: true },
+        { mode: 'at-eol', ignoreCrAtEol: false },
+        { mode: 'at-eol', ignoreCrAtEol: true },
+        { mode: 'none', ignoreCrAtEol: true },
+      ];
+
+      const matrix = ACTIVE_KEYS.flatMap((key) =>
+        [true, false].map((ignoreBlankLines) => ({ key, ignoreBlankLines })),
+      );
+
+      it.each(matrix)(
+        'Then the predicate path and the stat path agree ($key.mode/crAtEol=$key.ignoreCrAtEol/blank=$ignoreBlankLines)',
+        async ({ key, ignoreBlankLines }) => {
+          // Arrange
+          const wsOnly = wsOnlyPairFor(key.mode, key.ignoreCrAtEol);
+          const options = {
+            ...(key.mode !== 'none' ? { ignoreWhitespace: key.mode } : {}),
+            ...(key.ignoreCrAtEol ? { ignoreCrAtEol: true } : {}),
+            ...(ignoreBlankLines ? { ignoreBlankLines: true } : {}),
+          };
+
+          for (const pair of [wsOnly, REAL_CHANGE]) {
+            const ctx = await buildSeededContext();
+            const oldId = await writeObject(ctx, {
+              type: 'blob',
+              content: pair.oldBytes,
+              id: '' as ObjectId,
+            });
+            const newId = await writeObject(ctx, {
+              type: 'blob',
+              content: pair.newBytes,
+              id: '' as ObjectId,
+            });
+            const before = await writeTree(ctx, [
+              { name: 'f.txt', mode: FILE_MODE.REGULAR, id: oldId },
+            ]);
+            const after = await writeTree(ctx, [
+              { name: 'f.txt', mode: FILE_MODE.REGULAR, id: newId },
+            ]);
+
+            // Act
+            const predicateResult = await diffTrees(ctx, before, after, options);
+            const statResult = await diffTrees(ctx, before, after, { ...options, withStat: true });
+
+            // Assert — same survivor count from both paths
+            expect(predicateResult.changes.length).toBe(statResult.changes.length);
+          }
+        },
+      );
+    });
+  });
+
+  describe('Given a blank-only line insert under ignoreWhitespace:all with ignoreBlankLines', () => {
+    describe('When diffTrees is called with withStat omitted vs withStat:true', () => {
+      it('Then both paths drop the change (blank insert is insignificant under all four flags)', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const oldId = await blob(ctx, 'hello\n');
+        const newId = await blob(ctx, 'hello\n   \n');
+        const before = await writeTree(ctx, [
+          { name: 'f.txt', mode: FILE_MODE.REGULAR, id: oldId },
+        ]);
+        const after = await writeTree(ctx, [{ name: 'f.txt', mode: FILE_MODE.REGULAR, id: newId }]);
+        const options = { ignoreWhitespace: 'all' as const, ignoreBlankLines: true };
+
+        // Act
+        const predicateResult = await diffTrees(ctx, before, after, options);
+        const statResult = await diffTrees(ctx, before, after, { ...options, withStat: true });
+
+        // Assert
+        expect(predicateResult.changes).toHaveLength(0);
+        expect(statResult.changes).toHaveLength(0);
+      });
+    });
+  });
+
+  describe('Given a blank-only line insert under ignoreWhitespace:all WITHOUT ignoreBlankLines', () => {
+    describe('When diffTrees is called with withStat omitted vs withStat:true', () => {
+      it('Then both paths keep the change (blank-line count is significant without ignoreBlankLines)', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const oldId = await blob(ctx, 'hello\n');
+        const newId = await blob(ctx, 'hello\n\n');
+        const before = await writeTree(ctx, [
+          { name: 'f.txt', mode: FILE_MODE.REGULAR, id: oldId },
+        ]);
+        const after = await writeTree(ctx, [{ name: 'f.txt', mode: FILE_MODE.REGULAR, id: newId }]);
+        const options = { ignoreWhitespace: 'all' as const };
+
+        // Act
+        const predicateResult = await diffTrees(ctx, before, after, options);
+        const statResult = await diffTrees(ctx, before, after, { ...options, withStat: true });
+
+        // Assert
+        expect(predicateResult.changes).toHaveLength(1);
+        expect(statResult.changes).toHaveLength(1);
       });
     });
   });

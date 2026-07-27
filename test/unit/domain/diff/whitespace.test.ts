@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import type { LineKey } from '../../../../src/domain/diff/whitespace.js';
 import {
+  digestIsBlank,
+  digestNormalizedLine,
+  digestsEqual,
   isBlankLine,
   lineKeyIsActive,
   linesEqualUnder,
@@ -541,6 +544,168 @@ describe('NONE_KEY', () => {
       const result = normalizeLine(input, NONE_KEY);
       // Assert
       expect(result).toEqual(enc('a\r\n'));
+    });
+  });
+});
+
+describe('digestNormalizedLine', () => {
+  describe('Given two lines equal under normalizeLine', () => {
+    it.each([
+      {
+        mode: 'all' as const,
+        left: '\tbeta gamma\n',
+        right: '  beta  gamma   \n',
+        label: "mode 'all': whitespace-only difference (W1) digests equal",
+      },
+      {
+        mode: 'change' as const,
+        left: 'a b\n',
+        right: 'a    b\n',
+        label: "mode 'change': a run growing but staying non-zero (B-run) digests equal",
+      },
+      {
+        mode: 'at-eol' as const,
+        left: 'a\n',
+        right: 'a   \n',
+        label: "mode 'at-eol': trailing whitespace added (EOL1) digests equal",
+      },
+    ])('Then $label', ({ mode, left, right }) => {
+      // Arrange
+      const key: LineKey = { mode, ignoreCrAtEol: false };
+      const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
+
+      // Act
+      const leftDigest = digestNormalizedLine(enc(left), key);
+      const rightDigest = digestNormalizedLine(enc(right), key);
+
+      // Assert
+      expect(digestsEqual(leftDigest, rightDigest)).toBe(true);
+    });
+  });
+
+  describe('Given two lines that differ in real content under a given mode', () => {
+    it.each([
+      {
+        mode: 'all' as const,
+        left: 'real\n',
+        right: 'REAL\n',
+        label: "mode 'all': non-whitespace content differs, digests unequal",
+      },
+      {
+        mode: 'change' as const,
+        left: 'a b\n',
+        right: 'ab\n',
+        label: "mode 'change': internal space fully removed (B-zero) digests unequal",
+      },
+      {
+        mode: 'at-eol' as const,
+        left: '\tbeta gamma\n',
+        right: '  beta  gamma   \n',
+        label: "mode 'at-eol': internal whitespace differs (W3) digests unequal",
+      },
+      {
+        mode: 'none' as const,
+        left: 'a b\n',
+        right: 'ab\n',
+        label: "mode 'none': exact compare, whitespace difference digests unequal",
+      },
+    ])('Then $label', ({ mode, left, right }) => {
+      // Arrange
+      const key: LineKey = { mode, ignoreCrAtEol: false };
+      const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
+
+      // Act
+      const leftDigest = digestNormalizedLine(enc(left), key);
+      const rightDigest = digestNormalizedLine(enc(right), key);
+
+      // Assert
+      expect(digestsEqual(leftDigest, rightDigest)).toBe(false);
+    });
+  });
+
+  describe('Given a line whose trailing whitespace run touches the content boundary', () => {
+    it('Then mode change drops the collapsed trailing space from the digest', () => {
+      // Arrange
+      const key: LineKey = { mode: 'change', ignoreCrAtEol: false };
+      const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
+
+      // Act
+      const withTrailingRun = digestNormalizedLine(enc('a b \n'), key);
+      const withoutTrailingRun = digestNormalizedLine(enc('a b\n'), key);
+
+      // Assert
+      expect(digestsEqual(withTrailingRun, withoutTrailingRun)).toBe(true);
+    });
+
+    it('Then mode at-eol drops an internal (non-trailing) run intact but still drops the trailing one', () => {
+      // Arrange — internal run preserved verbatim (not collapsed), trailing run dropped
+      const key: LineKey = { mode: 'at-eol', ignoreCrAtEol: false };
+      const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
+
+      // Act
+      const digest = digestNormalizedLine(enc('a  b   \n'), key);
+      const expected = digestNormalizedLine(enc('a  b\n'), key);
+
+      // Assert
+      expect(digestsEqual(digest, expected)).toBe(true);
+    });
+  });
+
+  describe('Given a terminated line and its unterminated content-identical counterpart', () => {
+    it('Then the digests are unequal (terminator is significant)', () => {
+      // Arrange
+      const key: LineKey = { mode: 'none', ignoreCrAtEol: false };
+      const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
+
+      // Act
+      const terminated = digestNormalizedLine(enc('a\n'), key);
+      const unterminated = digestNormalizedLine(enc('a'), key);
+
+      // Assert
+      expect(digestsEqual(terminated, unterminated)).toBe(false);
+    });
+  });
+
+  describe('Given ignoreCrAtEol true with mode none', () => {
+    const key: LineKey = { mode: 'none', ignoreCrAtEol: true };
+
+    it('Then a trailing CR before the LF is dropped from the digest', () => {
+      // Arrange & Act
+      const withCr = digestNormalizedLine(new TextEncoder().encode('a\r\n'), key);
+      const withoutCr = digestNormalizedLine(new TextEncoder().encode('a\n'), key);
+
+      // Assert
+      expect(digestsEqual(withCr, withoutCr)).toBe(true);
+    });
+  });
+});
+
+describe('digestIsBlank', () => {
+  describe("Given mode 'all' and a spaces-only line", () => {
+    it('Then reports blank (matches isBlankLine)', () => {
+      // Arrange
+      const key: LineKey = { mode: 'all', ignoreCrAtEol: false };
+      const line = new TextEncoder().encode('   \n');
+
+      // Act
+      const result = digestIsBlank(digestNormalizedLine(line, key));
+
+      // Assert
+      expect(result).toBe(true);
+      expect(result).toBe(isBlankLine(line, key));
+    });
+  });
+
+  describe('Given NONE_KEY and a non-blank line', () => {
+    it('Then reports not blank', () => {
+      // Arrange
+      const line = new TextEncoder().encode('a\n');
+
+      // Act
+      const result = digestIsBlank(digestNormalizedLine(line, NONE_KEY));
+
+      // Assert
+      expect(result).toBe(false);
     });
   });
 });

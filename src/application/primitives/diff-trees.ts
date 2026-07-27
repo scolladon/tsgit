@@ -17,6 +17,8 @@ import type { Tree } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import { detectSimilarityRenames } from './detect-similarity-renames.js';
 import { flattenTree } from './flatten-tree.js';
+import { boundedMap, MAX_CONCURRENT_BLOB_LOADS } from './internal/bounded-map.js';
+import { isWhitespaceOnlyModify } from './internal/whitespace-drop-predicate.js';
 import { materialisePatchFiles } from './materialise-patch-files.js';
 import { readTree } from './read-tree.js';
 import type { DiffTreesInput, DiffTreesOptions } from './types.js';
@@ -86,13 +88,36 @@ function statOptionsFor(
 }
 
 /**
+ * Route the drop-pass predicate and the stat pass to the cheapest mechanism
+ * for what the caller asked for. `lineKeyActive && !withStat` (the common
+ * `git diff -w`-style predicate-only call) never needs blob content beyond
+ * the drop verdict, so it streams both blobs directly — skipping
+ * `materialisePatchFiles` (full read + textconv + attribute resolution)
+ * entirely. Any other combination needs materialised content (for counts
+ * and/or textconv-aware bytes) and keeps the full stat pass.
+ */
+async function applyLinePassAndStat(
+  ctx: Context,
+  diff: TreeDiff,
+  lineKey: LineKey,
+  lineKeyActive: boolean,
+  ignoreBlankLines: boolean,
+  withStat: boolean,
+): Promise<TreeDiff | StatTreeDiff> {
+  if (lineKeyActive && !withStat) {
+    return applyDropPredicate(ctx, diff, lineKey, ignoreBlankLines);
+  }
+  return applyStatPass(ctx, diff, lineKey, lineKeyActive, ignoreBlankLines, withStat);
+}
+
+/**
  * Materialise blobs once, run the drop pass and stat in a single traversal.
  * When `lineKeyActive`, drops modify changes that yield zero real hunks under
  * the active line-key mode. When `withStat`, attaches per-file counts to
  * every surviving change. The stat and drop predicate share one
  * `computeStatFields` call per modify so drop and counts are mutually consistent.
  */
-async function applyLinePassAndStat(
+async function applyStatPass(
   ctx: Context,
   diff: TreeDiff,
   lineKey: LineKey,
@@ -112,6 +137,33 @@ async function applyLinePassAndStat(
     surviving.push(withStat ? { ...file.change, ...stats } : file.change);
   }
   return { changes: surviving };
+}
+
+/**
+ * Predicate-only drop pass (no `withStat`): stream each `modify` change's
+ * blobs to decide keep/drop without materialising content. Non-modify
+ * changes are never dropped and need no I/O at all.
+ */
+async function applyDropPredicate(
+  ctx: Context,
+  diff: TreeDiff,
+  lineKey: LineKey,
+  ignoreBlankLines: boolean,
+): Promise<TreeDiff> {
+  const drops = await boundedMap(diff.changes, MAX_CONCURRENT_BLOB_LOADS, (change) =>
+    changeShouldDrop(ctx, change, lineKey, ignoreBlankLines),
+  );
+  return { changes: diff.changes.filter((_, index) => !drops[index]) };
+}
+
+function changeShouldDrop(
+  ctx: Context,
+  change: DiffChange,
+  lineKey: LineKey,
+  ignoreBlankLines: boolean,
+): Promise<boolean> {
+  if (change.type !== 'modify') return Promise.resolve(false);
+  return isWhitespaceOnlyModify(ctx, change, lineKey, ignoreBlankLines);
 }
 
 /**
