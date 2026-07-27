@@ -298,6 +298,7 @@ describe('object-resolver', () => {
         );
         const loosePath = `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(fakeId)}`;
         const rawBytes = new TextEncoder().encode('blob 3\0xyz');
+        const actualOid = await ctx.hash.hashHex(rawBytes);
         const compressed = await ctx.compressor.deflate(rawBytes);
         await ctx.fs.write(loosePath, compressed);
         const registry = createPackRegistry(ctx);
@@ -309,7 +310,13 @@ describe('object-resolver', () => {
           expect.unreachable();
         } catch (error) {
           expect(error).toBeInstanceOf(TsgitError);
-          expect((error as TsgitError).data.code).toBe('OBJECT_HASH_MISMATCH');
+          const data = (error as TsgitError).data;
+          expect(data.code).toBe('OBJECT_HASH_MISMATCH');
+          if (data.code !== 'OBJECT_HASH_MISMATCH') {
+            expect.fail(`expected OBJECT_HASH_MISMATCH, got ${data.code}`);
+          }
+          expect(data.expected).toBe(fakeId);
+          expect(data.actual).toBe(actualOid);
         }
       });
     });

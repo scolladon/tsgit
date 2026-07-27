@@ -1,3 +1,5 @@
+import { resolveAttribute } from '../../domain/attributes/index.js';
+import { primaryPath } from '../../domain/diff/change-path.js';
 import type { FlatTree, FlatTreeEntry } from '../../domain/diff/flat-tree.js';
 import {
   type AddChange,
@@ -27,6 +29,7 @@ import type { Context } from '../../ports/context.js';
 import { detectSimilarityRenames } from './detect-similarity-renames.js';
 import { flattenTree } from './flatten-tree.js';
 import { boundedMap, MAX_CONCURRENT_BLOB_LOADS } from './internal/bounded-map.js';
+import { type AttributeProvider, buildAttributeProvider } from './internal/read-gitattributes.js';
 import { isWhitespaceOnlyModify } from './internal/whitespace-drop-predicate.js';
 import { materialisePatchFiles } from './materialise-patch-files.js';
 import { readObject } from './read-object.js';
@@ -182,10 +185,53 @@ async function applyDropPredicate(
   lineKey: LineKey,
   ignoreBlankLines: boolean,
 ): Promise<TreeDiff> {
+  // One lazily-built provider per drop pass: the streaming predicate is
+  // blind to `.gitattributes`, so attribute-affected paths must be detected
+  // up front and routed through the materialise-based verdict instead.
+  let providerPromise: Promise<AttributeProvider> | undefined;
+  const getProvider = (): Promise<AttributeProvider> => {
+    providerPromise ??= buildAttributeProvider(ctx);
+    return providerPromise;
+  };
   const drops = await boundedMap(diff.changes, MAX_CONCURRENT_BLOB_LOADS, (change) =>
-    changeShouldDrop(ctx, change, lineKey, ignoreBlankLines),
+    changeShouldDrop(ctx, change, lineKey, ignoreBlankLines, getProvider),
   );
   return { changes: diff.changes.filter((_, index) => !drops[index]) };
+}
+
+/** `true` when the path's `diff` attribute is anything but unspecified —
+ *  `-diff` (forced binary), `diff` (forced text), or a named driver. */
+async function hasDiffAttribute(
+  change: DiffChange,
+  getProvider: () => Promise<AttributeProvider>,
+): Promise<boolean> {
+  const provider = await getProvider();
+  const filePath = primaryPath(change);
+  const { sources, macros } = await provider.sourcesForPath(filePath);
+  return resolveAttribute(sources, filePath, 'diff', macros) !== 'unspecified';
+}
+
+/**
+ * The stat-path verdict for one modify change — materialised content,
+ * textconv applied, binary override honoured — used whenever an attribute
+ * steers the file, so the predicate path can never diverge from
+ * `applyStatPass` (or from git) on attribute-marked files.
+ */
+async function materialisedShouldDrop(
+  ctx: Context,
+  change: DiffChange,
+  lineKey: LineKey,
+  ignoreBlankLines: boolean,
+): Promise<boolean> {
+  const files = await materialisePatchFiles(ctx, [change], { applyTextconv: true });
+  const file = files[0];
+  if (file === undefined) return false;
+  const stats = computeStatFields(
+    file.oldContent ?? EMPTY,
+    file.newContent ?? EMPTY,
+    statOptionsFor(lineKey, true, ignoreBlankLines, file.numstatBinaryOverride),
+  );
+  return shouldDrop(file.change, stats);
 }
 
 /**
@@ -202,14 +248,18 @@ function isDirectoryModeChange(change: DiffChange): boolean {
   return false;
 }
 
-function changeShouldDrop(
+async function changeShouldDrop(
   ctx: Context,
   change: DiffChange,
   lineKey: LineKey,
   ignoreBlankLines: boolean,
+  getProvider: () => Promise<AttributeProvider>,
 ): Promise<boolean> {
-  if (isDirectoryModeChange(change)) return Promise.resolve(true);
-  if (change.type !== 'modify') return Promise.resolve(false);
+  if (isDirectoryModeChange(change)) return true;
+  if (change.type !== 'modify') return false;
+  if (await hasDiffAttribute(change, getProvider)) {
+    return materialisedShouldDrop(ctx, change, lineKey, ignoreBlankLines);
+  }
   return isWhitespaceOnlyModify(ctx, change, lineKey, ignoreBlankLines);
 }
 

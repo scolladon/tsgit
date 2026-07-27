@@ -183,3 +183,97 @@ describe.skipIf(!GIT_AVAILABLE)(
     });
   },
 );
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'integration — whitespace predicate honours .gitattributes diff overrides',
+  { timeout: 60_000 },
+  () => {
+    let attrDir = '';
+    let attrRepo: Awaited<ReturnType<typeof openRepository>>;
+    let attrFrom = '';
+    let attrTo = '';
+
+    beforeAll(async () => {
+      attrDir = await realpath(await mkdtemp(path.join(os.tmpdir(), 'tsgit-ws-attr-interop-')));
+      await runGitAsync(['init', '-q', '-b', 'main', attrDir]);
+      await runGitAsync(['-C', attrDir, 'config', 'user.name', 'Ada']);
+      await runGitAsync(['-C', attrDir, 'config', 'user.email', 'ada@example.com']);
+      await runGitAsync(['-C', attrDir, 'config', 'diff.identity.textconv', 'cat']);
+
+      await writeFile(
+        path.join(attrDir, '.gitattributes'),
+        'nodiff.txt -diff\nconv.txt diff=identity\n',
+      );
+      await writeFile(path.join(attrDir, 'nodiff.txt'), 'a b\n');
+      await writeFile(path.join(attrDir, 'conv.txt'), 'a b\n');
+      await writeFile(path.join(attrDir, 'plain.txt'), 'a b\n');
+      await runGitAsync(['-C', attrDir, 'add', '.']);
+      await runGitAsync(['-C', attrDir, 'commit', '-q', '-m', 'base'], {
+        env: { ...runGitEnv(), ...IDENTITY },
+      });
+      attrFrom = (await runGitAsync(['-C', attrDir, 'rev-parse', 'HEAD'])).trim();
+
+      // Whitespace-only edits to all three files.
+      await writeFile(path.join(attrDir, 'nodiff.txt'), 'a  b\n');
+      await writeFile(path.join(attrDir, 'conv.txt'), 'a  b\n');
+      await writeFile(path.join(attrDir, 'plain.txt'), 'a  b\n');
+      await runGitAsync(['-C', attrDir, 'add', '.']);
+      await runGitAsync(['-C', attrDir, 'commit', '-q', '-m', 'ws-only'], {
+        env: { ...runGitEnv(), ...IDENTITY },
+      });
+      attrTo = (await runGitAsync(['-C', attrDir, 'rev-parse', 'HEAD'])).trim();
+
+      attrRepo = await openRepository({ cwd: attrDir });
+    });
+
+    afterAll(async () => {
+      await attrRepo.dispose();
+      await rm(attrDir, { recursive: true, force: true });
+    });
+
+    describe('Given whitespace-only edits to a -diff file, a textconv file, and a plain file', () => {
+      describe('When diffing with ignoreWhitespace on the predicate path, the stat path, and real git', () => {
+        it('Then all three agree — the -diff file survives (binary attr), the plain file drops', async () => {
+          // Arrange
+          const liveNameOnly = await runGitAsync([
+            '-C',
+            attrDir,
+            'diff',
+            '--no-ext-diff',
+            '--name-only',
+            '--ignore-all-space',
+            attrFrom,
+            attrTo,
+          ]);
+          const livePaths = liveNameOnly
+            .split('\n')
+            .filter((line) => line.length > 0)
+            .sort();
+
+          // Act
+          const predicateResult = await attrRepo.diff({
+            from: attrFrom,
+            to: attrTo,
+            ignoreWhitespace: 'all',
+          });
+          const statResult = await attrRepo.diff({
+            from: attrFrom,
+            to: attrTo,
+            ignoreWhitespace: 'all',
+            withStat: true,
+          });
+          const survivors = (treeDiff: TreeDiff): ReadonlyArray<string> =>
+            treeDiff.changes.map((c) => ('path' in c ? (c.path as string) : '')).sort();
+
+          // Assert — the attribute-marked binary file must survive like git's
+          // (whitespace flags never apply to a `-diff` file); the plain file
+          // must still drop; and both tsgit paths must agree with git exactly
+          expect(livePaths).toContain('nodiff.txt');
+          expect(livePaths).not.toContain('plain.txt');
+          expect(survivors(predicateResult)).toEqual(livePaths);
+          expect(survivors(statResult)).toEqual(livePaths);
+        });
+      });
+    });
+  },
+);

@@ -176,6 +176,32 @@ describe('read-commit-graph', () => {
       });
     });
 
+    describe('Given a present-but-corrupt single-file commit-graph', () => {
+      describe('When commitHeader is called for a real commit', () => {
+        it('Then the graph degrades to absent (undefined) instead of throwing', async () => {
+          // Arrange — garbage bytes where the graph should be; git treats a
+          // corrupt graph as absent (warn + object-read fallback, exit 0)
+          const ctx = await buildSeededContext();
+          const tree = await emptyTree(ctx);
+          const commit = await makeCommit(ctx, tree, [], 1, 'corrupt-graph');
+          const gitDir = commonGitDir(ctx);
+          await ctx.fs.write(
+            `${gitDir}/objects/info/commit-graph`,
+            new TextEncoder().encode('not a commit graph at all'),
+          );
+
+          // Act
+          const header = await commitHeader(ctx, commit.id);
+          const secondHeader = await commitHeader(ctx, commit.id);
+
+          // Assert — degraded on the first call AND the cached verdict is the
+          // fallback (never a memoized rejection poisoning later walks)
+          expect(header).toBeUndefined();
+          expect(secondHeader).toBeUndefined();
+        });
+      });
+    });
+
     describe('Given no commit-graph file at all', () => {
       describe('When commitHeader is called for a real commit', () => {
         it('Then returns undefined', async () => {
@@ -217,6 +243,28 @@ describe('read-commit-graph', () => {
   });
 
   describe('createBoundedReader', () => {
+    describe('Given a consumed id that was forgotten', () => {
+      describe('When start is called again for the same id', () => {
+        it('Then the underlying read runs a second time (memo entry was dropped)', async () => {
+          // Arrange
+          let reads = 0;
+          const boundedRead = createBoundedReader(2, async (id: ObjectId) => {
+            reads += 1;
+            return id;
+          });
+          const id = 'a'.repeat(40) as ObjectId;
+
+          // Act
+          await boundedRead.start(id);
+          boundedRead.forget(id);
+          await boundedRead.start(id);
+
+          // Assert
+          expect(reads).toBe(2);
+        });
+      });
+    });
+
     describe('Given a bound of 2 and 5 ids started without awaiting between them', () => {
       describe('When every read is eventually awaited', () => {
         it('Then concurrent in-flight reads never exceed the bound', async () => {

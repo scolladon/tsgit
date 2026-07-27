@@ -35,6 +35,7 @@ interface LineSourceState {
   buffer: Uint8Array;
   exhausted: boolean;
   nulScanOffset: number;
+  lfScanFrom: number;
   currentLineBytes: number;
   lineCount: number;
   binary: boolean;
@@ -46,6 +47,7 @@ function createLineSourceState(stream: AsyncIterable<Uint8Array>): LineSourceSta
     buffer: EMPTY,
     exhausted: false,
     nulScanOffset: 0,
+    lfScanFrom: 0,
     currentLineBytes: 0,
     lineCount: 0,
     binary: false,
@@ -86,6 +88,7 @@ function trackLineCaps(state: LineSourceState, lineLength: number, terminated: b
 function takeLine(state: LineSourceState, length: number, terminated: boolean): Uint8Array {
   const line = state.buffer.subarray(0, length);
   state.buffer = state.buffer.subarray(length);
+  state.lfScanFrom = 0;
   trackLineCaps(state, line.length, terminated);
   return line;
 }
@@ -93,8 +96,20 @@ function takeLine(state: LineSourceState, length: number, terminated: boolean): 
 /** Pull the next complete line (LF included) from the stream, or `undefined` at EOF. */
 async function nextLine(state: LineSourceState): Promise<Uint8Array | undefined> {
   for (;;) {
-    const lfAt = state.buffer.indexOf(LF);
+    // Resume the LF scan where the last one stopped — never rescan bytes a
+    // previous chunk already cleared, or a long line degrades to O(n²).
+    const lfAt = state.buffer.indexOf(LF, state.lfScanFrom);
     if (lfAt !== -1) return takeLine(state, lfAt + 1, true);
+    state.lfScanFrom = state.buffer.length;
+    // Enforce the line cap on the PENDING unterminated bytes, not only at
+    // line completion: a single multi-MB line (minified bundle, one-line
+    // JSON) would otherwise buffer the whole blob before the cap could
+    // fire. The final line would exceed the cap anyway, so the binary
+    // verdict is unchanged — this only fires it early.
+    if (state.currentLineBytes + state.buffer.length >= MAX_LINE_BYTES) {
+      state.binary = true;
+      return undefined;
+    }
     if (state.exhausted) {
       return state.buffer.length > 0 ? takeLine(state, state.buffer.length, false) : undefined;
     }

@@ -1204,6 +1204,31 @@ describe('diffTrees', () => {
     });
   });
 
+  describe('Given a single unterminated line longer than the line cap, whitespace-only change', () => {
+    describe('When diffTrees is called with ignoreWhitespace:all and withStat omitted', () => {
+      it('Then the file is kept (binary via the incremental cap, never buffered whole)', async () => {
+        // Arrange — one 70,000-byte line with no LF: over MAX_LINE_BYTES, so
+        // the predicate must flag binary from the PENDING bytes and bail early
+        const ctx = await buildSeededContext();
+        const longLine = 'x'.repeat(70_000);
+        const oldId = await blob(ctx, `${longLine} a`);
+        const newId = await blob(ctx, `${longLine}  a`);
+        const before = await writeTree(ctx, [
+          { name: 'big.txt', mode: FILE_MODE.REGULAR, id: oldId },
+        ]);
+        const after = await writeTree(ctx, [
+          { name: 'big.txt', mode: FILE_MODE.REGULAR, id: newId },
+        ]);
+
+        // Act
+        const result = await diffTrees(ctx, before, after, { ignoreWhitespace: 'all' });
+
+        // Assert — a binary side is never dropped, matching the stat path
+        expect(result.changes).toHaveLength(1);
+      });
+    });
+  });
+
   describe('Given a real (non-whitespace-only) modify with ignoreWhitespace:all and withStat omitted', () => {
     describe('When diffTrees is called', () => {
       it('Then the modify survives WITHOUT materialising blobs (streaming predicate)', async () => {

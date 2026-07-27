@@ -126,6 +126,21 @@ describe('isEntryStatClean', () => {
     });
   });
 
+  describe('Given a differing nanosecond ctime while both sides carry ns precision', () => {
+    describe('When checked', () => {
+      it('Then it is not clean', () => {
+        // Arrange
+        const stat: FileStat = { ...BASE_STAT, ctimeNs: (BASE_STAT.ctimeNs as bigint) + 1n };
+
+        // Act
+        const result = isEntryStatClean(BASE_ENTRY, stat, BASE_INDEX_MTIME);
+
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+  });
+
   describe('Given a stat with no nanosecond precision (platform without ns support)', () => {
     describe('When checked against an entry with zeroed ns fields, matching seconds only', () => {
       it('Then it is clean (ns comparison is skipped, not defaulted-mismatched)', () => {

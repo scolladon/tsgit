@@ -534,11 +534,17 @@ describe('RegisteredPack.readSlice — persistent handle (A4)', () => {
         const entryOffset = table.sortedOffsets[0]!;
         const sliceLength = table.trailerStart - entryOffset;
 
-        // Act
+        // Act — twice: the second call exercises the handlePromise
+        // reset-and-retry path after the first fallback
         const result = await pack.readSlice(entryOffset, sliceLength);
+        const secondResult = await pack.readSlice(entryOffset, sliceLength);
 
-        // Assert — the fallback path still returns the exact requested slice.
+        // Assert — the fallback path returns the exact bytes of the direct
+        // per-call read, byte-for-byte, on both attempts
+        const direct = await ctx.fs.readSlice(pack.packPath, entryOffset, sliceLength);
         expect(result.length).toBe(sliceLength);
+        expect(Array.from(result)).toEqual(Array.from(direct));
+        expect(Array.from(secondResult)).toEqual(Array.from(direct));
       });
     });
   });
@@ -585,6 +591,47 @@ describe('RegisteredPack.close', () => {
 
         // Assert
         expect(openSpy).not.toHaveBeenCalled();
+      });
+    });
+  });
+});
+
+describe('PackRegistry.refresh', () => {
+  describe('Given a pack that was read once (persistent handle opened)', () => {
+    describe('When refresh is called', () => {
+      it('Then the outgoing pack handle is closed (no fd leak across refreshes)', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'refresh-leak', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('r') },
+        ]);
+        let closeCalls = 0;
+        const wrapped = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            openWithNoFollow: async (path: string, mode: 'read' | 'write') => {
+              const handle = await ctx.fs.openWithNoFollow(path, mode);
+              return {
+                ...handle,
+                close: async () => {
+                  closeCalls += 1;
+                  await handle.close();
+                },
+              };
+            },
+          },
+        };
+        const registry = createPackRegistry(wrapped);
+        const packs = await registry.all();
+        await packs[0]!.readSlice(0, 4);
+
+        // Act
+        registry.refresh();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+
+        // Assert
+        expect(closeCalls).toBe(1);
       });
     });
   });
