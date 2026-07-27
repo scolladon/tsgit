@@ -253,6 +253,27 @@ describe('diffTrees', () => {
     });
   });
 
+  describe('Given new-tree entries supplied out of byte-sort order', () => {
+    describe('When diffTrees is called', () => {
+      it('Then changes are still emitted in byte-sorted path order (entriesOf re-sorts, never trusts input array order)', () => {
+        // Arrange — entries deliberately scrambled; nothing upstream guarantees the
+        // caller's array order matches git's byte-sort order.
+        const newTree = tree([
+          entry('c', FILE_MODE.REGULAR, ID_C),
+          entry('a', FILE_MODE.REGULAR, ID_A),
+          entry('b', FILE_MODE.REGULAR, ID_B),
+        ]);
+
+        // Act
+        const result = diffTrees(undefined, newTree);
+
+        // Assert — sorted 'a' < 'b' < 'c', not the scrambled input order 'c','a','b'
+        const paths = result.changes.map((c) => (c.type === 'add' ? c.newPath : undefined));
+        expect(paths).toEqual(['a', 'b', 'c']);
+      });
+    });
+  });
+
   describe('Given entries that participate in the merge-join', () => {
     describe('When diffTrees is called', () => {
       it('Then each entry name is encoded exactly once (no double TextEncoder pass)', () => {

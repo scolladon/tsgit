@@ -308,6 +308,43 @@ describe('compareWorkingTreeDelta', () => {
     });
   });
 
+  describe('Given a stat-clean file whose recorded mode differs from the working file, index mtime supplied', () => {
+    describe('When comparing the delta', () => {
+      it("Then returns 'mode-changed' without reading or hashing the content (stat-cache ternary distinguishes the mode mismatch)", async () => {
+        // Arrange — index mtime strictly after the entry's mtime ⇒ non-racy; matchesContentStat
+        // deliberately excludes mode, so the stat cache reports clean even though this
+        // entry's mode (100755) differs from the seeded working file's real mode (100644) —
+        // only the caller's ternary is what must tell 'unchanged' from 'mode-changed' apart.
+        const { ctx, entry } = await seedFile('a.txt', 'hello\n');
+        const executableEntry: IndexEntry = { ...entry, mode: '100755' };
+        const reads: string[] = [];
+        const spiedCtx: Context = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            read: async (readPath: string) => {
+              reads.push(readPath);
+              return ctx.fs.read(readPath);
+            },
+          },
+        };
+        const indexMtime = { seconds: entry.mtimeSeconds + 10, nanoseconds: 0 };
+
+        // Act
+        const result = await compareWorkingTreeDelta(
+          spiedCtx,
+          executableEntry,
+          undefined,
+          indexMtime,
+        );
+
+        // Assert
+        expect(result.status).toBe('mode-changed');
+        expect(reads).toEqual([]);
+      });
+    });
+  });
+
   describe('Given an assume-valid gitlink entry and the index mtime supplied', () => {
     describe('When comparing the delta', () => {
       it('Then the stat cache is bypassed and the content-path verdict stands (modified)', async () => {

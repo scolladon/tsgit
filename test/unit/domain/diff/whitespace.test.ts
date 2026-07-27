@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import type { LineKey } from '../../../../src/domain/diff/whitespace.js';
+import type {
+  LineDigest,
+  LineKey,
+  WhitespaceMode,
+} from '../../../../src/domain/diff/whitespace.js';
 import {
   digestIsBlank,
   digestNormalizedLine,
@@ -16,6 +20,29 @@ const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
 
 // Build a line exactly as splitLines would return it: content + optional LF terminator
 const line = (s: string): Uint8Array => enc(s);
+
+// Independent oracle for digestNormalizedLine: FNV-1a folded over normalizeLine's
+// OWN output (content bytes, plus a trailing LF byte when normalized ends in one).
+// normalizeLine is a genuinely separate code path from the digest* helpers under
+// test, so a branch/off-by-one/reset bug in the digest side almost never
+// coincidentally reproduces the same {length, terminated, hash} triple.
+const FNV_OFFSET_BASIS = 0x811c9dc5;
+const FNV_PRIME = 0x01000193;
+
+function fnvFold(bytes: Uint8Array): number {
+  let hash = FNV_OFFSET_BASIS;
+  for (const byte of bytes) {
+    hash = Math.imul(hash ^ byte, FNV_PRIME) >>> 0;
+  }
+  return hash;
+}
+
+function expectedDigest(input: Uint8Array, key: LineKey): LineDigest {
+  const normalized = normalizeLine(input, key);
+  const terminated = normalized.length > 0 && normalized[normalized.length - 1] === 0x0a;
+  const length = terminated ? normalized.length - 1 : normalized.length;
+  return { length, terminated, hash: fnvFold(normalized) };
+}
 
 describe('normalizeLine', () => {
   describe("Given mode 'all' (ignore all space/tab)", () => {
@@ -678,6 +705,153 @@ describe('digestNormalizedLine', () => {
 
       // Assert
       expect(digestsEqual(withCr, withoutCr)).toBe(true);
+    });
+  });
+});
+
+describe('digestNormalizedLine — branch-exhaustive cross-check', () => {
+  describe('Given a line and key exercising a specific digest branch, When digested', () => {
+    it.each([
+      {
+        mode: 'none' as WhitespaceMode,
+        ignoreCrAtEol: false,
+        input: 'a\r\n',
+        label: "a CR is retained under mode 'none' without ignoreCrAtEol (crApplies is false)",
+      },
+      {
+        mode: 'none' as WhitespaceMode,
+        ignoreCrAtEol: true,
+        input: '\r\n',
+        label:
+          'a lone CR at the content-start boundary is stripped under ignoreCrAtEol (crPos===0)',
+      },
+      {
+        mode: 'all' as WhitespaceMode,
+        ignoreCrAtEol: false,
+        input: 'ab\n',
+        label:
+          'an all-mode line with no trailing CR takes the non-CR ternary branch and keeps every byte',
+      },
+      {
+        mode: 'none' as WhitespaceMode,
+        ignoreCrAtEol: false,
+        input: 'a',
+        label: "an unterminated mode 'none' line never mixes a synthetic terminator into the hash",
+      },
+      {
+        mode: 'all' as WhitespaceMode,
+        ignoreCrAtEol: false,
+        input: 'ab',
+        label: 'an unterminated all-mode line never mixes a synthetic terminator into the hash',
+      },
+      {
+        mode: 'all' as WhitespaceMode,
+        ignoreCrAtEol: false,
+        input: 'a  b\n',
+        label: 'an all-mode internal run of two spaces is fully dropped, not collapsed to one',
+      },
+      {
+        mode: 'change' as WhitespaceMode,
+        ignoreCrAtEol: false,
+        input: 'ab\n',
+        label:
+          'a change-mode line starting with non-whitespace never injects a phantom leading space',
+      },
+      {
+        mode: 'change' as WhitespaceMode,
+        ignoreCrAtEol: false,
+        input: 'a bc\n',
+        label:
+          "a change-mode run's collapse state resets after each run, not sticking to the next byte",
+      },
+      {
+        mode: 'change' as WhitespaceMode,
+        ignoreCrAtEol: false,
+        input: 'ab',
+        label: 'an unterminated change-mode line never mixes a synthetic terminator into the hash',
+      },
+      {
+        mode: 'at-eol' as WhitespaceMode,
+        ignoreCrAtEol: false,
+        input: '  b\n',
+        label:
+          "an at-eol leading run's start index is captured on its first whitespace byte, not lost",
+      },
+      {
+        mode: 'at-eol' as WhitespaceMode,
+        ignoreCrAtEol: false,
+        input: 'ab\n',
+        label: 'an at-eol line with no whitespace run never enters the commit-run branch',
+      },
+      {
+        mode: 'at-eol' as WhitespaceMode,
+        ignoreCrAtEol: false,
+        input: 'a b c\n',
+        label: "an at-eol run commit resets its start sentinel to 'no run', not to a stray index",
+      },
+      {
+        mode: 'at-eol' as WhitespaceMode,
+        ignoreCrAtEol: false,
+        input: 'ab',
+        label: 'an unterminated at-eol line never mixes a synthetic terminator into the hash',
+      },
+      {
+        mode: 'at-eol' as WhitespaceMode,
+        ignoreCrAtEol: false,
+        input: 'a  b\n',
+        label:
+          'an at-eol internal run commits exactly its whitespace bytes, not the byte after it too',
+      },
+      {
+        mode: 'at-eol' as WhitespaceMode,
+        ignoreCrAtEol: false,
+        input: 'a   b\n',
+        label:
+          "an at-eol run's start index stays pinned across the whole run, not just its last byte",
+      },
+    ])(
+      'Then the digest matches the independent normalizeLine+FNV oracle ($label)',
+      ({ mode, ignoreCrAtEol, input }) => {
+        // Arrange
+        const key: LineKey = { mode, ignoreCrAtEol };
+        const bytes = enc(input);
+
+        // Act
+        const result = digestNormalizedLine(bytes, key);
+
+        // Assert
+        expect(result).toEqual(expectedDigest(bytes, key));
+      },
+    );
+  });
+});
+
+describe('digestsEqual', () => {
+  describe('Given two digests whose length differs but terminated and hash match', () => {
+    it('Then returns false (length is significant, not shadowed by hash agreement)', () => {
+      // Arrange
+      const a: LineDigest = { length: 1, terminated: true, hash: 99 };
+      const b: LineDigest = { length: 2, terminated: true, hash: 99 };
+
+      // Act
+      const result = digestsEqual(a, b);
+
+      // Assert
+      expect(result).toBe(false);
+    });
+  });
+
+  describe('Given two digests whose terminated flag differs but length and hash match', () => {
+    it('Then returns false (terminated is significant, not shadowed by hash agreement)', () => {
+      // Arrange
+      const a: LineDigest = { length: 1, terminated: true, hash: 99 };
+      const b: LineDigest = { length: 1, terminated: false, hash: 99 };
+
+      // Act
+      const result = digestsEqual(a, b);
+
+      // Assert
+      expect(result).toBe(false);
     });
   });
 });

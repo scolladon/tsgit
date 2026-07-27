@@ -225,8 +225,9 @@ async function materialisedShouldDrop(
   getProvider: () => Promise<AttributeProvider>,
 ): Promise<boolean> {
   const files = await materialisePatchFiles(ctx, [change], { applyTextconv: true, getProvider });
-  const file = files[0];
-  if (file === undefined) return false;
+  // boundedMap (materialisePatchFiles' worker) returns exactly one result per input
+  // change or rejects — never fewer — so a 1-element input always yields files[0].
+  const file = files[0]!;
   const stats = computeStatFields(
     file.oldContent ?? EMPTY,
     file.newContent ?? EMPTY,
@@ -245,7 +246,20 @@ async function materialisedShouldDrop(
 function isDirectoryModeChange(change: DiffChange): boolean {
   if (change.type === 'add') return isDirectory(change.newMode);
   if (change.type === 'delete') return isDirectory(change.oldMode);
-  if (change.type === 'modify') return isDirectory(change.oldMode) && isDirectory(change.newMode);
+  // Stryker disable next-line ConditionalExpression: equivalent — reached only by
+  // modify/type-change/rename/copy (add/delete return above). modify: guard is true
+  // either way, same body runs. type-change: classifySamePath only emits it when
+  // !isSameKind, so exactly 0 or 1 side is a directory, never both — the `&&` below
+  // is false regardless. rename/copy: buildRenameChange/buildCopyChange only complete
+  // after readBlob succeeds on both sides, which throws unexpectedObjectType for a
+  // tree oid — so a directory side can never reach a constructed RenameChange/CopyChange,
+  // isDirectory is false on both — `&&` is false either way. Every reachable case matches
+  // the unmutated `return false` fallthrough.
+  if (change.type === 'modify')
+    // Stryker disable next-line LogicalOperator: equivalent — classifySamePath only
+    // emits 'modify' when isSameKind(oldMode,newMode), so isDirectory(oldMode) ===
+    // isDirectory(newMode) always; X&&X === X||X for any X.
+    return isDirectory(change.oldMode) && isDirectory(change.newMode);
   return false;
 }
 

@@ -55,6 +55,13 @@ function createLineSourceState(stream: AsyncIterable<Uint8Array>): LineSourceSta
 }
 
 function concatBytes(a: Uint8Array, b: Uint8Array): Uint8Array {
+  // NOTE: the ConditionalExpression variant forcing this guard to `false` is
+  // equivalent — skipping the shortcut still produces byte-identical output:
+  // `out.set(a, 0)` is a no-op when a.length===0, so `out` ends up holding
+  // exactly b's bytes either way. Left unannotated because the opposite
+  // variant (`true`) is a real, killed mutant on this same line (it would
+  // always return `b`, including when `a` is non-empty), and Stryker's
+  // next-line disable matches by mutator+line, not by which boolean value.
   if (a.length === 0) return b;
   const out = new Uint8Array(a.length + b.length);
   out.set(a, 0);
@@ -64,6 +71,14 @@ function concatBytes(a: Uint8Array, b: Uint8Array): Uint8Array {
 
 // Mirrors line-diff.ts's hasNulInWindow, applied incrementally across chunks.
 function scanForNul(state: LineSourceState, chunk: Uint8Array): void {
+  // NOTE: forcing this guard's ConditionalExpression to `true`, or relaxing
+  // its EqualityOperator to `<=`, are both equivalent once nulScanOffset
+  // reaches BINARY_DETECTION_BYTES: `end` below becomes
+  // `Math.min(chunk.length, <= 0)`, which is <= 0 either way, so the scan
+  // loop never executes regardless of whether this guard fired. Left
+  // unannotated because the opposite-direction variants (`false`, `>=`) are
+  // real, killed mutants on this same line, and Stryker's next-line disable
+  // matches by mutator+line, not by which variant.
   if (state.nulScanOffset < BINARY_DETECTION_BYTES) {
     const end = Math.min(chunk.length, BINARY_DETECTION_BYTES - state.nulScanOffset);
     for (let i = 0; i < end; i++) {
@@ -82,6 +97,15 @@ function trackLineCaps(state: LineSourceState, lineLength: number, terminated: b
   if (state.currentLineBytes >= MAX_LINE_BYTES) state.binary = true;
   state.lineCount++;
   if (state.lineCount >= MAX_LINES) state.binary = true;
+  // NOTE: forcing this guard's ConditionalExpression to `true` is
+  // equivalent — this call is always the LAST trackLineCaps invocation for
+  // a given line (only the final, unterminated line reaches it via the
+  // exhausted branch below), so currentLineBytes is never read again
+  // regardless of whether it's reset here. Left unannotated because the
+  // opposite variant (`false`, never resetting) is a real, killed mutant on
+  // this same line (it lets multiple SHORT terminated lines' bytes
+  // accumulate past MAX_LINE_BYTES), and Stryker's next-line disable
+  // matches by mutator+line, not by which variant.
   if (terminated) state.currentLineBytes = 0;
 }
 
@@ -106,11 +130,14 @@ async function nextLine(state: LineSourceState): Promise<Uint8Array | undefined>
     // JSON) would otherwise buffer the whole blob before the cap could
     // fire. The final line would exceed the cap anyway, so the binary
     // verdict is unchanged — this only fires it early.
+    // Stryker disable next-line ArithmeticOperator,BlockStatement: equivalent — this whole check is a pending-bytes short-circuit only (see above): disabling it via either mutator just delays the cap to the completed line's own trackLineCaps call, since `buffer.length` only grows until the line completes (LF found or EOF); the final verdict is unchanged, exactly as this function's own comment documents.
+    // NOTE: the same reasoning makes the ConditionalExpression (`false`) and EqualityOperator (`>`) variants on this line equivalent too, but they're left unannotated because their opposite-direction siblings (`true`, `<`) are real, killed mutants, and Stryker's next-line disable matches by mutator+line, not by which variant.
     if (state.currentLineBytes + state.buffer.length >= MAX_LINE_BYTES) {
       state.binary = true;
       return undefined;
     }
     if (state.exhausted) {
+      // Stryker disable next-line BooleanLiteral: equivalent — this `terminated` argument only feeds trackLineCaps' reset-after-terminated-line branch, and this call is always the LAST line ever returned (the exhausted-EOF branch); currentLineBytes is never read again afterward, so mislabeling it `true` has no observable effect.
       return state.buffer.length > 0 ? takeLine(state, state.buffer.length, false) : undefined;
     }
     const step = await state.iterator.next();

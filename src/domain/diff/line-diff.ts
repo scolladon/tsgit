@@ -267,6 +267,14 @@ const BINARY_STRING_CHUNK = 8_192;
 // unit), used only as an exact Map key for line interning below.
 function binaryStringOf(bytes: Uint8Array): string {
   if (bytes.length <= BINARY_STRING_CHUNK) return String.fromCharCode(...bytes);
+  // Stryker disable next-line StringLiteral: equivalent — the seed is a fixed
+  // literal `out` accumulates onto via `+=`; every call gets the identical
+  // corrupted prefix, so relative equality/inequality between any two interned
+  // keys (the only thing callers observe — the string itself is never surfaced)
+  // is unchanged. A length-based collision with a fast-path (uncorrupted, ≤8192-
+  // char) key is also impossible: a corrupted key is always strictly longer than
+  // BINARY_STRING_CHUNK + the placeholder text, so its length alone rules out
+  // matching any fast-path key.
   let out = '';
   for (let i = 0; i < bytes.length; i += BINARY_STRING_CHUNK) {
     out += String.fromCharCode(...bytes.subarray(i, i + BINARY_STRING_CHUNK));
