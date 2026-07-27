@@ -56,6 +56,11 @@ export async function resolveObject(
   if (id === emptyTreeOid(ctx.hashConfig)) {
     return parseObject(id, EMPTY_TREE_BYTES, ctx.hashConfig);
   }
+  const cached = ctx.deltaCache.get(id);
+  if (cached !== undefined) {
+    enforceCachedCap(id, cached, maxBytes);
+    return finalize(ctx, id, cached, verifyHash);
+  }
   const loose = await tryLoose(ctx, id);
   if (loose !== undefined) {
     checkAborted(ctx);

@@ -578,6 +578,126 @@ describe('object-resolver', () => {
     });
   });
 
+  describe('deltaCache probe (A1 — warm delta-chain reads)', () => {
+    describe('Given a warm delta-chain read that already populated the cache', () => {
+      describe('When resolveObject is called again for the same id', () => {
+        it('Then returns byte-identical bytes with zero pack touches', async () => {
+          // Arrange — populate the cache with a real OFS_DELTA reconstruction,
+          // then spy the pack-touching surfaces before the second read.
+          const ctx = await buildSeededContext();
+          const baseContent = new TextEncoder().encode('warm base content');
+          const targetContent = new TextEncoder().encode('warm target content — different');
+          const ids = await writeSyntheticPack(ctx, 'warm-ofs', [
+            { kind: 'base', type: 'blob', content: baseContent },
+            { kind: 'ofs-delta', baseIndex: 0, targetContent },
+          ]);
+          const deltaId = ids[1]! as ObjectId;
+          const registry = createPackRegistry(ctx);
+          const first = await resolveObject(ctx, registry, deltaId, true);
+          const lookupSpy = vi.spyOn(registry, 'lookup');
+          const readSliceSpy = vi.spyOn(ctx.fs, 'readSlice');
+
+          // Act
+          const second = await resolveObject(ctx, registry, deltaId, true);
+
+          // Assert — no re-walk of the chain: neither the registry lookup nor
+          // any pack slice read fires on the warm path.
+          expect((second as Blob).content).toEqual((first as Blob).content);
+          expect(lookupSpy.mock.calls.length).toBe(0);
+          expect(readSliceSpy.mock.calls.length).toBe(0);
+        });
+      });
+    });
+
+    describe('Given a poisoned deltaCache entry whose bytes do not hash to its key', () => {
+      describe('When resolveObject is called with verifyHash true', () => {
+        it('Then throws OBJECT_HASH_MISMATCH carrying the actual computed oid', async () => {
+          // Arrange — no loose/pack copy exists for fakeId, so the only way to
+          // reach a result is the deltaCache probe.
+          const ctx = await buildSeededContext();
+          const fakeId = 'e'.repeat(40) as ObjectId;
+          const rawBytes = new TextEncoder().encode('blob 3\0xyz');
+          const actualOid = (await ctx.hash.hashHex(rawBytes)) as ObjectId;
+          ctx.deltaCache.set(fakeId, rawBytes, rawBytes.length);
+          const registry = createPackRegistry(ctx);
+
+          // Act
+          try {
+            await resolveObject(ctx, registry, fakeId, true);
+            // Assert
+            expect.unreachable();
+          } catch (error) {
+            const data = (error as TsgitError).data;
+            expect(data.code).toBe('OBJECT_HASH_MISMATCH');
+            if (data.code !== 'OBJECT_HASH_MISMATCH') {
+              expect.fail(`expected OBJECT_HASH_MISMATCH, got ${data.code}`);
+            }
+            expect(data.expected).toBe(fakeId);
+            expect(data.actual).toBe(actualOid);
+          }
+        });
+      });
+    });
+
+    describe('Given a deltaCache entry for id whose content exceeds maxBytes', () => {
+      describe('When resolveObject is called with a maxBytes cap', () => {
+        it('Then throws OBJECT_TOO_LARGE from the cache-hit path', async () => {
+          // Arrange — 10 content bytes cached under fakeId, cap = 5.
+          const ctx = await buildSeededContext();
+          const fakeId = 'c'.repeat(40) as ObjectId;
+          const header = new TextEncoder().encode('blob 10\0');
+          const content = new Uint8Array(10).fill(0x41);
+          const cached = new Uint8Array(header.length + content.length);
+          cached.set(header, 0);
+          cached.set(content, header.length);
+          ctx.deltaCache.set(fakeId, cached, cached.length);
+          const registry = createPackRegistry(ctx);
+
+          // Act
+          try {
+            await resolveObject(ctx, registry, fakeId, false, 5);
+            // Assert
+            expect.unreachable();
+          } catch (error) {
+            const data = (error as TsgitError).data;
+            expect(data.code).toBe('OBJECT_TOO_LARGE');
+            if (data.code !== 'OBJECT_TOO_LARGE') {
+              expect.fail(`expected OBJECT_TOO_LARGE, got ${data.code}`);
+            }
+            expect(data.id).toBe(fakeId);
+            expect(data.actualSize).toBe(10);
+            expect(data.limit).toBe(5);
+          }
+        });
+      });
+    });
+
+    describe('Given an empty deltaCache and a seeded loose blob', () => {
+      describe('When resolveObject is called', () => {
+        it('Then resolves via the loose path unchanged', async () => {
+          // Arrange
+          const blob: Blob = {
+            type: 'blob',
+            content: new TextEncoder().encode('cold miss loose content'),
+            id: '' as ObjectId,
+          };
+          const ctx = await buildSeededContext({ objects: [blob] });
+          const { serializeObject } = await import('../../../../src/domain/objects/index.js');
+          const id = (await ctx.hash.hashHex(serializeObject(blob, ctx.hashConfig))) as ObjectId;
+          const registry = createPackRegistry(ctx);
+          expect(ctx.deltaCache.get(id)).toBeUndefined();
+
+          // Act
+          const result = await resolveObject(ctx, registry, id, true);
+
+          // Assert
+          expect(result.type).toBe('blob');
+          expect((result as Blob).content).toEqual(blob.content);
+        });
+      });
+    });
+  });
+
   describe('Given a synthetic pack with a 2-hop OFS_DELTA chain', () => {
     describe('When resolveObject is called on the tip', () => {
       it('Then applies deltas in reverse order', async () => {
