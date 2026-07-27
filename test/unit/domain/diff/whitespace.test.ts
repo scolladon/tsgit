@@ -834,7 +834,7 @@ describe('digestNormalizedLine — branch-exhaustive cross-check', () => {
 });
 
 describe('digestsEqual', () => {
-  describe('Given two digests whose length differs but terminated and hash match', () => {
+  describe('Given two digests whose length differs but terminated and hash match, When comparing them', () => {
     it('Then returns false (length is significant, not shadowed by hash agreement)', () => {
       // Arrange
       const a: LineDigest = { length: 1, terminated: true, hash: 99 };
@@ -848,7 +848,7 @@ describe('digestsEqual', () => {
     });
   });
 
-  describe('Given two digests whose terminated flag differs but length and hash match', () => {
+  describe('Given two digests whose terminated flag differs but length and hash match, When comparing them', () => {
     it('Then returns false (terminated is significant, not shadowed by hash agreement)', () => {
       // Arrange
       const a: LineDigest = { length: 1, terminated: true, hash: 99 };
