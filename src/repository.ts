@@ -262,13 +262,14 @@ export interface Repository {
   /** Nested `repo.worktree.{list,add,move,remove}` namespace. */
   readonly worktree: commands.WorktreeNamespace;
 
-  // Tier-2 primitives (23) — bound under .primitives.* to keep the top-level
+  // Tier-2 primitives (24) — bound under .primitives.* to keep the top-level
   // surface focused on user-facing commands.
   readonly primitives: {
     readonly bisectMidpoint: BindCtx<typeof primitives.bisectMidpoint>;
     readonly catFileBatch: BindCtx<typeof primitives.catFileBatch>;
     readonly createCommit: BindCtx<typeof primitives.createCommit>;
     readonly diffTrees: BindCtx<typeof primitives.diffTrees>;
+    readonly flattenTree: BindCtx<typeof primitives.flattenTree>;
     readonly getRepoRoot: BindCtx<typeof primitives.getRepoRoot>;
     readonly hashBlob: BindCtx<typeof primitives.hashBlob>;
     readonly isIgnored: BindCtx<typeof primitives.isIgnored>;
@@ -658,6 +659,10 @@ export const openRepository = async (
         guard();
         return primitives.diffTrees(ctx, a, b, options);
       }) as Repository['primitives']['diffTrees'],
+      flattenTree: ((treeIdOrObject) => {
+        guard();
+        return primitives.flattenTree(ctx, treeIdOrObject);
+      }) as Repository['primitives']['flattenTree'],
       getRepoRoot: (() => {
         guard();
         return primitives.getRepoRoot(ctx);

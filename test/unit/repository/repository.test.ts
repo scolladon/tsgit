@@ -9,8 +9,9 @@ import {
   MemoryHttpTransport,
 } from '../../../src/adapters/memory/index.js';
 import { TsgitError } from '../../../src/domain/error.js';
+import { FILE_MODE } from '../../../src/domain/objects/file-mode.js';
 import { SHA1_CONFIG } from '../../../src/domain/objects/hash-config.js';
-import type { Blob, ObjectId } from '../../../src/domain/objects/index.js';
+import type { Blob, FilePath, ObjectId } from '../../../src/domain/objects/index.js';
 import { createLruCache } from '../../../src/domain/storage/lru-cache.js';
 import type { FileSystem } from '../../../src/ports/file-system.js';
 import { openRepository, type Repository, type RuntimeFallback } from '../../../src/repository.js';
@@ -298,6 +299,7 @@ describe('openRepository — Repository binding integrity', () => {
             'catFileBatch',
             'createCommit',
             'diffTrees',
+            'flattenTree',
             'getRepoRoot',
             'hashBlob',
             'isIgnored',
@@ -778,6 +780,34 @@ describe('openRepository — round-trip via memory adapter', () => {
 
         // Assert
         expect(count).toBe(0);
+      });
+    });
+  });
+
+  describe('Given the bound flattenTree primitive', () => {
+    describe('When called on a single-file tree', () => {
+      it('Then it delegates and returns a FlatTree with one entry', async () => {
+        // Arrange
+        const fallback = makeFallback();
+        const sut = await openRepository({ cwd: '/repo' }, fallback);
+        await sut.init();
+        const blobId = await sut.primitives.writeObject({
+          type: 'blob',
+          id: '' as ObjectId,
+          content: new TextEncoder().encode('hi'),
+        } satisfies Blob);
+        const treeId = await sut.primitives.writeTree([
+          { name: 'a.txt' as FilePath, id: blobId, mode: FILE_MODE.REGULAR },
+        ]);
+
+        // Act
+        const result = await sut.primitives.flattenTree(treeId);
+
+        // Assert
+        expect(result.entries.get('a.txt' as FilePath)).toEqual({
+          id: blobId,
+          mode: FILE_MODE.REGULAR,
+        });
       });
     });
   });

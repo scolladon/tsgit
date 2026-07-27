@@ -1,12 +1,12 @@
 /**
  * Diff + merge-base scenario — drives a two-commit history then exercises
- * `diff` (command), `diffTrees` (primitive), and `mergeBase` (primitive)
+ * `diff` (command), `diffTrees`/`mergeBase`/`flattenTree` (primitives)
  * against it. With a linear history the merge base of the two commits is
  * the older commit; the diff between them yields one added file.
  *
  * Surfaces closed (per 19.5a):
  *   commands:   diff
- *   primitives: diffTrees, mergeBase
+ *   primitives: diffTrees, mergeBase, flattenTree
  */
 import { AUTHOR, FILES, MESSAGES } from '../fixtures.ts';
 import type { Scenario } from './types.ts';
@@ -17,6 +17,7 @@ interface DiffPipelineResult {
   readonly diffAddedPaths: ReadonlyArray<string>;
   readonly diffTreesAddedPaths: ReadonlyArray<string>;
   readonly mergeBaseId: string;
+  readonly flattenTreePaths: ReadonlyArray<string>;
 }
 
 export const diffPipelineScenario: Scenario<DiffPipelineResult> = {
@@ -28,6 +29,7 @@ export const diffPipelineScenario: Scenario<DiffPipelineResult> = {
     diffAddedPaths: ['b.txt'],
     diffTreesAddedPaths: ['b.txt'],
     mergeBaseId: 'fa8b886eee0d470d870e786878657cac05d686e6',
+    flattenTreePaths: ['a.txt', 'b.txt'],
   },
   run: async (repo, inputs) => {
     await repo.init();
@@ -39,6 +41,7 @@ export const diffPipelineScenario: Scenario<DiffPipelineResult> = {
     const diff = await repo.diff({ from: first.id, to: second.id });
     const diffTrees = await repo.primitives.diffTrees(first.id, second.id);
     const [mergeBase] = await repo.primitives.mergeBase([first.id, second.id]);
+    const flatTree = await repo.primitives.flattenTree(second.tree);
 
     const addedPaths = (changes: ReadonlyArray<{ readonly type: string }>): ReadonlyArray<string> =>
       changes
@@ -55,6 +58,7 @@ export const diffPipelineScenario: Scenario<DiffPipelineResult> = {
       diffAddedPaths: addedPaths(diff.changes),
       diffTreesAddedPaths: addedPaths(diffTrees.changes),
       mergeBaseId: mergeBase ?? '',
+      flattenTreePaths: [...flatTree.entries.keys()].sort(),
     };
   },
 };
