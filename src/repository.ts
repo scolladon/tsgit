@@ -8,6 +8,7 @@ import { createRawTreeResolver } from './adapters/snapshot-resolvers/raw-tree-re
 import { createSingleFlightIndexResolver } from './adapters/snapshot-resolvers/single-flight-index-resolver.js';
 import * as commands from './application/commands/index.js';
 import * as primitives from './application/primitives/index.js';
+import { disposePackRegistry } from './application/primitives/read-object.js';
 import {
   createSnapshotFactory,
   type SnapshotFactory,
@@ -473,6 +474,9 @@ export const openRepository = async (
         if (typeof setImmediate === 'function') setImmediate(resolve);
         else setTimeout(resolve, 0);
       });
+      // Pack handles are FileHandles owned by ctx.fs — close them before the
+      // fs adapter itself is torn down.
+      await disposePackRegistry(ctx);
       await disposeAdapters(ctx);
       state = 'DISPOSED';
     })();

@@ -1,11 +1,11 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   createPackRegistry,
   nextOffsetForEntry,
   type PackOffsetTable,
 } from '../../../../src/application/primitives/pack-registry.js';
 import { REASON_PACK_IDX_EXCEEDS_MAX } from '../../../../src/application/primitives/validators.js';
-import type { TsgitError } from '../../../../src/domain/error.js';
+import { type TsgitError, unsupportedOperation } from '../../../../src/domain/error.js';
 import type { ObjectId } from '../../../../src/domain/objects/index.js';
 import type { DirEntry, FileStat } from '../../../../src/ports/file-system.js';
 import { buildSeededContext } from './fixtures.js';
@@ -460,6 +460,203 @@ describe('RegisteredPack.offsetTable', () => {
         expect(result.sortedOffsets).toHaveLength(2);
         expect(result.sortedOffsets[0]!).toBeGreaterThan(0);
         expect(result.sortedOffsets[1]!).toBeGreaterThan(result.sortedOffsets[0]!);
+      });
+    });
+  });
+});
+
+describe('RegisteredPack.readSlice — persistent handle (A4)', () => {
+  describe('Given a pack read twice via readSlice', () => {
+    describe('When the second call runs', () => {
+      it('Then openWithNoFollow is called exactly once', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const content = new TextEncoder().encode('reuse-content');
+        await writeSyntheticPack(ctx, 'reuse-pack', [{ kind: 'base', type: 'blob', content }]);
+        const registry = createPackRegistry(ctx);
+        const pack = (await registry.all())[0]!;
+        const openSpy = vi.spyOn(ctx.fs, 'openWithNoFollow');
+
+        // Act
+        await pack.readSlice(0, 4);
+        await pack.readSlice(4, 4);
+
+        // Assert — a single persistent handle serves both reads.
+        expect(openSpy.mock.calls.length).toBe(1);
+      });
+    });
+  });
+
+  describe('Given a length request that exceeds the remaining pack bytes', () => {
+    describe('When readSlice is called', () => {
+      it('Then returns exactly the available bytes with no trailing zero-fill', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const content = new TextEncoder().encode('short-read-content');
+        await writeSyntheticPack(ctx, 'short-read-pack', [{ kind: 'base', type: 'blob', content }]);
+        const registry = createPackRegistry(ctx);
+        const pack = (await registry.all())[0]!;
+        const table = await pack.offsetTable();
+        const entryOffset = table.sortedOffsets[0]!;
+        const available = table.packFileSize - entryOffset;
+
+        // Act — request far more than the remaining bytes.
+        const result = await pack.readSlice(entryOffset, available + 1000);
+
+        // Assert — trimmed to exactly what was read, not the requested length.
+        expect(result.length).toBe(available);
+      });
+    });
+  });
+
+  describe('Given an fs whose openWithNoFollow always throws UNSUPPORTED_OPERATION (browser-like)', () => {
+    describe('When readSlice is called', () => {
+      it('Then falls back to ctx.fs.readSlice and returns correct bytes', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const content = new TextEncoder().encode('fallback-content');
+        await writeSyntheticPack(ctx, 'fallback-pack', [{ kind: 'base', type: 'blob', content }]);
+        const wrapped = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            openWithNoFollow: async () => {
+              throw unsupportedOperation(
+                'openWithNoFollow',
+                'browser FS does not support O_NOFOLLOW',
+              );
+            },
+          },
+        };
+        const registry = createPackRegistry(wrapped);
+        const pack = (await registry.all())[0]!;
+        const table = await pack.offsetTable();
+        const entryOffset = table.sortedOffsets[0]!;
+        const sliceLength = table.trailerStart - entryOffset;
+
+        // Act
+        const result = await pack.readSlice(entryOffset, sliceLength);
+
+        // Assert — the fallback path still returns the exact requested slice.
+        expect(result.length).toBe(sliceLength);
+      });
+    });
+  });
+});
+
+describe('RegisteredPack.close', () => {
+  describe('Given a pack whose persistent handle was opened via readSlice', () => {
+    describe('When close is called twice', () => {
+      it('Then it does not throw (idempotent)', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const content = new TextEncoder().encode('close-idempotent');
+        await writeSyntheticPack(ctx, 'close-idempotent', [
+          { kind: 'base', type: 'blob', content },
+        ]);
+        const registry = createPackRegistry(ctx);
+        const pack = (await registry.all())[0]!;
+        await pack.readSlice(0, 4);
+
+        // Act
+        await pack.close();
+
+        // Assert
+        await expect(pack.close()).resolves.toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a pack whose handle was never opened', () => {
+    describe('When close is called', () => {
+      it('Then it resolves without opening a handle', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const content = new TextEncoder().encode('close-never-opened');
+        await writeSyntheticPack(ctx, 'close-never-opened', [
+          { kind: 'base', type: 'blob', content },
+        ]);
+        const registry = createPackRegistry(ctx);
+        const pack = (await registry.all())[0]!;
+        const openSpy = vi.spyOn(ctx.fs, 'openWithNoFollow');
+
+        // Act
+        await pack.close();
+
+        // Assert
+        expect(openSpy).not.toHaveBeenCalled();
+      });
+    });
+  });
+});
+
+describe('PackRegistry.dispose', () => {
+  describe('Given two packs that were each read once (persistent handles opened)', () => {
+    describe('When dispose is called', () => {
+      it('Then closes every loaded pack handle', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'dispose-a', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('a') },
+        ]);
+        await writeSyntheticPack(ctx, 'dispose-b', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('b') },
+        ]);
+        let closeCalls = 0;
+        const wrapped = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            openWithNoFollow: async (path: string, mode: 'read' | 'write') => {
+              const handle = await ctx.fs.openWithNoFollow(path, mode);
+              return {
+                ...handle,
+                close: async () => {
+                  closeCalls += 1;
+                  await handle.close();
+                },
+              };
+            },
+          },
+        };
+        const registry = createPackRegistry(wrapped);
+        const packs = await registry.all();
+        for (const pack of packs) {
+          await pack.readSlice(0, 4);
+        }
+
+        // Act
+        await registry.dispose();
+
+        // Assert
+        expect(closeCalls).toBe(2);
+      });
+    });
+  });
+
+  describe('Given no packs were ever loaded', () => {
+    describe('When dispose is called', () => {
+      it('Then resolves without scanning the pack directory', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        let readdirCalls = 0;
+        const wrapped = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            readdir: async (path: string): Promise<ReadonlyArray<DirEntry>> => {
+              readdirCalls += 1;
+              return ctx.fs.readdir(path);
+            },
+          },
+        };
+        const registry = createPackRegistry(wrapped);
+
+        // Act
+        await registry.dispose();
+
+        // Assert
+        expect(readdirCalls).toBe(0);
       });
     });
   });

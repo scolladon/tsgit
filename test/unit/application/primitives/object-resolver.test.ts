@@ -51,6 +51,24 @@ async function writeRawSingleEntryPack(
 }
 
 /**
+ * `readSlice`/`close` for a stub `RegisteredPack` that bypasses the
+ * persistent-handle machinery entirely — reads go straight through
+ * `ctx.fs.readSlice` against the file the test already wrote. Good enough
+ * for stubs that only need to satisfy the type and produce correct bytes.
+ */
+function stubPackHandle(
+  ctx: Context,
+  packPath: string,
+): Pick<RegisteredPack, 'readSlice' | 'close'> {
+  return {
+    readSlice: (offset, length) => ctx.fs.readSlice(packPath, offset, length),
+    close: async () => undefined,
+  };
+}
+
+const noopDispose = async (): Promise<void> => undefined;
+
+/**
  * A `PackRegistry` stub that resolves a fixed id to a fixed `{ packPath, offset }`
  * hit. `index` is a real (unrelated) `PackIndex` only to satisfy the type — the
  * object resolver never reads it. The entry at `offset` is whatever the caller
@@ -87,10 +105,11 @@ async function stubRegistry(
           trailerStart: packFileSize - 20,
         };
       },
+      ...stubPackHandle(ctx, packPath),
     };
     return { pack, offset: match.offset };
   };
-  return { all: async () => [], refresh: () => undefined, lookup };
+  return { all: async () => [], refresh: () => undefined, lookup, dispose: noopDispose };
 }
 
 describe('object-resolver', () => {
@@ -1048,7 +1067,7 @@ describe('object-resolver', () => {
           const table = await packs[0]!.offsetTable();
           const entryOffset = table.sortedOffsets[0]!;
           const expectedSliceLength = table.trailerStart - entryOffset;
-          const readSliceSpy = vi.spyOn(ctx.fs, 'readSlice');
+          const readSliceSpy = vi.spyOn(packs[0]!, 'readSlice');
 
           // Act
           const result = await sut(ctx, registry, id, false);
@@ -1056,7 +1075,8 @@ describe('object-resolver', () => {
           // Assert — exact slice length = trailerStart - entryOffset
           expect(result.type).toBe('blob');
           expect(readSliceSpy.mock.calls.length).toBe(1);
-          const [, , sliceLength] = readSliceSpy.mock.calls[0]!;
+          const [offset, sliceLength] = readSliceSpy.mock.calls[0]!;
+          expect(offset).toBe(entryOffset);
           expect(sliceLength).toBe(expectedSliceLength);
         });
       });
@@ -1093,6 +1113,7 @@ describe('object-resolver', () => {
             refresh: () => undefined,
             lookup: async (lookupId) =>
               lookupId === id ? { pack, offset: entryOffset } : undefined,
+            dispose: noopDispose,
           };
           const sut = resolveObject;
 
@@ -1141,11 +1162,13 @@ describe('object-resolver', () => {
               packFileSize: entryOffset + 5,
               trailerStart: entryOffset + 5 - 20, // = entryOffset - 15 → next is trailerStart < entryOffset
             }),
+            ...stubPackHandle(ctx, packPath),
           };
           const registry: PackRegistry = {
             all: async () => [],
             refresh: () => undefined,
             lookup: async (id) => (id === targetId ? { pack, offset: entryOffset } : undefined),
+            dispose: noopDispose,
           };
           const sut = resolveObject;
 
@@ -1200,11 +1223,13 @@ describe('object-resolver', () => {
               packFileSize: entryOffset + digestLength,
               trailerStart: entryOffset, // = entryOffset + digestLength - digestLength
             }),
+            ...stubPackHandle(ctx, packPath),
           };
           const registry: PackRegistry = {
             all: async () => [],
             refresh: () => undefined,
             lookup: async (id) => (id === targetId ? { pack, offset: entryOffset } : undefined),
+            dispose: noopDispose,
           };
           const sut = resolveObject;
 
@@ -1255,11 +1280,13 @@ describe('object-resolver', () => {
               packFileSize: entryOffset + 500,
               trailerStart: entryOffset + 500 - 20,
             }),
+            ...stubPackHandle(ctx, packPath),
           };
           const registry: PackRegistry = {
             all: async () => [],
             refresh: () => undefined,
             lookup: async (id) => (id === targetId ? { pack, offset: entryOffset } : undefined),
+            dispose: noopDispose,
           };
           const sut = resolveObject;
 
@@ -1301,7 +1328,7 @@ describe('object-resolver', () => {
           // delta entry (off1) is resolved first, then base (off0).
           const expectedDeltaSlice = table.trailerStart - off1!;
           const expectedBaseSlice = off1! - off0!;
-          const readSliceSpy = vi.spyOn(ctx.fs, 'readSlice');
+          const readSliceSpy = vi.spyOn(packs[0]!, 'readSlice');
           const streamInflateSpy = vi.spyOn(ctx.compressor, 'streamInflate');
 
           // Act
@@ -1312,12 +1339,49 @@ describe('object-resolver', () => {
           expect((result as Blob).content).toEqual(targetContent);
           // streamInflate must never be called
           expect(streamInflateSpy.mock.calls.length).toBe(0);
-          // Each of the 2 chain steps called readSlice with exact lengths.
+          // Each of the 2 chain steps called readSlice with exact lengths, both
+          // against the SAME pack's persistent handle (not one open per step).
           expect(readSliceSpy.mock.calls.length).toBe(2);
           // First call: delta entry (tip of chain, resolved first)
-          expect(readSliceSpy.mock.calls[0]![2]).toBe(expectedDeltaSlice);
+          expect(readSliceSpy.mock.calls[0]![1]).toBe(expectedDeltaSlice);
           // Second call: base entry
-          expect(readSliceSpy.mock.calls[1]![2]).toBe(expectedBaseSlice);
+          expect(readSliceSpy.mock.calls[1]![1]).toBe(expectedBaseSlice);
+        });
+      });
+    });
+  });
+
+  describe('persistent per-pack handle (A4 — one open per pack, not per step)', () => {
+    describe('Given a synthetic pack with a 5-hop OFS_DELTA chain', () => {
+      describe('When resolveObject is called on the tip', () => {
+        it('Then ctx.fs.openWithNoFollow is called exactly once for the pack', async () => {
+          // Arrange — 5 sequential chain steps each used to open+read+close their
+          // own FileHandle before A4. The persistent handle must open the pack
+          // ONCE and serve every step's readSlice through it.
+          const ctx = await buildSeededContext();
+          const step0 = ENC.encode('step-0');
+          const step1 = ENC.encode('step-1-longer');
+          const step2 = ENC.encode('step-2-longer-still');
+          const step3 = ENC.encode('step-3-even-longer-again');
+          const step4 = ENC.encode('step-4-the-tip-of-the-chain');
+          const ids = await writeSyntheticPack(ctx, 'deep-ofs-chain', [
+            { kind: 'base', type: 'blob', content: step0 },
+            { kind: 'ofs-delta', baseIndex: 0, targetContent: step1 },
+            { kind: 'ofs-delta', baseIndex: 1, targetContent: step2 },
+            { kind: 'ofs-delta', baseIndex: 2, targetContent: step3 },
+            { kind: 'ofs-delta', baseIndex: 3, targetContent: step4 },
+          ]);
+          const tipId = ids[4]!;
+          const registry = createPackRegistry(ctx);
+          const openSpy = vi.spyOn(ctx.fs, 'openWithNoFollow');
+
+          // Act
+          const result = await resolveObject(ctx, registry, tipId as ObjectId, true);
+
+          // Assert — one open for the whole chain walk; byte-identical output.
+          expect(result.type).toBe('blob');
+          expect((result as Blob).content).toEqual(step4);
+          expect(openSpy.mock.calls.length).toBe(1);
         });
       });
     });

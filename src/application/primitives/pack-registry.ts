@@ -2,6 +2,7 @@
  * Lazy scan + cache of .idx files under .git/objects/pack/.
  * Returns a PackRegistry facade used by object-resolver and readObject.
  */
+import { TsgitError } from '../../domain/error.js';
 import type { ObjectId } from '../../domain/objects/index.js';
 import { invalidPackIndex } from '../../domain/storage/error.js';
 import {
@@ -11,8 +12,13 @@ import {
   parsePackIndex,
 } from '../../domain/storage/index.js';
 import type { Context } from '../../ports/context.js';
+import type { FileHandle } from '../../ports/file-system.js';
 import { commonGitDir, packsDir } from './path-layout.js';
 import { exceedsMaxPackIdxBytes, REASON_PACK_IDX_EXCEEDS_MAX } from './validators.js';
+
+function isUnsupportedOperation(err: unknown): boolean {
+  return err instanceof TsgitError && err.data.code === 'UNSUPPORTED_OPERATION';
+}
 
 export interface PackOffsetTable {
   readonly sortedOffsets: ReadonlyArray<number>;
@@ -27,6 +33,15 @@ export interface RegisteredPack {
   readonly idxPath: string;
   /** Lazily-built, cached sorted entry offsets + trailer bound for this pack. */
   readonly offsetTable: () => Promise<PackOffsetTable>;
+  /**
+   * Read `length` bytes at `offset` via a lazily-opened, memoised persistent
+   * `FileHandle` — one `open` per pack for its whole delta-chain walk, not one
+   * per step. Falls back to a per-call `ctx.fs.readSlice` on adapters that
+   * cannot open a handle (browser OPFS throws `UNSUPPORTED_OPERATION`).
+   */
+  readonly readSlice: (offset: number, length: number) => Promise<Uint8Array>;
+  /** Release the persistent handle, if one was ever opened. Idempotent. */
+  readonly close: () => Promise<void>;
 }
 
 export interface PackLookupHit {
@@ -40,6 +55,9 @@ export interface PackRegistry {
   /** Drop the cached `.idx` scan so the next `all`/`lookup` re-scans the
    *  pack directory — used after a lazy-fetch writes a new pack. */
   refresh(): void;
+  /** Close every loaded pack's persistent handle. Idempotent; a registry
+   *  that never scanned the pack directory disposes without touching `fs`. */
+  dispose(): Promise<void>;
 }
 
 function isSafePackName(name: string): boolean {
@@ -89,7 +107,37 @@ async function loadPack(ctx: Context, dir: string, entryName: string): Promise<R
     return cachedTable;
   };
 
-  return { name, index, packPath, idxPath, offsetTable };
+  // Lazily-opened, memoised persistent handle for this pack's slice reads.
+  // Cleared back to `undefined` whenever the open attempt is known-unsupported
+  // (browser OPFS), so `close()` never has to unwind a rejected memo and every
+  // `readSlice` call after that point falls back cleanly.
+  let handlePromise: Promise<FileHandle> | undefined;
+
+  const readSlice = async (offset: number, length: number): Promise<Uint8Array> => {
+    if (handlePromise === undefined) {
+      handlePromise = ctx.fs.openWithNoFollow(packPath, 'read');
+    }
+    try {
+      const handle = await handlePromise;
+      const buffer = new Uint8Array(length);
+      const bytesRead = await handle.read(buffer, 0, length, offset);
+      return buffer.subarray(0, bytesRead);
+    } catch (err) {
+      if (!isUnsupportedOperation(err)) throw err;
+      handlePromise = undefined;
+      return ctx.fs.readSlice(packPath, offset, length);
+    }
+  };
+
+  const close = async (): Promise<void> => {
+    const pending = handlePromise;
+    if (pending === undefined) return;
+    handlePromise = undefined;
+    const handle = await pending;
+    await handle.close();
+  };
+
+  return { name, index, packPath, idxPath, offsetTable, readSlice, close };
 }
 
 function bisectLeft(arr: ReadonlyArray<number>, value: number): number {
@@ -153,6 +201,13 @@ export function createPackRegistry(ctx: Context): PackRegistry {
         }
       }
       return undefined;
+    },
+    async dispose(): Promise<void> {
+      // A registry that never scanned the pack directory has no handles to
+      // close — skip the scan entirely rather than triggering one just to
+      // find nothing.
+      if (cache === undefined) return;
+      await Promise.all(cache.map((pack) => pack.close()));
     },
   };
 }

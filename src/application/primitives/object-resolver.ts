@@ -378,7 +378,9 @@ export async function readEntryHeaderWithChunk(
   }
   // Read exactly the bytes belonging to this entry: [entryOffset, nextOffset).
   // REF_DELTA base-id length follows the active hash algorithm (SHA-1=20, SHA-256=32).
-  const chunk = await ctx.fs.readSlice(hit.pack.packPath, hit.offset, sliceLength);
+  // Routed through the pack's persistent handle (A4) — one `open` per pack for
+  // the whole chain walk, not one per step.
+  const chunk = await hit.pack.readSlice(hit.offset, sliceLength);
   const header = parsePackEntryHeader(chunk, 0, ctx.hashConfig);
   // parsePackEntryHeader was invoked with offset=0, so dataOffset is already
   // the position within the chunk where the zlib stream starts.

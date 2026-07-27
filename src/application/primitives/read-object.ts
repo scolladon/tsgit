@@ -39,6 +39,15 @@ export function refreshPackRegistry(ctx: Context): void {
   registryCache.get(ctx)?.refresh();
 }
 
+/**
+ * Close every persistent per-pack handle the registry opened for this
+ * Context. Does NOT create a registry if none exists — a repo that never
+ * touched a pack disposes without scanning `objects/pack/`.
+ */
+export async function disposePackRegistry(ctx: Context): Promise<void> {
+  await registryCache.get(ctx)?.dispose();
+}
+
 function getInflight(ctx: Context): Map<string, Promise<boolean>> {
   let inflight = inflightCache.get(ctx);
   if (inflight === undefined) {

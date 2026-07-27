@@ -2756,6 +2756,79 @@ describe('NodeFileSystem.readSlice — handle close on success (DI)', () => {
   });
 });
 
+describe('NodeFileSystem.readSlice — exact-size unsafe allocation (DI)', () => {
+  describe('Given a readSlice call', () => {
+    describe('When it runs', () => {
+      it('Then it allocates via Buffer.allocUnsafe(length), not the zero-filling Buffer.alloc', async () => {
+        // Arrange — the pack delta-chain hot path pays for zero-filling a
+        // buffer that `handle.read` immediately overwrites; a mutant reverting
+        // to the zero-filling `Buffer.alloc` must be caught here.
+        const rootDir = '/root';
+        const payload = Buffer.from([1, 2, 3, 4]);
+        const handle = {
+          read: vi.fn().mockImplementation(async (buf: Buffer) => {
+            payload.copy(buf);
+            return { bytesRead: payload.length, buffer: buf };
+          }),
+          close: vi.fn().mockResolvedValue(undefined),
+        };
+        const fsOps = fakeFsOps({
+          realpath: vi.fn().mockImplementation(async (input: string) => input),
+          open: vi.fn().mockResolvedValue(handle),
+        });
+        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+        const allocUnsafeSpy = vi.spyOn(Buffer, 'allocUnsafe');
+        const allocSpy = vi.spyOn(Buffer, 'alloc');
+
+        try {
+          // Act
+          await sut.readSlice('/root/file.bin', 0, 4);
+
+          // Assert
+          expect(allocUnsafeSpy).toHaveBeenCalledWith(4);
+          expect(allocSpy).not.toHaveBeenCalled();
+        } finally {
+          allocUnsafeSpy.mockRestore();
+          allocSpy.mockRestore();
+        }
+      });
+    });
+  });
+});
+
+describe('NodeFileSystem.readSlice — short read at EOF (DI)', () => {
+  describe('Given a read that returns fewer bytes than requested', () => {
+    describe('When readSlice runs', () => {
+      it('Then the result is exactly bytesRead long with no trailing zero padding', async () => {
+        // Arrange — request 8 bytes but the handle only has 3 available.
+        // `Buffer.allocUnsafe` does not zero-fill, so forgetting to trim the
+        // view to `bytesRead` (instead of the requested `length`) would leak
+        // whatever garbage bytes were already in that memory.
+        const rootDir = '/root';
+        const payload = Buffer.from([9, 9, 9]);
+        const handle = {
+          read: vi.fn().mockImplementation(async (buf: Buffer) => {
+            payload.copy(buf);
+            return { bytesRead: payload.length, buffer: buf };
+          }),
+          close: vi.fn().mockResolvedValue(undefined),
+        };
+        const fsOps = fakeFsOps({
+          realpath: vi.fn().mockImplementation(async (input: string) => input),
+          open: vi.fn().mockResolvedValue(handle),
+        });
+        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+
+        // Act
+        const result = await sut.readSlice('/root/file.bin', 0, 8);
+
+        // Assert
+        expect(result).toEqual(new Uint8Array([9, 9, 9]));
+      });
+    });
+  });
+});
+
 describe('NodeFileSystem.symlink — absolute-target containment OR (DI)', () => {
   describe('Given an absolute target inside the canonical root but outside the raw root', () => {
     describe('When symlink runs', () => {

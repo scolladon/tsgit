@@ -14,6 +14,7 @@ import type { Blob, ObjectId } from '../../../src/domain/objects/index.js';
 import { createLruCache } from '../../../src/domain/storage/lru-cache.js';
 import type { FileSystem } from '../../../src/ports/file-system.js';
 import { openRepository, type Repository, type RuntimeFallback } from '../../../src/repository.js';
+import { writeSyntheticPack } from '../application/primitives/pack-fixture.js';
 
 const makeFallback = (): RuntimeFallback => ({
   fs: new MemoryFileSystem({ rootDir: '/repo' }),
@@ -501,6 +502,77 @@ describe('openRepository — dispose state machine', () => {
 
         // Assert
         expect(disposeCalls).toBe(1);
+      });
+    });
+  });
+
+  describe('Given a repo whose pack was touched by a read (persistent handle opened)', () => {
+    describe('When dispose is called', () => {
+      it('Then closes the loaded pack handle', async () => {
+        // Arrange — A4's pack registry lazily opens a persistent FileHandle on
+        // the first slice read; dispose() must close it before the fs adapter
+        // itself is torn down.
+        const fallback = makeFallback();
+        const innerFs = fallback.fs;
+        let closeCalls = 0;
+        const wrappedFs: FileSystem = {
+          ...innerFs,
+          openWithNoFollow: async (path, mode) => {
+            const handle = await innerFs.openWithNoFollow(path, mode);
+            return {
+              ...handle,
+              close: async () => {
+                closeCalls += 1;
+                await handle.close();
+              },
+            };
+          },
+        };
+        const sut = await openRepository(
+          { cwd: '/repo', fs: wrappedFs, unsafeRawAdapters: true },
+          fallback,
+        );
+        await sut.init();
+        const [id] = await writeSyntheticPack(sut.ctx, 'dispose-pack', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('handle-close') },
+        ]);
+        await sut.primitives.readObject(id as ObjectId);
+
+        // Act
+        await sut.dispose();
+
+        // Assert
+        expect(closeCalls).toBe(1);
+      });
+    });
+  });
+
+  describe('Given a repo that never touched a pack', () => {
+    describe('When dispose is called', () => {
+      it('Then resolves without scanning the pack directory', async () => {
+        // Arrange — disposePackRegistry must not create a registry (and thus
+        // never scan objects/pack/) when no primitive ever read a pack.
+        const fallback = makeFallback();
+        const innerFs = fallback.fs;
+        let readdirCalls = 0;
+        const wrappedFs: FileSystem = {
+          ...innerFs,
+          readdir: async (path) => {
+            if (path === '/repo/.git/objects/pack') readdirCalls += 1;
+            return innerFs.readdir(path);
+          },
+        };
+        const sut = await openRepository(
+          { cwd: '/repo', fs: wrappedFs, unsafeRawAdapters: true },
+          fallback,
+        );
+        await sut.init();
+
+        // Act
+        await sut.dispose();
+
+        // Assert
+        expect(readdirCalls).toBe(0);
       });
     });
   });
