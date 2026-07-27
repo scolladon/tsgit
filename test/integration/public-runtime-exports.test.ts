@@ -6,42 +6,48 @@
  * against the stale declaration — the crash only surfaces at the consumer's
  * own runtime.
  *
- * Scope: `domain/diff`'s own value surface — the barrel the accompanying fix
- * touches. The built `dist/types/index.node.d.ts` also *syntactically*
- * declares values for other type-only-barrel-forwarded symbols (e.g.
- * `application/primitives`' `readBlob`) because rollup-plugin-dts shares
- * chunks across the package's several published entry points (`tsgit`,
- * `tsgit/primitives`, `tsgit/commands`, …) — a symbol that is a genuine
- * value at one entry point's declaration carries that shape into every
- * other entry point's re-export of the same chunk, even one that only
- * intended a type-only forward. Those symbols are reachable as real values
- * from their own dedicated entry points (verified separately) and are a
- * distinct, wider surface than this fix's scope — auditing them here would
- * assert the main entry exposes every primitive/command as a loose
- * function, which is not this change's decision to make.
+ * Two sweeps live here:
+ *  - `domain/diff`'s own value surface — the original barrel the fix
+ *    touched. Its runtime export keys already ARE its value surface
+ *    (`export type` re-exports never produce a runtime binding), so no
+ *    `.d.ts` parsing is needed to enumerate them.
+ *  - Every published package entry (each unique `(types, runtime)` pair
+ *    `package.json`'s `exports` map exposes). rollup-plugin-dts shares
+ *    declaration chunks across the package's several entry points, so a
+ *    symbol that is a genuine value at one entry's declaration can carry
+ *    that value shape into another entry's re-export of the same chunk,
+ *    even one whose runtime bundle never binds it — `readBlob` leaking
+ *    onto the main entry from `application/primitives`' chunk is the
+ *    running example. `tooling/truthful-dts.ts` fixes this at build time
+ *    by downgrading such leaks to `export type`; this sweep parses each
+ *    entry's built `.d.ts`/`.d.cts` for its declared VALUE exports
+ *    (`tooling/dts-value-exports.ts`) and asserts every one resolves at
+ *    runtime in that SAME entry's own built module.
  *
- * `domain/diff`'s own runtime export keys already ARE its value surface —
- * `export type` re-exports never produce a runtime binding, so no `.d.ts`
- * parsing is needed to enumerate them, only the built runtime entry needs
- * checking.
- *
- * Runs against the BUILT `dist/esm/index.node.js`, not `src/`: the
- * declared-vs-runtime pairing this guard locks is a property of the shipped
- * bundle, not reproducible by importing TypeScript source directly (mirrors
+ * Runs against the BUILT dist output, not `src/`: the declared-vs-runtime
+ * pairing this guard locks is a property of the shipped bundle, not
+ * reproducible by importing TypeScript source directly (mirrors
  * `dispose-free-exit.test.ts`).
  *
  * @proves
  *   surface:  public-types
  *   bucket:   coverage-gap
- *   unique:   every domain/diff value the .d.ts declares is defined at runtime, not just typed
+ *   unique:   every published entry's declared value export is defined in that entry's own built runtime module, not just typed
  */
 import { execFile } from 'node:child_process';
+import { createRequire } from 'node:module';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
 import { beforeAll, describe, expect, it } from 'vitest';
 import * as diffDomainBarrel from '../../src/domain/diff/index.js';
+import { getPublishedEntries, type PublishedEntry } from '../../tooling/dts-entries.ts';
+import {
+  analyzeDeclaredExports,
+  type EntryDeclarations,
+  findUndefinedValueExports,
+} from '../../tooling/dts-value-exports.ts';
 
 const execFileAsync = promisify(execFile);
 
@@ -56,6 +62,32 @@ const BUILD_TIMEOUT_MS = 120_000;
 const DIFF_BARREL_VALUE_NAMES = Object.keys(diffDomainBarrel).filter(
   (name) => name !== 'diffTrees',
 );
+
+type RequireFn = ReturnType<typeof createRequire>;
+
+const loadRuntimeExportNames = async (
+  entry: PublishedEntry,
+  requireCjs: RequireFn,
+): Promise<ReadonlySet<string>> => {
+  const runtimeModule =
+    entry.format === 'cjs' ? requireCjs(entry.runtimePath) : await import(entry.runtimePath);
+  return new Set(Object.keys(runtimeModule as Record<string, unknown>));
+};
+
+const collectUndefinedDeclaredValues = async (
+  entries: readonly PublishedEntry[],
+  declaredByPath: ReadonlyMap<string, EntryDeclarations>,
+  requireCjs: RequireFn,
+): Promise<readonly string[]> => {
+  const violations: string[] = [];
+  for (const entry of entries) {
+    const declarations = declaredByPath.get(entry.dtsPath);
+    const runtimeNames = await loadRuntimeExportNames(entry, requireCjs);
+    const undefinedNames = findUndefinedValueExports(declarations?.exports ?? [], runtimeNames);
+    violations.push(...undefinedNames.map((name) => `${entry.label}: ${name}`));
+  }
+  return violations;
+};
 
 describe('Given the built public Node runtime entry', () => {
   beforeAll(async () => {
@@ -90,4 +122,27 @@ describe('Given the built public Node runtime entry', () => {
       expect(result).toStrictEqual([]);
     });
   });
+});
+
+describe('Given every published package entry', () => {
+  beforeAll(async () => {
+    // Build the shipped artefacts once — the declared/runtime pairing this
+    // guard locks is a property of the rollup-bundled output, not of `src/`.
+    await execFileAsync('npm', ['run', 'build'], { cwd: ROOT, timeout: BUILD_TIMEOUT_MS });
+  }, BUILD_TIMEOUT_MS);
+
+  describe("When auditing each entry's declared value exports against its own runtime bundle", () => {
+    it('Then none of them are undefined in the matching runtime module', async () => {
+      // Arrange
+      const sut = getPublishedEntries(ROOT);
+      const requireCjs = createRequire(import.meta.url);
+      const declaredByPath = analyzeDeclaredExports(sut.map((entry) => entry.dtsPath));
+
+      // Act
+      const result = await collectUndefinedDeclaredValues(sut, declaredByPath, requireCjs);
+
+      // Assert
+      expect(result).toStrictEqual([]);
+    });
+  }, 600_000);
 });

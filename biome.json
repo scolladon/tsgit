@@ -22,7 +22,10 @@
       "tooling/test-pyramid/detect-sut-binds-result.ts",
       "tooling/test/unit/test-pyramid/detect-sut-binds-result.test.ts",
       "tooling/test-pyramid/**/*.ts",
-      "tooling/audit-test-pyramid.ts"
+      "tooling/audit-test-pyramid.ts",
+      "tooling/dts-entries.ts",
+      "tooling/dts-value-exports.ts",
+      "tooling/truthful-dts.ts"
     ]
   },
   "formatter": {

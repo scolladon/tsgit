@@ -225,14 +225,18 @@
       ]
     },
     "build:js": {
-      "command": "rollup -c rollup.config.ts --configPlugin @rollup/plugin-typescript",
+      "command": "rollup -c rollup.config.ts --configPlugin @rollup/plugin-typescript && node --experimental-strip-types tooling/truthful-dts.ts",
       "dependencies": [
         "check:types"
       ],
       "files": [
         "src/**/*.ts",
         "rollup.config.ts",
-        "tsconfig.build.json"
+        "tsconfig.build.json",
+        "package.json",
+        "tooling/dts-entries.ts",
+        "tooling/dts-value-exports.ts",
+        "tooling/truthful-dts.ts"
       ],
       "output": [
         "dist/esm/**",
