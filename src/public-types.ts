@@ -30,6 +30,51 @@ export type { WorkdirSnapshotOptions } from './application/primitives/snapshot/w
 // Diff change types (TreeDiff etc.) appear in both commands and domain/diff barrels but trace
 // to the SAME original declarations — benign dedupe, no TS2308.
 export type * from './domain/diff/index.js';
+// diff VALUES: `export type *` above only carries the type closure, so the built .d.ts can
+// declare a value (MAX_SCORE, toSimilarityPercent, …) that the runtime bundle omits — a
+// TypeScript consumer compiles green and crashes at runtime. Value-export every value
+// domain/diff/index.ts exports, so the runtime bundle matches what the .d.ts declares.
+// `diffTrees` is excluded — it stays the explicit type-only winner below (L59-equivalent)
+// to avoid the application/primitives-vs-domain/diff TS2308 name clash.
+export {
+  BINARY_DETECTION_BYTES,
+  classifyUnmerged,
+  comparePaths,
+  computeHunks,
+  computeStatFields,
+  conflictsToIndexEntries,
+  DEFAULT_BREAK_SCORE,
+  DEFAULT_MERGE_SCORE,
+  DEFAULT_RENAME_THRESHOLD,
+  detectRenames,
+  diffIndexAgainstTree,
+  diffLines,
+  estimateSimilarity,
+  groupUnmergedEntries,
+  invalidDiffInput,
+  invalidTreeForDiff,
+  isBinary,
+  isGitlink,
+  isSameKind,
+  kindOf,
+  lineKeyIsActive,
+  linesEqualUnder,
+  MAX_DIFF_EDIT_DISTANCE,
+  MAX_DIFF_ITERATION_FACTOR,
+  MAX_DIFF_LINES,
+  MAX_FLAT_TREE_ENTRIES,
+  MAX_LINE_BYTES,
+  MAX_LINES,
+  MAX_SCORE,
+  normalizeLine,
+  recordedPaths,
+  renderPatch,
+  resolveLineKey,
+  sortByPath,
+  sortedRecordedPaths,
+  splitLines,
+  toSimilarityPercent,
+} from './domain/diff/index.js';
 // git index types (GitIndex, IndexEntry, IndexEntryFlags, IndexExtension, StatData)
 export type * from './domain/git-index/index.js';
 // grep matcher types (MatchSpan, GrepPattern, GrepFixedPattern, LineVerdict, GrepMatcher, GrepMatcherOptions)
