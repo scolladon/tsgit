@@ -10,7 +10,8 @@
 > and a synthetic megarepo (16,050 files) against tsgit 3.1.0. Twelve fixes
 > (A1–A4, B1–B8), merged scope. The prime directive binds: A2/A3/B1 must match
 > canonical git byte-for-byte, pinned empirically below.
-> Status: draft → self-reviewed ×3 → decision candidates open (DC-1 … DC-8)
+> Status: decisions settled — ADRs 509–516 (DC-1…DC-8 resolved); designed &
+> self-reviewed to convergence.
 
 ## Context
 
@@ -28,15 +29,17 @@
 | B4 | `src/application/commands/diff.ts` → `diff`, `DiffOptions`, `resolveDiffOptions`; `src/application/primitives/diff-trees.ts` → `diffTrees`, `applyLinePassAndStat`; `src/domain/diff/whitespace.ts` → `normalizeLine`, `linesEqualUnder`, `LineKey`; `src/domain/diff/line-diff.ts` → `diffLines`, `splitLines`; `src/application/primitives/stream-blob.ts` → `streamBlob` | command + primitive + domain |
 | B5 | `src/domain/diff/tree-diff.ts` → `diffTrees`, `treeEntryCompare`; `src/application/primitives/diff-trees.ts` → `diffRecursive`, `blobProjection`; `src/domain/objects/tree.ts` → `parseTreeContent`; `src/domain/objects/object-id.ts` → `ObjectId.fromRaw`, `SHA1_HEX_RE` | domain + primitive |
 | B6 | `src/application/primitives/walk-tree.ts` → `walkTree`; `src/application/primitives/types.ts` → `WalkTreeEntry`, `WalkTreeOptions` | primitive |
-| B7 / B7b | `src/application/primitives/walk-commits.ts` → `walkCommits`; `src/application/primitives/walk-commits-by-date.ts` → `walkCommitsByDate`; `src/application/primitives/internal/commit-date-walk.ts` → `commitDateWalk`; `src/domain/commit/binary-heap.ts`; **new** commit-graph parser (domain) + reader (primitive), via the `FileSystem` port | primitive + domain + port |
+| B7 / B7b | `src/application/primitives/walk-commits.ts` → `walkCommits`; `src/application/primitives/walk-commits-by-date.ts` → `walkCommitsByDate`; `src/application/primitives/internal/commit-date-walk.ts` → `commitDateWalk`; `src/domain/commit/binary-heap.ts`; **new** commit-graph parser (domain — single-file **and** chain/split) + reader (primitive) with bounded parent-frontier prefetch and a per-`Repository` commit-header cache, all via the `FileSystem` port | primitive + domain + port |
 | B8 | (see A4 / B8 above) | facade + port |
 
 All twelve land at or below the primitive tier or behind an existing port, so
 browser and memory adapters inherit the wins through the shared `Context`/port
 surfaces — no per-adapter fork. The load-bearing shared state: `Context.deltaCache`
 (an existing 16 MiB-bounded `LruCache<Uint8Array>` created once per repo), the
-per-`Context` `PackRegistry` (WeakMap-cached in `read-object.ts`), and — new for B7 —
-a per-`Context` parsed commit-graph read through `ctx.fs`.
+per-`Context` `PackRegistry` (WeakMap-cached in `read-object.ts`; now also the owner of
+the persistent per-pack `FileHandle`s from A4/ADR-510), and — new for B7 — a
+per-`Context` parsed commit-graph (single-file *or* chain/split) plus a per-`Repository`
+commit-header cache, both read through `ctx.fs`.
 
 ### Prior decisions that constrain this design
 
@@ -54,10 +57,11 @@ a per-`Context` parsed commit-graph read through `ctx.fs`.
   reorder of `resolveObject`; its object-store loose-probe optimisation was
   implemented then **reverted** for a cold-read regression. `hasObject`
   (`has-object.ts`) is *already* pack-first (a pure-presence probe, correctly
-  divergent from the content read). A2/B7b re-open exactly this ground — the brief
-  asks for the reorder DC-7 rejected. This design re-pins git from scratch (below)
-  and surfaces the conflict as DC-1 rather than silently reversing an accepted
-  decision.
+  divergent from the content read). A2/B7b re-opened exactly this ground — the brief
+  asked for the reorder DC-7 rejected. This design re-pinned git from scratch (below);
+  DC-1 was settled by **ADR-509**, which upholds checkcontainment DC-7 (loose-first
+  preserved) and amortises the probe with a loose-oid cache rather than reversing the
+  accepted decision.
 - **ADR-209 — mutualize work-vs-index comparison into one primitive.** Names
   `compareWorkingTreeDelta`/`compareWorkingTreeEntry` as the single source of truth
   for "is this index entry dirty?", consumed by `status`, `rm`, `stash`,
@@ -66,8 +70,8 @@ a per-`Context` parsed commit-graph read through `ctx.fs`.
 - **ADR-150 / ADR-050 — generation-tracking cache invalidation / racy-stat.** The
   `CachingIndexResolver` already uses a generation counter + mtime/ns stat-match + a
   SHA-trailer racy fallback. A3's per-entry racy-clean guard reuses the same racy
-  concept; DC-1 option B reuses the same generation-counter invalidation for a
-  loose-object oid cache.
+  concept; the loose-oid cache (ADR-509) reuses the same generation-counter
+  invalidation.
 - **ADRs 378–382 — whitespace-diff-options (24.14).** Surfaced the structured
   `WhitespaceMode` on the diff options; B4 optimises the path those ADRs shipped
   (the spike's O(blob-bytes) strip-and-compare is exactly what B4 replaces).
@@ -196,8 +200,10 @@ error. Reordering `resolveObject` to pack-registry-first therefore changes an
 observable (which store answers, and the error surfaced when the winning store's copy
 is corrupt) and is a **divergence from ADR-226**. The returned *data* is byte-identical
 in every healthy case, and ADR-249 refines faithfulness to bind data/state not stderr
-— so whether this diagnostic difference is faithfulness-binding is a genuine call for
-the user. See **DC-1**.
+— so whether this diagnostic difference is faithfulness-binding was the call in DC-1.
+**Settled by ADR-509:** keep loose-first precedence (upholding ADR-226 and
+checkcontainment DC-7) and remove the probe cost with a per-fanout-dir loose-oid cache —
+no divergence.
 
 ### Pin B — empty tree is a virtual always-present object; empty blob is NOT (B1)
 
@@ -226,7 +232,7 @@ not a general "size 0" rule and not the empty blob.
 entries as unconditionally clean, (ii) skip `skipWorktree` entries, (iii) fall back
 to read+hash when the entry mtime is `>=` the index file's own mtime (racy).
 Without (iii), a same-second same-size edit is missed — a correctness bug. The index
-file's own mtime must be plumbed into the comparator (DC-3).
+file's own mtime must be plumbed into the comparator (ADR-511).
 
 ### Pin D — commit-graph on-disk format (B7)
 
@@ -243,18 +249,45 @@ file's own mtime must be plumbed into the comparator (DC-3).
 ```
 
 Self-consistent: 1092−68=1024 (fanout), 1192−1092=100 (5×20), 1372−1192=180 (5×36),
-1392−1372=20 (5×4), 1392+20=1412. **Chain/split form** →
-`.git/objects/info/commit-graphs/commit-graph-chain` (one layer hash per line,
-base→tip) + `graph-<hash>.graph` files; the header's *number-of-base-graphs* byte
-links layers. Parent positions use the sentinels `0x70000000` (no parent) and
-`0x80000000|edge-pos` (octopus → EDGE chunk).
+1392−1372=20 (5×4), 1392+20=1412. Parent positions use the sentinels `0x70000000`
+(no parent) and `0x80000000|edge-pos` (octopus → EDGE chunk).
 
-**Consequence for B7:** the parser reads the chunk table by id (not fixed offsets),
-serves `root-tree / parents / commit-date / generation` from CDAT+GDA2, and **falls
-back to `readObject`** for any commit not in the graph (or if the graph is
-absent/stale). The commit-graph is git's own cache, so a correct parser yields
-parents/dates *identical* to object reads — generation numbers only accelerate
-pruning/ordering, never change the visible commit set or order.
+**Chain/split form** (pinned on git 2.55.0: two `git commit-graph write --reachable
+--split=no-merge` passes, 3 then 2 commits ⇒ a 2-layer chain, `GIT_*` scrubbed / signing
+off / isolated `HOME`). `.git/objects/info/commit-graphs/commit-graph-chain` holds one
+lowercase-hex layer hash per line, **base→tip**, and there is one `graph-<hash>.graph`
+per layer:
+
+| Layer | header bytes 0–7 | num-chunks | num-base-graphs | chunks | commits |
+|---|---|---|---|---|---|
+| base `ef664751…` | `43 47 50 48 01 01 04 00` | 4 | 0 | OIDF, OIDL, CDAT, GDA2 | 3 (global pos 0–2) |
+| tip `d823c2d1…` | `43 47 50 48 01 01 05 01` | 5 | 1 | OIDF, OIDL, CDAT, GDA2, **BASE** | 2 (global pos 3–4) |
+
+- **`num-base-graphs`** = header **byte 7** (0 on the base layer, 1 on the tip). It
+  equals the number of 20-byte oids in that layer's **`BASE` chunk**, which lists the
+  base layers' graph hashes — the tip's `BASE` chunk (20 bytes, verified) holds exactly
+  the base layer's own hash `ef664751…`.
+- **Cross-layer position resolution:** a layer's OIDL/CDAT are addressed by a *global*
+  position = (Σ commit counts of all base layers) + local index. The base owns positions
+  0–2, the tip owns 3–4. A parent position `p` recorded in the tip resolves to the base
+  layer when `p < 3`, else to the tip at `p − 3`. EDGE/GDA2 are read per layer with the
+  same base-offset arithmetic.
+- **Staleness (pinned):** delete a referenced layer file then `git -c
+  core.commitGraph=true rev-list --all` ⇒ **exit 0** with `warning: unable to find all
+  commit-graph files` on stderr; git silently falls back to object reads. So a chain that
+  references a missing `graph-<hash>.graph` ⇒ treat the whole graph as **absent**.
+
+**Consequence for B7 (ADR-516 — full chain/split scope):** the parser reads the chunk
+table by id (not fixed offsets) and handles **both** on-disk forms — the single
+`objects/info/commit-graph` and the chain (`commit-graphs/commit-graph-chain` +
+per-layer `graph-<hash>.graph`). For the chain it walks layers base→tip, links them via
+the `num-base-graphs` byte and the `BASE` chunk, resolves parent positions against the
+concatenated global ordering (base-offset arithmetic above), and treats a chain that
+references a missing layer as **absent**. It serves `root-tree / parents / commit-date /
+generation` from CDAT+GDA2+EDGE and **falls back to `readObject`** for any commit not in
+the graph (or if the graph is absent/stale). The commit-graph is git's own cache, so a
+correct parser yields parents/dates *identical* to object reads — generation numbers
+only accelerate pruning/ordering, never change the visible commit set or order.
 
 ## Requirements
 
@@ -264,8 +297,8 @@ pruning/ordering, never change the visible commit set or order.
    REF-delta. `maxBytes` and `verifyHash` semantics byte-identical to the non-cached
    path.
 2. **A2/B7b — no wasted per-object loose I/O on packed walks**, without violating the
-   pinned loose-first precedence (or, if DC-1 chooses divergence, only under an
-   explicit ADR).
+   pinned loose-first precedence — via the per-fanout-dir loose-oid cache (ADR-509),
+   not a pack-first reorder.
 3. **A3 — clean tracked files are not read or hashed during `status`** when their
    index stat matches, faithful to `ie_match_stat` (Pin C): assume-valid ⇒ clean;
    skip-worktree ⇒ skipped; racy ⇒ re-hash; 32-bit ino/size; ns only when the
@@ -289,9 +322,11 @@ pruning/ordering, never change the visible commit set or order.
    oid subtrees are pruned before any entry materialisation.
 10. **B6 — bulk tree traversal reduces the per-entry async overhead** of `walkTree`,
     additively to the public surface (ADR-239).
-11. **B7 — commit walking is git-competitive via commit-graph read**, with fallback to
-    object reads for commits absent from the graph; visible commit set/order/parents/
-    dates identical to the object-read walk.
+11. **B7 — commit walking is git-competitive via commit-graph read** in **both** on-disk
+    forms (single-file and chain/split), with fallback to object reads for commits absent
+    from the graph (or a stale chain); visible commit set/order/parents/dates identical to
+    the object-read walk. Bounded parent-frontier prefetch and a per-`Repository`
+    commit-header cache back the walk (ADR-516).
 12. **B8 — a process that opens a repo, runs one diff, and returns without `dispose()`
     exits within N seconds**, and this stays true even if A4 introduces persistent
     handles.
@@ -337,40 +372,30 @@ loose→pack path. **Memory:** reads only, no new entries; the 16 MiB LRU bound 
 unchanged. **Verified (brief):** warm delta-chain `readBlob` 4.17 → 0.005 ms; warm
 log-small 5.97 → 0.53 ms; log-medium 13.8 ms vs iso-git 294 ms.
 
-#### A2 / B7b — eliminate the wasted per-object loose probe (precedence choice = DC-1)
+#### A2 / B7b — eliminate the wasted per-object loose probe (ADR-509 — loose-oid cache)
 
 The cost is real and independent of the precedence question: on a packed repo every
 object misses loose, so `tryLoose`'s `ctx.fs.exists(loosePath)` pays an uncached
 `realpath`-follow plus an internally-thrown ENOENT per object (14 % of log samples in
 `handleErrorFromBinding`, brief). B7b (probe order in commit walking) is the *same*
-probe on the same path — one implementation. Three ways to remove the cost, differing
-only in whether they touch the pinned precedence (**DC-1**):
+probe on the same path — one implementation.
 
-- **Option A — reorder to pack-registry-first (the brief's request).** Probe the
-  in-memory `registry.lookup(id)` (fanout binary search, zero I/O) first, fall back to
-  loose only on a pack miss. Kills the probe entirely — **but Pin A shows this
-  diverges**: in the both-stores/corrupt case tsgit serves the pack copy silently
-  where git surfaces the loose error. Requires a **new ADR** diverging from ADR-226
-  (mitigated by ADR-249: the divergence is a stderr diagnostic, not data). Streaming
-  paths (`looseCompressedBytes`) must be reordered consistently or kept loose-first
-  with a documented asymmetry.
-- **Option B — keep loose-first; amortise with a per-fanout-dir loose-oid cache
-  (recommended, = git's `odb_loose_cache`).** Preserve the pinned precedence exactly,
-  but replace the per-object `fs.exists` with an in-memory sorted-oid-set membership
-  test built lazily once per fanout dir (`objects/xx`, 256 max) by one `readdir`. A
-  full history walk pays ≤256 `readdir`s instead of thousands of `realpath`+ENOENT
-  probes; a loose hit is still read via `ctx.fs.read` (containment gate intact;
-  corrupt-loose and escaping-symlink cases identical). Invalidation reuses the ADR-150
-  generation counter. This is git's actual mechanism as an observable-preserving
-  optimisation.
-- **Option C — keep loose-first; cheaper per-object probe.** The reverted
-  Finding-5 approach: fold `exists`+`read` into one try-`read` and/or a parent-realpath-
-  cached `lstat`. Faithful and small, but one syscall per object (no amortisation) and
-  it previously regressed the cold single-read path (+0.011 ms).
+**Settled — ADR-509: keep loose-first, amortise with a per-fanout-dir loose-oid cache
+(git's `odb_loose_cache`).** The pinned precedence (Pin A) is preserved exactly; the
+per-object `ctx.fs.exists` is replaced with an in-memory sorted-oid-set membership test
+built lazily once per fanout dir (`objects/xx`, ≤256) by a single `readdir`. A full
+history walk pays ≤256 `readdir`s instead of thousands of `realpath`+ENOENT probes; a
+membership hit is still read via `ctx.fs.read`, so the containment gate, corrupt-loose
+error surfacing (Pin A), and escaping-symlink handling are byte-for-byte unchanged.
+Cache invalidation reuses the ADR-150 generation counter (bumped on loose write/prune).
+B7b consumes the same cache — the commit walk's object-store probes go through it.
 
-**Recommendation: B.** Achieves the brief's perf goal (no per-object realpath+ENOENT
-on packed walks) while honouring the prime directive and standing DC-7. A only if the
-user chooses to diverge and ratifies an ADR; C is the low-risk fallback.
+**Rejected alternatives** (recorded in ADR-509): *pack-first reorder* — kills the probe
+but Pin A shows it diverges (serves the pack copy silently where git surfaces the
+corrupt-loose error), needing a divergence ADR against ADR-226 and overturning
+checkcontainment DC-7; *cheaper per-object probe* (fold `exists`+`read`, realpath-cached
+`lstat`) — faithful but un-amortised, and previously regressed the cold single read
+(+0.011 ms).
 
 #### A3 — `ie_match_stat`-faithful stat-cache short-circuit in `compareWorkingTreeDelta`
 
@@ -414,7 +439,7 @@ pinned in Pin C, field-by-field against `match_stat_data`/`ce_match_stat_basic`:
 
 **Two supporting sub-changes (both required for the win to fire):**
 
-1. **Plumb the index's own mtime (DC-3).** `readIndex` already `stat`s `.git/index`;
+1. **Plumb the index's own mtime (ADR-511).** `readIndex` already `stat`s `.git/index`;
    surface that mtime (sec + ns) to `status`, which passes it into
    `compareWorkingTreeDelta` as a new **optional** argument. When absent (every
    non-`status` ADR-209 consumer — `rm`, `stash`, clean-work-tree, apply-merge), the
@@ -433,15 +458,21 @@ same-mtime edit is caught by the racy guard). The read+hash path (symlink `readl
 clean-filter, catch→`modified`) is untouched. **Verified (brief):** status-small 17.1
 → 5.8 ms (iso 7.0); status-medium → 483 ms vs iso 686 ms.
 
-#### A4 — cut per-step I/O in the delta-chain walk (strategy = DC-2, joint with B8)
+#### A4 — cut per-step I/O in the delta-chain walk (ADR-510 — persistent per-pack handles, joint with B8)
 
 Measured problem is a **cold single chain**: 43 sequential `readSlice` calls, each a
 full open+alloc+read+copy+close, keeping cold delta-chain `readBlob` at 4.2 ms vs
-iso-git's 1.07 ms (iso slurps the whole pack once). The three strategies are folded
-into **DC-2** together with B8's handle-lifecycle constraint (below), because A4's
-recommended option *creates* the very handle B8 audits. Whichever wins, the
-`Buffer.alloc` zero-fill and the `Uint8Array.from` full copy in `readSlice` can be
-trimmed (allocate exactly `bytesRead`, avoid the double copy) as a faithful micro-win.
+iso-git's 1.07 ms (iso slurps the whole pack once). **Settled — ADR-510:** the pack
+registry owns one lazily-opened persistent `FileHandle` per pack (via the existing
+`FileHandle` port), and the chain walk issues all its slice reads against that handle —
+**one `open` per pack, not per step** — closing it in `dispose()`. Because an idle Node
+`fs` `FileHandle` does not ref the libuv loop, this preserves B8's exit-without-
+`dispose()` invariant (the joint reconciliation is B8, below). Alongside, the
+`Buffer.alloc` zero-fill and the `Uint8Array.from` full copy in `readSlice` are trimmed
+(allocate exactly `bytesRead`, avoid the double copy) as a faithful micro-win.
+**Rejected** (ADR-510): a windowed per-pack byte cache (memory-bounding cost on
+multi-GB packs) and a `(packPath,offset)` intermediate-base cache (cross-object reuse,
+not the single-chain fix — the A1 target-id cache already covers the warm case).
 **Verified (brief):** cold delta-chain `readBlob` 4.2 → toward 1.07 ms.
 
 ### Track B
@@ -486,15 +517,18 @@ per-symbol barrel omission. Fix + guard:
    `dist/types/index.node.d.ts`; assert every declared value export is `!== undefined`
    at runtime.
 
-**ADR-249 tension (DC-4).** `toSimilarityPercent` converts a raw score to a *display*
-percentage (`similarity index NN%`) — a rendering helper. Making it public runtime API
-sits awkwardly with structured-output. So the fix direction is itself a decision: (A)
-add the runtime exports to honour the `.d.ts` promise; (B) *remove* these two from the
-public type surface (they stay internal) so the guard passes with a smaller surface;
-(C) reshape (expose the raw score field, drop the percent helper). See DC-4.
+**ADR-249 tension — settled by ADR-512 (add the runtime exports).**
+`toSimilarityPercent` converts a raw score to a *display* percentage (`similarity index
+NN%`) — a rendering helper, so publishing it as runtime API sits awkwardly with
+structured-output. But the `.d.ts` had already declared both symbols as values and a
+consumer (sfdx-git-delta) shipped a local workaround, so ADR-512 adds the runtime value
+exports to honour the published contract and stands `toSimilarityPercent` as a
+**documented, narrow ADR-249 exception** — ADR-249 still bars *new* cosmetic surfaces;
+this covers only the already-declared symbols. Rejected: removing both from the type
+surface, and exposing the raw score only.
 
-**Surface gates.** If (A) is chosen, the new public runtime exports hit the api.json /
-README-count / doc-coverage gates.
+**Surface gates.** The new public runtime exports hit the api.json / README-count /
+doc-coverage gates.
 
 #### B3 — bind `flattenTree` on `repo.primitives` + guard the class
 
@@ -526,9 +560,10 @@ concerns:
   a changed-only-by-whitespace pair collapses to "no significant change" without any
   alignment. `LineKey`/`normalizeLine`'s byte-level rules are reused, applied to the
   raw stream rather than decoded strings.
-- **Stat path (`withStat: true`) keeps full line-diff**, but the exact mechanism (see
-  DC-5) can hash lines to interned ints first so Myers runs over int arrays (git's
-  approach), collapsing the string/GC cost.
+- **Stat path (`withStat: true`) keeps full line-diff** but, per **ADR-513**, interns
+  normalised lines to ints first so Myers runs over int arrays (git's approach),
+  collapsing the string/GC cost. Predicate and stat share one normalisation rule set so
+  their verdicts stay provably consistent.
 
 **Faithfulness.** The drop-pass verdict must equal git's "is this file changed under
 `-w`?" — the predicate and the stat path must agree on which files survive; an interop
@@ -545,8 +580,10 @@ order:
 - **(a) byte-level entry comparison in `diffTrees`** — compare mode+name+raw-oid at the
   byte level in the merge-join and materialise hex strings / decoded paths **only for
   emitted changes**; ~29k unchanged entries never hit `bytesToHex` or `TextDecoder`.
-  How far to take this — a full internal 20-byte `Uint8Array` oid representation vs a
-  `diffTrees`-local byte comparison — is **DC-6**.
+  **Settled — ADR-514:** this stays a `diffTrees`-local byte comparison; the internal
+  oid remains a hex string elsewhere. A full end-to-end 20/32-byte `Uint8Array` oid
+  representation (git's approach) is a whole-domain change, **foreclosed** to a future
+  dedicated ADR.
 - **(b) validate oids at API boundaries only.** `parseTreeContent` calls
   `ObjectId.fromRaw` → `ObjectId.from(bytesToHex(bytes))` → `SHA1_HEX_RE.test` **per
   entry**. `bytesToHex` emits only `[0-9a-f]` by construction on a length-checked 20/32-
@@ -560,18 +597,15 @@ order:
 #### B6 — cut `walkTree`'s per-entry promise cost
 
 A 16.5k-entry recursive walk spends ~35–50 ms with 28.8% event-loop idle; per-entry
-work is ~2 µs but the async-generator machinery doubles it. Two additive options
-(**DC-7**), both ADR-239-additive and ADR-249-clean:
+work is ~2 µs but the async-generator machinery doubles it. **Settled — ADR-515: bind +
+document `flattenTree` (B3) as the bulk traversal path.** The eager `Map` builder is
+already the zero-per-entry-promise route, and B3 lands its `repo.primitives` binding
+anyway, so B6 is "bind + document" with **zero new surface** (ADR-239/249-clean).
+`walkTree` keeps its per-entry streaming shape unchanged; a batched-yield option
+(`WalkTreeEntry[]` per subtree) is **deferred to a future consumer-driven ADR** rather
+than added speculatively.
 
-- **Batched yields** — `walkTree` yields `WalkTreeEntry[]` per subtree (or gains a
-  `batch`/`batchSize` option), amortising the promise per N entries.
-- **Document `flattenTree` (B3) as the bulk path** — the eager `Map` builder is already
-  the zero-per-entry-promise route; B3 makes it a bound primitive, so B6 can be "bind +
-  document" rather than reshape the generator.
-
-Structured-output rule and API-surface gates apply to any new option/shape.
-
-#### B7 — commit-graph read support (scope = DC-8; B7b folds into A2/B7b)
+#### B7 — commit-graph read support (ADR-516 — full chain/split scope; B7b folds into A2/B7b)
 
 Add a **read-side** commit-graph path (Pin D): a domain parser
 (`commit-graph.ts`, chunk-table-driven) + a primitive reader that serves
@@ -580,60 +614,74 @@ Add a **read-side** commit-graph path (Pin D): a domain parser
 first and **fall back to `readObject`** for any commit not in it (or if the graph is
 absent/stale). Pairs with the existing `BinaryHeap` date queue; makes log, blame,
 describe, merge-base, and rev-list-shaped walks git-competitive (824 commits ~95 ms →
-toward git's 7.6 ms). Impact-ordered sub-parts:
+toward git's 7.6 ms). **Settled — ADR-516 (deviating from the design's original
+recommendation to defer chain/split): full chain/split scope, prefetch, and header
+cache all land in this PR.** Sub-parts, all in scope:
 
-- **(a) graph read + serve** — the core win. **Scope is DC-8:** single-file
-  `commit-graph` first vs full chain/split format (`commit-graphs/` + `commit-graph-
-  chain`) in the same PR.
-- **(b) probe order** = A2/B7b — one implementation (the loose-oid cache, DC-1).
-- **(c) prefetch the parent frontier in parallel** (bounded 8–16 in flight) instead of
-  one awaited read per commit — **DC-8 ride-along**.
-- **(d) per-Repository parsed-commit-header cache** (oid → parents/date) — **DC-8
-  ride-along**.
+- **(a) graph read + serve — both on-disk forms.** The parser handles the single
+  `objects/info/commit-graph` file **and** the chain/split form (Pin D chain/split
+  matrix): read `commit-graphs/commit-graph-chain` (base→tip layer hashes), open each
+  `graph-<hash>.graph`, and resolve commits across layers by **global position** =
+  (Σ base-layer commit counts) + local index. Per layer, the header's `num-base-graphs`
+  byte and the `BASE` chunk (base-layer oids) link the layers; parent positions decode
+  against the concatenated ordering; EDGE handles octopus parents; GDA2 carries the
+  generation data. A chain that references a **missing layer ⇒ treat the whole graph as
+  absent** and fall back to object reads (git's own behaviour — Pin D staleness).
+- **(b) probe order** = A2/B7b — one implementation (the loose-oid cache, ADR-509).
+- **(c) bounded parent-frontier prefetch** — read the parent frontier in parallel
+  (bounded 8–16 in flight) instead of one awaited read per commit, attacking the ~75%
+  syscall/idle directly.
+- **(d) per-`Repository` parsed-commit-header cache** (oid → parents/date) — cheap and
+  shared across every walk in the repo's lifetime.
 
-**Faithfulness.** The graph is git's own cache; a correct reader yields
-parents/dates/order identical to object reads. Interop: walk with the graph present vs
-absent → identical to each other and to `git rev-list`. Generation numbers only prune/
-order, never change the visible set. The parser is a decoder → property-test candidate
-(round-trip / total-function lenses).
+**Faithfulness.** The graph is git's own cache; a correct reader — single-file or chain
+— yields parents/dates/order identical to object reads. Interop: walk with a single-file
+graph present, with a **chain/split** graph present (built via `git commit-graph write
+--split`), and with the graph **absent** → all identical to each other and to `git
+rev-list`. Generation numbers only prune/order, never change the visible set. The parser
+is a decoder → property-test candidate (round-trip / total-function lenses).
 
-#### B8 — handle lifecycle (joint with A4, decided in DC-2)
+#### B8 — handle lifecycle (ADR-510, joint with A4)
 
 **Today** `openRepository` holds **no persistent OS file handles or watchers** — FDs
 are per-operation and closed in `finally` — so a process already exits without
 `dispose()` for the *file* path; any lingering aliveness is the HTTP transport
 (keep-alive sockets, which *do* ref the event loop) or an un-`unref`'d timer.
 
-**Technical reconciliation with A4.** An idle Node `fs` `FileHandle` does **not** keep
-the libuv event loop alive (only pending fs requests, sockets, servers, watchers, and
-un-`unref`'d timers do); the OS reclaims the fd on exit. So A4-option-A's persistent
+**Technical reconciliation with A4 (ADR-510).** An idle Node `fs` `FileHandle` does
+**not** keep the libuv event loop alive (only pending fs requests, sockets, servers,
+watchers, and un-`unref`'d timers do); the OS reclaims the fd on exit. So A4's persistent
 per-pack `FileHandle` does **not** by itself regress B8's "exit without `dispose()`"
 invariant — but it *does* leak fds until process exit for an undisposed repo (fd
-exhaustion under many repos). The coherent lifecycle story (DC-2):
+exhaustion under many repos). The coherent lifecycle story:
 
-1. A4 persistent pack handles (if chosen) are owned by the pack registry and disposed
-   with the repo (`dispose-adapters.ts`), preserving clean exit because idle fds don't
-   ref the loop.
-2. If an idle-close timer is added for pack handles, **the timer itself must be
+1. A4's persistent pack handles are owned by the pack registry and disposed with the
+   repo (`dispose-adapters.ts`), preserving clean exit because idle fds don't ref the
+   loop.
+2. If an idle-close timer is later added for pack handles, **the timer itself must be
    `unref()`'d** — an un-`unref`'d `setTimeout` would ironically keep the loop alive.
 3. B8's independent target is the actual loop-keeping references: `unref()` the
    transport agent's idle sockets / any keep-alive timer where semantically safe.
 4. **Regression test:** a child process opens a repo, runs one diff, returns without
    `dispose()`, and must exit within N seconds — the empirical guard for the whole
-   lifecycle story, whichever A4 option DC-2 picks.
+   lifecycle story under ADR-510's persistent handles.
 
-## Decision candidates
+## Decisions (settled — ADRs 509–516)
 
-| # | Choice | Alternatives (≤3) | Recommendation | Why |
+All eight decision candidates are resolved. "ratified" = the user made the call;
+"adopted-as-recommended" = the designer's recommendation stood with no user judgment
+needed.
+
+| # | Question | Settled choice | ADR | Status |
 |---|---|---|---|---|
-| DC-1 | A2/B7b object-store precedence — brief asks to reorder `resolveObject` pack-first, but Pin A shows git consults loose (matching DC-7). | **A.** Reorder pack-first (brief) — divergence from ADR-226, needs a new ADR (ADR-249 softens it to a stderr-only diff). **B.** Keep loose-first; amortise with a per-fanout-dir loose-oid cache (git `odb_loose_cache`, generation-invalidated). **C.** Keep loose-first; cheaper per-object probe. | **B** | Gets the perf win without diverging from the empirically-pinned precedence or overturning DC-7; A needs a faithfulness ADR, C previously regressed cold reads. |
-| DC-2 | A4 delta-chain per-step I/O **and** B8 handle lifecycle — brief defers A4 strategy to the ADR and demands the A4/B8 reconciliation. | **A.** Persistent per-pack `FileHandle` owned by the registry, disposed with the repo; idle fds don't ref the loop so B8 exit holds (add an `unref()`'d idle-close timer only if fd-leak matters). **B.** Windowed per-pack byte cache (mmap-window analogue). **C.** `(packPath,offset)`-keyed intermediate base cache (git `delta_base_cache`) — composes with A but doesn't close the single-chain cost alone. | **A** | Directly removes the 43× open/close via the existing `FileHandle` port and is B8-compatible (idle file handles don't keep the process alive); B risks memory on multi-GB packs, C is cross-object reuse not the single-chain fix. |
-| DC-3 | A3 how to source/thread the index's own mtime for the racy-clean guard. | **A.** `readIndex` surfaces the index mtime; `compareWorkingTreeDelta` gains an optional racy-guard arg (absent ⇒ no short-circuit). **B.** Route through the existing `CachingIndexResolver` (already holds the index `FileStat`). **C.** Carry the index mtime on `Context`, set per command. | **A** | Localised and safe-by-default (only `status` opts in; other ADR-209 consumers keep today's behaviour); B couples the comparator to a snapshot-resolver adapter, C widens `Context` for one command. |
-| DC-4 | B2 fix direction — the `.d.ts` promises `MAX_SCORE`/`toSimilarityPercent` as values, but `toSimilarityPercent` is a display helper (ADR-249 tension). | **A.** Add the runtime value exports to honour the `.d.ts` (brief) — expands the public surface. **B.** Remove both from the public type surface (keep internal) so the guard passes with a smaller surface. **C.** Expose the raw score field only, drop the percent helper. | **A** | The brief's stated intent; the guard test locks the contract either way. But the ADR conversation should weigh A vs B against ADR-249 — a percent formatter as public API is the cosmetic surface ADR-249 warns about. |
-| DC-5 | B4 whitespace line-equality mechanism (predicate + stat). | **A.** Rolling hash per normalised line, early-exit on first significant mismatch (predicate); keep string Myers for `withStat`. **B.** Intern lines to ints first, run both predicate and Myers over int arrays (git's approach) — one representation, more upfront. **C.** Rolling-hash predicate + int-array Myers for stat (A for the predicate, B for stat). | **C** | The predicate is the hot path (drop-pass), where the rolling-hash early-exit gives the biggest flat-memory win; the stat path benefits from int-array Myers, so use each where it pays. |
-| DC-6 | B5 how far to take the byte-level oid representation (step a). | **A.** `diffTrees`-local byte comparison — materialise hex only for emitted changes; internal oid stays a hex string elsewhere. **B.** Move the internal oid representation to a 20/32-byte `Uint8Array` end-to-end (git's approach) — structural long-pole touching every object parser/serializer. | **A** | Captures the megarepo win (the tax is in the unchanged-entry loop) at a fraction of B's blast radius; B is a whole-domain representation change better split into its own change if ever pursued. |
-| DC-7 | B6 how to cut `walkTree`'s per-entry promise cost. | **A.** Add batched yields (`WalkTreeEntry[]` per subtree, or a `batch` option) to `walkTree`. **B.** Bind + document `flattenTree` (B3) as the bulk path; leave `walkTree` per-entry. **C.** Both — bulk path now, batched-yield option later. | **B** | B3 already lands `flattenTree` as a bound primitive; documenting it as the bulk route is zero new surface and ADR-239/249-clean, deferring a `walkTree` shape change until a consumer needs streaming batches. |
-| DC-8 | B7 commit-graph scope + which sub-parts ride along. | **A.** Single-file `commit-graph` read only (defer chain/split + prefetch + parse-cache). **B.** Single-file + parallel parent-frontier prefetch (c) + per-Repository header cache (d). **C.** Full chain/split format + (c) + (d). | **B** | Single-file is `git commit-graph write --reachable`'s default and the common case; prefetch (c) attacks the 75% syscall/idle directly and the header cache (d) is cheap. Chain/split (C) is real but rarer — split into a follow-up unless the target repos use it. |
+| DC-1 | A2/B7b object-store precedence — reorder pack-first vs stay loose-first. | Keep loose-first; amortise the probe with a per-fanout-dir loose-oid cache (git `odb_loose_cache`, generation-invalidated). Pack-first reorder and cheaper-per-object-probe rejected. | ADR-509 | ratified |
+| DC-2 | A4 delta-chain per-step I/O **and** B8 handle lifecycle. | Persistent per-pack `FileHandle` owned by the registry, disposed with the repo; idle fds don't ref the loop so B8 exit holds; any idle-close timer must be `unref()`'d. Windowed cache and intermediate-base cache rejected. | ADR-510 | ratified |
+| DC-3 | How to source/thread the index's own mtime for the racy-clean guard. | `readIndex` surfaces the index mtime; `compareWorkingTreeDelta` gains an optional racy-guard arg (absent ⇒ no short-circuit, so non-`status` consumers are unchanged). | ADR-511 | adopted-as-recommended |
+| DC-4 | B2 fix direction given the ADR-249 tension on `toSimilarityPercent`. | Add the runtime value exports to honour the `.d.ts`; `toSimilarityPercent` stands as a documented, narrow ADR-249 exception. Guard test locks the whole `domain/diff` value surface. | ADR-512 | ratified |
+| DC-5 | B4 whitespace line-equality mechanism (predicate + stat). | Streaming rolling-hash predicate with early-exit **and** int-array Myers for the stat path (each mechanism where it pays). | ADR-513 | adopted-as-recommended |
+| DC-6 | B5 how far to take the byte-level oid representation. | `diffTrees`-local byte comparison; internal oid stays a hex string elsewhere. End-to-end `Uint8Array` representation foreclosed to a future dedicated ADR. | ADR-514 | adopted-as-recommended |
+| DC-7 | B6 how to cut `walkTree`'s per-entry promise cost. | Bind + document `flattenTree` (B3) as the bulk path; `walkTree` keeps per-entry streaming. Batched-yield option deferred to a consumer-driven ADR. | ADR-515 | adopted-as-recommended |
+| DC-8 | B7 commit-graph scope + which sub-parts ride along. | **Full chain/split format** read support + bounded parent-frontier prefetch + per-`Repository` header cache — all in this PR. **Deviates from the design recommendation** (single-file only + prefetch + cache). Write-side stays out of scope. | ADR-516 | ratified (deviates from recommendation) |
 
 ## Test strategy
 
@@ -642,11 +690,12 @@ exhaustion under many repos). The coherent lifecycle story (DC-2):
   `verifyHash` (poison entry → assert `OBJECT_HASH_MISMATCH` with the mismatched oid in
   `.data`), honours `maxBytes` (→ `OBJECT_TOO_LARGE` with size/limit), and cold miss
   still resolves. Assert error `.data`, not just the class.
-- **A2/B7b (unit + interop, Pin A).** Unit: packed-repo walk performs no per-object
-  loose `realpath`/`readdir`-per-object beyond the chosen bound (spy the FS). Interop:
-  build a repo where an object is loose-corrupt + pack-valid; for option B/C assert
-  tsgit surfaces the loose error like git; for option A the ADR documents and the test
-  asserts the diverging observable. Scrub `GIT_*`, sign off.
+- **A2/B7b (unit + interop, Pin A · ADR-509).** Unit: a packed-repo walk performs at
+  most one `readdir` per touched fanout dir (`objects/xx`, ≤256) and **no** per-object
+  `realpath`/ENOENT probe (spy the FS); the loose-oid cache membership test drives the
+  probe. Interop: build a repo where an object is loose-corrupt + pack-valid and assert
+  tsgit **surfaces the loose inflate error like git** (loose-first preserved). Scrub
+  `GIT_*`, sign off.
 - **A3 (unit + interop + property, Pin C).** Unit table over `isEntryStatClean`:
   assume-valid ⇒ clean; racy (entry mtime == index mtime) ⇒ read+hash; ns-present vs
   absent; 32-bit ino/size truncation boundary; exec-bit-only ⇒ `mode-changed`; each
@@ -657,7 +706,9 @@ exhaustion under many repos). The coherent lifecycle story (DC-2):
   any single mutated field is never clean; assume-valid clean for arbitrary stats; racy
   always defers.
 - **A4 (unit).** Deep-chain fixture (ADR-471) resolves with one `open`/`close` per pack
-  (not per step) under DC-2 option A (spy the port); byte-identical output.
+  (not per step) against the registry's persistent `FileHandle` (ADR-510; spy the port);
+  byte-identical output; `readSlice` allocates exactly `bytesRead` (no zero-fill / double
+  copy).
 - **B1 (unit + interop, Pin B).** Unit: `resolveObject(EMPTY_TREE_OID)` on a repo that
   never wrote it returns a zero-entry tree (both SHA-1 and, if plumbed, SHA-256); the
   empty *blob* still throws `OBJECT_NOT_FOUND`. Interop: `diff EMPTY_TREE_OID..HEAD`
@@ -679,16 +730,23 @@ exhaustion under many repos). The coherent lifecycle story (DC-2):
   flatten; emitted changes still carry hex oids + decoded paths. Property: `fromRaw`
   trusted path ≡ validated path for all 20/32-byte inputs; `diffTrees(parse(x))`
   invariants. (Parser touched → property-test the tree parse.)
-- **B6 (unit).** Batched/bulk traversal yields the same entry set/order as per-entry
-  `walkTree`; fewer awaits (count).
-- **B7 (unit + interop + property, Pin D).** Unit: commit-graph parser round-trips the
-  pinned chunk layout; reader serves parents/gen/date matching object reads; missing/
-  stale graph falls back to `readObject`. Interop: `walkCommits` with graph present vs
-  absent → identical to each other and to `git rev-list` order. Property (decoder
-  lenses): chunk-table parse is total over the safe subset; parse∘serialize round-trip.
+- **B6 (unit).** The bulk path `flattenTree` (ADR-515) yields the same entry set as a
+  per-entry `walkTree` drain with zero per-entry promises (count awaits); `walkTree`'s
+  per-entry shape is unchanged.
+- **B7 (unit + interop + property, Pin D · ADR-516).** Unit: the parser round-trips the
+  pinned **single-file and chain/split** chunk layouts (layer linking via
+  `num-base-graphs` + the `BASE` chunk, cross-layer global-position resolution, EDGE
+  octopus parents); the reader serves parents/gen/date matching object reads; a chain
+  that references a **missing layer**, a stale graph, or a commit absent from the graph
+  falls back to `readObject`; prefetch stays within its 8–16 bound; the header cache
+  returns the same headers on the second walk. Interop: build fixtures with a
+  **single-file** graph (`git commit-graph write --reachable`), a **chain/split** graph
+  (`git commit-graph write --reachable --split`), and **no** graph — all three walks
+  identical to each other and to `git rev-list` order. Property (decoder lenses):
+  chunk-table parse is total over the safe subset; parse∘serialize round-trip.
 - **B8 (integration).** Child process opens a repo, runs one diff, returns without
-  `dispose()`; assert exit within N seconds. Under DC-2 option A also assert no fd leak
-  after `dispose()`.
+  `dispose()`; assert exit within N seconds. With ADR-510's persistent handles, also
+  assert no fd leak after `dispose()`.
 - **Bench (req 13).** Nightly bench shows the four losing scenarios (delta-chain
   `readBlob`, log, status-clean, cold-LRU `readBlob`) and the Track-B scenarios
   (whitespace diff, megarepo tree diff, commit walk, walkTree) improved, and the winners
@@ -698,16 +756,18 @@ exhaustion under many repos). The coherent lifecycle story (DC-2):
 ## Out of scope
 
 - **Any rendering/output change** — pure read-path performance + wiring; structured
-  output (ADR-249) is untouched (B2/B6 explicitly avoid new cosmetic surfaces).
+  output (ADR-249) is untouched apart from ADR-512's documented, already-declared
+  `toSimilarityPercent`/`MAX_SCORE` exception (no *new* cosmetic surface; B6 adds none).
 - **`hasObject`/`objectExistsLocally` probe switching** — already pack-first
-  presence probes, not hot content frames; left as today (DC-7 narrowing).
-- **Commit-graph *write*** — B7 is read-only; tsgit does not emit `commit-graph`.
-- **Full internal 20/32-byte oid representation (DC-6 option B) if A is chosen** —
-  a whole-domain change, split out if ever pursued.
-- **Chain/split commit-graph (DC-8 option C) if A/B is chosen** — follow-up unless the
-  target repos use it.
-- **`git gc`/repack** — tsgit does not repack; Pin A's both-stores case arises only
-  from external tools, which is why DC-1/A's divergence is pathological but observable.
+  presence probes, not hot content frames; left as today (checkcontainment-hot-path
+  DC-7 narrowing).
+- **Commit-graph *write*** — B7 is read-only; both the single-file and chain/split forms
+  are parsed, never emitted; tsgit does not generate `commit-graph` files (ADR-516).
+- **Full internal 20/32-byte oid representation** — foreclosed by ADR-514 as a
+  whole-domain change; split out to its own ADR if ever pursued.
+- **`git gc`/repack** — tsgit does not repack; Pin A's both-stores case arises only from
+  external tools, which is why the corrupt-loose precedence detail is pathological but
+  observable (and why ADR-509 keeps loose-first rather than reorder).
 - **A3 `core.checkStat=minimal` / `trust_ctime=false` config variants** — A3 targets
   git's default (`core.checkStat=true`, `trust_ctime=true`) field set. Honouring the
   `minimal` variant (compare mtime+size only) is a documented follow-on: comparing the
