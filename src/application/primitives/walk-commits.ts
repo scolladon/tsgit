@@ -2,6 +2,12 @@ import { invalidWalkInput, operationAborted } from '../../domain/error.js';
 import type { Commit, ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import { readCommit } from './internal/read-commit.js';
+import {
+  type BoundedReader,
+  commitHeader,
+  createBoundedReader,
+  DEFAULT_PREFETCH_CONCURRENCY,
+} from './internal/read-commit-graph.js';
 import { MAX_WALK_QUEUE_SIZE, type WalkCommitsOptions } from './types.js';
 import {
   exceedsMaxWalkSeeds,
@@ -22,11 +28,16 @@ interface WalkState {
   readonly shallow: ReadonlySet<ObjectId>;
 }
 
-export async function* walkCommits(
-  ctx: Context,
-  options: WalkCommitsOptions,
-): AsyncIterable<Commit> {
-  validateOptions(options);
+type Order = 'topo' | 'first-parent';
+type CommitBodies = BoundedReader<Commit | undefined>;
+
+interface WalkSession {
+  readonly state: WalkState;
+  readonly bodies: CommitBodies;
+  readonly order: Order;
+}
+
+function createWalkSession(ctx: Context, options: WalkCommitsOptions): WalkSession {
   const order = options.order ?? 'topo';
   const ignoreMissing = options.ignoreMissing ?? false;
   const verifyHash = options.verifyHash ?? true;
@@ -37,6 +48,49 @@ export async function* walkCommits(
     until: new Set(options.until ?? []),
     shallow: options.shallow ?? new Set<ObjectId>(),
   };
+  const bound = ctx.config?.parallelism ?? DEFAULT_PREFETCH_CONCURRENCY;
+  const bodies: CommitBodies = createBoundedReader(bound, (id) =>
+    readCommit(ctx, id, { verifyHash, ignoreMissing, missing: state.missing }),
+  );
+  // Prime the initial seeds so their reads overlap instead of starting only
+  // as each is individually popped.
+  for (const seed of state.queue) bodies.start(seed);
+  return { state, bodies, order };
+}
+
+interface FrontierEntry {
+  readonly commit: Commit | undefined;
+  /** True when parents were already enqueued from the commit-graph header. */
+  readonly enqueuedFromHeader: boolean;
+}
+
+/**
+ * Resolve one popped id: prefer the commit-graph header — its parents are
+ * enqueued (and their own reads prefetched) BEFORE this id's own body read
+ * completes, the parallelism lever — falling back to the body itself only
+ * when the graph doesn't cover it (or `id` is a shallow boundary).
+ */
+async function resolveFrontierEntry(
+  ctx: Context,
+  session: WalkSession,
+  id: ObjectId,
+): Promise<FrontierEntry> {
+  const { state, bodies, order } = session;
+  const header = state.shallow.has(id) ? undefined : await commitHeader(ctx, id);
+  if (header !== undefined) {
+    enqueueIds(state, selectParentIds(header.parents, order), bodies);
+  }
+  const commit = await bodies.start(id);
+  return { commit, enqueuedFromHeader: header !== undefined };
+}
+
+export async function* walkCommits(
+  ctx: Context,
+  options: WalkCommitsOptions,
+): AsyncIterable<Commit> {
+  validateOptions(options);
+  const session = createWalkSession(ctx, options);
+  const { state, bodies, order } = session;
 
   while (state.queue.length > 0) {
     if (ctx.signal?.aborted) throw operationAborted();
@@ -44,11 +98,15 @@ export async function* walkCommits(
     const id = state.queue.shift() as ObjectId;
     if (state.visited.has(id) || state.until.has(id)) continue;
 
-    const commit = await readCommit(ctx, id, { verifyHash, ignoreMissing, missing: state.missing });
+    const { commit, enqueuedFromHeader } = await resolveFrontierEntry(ctx, session, id);
     if (commit === undefined) continue;
     state.visited.add(id);
     yield commit;
-    enqueueParents(state, commit, order);
+    // Graph-absent commit: parents were not yet known, so enqueue now from
+    // the just-read body (today's fallback path — unchanged shape).
+    if (!enqueuedFromHeader) {
+      enqueueParents(state, commit, order, bodies);
+    }
   }
 }
 
@@ -61,19 +119,29 @@ function validateOptions(options: WalkCommitsOptions): void {
   }
 }
 
-function enqueueParents(state: WalkState, commit: Commit, order: 'topo' | 'first-parent'): void {
+function selectParentIds(parents: ReadonlyArray<ObjectId>, order: Order): ReadonlyArray<ObjectId> {
+  return order === 'first-parent' && parents.length > 0 ? [parents[0] as ObjectId] : parents;
+}
+
+function enqueueParents(
+  state: WalkState,
+  commit: Commit,
+  order: Order,
+  bodies: CommitBodies,
+): void {
   // Shallow boundary: the commit itself is yielded, but its parents are not
   // walked. Matches canonical git's behavior on a `.git/shallow` repository.
   if (state.shallow.has(commit.id)) return;
-  const parents =
-    order === 'first-parent' && commit.data.parents.length > 0
-      ? [commit.data.parents[0] as ObjectId]
-      : commit.data.parents;
-  for (const parent of parents) {
-    if (state.visited.has(parent) || state.missing.has(parent) || state.until.has(parent)) continue;
+  enqueueIds(state, selectParentIds(commit.data.parents, order), bodies);
+}
+
+function enqueueIds(state: WalkState, ids: ReadonlyArray<ObjectId>, bodies: CommitBodies): void {
+  for (const id of ids) {
+    if (state.visited.has(id) || state.missing.has(id) || state.until.has(id)) continue;
     if (state.queue.length >= MAX_WALK_QUEUE_SIZE) {
       throw invalidWalkInput(REASON_WALK_QUEUE_OVERFLOW);
     }
-    state.queue.push(parent);
+    state.queue.push(id);
+    bodies.start(id);
   }
 }

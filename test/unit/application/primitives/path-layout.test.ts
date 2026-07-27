@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
+  commitGraphChainPath,
+  commitGraphLayerPath,
+  commitGraphPath,
   commonGitDir,
   indexPath,
   lockSuffix,
@@ -177,6 +180,40 @@ describe('path-layout', () => {
 
         // Assert
         expect(result).toBe('/g');
+      });
+    });
+  });
+
+  describe('Given gitDir', () => {
+    describe('When commitGraphPath', () => {
+      it('Then returns /gitDir/objects/info/commit-graph', () => {
+        // Arrange & Act
+        const result = commitGraphPath('/g');
+
+        // Assert
+        expect(result).toBe('/g/objects/info/commit-graph');
+      });
+    });
+
+    describe('When commitGraphChainPath', () => {
+      it('Then returns /gitDir/objects/info/commit-graphs/commit-graph-chain', () => {
+        // Arrange & Act
+        const result = commitGraphChainPath('/g');
+
+        // Assert
+        expect(result).toBe('/g/objects/info/commit-graphs/commit-graph-chain');
+      });
+    });
+  });
+
+  describe('Given gitDir and a layer hash', () => {
+    describe('When commitGraphLayerPath', () => {
+      it('Then returns /gitDir/objects/info/commit-graphs/graph-<hash>.graph', () => {
+        // Arrange & Act
+        const result = commitGraphLayerPath('/g', 'deadbeef');
+
+        // Assert
+        expect(result).toBe('/g/objects/info/commit-graphs/graph-deadbeef.graph');
       });
     });
   });

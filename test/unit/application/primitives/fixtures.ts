@@ -2,14 +2,23 @@
  * Shared test fixtures for primitives —.
  */
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
+import {
+  commitGraphChainPath,
+  commitGraphPath,
+} from '../../../../src/application/primitives/path-layout.js';
 import type { GitIndex } from '../../../../src/domain/git-index/index-entry.js';
 import { serializeIndex } from '../../../../src/domain/git-index/index-writer.js';
 import { serializeObject } from '../../../../src/domain/objects/git-object.js';
-import type { GitObject, ObjectId, RefName } from '../../../../src/domain/objects/index.js';
+import type { Commit, GitObject, ObjectId, RefName } from '../../../../src/domain/objects/index.js';
 import { type PackedRefEntry, serializePackedRefs } from '../../../../src/domain/refs/index.js';
 import { computeLooseObjectPath } from '../../../../src/domain/storage/loose-path.js';
 import type { Context } from '../../../../src/ports/context.js';
 import type { DirEntry, FileStat, FileSystem } from '../../../../src/ports/file-system.js';
+import {
+  buildCommitGraphBytes,
+  type CommitGraphCommitModel,
+  type CommitGraphLayerModel,
+} from '../../domain/commit/arbitraries.js';
 
 export interface BuildSeededContextParts {
   readonly objects?: ReadonlyArray<GitObject>;
@@ -202,4 +211,69 @@ export async function serializeIndexFixtureAsync(
  */
 export function serializeIndexFixture(index: GitIndex): Uint8Array {
   return serializeIndex(index);
+}
+
+const byOidAscending = (a: Commit, b: Commit): number => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+
+function layerModelFor(
+  sorted: ReadonlyArray<Commit>,
+  positionOf: ReadonlyMap<ObjectId, number>,
+  baseGraphHashes: ReadonlyArray<ObjectId>,
+): CommitGraphLayerModel {
+  const commits: CommitGraphCommitModel[] = sorted.map((commit) => ({
+    oid: commit.id,
+    rootTree: commit.data.tree,
+    parentPositions: commit.data.parents.map((parent) => positionOf.get(parent)!),
+    generationV1: 1,
+    committerDate: commit.data.committer.timestamp,
+    generationV2Offset: 0,
+  }));
+  return {
+    hashVersion: 1,
+    numBaseGraphs: baseGraphHashes.length,
+    baseGraphHashes,
+    includeGenerationData: true,
+    commits,
+  };
+}
+
+/**
+ * Write a real `commit-graph` (single-file, `layers.length === 1`) or chain
+ * (`layers.length > 1`, base → tip) encoding the given REAL commits (Pin D
+ * format, via the domain parser's own test encoder). Each layer is sorted by
+ * oid — the on-disk fanout/OIDL requirement — and parent references are
+ * resolved to GLOBAL positions across the concatenated layer ordering, the
+ * same arithmetic `read-commit-graph.ts` decodes.
+ */
+export async function writeCommitGraph(
+  ctx: Context,
+  layers: ReadonlyArray<ReadonlyArray<Commit>>,
+): Promise<void> {
+  const gitDir = ctx.layout.gitDir;
+  const positionOf = new Map<ObjectId, number>();
+  let cumulative = 0;
+  const sortedLayers = layers.map((layerCommits) => {
+    const sorted = [...layerCommits].sort(byOidAscending);
+    sorted.forEach((commit, i) => {
+      positionOf.set(commit.id, cumulative + i);
+    });
+    cumulative += sorted.length;
+    return sorted;
+  });
+
+  if (sortedLayers.length === 1) {
+    const bytes = buildCommitGraphBytes(layerModelFor(sortedLayers[0]!, positionOf, []));
+    await ctx.fs.write(commitGraphPath(gitDir), bytes);
+    return;
+  }
+
+  const hashes: ObjectId[] = [];
+  for (const sorted of sortedLayers) {
+    const baseGraphHashes = hashes.length > 0 ? [hashes[hashes.length - 1]!] : [];
+    const bytes = buildCommitGraphBytes(layerModelFor(sorted, positionOf, baseGraphHashes));
+    const hash = (await ctx.hash.hashHex(bytes)) as ObjectId;
+    hashes.push(hash);
+    await ctx.fs.write(`${gitDir}/objects/info/commit-graphs/graph-${hash}.graph`, bytes);
+  }
+  await ctx.fs.writeUtf8(commitGraphChainPath(gitDir), `${hashes.join('\n')}\n`);
 }

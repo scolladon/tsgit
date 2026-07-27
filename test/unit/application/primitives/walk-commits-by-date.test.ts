@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { createCommit } from '../../../../src/application/primitives/create-commit.js';
+import {
+  commitGraphChainPath,
+  commonGitDir,
+} from '../../../../src/application/primitives/path-layout.js';
+import { readObject } from '../../../../src/application/primitives/read-object.js';
 import { walkCommitsByDate } from '../../../../src/application/primitives/walk-commits-by-date.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import type { TsgitError } from '../../../../src/domain/error.js';
@@ -9,7 +14,8 @@ import type {
   ObjectId,
   Tree,
 } from '../../../../src/domain/objects/index.js';
-import { buildSeededContext } from './fixtures.js';
+import type { Context } from '../../../../src/ports/context.js';
+import { buildSeededContext, instrumentedContext, writeCommitGraph } from './fixtures.js';
 
 const AUTHOR: AuthorIdentity = {
   name: 'Alice',
@@ -70,6 +76,16 @@ async function collect(iter: AsyncIterable<Commit>): Promise<Commit[]> {
 }
 
 const idsOf = (commits: ReadonlyArray<Commit>): ObjectId[] => commits.map((c) => c.id);
+
+async function asCommits(ctx: Context, ids: ReadonlyArray<ObjectId>): Promise<Commit[]> {
+  const commits: Commit[] = [];
+  for (const id of ids) {
+    const object = await readObject(ctx, id);
+    if (object.type !== 'commit') throw new Error('expected a commit');
+    commits.push(object);
+  }
+  return commits;
+}
 
 describe('walkCommitsByDate', () => {
   describe('Given empty from', () => {
@@ -499,6 +515,150 @@ describe('walkCommitsByDate', () => {
         }
         expect(yielded).toEqual([newer]);
         expect((caught as TsgitError).data.code).toBe('OPERATION_ABORTED');
+      });
+    });
+  });
+
+  describe('commit-graph integration', () => {
+    describe('Given a single-file commit-graph covering the whole diamond', () => {
+      describe('When walkCommitsByDate is called from the merge', () => {
+        it('Then the yielded set/order is identical to the graph-absent walk', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const { a, b, c, d } = await buildDiamond(ctx);
+          const baseline = await collect(walkCommitsByDate(ctx, { from: [d] }));
+          await writeCommitGraph(ctx, [await asCommits(ctx, [a, b, c, d])]);
+
+          // Act
+          const withGraph = await collect(walkCommitsByDate(ctx, { from: [d] }));
+
+          // Assert
+          expect(idsOf(withGraph)).toEqual(idsOf(baseline));
+        });
+      });
+    });
+
+    describe('Given a chain/split graph covering the whole diamond (base=[a,b], tip=[c,d])', () => {
+      describe('When walkCommitsByDate is called from the merge', () => {
+        it('Then the yielded set/order is identical to the graph-absent walk', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const { a, b, c, d } = await buildDiamond(ctx);
+          const baseline = await collect(walkCommitsByDate(ctx, { from: [d] }));
+          const commits = await asCommits(ctx, [a, b, c, d]);
+          await writeCommitGraph(ctx, [
+            commits.filter((commit) => commit.id === a || commit.id === b),
+            commits.filter((commit) => commit.id === c || commit.id === d),
+          ]);
+
+          // Act
+          const withGraph = await collect(walkCommitsByDate(ctx, { from: [d] }));
+
+          // Assert
+          expect(idsOf(withGraph)).toEqual(idsOf(baseline));
+        });
+      });
+    });
+
+    describe('Given a chain/split graph whose most-recent layer file was deleted', () => {
+      describe('When walkCommitsByDate is called', () => {
+        it('Then it falls back to object reads and yields the correct result', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const ids = await linearChain(ctx, 5);
+          const baseline = await collect(walkCommitsByDate(ctx, { from: [ids.at(-1)!] }));
+          const commits = await asCommits(ctx, ids);
+          await writeCommitGraph(ctx, [commits.slice(0, 3), commits.slice(3)]);
+          const gitDir = commonGitDir(ctx);
+          const chainText = await ctx.fs.readUtf8(commitGraphChainPath(gitDir));
+          const tipHash = chainText.trim().split('\n').at(-1)!;
+          await ctx.fs.rm(`${gitDir}/objects/info/commit-graphs/graph-${tipHash}.graph`);
+
+          // Act
+          const withStaleGraph = await collect(walkCommitsByDate(ctx, { from: [ids.at(-1)!] }));
+
+          // Assert
+          expect(idsOf(withStaleGraph)).toEqual(idsOf(baseline));
+        });
+      });
+    });
+
+    describe('Given a commit-graph consulted across two separate walkCommitsByDate invocations', () => {
+      describe('When both walks target the same Context', () => {
+        it('Then the graph file is read only once', async () => {
+          // Arrange
+          const base = await buildSeededContext();
+          const ids = await linearChain(base, 3);
+          await writeCommitGraph(base, [await asCommits(base, ids)]);
+          const { ctx, calls } = instrumentedContext(base);
+
+          // Act
+          await collect(walkCommitsByDate(ctx, { from: [ids.at(-1)!] }));
+          await collect(walkCommitsByDate(ctx, { from: [ids.at(-1)!] }));
+
+          // Assert
+          const graphReads = calls().filter(
+            (call) => call.method === 'read' && call.path.includes('commit-graph'),
+          );
+          expect(graphReads.length).toBe(1);
+        });
+      });
+    });
+
+    describe('Given an octopus merge with 5 graph-covered parents and a concurrency bound of 2', () => {
+      describe('When walkCommitsByDate is called', () => {
+        it('Then concurrent loose-object body reads never exceed the bound', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const treeId = await emptyTree(ctx);
+          const parents: ObjectId[] = [];
+          for (let i = 0; i < 5; i += 1) {
+            parents.push(
+              await createCommit(ctx, {
+                tree: treeId,
+                parents: [],
+                author: { ...AUTHOR, timestamp: 1700000000 + i },
+                committer: { ...AUTHOR, timestamp: 1700000000 + i },
+                message: `root-${i}`,
+              }),
+            );
+          }
+          const merge = await createCommit(ctx, {
+            tree: treeId,
+            parents,
+            author: { ...AUTHOR, timestamp: 1700000100 },
+            committer: { ...AUTHOR, timestamp: 1700000100 },
+            message: 'octopus',
+          });
+          await writeCommitGraph(ctx, [await asCommits(ctx, [...parents, merge])]);
+
+          let active = 0;
+          let maxActive = 0;
+          const LOOSE_OBJECT_PATH = /\/objects\/[0-9a-f]{2}\//;
+          const bounded: Context = {
+            ...ctx,
+            config: { parallelism: 2 },
+            fs: {
+              ...ctx.fs,
+              read: async (path: string) => {
+                if (!LOOSE_OBJECT_PATH.test(path)) return ctx.fs.read(path);
+                active += 1;
+                maxActive = Math.max(maxActive, active);
+                await new Promise<void>((resolve) => setTimeout(resolve, 5));
+                const result = await ctx.fs.read(path);
+                active -= 1;
+                return result;
+              },
+            },
+          };
+
+          // Act
+          const commits = await collect(walkCommitsByDate(bounded, { from: [merge] }));
+
+          // Assert
+          expect(commits.length).toBe(6);
+          expect(maxActive).toBeLessThanOrEqual(2);
+        });
       });
     });
   });
