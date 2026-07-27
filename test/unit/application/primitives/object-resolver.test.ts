@@ -797,6 +797,13 @@ describe('object-resolver', () => {
             }
             expect(data.id).toBe(id);
           }
+
+          // Assert — the stale prefix set was dropped: a THIRD probe re-reads
+          // the directory, sees the object gone, and never touches the file
+          const readSpy = vi.spyOn(ctx.fs, 'read');
+          await resolveObject(ctx, registry, id, true).catch(() => {});
+          const loosePath = `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(id)}`;
+          expect(readSpy.mock.calls.map((call) => call[0])).not.toContain(loosePath);
         });
       });
     });

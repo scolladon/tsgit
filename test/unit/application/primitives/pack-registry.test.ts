@@ -550,6 +550,71 @@ describe('RegisteredPack.readSlice — persistent handle (A4)', () => {
   });
 });
 
+describe('RegisteredPack retired reads', () => {
+  describe('Given a pack whose persistent handle was closed', () => {
+    describe('When readSlice is called after close', () => {
+      it('Then it falls back to the per-call read and never re-opens a handle', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const content = new TextEncoder().encode('retired-read');
+        await writeSyntheticPack(ctx, 'retired-read', [{ kind: 'base', type: 'blob', content }]);
+        let opens = 0;
+        let perCallReads = 0;
+        const wrapped = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            openWithNoFollow: async (path: string, mode: 'read' | 'write') => {
+              opens += 1;
+              return ctx.fs.openWithNoFollow(path, mode);
+            },
+            readSlice: async (path: string, offset: number, length: number) => {
+              perCallReads += 1;
+              return ctx.fs.readSlice(path, offset, length);
+            },
+          },
+        };
+        const registry = createPackRegistry(wrapped);
+        const pack = (await registry.all())[0]!;
+        await pack.readSlice(0, 4);
+        await pack.close();
+
+        // Act
+        const result = await pack.readSlice(0, 4);
+        const direct = await ctx.fs.readSlice(pack.packPath, 0, 4);
+
+        // Assert — one open total (never re-opened), the post-close read went
+        // through the per-call path, bytes identical
+        expect(opens).toBe(1);
+        expect(perCallReads).toBe(1);
+        expect(Array.from(result)).toEqual(Array.from(direct));
+      });
+    });
+  });
+
+  describe('Given a slice read still in flight', () => {
+    describe('When close is called before the read is awaited', () => {
+      it('Then the in-flight read completes with correct bytes (drained before the handle closes)', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const content = new TextEncoder().encode('drain-in-flight');
+        await writeSyntheticPack(ctx, 'drain-in-flight', [{ kind: 'base', type: 'blob', content }]);
+        const registry = createPackRegistry(ctx);
+        const pack = (await registry.all())[0]!;
+
+        // Act — fire the read, close immediately, then await the read
+        const pending = pack.readSlice(0, 4);
+        await pack.close();
+        const result = await pending;
+
+        // Assert
+        const direct = await ctx.fs.readSlice(pack.packPath, 0, 4);
+        expect(Array.from(result)).toEqual(Array.from(direct));
+      });
+    });
+  });
+});
+
 describe('RegisteredPack.close', () => {
   describe('Given a pack whose persistent handle was opened via readSlice', () => {
     describe('When close is called twice', () => {

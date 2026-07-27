@@ -5,6 +5,7 @@ import {
   type DateWalkStep,
   selectParents,
 } from '../../../../../src/application/primitives/internal/commit-date-walk.js';
+import { readCommit } from '../../../../../src/application/primitives/internal/read-commit.js';
 import { writeObject } from '../../../../../src/application/primitives/write-object.js';
 import type {
   AuthorIdentity,
@@ -13,7 +14,7 @@ import type {
   ObjectId,
   Tree,
 } from '../../../../../src/domain/objects/index.js';
-import { buildSeededContext } from '../fixtures.js';
+import { buildSeededContext, writeCommitGraph } from '../fixtures.js';
 
 const AUTHOR: AuthorIdentity = {
   name: 'Alice',
@@ -197,6 +198,54 @@ describe('Given a diamond history and frontier-aware steps', () => {
 
       // Assert
       expect(frontiers).toEqual([[], [b], [a], []]);
+    });
+  });
+
+  describe('Given a graph-covered merge whose one parent object was pruned, under ignoreMissing', () => {
+    it('Then the pruned commit never enters the heap or any frontier snapshot', async () => {
+      // Arrange — pruned (ts1) sorts OLDER than kept (ts2): a header-dated
+      // push of the pruned commit would still sit in the heap when `kept`
+      // yields, so its frontier snapshot is the observable
+      const ctx = await buildSeededContext();
+      const treeId = await emptyTree(ctx);
+      const commit = async (msg: string, ts: number, parents: ObjectId[]): Promise<ObjectId> =>
+        createCommit(ctx, {
+          tree: treeId,
+          parents,
+          author: { ...AUTHOR, timestamp: ts },
+          committer: { ...AUTHOR, timestamp: ts },
+          message: msg,
+        });
+      const pruned = await commit('pruned', 1, []);
+      const kept = await commit('kept', 2, []);
+      const merge = await commit('merge', 3, [pruned, kept]);
+      const tip = await commit('tip', 4, [merge]);
+      const readOpts = { verifyHash: false, ignoreMissing: false, missing: new Set<string>() };
+      const commits = await Promise.all(
+        [pruned, kept, merge, tip].map(async (id) => (await readCommit(ctx, id, readOpts))!),
+      );
+      await writeCommitGraph(ctx, [commits]);
+      const { computeLooseObjectPath } = await import(
+        '../../../../../src/domain/storage/loose-path.js'
+      );
+      await ctx.fs.rm(`${ctx.layout.gitDir}/objects/${computeLooseObjectPath(pruned)}`);
+      const sut = commitDateWalk(ctx, { from: [tip], ignoreMissing: true });
+
+      // Act
+      const yielded: ObjectId[] = [];
+      const frontiers: ObjectId[] = [];
+      const empties: boolean[] = [];
+      for await (const step of sut) {
+        yielded.push(step.commit.id);
+        frontiers.push(...step.frontier());
+        empties.push(step.frontierEmpty);
+      }
+
+      // Assert — the pruned commit is neither yielded nor ever visible in a
+      // frontier; the final yield sees an empty heap
+      expect(yielded).toEqual([tip, merge, kept]);
+      expect(frontiers).not.toContain(pruned);
+      expect(empties.at(-1)).toBe(true);
     });
   });
 });
