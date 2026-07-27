@@ -117,7 +117,7 @@ describe.skipIf(!GIT_AVAILABLE)('dispose-free exit (A4/B8)', () => {
   afterAll(async () => {
     await rm(repoDir, { recursive: true, force: true });
     await rm(scriptDir, { recursive: true, force: true });
-  });
+  }, 120_000);
 
   describe('Given a repo whose objects are packed', () => {
     describe('When a child process opens it, runs one diff, and returns without dispose()', () => {

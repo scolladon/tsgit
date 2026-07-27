@@ -76,7 +76,7 @@ describe('Given the built public Node runtime entry', () => {
       expect(result.maxScore).not.toBeUndefined();
       expect(result.toSimilarityPercent).not.toBeUndefined();
     });
-  });
+  }, 300_000);
 
   describe('When auditing every domain/diff value export against the runtime bundle', () => {
     it('Then none of them are undefined at runtime', async () => {

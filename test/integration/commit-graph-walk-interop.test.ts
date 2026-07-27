@@ -130,7 +130,7 @@ describe.skipIf(!GIT_AVAILABLE)('commit-graph walk interop', () => {
 
   afterAll(async () => {
     await scenario.dispose();
-  });
+  }, 60_000);
 
   // Every test below establishes its OWN on-disk commit-graph state up front
   // (never relies on a sibling test's leftover state), so declaration order

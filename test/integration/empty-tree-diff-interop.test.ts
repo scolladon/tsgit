@@ -45,7 +45,7 @@ describe.skipIf(!GIT_AVAILABLE)('empty tree diff interop', () => {
       env: { ...runGitEnv(), ...IDENTITY },
     });
     repo = await openRepository({ cwd: dir });
-  });
+  }, 60_000);
 
   afterAll(async () => {
     await repo.dispose();

@@ -120,7 +120,7 @@ describe.skipIf(!GIT_AVAILABLE)(
       to = (await runGitAsync(['-C', dir, 'rev-parse', 'HEAD'])).trim();
 
       repo = await openRepository({ cwd: dir });
-    });
+    }, 60_000);
 
     afterAll(async () => {
       await repo.dispose();

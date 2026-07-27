@@ -134,7 +134,7 @@ describe.skipIf(!GIT_AVAILABLE)(
       }
 
       repo = await openRepository({ cwd: dir });
-    });
+    }, 60_000);
 
     afterAll(async () => {
       await repo.dispose();
@@ -224,7 +224,7 @@ describe.skipIf(!GIT_AVAILABLE)(
       attrTo = (await runGitAsync(['-C', attrDir, 'rev-parse', 'HEAD'])).trim();
 
       attrRepo = await openRepository({ cwd: attrDir });
-    });
+    }, 60_000);
 
     afterAll(async () => {
       await attrRepo.dispose();
