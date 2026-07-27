@@ -34303,6 +34303,16 @@
 								},
 								"name": "WorktreeError",
 								"package": "@scolladon/tsgit"
+							},
+							{
+								"type": "reference",
+								"target": {
+									"packageName": "@scolladon/tsgit",
+									"packagePath": "src/domain/commit/error.ts",
+									"qualifiedName": "CommitGraphError"
+								},
+								"name": "CommitGraphError",
+								"package": "@scolladon/tsgit"
 							}
 						]
 					}
