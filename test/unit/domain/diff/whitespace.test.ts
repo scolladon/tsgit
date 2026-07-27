@@ -719,6 +719,13 @@ describe('digestNormalizedLine — branch-exhaustive cross-check', () => {
         label: "a CR is retained under mode 'none' without ignoreCrAtEol (crApplies is false)",
       },
       {
+        mode: 'all' as WhitespaceMode,
+        ignoreCrAtEol: false,
+        input: 'a\r\n',
+        label:
+          "a CR is dropped under mode 'all' without ignoreCrAtEol (crApplies is true via mode!=='none' alone)",
+      },
+      {
         mode: 'none' as WhitespaceMode,
         ignoreCrAtEol: true,
         input: '\r\n',

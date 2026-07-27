@@ -266,6 +266,7 @@ const BINARY_STRING_CHUNK = 8_192;
 // A lossless byte->string projection (each byte maps 1:1 to a UTF-16 code
 // unit), used only as an exact Map key for line interning below.
 function binaryStringOf(bytes: Uint8Array): string {
+  // NOTE: this line's EqualityOperator mutant relaxing `<=` to `<` is equivalent at the boundary (bytes.length === BINARY_STRING_CHUNK): the fast path returns `String.fromCharCode(...bytes)` directly, while the mutated guard sends that exact input through the chunked loop below with a single BINARY_STRING_CHUNK-sized chunk (i=0 only), which builds the identical string via one `out += String.fromCharCode(...bytes.subarray(0, BINARY_STRING_CHUNK))`. Left unannotated because the sibling `>` variant on this same line is a real, killed mutant, and Stryker's next-line disable can't distinguish variant from variant of the same mutator.
   if (bytes.length <= BINARY_STRING_CHUNK) return String.fromCharCode(...bytes);
   // Stryker disable next-line StringLiteral: equivalent — the seed is a fixed
   // literal `out` accumulates onto via `+=`; every call gets the identical

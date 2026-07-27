@@ -72,7 +72,7 @@ function dropTrailingWs(bytes: Uint8Array): Uint8Array {
     wsStart--;
   }
   // Stryker disable next-line EqualityOperator: equivalent — flipping `end === bytes.length` to `!==` only swaps which branch (early return vs. fallthrough copy) fires when nothing needs trimming; both produce byte-identical output (verified by hand).
-  // NOTE: this line's ConditionalExpression mutant forcing the whole test to `false` is equally equivalent (same reasoning — the fallthrough branch always reproduces `bytes` byte-for-byte when there's nothing to trim), but is left unannotated: the sibling ConditionalExpression mutant forcing the test to `true` breaks real trimming and is a killable mutant on this same line, and Stryker's next-line disable can't distinguish `true` from `false` variants of the same mutator.
+  // NOTE: two more ConditionalExpression variants on this line are equally equivalent but left unannotated (their sibling `true`-on-the-whole-test and `true`-on-the-left-operand variants are real, killable mutants on this same line, and Stryker's next-line disable can't distinguish sub-expression from sub-expression of the same mutator): forcing the WHOLE test to `false`, and forcing just the right operand (`end === bytes.length`) to `true` (reducing the guard to `wsStart === end`). Both reduce to the same reasoning: whenever `wsStart === end` (nothing to trim), the fallthrough branch reproduces `bytes` byte-for-byte regardless of `end`'s relation to `bytes.length`, so skipping the early return via either variant changes no observable output.
   if (wsStart === end && end === bytes.length) return bytes; // nothing to drop
   const out = new Uint8Array(wsStart + (end < bytes.length ? 1 : 0));
   out.set(bytes.subarray(0, wsStart));
@@ -174,6 +174,7 @@ function digestContentEnd(bytes: Uint8Array, end: number, key: LineKey): number 
   const crApplies = key.ignoreCrAtEol || key.mode !== 'none';
   if (!crApplies) return end;
   const crPos = end - 1;
+  // NOTE: this line's ConditionalExpression mutant forcing the left operand (`crPos >= 0`) to `true` is equivalent — the only case it changes is crPos<0 (empty content, crPos===-1), where forcing it true just makes the right operand `bytes[crPos] === CR` evaluate instead of short-circuiting; `bytes[-1]` is `undefined` on a typed array, so that's `undefined === CR` = false either way, and the ternary still returns `end`. Left unannotated because the whole-condition and right-operand `true` variants on this same line are real, killed mutants, and Stryker's next-line disable can't distinguish sub-expression from sub-expression of the same mutator.
   return crPos >= 0 && bytes[crPos] === CR ? crPos : end;
 }
 

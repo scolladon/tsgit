@@ -685,6 +685,37 @@ describe('diffTrees', () => {
     });
   });
 
+  describe('Given copies:"on" (not "harder") with treeA defined', () => {
+    describe('When diffTrees is called with detectRenames:true and renameOptions:{copies:"on"}', () => {
+      it('Then buildPreimage never flattens treeA (the copies!=="harder" guard is checked, not just treeA===undefined)', async () => {
+        // Arrange — treeA IS defined here (unlike the sibling "treeA undefined" tests
+        // above), isolating the left operand of buildPreimage's guard: only the
+        // copies-mode check can short-circuit flattenTree for this input.
+        const ctx = await buildSeededContext();
+        const blobId = await blob(ctx, 'file content\n');
+        const treeA = await writeTree(ctx, [
+          { name: 'orig.txt', mode: FILE_MODE.REGULAR, id: blobId },
+        ]);
+        const treeB = await writeTree(ctx, [
+          { name: 'orig.txt', mode: FILE_MODE.REGULAR, id: blobId },
+          { name: 'new.txt', mode: FILE_MODE.REGULAR, id: await blob(ctx, 'new\n') },
+        ]);
+        const flattenSpy = vi.spyOn(flattenTreeMod, 'flattenTree');
+
+        // Act
+        const result = await diffTrees(ctx, treeA, treeB, {
+          detectRenames: true,
+          renameOptions: { copies: 'on' },
+        });
+
+        // Assert — no preimage was built for a non-'harder' copies mode
+        expect(flattenSpy).not.toHaveBeenCalled();
+        expect(result.changes.filter((c) => c.type === 'add')).toHaveLength(1);
+        flattenSpy.mockRestore();
+      });
+    });
+  });
+
   describe('Given withStat is omitted and a one-line blob added', () => {
     describe('When diffTrees is called', () => {
       it('Then the change carries no count fields (tree-level only)', async () => {
@@ -983,6 +1014,65 @@ describe('diffTrees', () => {
         expect(result.changes[0]).toMatchObject({
           type: 'modify',
           added: 1,
+          deleted: 1,
+          binary: false,
+        });
+      });
+    });
+  });
+
+  describe('Given a type-change with identical content, ignoreWhitespace:all, and withStat:true', () => {
+    describe('When diffTrees is called', () => {
+      it('Then the type-change is never dropped (shouldDrop is type-gated, not just added/deleted/binary)', async () => {
+        // Arrange — same content on both sides (added=0, deleted=0, binary=false),
+        // only the mode differs (regular -> symlink); withStat:true routes through
+        // applyStatPass, which calls shouldDrop directly for every file (unlike the
+        // streaming predicate path, which filters non-modify changes before ever
+        // reaching shouldDrop)
+        const ctx = await buildSeededContext();
+        const fileId = await blob(ctx, '   ');
+        const linkId = await blob(ctx, '   ');
+        const before = await writeTree(ctx, [{ name: 'x', mode: FILE_MODE.REGULAR, id: fileId }]);
+        const after = await writeTree(ctx, [{ name: 'x', mode: FILE_MODE.SYMLINK, id: linkId }]);
+
+        // Act
+        const result = await diffTrees(ctx, before, after, {
+          ignoreWhitespace: 'all',
+          withStat: true,
+        });
+
+        // Assert — type-change survives despite added===0 && deleted===0 && !binary
+        expect(result.changes).toHaveLength(1);
+        expect(result.changes[0]?.type).toBe('type-change');
+      });
+    });
+  });
+
+  describe('Given a pure-deletion modify (added=0, deleted>0), ignoreWhitespace:all, and withStat:true', () => {
+    describe('When diffTrees is called', () => {
+      it('Then the modify is kept (shouldDrop requires BOTH added===0 AND deleted===0)', async () => {
+        // Arrange — one line removed, nothing added; withStat:true routes through
+        // applyStatPass so shouldDrop's own deleted===0 check (not the streaming
+        // predicate) decides the verdict
+        const ctx = await buildSeededContext();
+        const oldId = await blob(ctx, 'a\nXYZ\n');
+        const newId = await blob(ctx, 'a\n');
+        const before = await writeTree(ctx, [
+          { name: 'f.txt', mode: FILE_MODE.REGULAR, id: oldId },
+        ]);
+        const after = await writeTree(ctx, [{ name: 'f.txt', mode: FILE_MODE.REGULAR, id: newId }]);
+
+        // Act
+        const result = await diffTrees(ctx, before, after, {
+          ignoreWhitespace: 'all',
+          withStat: true,
+        });
+
+        // Assert — kept, with the real deleted count intact
+        expect(result.changes).toHaveLength(1);
+        expect(result.changes[0]).toMatchObject({
+          type: 'modify',
+          added: 0,
           deleted: 1,
           binary: false,
         });
@@ -1978,6 +2068,116 @@ describe('diffTrees', () => {
         const data = (thrown as { data: { code: string; id: string } }).data;
         expect(data.code).toBe('TREE_CYCLE_DETECTED');
         expect(data.id).toBe(LOOP_ID);
+      });
+    });
+  });
+
+  describe('Given both sides of a recursive diff independently self-reference every level (neither ever converges to add/delete)', () => {
+    describe('When diffTrees is called with recursive:true', () => {
+      it('Then throws TREE_CYCLE_DETECTED via the old-side guard specifically (checked before the new-side guard)', async () => {
+        // Arrange — OLD_LOOP_ID and NEW_LOOP_ID each self-reference under the entry
+        // name 'x', so every level stays a directory-vs-directory 'modify' and NEITHER
+        // side ever degrades into an add/delete — the only route that would let
+        // flattenTree's own (redundant) cycle guard mask this one. Both stacks repeat
+        // at the SAME depth, so this isolates that the old-side check (checked first
+        // in source order) is what actually fires — not the new-side check alone.
+        const ctx = await buildSeededContext();
+        const OLD_LOOP_ID = 'd'.repeat(40) as ObjectId;
+        const NEW_LOOP_ID = 'e'.repeat(40) as ObjectId;
+        const oldLoopTree: Tree = {
+          type: 'tree',
+          id: OLD_LOOP_ID,
+          entries: [{ name: 'x', mode: FILE_MODE.DIRECTORY, id: OLD_LOOP_ID }],
+        };
+        const newLoopTree: Tree = {
+          type: 'tree',
+          id: NEW_LOOP_ID,
+          entries: [{ name: 'x', mode: FILE_MODE.DIRECTORY, id: NEW_LOOP_ID }],
+        };
+        const realReadObject = readObjectMod.readObject;
+        const spy = vi
+          .spyOn(readObjectMod, 'readObject')
+          .mockImplementation(async (spyCtx, id, options) => {
+            if (id === OLD_LOOP_ID) return oldLoopTree;
+            if (id === NEW_LOOP_ID) return newLoopTree;
+            return realReadObject(spyCtx, id, options);
+          });
+        const oldRoot = await subTree(ctx, 'sub', OLD_LOOP_ID, FILE_MODE.DIRECTORY);
+        const newRoot = await subTree(ctx, 'sub', NEW_LOOP_ID, FILE_MODE.DIRECTORY);
+
+        // Act
+        let thrown: unknown;
+        try {
+          await diffTrees(ctx, oldRoot, newRoot, { recursive: true });
+          expect.unreachable();
+        } catch (error) {
+          thrown = error;
+        } finally {
+          spy.mockRestore();
+        }
+
+        // Assert — old-side guard fires with the OLD id
+        const data = (thrown as { data: { code: string; id: string } }).data;
+        expect(data.code).toBe('TREE_CYCLE_DETECTED');
+        expect(data.id).toBe(OLD_LOOP_ID);
+      });
+    });
+  });
+
+  describe('Given the old side repeats one level later than the new side (staggered cycles)', () => {
+    describe('When diffTrees is called with recursive:true', () => {
+      it('Then throws TREE_CYCLE_DETECTED via the new-side guard specifically (the old side has not repeated yet)', async () => {
+        // Arrange — the old side is a genuine 2-cycle (OLD_A -> OLD_B -> OLD_A -> ...),
+        // so it does NOT repeat at the first re-entry into diffChangedSubtree; the new
+        // side self-references immediately every level. At the depth where the new
+        // side's stack first contains its own id, the old side's stack does not yet
+        // contain its own — isolating the new-side guard from the old-side one.
+        const ctx = await buildSeededContext();
+        const OLD_A = '1'.repeat(40) as ObjectId;
+        const OLD_B = '2'.repeat(40) as ObjectId;
+        const NEW_LOOP_ID = 'f'.repeat(40) as ObjectId;
+        const oldATree: Tree = {
+          type: 'tree',
+          id: OLD_A,
+          entries: [{ name: 'x', mode: FILE_MODE.DIRECTORY, id: OLD_B }],
+        };
+        const oldBTree: Tree = {
+          type: 'tree',
+          id: OLD_B,
+          entries: [{ name: 'x', mode: FILE_MODE.DIRECTORY, id: OLD_A }],
+        };
+        const newLoopTree: Tree = {
+          type: 'tree',
+          id: NEW_LOOP_ID,
+          entries: [{ name: 'x', mode: FILE_MODE.DIRECTORY, id: NEW_LOOP_ID }],
+        };
+        const realReadObject = readObjectMod.readObject;
+        const spy = vi
+          .spyOn(readObjectMod, 'readObject')
+          .mockImplementation(async (spyCtx, id, options) => {
+            if (id === OLD_A) return oldATree;
+            if (id === OLD_B) return oldBTree;
+            if (id === NEW_LOOP_ID) return newLoopTree;
+            return realReadObject(spyCtx, id, options);
+          });
+        const oldRoot = await subTree(ctx, 'sub', OLD_A, FILE_MODE.DIRECTORY);
+        const newRoot = await subTree(ctx, 'sub', NEW_LOOP_ID, FILE_MODE.DIRECTORY);
+
+        // Act
+        let thrown: unknown;
+        try {
+          await diffTrees(ctx, oldRoot, newRoot, { recursive: true });
+          expect.unreachable();
+        } catch (error) {
+          thrown = error;
+        } finally {
+          spy.mockRestore();
+        }
+
+        // Assert — new-side guard fires first (old side hasn't repeated at this depth)
+        const data = (thrown as { data: { code: string; id: string } }).data;
+        expect(data.code).toBe('TREE_CYCLE_DETECTED');
+        expect(data.id).toBe(NEW_LOOP_ID);
       });
     });
   });

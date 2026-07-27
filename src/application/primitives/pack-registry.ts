@@ -137,8 +137,18 @@ async function loadPack(ctx: Context, dir: string, entryName: string): Promise<R
       if (!isUnsupportedOperation(err)) throw err;
       handlePromise = undefined;
       return ctx.fs.readSlice(packPath, offset, length);
-      // Stryker disable next-line BlockStatement: equivalent — inFlight's only reader is close()'s `Promise.allSettled(inFlight)`, which settles identically whether or not already-settled entries remain (an already-settled promise adds no wait and its outcome is discarded), so dropping this deletion cannot change any observable return value or thrown error — only when the settled reference becomes eligible for GC.
     } finally {
+      // NOTE: this block's BlockStatement mutant (`{}`) is equivalent — inFlight's only
+      // reader is close()'s `Promise.allSettled(inFlight)`, which settles identically
+      // whether or not already-settled entries remain (an already-settled promise adds no
+      // wait and its outcome is discarded), so dropping this deletion cannot change any
+      // observable return value or thrown error — only when the settled reference becomes
+      // eligible for GC. No inline ignore-comment can attach here and stay equivalent-only,
+      // scoped: a comment placed before this block (outside the catch clause) would need
+      // `} finally {` split across lines, which the formatter always collapses back onto
+      // one line, and a comment placed inside the block (as here) attaches to the first
+      // STATEMENT's line, not the block's own line, so it can never target this exact
+      // mutant's reported location (verified against the instrumenter's comment handling).
       inFlight.delete(read);
     }
   };
