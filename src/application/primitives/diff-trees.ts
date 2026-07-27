@@ -1,10 +1,13 @@
-import type { FlatTree } from '../../domain/diff/flat-tree.js';
+import type { FlatTree, FlatTreeEntry } from '../../domain/diff/flat-tree.js';
 import {
+  type AddChange,
   computeStatFields,
+  type DeleteChange,
   type DiffChange,
   diffTrees as domainDiffTrees,
   type LineKey,
   lineKeyIsActive,
+  type ModifyChange,
   resolveLineKey,
   type StatDiffChange,
   type StatFields,
@@ -13,15 +16,23 @@ import {
   type TreeDiff,
 } from '../../domain/diff/index.js';
 import type { RenameDetectOptions } from '../../domain/diff/rename-detect.js';
-import type { Tree } from '../../domain/objects/index.js';
+import {
+  treeCycleDetected,
+  treeDepthExceeded,
+  unexpectedObjectType,
+} from '../../domain/objects/error.js';
+import { isDirectory } from '../../domain/objects/file-mode.js';
+import type { FilePath, ObjectId, Tree } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import { detectSimilarityRenames } from './detect-similarity-renames.js';
 import { flattenTree } from './flatten-tree.js';
 import { boundedMap, MAX_CONCURRENT_BLOB_LOADS } from './internal/bounded-map.js';
 import { isWhitespaceOnlyModify } from './internal/whitespace-drop-predicate.js';
 import { materialisePatchFiles } from './materialise-patch-files.js';
+import { readObject } from './read-object.js';
 import { readTree } from './read-tree.js';
 import type { DiffTreesInput, DiffTreesOptions } from './types.js';
+import { exceedsMaxTreeDepth } from './validators.js';
 
 const EMPTY = new Uint8Array(0);
 
@@ -199,29 +210,143 @@ async function resolveInput(ctx: Context, input: DiffTreesInput): Promise<Tree |
   return input;
 }
 
+/** Recursion state threaded through `diffRecursiveLevel` — tracks the full-path
+ * prefix plus per-side cycle/depth guards, mirroring `walkTree`'s protection
+ * (the merge-join below descends into changed subtrees directly, bypassing
+ * `walkTree`, so it must re-establish the same safety net). */
+interface DiffCursor {
+  readonly prefix: string;
+  readonly depth: number;
+  readonly oldStack: ReadonlyArray<ObjectId>;
+  readonly newStack: ReadonlyArray<ObjectId>;
+}
+
+const ROOT_CURSOR: DiffCursor = { prefix: '', depth: 0, oldStack: [], newStack: [] };
+const MAX_DIFF_RECURSION_DEPTH = 1024;
+
 async function diffRecursive(
   ctx: Context,
   a: Tree | undefined,
   b: Tree | undefined,
 ): Promise<TreeDiff> {
-  const [oldTree, newTree] = await Promise.all([blobProjection(ctx, a), blobProjection(ctx, b)]);
-  return domainDiffTrees(oldTree, newTree);
+  const changes = await diffRecursiveLevel(ctx, a, b, ROOT_CURSOR);
+  return { changes };
 }
 
 /**
- * Flatten a tree to a full-path blob projection — `Tree` entries carry
- * full slash-separated names at the leaf blob mode. This reproduces git's
- * recursive diff order: directories sort with a trailing `/`, so raw full-path
- * byte sort matches a recursive walk. The projection is diff-only and is never
- * serialised — its slash-bearing names would be rejected by the tree serializer.
+ * Merge-join one tree level via the domain diff, then expand only the entries
+ * that actually differ. A TREESAME directory entry (identical oid+mode on
+ * both sides) never reaches `expandLevelChange` — the domain merge-join
+ * already drops it — so its subtree is never read or flattened, matching
+ * git's own diff-tree pruning. Sibling directories that DO differ are
+ * expanded concurrently.
  */
-async function blobProjection(ctx: Context, tree: Tree | undefined): Promise<Tree | undefined> {
-  if (tree === undefined) return undefined;
-  const flat = await flattenTree(ctx, tree);
-  const entries = Array.from(flat.entries, ([name, entry]) => ({
-    name,
-    mode: entry.mode,
-    id: entry.id,
-  }));
-  return { type: 'tree', id: tree.id, entries };
+async function diffRecursiveLevel(
+  ctx: Context,
+  a: Tree | undefined,
+  b: Tree | undefined,
+  cursor: DiffCursor,
+): Promise<DiffChange[]> {
+  const levelChanges = domainDiffTrees(a, b).changes;
+  const expanded = await Promise.all(
+    levelChanges.map((change) => expandLevelChange(ctx, change, cursor)),
+  );
+  return expanded.flat();
+}
+
+function joinPath(prefix: string, name: string): FilePath {
+  return (prefix === '' ? name : `${prefix}/${name}`) as FilePath;
+}
+
+async function expandLevelChange(
+  ctx: Context,
+  change: DiffChange,
+  cursor: DiffCursor,
+): Promise<DiffChange[]> {
+  if (change.type === 'modify' && isDirectory(change.oldMode) && isDirectory(change.newMode)) {
+    return diffChangedSubtree(ctx, change, cursor);
+  }
+  if (change.type === 'add' && isDirectory(change.newMode)) {
+    return expandAddedSubtree(ctx, change.newId, joinPath(cursor.prefix, change.newPath));
+  }
+  if (change.type === 'delete' && isDirectory(change.oldMode)) {
+    return expandDeletedSubtree(ctx, change.oldId, joinPath(cursor.prefix, change.oldPath));
+  }
+  return [withPrefix(change, cursor.prefix)];
+}
+
+/** Rewrite a leaf-level change's path field with the recursion prefix. Rename
+ * and copy changes never reach here — the domain merge-join this feeds from
+ * only emits add/delete/modify/type-change — but the switch stays exhaustive
+ * over `DiffChange` so a future variant fails to compile, not silently drops. */
+function withPrefix(change: DiffChange, prefix: string): DiffChange {
+  if (prefix === '') return change;
+  switch (change.type) {
+    case 'add':
+      return { ...change, newPath: joinPath(prefix, change.newPath) };
+    case 'delete':
+      return { ...change, oldPath: joinPath(prefix, change.oldPath) };
+    case 'modify':
+    case 'type-change':
+      return { ...change, path: joinPath(prefix, change.path) };
+    case 'rename':
+    case 'copy':
+      return change;
+  }
+}
+
+async function diffChangedSubtree(
+  ctx: Context,
+  change: ModifyChange,
+  cursor: DiffCursor,
+): Promise<DiffChange[]> {
+  if (exceedsMaxTreeDepth(cursor.depth, MAX_DIFF_RECURSION_DEPTH)) {
+    throw treeDepthExceeded(cursor.depth);
+  }
+  if (cursor.oldStack.includes(change.oldId)) throw treeCycleDetected(change.oldId);
+  if (cursor.newStack.includes(change.newId)) throw treeCycleDetected(change.newId);
+
+  const [oldTree, newTree] = await Promise.all([
+    readTreeStrict(ctx, change.oldId),
+    readTreeStrict(ctx, change.newId),
+  ]);
+  const nextCursor: DiffCursor = {
+    prefix: joinPath(cursor.prefix, change.path),
+    depth: cursor.depth + 1,
+    oldStack: [...cursor.oldStack, change.oldId],
+    newStack: [...cursor.newStack, change.newId],
+  };
+  return diffRecursiveLevel(ctx, oldTree, newTree, nextCursor);
+}
+
+async function readTreeStrict(ctx: Context, id: ObjectId): Promise<Tree> {
+  const object = await readObject(ctx, id);
+  if (object.type !== 'tree') throw unexpectedObjectType('tree', object.type, id);
+  return object;
+}
+
+async function expandAddedSubtree(
+  ctx: Context,
+  id: ObjectId,
+  prefix: string,
+): Promise<AddChange[]> {
+  const flat = await flattenTree(ctx, id);
+  return Array.from(flat.entries, ([name, entry]) => addLeaf(joinPath(prefix, name), entry));
+}
+
+async function expandDeletedSubtree(
+  ctx: Context,
+  id: ObjectId,
+  prefix: string,
+): Promise<DeleteChange[]> {
+  const flat = await flattenTree(ctx, id);
+  return Array.from(flat.entries, ([name, entry]) => deleteLeaf(joinPath(prefix, name), entry));
+}
+
+function addLeaf(path: FilePath, entry: FlatTreeEntry): AddChange {
+  return { type: 'add', newPath: path, newId: entry.id, newMode: entry.mode };
+}
+
+function deleteLeaf(path: FilePath, entry: FlatTreeEntry): DeleteChange {
+  return { type: 'delete', oldPath: path, oldId: entry.id, oldMode: entry.mode };
 }

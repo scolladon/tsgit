@@ -1,5 +1,6 @@
+import { compareBytes, encode } from '../objects/encoding.js';
+import { isDirectory } from '../objects/file-mode.js';
 import type { FilePath, Tree, TreeEntry } from '../objects/index.js';
-import { sortTreeEntries, treeEntryCompare } from '../objects/index.js';
 import type { DiffChange, TreeDiff } from './diff-change.js';
 import { isSameKind } from './mode-kind.js';
 
@@ -45,9 +46,32 @@ function classifySamePath(oldEntry: TreeEntry, newEntry: TreeEntry): DiffChange 
   };
 }
 
-function entriesOf(tree: Tree | undefined): ReadonlyArray<TreeEntry> {
+interface KeyedEntry {
+  readonly entry: TreeEntry;
+  readonly key: Uint8Array;
+}
+
+/**
+ * mode+name sort key, mirroring git's tree order (a directory sorts as if
+ * suffixed with `/`). Computed once per entry so the merge-join below never
+ * re-derives a name it already sorted by — avoids the double `TextEncoder`
+ * pass (once to sort, once per merge-join comparison) the naive compare-by-
+ * re-encode approach pays.
+ */
+function entryKey(entry: TreeEntry): Uint8Array {
+  const nameBytes = encode(entry.name);
+  if (!isDirectory(entry.mode)) return nameBytes;
+  const withSlash = new Uint8Array(nameBytes.length + 1);
+  withSlash.set(nameBytes);
+  withSlash[nameBytes.length] = 0x2f;
+  return withSlash;
+}
+
+function entriesOf(tree: Tree | undefined): ReadonlyArray<KeyedEntry> {
   if (tree === undefined) return [];
-  return sortTreeEntries(tree.entries);
+  const decorated = tree.entries.map((entry) => ({ entry, key: entryKey(entry) }));
+  decorated.sort((a, b) => compareBytes(a.key, b.key));
+  return decorated;
 }
 
 export function diffTrees(oldTree: Tree | undefined, newTree: Tree | undefined): TreeDiff {
@@ -60,15 +84,15 @@ export function diffTrees(oldTree: Tree | undefined, newTree: Tree | undefined):
   while (i < oldEntries.length && j < newEntries.length) {
     const oldEntry = oldEntries[i]!;
     const newEntry = newEntries[j]!;
-    const cmp = treeEntryCompare(oldEntry, newEntry);
+    const cmp = compareBytes(oldEntry.key, newEntry.key);
     if (cmp < 0) {
-      changes.push(deleteFrom(oldEntry));
+      changes.push(deleteFrom(oldEntry.entry));
       i++;
     } else if (cmp > 0) {
-      changes.push(addFrom(newEntry));
+      changes.push(addFrom(newEntry.entry));
       j++;
     } else {
-      const change = classifySamePath(oldEntry, newEntry);
+      const change = classifySamePath(oldEntry.entry, newEntry.entry);
       if (change !== undefined) changes.push(change);
       i++;
       j++;
@@ -76,11 +100,11 @@ export function diffTrees(oldTree: Tree | undefined, newTree: Tree | undefined):
   }
 
   while (i < oldEntries.length) {
-    changes.push(deleteFrom(oldEntries[i]!));
+    changes.push(deleteFrom(oldEntries[i]!.entry));
     i++;
   }
   while (j < newEntries.length) {
-    changes.push(addFrom(newEntries[j]!));
+    changes.push(addFrom(newEntries[j]!.entry));
     j++;
   }
 

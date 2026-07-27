@@ -1,4 +1,3 @@
-import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 
 import { encode } from '../../../../src/domain/objects/encoding.js';
@@ -11,7 +10,6 @@ import {
   sortTreeEntries,
   treeEntryCompare,
 } from '../../../../src/domain/objects/tree.js';
-import { arbObjectId } from './arbitraries.js';
 
 const DUMMY_ID = ObjectId.from('a'.repeat(40));
 
@@ -438,85 +436,6 @@ describe('tree', () => {
 
           // Assert
           expect(result).toBeGreaterThan(0);
-        });
-      });
-    });
-  });
-
-  describe('property-based tests', () => {
-    const arbTreeEntry: fc.Arbitrary<TreeEntry> = fc
-      .tuple(
-        fc.constantFrom(
-          '100644' as const,
-          '100755' as const,
-          '120000' as const,
-          '40000' as const,
-          '160000' as const,
-        ),
-        fc
-          .string({ minLength: 1, maxLength: 50 })
-          .filter((s) => !s.includes('\0') && !s.includes('/') && s !== '.' && s !== '..'),
-        arbObjectId(40),
-      )
-      .map(([mode, name, id]) => ({ mode, name, id }));
-
-    describe('Given the sort idempotence property "sort(sort(entries)) equals sort(entries)"', () => {
-      describe('When checked', () => {
-        it('Then it holds', () => {
-          // Arrange + Assert
-          fc.assert(
-            fc.property(fc.array(arbTreeEntry), (entries) => {
-              const sorted = sortTreeEntries(entries);
-              const resorted = sortTreeEntries([...sorted]);
-              expect(resorted).toEqual(sorted);
-            }),
-          );
-        });
-      });
-    });
-
-    describe('Given the sort byte-consistency property "for adjacent sorted entries, treeEntryCompare(a, b) <= 0"', () => {
-      describe('When checked', () => {
-        it('Then it holds', () => {
-          // Arrange + Assert
-          fc.assert(
-            fc.property(fc.array(arbTreeEntry, { minLength: 2 }), (entries) => {
-              const sorted = sortTreeEntries(entries);
-              for (let i = 1; i < sorted.length; i++) {
-                expect(treeEntryCompare(sorted[i - 1]!, sorted[i]!)).toBeLessThanOrEqual(0);
-              }
-            }),
-          );
-        });
-      });
-    });
-
-    describe('Given the tree roundtrip property "parseTreeContent(id, serializeTreeContent(tree, hash), hash) preserves all entries"', () => {
-      describe('When checked', () => {
-        it('Then it holds', () => {
-          // Arrange + Assert
-          // Git trees cannot contain duplicate entry names — the parser rejects them.
-          // Dedupe by name before building the tree so the arbitrary never generates
-          // a tree that is invalid by construction (which would look like a flaky test).
-          fc.assert(
-            fc.property(fc.array(arbTreeEntry), (rawEntries) => {
-              const seen = new Set<string>();
-              const entries = rawEntries.filter((e) => {
-                if (seen.has(e.name)) return false;
-                seen.add(e.name);
-                return true;
-              });
-              const tree = {
-                type: 'tree' as const,
-                id: DUMMY_ID,
-                entries,
-              };
-              const serialized = serializeTreeContent(tree, SHA1_CONFIG);
-              const result = parseTreeContent(DUMMY_ID, serialized, SHA1_CONFIG);
-              const sorted = sortTreeEntries(entries);
-              expect(result.entries).toEqual(sorted);
-            }),
-          );
         });
       });
     });

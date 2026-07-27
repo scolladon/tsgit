@@ -1,11 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { diffTrees } from '../../../../src/application/primitives/diff-trees.js';
+import * as flattenTreeMod from '../../../../src/application/primitives/flatten-tree.js';
 import * as materialisePatchFilesMod from '../../../../src/application/primitives/materialise-patch-files.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../src/application/primitives/write-tree.js';
 import type { LineKey, WhitespaceMode } from '../../../../src/domain/diff/index.js';
 import { MAX_SCORE } from '../../../../src/domain/diff/similarity.js';
+import * as encodingMod from '../../../../src/domain/objects/encoding.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import type { Blob, FileMode, ObjectId } from '../../../../src/domain/objects/index.js';
 import type { CommandRunner } from '../../../../src/ports/command-runner.js';
@@ -276,6 +278,92 @@ describe('diffTrees', () => {
             newMode: FILE_MODE.SYMLINK,
           },
         ]);
+      });
+    });
+  });
+
+  describe('Given recursive=true and an unchanged (TREESAME) sub-directory alongside a changed file', () => {
+    describe('When diffTrees is called', () => {
+      it('Then flattenTree is never invoked (the TREESAME subtree is pruned before any read)', async () => {
+        // Arrange — `big/` is byte-identical (same tree oid) on both sides;
+        // only the root-level file differs.
+        const ctx = await buildSeededContext();
+        const unchangedSubId = await subTree(
+          ctx,
+          'inner.txt',
+          await blob(ctx, 'inner'),
+          FILE_MODE.REGULAR,
+        );
+        const oldFileId = await blob(ctx, 'old');
+        const newFileId = await blob(ctx, 'new');
+        const before = await writeTree(ctx, [
+          { name: 'big', mode: FILE_MODE.DIRECTORY, id: unchangedSubId },
+          { name: 'root.txt', mode: FILE_MODE.REGULAR, id: oldFileId },
+        ]);
+        const after = await writeTree(ctx, [
+          { name: 'big', mode: FILE_MODE.DIRECTORY, id: unchangedSubId },
+          { name: 'root.txt', mode: FILE_MODE.REGULAR, id: newFileId },
+        ]);
+        const flattenSpy = vi.spyOn(flattenTreeMod, 'flattenTree');
+
+        // Act
+        const result = await diffTrees(ctx, before, after, { recursive: true });
+
+        // Assert — no subtree was ever flattened; only the differing file changed.
+        expect(flattenSpy).not.toHaveBeenCalled();
+        expect(result.changes).toEqual([
+          {
+            type: 'modify',
+            path: 'root.txt',
+            oldId: oldFileId,
+            newId: newFileId,
+            oldMode: FILE_MODE.REGULAR,
+            newMode: FILE_MODE.REGULAR,
+          },
+        ]);
+        flattenSpy.mockRestore();
+      });
+    });
+  });
+
+  describe('Given recursive=true and a large unchanged sub-directory alongside a small change', () => {
+    describe('When diffTrees is called', () => {
+      it('Then bytesToHex/decode calls scale with entries actually read, not the unchanged subtree size', async () => {
+        // Arrange — `big/` carries 20 unread entries; only `root.txt` differs.
+        const ctx = await buildSeededContext();
+        const manyEntries = [];
+        for (let i = 0; i < 20; i++) {
+          manyEntries.push({
+            name: `f${i}.txt`,
+            mode: FILE_MODE.REGULAR,
+            id: await blob(ctx, `content-${i}`),
+          });
+        }
+        const unchangedSubId = await writeTree(ctx, manyEntries);
+        const oldFileId = await blob(ctx, 'old');
+        const newFileId = await blob(ctx, 'new');
+        const before = await writeTree(ctx, [
+          { name: 'big', mode: FILE_MODE.DIRECTORY, id: unchangedSubId },
+          { name: 'root.txt', mode: FILE_MODE.REGULAR, id: oldFileId },
+        ]);
+        const after = await writeTree(ctx, [
+          { name: 'big', mode: FILE_MODE.DIRECTORY, id: unchangedSubId },
+          { name: 'root.txt', mode: FILE_MODE.REGULAR, id: newFileId },
+        ]);
+        const bytesToHexSpy = vi.spyOn(encodingMod, 'bytesToHex');
+        const decodeSpy = vi.spyOn(encodingMod, 'decode');
+
+        // Act
+        const result = await diffTrees(ctx, before, after, { recursive: true });
+
+        // Assert — well under the 20-entry unchanged subtree: only the two
+        // root-level trees (2 entries each side) were ever parsed (4 oid
+        // conversions; 10 decodes = 2 headers + 2 mode/name pairs per tree).
+        expect(result.changes).toHaveLength(1);
+        expect(bytesToHexSpy.mock.calls.length).toBeLessThanOrEqual(4);
+        expect(decodeSpy.mock.calls.length).toBeLessThanOrEqual(10);
+        bytesToHexSpy.mockRestore();
+        decodeSpy.mockRestore();
       });
     });
   });
