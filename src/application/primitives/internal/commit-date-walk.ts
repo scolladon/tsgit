@@ -3,13 +3,9 @@ import { precedes, type QueueEntry } from '../../../domain/commit/priority-queue
 import { operationAborted } from '../../../domain/error.js';
 import type { Commit, ObjectId } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
+import { type BoundedReader, createBoundedReader } from './bounded-reader.js';
 import { readCommit } from './read-commit.js';
-import {
-  type BoundedReader,
-  commitHeader,
-  createBoundedReader,
-  DEFAULT_PREFETCH_CONCURRENCY,
-} from './read-commit-graph.js';
+import { commitHeader, DEFAULT_PREFETCH_CONCURRENCY } from './read-commit-graph.js';
 
 type CommitBodies = BoundedReader<Commit | undefined>;
 

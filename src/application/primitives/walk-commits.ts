@@ -1,13 +1,9 @@
 import { invalidWalkInput, operationAborted } from '../../domain/error.js';
 import type { Commit, ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
+import { type BoundedReader, createBoundedReader } from './internal/bounded-reader.js';
 import { readCommit } from './internal/read-commit.js';
-import {
-  type BoundedReader,
-  commitHeader,
-  createBoundedReader,
-  DEFAULT_PREFETCH_CONCURRENCY,
-} from './internal/read-commit-graph.js';
+import { commitHeader, DEFAULT_PREFETCH_CONCURRENCY } from './internal/read-commit-graph.js';
 import { MAX_WALK_QUEUE_SIZE, type WalkCommitsOptions } from './types.js';
 import {
   exceedsMaxWalkSeeds,
