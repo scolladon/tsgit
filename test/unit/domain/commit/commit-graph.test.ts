@@ -449,9 +449,26 @@ describe('commit-graph', () => {
             label: 'a file too short for the chunk table',
           },
           {
+            // Exactly HEADER_SIZE bytes: the header-size check's `<` boundary
+            // must let this through (rather than throwing HEADER-too-short) so
+            // the NEXT check (chunk table) is the one that actually fires —
+            // kills a `<`→`<=` mutant on the header-size guard.
+            bytes: validBytes.subarray(0, 8),
+            reasonContains: 'chunk table',
+            label: 'exactly HEADER_SIZE bytes (boundary — the table check must still run)',
+          },
+          {
             bytes: validBytes.subarray(0, validBytes.length - 5),
             reasonContains: 'trailer',
             label: 'a file too short for the trailer',
+          },
+          {
+            // Exactly the chunk-table's own end: the table-bounds check's `<`
+            // boundary must let this through so the TRAILER check is the one
+            // that fires — kills a `<`→`<=` mutant on the table-bounds guard.
+            bytes: validBytes.subarray(0, 68),
+            reasonContains: 'trailer',
+            label: 'exactly the chunk-table end (boundary — the trailer check must still run)',
           },
           {
             bytes: renameChunkRowId(validBytes, 'OIDF', 'XXXX'),
@@ -463,6 +480,11 @@ describe('commit-graph', () => {
             reasonContains: 'truncated OIDL',
             label: 'an OIDL chunk shorter than commitCount * hashLength',
           },
+          {
+            bytes: shrinkChunkAfter(validBytes, 'GDA2', -4),
+            reasonContains: 'truncated GDA2',
+            label: 'a GDA2 chunk shorter than commitCount * 4',
+          },
         ])('Then throws INVALID_COMMIT_GRAPH_CHUNK for $label', ({ bytes, reasonContains }) => {
           // Arrange (bytes from the each-table row) + Act & Assert
           expectThrows(
@@ -470,6 +492,32 @@ describe('commit-graph', () => {
             'INVALID_COMMIT_GRAPH_CHUNK',
             reasonContains,
           );
+        });
+      });
+    });
+
+    describe('Given a chunk-table trailer offset whose high/low halves only combine correctly via multiplication', () => {
+      describe('When parsing', () => {
+        it('Then the reconstructed (>4GiB) offset still fails the trailer bounds check', () => {
+          // Arrange — a zero-chunk table (a single sentinel/trailer row) whose
+          // offset's high word is 1: the correct `high*0x100000000+low`
+          // reconstructs a >4GiB value that the (small) file can never
+          // satisfy, so the trailer check throws. A `high/0x100000000+low`
+          // mutant reconstructs a near-zero value instead, the trailer check
+          // then passes, and parsing instead fails later on a missing OIDF
+          // chunk — a different, killable reason.
+          const bytes = new Uint8Array(24);
+          const view = new DataView(bytes.buffer);
+          bytes.set(new TextEncoder().encode('CGPH'), 0);
+          view.setUint8(4, 1); // version
+          view.setUint8(5, 1); // hashVersion
+          view.setUint8(6, 0); // numChunks
+          view.setUint8(7, 0); // numBaseGraphs
+          view.setUint32(12, 1); // sentinel row's offset: high word
+          view.setUint32(16, 0); // sentinel row's offset: low word
+
+          // Act & Assert
+          expectThrows(() => parseCommitGraphLayer(bytes), 'INVALID_COMMIT_GRAPH_CHUNK', 'trailer');
         });
       });
     });

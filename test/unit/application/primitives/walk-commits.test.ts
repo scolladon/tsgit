@@ -634,6 +634,86 @@ describe('walkCommits', () => {
         });
       });
     });
+
+    describe('Given a header-driven enqueue that runs its fallback a second time', () => {
+      describe('When the queue is already near MAX_WALK_QUEUE_SIZE from an unrelated seed', () => {
+        it('Then the redundant fallback enqueue overflows where a single enqueue would not', async () => {
+          // Arrange — resolveFrontierEntry's `enqueuedFromHeader` return value
+          // gates walkCommits' `!enqueuedFromHeader` fallback enqueue: it must
+          // be true whenever the header path already enqueued this id's
+          // parents, so the fallback is skipped. If that flag were forced
+          // false (or the fallback's own guard forced true), the SAME 30
+          // parents get pushed a second time.
+          //
+          // `filler`'s 65,500 distinct (never-read) parents bring the queue to
+          // 65,500. `head`'s 30 REAL, graph-covered parents push it to 65,530
+          // — under MAX_WALK_QUEUE_SIZE (65,536), so the correct single
+          // header-enqueue never overflows. A redundant second enqueue of the
+          // same 30 pushes past 65,536 partway through, throwing
+          // INVALID_WALK_INPUT — a different, killable outcome from the
+          // OPERATION_ABORTED this test forces once the correct code reaches
+          // the loop-top abort check.
+          const ctx = await buildSeededContext();
+          const tree: Tree = { type: 'tree', entries: [], id: '' as ObjectId };
+          const treeId = await writeObject(ctx, tree);
+          const parents: ObjectId[] = [];
+          for (let i = 0; i < 30; i += 1) {
+            parents.push(
+              await createCommit(ctx, {
+                tree: treeId,
+                parents: [],
+                author: { ...AUTHOR, timestamp: AUTHOR.timestamp + i },
+                committer: { ...AUTHOR, timestamp: AUTHOR.timestamp + i },
+                message: `root-${i}`,
+              }),
+            );
+          }
+          const head = await createCommit(ctx, {
+            tree: treeId,
+            parents,
+            author: { ...AUTHOR, timestamp: AUTHOR.timestamp + 100 },
+            committer: { ...AUTHOR, timestamp: AUTHOR.timestamp + 100 },
+            message: 'head',
+          });
+          await writeCommitGraph(ctx, [await asCommits(ctx, [...parents, head])]);
+          const fillerParents = Array.from(
+            { length: 65_500 },
+            (_, i) => i.toString(16).padStart(40, '0') as ObjectId,
+          );
+          const filler = await createCommit(ctx, {
+            tree: treeId,
+            parents: fillerParents,
+            author: AUTHOR,
+            committer: AUTHOR,
+            message: 'filler',
+          });
+          const controller = new AbortController();
+          const ctxWithSignal = { ...ctx, signal: controller.signal };
+          const iterator = walkCommits(ctxWithSignal, { from: [filler, head] })[
+            Symbol.asyncIterator
+          ]();
+
+          // Act
+          const first = await iterator.next();
+          const second = await iterator.next();
+          controller.abort();
+          let caught: unknown;
+          try {
+            await iterator.next();
+            expect.unreachable();
+          } catch (error) {
+            caught = error;
+          }
+
+          // Assert — filler then head are yielded in order; the abort (set
+          // only after head's enqueue already ran) is the walk's next stop —
+          // NOT a queue overflow from a redundant enqueue
+          expect(first.value?.id).toBe(filler);
+          expect(second.value?.id).toBe(head);
+          expect((caught as TsgitError).data.code).toBe('OPERATION_ABORTED');
+        });
+      });
+    });
   });
 
   describe('abort guard inside the walk loop', () => {
@@ -897,6 +977,29 @@ describe('walkCommits', () => {
           // Assert — only the tip is yielded; neither the missing commit nor
           // its graph-known ancestor enters the walk
           expect(result.map((commit) => commit.id)).toEqual([ids[2]!]);
+        });
+      });
+    });
+
+    describe('Given a graph-covered linear chain, ignoreMissing=true, and every body present', () => {
+      describe('When walkCommits is called from the tip', () => {
+        it('Then the header-deferred enqueue still walks every ancestor', async () => {
+          // Arrange — ignoreMissing=true routes header-driven enqueue through
+          // the DEFERRED branch (guarded by `commit !== undefined`), never the
+          // early one (guarded by `!ignoreMissing`). With every body present,
+          // that guard's third conjunct is true for every popped id, so this
+          // kills both the `commit !== undefined` -> `=== undefined` flip and
+          // the block-drop: either mutant stops the deferred enqueue from ever
+          // running, leaving only the tip yielded instead of all three.
+          const ctx = await buildSeededContext();
+          const ids = await linearChain(ctx, 3);
+          await writeCommitGraph(ctx, [await asCommits(ctx, ids)]);
+
+          // Act
+          const result = await collect(walkCommits(ctx, { from: [ids[2]!], ignoreMissing: true }));
+
+          // Assert — tip, middle, and root all walked via the deferred path
+          expect(result.map((commit) => commit.id)).toEqual([ids[2]!, ids[1]!, ids[0]!]);
         });
       });
     });

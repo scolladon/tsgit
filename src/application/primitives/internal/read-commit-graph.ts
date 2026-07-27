@@ -102,6 +102,11 @@ async function loadChain(ctx: Context, gitDir: string): Promise<LoadedGraph | un
   if (chainText === undefined) return undefined;
 
   const hashes = parseChainLayerHashes(chainText);
+  // Stryker disable next-line ConditionalExpression: equivalent — dropping this
+  // guard falls through to `layers: []`, a 0-layer LoadedGraph. Every consumer
+  // (findOwnPosition's `for (i<layers.length)`) treats a 0-layer graph exactly
+  // like an absent one — 0 iterations, `undefined` either way — so commitHeader's
+  // observable result is identical with or without the early return.
   if (hashes.length === 0) return undefined;
 
   const layers: CommitGraphLayer[] = [];
@@ -188,12 +193,21 @@ function findLayerForGlobalPosition(
   graph: LoadedGraph,
   globalPos: number,
 ): { readonly layer: CommitGraphLayer; readonly localPos: number } {
+  // Stryker disable next-line ArithmeticOperator: equivalent — starting at
+  // `length + 1` only adds two `graph.layerOffsets[i]` reads past the array end;
+  // out-of-bounds array access is `undefined` in JS, and `globalPos >= undefined`
+  // is always `false`, so those extra iterations are no-ops that fall through to
+  // the same `i = length - 1` starting point, identical for every globalPos.
   for (let i = graph.layers.length - 1; i >= 0; i -= 1) {
     const offset = graph.layerOffsets[i]!;
     if (globalPos >= offset) {
       return { layer: graph.layers[i]!, localPos: globalPos - offset };
     }
   }
+  // Stryker disable next-line StringLiteral: equivalent (unreachable) — layerOffsets[0]
+  // is always 0 (computeLayerOffsets seeds `cumulative=0` before the first push) and
+  // every globalPos read from CDAT/EDGE is a non-negative uint32, so the loop above
+  // always matches at (at latest) i=0; this throw's message can never be observed.
   throw invalidCommitGraphChunk(`parent position ${globalPos} out of range`);
 }
 

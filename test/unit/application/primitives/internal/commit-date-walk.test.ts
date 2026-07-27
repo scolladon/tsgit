@@ -7,6 +7,7 @@ import {
 } from '../../../../../src/application/primitives/internal/commit-date-walk.js';
 import { readCommit } from '../../../../../src/application/primitives/internal/read-commit.js';
 import { writeObject } from '../../../../../src/application/primitives/write-object.js';
+import type { TsgitError } from '../../../../../src/domain/error.js';
 import type {
   AuthorIdentity,
   Commit,
@@ -198,6 +199,58 @@ describe('Given a diamond history and frontier-aware steps', () => {
 
       // Assert
       expect(frontiers).toEqual([[], [b], [a], []]);
+    });
+  });
+});
+
+describe('commitDateWalk — early graph-confirmed push under ignoreMissing=false', () => {
+  describe('Given two graph-covered seeds, the older of which has a missing body, When walking by date', () => {
+    it('Then the newer seed is yielded before the missing one aborts the walk', async () => {
+      // Arrange — pins the early-return push: it must enqueue from the header
+      // WITHOUT awaiting the body, so a later-popped stale seed's rejection
+      // surfaces only once its own (lower-priority) turn comes up. If the
+      // early-return block were dropped, `enqueueSeeds` would await each
+      // seed's body in insertion order and reject on `stale` before `fresh`
+      // is ever enqueued/yielded.
+      const ctx = await buildSeededContext();
+      const treeId = await emptyTree(ctx);
+      const commit = async (msg: string, ts: number): Promise<ObjectId> =>
+        createCommit(ctx, {
+          tree: treeId,
+          parents: [],
+          author: { ...AUTHOR, timestamp: ts },
+          committer: { ...AUTHOR, timestamp: ts },
+          message: msg,
+        });
+      const stale = await commit('stale', 1);
+      const fresh = await commit('fresh', 2);
+      const readOpts = { verifyHash: false, ignoreMissing: false, missing: new Set<string>() };
+      const commits = await Promise.all(
+        [stale, fresh].map(async (id) => (await readCommit(ctx, id, readOpts))!),
+      );
+      await writeCommitGraph(ctx, [commits]);
+      const { computeLooseObjectPath } = await import(
+        '../../../../../src/domain/storage/loose-path.js'
+      );
+      await ctx.fs.rm(`${ctx.layout.gitDir}/objects/${computeLooseObjectPath(stale)}`);
+      const sut = commitDateWalk(ctx, { from: [stale, fresh] });
+
+      // Act
+      const yielded: ObjectId[] = [];
+      let caught: unknown;
+      try {
+        for await (const step of sut) {
+          yielded.push(step.commit.id);
+        }
+        expect.unreachable();
+      } catch (error) {
+        caught = error;
+      }
+
+      // Assert — fresh (newer date, popped first) is yielded before the walk
+      // aborts on stale's missing body
+      expect(yielded).toEqual([fresh]);
+      expect((caught as TsgitError).data.code).toBe('OBJECT_NOT_FOUND');
     });
   });
 });

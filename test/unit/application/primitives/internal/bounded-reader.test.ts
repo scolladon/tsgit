@@ -83,6 +83,56 @@ describe('createBoundedReader', () => {
     });
   });
 
+  describe('Given a bound of 1 and a third id started right after a release promotes a waiter', () => {
+    describe('When the promoted waiter is still in flight', () => {
+      it('Then the third id does not start until the waiter finishes (bound holds)', async () => {
+        // Arrange — the promotion path (`waiters` callback) increments `active`;
+        // if it decremented instead, `active` goes negative and a later
+        // immediate-acquire check (`active < bound`) wrongly admits a third
+        // concurrent reader while the promoted one is still running.
+        let active = 0;
+        let maxActive = 0;
+        const gates = new Map<string, () => void>();
+        const read = (id: ObjectId): Promise<ObjectId> => {
+          active += 1;
+          maxActive = Math.max(maxActive, active);
+          return new Promise<ObjectId>((resolve) => {
+            gates.set(id, () => {
+              active -= 1;
+              resolve(id);
+            });
+          });
+        };
+        const boundedRead = createBoundedReader(1, read);
+        const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
+        const a = 'a'.repeat(40) as ObjectId;
+        const b = 'b'.repeat(40) as ObjectId;
+        const c = 'c'.repeat(40) as ObjectId;
+
+        // Act
+        const pa = boundedRead.start(a);
+        const pb = boundedRead.start(b);
+        await flush(); // a acquired and is reading; b is queued as a waiter
+        gates.get(a)!();
+        await pa;
+        await flush(); // release(a) promotes b's waiter; b is now reading
+        const pc = boundedRead.start(c);
+        await flush(); // c's acquire() outcome (immediate vs queued) has settled
+
+        // Assert — c must still be queued behind b, not reading concurrently
+        expect(active).toBe(1);
+        expect(maxActive).toBe(1);
+
+        // Cleanup
+        gates.get(b)!();
+        await pb;
+        await flush();
+        gates.get(c)!();
+        await pc;
+      });
+    });
+  });
+
   describe('Given a read that rejects', () => {
     describe('When the rejection is never synchronously awaited by the starter', () => {
       it('Then a later await on the same promise still observes the rejection', async () => {

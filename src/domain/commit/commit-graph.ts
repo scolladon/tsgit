@@ -225,6 +225,12 @@ export function positionOf(layer: CommitGraphLayer, oid: ObjectId): number | und
 function compareOidAt(layer: CommitGraphLayer, index: number, targetBytes: Uint8Array): number {
   const base = layer._oidLookupOffset + index * layer._hashLength;
   const bytes = layer._bytes;
+  // Stryker disable next-line EqualityOperator: equivalent — an extra k===hashLength
+  // iteration compares bytes[base+hashLength] (a real byte past this OID) against
+  // targetBytes[hashLength] (undefined, since targetBytes.length===hashLength),
+  // yielding NaN; positionOf's binary search treats NaN identically to 0 (both fail
+  // `<0` and `>0`, landing in the same `return mid` branch), so no caller ever
+  // observes the difference.
   for (let k = 0; k < layer._hashLength; k += 1) {
     const diff = bytes[base + k]! - targetBytes[k]!;
     if (diff !== 0) return diff;
