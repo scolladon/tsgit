@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.1.1](https://github.com/scolladon/tsgit/compare/v3.1.0...v3.1.1) (2026-07-27)
+
+
+### Performance
+
+* close the isomorphic-git gap and land the sfdx-git-delta spike findings ([#253](https://github.com/scolladon/tsgit/issues/253)) ([5b02139](https://github.com/scolladon/tsgit/commit/5b0213977dfac101fe88dd7d39588ce3a015d57a))
+
 ## [3.1.0](https://github.com/scolladon/tsgit/compare/v3.0.0...v3.1.0) (2026-07-26)
 
 
