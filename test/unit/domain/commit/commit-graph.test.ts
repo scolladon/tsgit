@@ -406,7 +406,7 @@ describe('commit-graph', () => {
             label: 'unsupported hash version',
           },
         ])('Then throws INVALID_COMMIT_GRAPH_HEADER for $label', ({ bytes, reasonContains }) => {
-          // Act & Assert
+          // Arrange (bytes from the each-table row) + Act & Assert
           expectThrows(
             () => parseCommitGraphLayer(bytes),
             'INVALID_COMMIT_GRAPH_HEADER',
@@ -440,7 +440,7 @@ describe('commit-graph', () => {
             label: 'an OIDL chunk shorter than commitCount * hashLength',
           },
         ])('Then throws INVALID_COMMIT_GRAPH_CHUNK for $label', ({ bytes, reasonContains }) => {
-          // Act & Assert
+          // Arrange (bytes from the each-table row) + Act & Assert
           expectThrows(
             () => parseCommitGraphLayer(bytes),
             'INVALID_COMMIT_GRAPH_CHUNK',

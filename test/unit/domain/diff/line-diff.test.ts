@@ -592,6 +592,27 @@ describe('line-diff — diffLines', () => {
 });
 
 describe('line-diff — diffLines lineKey option', () => {
+  describe('Given a lineKey option and a line longer than the interning chunk size', () => {
+    describe('When the oversized line differs from its counterpart only in whitespace, mode all', () => {
+      it('Then the oversized line is common (chunked interning matches whole-line interning)', () => {
+        // Arrange — 9000 chars exceeds the 8192-byte fromCharCode chunk ceiling
+        const longLine = 'x'.repeat(9_000);
+        const ours = enc(`${longLine}\n`);
+        const theirs = enc(`  ${longLine}  \n`);
+        const options: LineDiffOptions = { lineKey: { mode: 'all', ignoreCrAtEol: false } };
+
+        // Act
+        const result = diffLines(ours, theirs, options);
+
+        // Assert — whitespace-only difference on the oversized line is common under mode all
+        expect(result.degraded).toBe(false);
+        expect(result.hunks).toEqual([
+          { kind: 'common', oursStart: 0, oursEnd: 1, theirsStart: 0, theirsEnd: 1 },
+        ]);
+      });
+    });
+  });
+
   describe('Given a lineKey option', () => {
     describe('When the file has a whitespace-only changed line and a real changed line, mode all', () => {
       it('Then the ws-only line is common, real line stays as ours-only/theirs-only, raw bytes preserved', () => {

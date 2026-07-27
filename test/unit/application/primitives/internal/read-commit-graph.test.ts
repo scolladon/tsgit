@@ -230,7 +230,7 @@ describe('read-commit-graph', () => {
             active -= 1;
             return id;
           };
-          const sut = createBoundedReader(2, read);
+          const boundedRead = createBoundedReader(2, read);
           const ids = [
             '1'.repeat(40),
             '2'.repeat(40),
@@ -240,7 +240,7 @@ describe('read-commit-graph', () => {
           ].map((hex) => hex as ObjectId);
 
           // Act
-          const promises = ids.map((id) => sut.start(id));
+          const promises = ids.map((id) => boundedRead.start(id));
           await Promise.all(promises);
 
           // Assert
@@ -259,12 +259,12 @@ describe('read-commit-graph', () => {
             await Promise.resolve();
             return id;
           };
-          const sut = createBoundedReader(4, read);
+          const boundedRead = createBoundedReader(4, read);
           const id = 'a'.repeat(40) as ObjectId;
 
           // Act
-          const first = sut.start(id);
-          const second = sut.start(id);
+          const first = boundedRead.start(id);
+          const second = boundedRead.start(id);
           const [firstResult, secondResult] = await Promise.all([first, second]);
 
           // Assert
@@ -283,14 +283,14 @@ describe('read-commit-graph', () => {
           const read = async (): Promise<never> => {
             throw new Error('boom');
           };
-          const sut = createBoundedReader(1, read);
+          const boundedRead = createBoundedReader(1, read);
           const id = 'b'.repeat(40) as ObjectId;
 
           // Act
-          sut.start(id); // fire-and-forget, exactly as a prefetching walk would
+          boundedRead.start(id); // fire-and-forget, exactly as a prefetching walk would
           let caught: unknown;
           try {
-            await sut.start(id);
+            await boundedRead.start(id);
           } catch (error) {
             caught = error;
           }

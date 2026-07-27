@@ -55,8 +55,7 @@ describe.skipIf(!GIT_AVAILABLE)('empty tree diff interop', () => {
   describe('Given a repo that never wrote the empty tree object', () => {
     describe('When git hashes an empty file as a tree', () => {
       it('Then the result equals the pinned empty-tree constant', async () => {
-        // Arrange
-        // Act
+        // Arrange + Act
         const result = (
           await runGitAsync(['-C', dir, 'hash-object', '-t', 'tree', '/dev/null'])
         ).trim();

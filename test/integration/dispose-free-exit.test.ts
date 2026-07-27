@@ -146,8 +146,7 @@ describe.skipIf(!GIT_AVAILABLE)('dispose-free exit (A4/B8)', () => {
 
     describe('When a child process opens it, runs one diff, and calls dispose() explicitly', () => {
       it('Then no active handles remain after dispose (no fd leak)', async () => {
-        // Arrange
-        // Act
+        // Arrange + Act
         const { stdout } = await execFileAsync(process.execPath, [scriptPath, repoDir, 'dispose'], {
           timeout: EXIT_TIMEOUT_MS,
         });

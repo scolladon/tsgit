@@ -549,7 +549,7 @@ describe('NONE_KEY', () => {
 });
 
 describe('digestNormalizedLine', () => {
-  describe('Given two lines equal under normalizeLine', () => {
+  describe('Given two lines equal under normalizeLine, When digesting both', () => {
     it.each([
       {
         mode: 'all' as const,
@@ -583,7 +583,7 @@ describe('digestNormalizedLine', () => {
     });
   });
 
-  describe('Given two lines that differ in real content under a given mode', () => {
+  describe('Given two lines that differ in real content under a given mode, When digesting both', () => {
     it.each([
       {
         mode: 'all' as const,
@@ -623,8 +623,8 @@ describe('digestNormalizedLine', () => {
     });
   });
 
-  describe('Given a line whose trailing whitespace run touches the content boundary', () => {
-    it('Then mode change drops the collapsed trailing space from the digest', () => {
+  describe('Given a line whose trailing whitespace run touches the content boundary, When digesting under mode change', () => {
+    it('Then the collapsed trailing space is dropped from the digest', () => {
       // Arrange
       const key: LineKey = { mode: 'change', ignoreCrAtEol: false };
       const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
@@ -636,8 +636,10 @@ describe('digestNormalizedLine', () => {
       // Assert
       expect(digestsEqual(withTrailingRun, withoutTrailingRun)).toBe(true);
     });
+  });
 
-    it('Then mode at-eol drops an internal (non-trailing) run intact but still drops the trailing one', () => {
+  describe('Given a line whose trailing whitespace run touches the content boundary, When digesting under mode at-eol', () => {
+    it('Then an internal (non-trailing) run stays intact while the trailing one is dropped', () => {
       // Arrange — internal run preserved verbatim (not collapsed), trailing run dropped
       const key: LineKey = { mode: 'at-eol', ignoreCrAtEol: false };
       const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
@@ -651,7 +653,7 @@ describe('digestNormalizedLine', () => {
     });
   });
 
-  describe('Given a terminated line and its unterminated content-identical counterpart', () => {
+  describe('Given a terminated line and its unterminated content-identical counterpart, When digesting both', () => {
     it('Then the digests are unequal (terminator is significant)', () => {
       // Arrange
       const key: LineKey = { mode: 'none', ignoreCrAtEol: false };
@@ -666,7 +668,7 @@ describe('digestNormalizedLine', () => {
     });
   });
 
-  describe('Given ignoreCrAtEol true with mode none', () => {
+  describe('Given ignoreCrAtEol true with mode none, When digesting a CR-terminated line', () => {
     const key: LineKey = { mode: 'none', ignoreCrAtEol: true };
 
     it('Then a trailing CR before the LF is dropped from the digest', () => {
@@ -681,7 +683,7 @@ describe('digestNormalizedLine', () => {
 });
 
 describe('digestIsBlank', () => {
-  describe("Given mode 'all' and a spaces-only line", () => {
+  describe("Given mode 'all' and a spaces-only line, When checking blankness", () => {
     it('Then reports blank (matches isBlankLine)', () => {
       // Arrange
       const key: LineKey = { mode: 'all', ignoreCrAtEol: false };
@@ -696,7 +698,7 @@ describe('digestIsBlank', () => {
     });
   });
 
-  describe('Given NONE_KEY and a non-blank line', () => {
+  describe('Given NONE_KEY and a non-blank line, When checking blankness', () => {
     it('Then reports not blank', () => {
       // Arrange
       const line = new TextEncoder().encode('a\n');
