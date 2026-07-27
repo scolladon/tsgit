@@ -1377,4 +1377,338 @@ describe('diffTrees', () => {
       });
     });
   });
+
+  describe('Given a non-recursive diff where a sub-directory changed (tree-oid modify) and ignoreWhitespace is set', () => {
+    describe('When diffTrees is called without recursive', () => {
+      it('Then the tree-oid modify is dropped instead of crashing (directory pairs cannot be line-diffed, matching `git diff-tree -w`)', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const subBefore = await subTree(
+          ctx,
+          'inner.txt',
+          await blob(ctx, 'old content\n'),
+          FILE_MODE.REGULAR,
+        );
+        const subAfter = await subTree(
+          ctx,
+          'inner.txt',
+          await blob(ctx, 'new content\n'),
+          FILE_MODE.REGULAR,
+        );
+        const before = await writeTree(ctx, [
+          { name: 'sub', mode: FILE_MODE.DIRECTORY, id: subBefore },
+        ]);
+        const after = await writeTree(ctx, [
+          { name: 'sub', mode: FILE_MODE.DIRECTORY, id: subAfter },
+        ]);
+
+        // Act
+        const result = await diffTrees(ctx, before, after, { ignoreWhitespace: 'all' });
+
+        // Assert
+        expect(result.changes).toHaveLength(0);
+      });
+    });
+  });
+
+  describe('Given a non-recursive diff mixing a tree-oid modify (sub-directory) and a real top-level file change, with ignoreWhitespace set', () => {
+    describe('When diffTrees is called', () => {
+      it('Then only the tree-oid modify is dropped; the top-level file change survives', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const subBefore = await subTree(
+          ctx,
+          'inner.txt',
+          await blob(ctx, 'old\n'),
+          FILE_MODE.REGULAR,
+        );
+        const subAfter = await subTree(
+          ctx,
+          'inner.txt',
+          await blob(ctx, 'new\n'),
+          FILE_MODE.REGULAR,
+        );
+        const oldFileId = await blob(ctx, 'alpha\n');
+        const newFileId = await blob(ctx, 'beta\n');
+        const before = await writeTree(ctx, [
+          { name: 'root.txt', mode: FILE_MODE.REGULAR, id: oldFileId },
+          { name: 'sub', mode: FILE_MODE.DIRECTORY, id: subBefore },
+        ]);
+        const after = await writeTree(ctx, [
+          { name: 'root.txt', mode: FILE_MODE.REGULAR, id: newFileId },
+          { name: 'sub', mode: FILE_MODE.DIRECTORY, id: subAfter },
+        ]);
+
+        // Act
+        const result = await diffTrees(ctx, before, after, { ignoreWhitespace: 'all' });
+
+        // Assert
+        expect(result.changes).toEqual([
+          {
+            type: 'modify',
+            path: 'root.txt',
+            oldId: oldFileId,
+            newId: newFileId,
+            oldMode: FILE_MODE.REGULAR,
+            newMode: FILE_MODE.REGULAR,
+          },
+        ]);
+      });
+    });
+  });
+
+  describe('Given a non-recursive diff where a whole new sub-directory was added (tree-oid add) and ignoreWhitespace is set', () => {
+    describe('When diffTrees is called without recursive', () => {
+      it('Then the tree-oid add is dropped (matching `git diff-tree -w`, which never shows a directory-mode entry)', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const subId = await subTree(
+          ctx,
+          'inner.txt',
+          await blob(ctx, 'line1\n'),
+          FILE_MODE.REGULAR,
+        );
+        const empty = await writeTree(ctx, []);
+        const withSub = await writeTree(ctx, [
+          { name: 'sub', mode: FILE_MODE.DIRECTORY, id: subId },
+        ]);
+
+        // Act
+        const result = await diffTrees(ctx, empty, withSub, { ignoreWhitespace: 'all' });
+
+        // Assert
+        expect(result.changes).toHaveLength(0);
+      });
+    });
+  });
+
+  describe('Given a non-recursive diff where a whole sub-directory was deleted (tree-oid delete) and ignoreWhitespace is set', () => {
+    describe('When diffTrees is called without recursive', () => {
+      it('Then the tree-oid delete is dropped (matching `git diff-tree -w`, which never shows a directory-mode entry)', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const subId = await subTree(
+          ctx,
+          'inner.txt',
+          await blob(ctx, 'line1\n'),
+          FILE_MODE.REGULAR,
+        );
+        const withSub = await writeTree(ctx, [
+          { name: 'sub', mode: FILE_MODE.DIRECTORY, id: subId },
+        ]);
+        const empty = await writeTree(ctx, []);
+
+        // Act
+        const result = await diffTrees(ctx, withSub, empty, { ignoreWhitespace: 'all' });
+
+        // Assert
+        expect(result.changes).toHaveLength(0);
+      });
+    });
+  });
+
+  describe('Given a non-recursive diff where a sub-directory changed (tree-oid modify) and withStat:true', () => {
+    describe('When diffTrees is called without recursive', () => {
+      it('Then the tree-oid modify is expanded into the real full-path leaf change with line counts (matching `git diff-tree --numstat`, which auto-recurses)', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const subBefore = await subTree(
+          ctx,
+          'inner.txt',
+          await blob(ctx, 'old content\n'),
+          FILE_MODE.REGULAR,
+        );
+        const subAfter = await subTree(
+          ctx,
+          'inner.txt',
+          await blob(ctx, 'new content\n'),
+          FILE_MODE.REGULAR,
+        );
+        const before = await writeTree(ctx, [
+          { name: 'sub', mode: FILE_MODE.DIRECTORY, id: subBefore },
+        ]);
+        const after = await writeTree(ctx, [
+          { name: 'sub', mode: FILE_MODE.DIRECTORY, id: subAfter },
+        ]);
+
+        // Act
+        const result = await diffTrees(ctx, before, after, { withStat: true });
+
+        // Assert
+        expect(result.changes).toHaveLength(1);
+        expect(result.changes[0]).toMatchObject({
+          type: 'modify',
+          path: 'sub/inner.txt',
+          added: 1,
+          deleted: 1,
+          binary: false,
+        });
+      });
+    });
+  });
+
+  describe('Given a non-recursive diff where a whole new sub-directory was added and withStat:true', () => {
+    describe('When diffTrees is called without recursive', () => {
+      it('Then the tree-oid add is expanded into per-file leaf adds with line counts (matching `git diff-tree --numstat`)', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const aId = await blob(ctx, 'line1\n');
+        const bId = await blob(ctx, 'line2\n');
+        const subId = await writeTree(ctx, [
+          { name: 'a.txt', mode: FILE_MODE.REGULAR, id: aId },
+          { name: 'b.txt', mode: FILE_MODE.REGULAR, id: bId },
+        ]);
+        const empty = await writeTree(ctx, []);
+        const withSub = await writeTree(ctx, [
+          { name: 'sub', mode: FILE_MODE.DIRECTORY, id: subId },
+        ]);
+
+        // Act
+        const result = await diffTrees(ctx, empty, withSub, { withStat: true });
+
+        // Assert
+        expect(result.changes).toHaveLength(2);
+        expect(result.changes).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              type: 'add',
+              newPath: 'sub/a.txt',
+              added: 1,
+              deleted: 0,
+              binary: false,
+            }),
+            expect.objectContaining({
+              type: 'add',
+              newPath: 'sub/b.txt',
+              added: 1,
+              deleted: 0,
+              binary: false,
+            }),
+          ]),
+        );
+      });
+    });
+  });
+
+  describe('Given a non-recursive diff where a whole sub-directory was deleted and withStat:true', () => {
+    describe('When diffTrees is called without recursive', () => {
+      it('Then the tree-oid delete is expanded into per-file leaf deletes with line counts (matching `git diff-tree --numstat`)', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const aId = await blob(ctx, 'line1\n');
+        const bId = await blob(ctx, 'line2\n');
+        const subId = await writeTree(ctx, [
+          { name: 'a.txt', mode: FILE_MODE.REGULAR, id: aId },
+          { name: 'b.txt', mode: FILE_MODE.REGULAR, id: bId },
+        ]);
+        const withSub = await writeTree(ctx, [
+          { name: 'sub', mode: FILE_MODE.DIRECTORY, id: subId },
+        ]);
+        const empty = await writeTree(ctx, []);
+
+        // Act
+        const result = await diffTrees(ctx, withSub, empty, { withStat: true });
+
+        // Assert
+        expect(result.changes).toHaveLength(2);
+        expect(result.changes).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              type: 'delete',
+              oldPath: 'sub/a.txt',
+              added: 0,
+              deleted: 1,
+              binary: false,
+            }),
+            expect.objectContaining({
+              type: 'delete',
+              oldPath: 'sub/b.txt',
+              added: 0,
+              deleted: 1,
+              binary: false,
+            }),
+          ]),
+        );
+      });
+    });
+  });
+
+  describe('Given a non-recursive diff where a sub-directory changed with real content, ignoreWhitespace:all and withStat:true', () => {
+    describe('When diffTrees is called', () => {
+      it('Then the change survives expanded with real counts (matching `git diff-tree -w --numstat`, which recurses then keeps the real change)', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const subBefore = await subTree(
+          ctx,
+          'inner.txt',
+          await blob(ctx, 'old content\n'),
+          FILE_MODE.REGULAR,
+        );
+        const subAfter = await subTree(
+          ctx,
+          'inner.txt',
+          await blob(ctx, 'new content\n'),
+          FILE_MODE.REGULAR,
+        );
+        const before = await writeTree(ctx, [
+          { name: 'sub', mode: FILE_MODE.DIRECTORY, id: subBefore },
+        ]);
+        const after = await writeTree(ctx, [
+          { name: 'sub', mode: FILE_MODE.DIRECTORY, id: subAfter },
+        ]);
+
+        // Act
+        const result = await diffTrees(ctx, before, after, {
+          ignoreWhitespace: 'all',
+          withStat: true,
+        });
+
+        // Assert
+        expect(result.changes).toHaveLength(1);
+        expect(result.changes[0]).toMatchObject({
+          type: 'modify',
+          path: 'sub/inner.txt',
+          added: 1,
+          deleted: 1,
+          binary: false,
+        });
+      });
+    });
+  });
+
+  describe('Given a non-recursive diff where a sub-directory changed only by whitespace, ignoreWhitespace:all and withStat:true', () => {
+    describe('When diffTrees is called', () => {
+      it('Then the expanded leaf change is dropped (0 changes), not left as an unexpanded tree-oid entry', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const subBefore = await subTree(
+          ctx,
+          'inner.txt',
+          await blob(ctx, 'hello world\n'),
+          FILE_MODE.REGULAR,
+        );
+        const subAfter = await subTree(
+          ctx,
+          'inner.txt',
+          await blob(ctx, 'hello  world\n'),
+          FILE_MODE.REGULAR,
+        );
+        const before = await writeTree(ctx, [
+          { name: 'sub', mode: FILE_MODE.DIRECTORY, id: subBefore },
+        ]);
+        const after = await writeTree(ctx, [
+          { name: 'sub', mode: FILE_MODE.DIRECTORY, id: subAfter },
+        ]);
+
+        // Act
+        const result = await diffTrees(ctx, before, after, {
+          ignoreWhitespace: 'all',
+          withStat: true,
+        });
+
+        // Assert
+        expect(result.changes).toHaveLength(0);
+      });
+    });
+  });
 });

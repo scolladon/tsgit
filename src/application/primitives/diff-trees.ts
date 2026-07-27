@@ -136,7 +136,8 @@ async function applyStatPass(
   ignoreBlankLines: boolean,
   withStat: boolean,
 ): Promise<TreeDiff | StatTreeDiff> {
-  const files = await materialisePatchFiles(ctx, diff.changes, { applyTextconv: true });
+  const changes = await expandDirectoryChanges(ctx, diff.changes);
+  const files = await materialisePatchFiles(ctx, changes, { applyTextconv: true });
   const surviving: Array<DiffChange | StatDiffChange> = [];
   for (const file of files) {
     const stats = computeStatFields(
@@ -148,6 +149,26 @@ async function applyStatPass(
     surviving.push(withStat ? { ...file.change, ...stats } : file.change);
   }
   return { changes: surviving };
+}
+
+/**
+ * Expand directory-mode add/delete/modify entries — a non-recursive diff can
+ * legitimately pair two tree oids for a changed/added/removed sub-directory —
+ * into full-path leaf changes before any blob content is materialised.
+ * Mirrors git's own `diff-tree` behaviour: any output format that needs blob
+ * content (`--numstat`/`--stat`/`-p`) implicitly recurses, because a tree
+ * pair has no lines to diff. A no-op for already-recursive diffs or diffs
+ * with no directory-mode entries — `expandLevelChange` passes leaf changes
+ * through unchanged.
+ */
+async function expandDirectoryChanges(
+  ctx: Context,
+  changes: ReadonlyArray<DiffChange>,
+): Promise<DiffChange[]> {
+  const expanded = await Promise.all(
+    changes.map((change) => expandLevelChange(ctx, change, ROOT_CURSOR)),
+  );
+  return expanded.flat();
 }
 
 /**
@@ -167,12 +188,27 @@ async function applyDropPredicate(
   return { changes: diff.changes.filter((_, index) => !drops[index]) };
 }
 
+/**
+ * A non-recursive diff can legitimately carry a directory-mode add/delete/
+ * modify (a whole changed/added/removed sub-directory, paired as tree oids).
+ * Git cannot line-diff a tree, so under any whitespace-ignore mode every
+ * such entry is dropped outright — matching `git diff-tree -w` (no `-r`),
+ * which never shows a directory-mode entry regardless of add/delete/modify.
+ */
+function isDirectoryModeChange(change: DiffChange): boolean {
+  if (change.type === 'add') return isDirectory(change.newMode);
+  if (change.type === 'delete') return isDirectory(change.oldMode);
+  if (change.type === 'modify') return isDirectory(change.oldMode) && isDirectory(change.newMode);
+  return false;
+}
+
 function changeShouldDrop(
   ctx: Context,
   change: DiffChange,
   lineKey: LineKey,
   ignoreBlankLines: boolean,
 ): Promise<boolean> {
+  if (isDirectoryModeChange(change)) return Promise.resolve(true);
   if (change.type !== 'modify') return Promise.resolve(false);
   return isWhitespaceOnlyModify(ctx, change, lineKey, ignoreBlankLines);
 }
