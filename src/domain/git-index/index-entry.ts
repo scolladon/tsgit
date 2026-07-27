@@ -52,6 +52,17 @@ export interface GitIndex {
    * from the empty-index defaults in `readIndex` (no underlying file).
    */
   readonly trailerSha: Uint8Array;
+  /**
+   * The `.git/index` file's own mtime (sec + ns), as observed by `readIndex`.
+   * Threaded into `compareWorkingTreeDelta`'s stat-cache short-circuit as the
+   * racy-clean guard's reference point — an entry not provably older than
+   * this mtime must be re-hashed rather than trusted. Undefined on the
+   * empty-index early return (no underlying file to stat).
+   */
+  readonly indexMtime?: {
+    readonly seconds: number;
+    readonly nanoseconds: number;
+  };
 }
 
 export interface StatData {

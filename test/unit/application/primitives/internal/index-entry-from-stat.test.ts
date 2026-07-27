@@ -44,3 +44,24 @@ describe('Given an lstat result plus a mode, id, and path', () => {
     });
   });
 });
+
+describe('Given an lstat result carrying nanosecond-precision timestamps', () => {
+  describe('When building a stage-0 index entry', () => {
+    it('Then it derives the sub-second remainder from ctimeNs/mtimeNs', () => {
+      // Arrange
+      const nsStat: FileStat = {
+        ...stat,
+        ctimeNs: 1_700_000_123_456_789_012n,
+        mtimeNs: 1_700_000_987_123_456_789n,
+      };
+
+      // Act
+      const result = indexEntryFromStat(nsStat, FILE_MODE.REGULAR, ID, 'lib' as FilePath);
+
+      // Assert — the remainder is the ns component within the second, not
+      // the full ns-since-epoch value.
+      expect(result.ctimeNanoseconds).toBe(456_789_012);
+      expect(result.mtimeNanoseconds).toBe(123_456_789);
+    });
+  });
+});

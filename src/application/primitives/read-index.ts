@@ -2,12 +2,20 @@ import { invalidIndexHeader } from '../../domain/git-index/error.js';
 import { type GitIndex, parseIndex } from '../../domain/git-index/index.js';
 import { bytesToHex } from '../../domain/objects/encoding.js';
 import type { Context } from '../../ports/context.js';
+import type { FileStat } from '../../ports/file-system.js';
 import { indexPath } from './path-layout.js';
 import {
   exceedsMaxIndexBytes,
   REASON_INDEX_CHECKSUM_MISMATCH,
   REASON_INDEX_EXCEEDS_MAX,
 } from './validators.js';
+
+const NS_PER_SECOND = 1_000_000_000n;
+
+const indexMtimeFrom = (stat: FileStat): { seconds: number; nanoseconds: number } => ({
+  seconds: Math.floor(stat.mtimeMs / 1000),
+  nanoseconds: stat.mtimeNs === undefined ? 0 : Number(stat.mtimeNs % NS_PER_SECOND),
+});
 
 export async function readIndex(ctx: Context): Promise<GitIndex> {
   const path = indexPath(ctx.layout.gitDir);
@@ -43,5 +51,5 @@ export async function readIndex(ctx: Context): Promise<GitIndex> {
     throw invalidIndexHeader(REASON_INDEX_CHECKSUM_MISMATCH);
   }
 
-  return parseIndex(bytes);
+  return { ...parseIndex(bytes), indexMtime: indexMtimeFrom(stat) };
 }

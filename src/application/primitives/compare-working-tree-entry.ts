@@ -14,6 +14,10 @@
  * Consumed by `status` (which reads the richer `compareWorkingTreeDelta`) and by
  * `rm` / `stash` / clean-work-tree / apply-merge (the local-modification valve,
  * which read the `compareWorkingTreeEntry` enum projection).
+ *
+ * `compareWorkingTreeDelta` accepts an optional index-file mtime (the racy-guard
+ * reference point for the `ie_match_stat` stat-cache short-circuit). Only
+ * `status` supplies it; every other consumer keeps reading and hashing.
  */
 import { isSameKind } from '../../domain/diff/mode-kind.js';
 import type { IndexEntry } from '../../domain/git-index/index-entry.js';
@@ -21,6 +25,7 @@ import { deriveWorkingMode, FILE_MODE, type FileMode } from '../../domain/object
 import type { FilePath, ObjectId } from '../../domain/objects/object-id.js';
 import type { CommandRunner } from '../../ports/command-runner.js';
 import type { Context } from '../../ports/context.js';
+import { type IndexMtime, isEntryStatClean } from './internal/is-entry-stat-clean.js';
 import { joinPath } from './internal/join-working-tree-path.js';
 import type { AttributeProvider } from './internal/read-gitattributes.js';
 import { serializeAndHash } from './internal/serialize-and-hash.js';
@@ -79,6 +84,7 @@ export const compareWorkingTreeDelta = async (
   ctx: Context,
   entry: IndexEntry,
   provider?: AttributeProvider,
+  indexMtime?: IndexMtime,
 ): Promise<WorkingTreeDelta> => {
   const absPath = joinPath(ctx.layout.workDir, entry.path);
   const stat = await ctx.fs.lstat(absPath).catch(() => undefined);
@@ -92,6 +98,13 @@ export const compareWorkingTreeDelta = async (
   // submodule directory degrades to `modified`).
   if (entry.mode !== FILE_MODE.GITLINK && !isSameKind(worktreeMode, entry.mode)) {
     return { status: 'type-changed', worktreeMode };
+  }
+  // Stat-cache short-circuit (`ie_match_stat`): only armed when the caller
+  // supplies the index file's own mtime (the racy-guard reference point).
+  // Absent — every non-`status` consumer — the fast path never fires and
+  // behaviour is exactly as before.
+  if (indexMtime !== undefined && isEntryStatClean(entry, stat, indexMtime)) {
+    return { status: worktreeMode === entry.mode ? 'unchanged' : 'mode-changed', worktreeMode };
   }
   try {
     const raw = stat.isSymbolicLink
