@@ -33,6 +33,7 @@ export interface FixtureSpec {
   readonly label:
     | 'small'
     | 'medium'
+    | 'medium-commit-graph'
     | 'large'
     | 'delta-chain'
     | 'deep-ancestry-small'
@@ -47,6 +48,8 @@ export interface FixtureSpec {
   readonly deltaDepth?: number;
   /** `git repack --window`, evolving strategy only. */
   readonly deltaWindow?: number;
+  /** Run `git commit-graph write --reachable` once the repo is built. */
+  readonly commitGraph?: boolean;
 }
 
 export const SMALL_FIXTURE: FixtureSpec = {
@@ -63,6 +66,13 @@ export const MEDIUM_FIXTURE: FixtureSpec = {
   commits: 5_000,
   blobs: 20_000,
   blobBytes: 2_560,
+};
+
+/** `MEDIUM_FIXTURE` plus a written single-file commit-graph — exercises the commit-graph read path against the plain object-read walk. */
+export const MEDIUM_FIXTURE_WITH_COMMIT_GRAPH: FixtureSpec = {
+  ...MEDIUM_FIXTURE,
+  label: 'medium-commit-graph',
+  commitGraph: true,
 };
 
 export const LARGE_FIXTURE: FixtureSpec = {
@@ -442,6 +452,9 @@ const generateInto = async (repoDir: string, spec: FixtureSpec): Promise<Fixture
   await mkdir(repoDir, { recursive: true });
   await runGit(repoDir, ['init', '--initial-branch=main', '--quiet']);
   await runGenerateStrategy(repoDir, spec);
+  if (spec.commitGraph === true) {
+    await runGit(repoDir, ['commit-graph', 'write', '--reachable']);
+  }
 
   const headCommitId = await runGit(repoDir, ['rev-parse', 'HEAD']);
   const firstBlobId = await firstBlobIdFor(repoDir, spec);
