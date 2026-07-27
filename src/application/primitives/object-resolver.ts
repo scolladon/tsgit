@@ -5,8 +5,11 @@
 import { operationAborted } from '../../domain/error.js';
 import { objectHashMismatch, objectNotFound, objectTooLarge } from '../../domain/objects/error.js';
 import {
+  EMPTY_TREE_OID,
   type GitObject,
+  type HashConfig,
   type ObjectId,
+  ObjectId as ObjectIdFactory,
   parseHeader,
   parseObject,
   serializeObject,
@@ -25,6 +28,23 @@ import type { Context } from '../../ports/context.js';
 import { nextOffsetForEntry, type PackLookupHit, type PackRegistry } from './pack-registry.js';
 import { commonGitDir, looseObjectPath } from './path-layout.js';
 
+/**
+ * Git treats the empty tree as a virtual, always-present object — resolvable
+ * anywhere a tree-ish is valid even though it was never written to disk. The
+ * loose-format content `tree 0\0` (7 bytes, zero content bytes) hashes to the
+ * empty-tree oid for the active algorithm by construction, so `verifyHash`
+ * holds trivially and no size cap can trip (content length is 0). Scope is
+ * ONLY the empty tree — the empty blob is not virtual and still misses.
+ */
+const EMPTY_TREE_BYTES = new TextEncoder().encode('tree 0\0');
+const EMPTY_TREE_OID_SHA256: ObjectId = ObjectIdFactory.from(
+  '6ef19b41225c5369f1c104d45d8d85efa9b057b53b14b4b9b939dd74decc5321',
+);
+
+function emptyTreeOid(hash: HashConfig): ObjectId {
+  return hash.digestLength === 32 ? EMPTY_TREE_OID_SHA256 : EMPTY_TREE_OID;
+}
+
 export async function resolveObject(
   ctx: Context,
   registry: PackRegistry,
@@ -33,6 +53,9 @@ export async function resolveObject(
   maxBytes?: number,
 ): Promise<GitObject> {
   checkAborted(ctx);
+  if (id === emptyTreeOid(ctx.hashConfig)) {
+    return parseObject(id, EMPTY_TREE_BYTES, ctx.hashConfig);
+  }
   const loose = await tryLoose(ctx, id);
   if (loose !== undefined) {
     checkAborted(ctx);

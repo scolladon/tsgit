@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { resolveObject } from '../../../../src/application/primitives/object-resolver.js';
 import {
   createPackRegistry,
@@ -7,7 +8,7 @@ import {
   type RegisteredPack,
 } from '../../../../src/application/primitives/pack-registry.js';
 import { TsgitError } from '../../../../src/domain/error.js';
-import type { Blob, ObjectId } from '../../../../src/domain/objects/index.js';
+import { type Blob, EMPTY_TREE_OID, type ObjectId } from '../../../../src/domain/objects/index.js';
 import {
   encodeOfsDistance,
   encodePackEntryHeader,
@@ -92,6 +93,94 @@ async function stubRegistry(
 }
 
 describe('object-resolver', () => {
+  describe('Given the empty tree oid on a repo that never wrote it', () => {
+    describe('When resolveObject is called', () => {
+      it('Then returns a zero-entry tree', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const registry = createPackRegistry(ctx);
+        const sut = resolveObject;
+
+        // Act
+        const result = await sut(ctx, registry, EMPTY_TREE_OID, true, undefined);
+
+        // Assert
+        expect(result).toEqual({ type: 'tree', id: EMPTY_TREE_OID, entries: [] });
+      });
+    });
+  });
+
+  describe('Given the empty blob oid on a repo that never wrote it', () => {
+    describe('When resolveObject is called', () => {
+      it('Then throws OBJECT_NOT_FOUND (the empty-tree intercept is tree-only)', async () => {
+        // Arrange — e69de29b… is the empty BLOB, not the empty tree; it is
+        // NOT virtual and must still miss like any other absent object.
+        const ctx = await buildSeededContext();
+        const registry = createPackRegistry(ctx);
+        const emptyBlobId = 'e69de29bb2d1d6434b8b29ae775ad8c2e48c5391' as ObjectId;
+        const sut = resolveObject;
+
+        // Act
+        try {
+          await sut(ctx, registry, emptyBlobId, true);
+          // Assert
+          expect.unreachable();
+        } catch (error) {
+          const data = (error as TsgitError).data;
+          expect(data.code).toBe('OBJECT_NOT_FOUND');
+          if (data.code !== 'OBJECT_NOT_FOUND') {
+            expect.fail(`expected OBJECT_NOT_FOUND, got ${data.code}`);
+          }
+          expect(data.id).toBe(emptyBlobId);
+        }
+      });
+    });
+  });
+
+  describe('Given a SHA-256 repo and the SHA-256 empty-tree oid', () => {
+    describe('When resolveObject is called', () => {
+      it('Then returns a zero-entry tree', async () => {
+        // Arrange
+        const ctx = createMemoryContext({ algorithm: 'sha256' });
+        const registry = createPackRegistry(ctx);
+        const emptyTreeOidSha256 =
+          '6ef19b41225c5369f1c104d45d8d85efa9b057b53b14b4b9b939dd74decc5321' as ObjectId;
+        const sut = resolveObject;
+
+        // Act
+        const result = await sut(ctx, registry, emptyTreeOidSha256, true, undefined);
+
+        // Assert
+        expect(result).toEqual({ type: 'tree', id: emptyTreeOidSha256, entries: [] });
+      });
+    });
+  });
+
+  describe('Given a SHA-256 repo and the SHA-1 empty-tree oid', () => {
+    describe('When resolveObject is called', () => {
+      it('Then throws OBJECT_NOT_FOUND (not intercepted under a mismatched hash config)', async () => {
+        // Arrange — the SHA-1 empty-tree oid is the wrong length/value for a
+        // SHA-256 repo's `emptyTreeOid`, so the intercept must not fire.
+        const ctx = createMemoryContext({ algorithm: 'sha256' });
+        const registry = createPackRegistry(ctx);
+        const sut = resolveObject;
+
+        // Act
+        try {
+          await sut(ctx, registry, EMPTY_TREE_OID, true);
+          // Assert
+          expect.unreachable();
+        } catch (error) {
+          const data = (error as TsgitError).data;
+          expect(data.code).toBe('OBJECT_NOT_FOUND');
+          if (data.code !== 'OBJECT_NOT_FOUND') {
+            expect.fail(`expected OBJECT_NOT_FOUND, got ${data.code}`);
+          }
+        }
+      });
+    });
+  });
+
   describe('Given a seeded loose blob', () => {
     describe('When resolveObject is called', () => {
       it('Then returns the parsed Blob', async () => {
