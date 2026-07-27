@@ -7,6 +7,7 @@ import {
   type PackRegistry,
   type RegisteredPack,
 } from '../../../../src/application/primitives/pack-registry.js';
+import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { TsgitError } from '../../../../src/domain/error.js';
 import { type Blob, EMPTY_TREE_OID, type ObjectId } from '../../../../src/domain/objects/index.js';
 import {
@@ -688,6 +689,134 @@ describe('object-resolver', () => {
           expect(ctx.deltaCache.get(id)).toBeUndefined();
 
           // Act
+          const result = await resolveObject(ctx, registry, id, true);
+
+          // Assert
+          expect(result.type).toBe('blob');
+          expect((result as Blob).content).toEqual(blob.content);
+        });
+      });
+    });
+  });
+
+  describe('loose-oid probe (A2/B7b — per-fanout-dir cache)', () => {
+    describe('Given several seeded loose blobs', () => {
+      describe('When resolveObject reads each of them, then reads every one again', () => {
+        it('Then each touched fanout dir is readdir-ed at most once and exists is never called', async () => {
+          // Arrange
+          const blobs: Blob[] = Array.from({ length: 5 }, (_, i) => ({
+            type: 'blob',
+            content: new TextEncoder().encode(`loose-oid-probe-content-${i}`),
+            id: '' as ObjectId,
+          }));
+          const ctx = await buildSeededContext({ objects: blobs });
+          const { serializeObject } = await import('../../../../src/domain/objects/index.js');
+          const ids = await Promise.all(
+            blobs.map(
+              async (blob) =>
+                (await ctx.hash.hashHex(serializeObject(blob, ctx.hashConfig))) as ObjectId,
+            ),
+          );
+          const registry = createPackRegistry(ctx);
+          const readdirSpy = vi.spyOn(ctx.fs, 'readdir');
+          const existsSpy = vi.spyOn(ctx.fs, 'exists');
+
+          // Act — resolve every id, then resolve every id again.
+          for (const id of ids) {
+            await resolveObject(ctx, registry, id, true);
+          }
+          for (const id of ids) {
+            await resolveObject(ctx, registry, id, true);
+          }
+
+          // Assert — one readdir per DISTINCT touched prefix, never per object
+          // or per read; the old per-object exists/realpath probe is gone.
+          const touchedPrefixes = new Set(ids.map((id) => id.slice(0, 2)));
+          expect(readdirSpy.mock.calls.length).toBe(touchedPrefixes.size);
+          expect(existsSpy.mock.calls.length).toBe(0);
+        });
+      });
+    });
+
+    describe('Given a seeded loose blob (membership hit)', () => {
+      describe('When resolveObject resolves it', () => {
+        it('Then the loose file is read via ctx.fs.read', async () => {
+          // Arrange
+          const blob: Blob = {
+            type: 'blob',
+            content: new TextEncoder().encode('membership-hit-content'),
+            id: '' as ObjectId,
+          };
+          const ctx = await buildSeededContext({ objects: [blob] });
+          const { serializeObject } = await import('../../../../src/domain/objects/index.js');
+          const id = (await ctx.hash.hashHex(serializeObject(blob, ctx.hashConfig))) as ObjectId;
+          const registry = createPackRegistry(ctx);
+          const readSpy = vi.spyOn(ctx.fs, 'read');
+
+          // Act
+          const result = await resolveObject(ctx, registry, id, true);
+
+          // Assert
+          expect(result.type).toBe('blob');
+          expect(readSpy.mock.calls.length).toBe(1);
+        });
+      });
+    });
+
+    describe('Given a missing id with no loose file and no pack copy (membership miss)', () => {
+      describe('When resolveObject is called', () => {
+        it('Then throws OBJECT_NOT_FOUND without ever reading or exists-probing the loose path', async () => {
+          // Arrange — the pack registry's own (unrelated) pack-dir existence
+          // check still fires once on a cold registry; what must NOT happen
+          // is a per-object exists/read probe against the loose object path.
+          const ctx = await buildSeededContext();
+          const registry = createPackRegistry(ctx);
+          const missingId = 'b'.repeat(40) as ObjectId;
+          const loosePathPattern = /\/objects\/[0-9a-f]{2}\/[0-9a-f]{38}$/;
+          const readSpy = vi.spyOn(ctx.fs, 'read');
+          const existsSpy = vi.spyOn(ctx.fs, 'exists');
+
+          // Act
+          try {
+            await resolveObject(ctx, registry, missingId, true);
+            // Assert
+            expect.unreachable();
+          } catch (error) {
+            expect((error as TsgitError).data.code).toBe('OBJECT_NOT_FOUND');
+          }
+
+          // Assert
+          expect(readSpy.mock.calls.length).toBe(0);
+          expect(existsSpy.mock.calls.some(([path]) => loosePathPattern.test(path))).toBe(false);
+        });
+      });
+    });
+
+    describe('Given a fanout dir already probed as empty for one id', () => {
+      describe('When writeObject adds a new object under the same prefix and resolveObject reads it', () => {
+        it('Then the write invalidates the stale cache and the new object resolves via the loose path', async () => {
+          // Arrange
+          const blob: Blob = {
+            type: 'blob',
+            content: new TextEncoder().encode('invalidation-after-write'),
+            id: '' as ObjectId,
+          };
+          const ctx = await buildSeededContext();
+          const { serializeObject } = await import('../../../../src/domain/objects/index.js');
+          const id = (await ctx.hash.hashHex(serializeObject(blob, ctx.hashConfig))) as ObjectId;
+          const prefix = id.slice(0, 2);
+          const decoyId = `${prefix}${'0'.repeat(38)}` as ObjectId;
+          const registry = createPackRegistry(ctx);
+          try {
+            // Primes the fanout-dir cache as empty for this prefix.
+            await resolveObject(ctx, registry, decoyId, true);
+            expect.unreachable();
+          } catch (error) {
+            expect((error as TsgitError).data.code).toBe('OBJECT_NOT_FOUND');
+          }
+
+          // Act
+          await writeObject(ctx, blob);
           const result = await resolveObject(ctx, registry, id, true);
 
           // Assert

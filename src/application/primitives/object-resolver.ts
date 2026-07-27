@@ -25,6 +25,7 @@ import {
   readDeltaTargetSize,
 } from '../../domain/storage/index.js';
 import type { Context } from '../../ports/context.js';
+import { probeLooseOid } from './internal/loose-oid-cache.js';
 import { nextOffsetForEntry, type PackLookupHit, type PackRegistry } from './pack-registry.js';
 import { commonGitDir, looseObjectPath } from './path-layout.js';
 
@@ -174,8 +175,8 @@ function checkAborted(ctx: Context): void {
 }
 
 async function tryLoose(ctx: Context, id: ObjectId): Promise<Uint8Array | undefined> {
+  if (!(await probeLooseOid(ctx, id))) return undefined;
   const path = looseObjectPath(commonGitDir(ctx), id);
-  if (!(await ctx.fs.exists(path))) return undefined;
   const compressed = await ctx.fs.read(path);
   return ctx.compressor.inflate(compressed);
 }
@@ -189,8 +190,8 @@ export async function looseCompressedBytes(
   ctx: Context,
   id: ObjectId,
 ): Promise<Uint8Array | undefined> {
+  if (!(await probeLooseOid(ctx, id))) return undefined;
   const path = looseObjectPath(commonGitDir(ctx), id);
-  if (!(await ctx.fs.exists(path))) return undefined;
   return ctx.fs.read(path);
 }
 
