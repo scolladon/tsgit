@@ -37,7 +37,9 @@ import type { Context } from '../../ports/context.js';
 import { detectSimilarityRenames } from './detect-similarity-renames.js';
 import { flattenTree } from './flatten-tree.js';
 import { boundedMap, MAX_CONCURRENT_BLOB_LOADS } from './internal/bounded-map.js';
+import { DEFAULT_FLATTEN_BOUNDS } from './internal/flatten-raw.js';
 import { type AttributeProvider, buildAttributeProvider } from './internal/read-gitattributes.js';
+import { walkRawSubtree } from './internal/walk-raw-subtree.js';
 import { isWhitespaceOnlyModify } from './internal/whitespace-drop-predicate.js';
 import { materialisePatchFiles } from './materialise-patch-files.js';
 import { readRawObject } from './read-object.js';
@@ -509,13 +511,24 @@ async function diffChangedSubtree(
   return diffRecursiveLevel(ctx, oldContent, newContent, nextCursor);
 }
 
+/**
+ * Expand a whole added/deleted subtree into one leaf change per ENTRY,
+ * duplicates included — matching `git diff-tree -r`, which never
+ * de-duplicates. `flattenTree`'s `Map` (last-name-wins) is the right shape
+ * for worktree materialisation but collapses a duplicate-name tree into a
+ * single entry, so this walks the raw bytes directly via `walkRawSubtree`
+ * instead.
+ */
 async function expandAddedSubtree(
   ctx: Context,
   id: ObjectId,
   prefix: string,
 ): Promise<AddChange[]> {
-  const flat = await flattenTree(ctx, id);
-  return Array.from(flat.entries, ([name, entry]) => addLeaf(joinPath(prefix, name), entry));
+  const changes: AddChange[] = [];
+  for await (const entry of walkRawSubtree(ctx, id, DEFAULT_FLATTEN_BOUNDS, prefix)) {
+    changes.push(addLeaf(entry.path, entry));
+  }
+  return changes;
 }
 
 async function expandDeletedSubtree(
@@ -523,8 +536,11 @@ async function expandDeletedSubtree(
   id: ObjectId,
   prefix: string,
 ): Promise<DeleteChange[]> {
-  const flat = await flattenTree(ctx, id);
-  return Array.from(flat.entries, ([name, entry]) => deleteLeaf(joinPath(prefix, name), entry));
+  const changes: DeleteChange[] = [];
+  for await (const entry of walkRawSubtree(ctx, id, DEFAULT_FLATTEN_BOUNDS, prefix)) {
+    changes.push(deleteLeaf(entry.path, entry));
+  }
+  return changes;
 }
 
 function addLeaf(path: FilePath, entry: FlatTreeEntry): AddChange {

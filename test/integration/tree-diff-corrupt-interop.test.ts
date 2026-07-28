@@ -275,6 +275,26 @@ describe.skipIf(!GIT_AVAILABLE)('tree-diff corrupt interop', () => {
         expect(result.changes.map(rawLine)).toEqual(peerLines);
       });
 
+      it('Then a duplicate-name tree inside an added subtree emits two adds, not one (git-verified)', async () => {
+        // Arrange — the duplicate lives inside a whole ADDED sub-directory
+        // (not at the compared root), exercising the added-subtree expansion
+        // rather than the top-level merge-join exercised by the row above.
+        const duplicateSub = buildLiteralTree(
+          concatBytes(rawEntry('100644', 'dup.txt', blobA), rawEntry('100644', 'dup.txt', blobB)),
+        );
+        const withSub = buildLiteralTree(rawEntry('40000', 'sub', duplicateSub));
+        const peerLines = gitDiffTreeLines(EMPTY_TREE_OID, withSub);
+        const ctx = freshCtx();
+        const sut = diffTrees;
+
+        // Act
+        const result = await sut(ctx, EMPTY_TREE_OID, toId(withSub), { recursive: true });
+
+        // Assert
+        expect(result.changes.map(rawLine)).toEqual(peerLines);
+        expect(peerLines).toHaveLength(2);
+      });
+
       it("Then a name containing a literal '/' is diffed, not refused (git-verified)", async () => {
         // Arrange
         const slashName = buildLiteralTree(rawEntry('100644', 'a/b', blobA));

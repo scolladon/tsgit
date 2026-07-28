@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { diffTrees } from '../../../../src/application/primitives/diff-trees.js';
 import * as flattenTreeMod from '../../../../src/application/primitives/flatten-tree.js';
+import * as walkRawSubtreeMod from '../../../../src/application/primitives/internal/walk-raw-subtree.js';
 import * as materialisePatchFilesMod from '../../../../src/application/primitives/materialise-patch-files.js';
 import * as readObjectMod from '../../../../src/application/primitives/read-object.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
@@ -355,6 +356,64 @@ describe('diffTrees', () => {
     });
   });
 
+  describe('Given recursive=true and a duplicate-name tree added as a whole sub-directory', () => {
+    describe('When diffTrees is called', () => {
+      it('Then every duplicate entry surfaces as its own AddChange (per-entry, not de-duplicated)', async () => {
+        // Arrange — `sub/dup.txt` appears twice inside the added subtree; git's
+        // `diff-tree -r` emits one add per entry, so the expansion must not
+        // collapse the two into a single last-wins entry the way a Map would.
+        const ctx = await buildSeededContext();
+        const dupAId = await blob(ctx, 'a');
+        const dupBId = await blob(ctx, 'b');
+        const subId = await writeTree(ctx, [
+          { name: 'dup.txt', mode: FILE_MODE.REGULAR, id: dupAId },
+          { name: 'dup.txt', mode: FILE_MODE.REGULAR, id: dupBId },
+        ]);
+        const empty = await writeTree(ctx, []);
+        const withSub = await writeTree(ctx, [
+          { name: 'sub', mode: FILE_MODE.DIRECTORY, id: subId },
+        ]);
+
+        // Act
+        const result = await diffTrees(ctx, empty, withSub, { recursive: true });
+
+        // Assert
+        expect(result.changes).toEqual([
+          { type: 'add', newPath: 'sub/dup.txt', newId: dupAId, newMode: FILE_MODE.REGULAR },
+          { type: 'add', newPath: 'sub/dup.txt', newId: dupBId, newMode: FILE_MODE.REGULAR },
+        ]);
+      });
+    });
+  });
+
+  describe('Given recursive=true and a duplicate-name tree deleted as a whole sub-directory', () => {
+    describe('When diffTrees is called', () => {
+      it('Then every duplicate entry surfaces as its own DeleteChange (per-entry, not de-duplicated)', async () => {
+        // Arrange — symmetric to the added-subtree case above.
+        const ctx = await buildSeededContext();
+        const dupAId = await blob(ctx, 'a');
+        const dupBId = await blob(ctx, 'b');
+        const subId = await writeTree(ctx, [
+          { name: 'dup.txt', mode: FILE_MODE.REGULAR, id: dupAId },
+          { name: 'dup.txt', mode: FILE_MODE.REGULAR, id: dupBId },
+        ]);
+        const withSub = await writeTree(ctx, [
+          { name: 'sub', mode: FILE_MODE.DIRECTORY, id: subId },
+        ]);
+        const empty = await writeTree(ctx, []);
+
+        // Act
+        const result = await diffTrees(ctx, withSub, empty, { recursive: true });
+
+        // Assert
+        expect(result.changes).toEqual([
+          { type: 'delete', oldPath: 'sub/dup.txt', oldId: dupAId, oldMode: FILE_MODE.REGULAR },
+          { type: 'delete', oldPath: 'sub/dup.txt', oldId: dupBId, oldMode: FILE_MODE.REGULAR },
+        ]);
+      });
+    });
+  });
+
   describe('Given recursive=true and a change three directory levels deep (a/b/c)', () => {
     describe('When diffTrees is called', () => {
       it('Then the change is a full-path ModifyChange threaded through every level', async () => {
@@ -460,7 +519,7 @@ describe('diffTrees', () => {
 
   describe('Given recursive=true and an unchanged (TREESAME) sub-directory alongside a changed file', () => {
     describe('When diffTrees is called', () => {
-      it('Then flattenTree is never invoked (the TREESAME subtree is pruned before any read)', async () => {
+      it('Then walkRawSubtree is never invoked (the TREESAME subtree is pruned before any read)', async () => {
         // Arrange — `big/` is byte-identical (same tree oid) on both sides;
         // only the root-level file differs.
         const ctx = await buildSeededContext();
@@ -480,13 +539,13 @@ describe('diffTrees', () => {
           { name: 'big', mode: FILE_MODE.DIRECTORY, id: unchangedSubId },
           { name: 'root.txt', mode: FILE_MODE.REGULAR, id: newFileId },
         ]);
-        const flattenSpy = vi.spyOn(flattenTreeMod, 'flattenTree');
+        const walkSpy = vi.spyOn(walkRawSubtreeMod, 'walkRawSubtree');
 
         // Act
         const result = await diffTrees(ctx, before, after, { recursive: true });
 
-        // Assert — no subtree was ever flattened; only the differing file changed.
-        expect(flattenSpy).not.toHaveBeenCalled();
+        // Assert — no subtree was ever expanded; only the differing file changed.
+        expect(walkSpy).not.toHaveBeenCalled();
         expect(result.changes).toEqual([
           {
             type: 'modify',
@@ -497,7 +556,7 @@ describe('diffTrees', () => {
             newMode: FILE_MODE.REGULAR,
           },
         ]);
-        flattenSpy.mockRestore();
+        walkSpy.mockRestore();
       });
     });
   });
