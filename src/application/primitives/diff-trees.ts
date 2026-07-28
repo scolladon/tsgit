@@ -205,8 +205,8 @@ async function expandDirectoryChanges(
   changes: ReadonlyArray<DiffChange>,
 ): Promise<DiffChange[]> {
   const state: DiffWalkState = { counter: { value: 0 }, maxEntries: MAX_FLAT_TREE_ENTRIES };
-  const expanded = await Promise.all(
-    changes.map((change) => expandLevelChange(ctx, change, ROOT_CURSOR, state)),
+  const expanded = await boundedMap(changes, MAX_CONCURRENT_BLOB_LOADS, (change) =>
+    expandLevelChange(ctx, change, ROOT_CURSOR, state),
   );
   return expanded.flat();
 }
@@ -450,7 +450,10 @@ export async function diffRecursive(
  * on both sides) never reaches `expandLevelChange` — the merge-join already
  * drops it — so its subtree is never read or flattened, matching git's own
  * diff-tree pruning. Sibling directories that DO differ are expanded
- * concurrently, bounded to `MAX_CONCURRENT_BLOB_LOADS` in-flight reads.
+ * concurrently via `boundedMap`, bounded to `MAX_CONCURRENT_BLOB_LOADS`
+ * in-flight reads PER LEVEL — nested levels each open their own bounded
+ * batch, so the total in-flight count across a deep recursion is not itself
+ * capped, only each level's own fan-out is.
  */
 async function diffRecursiveLevel(
   ctx: Context,
@@ -460,11 +463,13 @@ async function diffRecursiveLevel(
   state: DiffWalkState,
 ): Promise<DiffChange[]> {
   const levelChanges = diffRawTrees(a, b, ctx.hashConfig).changes;
-  for (let i = 0; i < levelChanges.length; i++) {
-    state.counter.value += 1;
-    if (exceedsMaxTreeEntries(state.counter.value, state.maxEntries)) {
-      throw treeEntryLimitExceeded(state.counter.value, state.maxEntries);
-    }
+  state.counter.value += levelChanges.length;
+  if (exceedsMaxTreeEntries(state.counter.value, state.maxEntries)) {
+    // A one-at-a-time increment-then-check loop throws at the FIRST value
+    // that exceeds the cap — always `maxEntries + 1`, regardless of how far
+    // past it a whole-batch addition lands. Report that same value so a
+    // multi-entry level batch stays byte-identical to the old per-entry loop.
+    throw treeEntryLimitExceeded(state.maxEntries + 1, state.maxEntries);
   }
   const expanded = await boundedMap(levelChanges, MAX_CONCURRENT_BLOB_LOADS, (change) =>
     expandLevelChange(ctx, change, cursor, state),

@@ -2794,4 +2794,38 @@ describe('diffTrees', () => {
       });
     });
   });
+
+  describe('Given a root level with 5 sibling leaf adds and a cap of 3', () => {
+    describe('When diffRecursive runs', () => {
+      it('Then reports count=4 (the cap is first exceeded at limit+1, never the full batch size)', async () => {
+        // Arrange — a single merge-join level can carry a multi-entry batch;
+        // the reported count must match a one-at-a-time increment-then-check
+        // loop's first exceedance, not however far a whole-batch addition
+        // would overshoot by.
+        const ctx = await buildSeededContext();
+        const oldRoot = await writeTree(ctx, []);
+        const newRoot = await writeTree(ctx, [
+          { name: 'a', mode: FILE_MODE.REGULAR, id: await blob(ctx, 'a') },
+          { name: 'b', mode: FILE_MODE.REGULAR, id: await blob(ctx, 'b') },
+          { name: 'c', mode: FILE_MODE.REGULAR, id: await blob(ctx, 'c') },
+          { name: 'd', mode: FILE_MODE.REGULAR, id: await blob(ctx, 'd') },
+          { name: 'e', mode: FILE_MODE.REGULAR, id: await blob(ctx, 'e') },
+        ]);
+        const rawOld = (await readObjectMod.readRawObject(ctx, oldRoot)).content;
+        const rawNew = (await readObjectMod.readRawObject(ctx, newRoot)).content;
+        const sut = diffRecursive;
+
+        // Act + Assert
+        try {
+          await sut(ctx, rawOld, rawNew, 3);
+          expect.unreachable();
+        } catch (error) {
+          const { data } = error as { data: { code: string; count: number; limit: number } };
+          expect(data.code).toBe('TREE_ENTRY_LIMIT_EXCEEDED');
+          expect(data.count).toBe(4);
+          expect(data.limit).toBe(3);
+        }
+      });
+    });
+  });
 });
