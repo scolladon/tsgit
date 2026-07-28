@@ -144469,6 +144469,14 @@
 		},
 		{
 			"kind": "text",
+			"text": " |\n| Browser (no build) | "
+		},
+		{
+			"kind": "code",
+			"text": "`https://unpkg.com/@scolladon/tsgit@3/dist/browser/tsgit.js`"
+		},
+		{
+			"kind": "text",
 			"text": " |\n| In-memory (tests) | "
 		},
 		{

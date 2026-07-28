@@ -29,6 +29,7 @@ await repo.dispose();
 |---|---|
 | Node.js 22+ | `@scolladon/tsgit` |
 | Browser (OPFS) | `@scolladon/tsgit/auto/browser` |
+| Browser (no build) | `https://unpkg.com/@scolladon/tsgit@3/dist/browser/tsgit.js` |
 | In-memory (tests) | `@scolladon/tsgit/auto/memory` |
 | Deno | `npm:@scolladon/tsgit` |
 | Bun | `@scolladon/tsgit` |
