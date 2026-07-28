@@ -886,6 +886,72 @@ describe('diffTrees', () => {
     });
   });
 
+  describe('Given copies:"harder" and treeA is wrapped in a commit oid (must peel before flattening)', () => {
+    describe('When diffTrees is called with detectRenames:true and renameOptions:{copies:"harder"}', () => {
+      it.each([
+        { label: 'non-recursive', recursive: false },
+        { label: 'recursive', recursive: true },
+      ])(
+        'Then the commit-oid form detects the same copy as the tree-oid form ($label)',
+        async ({ recursive }) => {
+          // Arrange — treeA has one unchanged file; treeB adds a file similar to it.
+          // copies:'harder' must fold the add into a copy from the unchanged source
+          // whether `a` is passed as the tree directly or as a commit wrapping it.
+          const ctx = await buildSeededContext();
+          const lines = Array.from({ length: 10 }, (_, i) => `line ${i}: shared content\n`).join(
+            '',
+          );
+          const unchangedId = await blob(ctx, lines);
+          const dstLines = lines.replace(
+            'line 0: shared content\n',
+            'COPY DST line 0: shared content\n',
+          );
+          const dstId = await blob(ctx, dstLines);
+          const treeA = await writeTree(ctx, [
+            { name: 'orig.txt', mode: FILE_MODE.REGULAR, id: unchangedId },
+          ]);
+          const treeB = await writeTree(ctx, [
+            { name: 'orig.txt', mode: FILE_MODE.REGULAR, id: unchangedId },
+            { name: 'copy.txt', mode: FILE_MODE.REGULAR, id: dstId },
+          ]);
+          const commitA = await writeObject(ctx, {
+            type: 'commit',
+            id: '' as ObjectId,
+            data: {
+              tree: treeA,
+              parents: [],
+              author: IDENTITY,
+              committer: IDENTITY,
+              message: 'wrap treeA',
+              extraHeaders: [],
+            },
+          });
+
+          // Act
+          const fromCommit = await diffTrees(ctx, commitA, treeB, {
+            detectRenames: true,
+            renameOptions: { copies: 'harder' },
+            recursive,
+          });
+          const fromTree = await diffTrees(ctx, treeA, treeB, {
+            detectRenames: true,
+            renameOptions: { copies: 'harder' },
+            recursive,
+          });
+
+          // Assert
+          expect(fromCommit).toEqual(fromTree);
+          const copies = fromCommit.changes.filter((c) => c.type === 'copy');
+          expect(copies).toHaveLength(1);
+          if (copies[0]?.type === 'copy') {
+            expect(copies[0].oldPath).toBe('orig.txt');
+            expect(copies[0].newPath).toBe('copy.txt');
+          }
+        },
+      );
+    });
+  });
+
   describe('Given withStat is omitted and a one-line blob added', () => {
     describe('When diffTrees is called', () => {
       it('Then the change carries no count fields (tree-level only)', async () => {

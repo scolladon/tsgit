@@ -25,7 +25,14 @@ import {
   unexpectedObjectType,
 } from '../../domain/objects/error.js';
 import { isDirectory } from '../../domain/objects/file-mode.js';
-import type { FilePath, ObjectId, Tree } from '../../domain/objects/index.js';
+import {
+  type FilePath,
+  type ObjectId,
+  parseCommitContent,
+  parseTagContent,
+  type Tree,
+} from '../../domain/objects/index.js';
+import { refChainTooDeep } from '../../domain/refs/error.js';
 import type { Context } from '../../ports/context.js';
 import { detectSimilarityRenames } from './detect-similarity-renames.js';
 import { flattenTree } from './flatten-tree.js';
@@ -35,7 +42,7 @@ import { isWhitespaceOnlyModify } from './internal/whitespace-drop-predicate.js'
 import { materialisePatchFiles } from './materialise-patch-files.js';
 import { readRawObject } from './read-object.js';
 import { readTree } from './read-tree.js';
-import type { DiffTreesInput, DiffTreesOptions } from './types.js';
+import { type DiffTreesInput, type DiffTreesOptions, MAX_PEEL_DEPTH } from './types.js';
 import { exceedsMaxTreeDepth } from './validators.js';
 
 const EMPTY = new Uint8Array(0);
@@ -310,9 +317,11 @@ function shouldDrop(change: DiffChange, stats: StatFields): boolean {
 
 /**
  * Build the flat preimage map for copies:'harder' — all tree-A paths become copy sources.
- * Returns undefined when copies:'harder' is not active or `a` is absent. Takes the
- * unresolved input directly — `flattenTree` accepts an `ObjectId | Tree` itself, so no
- * separate resolve is needed here.
+ * Returns undefined when copies:'harder' is not active or `a` is absent. An `ObjectId`
+ * is peeled to its tree first (a commit or tag oid must resolve exactly like the
+ * tree-oid form does) — `flattenTree` refuses anything but a tree, so `a` cannot be
+ * handed to it unresolved. A caller-supplied `Tree` is already resolved and passed
+ * through unchanged.
  */
 async function buildPreimage(
   ctx: Context,
@@ -320,7 +329,8 @@ async function buildPreimage(
   renameOptions: RenameDetectOptions | undefined,
 ): Promise<FlatTree['entries'] | undefined> {
   if (renameOptions?.copies !== 'harder' || a === undefined) return undefined;
-  const flat = await flattenTree(ctx, a);
+  const resolved = typeof a === 'string' ? (await peelToTree(ctx, a)).id : a;
+  const flat = await flattenTree(ctx, resolved);
   return flat.entries;
 }
 
@@ -348,8 +358,9 @@ async function readRawTree(ctx: Context, id: ObjectId): Promise<Uint8Array> {
  * Raw sibling of `resolveInput`, used only by the recursive branch. A caller-supplied
  * `Tree` is re-read raw by its own `id` — one walk implementation at every level, at
  * the cost of a hand-forged `Tree` whose `id` is not in the store now throwing
- * `OBJECT_NOT_FOUND`. An `ObjectId` still peels commit -> tree and tag -> tree exactly
- * like `readTree` (same max-peel-depth bound), so a commit/tag oid keeps working.
+ * `OBJECT_NOT_FOUND`. An `ObjectId` is peeled via `peelToTree` — commit -> tree and
+ * tag -> tree, same max-peel-depth bound as `readTree` — so a commit/tag oid keeps
+ * working, with every hop read raw exactly once (no redundant parse of the tree).
  */
 async function resolveRawInput(
   ctx: Context,
@@ -357,9 +368,36 @@ async function resolveRawInput(
 ): Promise<Uint8Array | undefined> {
   if (input === undefined) return undefined;
   if (typeof input !== 'string') return readRawTree(ctx, input.id);
-  const raw = await readRawObject(ctx, input);
-  if (raw.type === 'tree') return raw.content;
-  return readRawTree(ctx, (await readTree(ctx, input)).id);
+  return (await peelToTree(ctx, input)).content;
+}
+
+interface PeeledTree {
+  readonly id: ObjectId;
+  readonly content: Uint8Array;
+}
+
+/**
+ * Peel a commit or tag oid down to the tree it ultimately points at. Mirrors
+ * `readTree`'s peel loop (same `MAX_PEEL_DEPTH` bound, same non-tree refusal)
+ * but reads every hop once as raw bytes, parsing only the commit/tag body
+ * needed to find the next hop's id — the terminal tree is never parsed, only
+ * read, so a peel never pays for a `Tree` parse it immediately discards.
+ */
+async function peelToTree(ctx: Context, id: ObjectId): Promise<PeeledTree> {
+  let currentId = id;
+  let raw = await readRawObject(ctx, currentId);
+  let depth = 0;
+  while (raw.type === 'commit' || raw.type === 'tag') {
+    depth += 1;
+    if (depth > MAX_PEEL_DEPTH) throw refChainTooDeep(depth, []);
+    currentId =
+      raw.type === 'commit'
+        ? parseCommitContent(currentId, raw.content).data.tree
+        : parseTagContent(currentId, raw.content).data.object;
+    raw = await readRawObject(ctx, currentId);
+  }
+  if (raw.type !== 'tree') throw unexpectedObjectType('tree', raw.type, currentId);
+  return { id: currentId, content: raw.content };
 }
 
 /** Recursion state threaded through `diffRecursiveLevel` — tracks the full-path
