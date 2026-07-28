@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { MAX_CONCURRENT_BLOB_LOADS } from '../../../../../src/application/primitives/internal/bounded-map.js';
+import { MAX_CONCURRENT_OBJECT_LOADS } from '../../../../../src/application/primitives/internal/bounded-map.js';
 import {
   DEFAULT_FLATTEN_BOUNDS,
   type FlattenBounds,
@@ -9,10 +9,12 @@ import * as rawTreeIoMod from '../../../../../src/application/primitives/interna
 import * as readObjectMod from '../../../../../src/application/primitives/read-object.js';
 import { writeObject } from '../../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../../src/application/primitives/write-tree.js';
+import { encode } from '../../../../../src/domain/objects/encoding.js';
 import {
   FILE_MODE,
   type FileMode,
   type FilePath,
+  hexToBytes,
   type ObjectId,
   SHA1_CONFIG,
   serializeTreeContent,
@@ -28,6 +30,49 @@ async function writeBlob(
     content: new TextEncoder().encode(content),
     id: '' as ObjectId,
   });
+}
+
+function concatBytes(...parts: ReadonlyArray<Uint8Array>): Uint8Array {
+  const total = parts.reduce((sum, part) => sum + part.length, 0);
+  const result = new Uint8Array(total);
+  let offset = 0;
+  for (const part of parts) {
+    result.set(part, offset);
+    offset += part.length;
+  }
+  return result;
+}
+
+/** Hand-built raw entry bytes — planting a mode/name/oid combination
+ *  `writeTree` itself would refuse, to pin the prescan/main-loop refusal
+ *  ORDER rather than any single guard in isolation. */
+function rawEntry(mode: string, name: string, id: ObjectId): Uint8Array {
+  return concatBytes(encode(`${mode} ${name}\0`), hexToBytes(id));
+}
+
+/** A structurally truncated trailing entry — fewer oid bytes than the
+ *  digest length. `writeTree` never has to build this: it must be planted
+ *  directly in a level's raw content, ahead of the main loop's earlier
+ *  guards, to prove which error fires FIRST. */
+function truncatedEntry(mode: string, name: string, id: ObjectId, keepBytes: number): Uint8Array {
+  return concatBytes(encode(`${mode} ${name}\0`), hexToBytes(id).subarray(0, keepBytes));
+}
+
+const LEAF_OID = 'a'.repeat(40) as ObjectId;
+const WEIRD_MODE_OID = 'd'.repeat(40) as ObjectId;
+
+/** Swap `readRawObject`'s response for `rootId` with hand-crafted, possibly
+ *  malformed, raw content — the only way to get a level's OWN bytes past
+ *  `writeTree`'s validation and into `flattenRawTree`'s root read. */
+function stubRootContent(rootId: ObjectId, content: Uint8Array) {
+  const realReadRawObject = readObjectMod.readRawObject;
+  return vi
+    .spyOn(readObjectMod, 'readRawObject')
+    .mockImplementation(async (spyCtx, id, options) =>
+      id === rootId
+        ? { type: 'tree', content, bytes: content }
+        : realReadRawObject(spyCtx, id, options),
+    );
 }
 
 describe('flattenRawTree', () => {
@@ -294,7 +339,7 @@ describe('flattenRawTree', () => {
       it('Then in-flight subtree reads never exceed the bound but do exceed 1', async () => {
         // Arrange
         const ctx = await buildSeededContext();
-        const width = MAX_CONCURRENT_BLOB_LOADS + 8;
+        const width = MAX_CONCURRENT_OBJECT_LOADS + 8;
         const dirEntries: Array<{ name: string; mode: FileMode; id: ObjectId }> = [];
         const subtreeIds = new Set<ObjectId>();
         for (let i = 0; i < width; i++) {
@@ -331,7 +376,7 @@ describe('flattenRawTree', () => {
 
           // Assert
           expect(result.entries.size).toBe(width);
-          expect(maxInFlight).toBeLessThanOrEqual(MAX_CONCURRENT_BLOB_LOADS);
+          expect(maxInFlight).toBeLessThanOrEqual(MAX_CONCURRENT_OBJECT_LOADS);
           expect(maxInFlight).toBeGreaterThan(1);
         } finally {
           spy.mockRestore();
@@ -452,6 +497,128 @@ describe('flattenRawTree', () => {
           await new Promise<void>((resolve) => setImmediate(resolve));
           expect(unhandled).toEqual([]);
           process.off('unhandledRejection', onUnhandledRejection);
+          spy.mockRestore();
+        }
+      });
+    });
+  });
+
+  // --- refusal-order faithfulness: the prescan must never pre-empt the main
+  // loop's own, earlier per-entry guards (see internal/raw-subtree-prefetch.ts) ---
+
+  describe('Given 3 valid leaf entries followed by a truncated one, with maxEntries capped below the valid count', () => {
+    describe('When flattenRawTree runs', () => {
+      it('Then throws TREE_ENTRY_LIMIT_EXCEEDED — the entry cap trips before the main loop ever reaches the truncated tail', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const rootId = await writeTree(ctx, []);
+        const content = concatBytes(
+          rawEntry(FILE_MODE.REGULAR, 'a', LEAF_OID),
+          rawEntry(FILE_MODE.REGULAR, 'b', LEAF_OID),
+          rawEntry(FILE_MODE.REGULAR, 'c', LEAF_OID),
+          truncatedEntry(FILE_MODE.REGULAR, 'd', LEAF_OID, 5),
+        );
+        const spy = stubRootContent(rootId, content);
+        const bounds: FlattenBounds = { maxDepth: DEFAULT_FLATTEN_BOUNDS.maxDepth, maxEntries: 2 };
+        const sut = flattenRawTree;
+
+        // Act + Assert
+        try {
+          await sut(ctx, rootId, bounds);
+          expect.unreachable();
+        } catch (error) {
+          const { data } = error as { data: { code: string; count: number; limit: number } };
+          expect(data.code).toBe('TREE_ENTRY_LIMIT_EXCEEDED');
+          expect(data.count).toBe(3);
+          expect(data.limit).toBe(2);
+        } finally {
+          spy.mockRestore();
+        }
+      });
+    });
+  });
+
+  describe('Given an aborted signal and a level whose first entry is valid but whose second is truncated', () => {
+    describe('When flattenRawTree runs', () => {
+      it('Then throws OPERATION_ABORTED — the abort guard trips on entry 1, before the truncated entry 2 is ever scanned', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const rootId = await writeTree(ctx, []);
+        const content = concatBytes(
+          rawEntry(FILE_MODE.REGULAR, 'a', LEAF_OID),
+          truncatedEntry(FILE_MODE.REGULAR, 'b', LEAF_OID, 5),
+        );
+        const spy = stubRootContent(rootId, content);
+        const controller = new AbortController();
+        controller.abort();
+        const aborted = { ...ctx, signal: controller.signal };
+        const sut = flattenRawTree;
+
+        // Act + Assert
+        try {
+          await sut(aborted, rootId, DEFAULT_FLATTEN_BOUNDS);
+          expect.unreachable();
+        } catch (error) {
+          const { data } = error as { data: { code: string } };
+          expect(data.code).toBe('OPERATION_ABORTED');
+        } finally {
+          spy.mockRestore();
+        }
+      });
+    });
+  });
+
+  describe('Given an early entry named ".." and a later truncated entry', () => {
+    describe('When flattenRawTree runs', () => {
+      it("Then throws the name refusal at offset 0 — flatten's own name validation trips before the truncated tail is ever scanned", async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const rootId = await writeTree(ctx, []);
+        const content = concatBytes(
+          rawEntry(FILE_MODE.REGULAR, '..', LEAF_OID),
+          truncatedEntry(FILE_MODE.REGULAR, 'b', LEAF_OID, 5),
+        );
+        const spy = stubRootContent(rootId, content);
+        const sut = flattenRawTree;
+
+        // Act + Assert
+        try {
+          await sut(ctx, rootId, DEFAULT_FLATTEN_BOUNDS);
+          expect.unreachable();
+        } catch (error) {
+          const { data } = error as { data: { code: string; offset: number; reason: string } };
+          expect(data.code).toBe('INVALID_TREE_ENTRY');
+          expect(data.offset).toBe(0);
+          expect(data.reason).toBe('invalid entry name: ..');
+        } finally {
+          spy.mockRestore();
+        }
+      });
+    });
+  });
+
+  describe('Given an early entry with a directory-shaped but unrecognised mode (47777) and a later truncated entry', () => {
+    describe('When flattenRawTree runs', () => {
+      it('Then throws INVALID_FILE_MODE for the first entry — the mode refusal trips before the truncated tail is ever scanned', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const rootId = await writeTree(ctx, []);
+        const content = concatBytes(
+          rawEntry('47777', 'a', WEIRD_MODE_OID),
+          truncatedEntry(FILE_MODE.REGULAR, 'b', LEAF_OID, 5),
+        );
+        const spy = stubRootContent(rootId, content);
+        const sut = flattenRawTree;
+
+        // Act + Assert
+        try {
+          await sut(ctx, rootId, DEFAULT_FLATTEN_BOUNDS);
+          expect.unreachable();
+        } catch (error) {
+          const { data } = error as { data: { code: string; value: string } };
+          expect(data.code).toBe('INVALID_FILE_MODE');
+          expect(data.value).toBe('47777');
+        } finally {
           spy.mockRestore();
         }
       });

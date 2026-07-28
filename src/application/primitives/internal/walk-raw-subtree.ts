@@ -53,8 +53,9 @@ import {
   type TreeCursor,
 } from '../../../domain/objects/tree-cursor.js';
 import type { Context } from '../../../ports/context.js';
+import { readRawObject } from '../read-object.js';
 import { exceedsMaxTreeDepth, exceedsMaxTreeEntries } from '../validators.js';
-import { MAX_CONCURRENT_BLOB_LOADS } from './bounded-map.js';
+import { MAX_CONCURRENT_OBJECT_LOADS } from './bounded-map.js';
 import { type ConcurrencyLimiter, createConcurrencyLimiter } from './concurrency-limiter.js';
 import type { FlattenBounds } from './flatten-raw.js';
 import { prefetchSubtreeChildren, type SubtreePrefetch } from './raw-subtree-prefetch.js';
@@ -94,6 +95,15 @@ interface WalkConfig {
   readonly emit: (entry: RawSubtreeEntry) => void;
 }
 
+/**
+ * `limiter` defaults to a fresh, walk-scoped instance for a standalone
+ * caller (tests; any future direct consumer). `diff-trees.ts` passes its own
+ * `DiffWalkState.limiter` instead — ONE limiter per diff OPERATION, shared
+ * across every `walkRawSubtree` call that operation runs (added/deleted
+ * subtrees can be expanded concurrently, sibling to sibling), so two
+ * concurrent expansions queue behind the same budget rather than each
+ * multiplying the effective in-flight count.
+ */
 export async function walkRawSubtree(
   ctx: Context,
   root: ObjectId,
@@ -101,14 +111,10 @@ export async function walkRawSubtree(
   prefix: string,
   counter: Counter,
   emit: (entry: RawSubtreeEntry) => void,
+  limiter: ConcurrencyLimiter = createConcurrencyLimiter(MAX_CONCURRENT_OBJECT_LOADS),
 ): Promise<void> {
   const content = await readRawTreeById(ctx, root);
-  const config: WalkConfig = {
-    ctx,
-    bounds,
-    limiter: createConcurrencyLimiter(MAX_CONCURRENT_BLOB_LOADS),
-    emit,
-  };
+  const config: WalkConfig = { ctx, bounds, limiter, emit };
   await walkLevel(config, counter, content, root, prefix, 0, []);
 }
 
@@ -124,12 +130,15 @@ async function walkLevel(
   if (stack.includes(id)) throw treeCycleDetected(id);
   if (exceedsMaxTreeDepth(depth, config.bounds.maxDepth)) throw treeDepthExceeded(depth);
   const descentStack = [...stack, id];
-  // Fires off bounded-concurrency reads for every directory child at THIS
-  // level before the (unchanged) sequential loop below even starts — the
-  // loop still processes entries and awaits each descent one at a time, so
-  // DFS pre-order and every guard's ordering are untouched; only WHEN the
-  // underlying I/O was kicked off moves earlier.
-  const prefetch = prefetchSubtreeChildren(config.ctx, content, config.limiter);
+  // Fires off bounded-concurrency reads for a bounded WINDOW of directory
+  // children at THIS level before the (unchanged) sequential loop below even
+  // starts — the loop still processes entries and awaits each descent one at
+  // a time, so DFS pre-order and every guard's ordering are untouched; only
+  // WHEN the underlying I/O was kicked off moves earlier. A child beyond the
+  // window (or the remaining entry budget) is read directly by `emitEntry`'s
+  // fallback when the loop reaches it.
+  const remainingEntries = config.bounds.maxEntries - counter.value;
+  const prefetch = prefetchSubtreeChildren(config.ctx, content, config.limiter, remainingEntries);
   const cursor = openTreeCursor(content, config.ctx.hashConfig);
   while (!cursor.done) {
     await emitEntry(config, counter, cursor, prefix, depth, descentStack, prefetch);
@@ -158,11 +167,11 @@ async function emitEntry(
     config.emit({ path, id, mode });
     return;
   }
-  // `prefetch` was built from THIS SAME content by a prescan that flags a
-  // directory child exactly when `cursorMode` would (both key off the same
-  // `S_ISDIR` byte test) — every id reaching this branch is guaranteed
-  // present.
-  const raw = await prefetch.get(id)!;
+  // `prefetch` only covers a bounded window of this level's directory
+  // children (see `raw-subtree-prefetch.ts`) — a child beyond the window, or
+  // one the prescan never reached because it stopped tolerating a later
+  // structural defect, is read directly here instead.
+  const raw = await (prefetch.get(id) ?? readRawObject(config.ctx, id));
   if (raw.type !== 'tree') return;
   await walkLevel(config, counter, raw.content, id, path, depth + 1, stack);
 }

@@ -40,7 +40,11 @@ import {
 } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import { detectSimilarityRenames } from './detect-similarity-renames.js';
-import { boundedMap, MAX_CONCURRENT_BLOB_LOADS } from './internal/bounded-map.js';
+import { boundedMap, MAX_CONCURRENT_OBJECT_LOADS } from './internal/bounded-map.js';
+import {
+  type ConcurrencyLimiter,
+  createConcurrencyLimiter,
+} from './internal/concurrency-limiter.js';
 import {
   DEFAULT_FLATTEN_BOUNDS,
   type FlattenBounds,
@@ -207,8 +211,12 @@ async function expandDirectoryChanges(
   ctx: Context,
   changes: ReadonlyArray<DiffChange>,
 ): Promise<DiffChange[]> {
-  const state: DiffWalkState = { counter: { value: 0 }, maxEntries: MAX_FLAT_TREE_ENTRIES };
-  const expanded = await boundedMap(changes, MAX_CONCURRENT_BLOB_LOADS, (change) =>
+  const state: DiffWalkState = {
+    counter: { value: 0 },
+    maxEntries: MAX_FLAT_TREE_ENTRIES,
+    limiter: createConcurrencyLimiter(MAX_CONCURRENT_OBJECT_LOADS),
+  };
+  const expanded = await boundedMap(changes, MAX_CONCURRENT_OBJECT_LOADS, (change) =>
     expandLevelChange(ctx, change, ROOT_CURSOR, state),
   );
   return expanded.flat();
@@ -233,7 +241,7 @@ async function applyDropPredicate(
     providerPromise ??= buildAttributeProvider(ctx);
     return providerPromise;
   };
-  const drops = await boundedMap(diff.changes, MAX_CONCURRENT_BLOB_LOADS, (change) =>
+  const drops = await boundedMap(diff.changes, MAX_CONCURRENT_OBJECT_LOADS, (change) =>
     changeShouldDrop(ctx, change, lineKey, ignoreBlankLines, getProvider),
   );
   return { changes: diff.changes.filter((_, index) => !drops[index]) };
@@ -422,10 +430,18 @@ interface DiffWalkCounter {
  *  descent so a diamond DAG (the same subtree pair reached via more than one
  *  path) is bounded by its TOTAL entries visited, not just per level. Without
  *  memoisation across paths, each revisit re-walks the shared subtree, so the
- *  cap is what stops that from growing unbounded. */
+ *  cap is what stops that from growing unbounded.
+ *
+ *  `limiter` is ONE `ConcurrencyLimiter` for the WHOLE operation, created
+ *  once and threaded into every `walkRawSubtree` call `expandAddedSubtree`/
+ *  `expandDeletedSubtree` make — sibling subtree expansions (added and
+ *  deleted directories, expanded concurrently by the `boundedMap` calls
+ *  below) queue behind the SAME budget instead of each call minting its own
+ *  and multiplying the effective in-flight object-read count. */
 interface DiffWalkState {
   readonly counter: DiffWalkCounter;
   readonly maxEntries: number;
+  readonly limiter: ConcurrencyLimiter;
 }
 
 /**
@@ -440,7 +456,11 @@ export async function diffRecursive(
   b: Uint8Array | undefined,
   maxEntries: number = MAX_FLAT_TREE_ENTRIES,
 ): Promise<TreeDiff> {
-  const state: DiffWalkState = { counter: { value: 0 }, maxEntries };
+  const state: DiffWalkState = {
+    counter: { value: 0 },
+    maxEntries,
+    limiter: createConcurrencyLimiter(MAX_CONCURRENT_OBJECT_LOADS),
+  };
   const changes = await diffRecursiveLevel(ctx, a, b, ROOT_CURSOR, state);
   return { changes };
 }
@@ -451,10 +471,12 @@ export async function diffRecursive(
  * on both sides) never reaches `expandLevelChange` — the merge-join already
  * drops it — so its subtree is never read or flattened, matching git's own
  * diff-tree pruning. Sibling directories that DO differ are expanded
- * concurrently via `boundedMap`, bounded to `MAX_CONCURRENT_BLOB_LOADS`
+ * concurrently via `boundedMap`, bounded to `MAX_CONCURRENT_OBJECT_LOADS`
  * in-flight reads PER LEVEL — nested levels each open their own bounded
  * batch, so the total in-flight count across a deep recursion is not itself
- * capped, only each level's own fan-out is.
+ * capped, only each level's own fan-out is. Object reads a directory
+ * expansion issues BELOW that fan-out (subtree prefetch inside
+ * `walkRawSubtree`) are bounded separately, by `state.limiter`.
  */
 async function diffRecursiveLevel(
   ctx: Context,
@@ -472,7 +494,7 @@ async function diffRecursiveLevel(
     // multi-entry level batch stays byte-identical to the old per-entry loop.
     throw treeEntryLimitExceeded(state.maxEntries + 1, state.maxEntries);
   }
-  const expanded = await boundedMap(levelChanges, MAX_CONCURRENT_BLOB_LOADS, (change) =>
+  const expanded = await boundedMap(levelChanges, MAX_CONCURRENT_OBJECT_LOADS, (change) =>
     expandLevelChange(ctx, change, cursor, state),
   );
   return expanded.flat();
@@ -563,9 +585,17 @@ async function expandAddedSubtree(
   state: DiffWalkState,
 ): Promise<AddChange[]> {
   const changes: AddChange[] = [];
-  await walkRawSubtree(ctx, id, subtreeExpansionBounds(state), prefix, state.counter, (entry) => {
-    changes.push(addLeaf(entry.path, entry));
-  });
+  await walkRawSubtree(
+    ctx,
+    id,
+    subtreeExpansionBounds(state),
+    prefix,
+    state.counter,
+    (entry) => {
+      changes.push(addLeaf(entry.path, entry));
+    },
+    state.limiter,
+  );
   return changes;
 }
 
@@ -576,9 +606,17 @@ async function expandDeletedSubtree(
   state: DiffWalkState,
 ): Promise<DeleteChange[]> {
   const changes: DeleteChange[] = [];
-  await walkRawSubtree(ctx, id, subtreeExpansionBounds(state), prefix, state.counter, (entry) => {
-    changes.push(deleteLeaf(entry.path, entry));
-  });
+  await walkRawSubtree(
+    ctx,
+    id,
+    subtreeExpansionBounds(state),
+    prefix,
+    state.counter,
+    (entry) => {
+      changes.push(deleteLeaf(entry.path, entry));
+    },
+    state.limiter,
+  );
   return changes;
 }
 

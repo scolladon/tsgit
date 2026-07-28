@@ -1,6 +1,6 @@
-// Shared cap for concurrent blob loads (was duplicated in grep, materialise-patch-files,
-// detect-similarity-renames).
-export const MAX_CONCURRENT_BLOB_LOADS = 32;
+// Shared cap for concurrent object loads (was duplicated in grep, materialise-patch-files,
+// detect-similarity-renames, the raw subtree walkers, and the subtree prefetch).
+export const MAX_CONCURRENT_OBJECT_LOADS = 32;
 
 /**
  * Run `worker` over `items` with at most `limit` in flight, returning results in

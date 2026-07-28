@@ -23,7 +23,7 @@ import {
 } from '../../domain/diff/similarity.js';
 import type { FileMode, FilePath, ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
-import { boundedMap, MAX_CONCURRENT_BLOB_LOADS } from './internal/bounded-map.js';
+import { boundedMap, MAX_CONCURRENT_OBJECT_LOADS } from './internal/bounded-map.js';
 import { readBlob } from './read-blob.js';
 
 /** Must match `rename-detect.ts` DEFAULT_LIMIT (1000). */
@@ -38,7 +38,7 @@ async function hydrateIds(
   ctx: Context,
   ids: ReadonlyArray<ObjectId>,
 ): Promise<ReadonlyArray<BlobEntry>> {
-  return boundedMap(ids, MAX_CONCURRENT_BLOB_LOADS, async (id) => ({
+  return boundedMap(ids, MAX_CONCURRENT_OBJECT_LOADS, async (id) => ({
     id,
     bytes: (await readBlob(ctx, id)).content,
   }));

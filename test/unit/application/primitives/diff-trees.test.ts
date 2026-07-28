@@ -2944,4 +2944,49 @@ describe('diffTrees', () => {
       });
     });
   });
+
+  // --- one concurrency limiter per diff operation, shared across every
+  // subtree expansion it runs (see DiffWalkState.limiter) ---
+
+  describe('Given an added directory and a deleted directory expanded within the same diffRecursive call', () => {
+    describe('When diffRecursive runs', () => {
+      it('Then both walkRawSubtree calls share the identical DiffWalkState limiter instance, not one each', async () => {
+        // Arrange — two DIFFERENT subtree expansions (add + delete) at the same
+        // level, so `diffRecursiveLevel`'s `boundedMap` runs both concurrently.
+        // A shared limiter is what makes the two expansions' COMBINED in-flight
+        // object reads respect ONE bound instead of each minting its own and
+        // multiplying the effective concurrency — proving both calls receive the
+        // identical instance is a deterministic proxy for that property
+        // (`concurrency-limiter.test.ts` already proves the limiter itself caps
+        // concurrency for whoever shares it).
+        const ctx = await buildSeededContext();
+        const addedSubId = await subTree(ctx, 'f', await blob(ctx, 'added'), FILE_MODE.REGULAR);
+        const deletedSubId = await subTree(ctx, 'f', await blob(ctx, 'deleted'), FILE_MODE.REGULAR);
+        const oldRoot = await writeTree(ctx, [
+          { name: 'dDel', mode: FILE_MODE.DIRECTORY, id: deletedSubId },
+        ]);
+        const newRoot = await writeTree(ctx, [
+          { name: 'dAdd', mode: FILE_MODE.DIRECTORY, id: addedSubId },
+        ]);
+        const rawOld = (await readObjectMod.readRawObject(ctx, oldRoot)).content;
+        const rawNew = (await readObjectMod.readRawObject(ctx, newRoot)).content;
+        const walkSpy = vi.spyOn(walkRawSubtreeMod, 'walkRawSubtree');
+        const sut = diffRecursive;
+
+        // Act
+        try {
+          const result = await sut(ctx, rawOld, rawNew);
+
+          // Assert
+          expect(result.changes).toHaveLength(2);
+          expect(walkSpy).toHaveBeenCalledTimes(2);
+          const limiters = walkSpy.mock.calls.map((call) => call[6]);
+          expect(limiters[0]).toBeDefined();
+          expect(limiters[0]).toBe(limiters[1]);
+        } finally {
+          walkSpy.mockRestore();
+        }
+      });
+    });
+  });
 });

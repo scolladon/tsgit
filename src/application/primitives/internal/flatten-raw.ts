@@ -3,8 +3,11 @@
  * directly via `TreeCursor` instead of materialising a `Tree` object per
  * level or a `TreeEntry` per entry — the same descent `walkTree` performs,
  * with the same guards (cycle stack, max depth, entry counter, abort check,
- * directory-skip filter, silent non-tree skip), but with no per-entry
- * promise and no intermediate allocation.
+ * directory-skip filter, silent non-tree skip). No per-entry promise or
+ * intermediate allocation for a LEAF entry; a DIRECTORY entry trades some of
+ * that back — a prefetch-map entry and a hex oid string per child within the
+ * prescan window (`raw-subtree-prefetch.ts`) — for overlapping child object
+ * I/O across siblings instead of paying for it one descent at a time.
  *
  * Bounds are an explicit parameter rather than an inlined literal so the
  * entry-limit guard is reachable from a test with a small cap; `flattenTree`
@@ -35,8 +38,9 @@ import {
   type TreeCursor,
 } from '../../../domain/objects/tree-cursor.js';
 import type { Context } from '../../../ports/context.js';
+import { readRawObject } from '../read-object.js';
 import { exceedsMaxTreeDepth, exceedsMaxTreeEntries } from '../validators.js';
-import { MAX_CONCURRENT_BLOB_LOADS } from './bounded-map.js';
+import { MAX_CONCURRENT_OBJECT_LOADS } from './bounded-map.js';
 import { type ConcurrencyLimiter, createConcurrencyLimiter } from './concurrency-limiter.js';
 import { prefetchSubtreeChildren, type SubtreePrefetch } from './raw-subtree-prefetch.js';
 import { joinPath, readRawTreeById } from './raw-tree-io.js';
@@ -91,7 +95,7 @@ export async function flattenRawTree(
   const config: FlattenConfig = {
     ctx,
     bounds,
-    limiter: createConcurrencyLimiter(MAX_CONCURRENT_BLOB_LOADS),
+    limiter: createConcurrencyLimiter(MAX_CONCURRENT_OBJECT_LOADS),
   };
   const state: FlattenState = { counter: { value: 0 }, entries: new Map() };
   await flattenLevel(config, state, content, rootId, '', 0, []);
@@ -110,12 +114,15 @@ async function flattenLevel(
   if (stack.includes(id)) throw treeCycleDetected(id);
   if (exceedsMaxTreeDepth(depth, config.bounds.maxDepth)) throw treeDepthExceeded(depth);
   const descentStack = [...stack, id];
-  // Fires off bounded-concurrency reads for every directory child at THIS
-  // level before the (unchanged) sequential loop below even starts — the
-  // loop still processes entries and awaits each descent one at a time, so
-  // DFS pre-order and every guard's ordering are untouched; only WHEN the
-  // underlying I/O was kicked off moves earlier.
-  const prefetch = prefetchSubtreeChildren(config.ctx, content, config.limiter);
+  // Fires off bounded-concurrency reads for a bounded WINDOW of directory
+  // children at THIS level before the (unchanged) sequential loop below even
+  // starts — the loop still processes entries and awaits each descent one at
+  // a time, so DFS pre-order and every guard's ordering are untouched; only
+  // WHEN the underlying I/O was kicked off moves earlier. A child beyond the
+  // window (or the remaining entry budget) is read directly by
+  // `descendIfTree`'s fallback when the loop reaches it.
+  const remainingEntries = config.bounds.maxEntries - state.counter.value;
+  const prefetch = prefetchSubtreeChildren(config.ctx, content, config.limiter, remainingEntries);
   const cursor = openTreeCursor(content, config.ctx.hashConfig);
   while (!cursor.done) {
     const child = flattenEntry(config, state, cursor, prefix);
@@ -177,11 +184,11 @@ async function descendIfTree(
   stack: ReadonlyArray<ObjectId>,
   prefetch: SubtreePrefetch,
 ): Promise<void> {
-  // `prefetch` was built from THIS SAME content by a prescan that flags a
-  // directory child exactly when `cursorMode` would (both key off the same
-  // `S_ISDIR` byte test) — every id `flattenEntry` hands back as a directory
-  // is guaranteed present.
-  const raw = await prefetch.get(childId)!;
+  // `prefetch` only covers a bounded window of this level's directory
+  // children (see `raw-subtree-prefetch.ts`) — a child beyond the window, or
+  // one the prescan never reached because it stopped tolerating a later
+  // structural defect, is read directly here instead.
+  const raw = await (prefetch.get(childId) ?? readRawObject(config.ctx, childId));
   if (raw.type !== 'tree') return;
   await flattenLevel(config, state, raw.content, childId, path, depth + 1, stack);
 }

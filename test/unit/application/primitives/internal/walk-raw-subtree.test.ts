@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { MAX_CONCURRENT_BLOB_LOADS } from '../../../../../src/application/primitives/internal/bounded-map.js';
+import { MAX_CONCURRENT_OBJECT_LOADS } from '../../../../../src/application/primitives/internal/bounded-map.js';
 import { DEFAULT_FLATTEN_BOUNDS } from '../../../../../src/application/primitives/internal/flatten-raw.js';
 import {
   type Counter,
@@ -338,7 +338,7 @@ describe('walkRawSubtree', () => {
       it('Then in-flight subtree reads never exceed the bound but do exceed 1', async () => {
         // Arrange
         const ctx = await buildSeededContext();
-        const width = MAX_CONCURRENT_BLOB_LOADS + 8;
+        const width = MAX_CONCURRENT_OBJECT_LOADS + 8;
         const dirEntries: Array<{ name: string; mode: FileMode; id: ObjectId }> = [];
         const subtreeIds = new Set<ObjectId>();
         for (let i = 0; i < width; i++) {
@@ -374,7 +374,7 @@ describe('walkRawSubtree', () => {
 
           // Assert
           expect(entries).toHaveLength(width);
-          expect(maxInFlight).toBeLessThanOrEqual(MAX_CONCURRENT_BLOB_LOADS);
+          expect(maxInFlight).toBeLessThanOrEqual(MAX_CONCURRENT_OBJECT_LOADS);
           expect(maxInFlight).toBeGreaterThan(1);
         } finally {
           spy.mockRestore();

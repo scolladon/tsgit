@@ -1605,7 +1605,7 @@ describe('detectSimilarityRenames', () => {
   // indices regardless of initial length. Proof: results[idx]=… sets length to
   // max(idx)+1; .map() then covers 0..ids.length-1 identically.
   //
-  // equivalent-mutant: L53 Math.max(MAX_CONCURRENT_BLOB_LOADS,ids.length) as concurrency ─
+  // equivalent-mutant: L53 Math.max(MAX_CONCURRENT_OBJECT_LOADS,ids.length) as concurrency ─
   // Extra workers spin once, see cursor≥ids.length, and return immediately.
   // Proof: cursor is shared; all ids processed before extras start.
   //
