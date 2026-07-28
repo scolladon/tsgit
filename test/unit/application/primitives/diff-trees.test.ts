@@ -2698,7 +2698,9 @@ describe('diffTrees', () => {
           await diffTrees(ctx, currentId, treeId, { recursive: true });
           expect.unreachable();
         } catch (error) {
-          expect((error as { data: { code: string } }).data.code).toBe('REF_CHAIN_TOO_DEEP');
+          const data = (error as { data: { code: string; depth: number } }).data;
+          expect(data.code).toBe('REF_CHAIN_TOO_DEEP');
+          expect(data.depth).toBe(MAX_PEEL_DEPTH + 1);
         }
       });
     });

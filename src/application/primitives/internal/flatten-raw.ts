@@ -68,6 +68,8 @@ interface FlattenState {
  * the caller (e.g. `diff-trees.ts`'s `peelToTree` reads the terminal tree as
  * its last peel hop) — passing it skips this function's own root read
  * entirely, so a caller that already paid for the bytes never pays twice.
+ * It also skips the non-tree refusal that read performs: the caller MUST
+ * have already verified the bytes are tree content.
  */
 export async function flattenRawTree(
   ctx: Context,

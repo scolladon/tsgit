@@ -1,6 +1,6 @@
 /**
  * Flatten a nested `Tree` into the `FlatTree` shape that the `mergeTrees`
- * domain primitive (and the recursive tree-diff) consume.
+ * domain primitive consumes.
  *
  * Delegates to `flattenRawTree`, a raw byte-cursor descent that walks tree
  * bytes directly instead of materialising a `Tree`/`TreeEntry` per level.
@@ -8,8 +8,9 @@
  * object the root is still read raw by its `id` (no redundant-root-read
  * shortcut; a hand-forged `Tree` whose `id` is absent throws
  * `OBJECT_NOT_FOUND`). Consumed by `merge.ts`'s clean-merge tree walk,
- * `rm`'s HEAD-vs-index staged-change check, and the `diffTrees` recursive
- * path, so it is exported from the primitives barrel.
+ * `rm`'s HEAD-vs-index staged-change check, and other worktree-facing
+ * callers, so it is exported from the primitives barrel. The recursive
+ * diff no longer flattens — it walks raw bytes directly.
  *
  * Pure with respect to the working tree — only reads git objects.
  */

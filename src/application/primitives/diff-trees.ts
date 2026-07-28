@@ -541,6 +541,10 @@ async function diffChangedSubtree(
   return diffRecursiveLevel(ctx, oldContent, newContent, nextCursor, state);
 }
 
+function subtreeExpansionBounds(state: DiffWalkState): FlattenBounds {
+  return { maxDepth: DEFAULT_FLATTEN_BOUNDS.maxDepth, maxEntries: state.maxEntries };
+}
+
 /**
  * Expand a whole added/deleted subtree into one leaf change per ENTRY,
  * duplicates included — matching `git diff-tree -r`, which never
@@ -552,10 +556,6 @@ async function diffChangedSubtree(
  * budget `diffRecursiveLevel` itself counts against, not a fresh one per
  * subtree; only `maxDepth` stays fixed at `DEFAULT_FLATTEN_BOUNDS`' value.
  */
-function subtreeExpansionBounds(state: DiffWalkState): FlattenBounds {
-  return { maxDepth: DEFAULT_FLATTEN_BOUNDS.maxDepth, maxEntries: state.maxEntries };
-}
-
 async function expandAddedSubtree(
   ctx: Context,
   id: ObjectId,

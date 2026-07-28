@@ -560,6 +560,16 @@ argument for B is answered by requirement 7: the path that can actually reach th
 filesystem (`flattenTree`) validates under both options, and the node adapter's
 containment gate is an independent second gate.
 
+**Deliberate over-block:** both lexical gates canonicalise a segment the way
+Win32 does before comparing it to `..` (trailing dots/spaces stripped, drive
+prefixes treated as absolute), because the platform behind a caller-supplied
+`FileSystem` is unknown. On POSIX this fail-closed choice refuses legal names
+like a directory literally called `...` (the wrapped-fs guard) or skips a
+`.gitattributes` under one (the attribute resolver) where real git would
+proceed — accepted: the guards protect unknown adapters, the built-in Node
+adapter's realpath containment is unaffected, and failing closed beats a
+Windows traversal.
+
 **The rider is not optional, and it is verified, not assumed.** tsgit's `fsck`
 (`src/application/commands/internal/fsck/content-validation.ts`) implements **none**
 of git's five tree-structure checks — no `treeNotSorted`, `duplicateEntries`,

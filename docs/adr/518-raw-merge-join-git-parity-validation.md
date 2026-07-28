@@ -15,7 +15,7 @@ The raw byte-cursor merge-join must pick a refusal surface. Empirical pins again
 
 ## Decision
 
-**Ratified by user — Option 1.** The raw merge-join enforces exactly git's `decode_tree_entry` structural refusals and nothing else; the fsck rider lands in the same change — the packed-object read gap closed and all five tree-structure checks pinned against `git fsck --strict`. On fsck-invalid trees the recursive diff now produces git's exact output instead of silently re-sorted output. `flattenTree` keeps its name validation for the callers that can reach the filesystem (`merge`, `rm`, `apply-merge-to-worktree`, `buildPreimage`, `repo.primitives.flattenTree`) — the diff's own traversal, merge-join AND added/deleted-subtree expansion alike, validates neither; the resulting seam is deliberate and documented in the design.
+**Ratified by user — Option 1.** The raw merge-join enforces exactly git's `decode_tree_entry` structural refusals and nothing else; the fsck rider lands in the same change — the packed-object read gap closed and all five tree-structure checks pinned against `git fsck --strict`. On fsck-invalid trees the recursive diff now produces git's exact output instead of silently re-sorted output. `flattenTree` keeps its name validation for its worktree-facing callers (`merge`, `rm`, `apply-merge-to-worktree`, `stash`, and every other consumer of the flatten path) — the diff's own traversal, merge-join AND added/deleted-subtree expansion alike, validates neither; the resulting seam is deliberate and documented in the design.
 
 ## Consequences
 
