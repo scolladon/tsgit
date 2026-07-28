@@ -337,7 +337,7 @@ describe('tree-cursor', () => {
 
     describe("Given a blob 'd' and a blob 'd!' (identical shared-prefix byte, diverging length)", () => {
       describe('When comparing', () => {
-        it("Then 'd' sorts before 'd!' (kills the Math.min→Math.max mutant on the shared-prefix bound)", () => {
+        it("Then 'd' sorts before 'd!' via the virtual slash on the exhausted shorter side", () => {
           // Arrange — a Math.max mutant would extend the compare loop past the
           // shorter name's real length into VIRTUAL_SLASH ('/' = 0x2f), which
           // sorts AFTER '!' (0x21), flipping the verdict to positive.
