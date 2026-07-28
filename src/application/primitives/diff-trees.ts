@@ -38,12 +38,15 @@ import {
   parseTagContent,
   type Tree,
 } from '../../domain/objects/index.js';
-import { refChainTooDeep } from '../../domain/refs/error.js';
 import type { Context } from '../../ports/context.js';
 import { detectSimilarityRenames } from './detect-similarity-renames.js';
-import { flattenTree } from './flatten-tree.js';
 import { boundedMap, MAX_CONCURRENT_BLOB_LOADS } from './internal/bounded-map.js';
-import { DEFAULT_FLATTEN_BOUNDS, type FlattenBounds } from './internal/flatten-raw.js';
+import {
+  DEFAULT_FLATTEN_BOUNDS,
+  type FlattenBounds,
+  flattenRawTree,
+} from './internal/flatten-raw.js';
+import { peelChain } from './internal/peel-chain.js';
 import { joinPath, readRawTreeById as readRawTree } from './internal/raw-tree-io.js';
 import { type AttributeProvider, buildAttributeProvider } from './internal/read-gitattributes.js';
 import { walkRawSubtree } from './internal/walk-raw-subtree.js';
@@ -51,7 +54,7 @@ import { isWhitespaceOnlyModify } from './internal/whitespace-drop-predicate.js'
 import { materialisePatchFiles } from './materialise-patch-files.js';
 import { readRawObject } from './read-object.js';
 import { readTree } from './read-tree.js';
-import { type DiffTreesInput, type DiffTreesOptions, MAX_PEEL_DEPTH } from './types.js';
+import type { DiffTreesInput, DiffTreesOptions } from './types.js';
 import { exceedsMaxTreeDepth, exceedsMaxTreeEntries } from './validators.js';
 
 const EMPTY = new Uint8Array(0);
@@ -329,9 +332,11 @@ function shouldDrop(change: DiffChange, stats: StatFields): boolean {
  * Build the flat preimage map for copies:'harder' — all tree-A paths become copy sources.
  * Returns undefined when copies:'harder' is not active or `a` is absent. An `ObjectId`
  * is peeled to its tree first (a commit or tag oid must resolve exactly like the
- * tree-oid form does) — `flattenTree` refuses anything but a tree, so `a` cannot be
- * handed to it unresolved. A caller-supplied `Tree` is already resolved and passed
- * through unchanged.
+ * tree-oid form does) — `flattenRawTree` refuses anything but a tree, so `a` cannot be
+ * handed to it unresolved. `peelToTree` already reads the terminal tree's raw bytes as
+ * its last peel hop, so they are threaded straight into `flattenRawTree` as `preread`
+ * rather than re-read — one read total, not two. A caller-supplied `Tree` has no
+ * preread bytes available and is passed through unchanged.
  */
 async function buildPreimage(
   ctx: Context,
@@ -339,9 +344,11 @@ async function buildPreimage(
   renameOptions: RenameDetectOptions | undefined,
 ): Promise<FlatTree['entries'] | undefined> {
   if (renameOptions?.copies !== 'harder' || a === undefined) return undefined;
-  const resolved = typeof a === 'string' ? (await peelToTree(ctx, a)).id : a;
-  const flat = await flattenTree(ctx, resolved);
-  return flat.entries;
+  if (typeof a !== 'string') {
+    return (await flattenRawTree(ctx, a, DEFAULT_FLATTEN_BOUNDS)).entries;
+  }
+  const peeled = await peelToTree(ctx, a);
+  return (await flattenRawTree(ctx, peeled.id, DEFAULT_FLATTEN_BOUNDS, peeled.content)).entries;
 }
 
 async function resolveInput(ctx: Context, input: DiffTreesInput): Promise<Tree | undefined> {
@@ -376,27 +383,21 @@ interface PeeledTree {
 }
 
 /**
- * Peel a commit or tag oid down to the tree it ultimately points at. Mirrors
- * `readTree`'s peel loop (same `MAX_PEEL_DEPTH` bound, same non-tree refusal)
- * but reads every hop once as raw bytes, parsing only the commit/tag body
- * needed to find the next hop's id — the terminal tree is never parsed, only
- * read, so a peel never pays for a `Tree` parse it immediately discards.
+ * Peel a commit or tag oid down to the tree it ultimately points at. Shares
+ * `readTree`'s peel loop (`peelChain`, same `MAX_PEEL_DEPTH` bound, same
+ * non-tree refusal) but reads every hop once as raw bytes, parsing only the
+ * commit/tag body needed to find the next hop's id — the terminal tree is
+ * never parsed, only read, so a peel never pays for a `Tree` parse it
+ * immediately discards.
  */
 async function peelToTree(ctx: Context, id: ObjectId): Promise<PeeledTree> {
-  let currentId = id;
-  let raw = await readRawObject(ctx, currentId);
-  let depth = 0;
-  while (raw.type === 'commit' || raw.type === 'tag') {
-    depth += 1;
-    if (depth > MAX_PEEL_DEPTH) throw refChainTooDeep(depth, []);
-    currentId =
-      raw.type === 'commit'
-        ? parseCommitContent(currentId, raw.content).data.tree
-        : parseTagContent(currentId, raw.content).data.object;
-    raw = await readRawObject(ctx, currentId);
-  }
-  if (raw.type !== 'tree') throw unexpectedObjectType('tree', raw.type, currentId);
-  return { id: currentId, content: raw.content };
+  const { id: currentId, result } = await peelChain(ctx, id, readRawObject, (raw, hopId) => {
+    if (raw.type === 'commit') return parseCommitContent(hopId, raw.content).data.tree;
+    if (raw.type === 'tag') return parseTagContent(hopId, raw.content).data.object;
+    return undefined;
+  });
+  if (result.type !== 'tree') throw unexpectedObjectType('tree', result.type, currentId);
+  return { id: currentId, content: result.content };
 }
 
 /** Recursion state threaded through `diffRecursiveLevel` — tracks the full-path

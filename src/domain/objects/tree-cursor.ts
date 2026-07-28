@@ -25,6 +25,7 @@ const VIRTUAL_SLASH = 0x2f;
 export interface TreeCursor {
   readonly buf: Uint8Array;
   readonly digestLength: number;
+  /** An entry begins with its mode — `offset` IS the mode start. */
   offset: number;
   modeEnd: number;
   nameStart: number;

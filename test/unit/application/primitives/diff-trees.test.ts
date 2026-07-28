@@ -6,6 +6,7 @@ import * as walkRawSubtreeMod from '../../../../src/application/primitives/inter
 import * as materialisePatchFilesMod from '../../../../src/application/primitives/materialise-patch-files.js';
 import * as readObjectMod from '../../../../src/application/primitives/read-object.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
+import { MAX_PEEL_DEPTH } from '../../../../src/application/primitives/types.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../src/application/primitives/write-tree.js';
 import type { LineKey, WhitespaceMode } from '../../../../src/domain/diff/index.js';
@@ -1091,6 +1092,48 @@ describe('diffTrees', () => {
           }
         },
       );
+    });
+  });
+
+  describe('Given copies:"harder" and treeA wrapped in a commit oid', () => {
+    describe('When diffTrees builds the preimage', () => {
+      it('Then the terminal tree is read raw exactly once (the peeled bytes feed the preimage flatten directly)', async () => {
+        // Arrange — peelToTree already reads the terminal tree's raw bytes as
+        // its last hop; flattenRawTree must reuse them rather than re-reading
+        // the same tree object a second time.
+        const ctx = await buildSeededContext();
+        const unchangedId = await blob(ctx, 'shared content\n');
+        const treeA = await writeTree(ctx, [
+          { name: 'orig.txt', mode: FILE_MODE.REGULAR, id: unchangedId },
+        ]);
+        const treeB = await writeTree(ctx, [
+          { name: 'orig.txt', mode: FILE_MODE.REGULAR, id: unchangedId },
+        ]);
+        const commitA = await writeObject(ctx, {
+          type: 'commit',
+          id: '' as ObjectId,
+          data: {
+            tree: treeA,
+            parents: [],
+            author: IDENTITY,
+            committer: IDENTITY,
+            message: 'wrap treeA',
+            extraHeaders: [],
+          },
+        });
+        const readRawObjectSpy = vi.spyOn(readObjectMod, 'readRawObject');
+
+        // Act
+        await diffTrees(ctx, commitA, treeB, {
+          detectRenames: true,
+          renameOptions: { copies: 'harder' },
+        });
+
+        // Assert
+        const treeAReads = readRawObjectSpy.mock.calls.filter(([, id]) => id === treeA).length;
+        expect(treeAReads).toBe(1);
+        readRawObjectSpy.mockRestore();
+      });
     });
   });
 
@@ -2588,6 +2631,75 @@ describe('diffTrees', () => {
         expect(data.code).toBe('UNEXPECTED_OBJECT_TYPE');
         expect(data.expected).toBe('tree');
         expect(data.actual).toBe('blob');
+      });
+    });
+  });
+
+  describe('Given recursive=true and a top-level tag oid pointing directly at a tree', () => {
+    describe('When diffTrees is called', () => {
+      it('Then peels the tag to its tree before diffing (the tag arm of the raw peel)', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const fileId = await blob(ctx, 'content');
+        const treeId = await writeTree(ctx, [
+          { name: 'a.txt', mode: FILE_MODE.REGULAR, id: fileId },
+        ]);
+        const tagId = await writeObject(ctx, {
+          type: 'tag',
+          id: '' as ObjectId,
+          data: {
+            object: treeId,
+            objectType: 'tree',
+            tagName: 'v1',
+            tagger: IDENTITY,
+            message: 'tag msg',
+            extraHeaders: [],
+          },
+        });
+
+        // Act
+        const result = await diffTrees(ctx, tagId, treeId, { recursive: true });
+
+        // Assert — the tag peels to the SAME tree it points at, so diffing
+        // it against that tree directly yields no changes.
+        expect(result.changes).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given recursive=true and a tag chain exceeding MAX_PEEL_DEPTH', () => {
+    describe('When diffTrees is called', () => {
+      it('Then throws REF_CHAIN_TOO_DEEP', async () => {
+        // Arrange — mirrors read-tree.test.ts's boundary case: the peel
+        // walker's depth counter is the only thing stopping runaway tag
+        // resolution on the raw (diff) side too.
+        const ctx = await buildSeededContext();
+        const treeId = await writeTree(ctx, []);
+        let currentId: ObjectId = treeId;
+        let currentType: 'tree' | 'tag' = 'tree';
+        for (let i = 0; i <= MAX_PEEL_DEPTH; i += 1) {
+          currentId = await writeObject(ctx, {
+            type: 'tag',
+            id: '' as ObjectId,
+            data: {
+              object: currentId,
+              objectType: currentType,
+              tagName: `v${i}`,
+              tagger: IDENTITY,
+              message: `tag${i}`,
+              extraHeaders: [],
+            },
+          });
+          currentType = 'tag';
+        }
+
+        // Act + Assert
+        try {
+          await diffTrees(ctx, currentId, treeId, { recursive: true });
+          expect.unreachable();
+        } catch (error) {
+          expect((error as { data: { code: string } }).data.code).toBe('REF_CHAIN_TOO_DEEP');
+        }
       });
     });
   });

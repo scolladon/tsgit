@@ -63,13 +63,20 @@ interface FlattenState {
   readonly entries: Map<FilePath, FlatTreeEntry>;
 }
 
+/**
+ * `preread`, when supplied, is the root's own raw content already read by
+ * the caller (e.g. `diff-trees.ts`'s `peelToTree` reads the terminal tree as
+ * its last peel hop) — passing it skips this function's own root read
+ * entirely, so a caller that already paid for the bytes never pays twice.
+ */
 export async function flattenRawTree(
   ctx: Context,
   root: ObjectId | Tree,
   bounds: FlattenBounds,
+  preread?: Uint8Array,
 ): Promise<FlatTree> {
   const rootId = typeof root === 'string' ? root : root.id;
-  const content = await readRawTreeById(ctx, rootId);
+  const content = preread ?? (await readRawTreeById(ctx, rootId));
   const config: FlattenConfig = { ctx, bounds };
   const state: FlattenState = { counter: { value: 0 }, entries: new Map() };
   await flattenLevel(config, state, content, rootId, '', 0, []);

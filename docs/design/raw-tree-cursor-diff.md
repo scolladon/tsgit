@@ -411,6 +411,11 @@ semantics:
   that today; this design keeps both, it does not unify them.
 - **leaf** → `withPrefix`, unchanged.
 
+`diffRecursive` stays a module-level export from `diff-trees.ts` — not added to the
+primitives barrel or facade-bound — purely for test-reachability: the entry-cap tests
+call it directly with a small injected `maxEntries`. The same shape `flattenRawTree`'s
+injectable `FlattenBounds` parameter already establishes for `internal/flatten-raw.ts`.
+
 `diffRecursive`'s roots need bytes. `resolveInput` gains a raw sibling used only by
 the recursive branch:
 

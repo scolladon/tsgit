@@ -3,20 +3,6 @@ import type { FilePath } from '../domain/objects/object-id.js';
 import type { FileSystem } from '../ports/file-system.js';
 
 /**
- * Wrap a user-supplied FileSystem so every path-taking method asserts that
- * the path is contained within `cwd`. commands ALREADY validate
- * cwd-relative paths via `validatePath` before computing absolute paths;
- * this wrapper is defense-in-depth for adapters whose own implementation
- * (e.g., a buggy `realpath`) might lie about resolution.
- *
- * Bypassed when `openRepository` is called with `unsafeRawAdapters: true`.
- *
- * Threat model: only protects path-naming surface (which path strings the
- * adapter sees). A malicious FS can still return adversarial **content** for
- * `read`/`readUtf8`; that level of trust is delegated to the caller's choice
- * of FS implementation.
- */
-/**
  * True when `segment` is `..`, or Win32 path canonicalisation reduces it to
  * `..` by stripping trailing dots/spaces (e.g. `'.. '`, `'...'`) — a
  * `CreateFile`/`GetFullPathName`-style traversal segment a naive `=== '..'`
@@ -48,6 +34,20 @@ const hasDotDotSegment = (path: string): boolean =>
 const sanitizeAllowlist = (paths: ReadonlyArray<string>): ReadonlyArray<string> =>
   paths.filter((p) => p.length > 0 && !hasDotDotSegment(p));
 
+/**
+ * Wrap a user-supplied FileSystem so every path-taking method asserts that
+ * the path is contained within `cwd`. commands ALREADY validate
+ * cwd-relative paths via `validatePath` before computing absolute paths;
+ * this wrapper is defense-in-depth for adapters whose own implementation
+ * (e.g., a buggy `realpath`) might lie about resolution.
+ *
+ * Bypassed when `openRepository` is called with `unsafeRawAdapters: true`.
+ *
+ * Threat model: only protects path-naming surface (which path strings the
+ * adapter sees). A malicious FS can still return adversarial **content** for
+ * `read`/`readUtf8`; that level of trust is delegated to the caller's choice
+ * of FS implementation.
+ */
 export const wrapFsValidator = (
   fs: FileSystem,
   roots: string | ReadonlyArray<string>,
