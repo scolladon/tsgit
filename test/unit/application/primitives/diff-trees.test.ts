@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { diffRecursive, diffTrees } from '../../../../src/application/primitives/diff-trees.js';
-import * as flattenTreeMod from '../../../../src/application/primitives/flatten-tree.js';
+import * as flattenRawMod from '../../../../src/application/primitives/internal/flatten-raw.js';
 import * as walkRawSubtreeMod from '../../../../src/application/primitives/internal/walk-raw-subtree.js';
 import * as materialisePatchFilesMod from '../../../../src/application/primitives/materialise-patch-files.js';
 import * as readObjectMod from '../../../../src/application/primitives/read-object.js';
@@ -1003,7 +1003,9 @@ describe('diffTrees', () => {
       it('Then buildPreimage never flattens treeA (the copies!=="harder" guard is checked, not just treeA===undefined)', async () => {
         // Arrange — treeA IS defined here (unlike the sibling "treeA undefined" tests
         // above), isolating the left operand of buildPreimage's guard: only the
-        // copies-mode check can short-circuit flattenTree for this input.
+        // copies-mode check can short-circuit flattenRawTree for this input.
+        // Spies on `flattenRawTree` (the raw-cursor descent buildPreimage actually
+        // calls) — not the legacy `flattenTree`, which this path stopped using.
         const ctx = await buildSeededContext();
         const blobId = await blob(ctx, 'file content\n');
         const treeA = await writeTree(ctx, [
@@ -1013,7 +1015,7 @@ describe('diffTrees', () => {
           { name: 'orig.txt', mode: FILE_MODE.REGULAR, id: blobId },
           { name: 'new.txt', mode: FILE_MODE.REGULAR, id: await blob(ctx, 'new\n') },
         ]);
-        const flattenSpy = vi.spyOn(flattenTreeMod, 'flattenTree');
+        const flattenSpy = vi.spyOn(flattenRawMod, 'flattenRawTree');
 
         // Act
         const result = await diffTrees(ctx, treeA, treeB, {

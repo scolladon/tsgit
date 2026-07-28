@@ -279,6 +279,32 @@ describe('file-mode', () => {
       });
     });
 
+    describe('Given a byte range whose length is neither 5 nor 6 but whose first six bytes match a valid 6-byte mode', () => {
+      describe('When matching', () => {
+        it('Then throws INVALID_FILE_MODE, pinning the length gate ahead of the byte-match (not just length===5)', () => {
+          // Arrange — '1006440' shares its first 6 bytes with REGULAR ('100644'); only
+          // the length===6 gate (not the byte comparison) keeps this from matching.
+          const value = '1006440';
+          const buf = encode(value);
+          let caught: unknown;
+
+          // Act
+          try {
+            matchFileModeBytes(buf, 0, buf.length);
+          } catch (error) {
+            caught = error;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data).toEqual({
+            code: 'INVALID_FILE_MODE',
+            value,
+          });
+        });
+      });
+    });
+
     describe('Given an invalid mode exactly at the 16-byte truncation boundary', () => {
       describe('When matching', () => {
         it('Then the error carries the exact 16-byte value, untruncated', () => {
@@ -323,6 +349,35 @@ describe('file-mode', () => {
           expect((caught as TsgitError).data).toEqual({
             code: 'INVALID_FILE_MODE',
             value: `${'9'.repeat(16)}…`,
+          });
+        });
+      });
+    });
+
+    describe('Given an invalid 5-byte mode offset far enough into a buffer that end+start would cross the truncation boundary while end-start does not', () => {
+      describe('When matching', () => {
+        it('Then the error carries the exact untruncated value, pinning the arithmetic to end-start (not end+start)', () => {
+          // Arrange — a 10-byte prefix pushes `start` to 10; the invalid mode itself
+          // is only 5 bytes (end-start=5, well within the 16-byte cap), but
+          // end+start=25 would wrongly cross the cap under a start-inflated sum,
+          // producing a truncated '…'-suffixed value instead of the exact one.
+          const prefix = 'p'.repeat(10);
+          const value = 'zzzzz';
+          const buf = encode(`${prefix}${value}`);
+          let caught: unknown;
+
+          // Act
+          try {
+            matchFileModeBytes(buf, prefix.length, buf.length);
+          } catch (error) {
+            caught = error;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data).toEqual({
+            code: 'INVALID_FILE_MODE',
+            value,
           });
         });
       });

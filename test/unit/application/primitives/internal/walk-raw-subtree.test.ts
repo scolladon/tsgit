@@ -273,4 +273,62 @@ describe('walkRawSubtree', () => {
       });
     });
   });
+
+  describe('Given a signal that aborts between two sibling leaf entries', () => {
+    describe('When walkRawSubtree runs', () => {
+      it('Then throws OPERATION_ABORTED before the second entry is ever emitted (the walk stops, not just throws)', async () => {
+        // Arrange — root reads its own (redundant) abort check before the walk
+        // even starts, so aborting up front (as the sibling test above does)
+        // never reaches this per-entry guard. Abort instead from inside the
+        // `emit` callback for the FIRST entry — no other read happens between
+        // two sibling leaves, so only this guard can catch the second one.
+        const ctx = await buildSeededContext();
+        const blobA = await writeBlob(ctx, 'a');
+        const blobB = await writeBlob(ctx, 'b');
+        const treeId = await writeTree(ctx, [
+          { name: 'a.txt', mode: FILE_MODE.REGULAR, id: blobA },
+          { name: 'b.txt', mode: FILE_MODE.REGULAR, id: blobB },
+        ]);
+        const controller = new AbortController();
+        const aborted = { ...ctx, signal: controller.signal };
+        const emitted: RawSubtreeEntry[] = [];
+        const sut = walkRawSubtree;
+
+        // Act + Assert
+        try {
+          await sut(aborted, treeId, DEFAULT_FLATTEN_BOUNDS, 'top', { value: 0 }, (entry) => {
+            emitted.push(entry);
+            controller.abort();
+          });
+          expect.unreachable();
+        } catch (error) {
+          const { data } = error as { data: { code: string } };
+          expect(data.code).toBe('OPERATION_ABORTED');
+        } finally {
+          // Only the first entry was ever emitted — the walk stopped.
+          expect(emitted).toHaveLength(1);
+        }
+      });
+    });
+  });
+
+  describe('Given a signal that is present but never aborted', () => {
+    describe('When walkRawSubtree runs', () => {
+      it('Then all entries are emitted normally', async () => {
+        // Arrange — a live, non-aborted signal must not trip the guard.
+        const controller = new AbortController();
+        const ctx = await buildSeededContext({ signal: controller.signal });
+        const blobId = await writeBlob(ctx, 'x');
+        const treeId = await writeTree(ctx, [
+          { name: 'a.txt', mode: FILE_MODE.REGULAR, id: blobId },
+        ]);
+
+        // Act
+        const entries = await collect(ctx, treeId);
+
+        // Assert
+        expect(entries).toHaveLength(1);
+      });
+    });
+  });
 });

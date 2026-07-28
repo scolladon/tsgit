@@ -4,6 +4,7 @@ import {
   type FlattenBounds,
   flattenRawTree,
 } from '../../../../../src/application/primitives/internal/flatten-raw.js';
+import * as rawTreeIoMod from '../../../../../src/application/primitives/internal/raw-tree-io.js';
 import * as readObjectMod from '../../../../../src/application/primitives/read-object.js';
 import { writeObject } from '../../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../../src/application/primitives/write-tree.js';
@@ -216,6 +217,73 @@ describe('flattenRawTree', () => {
         } finally {
           spy.mockRestore();
         }
+      });
+    });
+  });
+
+  describe('Given a signal that aborts between two sibling leaf entries', () => {
+    describe('When flattenRawTree runs', () => {
+      it('Then throws OPERATION_ABORTED before the second entry is ever read (the walk stops, not just throws)', async () => {
+        // Arrange — the root tree's own read already runs its own (redundant)
+        // abort check before flattenLevel ever starts, so a signal aborted from
+        // the outset would never actually exercise this guard. Abort instead
+        // from inside the FIRST entry's own path computation, so only this
+        // per-entry guard can catch the SECOND entry — and prove the walk
+        // stopped there (via the join-path call count) rather than merely
+        // throwing after finishing the whole tree.
+        const ctx = await buildSeededContext();
+        const blobA = await writeBlob(ctx, 'a');
+        const blobB = await writeBlob(ctx, 'b');
+        const treeId = await writeTree(ctx, [
+          { name: 'a.txt', mode: FILE_MODE.REGULAR, id: blobA },
+          { name: 'b.txt', mode: FILE_MODE.REGULAR, id: blobB },
+        ]);
+        const controller = new AbortController();
+        const aborted = { ...ctx, signal: controller.signal };
+        const realJoinPath = rawTreeIoMod.joinPath;
+        let calls = 0;
+        const joinPathSpy = vi
+          .spyOn(rawTreeIoMod, 'joinPath')
+          .mockImplementation((prefix, name) => {
+            calls += 1;
+            if (calls === 1) controller.abort();
+            return realJoinPath(prefix, name);
+          });
+        const sut = flattenRawTree;
+
+        // Act + Assert
+        try {
+          await sut(aborted, treeId, DEFAULT_FLATTEN_BOUNDS);
+          expect.unreachable();
+        } catch (error) {
+          const { data } = error as { data: { code: string } };
+          expect(data.code).toBe('OPERATION_ABORTED');
+        } finally {
+          // Only the first entry's path was ever computed.
+          expect(joinPathSpy).toHaveBeenCalledTimes(1);
+          joinPathSpy.mockRestore();
+        }
+      });
+    });
+  });
+
+  describe('Given a signal that is present but never aborted', () => {
+    describe('When flattenRawTree runs', () => {
+      it('Then the tree flattens normally', async () => {
+        // Arrange — a live, non-aborted signal must not trip the guard.
+        const controller = new AbortController();
+        const ctx = await buildSeededContext({ signal: controller.signal });
+        const blobId = await writeBlob(ctx, 'x');
+        const treeId = await writeTree(ctx, [
+          { name: 'a.txt', mode: FILE_MODE.REGULAR, id: blobId },
+        ]);
+        const sut = flattenRawTree;
+
+        // Act
+        const result = await sut(ctx, treeId, DEFAULT_FLATTEN_BOUNDS);
+
+        // Assert
+        expect(result.entries.size).toBe(1);
       });
     });
   });
