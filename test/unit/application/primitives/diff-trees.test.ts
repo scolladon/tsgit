@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
-import { diffTrees } from '../../../../src/application/primitives/diff-trees.js';
+import { diffRecursive, diffTrees } from '../../../../src/application/primitives/diff-trees.js';
 import * as flattenTreeMod from '../../../../src/application/primitives/flatten-tree.js';
 import * as walkRawSubtreeMod from '../../../../src/application/primitives/internal/walk-raw-subtree.js';
 import * as materialisePatchFilesMod from '../../../../src/application/primitives/materialise-patch-files.js';
@@ -2585,6 +2585,93 @@ describe('diffTrees', () => {
           {
             type: 'modify',
             path: 'sub/inner.txt',
+            oldId: oldLeaf,
+            newId: newLeaf,
+            oldMode: FILE_MODE.REGULAR,
+            newMode: FILE_MODE.REGULAR,
+          },
+        ]);
+      });
+    });
+  });
+
+  // --- diffRecursive: shared entry-count budget across the merge-join walk ---
+
+  describe('Given a diamond DAG where two sibling directories reach the same changed subtree', () => {
+    describe('When diffRecursive runs with a tiny injected entry cap', () => {
+      it('Then throws TREE_ENTRY_LIMIT_EXCEEDED once the cumulative entry count exceeds the cap', async () => {
+        // Arrange — d1 and d2 both pair the SAME old/new subtree; with no
+        // memoisation the walk revisits that pair via every path that reaches
+        // it, so its own change is counted once per visit.
+        const ctx = await buildSeededContext();
+        const oldLeaf = await blob(ctx, 'old');
+        const newLeaf = await blob(ctx, 'new');
+        const sharedOld = await subTree(ctx, 'leaf.txt', oldLeaf, FILE_MODE.REGULAR);
+        const sharedNew = await subTree(ctx, 'leaf.txt', newLeaf, FILE_MODE.REGULAR);
+        const oldRoot = await writeTree(ctx, [
+          { name: 'd1', mode: FILE_MODE.DIRECTORY, id: sharedOld },
+          { name: 'd2', mode: FILE_MODE.DIRECTORY, id: sharedOld },
+        ]);
+        const newRoot = await writeTree(ctx, [
+          { name: 'd1', mode: FILE_MODE.DIRECTORY, id: sharedNew },
+          { name: 'd2', mode: FILE_MODE.DIRECTORY, id: sharedNew },
+        ]);
+        const rawOld = (await readObjectMod.readRawObject(ctx, oldRoot)).content;
+        const rawNew = (await readObjectMod.readRawObject(ctx, newRoot)).content;
+        const sut = diffRecursive;
+
+        // Act + Assert — cap=3: the root level contributes 2 (d1, d2 modify),
+        // then each subtree visit contributes 1 more (leaf.txt modify); the
+        // second subtree visit pushes the cumulative count to 4 > 3.
+        try {
+          await sut(ctx, rawOld, rawNew, 3);
+          expect.unreachable();
+        } catch (error) {
+          const { data } = error as { data: { code: string; count: number; limit: number } };
+          expect(data.code).toBe('TREE_ENTRY_LIMIT_EXCEEDED');
+          expect(data.count).toBe(4);
+          expect(data.limit).toBe(3);
+        }
+      });
+    });
+
+    describe('When diffRecursive runs with the cap exactly at the cumulative count', () => {
+      it('Then both subtree expansions succeed', async () => {
+        // Arrange — identical diamond, cap=4 (the exact cumulative count),
+        // proving the guard is `count > limit`, not `>=`.
+        const ctx = await buildSeededContext();
+        const oldLeaf = await blob(ctx, 'old');
+        const newLeaf = await blob(ctx, 'new');
+        const sharedOld = await subTree(ctx, 'leaf.txt', oldLeaf, FILE_MODE.REGULAR);
+        const sharedNew = await subTree(ctx, 'leaf.txt', newLeaf, FILE_MODE.REGULAR);
+        const oldRoot = await writeTree(ctx, [
+          { name: 'd1', mode: FILE_MODE.DIRECTORY, id: sharedOld },
+          { name: 'd2', mode: FILE_MODE.DIRECTORY, id: sharedOld },
+        ]);
+        const newRoot = await writeTree(ctx, [
+          { name: 'd1', mode: FILE_MODE.DIRECTORY, id: sharedNew },
+          { name: 'd2', mode: FILE_MODE.DIRECTORY, id: sharedNew },
+        ]);
+        const rawOld = (await readObjectMod.readRawObject(ctx, oldRoot)).content;
+        const rawNew = (await readObjectMod.readRawObject(ctx, newRoot)).content;
+        const sut = diffRecursive;
+
+        // Act
+        const result = await sut(ctx, rawOld, rawNew, 4);
+
+        // Assert
+        expect(result.changes).toEqual([
+          {
+            type: 'modify',
+            path: 'd1/leaf.txt',
+            oldId: oldLeaf,
+            newId: newLeaf,
+            oldMode: FILE_MODE.REGULAR,
+            newMode: FILE_MODE.REGULAR,
+          },
+          {
+            type: 'modify',
+            path: 'd2/leaf.txt',
             oldId: oldLeaf,
             newId: newLeaf,
             oldMode: FILE_MODE.REGULAR,

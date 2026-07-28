@@ -9,6 +9,7 @@ import {
   diffTrees as domainDiffTrees,
   type LineKey,
   lineKeyIsActive,
+  MAX_FLAT_TREE_ENTRIES,
   type ModifyChange,
   resolveLineKey,
   type StatDiffChange,
@@ -22,6 +23,7 @@ import type { RenameDetectOptions } from '../../domain/diff/rename-detect.js';
 import {
   treeCycleDetected,
   treeDepthExceeded,
+  treeEntryLimitExceeded,
   unexpectedObjectType,
 } from '../../domain/objects/error.js';
 import { isDirectory } from '../../domain/objects/file-mode.js';
@@ -45,7 +47,7 @@ import { materialisePatchFiles } from './materialise-patch-files.js';
 import { readRawObject } from './read-object.js';
 import { readTree } from './read-tree.js';
 import { type DiffTreesInput, type DiffTreesOptions, MAX_PEEL_DEPTH } from './types.js';
-import { exceedsMaxTreeDepth } from './validators.js';
+import { exceedsMaxTreeDepth, exceedsMaxTreeEntries } from './validators.js';
 
 const EMPTY = new Uint8Array(0);
 
@@ -197,8 +199,9 @@ async function expandDirectoryChanges(
   ctx: Context,
   changes: ReadonlyArray<DiffChange>,
 ): Promise<DiffChange[]> {
+  const state: DiffWalkState = { counter: { value: 0 }, maxEntries: MAX_FLAT_TREE_ENTRIES };
   const expanded = await Promise.all(
-    changes.map((change) => expandLevelChange(ctx, change, ROOT_CURSOR)),
+    changes.map((change) => expandLevelChange(ctx, change, ROOT_CURSOR, state)),
   );
   return expanded.flat();
 }
@@ -416,12 +419,35 @@ interface DiffCursor {
 const ROOT_CURSOR: DiffCursor = { prefix: '', depth: 0, oldStack: [], newStack: [] };
 const MAX_DIFF_RECURSION_DEPTH = 1024;
 
-async function diffRecursive(
+interface DiffWalkCounter {
+  value: number;
+}
+
+/** Shared, mutable entry-count budget for one `diffRecursive` call — threaded
+ *  through every level of the merge-join and every `diffChangedSubtree`
+ *  descent so a diamond DAG (the same subtree pair reached via more than one
+ *  path) is bounded by its TOTAL entries visited, not just per level. Without
+ *  memoisation across paths, each revisit re-walks the shared subtree, so the
+ *  cap is what stops that from growing unbounded. */
+interface DiffWalkState {
+  readonly counter: DiffWalkCounter;
+  readonly maxEntries: number;
+}
+
+/**
+ * Diff two raw tree contents recursively. `maxEntries` bounds the total
+ * number of merge-join entries the walk may visit (default `MAX_FLAT_TREE_ENTRIES`,
+ * the same cap `flattenRawTree` uses) — an explicit parameter rather than an
+ * inlined literal so the guard is reachable from a test with a small cap.
+ */
+export async function diffRecursive(
   ctx: Context,
   a: Uint8Array | undefined,
   b: Uint8Array | undefined,
+  maxEntries: number = MAX_FLAT_TREE_ENTRIES,
 ): Promise<TreeDiff> {
-  const changes = await diffRecursiveLevel(ctx, a, b, ROOT_CURSOR);
+  const state: DiffWalkState = { counter: { value: 0 }, maxEntries };
+  const changes = await diffRecursiveLevel(ctx, a, b, ROOT_CURSOR, state);
   return { changes };
 }
 
@@ -431,17 +457,24 @@ async function diffRecursive(
  * on both sides) never reaches `expandLevelChange` — the merge-join already
  * drops it — so its subtree is never read or flattened, matching git's own
  * diff-tree pruning. Sibling directories that DO differ are expanded
- * concurrently.
+ * concurrently, bounded to `MAX_CONCURRENT_BLOB_LOADS` in-flight reads.
  */
 async function diffRecursiveLevel(
   ctx: Context,
   a: Uint8Array | undefined,
   b: Uint8Array | undefined,
   cursor: DiffCursor,
+  state: DiffWalkState,
 ): Promise<DiffChange[]> {
   const levelChanges = diffRawTrees(a, b, ctx.hashConfig).changes;
-  const expanded = await Promise.all(
-    levelChanges.map((change) => expandLevelChange(ctx, change, cursor)),
+  for (let i = 0; i < levelChanges.length; i++) {
+    state.counter.value += 1;
+    if (exceedsMaxTreeEntries(state.counter.value, state.maxEntries)) {
+      throw treeEntryLimitExceeded(state.counter.value, state.maxEntries);
+    }
+  }
+  const expanded = await boundedMap(levelChanges, MAX_CONCURRENT_BLOB_LOADS, (change) =>
+    expandLevelChange(ctx, change, cursor, state),
   );
   return expanded.flat();
 }
@@ -454,9 +487,10 @@ async function expandLevelChange(
   ctx: Context,
   change: DiffChange,
   cursor: DiffCursor,
+  state: DiffWalkState,
 ): Promise<DiffChange[]> {
   if (change.type === 'modify' && isDirectory(change.oldMode) && isDirectory(change.newMode)) {
-    return diffChangedSubtree(ctx, change, cursor);
+    return diffChangedSubtree(ctx, change, cursor, state);
   }
   if (change.type === 'add' && isDirectory(change.newMode)) {
     return expandAddedSubtree(ctx, change.newId, joinPath(cursor.prefix, change.newPath));
@@ -491,6 +525,7 @@ async function diffChangedSubtree(
   ctx: Context,
   change: ModifyChange,
   cursor: DiffCursor,
+  state: DiffWalkState,
 ): Promise<DiffChange[]> {
   if (exceedsMaxTreeDepth(cursor.depth, MAX_DIFF_RECURSION_DEPTH)) {
     throw treeDepthExceeded(cursor.depth);
@@ -508,7 +543,7 @@ async function diffChangedSubtree(
     oldStack: [...cursor.oldStack, change.oldId],
     newStack: [...cursor.newStack, change.newId],
   };
-  return diffRecursiveLevel(ctx, oldContent, newContent, nextCursor);
+  return diffRecursiveLevel(ctx, oldContent, newContent, nextCursor, state);
 }
 
 /**
