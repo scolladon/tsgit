@@ -12,6 +12,7 @@ This guide maps every `isomorphic-git` API used by typical consumers to its tsgi
 | Validation | per-call, partial | every option validated at `openRepository` time |
 | SSRF guards | opt-in | always-on, opt-out via `unsafeRawAdapters` |
 | Bundle size | larger | Node entry < 60 KB gz, tree-shakeable |
+| No-build browser usage | unpkg bundle | single-file ESM bundle — see [the browser guide](browser.md#no-build-step-cdn) |
 
 ## Setup
 
