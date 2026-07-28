@@ -330,8 +330,12 @@ toolchain. Four mechanical follow-ons:
   `test/**`, so the new spec is linted without a config edit.
 
 CI needs no new job: the `build` job already runs `npm run build` +
-`npm run check:size` + `npm run check:exports` and uploads `dist/` as the
-artifact every downstream job (integration, runtime-parity, e2e) downloads.
+`npm run check:size` + `npm run check:exports` and uploads `dist/` as an
+artifact. Only the runtime-parity jobs download it; the `e2e` job rebuilds from
+source on each matrix leg (its wireit `test:e2e` depends on `build`, and a
+downloaded `dist/` carries no cached fingerprint), so the browser config's
+~3.6 s is also paid once per e2e leg — negligible, but it is a rebuild, not a
+download.
 
 ### 6 · Documentation
 
