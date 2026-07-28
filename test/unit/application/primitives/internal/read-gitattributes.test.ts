@@ -195,28 +195,28 @@ describe('buildAttributeProvider', () => {
       it('Then a directory starting with `..` but followed by a non-dot/space character is read, not skipped as escaping (..x)', async () => {
         // Arrange
         const ctx = createMemoryContext();
-        await seed(ctx, '/repo/..x/.gitattributes', '* merge=dotdotx\n');
+        await seed(ctx, '/repo/..x/.gitattributes', '* merge=leading\n');
         const readUtf8Spy = vi.spyOn(ctx.fs, 'readUtf8');
 
         // Act
         const result = await merge(ctx, '..x/x.txt');
 
         // Assert
-        expect(result).toEqual({ set: 'dotdotx' });
+        expect(result).toEqual({ set: 'leading' });
         expect(readUtf8Spy).toHaveBeenCalledWith('/repo/..x/.gitattributes');
       });
 
       it('Then a directory ending with `..` but not starting with it is read, not skipped as escaping (x..)', async () => {
         // Arrange
         const ctx = createMemoryContext();
-        await seed(ctx, '/repo/x../.gitattributes', '* merge=xdotdot\n');
+        await seed(ctx, '/repo/x../.gitattributes', '* merge=trailing\n');
         const readUtf8Spy = vi.spyOn(ctx.fs, 'readUtf8');
 
         // Act
         const result = await merge(ctx, 'x../x.txt');
 
         // Assert
-        expect(result).toEqual({ set: 'xdotdot' });
+        expect(result).toEqual({ set: 'trailing' });
         expect(readUtf8Spy).toHaveBeenCalledWith('/repo/x../.gitattributes');
       });
     });

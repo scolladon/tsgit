@@ -509,7 +509,7 @@ describe('flattenRawTree', () => {
     });
   });
 
-  // --- refusal-order faithfulness: the prescan must never pre-empt the main
+  // --- refusal-order faithfulness: the prescan must never run ahead of the main
   // loop's own, earlier per-entry guards (see internal/raw-subtree-prefetch.ts) ---
 
   describe('Given 3 valid leaf entries followed by a truncated one, with maxEntries capped below the valid count', () => {
