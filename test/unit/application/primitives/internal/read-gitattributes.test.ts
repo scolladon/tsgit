@@ -159,32 +159,6 @@ describe('buildAttributeProvider', () => {
           },
           expected: { set: 'union' },
         },
-        {
-          label:
-            'a directory containing `..` in the middle of its name is not treated as escaping the worktree',
-          path: 'a..b//x.txt',
-          arrange: async (ctx: Context): Promise<void> => {
-            await seed(ctx, '/repo/a..b/.gitattributes', '* merge=ab\n');
-          },
-          expected: { set: 'ab' },
-        },
-        {
-          label:
-            'a directory starting with `..` but followed by a non-dot/space character is not treated as escaping',
-          path: '..x/x.txt',
-          arrange: async (ctx: Context): Promise<void> => {
-            await seed(ctx, '/repo/..x/.gitattributes', '* merge=dotdotx\n');
-          },
-          expected: { set: 'dotdotx' },
-        },
-        {
-          label: 'a directory ending with `..` but not starting with it is not treated as escaping',
-          path: 'x../x.txt',
-          arrange: async (ctx: Context): Promise<void> => {
-            await seed(ctx, '/repo/x../.gitattributes', '* merge=xdotdot\n');
-          },
-          expected: { set: 'xdotdot' },
-        },
       ])('Then $label', async ({ path, homeDir, arrange, expected }) => {
         // Arrange
         const ctx = createMemoryContext(homeDir === undefined ? {} : { homeDir });
@@ -195,6 +169,55 @@ describe('buildAttributeProvider', () => {
 
         // Assert
         expect(result).toEqual(expected);
+      });
+    });
+  });
+
+  describe('Given a directory chain that contains `..` as a substring but not as an escaping segment', () => {
+    describe('When resolving attribute sources for the path', () => {
+      it('Then a directory containing `..` in the middle of its name is read, not skipped as escaping (a..b/c, reached through an adversarial double-slash segment)', async () => {
+        // Arrange — the double slash makes dirChain also visit 'a..b/' and
+        // 'a..b//c', both of which split to an empty '' segment; only the
+        // nested 'c' level carries the seeded file, so a wrongly-escaped
+        // 'a..b//c' entry cannot be masked by a shallower, unseeded sibling.
+        const ctx = createMemoryContext();
+        await seed(ctx, '/repo/a..b/c/.gitattributes', '* merge=ab\n');
+        const readUtf8Spy = vi.spyOn(ctx.fs, 'readUtf8');
+
+        // Act
+        const result = await merge(ctx, 'a..b//c/x.txt');
+
+        // Assert
+        expect(result).toEqual({ set: 'ab' });
+        expect(readUtf8Spy).toHaveBeenCalledWith('/repo/a..b//c/.gitattributes');
+      });
+
+      it('Then a directory starting with `..` but followed by a non-dot/space character is read, not skipped as escaping (..x)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '/repo/..x/.gitattributes', '* merge=dotdotx\n');
+        const readUtf8Spy = vi.spyOn(ctx.fs, 'readUtf8');
+
+        // Act
+        const result = await merge(ctx, '..x/x.txt');
+
+        // Assert
+        expect(result).toEqual({ set: 'dotdotx' });
+        expect(readUtf8Spy).toHaveBeenCalledWith('/repo/..x/.gitattributes');
+      });
+
+      it('Then a directory ending with `..` but not starting with it is read, not skipped as escaping (x..)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '/repo/x../.gitattributes', '* merge=xdotdot\n');
+        const readUtf8Spy = vi.spyOn(ctx.fs, 'readUtf8');
+
+        // Act
+        const result = await merge(ctx, 'x../x.txt');
+
+        // Assert
+        expect(result).toEqual({ set: 'xdotdot' });
+        expect(readUtf8Spy).toHaveBeenCalledWith('/repo/x../.gitattributes');
       });
     });
   });

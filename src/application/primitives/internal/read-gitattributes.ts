@@ -53,10 +53,7 @@ const dirChain = (path: FilePath): ReadonlyArray<string> => {
  * `CreateFile`/`GetFullPathName`-style traversal segment a naive `=== '..'`
  * check would miss.
  */
-// Stryker disable next-line MethodExpression: equivalent — reached only when
-// segment.startsWith('..') already holds, so the first two characters are
-// dots; testing the whole segment against /^[. ]*$/ is identical to testing
-// the remainder, since the class trivially matches those same two characters.
+// Stryker disable next-line MethodExpression: equivalent — reached only when segment.startsWith('..') already holds, so the class trivially matches the leading two dots; testing the whole segment is identical to testing the remainder.
 const isDotDotSegment = (segment: string): boolean =>
   segment === '..' || (segment.startsWith('..') && /^[. ]*$/.test(segment.slice(2)));
 
@@ -76,11 +73,7 @@ const WINDOWS_DRIVE_ABSOLUTE_RE = /^[A-Za-z]:/;
 const dirEscapesWorktree = (dir: string): boolean => {
   const normalized = dir.replace(/\\/g, '/');
   if (normalized.startsWith('/') || WINDOWS_DRIVE_ABSOLUTE_RE.test(normalized)) return true;
-  // Stryker disable next-line StringLiteral: equivalent — a genuine dot-dot
-  // segment always contains the substring '..', so normalized.includes('..')
-  // is implied whenever .some(isDotDotSegment) is true; forcing the substring
-  // check to always-true (includes('')) cannot change the && result, which
-  // the right-hand operand already determines.
+  // Stryker disable next-line StringLiteral: equivalent — a genuine dot-dot segment always contains '..', so normalized.includes('..') is implied whenever .some(isDotDotSegment) is true; forcing it always-true cannot change the && result.
   return normalized.includes('..') && normalized.split('/').some(isDotDotSegment);
 };
 
