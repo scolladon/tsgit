@@ -8,8 +8,8 @@ import type { FileSystem } from '../ports/file-system.js';
  * `CreateFile`/`GetFullPathName`-style traversal segment a naive `=== '..'`
  * check would miss.
  */
-// Stryker disable next-line MethodExpression: equivalent — reached only when segment.startsWith('..') already holds, so the class trivially matches the leading two dots; testing the whole segment is identical to testing the remainder.
 const isDotDotSegment = (segment: string): boolean =>
+  // Stryker disable next-line MethodExpression: equivalent — reached only when segment.startsWith('..') already holds, so the class trivially matches the leading two dots; testing the whole segment is identical to testing the remainder.
   segment === '..' || (segment.startsWith('..') && /^[. ]*$/.test(segment.slice(2)));
 
 /**
@@ -20,8 +20,8 @@ const isDotDotSegment = (segment: string): boolean =>
  * `path.includes('..')` is a cheap substring prefilter: the common case (no
  * `..` anywhere) never pays for the segment split.
  */
-// Stryker disable next-line StringLiteral: equivalent — a genuine dot-dot segment always contains '..', so path.includes('..') is implied whenever .some(isDotDotSegment) is true; forcing it always-true cannot change the && result.
 const hasDotDotSegment = (path: string): boolean =>
+  // Stryker disable next-line StringLiteral: equivalent — a genuine dot-dot segment always contains '..', so path.includes('..') is implied whenever .some(isDotDotSegment) is true; forcing it always-true cannot change the && result.
   path.includes('..') && path.split(/[\\/]/).some(isDotDotSegment);
 
 /**

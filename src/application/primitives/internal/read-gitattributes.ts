@@ -53,8 +53,8 @@ const dirChain = (path: FilePath): ReadonlyArray<string> => {
  * `CreateFile`/`GetFullPathName`-style traversal segment a naive `=== '..'`
  * check would miss.
  */
-// Stryker disable next-line MethodExpression: equivalent — reached only when segment.startsWith('..') already holds, so the class trivially matches the leading two dots; testing the whole segment is identical to testing the remainder.
 const isDotDotSegment = (segment: string): boolean =>
+  // Stryker disable next-line MethodExpression: equivalent — reached only when segment.startsWith('..') already holds, so the class trivially matches the leading two dots; testing the whole segment is identical to testing the remainder.
   segment === '..' || (segment.startsWith('..') && /^[. ]*$/.test(segment.slice(2)));
 
 const WINDOWS_DRIVE_ABSOLUTE_RE = /^[A-Za-z]:/;
