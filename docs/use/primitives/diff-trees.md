@@ -49,6 +49,28 @@ suppression (`ignoreBlankLines` suppresses hunks/numstat but keeps the file in
 `changes`) are both applied here. See [`diff`](../commands/diff.md#whitespace)
 for the full behaviour and the numstat omit rule.
 
+## Recursive diff and corrupt trees
+
+With `recursive: true`, the walk enforces only the structural checks a tree
+object needs to be readable at all — missing space after mode, malformed or
+empty mode, missing NUL after name, empty filename, truncated hash — throwing
+`INVALID_TREE_ENTRY` when one is hit, in either tree, at any depth. An
+unsorted tree, a duplicate entry name, or a `.`/`..`/embedded-`/` entry name is
+walked and diffed exactly as `git diff-tree -r` does, not refused. (The
+non-recursive path still refuses invalid or duplicate names via the parsed
+`Tree`'s own validation, but silently re-sorts an unsorted tree rather than
+diffing it in on-disk order or refusing it — a pre-existing divergence,
+unrelated to `recursive: true`.)
+
+## Throws
+
+- `INVALID_TREE_ENTRY` — one of the structural malformations above (`recursive: true` only).
+- `UNEXPECTED_OBJECT_TYPE` — a changed directory entry's oid does not resolve to a tree; or `a`/`b` (an `ObjectId`, or a commit/tag oid peeled down to its tree) resolves to something other than a tree.
+- `OBJECT_NOT_FOUND` — an oid is missing from the store. With `recursive: true`, a caller-supplied `Tree` is re-read raw by its own `id` before the walk starts, so a hand-forged `Tree` whose `id` was never written throws here even though its `entries` were already in hand.
+- `TREE_CYCLE_DETECTED` / `TREE_DEPTH_EXCEEDED` — a gitlink loop, or recursion past the 1024-level cap (`recursive: true` only).
+- `TREE_ENTRY_LIMIT_EXCEEDED` — total entries walked — every merge-join level plus every expanded added/deleted subtree — exceeds 1,000,000. One shared budget for the whole `recursive: true` call, not one per subtree.
+- `OPERATION_ABORTED` — `ctx.signal` is already aborted.
+
 ## See also
 
 - Tier-1: [`diff`](../commands/diff.md), [`merge`](../commands/merge.md)
