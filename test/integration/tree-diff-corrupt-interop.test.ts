@@ -39,7 +39,8 @@ import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import { diffTrees } from '../../src/application/primitives/diff-trees.js';
-import type { DiffChange } from '../../src/domain/diff/index.js';
+import { primaryPath } from '../../src/domain/diff/change-path.js';
+import type { DiffChange, StatDiffChange } from '../../src/domain/diff/index.js';
 import { encode, hexToBytes } from '../../src/domain/objects/encoding.js';
 import { TsgitError } from '../../src/domain/objects/error.js';
 import { EMPTY_TREE_OID, ObjectId } from '../../src/domain/objects/index.js';
@@ -76,10 +77,20 @@ function rawEntry(mode: string, name: string, oidHex: string): Uint8Array {
 /** Write hand-built tree bytes past git's write-side validity checks —
  * `--literally` is what lets the malformed/on-disk-order fixtures below
  * exist as real loose objects at all. */
-function buildLiteralTree(body: Uint8Array): string {
-  return runGit(['-C', dir, 'hash-object', '-t', 'tree', '-w', '--stdin', '--literally'], {
+function buildLiteralTreeIn(repoDir: string, body: Uint8Array): string {
+  return runGit(['-C', repoDir, 'hash-object', '-t', 'tree', '-w', '--stdin', '--literally'], {
     input: body,
   }).trim();
+}
+
+function buildLiteralTree(body: Uint8Array): string {
+  return buildLiteralTreeIn(dir, body);
+}
+
+/** Reconstruct git's `--numstat` line from one structured `StatDiffChange` —
+ * same structured-fields-only discipline as `rawLine` above. */
+function numstatLine(change: StatDiffChange): string {
+  return `${change.added}\t${change.deleted}\t${primaryPath(change)}`;
 }
 
 /** A fresh `Context` over the shared repo, created after this test's git
@@ -501,6 +512,120 @@ describe.skipIf(!GIT_AVAILABLE)('tree-diff corrupt interop', () => {
         // Assert
         expect(result.changes.map(rawLine)).toEqual(peerLines);
       });
+    });
+  });
+
+  describe('Given a diff path whose directory chain escapes the worktree via an embedded `..`', () => {
+    // A nested repo one level under the shared `dir`, so a single `..` lands
+    // in `dir` itself — a directory this suite fully controls and never
+    // seeds with a `.gitattributes` — rather than the ambient, uncontrolled
+    // filesystem above `os.tmpdir()`.
+    let escapeDir = '';
+    let baseBlob = '';
+    let differingBlob = '';
+    let whitespaceOnlyBlob = '';
+
+    beforeAll(async () => {
+      escapeDir = path.join(dir, 'escape-worktree');
+      await mkdir(escapeDir, { recursive: true });
+      runGit(['init', '-q', '-b', 'main', escapeDir]);
+      baseBlob = runGit(['-C', escapeDir, 'hash-object', '-w', '--stdin'], {
+        input: 'foo bar\n',
+      }).trim();
+      differingBlob = runGit(['-C', escapeDir, 'hash-object', '-w', '--stdin'], {
+        input: 'foo baz\n',
+      }).trim();
+      whitespaceOnlyBlob = runGit(['-C', escapeDir, 'hash-object', '-w', '--stdin'], {
+        input: 'foo  bar\n',
+      }).trim();
+    }, SETUP_TIMEOUT);
+
+    function buildEscapeTree(name: string, oidHex: string): string {
+      return buildLiteralTreeIn(escapeDir, rawEntry('100644', name, oidHex));
+    }
+
+    function escapeCtx(): Context {
+      return createNodeContext({ workDir: escapeDir });
+    }
+
+    const rows: ReadonlyArray<{ readonly label: string; readonly name: string }> = [
+      {
+        label: 'a name whose directory chain escapes the worktree via `..`',
+        name: '../escaped-target',
+      },
+      {
+        label: 'a name with an embedded `/` that stays inside the worktree',
+        name: 'safe/nested-name',
+      },
+    ];
+
+    describe('When diffTrees runs with withStat over a modify of that entry', () => {
+      it.each(rows)(
+        'Then $label resolves without throwing, matching real git diff-tree -r --numstat',
+        async ({ name }) => {
+          // Arrange
+          const oldTree = buildEscapeTree(name, baseBlob);
+          const newTree = buildEscapeTree(name, differingBlob);
+          const gitNumstat = tryRunGitWithExit([
+            '-C',
+            escapeDir,
+            'diff-tree',
+            '-r',
+            '--no-commit-id',
+            '--numstat',
+            '--no-ext-diff',
+            oldTree,
+            newTree,
+          ]).stdout.trim();
+          const ctx = escapeCtx();
+          const sut = diffTrees;
+
+          // Act
+          const result = await sut(ctx, toId(oldTree), toId(newTree), {
+            recursive: true,
+            withStat: true,
+          });
+
+          // Assert
+          expect(result.changes.map(numstatLine)).toEqual([gitNumstat]);
+        },
+      );
+    });
+
+    describe('When diffTrees runs with ignoreWhitespace over a whitespace-only modify of that entry', () => {
+      it.each(rows)(
+        'Then $label is dropped exactly as real git diff-tree -r --numstat -w drops it',
+        async ({ name }) => {
+          // Arrange
+          const oldTree = buildEscapeTree(name, baseBlob);
+          const newTree = buildEscapeTree(name, whitespaceOnlyBlob);
+          const gitNumstat = tryRunGitWithExit([
+            '-C',
+            escapeDir,
+            'diff-tree',
+            '-r',
+            '--no-commit-id',
+            '--numstat',
+            '-w',
+            '--no-ext-diff',
+            oldTree,
+            newTree,
+          ]).stdout.trim();
+          const ctx = escapeCtx();
+          const sut = diffTrees;
+
+          // Act
+          const result = await sut(ctx, toId(oldTree), toId(newTree), {
+            recursive: true,
+            ignoreWhitespace: 'all',
+          });
+
+          // Assert — real git drops a whitespace-only change from -w numstat
+          // entirely (no line at all), which this pins as an empty verdict.
+          expect(gitNumstat).toBe('');
+          expect(result.changes).toEqual([]);
+        },
+      );
     });
   });
 });

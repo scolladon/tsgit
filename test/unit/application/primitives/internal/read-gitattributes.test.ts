@@ -348,6 +348,27 @@ describe('buildAttributeProvider', () => {
   });
 });
 
+describe('Given a diff path whose directory chain lexically escapes the worktree', () => {
+  describe('When resolving attribute sources for that path', () => {
+    it('Then yields zero sources without ever touching the filesystem for the escaping directories', async () => {
+      // Arrange — the raw merge-join does not validate entry names, so a
+      // tree entry can carry an embedded traversal like this as its name.
+      const ctx = createMemoryContext();
+      const provider = await buildAttributeProvider(ctx);
+      const lstatSpy = vi.spyOn(ctx.fs, 'lstat');
+      const readUtf8Spy = vi.spyOn(ctx.fs, 'readUtf8');
+
+      // Act
+      const { sources } = await provider.sourcesForPath('../../../../../../etc/passwd' as FilePath);
+
+      // Assert
+      expect(sources).toEqual([]);
+      expect(lstatSpy).not.toHaveBeenCalled();
+      expect(readUtf8Spy).not.toHaveBeenCalled();
+    });
+  });
+});
+
 describe('maybeBuildAttributeProvider', () => {
   describe('Given a context without a command runner (ctx.command is undefined)', () => {
     describe('When maybeBuildAttributeProvider is called', () => {

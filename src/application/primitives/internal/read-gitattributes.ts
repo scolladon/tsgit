@@ -47,6 +47,21 @@ const dirChain = (path: FilePath): ReadonlyArray<string> => {
   return dirs;
 };
 
+/**
+ * True when a directory chain entry — built from a diff-change path the raw
+ * merge-join never validates — would lexically resolve outside the worktree
+ * once joined onto `workDir`: any `..` segment, or a leading absolute
+ * segment. Real git diffs such trees cleanly; this is the boundary that lets
+ * tsgit do the same without ever asking the filesystem about a path outside
+ * the worktree.
+ */
+const dirEscapesWorktree = (dir: string): boolean => {
+  if (dir === '') return false;
+  const normalized = dir.replace(/\\/g, '/');
+  if (normalized.startsWith('/')) return true;
+  return normalized.split('/').includes('..');
+};
+
 /** Resolves the precedence-ordered attribute sources + macro registry for a path. */
 export interface AttributeProvider {
   readonly sourcesForPath: (path: FilePath) => Promise<{
@@ -75,6 +90,10 @@ export const buildAttributeProvider = async (ctx: Context): Promise<AttributePro
   const dirCache = new Map<string, ParsedAttributes | undefined>([['', root]]);
   const loadDir = async (dir: string): Promise<ParsedAttributes | undefined> => {
     if (dirCache.has(dir)) return dirCache.get(dir);
+    if (dirEscapesWorktree(dir)) {
+      dirCache.set(dir, undefined);
+      return undefined;
+    }
     const parsed = await readDir(ctx, dir as FilePath);
     dirCache.set(dir, parsed);
     return parsed;
