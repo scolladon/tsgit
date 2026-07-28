@@ -19,7 +19,6 @@ import {
   treeCycleDetected,
   treeDepthExceeded,
   treeEntryLimitExceeded,
-  unexpectedObjectType,
 } from '../../../domain/objects/error.js';
 import {
   FILE_MODE,
@@ -38,6 +37,7 @@ import {
 import type { Context } from '../../../ports/context.js';
 import { readRawObject } from '../read-object.js';
 import { exceedsMaxTreeDepth, exceedsMaxTreeEntries } from '../validators.js';
+import { joinPath, readRawTreeById } from './raw-tree-io.js';
 
 export interface FlattenBounds {
   readonly maxDepth: number;
@@ -74,12 +74,6 @@ export async function flattenRawTree(
   const state: FlattenState = { counter: { value: 0 }, entries: new Map() };
   await flattenLevel(config, state, content, rootId, '', 0, []);
   return { entries: state.entries };
-}
-
-async function readRawTreeById(ctx: Context, id: ObjectId): Promise<Uint8Array> {
-  const raw = await readRawObject(ctx, id);
-  if (raw.type !== 'tree') throw unexpectedObjectType('tree', raw.type, id);
-  return raw.content;
 }
 
 async function flattenLevel(
@@ -144,10 +138,6 @@ function validatedName(cursor: TreeCursor): string {
     throw invalidTreeEntry(cursor.offset, `invalid entry name: ${name}`);
   }
   return name;
-}
-
-function joinPath(prefix: string, name: string): FilePath {
-  return (prefix === '' ? name : `${prefix}/${name}`) as FilePath;
 }
 
 async function descendIfTree(

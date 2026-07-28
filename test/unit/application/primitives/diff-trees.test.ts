@@ -2758,4 +2758,40 @@ describe('diffTrees', () => {
       });
     });
   });
+
+  describe('Given an add-diamond DAG where an added and a deleted directory both point at the same subtree', () => {
+    describe('When diffRecursive runs with a tiny injected entry cap', () => {
+      it('Then throws TREE_ENTRY_LIMIT_EXCEEDED counting across both subtree expansions', async () => {
+        // Arrange — dAdd (new-only) and dDel (old-only) both pair the SAME
+        // subtree; with no shared budget across expandAddedSubtree and
+        // expandDeletedSubtree, each expansion would silently walk its own
+        // full-size default budget instead of the caller's tiny cap.
+        const ctx = await buildSeededContext();
+        const leaf = await blob(ctx, 'shared');
+        const sharedSubtree = await subTree(ctx, 'leaf.txt', leaf, FILE_MODE.REGULAR);
+        const oldRoot = await writeTree(ctx, [
+          { name: 'dDel', mode: FILE_MODE.DIRECTORY, id: sharedSubtree },
+        ]);
+        const newRoot = await writeTree(ctx, [
+          { name: 'dAdd', mode: FILE_MODE.DIRECTORY, id: sharedSubtree },
+        ]);
+        const rawOld = (await readObjectMod.readRawObject(ctx, oldRoot)).content;
+        const rawNew = (await readObjectMod.readRawObject(ctx, newRoot)).content;
+        const sut = diffRecursive;
+
+        // Act + Assert — cap=3: the root level contributes 2 (dAdd add,
+        // dDel delete), then each subtree expansion contributes 1 more
+        // (leaf.txt); the second expansion pushes the cumulative count to 4 > 3.
+        try {
+          await sut(ctx, rawOld, rawNew, 3);
+          expect.unreachable();
+        } catch (error) {
+          const { data } = error as { data: { code: string; count: number; limit: number } };
+          expect(data.code).toBe('TREE_ENTRY_LIMIT_EXCEEDED');
+          expect(data.count).toBe(4);
+          expect(data.limit).toBe(3);
+        }
+      });
+    });
+  });
 });

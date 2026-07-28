@@ -43,7 +43,8 @@ import type { Context } from '../../ports/context.js';
 import { detectSimilarityRenames } from './detect-similarity-renames.js';
 import { flattenTree } from './flatten-tree.js';
 import { boundedMap, MAX_CONCURRENT_BLOB_LOADS } from './internal/bounded-map.js';
-import { DEFAULT_FLATTEN_BOUNDS } from './internal/flatten-raw.js';
+import { DEFAULT_FLATTEN_BOUNDS, type FlattenBounds } from './internal/flatten-raw.js';
+import { joinPath, readRawTreeById as readRawTree } from './internal/raw-tree-io.js';
 import { type AttributeProvider, buildAttributeProvider } from './internal/read-gitattributes.js';
 import { walkRawSubtree } from './internal/walk-raw-subtree.js';
 import { isWhitespaceOnlyModify } from './internal/whitespace-drop-predicate.js';
@@ -353,17 +354,6 @@ async function resolveInput(ctx: Context, input: DiffTreesInput): Promise<Tree |
 }
 
 /**
- * Read an object raw and require it to be a tree, mirroring `readTree`'s own
- * non-tree refusal but without parsing — used by the recursive path, which
- * only ever needs tree bytes for the byte-cursor merge-join.
- */
-async function readRawTree(ctx: Context, id: ObjectId): Promise<Uint8Array> {
-  const raw = await readRawObject(ctx, id);
-  if (raw.type !== 'tree') throw unexpectedObjectType('tree', raw.type, id);
-  return raw.content;
-}
-
-/**
  * Raw sibling of `resolveInput`, used only by the recursive branch. A caller-supplied
  * `Tree` is re-read raw by its own `id` — one walk implementation at every level, at
  * the cost of a hand-forged `Tree` whose `id` is not in the store now throwing
@@ -482,10 +472,6 @@ async function diffRecursiveLevel(
   return expanded.flat();
 }
 
-function joinPath(prefix: string, name: string): FilePath {
-  return (prefix === '' ? name : `${prefix}/${name}`) as FilePath;
-}
-
 async function expandLevelChange(
   ctx: Context,
   change: DiffChange,
@@ -496,10 +482,10 @@ async function expandLevelChange(
     return diffChangedSubtree(ctx, change, cursor, state);
   }
   if (change.type === 'add' && isDirectory(change.newMode)) {
-    return expandAddedSubtree(ctx, change.newId, joinPath(cursor.prefix, change.newPath));
+    return expandAddedSubtree(ctx, change.newId, joinPath(cursor.prefix, change.newPath), state);
   }
   if (change.type === 'delete' && isDirectory(change.oldMode)) {
-    return expandDeletedSubtree(ctx, change.oldId, joinPath(cursor.prefix, change.oldPath));
+    return expandDeletedSubtree(ctx, change.oldId, joinPath(cursor.prefix, change.oldPath), state);
   }
   return [withPrefix(change, cursor.prefix)];
 }
@@ -555,17 +541,25 @@ async function diffChangedSubtree(
  * de-duplicates. `flattenTree`'s `Map` (last-name-wins) is the right shape
  * for worktree materialisation but collapses a duplicate-name tree into a
  * single entry, so this walks the raw bytes directly via `walkRawSubtree`
- * instead.
+ * instead. `state.counter` is threaded straight into the walk so a diamond
+ * DAG reached via more than one add/delete pays out of the SAME entry
+ * budget `diffRecursiveLevel` itself counts against, not a fresh one per
+ * subtree; only `maxDepth` stays fixed at `DEFAULT_FLATTEN_BOUNDS`' value.
  */
+function subtreeExpansionBounds(state: DiffWalkState): FlattenBounds {
+  return { maxDepth: DEFAULT_FLATTEN_BOUNDS.maxDepth, maxEntries: state.maxEntries };
+}
+
 async function expandAddedSubtree(
   ctx: Context,
   id: ObjectId,
   prefix: string,
+  state: DiffWalkState,
 ): Promise<AddChange[]> {
   const changes: AddChange[] = [];
-  for await (const entry of walkRawSubtree(ctx, id, DEFAULT_FLATTEN_BOUNDS, prefix)) {
+  await walkRawSubtree(ctx, id, subtreeExpansionBounds(state), prefix, state.counter, (entry) => {
     changes.push(addLeaf(entry.path, entry));
-  }
+  });
   return changes;
 }
 
@@ -573,11 +567,12 @@ async function expandDeletedSubtree(
   ctx: Context,
   id: ObjectId,
   prefix: string,
+  state: DiffWalkState,
 ): Promise<DeleteChange[]> {
   const changes: DeleteChange[] = [];
-  for await (const entry of walkRawSubtree(ctx, id, DEFAULT_FLATTEN_BOUNDS, prefix)) {
+  await walkRawSubtree(ctx, id, subtreeExpansionBounds(state), prefix, state.counter, (entry) => {
     changes.push(deleteLeaf(entry.path, entry));
-  }
+  });
   return changes;
 }
 
