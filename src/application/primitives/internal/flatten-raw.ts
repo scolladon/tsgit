@@ -95,19 +95,27 @@ async function flattenLevel(
   const descentStack = [...stack, id];
   const cursor = openTreeCursor(content, config.ctx.hashConfig);
   while (!cursor.done) {
-    await flattenEntry(config, state, cursor, prefix, depth, descentStack);
+    const child = flattenEntry(config, state, cursor, prefix);
+    if (child !== undefined) {
+      await descendIfTree(config, state, child.id, child.path, depth, descentStack);
+    }
     advanceCursor(cursor);
   }
 }
 
-async function flattenEntry(
+/**
+ * Leaf-level work for one entry — abort check, name validation, counter/cap
+ * check, and (for a leaf) the `Map` write — all synchronous: no promise is
+ * allocated for an entry that turns out to be a leaf. Returns the child id
+ * and path to descend into when the entry is a directory, `undefined`
+ * otherwise (the leaf is already recorded).
+ */
+function flattenEntry(
   config: FlattenConfig,
   state: FlattenState,
   cursor: TreeCursor,
   prefix: string,
-  depth: number,
-  stack: ReadonlyArray<ObjectId>,
-): Promise<void> {
+): { readonly id: ObjectId; readonly path: FilePath } | undefined {
   if (config.ctx.signal?.aborted) throw operationAborted();
   const path = joinPath(prefix, validatedName(cursor));
   state.counter.value += 1;
@@ -115,11 +123,12 @@ async function flattenEntry(
     throw treeEntryLimitExceeded(state.counter.value, config.bounds.maxEntries);
   }
   const mode = cursorMode(cursor);
+  const id = cursorOid(cursor);
   if (mode !== FILE_MODE.DIRECTORY) {
-    state.entries.set(path, { id: cursorOid(cursor), mode });
-    return;
+    state.entries.set(path, { id, mode });
+    return undefined;
   }
-  await descendIfTree(config, state, cursorOid(cursor), path, depth, stack);
+  return { id, path };
 }
 
 // Name validation stays on this path (unlike the raw merge-join diff, which
