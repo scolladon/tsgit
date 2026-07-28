@@ -225,6 +225,41 @@ describe('file-mode', () => {
       });
     });
 
+    describe('Given a byte range that stops just short of a directory mode', () => {
+      describe('When matching', () => {
+        it.each([
+          {
+            mode: '40001',
+            label:
+              "'40001' (length 5, content diverges from '40000') — kills the length===5 && matchesBytes mutant's right operand",
+          },
+          {
+            mode: '400000',
+            label:
+              "'400000' (length 6, first 5 bytes equal '40000') — kills the same mutant's left operand",
+          },
+        ])('Then throws INVALID_FILE_MODE with the decoded value ($label)', ({ mode }) => {
+          // Arrange
+          const buf = encode(mode);
+          let caught: unknown;
+
+          // Act
+          try {
+            matchFileModeBytes(buf, 0, buf.length);
+          } catch (error) {
+            caught = error;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data).toEqual({
+            code: 'INVALID_FILE_MODE',
+            value: mode,
+          });
+        });
+      });
+    });
+
     describe('Given the byte range of a mode whose length is neither 5 nor 6', () => {
       describe('When matching', () => {
         it('Then throws INVALID_FILE_MODE with the decoded value', () => {

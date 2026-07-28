@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { readObject, readRawObject } from '../../../../src/application/primitives/read-object.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import type { TsgitError } from '../../../../src/domain/error.js';
@@ -452,7 +452,7 @@ describe('readRawObject', () => {
 
   describe('Given a packed delta-chain blob already resolved by an earlier read', () => {
     describe('When readRawObject reads it again', () => {
-      it('Then the second read is served from the delta cache with the same content', async () => {
+      it('Then the second read is served from the delta cache (a cache hit, not a re-resolve)', async () => {
         // Arrange
         const baseContent = new TextEncoder().encode('abcd');
         const targetContent = new TextEncoder().encode('abcdefgh');
@@ -463,13 +463,18 @@ describe('readRawObject', () => {
         ]);
         const deltaId = ids[1] as ObjectId;
         await readRawObject(ctx, deltaId);
+        const cacheGetSpy = vi.spyOn(ctx.deltaCache, 'get');
 
         // Act
         const result = await readRawObject(ctx, deltaId);
 
-        // Assert
+        // Assert — the second read hits the cache directly (a defined value
+        // for this exact id), rather than falling through to loose/pack lookup.
+        expect(cacheGetSpy).toHaveBeenCalledWith(deltaId);
+        expect(cacheGetSpy.mock.results[0]?.value).toBeDefined();
         expect(result.type).toBe('blob');
         expect(result.content).toEqual(targetContent);
+        cacheGetSpy.mockRestore();
       });
     });
   });
@@ -525,7 +530,9 @@ describe('readRawObject', () => {
           const data = (error as TsgitError).data;
           expect(data.code).toBe('OBJECT_HASH_MISMATCH');
           if (data.code === 'OBJECT_HASH_MISMATCH') {
+            const actualHash = await ctx.hash.hashHex(rawBytes);
             expect(data.expected).toBe(fakeId);
+            expect(data.actual).toBe(actualHash);
           }
         }
       });

@@ -12,6 +12,8 @@ function contentOf(tree: Tree): Uint8Array {
   return serializeTreeContent(tree, SHA1_CONFIG);
 }
 
+const sut = diffRawTrees;
+
 describe('diffRawTrees — property-based tests', () => {
   describe('Given two arbitrary canonical trees', () => {
     describe('When diffed via the raw cursor walk and via the parsed-Tree walk', () => {
@@ -19,7 +21,7 @@ describe('diffRawTrees — property-based tests', () => {
         // Arrange + Assert
         fc.assert(
           fc.property(arbCanonicalTree(), arbCanonicalTree(), (treeA, treeB) => {
-            const result = diffRawTrees(contentOf(treeA), contentOf(treeB), SHA1_CONFIG);
+            const result = sut(contentOf(treeA), contentOf(treeB), SHA1_CONFIG);
 
             expect(result.changes).toEqual(diffTrees(treeA, treeB).changes);
           }),
@@ -37,7 +39,7 @@ describe('diffRawTrees — property-based tests', () => {
           fc.property(arbCanonicalTree(), (t) => {
             const content = contentOf(t);
 
-            const result = diffRawTrees(content, content, SHA1_CONFIG);
+            const result = sut(content, content, SHA1_CONFIG);
 
             expect(result.changes).toEqual([]);
           }),
@@ -63,7 +65,7 @@ describe('diffRawTrees — property-based tests', () => {
                 entries: fullTree.entries.filter((_, i) => i !== removeAt),
               };
 
-              const result = diffRawTrees(contentOf(fullTree), contentOf(fewerTree), SHA1_CONFIG);
+              const result = sut(contentOf(fullTree), contentOf(fewerTree), SHA1_CONFIG);
 
               expect(result.changes).toEqual([
                 {

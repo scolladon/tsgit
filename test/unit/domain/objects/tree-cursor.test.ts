@@ -257,6 +257,29 @@ describe('tree-cursor', () => {
         });
       });
     });
+
+    describe('Given a length-4 mode as the SECOND entry, immediately after an oid whose final byte is 0x34', () => {
+      describe('When opening a cursor at the second entry', () => {
+        it('Then isDir is false (the length < 5 short-circuit fires before the coincidental byte match)', () => {
+          // Arrange — a `||`→`&&` mutant would need BOTH `length < 5` and a
+          // 0x34 byte at modeEnd-5 to fall through; planting that coincidental
+          // byte in the PRECEDING entry's oid (which modeEnd-5 lands on, since
+          // this mode is only 4 bytes long) proves the short-circuit alone
+          // decides the verdict, not a lucky byte match.
+          const precedingOidHex = `${'a'.repeat(38)}34`;
+          const first = entryBytes('100644', 'a', precedingOidHex);
+          const second = entryBytes('4000', 'b');
+          const buf = concatBytes(first, second);
+          const cursor = openTreeCursor(buf, SHA1_CONFIG);
+
+          // Act
+          advanceCursor(cursor);
+
+          // Assert
+          expect(cursor.isDir).toBe(false);
+        });
+      });
+    });
   });
 
   describe('compareCursorNames', () => {
@@ -305,6 +328,25 @@ describe('tree-cursor', () => {
 
           // Act
           const result = sut(ab, abc);
+
+          // Assert
+          expect(result).toBeLessThan(0);
+        });
+      });
+    });
+
+    describe("Given a blob 'd' and a blob 'd!' (identical shared-prefix byte, diverging length)", () => {
+      describe('When comparing', () => {
+        it("Then 'd' sorts before 'd!' (kills the Math.min→Math.max mutant on the shared-prefix bound)", () => {
+          // Arrange — a Math.max mutant would extend the compare loop past the
+          // shorter name's real length into VIRTUAL_SLASH ('/' = 0x2f), which
+          // sorts AFTER '!' (0x21), flipping the verdict to positive.
+          const d = singleEntryCursor('100644', 'd');
+          const dBang = singleEntryCursor('100644', 'd!');
+          const sut = compareCursorNames;
+
+          // Act
+          const result = sut(d, dBang);
 
           // Assert
           expect(result).toBeLessThan(0);

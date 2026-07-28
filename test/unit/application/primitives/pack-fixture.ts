@@ -28,6 +28,12 @@ export interface BaseEntrySpec {
   readonly type: 'commit' | 'tree' | 'blob' | 'tag';
   /** Raw object content (without the `<type> <size>\0` header). */
   readonly content: Uint8Array;
+  /**
+   * Index this entry under a caller-chosen id instead of the content's real
+   * hash — the only way to plant a packed object whose bytes don't hash to
+   * its indexed id (hash-mismatch fixtures for fsck-style tests).
+   */
+  readonly idOverride?: string;
 }
 
 export interface OfsDeltaSpec {
@@ -116,7 +122,8 @@ export async function buildSyntheticPack(
     // or delta-resolved). The id is over `<type> <size>\0<content>`.
     const resolvedType = resolvedTypeOf(entries, i);
     const fullBytes = prependObjectHeader(uncompressed, resolvedType);
-    const id = await ctx.hash.hashHex(fullBytes);
+    const realId = await ctx.hash.hashHex(fullBytes);
+    const id = spec.kind === 'base' ? (spec.idOverride ?? realId) : realId;
     ids.push(id);
   }
 

@@ -5,6 +5,7 @@ import * as flattenTreeMod from '../../../../src/application/primitives/flatten-
 import * as walkRawSubtreeMod from '../../../../src/application/primitives/internal/walk-raw-subtree.js';
 import * as materialisePatchFilesMod from '../../../../src/application/primitives/materialise-patch-files.js';
 import * as readObjectMod from '../../../../src/application/primitives/read-object.js';
+import { readObject } from '../../../../src/application/primitives/read-object.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../src/application/primitives/write-tree.js';
 import type { LineKey, WhitespaceMode } from '../../../../src/domain/diff/index.js';
@@ -548,12 +549,16 @@ describe('diffTrees', () => {
           { name: 'root.txt', mode: FILE_MODE.REGULAR, id: newFileId },
         ]);
         const walkSpy = vi.spyOn(walkRawSubtreeMod, 'walkRawSubtree');
+        const readRawObjectSpy = vi.spyOn(readObjectMod, 'readRawObject');
 
         // Act
         const result = await diffTrees(ctx, before, after, { recursive: true });
 
         // Assert — no subtree was ever expanded; only the differing file changed.
         expect(walkSpy).not.toHaveBeenCalled();
+        // Assert — the unchanged subtree's own bytes are never read either (not
+        // just never walked): TREESAME is pruned before any object read for it.
+        expect(readRawObjectSpy.mock.calls.some(([, id]) => id === unchangedSubId)).toBe(false);
         expect(result.changes).toEqual([
           {
             type: 'modify',
@@ -565,6 +570,7 @@ describe('diffTrees', () => {
           },
         ]);
         walkSpy.mockRestore();
+        readRawObjectSpy.mockRestore();
       });
     });
   });
@@ -601,12 +607,14 @@ describe('diffTrees', () => {
 
         // Assert — well under the 20-entry unchanged subtree: only the emitted
         // `root.txt` entry's two oids are ever hex-converted (the unchanged
-        // `big/` comparison is byte-level, no conversion at all); decode runs
-        // 3 times — one per raw object header read at the root level (old side
-        // + new side) plus one to build the emitted entry's name.
+        // `big/` comparison is byte-level, no conversion at all) — one call for
+        // oldId, one for newId (cursorOid on each side of `root.txt`); decode
+        // runs exactly 3 times — one per raw object header read at the root
+        // level (old side + new side, via peelToTree/splitObject) plus one to
+        // build the emitted `root.txt` entry's name (cursorName).
         expect(result.changes).toHaveLength(1);
-        expect(bytesToHexSpy.mock.calls.length).toBeLessThanOrEqual(2);
-        expect(decodeSpy.mock.calls.length).toBeLessThanOrEqual(3);
+        expect(bytesToHexSpy.mock.calls.length).toBe(2);
+        expect(decodeSpy.mock.calls.length).toBe(3);
         bytesToHexSpy.mockRestore();
         decodeSpy.mockRestore();
       });
@@ -761,6 +769,73 @@ describe('diffTrees', () => {
         // Assert
         expect(result.changes.length).toBe(1);
         expect(result.changes[0]?.type).toBe('add');
+      });
+    });
+  });
+
+  describe('Given caller-supplied Tree objects (not oids) with recursive:true', () => {
+    describe('When diffTrees is called with the Tree objects vs with their oids', () => {
+      it('Then both forms produce the identical DiffChange[]', async () => {
+        // Arrange — a nested change, resolved to Tree objects (rather than oid strings).
+        const ctx = await buildSeededContext();
+        const oldLeaf = await blob(ctx, 'old');
+        const newLeaf = await blob(ctx, 'new');
+        const beforeId = await writeTree(ctx, [
+          {
+            name: 'sub',
+            mode: FILE_MODE.DIRECTORY,
+            id: await subTree(ctx, 'inner.txt', oldLeaf, FILE_MODE.REGULAR),
+          },
+        ]);
+        const afterId = await writeTree(ctx, [
+          {
+            name: 'sub',
+            mode: FILE_MODE.DIRECTORY,
+            id: await subTree(ctx, 'inner.txt', newLeaf, FILE_MODE.REGULAR),
+          },
+        ]);
+        const beforeObject = (await readObject(ctx, beforeId)) as Tree;
+        const afterObject = (await readObject(ctx, afterId)) as Tree;
+
+        // Act
+        const fromObjects = await diffTrees(ctx, beforeObject, afterObject, { recursive: true });
+        const fromOids = await diffTrees(ctx, beforeId, afterId, { recursive: true });
+
+        // Assert — resolveRawInput re-reads a Tree object by its `id`, so both
+        // forms must agree exactly.
+        expect(fromObjects.changes).toEqual(fromOids.changes);
+        expect(fromObjects.changes).toEqual([
+          {
+            type: 'modify',
+            path: 'sub/inner.txt',
+            oldId: oldLeaf,
+            newId: newLeaf,
+            oldMode: FILE_MODE.REGULAR,
+            newMode: FILE_MODE.REGULAR,
+          },
+        ]);
+      });
+    });
+  });
+
+  describe('Given a hand-forged Tree object whose id is not present in the store', () => {
+    describe('When diffTrees is called with recursive:true', () => {
+      it('Then throws OBJECT_NOT_FOUND (the Tree is re-read by its id, not walked directly)', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const emptyId = await writeTree(ctx, []);
+        const unknownId = 'f'.repeat(40) as ObjectId;
+        const forgedTree: Tree = { type: 'tree', id: unknownId, entries: [] };
+
+        // Act + Assert
+        try {
+          await diffTrees(ctx, emptyId, forgedTree, { recursive: true });
+          expect.unreachable();
+        } catch (error) {
+          const { data } = error as { data: { code: string; id: string } };
+          expect(data.code).toBe('OBJECT_NOT_FOUND');
+          expect(data.id).toBe(unknownId);
+        }
       });
     });
   });

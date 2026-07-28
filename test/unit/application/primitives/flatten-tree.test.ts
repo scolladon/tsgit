@@ -205,6 +205,31 @@ describe('flattenTree', () => {
     });
   });
 
+  describe('Given two sibling directories that both point at the same subtree oid', () => {
+    describe('When flattenTree runs', () => {
+      it('Then both branches flatten fully (no false TREE_CYCLE_DETECTED)', async () => {
+        // Arrange — x/ and y/ share the same subtree oid (containing f); the
+        // per-branch descent stack must not treat the second visit as a cycle.
+        const ctx = await buildSeededContext();
+        const blobId = await writeBlob(ctx, 'shared');
+        const sharedSubId = await writeTree(ctx, [
+          { name: 'f' as FilePath, id: blobId, mode: FILE_MODE.REGULAR },
+        ]);
+        const rootId = await writeTree(ctx, [
+          { name: 'x' as FilePath, id: sharedSubId, mode: FILE_MODE.DIRECTORY },
+          { name: 'y' as FilePath, id: sharedSubId, mode: FILE_MODE.DIRECTORY },
+        ]);
+
+        // Act
+        const result = await flattenTree(ctx, rootId);
+
+        // Assert
+        expect(result.entries.get('x/f' as FilePath)?.id).toBe(blobId);
+        expect(result.entries.get('y/f' as FilePath)?.id).toBe(blobId);
+      });
+    });
+  });
+
   describe('Given a multi-depth tree with several blob entries', () => {
     describe('When flattenTree runs and a walkTree drain is compared over the same tree', () => {
       it('Then flattenTree yields the same entry set as the walkTree drain', async () => {
@@ -366,6 +391,31 @@ describe('flattenTree', () => {
         const ctx = await buildSeededContext();
         const blobId = await writeBlob(ctx, 'x');
         const content = rawEntry(FILE_MODE.REGULAR, '..', blobId);
+        const treeId = await writeRawObjectBytes(ctx, 'tree', content);
+
+        // Act + Assert
+        try {
+          await flattenTree(ctx, treeId);
+          expect.unreachable();
+        } catch (error) {
+          const { data } = error as { data: { code: string; offset: number; reason: string } };
+          expect(data.code).toBe('INVALID_TREE_ENTRY');
+          expect(data.offset).toBe(0);
+          expect(data.reason).toBe('invalid entry name: ..');
+        }
+      });
+    });
+  });
+
+  describe('Given a DIRECTORY-mode tree entry named ".."', () => {
+    describe('When flattenTree runs', () => {
+      it('Then throws INVALID_TREE_ENTRY with the invalid-name reason (name validation covers directories too)', async () => {
+        // Arrange — validatedName runs unconditionally for every entry, before
+        // the directory/non-directory branch, so a directory-mode entry with
+        // an invalid name must refuse exactly like a blob-mode one.
+        const ctx = await buildSeededContext();
+        const subTreeId = await writeTree(ctx, []);
+        const content = rawEntry(FILE_MODE.DIRECTORY, '..', subTreeId);
         const treeId = await writeRawObjectBytes(ctx, 'tree', content);
 
         // Act + Assert

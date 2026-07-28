@@ -73,6 +73,38 @@ describe('Given a universe containing an object that is neither loose nor readab
   });
 });
 
+describe('Given a packed blob whose bytes do not hash to its indexed id', () => {
+  describe('When runContentValidationPass validates that object', () => {
+    it('Then emits a hash-mismatch finding, not badType (verifyHash:false on the pack read still surfaces the mismatch)', async () => {
+      // Arrange — readRawObject with verifyHash:false (what tryGetRawObjectBody
+      // uses for pack reads) succeeds regardless of the hash, so the mismatch
+      // must be caught by validateOneObject's own hash check afterward.
+      const content = ENCODER.encode('mismatched content');
+      const ctx = createMemoryContext();
+      const wrongId = '0000000000000000000000000000000000000002' as ObjectId;
+      const ids = await writeSyntheticPack(ctx, 'p2', [
+        { kind: 'base', type: 'blob', content, idOverride: wrongId },
+      ]);
+      const blobId = ids[0] as ObjectId;
+
+      // Act
+      const result = await sut(ctx, new Set([blobId]), false, new Map());
+
+      // Assert
+      const badTypeFindings = result.findings.filter(
+        (f) => f.type === 'bad-object' && f.msgId === 'badType',
+      );
+      expect(badTypeFindings).toHaveLength(0);
+      const hashMismatchFindings = result.findings.filter((f) => f.type === 'hash-mismatch');
+      expect(hashMismatchFindings).toHaveLength(1);
+      expect(hashMismatchFindings[0]).toMatchObject({ id: blobId });
+      if (hashMismatchFindings[0]?.type === 'hash-mismatch') {
+        expect(hashMismatchFindings[0].actual).not.toBe(blobId);
+      }
+    });
+  });
+});
+
 describe('Given a packed tree with a duplicate entry name', () => {
   describe('When runContentValidationPass validates that object', () => {
     it('Then emits a duplicateEntries finding instead of badType', async () => {

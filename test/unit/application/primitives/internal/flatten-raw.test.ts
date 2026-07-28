@@ -10,6 +10,7 @@ import { writeTree } from '../../../../../src/application/primitives/write-tree.
 import {
   FILE_MODE,
   type FileMode,
+  type FilePath,
   type ObjectId,
   SHA1_CONFIG,
   serializeTreeContent,
@@ -139,6 +140,39 @@ describe('flattenRawTree', () => {
           expect(data.code).toBe('TREE_DEPTH_EXCEEDED');
           expect(data.depth).toBe(2);
         }
+      });
+    });
+  });
+
+  describe('Given maxDepth=2 and a two-level nested tree (at cap)', () => {
+    describe('When flattenRawTree runs', () => {
+      it('Then the tree flattens fully (pins the comparison direction: depth === cap succeeds)', async () => {
+        // Arrange — same shape as the maxDepth=1 failing case above, but the
+        // cap now exactly matches the depth reached (2), proving the guard is
+        // `depth > cap`, not `depth >= cap`.
+        const ctx = await buildSeededContext();
+        const blobId = await writeBlob(ctx, 'x');
+        const leafId = await writeTree(ctx, [
+          { name: 'leaf', mode: FILE_MODE.REGULAR, id: blobId },
+        ]);
+        const midId = await writeTree(ctx, [
+          { name: 'mid', mode: FILE_MODE.DIRECTORY, id: leafId },
+        ]);
+        const rootId = await writeTree(ctx, [
+          { name: 'root', mode: FILE_MODE.DIRECTORY, id: midId },
+        ]);
+        const bounds: FlattenBounds = {
+          maxDepth: 2,
+          maxEntries: DEFAULT_FLATTEN_BOUNDS.maxEntries,
+        };
+        const sut = flattenRawTree;
+
+        // Act
+        const result = await sut(ctx, rootId, bounds);
+
+        // Assert
+        expect(result.entries.size).toBe(1);
+        expect(result.entries.get('root/mid/leaf' as FilePath)?.id).toBe(blobId);
       });
     });
   });
