@@ -504,4 +504,64 @@ describe('walkRawSubtree', () => {
       });
     });
   });
+
+  describe('Given a level entered with only 1 entry left in the budget, and that level has 3 directory children', () => {
+    describe('When walkRawSubtree runs', () => {
+      it('Then speculative child reads never exceed the remaining budget, and the walk still throws TREE_ENTRY_LIMIT_EXCEEDED', async () => {
+        // Arrange — maxEntries=2: the root's own 'd' entry consumes 1, so by
+        // the time walkLevel enters 'd's content (3 directory grandchildren)
+        // the remaining budget is maxEntries - counter.value = 1. A mutant
+        // flipping that `-` to `+` opens the window to maxEntries +
+        // counter.value (3) instead, prefetching all 3 grandchildren
+        // regardless of the 1-entry budget — wasted I/O that, on a partial
+        // clone, would reach a promisor fetch for an object the walk was
+        // never going to need.
+        const ctx = await buildSeededContext();
+        const mkTinyDir = async (label: string): Promise<ObjectId> => {
+          const blobId = await writeBlob(ctx, label);
+          return writeTree(ctx, [{ name: 'x', mode: FILE_MODE.REGULAR, id: blobId }]);
+        };
+        const g0 = await mkTinyDir('g0');
+        const g1 = await mkTinyDir('g1');
+        const g2 = await mkTinyDir('g2');
+        const grandchildIds = new Set<ObjectId>([g0, g1, g2]);
+        const childLevelId = await writeTree(ctx, [
+          { name: 'g0', mode: FILE_MODE.DIRECTORY, id: g0 },
+          { name: 'g1', mode: FILE_MODE.DIRECTORY, id: g1 },
+          { name: 'g2', mode: FILE_MODE.DIRECTORY, id: g2 },
+        ]);
+        const rootId = await writeTree(ctx, [
+          { name: 'd', mode: FILE_MODE.DIRECTORY, id: childLevelId },
+        ]);
+        const bounds = { maxDepth: DEFAULT_FLATTEN_BOUNDS.maxDepth, maxEntries: 2 };
+        const remainingBudgetAtChildLevel = 1;
+        let speculativeReadCount = 0;
+        const realReadRawObject = readObjectMod.readRawObject;
+        const spy = vi
+          .spyOn(readObjectMod, 'readRawObject')
+          .mockImplementation(async (spyCtx, id, options) => {
+            if (grandchildIds.has(id)) speculativeReadCount += 1;
+            return realReadRawObject(spyCtx, id, options);
+          });
+
+        // Act + Assert
+        try {
+          await collect(ctx, rootId, bounds);
+          expect.unreachable();
+        } catch (error) {
+          const { data } = error as { data: { code: string; count: number; limit: number } };
+          expect(data.code).toBe('TREE_ENTRY_LIMIT_EXCEEDED');
+          expect(data.count).toBe(3);
+          expect(data.limit).toBe(2);
+        } finally {
+          await new Promise<void>((resolve) => setImmediate(resolve));
+          try {
+            expect(speculativeReadCount).toBeLessThanOrEqual(remainingBudgetAtChildLevel);
+          } finally {
+            spy.mockRestore();
+          }
+        }
+      });
+    });
+  });
 });
