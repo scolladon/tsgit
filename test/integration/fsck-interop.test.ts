@@ -167,6 +167,7 @@ let catalogueCtx: Context;
 let sortedTreeSha = '';
 let badEmailCommitSha = '';
 let emptyTreeSha = '';
+let duplicateEntriesTreeSha = '';
 
 beforeAll(async () => {
   catalogueDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-fsck-catalogue-'));
@@ -190,6 +191,12 @@ beforeAll(async () => {
   const treeBody = Buffer.concat([e1, sha1Bytes, e2, sha2Bytes]);
   sortedTreeSha = await writeLooseObject(catalogueDir, 'tree', treeBody);
 
+  // Build a tree with duplicateEntries: 'a.txt' listed twice
+  const dupE1 = Buffer.from('100644 a.txt\0');
+  const dupE2 = Buffer.from('100644 a.txt\0');
+  const duplicateEntriesTreeBody = Buffer.concat([dupE1, sha1Bytes, dupE2, sha2Bytes]);
+  duplicateEntriesTreeSha = await writeLooseObject(catalogueDir, 'tree', duplicateEntriesTreeBody);
+
   // Write the canonical empty-tree object (4b825dc...) directly
   emptyTreeSha = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
   await writeLooseObject(catalogueDir, 'tree', Buffer.alloc(0));
@@ -211,11 +218,71 @@ beforeAll(async () => {
   // Point another ref to the bad-email commit
   await writeFile(path.join(refsDir, 'badEmail'), `${badEmailCommitSha}\n`);
 
+  // Point another ref to a commit for the duplicateEntries tree directly
+  const commitForDuplicateBody = Buffer.from(
+    `tree ${duplicateEntriesTreeSha}\nauthor Test <test@example.com> 1700000000 +0000\ncommitter Test <test@example.com> 1700000000 +0000\n\nduplicate\n`,
+  );
+  const commitForDuplicate = await writeLooseObject(catalogueDir, 'commit', commitForDuplicateBody);
+  await writeFile(path.join(refsDir, 'duplicateEntries'), `${commitForDuplicate}\n`);
+
   catalogueCtx = createNodeContext({ workDir: catalogueDir });
 }, SETUP_TIMEOUT);
 
 afterAll(async () => {
   if (catalogueDir !== '') await rm(catalogueDir, { recursive: true, force: true });
+});
+
+// --- Scenario family: tree name faults (hasDot, hasDotdot, fullPathname) -----
+// Isolated from catalogueDir so each check's own repo carries no other
+// content-error finding — the default-mode exit code proves the WARN severity
+// in isolation, exactly like the zeroPaddedFilemode family above.
+
+let nameFaultsDir = '';
+let nameFaultsCtx: Context;
+let hasDotTreeSha = '';
+let hasDotdotTreeSha = '';
+let fullPathnameTreeSha = '';
+
+beforeAll(async () => {
+  nameFaultsDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-fsck-nameFaults-'));
+  initRepo(nameFaultsDir);
+
+  const blobSha = runGit(['-C', nameFaultsDir, 'hash-object', '-w', '--stdin'], {
+    env: SAFE_ENV,
+    input: 'hello\n',
+  }).trim();
+  const blobShaBytes = Buffer.from(blobSha, 'hex');
+
+  const refsDir = path.join(nameFaultsDir, '.git', 'refs', 'heads');
+  await mkdir(refsDir, { recursive: true });
+
+  const writeTreeNamed = async (name: string): Promise<string> => {
+    const modeAndName = Buffer.from(`100644 ${name}\0`);
+    const treeBody = Buffer.concat([modeAndName, blobShaBytes]);
+    return writeLooseObject(nameFaultsDir, 'tree', treeBody);
+  };
+
+  const pointRefAtTree = async (ref: string, treeSha: string): Promise<void> => {
+    const commitBody = Buffer.from(
+      `tree ${treeSha}\nauthor Test <test@example.com> 1700000000 +0000\ncommitter Test <test@example.com> 1700000000 +0000\n\n${ref}\n`,
+    );
+    const commitSha = await writeLooseObject(nameFaultsDir, 'commit', commitBody);
+    await writeFile(path.join(refsDir, ref), `${commitSha}\n`);
+  };
+
+  hasDotTreeSha = await writeTreeNamed('.');
+  hasDotdotTreeSha = await writeTreeNamed('..');
+  fullPathnameTreeSha = await writeTreeNamed('a/b');
+
+  await pointRefAtTree('hasDot', hasDotTreeSha);
+  await pointRefAtTree('hasDotdot', hasDotdotTreeSha);
+  await pointRefAtTree('fullPathname', fullPathnameTreeSha);
+
+  nameFaultsCtx = createNodeContext({ workDir: nameFaultsDir });
+}, SETUP_TIMEOUT);
+
+afterAll(async () => {
+  if (nameFaultsDir !== '') await rm(nameFaultsDir, { recursive: true, force: true });
 });
 
 // --- Scenario: corrupt loose object ------------------------------------------
@@ -293,7 +360,10 @@ afterAll(async () => {
 // Test groups
 // ---------------------------------------------------------------------------
 
-const ZERO_PADDED_FILEMODE_MATRIX: ReadonlyArray<{
+// Shared by every WARN-by-default, ERROR-under-`--strict` msg-id: the severity
+// flip is identical across zeroPaddedFilemode, hasDot, hasDotdot and
+// fullPathname, so one matrix drives all four `it.each` blocks below.
+const WARN_STRICT_UPGRADE_MATRIX: ReadonlyArray<{
   readonly label: string;
   readonly gitFlags: readonly string[];
   readonly strict: boolean;
@@ -318,7 +388,7 @@ const ZERO_PADDED_FILEMODE_MATRIX: ReadonlyArray<{
 
 describe.skipIf(!GIT_AVAILABLE)('Given a loose tree with zeroPaddedFilemode', () => {
   describe('When fsck runs', () => {
-    it.each(ZERO_PADDED_FILEMODE_MATRIX)(
+    it.each(WARN_STRICT_UPGRADE_MATRIX)(
       'Then emits bad-object and exit code matches real git for "$label"',
       async ({ gitFlags, strict, severity, exitCode }) => {
         // Arrange — git's expected output
@@ -350,6 +420,158 @@ describe.skipIf(!GIT_AVAILABLE)('Given a loose tree with zeroPaddedFilemode', ()
     );
   });
 });
+
+describe.skipIf(!GIT_AVAILABLE)('Given a loose tree with entry name "."', () => {
+  describe('When fsck runs', () => {
+    it.each(WARN_STRICT_UPGRADE_MATRIX)(
+      'Then emits bad-object and exit code matches real git for "$label"',
+      async ({ gitFlags, strict, severity, exitCode }) => {
+        // Arrange — git's expected output
+        const gitResult = gitFsck(nameFaultsDir, ...gitFlags);
+
+        // Act
+        const result = await fsck(nameFaultsCtx, { strict });
+
+        // Assert — exit code matches real git and the pinned expectation
+        expect(result.exitCode).toBe(gitResult.exitCode);
+        expect(result.exitCode).toBe(exitCode);
+
+        // Assert — finding present with the expected severity
+        const hasDot = result.findings.find(
+          (f): f is FsckFinding & { type: 'bad-object' } =>
+            f.type === 'bad-object' && f.msgId === 'hasDot',
+        );
+        expect(hasDot).toBeDefined();
+        expect(hasDot?.severity).toBe(severity);
+        expect(hasDot?.id).toBe(hasDotTreeSha);
+
+        // Reconstruct git stderr line and assert byte-equality
+        // git: "<severity> in tree <sha>: hasDot: contains '.'"
+        if (hasDot !== undefined) {
+          const reconstructed = `${severity} in tree ${hasDot.id}: ${hasDot.msgId}: contains '.'`;
+          expect(gitResult.stderr).toContain(reconstructed);
+        }
+      },
+    );
+  });
+});
+
+describe.skipIf(!GIT_AVAILABLE)('Given a loose tree with entry name ".."', () => {
+  describe('When fsck runs', () => {
+    it.each(WARN_STRICT_UPGRADE_MATRIX)(
+      'Then emits bad-object and exit code matches real git for "$label"',
+      async ({ gitFlags, strict, severity, exitCode }) => {
+        // Arrange — git's expected output
+        const gitResult = gitFsck(nameFaultsDir, ...gitFlags);
+
+        // Act
+        const result = await fsck(nameFaultsCtx, { strict });
+
+        // Assert — exit code matches real git and the pinned expectation
+        expect(result.exitCode).toBe(gitResult.exitCode);
+        expect(result.exitCode).toBe(exitCode);
+
+        // Assert — finding present with the expected severity
+        const hasDotdot = result.findings.find(
+          (f): f is FsckFinding & { type: 'bad-object' } =>
+            f.type === 'bad-object' && f.msgId === 'hasDotdot',
+        );
+        expect(hasDotdot).toBeDefined();
+        expect(hasDotdot?.severity).toBe(severity);
+        expect(hasDotdot?.id).toBe(hasDotdotTreeSha);
+
+        // Reconstruct git stderr line and assert byte-equality
+        // git: "<severity> in tree <sha>: hasDotdot: contains '..'"
+        if (hasDotdot !== undefined) {
+          const reconstructed = `${severity} in tree ${hasDotdot.id}: ${hasDotdot.msgId}: contains '..'`;
+          expect(gitResult.stderr).toContain(reconstructed);
+        }
+      },
+    );
+  });
+});
+
+describe.skipIf(!GIT_AVAILABLE)('Given a loose tree with an entry name containing "/"', () => {
+  describe('When fsck runs', () => {
+    it.each(WARN_STRICT_UPGRADE_MATRIX)(
+      'Then emits bad-object and exit code matches real git for "$label"',
+      async ({ gitFlags, strict, severity, exitCode }) => {
+        // Arrange — git's expected output
+        const gitResult = gitFsck(nameFaultsDir, ...gitFlags);
+
+        // Act
+        const result = await fsck(nameFaultsCtx, { strict });
+
+        // Assert — exit code matches real git and the pinned expectation
+        expect(result.exitCode).toBe(gitResult.exitCode);
+        expect(result.exitCode).toBe(exitCode);
+
+        // Assert — finding present with the expected severity
+        const fullPathname = result.findings.find(
+          (f): f is FsckFinding & { type: 'bad-object' } =>
+            f.type === 'bad-object' && f.msgId === 'fullPathname',
+        );
+        expect(fullPathname).toBeDefined();
+        expect(fullPathname?.severity).toBe(severity);
+        expect(fullPathname?.id).toBe(fullPathnameTreeSha);
+
+        // Reconstruct git stderr line and assert byte-equality
+        // git: "<severity> in tree <sha>: fullPathname: contains full pathnames"
+        if (fullPathname !== undefined) {
+          const reconstructed = `${severity} in tree ${fullPathname.id}: ${fullPathname.msgId}: contains full pathnames`;
+          expect(gitResult.stderr).toContain(reconstructed);
+        }
+      },
+    );
+  });
+});
+
+const DUPLICATE_ENTRIES_MATRIX: ReadonlyArray<{
+  readonly label: string;
+  readonly strict: boolean;
+}> = [
+  { label: 'no --strict', strict: false },
+  { label: 'with --strict', strict: true },
+];
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'Given a loose tree with duplicateEntries (ERROR catalogue entry, unaffected by --strict)',
+  () => {
+    describe('When fsck runs', () => {
+      it.each(DUPLICATE_ENTRIES_MATRIX)(
+        'Then emits error bad-object and exit code matches real git for "$label"',
+        async ({ strict }) => {
+          // Arrange — git's expected output
+          const gitFlags = strict ? ['--strict'] : [];
+          const gitResult = gitFsck(catalogueDir, ...gitFlags);
+
+          // Act
+          const result = await fsck(catalogueCtx, { strict });
+
+          // Assert — exit code includes bit 1 (ERROR finding) in both modes
+          expect(result.exitCode & 1).toBe(1);
+          expect(gitResult.exitCode & 1).toBe(1);
+
+          // Assert — duplicateEntries stays error severity even under --strict
+          const duplicate = result.findings.find(
+            (f): f is FsckFinding & { type: 'bad-object' } =>
+              f.type === 'bad-object' && f.msgId === 'duplicateEntries',
+          );
+          expect(duplicate).toBeDefined();
+          expect(duplicate?.severity).toBe('error');
+          expect(duplicate?.id).toBe(duplicateEntriesTreeSha);
+
+          // Reconstruct git stderr line
+          // git: "error in tree <sha>: duplicateEntries: contains duplicate file entries"
+          if (duplicate !== undefined) {
+            const reconstructed = `error in tree ${duplicate.id}: ${duplicate.msgId}: contains duplicate file entries`;
+            expect(gitResult.stderr).toContain(reconstructed);
+          }
+        },
+      );
+    });
+  },
+);
 
 describe.skipIf(!GIT_AVAILABLE)(
   'Given a loose tree with treeNotSorted (ERROR catalogue entry)',

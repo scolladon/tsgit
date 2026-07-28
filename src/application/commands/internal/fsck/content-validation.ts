@@ -2,10 +2,10 @@ import { TsgitError } from '../../../../domain/error.js';
 import type { FsckObjectType } from '../../../../domain/fsck/index.js';
 import { validateObject } from '../../../../domain/fsck/index.js';
 import type { ObjectId } from '../../../../domain/objects/index.js';
-import { parseHeader, serializeObject } from '../../../../domain/objects/index.js';
+import { parseHeader, serializeHeader } from '../../../../domain/objects/index.js';
 import type { Context } from '../../../../ports/context.js';
 import { looseCompressedBytes } from '../../../primitives/object-resolver.js';
-import { readObject } from '../../../primitives/read-object.js';
+import { readRawObject } from '../../../primitives/read-object.js';
 import { EXIT_CONTENT_ERROR, EXIT_CORRUPT, EXIT_HASH_MISMATCH } from './exit-codes.js';
 import type { FsckFinding } from './types.js';
 
@@ -27,10 +27,11 @@ type RawObjectResult =
  * other normalisation-defeated bytes that tsgit's strict parsers reject.
  * The full inflated bytes are also returned for hash verification.
  *
- * For pack objects: re-serialize the parsed object. Packs never contain
- * zero-padded modes (git normalises on pack write), so re-serialisation is
- * correct and all catalogue checks apply to packed objects.
- * The re-serialized bytes are returned for hash verification.
+ * For pack objects: read the pre-parse bytes directly (no domain parse, no
+ * re-serialisation), so a malformed packed object is classified by the
+ * catalogue instead of being swallowed into a generic `badType` finding, and
+ * hash verification is computed from the object's ORIGINAL bytes rather than
+ * a canonicalised re-encoding.
  */
 async function tryGetRawObjectBody(ctx: Context, id: ObjectId): Promise<RawObjectResult> {
   const compressed = await looseCompressedBytes(ctx, id);
@@ -64,13 +65,19 @@ async function tryGetRawObjectBody(ctx: Context, id: ObjectId): Promise<RawObjec
     }
   }
 
-  // Pack object — go through normal parse path and re-serialize
+  // Pack object — read the pre-parse bytes directly. Going through readObject's
+  // domain parser would throw on exactly the faults the catalogue exists to
+  // report (duplicate name, '.', '..', an embedded '/'), collapsing every such
+  // packed tree into badType; and re-serializing a parsed Tree re-sorts its
+  // entries, so hashing that re-sorted form against an unsorted tree's id
+  // would report a false hash-mismatch. Hashing the ORIGINAL bytes avoids both.
   try {
-    // Stryker disable next-line ObjectLiteral,BooleanLiteral: equivalent — verifyHash defaults true; hash-verification throws are caught below → returns { ok: false, msgId: 'badType' }, same outcome.
-    const obj = await readObject(ctx, id, { verifyHash: false });
-    const full = serializeObject(obj, ctx.hashConfig);
-    const { contentOffset } = parseHeader(full);
-    return { ok: true, kind: obj.type, rawBody: full.subarray(contentOffset), hashBytes: full };
+    const raw = await readRawObject(ctx, id, { verifyHash: false });
+    const header = serializeHeader(raw.type, raw.content.length);
+    const hashBytes = new Uint8Array(header.length + raw.content.length);
+    hashBytes.set(header, 0);
+    hashBytes.set(raw.content, header.length);
+    return { ok: true, kind: raw.type, rawBody: raw.content, hashBytes };
   } catch {
     return { ok: false, msgId: 'badType' };
   }
