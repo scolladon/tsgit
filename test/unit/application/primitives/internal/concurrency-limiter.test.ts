@@ -71,6 +71,28 @@ describe('createConcurrencyLimiter', () => {
     });
   });
 
+  describe('Given a limit-1 limiter whose only task has already completed', () => {
+    describe('When a second task is run after the first finished', () => {
+      it('Then the second task starts without queueing (the freed slot returned to the pool)', async () => {
+        // Arrange
+        const sut = createConcurrencyLimiter(1);
+        await sut.run(async () => 'first');
+        let secondStarted = false;
+
+        // Act
+        const second = sut.run(async () => {
+          secondStarted = true;
+          return 'second';
+        });
+        await Promise.resolve();
+
+        // Assert
+        expect(secondStarted).toBe(true);
+        await expect(second).resolves.toBe('second');
+      });
+    });
+  });
+
   describe('Given limit greater than the number of tasks', () => {
     describe('When every task runs through the limiter', () => {
       it('Then concurrency caps at the task count, not the limit', async () => {
