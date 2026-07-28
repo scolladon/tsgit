@@ -362,7 +362,9 @@ afterAll(async () => {
 
 // Shared by every WARN-by-default, ERROR-under-`--strict` msg-id: the severity
 // flip is identical across zeroPaddedFilemode, hasDot, hasDotdot and
-// fullPathname, so one matrix drives all four `it.each` blocks below.
+// fullPathname, so one matrix drives the zeroPaddedFilemode `it.each` below
+// and, crossed with a 3-row name-fault table, the combined hasDot/hasDotdot/
+// fullPathname `it.each` further down.
 const WARN_STRICT_UPGRADE_MATRIX: ReadonlyArray<{
   readonly label: string;
   readonly gitFlags: readonly string[];
@@ -385,6 +387,50 @@ const WARN_STRICT_UPGRADE_MATRIX: ReadonlyArray<{
     exitCode: 1,
   },
 ];
+
+// The three tree-entry name faults share one repo fixture (nameFaultsDir /
+// nameFaultsCtx) and one oracle shape — only the msgId, the pre-built tree's
+// sha, and git's reconstructed message suffix differ. `treeShaOf` is a thunk
+// (not a direct value) because the tree shas are only populated inside the
+// `beforeAll` above, after this array is defined.
+const NAME_FAULT_MATRIX: ReadonlyArray<{
+  readonly label: string;
+  readonly msgId: 'hasDot' | 'hasDotdot' | 'fullPathname';
+  readonly treeShaOf: () => string;
+  readonly gitMessageSuffix: string;
+}> = [
+  {
+    label: 'entry name "."',
+    msgId: 'hasDot',
+    treeShaOf: () => hasDotTreeSha,
+    gitMessageSuffix: "contains '.'",
+  },
+  {
+    label: 'entry name ".."',
+    msgId: 'hasDotdot',
+    treeShaOf: () => hasDotdotTreeSha,
+    gitMessageSuffix: "contains '..'",
+  },
+  {
+    label: 'entry name containing "/"',
+    msgId: 'fullPathname',
+    treeShaOf: () => fullPathnameTreeSha,
+    gitMessageSuffix: 'contains full pathnames',
+  },
+];
+
+const NAME_FAULT_ROWS = NAME_FAULT_MATRIX.flatMap((fault) =>
+  WARN_STRICT_UPGRADE_MATRIX.map((upgrade) => ({
+    label: `${fault.label}, ${upgrade.label}`,
+    msgId: fault.msgId,
+    treeShaOf: fault.treeShaOf,
+    gitMessageSuffix: fault.gitMessageSuffix,
+    gitFlags: upgrade.gitFlags,
+    strict: upgrade.strict,
+    severity: upgrade.severity,
+    exitCode: upgrade.exitCode,
+  })),
+);
 
 describe.skipIf(!GIT_AVAILABLE)('Given a loose tree with zeroPaddedFilemode', () => {
   describe('When fsck runs', () => {
@@ -421,110 +467,43 @@ describe.skipIf(!GIT_AVAILABLE)('Given a loose tree with zeroPaddedFilemode', ()
   });
 });
 
-describe.skipIf(!GIT_AVAILABLE)('Given a loose tree with entry name "."', () => {
-  describe('When fsck runs', () => {
-    it.each(WARN_STRICT_UPGRADE_MATRIX)(
-      'Then emits bad-object and exit code matches real git for "$label"',
-      async ({ gitFlags, strict, severity, exitCode }) => {
-        // Arrange — git's expected output
-        const gitResult = gitFsck(nameFaultsDir, ...gitFlags);
+describe.skipIf(!GIT_AVAILABLE)(
+  'Given a loose tree with a name fault only fsck --strict upgrades to error',
+  () => {
+    describe('When fsck runs', () => {
+      it.each(NAME_FAULT_ROWS)(
+        'Then emits bad-object and exit code matches real git for $msgId ($label)',
+        async ({ msgId, treeShaOf, gitMessageSuffix, gitFlags, strict, severity, exitCode }) => {
+          // Arrange — git's expected output
+          const gitResult = gitFsck(nameFaultsDir, ...gitFlags);
 
-        // Act
-        const result = await fsck(nameFaultsCtx, { strict });
+          // Act
+          const result = await fsck(nameFaultsCtx, { strict });
 
-        // Assert — exit code matches real git and the pinned expectation
-        expect(result.exitCode).toBe(gitResult.exitCode);
-        expect(result.exitCode).toBe(exitCode);
+          // Assert — exit code matches real git and the pinned expectation
+          expect(result.exitCode).toBe(gitResult.exitCode);
+          expect(result.exitCode).toBe(exitCode);
 
-        // Assert — finding present with the expected severity
-        const hasDot = result.findings.find(
-          (f): f is FsckFinding & { type: 'bad-object' } =>
-            f.type === 'bad-object' && f.msgId === 'hasDot',
-        );
-        expect(hasDot).toBeDefined();
-        expect(hasDot?.severity).toBe(severity);
-        expect(hasDot?.id).toBe(hasDotTreeSha);
+          // Assert — finding present with the expected severity
+          const finding = result.findings.find(
+            (f): f is FsckFinding & { type: 'bad-object' } =>
+              f.type === 'bad-object' && f.msgId === msgId,
+          );
+          expect(finding).toBeDefined();
+          expect(finding?.severity).toBe(severity);
+          expect(finding?.id).toBe(treeShaOf());
 
-        // Reconstruct git stderr line and assert byte-equality
-        // git: "<severity> in tree <sha>: hasDot: contains '.'"
-        if (hasDot !== undefined) {
-          const reconstructed = `${severity} in tree ${hasDot.id}: ${hasDot.msgId}: contains '.'`;
-          expect(gitResult.stderr).toContain(reconstructed);
-        }
-      },
-    );
-  });
-});
-
-describe.skipIf(!GIT_AVAILABLE)('Given a loose tree with entry name ".."', () => {
-  describe('When fsck runs', () => {
-    it.each(WARN_STRICT_UPGRADE_MATRIX)(
-      'Then emits bad-object and exit code matches real git for "$label"',
-      async ({ gitFlags, strict, severity, exitCode }) => {
-        // Arrange — git's expected output
-        const gitResult = gitFsck(nameFaultsDir, ...gitFlags);
-
-        // Act
-        const result = await fsck(nameFaultsCtx, { strict });
-
-        // Assert — exit code matches real git and the pinned expectation
-        expect(result.exitCode).toBe(gitResult.exitCode);
-        expect(result.exitCode).toBe(exitCode);
-
-        // Assert — finding present with the expected severity
-        const hasDotdot = result.findings.find(
-          (f): f is FsckFinding & { type: 'bad-object' } =>
-            f.type === 'bad-object' && f.msgId === 'hasDotdot',
-        );
-        expect(hasDotdot).toBeDefined();
-        expect(hasDotdot?.severity).toBe(severity);
-        expect(hasDotdot?.id).toBe(hasDotdotTreeSha);
-
-        // Reconstruct git stderr line and assert byte-equality
-        // git: "<severity> in tree <sha>: hasDotdot: contains '..'"
-        if (hasDotdot !== undefined) {
-          const reconstructed = `${severity} in tree ${hasDotdot.id}: ${hasDotdot.msgId}: contains '..'`;
-          expect(gitResult.stderr).toContain(reconstructed);
-        }
-      },
-    );
-  });
-});
-
-describe.skipIf(!GIT_AVAILABLE)('Given a loose tree with an entry name containing "/"', () => {
-  describe('When fsck runs', () => {
-    it.each(WARN_STRICT_UPGRADE_MATRIX)(
-      'Then emits bad-object and exit code matches real git for "$label"',
-      async ({ gitFlags, strict, severity, exitCode }) => {
-        // Arrange — git's expected output
-        const gitResult = gitFsck(nameFaultsDir, ...gitFlags);
-
-        // Act
-        const result = await fsck(nameFaultsCtx, { strict });
-
-        // Assert — exit code matches real git and the pinned expectation
-        expect(result.exitCode).toBe(gitResult.exitCode);
-        expect(result.exitCode).toBe(exitCode);
-
-        // Assert — finding present with the expected severity
-        const fullPathname = result.findings.find(
-          (f): f is FsckFinding & { type: 'bad-object' } =>
-            f.type === 'bad-object' && f.msgId === 'fullPathname',
-        );
-        expect(fullPathname).toBeDefined();
-        expect(fullPathname?.severity).toBe(severity);
-        expect(fullPathname?.id).toBe(fullPathnameTreeSha);
-
-        // Reconstruct git stderr line and assert byte-equality
-        // git: "<severity> in tree <sha>: fullPathname: contains full pathnames"
-        if (fullPathname !== undefined) {
-          const reconstructed = `${severity} in tree ${fullPathname.id}: ${fullPathname.msgId}: contains full pathnames`;
-          expect(gitResult.stderr).toContain(reconstructed);
-        }
-      },
-    );
-  });
-});
+          // Reconstruct git stderr line and assert byte-equality
+          // git: "<severity> in tree <sha>: <msgId>: <gitMessageSuffix>"
+          if (finding !== undefined) {
+            const reconstructed = `${severity} in tree ${finding.id}: ${finding.msgId}: ${gitMessageSuffix}`;
+            expect(gitResult.stderr).toContain(reconstructed);
+          }
+        },
+      );
+    });
+  },
+);
 
 const DUPLICATE_ENTRIES_MATRIX: ReadonlyArray<{
   readonly label: string;

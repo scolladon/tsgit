@@ -2,11 +2,11 @@
  * Cross-tool interop — corrupt and edge-case trees, pinned against real git.
  *
  * The raw byte-cursor recursive diff enforces only git's structural
- * `decode_tree_entry` refusals (Pin A) and nothing else, so on-disk-order
+ * `decode_tree_entry` refusals and nothing else, so on-disk-order
  * trees that only `git fsck --strict` would flag are diffed rather than
- * refused (Pin B). Mode bytes are matched, not decoded (Pin C), and the
- * virtual trailing-slash directory sort order is exercised end to end
- * (Pin D). Every malformed/edge tree is hand-written past git's write-side
+ * refused. Mode bytes are matched, not decoded, and the
+ * virtual trailing-slash directory sort order is exercised end to end.
+ * Every malformed/edge tree is hand-written past git's write-side
  * validity checks with `git hash-object -t tree -w --stdin --literally`,
  * then compared through `diffTrees(ctx, oldId, newId, { recursive: true })`
  * — the same primitive real commands call.
@@ -125,7 +125,7 @@ function rawLine(change: DiffChange): string {
 }
 
 function gitDiffTreeLines(oldTree: string, newTree: string): ReadonlyArray<string> {
-  return tryRunGitWithExit([
+  const result = tryRunGitWithExit([
     '-C',
     dir,
     'diff-tree',
@@ -135,9 +135,11 @@ function gitDiffTreeLines(oldTree: string, newTree: string): ReadonlyArray<strin
     '--no-ext-diff',
     oldTree,
     newTree,
-  ])
-    .stdout.split('\n')
-    .filter((line) => line.length > 0);
+  ]);
+  // A broken oracle must fail as a broken oracle, not as a silently-empty
+  // peer line set that a wrong tsgit result could then vacuously match.
+  expect(result.exitCode).toBe(0);
+  return result.stdout.split('\n').filter((line) => line.length > 0);
 }
 
 describe.skipIf(!GIT_AVAILABLE)('tree-diff corrupt interop', () => {
@@ -155,7 +157,7 @@ describe.skipIf(!GIT_AVAILABLE)('tree-diff corrupt interop', () => {
     await rm(dir, { recursive: true, force: true });
   });
 
-  describe('Given Pin A structural refusals', () => {
+  describe("Given the structural refusals git's tree decoder enforces", () => {
     describe('When diffTrees recurses over a malformed tree', () => {
       const rows: ReadonlyArray<{
         readonly label: string;
@@ -241,7 +243,7 @@ describe.skipIf(!GIT_AVAILABLE)('tree-diff corrupt interop', () => {
     });
   });
 
-  describe('Given Pin B rows accepted by git diff-tree but flagged only by fsck --strict', () => {
+  describe('Given entries only fsck --strict flags (accepted silently by git diff-tree itself)', () => {
     describe('When diffTrees recurses over an on-disk-order tree', () => {
       it('Then an unsorted new tree emits delete a.txt then add a.txt with the same oid on both sides (git-verified)', async () => {
         // Arrange
@@ -380,7 +382,7 @@ describe.skipIf(!GIT_AVAILABLE)('tree-diff corrupt interop', () => {
     });
   });
 
-  describe('Given Pin C mode-canonicalisation rows', () => {
+  describe('Given mode canonicalisation verdicts', () => {
     describe('When both sides canonicalise to the same mode and oid', () => {
       const rows: ReadonlyArray<{
         readonly label: string;
@@ -511,7 +513,7 @@ describe.skipIf(!GIT_AVAILABLE)('tree-diff corrupt interop', () => {
     });
   });
 
-  describe('Given the Pin D virtual trailing-slash sort order', () => {
+  describe('Given the virtual trailing-slash sort order', () => {
     describe('When a recursive diff runs against a tree git itself wrote (write-tree over d/f, d.txt, d-dash, d0)', () => {
       it('Then adds are emitted in git order: d-dash, d.txt, d/f, d0', async () => {
         // Arrange

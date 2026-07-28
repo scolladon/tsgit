@@ -110,7 +110,7 @@ describe('tree-cursor', () => {
     });
   });
 
-  describe('Pin A structural refusals', () => {
+  describe("the structural refusals git's tree decoder enforces", () => {
     describe('Given an entry with no space anywhere after the mode', () => {
       describe('When opening a cursor over it', () => {
         it("Then throws INVALID_TREE_ENTRY 'missing space after mode' at offset 0", () => {
@@ -283,7 +283,7 @@ describe('tree-cursor', () => {
   });
 
   describe('compareCursorNames', () => {
-    describe('Given the Pin D virtual-trailing-slash ordering (d-dash < d.txt < d/ < d0)', () => {
+    describe('Given the virtual trailing-slash sort order (d-dash < d.txt < d/ < d0)', () => {
       describe('When comparing adjacent pairs', () => {
         it('Then each pair orders as git does', () => {
           // Arrange
