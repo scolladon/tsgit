@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
+import { encode } from '../../../../src/domain/objects/encoding.js';
 import { TsgitError } from '../../../../src/domain/objects/error.js';
 import {
   deriveWorkingMode,
+  FILE_MODE,
   type FileMode,
   isDirectory,
+  matchFileModeBytes,
   normalizeFileMode,
   validateFileMode,
 } from '../../../../src/domain/objects/file-mode.js';
@@ -168,6 +171,96 @@ describe('file-mode', () => {
 
           // Assert
           expect(result).toBe('100644');
+        });
+      });
+    });
+  });
+
+  describe('matchFileModeBytes', () => {
+    describe('Given the byte range of a recognized git file mode', () => {
+      describe('When matching', () => {
+        it.each([
+          { mode: '100644', expected: FILE_MODE.REGULAR, label: 'REGULAR' },
+          { mode: '100755', expected: FILE_MODE.EXECUTABLE, label: 'EXECUTABLE' },
+          { mode: '120000', expected: FILE_MODE.SYMLINK, label: 'SYMLINK' },
+          { mode: '40000', expected: FILE_MODE.DIRECTORY, label: 'DIRECTORY' },
+          { mode: '160000', expected: FILE_MODE.GITLINK, label: 'GITLINK' },
+          { mode: '040000', expected: FILE_MODE.DIRECTORY, label: 'DIRECTORY, zero-prefixed' },
+        ])('Then returns the interned $label constant', ({ mode, expected }) => {
+          // Arrange
+          const buf = encode(mode);
+          const sut = matchFileModeBytes;
+
+          // Act
+          const result = sut(buf, 0, buf.length);
+
+          // Assert — identity, not just equality: the matcher must return the
+          // interned FILE_MODE constant, never a freshly decoded string.
+          expect(result).toBe(expected);
+        });
+      });
+    });
+
+    describe('Given the byte range of an unrecognized mode', () => {
+      describe('When matching', () => {
+        it('Then throws INVALID_FILE_MODE with the decoded value', () => {
+          // Arrange
+          const buf = encode('100664');
+          let caught: unknown;
+
+          // Act
+          try {
+            matchFileModeBytes(buf, 0, buf.length);
+          } catch (error) {
+            caught = error;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data).toEqual({
+            code: 'INVALID_FILE_MODE',
+            value: '100664',
+          });
+        });
+      });
+    });
+
+    describe('Given the byte range of a mode whose length is neither 5 nor 6', () => {
+      describe('When matching', () => {
+        it('Then throws INVALID_FILE_MODE with the decoded value', () => {
+          // Arrange
+          const buf = encode('1');
+          let caught: unknown;
+
+          // Act
+          try {
+            matchFileModeBytes(buf, 0, buf.length);
+          } catch (error) {
+            caught = error;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data).toEqual({
+            code: 'INVALID_FILE_MODE',
+            value: '1',
+          });
+        });
+      });
+    });
+
+    describe('Given a byte range embedded inside a larger buffer', () => {
+      describe('When matching only that slice', () => {
+        it('Then matches on the [start, end) window, ignoring surrounding bytes', () => {
+          // Arrange
+          const buf = encode('xx100644yy');
+          const sut = matchFileModeBytes;
+
+          // Act
+          const result = sut(buf, 2, 8);
+
+          // Assert
+          expect(result).toBe(FILE_MODE.REGULAR);
         });
       });
     });

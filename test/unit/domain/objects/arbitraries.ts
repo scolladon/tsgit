@@ -4,6 +4,7 @@ import type { AuthorIdentity } from '../../../../src/domain/objects/author-ident
 import { FILE_MODE, type FileMode } from '../../../../src/domain/objects/file-mode.js';
 import type { ObjectType } from '../../../../src/domain/objects/header.js';
 import type { ObjectId } from '../../../../src/domain/objects/object-id.js';
+import type { TreeEntry } from '../../../../src/domain/objects/tree.js';
 
 export function arbObjectId(length: 40 | 64 = 40): fc.Arbitrary<ObjectId> {
   return fc
@@ -26,6 +27,35 @@ export function arbFileModeEnum(): fc.Arbitrary<FileMode> {
     FILE_MODE.DIRECTORY,
     FILE_MODE.GITLINK,
   );
+}
+
+// The single home for the tree-entry family: any of the five accepted modes
+// (including DIRECTORY, so directory/file virtual-slash ordering is
+// exercised), a name free of the bytes/values a tree entry can never carry.
+export function arbTreeEntryAnyMode(): fc.Arbitrary<TreeEntry> {
+  return fc
+    .tuple(
+      arbFileModeEnum(),
+      fc
+        .string({ minLength: 1, maxLength: 50 })
+        .filter((s) => !s.includes('\0') && !s.includes('/') && s !== '.' && s !== '..'),
+      arbObjectId(40),
+    )
+    .map(([mode, name, id]) => ({ mode, name, id }));
+}
+
+// Git trees cannot contain duplicate entry names — dedupe by name (first
+// wins) before building a tree so the arbitrary never generates a tree that
+// is invalid by construction (which would look like a flaky test).
+export function dedupeTreeEntriesByName(
+  entries: ReadonlyArray<TreeEntry>,
+): ReadonlyArray<TreeEntry> {
+  const seen = new Set<string>();
+  return entries.filter((entry) => {
+    if (seen.has(entry.name)) return false;
+    seen.add(entry.name);
+    return true;
+  });
 }
 
 export function arbAuthorIdentity(): fc.Arbitrary<AuthorIdentity> {

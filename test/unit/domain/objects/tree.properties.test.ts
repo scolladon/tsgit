@@ -11,37 +11,9 @@ import {
   sortTreeEntries,
   treeEntryCompare,
 } from '../../../../src/domain/objects/tree.js';
-import { arbObjectId } from './arbitraries.js';
+import { arbTreeEntryAnyMode, dedupeTreeEntriesByName } from './arbitraries.js';
 
 const DUMMY_ID = ObjectId.from('a'.repeat(40));
-
-const arbTreeEntry: fc.Arbitrary<TreeEntry> = fc
-  .tuple(
-    fc.constantFrom(
-      '100644' as const,
-      '100755' as const,
-      '120000' as const,
-      '40000' as const,
-      '160000' as const,
-    ),
-    fc
-      .string({ minLength: 1, maxLength: 50 })
-      .filter((s) => !s.includes('\0') && !s.includes('/') && s !== '.' && s !== '..'),
-    arbObjectId(40),
-  )
-  .map(([mode, name, id]) => ({ mode, name, id }));
-
-// Git trees cannot contain duplicate entry names — dedupe by name (first wins)
-// before building a tree so the arbitrary never generates a tree that is
-// invalid by construction (which would look like a flaky test).
-function dedupeByName(entries: ReadonlyArray<TreeEntry>): ReadonlyArray<TreeEntry> {
-  const seen = new Set<string>();
-  return entries.filter((e) => {
-    if (seen.has(e.name)) return false;
-    seen.add(e.name);
-    return true;
-  });
-}
 
 function buildTree(entries: ReadonlyArray<TreeEntry>): Tree {
   return { type: 'tree', id: DUMMY_ID, entries };
@@ -58,7 +30,7 @@ describe('tree — property-based tests', () => {
       it('Then it holds', () => {
         // Arrange + Assert
         fc.assert(
-          fc.property(fc.array(arbTreeEntry), (entries) => {
+          fc.property(fc.array(arbTreeEntryAnyMode()), (entries) => {
             const sorted = sortTreeEntries(entries);
             const resorted = sortTreeEntries([...sorted]);
             expect(resorted).toEqual(sorted);
@@ -73,7 +45,7 @@ describe('tree — property-based tests', () => {
       it('Then it holds', () => {
         // Arrange + Assert
         fc.assert(
-          fc.property(fc.array(arbTreeEntry, { minLength: 2 }), (entries) => {
+          fc.property(fc.array(arbTreeEntryAnyMode(), { minLength: 2 }), (entries) => {
             const sorted = sortTreeEntries(entries);
             for (let i = 1; i < sorted.length; i++) {
               expect(treeEntryCompare(sorted[i - 1]!, sorted[i]!)).toBeLessThanOrEqual(0);
@@ -89,8 +61,8 @@ describe('tree — property-based tests', () => {
       it('Then it holds', () => {
         // Arrange + Assert
         fc.assert(
-          fc.property(fc.array(arbTreeEntry), (rawEntries) => {
-            const entries = dedupeByName(rawEntries);
+          fc.property(fc.array(arbTreeEntryAnyMode()), (rawEntries) => {
+            const entries = dedupeTreeEntriesByName(rawEntries);
             const result = parseBuilt(entries);
             const sorted = sortTreeEntries(entries);
             expect(result.entries).toEqual(sorted);
@@ -105,8 +77,8 @@ describe('tree — property-based tests', () => {
       it('Then it holds', () => {
         // Arrange + Assert
         fc.assert(
-          fc.property(fc.array(arbTreeEntry), (rawEntries) => {
-            const entries = dedupeByName(rawEntries);
+          fc.property(fc.array(arbTreeEntryAnyMode()), (rawEntries) => {
+            const entries = dedupeTreeEntriesByName(rawEntries);
             const parsed = parseBuilt(entries);
 
             const result = diffTrees(parsed, parsed);
@@ -124,10 +96,10 @@ describe('tree — property-based tests', () => {
         // Arrange + Assert
         fc.assert(
           fc.property(
-            fc.array(arbTreeEntry, { minLength: 1 }),
+            fc.array(arbTreeEntryAnyMode(), { minLength: 1 }),
             fc.nat(),
             (rawEntries, pickIndex) => {
-              const entries = dedupeByName(rawEntries);
+              const entries = dedupeTreeEntriesByName(rawEntries);
               fc.pre(entries.length > 0);
               const removeAt = pickIndex % entries.length;
               const removed = entries[removeAt]!;
