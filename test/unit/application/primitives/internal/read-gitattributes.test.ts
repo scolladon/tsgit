@@ -346,25 +346,49 @@ describe('buildAttributeProvider', () => {
       });
     });
   });
-});
 
-describe('Given a diff path whose directory chain lexically escapes the worktree', () => {
-  describe('When resolving attribute sources for that path', () => {
-    it('Then yields zero sources without ever touching the filesystem for the escaping directories', async () => {
-      // Arrange — the raw merge-join does not validate entry names, so a
-      // tree entry can carry an embedded traversal like this as its name.
-      const ctx = createMemoryContext();
-      const provider = await buildAttributeProvider(ctx);
-      const lstatSpy = vi.spyOn(ctx.fs, 'lstat');
-      const readUtf8Spy = vi.spyOn(ctx.fs, 'readUtf8');
+  describe('Given a diff path whose directory chain lexically escapes the worktree', () => {
+    describe('When resolving attribute sources for the path', () => {
+      it.each([
+        {
+          label: 'a `..`-laden chain (the raw merge-join does not validate entry names)',
+          path: '../../../../../../etc/passwd',
+        },
+        {
+          label: 'a `.. ` (dot-dot-space) segment Win32 canonicalises to `..`',
+          path: '.. /file.txt',
+        },
+        {
+          label: 'a Windows drive-absolute directory',
+          path: 'C:/secrets/file.txt',
+        },
+        {
+          label: 'a backslash-separated directory that normalises into a `..` segment',
+          path: '..\\secret/file.txt',
+        },
+        {
+          label: 'a leading-`/` absolute directory',
+          path: '/etc/file.txt',
+        },
+      ])(
+        'Then yields zero sources without ever touching the filesystem ($label)',
+        async ({ path }) => {
+          // Arrange
+          const ctx = createMemoryContext();
+          const provider = await buildAttributeProvider(ctx);
+          const sut = provider.sourcesForPath;
+          const lstatSpy = vi.spyOn(ctx.fs, 'lstat');
+          const readUtf8Spy = vi.spyOn(ctx.fs, 'readUtf8');
 
-      // Act
-      const { sources } = await provider.sourcesForPath('../../../../../../etc/passwd' as FilePath);
+          // Act
+          const { sources } = await sut(path as FilePath);
 
-      // Assert
-      expect(sources).toEqual([]);
-      expect(lstatSpy).not.toHaveBeenCalled();
-      expect(readUtf8Spy).not.toHaveBeenCalled();
+          // Assert
+          expect(sources).toEqual([]);
+          expect(lstatSpy).not.toHaveBeenCalled();
+          expect(readUtf8Spy).not.toHaveBeenCalled();
+        },
+      );
     });
   });
 });

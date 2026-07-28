@@ -265,6 +265,20 @@ describe('wrapFsValidator — dot-dot segment rejected under an allowed root', (
       });
     });
   });
+
+  describe('Given a path containing a `.. ` (dot-dot-space) segment', () => {
+    describe('When read runs', () => {
+      it('Then throws PATHSPEC_OUTSIDE_REPO (Win32 canonicalisation strips the trailing space, resolving it as `..`)', async () => {
+        // Arrange
+        const fs = stubFs();
+        const sut = wrapFsValidator(fs, '/repo');
+
+        // Act + Assert
+        await expectOutside(() => sut.read('/repo/.. /etc/passwd'));
+        expect(fs.read).not.toHaveBeenCalled();
+      });
+    });
+  });
 });
 
 describe('wrapFsValidator — external-path allowlist sanitisation', () => {

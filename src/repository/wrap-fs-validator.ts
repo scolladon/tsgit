@@ -17,12 +17,24 @@ import type { FileSystem } from '../ports/file-system.js';
  * of FS implementation.
  */
 /**
- * True when any `/`- or `\`-delimited segment of `path` is exactly `..` —
- * the segment that lets a nominally-contained path (`isContainedIn`'s prefix
- * check alone would accept `/repo/../etc/x` as being "under" `/repo`) resolve
- * outside its root once the `..` is applied.
+ * True when `segment` is `..`, or Win32 path canonicalisation reduces it to
+ * `..` by stripping trailing dots/spaces (e.g. `'.. '`, `'...'`) — a
+ * `CreateFile`/`GetFullPathName`-style traversal segment a naive `=== '..'`
+ * check would miss.
  */
-const hasDotDotSegment = (path: string): boolean => path.split(/[\\/]/).includes('..');
+const isDotDotSegment = (segment: string): boolean =>
+  segment === '..' || (segment.startsWith('..') && /^[. ]*$/.test(segment.slice(2)));
+
+/**
+ * True when any `/`- or `\`-delimited segment of `path` is (or Win32
+ * canonicalises to) `..` — the segment that lets a nominally-contained path
+ * (`isContainedIn`'s prefix check alone would accept `/repo/../etc/x` as
+ * being "under" `/repo`) resolve outside its root once the `..` is applied.
+ * `path.includes('..')` is a cheap substring prefilter: the common case (no
+ * `..` anywhere) never pays for the segment split.
+ */
+const hasDotDotSegment = (path: string): boolean =>
+  path.includes('..') && path.split(/[\\/]/).some(isDotDotSegment);
 
 /**
  * Filter an allowlist of external paths through two defensive checks before
