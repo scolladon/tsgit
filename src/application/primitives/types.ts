@@ -77,6 +77,17 @@ export interface ReadObjectOptions {
   readonly maxBytes?: number;
 }
 
+/**
+ * The pre-parse product of an object read: the header's declared type plus
+ * the raw content bytes, before any `parseBlobContent`/`parseTreeContent`/…
+ * decode. Internal-only — not re-exported from the primitives barrel and not
+ * bound on `repo.primitives` (see `readRawObject`).
+ */
+export interface RawObject {
+  readonly type: ObjectType;
+  readonly content: Uint8Array;
+}
+
 export interface ResolveRefOptions {
   readonly peel?: boolean;
   readonly maxSymbolicDepth?: number;

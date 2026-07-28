@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { readObject } from '../../../../src/application/primitives/read-object.js';
+import { readObject, readRawObject } from '../../../../src/application/primitives/read-object.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import type { TsgitError } from '../../../../src/domain/error.js';
 import type { Blob, ObjectId } from '../../../../src/domain/objects/index.js';
-import { serializeObject } from '../../../../src/domain/objects/index.js';
+import { EMPTY_TREE_OID, serializeObject } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
 import type { PromisorRemote } from '../../../../src/ports/promisor.js';
 import { buildSeededContext } from './fixtures.js';
@@ -367,6 +367,243 @@ describe('readObject', () => {
 
         // Assert — at most one readdir on the pack dir (cache is honored).
         expect(readdirCount).toBeLessThanOrEqual(1);
+      });
+    });
+  });
+});
+
+describe('readRawObject', () => {
+  describe('Given a seeded blob', () => {
+    describe('When readRawObject is called', () => {
+      it('Then returns the pre-parse { type, content }', async () => {
+        // Arrange
+        const blob: Blob = { type: 'blob', content: new Uint8Array([4, 5, 6]), id: '' as ObjectId };
+        const ctx = await buildSeededContext({ objects: [blob] });
+        const id = (await ctx.hash.hashHex(serializeObject(blob, ctx.hashConfig))) as ObjectId;
+
+        // Act
+        const result = await readRawObject(ctx, id);
+
+        // Assert
+        expect(result).toEqual({ type: 'blob', content: blob.content });
+      });
+    });
+  });
+
+  describe('Given the virtual empty-tree oid', () => {
+    describe('When readRawObject is called', () => {
+      it('Then returns { type: "tree", content } with zero-length content', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+
+        // Act
+        const result = await readRawObject(ctx, EMPTY_TREE_OID);
+
+        // Assert
+        expect(result.type).toBe('tree');
+        expect(result.content).toHaveLength(0);
+      });
+    });
+  });
+
+  describe('Given a packed blob base entry', () => {
+    describe('When readRawObject is called', () => {
+      it('Then returns content byte-identical to what readObject parsed from', async () => {
+        // Arrange
+        const content = new TextEncoder().encode('abcdefgh');
+        const ctx = await buildSeededContext();
+        const [id] = await writeSyntheticPack(ctx, 'raw-packed-base', [
+          { kind: 'base', type: 'blob', content },
+        ]);
+
+        // Act
+        const result = await readRawObject(ctx, id as ObjectId);
+
+        // Assert
+        expect(result).toEqual({ type: 'blob', content });
+      });
+    });
+  });
+
+  describe('Given a packed delta-chain blob', () => {
+    describe('When readRawObject is called', () => {
+      it('Then returns the fully-resolved delta content', async () => {
+        // Arrange
+        const baseContent = new TextEncoder().encode('abcd');
+        const targetContent = new TextEncoder().encode('abcdefgh');
+        const ctx = await buildSeededContext();
+        const ids = await writeSyntheticPack(ctx, 'raw-packed-delta', [
+          { kind: 'base', type: 'blob', content: baseContent },
+          { kind: 'ofs-delta', baseIndex: 0, targetContent },
+        ]);
+        const deltaId = ids[1] as ObjectId;
+
+        // Act
+        const result = await readRawObject(ctx, deltaId);
+
+        // Assert
+        expect(result).toEqual({ type: 'blob', content: targetContent });
+      });
+    });
+  });
+
+  describe('Given a packed delta-chain blob already resolved by an earlier read', () => {
+    describe('When readRawObject reads it again', () => {
+      it('Then the second read is served from the delta cache with the same content', async () => {
+        // Arrange
+        const baseContent = new TextEncoder().encode('abcd');
+        const targetContent = new TextEncoder().encode('abcdefgh');
+        const ctx = await buildSeededContext();
+        const ids = await writeSyntheticPack(ctx, 'raw-packed-cache', [
+          { kind: 'base', type: 'blob', content: baseContent },
+          { kind: 'ofs-delta', baseIndex: 0, targetContent },
+        ]);
+        const deltaId = ids[1] as ObjectId;
+        await readRawObject(ctx, deltaId);
+
+        // Act
+        const result = await readRawObject(ctx, deltaId);
+
+        // Assert
+        expect(result).toEqual({ type: 'blob', content: targetContent });
+      });
+    });
+  });
+
+  describe('Given a loose blob one byte over the cap', () => {
+    describe('When readRawObject is called with maxBytes', () => {
+      it('Then throws OBJECT_TOO_LARGE with id, actualSize=9, limit=8', async () => {
+        // Arrange
+        const content = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+        const blob: Blob = { type: 'blob', content, id: '' as ObjectId };
+        const ctx = await buildSeededContext({ objects: [blob] });
+        const id = (await ctx.hash.hashHex(serializeObject(blob, ctx.hashConfig))) as ObjectId;
+
+        // Act
+        try {
+          await readRawObject(ctx, id, { maxBytes: 8 });
+          // Assert
+          expect.unreachable();
+        } catch (error) {
+          const data = (error as TsgitError).data;
+          expect(data.code).toBe('OBJECT_TOO_LARGE');
+          if (data.code === 'OBJECT_TOO_LARGE') {
+            expect(data.actualSize).toBe(9);
+            expect(data.limit).toBe(8);
+          }
+        }
+      });
+    });
+  });
+
+  describe('Given a corrupted loose file and verifyHash default true', () => {
+    describe('When readRawObject is called', () => {
+      it('Then throws OBJECT_HASH_MISMATCH with expected/actual', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const fakeId = 'a'.repeat(40) as ObjectId;
+        const { computeLooseObjectPath } = await import(
+          '../../../../src/domain/storage/loose-path.js'
+        );
+        const rawBytes = new TextEncoder().encode('blob 3\0xyz');
+        const compressed = await ctx.compressor.deflate(rawBytes);
+        await ctx.fs.write(
+          `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(fakeId)}`,
+          compressed,
+        );
+
+        // Act
+        try {
+          await readRawObject(ctx, fakeId);
+          // Assert
+          expect.unreachable();
+        } catch (error) {
+          const data = (error as TsgitError).data;
+          expect(data.code).toBe('OBJECT_HASH_MISMATCH');
+          if (data.code === 'OBJECT_HASH_MISMATCH') {
+            expect(data.expected).toBe(fakeId);
+          }
+        }
+      });
+    });
+  });
+
+  describe('Given verifyHash=false on the same corrupted file', () => {
+    describe('When readRawObject is called', () => {
+      it('Then returns the unverified raw content', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const fakeId = 'a'.repeat(40) as ObjectId;
+        const { computeLooseObjectPath } = await import(
+          '../../../../src/domain/storage/loose-path.js'
+        );
+        const rawBytes = new TextEncoder().encode('blob 3\0xyz');
+        const compressed = await ctx.compressor.deflate(rawBytes);
+        await ctx.fs.write(
+          `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(fakeId)}`,
+          compressed,
+        );
+
+        // Act
+        const result = await readRawObject(ctx, fakeId, { verifyHash: false });
+
+        // Assert
+        expect(result.type).toBe('blob');
+        expect(new TextDecoder().decode(result.content)).toBe('xyz');
+      });
+    });
+  });
+
+  describe('Given a missing object and a promisor that supplies it', () => {
+    describe('When readRawObject is called', () => {
+      it('Then it is lazy-fetched exactly once', async () => {
+        // Arrange
+        const base = await buildSeededContext();
+        const blob: Blob = { type: 'blob', content: new Uint8Array([7, 8, 9]), id: '' as ObjectId };
+        const id = (await base.hash.hashHex(serializeObject(blob, base.hashConfig))) as ObjectId;
+        const calls = { count: 0 };
+        let ctx!: Context;
+        ctx = {
+          ...base,
+          promisor: {
+            fetch: async (oids) => {
+              calls.count += 1;
+              await writeObject(ctx, blob);
+              return { attempted: true, requested: oids.length, fetched: oids.length };
+            },
+          },
+        };
+
+        // Act
+        const result = await readRawObject(ctx, id);
+
+        // Assert
+        expect(result).toEqual({ type: 'blob', content: blob.content });
+        expect(calls.count).toBe(1);
+      });
+    });
+  });
+
+  describe('Given a promisor reporting attempted=false', () => {
+    describe('When readRawObject misses', () => {
+      it('Then the original OBJECT_NOT_FOUND is rethrown without a re-resolve', async () => {
+        // Arrange
+        const base = await buildSeededContext();
+        const ctx: Context = {
+          ...base,
+          promisor: {
+            fetch: async (oids) => ({ attempted: false, requested: oids.length, fetched: 0 }),
+          },
+        };
+
+        // Act
+        try {
+          await readRawObject(ctx, 'f'.repeat(40) as ObjectId);
+          // Assert
+          expect.unreachable();
+        } catch (error) {
+          expect((error as TsgitError).data.code).toBe('OBJECT_NOT_FOUND');
+        }
       });
     });
   });

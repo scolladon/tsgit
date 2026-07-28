@@ -1,8 +1,13 @@
 import { describe, expect, it } from 'vitest';
+import type { TsgitError } from '../../../../src/domain/error.js';
 import type { Blob } from '../../../../src/domain/objects/blob.js';
 import type { Commit } from '../../../../src/domain/objects/commit.js';
 import { encode } from '../../../../src/domain/objects/encoding.js';
-import { parseObject, serializeObject } from '../../../../src/domain/objects/git-object.js';
+import {
+  parseObject,
+  serializeObject,
+  splitObject,
+} from '../../../../src/domain/objects/git-object.js';
 import { SHA1_CONFIG } from '../../../../src/domain/objects/hash-config.js';
 import { ObjectId } from '../../../../src/domain/objects/object-id.js';
 import type { Tree } from '../../../../src/domain/objects/tree.js';
@@ -171,6 +176,107 @@ describe('git-object', () => {
             );
           },
         );
+      });
+    });
+  });
+
+  describe('splitObject', () => {
+    describe('Given a loose-format buffer for each object type', () => {
+      describe('When calling splitObject', () => {
+        it.each([
+          { label: 'a blob', raw: () => rawBlob('hello'), type: 'blob' },
+          {
+            label: 'a tree',
+            raw: () => rawTree(rawTreeEntry('100644', 'file.txt', new Uint8Array(20).fill(0xab))),
+            type: 'tree',
+          },
+          {
+            label: 'a commit',
+            raw: () =>
+              rawCommit(
+                [
+                  `tree ${'b'.repeat(40)}`,
+                  'author A <a@a.com> 0 +0000',
+                  'committer A <a@a.com> 0 +0000',
+                  '',
+                  'msg',
+                ].join('\n'),
+              ),
+            type: 'commit',
+          },
+          {
+            label: 'a tag',
+            raw: () =>
+              rawTag(
+                [
+                  `object ${'b'.repeat(40)}`,
+                  'type commit',
+                  'tag v1.0',
+                  'tagger A <a@a.com> 0 +0000',
+                  '',
+                  'tag msg',
+                ].join('\n'),
+              ),
+            type: 'tag',
+          },
+        ])('Then returns { type: $type, content } for $label', ({ raw, type }) => {
+          // Arrange
+          const sut = splitObject;
+          const bytes = raw();
+
+          // Act
+          const result = sut(bytes);
+
+          // Assert
+          expect(result.type).toBe(type);
+          expect(result.content).toEqual(bytes.subarray(bytes.indexOf(0) + 1));
+        });
+      });
+    });
+
+    describe('Given a loose-format buffer whose header size does not match the actual content length', () => {
+      describe('When calling splitObject', () => {
+        it('Then throws INVALID_OBJECT_HEADER with the exact size-mismatch reason', () => {
+          // Arrange
+          const sut = splitObject;
+          const bytes = encode('blob 999\0short');
+
+          // Act
+          try {
+            sut(bytes);
+            // Assert
+            expect.unreachable();
+          } catch (error) {
+            const data = (error as TsgitError).data;
+            expect(data.code).toBe('INVALID_OBJECT_HEADER');
+            if (data.code === 'INVALID_OBJECT_HEADER') {
+              expect(data.reason).toBe('size mismatch: header says 999, actual content is 5');
+            }
+          }
+        });
+      });
+    });
+
+    describe('Given the same size-mismatched buffer routed through parseObject', () => {
+      describe('When calling parseObject', () => {
+        it('Then throws the identical INVALID_OBJECT_HEADER reason (proves the shared split)', () => {
+          // Arrange
+          const sut = parseObject;
+          const bytes = encode('blob 999\0short');
+
+          // Act
+          try {
+            sut(DUMMY_ID, bytes, SHA1_CONFIG);
+            // Assert
+            expect.unreachable();
+          } catch (error) {
+            const data = (error as TsgitError).data;
+            expect(data.code).toBe('INVALID_OBJECT_HEADER');
+            if (data.code === 'INVALID_OBJECT_HEADER') {
+              expect(data.reason).toBe('size mismatch: header says 999, actual content is 5');
+            }
+          }
+        });
       });
     });
   });
