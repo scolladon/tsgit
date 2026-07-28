@@ -2912,7 +2912,7 @@ describe('diffTrees', () => {
       it('Then reports count=4 (the cap is first exceeded at limit+1, never the full batch size)', async () => {
         // Arrange — a single merge-join level can carry a multi-entry batch;
         // the reported count must match a one-at-a-time increment-then-check
-        // loop's first exceedance, not however far a whole-batch addition
+        // loop's first over-limit count, not however far a whole-batch addition
         // would overshoot by.
         const ctx = await buildSeededContext();
         const oldRoot = await writeTree(ctx, []);
