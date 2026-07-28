@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.1.2](https://github.com/scolladon/tsgit/compare/v3.1.1...v3.1.2) (2026-07-28)
+
+
+### Performance
+
+* walk the recursive tree diff and flatten over raw byte cursors ([#255](https://github.com/scolladon/tsgit/issues/255)) ([b936120](https://github.com/scolladon/tsgit/commit/b9361205db4ce7c08565fc193e2e0c640e657a1d))
+
 ## [3.1.1](https://github.com/scolladon/tsgit/compare/v3.1.0...v3.1.1) (2026-07-27)
 
 
