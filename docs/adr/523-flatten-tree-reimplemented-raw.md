@@ -20,3 +20,5 @@ The diff's added/deleted-subtree expansion and the Tier-1 `repo.flattenTree` (co
 ## Consequences
 
 All flatten consumers speed up together and share one validation surface (names still validated per ADR-518's flatten carve-out). `walkTree` remains for its other consumers.
+
+The reimplementation also dropped the per-tree `Set<string>` duplicate-name check the old `walkTree`-backed path had: `flattenRawTree` inserts each entry into a plain `Map` keyed by path, so a tree with a repeated name resolves last-wins, matching `git read-tree`. Duplicate-name refusal is fsck's job (`duplicateEntries`), same as the merge-join side of ADR-518.

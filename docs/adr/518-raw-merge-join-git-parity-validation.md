@@ -20,3 +20,5 @@ The raw byte-cursor merge-join must pick a refusal surface. Empirical pins again
 ## Consequences
 
 Recursive diff becomes more faithful and faster at once. Refusal surface matches `diff-tree` byte-for-byte; corrupt-tree interop fixtures pin both the diff behaviour and the new fsck refusals. The parsed non-recursive path retains its re-sort divergence (out of scope; recorded in the design).
+
+The design's original "flatten path can reach the filesystem, the merge-join cannot" framing was wrong: `diffTrees({ withStat: true })` and `{ ignoreWhitespace }` resolve `.gitattributes` per changed path, so an unvalidated name reaches the filesystem through the merge-join too. The real containment is two independent gates — attribute-provider path resolution treats any path that lexically escapes the worktree as carrying no attribute sources (no filesystem call at all), plus the adapter's own containment check as a second, defence-in-depth layer — not an asymmetry between the two traversal paths.

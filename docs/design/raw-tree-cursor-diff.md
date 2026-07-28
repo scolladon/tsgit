@@ -510,9 +510,17 @@ diverges from git.
   making mode refusal entry-dependent. **Named inconsistency:** requirement 7
   keeps `flattenTree` validating names, so an *added* subtree containing a `..`
   entry still refuses (it flattens) while the same entry inside a *modified*
-  subtree does not (it merge-joins). That is deliberate — the flatten path can
-  reach the filesystem, the merge-join cannot — but it is a seam, and the `fsck`
-  rider is what makes it defensible rather than arbitrary.
+  subtree does not (it merge-joins). That is deliberate — but the merge-join
+  path is not filesystem-blind either: `diffTrees({ withStat: true })` and
+  `{ ignoreWhitespace }` resolve `.gitattributes` sources per changed path
+  (`diff`/whitespace attributes), so an unvalidated name still reaches the
+  filesystem indirectly. The real boundary is two independent gates —
+  attribute-provider path containment (the directory-chain resolver treats any
+  path that lexically escapes the worktree as carrying no attribute sources,
+  never issuing the filesystem call) and the adapter's own containment check
+  as a second, defence-in-depth gate — not an asymmetry between the two
+  traversal paths. The seam is real; the `fsck` rider is what makes it
+  defensible rather than arbitrary.
 - **Option B — keep tsgit's stricter checks (3.7× measured).** Structural, plus
   name validation (`''`/`.`/`..`/embedded `/`), plus mode-set matching, plus a
   strictly-ascending `compareCursorNames` check between consecutive entries (which
