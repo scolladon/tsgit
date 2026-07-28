@@ -17,6 +17,14 @@ import type { FileSystem } from '../ports/file-system.js';
  * of FS implementation.
  */
 /**
+ * True when any `/`- or `\`-delimited segment of `path` is exactly `..` —
+ * the segment that lets a nominally-contained path (`isContainedIn`'s prefix
+ * check alone would accept `/repo/../etc/x` as being "under" `/repo`) resolve
+ * outside its root once the `..` is applied.
+ */
+const hasDotDotSegment = (path: string): boolean => path.split(/[\\/]/).includes('..');
+
+/**
  * Filter an allowlist of external paths through two defensive checks before
  * trusting them: reject empty strings (a malicious / buggy adapter returning
  * `''` would otherwise add the root-relative path `'/x'` to the allowlist) and
@@ -26,7 +34,7 @@ import type { FileSystem } from '../ports/file-system.js';
  * methods; in production these are trusted, but defence in depth costs nothing.
  */
 const sanitizeAllowlist = (paths: ReadonlyArray<string>): ReadonlyArray<string> =>
-  paths.filter((p) => p.length > 0 && !p.split(/[\\/]/).includes('..'));
+  paths.filter((p) => p.length > 0 && !hasDotDotSegment(p));
 
 export const wrapFsValidator = (
   fs: FileSystem,
@@ -39,6 +47,10 @@ export const wrapFsValidator = (
   const rootList = typeof roots === 'string' ? [roots] : roots;
   const allowSet = new Set(sanitizeAllowlist(allowExternalPaths));
   const guard = (path: string): void => {
+    // A `..` segment defeats `isContainedIn`'s prefix check on its own:
+    // `/repo/../etc/x` satisfies `startsWith('/repo/')` yet resolves outside
+    // `/repo` once the `..` is applied. Reject before the prefix check runs.
+    if (hasDotDotSegment(path)) throw pathspecOutsideRepo(path as FilePath);
     if (rootList.some((root) => isContainedIn(path, root))) return;
     if (allowSet.has(path)) return;
     throw pathspecOutsideRepo(path as FilePath);

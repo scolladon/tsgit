@@ -250,6 +250,23 @@ describe('wrapFsValidator — outside cwd rejected', () => {
   });
 });
 
+describe('wrapFsValidator — dot-dot segment rejected under an allowed root', () => {
+  describe('Given a path that starts with an allowed root prefix but contains a `..` segment', () => {
+    describe('When read runs', () => {
+      it('Then throws PATHSPEC_OUTSIDE_REPO even though the naive prefix check would pass', async () => {
+        // Arrange — '/repo/../etc/passwd' satisfies startsWith('/repo/') yet
+        // resolves outside '/repo' once the '..' is applied.
+        const fs = stubFs();
+        const sut = wrapFsValidator(fs, '/repo');
+
+        // Act + Assert
+        await expectOutside(() => sut.read('/repo/../etc/passwd'));
+        expect(fs.read).not.toHaveBeenCalled();
+      });
+    });
+  });
+});
+
 describe('wrapFsValidator — external-path allowlist sanitisation', () => {
   describe('Given an allowlist containing an empty string', () => {
     describe('When the empty path is accessed', () => {
