@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../../../src/adapters/memory/memory-adapter.js';
 import { runContentValidationPass } from '../../../../../../src/application/commands/internal/fsck/content-validation.js';
 import type { ObjectId } from '../../../../../../src/domain/objects/index.js';
+import { serializeObject } from '../../../../../../src/domain/objects/index.js';
 import { writeSyntheticPack } from '../../../primitives/pack-fixture.js';
 
 const sut = runContentValidationPass;
@@ -99,7 +100,12 @@ describe('Given a packed blob whose bytes do not hash to its indexed id', () => 
       expect(hashMismatchFindings).toHaveLength(1);
       expect(hashMismatchFindings[0]).toMatchObject({ id: blobId });
       if (hashMismatchFindings[0]?.type === 'hash-mismatch') {
-        expect(hashMismatchFindings[0].actual).not.toBe(blobId);
+        // The reported `actual` is the REAL hash of the object's own bytes
+        // (header + content, computed via the same hash service the SUT
+        // uses) — not merely "not the wrong indexed id".
+        const realBytes = serializeObject({ type: 'blob', content, id: wrongId }, ctx.hashConfig);
+        const realHash = await ctx.hash.hashHex(realBytes);
+        expect(hashMismatchFindings[0].actual).toBe(realHash);
       }
     });
   });

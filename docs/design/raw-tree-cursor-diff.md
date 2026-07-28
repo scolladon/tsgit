@@ -405,10 +405,14 @@ semantics:
   are byte-identical, and `readRawTree` **throws** `unexpectedObjectType` on a
   non-tree exactly as `readTreeStrict` does today.
 - **dir add / dir delete** → `expandAddedSubtree` / `expandDeletedSubtree`, which
-  keep calling `flattenTree` (now raw, §P5). `flattenTree`'s `walkTree` semantics —
+  call `walkRawSubtree` (`internal/walk-raw-subtree.ts`) — a dedicated per-entry raw
+  walker, not `flattenTree`: a whole-subtree add/delete must surface once per ENTRY,
+  duplicates included (matching `git diff-tree -r`), and `flattenTree`'s
+  de-duplicating `Map` is the wrong structure for that. `walkTree`'s semantics —
   which **silently skip** a directory-mode entry whose oid resolves to a non-tree,
-  rather than throwing — are preserved. The two routes deliberately disagree on
-  that today; this design keeps both, it does not unify them.
+  rather than throwing — are preserved on this route, same as `diffChangedSubtree`
+  and `flattenTree` deliberately disagree on today; this design keeps that
+  disagreement, it does not unify them.
 - **leaf** → `withPrefix`, unchanged.
 
 `diffRecursive` stays a module-level export from `diff-trees.ts` — not added to the
@@ -427,15 +431,21 @@ resolveRawInput(ctx, input: DiffTreesInput): Promise<Uint8Array | undefined>
 ```
 
 The non-recursive branch keeps `resolveInput` verbatim. `buildPreimage`
-(`copies: 'harder'`) takes the oid/`Tree` and keeps calling `flattenTree`, which
-accepts both.
+(`copies: 'harder'`) takes the oid/`Tree` and calls `flattenRawTree` directly
+(both accept an oid or a `Tree`) rather than the public `flattenTree` facade —
+when `a` is a string, `peelToTree` has already read the terminal tree's raw
+bytes as its last peel hop, and those are threaded straight into
+`flattenRawTree` as its optional `preread` parameter, so the terminal tree is
+read once, not twice.
 
 ### P5 — raw `flattenTree`
 
 `flattenTree` is **reimplemented** over the cursor rather than duplicated (DC-6):
 one implementation, one behaviour, and every consumer (`merge`, `rm`,
-`apply-merge-to-worktree`, `buildPreimage`, `expand*Subtree`,
-`repo.primitives.flattenTree`) inherits the win.
+`apply-merge-to-worktree`, `buildPreimage` (via `flattenRawTree` directly, §P4),
+`repo.primitives.flattenTree`) inherits the win. `expand*Subtree` is NOT a
+`flattenTree` consumer — it walks the raw bytes itself via `walkRawSubtree`
+(§P4), the per-entry twin of this section's descent.
 
 ```ts
 export const flattenTree = async (ctx, treeIdOrObject: ObjectId | Tree): Promise<FlatTree> => {
@@ -468,8 +478,10 @@ its `yield`-then-`readObject` interleave. What stays: the per-branch cycle stack
 (`treeCycleDetected`), `maxDepth` (`treeDepthExceeded`, 1024), the entry counter
 (`treeEntryLimitExceeded`), the abort check, the directory-skip filter (only
 `FILE_MODE.DIRECTORY` entries are omitted from the map — gitlinks and symlinks are
-kept), and DFS pre-order insertion order (so `Array.from(flat.entries, …)` in
-`expand*Subtree` yields the same sequence).
+kept), and DFS pre-order insertion order into the `Map`. `expand*Subtree` does
+**not** consume this `Map` — it walks the raw bytes directly via its own
+per-entry walker, `walkRawSubtree`, which preserves duplicate-name entries
+`flattenTree`'s last-name-wins `Map` would collapse (§P4).
 
 **`flattenTree` keeps full name validation** (requirement 7) regardless of DC-1: it
 feeds worktree materialisation, so `''`/`.`/`..`/embedded `/` stay refused there.
@@ -512,20 +524,23 @@ diverges from git.
   puts them. Consequence: on an fsck-invalid tree tsgit's `diff` starts producing
   git's exact output (Pin B's `D a.txt` + `A a.txt`) instead of silently nothing;
   a mode outside the five-value set is refused only when the entry is *emitted*,
-  making mode refusal entry-dependent. **Named inconsistency:** requirement 7
-  keeps `flattenTree` validating names, so an *added* subtree containing a `..`
-  entry still refuses (it flattens) while the same entry inside a *modified*
-  subtree does not (it merge-joins). That is deliberate — but the merge-join
-  path is not filesystem-blind either: `diffTrees({ withStat: true })` and
-  `{ ignoreWhitespace }` resolve `.gitattributes` sources per changed path
-  (`diff`/whitespace attributes), so an unvalidated name still reaches the
-  filesystem indirectly. The real boundary is two independent gates —
-  attribute-provider path containment (the directory-chain resolver treats any
-  path that lexically escapes the worktree as carrying no attribute sources,
-  never issuing the filesystem call) and the adapter's own containment check
-  as a second, defence-in-depth gate — not an asymmetry between the two
-  traversal paths. The seam is real; the `fsck` rider is what makes it
-  defensible rather than arbitrary.
+  making mode refusal entry-dependent. **No named inconsistency between the two
+  diff traversal routes:** an *added*/*deleted* subtree is expanded via
+  `walkRawSubtree` (`internal/walk-raw-subtree.ts`), a dedicated per-entry raw
+  walker that deliberately does NOT validate names either — so a `..` entry
+  inside an added subtree is exactly as unvalidated as the same entry inside a
+  *modified* subtree's merge-join. Requirement 7's name validation still holds,
+  but only for `flattenTree`'s OTHER callers (`merge`, `rm`,
+  `apply-merge-to-worktree`, `buildPreimage`'s `copies:'harder'` preimage,
+  `repo.primitives.flattenTree`) — the ones that feed worktree materialisation,
+  not the diff's own traversal. Neither diff route is filesystem-blind, though:
+  `diffTrees({ withStat: true })` and `{ ignoreWhitespace }` resolve `.gitattributes`
+  sources per changed path (`diff`/whitespace attributes), so an unvalidated name
+  still reaches the filesystem indirectly. The real containment is two independent
+  gates — attribute-provider path containment (the directory-chain resolver treats
+  any path that lexically escapes the worktree as carrying no attribute sources,
+  never issuing the filesystem call) and the adapter's own containment check as a
+  second, defence-in-depth gate — not an asymmetry between the two traversal paths.
 - **Option B — keep tsgit's stricter checks (3.7× measured).** Structural, plus
   name validation (`''`/`.`/`..`/embedded `/`), plus mode-set matching, plus a
   strictly-ascending `compareCursorNames` check between consecutive entries (which

@@ -228,18 +228,13 @@ describe('file-mode', () => {
     describe('Given a byte range that stops just short of a directory mode', () => {
       describe('When matching', () => {
         it.each([
-          {
-            mode: '40001',
-            label:
-              "'40001' (length 5, content diverges from '40000') — kills the length===5 && matchesBytes mutant's right operand",
-          },
-          {
-            mode: '400000',
-            label:
-              "'400000' (length 6, first 5 bytes equal '40000') — kills the same mutant's left operand",
-          },
+          { mode: '40001', label: "'40001' (length 5, content diverges from '40000')" },
+          { mode: '400000', label: "'400000' (length 6, first 5 bytes equal '40000')" },
         ])('Then throws INVALID_FILE_MODE with the decoded value ($label)', ({ mode }) => {
-          // Arrange
+          // Arrange — both rows exercise the same directory-match guard from
+          // opposite sides: '40001' is the right operand (same length,
+          // diverging content), '400000' is the left operand (matching
+          // prefix, wrong length) — neither passes alone.
           const buf = encode(mode);
           let caught: unknown;
 

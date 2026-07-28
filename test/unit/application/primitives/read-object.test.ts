@@ -464,6 +464,7 @@ describe('readRawObject', () => {
         const deltaId = ids[1] as ObjectId;
         await readRawObject(ctx, deltaId);
         const cacheGetSpy = vi.spyOn(ctx.deltaCache, 'get');
+        const readSliceSpy = vi.spyOn(ctx.fs, 'readSlice');
 
         // Act
         const result = await readRawObject(ctx, deltaId);
@@ -472,9 +473,14 @@ describe('readRawObject', () => {
         // for this exact id), rather than falling through to loose/pack lookup.
         expect(cacheGetSpy).toHaveBeenCalledWith(deltaId);
         expect(cacheGetSpy.mock.results[0]?.value).toBeDefined();
+        // Assert — proves "not a re-resolve" structurally: the pack chain
+        // walker's own read (readSlice, used to fetch pack entry bytes) is
+        // never re-entered on the cached read.
+        expect(readSliceSpy).not.toHaveBeenCalled();
         expect(result.type).toBe('blob');
         expect(result.content).toEqual(targetContent);
         cacheGetSpy.mockRestore();
+        readSliceSpy.mockRestore();
       });
     });
   });
