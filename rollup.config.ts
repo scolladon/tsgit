@@ -32,6 +32,18 @@ const terserOptions = {
   },
 };
 
+const tsPluginOptions = {
+  tsconfig: './tsconfig.build.json',
+  compilerOptions: {
+    outDir: undefined,
+    declaration: false,
+    declarationMap: false,
+    sourceMap: false,
+    module: 'ESNext',
+    moduleResolution: 'bundler',
+  },
+};
+
 export default defineConfig([
   {
     input: entryPoints,
@@ -57,17 +69,7 @@ export default defineConfig([
     external,
     plugins: [
       resolve(),
-      typescript({
-        tsconfig: './tsconfig.build.json',
-        compilerOptions: {
-          outDir: undefined,
-          declaration: false,
-          declarationMap: false,
-          sourceMap: false,
-          module: 'ESNext',
-          moduleResolution: 'bundler',
-        },
-      }),
+      typescript(tsPluginOptions),
       terser(terserOptions),
       visualizer({
         filename: 'reports/bundle-analysis.html',
@@ -75,6 +77,21 @@ export default defineConfig([
         template: 'treemap',
       }),
     ],
+    treeshake: {
+      moduleSideEffects: false,
+      propertyReadSideEffects: false,
+    },
+  },
+  {
+    input: 'src/index.browser.ts',
+    output: {
+      file: 'dist/browser/tsgit.js',
+      format: 'esm',
+      sourcemap: false,
+      inlineDynamicImports: true,
+    },
+    external,
+    plugins: [resolve(), typescript(tsPluginOptions), terser(terserOptions)],
     treeshake: {
       moduleSideEffects: false,
       propertyReadSideEffects: false,

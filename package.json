@@ -28,6 +28,8 @@
   "main": "./dist/cjs/index.cjs",
   "module": "./dist/esm/index.js",
   "types": "./dist/types/index.d.ts",
+  "unpkg": "dist/browser/tsgit.js",
+  "jsdelivr": "dist/browser/tsgit.js",
   "exports": {
     ".": {
       "node": {
@@ -241,7 +243,8 @@
       "output": [
         "dist/esm/**",
         "dist/cjs/**",
-        "dist/types/**"
+        "dist/types/**",
+        "dist/browser/**"
       ],
       "clean": "if-file-deleted"
     },
