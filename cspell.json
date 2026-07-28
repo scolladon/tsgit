@@ -730,6 +730,8 @@
     "preread",
     "Prereq",
     "prereqs",
+    "prescan",
+    "PRESCAN",
     "prio",
     "prioritising",
     "PRNG",

@@ -111,9 +111,10 @@ describe('createConcurrencyLimiter', () => {
         // Act
         const results = await Promise.all([1, 2, 3].map((n) => sut.run(() => task(n))));
 
-        // Assert
+        // Assert — exactly the task count, not merely at-or-under it (which a
+        // fully serialising bug, maxInFlight === 1, would also satisfy).
         expect(results).toEqual([1, 2, 3]);
-        expect(maxInFlight).toBeLessThanOrEqual(3);
+        expect(maxInFlight).toBe(3);
       });
     });
   });

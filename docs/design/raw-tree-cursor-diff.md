@@ -489,6 +489,73 @@ The cost is nil — every non-directory entry is emitted anyway, so its name is
 decoded regardless; validation is one scan of an already-materialised string.
 `walkTree` itself is untouched (ADR-515).
 
+### Bounded subtree prefetch
+
+A later addition to P4/P5, not part of the original spike: `internal/raw-subtree-prefetch.ts`'s
+`prefetchSubtreeChildren` kicks off bounded-concurrency reads for a level's DIRECTORY
+children *ahead of* the (unchanged) sequential per-entry loop in both `flatten-raw.ts`
+and `walk-raw-subtree.ts`, overlapping child object I/O across siblings instead of
+paying for it one descent at a time. It never processes an entry itself — no name
+validation, no entry counter, no abort check — so it cannot weaken any guard the main
+loop enforces, provided it is bounded on the same two axes the main loop is:
+
+- **Window cap.** The prescan stops enqueueing once its map reaches `PRESCAN_WINDOW`
+  (`MAX_CONCURRENT_OBJECT_LOADS * 2`), or the caller's remaining entry budget
+  (`bounds.maxEntries - counter.value`) if smaller. A level with more directory
+  children than that scans past the window without enqueueing the rest — a
+  pathologically wide level cannot make the prescan allocate one promise per child
+  up front, which would otherwise defeat the entry-cap/abort containment the main
+  loop provides (queued reads reaching promisor fetches on a partial clone, after
+  the walk has already decided to abort). A child beyond the window is read directly
+  by a `prefetch.get(id) ?? readRawObject(ctx, id)` fallback at both descent sites
+  when the main loop reaches it — one extra I/O, not extra risk. The window is
+  sized off the shared concurrency cap rather than a level's own width because it
+  doubles as the bound on the prefetch's own FIFO backlog: capping how many reads
+  can queue behind the limiter before any of them is even awaited also bounds how
+  far a low-priority child can be pushed behind its siblings by a wide level
+  elsewhere in the same walk (priority inversion).
+- **Tolerant of structural failure.** The prescan's own cursor walk can reach a
+  structurally malformed entry *before* the main loop's earlier per-entry guards
+  (abort signal, entry cap, name refusal, mode refusal) get a chance to fire against
+  an *earlier* entry — an unguarded prescan would then report the wrong refusal
+  (e.g. `INVALID_TREE_ENTRY` for a truncated tail entry instead of the
+  `TREE_ENTRY_LIMIT_EXCEEDED`, `OPERATION_ABORTED`, or name/mode refusal the main
+  loop would have reported first). `prefetchSubtreeChildren` wraps its scan in a
+  `try`/`catch` that simply stops prefetching on a structural throw. This is not
+  error swallowing: the main loop's own cursor scan re-encounters the identical byte
+  offset and throws the identical error at the point the un-prefetched code path was
+  always going to throw it — the catch only removes the prescan's ability to report
+  it *first, out of order*. `flatten-raw.test.ts` pins four such refusal-order rows
+  (entry-limit vs. structural, abort vs. structural, name refusal vs. structural,
+  mode refusal vs. structural) against `flattenRawTree`, the walker whose validation
+  chain (unlike `walkRawSubtree`'s) exercises all four.
+
+**Limiter scope is per OPERATION, not per level and not per subtree call.**
+`flattenRawTree` keeps one `ConcurrencyLimiter` per call, created once and threaded
+through its own recursion (single-walk caller — nothing else needs to share it).
+`walkRawSubtree` takes the limiter as an optional parameter, defaulting to a fresh
+instance for a standalone caller, but `diff-trees.ts` passes its own
+`DiffWalkState.limiter` — ONE limiter created once per `diffRecursive`/`diffTrees`
+call and threaded into every `walkRawSubtree` call that operation runs. Added and
+deleted subtrees are expanded *concurrently*, sibling to sibling, by the same
+`boundedMap` calls that fan out `diffRecursiveLevel`'s merge-join changes — without a
+shared limiter, two concurrent expansions each mint their own
+`MAX_CONCURRENT_OBJECT_LOADS`-capped limiter and the combined in-flight read count
+can reach double the intended bound. `diff-trees.test.ts` pins the wiring directly
+(both `walkRawSubtree` calls receive the identical `DiffWalkState.limiter` instance)
+rather than measuring live concurrency: forcing two subtree expansions to race
+deterministically through `boundedMap`'s own scheduling proved flaky in practice
+(the observed peak varied between runs depending on unrelated timing), while the
+shared-instance property is both necessary and — given `concurrency-limiter.test.ts`
+already proves the limiter's own bound — sufficient.
+
+**Performance.** Warm local benches show no measurable signal from the prefetch
+change: the win is I/O-bound (overlapping the latency of concurrent object reads,
+not CPU work), and a warm local run is dominated by session load rather than I/O
+wait. Per the project's standing measurement policy (§"Measured, not asserted"), the
+nightly `bench.yml` artifact is the published authority for this class of change,
+not a local before/after.
+
 ### Layering
 
 ```

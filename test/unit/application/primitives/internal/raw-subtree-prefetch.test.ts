@@ -123,9 +123,11 @@ describe('prefetchSubtreeChildren', () => {
         process.on('unhandledRejection', onUnhandledRejection);
         const sut = prefetchSubtreeChildren;
 
-        // Act — the map is built but deliberately never read from.
+        // Act — the map is built but deliberately never read from. Node only
+        // reports an unhandled rejection after the current tick, so waiting
+        // out a microtask loop isn't enough — a macrotask boundary is needed.
         sut(ctx, content, limiter);
-        for (let i = 0; i < 10; i++) await Promise.resolve();
+        await new Promise<void>((resolve) => setImmediate(resolve));
 
         // Assert
         try {

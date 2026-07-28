@@ -335,7 +335,7 @@ describe('walkRawSubtree', () => {
 
   describe('Given a root subtree with more directory children than the concurrency bound', () => {
     describe('When walkRawSubtree runs', () => {
-      it('Then in-flight subtree reads never exceed the bound but do exceed 1', async () => {
+      it('Then in-flight subtree reads peak at exactly the bound', async () => {
         // Arrange
         const ctx = await buildSeededContext();
         const width = MAX_CONCURRENT_OBJECT_LOADS + 8;
@@ -374,8 +374,11 @@ describe('walkRawSubtree', () => {
 
           // Assert
           expect(entries).toHaveLength(width);
-          expect(maxInFlight).toBeLessThanOrEqual(MAX_CONCURRENT_OBJECT_LOADS);
-          expect(maxInFlight).toBeGreaterThan(1);
+          // width (bound + 8) sits under the prescan window (2x bound), so
+          // every child is queued and the limiter alone decides the peak:
+          // exactly the bound, not merely at-or-under it (which a
+          // non-serialising bug of 2 or 3 in-flight would also satisfy).
+          expect(maxInFlight).toBe(MAX_CONCURRENT_OBJECT_LOADS);
         } finally {
           spy.mockRestore();
         }
@@ -491,9 +494,12 @@ describe('walkRawSubtree', () => {
           expect(data.id).toBe(realTreeId);
         } finally {
           await new Promise<void>((resolve) => setImmediate(resolve));
-          expect(unhandled).toEqual([]);
-          process.off('unhandledRejection', onUnhandledRejection);
-          spy.mockRestore();
+          try {
+            expect(unhandled).toEqual([]);
+          } finally {
+            process.off('unhandledRejection', onUnhandledRejection);
+            spy.mockRestore();
+          }
         }
       });
     });
