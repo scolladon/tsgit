@@ -69,10 +69,14 @@ export const AUTHOR: Author = {
   timezoneOffset: '+0000',
 };
 
+// The two harness pages publish the library under different globals; the
+// round-trip helper is keyed by whichever one a spec drives.
+type HarnessGlobal = '__tsgit' | '__tsgitBundle';
+
 // The repository surface exercised by the round-trip specs — a typing aid for
 // values crossing the page.evaluate boundary, not a shared contract; the real
 // facade lives in src/.
-export interface BrowserRepo {
+interface BrowserRepo {
   init: () => Promise<{ initialBranch: string; bare: boolean }>;
   add: (paths: ReadonlyArray<string>) => Promise<{ added: ReadonlyArray<string> }>;
   commit: (opts: { message: string; author: Author }) => Promise<{ id: string; branch?: string }>;
@@ -103,14 +107,12 @@ export interface RoundTripResult {
 // specs run this same body so the two entry points cannot drift apart.
 export const runOpfsRoundTrip = (
   page: Page,
-  windowKey: '__tsgit' | '__tsgitBundle',
+  windowKey: HarnessGlobal,
   message: string,
 ): Promise<RoundTripResult> =>
   page.evaluate(
     async ({ windowKey, message, author }) => {
-      const tsgit = (window as unknown as Record<'__tsgit' | '__tsgitBundle', RepositoryOpener>)[
-        windowKey
-      ];
+      const tsgit = (window as unknown as Record<HarnessGlobal, RepositoryOpener>)[windowKey];
       const rootHandle = await navigator.storage.getDirectory();
 
       const file = await rootHandle.getFileHandle('a.txt', { create: true });

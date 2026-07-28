@@ -96,12 +96,18 @@ done
 # Artefact shape. The browser bundle is the no-build CDN entry: a <script
 # type="module"> must fetch it and nothing else. Any surviving module specifier
 # means the build re-split and consumers would pay extra round trips. The
-# import predicate anchors on statement position (start of file, or after ; })
-# so the word "import" inside a string literal cannot false-positive the gate.
+# static-import predicate anchors on statement position (start of line, or
+# after ; }) so the word "import" inside a string literal does not trip the
+# gate; the dynamic-import predicate needs no anchor because the `("`/`('`
+# suffix does not occur in prose.
 tar -xzOf "$TARBALL" "$BUNDLE_MEMBER" >"$BUNDLE"
 
 if LC_ALL=C grep -aqE '(^|[;}])[[:space:]]*import[[:space:]]*[{*'\''"(A-Za-z]' "$BUNDLE"; then
   echo "FAIL: browser bundle contains an import statement — it is not single-file" >&2
+  exit 1
+fi
+if LC_ALL=C grep -aqE 'import[[:space:]]*\([[:space:]]*["'\'']' "$BUNDLE"; then
+  echo "FAIL: browser bundle contains a dynamic import — it is not single-file" >&2
   exit 1
 fi
 if LC_ALL=C grep -aqE '[}][[:space:]]*from[[:space:]]*["'\'']' "$BUNDLE"; then
@@ -112,32 +118,38 @@ if LC_ALL=C grep -aqE '(^|[^A-Za-z0-9_$])export[[:space:]]*\*[[:space:]]*from' "
   echo "FAIL: browser bundle contains a star re-export — it is not single-file" >&2
   exit 1
 fi
-if LC_ALL=C grep -aqE '["'\'']node:' "$BUNDLE"; then
+if LC_ALL=C grep -aqE '(import|from|require)[^"'\'']*["'\'']node:' "$BUNDLE"; then
   echo "FAIL: browser bundle references a node: specifier — it cannot run in a browser" >&2
   exit 1
 fi
 
 # The single-file checks above are absence-only and a CommonJS artefact would
-# pass them all; assert the bundle is actually ESM by requiring an export
-# statement to survive minification.
-if ! LC_ALL=C grep -aqE '(^|[^A-Za-z0-9_$])export[[:space:]]*[{*]' "$BUNDLE"; then
+# pass them all; assert the bundle is actually ESM by requiring a
+# statement-position export to survive minification.
+if ! LC_ALL=C grep -aqE '(^|[;}])[[:space:]]*export[[:space:]]*[{*]' "$BUNDLE"; then
   echo "FAIL: browser bundle carries no export statement — it is not an ESM module" >&2
   exit 1
 fi
 
 # Export parity. The bundle must expose exactly the surface the code-split
 # browser entry exposes — no addition, no removal. Both files are imported
-# from dist/, which is byte-for-byte what npm pack just archived.
-node --input-type=module -e '
+# from dist/, which is byte-for-byte what npm pack just archived; the bundle
+# path is the same unpkg-derived one every other check uses.
+BUNDLE_REL="${UNPKG_FIELD#./}" node --input-type=module -e '
 import { pathToFileURL } from "node:url";
 const root = pathToFileURL(process.cwd() + "/").href;
 const esm = Object.keys(await import(new URL("dist/esm/index.browser.js", root).href)).sort();
-const bundle = Object.keys(await import(new URL("dist/browser/tsgit.js", root).href)).sort();
-if (esm.length !== bundle.length || esm.some((name, i) => name !== bundle[i])) {
-  console.error(`FAIL: bundle exports (${bundle.length}) differ from dist/esm/index.browser.js (${esm.length})`);
+const bundle = Object.keys(await import(new URL(process.env.BUNDLE_REL, root).href)).sort();
+const missing = esm.filter((name) => !bundle.includes(name));
+const extra = bundle.filter((name) => !esm.includes(name));
+if (missing.length > 0 || extra.length > 0) {
+  console.error(`missing from bundle: [${missing.join(", ")}] — extra in bundle: [${extra.join(", ")}]`);
   process.exit(1);
 }
-' || exit 1
+' || {
+  echo "FAIL: browser bundle export set differs from dist/esm/index.browser.js" >&2
+  exit 1
+}
 
 # Resolution check — call the pinned, locally-installed attw rather than
 # `npx --yes` so the version cannot drift between this check and the published
