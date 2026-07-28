@@ -7,10 +7,11 @@ import * as readObjectMod from '../../../../src/application/primitives/read-obje
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../src/application/primitives/write-tree.js';
 import type { LineKey, WhitespaceMode } from '../../../../src/domain/diff/index.js';
+import * as rawTreeDiffMod from '../../../../src/domain/diff/raw-tree-diff.js';
 import { MAX_SCORE } from '../../../../src/domain/diff/similarity.js';
-import * as domainTreeDiffMod from '../../../../src/domain/diff/tree-diff.js';
 import * as encodingMod from '../../../../src/domain/objects/encoding.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
+import { SHA1_CONFIG } from '../../../../src/domain/objects/hash-config.js';
 import type {
   Blob,
   FileMode,
@@ -18,10 +19,18 @@ import type {
   ObjectId,
   Tree,
 } from '../../../../src/domain/objects/index.js';
+import { serializeTreeContent } from '../../../../src/domain/objects/tree.js';
 import type { CommandRunner } from '../../../../src/ports/command-runner.js';
 import { buildSeededContext, instrumentedContext } from './fixtures.js';
 
 type Ctx = Awaited<ReturnType<typeof buildSeededContext>>;
+
+const IDENTITY = {
+  name: 'Test',
+  email: 'test@example.com',
+  timestamp: 1_700_000_000,
+  timezoneOffset: '+0000',
+} as const;
 
 const blob = (ctx: Ctx, content: string): Promise<ObjectId> =>
   writeObject(ctx, {
@@ -290,6 +299,165 @@ describe('diffTrees', () => {
     });
   });
 
+  describe('Given recursive=true and multiple files added inside a nested sub-directory', () => {
+    describe('When diffTrees is called', () => {
+      it('Then every nested file surfaces as its own full-path AddChange, in tree order', async () => {
+        // Arrange — empty root vs root carrying `sub/a.txt` and `sub/b.txt`.
+        const ctx = await buildSeededContext();
+        const aId = await blob(ctx, 'a');
+        const bId = await blob(ctx, 'b');
+        const subId = await writeTree(ctx, [
+          { name: 'a.txt', mode: FILE_MODE.REGULAR, id: aId },
+          { name: 'b.txt', mode: FILE_MODE.REGULAR, id: bId },
+        ]);
+        const empty = await writeTree(ctx, []);
+        const withSub = await writeTree(ctx, [
+          { name: 'sub', mode: FILE_MODE.DIRECTORY, id: subId },
+        ]);
+
+        // Act
+        const result = await diffTrees(ctx, empty, withSub, { recursive: true });
+
+        // Assert
+        expect(result.changes).toEqual([
+          { type: 'add', newPath: 'sub/a.txt', newId: aId, newMode: FILE_MODE.REGULAR },
+          { type: 'add', newPath: 'sub/b.txt', newId: bId, newMode: FILE_MODE.REGULAR },
+        ]);
+      });
+    });
+  });
+
+  describe('Given recursive=true and multiple files deleted inside a nested sub-directory', () => {
+    describe('When diffTrees is called', () => {
+      it('Then every nested file surfaces as its own full-path DeleteChange, in tree order', async () => {
+        // Arrange — root carrying `sub/a.txt` and `sub/b.txt` vs empty root.
+        const ctx = await buildSeededContext();
+        const aId = await blob(ctx, 'a');
+        const bId = await blob(ctx, 'b');
+        const subId = await writeTree(ctx, [
+          { name: 'a.txt', mode: FILE_MODE.REGULAR, id: aId },
+          { name: 'b.txt', mode: FILE_MODE.REGULAR, id: bId },
+        ]);
+        const withSub = await writeTree(ctx, [
+          { name: 'sub', mode: FILE_MODE.DIRECTORY, id: subId },
+        ]);
+        const empty = await writeTree(ctx, []);
+
+        // Act
+        const result = await diffTrees(ctx, withSub, empty, { recursive: true });
+
+        // Assert
+        expect(result.changes).toEqual([
+          { type: 'delete', oldPath: 'sub/a.txt', oldId: aId, oldMode: FILE_MODE.REGULAR },
+          { type: 'delete', oldPath: 'sub/b.txt', oldId: bId, oldMode: FILE_MODE.REGULAR },
+        ]);
+      });
+    });
+  });
+
+  describe('Given recursive=true and a change three directory levels deep (a/b/c)', () => {
+    describe('When diffTrees is called', () => {
+      it('Then the change is a full-path ModifyChange threaded through every level', async () => {
+        // Arrange — `a/b/c/leaf.txt` changes content; every ancestor tree-oid
+        // (c, b, a) also changes, exercising diffChangedSubtree recursion
+        // through three real levels.
+        const ctx = await buildSeededContext();
+        const oldLeaf = await blob(ctx, 'old');
+        const newLeaf = await blob(ctx, 'new');
+        const oldC = await subTree(ctx, 'leaf.txt', oldLeaf, FILE_MODE.REGULAR);
+        const newC = await subTree(ctx, 'leaf.txt', newLeaf, FILE_MODE.REGULAR);
+        const oldB = await subTree(ctx, 'c', oldC, FILE_MODE.DIRECTORY);
+        const newB = await subTree(ctx, 'c', newC, FILE_MODE.DIRECTORY);
+        const before = await writeTree(ctx, [
+          {
+            name: 'a',
+            mode: FILE_MODE.DIRECTORY,
+            id: await subTree(ctx, 'b', oldB, FILE_MODE.DIRECTORY),
+          },
+        ]);
+        const after = await writeTree(ctx, [
+          {
+            name: 'a',
+            mode: FILE_MODE.DIRECTORY,
+            id: await subTree(ctx, 'b', newB, FILE_MODE.DIRECTORY),
+          },
+        ]);
+
+        // Act
+        const result = await diffTrees(ctx, before, after, { recursive: true });
+
+        // Assert
+        expect(result.changes).toEqual([
+          {
+            type: 'modify',
+            path: 'a/b/c/leaf.txt',
+            oldId: oldLeaf,
+            newId: newLeaf,
+            oldMode: FILE_MODE.REGULAR,
+            newMode: FILE_MODE.REGULAR,
+          },
+        ]);
+      });
+    });
+  });
+
+  describe('Given recursive=true and both inputs are commit oids (peel to their trees)', () => {
+    describe('When diffTrees is called', () => {
+      it('Then diffs the peeled trees, not the commits themselves', async () => {
+        // Arrange — resolveRawInput must peel commit -> tree exactly like
+        // readTree, so a commit oid keeps working through the raw path.
+        const ctx = await buildSeededContext();
+        const oldFileId = await blob(ctx, 'old');
+        const newFileId = await blob(ctx, 'new');
+        const oldTreeId = await writeTree(ctx, [
+          { name: 'root.txt', mode: FILE_MODE.REGULAR, id: oldFileId },
+        ]);
+        const newTreeId = await writeTree(ctx, [
+          { name: 'root.txt', mode: FILE_MODE.REGULAR, id: newFileId },
+        ]);
+        const oldCommitId = await writeObject(ctx, {
+          type: 'commit',
+          id: '' as ObjectId,
+          data: {
+            tree: oldTreeId,
+            parents: [],
+            author: IDENTITY,
+            committer: IDENTITY,
+            message: 'old',
+            extraHeaders: [],
+          },
+        });
+        const newCommitId = await writeObject(ctx, {
+          type: 'commit',
+          id: '' as ObjectId,
+          data: {
+            tree: newTreeId,
+            parents: [],
+            author: IDENTITY,
+            committer: IDENTITY,
+            message: 'new',
+            extraHeaders: [],
+          },
+        });
+
+        // Act
+        const result = await diffTrees(ctx, oldCommitId, newCommitId, { recursive: true });
+
+        // Assert
+        expect(result.changes).toEqual([
+          {
+            type: 'modify',
+            path: 'root.txt',
+            oldId: oldFileId,
+            newId: newFileId,
+            oldMode: FILE_MODE.REGULAR,
+            newMode: FILE_MODE.REGULAR,
+          },
+        ]);
+      });
+    });
+  });
+
   describe('Given recursive=true and an unchanged (TREESAME) sub-directory alongside a changed file', () => {
     describe('When diffTrees is called', () => {
       it('Then flattenTree is never invoked (the TREESAME subtree is pruned before any read)', async () => {
@@ -364,12 +532,14 @@ describe('diffTrees', () => {
         // Act
         const result = await diffTrees(ctx, before, after, { recursive: true });
 
-        // Assert — well under the 20-entry unchanged subtree: only the two
-        // root-level trees (2 entries each side) were ever parsed (4 oid
-        // conversions; 10 decodes = 2 headers + 2 mode/name pairs per tree).
+        // Assert — well under the 20-entry unchanged subtree: only the emitted
+        // `root.txt` entry's two oids are ever hex-converted (the unchanged
+        // `big/` comparison is byte-level, no conversion at all); decode runs
+        // 3 times — one per raw object header read at the root level (old side
+        // + new side) plus one to build the emitted entry's name.
         expect(result.changes).toHaveLength(1);
-        expect(bytesToHexSpy.mock.calls.length).toBeLessThanOrEqual(4);
-        expect(decodeSpy.mock.calls.length).toBeLessThanOrEqual(10);
+        expect(bytesToHexSpy.mock.calls.length).toBeLessThanOrEqual(2);
+        expect(decodeSpy.mock.calls.length).toBeLessThanOrEqual(3);
         bytesToHexSpy.mockRestore();
         decodeSpy.mockRestore();
       });
@@ -1920,10 +2090,10 @@ describe('diffTrees', () => {
 
   // --- withPrefix identity short-circuit ---
 
-  describe('Given recursive=true and the domain diff yields a change at the root (prefix is empty)', () => {
+  describe('Given recursive=true and the raw merge-join yields a change at the root (prefix is empty)', () => {
     describe('When diffTrees is called', () => {
       it('Then the change is returned as the exact same object (withPrefix short-circuits, no reconstruction)', async () => {
-        // Arrange — mock the domain diff to return a known object reference; withPrefix('')
+        // Arrange — mock the raw merge-join to return a known object reference; withPrefix('')
         // is documented as a no-op, so the returned change must be THAT reference, not a
         // structurally-equal `{...change}` copy.
         const ctx = await buildSeededContext();
@@ -1936,7 +2106,7 @@ describe('diffTrees', () => {
           newMode: FILE_MODE.REGULAR,
         };
         const spy = vi
-          .spyOn(domainTreeDiffMod, 'diffTrees')
+          .spyOn(rawTreeDiffMod, 'diffRawTrees')
           .mockReturnValue({ changes: [sentinelChange] });
 
         // Act
@@ -1989,7 +2159,7 @@ describe('diffTrees', () => {
         // Arrange — LOOP_ID's tree content lies about itself (an entry pointing back to
         // LOOP_ID). A genuine self-referential tree cannot exist in a real object store
         // (its hash would have to be a fixed point of its own content, and reads are
-        // hash-verified — object-resolver.ts rejects any mismatch), so readObject is
+        // hash-verified — object-resolver.ts rejects any mismatch), so readRawObject is
         // mocked for this one id only; every other id still resolves through the real
         // implementation.
         const ctx = await buildSeededContext();
@@ -1999,11 +2169,13 @@ describe('diffTrees', () => {
           id: LOOP_ID,
           entries: [{ name: 'inner', mode: FILE_MODE.DIRECTORY, id: LOOP_ID }],
         };
-        const realReadObject = readObjectMod.readObject;
+        const realReadRawObject = readObjectMod.readRawObject;
         const spy = vi
-          .spyOn(readObjectMod, 'readObject')
+          .spyOn(readObjectMod, 'readRawObject')
           .mockImplementation(async (spyCtx, id, options) =>
-            id === LOOP_ID ? loopTree : realReadObject(spyCtx, id, options),
+            id === LOOP_ID
+              ? { type: 'tree', content: serializeTreeContent(loopTree, SHA1_CONFIG) }
+              : realReadRawObject(spyCtx, id, options),
           );
         const distinctLeaf = await writeTree(ctx, []);
         const newLevel0 = await subTree(ctx, 'inner', distinctLeaf, FILE_MODE.DIRECTORY);
@@ -2042,11 +2214,13 @@ describe('diffTrees', () => {
           id: LOOP_ID,
           entries: [{ name: 'inner', mode: FILE_MODE.DIRECTORY, id: LOOP_ID }],
         };
-        const realReadObject = readObjectMod.readObject;
+        const realReadRawObject = readObjectMod.readRawObject;
         const spy = vi
-          .spyOn(readObjectMod, 'readObject')
+          .spyOn(readObjectMod, 'readRawObject')
           .mockImplementation(async (spyCtx, id, options) =>
-            id === LOOP_ID ? loopTree : realReadObject(spyCtx, id, options),
+            id === LOOP_ID
+              ? { type: 'tree', content: serializeTreeContent(loopTree, SHA1_CONFIG) }
+              : realReadRawObject(spyCtx, id, options),
           );
         const distinctLeaf = await writeTree(ctx, []);
         const oldLevel0 = await subTree(ctx, 'inner', distinctLeaf, FILE_MODE.DIRECTORY);
@@ -2094,13 +2268,17 @@ describe('diffTrees', () => {
           id: NEW_LOOP_ID,
           entries: [{ name: 'x', mode: FILE_MODE.DIRECTORY, id: NEW_LOOP_ID }],
         };
-        const realReadObject = readObjectMod.readObject;
+        const realReadRawObject = readObjectMod.readRawObject;
         const spy = vi
-          .spyOn(readObjectMod, 'readObject')
+          .spyOn(readObjectMod, 'readRawObject')
           .mockImplementation(async (spyCtx, id, options) => {
-            if (id === OLD_LOOP_ID) return oldLoopTree;
-            if (id === NEW_LOOP_ID) return newLoopTree;
-            return realReadObject(spyCtx, id, options);
+            if (id === OLD_LOOP_ID) {
+              return { type: 'tree', content: serializeTreeContent(oldLoopTree, SHA1_CONFIG) };
+            }
+            if (id === NEW_LOOP_ID) {
+              return { type: 'tree', content: serializeTreeContent(newLoopTree, SHA1_CONFIG) };
+            }
+            return realReadRawObject(spyCtx, id, options);
           });
         const oldRoot = await subTree(ctx, 'sub', OLD_LOOP_ID, FILE_MODE.DIRECTORY);
         const newRoot = await subTree(ctx, 'sub', NEW_LOOP_ID, FILE_MODE.DIRECTORY);
@@ -2151,14 +2329,18 @@ describe('diffTrees', () => {
           id: NEW_LOOP_ID,
           entries: [{ name: 'x', mode: FILE_MODE.DIRECTORY, id: NEW_LOOP_ID }],
         };
-        const realReadObject = readObjectMod.readObject;
+        const realReadRawObject = readObjectMod.readRawObject;
         const spy = vi
-          .spyOn(readObjectMod, 'readObject')
+          .spyOn(readObjectMod, 'readRawObject')
           .mockImplementation(async (spyCtx, id, options) => {
-            if (id === OLD_A) return oldATree;
-            if (id === OLD_B) return oldBTree;
-            if (id === NEW_LOOP_ID) return newLoopTree;
-            return realReadObject(spyCtx, id, options);
+            if (id === OLD_A)
+              return { type: 'tree', content: serializeTreeContent(oldATree, SHA1_CONFIG) };
+            if (id === OLD_B)
+              return { type: 'tree', content: serializeTreeContent(oldBTree, SHA1_CONFIG) };
+            if (id === NEW_LOOP_ID) {
+              return { type: 'tree', content: serializeTreeContent(newLoopTree, SHA1_CONFIG) };
+            }
+            return realReadRawObject(spyCtx, id, options);
           });
         const oldRoot = await subTree(ctx, 'sub', OLD_A, FILE_MODE.DIRECTORY);
         const newRoot = await subTree(ctx, 'sub', NEW_LOOP_ID, FILE_MODE.DIRECTORY);
@@ -2178,6 +2360,112 @@ describe('diffTrees', () => {
         const data = (thrown as { data: { code: string; id: string } }).data;
         expect(data.code).toBe('TREE_CYCLE_DETECTED');
         expect(data.id).toBe(NEW_LOOP_ID);
+      });
+    });
+  });
+
+  describe('Given recursive=true and a top-level blob oid (not a tree/commit/tag)', () => {
+    describe('When diffTrees is called', () => {
+      it('Then throws UNEXPECTED_OBJECT_TYPE (a blob cannot be diffed as a tree)', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const blobId = await blob(ctx, 'not a tree');
+        const treeId = await writeTree(ctx, []);
+
+        // Act
+        let thrown: unknown;
+        try {
+          await diffTrees(ctx, blobId, treeId, { recursive: true });
+          expect.unreachable();
+        } catch (error) {
+          thrown = error;
+        }
+
+        // Assert
+        const data = (thrown as { data: { code: string; expected: string; actual: string } }).data;
+        expect(data.code).toBe('UNEXPECTED_OBJECT_TYPE');
+        expect(data.expected).toBe('tree');
+        expect(data.actual).toBe('blob');
+      });
+    });
+  });
+
+  describe('Given recursive=true and a changed directory entry whose oid actually resolves to a blob', () => {
+    describe('When diffTrees is called', () => {
+      it('Then throws UNEXPECTED_OBJECT_TYPE on the modify route (the add/delete route silently skips instead)', async () => {
+        // Arrange — `sub` is directory-mode on both sides (so the merge-join classifies
+        // it as a directory `modify`), but its oid on the new side actually points at a
+        // blob — diffChangedSubtree must read it raw and throw, unlike flattenTree's
+        // silent skip on the add/delete route (deliberately not unified, see design).
+        const ctx = await buildSeededContext();
+        const oldSubId = await subTree(
+          ctx,
+          'inner.txt',
+          await blob(ctx, 'inner'),
+          FILE_MODE.REGULAR,
+        );
+        const notATreeId = await blob(ctx, 'not a tree');
+        const before = await writeTree(ctx, [
+          { name: 'sub', mode: FILE_MODE.DIRECTORY, id: oldSubId },
+        ]);
+        const after = await writeTree(ctx, [
+          { name: 'sub', mode: FILE_MODE.DIRECTORY, id: notATreeId },
+        ]);
+
+        // Act
+        let thrown: unknown;
+        try {
+          await diffTrees(ctx, before, after, { recursive: true });
+          expect.unreachable();
+        } catch (error) {
+          thrown = error;
+        }
+
+        // Assert
+        const data = (thrown as { data: { code: string; expected: string; actual: string } }).data;
+        expect(data.code).toBe('UNEXPECTED_OBJECT_TYPE');
+        expect(data.expected).toBe('tree');
+        expect(data.actual).toBe('blob');
+      });
+    });
+  });
+
+  describe('Given recursive=true and a 32-byte (SHA-256) HashConfig', () => {
+    describe('When diffTrees is called over a nested fixture', () => {
+      it('Then the raw cursor walk reads oids at the SHA-256 width, not a fixed 20 bytes', async () => {
+        // Arrange
+        const ctx = createMemoryContext({ algorithm: 'sha256' });
+        const oldLeaf = await blob(ctx, 'old');
+        const newLeaf = await blob(ctx, 'new');
+        const before = await writeTree(ctx, [
+          {
+            name: 'sub',
+            mode: FILE_MODE.DIRECTORY,
+            id: await subTree(ctx, 'inner.txt', oldLeaf, FILE_MODE.REGULAR),
+          },
+        ]);
+        const after = await writeTree(ctx, [
+          {
+            name: 'sub',
+            mode: FILE_MODE.DIRECTORY,
+            id: await subTree(ctx, 'inner.txt', newLeaf, FILE_MODE.REGULAR),
+          },
+        ]);
+
+        // Act
+        const result = await diffTrees(ctx, before, after, { recursive: true });
+
+        // Assert
+        expect(result.changes).toEqual([
+          {
+            type: 'modify',
+            path: 'sub/inner.txt',
+            oldId: oldLeaf,
+            newId: newLeaf,
+            oldMode: FILE_MODE.REGULAR,
+            newMode: FILE_MODE.REGULAR,
+          },
+        ]);
       });
     });
   });

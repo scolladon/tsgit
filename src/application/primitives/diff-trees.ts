@@ -17,6 +17,7 @@ import {
   type StatTreeDiff,
   type TreeDiff,
 } from '../../domain/diff/index.js';
+import { diffRawTrees } from '../../domain/diff/raw-tree-diff.js';
 import type { RenameDetectOptions } from '../../domain/diff/rename-detect.js';
 import {
   treeCycleDetected,
@@ -32,7 +33,7 @@ import { boundedMap, MAX_CONCURRENT_BLOB_LOADS } from './internal/bounded-map.js
 import { type AttributeProvider, buildAttributeProvider } from './internal/read-gitattributes.js';
 import { isWhitespaceOnlyModify } from './internal/whitespace-drop-predicate.js';
 import { materialisePatchFiles } from './materialise-patch-files.js';
-import { readObject } from './read-object.js';
+import { readRawObject } from './read-object.js';
 import { readTree } from './read-tree.js';
 import type { DiffTreesInput, DiffTreesOptions } from './types.js';
 import { exceedsMaxTreeDepth } from './validators.js';
@@ -57,18 +58,14 @@ export async function diffTrees(
   b: DiffTreesInput,
   options?: DiffTreesOptions,
 ): Promise<TreeDiff | StatTreeDiff> {
-  const [treeA, treeB] = await Promise.all([resolveInput(ctx, a), resolveInput(ctx, b)]);
-  const rawDiff =
-    options?.recursive === true
-      ? await diffRecursive(ctx, treeA, treeB)
-      : domainDiffTrees(treeA, treeB);
+  const rawDiff = await resolveAndDiff(ctx, a, b, options);
   const diff =
     options?.detectRenames === true
       ? await detectSimilarityRenames(
           ctx,
           rawDiff,
           options.renameOptions,
-          await buildPreimage(ctx, treeA, options.renameOptions),
+          await buildPreimage(ctx, a, options.renameOptions),
         )
       : rawDiff;
 
@@ -81,6 +78,29 @@ export async function diffTrees(
     return applyLinePassAndStat(ctx, diff, lineKey, lineKeyActive, ignoreBlankLines, withStat);
   }
   return diff;
+}
+
+/**
+ * Resolve both inputs and compute the top-level diff. The recursive branch
+ * resolves to raw bytes and walks the byte-cursor merge-join; the
+ * non-recursive branch keeps resolving to parsed `Tree` objects — the two
+ * branches never both resolve the same input, so only one read path runs.
+ */
+async function resolveAndDiff(
+  ctx: Context,
+  a: DiffTreesInput,
+  b: DiffTreesInput,
+  options: DiffTreesOptions | undefined,
+): Promise<TreeDiff> {
+  if (options?.recursive === true) {
+    const [aContent, bContent] = await Promise.all([
+      resolveRawInput(ctx, a),
+      resolveRawInput(ctx, b),
+    ]);
+    return diffRecursive(ctx, aContent, bContent);
+  }
+  const [treeA, treeB] = await Promise.all([resolveInput(ctx, a), resolveInput(ctx, b)]);
+  return domainDiffTrees(treeA, treeB);
 }
 
 /** Resolve the stat options for one file: line-key + blank when a mode is active,
@@ -290,15 +310,17 @@ function shouldDrop(change: DiffChange, stats: StatFields): boolean {
 
 /**
  * Build the flat preimage map for copies:'harder' — all tree-A paths become copy sources.
- * Returns undefined when copies:'harder' is not active or treeA is absent.
+ * Returns undefined when copies:'harder' is not active or `a` is absent. Takes the
+ * unresolved input directly — `flattenTree` accepts an `ObjectId | Tree` itself, so no
+ * separate resolve is needed here.
  */
 async function buildPreimage(
   ctx: Context,
-  treeA: Tree | undefined,
+  a: DiffTreesInput,
   renameOptions: RenameDetectOptions | undefined,
 ): Promise<FlatTree['entries'] | undefined> {
-  if (renameOptions?.copies !== 'harder' || treeA === undefined) return undefined;
-  const flat = await flattenTree(ctx, treeA);
+  if (renameOptions?.copies !== 'harder' || a === undefined) return undefined;
+  const flat = await flattenTree(ctx, a);
   return flat.entries;
 }
 
@@ -309,6 +331,35 @@ async function resolveInput(ctx: Context, input: DiffTreesInput): Promise<Tree |
     return readTree(ctx, input);
   }
   return input;
+}
+
+/**
+ * Read an object raw and require it to be a tree, mirroring `readTree`'s own
+ * non-tree refusal but without parsing — used by the recursive path, which
+ * only ever needs tree bytes for the byte-cursor merge-join.
+ */
+async function readRawTree(ctx: Context, id: ObjectId): Promise<Uint8Array> {
+  const raw = await readRawObject(ctx, id);
+  if (raw.type !== 'tree') throw unexpectedObjectType('tree', raw.type, id);
+  return raw.content;
+}
+
+/**
+ * Raw sibling of `resolveInput`, used only by the recursive branch. A caller-supplied
+ * `Tree` is re-read raw by its own `id` — one walk implementation at every level, at
+ * the cost of a hand-forged `Tree` whose `id` is not in the store now throwing
+ * `OBJECT_NOT_FOUND`. An `ObjectId` still peels commit -> tree and tag -> tree exactly
+ * like `readTree` (same max-peel-depth bound), so a commit/tag oid keeps working.
+ */
+async function resolveRawInput(
+  ctx: Context,
+  input: DiffTreesInput,
+): Promise<Uint8Array | undefined> {
+  if (input === undefined) return undefined;
+  if (typeof input !== 'string') return readRawTree(ctx, input.id);
+  const raw = await readRawObject(ctx, input);
+  if (raw.type === 'tree') return raw.content;
+  return readRawTree(ctx, (await readTree(ctx, input)).id);
 }
 
 /** Recursion state threaded through `diffRecursiveLevel` — tracks the full-path
@@ -327,28 +378,28 @@ const MAX_DIFF_RECURSION_DEPTH = 1024;
 
 async function diffRecursive(
   ctx: Context,
-  a: Tree | undefined,
-  b: Tree | undefined,
+  a: Uint8Array | undefined,
+  b: Uint8Array | undefined,
 ): Promise<TreeDiff> {
   const changes = await diffRecursiveLevel(ctx, a, b, ROOT_CURSOR);
   return { changes };
 }
 
 /**
- * Merge-join one tree level via the domain diff, then expand only the entries
- * that actually differ. A TREESAME directory entry (identical oid+mode on
- * both sides) never reaches `expandLevelChange` — the domain merge-join
- * already drops it — so its subtree is never read or flattened, matching
- * git's own diff-tree pruning. Sibling directories that DO differ are
- * expanded concurrently.
+ * Merge-join one tree level via the raw byte-cursor diff, then expand only the
+ * entries that actually differ. A TREESAME directory entry (identical oid+mode
+ * on both sides) never reaches `expandLevelChange` — the merge-join already
+ * drops it — so its subtree is never read or flattened, matching git's own
+ * diff-tree pruning. Sibling directories that DO differ are expanded
+ * concurrently.
  */
 async function diffRecursiveLevel(
   ctx: Context,
-  a: Tree | undefined,
-  b: Tree | undefined,
+  a: Uint8Array | undefined,
+  b: Uint8Array | undefined,
   cursor: DiffCursor,
 ): Promise<DiffChange[]> {
-  const levelChanges = domainDiffTrees(a, b).changes;
+  const levelChanges = diffRawTrees(a, b, ctx.hashConfig).changes;
   const expanded = await Promise.all(
     levelChanges.map((change) => expandLevelChange(ctx, change, cursor)),
   );
@@ -407,9 +458,9 @@ async function diffChangedSubtree(
   if (cursor.oldStack.includes(change.oldId)) throw treeCycleDetected(change.oldId);
   if (cursor.newStack.includes(change.newId)) throw treeCycleDetected(change.newId);
 
-  const [oldTree, newTree] = await Promise.all([
-    readTreeStrict(ctx, change.oldId),
-    readTreeStrict(ctx, change.newId),
+  const [oldContent, newContent] = await Promise.all([
+    readRawTree(ctx, change.oldId),
+    readRawTree(ctx, change.newId),
   ]);
   const nextCursor: DiffCursor = {
     prefix: joinPath(cursor.prefix, change.path),
@@ -417,13 +468,7 @@ async function diffChangedSubtree(
     oldStack: [...cursor.oldStack, change.oldId],
     newStack: [...cursor.newStack, change.newId],
   };
-  return diffRecursiveLevel(ctx, oldTree, newTree, nextCursor);
-}
-
-async function readTreeStrict(ctx: Context, id: ObjectId): Promise<Tree> {
-  const object = await readObject(ctx, id);
-  if (object.type !== 'tree') throw unexpectedObjectType('tree', object.type, id);
-  return object;
+  return diffRecursiveLevel(ctx, oldContent, newContent, nextCursor);
 }
 
 async function expandAddedSubtree(
