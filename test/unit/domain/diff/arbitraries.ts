@@ -1,7 +1,11 @@
 import fc from 'fast-check';
 import type { FileMode, ObjectId, Tree, TreeEntry } from '../../../../src/domain/objects/index.js';
 import { FILE_MODE } from '../../../../src/domain/objects/index.js';
-import { arbObjectId } from '../objects/arbitraries.js';
+import {
+  arbObjectId,
+  arbTreeEntryAnyMode,
+  dedupeTreeEntriesByName,
+} from '../objects/arbitraries.js';
 
 export function arbBlobBytes(): fc.Arbitrary<Uint8Array> {
   return fc
@@ -46,4 +50,15 @@ export function arbTree(): fc.Arbitrary<Tree> {
       entries: Array.from(byName.values()),
     };
   });
+}
+
+// Unlike arbTree (deliberately non-directory, above), this family includes
+// FILE_MODE.DIRECTORY so the virtual-slash ordering the raw cursor walk
+// depends on is exercised by the differential property against diffTrees.
+export function arbCanonicalTree(): fc.Arbitrary<Tree> {
+  return fc.array(arbTreeEntryAnyMode(), { minLength: 0, maxLength: 12 }).map((rawEntries) => ({
+    type: 'tree' as const,
+    id: '0'.repeat(40) as ObjectId,
+    entries: dedupeTreeEntriesByName(rawEntries),
+  }));
 }

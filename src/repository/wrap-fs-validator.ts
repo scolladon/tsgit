@@ -3,6 +3,40 @@ import type { FilePath } from '../domain/objects/object-id.js';
 import type { FileSystem } from '../ports/file-system.js';
 
 /**
+ * True when `segment` is `..`, or Win32 path canonicalisation reduces it to
+ * `..` by stripping trailing dots/spaces (e.g. `'.. '`, `'...'`) — a
+ * `CreateFile`/`GetFullPathName`-style traversal segment a naive `=== '..'`
+ * check would miss.
+ */
+const isDotDotSegment = (segment: string): boolean =>
+  // Stryker disable next-line MethodExpression: equivalent — reached only when segment.startsWith('..') already holds, so the class trivially matches the leading two dots; testing the whole segment is identical to testing the remainder.
+  segment === '..' || (segment.startsWith('..') && /^[. ]*$/.test(segment.slice(2)));
+
+/**
+ * True when any `/`- or `\`-delimited segment of `path` is (or Win32
+ * canonicalises to) `..` — the segment that lets a nominally-contained path
+ * (`isContainedIn`'s prefix check alone would accept `/repo/../etc/x` as
+ * being "under" `/repo`) resolve outside its root once the `..` is applied.
+ * `path.includes('..')` is a cheap substring prefilter: the common case (no
+ * `..` anywhere) never pays for the segment split.
+ */
+const hasDotDotSegment = (path: string): boolean =>
+  // Stryker disable next-line StringLiteral: equivalent — a genuine dot-dot segment always contains '..', so path.includes('..') is implied whenever .some(isDotDotSegment) is true; forcing it always-true cannot change the && result.
+  path.includes('..') && path.split(/[\\/]/).some(isDotDotSegment);
+
+/**
+ * Filter an allowlist of external paths through two defensive checks before
+ * trusting them: reject empty strings (a malicious / buggy adapter returning
+ * `''` would otherwise add the root-relative path `'/x'` to the allowlist) and
+ * reject paths containing a `..` segment (which would let the adapter slip a
+ * traversal-bearing path past the containment guard). The allowed paths come
+ * from the FS adapter's own `homedir()` / `xdgConfigHome()` / `systemConfigPath()`
+ * methods; in production these are trusted, but defence in depth costs nothing.
+ */
+const sanitizeAllowlist = (paths: ReadonlyArray<string>): ReadonlyArray<string> =>
+  paths.filter((p) => p.length > 0 && !hasDotDotSegment(p));
+
+/**
  * Wrap a user-supplied FileSystem so every path-taking method asserts that
  * the path is contained within `cwd`. commands ALREADY validate
  * cwd-relative paths via `validatePath` before computing absolute paths;
@@ -16,18 +50,6 @@ import type { FileSystem } from '../ports/file-system.js';
  * `read`/`readUtf8`; that level of trust is delegated to the caller's choice
  * of FS implementation.
  */
-/**
- * Filter an allowlist of external paths through two defensive checks before
- * trusting them: reject empty strings (a malicious / buggy adapter returning
- * `''` would otherwise add the root-relative path `'/x'` to the allowlist) and
- * reject paths containing a `..` segment (which would let the adapter slip a
- * traversal-bearing path past the containment guard). The allowed paths come
- * from the FS adapter's own `homedir()` / `xdgConfigHome()` / `systemConfigPath()`
- * methods; in production these are trusted, but defence in depth costs nothing.
- */
-const sanitizeAllowlist = (paths: ReadonlyArray<string>): ReadonlyArray<string> =>
-  paths.filter((p) => p.length > 0 && !p.split(/[\\/]/).includes('..'));
-
 export const wrapFsValidator = (
   fs: FileSystem,
   roots: string | ReadonlyArray<string>,
@@ -39,6 +61,10 @@ export const wrapFsValidator = (
   const rootList = typeof roots === 'string' ? [roots] : roots;
   const allowSet = new Set(sanitizeAllowlist(allowExternalPaths));
   const guard = (path: string): void => {
+    // A `..` segment defeats `isContainedIn`'s prefix check on its own:
+    // `/repo/../etc/x` satisfies `startsWith('/repo/')` yet resolves outside
+    // `/repo` once the `..` is applied. Reject before the prefix check runs.
+    if (hasDotDotSegment(path)) throw pathspecOutsideRepo(path as FilePath);
     if (rootList.some((root) => isContainedIn(path, root))) return;
     if (allowSet.has(path)) return;
     throw pathspecOutsideRepo(path as FilePath);

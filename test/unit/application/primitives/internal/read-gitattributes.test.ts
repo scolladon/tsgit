@@ -173,6 +173,55 @@ describe('buildAttributeProvider', () => {
     });
   });
 
+  describe('Given a directory chain that contains `..` as a substring but not as an escaping segment', () => {
+    describe('When resolving attribute sources for the path', () => {
+      it('Then a directory containing `..` in the middle of its name is read, not skipped as escaping (a..b/c, reached through an adversarial double-slash segment)', async () => {
+        // Arrange — the double slash makes dirChain also visit 'a..b/' and
+        // 'a..b//c', both of which split to an empty '' segment; only the
+        // nested 'c' level carries the seeded file, so a wrongly-escaped
+        // 'a..b//c' entry cannot be masked by a shallower, unseeded sibling.
+        const ctx = createMemoryContext();
+        await seed(ctx, '/repo/a..b/c/.gitattributes', '* merge=ab\n');
+        const readUtf8Spy = vi.spyOn(ctx.fs, 'readUtf8');
+
+        // Act
+        const result = await merge(ctx, 'a..b//c/x.txt');
+
+        // Assert
+        expect(result).toEqual({ set: 'ab' });
+        expect(readUtf8Spy).toHaveBeenCalledWith('/repo/a..b//c/.gitattributes');
+      });
+
+      it('Then a directory starting with `..` but followed by a non-dot/space character is read, not skipped as escaping (..x)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '/repo/..x/.gitattributes', '* merge=leading\n');
+        const readUtf8Spy = vi.spyOn(ctx.fs, 'readUtf8');
+
+        // Act
+        const result = await merge(ctx, '..x/x.txt');
+
+        // Assert
+        expect(result).toEqual({ set: 'leading' });
+        expect(readUtf8Spy).toHaveBeenCalledWith('/repo/..x/.gitattributes');
+      });
+
+      it('Then a directory ending with `..` but not starting with it is read, not skipped as escaping (x..)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '/repo/x../.gitattributes', '* merge=trailing\n');
+        const readUtf8Spy = vi.spyOn(ctx.fs, 'readUtf8');
+
+        // Act
+        const result = await merge(ctx, 'x../x.txt');
+
+        // Assert
+        expect(result).toEqual({ set: 'trailing' });
+        expect(readUtf8Spy).toHaveBeenCalledWith('/repo/x../.gitattributes');
+      });
+    });
+  });
+
   describe('Given a gitattributes configuration with no applicable global rule', () => {
     describe('When resolving', () => {
       it.each<{
@@ -344,6 +393,51 @@ describe('buildAttributeProvider', () => {
         }
         expect((caught as Error).message).toBe('unexpected I/O failure');
       });
+    });
+  });
+
+  describe('Given a diff path whose directory chain lexically escapes the worktree', () => {
+    describe('When resolving attribute sources for the path', () => {
+      it.each([
+        {
+          label: 'a `..`-laden chain (the raw merge-join does not validate entry names)',
+          path: '../../../../../../etc/passwd',
+        },
+        {
+          label: 'a `.. ` (dot-dot-space) segment Win32 canonicalises to `..`',
+          path: '.. /file.txt',
+        },
+        {
+          label: 'a Windows drive-absolute directory',
+          path: 'C:/secrets/file.txt',
+        },
+        {
+          label: 'a backslash-separated directory that normalises into a `..` segment',
+          path: '..\\secret/file.txt',
+        },
+        {
+          label: 'a leading-`/` absolute directory',
+          path: '/etc/file.txt',
+        },
+      ])(
+        'Then yields zero sources without ever touching the filesystem ($label)',
+        async ({ path }) => {
+          // Arrange
+          const ctx = createMemoryContext();
+          const provider = await buildAttributeProvider(ctx);
+          const sut = provider.sourcesForPath;
+          const lstatSpy = vi.spyOn(ctx.fs, 'lstat');
+          const readUtf8Spy = vi.spyOn(ctx.fs, 'readUtf8');
+
+          // Act
+          const { sources } = await sut(path as FilePath);
+
+          // Assert
+          expect(sources).toEqual([]);
+          expect(lstatSpy).not.toHaveBeenCalled();
+          expect(readUtf8Spy).not.toHaveBeenCalled();
+        },
+      );
     });
   });
 });

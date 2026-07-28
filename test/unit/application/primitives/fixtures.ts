@@ -9,7 +9,14 @@ import {
 import type { GitIndex } from '../../../../src/domain/git-index/index-entry.js';
 import { serializeIndex } from '../../../../src/domain/git-index/index-writer.js';
 import { serializeObject } from '../../../../src/domain/objects/git-object.js';
-import type { Commit, GitObject, ObjectId, RefName } from '../../../../src/domain/objects/index.js';
+import type {
+  Commit,
+  GitObject,
+  ObjectId,
+  ObjectType,
+  RefName,
+} from '../../../../src/domain/objects/index.js';
+import { serializeHeader } from '../../../../src/domain/objects/index.js';
 import { type PackedRefEntry, serializePackedRefs } from '../../../../src/domain/refs/index.js';
 import { computeLooseObjectPath } from '../../../../src/domain/storage/loose-path.js';
 import type { Context } from '../../../../src/ports/context.js';
@@ -66,6 +73,30 @@ export async function buildSeededContext(parts: BuildSeededContextParts = {}): P
   }
 
   return ctx;
+}
+
+/**
+ * Write hand-built object *content* bytes as a loose object, bypassing every
+ * domain serializer (`serializeObject`/`serializeTreeContent`). Used to plant
+ * tree bodies whose entry order or entry names a canonicalising writer
+ * (`writeTree`/`writeObject`) would never produce on disk — e.g. an unsorted
+ * or invalid-name tree — so a raw reader observes the exact bytes a
+ * corrupt/adversarial repository could contain.
+ */
+export async function writeRawObjectBytes(
+  ctx: Context,
+  type: ObjectType,
+  content: Uint8Array,
+): Promise<ObjectId> {
+  const header = serializeHeader(type, content.length);
+  const bytes = new Uint8Array(header.length + content.length);
+  bytes.set(header, 0);
+  bytes.set(content, header.length);
+  const id = (await ctx.hash.hashHex(bytes)) as ObjectId;
+  const loosePath = `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(id)}`;
+  const compressed = await ctx.compressor.deflate(bytes);
+  await ctx.fs.write(loosePath, compressed);
+  return id;
 }
 
 /**

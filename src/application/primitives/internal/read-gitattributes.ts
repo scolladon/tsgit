@@ -47,6 +47,36 @@ const dirChain = (path: FilePath): ReadonlyArray<string> => {
   return dirs;
 };
 
+/**
+ * True when `segment` is `..`, or Win32 path canonicalisation reduces it to
+ * `..` by stripping trailing dots/spaces (e.g. `'.. '`, `'...'`) — a
+ * `CreateFile`/`GetFullPathName`-style traversal segment a naive `=== '..'`
+ * check would miss.
+ */
+const isDotDotSegment = (segment: string): boolean =>
+  // Stryker disable next-line MethodExpression: equivalent — reached only when segment.startsWith('..') already holds, so the class trivially matches the leading two dots; testing the whole segment is identical to testing the remainder.
+  segment === '..' || (segment.startsWith('..') && /^[. ]*$/.test(segment.slice(2)));
+
+const WINDOWS_DRIVE_ABSOLUTE_RE = /^[A-Za-z]:/;
+
+/**
+ * True when a directory chain entry — built from a diff-change path the raw
+ * merge-join never validates — would lexically resolve outside the worktree
+ * once joined onto `workDir`: a leading absolute segment (POSIX `/` or a
+ * Windows drive letter), or a `..` (or Win32-canonicalises-to-`..`) segment.
+ * Real git diffs such trees cleanly; this is the boundary that lets tsgit do
+ * the same without ever asking the filesystem about a path outside the
+ * worktree. Never called with `''` — the root directory key is pre-seeded
+ * into `dirCache` before any lookup, so `loadDir` never reaches this guard
+ * for it.
+ */
+const dirEscapesWorktree = (dir: string): boolean => {
+  const normalized = dir.replace(/\\/g, '/');
+  if (normalized.startsWith('/') || WINDOWS_DRIVE_ABSOLUTE_RE.test(normalized)) return true;
+  // Stryker disable next-line StringLiteral: equivalent — a genuine dot-dot segment always contains '..', so normalized.includes('..') is implied whenever .some(isDotDotSegment) is true; forcing it always-true cannot change the && result.
+  return normalized.includes('..') && normalized.split('/').some(isDotDotSegment);
+};
+
 /** Resolves the precedence-ordered attribute sources + macro registry for a path. */
 export interface AttributeProvider {
   readonly sourcesForPath: (path: FilePath) => Promise<{
@@ -75,6 +105,10 @@ export const buildAttributeProvider = async (ctx: Context): Promise<AttributePro
   const dirCache = new Map<string, ParsedAttributes | undefined>([['', root]]);
   const loadDir = async (dir: string): Promise<ParsedAttributes | undefined> => {
     if (dirCache.has(dir)) return dirCache.get(dir);
+    if (dirEscapesWorktree(dir)) {
+      dirCache.set(dir, undefined);
+      return undefined;
+    }
     const parsed = await readDir(ctx, dir as FilePath);
     dirCache.set(dir, parsed);
     return parsed;

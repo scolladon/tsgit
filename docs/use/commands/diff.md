@@ -78,6 +78,12 @@ const noBlank = await repo.diff({ from: 'HEAD~1', ignoreBlankLines: true });
 - The default is **non-recursive** like `git diff-tree`: a changed sub-directory
   surfaces as a single tree-entry change. Pass `recursive: true` to expand it
   into per-file `DiffChange`s (`git diff-tree -r`).
+- With `recursive: true`, a corrupt/fsck-invalid tree (unsorted entries,
+  duplicate names, `.`/`..`/embedded-`/` names) diffs exactly like
+  `git diff-tree -r` instead of throwing — only structural entry damage
+  (missing space/NUL, malformed/empty mode, truncated hash) still refuses.
+  See [`diffTrees`](../primitives/diff-trees.md#throws) for the full refusal
+  surface.
 
 ## Data guarantees
 

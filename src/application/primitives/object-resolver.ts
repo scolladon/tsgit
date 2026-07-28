@@ -46,27 +46,27 @@ function emptyTreeOid(hash: HashConfig): ObjectId {
   return hash.digestLength === 32 ? EMPTY_TREE_OID_SHA256 : EMPTY_TREE_OID;
 }
 
-export async function resolveObject(
+export async function resolveObjectBytes(
   ctx: Context,
   registry: PackRegistry,
   id: ObjectId,
   verifyHash: boolean,
   maxBytes?: number,
-): Promise<GitObject> {
+): Promise<Uint8Array> {
   checkAborted(ctx);
   if (id === emptyTreeOid(ctx.hashConfig)) {
-    return parseObject(id, EMPTY_TREE_BYTES, ctx.hashConfig);
+    return EMPTY_TREE_BYTES;
   }
   const cached = ctx.deltaCache.get(id);
   if (cached !== undefined) {
     enforceCachedCap(id, cached, maxBytes);
-    return finalize(ctx, id, cached, verifyHash);
+    return verifyAndReturn(ctx, id, cached, verifyHash);
   }
   const loose = await tryLoose(ctx, id);
   if (loose !== undefined) {
     checkAborted(ctx);
     enforceLooseCap(id, loose, maxBytes);
-    return finalize(ctx, id, loose, verifyHash);
+    return verifyAndReturn(ctx, id, loose, verifyHash);
   }
 
   checkAborted(ctx);
@@ -77,7 +77,18 @@ export async function resolveObject(
   checkAborted(ctx);
   const bytes = await resolvePackChain(ctx, registry, hit, id, maxBytes);
   checkAborted(ctx);
-  return finalize(ctx, id, bytes, verifyHash);
+  return verifyAndReturn(ctx, id, bytes, verifyHash);
+}
+
+export async function resolveObject(
+  ctx: Context,
+  registry: PackRegistry,
+  id: ObjectId,
+  verifyHash: boolean,
+  maxBytes?: number,
+): Promise<GitObject> {
+  const bytes = await resolveObjectBytes(ctx, registry, id, verifyHash, maxBytes);
+  return parseObject(id, bytes, ctx.hashConfig);
 }
 
 /**
@@ -212,12 +223,12 @@ export async function looseCompressedBytes(
   return readLooseCompressed(ctx, id);
 }
 
-async function finalize(
+async function verifyAndReturn(
   ctx: Context,
   id: ObjectId,
   bytes: Uint8Array,
   verifyHash: boolean,
-): Promise<GitObject> {
+): Promise<Uint8Array> {
   if (verifyHash) {
     const actual = (await ctx.hash.hashHex(bytes)) as ObjectId;
     checkAborted(ctx);
@@ -225,7 +236,7 @@ async function finalize(
       throw objectHashMismatch(id, actual);
     }
   }
-  return parseObject(id, bytes, ctx.hashConfig);
+  return bytes;
 }
 
 interface DeltaStep {

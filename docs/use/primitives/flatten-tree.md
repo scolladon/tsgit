@@ -19,7 +19,7 @@ interface FlatTree {
 
 ## Behaviour
 
-Recurses into every sub-tree; directory entries themselves are not included in the result — only blob and gitlink leaves. Accepts either a tree `ObjectId` or an already-resolved `Tree` object (passing the resolved object avoids a redundant root read when the caller already has it).
+Recurses into every sub-tree; directory entries themselves are not included in the result — only blob and gitlink leaves. Accepts either a tree `ObjectId` or an already-resolved `Tree` object — either form re-reads the root raw by its `id` before walking (passing a resolved `Tree` is not a redundant-root-read shortcut; see Throws below for what that means for a hand-forged `Tree`). An entry named `.` or `..`, containing an embedded `/`, or with an empty name is refused before it is recorded, for directory entries exactly as for blob/gitlink leaves.
 
 ## Example
 
@@ -33,7 +33,13 @@ for (const [path, entry] of flat.entries) {
 
 ## Throws
 
-Propagates `readObject`'s errors for a missing or malformed tree object.
+- `OBJECT_NOT_FOUND` — the root oid (or a passed-in `Tree`'s `id`) is not in the store.
+- `UNEXPECTED_OBJECT_TYPE` — the root oid (or a passed-in `Tree`'s `id`) does not resolve to a tree. A directory-mode entry deeper in the walk whose oid resolves to a non-tree is silently skipped instead — never recursed into, never recorded — mirroring `walkTree`'s own asymmetry.
+- `INVALID_TREE_ENTRY` — a structurally malformed entry, or a `.`/`..`/embedded-`/`-name refusal (an empty name is refused structurally before the name-shape check ever runs).
+- `TREE_DEPTH_EXCEEDED` / `TREE_ENTRY_LIMIT_EXCEEDED` / `TREE_CYCLE_DETECTED` — the traversal's bounded-recursion guards.
+- `OPERATION_ABORTED` — `ctx.signal` is already aborted.
+
+Two on-disk entries sharing the same name are not refused here — the later entry on disk wins; `git fsck --strict` is where duplicate-name detection lives.
 
 ## See also
 

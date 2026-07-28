@@ -1,3 +1,4 @@
+import { MAX_TREE_WALK_DEPTH } from '../../domain/diff/flat-tree.js';
 import { MAX_FLAT_TREE_ENTRIES } from '../../domain/diff/index.js';
 import { operationAborted } from '../../domain/error.js';
 import {
@@ -37,7 +38,7 @@ export async function* walkTree(
   const config: WalkConfig = {
     ctx,
     recursive: options?.recursive ?? true,
-    maxDepth: options?.maxDepth ?? 1024,
+    maxDepth: options?.maxDepth ?? MAX_TREE_WALK_DEPTH,
     maxEntries: options?.maxEntries ?? MAX_FLAT_TREE_ENTRIES,
   };
   const counter: Counter = { value: 0 };

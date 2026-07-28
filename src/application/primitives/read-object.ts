@@ -1,10 +1,11 @@
 import { TsgitError } from '../../domain/error.js';
+import { splitObject } from '../../domain/objects/git-object.js';
 import type { GitObject, ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import type { PromisorRemote } from '../../ports/promisor.js';
-import { resolveObject } from './object-resolver.js';
+import { resolveObject, resolveObjectBytes } from './object-resolver.js';
 import { createPackRegistry, type PackRegistry } from './pack-registry.js';
-import type { ReadObjectOptions } from './types.js';
+import type { RawObject, ReadObjectOptions } from './types.js';
 
 /**
  * Per-Context registry cache. Keyed by the Context instance so that a long-running
@@ -90,15 +91,21 @@ async function lazyFetchOnce(
   }
 }
 
-export async function readObject(
+/**
+ * Runs `run` once; on an `OBJECT_NOT_FOUND` miss with a promisor attached,
+ * lazy-fetches the missing object and retries `run` exactly once. Shared by
+ * `readObject` and `readRawObject` so a partial clone behaves identically on
+ * both — a divergence here would let the raw path see a weaker retry
+ * contract than the parsed one.
+ */
+async function withLazyFetchRetry<T>(
   ctx: Context,
   id: ObjectId,
-  options?: ReadObjectOptions,
-): Promise<GitObject> {
-  const verifyHash = options?.verifyHash ?? true;
-  const registry = getPackRegistry(ctx);
+  registry: PackRegistry,
+  run: () => Promise<T>,
+): Promise<T> {
   try {
-    return await resolveObject(ctx, registry, id, verifyHash, options?.maxBytes);
+    return await run();
   } catch (err) {
     const promisor = ctx.promisor;
     if (promisor === undefined || !isObjectNotFound(err)) throw err;
@@ -110,6 +117,30 @@ export async function readObject(
     // Surface the original error directly and skip that pointless re-resolve.
     if (!attempted) throw err;
     registry.refresh();
-    return resolveObject(ctx, registry, id, verifyHash, options?.maxBytes);
+    return run();
   }
+}
+
+export async function readObject(
+  ctx: Context,
+  id: ObjectId,
+  options?: ReadObjectOptions,
+): Promise<GitObject> {
+  const verifyHash = options?.verifyHash ?? true;
+  const registry = getPackRegistry(ctx);
+  return withLazyFetchRetry(ctx, id, registry, () =>
+    resolveObject(ctx, registry, id, verifyHash, options?.maxBytes),
+  );
+}
+
+export async function readRawObject(
+  ctx: Context,
+  id: ObjectId,
+  options?: ReadObjectOptions,
+): Promise<RawObject> {
+  const verifyHash = options?.verifyHash ?? true;
+  const registry = getPackRegistry(ctx);
+  return withLazyFetchRetry(ctx, id, registry, async () =>
+    splitObject(await resolveObjectBytes(ctx, registry, id, verifyHash, options?.maxBytes)),
+  );
 }

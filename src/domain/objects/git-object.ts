@@ -4,7 +4,7 @@ import type { Commit } from './commit.js';
 import { parseCommitContent, serializeCommitContent } from './commit.js';
 import { invalidObjectHeader } from './error.js';
 import type { HashConfig } from './hash-config.js';
-import { parseHeader, serializeHeader } from './header.js';
+import { type ObjectType, parseHeader, serializeHeader } from './header.js';
 import type { ObjectId } from './object-id.js';
 import type { Tag } from './tag.js';
 import { parseTagContent, serializeTagContent } from './tag.js';
@@ -13,7 +13,11 @@ import { parseTreeContent, serializeTreeContent } from './tree.js';
 
 export type GitObject = Blob | Tree | Commit | Tag;
 
-export function parseObject(id: ObjectId, rawBytes: Uint8Array, hash: HashConfig): GitObject {
+export function splitObject(rawBytes: Uint8Array): {
+  readonly type: ObjectType;
+  readonly content: Uint8Array;
+  readonly bytes: Uint8Array;
+} {
   const { type, size, contentOffset } = parseHeader(rawBytes);
   const content = rawBytes.subarray(contentOffset);
 
@@ -22,6 +26,12 @@ export function parseObject(id: ObjectId, rawBytes: Uint8Array, hash: HashConfig
       `size mismatch: header says ${size}, actual content is ${content.length}`,
     );
   }
+
+  return { type, content, bytes: rawBytes };
+}
+
+export function parseObject(id: ObjectId, rawBytes: Uint8Array, hash: HashConfig): GitObject {
+  const { type, content } = splitObject(rawBytes);
 
   switch (type) {
     case 'blob':

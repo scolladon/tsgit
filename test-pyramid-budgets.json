@@ -111,6 +111,7 @@
         "createByteGranularityTracker",
         "createCounterGenerationView",
         "createInMemoryWriteEventBus",
+        "createConcurrencyLimiter",
 
         "withRetry",
         "withLogging",

@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
+import { encode } from '../../../../src/domain/objects/encoding.js';
 import { TsgitError } from '../../../../src/domain/objects/error.js';
 import {
   deriveWorkingMode,
+  FILE_MODE,
   type FileMode,
   isDirectory,
+  matchFileModeBytes,
   normalizeFileMode,
   validateFileMode,
 } from '../../../../src/domain/objects/file-mode.js';
@@ -168,6 +171,230 @@ describe('file-mode', () => {
 
           // Assert
           expect(result).toBe('100644');
+        });
+      });
+    });
+  });
+
+  describe('matchFileModeBytes', () => {
+    describe('Given the byte range of a recognized git file mode', () => {
+      describe('When matching', () => {
+        it.each([
+          { mode: '100644', expected: FILE_MODE.REGULAR, label: 'REGULAR' },
+          { mode: '100755', expected: FILE_MODE.EXECUTABLE, label: 'EXECUTABLE' },
+          { mode: '120000', expected: FILE_MODE.SYMLINK, label: 'SYMLINK' },
+          { mode: '40000', expected: FILE_MODE.DIRECTORY, label: 'DIRECTORY' },
+          { mode: '160000', expected: FILE_MODE.GITLINK, label: 'GITLINK' },
+          { mode: '040000', expected: FILE_MODE.DIRECTORY, label: 'DIRECTORY, zero-prefixed' },
+        ])('Then returns the interned $label constant', ({ mode, expected }) => {
+          // Arrange
+          const buf = encode(mode);
+          const sut = matchFileModeBytes;
+
+          // Act
+          const result = sut(buf, 0, buf.length);
+
+          // Assert — identity, not just equality: the matcher must return the
+          // interned FILE_MODE constant, never a freshly decoded string.
+          expect(result).toBe(expected);
+        });
+      });
+    });
+
+    describe('Given the byte range of an unrecognized mode', () => {
+      describe('When matching', () => {
+        it('Then throws INVALID_FILE_MODE with the decoded value', () => {
+          // Arrange
+          const buf = encode('100664');
+          let caught: unknown;
+
+          // Act
+          try {
+            matchFileModeBytes(buf, 0, buf.length);
+          } catch (error) {
+            caught = error;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data).toEqual({
+            code: 'INVALID_FILE_MODE',
+            value: '100664',
+          });
+        });
+      });
+    });
+
+    describe('Given a byte range that stops just short of a directory mode', () => {
+      describe('When matching', () => {
+        it.each([
+          { mode: '40001', label: "'40001' (length 5, content diverges from '40000')" },
+          { mode: '400000', label: "'400000' (length 6, first 5 bytes equal '40000')" },
+        ])('Then throws INVALID_FILE_MODE with the decoded value ($label)', ({ mode }) => {
+          // Arrange — both rows exercise the same directory-match guard from
+          // opposite sides: '40001' is the right operand (same length,
+          // diverging content), '400000' is the left operand (matching
+          // prefix, wrong length) — neither passes alone.
+          const buf = encode(mode);
+          let caught: unknown;
+
+          // Act
+          try {
+            matchFileModeBytes(buf, 0, buf.length);
+          } catch (error) {
+            caught = error;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data).toEqual({
+            code: 'INVALID_FILE_MODE',
+            value: mode,
+          });
+        });
+      });
+    });
+
+    describe('Given the byte range of a mode whose length is neither 5 nor 6', () => {
+      describe('When matching', () => {
+        it('Then throws INVALID_FILE_MODE with the decoded value', () => {
+          // Arrange
+          const buf = encode('1');
+          let caught: unknown;
+
+          // Act
+          try {
+            matchFileModeBytes(buf, 0, buf.length);
+          } catch (error) {
+            caught = error;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data).toEqual({
+            code: 'INVALID_FILE_MODE',
+            value: '1',
+          });
+        });
+      });
+    });
+
+    describe('Given a byte range whose length is neither 5 nor 6 but whose first six bytes match a valid 6-byte mode', () => {
+      describe('When matching', () => {
+        it('Then throws INVALID_FILE_MODE, pinning the length gate ahead of the byte-match (not just length===5)', () => {
+          // Arrange — '1006440' shares its first 6 bytes with REGULAR ('100644'); only
+          // the length===6 gate (not the byte comparison) keeps this from matching.
+          const value = '1006440';
+          const buf = encode(value);
+          let caught: unknown;
+
+          // Act
+          try {
+            matchFileModeBytes(buf, 0, buf.length);
+          } catch (error) {
+            caught = error;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data).toEqual({
+            code: 'INVALID_FILE_MODE',
+            value,
+          });
+        });
+      });
+    });
+
+    describe('Given an invalid mode exactly at the 16-byte truncation boundary', () => {
+      describe('When matching', () => {
+        it('Then the error carries the exact 16-byte value, untruncated', () => {
+          // Arrange
+          const value = '9'.repeat(16);
+          const buf = encode(value);
+          let caught: unknown;
+
+          // Act
+          try {
+            matchFileModeBytes(buf, 0, buf.length);
+          } catch (error) {
+            caught = error;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data).toEqual({
+            code: 'INVALID_FILE_MODE',
+            value,
+          });
+        });
+      });
+    });
+
+    describe('Given an invalid mode exceeding the 16-byte truncation boundary', () => {
+      describe('When matching', () => {
+        it('Then the error carries only the first 16 bytes plus an ellipsis marker', () => {
+          // Arrange
+          const buf = encode('9'.repeat(1_000_000));
+          let caught: unknown;
+
+          // Act
+          try {
+            matchFileModeBytes(buf, 0, buf.length);
+          } catch (error) {
+            caught = error;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data).toEqual({
+            code: 'INVALID_FILE_MODE',
+            value: `${'9'.repeat(16)}…`,
+          });
+        });
+      });
+    });
+
+    describe('Given an invalid 5-byte mode offset far enough into a buffer that end+start would cross the truncation boundary while end-start does not', () => {
+      describe('When matching', () => {
+        it('Then the error carries the exact untruncated value, pinning the arithmetic to end-start (not end+start)', () => {
+          // Arrange — a 10-byte prefix pushes `start` to 10; the invalid mode itself
+          // is only 5 bytes (end-start=5, well within the 16-byte cap), but
+          // end+start=25 would wrongly cross the cap under a start-inflated sum,
+          // producing a truncated '…'-suffixed value instead of the exact one.
+          const prefix = 'p'.repeat(10);
+          const value = 'zzzzz';
+          const buf = encode(`${prefix}${value}`);
+          let caught: unknown;
+
+          // Act
+          try {
+            matchFileModeBytes(buf, prefix.length, buf.length);
+          } catch (error) {
+            caught = error;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data).toEqual({
+            code: 'INVALID_FILE_MODE',
+            value,
+          });
+        });
+      });
+    });
+
+    describe('Given a byte range embedded inside a larger buffer', () => {
+      describe('When matching only that slice', () => {
+        it('Then matches on the [start, end) window, ignoring surrounding bytes', () => {
+          // Arrange
+          const buf = encode('xx100644yy');
+          const sut = matchFileModeBytes;
+
+          // Act
+          const result = sut(buf, 2, 8);
+
+          // Assert
+          expect(result).toBe(FILE_MODE.REGULAR);
         });
       });
     });

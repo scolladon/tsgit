@@ -38,7 +38,7 @@
  * commit (signing off) write nothing under `HOME` — so there is nothing to set
  * up and nothing to clean up.
  */
-import { execFile, execFileSync } from 'node:child_process';
+import { execFile, execFileSync, spawnSync } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -75,10 +75,13 @@ const SAFE_ENV: NodeJS.ProcessEnv = buildSafeEnv();
  */
 export const runGit = (
   args: ReadonlyArray<string>,
-  options: { readonly input?: string; readonly env?: NodeJS.ProcessEnv } = {},
+  options: { readonly input?: string | Uint8Array; readonly env?: NodeJS.ProcessEnv } = {},
 ): string => {
   const env = options.env ?? SAFE_ENV;
-  const opts: { env: NodeJS.ProcessEnv; input?: string } = { env };
+  // `input` accepts raw bytes as well as text: a string `input` is written by
+  // `execFileSync` as UTF-8, which silently mangles any byte >= 0x80 — malformed
+  // tree bodies built from arbitrary oid bytes must go through as a Uint8Array.
+  const opts: { env: NodeJS.ProcessEnv; input?: string | Uint8Array } = { env };
   if (options.input !== undefined) opts.input = options.input;
   return execFileSync('git', args as string[], opts).toString();
 };
@@ -184,6 +187,26 @@ export const writeTreeOf = (dir: string): string => git(dir, 'write-tree').trim(
  */
 export const topReflogSubject = (dir: string, ref: string): string =>
   git(dir, 'log', '-g', '--format=%gs', ref).split('\n')[0] ?? '';
+
+/**
+ * Run `git`, capturing stdout, stderr AND the numeric exit code (never
+ * throws) — for co-refusal assertions where the exact exit code matters, not
+ * just success/failure. `tryRunGit` above only distinguishes ok/not-ok; this
+ * reports the code so a caller can assert git's documented refusal exit
+ * (128 for a structural `fatal:`, 1 for `fsck`'s WARN/ERROR bits).
+ */
+export const tryRunGitWithExit = (
+  args: ReadonlyArray<string>,
+  options: { readonly env?: NodeJS.ProcessEnv } = {},
+): { readonly stdout: string; readonly stderr: string; readonly exitCode: number } => {
+  const env = options.env ?? SAFE_ENV;
+  const result = spawnSync('git', args as string[], { env, encoding: 'utf8' });
+  return {
+    stdout: result.stdout ?? '',
+    stderr: result.stderr ?? '',
+    exitCode: result.status ?? 1,
+  };
+};
 
 export interface GitRunResult {
   readonly ok: boolean;

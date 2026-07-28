@@ -145,7 +145,12 @@ findings.filter(f => f.type === 'tagged')
   (exit bit 8) and ref→absent-OID pointers (exit bit 2). Composite exit 10
   when both classes fire on the same run.
 - **Storage-agnostic.** Dangling/unreachable detection is identical for loose
-  and packed objects.
+  and packed objects. Content validation is too: the five tree-structure
+  checks (`treeNotSorted`, `duplicateEntries`, `hasDot`, `hasDotdot`,
+  `fullPathname`) fire on a packed tree exactly as they do on a loose one —
+  validation reads a packed object's own pre-parse bytes rather than
+  re-serializing a parsed `Tree` (which would re-sort entries and could
+  report a false `hash-mismatch` against an unsorted tree).
 
 ## Examples
 

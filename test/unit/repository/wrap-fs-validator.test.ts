@@ -250,6 +250,81 @@ describe('wrapFsValidator — outside cwd rejected', () => {
   });
 });
 
+describe('wrapFsValidator — dot-dot segment rejected under an allowed root', () => {
+  describe('Given a path that starts with an allowed root prefix but contains a `..` segment', () => {
+    describe('When read runs', () => {
+      it('Then throws PATHSPEC_OUTSIDE_REPO even though the naive prefix check would pass', async () => {
+        // Arrange — '/repo/../etc/passwd' satisfies startsWith('/repo/') yet
+        // resolves outside '/repo' once the '..' is applied.
+        const fs = stubFs();
+        const sut = wrapFsValidator(fs, '/repo');
+
+        // Act + Assert
+        await expectOutside(() => sut.read('/repo/../etc/passwd'));
+        expect(fs.read).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('Given a path containing a `.. ` (dot-dot-space) segment', () => {
+    describe('When read runs', () => {
+      it('Then throws PATHSPEC_OUTSIDE_REPO (Win32 canonicalisation strips the trailing space, resolving it as `..`)', async () => {
+        // Arrange
+        const fs = stubFs();
+        const sut = wrapFsValidator(fs, '/repo');
+
+        // Act + Assert
+        await expectOutside(() => sut.read('/repo/.. /etc/passwd'));
+        expect(fs.read).not.toHaveBeenCalled();
+      });
+    });
+  });
+});
+
+describe('wrapFsValidator — `..` substring that is not a dot-dot segment', () => {
+  describe('Given a segment containing `..` in the middle of a longer name', () => {
+    describe('When read runs', () => {
+      it('Then it delegates without throwing (e.g. /repo/a..b/f)', async () => {
+        // Arrange — 'a..b' contains the '..' substring (so the cheap
+        // includes('..') prefilter fires) but is not itself a dot-dot
+        // segment: it neither equals '..' nor starts with it.
+        const fs = stubFs();
+        const sut = wrapFsValidator(fs, '/repo');
+
+        // Act + Assert
+        await expect(sut.read('/repo/a..b/f')).resolves.toBeInstanceOf(Uint8Array);
+      });
+    });
+  });
+
+  describe('Given a segment that starts with `..` but is followed by a non-dot/space character', () => {
+    describe('When read runs', () => {
+      it('Then it delegates without throwing (e.g. /repo/..x/f)', async () => {
+        // Arrange — Win32 canonicalisation only strips trailing dots/spaces;
+        // '..x' has a real trailing character, so it stays a normal segment.
+        const fs = stubFs();
+        const sut = wrapFsValidator(fs, '/repo');
+
+        // Act + Assert
+        await expect(sut.read('/repo/..x/f')).resolves.toBeInstanceOf(Uint8Array);
+      });
+    });
+  });
+
+  describe('Given a segment that ends with `..` but does not start with it', () => {
+    describe('When read runs', () => {
+      it('Then it delegates without throwing (e.g. /repo/x../f)', async () => {
+        // Arrange
+        const fs = stubFs();
+        const sut = wrapFsValidator(fs, '/repo');
+
+        // Act + Assert
+        await expect(sut.read('/repo/x../f')).resolves.toBeInstanceOf(Uint8Array);
+      });
+    });
+  });
+});
+
 describe('wrapFsValidator — external-path allowlist sanitisation', () => {
   describe('Given an allowlist containing an empty string', () => {
     describe('When the empty path is accessed', () => {

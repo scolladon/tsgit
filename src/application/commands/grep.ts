@@ -11,7 +11,7 @@ import type { FilePath, ObjectId } from '../../domain/objects/object-id.js';
 import { matchesPathspec } from '../../domain/pathspec/index.js';
 import type { Context } from '../../ports/context.js';
 import { readBlob, readIndex, walkTree } from '../primitives/index.js';
-import { boundedMap, MAX_CONCURRENT_BLOB_LOADS } from '../primitives/internal/bounded-map.js';
+import { boundedMap, MAX_CONCURRENT_OBJECT_LOADS } from '../primitives/internal/bounded-map.js';
 import { joinPath } from '../primitives/internal/join-working-tree-path.js';
 import { resolvePathspec } from './internal/resolve-pathspec.js';
 import { resolveTreeish } from './internal/resolve-rev.js';
@@ -188,7 +188,7 @@ export async function grep(ctx: Context, opts: GrepOptions): Promise<GrepResult>
       ? candidates.filter(({ path }) => matchesPathspec(pathspecMatcher.matcher, path))
       : candidates;
 
-  const results = await boundedMap(inScope, MAX_CONCURRENT_BLOB_LOADS, async (c) =>
+  const results = await boundedMap(inScope, MAX_CONCURRENT_OBJECT_LOADS, async (c) =>
     scanBlob(matcher, binaryProbeMatcher, c.path, await c.load()),
   );
   const paths = results.filter((r): r is GrepPathResult => r !== undefined);
