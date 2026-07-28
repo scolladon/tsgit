@@ -35,8 +35,10 @@ import {
   type TreeCursor,
 } from '../../../domain/objects/tree-cursor.js';
 import type { Context } from '../../../ports/context.js';
-import { readRawObject } from '../read-object.js';
 import { exceedsMaxTreeDepth, exceedsMaxTreeEntries } from '../validators.js';
+import { MAX_CONCURRENT_BLOB_LOADS } from './bounded-map.js';
+import { type ConcurrencyLimiter, createConcurrencyLimiter } from './concurrency-limiter.js';
+import { prefetchSubtreeChildren, type SubtreePrefetch } from './raw-subtree-prefetch.js';
 import { joinPath, readRawTreeById } from './raw-tree-io.js';
 
 export interface FlattenBounds {
@@ -52,6 +54,13 @@ export const DEFAULT_FLATTEN_BOUNDS: FlattenBounds = {
 interface FlattenConfig {
   readonly ctx: Context;
   readonly bounds: FlattenBounds;
+  /**
+   * ONE limiter per `flattenRawTree` call, threaded through the whole
+   * recursion (never rebuilt per level) — so nested levels queue behind the
+   * same concurrency budget instead of each opening a fresh one and
+   * multiplying the effective in-flight read count.
+   */
+  readonly limiter: ConcurrencyLimiter;
 }
 
 interface Counter {
@@ -79,7 +88,11 @@ export async function flattenRawTree(
 ): Promise<FlatTree> {
   const rootId = typeof root === 'string' ? root : root.id;
   const content = preread ?? (await readRawTreeById(ctx, rootId));
-  const config: FlattenConfig = { ctx, bounds };
+  const config: FlattenConfig = {
+    ctx,
+    bounds,
+    limiter: createConcurrencyLimiter(MAX_CONCURRENT_BLOB_LOADS),
+  };
   const state: FlattenState = { counter: { value: 0 }, entries: new Map() };
   await flattenLevel(config, state, content, rootId, '', 0, []);
   return { entries: state.entries };
@@ -97,11 +110,17 @@ async function flattenLevel(
   if (stack.includes(id)) throw treeCycleDetected(id);
   if (exceedsMaxTreeDepth(depth, config.bounds.maxDepth)) throw treeDepthExceeded(depth);
   const descentStack = [...stack, id];
+  // Fires off bounded-concurrency reads for every directory child at THIS
+  // level before the (unchanged) sequential loop below even starts — the
+  // loop still processes entries and awaits each descent one at a time, so
+  // DFS pre-order and every guard's ordering are untouched; only WHEN the
+  // underlying I/O was kicked off moves earlier.
+  const prefetch = prefetchSubtreeChildren(config.ctx, content, config.limiter);
   const cursor = openTreeCursor(content, config.ctx.hashConfig);
   while (!cursor.done) {
     const child = flattenEntry(config, state, cursor, prefix);
     if (child !== undefined) {
-      await descendIfTree(config, state, child.id, child.path, depth, descentStack);
+      await descendIfTree(config, state, child.id, child.path, depth, descentStack, prefetch);
     }
     advanceCursor(cursor);
   }
@@ -156,8 +175,13 @@ async function descendIfTree(
   path: FilePath,
   depth: number,
   stack: ReadonlyArray<ObjectId>,
+  prefetch: SubtreePrefetch,
 ): Promise<void> {
-  const raw = await readRawObject(config.ctx, childId);
+  // `prefetch` was built from THIS SAME content by a prescan that flags a
+  // directory child exactly when `cursorMode` would (both key off the same
+  // `S_ISDIR` byte test) — every id `flattenEntry` hands back as a directory
+  // is guaranteed present.
+  const raw = await prefetch.get(childId)!;
   if (raw.type !== 'tree') return;
   await flattenLevel(config, state, raw.content, childId, path, depth + 1, stack);
 }

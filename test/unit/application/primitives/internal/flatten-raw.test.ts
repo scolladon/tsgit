@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { MAX_CONCURRENT_BLOB_LOADS } from '../../../../../src/application/primitives/internal/bounded-map.js';
 import {
   DEFAULT_FLATTEN_BOUNDS,
   type FlattenBounds,
@@ -284,6 +285,175 @@ describe('flattenRawTree', () => {
 
         // Assert
         expect(result.entries.size).toBe(1);
+      });
+    });
+  });
+
+  describe('Given a root tree with more directory children than the concurrency bound', () => {
+    describe('When flattenRawTree runs', () => {
+      it('Then in-flight subtree reads never exceed the bound but do exceed 1', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const width = MAX_CONCURRENT_BLOB_LOADS + 8;
+        const dirEntries: Array<{ name: string; mode: FileMode; id: ObjectId }> = [];
+        const subtreeIds = new Set<ObjectId>();
+        for (let i = 0; i < width; i++) {
+          const blobId = await writeBlob(ctx, `content-${i}`);
+          const subtreeId = await writeTree(ctx, [
+            { name: 'f', mode: FILE_MODE.REGULAR, id: blobId },
+          ]);
+          subtreeIds.add(subtreeId);
+          dirEntries.push({
+            name: `d${String(i).padStart(3, '0')}`,
+            mode: FILE_MODE.DIRECTORY,
+            id: subtreeId,
+          });
+        }
+        const rootId = await writeTree(ctx, dirEntries);
+        let inFlight = 0;
+        let maxInFlight = 0;
+        const realReadRawObject = readObjectMod.readRawObject;
+        const spy = vi
+          .spyOn(readObjectMod, 'readRawObject')
+          .mockImplementation(async (spyCtx, id, options) => {
+            if (!subtreeIds.has(id)) return realReadRawObject(spyCtx, id, options);
+            inFlight += 1;
+            if (inFlight > maxInFlight) maxInFlight = inFlight;
+            await Promise.resolve();
+            inFlight -= 1;
+            return realReadRawObject(spyCtx, id, options);
+          });
+        const sut = flattenRawTree;
+
+        // Act
+        try {
+          const result = await sut(ctx, rootId, DEFAULT_FLATTEN_BOUNDS);
+
+          // Assert
+          expect(result.entries.size).toBe(width);
+          expect(maxInFlight).toBeLessThanOrEqual(MAX_CONCURRENT_BLOB_LOADS);
+          expect(maxInFlight).toBeGreaterThan(1);
+        } finally {
+          spy.mockRestore();
+        }
+      });
+    });
+  });
+
+  describe('Given a multi-level, multi-directory tree whose reads settle out of request order', () => {
+    describe('When flattenRawTree runs', () => {
+      it('Then the flattened Map is still populated in strict DFS pre-order', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const leafA = await writeBlob(ctx, 'a');
+        const leafAI = await writeBlob(ctx, 'ai');
+        const leafB = await writeBlob(ctx, 'b');
+        const leafC = await writeBlob(ctx, 'c');
+        const innerId = await writeTree(ctx, [
+          { name: 'x.txt', mode: FILE_MODE.REGULAR, id: leafAI },
+        ]);
+        const dirAId = await writeTree(ctx, [
+          { name: '1-leaf.txt', mode: FILE_MODE.REGULAR, id: leafA },
+          { name: '2-inner', mode: FILE_MODE.DIRECTORY, id: innerId },
+        ]);
+        const dirBId = await writeTree(ctx, [
+          { name: 'leaf.txt', mode: FILE_MODE.REGULAR, id: leafB },
+        ]);
+        const dirCId = await writeTree(ctx, [
+          { name: 'leaf.txt', mode: FILE_MODE.REGULAR, id: leafC },
+        ]);
+        const rootId = await writeTree(ctx, [
+          { name: 'a-dirA', mode: FILE_MODE.DIRECTORY, id: dirAId },
+          { name: 'b-dirB', mode: FILE_MODE.DIRECTORY, id: dirBId },
+          { name: 'c-dirC', mode: FILE_MODE.DIRECTORY, id: dirCId },
+        ]);
+        // dirA is requested first but settles LAST; dirC is requested last but
+        // settles FIRST — proves emission order tracks the entry loop, not
+        // read-completion order.
+        const extraTicks = new Map<ObjectId, number>([
+          [dirAId, 3],
+          [dirBId, 2],
+          [dirCId, 1],
+        ]);
+        const realReadRawObject = readObjectMod.readRawObject;
+        const spy = vi
+          .spyOn(readObjectMod, 'readRawObject')
+          .mockImplementation(async (spyCtx, id, options) => {
+            const ticks = extraTicks.get(id);
+            if (ticks !== undefined) {
+              for (let i = 0; i < ticks; i++) await Promise.resolve();
+            }
+            return realReadRawObject(spyCtx, id, options);
+          });
+        const sut = flattenRawTree;
+
+        // Act
+        try {
+          const result = await sut(ctx, rootId, DEFAULT_FLATTEN_BOUNDS);
+
+          // Assert
+          expect([...result.entries.keys()]).toEqual([
+            'a-dirA/1-leaf.txt',
+            'a-dirA/2-inner/x.txt',
+            'b-dirB/leaf.txt',
+            'c-dirC/leaf.txt',
+          ]);
+        } finally {
+          spy.mockRestore();
+        }
+      });
+    });
+  });
+
+  describe('Given a cycle on the first sibling and a second sibling whose prefetch read rejects', () => {
+    describe('When flattenRawTree runs', () => {
+      it('Then the cycle error surfaces and the second sibling never produces an unhandled rejection', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const realTreeId = await writeTree(ctx, []);
+        const failingSubtreeId = await writeTree(ctx, []);
+        const loopEntries: ReadonlyArray<{
+          readonly name: string;
+          readonly mode: FileMode;
+          readonly id: ObjectId;
+        }> = [
+          { name: 'aaa-loop', mode: FILE_MODE.DIRECTORY, id: realTreeId },
+          { name: 'zzz-other', mode: FILE_MODE.DIRECTORY, id: failingSubtreeId },
+        ];
+        const loopContent = serializeTreeContent(
+          { type: 'tree', id: realTreeId, entries: loopEntries },
+          SHA1_CONFIG,
+        );
+        const realReadRawObject = readObjectMod.readRawObject;
+        const spy = vi
+          .spyOn(readObjectMod, 'readRawObject')
+          .mockImplementation(async (spyCtx, id, options) => {
+            if (id === realTreeId)
+              return { type: 'tree', content: loopContent, bytes: loopContent };
+            if (id === failingSubtreeId) throw new Error('simulated read failure');
+            return realReadRawObject(spyCtx, id, options);
+          });
+        const unhandled: unknown[] = [];
+        const onUnhandledRejection = (reason: unknown): void => {
+          unhandled.push(reason);
+        };
+        process.on('unhandledRejection', onUnhandledRejection);
+        const sut = flattenRawTree;
+
+        // Act + Assert
+        try {
+          await sut(ctx, realTreeId, DEFAULT_FLATTEN_BOUNDS);
+          expect.unreachable();
+        } catch (error) {
+          const { data } = error as { data: { code: string; id: string } };
+          expect(data.code).toBe('TREE_CYCLE_DETECTED');
+          expect(data.id).toBe(realTreeId);
+        } finally {
+          await new Promise<void>((resolve) => setImmediate(resolve));
+          expect(unhandled).toEqual([]);
+          process.off('unhandledRejection', onUnhandledRejection);
+          spy.mockRestore();
+        }
       });
     });
   });

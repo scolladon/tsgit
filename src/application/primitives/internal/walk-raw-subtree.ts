@@ -53,9 +53,11 @@ import {
   type TreeCursor,
 } from '../../../domain/objects/tree-cursor.js';
 import type { Context } from '../../../ports/context.js';
-import { readRawObject } from '../read-object.js';
 import { exceedsMaxTreeDepth, exceedsMaxTreeEntries } from '../validators.js';
+import { MAX_CONCURRENT_BLOB_LOADS } from './bounded-map.js';
+import { type ConcurrencyLimiter, createConcurrencyLimiter } from './concurrency-limiter.js';
 import type { FlattenBounds } from './flatten-raw.js';
+import { prefetchSubtreeChildren, type SubtreePrefetch } from './raw-subtree-prefetch.js';
 import { readRawTreeById } from './raw-tree-io.js';
 
 export interface RawSubtreeEntry {
@@ -79,6 +81,19 @@ function joinPath(prefix: string, name: string): FilePath {
   return `${prefix}/${name}` as FilePath;
 }
 
+/**
+ * Everything invariant across the WHOLE walk (never rebuilt per level or per
+ * entry): the context, the bounds, the caller's sink, and ONE concurrency
+ * limiter shared by every level's prefetch so nested levels queue behind the
+ * same budget instead of each multiplying the effective in-flight count.
+ */
+interface WalkConfig {
+  readonly ctx: Context;
+  readonly bounds: FlattenBounds;
+  readonly limiter: ConcurrencyLimiter;
+  readonly emit: (entry: RawSubtreeEntry) => void;
+}
+
 export async function walkRawSubtree(
   ctx: Context,
   root: ObjectId,
@@ -88,53 +103,66 @@ export async function walkRawSubtree(
   emit: (entry: RawSubtreeEntry) => void,
 ): Promise<void> {
   const content = await readRawTreeById(ctx, root);
-  await walkLevel(ctx, bounds, counter, content, root, prefix, 0, [], emit);
+  const config: WalkConfig = {
+    ctx,
+    bounds,
+    limiter: createConcurrencyLimiter(MAX_CONCURRENT_BLOB_LOADS),
+    emit,
+  };
+  await walkLevel(config, counter, content, root, prefix, 0, []);
 }
 
 async function walkLevel(
-  ctx: Context,
-  bounds: FlattenBounds,
+  config: WalkConfig,
   counter: Counter,
   content: Uint8Array,
   id: ObjectId,
   prefix: string,
   depth: number,
   stack: ReadonlyArray<ObjectId>,
-  emit: (entry: RawSubtreeEntry) => void,
 ): Promise<void> {
   if (stack.includes(id)) throw treeCycleDetected(id);
-  if (exceedsMaxTreeDepth(depth, bounds.maxDepth)) throw treeDepthExceeded(depth);
+  if (exceedsMaxTreeDepth(depth, config.bounds.maxDepth)) throw treeDepthExceeded(depth);
   const descentStack = [...stack, id];
-  const cursor = openTreeCursor(content, ctx.hashConfig);
+  // Fires off bounded-concurrency reads for every directory child at THIS
+  // level before the (unchanged) sequential loop below even starts — the
+  // loop still processes entries and awaits each descent one at a time, so
+  // DFS pre-order and every guard's ordering are untouched; only WHEN the
+  // underlying I/O was kicked off moves earlier.
+  const prefetch = prefetchSubtreeChildren(config.ctx, content, config.limiter);
+  const cursor = openTreeCursor(content, config.ctx.hashConfig);
   while (!cursor.done) {
-    await emitEntry(ctx, bounds, counter, cursor, prefix, depth, descentStack, emit);
+    await emitEntry(config, counter, cursor, prefix, depth, descentStack, prefetch);
     advanceCursor(cursor);
   }
 }
 
 async function emitEntry(
-  ctx: Context,
-  bounds: FlattenBounds,
+  config: WalkConfig,
   counter: Counter,
   cursor: TreeCursor,
   prefix: string,
   depth: number,
   stack: ReadonlyArray<ObjectId>,
-  emit: (entry: RawSubtreeEntry) => void,
+  prefetch: SubtreePrefetch,
 ): Promise<void> {
-  if (ctx.signal?.aborted) throw operationAborted();
+  if (config.ctx.signal?.aborted) throw operationAborted();
   const path = joinPath(prefix, cursorName(cursor));
   counter.value += 1;
-  if (exceedsMaxTreeEntries(counter.value, bounds.maxEntries)) {
-    throw treeEntryLimitExceeded(counter.value, bounds.maxEntries);
+  if (exceedsMaxTreeEntries(counter.value, config.bounds.maxEntries)) {
+    throw treeEntryLimitExceeded(counter.value, config.bounds.maxEntries);
   }
   const mode = cursorMode(cursor);
   const id = cursorOid(cursor);
   if (mode !== FILE_MODE.DIRECTORY) {
-    emit({ path, id, mode });
+    config.emit({ path, id, mode });
     return;
   }
-  const raw = await readRawObject(ctx, id);
+  // `prefetch` was built from THIS SAME content by a prescan that flags a
+  // directory child exactly when `cursorMode` would (both key off the same
+  // `S_ISDIR` byte test) — every id reaching this branch is guaranteed
+  // present.
+  const raw = await prefetch.get(id)!;
   if (raw.type !== 'tree') return;
-  await walkLevel(ctx, bounds, counter, raw.content, id, path, depth + 1, stack, emit);
+  await walkLevel(config, counter, raw.content, id, path, depth + 1, stack);
 }
