@@ -12,6 +12,17 @@ export const waitForTsgitReady = async (page: Page): Promise<void> => {
   });
 };
 
+export const NO_BUILD_HARNESS_PATH = '/test/browser/no-build.html';
+
+// Wait until the inline module script in no-build.html has assigned
+// `window.__tsgitBundle` from the single-file browser bundle.
+export const waitForBundleReady = async (page: Page): Promise<void> => {
+  await page.goto(NO_BUILD_HARNESS_PATH, { waitUntil: 'load' });
+  await page.waitForFunction(() => {
+    return typeof (window as unknown as { __tsgitBundle?: unknown }).__tsgitBundle === 'object';
+  });
+};
+
 // Clear OPFS between tests so each scenario starts from a known-empty root.
 // Defensive: not every browser engine ships OPFS in headless mode, so swallow
 // the absence here and let the scenario assertions fail loudly if it matters.

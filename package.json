@@ -462,6 +462,7 @@
         "test/browser/**/*.ts",
         "test/browser/**/*.mjs",
         "test/browser/index.html",
+        "test/browser/no-build.html",
         "test/browser/parity-scenarios.bundle.js",
         "playwright.config.ts"
       ],
