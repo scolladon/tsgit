@@ -25,23 +25,28 @@ SIZE_CAP=$((750 * 1024))
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders
 # is a no-op.
-TARBALL=""
+PACKDIR=""
 INVENTORY=""
 BUNDLE=""
 cleanup() {
-  rm -f "$TARBALL" "$INVENTORY" "$BUNDLE"
+  rm -f "$INVENTORY" "$BUNDLE"
+  if [ -n "$PACKDIR" ]; then rm -rf "$PACKDIR"; fi
 }
 trap cleanup EXIT
 
-# `npm pack` prints the tarball filename on stdout; capture that directly so
-# we never pick up a stale .tgz from a previously-interrupted run.
-TARBALL=$(npm pack --silent)
+# Pack into a private temp directory: `attw --pack` (check:exports) packs the
+# same default filename into the repo root, and the two checks run
+# concurrently under wireit — sharing the root makes each one's cleanup race
+# the other's. `npm pack` prints the tarball filename on stdout; capture that
+# directly so we never pick up a stale .tgz from a previously-interrupted run.
+PACKDIR=$(mktemp -d -t tsgit-pack.XXXXXX)
+TARBALL="$PACKDIR/$(npm pack --silent --pack-destination "$PACKDIR")"
 INVENTORY=$(mktemp -t tsgit-tarball-inventory.XXXXXX)
 BUNDLE=$(mktemp -t tsgit-browser-bundle.XXXXXX)
 SIZE=$(wc -c < "$TARBALL" | tr -d ' ')
 
 if (( SIZE > SIZE_CAP )); then
-  echo "FAIL: tarball ${TARBALL} is ${SIZE} bytes (cap ${SIZE_CAP})" >&2
+  echo "FAIL: tarball $(basename "$TARBALL") is ${SIZE} bytes (cap ${SIZE_CAP})" >&2
   exit 1
 fi
 
@@ -144,4 +149,4 @@ if (( QUICK == 0 )); then
   }
 fi
 
-echo "OK: tarball ${TARBALL} verified at ${SIZE} bytes."
+echo "OK: tarball $(basename "$TARBALL") verified at ${SIZE} bytes."
