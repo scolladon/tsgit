@@ -6,7 +6,7 @@
 
 ## Context
 
-The raw walk needs undecoded object bytes: `readRawObject(ctx, id): { type, content }` — `resolveObject`'s pre-parse product. A new public export triggers six surface gates (primitives barrel, facade binding, doc-coverage page, browser scenario, README count, `reports/api.json`), and users who need bytes already have `repo.primitives.catFileBatch` and `streamBlob`.
+The raw walk needs raw, unparsed object bytes: `readRawObject(ctx, id): { type, content }` — `resolveObject`'s pre-parse product. A new public export triggers six surface gates (primitives barrel, facade binding, doc-coverage page, browser scenario, README count, `reports/api.json`), and users who need bytes already have `repo.primitives.catFileBatch` and `streamBlob`.
 
 ## Options considered
 
