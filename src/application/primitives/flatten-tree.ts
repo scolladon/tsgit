@@ -2,29 +2,23 @@
  * Flatten a nested `Tree` into the `FlatTree` shape that the `mergeTrees`
  * domain primitive (and the recursive tree-diff) consume.
  *
- * Bridges `walkTree`'s iterator into the `FlatTree` Map of
- * `path → { id, mode }`. Accepts either an oid or an already-resolved `Tree`
- * object (the recursive diff passes the latter to avoid a redundant root read);
- * `walkTree` resolves both. Consumed by `merge.ts`'s clean-merge tree walk,
- * `rm`'s HEAD-vs-index staged-change check, and the `diffTrees` recursive path,
- * so it is exported from the primitives barrel.
+ * Delegates to `flattenRawTree`, a raw byte-cursor descent that walks tree
+ * bytes directly instead of materialising a `Tree`/`TreeEntry` per level.
+ * Accepts either an oid or an already-resolved `Tree` object — for a `Tree`
+ * object the root is still read raw by its `id` (no redundant-root-read
+ * shortcut; a hand-forged `Tree` whose `id` is absent throws
+ * `OBJECT_NOT_FOUND`). Consumed by `merge.ts`'s clean-merge tree walk,
+ * `rm`'s HEAD-vs-index staged-change check, and the `diffTrees` recursive
+ * path, so it is exported from the primitives barrel.
  *
- * Pure with respect to the working tree — only reads git objects via
- * `walkTree`.
+ * Pure with respect to the working tree — only reads git objects.
  */
-import type { FlatTree, FlatTreeEntry } from '../../domain/diff/flat-tree.js';
-import { FILE_MODE, type FilePath, type ObjectId, type Tree } from '../../domain/objects/index.js';
+import type { FlatTree } from '../../domain/diff/flat-tree.js';
+import type { ObjectId, Tree } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
-import { walkTree } from './walk-tree.js';
+import { DEFAULT_FLATTEN_BOUNDS, flattenRawTree } from './internal/flatten-raw.js';
 
 export const flattenTree = async (
   ctx: Context,
   treeIdOrObject: ObjectId | Tree,
-): Promise<FlatTree> => {
-  const entries = new Map<FilePath, FlatTreeEntry>();
-  for await (const entry of walkTree(ctx, treeIdOrObject)) {
-    if (entry.mode === FILE_MODE.DIRECTORY) continue;
-    entries.set(entry.path, { id: entry.id, mode: entry.mode });
-  }
-  return { entries };
-};
+): Promise<FlatTree> => flattenRawTree(ctx, treeIdOrObject, DEFAULT_FLATTEN_BOUNDS);
