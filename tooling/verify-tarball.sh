@@ -22,17 +22,23 @@ done
 # not shipped, so they do not count against this cap.
 SIZE_CAP=$((750 * 1024))
 
+# Register cleanup before any temp file exists so a failure between two
+# creations cannot leak the earlier ones; `rm -f` on the empty placeholders
+# is a no-op.
+TARBALL=""
+INVENTORY=""
+BUNDLE=""
+cleanup() {
+  rm -f "$TARBALL" "$INVENTORY" "$BUNDLE"
+}
+trap cleanup EXIT
+
 # `npm pack` prints the tarball filename on stdout; capture that directly so
 # we never pick up a stale .tgz from a previously-interrupted run.
 TARBALL=$(npm pack --silent)
 INVENTORY=$(mktemp -t tsgit-tarball-inventory.XXXXXX)
 BUNDLE=$(mktemp -t tsgit-browser-bundle.XXXXXX)
 SIZE=$(wc -c < "$TARBALL" | tr -d ' ')
-
-cleanup() {
-  rm -f "$TARBALL" "$INVENTORY" "$BUNDLE"
-}
-trap cleanup EXIT
 
 if (( SIZE > SIZE_CAP )); then
   echo "FAIL: tarball ${TARBALL} is ${SIZE} bytes (cap ${SIZE_CAP})" >&2
@@ -58,8 +64,19 @@ grep -E "^package/README\.md$" "$INVENTORY" >/dev/null || {
   echo "FAIL: tarball missing README.md" >&2
   exit 1
 }
-grep -E "^package/dist/browser/tsgit\.js$" "$INVENTORY" >/dev/null || {
-  echo "FAIL: tarball missing dist/browser/tsgit.js" >&2
+# The CDN root URLs resolve through the package's top-level unpkg/jsdelivr
+# fields, so the expected bundle path is derived from them — the fields become
+# verified claims: dropping one, letting them disagree, or renaming the rollup
+# output without updating them all fail here instead of shipping silently.
+UNPKG_FIELD=$(node -p "require('./package.json').unpkg ?? ''")
+JSDELIVR_FIELD=$(node -p "require('./package.json').jsdelivr ?? ''")
+if [ -z "$UNPKG_FIELD" ] || [ "$UNPKG_FIELD" != "$JSDELIVR_FIELD" ]; then
+  echo "FAIL: package.json unpkg/jsdelivr must both name the browser bundle (unpkg='${UNPKG_FIELD}' jsdelivr='${JSDELIVR_FIELD}')" >&2
+  exit 1
+fi
+BUNDLE_MEMBER="package/${UNPKG_FIELD#./}"
+grep -Fx "$BUNDLE_MEMBER" "$INVENTORY" >/dev/null || {
+  echo "FAIL: tarball missing ${UNPKG_FIELD} (the unpkg/jsdelivr target)" >&2
   exit 1
 }
 
@@ -73,10 +90,12 @@ done
 
 # Artefact shape. The browser bundle is the no-build CDN entry: a <script
 # type="module"> must fetch it and nothing else. Any surviving module specifier
-# means the build re-split and consumers would pay extra round trips.
-tar -xzOf "$TARBALL" package/dist/browser/tsgit.js >"$BUNDLE"
+# means the build re-split and consumers would pay extra round trips. The
+# import predicate anchors on statement position (start of file, or after ; })
+# so the word "import" inside a string literal cannot false-positive the gate.
+tar -xzOf "$TARBALL" "$BUNDLE_MEMBER" >"$BUNDLE"
 
-if LC_ALL=C grep -aqE '(^|[^A-Za-z0-9_$])import[[:space:]]*[{*'\''"(A-Za-z]' "$BUNDLE"; then
+if LC_ALL=C grep -aqE '(^|[;}])[[:space:]]*import[[:space:]]*[{*'\''"(A-Za-z]' "$BUNDLE"; then
   echo "FAIL: browser bundle contains an import statement — it is not single-file" >&2
   exit 1
 fi
@@ -84,6 +103,36 @@ if LC_ALL=C grep -aqE '[}][[:space:]]*from[[:space:]]*["'\'']' "$BUNDLE"; then
   echo "FAIL: browser bundle contains a re-export — it is not single-file" >&2
   exit 1
 fi
+if LC_ALL=C grep -aqE '(^|[^A-Za-z0-9_$])export[[:space:]]*\*[[:space:]]*from' "$BUNDLE"; then
+  echo "FAIL: browser bundle contains a star re-export — it is not single-file" >&2
+  exit 1
+fi
+if LC_ALL=C grep -aqE '["'\'']node:' "$BUNDLE"; then
+  echo "FAIL: browser bundle references a node: specifier — it cannot run in a browser" >&2
+  exit 1
+fi
+
+# The single-file checks above are absence-only and a CommonJS artefact would
+# pass them all; assert the bundle is actually ESM by requiring an export
+# statement to survive minification.
+if ! LC_ALL=C grep -aqE '(^|[^A-Za-z0-9_$])export[[:space:]]*[{*]' "$BUNDLE"; then
+  echo "FAIL: browser bundle carries no export statement — it is not an ESM module" >&2
+  exit 1
+fi
+
+# Export parity. The bundle must expose exactly the surface the code-split
+# browser entry exposes — no addition, no removal. Both files are imported
+# from dist/, which is byte-for-byte what npm pack just archived.
+node --input-type=module -e '
+import { pathToFileURL } from "node:url";
+const root = pathToFileURL(process.cwd() + "/").href;
+const esm = Object.keys(await import(new URL("dist/esm/index.browser.js", root).href)).sort();
+const bundle = Object.keys(await import(new URL("dist/browser/tsgit.js", root).href)).sort();
+if (esm.length !== bundle.length || esm.some((name, i) => name !== bundle[i])) {
+  console.error(`FAIL: bundle exports (${bundle.length}) differ from dist/esm/index.browser.js (${esm.length})`);
+  process.exit(1);
+}
+' || exit 1
 
 # Resolution check — call the pinned, locally-installed attw rather than
 # `npx --yes` so the version cannot drift between this check and the published

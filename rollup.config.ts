@@ -32,6 +32,11 @@ const terserOptions = {
   },
 };
 
+const treeshakeOptions = {
+  moduleSideEffects: false,
+  propertyReadSideEffects: false,
+};
+
 const tsPluginOptions = {
   tsconfig: './tsconfig.build.json',
   compilerOptions: {
@@ -77,10 +82,7 @@ export default defineConfig([
         template: 'treemap',
       }),
     ],
-    treeshake: {
-      moduleSideEffects: false,
-      propertyReadSideEffects: false,
-    },
+    treeshake: treeshakeOptions,
   },
   {
     input: 'src/index.browser.ts',
@@ -92,10 +94,7 @@ export default defineConfig([
     },
     external,
     plugins: [resolve(), typescript(tsPluginOptions), terser(terserOptions)],
-    treeshake: {
-      moduleSideEffects: false,
-      propertyReadSideEffects: false,
-    },
+    treeshake: treeshakeOptions,
   },
   {
     input: entryPoints,
