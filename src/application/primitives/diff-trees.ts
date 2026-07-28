@@ -10,6 +10,7 @@ import {
   type LineKey,
   lineKeyIsActive,
   MAX_FLAT_TREE_ENTRIES,
+  MAX_TREE_WALK_DEPTH,
   type ModifyChange,
   resolveLineKey,
   type StatDiffChange,
@@ -417,7 +418,6 @@ interface DiffCursor {
 }
 
 const ROOT_CURSOR: DiffCursor = { prefix: '', depth: 0, oldStack: [], newStack: [] };
-const MAX_DIFF_RECURSION_DEPTH = 1024;
 
 interface DiffWalkCounter {
   value: number;
@@ -527,7 +527,7 @@ async function diffChangedSubtree(
   cursor: DiffCursor,
   state: DiffWalkState,
 ): Promise<DiffChange[]> {
-  if (exceedsMaxTreeDepth(cursor.depth, MAX_DIFF_RECURSION_DEPTH)) {
+  if (exceedsMaxTreeDepth(cursor.depth, MAX_TREE_WALK_DEPTH)) {
     throw treeDepthExceeded(cursor.depth);
   }
   if (cursor.oldStack.includes(change.oldId)) throw treeCycleDetected(change.oldId);

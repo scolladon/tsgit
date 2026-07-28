@@ -10,3 +10,10 @@ export interface FlatTree {
 }
 
 export const MAX_FLAT_TREE_ENTRIES = 1_000_000;
+
+/**
+ * Default recursion-depth cap shared by every tree walk that descends level
+ * by level (`walkTree`, `flattenRawTree`, the recursive tree diff) — one
+ * named home instead of the same `1024` literal inlined at each call site.
+ */
+export const MAX_TREE_WALK_DEPTH = 1024;

@@ -26,7 +26,6 @@ export interface TreeCursor {
   readonly buf: Uint8Array;
   readonly digestLength: number;
   offset: number;
-  modeStart: number;
   modeEnd: number;
   nameStart: number;
   nameEnd: number;
@@ -40,7 +39,6 @@ export function openTreeCursor(buf: Uint8Array, hash: HashConfig): TreeCursor {
     buf,
     digestLength: hash.digestLength,
     offset: 0,
-    modeStart: 0,
     modeEnd: 0,
     nameStart: 0,
     nameEnd: 0,
@@ -63,11 +61,10 @@ export function advanceCursor(c: TreeCursor): void {
 
 function scanEntryAt(c: TreeCursor, start: number): void {
   c.offset = start;
-  c.modeStart = start;
   scanMode(c, start);
   scanName(c);
   scanOid(c);
-  c.isDir = computeIsDir(c.buf, c.modeStart, c.modeEnd);
+  c.isDir = computeIsDir(c.buf, c.offset, c.modeEnd);
 }
 
 function scanMode(c: TreeCursor, start: number): void {
@@ -115,20 +112,30 @@ function computeIsDir(buf: Uint8Array, modeStart: number, modeEnd: number): bool
   return length === 5 || (buf[modeEnd - 6]! - OCTAL_ZERO) % 2 === 0;
 }
 
+/**
+ * Byte-compare two entry names in git's tree sort order — a directory sorts
+ * as if its name carried a trailing `/`. Hottest loop in the raw merge-join:
+ * `buf`/`nameStart`/name-length are hoisted to locals once per side rather
+ * than re-read off the cursor per byte, and the virtual-trailing-slash
+ * lookup is inlined rather than a per-byte helper call.
+ */
 export function compareCursorNames(a: TreeCursor, b: TreeCursor): number {
-  const ea = a.nameEnd - a.nameStart + (a.isDir ? 1 : 0);
-  const eb = b.nameEnd - b.nameStart + (b.isDir ? 1 : 0);
-  const end = Math.min(ea, eb);
+  const aBuf = a.buf;
+  const aStart = a.nameStart;
+  const aRealLen = a.nameEnd - aStart;
+  const aLen = aRealLen + (a.isDir ? 1 : 0);
+  const bBuf = b.buf;
+  const bStart = b.nameStart;
+  const bRealLen = b.nameEnd - bStart;
+  const bLen = bRealLen + (b.isDir ? 1 : 0);
+  const end = Math.min(aLen, bLen);
   for (let i = 0; i < end; i++) {
-    const diff = virtualByteAt(a, i) - virtualByteAt(b, i);
+    const av = i < aRealLen ? aBuf[aStart + i]! : VIRTUAL_SLASH;
+    const bv = i < bRealLen ? bBuf[bStart + i]! : VIRTUAL_SLASH;
+    const diff = av - bv;
     if (diff !== 0) return diff;
   }
-  return ea - eb;
-}
-
-function virtualByteAt(c: TreeCursor, i: number): number {
-  const length = c.nameEnd - c.nameStart;
-  return i < length ? c.buf[c.nameStart + i]! : VIRTUAL_SLASH;
+  return aLen - bLen;
 }
 
 export function cursorsSame(a: TreeCursor, b: TreeCursor): boolean {
@@ -143,8 +150,8 @@ function sameOid(a: TreeCursor, b: TreeCursor): boolean {
 }
 
 function sameMode(a: TreeCursor, b: TreeCursor): boolean {
-  const aStart = skipLeadingZeros(a.buf, a.modeStart, a.modeEnd);
-  const bStart = skipLeadingZeros(b.buf, b.modeStart, b.modeEnd);
+  const aStart = skipLeadingZeros(a.buf, a.offset, a.modeEnd);
+  const bStart = skipLeadingZeros(b.buf, b.offset, b.modeEnd);
   const aLength = a.modeEnd - aStart;
   const bLength = b.modeEnd - bStart;
   if (aLength !== bLength) return false;
@@ -171,5 +178,5 @@ export function cursorOid(c: TreeCursor): ObjectId {
 }
 
 export function cursorMode(c: TreeCursor): FileMode {
-  return matchFileModeBytes(c.buf, c.modeStart, c.modeEnd);
+  return matchFileModeBytes(c.buf, c.offset, c.modeEnd);
 }
