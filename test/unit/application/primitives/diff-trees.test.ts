@@ -43,6 +43,14 @@ const blob = (ctx: Ctx, content: string): Promise<ObjectId> =>
 const subTree = (ctx: Ctx, name: string, id: ObjectId, mode: FileMode): Promise<ObjectId> =>
   writeTree(ctx, [{ name, mode, id }]);
 
+/** Build a `readRawObject`-shaped stub for a hand-forged self-referential
+ *  tree — `bytes` mirrors `content` since these cycle-detection tests only
+ *  ever inspect `.type`/`.content`, never the raw header+content encoding. */
+const rawTreeStub = (tree: Tree): { type: 'tree'; content: Uint8Array; bytes: Uint8Array } => {
+  const content = serializeTreeContent(tree, SHA1_CONFIG);
+  return { type: 'tree', content, bytes: content };
+};
+
 describe('diffTrees', () => {
   describe('Given undefined vs undefined', () => {
     describe('When diffTrees is called', () => {
@@ -2298,9 +2306,7 @@ describe('diffTrees', () => {
         const spy = vi
           .spyOn(readObjectMod, 'readRawObject')
           .mockImplementation(async (spyCtx, id, options) =>
-            id === LOOP_ID
-              ? { type: 'tree', content: serializeTreeContent(loopTree, SHA1_CONFIG) }
-              : realReadRawObject(spyCtx, id, options),
+            id === LOOP_ID ? rawTreeStub(loopTree) : realReadRawObject(spyCtx, id, options),
           );
         const distinctLeaf = await writeTree(ctx, []);
         const newLevel0 = await subTree(ctx, 'inner', distinctLeaf, FILE_MODE.DIRECTORY);
@@ -2343,9 +2349,7 @@ describe('diffTrees', () => {
         const spy = vi
           .spyOn(readObjectMod, 'readRawObject')
           .mockImplementation(async (spyCtx, id, options) =>
-            id === LOOP_ID
-              ? { type: 'tree', content: serializeTreeContent(loopTree, SHA1_CONFIG) }
-              : realReadRawObject(spyCtx, id, options),
+            id === LOOP_ID ? rawTreeStub(loopTree) : realReadRawObject(spyCtx, id, options),
           );
         const distinctLeaf = await writeTree(ctx, []);
         const oldLevel0 = await subTree(ctx, 'inner', distinctLeaf, FILE_MODE.DIRECTORY);
@@ -2398,10 +2402,10 @@ describe('diffTrees', () => {
           .spyOn(readObjectMod, 'readRawObject')
           .mockImplementation(async (spyCtx, id, options) => {
             if (id === OLD_LOOP_ID) {
-              return { type: 'tree', content: serializeTreeContent(oldLoopTree, SHA1_CONFIG) };
+              return rawTreeStub(oldLoopTree);
             }
             if (id === NEW_LOOP_ID) {
-              return { type: 'tree', content: serializeTreeContent(newLoopTree, SHA1_CONFIG) };
+              return rawTreeStub(newLoopTree);
             }
             return realReadRawObject(spyCtx, id, options);
           });
@@ -2458,12 +2462,10 @@ describe('diffTrees', () => {
         const spy = vi
           .spyOn(readObjectMod, 'readRawObject')
           .mockImplementation(async (spyCtx, id, options) => {
-            if (id === OLD_A)
-              return { type: 'tree', content: serializeTreeContent(oldATree, SHA1_CONFIG) };
-            if (id === OLD_B)
-              return { type: 'tree', content: serializeTreeContent(oldBTree, SHA1_CONFIG) };
+            if (id === OLD_A) return rawTreeStub(oldATree);
+            if (id === OLD_B) return rawTreeStub(oldBTree);
             if (id === NEW_LOOP_ID) {
-              return { type: 'tree', content: serializeTreeContent(newLoopTree, SHA1_CONFIG) };
+              return rawTreeStub(newLoopTree);
             }
             return realReadRawObject(spyCtx, id, options);
           });

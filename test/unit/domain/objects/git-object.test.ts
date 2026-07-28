@@ -219,7 +219,7 @@ describe('git-object', () => {
               ),
             type: 'tag',
           },
-        ])('Then returns { type: $type, content } for $label', ({ raw, type }) => {
+        ])('Then returns { type: $type, content, bytes } for $label', ({ raw, type }) => {
           // Arrange
           const sut = splitObject;
           const bytes = raw();
@@ -230,6 +230,7 @@ describe('git-object', () => {
           // Assert
           expect(result.type).toBe(type);
           expect(result.content).toEqual(bytes.subarray(bytes.indexOf(0) + 1));
+          expect(result.bytes).toBe(bytes);
         });
       });
     });

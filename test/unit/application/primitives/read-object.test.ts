@@ -385,7 +385,8 @@ describe('readRawObject', () => {
         const result = await readRawObject(ctx, id);
 
         // Assert
-        expect(result).toEqual({ type: 'blob', content: blob.content });
+        expect(result.type).toBe('blob');
+        expect(result.content).toEqual(blob.content);
       });
     });
   });
@@ -420,7 +421,8 @@ describe('readRawObject', () => {
         const result = await readRawObject(ctx, id as ObjectId);
 
         // Assert
-        expect(result).toEqual({ type: 'blob', content });
+        expect(result.type).toBe('blob');
+        expect(result.content).toEqual(content);
       });
     });
   });
@@ -442,7 +444,8 @@ describe('readRawObject', () => {
         const result = await readRawObject(ctx, deltaId);
 
         // Assert
-        expect(result).toEqual({ type: 'blob', content: targetContent });
+        expect(result.type).toBe('blob');
+        expect(result.content).toEqual(targetContent);
       });
     });
   });
@@ -465,7 +468,8 @@ describe('readRawObject', () => {
         const result = await readRawObject(ctx, deltaId);
 
         // Assert
-        expect(result).toEqual({ type: 'blob', content: targetContent });
+        expect(result.type).toBe('blob');
+        expect(result.content).toEqual(targetContent);
       });
     });
   });
@@ -578,7 +582,8 @@ describe('readRawObject', () => {
         const result = await readRawObject(ctx, id);
 
         // Assert
-        expect(result).toEqual({ type: 'blob', content: blob.content });
+        expect(result.type).toBe('blob');
+        expect(result.content).toEqual(blob.content);
         expect(calls.count).toBe(1);
       });
     });

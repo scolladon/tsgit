@@ -82,10 +82,16 @@ export interface ReadObjectOptions {
  * the raw content bytes, before any `parseBlobContent`/`parseTreeContent`/…
  * decode. Internal-only — not re-exported from the primitives barrel and not
  * bound on `repo.primitives` (see `readRawObject`).
+ *
+ * `content` and `bytes` may alias the object cache (`ctx.deltaCache` or a
+ * loose-read buffer) — treat both as immutable and copy before mutating.
  */
 export interface RawObject {
   readonly type: ObjectType;
+  /** The object's content, after its `<type> <size>\0` header. */
   readonly content: Uint8Array;
+  /** The object's full bytes, header included — `content` is a subarray of this. */
+  readonly bytes: Uint8Array;
 }
 
 export interface ResolveRefOptions {

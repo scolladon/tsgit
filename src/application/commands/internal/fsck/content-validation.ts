@@ -2,7 +2,7 @@ import { TsgitError } from '../../../../domain/error.js';
 import type { FsckObjectType } from '../../../../domain/fsck/index.js';
 import { validateObject } from '../../../../domain/fsck/index.js';
 import type { ObjectId } from '../../../../domain/objects/index.js';
-import { parseHeader, serializeHeader } from '../../../../domain/objects/index.js';
+import { parseHeader } from '../../../../domain/objects/index.js';
 import type { Context } from '../../../../ports/context.js';
 import { looseCompressedBytes } from '../../../primitives/object-resolver.js';
 import { readRawObject } from '../../../primitives/read-object.js';
@@ -70,14 +70,12 @@ async function tryGetRawObjectBody(ctx: Context, id: ObjectId): Promise<RawObjec
   // report (duplicate name, '.', '..', an embedded '/'), collapsing every such
   // packed tree into badType; and re-serializing a parsed Tree re-sorts its
   // entries, so hashing that re-sorted form against an unsorted tree's id
-  // would report a false hash-mismatch. Hashing the ORIGINAL bytes avoids both.
+  // would report a false hash-mismatch. `raw.bytes` is the object's own
+  // header+content bytes — no re-serialisation, no re-allocation — so hashing
+  // it avoids both.
   try {
     const raw = await readRawObject(ctx, id, { verifyHash: false });
-    const header = serializeHeader(raw.type, raw.content.length);
-    const hashBytes = new Uint8Array(header.length + raw.content.length);
-    hashBytes.set(header, 0);
-    hashBytes.set(raw.content, header.length);
-    return { ok: true, kind: raw.type, rawBody: raw.content, hashBytes };
+    return { ok: true, kind: raw.type, rawBody: raw.content, hashBytes: raw.bytes };
   } catch {
     return { ok: false, msgId: 'badType' };
   }
@@ -156,7 +154,8 @@ async function validateOneObject(
 
   // Hash check: verify hash from the bytes already read (no second readObject).
   // For loose objects hashBytes is the full inflated bytes (header + body).
-  // For pack objects hashBytes is the re-serialized canonical form.
+  // For pack objects hashBytes is the object's original bytes (its own header
+  // plus body), not a re-encoding.
   // Hash-mismatch does not preclude catalogue checks above.
   try {
     const computedHash = await ctx.hash.hashHex(hashBytes);

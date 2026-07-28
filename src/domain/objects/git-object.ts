@@ -16,6 +16,7 @@ export type GitObject = Blob | Tree | Commit | Tag;
 export function splitObject(rawBytes: Uint8Array): {
   readonly type: ObjectType;
   readonly content: Uint8Array;
+  readonly bytes: Uint8Array;
 } {
   const { type, size, contentOffset } = parseHeader(rawBytes);
   const content = rawBytes.subarray(contentOffset);
@@ -26,7 +27,7 @@ export function splitObject(rawBytes: Uint8Array): {
     );
   }
 
-  return { type, content };
+  return { type, content, bytes: rawBytes };
 }
 
 export function parseObject(id: ObjectId, rawBytes: Uint8Array, hash: HashConfig): GitObject {

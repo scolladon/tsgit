@@ -166,7 +166,7 @@ describe('flattenRawTree', () => {
           .spyOn(readObjectMod, 'readRawObject')
           .mockImplementation(async (spyCtx, id, options) =>
             id === realTreeId
-              ? { type: 'tree', content: loopContent }
+              ? { type: 'tree', content: loopContent, bytes: loopContent }
               : realReadRawObject(spyCtx, id, options),
           );
         const sut = flattenRawTree;
