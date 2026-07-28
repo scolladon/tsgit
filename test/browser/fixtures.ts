@@ -69,6 +69,69 @@ export const AUTHOR: Author = {
   timezoneOffset: '+0000',
 };
 
+// The repository surface exercised by the round-trip specs — a typing aid for
+// values crossing the page.evaluate boundary, not a shared contract; the real
+// facade lives in src/.
+export interface BrowserRepo {
+  init: () => Promise<{ initialBranch: string; bare: boolean }>;
+  add: (paths: ReadonlyArray<string>) => Promise<{ added: ReadonlyArray<string> }>;
+  commit: (opts: { message: string; author: Author }) => Promise<{ id: string; branch?: string }>;
+  status: () => Promise<{
+    clean: boolean;
+    branch?: string;
+    detached: boolean;
+    changes: ReadonlyArray<unknown>;
+    untracked: ReadonlyArray<unknown>;
+  }>;
+  dispose: () => Promise<void>;
+}
+
+interface RepositoryOpener {
+  openRepository: (opts: { rootHandle: FileSystemDirectoryHandle }) => Promise<BrowserRepo>;
+}
+
+export interface RoundTripResult {
+  init: Awaited<ReturnType<BrowserRepo['init']>>;
+  add: Awaited<ReturnType<BrowserRepo['add']>>;
+  commit: Awaited<ReturnType<BrowserRepo['commit']>>;
+  status: Awaited<ReturnType<BrowserRepo['status']>>;
+}
+
+// One full init → add → commit → status round-trip against the OPFS root,
+// through whichever harness global carries the library (`__tsgit` on the
+// code-split harness, `__tsgitBundle` on the no-build one). Both round-trip
+// specs run this same body so the two entry points cannot drift apart.
+export const runOpfsRoundTrip = (
+  page: Page,
+  windowKey: '__tsgit' | '__tsgitBundle',
+  message: string,
+): Promise<RoundTripResult> =>
+  page.evaluate(
+    async ({ windowKey, message, author }) => {
+      const tsgit = (window as unknown as Record<'__tsgit' | '__tsgitBundle', RepositoryOpener>)[
+        windowKey
+      ];
+      const rootHandle = await navigator.storage.getDirectory();
+
+      const file = await rootHandle.getFileHandle('a.txt', { create: true });
+      const writable = await file.createWritable();
+      await writable.write(new TextEncoder().encode('hello browser\n'));
+      await writable.close();
+
+      const repo = await tsgit.openRepository({ rootHandle });
+      try {
+        const init = await repo.init();
+        const add = await repo.add(['a.txt']);
+        const commit = await repo.commit({ message, author });
+        const status = await repo.status();
+        return { init, add, commit, status };
+      } finally {
+        await repo.dispose();
+      }
+    },
+    { windowKey, message, author: AUTHOR },
+  );
+
 // Minimal repo shape used only inside seedRepo's evaluate callback — a local
 // typing aid, not a shared contract; the real facade lives in src/.
 interface SeedRepo {

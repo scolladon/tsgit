@@ -10,64 +10,59 @@
  */
 import type { Page } from '@playwright/test';
 import {
-  AUTHOR,
-  type Author,
   expect,
   resetOpfs,
+  runOpfsRoundTrip,
   test,
   waitForBundleReady,
   waitForTsgitReady,
 } from './fixtures.js';
 
-interface BrowserRepo {
-  init: () => Promise<{ initialBranch: string; bare: boolean }>;
-  add: (paths: ReadonlyArray<string>) => Promise<{ added: ReadonlyArray<string> }>;
-  commit: (opts: { message: string; author: Author }) => Promise<{ id: string; branch?: string }>;
-  status: () => Promise<{
-    clean: boolean;
-    branch?: string;
-    detached: boolean;
-    changes: ReadonlyArray<unknown>;
-    untracked: ReadonlyArray<unknown>;
-  }>;
-  dispose: () => Promise<void>;
-}
-
 interface TsgitBundle {
   isBrowser: () => boolean;
-  openRepository: (opts: { rootHandle: FileSystemDirectoryHandle }) => Promise<BrowserRepo>;
 }
 
-// Attach the request listener before navigation so no request is missed.
-// Filtering on '/dist/' excludes the harness page itself and any favicon probe.
-const trackDistRequests = (page: Page): ReadonlyArray<string> => {
+// Attach the request listener before navigation; the returned reader snapshots
+// the URLs collected so far, so assertions run on an immutable copy taken at a
+// defined point. Filtering on '/dist/' excludes the harness page itself and
+// any favicon probe.
+const trackDistRequests = (page: Page): (() => ReadonlyArray<string>) => {
   const urls: string[] = [];
   page.on('request', (request) => {
     if (request.url().includes('/dist/')) urls.push(request.url());
   });
-  return urls;
+  return () => [...urls];
 };
 
 test.describe('no-build bundle', () => {
   test('Given the no-build harness, When the page loads, Then exactly one /dist/ request fetches the bundle', async ({
     page,
   }) => {
-    const distRequests = trackDistRequests(page);
+    const readDistRequests = trackDistRequests(page);
 
     await waitForBundleReady(page);
 
+    const distRequests = readDistRequests();
     expect(distRequests).toHaveLength(1);
     expect(distRequests[0]).toContain('/dist/browser/tsgit.js');
   });
 
-  test('Given the code-split harness (control), When the page loads, Then more than one /dist/ request fires', async ({
+  // Control: pins the code-split path's fan-out shape via its chunk fetches,
+  // proving the request filter distinguishes the two harnesses. If the ESM
+  // build ever legitimately stops splitting, delete this control rather than
+  // "fixing" it.
+  test('Given the code-split harness (control), When the page loads, Then chunk requests fan out', async ({
     page,
   }) => {
-    const distRequests = trackDistRequests(page);
+    const readDistRequests = trackDistRequests(page);
 
     await waitForTsgitReady(page);
 
+    const distRequests = readDistRequests();
     expect(distRequests.length).toBeGreaterThan(1);
+    expect(distRequests.filter((url) => url.includes('/dist/esm/chunks/')).length).toBeGreaterThan(
+      0,
+    );
   });
 
   test('Given the bundle loaded in a real page, When isBrowser is called, Then it reports true', async ({
@@ -92,26 +87,7 @@ test.describe('no-build bundle OPFS round-trip', () => {
     await waitForBundleReady(page);
     await resetOpfs(page);
 
-    const result = await page.evaluate(async (author) => {
-      const tsgit = (window as unknown as { __tsgitBundle: TsgitBundle }).__tsgitBundle;
-      const rootHandle = await navigator.storage.getDirectory();
-
-      const file = await rootHandle.getFileHandle('a.txt', { create: true });
-      const writable = await file.createWritable();
-      await writable.write(new TextEncoder().encode('hello browser\n'));
-      await writable.close();
-
-      const repo = await tsgit.openRepository({ rootHandle });
-      try {
-        const init = await repo.init();
-        const add = await repo.add(['a.txt']);
-        const commit = await repo.commit({ message: 'first bundle commit', author });
-        const status = await repo.status();
-        return { init, add, commit, status };
-      } finally {
-        await repo.dispose();
-      }
-    }, AUTHOR);
+    const result = await runOpfsRoundTrip(page, '__tsgitBundle', 'first bundle commit');
 
     await test.step('init reports the main branch on a non-bare repo', () => {
       expect(result.init.initialBranch).toBe('main');
