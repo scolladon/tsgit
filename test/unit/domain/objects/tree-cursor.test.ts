@@ -156,6 +156,23 @@ describe('tree-cursor', () => {
       });
     });
 
+    describe('Given a mode byte below the octal range rather than above it', () => {
+      describe('When opening a cursor over it', () => {
+        it("Then throws INVALID_TREE_ENTRY 'malformed mode' at offset 0", () => {
+          // Arrange — a `byte < OCTAL_ZERO` guard mutant would leave only the
+          // `byte > OCTAL_SEVEN` half active; '-' (0x2d) sits below '0' (0x30)
+          // without ever exceeding '7' (0x37), so only the low-end check flags it.
+          const buf = concatBytes(encode('10064- a.txt\0'), hexToBytes(OID_HEX_20_A));
+
+          // Act & Assert
+          expectInvalidTreeEntry(() => openTreeCursor(buf, SHA1_CONFIG), {
+            offset: 0,
+            reason: 'malformed mode',
+          });
+        });
+      });
+    });
+
     describe('Given an entry with no NUL after the name', () => {
       describe('When opening a cursor over it', () => {
         it("Then throws INVALID_TREE_ENTRY 'missing null after name' at offset 0", () => {
@@ -247,6 +264,18 @@ describe('tree-cursor', () => {
             mode: '140000',
             expected: false,
             label: "'140000' is not a directory (right 8^4 digit, odd 8^5 digit)",
+          },
+          {
+            mode: '020000',
+            expected: false,
+            label:
+              "'020000' is not a directory (wrong 8^4 digit; an even 8^5 digit alone can't fake it)",
+          },
+          {
+            mode: '240000',
+            expected: true,
+            label:
+              "'240000' is a directory (nonzero even 8^5 digit distinguishes parity from doubling)",
           },
         ])('Then $label', ({ mode, expected }) => {
           // Arrange
@@ -413,6 +442,25 @@ describe('tree-cursor', () => {
           // Arrange
           const a = singleEntryCursor('644', 'a.txt');
           const b = singleEntryCursor('100644', 'a.txt');
+          const sut = cursorsSame;
+
+          // Act
+          const result = sut(a, b);
+
+          // Assert
+          expect(result).toBe(false);
+        });
+      });
+    });
+
+    describe('Given the same oid and modes where the shorter is a byte-for-byte prefix of the longer', () => {
+      describe('When comparing', () => {
+        it('Then returns false (the length guard decides it, not a lucky prefix match)', () => {
+          // Arrange — an `aLength !== bLength` guard mutant would skip straight
+          // to the byte loop, which only walks the shorter `aLength`; '644' is a
+          // byte-for-byte prefix of '6440', so the loop alone finds no mismatch.
+          const a = singleEntryCursor('644', 'a.txt');
+          const b = singleEntryCursor('6440', 'a.txt');
           const sut = cursorsSame;
 
           // Act

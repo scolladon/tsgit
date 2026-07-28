@@ -110,7 +110,14 @@ function scanOid(c: TreeCursor): void {
 function computeIsDir(buf: Uint8Array, modeStart: number, modeEnd: number): boolean {
   const length = modeEnd - modeStart;
   if (length < 5 || buf[modeEnd - 5] !== 0x34) return false;
-  return length === 5 || (buf[modeEnd - 6]! - OCTAL_ZERO) % 2 === 0;
+  if (length === 5) return true;
+  const pow5Byte = buf[modeEnd - 6]!;
+  // Stryker disable next-line ArithmeticOperator: equivalent — OCTAL_ZERO (0x30) is
+  // even, so adding or subtracting it preserves the byte's parity: `(byte +
+  // OCTAL_ZERO) % 2` equals `(byte - OCTAL_ZERO) % 2` for every octal-digit byte,
+  // leaving the directory verdict unchanged.
+  const pow5Digit = pow5Byte - OCTAL_ZERO;
+  return pow5Digit % 2 === 0;
 }
 
 /**
@@ -166,6 +173,11 @@ function sameMode(a: TreeCursor, b: TreeCursor): boolean {
 // `sameMode` runs (structural scanning already refused that).
 function skipLeadingZeros(buf: Uint8Array, start: number, end: number): number {
   let i = start;
+  // Stryker disable next-line ArithmeticOperator: equivalent — buf[end] is always
+  // the mode's trailing space (0x20), never an octal digit, so the loop already
+  // halts at i===end regardless of this bound; relaxing `end - 1` to `end + 1`
+  // only ever lets i reach `end` (never beyond, since buf[end] can't match
+  // OCTAL_ZERO) — same as the unmutated bound in every case.
   while (i < end - 1 && buf[i] === OCTAL_ZERO) i++;
   return i;
 }
