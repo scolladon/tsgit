@@ -21,7 +21,7 @@ export { invalidDiffInput, invalidTreeForDiff } from './error.js';
 
 // FlatTree
 export type { FlatTree, FlatTreeEntry } from './flat-tree.js';
-export { MAX_FLAT_TREE_ENTRIES, MAX_TREE_WALK_DEPTH } from './flat-tree.js';
+export { MAX_FLAT_TREE_ENTRIES } from './flat-tree.js';
 
 // Index diff + unmerged bridges
 export type { GroupedIndex, UnmergedEntryGroup } from './index-diff.js';

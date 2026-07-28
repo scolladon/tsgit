@@ -1,6 +1,10 @@
 import { resolveAttribute } from '../../domain/attributes/index.js';
 import { primaryPath } from '../../domain/diff/change-path.js';
-import type { FlatTree, FlatTreeEntry } from '../../domain/diff/flat-tree.js';
+import {
+  type FlatTree,
+  type FlatTreeEntry,
+  MAX_TREE_WALK_DEPTH,
+} from '../../domain/diff/flat-tree.js';
 import {
   type AddChange,
   computeStatFields,
@@ -10,7 +14,6 @@ import {
   type LineKey,
   lineKeyIsActive,
   MAX_FLAT_TREE_ENTRIES,
-  MAX_TREE_WALK_DEPTH,
   type ModifyChange,
   resolveLineKey,
   type StatDiffChange,

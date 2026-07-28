@@ -1,4 +1,5 @@
-import { MAX_FLAT_TREE_ENTRIES, MAX_TREE_WALK_DEPTH } from '../../domain/diff/index.js';
+import { MAX_TREE_WALK_DEPTH } from '../../domain/diff/flat-tree.js';
+import { MAX_FLAT_TREE_ENTRIES } from '../../domain/diff/index.js';
 import { operationAborted } from '../../domain/error.js';
 import {
   treeCycleDetected,
