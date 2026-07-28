@@ -249,6 +249,55 @@ describe('file-mode', () => {
       });
     });
 
+    describe('Given an invalid mode exactly at the 16-byte truncation boundary', () => {
+      describe('When matching', () => {
+        it('Then the error carries the exact 16-byte value, untruncated', () => {
+          // Arrange
+          const value = '9'.repeat(16);
+          const buf = encode(value);
+          let caught: unknown;
+
+          // Act
+          try {
+            matchFileModeBytes(buf, 0, buf.length);
+          } catch (error) {
+            caught = error;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data).toEqual({
+            code: 'INVALID_FILE_MODE',
+            value,
+          });
+        });
+      });
+    });
+
+    describe('Given an invalid mode exceeding the 16-byte truncation boundary', () => {
+      describe('When matching', () => {
+        it('Then the error carries only the first 16 bytes plus an ellipsis marker', () => {
+          // Arrange
+          const buf = encode('9'.repeat(1_000_000));
+          let caught: unknown;
+
+          // Act
+          try {
+            matchFileModeBytes(buf, 0, buf.length);
+          } catch (error) {
+            caught = error;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data).toEqual({
+            code: 'INVALID_FILE_MODE',
+            value: `${'9'.repeat(16)}…`,
+          });
+        });
+      });
+    });
+
     describe('Given a byte range embedded inside a larger buffer', () => {
       describe('When matching only that slice', () => {
         it('Then matches on the [start, end) window, ignoring surrounding bytes', () => {

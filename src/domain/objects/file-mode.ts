@@ -49,7 +49,18 @@ export function matchFileModeBytes(buf: Uint8Array, start: number, end: number):
     const matched = matchSixByteMode(buf, start);
     if (matched !== undefined) return matched;
   }
-  throw invalidFileMode(decode(buf.subarray(start, end)));
+  throw invalidFileMode(decodeModeForError(buf, start, end));
+}
+
+// The mode span comes straight from an unvalidated tree entry (no bound on
+// how far a malformed mode runs before the next space byte), so the error
+// path decodes at most this many bytes rather than the attacker-controlled
+// full span.
+const MAX_INVALID_MODE_ERROR_BYTES = 16;
+
+function decodeModeForError(buf: Uint8Array, start: number, end: number): string {
+  if (end - start <= MAX_INVALID_MODE_ERROR_BYTES) return decode(buf.subarray(start, end));
+  return `${decode(buf.subarray(start, start + MAX_INVALID_MODE_ERROR_BYTES))}…`;
 }
 
 function matchSixByteMode(buf: Uint8Array, start: number): FileMode | undefined {
