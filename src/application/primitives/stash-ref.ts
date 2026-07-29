@@ -22,7 +22,7 @@ import type { ReflogEntry } from '../../domain/reflog/reflog-entry.js';
 import { sanitizeReflogMessage } from '../../domain/reflog/reflog-format.js';
 import type { Context } from '../../ports/context.js';
 import { atomicWriteRef } from './atomic-write.js';
-import { looseRefPath } from './path-layout.js';
+import { commonGitDir, looseRefPath } from './path-layout.js';
 import { getRefStore } from './ref-store.js';
 import { resolveReflogIdentity } from './reflog-identity.js';
 import { appendReflog, deleteReflog, readReflog, writeReflog } from './reflog-store.js';
@@ -49,7 +49,7 @@ const writeStashRef = (ctx: Context, oid: ObjectId): Promise<void> =>
   atomicWriteRef(
     ctx,
     STASH_REF,
-    looseRefPath(ctx.layout.gitDir, STASH_REF),
+    looseRefPath(commonGitDir(ctx), STASH_REF),
     REF_ENCODER.encode(`${oid}\n`),
   );
 

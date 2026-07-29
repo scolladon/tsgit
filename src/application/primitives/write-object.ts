@@ -16,7 +16,7 @@ import type { Context } from '../../ports/context.js';
 import { readConfig, ZLIB_MAX_LEVEL, ZLIB_MIN_LEVEL } from './config-read.js';
 import { invalidateLooseOid } from './internal/loose-oid-cache.js';
 import { serializeAndHash } from './internal/serialize-and-hash.js';
-import { looseObjectPath, objectsDir } from './path-layout.js';
+import { commonGitDir, looseObjectPath, objectsDir } from './path-layout.js';
 import { hasDeclaredId } from './validators.js';
 
 export async function writeObject(ctx: Context, object: GitObject): Promise<ObjectId> {
@@ -35,8 +35,8 @@ export async function writeObject(ctx: Context, object: GitObject): Promise<Obje
   const looseLevel = config.core?.looseCompression;
 
   const prefix = computed.slice(0, 2);
-  await ctx.fs.mkdir(objectsDir(ctx.layout.gitDir, prefix));
-  const path = looseObjectPath(ctx.layout.gitDir, computed);
+  await ctx.fs.mkdir(objectsDir(commonGitDir(ctx), prefix));
+  const path = looseObjectPath(commonGitDir(ctx), computed);
   const compressed =
     looseLevel !== undefined && looseLevel >= ZLIB_MIN_LEVEL && looseLevel <= ZLIB_MAX_LEVEL
       ? await ctx.compressor.deflate(bytes, looseLevel)

@@ -14,7 +14,8 @@
  *   unique:         linked-worktree, submodule and separate-git-dir discovery matches git rev-parse
  *   interopSurface: worktree
  */
-import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -411,6 +412,162 @@ describe.skipIf(!GIT_AVAILABLE)('linked-worktree discovery interop', () => {
         } finally {
           await repo.dispose();
           await rm(root, { recursive: true, force: true });
+        }
+      });
+    });
+  });
+
+  describe('Given a git-built linked worktree on a packed branch, with packed refs and a commit-graph (scenario B)', () => {
+    let root: string;
+    let main: string;
+    let wt: string;
+    let repo: Repository;
+    let extraBranchId: string;
+    let extraTagId: string;
+
+    beforeAll(async () => {
+      root = await mkRoot('b');
+      main = path.join(root, 'main');
+      runGit(['init', '-q', '-b', 'main', main]);
+      await writeFile(path.join(main, 'a.txt'), 'one\n');
+      git(main, 'add', 'a.txt');
+      commit(main, 'c1');
+      // `feature` is the branch the worktree checks out; packing it (and
+      // main/v1) proves reads resolve names via the common packed-refs, not
+      // just loose files.
+      git(main, 'branch', 'feature');
+      git(main, 'tag', 'v1');
+      git(main, 'pack-refs', '--all');
+      git(main, 'commit-graph', 'write', '--reachable');
+      git(main, 'repack', '-adq');
+
+      wt = path.join(root, 'wt');
+      git(main, 'worktree', 'add', '-q', wt, 'feature');
+
+      // Created AFTER packing, from the worktree: these live only as loose
+      // files under the common dir, never in packed-refs.
+      git(wt, 'branch', 'extra-branch');
+      extraBranchId = git(wt, 'rev-parse', 'extra-branch').trim();
+      git(wt, 'tag', 'extra-tag');
+      extraTagId = git(wt, 'rev-parse', 'extra-tag').trim();
+
+      repo = await openRepository({ cwd: wt });
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      await repo?.dispose();
+      if (root !== undefined) await rm(root, { recursive: true, force: true });
+    });
+
+    describe('When log walks from the packed branch tip', () => {
+      it('Then results match git log, and the admin gitdir never grows an objects dir', async () => {
+        // Arrange
+        const expected = git(wt, 'log', '--format=%H').trim().split('\n');
+        const [adminGitDir] = gitDirPair(wt);
+
+        // Act
+        const result = await repo.log();
+
+        // Assert
+        expect(result.map((entry) => entry.id)).toEqual(expected);
+        expect(existsSync(path.join(adminGitDir, 'objects'))).toBe(false);
+      });
+    });
+
+    describe('When branch.list runs from the worktree', () => {
+      it('Then it finds the loose branch created after packing, from the common dir', async () => {
+        // Act
+        const result = await repo.branch.list();
+
+        // Assert
+        const found = result.branches.find((b) => b.name === 'refs/heads/extra-branch');
+        expect(found?.id).toBe(extraBranchId);
+      });
+    });
+
+    describe('When tag.list runs from the worktree', () => {
+      it('Then it finds the loose tag created after packing, from the common dir', async () => {
+        // Act
+        const result = await repo.tag.list();
+
+        // Assert
+        const found = result.tags.find((t) => t.name === 'refs/tags/extra-tag');
+        expect(found?.id).toBe(extraTagId);
+      });
+    });
+  });
+
+  describe('Given a tsgit repo with a linked worktree, writing through the worktree Context (scenario C)', () => {
+    let root: string;
+    let wt: string;
+    let main: string;
+
+    beforeAll(async () => {
+      root = await mkRoot('c');
+      main = path.join(root, 'main');
+      await mkdir(main, { recursive: true });
+      const repo = await openRepository({ cwd: main });
+      try {
+        await repo.init();
+        await writeFile(path.join(main, 'a.txt'), 'one\n');
+        await repo.add(['a.txt']);
+        await repo.commit({ message: 'c1', author: AUTHOR });
+        wt = path.join(root, 'wt');
+        await repo.worktree.add({ path: wt, branch: 'feature' });
+      } finally {
+        await repo.dispose();
+      }
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      if (root !== undefined) await rm(root, { recursive: true, force: true });
+    });
+
+    describe('When commit, config.set and stash.push run from the worktree', () => {
+      // `branch.create` / `tag.create` and commit's own branch-ref move are
+      // deliberately NOT exercised here: their ref write goes through
+      // `updateRef`, which routes every shared ref through `perWorktreeRefDir`
+      // only once Part 5 lands (`update-ref.ts` is explicitly out of this
+      // part's site table). Verified empirically: after `repo.commit()` here,
+      // `git -C main log feature` still shows the pre-commit tip — the new
+      // commit object itself is correctly written to the common dir (this
+      // part's fix) but the branch pointer move is not yet routed there.
+      it('Then new objects/config/stash land in the common dir, HEAD/index stay in the admin dir, and git reads the new object', async () => {
+        // Arrange
+        const [gitDir, commonDir] = gitDirPair(wt);
+        const repo = await openRepository({ cwd: wt });
+
+        try {
+          // Act
+          await writeFile(path.join(wt, 'b.txt'), 'two\n');
+          await repo.add(['b.txt']);
+          const committed = await repo.commit({ message: 'c2', author: AUTHOR });
+          await repo.config.set({ key: 'wt.marker', value: 'yes', scope: 'local' });
+          await writeFile(path.join(wt, 'c.txt'), 'dirty\n');
+          await repo.stash.push({ includeUntracked: true });
+
+          // Assert — new commit object lands under the common objects dir
+          const objectRel = path.join('objects', committed.id.slice(0, 2), committed.id.slice(2));
+          expect(existsSync(path.join(commonDir, objectRel))).toBe(true);
+          expect(existsSync(path.join(gitDir, objectRel))).toBe(false);
+
+          // Assert — config key lands under the common config
+          const configText = await readFile(path.join(commonDir, 'config'), 'utf8');
+          expect(configText).toContain('marker = yes');
+          expect(existsSync(path.join(gitDir, 'config'))).toBe(false);
+
+          // Assert — refs/stash lands under the common dir
+          expect(existsSync(path.join(commonDir, 'refs', 'stash'))).toBe(true);
+          expect(existsSync(path.join(gitDir, 'refs', 'stash'))).toBe(false);
+
+          // Assert — HEAD and the index stay under the admin (per-worktree) dir
+          expect(existsSync(path.join(gitDir, 'HEAD'))).toBe(true);
+          expect(existsSync(path.join(gitDir, 'index'))).toBe(true);
+
+          // Assert — git reads the new object straight out of the common dir
+          expect(git(main, 'cat-file', '-t', committed.id).trim()).toBe('commit');
+        } finally {
+          await repo.dispose();
         }
       });
     });

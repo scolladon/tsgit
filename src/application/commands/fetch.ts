@@ -35,6 +35,7 @@ import { readConfig } from '../primitives/config-read.js';
 import { fetchPack } from '../primitives/fetch-pack.js';
 import { hasObject } from '../primitives/has-object.js';
 import { assertNoValuelessConfig } from '../primitives/internal/valueless-config-guard.js';
+import { commonGitDir } from '../primitives/path-layout.js';
 import { getRefStore } from '../primitives/ref-store.js';
 import { updateShallow } from '../primitives/shallow-file.js';
 import { MAX_HAVES, MAX_WALK_SEEDS } from '../primitives/types.js';
@@ -288,13 +289,13 @@ const collectRefTips = async (
   // Loose refs first: walk the on-disk tree under each ref prefix.
   const ids: ObjectId[] = [];
   // equivalent-mutant: replacing the `refs/remotes/` template literal head
-  // with an empty backtick changes `fullDir` to `${gitDir}/origin`, which
-  // does not exist in any test fixture, so `fs.exists` returns false and
+  // with an empty backtick changes `fullDir` to `${commonGitDir(ctx)}/origin`,
+  // which does not exist in any test fixture, so `fs.exists` returns false and
   // `collectFromDir` is never reached — observable-equivalent on real-world
-  // repositories (the dir literally never has a sibling named `origin`).
+  // repositories (the common dir literally never has a sibling named `origin`).
   const looseDirs = [`refs/remotes/${remoteName}`, 'refs/tags'];
   for (const dir of looseDirs) {
-    const fullDir = `${ctx.layout.gitDir}/${dir}`;
+    const fullDir = `${commonGitDir(ctx)}/${dir}`;
     if (!(await ctx.fs.exists(fullDir))) continue;
     await collectFromDir(ctx, fullDir, ids);
   }
@@ -402,7 +403,7 @@ const prune = async (
       .filter((r) => r.name.startsWith(HEADS_PREFIX))
       .map((r) => r.name.slice(HEADS_PREFIX.length)),
   );
-  const remoteDir = `${ctx.layout.gitDir}/refs/remotes/${remoteName}`;
+  const remoteDir = `${commonGitDir(ctx)}/refs/remotes/${remoteName}`;
   if (!(await ctx.fs.exists(remoteDir))) return [];
   const deleted: RefName[] = [];
   await deleteUnadvertised(ctx, remoteDir, '', advertisedBranches, remoteName, deleted);

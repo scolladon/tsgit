@@ -25,12 +25,13 @@ import { TsgitError } from '../../domain/error.js';
 import type { ObjectId } from '../../domain/objects/object-id.js';
 import { ObjectId as OID } from '../../domain/objects/object-id.js';
 import type { Context } from '../../ports/context.js';
+import { commonGitDir } from './path-layout.js';
 
 const SHALLOW_FILE = 'shallow';
 const SHALLOW_LOCK = 'shallow.lock';
 
-const shallowPath = (ctx: Context): string => `${ctx.layout.gitDir}/${SHALLOW_FILE}`;
-const shallowLockPath = (ctx: Context): string => `${ctx.layout.gitDir}/${SHALLOW_LOCK}`;
+const shallowPath = (ctx: Context): string => `${commonGitDir(ctx)}/${SHALLOW_FILE}`;
+const shallowLockPath = (ctx: Context): string => `${commonGitDir(ctx)}/${SHALLOW_LOCK}`;
 
 const isFileNotFound = (error: unknown): boolean =>
   error instanceof TsgitError && error.data.code === 'FILE_NOT_FOUND';

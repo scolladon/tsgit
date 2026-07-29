@@ -5,6 +5,7 @@ import type { HookRequest, HookResult } from '../../ports/hook-runner.js';
 import { readConfig } from './config-read.js';
 import { joinPath } from './internal/join-working-tree-path.js';
 import { assertNoValuelessConfig } from './internal/valueless-config-guard.js';
+import { commonDirOf } from './path-layout.js';
 
 const HOOKS_SUBDIR = 'hooks';
 
@@ -32,9 +33,9 @@ export const resolveHooksDir = (
   hooksPath: string | undefined,
   layout: RepositoryLayout,
 ): string => {
-  const fallback = `${layout.gitDir}/${HOOKS_SUBDIR}`;
+  const fallback = `${commonDirOf(layout)}/${HOOKS_SUBDIR}`;
   if (hooksPath === undefined) return fallback;
-  if (hooksPath === '') return `${layout.gitDir}/${NO_HOOKS_SUBDIR}`;
+  if (hooksPath === '') return `${commonDirOf(layout)}/${NO_HOOKS_SUBDIR}`;
   if (hooksPath.startsWith('~/')) {
     return layout.homeDir === undefined ? fallback : `${layout.homeDir}/${hooksPath.slice(2)}`;
   }
