@@ -16,6 +16,39 @@ npm install @scolladon/tsgit
 
 The package's `"exports"` resolves the browser entry automatically when your bundler runs under the `browser` condition.
 
+## No build step (CDN)
+
+No bundler, no install step: the package also ships a single-file, minified ESM bundle, and the CDN root URLs resolve straight to it — one request, the whole library.
+
+```html
+<script type="module">
+  import { openRepository } from 'https://unpkg.com/@scolladon/tsgit@3/dist/browser/tsgit.js';
+
+  const rootHandle = await navigator.storage.getDirectory();
+  const repo = await openRepository({ rootHandle });
+</script>
+```
+
+The jsDelivr equivalent:
+
+```html
+<script type="module">
+  import { openRepository } from 'https://cdn.jsdelivr.net/npm/@scolladon/tsgit@3/dist/browser/tsgit.js';
+</script>
+```
+
+`@3` floats to the latest 3.x release. For production, replace `@3` with the exact version you tested against so the URL is immutable and a future release can't silently re-resolve it.
+
+The bundle exposes the same names as `@scolladon/tsgit/auto/browser` — `openRepository`, the runtime detectors, the branded-type constructors, the diff/merge constants — and deliberately not the browser adapter classes or the transport middleware. Use the bundler path above if you need those.
+
+| | Bundler | CDN (no build) |
+|---|---|---|
+| Install step | `npm install` | a URL |
+| Requests for tsgit code | resolved by your bundler | 1 |
+| Payload | tree-shaken to your imports | the whole library |
+| Dependency dedupe | yes, with your app's deps | no |
+| Debuggable source | yes | minified only — the bundle ships no sourcemap by design |
+
 ## Open a repository
 
 The browser has no `process.cwd()` equivalent, so you must supply an OPFS `FileSystemDirectoryHandle`:

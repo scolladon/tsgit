@@ -28,6 +28,8 @@
   "main": "./dist/cjs/index.cjs",
   "module": "./dist/esm/index.js",
   "types": "./dist/types/index.d.ts",
+  "unpkg": "dist/browser/tsgit.js",
+  "jsdelivr": "dist/browser/tsgit.js",
   "exports": {
     ".": {
       "node": {
@@ -241,7 +243,8 @@
       "output": [
         "dist/esm/**",
         "dist/cjs/**",
-        "dist/types/**"
+        "dist/types/**",
+        "dist/browser/**"
       ],
       "clean": "if-file-deleted"
     },
@@ -459,6 +462,7 @@
         "test/browser/**/*.ts",
         "test/browser/**/*.mjs",
         "test/browser/index.html",
+        "test/browser/no-build.html",
         "test/browser/parity-scenarios.bundle.js",
         "playwright.config.ts"
       ],
@@ -805,7 +809,7 @@
   "devDependencies": {
     "@arethetypeswrong/cli": "0.18.5",
     "@biomejs/biome": "2.5.6",
-    "@cloudflare/vitest-pool-workers": "0.18.8",
+    "@cloudflare/vitest-pool-workers": "0.19.0",
     "@cloudflare/workers-types": "5.20260728.1",
     "@commitlint/cli": "21.2.1",
     "@commitlint/config-conventional": "21.2.0",
@@ -814,7 +818,7 @@
     "@rollup/plugin-node-resolve": "16.0.3",
     "@rollup/plugin-terser": "1.0.0",
     "@rollup/plugin-typescript": "12.3.0",
-    "@size-limit/file": "13.0.1",
+    "@size-limit/file": "13.0.2",
     "@stryker-mutator/core": "9.6.1",
     "@stryker-mutator/typescript-checker": "9.6.1",
     "@stryker-mutator/vitest-runner": "9.6.1",
@@ -832,11 +836,11 @@
     "rollup": "4.62.3",
     "rollup-plugin-dts": "6.4.1",
     "rollup-plugin-visualizer": "7.0.1",
-    "size-limit": "13.0.1",
+    "size-limit": "13.0.2",
     "typedoc": "0.28.20",
     "typescript": "6.0.3",
     "vitest": "4.1.10",
     "wireit": "0.14.13",
-    "wrangler": "4.114.0"
+    "wrangler": "4.115.0"
   }
 }

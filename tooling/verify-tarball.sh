@@ -14,26 +14,39 @@ done
 
 # Compressed tarball cap. The published package ships dual ESM+CJS code plus
 # dual .d.ts/.d.cts types (both structurally required — dropping either is a
-# breaking change), so the honest floor is code+types ≈ 482 KiB compressed;
-# the real pack measures ~504 KiB. The cap is set ~9% above that — tight by
-# choice: a change that adds ~47 KiB compressed fires the guard for a
-# considered review rather than an automatic bump. Source maps are not shipped,
-# so they do not count against this cap.
-SIZE_CAP=$((550 * 1024))
+# breaking change) plus the single-file browser bundle served from the CDN
+# root fields, so the honest floor is code+types+bundle ≈ 656 KiB compressed;
+# the real pack measures around that mark. The cap is set ~14% above that —
+# tight by choice: a change that meaningfully grows any of the three fires the
+# guard for a considered review rather than an automatic bump. Source maps are
+# not shipped, so they do not count against this cap.
+SIZE_CAP=$((750 * 1024))
 
-# `npm pack` prints the tarball filename on stdout; capture that directly so
-# we never pick up a stale .tgz from a previously-interrupted run.
-TARBALL=$(npm pack --silent)
-INVENTORY=$(mktemp -t tsgit-tarball-inventory.XXXXXX)
-SIZE=$(wc -c < "$TARBALL" | tr -d ' ')
-
+# Register cleanup before any temp file exists so a failure between two
+# creations cannot leak the earlier ones; `rm -f` on the empty placeholders
+# is a no-op.
+PACKDIR=""
+INVENTORY=""
+BUNDLE=""
 cleanup() {
-  rm -f "$TARBALL" "$INVENTORY"
+  rm -f "$INVENTORY" "$BUNDLE"
+  if [ -n "$PACKDIR" ]; then rm -rf "$PACKDIR"; fi
 }
 trap cleanup EXIT
 
+# Pack into a private temp directory: `attw --pack` (check:exports) packs the
+# same default filename into the repo root, and the two checks run
+# concurrently under wireit — sharing the root makes each one's cleanup race
+# the other's. `npm pack` prints the tarball filename on stdout; capture that
+# directly so we never pick up a stale .tgz from a previously-interrupted run.
+PACKDIR=$(mktemp -d -t tsgit-pack.XXXXXX)
+TARBALL="$PACKDIR/$(npm pack --silent --pack-destination "$PACKDIR")"
+INVENTORY=$(mktemp -t tsgit-tarball-inventory.XXXXXX)
+BUNDLE=$(mktemp -t tsgit-browser-bundle.XXXXXX)
+SIZE=$(wc -c < "$TARBALL" | tr -d ' ')
+
 if (( SIZE > SIZE_CAP )); then
-  echo "FAIL: tarball ${TARBALL} is ${SIZE} bytes (cap ${SIZE_CAP})" >&2
+  echo "FAIL: tarball $(basename "$TARBALL") is ${SIZE} bytes (cap ${SIZE_CAP})" >&2
   exit 1
 fi
 
@@ -56,6 +69,21 @@ grep -E "^package/README\.md$" "$INVENTORY" >/dev/null || {
   echo "FAIL: tarball missing README.md" >&2
   exit 1
 }
+# The CDN root URLs resolve through the package's top-level unpkg/jsdelivr
+# fields, so the expected bundle path is derived from them — the fields become
+# verified claims: dropping one, letting them disagree, or renaming the rollup
+# output without updating them all fail here instead of shipping silently.
+UNPKG_FIELD=$(node -p "require('./package.json').unpkg ?? ''")
+JSDELIVR_FIELD=$(node -p "require('./package.json').jsdelivr ?? ''")
+if [ -z "$UNPKG_FIELD" ] || [ "$UNPKG_FIELD" != "$JSDELIVR_FIELD" ]; then
+  echo "FAIL: package.json unpkg/jsdelivr must both name the browser bundle (unpkg='${UNPKG_FIELD}' jsdelivr='${JSDELIVR_FIELD}')" >&2
+  exit 1
+fi
+BUNDLE_MEMBER="package/${UNPKG_FIELD#./}"
+grep -Fx "$BUNDLE_MEMBER" "$INVENTORY" >/dev/null || {
+  echo "FAIL: tarball missing ${UNPKG_FIELD} (the unpkg/jsdelivr target)" >&2
+  exit 1
+}
 
 # Forbidden content.
 for forbidden in "^package/src/" "^package/test/" "^package/reports/" "^package/\.claude/" "^package/\.github/" "^package/.*\.map$"; do
@@ -64,6 +92,64 @@ for forbidden in "^package/src/" "^package/test/" "^package/reports/" "^package/
     exit 1
   fi
 done
+
+# Artefact shape. The browser bundle is the no-build CDN entry: a <script
+# type="module"> must fetch it and nothing else. Any surviving module specifier
+# means the build re-split and consumers would pay extra round trips. The
+# static-import predicate anchors on statement position (start of line, or
+# after ; }) so the word "import" inside a string literal does not trip the
+# gate; the dynamic-import predicate needs no anchor because the `("`/`('`
+# suffix does not occur in prose.
+tar -xzOf "$TARBALL" "$BUNDLE_MEMBER" >"$BUNDLE"
+
+if LC_ALL=C grep -aqE '(^|[;}])[[:space:]]*import[[:space:]]*[{*'\''"(A-Za-z]' "$BUNDLE"; then
+  echo "FAIL: browser bundle contains an import statement — it is not single-file" >&2
+  exit 1
+fi
+if LC_ALL=C grep -aqE 'import[[:space:]]*\([[:space:]]*["'\'']' "$BUNDLE"; then
+  echo "FAIL: browser bundle contains a dynamic import — it is not single-file" >&2
+  exit 1
+fi
+if LC_ALL=C grep -aqE '[}][[:space:]]*from[[:space:]]*["'\'']' "$BUNDLE"; then
+  echo "FAIL: browser bundle contains a re-export — it is not single-file" >&2
+  exit 1
+fi
+if LC_ALL=C grep -aqE '(^|[^A-Za-z0-9_$])export[[:space:]]*\*[[:space:]]*from' "$BUNDLE"; then
+  echo "FAIL: browser bundle contains a star re-export — it is not single-file" >&2
+  exit 1
+fi
+if LC_ALL=C grep -aqE '(import|from|require)[^"'\'']*["'\'']node:' "$BUNDLE"; then
+  echo "FAIL: browser bundle references a node: specifier — it cannot run in a browser" >&2
+  exit 1
+fi
+
+# The single-file checks above are absence-only and a CommonJS artefact would
+# pass them all; assert the bundle is actually ESM by requiring a
+# statement-position export to survive minification.
+if ! LC_ALL=C grep -aqE '(^|[;}])[[:space:]]*export[[:space:]]*[{*]' "$BUNDLE"; then
+  echo "FAIL: browser bundle carries no export statement — it is not an ESM module" >&2
+  exit 1
+fi
+
+# Export parity. The bundle must expose exactly the surface the code-split
+# browser entry exposes — no addition, no removal. Both files are imported
+# from dist/, which is byte-for-byte what npm pack just archived; the bundle
+# path is the same unpkg-derived one every other check uses.
+BUNDLE_REL="${UNPKG_FIELD#./}" node --input-type=module -e '
+import { pathToFileURL } from "node:url";
+const root = pathToFileURL(process.cwd() + "/").href;
+const esm = Object.keys(await import(new URL("dist/esm/index.browser.js", root).href)).sort();
+const bundle = Object.keys(await import(new URL(process.env.BUNDLE_REL, root).href)).sort();
+const missing = esm.filter((name) => !bundle.includes(name));
+const extra = bundle.filter((name) => !esm.includes(name));
+if (missing.length > 0 || extra.length > 0) {
+  console.error(`missing from bundle: [${missing.join(", ")}] — extra in bundle: [${extra.join(", ")}]`);
+  process.exit(1);
+}
+' || {
+  echo "FAIL: browser bundle export set differs from dist/esm/index.browser.js" >&2
+  exit 1
+}
 
 # Resolution check — call the pinned, locally-installed attw rather than
 # `npx --yes` so the version cannot drift between this check and the published
@@ -75,4 +161,4 @@ if (( QUICK == 0 )); then
   }
 fi
 
-echo "OK: tarball ${TARBALL} verified at ${SIZE} bytes."
+echo "OK: tarball $(basename "$TARBALL") verified at ${SIZE} bytes."

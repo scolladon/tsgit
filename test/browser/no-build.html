@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>tsgit no-build bundle harness</title>
+  </head>
+  <body>
+    <h1>tsgit no-build bundle harness</h1>
+    <p>This page is loaded by Playwright. It imports the single-file browser bundle
+      and exposes it as <code>window.__tsgitBundle</code>.</p>
+    <script type="module">
+      import { isBrowser, openRepository } from '/dist/browser/tsgit.js';
+
+      window.__tsgitBundle = { isBrowser, openRepository };
+      window.dispatchEvent(new Event('tsgit:bundle-ready'));
+    </script>
+  </body>
+</html>
