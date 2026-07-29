@@ -69,7 +69,7 @@ describe('fileSystemLayoutProbe', () => {
         const result = await sut.stat('/repo/.git');
 
         // Assert
-        expect(result).toStrictEqual({ isDirectory: true, isFile: false });
+        expect(result).toStrictEqual({ isDirectory: true, isFile: false, size: 0 });
       });
     });
   });
@@ -86,7 +86,7 @@ describe('fileSystemLayoutProbe', () => {
         const result = await sut.stat('/repo/.git');
 
         // Assert
-        expect(result).toStrictEqual({ isDirectory: false, isFile: true });
+        expect(result).toStrictEqual({ isDirectory: false, isFile: true, size: 19 });
       });
     });
   });

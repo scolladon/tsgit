@@ -18,7 +18,9 @@ export interface LayoutProbe {
    */
   readonly stat: (
     path: string,
-  ) => Promise<{ readonly isDirectory: boolean; readonly isFile: boolean } | undefined>;
+  ) => Promise<
+    { readonly isDirectory: boolean; readonly isFile: boolean; readonly size: number } | undefined
+  >;
   /**
    * Reads `path` as UTF-8. Resolves to `undefined` under the same absence /
    * containment-denial contract as `stat`.

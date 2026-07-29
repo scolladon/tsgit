@@ -57,8 +57,15 @@ export const wrapFsValidator = (
 ): FileSystem => {
   // A path is permitted when it is contained in ANY root (a worktree Context is
   // confined to its worktree path PLUS the common dir — ADR-298). A single
-  // string is the one-root case.
-  const rootList = typeof roots === 'string' ? [roots] : roots;
+  // string is the one-root case. Roots get the same sanitisation as the
+  // allowlist: an empty-string root contains every path (its prefix check is
+  // vacuous) and a `..`-bearing one defeats the prefix comparison — either way
+  // the guard silently vanishes, so a root set that sanitises to empty fails
+  // closed instead of admitting everything.
+  const rootList = sanitizeAllowlist(typeof roots === 'string' ? [roots] : roots);
+  if (rootList.length === 0) {
+    throw pathspecOutsideRepo((typeof roots === 'string' ? roots : (roots[0] ?? '')) as FilePath);
+  }
   const allowSet = new Set(sanitizeAllowlist(allowExternalPaths));
   const guard = (path: string): void => {
     // A `..` segment defeats `isContainedIn`'s prefix check on its own:

@@ -79,6 +79,32 @@ describe('listWorktrees', () => {
     });
   });
 
+  describe('Given a bare repository whose gitDir has no /.git suffix (bare.git)', () => {
+    describe('When listWorktrees runs', () => {
+      it('Then the main entry path is the gitdir itself and bare stays true', async () => {
+        // Arrange — the `bare.git` shape: nothing to strip, so the derived
+        // main path is the gitdir; the bare flag is layout-driven, unchanged.
+        const base = await buildSeededContext();
+        const gitDir = `${base.layout.workDir}/bare.git`;
+        const ctx: Context = { ...base, layout: { ...base.layout, gitDir, bare: true } };
+        await ctx.fs.writeUtf8(`${gitDir}/HEAD`, 'ref: refs/heads/main\n');
+
+        // Act
+        const result = await listWorktrees(ctx);
+
+        // Assert
+        expect(result).toEqual([
+          {
+            path: gitDir,
+            detached: false,
+            bare: true,
+            main: true,
+          },
+        ]);
+      });
+    });
+  });
+
   describe('Given a repository with a separate git dir (no /.git suffix, no commonDir override)', () => {
     describe('When listWorktrees runs', () => {
       it('Then the main entry path is the gitdir itself, not workDir — the divergence fix', async () => {

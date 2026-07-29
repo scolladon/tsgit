@@ -656,6 +656,12 @@ describe.skipIf(!GIT_AVAILABLE)('linked-worktree discovery interop', () => {
           expect(existsSync(path.join(commonDir, 'refs', 'tags', 'wt-tag'))).toBe(true);
           expect(existsSync(path.join(gitDir, 'refs', 'tags', 'wt-tag'))).toBe(false);
 
+          // Assert — the moved branch's reflog lands under the common logs
+          // dir while logs/HEAD stays per-worktree in the admin dir
+          expect(existsSync(path.join(commonDir, 'logs', 'refs', 'heads', 'feature'))).toBe(true);
+          expect(existsSync(path.join(gitDir, 'logs', 'refs', 'heads', 'feature'))).toBe(false);
+          expect(existsSync(path.join(gitDir, 'logs', 'HEAD'))).toBe(true);
+
           // Assert — HEAD and the index stay under the admin (per-worktree) dir
           expect(existsSync(path.join(gitDir, 'HEAD'))).toBe(true);
           expect(existsSync(path.join(gitDir, 'index'))).toBe(true);

@@ -123,6 +123,38 @@ if LC_ALL=C grep -aqE '(import|from|require)[^"'\'']*["'\'']node:' "$BUNDLE"; th
   exit 1
 fi
 
+# The default entry (package.json "." default condition + ./auto/memory) is the
+# runtime-agnostic one: a node: specifier there hard-fails any runtime without
+# node builtins (plain browsers, workerd without nodejs_compat). Check the
+# entry file AND every chunk in its static import graph.
+DEFAULT_ENTRY_DIR=$(mktemp -d -t tsgit-default-entry.XXXXXX)
+tar -xzf "$TARBALL" -C "$DEFAULT_ENTRY_DIR" 'package/dist/esm'
+if ! DEFAULT_ENTRY_DIR="$DEFAULT_ENTRY_DIR" node --input-type=module -e '
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+const seen = new Set();
+const queue = [resolve(process.env.DEFAULT_ENTRY_DIR, "package/dist/esm/index.default.js")];
+const specifierRe = /(?:import|from)\s*["'"'"']([^"'"'"']+)["'"'"']|import\s*\(\s*["'"'"']([^"'"'"']+)["'"'"']\s*\)/g;
+while (queue.length > 0) {
+  const file = queue.pop();
+  if (seen.has(file)) continue;
+  seen.add(file);
+  const source = readFileSync(file, "utf8");
+  for (const match of source.matchAll(specifierRe)) {
+    const spec = match[1] ?? match[2];
+    if (spec === undefined) continue;
+    if (spec.startsWith("node:")) {
+      console.error(`node: specifier "${spec}" reachable from index.default.js via ${file}`);
+      process.exit(1);
+    }
+    if (spec.startsWith(".")) queue.push(resolve(dirname(file), spec));
+  }
+}
+' ; then
+  echo "FAIL: the default (runtime-agnostic) entry reaches a node: specifier" >&2
+  exit 1
+fi
+
 # The single-file checks above are absence-only and a CommonJS artefact would
 # pass them all; assert the bundle is actually ESM by requiring a
 # statement-position export to survive minification.

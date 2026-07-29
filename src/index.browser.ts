@@ -11,15 +11,11 @@ import { BrowserHashService } from './adapters/browser/browser-hash-service.js';
 import { BrowserHttpTransport } from './adapters/browser/browser-http-transport.js';
 import { SHA1_CONFIG } from './domain/objects/hash-config.js';
 import { createLruCache } from './domain/storage/lru-cache.js';
-import type { FileSystem } from './ports/file-system.js';
-import { fileSystemLayoutProbe } from './repository/file-system-layout-probe.js';
-import { layoutFromGitfile } from './repository/find-layout.js';
-import { portablePosixPolicy } from './repository/portable-posix-policy.js';
+import { resolveFixedEntryLayout } from './repository/fixed-entry-layout.js';
 import {
   type OpenRepositoryOptions,
   openRepository as openRepositoryCore,
   type Repository,
-  type RepositoryLayoutInput,
 } from './repository.js';
 
 const DEFAULT_DELTA_CACHE_BYTES = 16 * 1024 * 1024;
@@ -42,37 +38,16 @@ export interface OpenBrowserRepositoryOptions extends OpenRepositoryOptions {
   readonly deltaCacheMaxEntries?: number;
 }
 
-/**
- * Resolves the browser's fixed `/{gitDirName}` entry, pointer-aware. A walk-up
- * is meaningless in OPFS (`dirname('/') === '/'` terminates on the first
- * iteration), so — unlike the node/memory shims — this probes the fixed entry
- * directly rather than calling `findLayout`. When the entry is a *file* (a
- * linked worktree's `.git` gitfile), it resolves through the same pointer +
- * commondir grammar `findLayout` uses; otherwise the literal layout is kept.
- * `layoutFromGitfile` always reports `bare: false`, so `bare` is applied by
- * the caller afterwards regardless of which branch resolved the layout —
- * discovery never decides bare-ness. Uses `portablePosixPolicy` rather than
- * the Node-backed `posixPolicy` — see that module's doc comment for why.
- */
-const resolveBrowserLayout = async (
-  fs: FileSystem,
-  gitDir: string,
-  bare: boolean,
-): Promise<RepositoryLayoutInput> => {
-  const probe = fileSystemLayoutProbe(fs);
-  const entry = await probe.stat(gitDir);
-  if (entry?.isFile === true) {
-    const resolved = await layoutFromGitfile(probe, ROOT_WORK_DIR, gitDir, portablePosixPolicy);
-    return { ...resolved, bare };
-  }
-  return { workDir: ROOT_WORK_DIR, gitDir, bare };
-};
-
 export const openRepository = async (opts: OpenBrowserRepositoryOptions): Promise<Repository> => {
   const gitDirName = opts.gitDirName ?? DEFAULT_GIT_DIR_NAME;
   const fs = new BrowserFileSystem(opts.rootHandle);
-  const layout = await resolveBrowserLayout(
+  // A walk-up is meaningless in OPFS (`dirname('/') === '/'` terminates on
+  // the first iteration), so — unlike the node/memory shims — the browser
+  // resolves its fixed `/{gitDirName}` entry pointer-aware via
+  // `resolveFixedEntryLayout` rather than calling `findLayout`.
+  const layout = await resolveFixedEntryLayout(
     fs,
+    ROOT_WORK_DIR,
     `${ROOT_WORK_DIR}${gitDirName}`,
     opts.bare ?? false,
   );

@@ -7,6 +7,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
+import { MemoryHookRunner } from '../../../../src/adapters/memory/memory-hook-runner.js';
 import { branchList } from '../../../../src/application/commands/branch.js';
 import { fetch } from '../../../../src/application/commands/fetch.js';
 import { createPromisorRemote } from '../../../../src/application/commands/fetch-missing.js';
@@ -20,6 +21,7 @@ import { looseObjectPath } from '../../../../src/application/primitives/path-lay
 import {
   NO_HOOKS_SUBDIR,
   resolveHooksDir,
+  runHook,
 } from '../../../../src/application/primitives/run-hook.js';
 import { updateShallow } from '../../../../src/application/primitives/shallow-file.js';
 import { pushStashRef } from '../../../../src/application/primitives/stash-ref.js';
@@ -220,6 +222,24 @@ describe('common-dir write sweep (writes ⇒ commonGitDir)', () => {
 
         // Assert
         expect(result).toBe(`${ctx.layout.gitDir}/${NO_HOOKS_SUBDIR}`);
+      });
+    });
+
+    describe('When runHook dispatches to the runner', () => {
+      it('Then the request gitDir stays the admin dir while hooksDir is the common one', async () => {
+        // Arrange — hook LOOKUP is shared, hook GIT_DIR is per-worktree.
+        const ctx = await buildSeededContext();
+        await seedAdminHead(ctx);
+        const runner = new MemoryHookRunner();
+        const sut: Context = { ...asWorktreeChild(ctx), hooks: runner };
+
+        // Act
+        await runHook(sut, 'pre-commit');
+
+        // Assert
+        expect(runner.calls[0]?.gitDir).toBe(adminDir(ctx));
+        expect(runner.calls[0]?.gitDir).not.toBe(ctx.layout.gitDir);
+        expect(runner.calls[0]?.hooksDir).toBe(`${ctx.layout.gitDir}/hooks`);
       });
     });
   });

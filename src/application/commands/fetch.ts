@@ -382,6 +382,10 @@ const readExistingRef = async (ctx: Context, name: RefName): Promise<ObjectId | 
   // future refactor that loses the guard cannot reintroduce the
   // path-traversal vulnerability. validateRefName throws if invalid.
   validateRefName(name);
+  // `perWorktreeRefDir` is defensive here: today's only caller passes refspec
+  // destinations (`refs/remotes/**`, shared ⇒ common dir), so the per-worktree
+  // branch is unreachable through the current call graph — it exists so a new
+  // caller passing a per-worktree name (e.g. FETCH_HEAD) resolves correctly.
   const path = `${perWorktreeRefDir(ctx, name)}/${name}`;
   if (!(await ctx.fs.exists(path))) return undefined;
   const content = (await ctx.fs.readUtf8(path)).trim();

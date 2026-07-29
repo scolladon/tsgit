@@ -167,14 +167,55 @@ describe('portablePosixPolicy', () => {
     });
   });
 
-  describe('Given any path', () => {
+  describe('Given an absolute path', () => {
     describe('When rootOf runs', () => {
-      it('Then it always returns "/"', () => {
+      it('Then it returns "/" like posixPolicy', () => {
         // Arrange & Act
         const result = portablePosixPolicy.rootOf('/repo/wt');
 
         // Assert
         expect(result).toBe('/');
+      });
+    });
+  });
+
+  describe('Given a relative path', () => {
+    describe('When rootOf runs', () => {
+      it('Then it returns "" like posixPolicy', () => {
+        // Arrange & Act
+        const result = portablePosixPolicy.rootOf('repo/wt');
+
+        // Assert
+        expect(result).toBe('');
+      });
+    });
+  });
+
+  describe('Given an absolute path with single-dot segments', () => {
+    describe('When resolve runs', () => {
+      it('Then it drops the dot segments like node:path/posix.resolve', () => {
+        // Arrange
+        const path = '/repo/./wt/.';
+
+        // Act
+        const result = portablePosixPolicy.resolve(path);
+
+        // Assert
+        expect(result).toBe(nodePosix.resolve(path));
+        expect(result).toBe('/repo/wt');
+      });
+    });
+  });
+
+  describe('Given an absolute base joined with a dot-prefixed segment', () => {
+    describe('When join runs', () => {
+      it('Then it drops the dot like node:path/posix.join', () => {
+        // Arrange & Act
+        const result = portablePosixPolicy.join('/repo', './wt');
+
+        // Assert
+        expect(result).toBe(nodePosix.join('/repo', './wt'));
+        expect(result).toBe('/repo/wt');
       });
     });
   });

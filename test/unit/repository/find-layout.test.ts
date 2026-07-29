@@ -263,7 +263,7 @@ describe('findLayout', () => {
     });
   });
 
-  describe('Given a .git file whose target lacks objects/ and refs/', () => {
+  describe('Given a .git file whose target is an empty dir (no HEAD, objects/ or refs/)', () => {
     describe('When findLayout runs', () => {
       it('Then it throws NOT_A_REPOSITORY naming the worktree dir', async () => {
         // Arrange
@@ -284,6 +284,105 @@ describe('findLayout', () => {
         expect((caught as TsgitError).data).toEqual({
           code: 'NOT_A_REPOSITORY',
           path: '/repo/wt',
+        });
+      });
+    });
+  });
+
+  describe('Given a .git file whose target has HEAD but lacks objects/ and refs/', () => {
+    describe('When findLayout runs', () => {
+      it('Then it throws NOT_A_REPOSITORY through the objects/refs guards', async () => {
+        // Arrange
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await fs.writeUtf8('/repo/head-only/HEAD', 'ref: refs/heads/main\n');
+        await fs.writeUtf8('/repo/wt/.git', 'gitdir: /repo/head-only\n');
+
+        // Act
+        let caught: unknown;
+        try {
+          await findLayout(fileSystemLayoutProbe(fs), '/repo/wt', posixPolicy);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data).toEqual({
+          code: 'NOT_A_REPOSITORY',
+          path: '/repo/wt',
+        });
+      });
+    });
+  });
+
+  describe('Given a .git directory whose HEAD entry is itself a directory', () => {
+    describe('When findLayout runs from inside it with a valid repo one level up', () => {
+      it('Then the invalid directory is skipped and the outer repo is returned', async () => {
+        // Arrange — HEAD must be a regular file; a directory named HEAD is
+        // not a head, so the candidate fails validation and the walk climbs.
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await makeGitDir(fs, '/repo/.git');
+        await fs.mkdir('/repo/inner/.git/HEAD');
+        await fs.mkdir('/repo/inner/.git/objects');
+        await fs.mkdir('/repo/inner/.git/refs');
+
+        // Act
+        const result = await findLayout(fileSystemLayoutProbe(fs), '/repo/inner', posixPolicy);
+
+        // Assert
+        expect(result).toEqual({ workDir: '/repo', gitDir: '/repo/.git', bare: false });
+      });
+    });
+  });
+
+  describe('Given a .git file larger than the gitfile size cap', () => {
+    describe('When findLayout runs', () => {
+      it('Then it throws GITFILE_INVALID_FORMAT without parsing the content', async () => {
+        // Arrange — a hostile multi-megabyte `.git` file must be refused on
+        // its stat size, before its bytes reach the parser.
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await fs.writeUtf8('/repo/wt/.git', `gitdir: /repo/admin${'x'.repeat(70_000)}\n`);
+
+        // Act
+        let caught: unknown;
+        try {
+          await findLayout(fileSystemLayoutProbe(fs), '/repo/wt', posixPolicy);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data).toEqual({
+          code: 'GITFILE_INVALID_FORMAT',
+          path: '/repo/wt/.git',
+        });
+      });
+    });
+  });
+
+  describe('Given an admin dir whose commondir file is larger than the size cap', () => {
+    describe('When findLayout runs', () => {
+      it('Then it throws GITFILE_INVALID_FORMAT naming the commondir path', async () => {
+        // Arrange
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await fs.writeUtf8('/repo/admin/HEAD', 'ref: refs/heads/main\n');
+        await fs.writeUtf8('/repo/admin/commondir', `${'x'.repeat(70_000)}\n`);
+        await fs.writeUtf8('/repo/wt/.git', 'gitdir: /repo/admin\n');
+
+        // Act
+        let caught: unknown;
+        try {
+          await findLayout(fileSystemLayoutProbe(fs), '/repo/wt', posixPolicy);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data).toEqual({
+          code: 'GITFILE_INVALID_FORMAT',
+          path: '/repo/admin/commondir',
         });
       });
     });
@@ -323,7 +422,7 @@ describe('findLayout', () => {
         const gitfilePath = '/repo/wt/.git';
         const probe: LayoutProbe = {
           stat: async (path) =>
-            path === gitfilePath ? { isDirectory: false, isFile: true } : undefined,
+            path === gitfilePath ? { isDirectory: false, isFile: true, size: 32 } : undefined,
           readUtf8: async () => undefined,
         };
 

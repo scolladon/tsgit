@@ -34,7 +34,9 @@ const normalizeAbsolutePosixPath = (path: string): string => {
  * `layoutFromGitfile` always join/resolve against an absolute `workDir` or
  * `gitDir`), so both simply normalize the joined string rather than
  * replicate `path.posix`'s "later absolute argument wins" or
- * relative-to-cwd-fallback semantics.
+ * relative-to-cwd-fallback semantics. `rootOf` mirrors `posixPolicy`'s
+ * verdict for both input shapes: `'/'` for an absolute path, `''` for a
+ * relative one.
  */
 export const portablePosixPolicy: PathPolicy = {
   sep: '/',
@@ -51,6 +53,6 @@ export const portablePosixPolicy: PathPolicy = {
     const normalized = normalizeAbsolutePosixPath(path);
     return normalized === '/' ? '' : normalized.slice(normalized.lastIndexOf('/') + 1);
   },
-  rootOf: () => '/',
+  rootOf: (path) => (path.startsWith('/') ? '/' : ''),
   normalizeForCompare: (path) => path,
 };

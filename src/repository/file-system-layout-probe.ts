@@ -10,7 +10,9 @@ import type { LayoutProbe } from '../ports/layout-probe.js';
 export const fileSystemLayoutProbe = (fs: FileSystem): LayoutProbe => ({
   stat: async (path) => {
     const stat = await fs.stat(path).catch(() => undefined);
-    return stat === undefined ? undefined : { isDirectory: stat.isDirectory, isFile: stat.isFile };
+    return stat === undefined
+      ? undefined
+      : { isDirectory: stat.isDirectory, isFile: stat.isFile, size: stat.size };
   },
   readUtf8: (path) => fs.readUtf8(path).catch(() => undefined),
 });

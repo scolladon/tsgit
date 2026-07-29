@@ -66,10 +66,21 @@ export const layoutFromGitfile = async (
 };
 
 /**
+ * A `.git` gitfile or `commondir` file larger than this is rejected before
+ * parsing. Real pointer files are a path plus a short prefix (well under one
+ * kilobyte); an oversized one in the walk path is hostile or corrupt, and
+ * capping here keeps discovery from feeding megabytes into the parser.
+ */
+const GITFILE_MAX_BYTES = 65536;
+
+/**
  * Parses and resolves a gitfile's `gitdir:` pointer. The gitfile path was
- * already `stat`ed as a file by the caller, so an unreadable file here is a
- * hard I/O failure, not "absent" — it must throw, never fall back to
- * walking up past it.
+ * already `stat`ed as a file by the caller, so `readUtf8` returning
+ * `undefined` here means unreadable-or-vanished, not "absent". The probe
+ * contract collapses every failure to `undefined`, so an EACCES is not
+ * distinguishable from a race-removed file; both map to the gitfile-format
+ * refusal because the invariant that matters is the hard stop — discovery
+ * must never walk up past a `.git` file it could not use.
  */
 const resolvePointer = async (
   probe: LayoutProbe,
@@ -77,6 +88,10 @@ const resolvePointer = async (
   baseDir: string,
   pathPolicy: PathPolicy,
 ): Promise<string> => {
+  const stat = await probe.stat(gitfilePath);
+  if (stat === undefined || stat.size > GITFILE_MAX_BYTES) {
+    throw gitfileInvalidFormat(gitfilePath);
+  }
   const raw = await probe.readUtf8(gitfilePath);
   if (raw === undefined) throw gitfileInvalidFormat(gitfilePath);
   const parsed = parseGitfilePointer(raw);
@@ -99,7 +114,7 @@ const layoutFor = async (
   pathPolicy: PathPolicy,
 ): Promise<RepositoryLayoutInput | undefined> => {
   const commonDir = await resolveCommonDir(probe, gitDir, pathPolicy);
-  if (!(await isGitDirectory(probe, gitDir, commonDir))) return undefined;
+  if (!(await isGitDirectory(probe, gitDir, commonDir, pathPolicy))) return undefined;
   return {
     workDir,
     gitDir,
@@ -122,6 +137,9 @@ const resolveCommonDir = async (
   pathPolicy: PathPolicy,
 ): Promise<string> => {
   const commondirPath = pathPolicy.join(gitDir, 'commondir');
+  const stat = await probe.stat(commondirPath);
+  if (stat === undefined) return gitDir;
+  if (stat.size > GITFILE_MAX_BYTES) throw gitfileInvalidFormat(commondirPath);
   const raw = await probe.readUtf8(commondirPath);
   if (raw === undefined) return gitDir;
   const value = parseCommondir(raw);
@@ -132,21 +150,23 @@ const resolveCommonDir = async (
 };
 
 /**
- * Git's `is_git_directory`, narrowed: only checks that `HEAD` exists, never
- * parses its content. Ref parsing is unavailable at discovery time; a
- * directory with a malformed `HEAD` is accepted here and rejected later by
- * the primitives tier with its own structured error, rather than by
- * silently walking up past it.
+ * Git's `is_git_directory`, narrowed: `HEAD` must be a regular file (via a
+ * following `stat`, so a symlinked HEAD qualifies) but its content is never
+ * parsed. Ref parsing is unavailable at discovery time; a directory with a
+ * malformed `HEAD` is accepted here and rejected later by the primitives
+ * tier with its own structured error, rather than by silently walking up
+ * past it. A directory named `HEAD` is not a head and fails the check.
  */
 const isGitDirectory = async (
   probe: LayoutProbe,
   gitDir: string,
   commonDir: string,
+  pathPolicy: PathPolicy,
 ): Promise<boolean> => {
-  const head = await probe.stat(`${gitDir}/HEAD`);
-  if (head === undefined) return false;
-  const objects = await probe.stat(`${commonDir}/objects`);
+  const head = await probe.stat(pathPolicy.join(gitDir, 'HEAD'));
+  if (head?.isFile !== true) return false;
+  const objects = await probe.stat(pathPolicy.join(commonDir, 'objects'));
   if (objects?.isDirectory !== true) return false;
-  const refs = await probe.stat(`${commonDir}/refs`);
+  const refs = await probe.stat(pathPolicy.join(commonDir, 'refs'));
   return refs?.isDirectory === true;
 };

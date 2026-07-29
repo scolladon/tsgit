@@ -118,7 +118,9 @@ export const openRepository = async (opts: OpenNodeRepositoryOptions = {}): Prom
 const nodeLayoutProbe: LayoutProbe = {
   stat: async (p) => {
     const s = await stat(p).catch(() => undefined);
-    return s === undefined ? undefined : { isDirectory: s.isDirectory(), isFile: s.isFile() };
+    return s === undefined
+      ? undefined
+      : { isDirectory: s.isDirectory(), isFile: s.isFile(), size: s.size };
   },
   readUtf8: (p) => readFile(p, 'utf8').catch(() => undefined),
 };
