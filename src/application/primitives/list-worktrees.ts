@@ -54,9 +54,24 @@ const resolveHead = async (ctx: Context, content: string): Promise<ResolvedHead>
   };
 };
 
-/** The primary worktree entry (the repository's own working tree). */
+/**
+ * Strip a trailing `/.git` from `dir`; absent means `dir` itself. Shared by
+ * `mainEntry` (derives the main worktree's path from the common dir) and
+ * `linkedEntry` (derives a linked worktree's path from its gitdir pointer) —
+ * both are the same "gitdir to working-tree path" rule.
+ */
+const stripGitSuffix = (dir: string): string =>
+  dir.endsWith(GIT_SUFFIX) ? dir.slice(0, -GIT_SUFFIX.length) : dir;
+
+/**
+ * The primary worktree entry (the repository's own working tree). The path
+ * is always derived from the common dir, never from `ctx.layout.workDir` —
+ * the latter is the caller's opened path, which is a linked worktree's own
+ * path when opened from inside one, whereas `git worktree list` always
+ * reports the main worktree's path first.
+ */
 const mainEntry = async (ctx: Context): Promise<WorktreeEntry> => {
-  const path = ctx.layout.workDir as FilePath;
+  const path = stripGitSuffix(commonGitDir(ctx)) as FilePath;
   if (ctx.layout.bare) {
     return { path, detached: false, bare: true, main: true };
   }
@@ -77,9 +92,7 @@ const readLocked = async (
 /** Build the entry for one linked worktree from its admin dir. */
 const linkedEntry = async (ctx: Context, id: string, adminDir: string): Promise<WorktreeEntry> => {
   const gitdirPointer = (await ctx.fs.readUtf8(`${adminDir}/gitdir`)).trim();
-  const path = (
-    gitdirPointer.endsWith(GIT_SUFFIX) ? gitdirPointer.slice(0, -GIT_SUFFIX.length) : gitdirPointer
-  ) as FilePath;
+  const path = stripGitSuffix(gitdirPointer) as FilePath;
   const resolved = await resolveHead(ctx, await ctx.fs.readUtf8(`${adminDir}/HEAD`));
   const locked = await readLocked(ctx, adminDir);
   // The worktree dir lives outside workDir, so probe it through the worktree fs

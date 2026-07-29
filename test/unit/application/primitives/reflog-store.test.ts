@@ -14,6 +14,7 @@ import type { AuthorIdentity, ObjectId, RefName } from '../../../../src/domain/o
 import { ZERO_OID } from '../../../../src/domain/objects/index.js';
 import type { ReflogEntry } from '../../../../src/domain/reflog/index.js';
 import { serializeReflogLine } from '../../../../src/domain/reflog/index.js';
+import type { Context } from '../../../../src/ports/context.js';
 
 const OID_A = 'a'.repeat(40) as ObjectId;
 const OID_B = 'b'.repeat(40) as ObjectId;
@@ -44,6 +45,15 @@ const lineOfSize = (bytes: number): string => {
   const framing = serializeReflogLine(entry({ message: '' })).length + 1;
   return serializeReflogLine(entry({ message: 'x'.repeat(bytes - framing) }));
 };
+
+/** The linked worktree's own (admin) gitdir under the common dir's `worktrees/`. */
+const adminDir = (ctx: Context): string => `${ctx.layout.gitDir}/worktrees/wt`;
+
+/** Reframe a seeded main-repo Context as a linked-worktree child Context. */
+const asWorktreeChild = (ctx: Context): Context => ({
+  ...ctx,
+  layout: { ...ctx.layout, gitDir: adminDir(ctx), commonDir: ctx.layout.gitDir },
+});
 
 describe('reflog-store', () => {
   describe('appendReflog', () => {
@@ -296,6 +306,41 @@ describe('reflog-store', () => {
           expect([...result].sort()).toEqual(
             ['HEAD', 'refs/heads/main', 'refs/remotes/origin/main'].sort(),
           );
+        });
+      });
+    });
+
+    describe('Given a worktree child Context with a shared-ref reflog in the common dir and a per-worktree reflog in the admin dir', () => {
+      describe('When listReflogs', () => {
+        it('Then both are returned, each exactly once', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          const sut = asWorktreeChild(ctx);
+          await appendReflog(sut, HEAD, entry());
+          await appendReflog(sut, BRANCH, entry());
+
+          // Act
+          const result = await listReflogs(sut);
+
+          // Assert
+          expect([...result].sort()).toEqual(['HEAD', 'refs/heads/main'].sort());
+        });
+      });
+    });
+
+    describe('Given a plain Context whose gitDir equals its commonDir', () => {
+      describe('When listReflogs', () => {
+        it('Then a reflog present in both walk roots is still returned exactly once', async () => {
+          // Arrange — gitDir === commonDir (no `commonDir` override), so the
+          // two-root walk collapses onto the same directory: the dedup proof.
+          const ctx = createMemoryContext();
+          await appendReflog(ctx, HEAD, entry());
+
+          // Act
+          const result = await listReflogs(ctx);
+
+          // Assert
+          expect(result.filter((r) => r === 'HEAD')).toHaveLength(1);
         });
       });
     });

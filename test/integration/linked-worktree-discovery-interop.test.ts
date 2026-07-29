@@ -68,6 +68,47 @@ const gitDirPair = (cwd: string): readonly [string, string] => {
   return [gitDir, commonDir];
 };
 
+/** One entry parsed from `git worktree list --porcelain` output. */
+interface PorcelainWorktreeEntry {
+  readonly path: string;
+  readonly head?: string;
+  readonly branch?: string;
+  readonly detached: boolean;
+  readonly bare: boolean;
+}
+
+/**
+ * Reconstruct `git worktree list --porcelain`'s entries as structured fields
+ * — blank-line-separated blocks, each a `key value` line per field (or a
+ * bare `detached` / `bare` keyword line).
+ */
+const parseWorktreePorcelain = (output: string): ReadonlyArray<PorcelainWorktreeEntry> =>
+  output
+    .trim()
+    .split('\n\n')
+    .filter((block) => block.length > 0)
+    .map((block) => {
+      let path = '';
+      let head: string | undefined;
+      let branch: string | undefined;
+      let detached = false;
+      let bare = false;
+      for (const line of block.split('\n')) {
+        if (line.startsWith('worktree ')) path = line.slice('worktree '.length);
+        else if (line.startsWith('HEAD ')) head = line.slice('HEAD '.length);
+        else if (line.startsWith('branch ')) branch = line.slice('branch '.length);
+        else if (line === 'detached') detached = true;
+        else if (line === 'bare') bare = true;
+      }
+      return {
+        path,
+        detached,
+        bare,
+        ...(head !== undefined ? { head } : {}),
+        ...(branch !== undefined ? { branch } : {}),
+      };
+    });
+
 describe.skipIf(!GIT_AVAILABLE)('linked-worktree discovery interop', () => {
   describe('Given a git-built linked worktree checked out at HEAD~1 (scenarios A, D)', () => {
     let root: string;
@@ -172,6 +213,27 @@ describe.skipIf(!GIT_AVAILABLE)('linked-worktree discovery interop', () => {
         } finally {
           await nested.dispose();
         }
+      });
+    });
+
+    describe('When worktree.list runs from inside the worktree (scenario I, normal shape)', () => {
+      it('Then entries match git worktree list --porcelain: main first, main path derived from the common dir', async () => {
+        // Arrange
+        const expected = parseWorktreePorcelain(git(wt, 'worktree', 'list', '--porcelain'));
+
+        // Act
+        const result = await repo.worktree.list();
+
+        // Assert
+        expect(result.entries).toHaveLength(expected.length);
+        const [mainExpected] = expected;
+        const [mainActual] = result.entries;
+        expect(mainActual?.main).toBe(true);
+        expect(mainActual?.path).toBe(mainExpected?.path);
+        expect(mainActual?.head).toBe(mainExpected?.head);
+        expect(mainActual?.branch).toBe(mainExpected?.branch);
+        expect(mainActual?.detached).toBe(mainExpected?.detached);
+        expect(mainActual?.bare).toBe(mainExpected?.bare);
       });
     });
   });
@@ -284,6 +346,33 @@ describe.skipIf(!GIT_AVAILABLE)('linked-worktree discovery interop', () => {
 
           // Assert
           expect(result).toBe(expected);
+        } finally {
+          await repo.dispose();
+        }
+      });
+    });
+
+    describe('When worktree.list runs from the working directory (scenario I, separate-git-dir shape)', () => {
+      it('Then the main entry path matches git worktree list --porcelain: the gitdir, not the working directory', async () => {
+        // Arrange — the divergence fix: a separate-git-dir main worktree has
+        // no `/.git` suffix to strip, so git reports the gitdir itself.
+        const expected = parseWorktreePorcelain(git(workDir, 'worktree', 'list', '--porcelain'));
+        const repo = await openRepository({ cwd: workDir });
+
+        try {
+          // Act
+          const result = await repo.worktree.list();
+
+          // Assert
+          expect(result.entries).toHaveLength(expected.length);
+          const [mainExpected] = expected;
+          const [mainActual] = result.entries;
+          expect(mainActual?.main).toBe(true);
+          expect(mainActual?.path).toBe(mainExpected?.path);
+          expect(mainActual?.path).not.toBe(workDir);
+          expect(mainActual?.head).toBe(mainExpected?.head);
+          expect(mainActual?.branch).toBe(mainExpected?.branch);
+          expect(mainActual?.detached).toBe(mainExpected?.detached);
         } finally {
           await repo.dispose();
         }
@@ -523,16 +612,8 @@ describe.skipIf(!GIT_AVAILABLE)('linked-worktree discovery interop', () => {
       if (root !== undefined) await rm(root, { recursive: true, force: true });
     });
 
-    describe('When commit, config.set and stash.push run from the worktree', () => {
-      // `branch.create` / `tag.create` and commit's own branch-ref move are
-      // deliberately NOT exercised here: their ref write goes through
-      // `updateRef`, which routes every shared ref through `perWorktreeRefDir`
-      // only once Part 5 lands (`update-ref.ts` is explicitly out of this
-      // part's site table). Verified empirically: after `repo.commit()` here,
-      // `git -C main log feature` still shows the pre-commit tip — the new
-      // commit object itself is correctly written to the common dir (this
-      // part's fix) but the branch pointer move is not yet routed there.
-      it('Then new objects/config/stash land in the common dir, HEAD/index stay in the admin dir, and git reads the new object', async () => {
+    describe('When commit, config.set, stash.push, branch.create and tag.create run from the worktree', () => {
+      it('Then new objects/config/stash/refs land in the common dir, HEAD/index stay in the admin dir, and git reads the moved branch tip', async () => {
         // Arrange
         const [gitDir, commonDir] = gitDirPair(wt);
         const repo = await openRepository({ cwd: wt });
@@ -545,6 +626,8 @@ describe.skipIf(!GIT_AVAILABLE)('linked-worktree discovery interop', () => {
           await repo.config.set({ key: 'wt.marker', value: 'yes', scope: 'local' });
           await writeFile(path.join(wt, 'c.txt'), 'dirty\n');
           await repo.stash.push({ includeUntracked: true });
+          await repo.branch.create({ name: 'wt-branch' });
+          await repo.tag.create({ name: 'wt-tag' });
 
           // Assert — new commit object lands under the common objects dir
           const objectRel = path.join('objects', committed.id.slice(0, 2), committed.id.slice(2));
@@ -559,6 +642,19 @@ describe.skipIf(!GIT_AVAILABLE)('linked-worktree discovery interop', () => {
           // Assert — refs/stash lands under the common dir
           expect(existsSync(path.join(commonDir, 'refs', 'stash'))).toBe(true);
           expect(existsSync(path.join(gitDir, 'refs', 'stash'))).toBe(false);
+
+          // Assert — the checked-out branch (`feature`)'s ref move lands under
+          // the common dir: git, run from the main worktree, sees the new tip.
+          expect(existsSync(path.join(commonDir, 'refs', 'heads', 'feature'))).toBe(true);
+          expect(existsSync(path.join(gitDir, 'refs', 'heads', 'feature'))).toBe(false);
+          const featureLog = git(main, 'log', '--format=%H', 'feature').trim().split('\n');
+          expect(featureLog[0]).toBe(committed.id);
+
+          // Assert — branch.create / tag.create land under the common refs dir
+          expect(existsSync(path.join(commonDir, 'refs', 'heads', 'wt-branch'))).toBe(true);
+          expect(existsSync(path.join(gitDir, 'refs', 'heads', 'wt-branch'))).toBe(false);
+          expect(existsSync(path.join(commonDir, 'refs', 'tags', 'wt-tag'))).toBe(true);
+          expect(existsSync(path.join(gitDir, 'refs', 'tags', 'wt-tag'))).toBe(false);
 
           // Assert — HEAD and the index stay under the admin (per-worktree) dir
           expect(existsSync(path.join(gitDir, 'HEAD'))).toBe(true);

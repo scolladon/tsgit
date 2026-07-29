@@ -10,6 +10,7 @@ import { validateRefName } from '../../domain/refs/index.js';
 import { HEADS_PREFIX } from '../../domain/refs/ref-prefixes.js';
 import type { Context } from '../../ports/context.js';
 import { materializeTree } from '../primitives/materialize-tree.js';
+import { perWorktreeRefDir } from '../primitives/path-layout.js';
 import { readIndex } from '../primitives/read-index.js';
 import { loadSparseMatcher } from '../primitives/read-sparse-checkout.js';
 import { readTree } from '../primitives/read-tree.js';
@@ -88,7 +89,7 @@ const switchBranch = async (ctx: Context, opts: CheckoutSwitchOptions): Promise<
     oid = await resolveSwitchOid(ctx, opts.rev);
   } else {
     branchRef = validateRefName(`${HEADS_PREFIX}${opts.rev}`);
-    if (!(await ctx.fs.exists(`${ctx.layout.gitDir}/${branchRef}`))) {
+    if (!(await ctx.fs.exists(`${perWorktreeRefDir(ctx, branchRef)}/${branchRef}`))) {
       throw branchNotFound(branchRef);
     }
     oid = await resolveRef(ctx, branchRef);

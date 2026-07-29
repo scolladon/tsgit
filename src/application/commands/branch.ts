@@ -12,7 +12,7 @@ import { branchCreatedFrom, branchRenamed } from '../../domain/reflog/reflog-mes
 import { validateRefName } from '../../domain/refs/index.js';
 import { HEADS_PREFIX } from '../../domain/refs/ref-prefixes.js';
 import type { Context } from '../../ports/context.js';
-import { commonGitDir } from '../primitives/path-layout.js';
+import { commonGitDir, perWorktreeRefDir } from '../primitives/path-layout.js';
 import { readReflog, writeReflog } from '../primitives/reflog-store.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import { updateRef } from '../primitives/update-ref.js';
@@ -129,7 +129,7 @@ export const branchDelete = async (
   if (head.kind === 'symbolic' && head.target === name) {
     throw cannotDeleteCheckedOutBranch(name);
   }
-  if (!(await ctx.fs.exists(`${ctx.layout.gitDir}/${name}`))) {
+  if (!(await ctx.fs.exists(`${perWorktreeRefDir(ctx, name)}/${name}`))) {
     throw branchNotFound(name);
   }
   await updateRef(ctx, name, ZERO_OID, { delete: true });

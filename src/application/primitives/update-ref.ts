@@ -5,7 +5,7 @@ import { refNotFound, refUpdateConflict } from '../../domain/refs/error.js';
 import { validateRefName } from '../../domain/refs/ref-validation.js';
 import type { Context } from '../../ports/context.js';
 import { atomicWriteRef } from './atomic-write.js';
-import { looseRefPath } from './path-layout.js';
+import { looseRefPath, perWorktreeRefDir } from './path-layout.js';
 import { recordRefUpdate } from './record-ref-update.js';
 import { getRefStore, type RefStore } from './ref-store.js';
 import { deleteReflog } from './reflog-store.js';
@@ -23,7 +23,7 @@ export async function updateRef(
   // that could let `${gitDir}/${name}` escape the repo — no separate path
   // containment check is needed.
   validateRefName(name);
-  const refPath = looseRefPath(ctx.layout.gitDir, name);
+  const refPath = looseRefPath(perWorktreeRefDir(ctx, name), name);
 
   const store = getRefStore(ctx);
   const current = await store.resolveDirect(name);

@@ -35,7 +35,7 @@ import { readConfig } from '../primitives/config-read.js';
 import { fetchPack } from '../primitives/fetch-pack.js';
 import { hasObject } from '../primitives/has-object.js';
 import { assertNoValuelessConfig } from '../primitives/internal/valueless-config-guard.js';
-import { commonGitDir } from '../primitives/path-layout.js';
+import { commonGitDir, perWorktreeRefDir } from '../primitives/path-layout.js';
 import { getRefStore } from '../primitives/ref-store.js';
 import { updateShallow } from '../primitives/shallow-file.js';
 import { MAX_HAVES, MAX_WALK_SEEDS } from '../primitives/types.js';
@@ -382,7 +382,7 @@ const readExistingRef = async (ctx: Context, name: RefName): Promise<ObjectId | 
   // future refactor that loses the guard cannot reintroduce the
   // path-traversal vulnerability. validateRefName throws if invalid.
   validateRefName(name);
-  const path = `${ctx.layout.gitDir}/${name}`;
+  const path = `${perWorktreeRefDir(ctx, name)}/${name}`;
   if (!(await ctx.fs.exists(path))) return undefined;
   const content = (await ctx.fs.readUtf8(path)).trim();
   return isOid(content) ? (content as ObjectId) : undefined;
