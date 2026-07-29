@@ -146,6 +146,58 @@ describe('Node shim — findLayout walk-up', () => {
   });
 });
 
+describe('Node shim — linked worktree discovery', () => {
+  describe('Given a repo with a commit, When repo.worktree.add creates a linked worktree and openRepository opens it', () => {
+    it('Then it resolves workDir/gitDir/commonDir', async () => {
+      // Arrange — seed a repo with one commit, then create a linked worktree.
+      // The sibling worktree path is built from the REALPATHED tmpdir (not the
+      // raw one) — openRepository realpaths cwd internally, so a worktree path
+      // built off the raw form would root the two sibling directories under
+      // different (mismatched) prefixes on a symlinked tmp hierarchy (macOS
+      // /var -> /private/var).
+      const realTmpdir = await realpath(tmpdir);
+      const setup = await openRepository({ cwd: tmpdir });
+      await setup.init();
+      await writeFile(path.join(tmpdir, 'a.txt'), 'hello\n');
+      await setup.add(['a.txt']);
+      await setup.commit({ message: 'first', author });
+      const wt = `${realTmpdir}-wt`;
+      const { id } = await setup.worktree.add({ path: wt, branch: 'wt' });
+      await setup.dispose();
+
+      // Act — open a fresh repo at the linked worktree path.
+      const sut = await openRepository({ cwd: wt });
+      try {
+        // Assert
+        expect(sut.ctx.layout.workDir).toBe(wt);
+        expect(sut.ctx.layout.gitDir).toBe(path.join(realTmpdir, '.git', 'worktrees', id));
+        expect(sut.ctx.layout.commonDir).toBe(path.join(realTmpdir, '.git'));
+      } finally {
+        await sut.dispose();
+        await rm(wt, { recursive: true, force: true });
+      }
+    });
+  });
+
+  describe('Given a plain (non-worktree) repo, When openRepository runs', () => {
+    it('Then the layout carries no commonDir key', async () => {
+      // Arrange
+      const setup = await openRepository({ cwd: tmpdir });
+      await setup.init();
+      await setup.dispose();
+
+      // Act
+      const sut = await openRepository({ cwd: tmpdir });
+      try {
+        // Assert
+        expect('commonDir' in sut.ctx.layout).toBe(false);
+      } finally {
+        await sut.dispose();
+      }
+    });
+  });
+});
+
 describe('Node shim — dispose', () => {
   describe('Given a disposed repo, When any bound method is invoked', () => {
     it('Then it throws REPOSITORY_DISPOSED', async () => {

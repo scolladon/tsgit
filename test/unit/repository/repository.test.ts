@@ -1142,6 +1142,71 @@ describe('openRepository — worktreeFs capability', () => {
   });
 });
 
+describe('openRepository — layout.commonDir plumbing', () => {
+  // '/root' is the memory adapter's own containment boundary; '/root/repo' and
+  // '/root/common' are sibling subtrees of it — commonDir is unreachable
+  // through a single-root workDir-only guard, but still inside the adapter's
+  // own bound.
+  const commonDirFallback = (fs: MemoryFileSystem): RuntimeFallback => ({
+    ...makeFallback(),
+    fs,
+    layout: {
+      workDir: '/root/repo',
+      gitDir: '/root/repo/.git',
+      bare: false,
+      commonDir: '/root/common',
+    },
+  });
+
+  describe('Given a fallback.layout carrying commonDir (a linked-worktree shape)', () => {
+    describe('When openRepository runs', () => {
+      it('Then ctx.layout.commonDir is populated from the fallback layout', async () => {
+        // Arrange
+        const fs = new MemoryFileSystem({ rootDir: '/root' });
+        const fallback = commonDirFallback(fs);
+
+        // Act
+        const sut = await openRepository({ cwd: '/root/repo' }, fallback);
+
+        // Assert
+        expect(sut.ctx.layout.commonDir).toBe('/root/common');
+      });
+    });
+
+    describe('When reading a path under commonDir through the wrapped fs', () => {
+      it('Then it does not throw — commonDir is an admitted root', async () => {
+        // Arrange
+        const fs = new MemoryFileSystem({ rootDir: '/root' });
+        await fs.mkdir('/root/common');
+        await fs.writeUtf8('/root/common/HEAD', 'ref: refs/heads/main\n');
+        const fallback = commonDirFallback(fs);
+        const sut = await openRepository({ cwd: '/root/repo' }, fallback);
+
+        // Act
+        const result = await sut.ctx.fs.readUtf8('/root/common/HEAD');
+
+        // Assert
+        expect(result).toBe('ref: refs/heads/main\n');
+      });
+    });
+
+    describe('When reading a path outside every layout root through the wrapped fs', () => {
+      it('Then it still throws PATHSPEC_OUTSIDE_REPO', async () => {
+        // Arrange
+        const fs = new MemoryFileSystem({ rootDir: '/root' });
+        const fallback = commonDirFallback(fs);
+        const sut = await openRepository({ cwd: '/root/repo' }, fallback);
+
+        // Act
+        const code = await rejectionCode(() => sut.ctx.fs.read('/root/outside/secret'));
+
+        // Assert
+        expect(code).toBe('PATHSPEC_OUTSIDE_REPO');
+      });
+    });
+  });
+});
+
 describe('openRepository — config-scope allowlist', () => {
   describe('Given a default-wrapped repo whose adapter exposes home, XDG and system config scopes', () => {
     describe('When accessing a config-scope or arbitrary path through the wrapped fs', () => {

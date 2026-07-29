@@ -178,7 +178,7 @@ export const wrapFsValidator = (
  */
 const normalizeSeparators = (p: string): string => p.replace(/\\/g, '/');
 
-const isContainedIn = (path: string, cwd: string): boolean => {
+export const isContainedIn = (path: string, cwd: string): boolean => {
   const a = normalizeSeparators(path);
   const b = normalizeSeparators(cwd);
   if (a === b) return true;

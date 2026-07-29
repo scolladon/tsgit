@@ -4,7 +4,7 @@
  * cwd-walked layout) and forwards every `openRepository(opts)` call to the
  * core factory with the fallback pre-bound.
  */
-import { realpath, stat } from 'node:fs/promises';
+import { readFile, realpath, stat } from 'node:fs/promises';
 import * as nodePath from 'node:path';
 
 import { NodeCommandRunner } from './adapters/node/node-command-runner.js';
@@ -18,11 +18,15 @@ import { NodeSshTransport } from './adapters/node/node-ssh-transport.js';
 import { nativePolicy } from './adapters/node/path-policy.js';
 import { SHA1_CONFIG } from './domain/objects/hash-config.js';
 import { createLruCache } from './domain/storage/lru-cache.js';
+import type { LayoutProbe } from './ports/layout-probe.js';
 import { commonAncestor } from './repository/common-ancestor.js';
+import { findLayout } from './repository/find-layout.js';
+import { layoutRootsOf } from './repository/layout-roots.js';
 import {
   type OpenRepositoryOptions,
   openRepository as openRepositoryCore,
   type Repository,
+  type RepositoryLayoutInput,
 } from './repository.js';
 
 const DEFAULT_DELTA_CACHE_BYTES = 16 * 1024 * 1024;
@@ -51,15 +55,24 @@ export const openRepository = async (opts: OpenNodeRepositoryOptions = {}): Prom
   // point at a not-yet-existing directory).
   const resolvedCwd = await realpath(nodePath.resolve(cwd)).catch(() => nodePath.resolve(cwd));
   // Discover layout BEFORE constructing the bounded NodeFileSystem. Layout
-  // discovery walks up the parent chain looking for `.git`; the bounded FS
-  // would reject paths outside its rootDir, preventing the walk from reaching
-  // a repo whose root is an ancestor of the user's cwd.
-  const layout = (await discoverLayout(resolvedCwd)) ?? {
-    workDir: resolvedCwd,
-    gitDir: nodePath.join(resolvedCwd, '.git'),
-    bare: false,
-  };
-  const fs = new NodeFileSystem(layout.workDir);
+  // discovery walks up the parent chain looking for `.git` (a directory OR a
+  // gitfile pointer — linked worktree, submodule, `--separate-git-dir`); the
+  // bounded FS would reject paths outside its rootDir, preventing the walk
+  // from reaching a repo whose root is an ancestor of the user's cwd.
+  const layout = await resolveNodeLayout(resolvedCwd);
+  // The raw adapter roots at the common ancestor of the (containment-minimised)
+  // layout roots — wide enough to reach a linked worktree's workDir AND its
+  // common dir in one instance. It must stay wide: the facade's multi-root
+  // FS validator (repository.ts) is the real containment gate, narrowing
+  // access back down to exactly `layoutRootsOf(layout)`. This mirrors
+  // `makeWorktreeFs` below, which has rooted a fresh raw adapter this way for
+  // a linked worktree's out-of-workDir common dir; the only way a caller
+  // reaches this raw, broader-rooted adapter directly is the explicit
+  // `unsafeRawAdapters: true` opt-out.
+  const fs = new NodeFileSystem(
+    commonAncestor([...layoutRootsOf(layout)], nativePolicy),
+    nativePolicy,
+  );
   const hash = new NodeHashService();
   const compressor = new NodeCompressor();
   const transport = new NodeHttpTransport({
@@ -105,24 +118,44 @@ export const openRepository = async (opts: OpenNodeRepositoryOptions = {}): Prom
 };
 
 /**
- * Walk up from `start` looking for a `.git` directory. Uses raw `fs.promises`
- * so the walk is not gated by any NodeFileSystem containment check — must run
- * BEFORE the bounded FS is constructed.
+ * Raw `node:fs/promises`-backed `LayoutProbe`. Must stay raw (never routed
+ * through a bounded `NodeFileSystem`): the discovery walk climbs above `cwd`
+ * looking for `.git`, and a bounded adapter would reject every step outside
+ * its own rootDir — this has to run BEFORE that adapter is constructed.
  */
-const discoverLayout = async (
-  start: string,
-): Promise<{ workDir: string; gitDir: string; bare: boolean } | undefined> => {
-  let current = start;
-  while (true) {
-    const candidate = nodePath.join(current, '.git');
-    const result = await stat(candidate).catch(() => undefined);
-    if (result?.isDirectory()) {
-      return { workDir: current, gitDir: candidate, bare: false };
-    }
-    const parent = nodePath.dirname(current);
-    if (parent === current) return undefined;
-    current = parent;
+const nodeLayoutProbe: LayoutProbe = {
+  stat: async (p) => {
+    const s = await stat(p).catch(() => undefined);
+    return s === undefined ? undefined : { isDirectory: s.isDirectory(), isFile: s.isFile() };
+  },
+  readUtf8: (p) => readFile(p, 'utf8').catch(() => undefined),
+};
+
+/** realpath with the same not-yet-existing-path fallback the resolved `cwd` above uses. */
+const canonicalize = (p: string): Promise<string> => realpath(p).catch(() => p);
+
+/**
+ * Resolve the physical layout for `cwd`: walk up looking for a `.git` entry,
+ * then realpath the discovered `gitDir`/`commonDir` — the node adapter
+ * confines by realpath, so an unresolved admin path would spuriously reject
+ * on a symlinked repo root (e.g. macOS's `/var` -> `/private/var`). `workDir`
+ * needs no separate realpath: it is derived by walking up from the
+ * already-realpathed `cwd`, and an ancestor of a realpath is itself real.
+ *
+ * Falls back to `{cwd}/.git` when nothing is found up to the filesystem
+ * root — the `openRepository`/`init`/`clone` contract against a
+ * not-yet-existing repository.
+ */
+const resolveNodeLayout = async (cwd: string): Promise<RepositoryLayoutInput> => {
+  const discovered = await findLayout(nodeLayoutProbe, cwd, nativePolicy);
+  if (discovered === undefined) {
+    return { workDir: cwd, gitDir: nodePath.join(cwd, '.git'), bare: false };
   }
+  const gitDir = await canonicalize(discovered.gitDir);
+  if (discovered.commonDir === undefined) {
+    return { ...discovered, gitDir };
+  }
+  return { ...discovered, gitDir, commonDir: await canonicalize(discovered.commonDir) };
 };
 
 export type { AdapterSet } from './adapter-detect.js';
