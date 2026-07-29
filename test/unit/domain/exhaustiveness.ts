@@ -180,6 +180,8 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'WORKTREE_LOCKED':
     case 'WORKTREE_DIRTY':
     case 'NOT_A_WORKTREE':
+    case 'GITFILE_INVALID_FORMAT':
+    case 'GITFILE_NO_PATH':
     case 'BUNDLE_EMPTY':
     case 'BUNDLE_READ_FAILED':
     case 'BUNDLE_BAD_HEADER':

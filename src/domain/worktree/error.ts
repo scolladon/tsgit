@@ -6,7 +6,9 @@ export type WorktreeError =
   | { readonly code: 'BRANCH_CHECKED_OUT'; readonly branch: string; readonly path: string }
   | { readonly code: 'WORKTREE_LOCKED'; readonly path: string; readonly reason: string }
   | { readonly code: 'WORKTREE_DIRTY'; readonly path: string }
-  | { readonly code: 'NOT_A_WORKTREE'; readonly path: string };
+  | { readonly code: 'NOT_A_WORKTREE'; readonly path: string }
+  | { readonly code: 'GITFILE_INVALID_FORMAT'; readonly path: string }
+  | { readonly code: 'GITFILE_NO_PATH'; readonly path: string };
 
 /**
  * `add`/`move` refuse a destination directory that already exists and is not
@@ -44,3 +46,17 @@ export const worktreeDirty = (path: string): TsgitError =>
  */
 export const notAWorktree = (path: string): TsgitError =>
   new TsgitError({ code: 'NOT_A_WORKTREE', path });
+
+/**
+ * Discovery refuses a `.git` gitfile that lacks the exact `gitdir: ` prefix —
+ * git's `fatal: invalid gitfile format: <path>`.
+ */
+export const gitfileInvalidFormat = (path: string): TsgitError =>
+  new TsgitError({ code: 'GITFILE_INVALID_FORMAT', path });
+
+/**
+ * Discovery refuses a `.git` gitfile whose `gitdir: ` prefix is followed by an
+ * empty path — git's `fatal: no path in gitfile: <path>`.
+ */
+export const gitfileNoPath = (path: string): TsgitError =>
+  new TsgitError({ code: 'GITFILE_NO_PATH', path });

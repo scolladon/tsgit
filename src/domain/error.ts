@@ -487,6 +487,10 @@ function extractDetail(data: TsgitErrorData): string {
       return `'${data.path}' contains modified or untracked files, use --force to delete it`;
     case 'NOT_A_WORKTREE':
       return `'${data.path}' is not a working tree`;
+    case 'GITFILE_INVALID_FORMAT':
+      return `invalid gitfile format: ${data.path}`;
+    case 'GITFILE_NO_PATH':
+      return `no path in gitfile: ${data.path}`;
     case 'BUNDLE_EMPTY':
       return `refusing to create empty bundle: ${data.reason}`;
     case 'BUNDLE_READ_FAILED':

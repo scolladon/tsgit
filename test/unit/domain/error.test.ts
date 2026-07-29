@@ -1115,6 +1115,33 @@ describe('domain error — AdapterError', () => {
         });
       });
     });
+
+    describe('Given GITFILE_INVALID_FORMAT', () => {
+      describe('When reading message', () => {
+        it('Then states the gitfile format is invalid and names the path', () => {
+          // Arrange & Act
+          const result = new TsgitErrorClass({
+            code: 'GITFILE_INVALID_FORMAT',
+            path: 'wt/.git',
+          });
+
+          // Assert — its own message, never the GITFILE_NO_PATH case it precedes.
+          expect(result.message).toBe('GITFILE_INVALID_FORMAT: invalid gitfile format: wt/.git');
+        });
+      });
+    });
+
+    describe('Given GITFILE_NO_PATH', () => {
+      describe('When reading message', () => {
+        it('Then states there is no path in the gitfile', () => {
+          // Arrange & Act
+          const result = new TsgitErrorClass({ code: 'GITFILE_NO_PATH', path: 'wt/.git' });
+
+          // Assert
+          expect(result.message).toBe('GITFILE_NO_PATH: no path in gitfile: wt/.git');
+        });
+      });
+    });
   });
 
   describe("Given pathNotInTree('HEAD', 'missing.txt')", () => {
