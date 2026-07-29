@@ -565,7 +565,7 @@ describe.skipIf(!GIT_AVAILABLE)('linked-worktree discovery interop', () => {
 
     describe('When branch.list runs from the worktree', () => {
       it('Then it finds the loose branch created after packing, from the common dir', async () => {
-        // Act
+        // Arrange & Act
         const result = await repo.branch.list();
 
         // Assert
@@ -576,7 +576,7 @@ describe.skipIf(!GIT_AVAILABLE)('linked-worktree discovery interop', () => {
 
     describe('When tag.list runs from the worktree', () => {
       it('Then it finds the loose tag created after packing, from the common dir', async () => {
-        // Act
+        // Arrange & Act
         const result = await repo.tag.list();
 
         // Assert

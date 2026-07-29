@@ -120725,7 +120725,7 @@
 									},
 									{
 										"kind": "code",
-										"text": "`.git/logs/`"
+										"text": "`logs/`"
 									},
 									{
 										"kind": "text",
@@ -120737,7 +120737,15 @@
 									},
 									{
 										"kind": "text",
-										"text": " it logs."
+										"text": " it logs. Reflogs live\nunder two roots for a linked worktree: the worktree's own gitdir (HEAD's\nper-worktree log) and the common dir (every shared ref's log). For a\nnormal repo / the main worktree the two roots are identical — both are\nstill walked, and the "
+									},
+									{
+										"kind": "code",
+										"text": "`Set<RefName>`"
+									},
+									{
+										"kind": "text",
+										"text": " below collapses the resulting\nduplicate names."
 									}
 								]
 							},

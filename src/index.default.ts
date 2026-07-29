@@ -13,8 +13,11 @@ import { MemoryCompressor } from './adapters/memory/memory-compressor.js';
 import { MemoryFileSystem } from './adapters/memory/memory-file-system.js';
 import { MemoryHashService } from './adapters/memory/memory-hash-service.js';
 import { MemoryHttpTransport } from './adapters/memory/memory-http-transport.js';
+import { posixPolicy } from './adapters/node/path-policy.js';
 import { SHA1_CONFIG, SHA256_CONFIG } from './domain/objects/hash-config.js';
 import { createLruCache } from './domain/storage/lru-cache.js';
+import { fileSystemLayoutProbe } from './repository/file-system-layout-probe.js';
+import { findLayout } from './repository/find-layout.js';
 import {
   type OpenRepositoryOptions,
   openRepository as openRepositoryCore,
@@ -46,13 +49,20 @@ export const openRepository = async (
     opts.files === undefined
       ? { rootDir: DEFAULT_WORK_DIR }
       : { rootDir: DEFAULT_WORK_DIR, files: opts.files };
+  const fs = new MemoryFileSystem(fsOptions);
+  const cwd = opts.cwd ?? DEFAULT_WORK_DIR;
+  const layout = (await findLayout(fileSystemLayoutProbe(fs), cwd, posixPolicy)) ?? {
+    workDir: DEFAULT_WORK_DIR,
+    gitDir: DEFAULT_GIT_DIR,
+    bare: false,
+  };
   const fallback = {
-    fs: new MemoryFileSystem(fsOptions),
+    fs,
     hash: new MemoryHashService(algorithm),
     compressor: new MemoryCompressor(),
     transport: new MemoryHttpTransport(),
     runtime: 'memory' as const,
-    layout: { workDir: DEFAULT_WORK_DIR, gitDir: DEFAULT_GIT_DIR, bare: false },
+    layout,
     hashConfig: algorithm === 'sha256' ? SHA256_CONFIG : SHA1_CONFIG,
     deltaCache: createLruCache<Uint8Array>(DEFAULT_DELTA_CACHE_BYTES),
   };
