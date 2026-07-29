@@ -374,10 +374,13 @@ describe('NodeFileSystem — canonical-root cache (DI)', () => {
     });
   });
 
-  describe('Given the first realpath(rootDir) rejects', () => {
+  describe('Given the root does not exist on the first realpath(rootDir)', () => {
     describe('When `exists` is called again', () => {
-      it('Then realpath is retried (cache reset on rejection)', async () => {
-        // Arrange
+      it('Then realpath is retried (an incomplete root set is never memoised)', async () => {
+        // Arrange — a missing root is tolerated (it contributes no canonical
+        // prefix) but must NOT freeze: a caller about to create the root — a
+        // `worktree add` target — needs the next call to pick up its
+        // canonical form.
         const rootDir = 'C:\\canonical\\missing';
         let callCount = 0;
         const realpath = vi.fn().mockImplementation(async (input: string) => {
@@ -445,14 +448,15 @@ describe('NodeFileSystem — canonical-root cache (DI)', () => {
     });
   });
 
-  describe('Given the first canonical-root resolution rejects', () => {
+  describe('Given the first canonical-root resolution rejects with a non-ENOENT errno', () => {
     describe('When a later `checkContainment`-driving call runs (lstat)', () => {
-      it('Then the cached field stays undefined and the canonical root is retried', async () => {
-        // Arrange — pins the `.catch` arm of `getCanonicalRoot`: on
-        // rejection, `resolvedCanonicalRootPrefix` must stay `undefined` so
-        // the guard's `if` branch re-awaits `getCanonicalRoot()` on the next
-        // call instead of trusting a stale/never-set field. Leaves live
-        // under `/root/sub` so the lstat-arm's OWN parent-realpath call
+      it('Then the error surfaces and the canonical root is retried', async () => {
+        // Arrange — pins the `.catch` arm of `loadRootSet`: an errno that is
+        // NOT ENOENT (a missing root is legitimately tolerated) must never be
+        // swallowed, and must leave `resolvedRootSet` `undefined` so the
+        // guard's `if` branch re-awaits `loadRootSet()` on the next call
+        // instead of trusting a stale/never-set field. Leaves live under
+        // `/root/sub` so the lstat-arm's OWN parent-realpath call
         // (`cachedParentRealpath('/root/sub')`) is a distinct call site from
         // the canonical-root resolution (`realpath('/root')`) this test pins.
         const rootDir = '/root';
@@ -460,7 +464,7 @@ describe('NodeFileSystem — canonical-root cache (DI)', () => {
         const realpath = vi.fn().mockImplementation(async (input: string) => {
           if (input === rootDir) {
             callCount += 1;
-            if (callCount === 1) throw enoent();
+            if (callCount === 1) throw eacces();
             return rootDir;
           }
           return input;
@@ -483,10 +487,10 @@ describe('NodeFileSystem — canonical-root cache (DI)', () => {
         });
         const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
 
-        // Act — `getCanonicalRoot()`'s rejection propagates raw (it is
-        // awaited BEFORE `checkContainment`'s try/catch), so the first call
-        // rejects with the underlying ENOENT; the second succeeds once the
-        // canonical root resolves.
+        // Act — `loadRootSet()`'s rejection propagates raw (it is awaited
+        // BEFORE `checkContainment`'s try/catch), so the first call rejects
+        // with the underlying EACCES; the second succeeds once the canonical
+        // root resolves.
         let firstCaught: unknown;
         try {
           await sut.lstat('/root/sub/a');
@@ -502,7 +506,7 @@ describe('NodeFileSystem — canonical-root cache (DI)', () => {
 
         // Assert
         expect(firstCaught).toBeInstanceOf(Error);
-        expect((firstCaught as NodeJS.ErrnoException).code).toBe('ENOENT');
+        expect((firstCaught as NodeJS.ErrnoException).code).toBe('EACCES');
         expect(secondCaught).toBeUndefined();
         const rootCalls = realpath.mock.calls.filter(
           ([arg]: readonly unknown[]) => arg === rootDir,

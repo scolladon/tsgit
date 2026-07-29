@@ -19,7 +19,6 @@ import { nativePolicy } from './adapters/node/path-policy.js';
 import { SHA1_CONFIG } from './domain/objects/hash-config.js';
 import { createLruCache } from './domain/storage/lru-cache.js';
 import type { LayoutProbe } from './ports/layout-probe.js';
-import { commonAncestor } from './repository/common-ancestor.js';
 import { findLayout } from './repository/find-layout.js';
 import { layoutRootsOf } from './repository/layout-roots.js';
 import {
@@ -60,19 +59,15 @@ export const openRepository = async (opts: OpenNodeRepositoryOptions = {}): Prom
   // bounded FS would reject paths outside its rootDir, preventing the walk
   // from reaching a repo whose root is an ancestor of the user's cwd.
   const layout = await resolveNodeLayout(resolvedCwd);
-  // The raw adapter roots at the common ancestor of the (containment-minimised)
-  // layout roots — wide enough to reach a linked worktree's workDir AND its
-  // common dir in one instance. It must stay wide: the facade's multi-root
-  // FS validator (repository.ts) is the real containment gate, narrowing
-  // access back down to exactly `layoutRootsOf(layout)`. This mirrors
-  // `makeWorktreeFs` below, which has rooted a fresh raw adapter this way for
-  // a linked worktree's out-of-workDir common dir; the only way a caller
-  // reaches this raw, broader-rooted adapter directly is the explicit
-  // `unsafeRawAdapters: true` opt-out.
-  const fs = new NodeFileSystem(
-    commonAncestor([...layoutRootsOf(layout)], nativePolicy),
-    nativePolicy,
-  );
+  // The raw adapter is confined to exactly the (containment-minimised) layout
+  // roots — wide enough to reach a linked worktree's workDir AND its common
+  // dir in one instance, and no wider. A common-ancestor root would admit
+  // everything between the roots (and, for a cross-top-level layout, the whole
+  // filesystem), and this adapter's realpath containment is the ONLY
+  // symlink-aware gate — the facade's multi-root validator above it is purely
+  // lexical, so a symlink planted inside a root would read and write through
+  // it into the ancestor.
+  const fs = new NodeFileSystem(layoutRootsOf(layout), nativePolicy);
   const hash = new NodeHashService();
   const compressor = new NodeCompressor();
   const transport = new NodeHttpTransport({
@@ -95,15 +90,12 @@ export const openRepository = async (opts: OpenNodeRepositoryOptions = {}): Prom
       opts.deltaCacheMaxEntries ?? DEFAULT_DELTA_CACHE_ENTRIES,
     ),
     // A linked worktree lives outside `workDir`; root a fresh adapter at the
-    // common ancestor of the repo and the worktree paths so it can reach both
-    // (the facade's multi-root validator then narrows access). Threading the
-    // same policy into both calls keeps the root's separator shape and the
-    // containment comparison governed by one native, platform-matching rule.
+    // repo's own workDir PLUS every path the caller asked for (the facade
+    // passes the worktree paths followed by the layout roots), so it reaches
+    // exactly those subtrees and nothing between them. `workDir` leads so it
+    // stays the base for resolving a relative path, as in the main adapter.
     makeWorktreeFs: (worktreePaths: ReadonlyArray<string>): NodeFileSystem =>
-      new NodeFileSystem(
-        commonAncestor([layout.workDir, ...worktreePaths], nativePolicy),
-        nativePolicy,
-      ),
+      new NodeFileSystem([layout.workDir, ...worktreePaths], nativePolicy),
   };
   // Strip the node-only opts AND `cwd` (we override with the realpath-resolved
   // form) before forwarding so the core sees only its own option surface.

@@ -284,24 +284,22 @@ describe('Node shim — ssh/env/runtime context wiring', () => {
 
 describe('Node shim — worktreeFs raw adapter root', () => {
   describe('Given the raw worktree filesystem (unsafeRawAdapters)', () => {
-    describe('When a path inside the repo/worktree common ancestor is probed', () => {
-      // Runs on every platform: makeWorktreeFs roots the raw adapter at
-      // `commonAncestor`, which now resolves through the native `PathPolicy`
-      // (native separator, drive/UNC aware) instead of assuming POSIX
-      // shape — so the emitted root matches the real filesystem's own
-      // separator on Windows just as it does on POSIX.
-      it('Then the raw adapter is rooted at the common ancestor and reaches it', async () => {
+    describe('When a path inside the repo workDir is probed', () => {
+      // Runs on every platform: makeWorktreeFs hands the raw adapter the
+      // repo's workDir followed by the caller's paths, and the adapter
+      // compares them through the native `PathPolicy` (native separator,
+      // drive/UNC aware) instead of assuming POSIX shape.
+      it('Then the raw adapter is rooted at the workDir and reaches it', async () => {
         // Arrange — unsafeRawAdapters:true exposes the raw NodeFileSystem the
-        // Node shim builds via makeWorktreeFs, rooted at the common ancestor of
-        // the workDir and the worktree paths (here the resolved cwd). The L87
-        // ArrayDeclaration mutant swaps that argument array for `[]`, so
-        // commonAncestor([], nativePolicy) collapses to policy.sep, whose
-        // containment prefix rejects every real absolute path with
-        // PERMISSION_DENIED. A directory inside the repo must therefore stay
-        // reachable — the correct root contains it (exists resolves), the
-        // mutant root refuses it. Every path is derived from the repo's own
-        // resolved workDir so the created directory, the worktree root and the
-        // probe all share one canonical form — the containment prefix stays
+        // Node shim builds via makeWorktreeFs, rooted at the workDir plus the
+        // worktree paths (here derived from the resolved cwd). The
+        // ArrayDeclaration mutant swaps that argument array for `[]`, leaving
+        // the adapter with no root at all — it then refuses to construct
+        // (UNSUPPORTED_OPERATION), so building the fs throws instead of
+        // returning one. A directory inside the repo must therefore stay
+        // reachable. Every path is derived from the repo's own resolved
+        // workDir so the created directory, the worktree root and the probe
+        // all share one canonical form — the containment prefix stays
         // case-exact on every platform (incl. Windows, where tmpdir's 8.3
         // short form would otherwise diverge from realpath).
         const sut = await openRepository({ cwd: tmpdir, unsafeRawAdapters: true });

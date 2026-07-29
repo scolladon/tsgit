@@ -36,6 +36,35 @@ function toRootPrefix(normalized: string, sep: string): RootPrefix {
 }
 
 /**
+ * The adapter's containment roots in the two forms the checks consume:
+ * `canonical` (every root's realpath — the post-realpath escape gate) and
+ * `all` (raw ∪ canonical — the lexical gate, which must accept a path
+ * supplied in either form). Bundled in ONE record so a check can never read
+ * a raw prefix that has drifted from the canonical set it was resolved with.
+ */
+interface RootSet {
+  readonly canonical: ReadonlyArray<RootPrefix>;
+  readonly all: ReadonlyArray<RootPrefix>;
+}
+
+/**
+ * Union of two prefix lists, deduped by normalised form — raw and canonical
+ * coincide for every root without a symlinked or 8.3-shortened component, and
+ * carrying both copies would double the containment loop for no verdict
+ * change. `withSep` is derived from `normalized`, so equal keys carry equal
+ * values and the surviving entry is interchangeable. Keyed through a `Map` so
+ * the dedupe is structural, not an optional filtering step.
+ */
+function unionRootPrefixes(
+  raw: ReadonlyArray<RootPrefix>,
+  canonical: ReadonlyArray<RootPrefix>,
+): ReadonlyArray<RootPrefix> {
+  const byNormalized = new Map<string, RootPrefix>();
+  for (const prefix of [...raw, ...canonical]) byNormalized.set(prefix.normalized, prefix);
+  return [...byNormalized.values()];
+}
+
+/**
  * A parent directory's realpath, paired with the containment verdict for
  * that realpath — computed once, right after the realpath resolves, and
  * always read together so the two can never diverge. See
@@ -140,8 +169,7 @@ export function pathContains(
  * Same predicate as `pathContains`, but the caller has already normalised
  * `parent` once and is willing to keep that result. Saves the per-call
  * `policy.normalizeForCompare(parent)` allocation when `parent` is a value
- * the caller holds constant — typically the adapter's `rootDir` /
- * `canonicalRoot` on the containment hot path.
+ * the caller holds constant.
  *
  * @internal
  */
@@ -160,7 +188,7 @@ export function pathContainsNormalized(
  * already-normalised child AND an already-precomputed `normalizedParent +
  * sep` prefix — used on `NodeFileSystem`'s hot path where both the child
  * normalisation and the parent `+sep` concatenation are amortised across
- * the containment check (see `isContainedInEitherRoot`).
+ * the containment check (see `isContainedInAnyRoot`).
  */
 function containedByPrefix(
   normalizedChild: string,
@@ -331,6 +359,21 @@ export function mapStat(s: {
 }
 
 export class NodeFileSystem implements FileSystem {
+  /**
+   * Every containment root this adapter admits. A path is contained when it
+   * is inside ANY of them — the set is the repository layout's own roots
+   * (`workDir`, `gitDir`, `commonDir`), never a common ancestor of them: for
+   * a linked worktree that ancestor is an unrelated parent directory, and
+   * for a cross-top-level layout it degrades to the filesystem root, turning
+   * the realpath gate into a no-op.
+   */
+  private readonly rootDirs: ReadonlyArray<string>;
+
+  /**
+   * The PRIMARY root — the first entry of `rootDirs`. Base for resolving a
+   * caller's relative path (`toAbsolute`); containment itself always
+   * consults the whole set.
+   */
   private readonly rootDir: string;
 
   private readonly pathPolicy: PathPolicy;
@@ -340,7 +383,7 @@ export class NodeFileSystem implements FileSystem {
   /**
    * Memoised realpath of an *existing* parent directory, keyed by the raw
    * (pre-realpath) parent path, paired with that parent's containment
-   * verdict (`isContainedInEitherRoot(realParent, …)`, computed once right
+   * verdict (`isContainedInAnyRoot(realParent, …)`, computed once right
    * after the realpath resolves). The cached value is mode-independent, so
    * this single cache serves BOTH `resolveForCreation` (creation mode) and
    * `resolveForMode`'s lstat arm (lstat mode): a clone/checkout writing N
@@ -348,12 +391,18 @@ export class NodeFileSystem implements FileSystem {
    * the same directory, pays the realpath walk-up — and, for the lstat
    * arm, the containment POST-check — once per parent rather than once per
    * file/entry. The verdict is a per-clean-leaf equivalence
-   * (`isContainedInEitherRoot(join(realParent, basename))` ≡
-   * `isContainedInEitherRoot(realParent)`, see the design doc's proof) and
+   * (`isContainedInAnyRoot(join(realParent, basename))` ≡
+   * `isContainedInAnyRoot(realParent)`, see the design doc's proof) and
    * is consulted ONLY by the lstat arm; `read`/`creation` realpath the full
    * leaf and keep their own per-entry post-check.
    *
    * Invariants:
+   * - The key is the parent path alone: the root set is fixed for the
+   *   adapter's lifetime, so no verdict can be reused across root sets.
+   *   The one way the set moves is a root that did not exist at first
+   *   resolution gaining a canonical prefix once created — it only ever
+   *   widens, so a verdict cached under the narrower set can deny but never
+   *   over-admit.
    * - Only EXISTING parents are cached. ENOENT walks fall back to
    *   `realpathNearestExisting` (creation) or propagate (lstat) and are
    *   never recorded.
@@ -368,103 +417,146 @@ export class NodeFileSystem implements FileSystem {
   private readonly parentRealpathCache = createLruCache<ParentRealpathEntry>(128 * 1024, 512);
 
   /**
-   * Lazy long-name canonicalisation of `rootDir` for containment checks,
-   * resolving to the canonical root's `RootPrefix`. Promise so concurrent
-   * first calls share one `realpath`; cleared on rejection so a transient
-   * ENOENT can be retried.
+   * Lazy canonicalisation of every containment root, resolving to the whole
+   * `RootSet`. Promise so concurrent first calls share one round of
+   * `realpath`s; cleared on rejection so a transient error can be retried,
+   * and cleared on an incomplete resolution (see `loadRootSet`).
    */
-  private canonicalRootPromise: Promise<RootPrefix> | undefined = undefined;
+  private rootSetPromise: Promise<RootSet> | undefined = undefined;
 
   /**
-   * Synchronous cache of the resolved canonical-root `RootPrefix`, set on
-   * `getCanonicalRoot()`'s promise-resolution arm and cleared on its
-   * rejection arm — always in lockstep with `canonicalRootPromise`. Lets
-   * hot-path callers (`checkContainment`, `exists`, `symlink`) read the
-   * settled value directly, without an `await` (and its microtask), once
-   * the root has resolved at least once.
+   * Synchronous cache of the resolved `RootSet`, set on `loadRootSet()`'s
+   * resolution arm and cleared on its rejection arm — always in lockstep
+   * with `rootSetPromise`. Lets hot-path callers (`checkContainment`,
+   * `exists`, `symlink`) read the settled value directly, without an
+   * `await` (and its microtask), once the roots have resolved at least once.
    */
-  private resolvedCanonicalRootPrefix: RootPrefix | undefined = undefined;
+  private resolvedRootSet: RootSet | undefined = undefined;
 
   /**
-   * Memoised `{ normalized, withSep }` pair for `pathPolicy.normalizeForCompare(rootDir)`.
-   * The rootDir is `readonly` for the adapter's lifetime, so a single
-   * normalisation (and its `+sep` prefix) is amortised across every
-   * containment check. Bundled in one field — never two — so the prefix
-   * can never diverge from the root it was derived from.
+   * Memoised `{ normalized, withSep }` pair per RAW root. `rootDirs` is
+   * `readonly` for the adapter's lifetime, so a single normalisation (and
+   * its `+sep` prefix) per root is amortised across every containment
+   * check. Each pair is bundled in one value — never two — so a prefix can
+   * never diverge from the root it was derived from.
    */
-  private normalizedRootDirPrefix: RootPrefix | undefined = undefined;
+  private normalizedRootDirPrefixes: ReadonlyArray<RootPrefix> | undefined = undefined;
 
   constructor(
-    rootDir: string,
+    rootDir: string | ReadonlyArray<string>,
     pathPolicy: PathPolicy = nativePolicy,
     fsOps: FsOperations = realFsOps,
   ) {
-    this.rootDir = rootDir;
+    const roots = typeof rootDir === 'string' ? [rootDir] : rootDir;
+    const [primary] = roots;
+    // Fail closed: an empty root set would make every containment check
+    // vacuously false, so the adapter must never be constructible without
+    // at least one root to confine to.
+    if (primary === undefined) {
+      throw unsupportedOperation('constructor', 'NodeFileSystem requires at least one root');
+    }
+    this.rootDirs = roots;
+    this.rootDir = primary;
     this.pathPolicy = pathPolicy;
     this.fsOps = fsOps;
   }
 
   /**
-   * Lazily normalises `rootDir` and its `+sep` prefix as one bundled
-   * `RootPrefix`, memoised for the adapter's lifetime.
+   * Lazily normalises each raw root and its `+sep` prefix, memoised for the
+   * adapter's lifetime.
    */
-  private getRootDirPrefix(): RootPrefix {
-    if (this.normalizedRootDirPrefix === undefined) {
-      this.normalizedRootDirPrefix = toRootPrefix(
-        this.pathPolicy.normalizeForCompare(this.rootDir),
-        this.pathPolicy.sep,
-      );
+  private getRootDirPrefixes(): ReadonlyArray<RootPrefix> {
+    if (this.normalizedRootDirPrefixes === undefined) {
+      this.normalizedRootDirPrefixes = this.rootDirs.map((root) => this.toRootPrefix(root));
     }
-    return this.normalizedRootDirPrefix;
+    return this.normalizedRootDirPrefixes;
   }
 
-  private getNormalizedRootDir(): string {
-    return this.getRootDirPrefix().normalized;
+  private toRootPrefix(root: string): RootPrefix {
+    return toRootPrefix(this.pathPolicy.normalizeForCompare(root), this.pathPolicy.sep);
   }
 
   /**
-   * Resolves and memoises the canonical-root `RootPrefix`. Returns the
-   * bundled `{ normalized, withSep }` value directly from the promise
-   * chain — callers thread the returned value onward, so there is no
+   * Realpaths every root. A root that does not exist contributes NO
+   * canonical prefix and marks the resolution incomplete: a not-yet-created
+   * directory is a legitimate root (`worktree add` probes its own target
+   * before creating it) and has no realpath to admit, so dropping it is
+   * fail-closed — its RAW prefix still serves the lexical gate. Any other
+   * errno rejects the whole resolution rather than being swallowed.
+   */
+  private async canonicalizeRoots(): Promise<{
+    readonly canonical: ReadonlyArray<RootPrefix>;
+    readonly complete: boolean;
+  }> {
+    const resolved = await Promise.all(
+      this.rootDirs.map(async (root) => {
+        try {
+          return await this.fsOps.realpath(root);
+        } catch (err) {
+          if (isErrnoException(err) && err.code === 'ENOENT') return undefined;
+          throw err;
+        }
+      }),
+    );
+    return {
+      canonical: resolved
+        .filter((root) => root !== undefined)
+        .map((root) => this.toRootPrefix(root)),
+      complete: !resolved.includes(undefined),
+    };
+  }
+
+  /**
+   * Resolves and memoises the `RootSet`. Returns it directly from the
+   * promise chain — callers thread the returned value onward, so there is no
    * synchronous "trust it's been set" field read: the type system proves
    * the value is defined via the `await`'s return, not a nullable field.
    */
-  private async getCanonicalRoot(): Promise<RootPrefix> {
-    if (this.canonicalRootPromise === undefined) {
-      this.canonicalRootPromise = this.fsOps
-        .realpath(this.rootDir)
-        .then((canonical) => {
-          const prefix = toRootPrefix(
-            this.pathPolicy.normalizeForCompare(canonical),
-            this.pathPolicy.sep,
-          );
-          this.resolvedCanonicalRootPrefix = prefix;
-          return prefix;
+  private async loadRootSet(): Promise<RootSet> {
+    if (this.rootSetPromise === undefined) {
+      this.rootSetPromise = this.canonicalizeRoots()
+        .then(({ canonical, complete }) => {
+          const rootSet: RootSet = {
+            canonical,
+            all: unionRootPrefixes(this.getRootDirPrefixes(), canonical),
+          };
+          if (!complete) {
+            // A root that does not exist YET must not be frozen as "missing"
+            // for the adapter's lifetime: the caller is about to create it
+            // (a worktree target) and its canonical form differs from its raw
+            // one under any symlinked ancestor. Drop the memo so the next
+            // call re-probes; the fail-closed set is still returned to THIS
+            // caller.
+            this.rootSetPromise = undefined;
+            return rootSet;
+          }
+          this.resolvedRootSet = rootSet;
+          return rootSet;
         })
         .catch((err: unknown) => {
-          this.canonicalRootPromise = undefined;
-          this.resolvedCanonicalRootPrefix = undefined;
+          this.rootSetPromise = undefined;
+          this.resolvedRootSet = undefined;
           throw err;
         });
     }
-    return this.canonicalRootPromise;
+    return this.rootSetPromise;
   }
 
   /**
-   * Synchronous-first-path accessor for the canonical root: returns the
-   * already-settled `resolvedCanonicalRootPrefix` field when populated (no
-   * `await`, no microtask), falling back to `getCanonicalRoot()` only on
-   * the first call or after a rejection cleared the field. Used by every
-   * hot-path call site (`checkContainment`, `exists`, `symlink`) instead of
-   * an unconditional `await this.getCanonicalRoot()`.
+   * Synchronous-first-path accessor for the roots: returns the
+   * already-settled `resolvedRootSet` field when populated (no `await`, no
+   * microtask), falling back to `loadRootSet()` only on the first call or
+   * after a rejection / incomplete resolution cleared the field. Used by
+   * every hot-path call site (`checkContainment`, `exists`, `symlink`)
+   * instead of an unconditional `await this.loadRootSet()`.
    */
-  private async resolveCanonicalRoot(): Promise<RootPrefix> {
-    let canonicalRootPrefix = this.resolvedCanonicalRootPrefix;
-    // Stryker disable next-line ConditionalExpression: equivalent — when `resolvedCanonicalRootPrefix` is already set, `getCanonicalRoot()` returns the memoised promise resolving to that same `RootPrefix` (set in lockstep in its resolve arm, cleared with the promise on rejection), so forcing this guard true reassigns the identical value with no extra `realpath`; only the await fast-path is dropped.
-    if (canonicalRootPrefix === undefined) {
-      canonicalRootPrefix = await this.getCanonicalRoot();
+  private async resolveRootSet(): Promise<RootSet> {
+    let rootSet = this.resolvedRootSet;
+    // Stryker disable next-line ConditionalExpression: equivalent — when `resolvedRootSet` is already set, `loadRootSet()` returns the memoised promise resolving to that same `RootSet` (set in lockstep in its resolve arm, cleared with the promise on rejection or an incomplete resolution), so forcing this guard true reassigns the identical value with no extra `realpath`; only the await fast-path is dropped.
+    if (rootSet === undefined) {
+      rootSet = await this.loadRootSet();
     }
-    return canonicalRootPrefix;
+    return rootSet;
   }
 
   read = async (path: string): Promise<Uint8Array> => {
@@ -540,13 +632,12 @@ export class NodeFileSystem implements FileSystem {
 
   exists = async (path: string): Promise<boolean> => {
     const resolved = this.pathPolicy.resolve(toAbsolute(path, this.rootDir, this.pathPolicy));
-    const normalizedRoot = this.getNormalizedRootDir();
-    const normalizedCanonical = (await this.resolveCanonicalRoot()).normalized;
+    const { canonical, all } = await this.resolveRootSet();
     try {
       // Post-realpath check is the security gate against symlink escapes
       // and 8.3 short-name aliasing.
       const real = await this.fsOps.realpath(resolved);
-      if (!pathContainsNormalized(normalizedCanonical, real, this.pathPolicy)) {
+      if (!this.isContainedInAnyRoot(real, canonical)) {
         throw permissionDenied(path);
       }
       return true;
@@ -555,14 +646,11 @@ export class NodeFileSystem implements FileSystem {
       if (err instanceof TsgitError) throw err;
       if (isErrnoException(err) && err.code === 'ENOENT') {
         // ENOENT — the resolved path doesn't exist. But the caller might be
-        // probing `../outside`: verify the path WOULD have been inside the
-        // root if it existed. Check against BOTH raw and canonical roots so
-        // callers can pass paths in either form when rootDir's parent is
-        // 8.3-shortened on Windows.
-        if (
-          !pathContainsNormalized(normalizedRoot, resolved, this.pathPolicy) &&
-          !pathContainsNormalized(normalizedCanonical, resolved, this.pathPolicy)
-        ) {
+        // probing `../outside`: verify the path WOULD have been inside one of
+        // the roots if it existed. Check against BOTH the raw and canonical
+        // forms so callers can pass paths in either one when a root's parent
+        // is 8.3-shortened on Windows.
+        if (!this.isContainedInAnyRoot(resolved, all)) {
           throw permissionDenied(path);
         }
         return false;
@@ -629,7 +717,7 @@ export class NodeFileSystem implements FileSystem {
   };
 
   symlink = async (target: string, path: string): Promise<void> => {
-    // Absolute targets must point inside rootDir. Without this gate, a
+    // Absolute targets must point inside a root. Without this gate, a
     // malicious tree could plant a `/etc/passwd`-style symlink that
     // subsequent `readlink` exfiltrates. Relative targets are not
     // validated at create time — they are resolved against the link
@@ -638,18 +726,14 @@ export class NodeFileSystem implements FileSystem {
     if (this.pathPolicy.isAbsolute(target)) {
       // Lexical normalisation alone is insufficient: a Windows directory
       // junction (`C:\repo\junction` → `C:\outside`) lexically passes the
-      // prefix check but the OS-resolved path lands outside rootDir.
+      // prefix check but the OS-resolved path lands outside every root.
       // Resolve symlinks/junctions in the target's existing prefix and
       // compare the *real* path. The resolve only ever expands the target
       // — never the link entry, which doesn't exist yet.
       const lexical = this.pathPolicy.resolve(target);
       const resolvedTarget = await realpathNearestExisting(lexical, this.pathPolicy, this.fsOps);
-      const normalizedRoot = this.getNormalizedRootDir();
-      const normalizedCanonical = (await this.resolveCanonicalRoot()).normalized;
-      if (
-        !pathContainsNormalized(normalizedRoot, resolvedTarget, this.pathPolicy) &&
-        !pathContainsNormalized(normalizedCanonical, resolvedTarget, this.pathPolicy)
-      ) {
+      const { all } = await this.resolveRootSet();
+      if (!this.isContainedInAnyRoot(resolvedTarget, all)) {
         throw permissionDenied(path);
       }
     }
@@ -756,13 +840,12 @@ export class NodeFileSystem implements FileSystem {
   private async resolveForCreation(
     path: string,
     resolved: string,
-    root: RootPrefix,
-    canonicalRoot: RootPrefix,
+    roots: ReadonlyArray<RootPrefix>,
   ): Promise<string> {
     // realpathNearestExisting already resolved the existing prefix and rethrew any non-ENOENT
     // error, so lstat on `real` here can only succeed (leaf exists) or throw ENOENT (leaf is
     // the to-be-created tail). A symlink leaf is rejected to prevent writes through it.
-    const real = await this.realpathForCreation(resolved, root, canonicalRoot);
+    const real = await this.realpathForCreation(resolved, roots);
     let lstatResult: { ok: true; isSymlink: boolean } | { ok: false; err: unknown };
     try {
       const leafStat = await this.fsOps.lstat(real);
@@ -783,8 +866,7 @@ export class NodeFileSystem implements FileSystem {
   // cached) — callers that need a fallback catch it themselves.
   private async cachedParentRealpath(
     parent: string,
-    root: RootPrefix,
-    canonicalRoot: RootPrefix,
+    roots: ReadonlyArray<RootPrefix>,
   ): Promise<ParentRealpathEntry> {
     const cached = this.parentRealpathCache.get(parent);
     if (cached !== undefined) {
@@ -793,7 +875,7 @@ export class NodeFileSystem implements FileSystem {
     const realParent = await this.fsOps.realpath(parent);
     const entry: ParentRealpathEntry = {
       realParent,
-      contained: this.isContainedInEitherRoot(realParent, root, canonicalRoot),
+      contained: this.isContainedInAnyRoot(realParent, roots),
     };
     this.parentRealpathCache.set(parent, entry, parent.length + realParent.length);
     return entry;
@@ -801,8 +883,7 @@ export class NodeFileSystem implements FileSystem {
 
   private async realpathForCreation(
     resolved: string,
-    root: RootPrefix,
-    canonicalRoot: RootPrefix,
+    roots: ReadonlyArray<RootPrefix>,
   ): Promise<string> {
     // Fast path: parent already cached. The leaf realpath is meaningless
     // for creation (the leaf often doesn't exist yet), so we cache the
@@ -815,7 +896,7 @@ export class NodeFileSystem implements FileSystem {
     // Cache miss falls through to a direct parent realpath — when the
     // parent exists this is a single call instead of the full walk-up.
     try {
-      const { realParent } = await this.cachedParentRealpath(parent, root, canonicalRoot);
+      const { realParent } = await this.cachedParentRealpath(parent, roots);
       return this.pathPolicy.join(realParent, basename);
     } catch (err) {
       if (isErrnoException(err) && err.code === 'ENOENT') {
@@ -841,11 +922,10 @@ export class NodeFileSystem implements FileSystem {
     path: string,
     resolved: string,
     mode: ContainmentMode,
-    root: RootPrefix,
-    canonicalRoot: RootPrefix,
+    roots: ReadonlyArray<RootPrefix>,
   ): Promise<{ real: string; contained: boolean | undefined }> {
     if (mode === 'read') {
-      if (!this.isContainedInEitherRoot(resolved, root, canonicalRoot)) {
+      if (!this.isContainedInAnyRoot(resolved, roots)) {
         throw permissionDenied(path);
       }
       const real = await this.fsOps.realpath(resolved);
@@ -856,7 +936,7 @@ export class NodeFileSystem implements FileSystem {
       // BEFORE issuing the realpath I/O. Without this gate, an absolute
       // escape path (`../../etc`) would still walk through
       // `realpath(dirname)` before the post-check catches it.
-      const verdict = this.containmentVerdict(resolved, root, canonicalRoot);
+      const verdict = this.containmentVerdict(resolved, roots);
       if (!verdict.contained) {
         throw permissionDenied(path);
       }
@@ -866,70 +946,58 @@ export class NodeFileSystem implements FileSystem {
       // creation path.
       const parent = this.pathPolicy.dirname(resolved);
       const basename = this.pathPolicy.basename(resolved);
-      const { realParent, contained } = await this.cachedParentRealpath(
-        parent,
-        root,
-        canonicalRoot,
-      );
+      const { realParent, contained } = await this.cachedParentRealpath(parent, roots);
       // The per-parent verdict equivalence (`contained(join(realParent,
       // basename)) === contained(realParent)`) holds for every leaf
       // STRICTLY UNDER a root, but not when `resolved` IS a root itself:
-      // `dirname(rootDir)` is the root's own parent, which is never
-      // "contained in rootDir" even though `rootDir` trivially is (the
+      // `dirname(root)` is that root's own parent, which is never
+      // "contained in the root set" even though the root trivially is (the
       // `===` arm) — so the cached per-parent verdict here would
       // false-deny an exact-root leaf. The exact-root leaf is therefore
       // the ONE exception to the per-parent equivalence: report
       // `contained: undefined` so `checkContainment`'s
-      // `contained ?? isContainedInEitherRoot(real, …)` runs the FULL
+      // `contained ?? isContainedInAnyRoot(real, …)` runs the FULL
       // per-entry post-check on the realpath'd `real` instead of trusting
       // the (inapplicable) per-parent verdict. This reproduces the
-      // pre-per-parent-cache behaviour: a rootDir that is itself a symlink
+      // pre-per-parent-cache behaviour: a root that is itself a symlink
       // pointing outside its own tree is DENIED, because `real` — built
       // from the SAME `realParent`/`basename` join as any other leaf — is
-      // then checked against both roots on its own merits.
+      // then checked against every root on its own merits.
       return {
         real: this.pathPolicy.join(realParent, basename),
         contained: verdict.isExactRoot ? undefined : contained,
       };
     }
-    const real = await this.resolveForCreation(path, resolved, root, canonicalRoot);
+    const real = await this.resolveForCreation(path, resolved, roots);
     return { real, contained: undefined };
   }
 
   /**
-   * `abs` is normalised ONCE (not once per root) and compared against
-   * both roots' precomputed `+sep` prefixes. Both the `=== root` equality
-   * arm and the `startsWith(root + sep)` prefix arm are retained per
-   * root — dropping either changes the verdict (a bare `startsWith(root)`
-   * would admit the prefix-only sibling `root-evil`). Both roots are
-   * passed in as already-resolved `RootPrefix` values — no field read-back.
+   * `abs` is normalised ONCE (not once per root) and compared against every
+   * root's precomputed `+sep` prefix. Both the `=== root` equality arm and
+   * the `startsWith(root + sep)` prefix arm are retained per root — dropping
+   * either changes the verdict (a bare `startsWith(root)` would admit the
+   * prefix-only sibling `root-evil`). The roots are passed in as
+   * already-resolved `RootPrefix` values — no field read-back.
    */
-  private isContainedInEitherRoot(
-    abs: string,
-    root: RootPrefix,
-    canonicalRoot: RootPrefix,
-  ): boolean {
-    return this.containmentVerdict(abs, root, canonicalRoot).contained;
+  private isContainedInAnyRoot(abs: string, roots: ReadonlyArray<RootPrefix>): boolean {
+    return this.containmentVerdict(abs, roots).contained;
   }
 
   /**
-   * Single source of truth for the two-root, two-arm containment test —
-   * `isContainedInEitherRoot` and the lstat arm's PRE-check both delegate
+   * Single source of truth for the multi-root, two-arm containment test —
+   * `isContainedInAnyRoot` and the lstat arm's PRE-check both delegate
    * here so the "is `abs` exactly one of the roots" fact (needed by the
    * lstat arm's exact-root shortcut) is derived from the SAME normalise
    * call as the containment verdict, not a second one.
    */
   private containmentVerdict(
     abs: string,
-    root: RootPrefix,
-    canonicalRoot: RootPrefix,
+    roots: ReadonlyArray<RootPrefix>,
   ): { contained: boolean; isExactRoot: boolean } {
     const c = this.pathPolicy.normalizeForCompare(abs);
-    const isExactRoot = c === root.normalized || c === canonicalRoot.normalized;
-    const contained =
-      isExactRoot ||
-      containedByPrefix(c, root.normalized, root.withSep) ||
-      containedByPrefix(c, canonicalRoot.normalized, canonicalRoot.withSep);
+    const isExactRoot = roots.some((root) => c === root.normalized);
+    const contained = roots.some((root) => containedByPrefix(c, root.normalized, root.withSep));
     return { contained, isExactRoot };
   }
 
@@ -940,39 +1008,29 @@ export class NodeFileSystem implements FileSystem {
     // platform-native form so the containment prefix-check compares
     // like-for-like.
     const resolved = this.pathPolicy.resolve(toAbsolute(path, this.rootDir, this.pathPolicy));
-    // Containment passes if `abs` is inside EITHER the raw rootDir (which
-    // matches user-supplied paths with the same short-name form as the
-    // constructor argument) OR the canonical rootDir (which matches paths
-    // produced by `realpath` after short-name expansion). Without the
-    // OR, a Windows user passing a short-name input would hit the pre-resolve
+    // Containment passes if `abs` is inside ANY root, in either its raw form
+    // (which matches user-supplied paths with the same short-name form as the
+    // constructor argument) OR its canonical form (which matches paths
+    // produced by `realpath` after short-name expansion). Without both forms,
+    // a Windows user passing a short-name input would hit the pre-resolve
     // check against the canonical long-name root and fail spuriously.
     //
-    // Both parents are constant for the call's lifetime; we hold their
-    // normalised forms as instance fields — `normalizedRootDirPrefix` for
-    // the raw root (read synchronously via `getRootDirPrefix()`) and
-    // `resolvedCanonicalRootPrefix` for the canonical root (read via
-    // `resolveCanonicalRoot()`, which skips the `await` entirely once that
-    // field is populated) — so the case-fold allocation AND the
-    // canonical-root microtask on the hot path each run once per adapter
-    // lifetime rather than once per containment check.
-    const rootPrefix = this.getRootDirPrefix();
-    const canonicalRootPrefix = await this.resolveCanonicalRoot();
+    // Every root is constant for the adapter's lifetime; their normalised
+    // raw and canonical prefixes are held as one `RootSet` instance field,
+    // read via `resolveRootSet()` (which skips the `await` entirely once the
+    // set has settled) — so the case-fold allocations AND the canonicalising
+    // microtask on the hot path each run once per adapter lifetime rather
+    // than once per containment check.
+    const { all } = await this.resolveRootSet();
     try {
-      const { real, contained } = await this.resolveForMode(
-        path,
-        resolved,
-        mode,
-        rootPrefix,
-        canonicalRootPrefix,
-      );
+      const { real, contained } = await this.resolveForMode(path, resolved, mode, all);
       // `contained !== undefined` means `resolveForMode` already produced
       // the lstat arm's per-parent verdict (B3) — trust it and skip the
       // redundant per-entry recomputation. `read`/`creation` return
       // `undefined` and fall through to the per-entry POST-check, since
       // their `real` is a full-leaf realpath (the clean-single-leaf
       // equivalence B3 relies on does not hold for them).
-      const isContained =
-        contained ?? this.isContainedInEitherRoot(real, rootPrefix, canonicalRootPrefix);
+      const isContained = contained ?? this.isContainedInAnyRoot(real, all);
       if (!isContained) {
         throw permissionDenied(path);
       }

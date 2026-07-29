@@ -9,7 +9,7 @@
  *   bucket:  coverage-gap
  *   unique:  src/index.node.ts runtime-shim adapter construction path the unit suite cannot reach
  */
-import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
@@ -235,6 +235,98 @@ describe('Node shim — dispose', () => {
         // dispose() itself is no-op past abort; calling it cleans up the controller.
         await sut.dispose();
       }
+    });
+  });
+});
+
+/**
+ * A linked worktree and the main repo are siblings, so their common ancestor
+ * is a directory that belongs to neither. Rooting the raw adapter there would
+ * make every sibling readable and writable through a symlink planted inside
+ * the worktree — the facade's multi-root validator is purely lexical and
+ * never resolves the link.
+ */
+const seedWorktreeWithEscapeLink = async (): Promise<{
+  readonly worktreePath: string;
+  readonly secretFile: string;
+  readonly cleanup: () => Promise<void>;
+}> => {
+  const realTmpdir = await realpath(tmpdir);
+  const secretDir = `${realTmpdir}-secret`;
+  await mkdir(secretDir, { recursive: true });
+  await writeFile(path.join(secretDir, 'key.txt'), 'secret content\n');
+  const setup = await openRepository({ cwd: realTmpdir });
+  await setup.init();
+  await writeFile(path.join(realTmpdir, 'a.txt'), 'hello\n');
+  await setup.add(['a.txt']);
+  await setup.commit({ message: 'first', author });
+  const worktreePath = `${realTmpdir}-wt`;
+  await setup.worktree.add({ path: worktreePath, branch: 'wt' });
+  await setup.dispose();
+  await symlink(secretDir, path.join(worktreePath, 'link'));
+  return {
+    worktreePath,
+    secretFile: path.join(secretDir, 'key.txt'),
+    cleanup: async () => {
+      await rm(worktreePath, { recursive: true, force: true });
+      await rm(secretDir, { recursive: true, force: true });
+    },
+  };
+};
+
+describe('Node shim — linked-worktree containment', () => {
+  describe('Given a linked worktree holding a symlink to a directory outside every layout root', () => {
+    describe('When adding a path through that symlink', () => {
+      it('Then the pathspec is refused and nothing is staged', async () => {
+        // Arrange
+        const { worktreePath, cleanup } = await seedWorktreeWithEscapeLink();
+        const sut = await openRepository({ cwd: worktreePath });
+
+        try {
+          // Act
+          let caught: unknown;
+          try {
+            await sut.add(['link/key.txt']);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect((caught as { data: { code: string } }).data.code).toBe('PATHSPEC_NO_MATCH');
+          expect((await sut.status()).changes).toHaveLength(0);
+        } finally {
+          await sut.dispose();
+          await cleanup();
+        }
+      });
+    });
+
+    describe('When reading the outside file through the raw adapter', () => {
+      it('Then it throws PERMISSION_DENIED', async () => {
+        // Arrange — `unsafeRawAdapters` bypasses the lexical facade validator,
+        // leaving the adapter's realpath containment as the only gate.
+        const { worktreePath, secretFile, cleanup } = await seedWorktreeWithEscapeLink();
+        const sut = await openRepository({ cwd: worktreePath, unsafeRawAdapters: true });
+
+        try {
+          // Act
+          let caught: unknown;
+          try {
+            await sut.ctx.fs.readUtf8(secretFile);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect((caught as { data: unknown }).data).toEqual({
+            code: 'PERMISSION_DENIED',
+            path: secretFile,
+          });
+        } finally {
+          await sut.dispose();
+          await cleanup();
+        }
+      });
     });
   });
 });
