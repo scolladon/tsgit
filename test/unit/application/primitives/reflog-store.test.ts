@@ -342,6 +342,32 @@ describe('reflog-store', () => {
           // Assert
           expect(result.filter((r) => r === 'HEAD')).toHaveLength(1);
         });
+
+        it('Then the logs directory is walked exactly once', async () => {
+          // Arrange — gitDir === commonDir: the walk must short-circuit to a
+          // single root, not walk the same directory twice and dedup after.
+          const ctx = createMemoryContext();
+          await appendReflog(ctx, HEAD, entry());
+          const logsRoot = `${ctx.layout.gitDir}/logs`;
+          const readdirCalls: string[] = [];
+          const originalReaddir = ctx.fs.readdir;
+          const spiedCtx: Context = {
+            ...ctx,
+            fs: {
+              ...ctx.fs,
+              readdir: async (path: string) => {
+                readdirCalls.push(path);
+                return originalReaddir(path);
+              },
+            },
+          };
+
+          // Act
+          await listReflogs(spiedCtx);
+
+          // Assert
+          expect(readdirCalls.filter((p) => p === logsRoot)).toHaveLength(1);
+        });
       });
     });
   });

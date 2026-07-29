@@ -141,6 +141,33 @@ describe('enumerateRefs', () => {
         // Assert
         expect(result.filter((r) => r === 'refs/heads/main')).toHaveLength(1);
       });
+
+      it('Then the refs directory is walked exactly once', async () => {
+        // Arrange — gitDir === commonDir: the walk must short-circuit to a
+        // single root, not walk the same directory twice and dedup after.
+        const ctx = await buildSeededContext({
+          refs: [{ name: 'refs/heads/main' as RefName, id: OID_A }],
+        });
+        const refsDir = `${ctx.layout.gitDir}/refs`;
+        const readdirCalls: string[] = [];
+        const originalReaddir = ctx.fs.readdir;
+        const spiedCtx: Context = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            readdir: async (path: string) => {
+              readdirCalls.push(path);
+              return originalReaddir(path);
+            },
+          },
+        };
+
+        // Act
+        await enumerateRefs(spiedCtx);
+
+        // Assert
+        expect(readdirCalls.filter((p) => p === refsDir)).toHaveLength(1);
+      });
     });
   });
 });

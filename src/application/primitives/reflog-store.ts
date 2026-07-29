@@ -54,12 +54,14 @@ export async function deleteReflog(ctx: Context, ref: RefName): Promise<void> {
  * Every reflog under `logs/`, each as the `RefName` it logs. Reflogs live
  * under two roots for a linked worktree: the worktree's own gitdir (HEAD's
  * per-worktree log) and the common dir (every shared ref's log). For a
- * normal repo / the main worktree the two roots are identical — both are
- * still walked, and the `Set<RefName>` below collapses the resulting
- * duplicate names.
+ * normal repo / the main worktree the two roots are one and the same string,
+ * so the walk runs once; the `Set<RefName>` below collapses the cross-root
+ * duplicates that remain in the split case.
  */
 export async function listReflogs(ctx: Context): Promise<ReadonlyArray<RefName>> {
-  const roots = [logsDir(ctx.layout.gitDir), logsDir(commonGitDir(ctx))];
+  const own = logsDir(ctx.layout.gitDir);
+  const common = logsDir(commonGitDir(ctx));
+  const roots = own === common ? [own] : [own, common];
   const names = new Set<RefName>();
   for (const root of roots) {
     if (!(await ctx.fs.exists(root))) continue;

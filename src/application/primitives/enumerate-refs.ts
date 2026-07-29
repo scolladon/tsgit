@@ -2,8 +2,9 @@
  * Enumerate every current ref: `HEAD`, loose refs under both the worktree's
  * own `refs/` (per-worktree namespaces: `refs/bisect/…`, `refs/worktree/…`,
  * `refs/rewritten/…`) and the common dir's `refs/` (everything shared), and
- * packed-refs entries — deduplicated. Used by `reflog expire` to seed the
- * reachable-commit walk; not on any hot path.
+ * packed-refs entries — deduplicated. Consumed by `describe`, `name-rev`,
+ * `push`, `remote`, `bundle-create`, fsck and `reflog expire` — several of
+ * which are bench-tracked, so the walk below stays single-pass per root.
  */
 import type { RefName } from '../../domain/objects/object-id.js';
 import type { Context } from '../../ports/context.js';
@@ -29,16 +30,20 @@ export async function enumerateRefs(ctx: Context): Promise<ReadonlyArray<RefName
 /**
  * Loose refs live under two roots for a linked worktree: the worktree's own
  * gitdir (per-worktree namespaces) and the common dir (everything shared).
- * For a normal repo / the main worktree the two roots are identical — both
- * are still walked, and `enumerateRefs`'s `Set<RefName>` collapses the
- * resulting duplicate names.
+ * For a normal repo / the main worktree the two roots are one and the same
+ * string, so the walk runs once; `enumerateRefs`'s `Set<RefName>` collapses
+ * the cross-root duplicates that remain in the split case.
  */
 async function collectLooseRefs(ctx: Context): Promise<ReadonlyArray<RefName>> {
-  const roots = [`${ctx.layout.gitDir}/refs`, `${commonGitDir(ctx)}/refs`];
+  const ownRefs = `${ctx.layout.gitDir}/refs`;
+  const commonRefs = `${commonGitDir(ctx)}/refs`;
+  const roots = ownRefs === commonRefs ? [ownRefs] : [ownRefs, commonRefs];
   const refs: RefName[] = [];
   for (const root of roots) {
     if (!(await ctx.fs.exists(root))) continue;
-    refs.push(...(await walkLooseRefs(ctx, root, 'refs')));
+    for (const ref of await walkLooseRefs(ctx, root, 'refs')) {
+      refs.push(ref);
+    }
   }
   return refs;
 }
@@ -53,7 +58,9 @@ async function walkLooseRefs(
   for (const entry of entries) {
     const rel = `${prefix}/${entry.name}`;
     if (entry.isDirectory) {
-      refs.push(...(await walkLooseRefs(ctx, `${dir}/${entry.name}`, rel)));
+      for (const ref of await walkLooseRefs(ctx, `${dir}/${entry.name}`, rel)) {
+        refs.push(ref);
+      }
     } else {
       refs.push(rel as RefName);
     }
