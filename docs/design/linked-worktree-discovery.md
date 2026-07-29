@@ -134,7 +134,8 @@ first, with the main worktree's own path (derived from the common dir), matching
 `git worktree list --porcelain`.
 
 R11. Sandboxed adapters (memory, browser) resolve pointers that stay inside their
-root and surface the adapter's own containment error for pointers that escape it.
+root; a pointer escaping the sandbox fails discovery cleanly (a hard stop, never
+a walk-up) under the probe's absence/containment-denial contract (§2).
 
 R12. 100% line/branch/function/statement coverage on touched code inside the
 coverage scope (`domain/`, `ports/`, `adapters/node/`, `adapters/memory/`,
@@ -412,23 +413,28 @@ The same `layoutRoots` is appended to the facade's `worktreeFs` roots
 (`repository.ts` L406, today `[...paths, commonDir]`), so a worktree child
 Context reaches the admin dir even in that unrelated-subtree case.
 
-**`src/index.node.ts`** — the primary adapter root widens:
+**`src/index.node.ts`** — the primary adapter root generalises to a **root
+set** (ADR-541, revised during review from an earlier common-ancestor rooting):
 
 ```ts
 const fs = new NodeFileSystem(layout.workDir);                                  // L62
 ```
 
-becomes `new NodeFileSystem(commonAncestor([...layoutRoots], nativePolicy), nativePolicy)`.
-The raw adapter must be **wide enough**; the multi-root validator above is the
-real gate (the reasoning ADR-495 already recorded). For a normal repo
-`commonAncestor([workDir])` **is** `workDir` — unchanged. `makeWorktreeFs`
-(L89–93) needs **no** change: it is already called with the facade's full root
-list and roots itself at their common ancestor.
+becomes `new NodeFileSystem(layoutRootsOf(layout), nativePolicy)`. The adapter's
+realpath containment is the ONLY symlink-aware gate — the facade's multi-root
+validator above it is purely lexical — so the raw adapter must be confined to
+exactly the layout roots, never their common ancestor (which would admit
+everything between them, and for a cross-top-level layout degrades to the whole
+filesystem). The first root stays the primary (relative-path base). A root that
+does not yet exist contributes no canonical prefix and is re-probed until it
+exists (`worktree add` probes its own not-yet-created target through this
+adapter). For a normal repo the set collapses to `[workDir]` — unchanged.
+`makeWorktreeFs` (L89–93) passes its full root list the same way.
 
 Cross-volume worktrees on Windows remain the documented ADR-495 limitation
-(`commonAncestor` returns the first input, so the common dir is unreachable and
-the operation fails closed with `PATHSPEC_OUTSIDE_REPO` rather than silently
-reading the wrong tree).
+(the cross-volume root admits nothing after native resolution, so the operation
+fails closed with `PATHSPEC_OUTSIDE_REPO` rather than silently reading the
+wrong tree).
 
 `discoverLayout` (L112–126) is deleted; the shim calls the shared `findLayout`
 with a `LayoutProbe` backed by raw `node:fs/promises` (preserving the "before the
@@ -463,7 +469,7 @@ becomes observable. Audited against §1c/§1d; `⇒ C` = must become
 | `primitives/reflog-store.ts:55` | `logsDir(ctx.layout.gitDir)` (`listReflogs`) | union of `logsDir(gitDir)` + `logsDir(commonDir)`, deduped when equal |
 | `primitives/list-worktrees.ts:59` | `ctx.layout.workDir` as the main entry's path | derive from `commonDir` (§1h); `main` flag follows |
 | `repository.ts:403` | `const commonDir = fallback.layout.gitDir` | `commonDir ?? gitDir`; `layoutRoots` feeds both the facade validator (L388–392) and `worktreeFs` (L406) |
-| `index.node.ts:62` | `new NodeFileSystem(layout.workDir)` | root at `commonAncestor(layoutRoots)` (§3); L89–93 `makeWorktreeFs` unchanged |
+| `index.node.ts:62` | `new NodeFileSystem(layout.workDir)` | root SET `layoutRootsOf(layout)` (§3, ADR-541); L89–93 `makeWorktreeFs` passes its root list the same way |
 
 Already correct, **no change** (each pinned per-worktree in §1c): `read-index.ts:21`,
 `internal/index-lock.ts:48,49`, `caching-index-resolver.ts:142`,
@@ -530,8 +536,11 @@ and never discovers. Running the shared `findLayout` there lets parity fixtures
 seed a worktree-shaped tree and open it — the layout must stay **inside**
 `rootDir` (`/repo`), so a memory-adapter worktree lives at e.g. `/repo/wt` with
 its admin dir at `/repo/.git/worktrees/wt`. A pointer resolving outside `/repo`
-surfaces the adapter's own `PERMISSION_DENIED`; that is the faithful sandbox
-answer, not a special case.
+reads as "absent" through the `LayoutProbe` contract (§2, ADR-535), so
+discovery hard-stops with `NOT_A_REPOSITORY` naming the worktree dir — never a
+walk-up. Post-open operations through the bounded adapter surface its own
+`PERMISSION_DENIED` as before; the two layers answer at different times by
+design.
 
 **Browser.** OPFS is rooted at `/` with `ROOT_WORK_DIR = '/'`; a walk-up is
 meaningless (`dirname('/') === '/'` terminates immediately) and `gitDirName` is
@@ -683,3 +692,14 @@ whose `@writes` surface changes must keep a named interop proof;
 - Sparse-checkout inheritance on `worktree add` — deferred with ADR-296/297.
 - Any rendered output: the layout is data (ADR-249); reconstructing git's
   `rev-parse` lines happens inside the interop test, never in the library.
+- An ownership/trust gate on discovered layouts (git's `safe.directory`):
+  following `.git` pointer files inherits git's ownership-check requirement —
+  a planted gitfile can point hook lookup (`hooks/` in the attacker-chosen
+  common dir) at attacker-controlled scripts, which is why git grew
+  `safe.directory`. tsgit has no equivalent gate yet; the mechanism here is
+  git-faithful, and the gate is a separate surface with its own design.
+- `worktree.list`'s `bare` flag for the main entry when opened FROM a linked
+  worktree of a bare repo: deriving it needs `core.bare` from the common
+  config, which the first bullet's config-driven-layout exclusion already
+  covers. The main entry's *path* is derived correctly in every shape
+  (ADR-540); only the flag stays layout-driven.
