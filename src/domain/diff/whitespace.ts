@@ -169,106 +169,172 @@ function fnvMix(hash: number, byte: number): number {
   return Math.imul(hash ^ byte, FNV_PRIME) >>> 0;
 }
 
-/** The CR-adjusted content boundary, mirroring `applyCrRule` without allocating. */
-function digestContentEnd(bytes: Uint8Array, end: number, key: LineKey): number {
-  const crApplies = key.ignoreCrAtEol || key.mode !== 'none';
-  if (!crApplies) return end;
-  const crPos = end - 1;
-  // NOTE: this line's ConditionalExpression mutant forcing the left operand (`crPos >= 0`) to `true` is equivalent — the only case it changes is crPos<0 (empty content, crPos===-1), where forcing it true just makes the right operand `bytes[crPos] === CR` evaluate instead of short-circuiting; `bytes[-1]` is `undefined` on a typed array, so that's `undefined === CR` = false either way, and the ternary still returns `end`. Left unannotated because the whole-condition and right-operand `true` variants on this same line are real, killed mutants, and Stryker's next-line disable can't distinguish sub-expression from sub-expression of the same mutator.
-  return crPos >= 0 && bytes[crPos] === CR ? crPos : end;
+/**
+ * Per-line fold state (§D1.3). `committed` is the fold over everything
+ * definitely part of the normalized line; `tentative` is `committed` plus the
+ * pending droppable tail (`WS* CR?`), folded as it would be if the tail turned
+ * out to be internal. Both are two-number pairs — the memory cost of "not
+ * knowing yet" is fixed, never scaling with the run's length.
+ */
+interface FoldState {
+  committedHash: number;
+  committedLength: number;
+  tentHash: number;
+  tentLength: number;
+  pendingWs: boolean;
+  pendingCr: boolean;
+  sawLf: boolean;
+  lineHasBytes: boolean;
 }
 
-function digestVerbatim(bytes: Uint8Array, contentEnd: number, terminated: boolean): LineDigest {
-  let hash = FNV_OFFSET_BASIS;
-  for (let i = 0; i < contentEnd; i++) hash = fnvMix(hash, bytes[i]!);
-  if (terminated) hash = fnvMix(hash, LF);
-  return { length: contentEnd, terminated, hash };
+function createFoldState(): FoldState {
+  return {
+    committedHash: FNV_OFFSET_BASIS,
+    committedLength: 0,
+    tentHash: FNV_OFFSET_BASIS,
+    tentLength: 0,
+    pendingWs: false,
+    pendingCr: false,
+    sawLf: false,
+    lineHasBytes: false,
+  };
 }
 
-// Mirrors dropAllWs: every space/tab byte is dropped, regardless of position.
-function digestDropAllWs(bytes: Uint8Array, contentEnd: number, terminated: boolean): LineDigest {
-  let hash = FNV_OFFSET_BASIS;
-  let length = 0;
-  for (let i = 0; i < contentEnd; i++) {
-    const b = bytes[i]!;
-    if (isWs(b)) continue;
-    hash = fnvMix(hash, b);
-    length++;
+function resetLine(state: FoldState): void {
+  state.committedHash = FNV_OFFSET_BASIS;
+  state.committedLength = 0;
+  state.tentHash = FNV_OFFSET_BASIS;
+  state.tentLength = 0;
+  state.pendingWs = false;
+  state.pendingCr = false;
+  state.sawLf = false;
+  state.lineHasBytes = false;
+}
+
+// A byte is soft-WS when it could be part of a droppable trailing run.
+function isSoftWs(byte: number, key: LineKey): boolean {
+  return isWs(byte) && key.mode !== 'none';
+}
+
+// A byte is soft-CR when it could be a droppable trailing CR — today's
+// unconditional-on-termination rule (mirrors digestContentEnd's `crApplies`).
+function isSoftCr(byte: number, key: LineKey): boolean {
+  return byte === CR && (key.ignoreCrAtEol || key.mode !== 'none');
+}
+
+function foldTentative(state: FoldState, byte: number): void {
+  state.tentHash = fnvMix(state.tentHash, byte);
+  state.tentLength++;
+}
+
+function promoteTentative(state: FoldState): void {
+  state.committedHash = state.tentHash;
+  state.committedLength = state.tentLength;
+}
+
+// Close a pending whitespace run that turned out to be internal, not trailing.
+function closeRun(state: FoldState, key: LineKey): void {
+  // 'all' drops the run everywhere (nothing to fold); 'at-eol' already folded
+  // it verbatim during the run (mirrors commitRun); 'none' never reaches here
+  // (whitespace is hard there). Only 'change' owes the run one collapsed SPACE
+  // (mirrors digestCollapseRuns' pendingSpace).
+  if (key.mode === 'change') foldTentative(state, SPACE);
+}
+
+function onHard(state: FoldState, key: LineKey, byte: number): void {
+  if (state.pendingWs) closeRun(state, key);
+  state.pendingWs = false;
+  state.pendingCr = false;
+  foldTentative(state, byte);
+  promoteTentative(state);
+}
+
+function onSoftWs(state: FoldState, key: LineKey, byte: number): void {
+  if (state.pendingCr) {
+    // The previous CR is followed by more content — it is internal, not trailing.
+    promoteTentative(state);
+    state.pendingCr = false;
   }
-  if (terminated) hash = fnvMix(hash, LF);
-  return { length, terminated, hash };
+  if (key.mode === 'at-eol') foldTentative(state, byte);
+  state.pendingWs = true;
 }
 
-// Mirrors collapseRuns: each internal run collapses to one space; a run
-// touching the end (still pending when the loop ends) is dropped, not committed.
-function digestCollapseRuns(
-  bytes: Uint8Array,
-  contentEnd: number,
-  terminated: boolean,
-): LineDigest {
-  let hash = FNV_OFFSET_BASIS;
-  let length = 0;
-  let pendingSpace = false;
-  for (let i = 0; i < contentEnd; i++) {
-    const b = bytes[i]!;
-    if (isWs(b)) {
-      pendingSpace = true;
-      continue;
-    }
-    if (pendingSpace) {
-      hash = fnvMix(hash, SPACE);
-      length++;
-      pendingSpace = false;
-    }
-    hash = fnvMix(hash, b);
-    length++;
+function onSoftCr(state: FoldState, key: LineKey): void {
+  if (state.pendingCr) {
+    // A second CR follows the first — the first is internal, not trailing.
+    promoteTentative(state);
+  } else if (state.pendingWs) {
+    // The run does not promote just because a CR follows it (§D1.2 row 1).
+    closeRun(state, key);
   }
-  if (terminated) hash = fnvMix(hash, LF);
-  return { length, terminated, hash };
+  state.pendingWs = false;
+  foldTentative(state, CR);
+  state.pendingCr = true;
 }
 
-/** Commit a buffered (non-trailing) whitespace run's bytes verbatim into the digest. */
-function commitRun(
-  bytes: Uint8Array,
-  runStart: number,
-  runEnd: number,
-  hash: number,
-  length: number,
-): { readonly hash: number; readonly length: number } {
-  let h = hash;
-  let l = length;
-  for (let j = runStart; j < runEnd; j++) {
-    h = fnvMix(h, bytes[j]!);
-    l++;
+function applyContentByte(state: FoldState, key: LineKey, byte: number): void {
+  if (isSoftWs(byte, key)) {
+    onSoftWs(state, key, byte);
+    return;
   }
-  return { hash: h, length: l };
+  if (isSoftCr(byte, key)) {
+    onSoftCr(state, key);
+    return;
+  }
+  onHard(state, key, byte);
 }
 
-// Mirrors dropTrailingWs: internal runs are preserved verbatim; only a run
-// still pending when the loop ends (touching the content boundary) is dropped.
-function digestDropTrailingWs(
-  bytes: Uint8Array,
-  contentEnd: number,
-  terminated: boolean,
-): LineDigest {
-  let hash = FNV_OFFSET_BASIS;
-  let length = 0;
-  let runStart = -1;
-  for (let i = 0; i < contentEnd; i++) {
-    const b = bytes[i]!;
-    if (isWs(b)) {
-      if (runStart === -1) runStart = i;
-      continue;
+function emitDigest(state: FoldState): LineDigest {
+  // Today's unconditional rules (pre-fix): the LF always decides `terminated`,
+  // and the pending tail is always discarded — `committed` always wins.
+  const terminated = state.sawLf;
+  const hash = terminated ? fnvMix(state.committedHash, LF) : state.committedHash;
+  return { length: state.committedLength, terminated, hash };
+}
+
+export interface LineDigestFold {
+  /** Fold one raw byte of the line. Returns true when the byte was the line's
+   *  LF terminator — the caller must then call `endLine()` before folding more. */
+  push(byte: number): boolean;
+  /** Emit the finished line's digest and reset the per-line state. */
+  endLine(): LineDigest;
+  /** False when nothing has been folded since the last `endLine()` — lets a
+   *  caller tell EOF from an empty unterminated final line. */
+  readonly lineHasBytes: boolean;
+}
+
+/**
+ * Folds one line's bytes into a `LineDigest` incrementally, in `O(1)` memory —
+ * the line is never buffered. A "line" here is exactly what `splitLines`
+ * emits: at most one LF terminator, always the last byte pushed. Feeding an
+ * interior LF is outside this contract.
+ */
+export function createLineDigestFold(key: LineKey): LineDigestFold {
+  const state = createFoldState();
+
+  function push(byte: number): boolean {
+    state.lineHasBytes = true;
+    if (byte === LF) {
+      state.sawLf = true;
+      return true;
     }
-    if (runStart !== -1) {
-      ({ hash, length } = commitRun(bytes, runStart, i, hash, length));
-      runStart = -1;
-    }
-    hash = fnvMix(hash, b);
-    length++;
+    applyContentByte(state, key, byte);
+    return false;
   }
-  if (terminated) hash = fnvMix(hash, LF);
-  return { length, terminated, hash };
+
+  function endLine(): LineDigest {
+    const digest = emitDigest(state);
+    resetLine(state);
+    return digest;
+  }
+
+  return {
+    push,
+    endLine,
+    get lineHasBytes(): boolean {
+      return state.lineHasBytes;
+    },
+  };
 }
 
 /**
@@ -277,19 +343,11 @@ function digestDropTrailingWs(
  * with `linesEqualUnder(a,b,k)`) but without allocating the normalized array.
  */
 export function digestNormalizedLine(bytes: Uint8Array, key: LineKey): LineDigest {
-  const end = lfIndex(bytes);
-  const terminated = end < bytes.length;
-  const contentEnd = digestContentEnd(bytes, end, key);
-  switch (key.mode) {
-    case 'all':
-      return digestDropAllWs(bytes, contentEnd, terminated);
-    case 'change':
-      return digestCollapseRuns(bytes, contentEnd, terminated);
-    case 'at-eol':
-      return digestDropTrailingWs(bytes, contentEnd, terminated);
-    case 'none':
-      return digestVerbatim(bytes, contentEnd, terminated);
+  const fold = createLineDigestFold(key);
+  for (let i = 0; i < bytes.length; i++) {
+    fold.push(bytes[i]!);
   }
+  return fold.endLine();
 }
 
 export function digestsEqual(a: LineDigest, b: LineDigest): boolean {

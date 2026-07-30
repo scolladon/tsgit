@@ -5,6 +5,7 @@ import type {
   WhitespaceMode,
 } from '../../../../src/domain/diff/whitespace.js';
 import {
+  createLineDigestFold,
   digestIsBlank,
   digestNormalizedLine,
   digestsEqual,
@@ -15,34 +16,19 @@ import {
   normalizeLine,
   resolveLineKey,
 } from '../../../../src/domain/diff/whitespace.js';
+import { expectedDigest } from './digest-oracle.js';
 
 const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
 
 // Build a line exactly as splitLines would return it: content + optional LF terminator
 const line = (s: string): Uint8Array => enc(s);
 
-// Independent oracle for digestNormalizedLine: FNV-1a folded over normalizeLine's
-// OWN output (content bytes, plus a trailing LF byte when normalized ends in one).
-// normalizeLine is a genuinely separate code path from the digest* helpers under
-// test, so a branch/off-by-one/reset bug in the digest side almost never
-// coincidentally reproduces the same {length, terminated, hash} triple.
-const FNV_OFFSET_BASIS = 0x811c9dc5;
-const FNV_PRIME = 0x01000193;
-
-function fnvFold(bytes: Uint8Array): number {
-  let hash = FNV_OFFSET_BASIS;
-  for (const byte of bytes) {
-    hash = Math.imul(hash ^ byte, FNV_PRIME) >>> 0;
-  }
-  return hash;
-}
-
-function expectedDigest(input: Uint8Array, key: LineKey): LineDigest {
-  const normalized = normalizeLine(input, key);
-  const terminated = normalized.length > 0 && normalized[normalized.length - 1] === 0x0a;
-  const length = terminated ? normalized.length - 1 : normalized.length;
-  return { length, terminated, hash: fnvFold(normalized) };
-}
+const ALL_LINE_KEYS: ReadonlyArray<LineKey> = (
+  ['all', 'change', 'at-eol', 'none'] as const
+).flatMap((mode) => [
+  { mode, ignoreCrAtEol: false },
+  { mode, ignoreCrAtEol: true },
+]);
 
 describe('normalizeLine', () => {
   describe("Given mode 'all' (ignore all space/tab)", () => {
@@ -830,6 +816,200 @@ describe('digestNormalizedLine — branch-exhaustive cross-check', () => {
         expect(result).toEqual(expectedDigest(bytes, key));
       },
     );
+  });
+});
+
+describe('digestNormalizedLine — tail-grammar exhaustive rows', () => {
+  // The four worked cases from the tail grammar TAIL := WS* CR?, each run
+  // against every LineKey shape and both termination states.
+  const TAIL_CASES = ['a  \r', 'a \r ', 'a\r\r', 'a  \r  '] as const;
+
+  describe('Given every LineKey shape and termination state, When a tail-grammar line is digested', () => {
+    const rows = ALL_LINE_KEYS.flatMap((key) =>
+      [false, true].flatMap((terminated) =>
+        TAIL_CASES.map((tail) => {
+          const input = terminated ? `${tail}\n` : tail;
+          const shape = `mode ${key.mode} ignoreCrAtEol=${key.ignoreCrAtEol} ${
+            terminated ? 'terminated' : 'unterminated'
+          }`;
+          return { key, input, label: `${shape} "${tail.replace(/\r/g, '\\r')}"` };
+        }),
+      ),
+    );
+
+    it.each(rows)('Then $label matches the independent oracle', ({ key, input }) => {
+      // Arrange
+      const bytes = enc(input);
+
+      // Act
+      const result = digestNormalizedLine(bytes, key);
+
+      // Assert
+      expect(result).toEqual(expectedDigest(bytes, key));
+    });
+  });
+
+  describe('Given a leading whitespace run, When digesting under change vs at-eol', () => {
+    it.each([
+      {
+        mode: 'change' as const,
+        input: '  a',
+        label: "mode 'change' collapses a leading space run to one SPACE",
+      },
+      {
+        mode: 'change' as const,
+        input: '\ta',
+        label: "mode 'change' collapses a leading tab run to one SPACE",
+      },
+      {
+        mode: 'at-eol' as const,
+        input: '  a',
+        label: "mode 'at-eol' preserves a leading space run verbatim",
+      },
+      {
+        mode: 'at-eol' as const,
+        input: '\ta',
+        label: "mode 'at-eol' preserves a leading tab run verbatim",
+      },
+    ])('Then $label, matching the independent oracle', ({ mode, input }) => {
+      // Arrange
+      const key: LineKey = { mode, ignoreCrAtEol: false };
+      const bytes = enc(input);
+
+      // Act
+      const result = digestNormalizedLine(bytes, key);
+
+      // Assert
+      expect(result).toEqual(expectedDigest(bytes, key));
+    });
+  });
+
+  describe('Given a line whose whole content is tail, When digesting under every LineKey shape', () => {
+    const ALL_TAIL_CASES = ['   ', '\r', '', '\n'] as const;
+    const rows = ALL_LINE_KEYS.flatMap((key) =>
+      ALL_TAIL_CASES.map((input) => ({
+        key,
+        input,
+        label: `mode ${key.mode} ignoreCrAtEol=${key.ignoreCrAtEol} on ${JSON.stringify(input)}`,
+      })),
+    );
+
+    it.each(rows)('Then $label matches the independent oracle', ({ key, input }) => {
+      // Arrange
+      const bytes = enc(input);
+
+      // Act
+      const result = digestNormalizedLine(bytes, key);
+
+      // Assert
+      expect(result).toEqual(expectedDigest(bytes, key));
+    });
+  });
+
+  describe('Given a reviewer-adversarial CR-adjacent shape, When digesting under every LineKey shape', () => {
+    // blind-spot 5: multiple CRs sharing a line with whitespace runs, and a CR
+    // as the very first content byte.
+    const BLIND_SPOT_CASES = ['a\r \r', '  \r  \r', '\r', '\ra'] as const;
+    const rows = ALL_LINE_KEYS.flatMap((key) =>
+      BLIND_SPOT_CASES.map((input) => ({
+        key,
+        input,
+        label: `mode ${key.mode} ignoreCrAtEol=${key.ignoreCrAtEol} on ${JSON.stringify(input)}`,
+      })),
+    );
+
+    it.each(rows)('Then $label matches the independent oracle', ({ key, input }) => {
+      // Arrange
+      const bytes = enc(input);
+
+      // Act
+      const result = digestNormalizedLine(bytes, key);
+
+      // Assert
+      expect(result).toEqual(expectedDigest(bytes, key));
+    });
+  });
+});
+
+describe('createLineDigestFold', () => {
+  describe('Given a fresh fold, When no byte has been pushed yet', () => {
+    it('Then lineHasBytes is false', () => {
+      // Arrange
+      const sut = createLineDigestFold(NONE_KEY);
+
+      // Act & Assert
+      expect(sut.lineHasBytes).toBe(false);
+    });
+  });
+
+  describe('Given a fold that has received a content byte, When lineHasBytes is read', () => {
+    it('Then lineHasBytes is true', () => {
+      // Arrange
+      const sut = createLineDigestFold(NONE_KEY);
+
+      // Act
+      sut.push(0x61); // 'a'
+
+      // Assert
+      expect(sut.lineHasBytes).toBe(true);
+    });
+  });
+
+  describe('Given a fold that just finished a line, When endLine resets the per-line state', () => {
+    it('Then lineHasBytes reports false again', () => {
+      // Arrange
+      const sut = createLineDigestFold(NONE_KEY);
+      sut.push(0x61); // 'a'
+      sut.push(0x0a); // LF
+
+      // Act
+      sut.endLine();
+
+      // Assert
+      expect(sut.lineHasBytes).toBe(false);
+    });
+  });
+
+  describe('Given a byte that is not the LF terminator, When push is called', () => {
+    it('Then push returns false', () => {
+      // Arrange
+      const sut = createLineDigestFold(NONE_KEY);
+
+      // Act
+      const result = sut.push(0x61); // 'a'
+
+      // Assert
+      expect(result).toBe(false);
+    });
+  });
+
+  describe('Given the LF terminator byte, When push is called', () => {
+    it('Then push returns true', () => {
+      // Arrange
+      const sut = createLineDigestFold(NONE_KEY);
+
+      // Act
+      const result = sut.push(0x0a);
+
+      // Assert
+      expect(result).toBe(true);
+    });
+  });
+
+  describe('Given a fold driven byte-by-byte over a whole line, When endLine is called', () => {
+    it('Then the emitted digest matches digestNormalizedLine over the same bytes', () => {
+      // Arrange
+      const key: LineKey = { mode: 'change', ignoreCrAtEol: true };
+      const bytes = enc('a  b\r\n');
+      const sut = createLineDigestFold(key);
+      for (let i = 0; i < bytes.length; i++) sut.push(bytes[i] as number);
+
+      // Act
+      const result = sut.endLine();
+
+      // Assert
+      expect(result).toEqual(digestNormalizedLine(bytes, key));
+    });
   });
 });
 
