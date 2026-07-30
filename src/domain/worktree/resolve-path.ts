@@ -6,6 +6,8 @@
  * (ADR-298) then re-roots at it. Pure POSIX path algebra.
  */
 
+import { collapsePosixSegments } from '../path/collapse-posix-segments.js';
+
 /** The last path component of an absolute path (used as the default branch/id). */
 export const worktreePathBasename = (absolutePath: string): string => {
   const segments = absolutePath.split('/').filter((s) => s !== '');
@@ -17,16 +19,5 @@ export const worktreePathBasename = (absolutePath: string): string => {
  * `input` ignores `cwd`; a relative one is joined onto it. `.` segments are
  * dropped and `..` pops the previous segment (never below the root).
  */
-export const resolveWorktreePath = (cwd: string, input: string): string => {
-  const base = input.startsWith('/') ? input : `${cwd}/${input}`;
-  const out: string[] = [];
-  for (const segment of base.split('/')) {
-    if (segment === '' || segment === '.') continue;
-    if (segment === '..') {
-      out.pop();
-      continue;
-    }
-    out.push(segment);
-  }
-  return `/${out.join('/')}`;
-};
+export const resolveWorktreePath = (cwd: string, input: string): string =>
+  collapsePosixSegments(input.startsWith('/') ? input : `${cwd}/${input}`);

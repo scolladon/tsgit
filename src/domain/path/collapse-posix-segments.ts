@@ -1,11 +1,8 @@
 /**
  * Collapses `.`/`..`/duplicate-slash segments in a POSIX-style path, joining
- * what remains back onto a single leading slash. Shared by
- * `repository/portable-posix-policy.ts` (already-absolute paths only) and
- * `adapters/memory/memory-file-system.ts` (paths rooted against `rootDir`
- * before reaching here) — both feed it a string that is absolute by the time
- * it arrives, so this does not implement `path.posix.resolve`'s
- * relative-to-cwd fallback.
+ * what remains back onto a single leading slash: absolute in, absolute out.
+ * `..` never pops below the root. Deliberately NOT `path.posix.resolve` —
+ * there is no relative-to-cwd fallback; callers root their input first.
  */
 export const collapsePosixSegments = (path: string): string => {
   const resolved: string[] = [];

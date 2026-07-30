@@ -76,4 +76,20 @@ describe('collapsePosixSegments', () => {
       });
     });
   });
+
+  describe('Given a path that collapses to nothing', () => {
+    describe('When collapsed', () => {
+      it('Then the bare root is returned', () => {
+        // Arrange — the browser shim's ROOT_WORK_DIR is '/', so the
+        // zero-segment output shape is a live consumer case.
+        const sut = collapsePosixSegments;
+
+        // Act
+        const results = [sut('/'), sut('/a/..')];
+
+        // Assert
+        expect(results).toEqual(['/', '/']);
+      });
+    });
+  });
 });

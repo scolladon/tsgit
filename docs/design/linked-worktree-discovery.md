@@ -86,7 +86,7 @@ repository with no error.
   no rendered strings; the layout is data.
 - **Hexagonal dependency rule**: `repository → commands → primitives → domain`;
   `src/repository/` may `import type` from `adapters/node/path-policy.js` only
-  (the precedent set by `find-layout.ts` and `common-ancestor.ts`).
+  (the precedent set by `find-layout.ts` and `portable-posix-policy.ts`).
 - Branded types, no `any`, files < 800 lines, functions < 20 lines, kebab-case.
 
 ## Requirements

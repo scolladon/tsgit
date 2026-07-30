@@ -33,8 +33,11 @@ empty root set fails closed.
 ## Consequences
 
 `commonAncestor` lost its last production consumer and has since been deleted
-(the refactoring pass; ADR-495's path-algebra note is folded in here — that
-design doc stays as historical record). ADR-495's cross-volume
+(the refactoring pass); ADR-495 is marked deprecated with a forward pointer
+here — its drive-letter / mixed-separator / case-fold comparison algebra now
+lives entirely in `PathPolicy` + the adapter's containment, and
+`docs/design/common-ancestor-windows-paths.md` stays as historical record.
+ADR-495's cross-volume
 limitation no longer applies to the adapter root: each volume's root stands on
 its own. Through-adapter symlink escapes from linked worktrees are refused
 exactly as in a normal repo, pinned by unit and integration regressions; the

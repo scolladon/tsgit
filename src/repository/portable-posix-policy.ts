@@ -1,14 +1,8 @@
 import type { PathPolicy } from '../adapters/node/path-policy.js';
-import { collapsePosixSegments } from '../domain/path/collapse-posix-segments.js';
-
-/**
- * Collapses `.`/`..`/duplicate-slash segments in an already-absolute POSIX
- * path. Assumes the input is rooted — every caller reachable through
- * `portablePosixPolicy` only ever feeds it an absolute path — so this does
- * not implement `path.posix.resolve`'s relative-to-cwd fallback, which OPFS
- * (the browser shim's only consumer) has no equivalent of anyway.
- */
-const normalizeAbsolutePosixPath = collapsePosixSegments;
+// Every path reaching `portablePosixPolicy` is already absolute (the browser
+// shim's OPFS root and `findLayout`'s resolved bases), so the collapse's
+// absolute-in contract holds at every call site below.
+import { collapsePosixSegments as normalizeAbsolutePosixPath } from '../domain/path/collapse-posix-segments.js';
 
 /**
  * Dependency-free stand-in for `adapters/node/path-policy.ts`'s
