@@ -28,7 +28,7 @@ import type { Context } from '../../ports/context.js';
 import { MAX_SHALLOW_ENTRIES, parseShallowFile } from './internal/parse-shallow.js';
 import { invalidateShallowSet, isAbsentShallowFile } from './internal/shallow-set.js';
 import { commonGitDir, shallowFilePath, shallowLockPath } from './path-layout.js';
-import { REASON_SHALLOW_TOO_MANY_ENTRIES } from './validators.js';
+import { REASON_SHALLOW_OID_WIDTH, REASON_SHALLOW_TOO_MANY_ENTRIES } from './validators.js';
 
 const isFileNotFound = (error: unknown): boolean =>
   error instanceof TsgitError && error.data.code === 'FILE_NOT_FOUND';
@@ -63,12 +63,20 @@ interface ShallowUpdate {
  * Apply a set of shallow / unshallow updates to `.git/shallow`. Writes
  * atomically via lock-rename; deletes the file when the resulting set is
  * empty. Refuses (`SHALLOW_FILE_MALFORMED`) when the resulting set would
- * exceed `MAX_SHALLOW_ENTRIES`: the write side enforces the same bound as
- * the reader, so a hostile server cannot persist a file every later read
- * would refuse — the refusal fires here, before repository state changes.
+ * exceed `MAX_SHALLOW_ENTRIES`, or when an added oid's width does not match
+ * the repository hash (the wire parser accepts either width, and persisting
+ * a foreign-width oid would truncate on the next read into a never-matching
+ * boundary): the write side enforces what the reader enforces, so a hostile
+ * server cannot persist a file every later read would refuse or misread —
+ * the refusal fires here, before repository state changes.
  */
 export const updateShallow = async (ctx: Context, updates: ShallowUpdate): Promise<void> => {
   const current = new Set(await readShallow(ctx));
+  updates.shallow.forEach((id, index) => {
+    if (id.length !== ctx.hashConfig.hexLength) {
+      throw shallowFileMalformed(REASON_SHALLOW_OID_WIDTH, index + 1);
+    }
+  });
   for (const id of updates.shallow) current.add(id);
   for (const id of updates.unshallow) current.delete(id);
   if (current.size > MAX_SHALLOW_ENTRIES) {

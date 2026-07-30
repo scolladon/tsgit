@@ -10,8 +10,10 @@ import { loadShallowSet } from './shallow-set.js';
  * Read a commit's data with shallow-boundary parents masked. The single
  * grafted `CommitData` reader shared by the history-rewriting porcelain
  * (via `commands/internal/history-rewrite.ts`) and `patch-id.ts` — one
- * definition, so the graft can never be applied in one consumer and
- * forgotten in the other.
+ * definition for the `CommitData` shape, so the graft cannot be applied in
+ * one of those consumers and forgotten in the other. (Sites that need a
+ * whole `Commit` — show, rev-parse, name-rev, bisect-midpoint — graft with
+ * `applyGraft` at their own read.)
  */
 export const readCommitData = async (ctx: Context, id: ObjectId): Promise<CommitData> => {
   const obj = await readObject(ctx, id);

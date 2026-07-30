@@ -35,6 +35,8 @@ export function exceedsMaxWalkSeeds(from: ReadonlyArray<unknown>): boolean {
 
 export const REASON_SHALLOW_BAD_LINE = 'bad shallow line' as const;
 export const REASON_SHALLOW_TOO_MANY_ENTRIES = 'shallow entry count exceeds bound' as const;
+export const REASON_SHALLOW_OID_WIDTH =
+  'shallow oid width does not match the repository hash' as const;
 
 /* ──────────────── createCommit ──────────────── */
 
@@ -53,13 +55,11 @@ export const REASON_PARENT_INVALID = 'parent is not a well-formed object id' as 
 export const REASON_SKIP_TARGET_PARENTLESS =
   'cannot skip: the stopped commit has no parent' as const;
 
-const PARENT_OID_RE = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
-
 /** Last-gate parent check before commit serialisation: `ObjectId` is a branded
  *  string, so a single bad cast upstream would otherwise flow a non-oid (or
  *  `undefined`) verbatim into a `parent <x>` header. */
 export function isMalformedParentOid(parent: string | undefined): boolean {
-  return parent === undefined || !PARENT_OID_RE.test(parent);
+  return parent === undefined || !looksLikeObjectId(parent);
 }
 
 export function messageContainsNul(message: string): boolean {

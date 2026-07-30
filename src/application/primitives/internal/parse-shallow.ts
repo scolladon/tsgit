@@ -12,12 +12,14 @@
  * other line — blank, short, non-hex — is a fatal refusal: canonical git's
  * shallow-line reader does not tolerate malformed content.
  *
- * The scan is cursor-based and refuses the moment the entry count crosses
- * `MAX_SHALLOW_ENTRIES`, before materialising further lines, so the cap
- * bounds peak allocation as well as the retained set. The cap sits at
- * parity with the protocol side (`MAX_V2_SECTION_ENTRIES`, itself
- * `MAX_ADVERTISED_REFS`), which bounds the `shallow-info` entries a fetch
- * can persist — a file tsgit wrote therefore always re-reads under it.
+ * The scan is cursor-based, copies only each line's oid-prefix window (never
+ * the full line), and refuses the moment the entry count crosses
+ * `MAX_SHALLOW_ENTRIES` — before materialising further lines — so the cap
+ * bounds peak per-line allocation as well as the retained set (the raw
+ * string itself is already in memory and bounded by the caller's read). The
+ * cap sits at parity with the protocol side (`MAX_V2_SECTION_ENTRIES`,
+ * itself `MAX_ADVERTISED_REFS`), which bounds the `shallow-info` entries a
+ * fetch can persist — a file tsgit wrote therefore always re-reads under it.
  */
 import { shallowFileMalformed } from '../../../domain/error.js';
 import type { ObjectId } from '../../../domain/objects/object-id.js';
@@ -36,7 +38,11 @@ export const parseShallowFile = (raw: string, hexLength: 40 | 64): ReadonlyArray
       throw shallowFileMalformed(REASON_SHALLOW_TOO_MANY_ENTRIES, out.length + 1);
     }
     const lineEnd = nextLineEnd(raw, cursor);
-    out.push(parseShallowLine(raw.slice(cursor, lineEnd), out.length + 1, hexLength));
+    // Copy only the prefix window, never the full line. A line shorter than
+    // `hexLength` yields a short window, which fails the fixed-width hex
+    // test — the refusal needs no view of the rest of the line.
+    const windowEnd = Math.min(cursor + hexLength, lineEnd);
+    out.push(parseShallowPrefix(raw.slice(cursor, windowEnd), out.length + 1, hexLength));
     cursor = lineEnd + 1;
   }
   return out;
@@ -47,8 +53,7 @@ const nextLineEnd = (raw: string, cursor: number): number => {
   return lf === -1 ? raw.length : lf;
 };
 
-const parseShallowLine = (line: string, lineNumber: number, hexLength: 40 | 64): ObjectId => {
-  const prefix = line.slice(0, hexLength);
+const parseShallowPrefix = (prefix: string, lineNumber: number, hexLength: 40 | 64): ObjectId => {
   if (!SHALLOW_HEX_RE[hexLength].test(prefix)) {
     throw shallowFileMalformed(REASON_SHALLOW_BAD_LINE, lineNumber);
   }

@@ -15,6 +15,7 @@ import { MAX_SHALLOW_ENTRIES } from '../../../../src/application/primitives/inte
 import { readShallow, updateShallow } from '../../../../src/application/primitives/shallow-file.js';
 import {
   REASON_SHALLOW_BAD_LINE,
+  REASON_SHALLOW_OID_WIDTH,
   REASON_SHALLOW_TOO_MANY_ENTRIES,
 } from '../../../../src/application/primitives/validators.js';
 import { notADirectory, TsgitError } from '../../../../src/domain/index.js';
@@ -566,6 +567,37 @@ describe('shallow-file', () => {
           // Assert
           expect(result.has(oid64)).toBe(true);
           expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/shallow`)).toBe(`${oid64}\n`);
+        });
+      });
+    });
+
+    describe('Given a sha1 repository and a 64-hex oid to persist', () => {
+      describe('When updateShallow runs', () => {
+        it('Then refuses: persisting a foreign-width oid would truncate on the next read', async () => {
+          // Arrange — the wire parser accepts either width, so the write gate
+          // is what keeps the on-disk file readable at the repository width.
+          const ctx = createMemoryContext();
+          await ctx.fs.mkdir(ctx.layout.gitDir);
+          const oid64 = ObjectId.from('f'.repeat(64));
+
+          // Act
+          let caught: unknown;
+          try {
+            await updateShallow(ctx, { shallow: [oid64], unshallow: [] });
+            expect.unreachable();
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          if (!(caught instanceof TsgitError)) throw caught;
+          expect(caught.data.code).toBe('SHALLOW_FILE_MALFORMED');
+          expect(caught.data.code === 'SHALLOW_FILE_MALFORMED' && caught.data.reason).toBe(
+            REASON_SHALLOW_OID_WIDTH,
+          );
+          expect(caught.data.code === 'SHALLOW_FILE_MALFORMED' && caught.data.lineNumber).toBe(1);
+          expect(await ctx.fs.exists(`${ctx.layout.gitDir}/shallow`)).toBe(false);
         });
       });
     });
