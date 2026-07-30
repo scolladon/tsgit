@@ -131552,7 +131552,7 @@
 									},
 									{
 										"kind": "text",
-										"text": ": the write side enforces the same bound as\nthe reader, so a hostile server cannot persist a file every later read\nwould refuse — the refusal fires here, before repository state changes."
+										"text": ", or when an added oid's width does not match\nthe repository hash (the wire parser accepts either width, and persisting\na foreign-width oid would truncate on the next read into a never-matching\nboundary): the write side enforces what the reader enforces, so a hostile\nserver cannot persist a file every later read would refuse or misread —\nthe refusal fires here, before repository state changes."
 									}
 								]
 							},
