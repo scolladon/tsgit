@@ -566,6 +566,51 @@ describe('revParse', () => {
     });
   });
 
+  describe('Given a shallow boundary at HEAD~1', () => {
+    describe('When revParse(HEAD~1)', () => {
+      it('Then resolves to the boundary itself — masking only hides ITS parents', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const root = await writeCommit(ctx, TREE_OID as ObjectId, []);
+        const boundary = await writeCommit(ctx, TREE_OID as ObjectId, [root]);
+        const head = await writeCommit(ctx, TREE_OID as ObjectId, [boundary]);
+        await seedRepo(ctx, { refs: { 'refs/heads/main': head } });
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/shallow`, `${boundary}\n`);
+
+        // Act
+        const result = await revParse(ctx, 'HEAD~1');
+
+        // Assert
+        expect(result).toBe(boundary);
+      });
+    });
+
+    describe('When revParse(HEAD~2)', () => {
+      it('Then throws OBJECT_NOT_FOUND naming the boundary — its masked parent list is empty', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const root = await writeCommit(ctx, TREE_OID as ObjectId, []);
+        const boundary = await writeCommit(ctx, TREE_OID as ObjectId, [root]);
+        const head = await writeCommit(ctx, TREE_OID as ObjectId, [boundary]);
+        await seedRepo(ctx, { refs: { 'refs/heads/main': head } });
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/shallow`, `${boundary}\n`);
+
+        // Act
+        let caught: unknown;
+        try {
+          await revParse(ctx, 'HEAD~2');
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        const data = (caught as TsgitError).data as { code: string; id: string };
+        expect(data.code).toBe('OBJECT_NOT_FOUND');
+        expect(data.id).toBe(boundary);
+      });
+    });
+  });
+
   describe('Given a three-commit chain', () => {
     describe('When revParse(HEAD~2)', () => {
       it('Then walks first-parent twice to the grandparent', async () => {

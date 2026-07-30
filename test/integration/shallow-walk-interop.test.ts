@@ -598,13 +598,18 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
       });
     });
 
-    // B7 (mergeBase(merge, main1) === main1) is deliberately NOT asserted here.
-    // `mergeBase`'s own commit reader (`merge-base.ts`) calls `readObject`
-    // directly, bypassing `readCommit`/`applyGraft` — verified by hand: it walks
-    // past `main1` into its true (real, unmasked) parent `base`, which does not
-    // exist in this shallow clone, and rejects OBJECT_NOT_FOUND. Grafting
-    // `mergeBase` is out of this part's scope (it has no consumer of the
-    // shallow set yet); the row belongs to the part that grafts it.
+    describe('When mergeBase compares the merge against the main-side boundary', () => {
+      it('Then resolves to the boundary itself', async () => {
+        // Arrange — B7
+        const repo = await openRepository({ cwd: f3 });
+
+        // Act
+        const result = await repo.primitives.mergeBase([merge3, main1]);
+
+        // Assert
+        expect(result).toEqual([main1]);
+      });
+    });
   });
 
   describe('Given a linked worktree of the shallow clone (F6: no .git/shallow in the worktree admin dir)', () => {
@@ -911,6 +916,168 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
           expect.objectContaining({ path: 'f3.txt', type: 'add-add' }),
         );
         expect(gitResult.exitCode).toBe(1);
+      });
+    });
+  });
+
+  describe('Given the boundary at HEAD~1 (F1)', () => {
+    describe('When revParse walks the parent chain past it', () => {
+      it('Then HEAD~1 resolves to the boundary and HEAD~2/C4^ refuse, matching git', async () => {
+        // Arrange — A12/A13
+        const repo = await openRepository({ cwd: f1 });
+        const c4 = ids[3] as ObjectId;
+        const gitHead1 = runGit(['-C', f1, 'rev-parse', 'HEAD~1']).trim();
+        const gitHead2 = tryRunGitWithExit(['-C', f1, 'rev-parse', 'HEAD~2']);
+
+        // Act
+        const head1 = await repo.revParse('HEAD~1');
+        let head2Caught: unknown;
+        try {
+          await repo.revParse('HEAD~2');
+          expect.unreachable();
+        } catch (error) {
+          head2Caught = error;
+        }
+        let caretCaught: unknown;
+        try {
+          await repo.revParse(`${c4}^`);
+          expect.unreachable();
+        } catch (error) {
+          caretCaught = error;
+        }
+
+        // Assert
+        expect(head1).toBe(c4);
+        expect(gitHead1).toBe(c4);
+        expect((head2Caught as TsgitError).data.code).toBe('OBJECT_NOT_FOUND');
+        expect(gitHead2.exitCode).toBe(128);
+        expect((caretCaught as TsgitError).data.code).toBe('OBJECT_NOT_FOUND');
+      });
+    });
+  });
+
+  describe('Given the boundary compared against HEAD (F1)', () => {
+    describe('When mergeBase runs', () => {
+      it('Then the boundary is the merge base — proving it is also an ancestor of HEAD, matching git', async () => {
+        // Arrange — A18/A20: a single mergeBase call discharges both pins;
+        // [C5,C4] reduces to [C4] only when C4 is an ancestor of C5.
+        const repo = await openRepository({ cwd: f1 });
+        const c4 = ids[3] as ObjectId;
+        const c5 = ids[4] as ObjectId;
+        const gitBase = runGit(['-C', f1, 'merge-base', 'HEAD', c4]).trim();
+
+        // Act
+        const result = await repo.primitives.mergeBase([c5, c4]);
+
+        // Assert
+        expect(result).toEqual([c4]);
+        expect(gitBase).toBe(c4);
+      });
+    });
+
+    describe('When mergeBase is asked about a commit beyond the boundary', () => {
+      it('Then it rejects OBJECT_NOT_FOUND rather than inventing a commit, matching git', async () => {
+        // Arrange — A19: C3 is a genuinely absent input, not a masked parent —
+        // grafting must not paper over a truly missing seed.
+        const repo = await openRepository({ cwd: f1 });
+        const c3 = ids[2] as ObjectId;
+        const c5 = ids[4] as ObjectId;
+        const gitResult = tryRunGitWithExit(['-C', f1, 'merge-base', 'HEAD', c3]);
+
+        // Act & Assert
+        let caught: unknown;
+        try {
+          await repo.primitives.mergeBase([c5, c3]);
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+        expect((caught as TsgitError).data.code).toBe('OBJECT_NOT_FOUND');
+        expect(gitResult.exitCode).toBe(128);
+      });
+    });
+  });
+
+  // A21 (`git merge-base --independent HEAD <C4>` ⇒ `C5`) has no tsgit
+  // surface: `mergeBase`'s `{ all }` option reduces the *common-ancestor* set
+  // found between the given commits, not the given commits themselves down to
+  // an independent subset — the distinct operation `--independent` performs.
+  // tsgit exposes no primitive that reduces an arbitrary input commit set this
+  // way, so only git's side is recorded here — an honest, out-of-scope
+  // divergence, consistent with A11/A22's "no tsgit surface" treatment. No
+  // option is invented to close it.
+  describe('Given the boundary compared against HEAD under --independent (F1, git-side only)', () => {
+    describe('When git merge-base --independent runs', () => {
+      it('Then it reduces {HEAD, C4} to {C5} — A21 has no tsgit surface', () => {
+        // Arrange + Act — A21
+        const c4 = ids[3] as ObjectId;
+        const gitIndependent = runGit(['-C', f1, 'merge-base', '--independent', 'HEAD', c4]).trim();
+
+        // Assert
+        expect(gitIndependent).toBe(ids[4]);
+      });
+    });
+  });
+
+  describe('Given HEAD named on a shallow clone (F1)', () => {
+    describe('When nameRev runs', () => {
+      it('Then it resolves the same name git prints, matching git name-rev', async () => {
+        // Arrange — A30
+        const repo = await openRepository({ cwd: f1 });
+        const gitName = runGit(['-C', f1, 'name-rev', '--name-only', 'HEAD']).trim();
+
+        // Act
+        const result = await repo.nameRev('HEAD');
+
+        // Assert
+        expect(result.ref).toBe(`refs/heads/${gitName}`);
+        expect(result.steps).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a shallow clone checked with fsck (F1)', () => {
+    describe('When fsck runs strict', () => {
+      it('Then it reports a clean exit bitmask, matching git fsck', async () => {
+        // Arrange — A32
+        const repo = await openRepository({ cwd: f1 });
+        const gitResult = tryRunGitWithExit(['-C', f1, 'fsck', '--strict', '--no-progress']);
+
+        // Act
+        const result = await repo.fsck({ strict: true });
+
+        // Assert — the boundary surfaces only as a non-fault `root` finding.
+        const faultTypes = [
+          'dangling',
+          'unreachable',
+          'missing',
+          'broken-link',
+          'bad-object',
+          'hash-mismatch',
+          'bad-ref',
+        ];
+        const faults = result.findings.filter((f) => faultTypes.includes(f.type));
+        expect(faults).toHaveLength(0);
+        expect(result.exitCode).toBe(0);
+        expect(gitResult.exitCode).toBe(0);
+      });
+    });
+  });
+
+  describe('Given a bisect between the boundary and HEAD (F1)', () => {
+    describe('When bisectMidpoint runs', () => {
+      it('Then it reports C5 as the sole candidate, consistent with a single-step git bisect', async () => {
+        // Arrange — A37
+        const repo = await openRepository({ cwd: f1 });
+        const c4 = ids[3] as ObjectId;
+        const c5 = ids[4] as ObjectId;
+
+        // Act
+        const result = await repo.primitives.bisectMidpoint([c4], c5);
+
+        // Assert — git bisect start HEAD <C4> reports C5 as the only step.
+        expect(result?.nextCommit).toBe(c5);
+        expect(result?.candidateCount).toBe(1);
       });
     });
   });

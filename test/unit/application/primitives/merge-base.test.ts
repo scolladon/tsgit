@@ -498,4 +498,47 @@ describe('mergeBase', () => {
       });
     });
   });
+
+  describe('Given a shallow boundary compared directly against the tip', () => {
+    describe('When mergeBase runs', () => {
+      it('Then the boundary itself is the base — proving it is an ancestor of the tip', async () => {
+        // Arrange — linear chain root ← boundary ← tip.
+        const ctx = await buildSeededContext();
+        const chain = await buildLinear(ctx, 3);
+        const root = chain[0]!;
+        const boundary = chain[1]!;
+        const tip = chain[2]!;
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/shallow`, `${boundary}\n`);
+
+        // Act
+        const result = await mergeBase(ctx, [tip, boundary]);
+
+        // Assert
+        expect(result).toEqual([boundary]);
+        expect(result).not.toContain(root);
+      });
+    });
+  });
+
+  describe('Given a shallow boundary whose true parent was never fetched into the store', () => {
+    describe('When mergeBase compares the tip against the boundary', () => {
+      it('Then resolves without ever reading the absent grandparent', async () => {
+        // Arrange — the boundary's raw parent oid names an object that is never
+        // written, simulating a shallow clone's cut history; a walk that failed
+        // to mask the boundary would try to read it and throw.
+        const ctx = await buildSeededContext();
+        const treeId = await emptyTree(ctx);
+        const missingParent = 'a'.repeat(40) as ObjectId;
+        const boundary = await commitWith(ctx, treeId, 1, [missingParent]);
+        const tip = await commitWith(ctx, treeId, 2, [boundary]);
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/shallow`, `${boundary}\n`);
+
+        // Act
+        const result = await mergeBase(ctx, [tip, boundary]);
+
+        // Assert
+        expect(result).toEqual([boundary]);
+      });
+    });
+  });
 });
