@@ -2,7 +2,12 @@
 
 - **Status:** accepted
 - **Date:** 2026-07-30
-- **Design:** docs/design/whitespace-drop-fast-path.md · **Supersedes/Refines:** none
+- **Design:** docs/design/whitespace-drop-fast-path.md · **Supersedes/Refines:** none · **Refined by:** ADR-558
+
+> **Refined by ADR-558.** The "bodies move verbatim" clause below does **not** hold for
+> the digest folders or `takeLine`: ADR-558 replaces per-line buffering with an
+> incremental O(1) fold. The decision this ADR actually records — one synchronous
+> chunk-fed scanner, in `src/domain/diff/`, driving both arms — stands unchanged.
 
 ## Context
 

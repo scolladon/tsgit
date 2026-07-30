@@ -2,7 +2,13 @@
 
 - **Status:** accepted
 - **Date:** 2026-07-30
-- **Design:** docs/design/whitespace-drop-fast-path.md · **Supersedes/Refines:** none
+- **Design:** docs/design/whitespace-drop-fast-path.md · **Supersedes/Refines:** none · **Refined by:** ADR-558
+
+> **Refined by ADR-558.** The per-proof dispositions below are re-derived against the
+> incremental fold: several lose their subject when the construct holding them is
+> deleted. The standing requirement — no proof carried forward unexamined — is unchanged
+> and binds harder; a proof whose construct no longer exists is **deleted, not
+> re-anchored**.
 
 ## Context
 
