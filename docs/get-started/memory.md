@@ -30,6 +30,8 @@ await repo.init();
 
 The `files` map seeds the working tree before `init`. Keys are absolute POSIX paths under any root you choose (here `/repo`); values are `Uint8Array`. Defensive copies are made on read and write, so caller mutations cannot corrupt stored state.
 
+`openRepository({ cwd, files })` discovers the layout the same way the Node adapter does: it walks up from `cwd` (default `/repo`) for a `.git` entry and resolves gitfile pointers, so a `files` map that seeds a worktree-shaped tree (e.g. a `.git` file at `/repo/wt/.git` pointing at an admin dir under `/repo/.git/worktrees/wt`) opens correctly from `cwd: '/repo/wt'` — as long as every resolved path stays inside `rootDir`.
+
 ## Exercise the API
 
 ```ts

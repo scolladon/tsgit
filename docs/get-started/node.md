@@ -23,7 +23,7 @@ import { openRepository } from '@scolladon/tsgit';
 const repo = await openRepository({ cwd: process.cwd() });
 ```
 
-`openRepository` walks up from `cwd` looking for a `.git` directory and binds every command to a frozen [Context](../understand/architecture.md#context). One open call, one validation pass — every subsequent call inherits the resolved layout and the configured adapters.
+`openRepository` walks up from `cwd` looking for a `.git` entry — a directory, or a gitfile pointer to one (a linked worktree, a submodule working directory, or a `--separate-git-dir` layout) — and binds every command to a frozen [Context](../understand/architecture.md#context). One open call, one validation pass — every subsequent call inherits the resolved layout and the configured adapters. See [`worktree`](../use/commands/worktree.md) for what changes when the resolved layout's `commonDir` differs from `gitDir`.
 
 If you pass `cwd` pointing at a path that doesn't exist yet, tsgit treats it as a future repository root (for example, the target of an upcoming `init` or `clone`).
 

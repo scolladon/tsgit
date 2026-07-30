@@ -26,6 +26,7 @@ import {
   serializePackIndex,
 } from '../../domain/storage/index.js';
 import type { Context } from '../../ports/context.js';
+import { commonGitDir, packsDir } from './path-layout.js';
 import { refreshPackRegistry } from './read-object.js';
 
 /**
@@ -512,7 +513,7 @@ const writePackArtifacts = async (
   objectCount: number,
   promisor: boolean,
 ): Promise<WrittenPackArtifacts> => {
-  const packDir = `${ctx.layout.gitDir}/objects/pack`;
+  const packDir = packsDir(commonGitDir(ctx));
   await ctx.fs.mkdir(packDir);
   const packPath = `${packDir}/pack-${packSha}.pack`;
   const idxPath = `${packDir}/pack-${packSha}.idx`;

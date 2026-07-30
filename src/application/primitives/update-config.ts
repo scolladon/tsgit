@@ -36,6 +36,7 @@ import {
   renderEntry,
   renderSectionHeader,
 } from './internal/config-write-shared.js';
+import { commonGitDir } from './path-layout.js';
 
 import {
   rawSectionName,
@@ -422,7 +423,7 @@ export const updateConfigEntries = async (
   ctx: Context,
   entries: ReadonlyArray<ConfigEntry>,
 ): Promise<void> => {
-  const path = `${ctx.layout.gitDir}/config`;
+  const path = `${commonGitDir(ctx)}/config`;
   const original = await readConfigText(ctx, path);
   parseIniSectionsForWrite(original, path);
   const updated = entries.reduce(
@@ -553,7 +554,7 @@ export const updateConfigOperations = async (
   ctx: Context,
   ops: ReadonlyArray<ConfigOperation>,
 ): Promise<void> => {
-  const path = `${ctx.layout.gitDir}/config`;
+  const path = `${commonGitDir(ctx)}/config`;
   const original = await readConfigText(ctx, path);
   parseIniSectionsForWrite(original, path);
   const updated = ops.reduce(applyConfigOpInText, original);

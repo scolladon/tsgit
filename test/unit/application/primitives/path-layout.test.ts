@@ -3,6 +3,7 @@ import {
   commitGraphChainPath,
   commitGraphLayerPath,
   commitGraphPath,
+  commonDirOf,
   commonGitDir,
   indexPath,
   lockSuffix,
@@ -177,6 +178,36 @@ describe('path-layout', () => {
 
         // Act
         const result = commonGitDir(ctx);
+
+        // Assert
+        expect(result).toBe('/g');
+      });
+    });
+  });
+
+  describe('Given a layout with no commonDir', () => {
+    describe('When commonDirOf', () => {
+      it('Then falls back to gitDir', () => {
+        // Arrange
+        const layout = ctxWithLayout('/g').layout;
+
+        // Act
+        const result = commonDirOf(layout);
+
+        // Assert
+        expect(result).toBe('/g');
+      });
+    });
+  });
+
+  describe('Given a layout whose commonDir differs from gitDir', () => {
+    describe('When commonDirOf', () => {
+      it('Then returns the commonDir', () => {
+        // Arrange
+        const layout = ctxWithLayout('/g/worktrees/wt', '/g').layout;
+
+        // Act
+        const result = commonDirOf(layout);
 
         // Assert
         expect(result).toBe('/g');

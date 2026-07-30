@@ -17,6 +17,15 @@ interface WorktreeScenarioResult {
     readonly detached: boolean;
     readonly main: boolean;
   }>;
+  /**
+   * Proves worktree common-dir routing is adapter-independent: every entry's
+   * HEAD (the main worktree's, read off the shared common dir, and the linked
+   * worktree's, read off its own admin dir under `<commonDir>/worktrees/<id>`)
+   * resolves to the one seed commit — same object store, different admin
+   * dirs. A boolean, not the oid itself: the golden is static and must not
+   * carry a computed hash.
+   */
+  readonly headsResolveToSeed: boolean;
 }
 
 export const worktreeScenario: Scenario<WorktreeScenarioResult> = {
@@ -32,17 +41,19 @@ export const worktreeScenario: Scenario<WorktreeScenarioResult> = {
       { branch: 'refs/heads/main', detached: false, main: true },
       { branch: 'refs/heads/wt', detached: false, main: false },
     ],
+    headsResolveToSeed: true,
   },
   run: async (repo, inputs) => {
     await repo.init();
     await repo.add(['a.txt']);
-    await repo.commit({ message: 'seed commit', author: inputs.author });
+    const seed = await repo.commit({ message: 'seed commit', author: inputs.author });
 
     const added = await repo.worktree.add({ path: 'wt' });
     const list = await repo.worktree.list();
     return {
       added: { branch: added.branch, detached: added.detached },
       list: list.entries.map((e) => ({ branch: e.branch, detached: e.detached, main: e.main })),
+      headsResolveToSeed: list.entries.every((e) => e.head === seed.id),
     };
   },
 };

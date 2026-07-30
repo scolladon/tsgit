@@ -63,8 +63,19 @@ interface WorktreeRemoveResult { readonly path: FilePath; readonly id: string; }
   (`HEAD`/`commondir`/`gitdir`/`ORIG_HEAD`/`logs/HEAD`) and the worktree `.git`
   gitfile are written byte-for-byte to git's format.
 - **`list`** — the main worktree first, then linked worktrees sorted by path.
+  The main entry's path is always derived from the common dir (a trailing
+  `/.git` stripped), so `list` run from inside a linked worktree still reports
+  the *main* worktree first with its own path — never the linked worktree the
+  call happened to run from — matching `git worktree list --porcelain`.
   `locked` is present when `<admin>/locked` exists (`reason` is its trimmed
   content); `prunable` is present when the worktree directory is gone.
+- **Opening from inside a linked worktree.** `openRepository({ cwd: <worktree
+  path> })` resolves the worktree's `.git` gitfile pointer to its admin
+  directory and the admin dir's own `commondir` file, so every command works
+  the same from inside a linked worktree as from the main one: shared refs,
+  objects, `packed-refs`, `config`, and `shallow` are read/written in the
+  common dir; `HEAD`, the index, and the other per-worktree state stay in the
+  admin dir.
 - **`move`** — renames the worktree directory and re-points the admin `gitdir`
   file; the `.git` gitfile moves with the directory and still points at the
   (unchanged) admin dir.
@@ -110,10 +121,10 @@ await repo.worktree.remove('../feature-2', { force: true });
 
 ## Non-goals (v1)
 
-`lock` / `unlock` / `prune` / `repair` verbs (lock state is read-only here),
+`lock` / `unlock` / `prune` / `repair` verbs (lock state is read-only here;
+deferred by [ADR-297](../../adr/297-worktree-lock-read-only-verbs-deferred.md)),
 `add` flags beyond the four modes above (`--track`/`--orphan`/`--no-checkout`),
-sparse-checkout inheritance on `add`, and operating tsgit from *inside* a linked
-worktree via `openRepository` (ADRs 296–298).
+and sparse-checkout inheritance on `add`.
 
 ## See also
 

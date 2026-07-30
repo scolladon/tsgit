@@ -1,9 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { openRepository } from '../../src/index.browser.js';
+import type { FileSystem } from '../../src/ports/file-system.js';
+import { resolveFixedEntryLayout } from '../../src/repository/fixed-entry-layout.js';
 
-// The browser shim only stores the `rootHandle` (BrowserFileSystem's
-// constructor never touches it) and `openRepository` performs no eager
-// I/O, so a stub handle is sufficient to assert the ctx it builds.
+// The stub handle makes every OPFS call reject; `fileSystemLayoutProbe`
+// maps those rejections to "absent", so `openRepository`'s fixed-entry
+// probe falls through to the literal layout. These tests therefore ALSO
+// pin the absent-`/.git` (pre-`init`) branch of `resolveFixedEntryLayout`
+// — including the `entry?.isFile` optional chain — not just the ctx shape.
 const fakeHandle = {} as unknown as FileSystemDirectoryHandle;
 
 describe('browser shim — openRepository', () => {
@@ -122,6 +126,116 @@ describe('browser shim — openRepository', () => {
         expect(sut.ctx.ssh).toBeUndefined();
         expect(sut.ctx.env).toBeUndefined();
         expect(sut.ctx.runtime).toBe('browser');
+      });
+    });
+  });
+});
+
+type StubEntry = { readonly kind: 'file'; readonly content: string } | { readonly kind: 'dir' };
+
+/** Minimal FS façade over a path map — only the probe surface is real. */
+const stubFsOver = (entries: Readonly<Record<string, StubEntry>>): FileSystem =>
+  ({
+    stat: async (path: string) => {
+      const entry = entries[path];
+      if (entry === undefined) throw new Error(`absent: ${path}`);
+      return {
+        isFile: entry.kind === 'file',
+        isDirectory: entry.kind === 'dir',
+        size: entry.kind === 'file' ? entry.content.length : 0,
+      };
+    },
+    readUtf8: async (path: string) => {
+      const entry = entries[path];
+      if (entry === undefined || entry.kind !== 'file') throw new Error(`absent: ${path}`);
+      return entry.content;
+    },
+  }) as unknown as FileSystem;
+
+describe('fixed-entry layout resolution (the browser shim path)', () => {
+  describe('Given a /.git entry that is a gitfile pointing at an admin dir without commondir', () => {
+    describe('When resolveFixedEntryLayout runs', () => {
+      it('Then the layout resolves to the admin dir with no commonDir key', async () => {
+        // Arrange
+        const fs = stubFsOver({
+          '/.git': { kind: 'file', content: 'gitdir: /admin\n' },
+          '/admin/HEAD': { kind: 'file', content: 'ref: refs/heads/main\n' },
+          '/admin/objects': { kind: 'dir' },
+          '/admin/refs': { kind: 'dir' },
+        });
+        const sut = resolveFixedEntryLayout;
+
+        // Act
+        const result = await sut(fs, '/', '/.git', false);
+
+        // Assert
+        expect(result).toEqual({ workDir: '/', gitDir: '/admin', bare: false });
+      });
+    });
+  });
+
+  describe('Given a /.git gitfile whose admin dir carries an absolute commondir', () => {
+    describe('When resolveFixedEntryLayout runs', () => {
+      it('Then the layout splits gitDir from commonDir', async () => {
+        // Arrange
+        const fs = stubFsOver({
+          '/.git': { kind: 'file', content: 'gitdir: /admin\n' },
+          '/admin/HEAD': { kind: 'file', content: 'ref: refs/heads/main\n' },
+          '/admin/commondir': { kind: 'file', content: '/common\n' },
+          '/common/objects': { kind: 'dir' },
+          '/common/refs': { kind: 'dir' },
+        });
+        const sut = resolveFixedEntryLayout;
+
+        // Act
+        const result = await sut(fs, '/', '/.git', false);
+
+        // Assert
+        expect(result).toEqual({
+          workDir: '/',
+          gitDir: '/admin',
+          commonDir: '/common',
+          bare: false,
+        });
+      });
+    });
+  });
+
+  describe('Given a /.git gitfile and a bare:true option', () => {
+    describe('When resolveFixedEntryLayout runs', () => {
+      it('Then the caller-supplied bare overrides the resolver default', async () => {
+        // Arrange — layoutFromGitfile always reports bare:false; the shim
+        // must apply the caller flag on top of the resolved layout.
+        const fs = stubFsOver({
+          '/.git': { kind: 'file', content: 'gitdir: /admin\n' },
+          '/admin/HEAD': { kind: 'file', content: 'ref: refs/heads/main\n' },
+          '/admin/objects': { kind: 'dir' },
+          '/admin/refs': { kind: 'dir' },
+        });
+        const sut = resolveFixedEntryLayout;
+
+        // Act
+        const result = await sut(fs, '/', '/.git', true);
+
+        // Assert
+        expect(result.bare).toBe(true);
+        expect(result.gitDir).toBe('/admin');
+      });
+    });
+  });
+
+  describe('Given a /.git entry that is a directory', () => {
+    describe('When resolveFixedEntryLayout runs', () => {
+      it('Then the literal fixed layout is kept', async () => {
+        // Arrange
+        const fs = stubFsOver({ '/.git': { kind: 'dir' } });
+        const sut = resolveFixedEntryLayout;
+
+        // Act
+        const result = await sut(fs, '/', '/.git', false);
+
+        // Assert
+        expect(result).toEqual({ workDir: '/', gitDir: '/.git', bare: false });
       });
     });
   });

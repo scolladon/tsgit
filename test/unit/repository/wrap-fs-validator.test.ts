@@ -413,4 +413,121 @@ describe('wrapFsValidator — coverage of every wrapped method', () => {
       });
     });
   });
+
+  describe('Given a root list containing an empty string beside a real root', () => {
+    describe('When a path outside the real root is read', () => {
+      it('Then the empty root is discarded and the read throws PATHSPEC_OUTSIDE_REPO', async () => {
+        // Arrange — an unfiltered '' root would contain every path.
+        const fs = stubFs();
+        const sut = wrapFsValidator(fs, ['', '/repo']);
+
+        // Act + Assert
+        await expectOutside(() => sut.readUtf8('/etc/shadow'));
+      });
+    });
+
+    describe('When a path inside the real root is read', () => {
+      it('Then the read is admitted', async () => {
+        // Arrange
+        const fs = stubFs();
+        const sut = wrapFsValidator(fs, ['', '/repo']);
+
+        // Act
+        await sut.readUtf8('/repo/file');
+
+        // Assert
+        expect(fs.readUtf8).toHaveBeenCalledWith('/repo/file');
+      });
+    });
+  });
+
+  describe('Given a root list whose only entry is an empty string', () => {
+    describe('When wrapFsValidator is constructed', () => {
+      it('Then it fails closed with PATHSPEC_OUTSIDE_REPO instead of guarding nothing', () => {
+        // Arrange
+        const fs = stubFs();
+
+        // Act
+        let caught: unknown;
+        try {
+          wrapFsValidator(fs, ['']);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data).toEqual({ code: 'PATHSPEC_OUTSIDE_REPO', path: '' });
+      });
+    });
+  });
+
+  describe('Given a root list whose only entry carries a dot-dot segment', () => {
+    describe('When wrapFsValidator is constructed', () => {
+      it('Then it fails closed with PATHSPEC_OUTSIDE_REPO naming that root', () => {
+        // Arrange
+        const fs = stubFs();
+
+        // Act
+        let caught: unknown;
+        try {
+          wrapFsValidator(fs, ['/repo/../etc']);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data).toEqual({
+          code: 'PATHSPEC_OUTSIDE_REPO',
+          path: '/repo/../etc',
+        });
+      });
+    });
+  });
+
+  describe('Given a single-string root that sanitises away', () => {
+    describe('When wrapFsValidator is constructed', () => {
+      it('Then it fails closed naming that root (the string form of the throw)', () => {
+        // Arrange
+        const fs = stubFs();
+
+        // Act
+        let caught: unknown;
+        try {
+          wrapFsValidator(fs, '/repo/../etc');
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data).toEqual({
+          code: 'PATHSPEC_OUTSIDE_REPO',
+          path: '/repo/../etc',
+        });
+      });
+    });
+  });
+
+  describe('Given an empty root array', () => {
+    describe('When wrapFsValidator is constructed', () => {
+      it('Then it fails closed with an empty path (the ?? fallback)', () => {
+        // Arrange
+        const fs = stubFs();
+
+        // Act
+        let caught: unknown;
+        try {
+          wrapFsValidator(fs, []);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data).toEqual({ code: 'PATHSPEC_OUTSIDE_REPO', path: '' });
+      });
+    });
+  });
 });

@@ -91,6 +91,7 @@
         "openUnavailable",
         "openGitSession",
 
+        "fileSystemLayoutProbe",
         "createCachingIndexResolver",
         "createFsWorkdirEnumerator",
         "createCachingTreeResolver",

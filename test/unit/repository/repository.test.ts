@@ -1121,6 +1121,32 @@ describe('openRepository — worktreeFs capability', () => {
     });
   });
 
+  describe('Given a linked-worktree path that is a sibling of workDir, not nested under it', () => {
+    describe('When operating on a worktree-scoped fs under that worktree path', () => {
+      it('Then the worktree path is admitted as a root and write/read round-trips', async () => {
+        // Arrange — '/root' is the memory adapter's containment boundary;
+        // layoutRoots minimizes to ['/root/repo'] (workDir), which does NOT
+        // contain the sibling '/root/wt': only a roots array that explicitly
+        // carries the worktree path admits this write.
+        const fs = new MemoryFileSystem({ rootDir: '/root' });
+        const fallback: RuntimeFallback = {
+          ...makeFallback(),
+          fs,
+          layout: { workDir: '/root/repo', gitDir: '/root/repo/.git', bare: false },
+        };
+        const sut = await openRepository({ cwd: '/root/repo' }, fallback);
+        const worktreeFs = worktreeScopedFs(sut, '/root/wt');
+
+        // Act
+        await worktreeFs.writeUtf8('/root/wt/tracked.txt', 'inside');
+        const roundTripped = await worktreeFs.readUtf8('/root/wt/tracked.txt');
+
+        // Assert
+        expect(roundTripped).toBe('inside');
+      });
+    });
+  });
+
   describe('Given unsafeRawAdapters: true and a custom fs', () => {
     describe('When resolving a worktree-scoped fs', () => {
       it('Then it returns the raw adapter unwrapped (reference-equal)', async () => {
@@ -1137,6 +1163,71 @@ describe('openRepository — worktreeFs capability', () => {
 
         // Assert — no wrapper layer: the returned fs IS the raw adapter.
         expect(worktreeFs).toBe(innerFs);
+      });
+    });
+  });
+});
+
+describe('openRepository — layout.commonDir plumbing', () => {
+  // '/root' is the memory adapter's own containment boundary; '/root/repo' and
+  // '/root/common' are sibling subtrees of it — commonDir is unreachable
+  // through a single-root workDir-only guard, but still inside the adapter's
+  // own bound.
+  const commonDirFallback = (fs: MemoryFileSystem): RuntimeFallback => ({
+    ...makeFallback(),
+    fs,
+    layout: {
+      workDir: '/root/repo',
+      gitDir: '/root/repo/.git',
+      bare: false,
+      commonDir: '/root/common',
+    },
+  });
+
+  describe('Given a fallback.layout carrying commonDir (a linked-worktree shape)', () => {
+    describe('When openRepository runs', () => {
+      it('Then ctx.layout.commonDir is populated from the fallback layout', async () => {
+        // Arrange
+        const fs = new MemoryFileSystem({ rootDir: '/root' });
+        const fallback = commonDirFallback(fs);
+
+        // Act
+        const sut = await openRepository({ cwd: '/root/repo' }, fallback);
+
+        // Assert
+        expect(sut.ctx.layout.commonDir).toBe('/root/common');
+      });
+    });
+
+    describe('When reading a path under commonDir through the wrapped fs', () => {
+      it('Then it does not throw — commonDir is an admitted root', async () => {
+        // Arrange
+        const fs = new MemoryFileSystem({ rootDir: '/root' });
+        await fs.mkdir('/root/common');
+        await fs.writeUtf8('/root/common/HEAD', 'ref: refs/heads/main\n');
+        const fallback = commonDirFallback(fs);
+        const sut = await openRepository({ cwd: '/root/repo' }, fallback);
+
+        // Act
+        const result = await sut.ctx.fs.readUtf8('/root/common/HEAD');
+
+        // Assert
+        expect(result).toBe('ref: refs/heads/main\n');
+      });
+    });
+
+    describe('When reading a path outside every layout root through the wrapped fs', () => {
+      it('Then it still throws PATHSPEC_OUTSIDE_REPO', async () => {
+        // Arrange
+        const fs = new MemoryFileSystem({ rootDir: '/root' });
+        const fallback = commonDirFallback(fs);
+        const sut = await openRepository({ cwd: '/root/repo' }, fallback);
+
+        // Act
+        const code = await rejectionCode(() => sut.ctx.fs.read('/root/outside/secret'));
+
+        // Assert
+        expect(code).toBe('PATHSPEC_OUTSIDE_REPO');
       });
     });
   });

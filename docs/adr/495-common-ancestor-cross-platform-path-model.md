@@ -1,6 +1,6 @@
 # 495 — `commonAncestor` cross-platform path model (drive letters, mixed separators, UNC)
 
-- **Status:** accepted (user judgment — confirmed the path model, UNC scope, cross-drive fallback, and injection shape)
+- **Status:** deprecated — the `commonAncestor` module this decision governs was deleted once the raw adapter moved to a layout root set; see [ADR-541](541-raw-node-adapter-layout-root-set.md). The cross-platform `PathPolicy` comparison model it confirmed remains in force.
 - **Date:** 2026-07-22
 - **Design:** docs/design/common-ancestor-windows-paths.md · **Refines:** [ADR-298](298-worktree-fs-containment-escape.md)
 

@@ -1218,3 +1218,297 @@ describe('NodeFileSystem config-path capabilities', () => {
     });
   });
 });
+
+describe('NodeFileSystem multi-root containment', () => {
+  /** The errno of an lstat that must have failed — `'ENOENT'` proves nothing was created. */
+  const lstatErrorCode = async (path: string): Promise<string | undefined> =>
+    fsPromises.lstat(path).then(
+      () => undefined,
+      (err: NodeJS.ErrnoException) => err.code,
+    );
+
+  /**
+   * Three sibling directories under one parent: two are containment roots,
+   * the third is not. Every "outside" path therefore still lives under the
+   * roots' common ancestor — the shape a linked worktree produces, and the
+   * one a common-ancestor root would wrongly admit.
+   */
+  const makeMultiRootFs = async (): Promise<{
+    readonly sut: NodeFileSystem;
+    readonly rootA: string;
+    readonly rootB: string;
+    readonly outsideDir: string;
+    readonly cleanup: () => Promise<void>;
+  }> => {
+    const tempBase = await fsPromises.mkdtemp(nodePath.join(os.tmpdir(), 'tsgit-multi-'));
+    const base = await fsPromises.realpath(tempBase);
+    const rootA = nodePath.join(base, 'root-a');
+    const rootB = nodePath.join(base, 'root-b');
+    const outsideDir = nodePath.join(base, 'outside');
+    await fsPromises.mkdir(rootA, { recursive: true });
+    await fsPromises.mkdir(rootB, { recursive: true });
+    await fsPromises.mkdir(outsideDir, { recursive: true });
+    return {
+      sut: new NodeFileSystem([rootA, rootB]),
+      rootA,
+      rootB,
+      outsideDir,
+      cleanup: () => fsPromises.rm(base, { recursive: true, force: true }),
+    };
+  };
+
+  describe('Given a file under the SECOND root', () => {
+    describe('When reading it', () => {
+      it('Then it returns the file content', async () => {
+        // Arrange
+        const { sut, rootB, cleanup } = await makeMultiRootFs();
+        const file = nodePath.join(rootB, 'second.txt');
+        await fsPromises.writeFile(file, 'from-root-b');
+
+        // Act
+        const result = await sut.readUtf8(file);
+
+        // Assert
+        expect(result).toBe('from-root-b');
+        await cleanup();
+      });
+    });
+  });
+
+  describe('Given a file outside every root but under their common ancestor', () => {
+    describe('When reading it', () => {
+      it('Then it throws PERMISSION_DENIED naming that path', async () => {
+        // Arrange
+        const { sut, outsideDir, cleanup } = await makeMultiRootFs();
+        const file = nodePath.join(outsideDir, 'secret.txt');
+        await fsPromises.writeFile(file, 'secret content');
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut.readUtf8(file);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({ code: 'PERMISSION_DENIED', path: file });
+        await cleanup();
+      });
+    });
+  });
+
+  describe('Given a path outside every root but under their common ancestor', () => {
+    describe('When writing to it', () => {
+      it('Then it throws PERMISSION_DENIED and creates nothing', async () => {
+        // Arrange
+        const { sut, outsideDir, cleanup } = await makeMultiRootFs();
+        const file = nodePath.join(outsideDir, 'planted.txt');
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut.writeUtf8(file, 'owned');
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({ code: 'PERMISSION_DENIED', path: file });
+        expect(await lstatErrorCode(file)).toBe('ENOENT');
+        await cleanup();
+      });
+    });
+  });
+
+  describe('Given a symlink inside the first root targeting a file outside every root', () => {
+    describe('When reading through it', () => {
+      it('Then it throws PERMISSION_DENIED', async () => {
+        // Arrange — the post-realpath gate: the link is lexically inside
+        // root A, only its resolved target reveals the escape.
+        const { sut, rootA, outsideDir, cleanup } = await makeMultiRootFs();
+        const escapeTarget = nodePath.join(outsideDir, 'secret.txt');
+        await fsPromises.writeFile(escapeTarget, 'secret content');
+        const link = nodePath.join(rootA, 'escape-link');
+        await fsPromises.symlink(escapeTarget, link);
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut.readUtf8(link);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({ code: 'PERMISSION_DENIED', path: link });
+        await cleanup();
+      });
+    });
+  });
+
+  describe('Given a symlink inside the first root targeting a file inside the second root', () => {
+    describe('When reading through it', () => {
+      it('Then it returns the target content', async () => {
+        // Arrange
+        const { sut, rootA, rootB, cleanup } = await makeMultiRootFs();
+        const target = nodePath.join(rootB, 'shared.txt');
+        await fsPromises.writeFile(target, 'cross-root');
+        const link = nodePath.join(rootA, 'cross-link');
+        await fsPromises.symlink(target, link);
+
+        // Act
+        const result = await sut.readUtf8(link);
+
+        // Assert
+        expect(result).toBe('cross-root');
+        await cleanup();
+      });
+    });
+  });
+
+  describe('Given a non-existent path outside every root', () => {
+    describe('When probing it with exists', () => {
+      it('Then it throws PERMISSION_DENIED', async () => {
+        // Arrange
+        const { sut, outsideDir, cleanup } = await makeMultiRootFs();
+        const probe = nodePath.join(outsideDir, 'absent.txt');
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut.exists(probe);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({ code: 'PERMISSION_DENIED', path: probe });
+        await cleanup();
+      });
+    });
+  });
+
+  describe('Given a non-existent path under the SECOND root', () => {
+    describe('When probing it with exists', () => {
+      it('Then it returns false', async () => {
+        // Arrange
+        const { sut, rootB, cleanup } = await makeMultiRootFs();
+
+        // Act
+        const result = await sut.exists(nodePath.join(rootB, 'absent.txt'));
+
+        // Assert
+        expect(result).toBe(false);
+        await cleanup();
+      });
+    });
+  });
+
+  describe('Given an absolute symlink target under the SECOND root', () => {
+    describe('When creating the link', () => {
+      it('Then the link is created with that target', async () => {
+        // Arrange
+        const { sut, rootA, rootB, cleanup } = await makeMultiRootFs();
+        const target = nodePath.join(rootB, 'target.txt');
+        await fsPromises.writeFile(target, 'linked');
+        const link = nodePath.join(rootA, 'to-root-b');
+
+        // Act
+        await sut.symlink(target, link);
+
+        // Assert
+        expect(await fsPromises.readlink(link)).toBe(target);
+        await cleanup();
+      });
+    });
+  });
+
+  describe('Given an absolute symlink target outside every root', () => {
+    describe('When creating the link', () => {
+      it('Then it throws PERMISSION_DENIED and creates no link', async () => {
+        // Arrange
+        const { sut, rootA, outsideDir, cleanup } = await makeMultiRootFs();
+        const target = nodePath.join(outsideDir, 'secret.txt');
+        await fsPromises.writeFile(target, 'secret content');
+        const link = nodePath.join(rootA, 'to-outside');
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut.symlink(target, link);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({ code: 'PERMISSION_DENIED', path: link });
+        expect(await lstatErrorCode(link)).toBe('ENOENT');
+        await cleanup();
+      });
+    });
+  });
+
+  describe('Given an empty root list', () => {
+    describe('When constructing the adapter', () => {
+      it('Then it throws UNSUPPORTED_OPERATION rather than confining to nothing', () => {
+        // Arrange
+        const sut = (): NodeFileSystem => new NodeFileSystem([]);
+
+        // Act
+        let caught: unknown;
+        try {
+          sut();
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'UNSUPPORTED_OPERATION',
+          operation: 'constructor',
+          reason: 'NodeFileSystem requires at least one root',
+        });
+      });
+    });
+  });
+
+  describe('Given a root that does not exist yet', () => {
+    describe('When probing a path under it with exists', () => {
+      it('Then it returns false instead of surfacing the root ENOENT', async () => {
+        // Arrange — a `worktree add` target is a legitimate root the caller
+        // is about to create; it must not break every call until it exists.
+        const { rootA, cleanup } = await makeMultiRootFs();
+        const pending = nodePath.join(nodePath.dirname(rootA), 'not-yet');
+        const sut = new NodeFileSystem([rootA, pending]);
+
+        // Act
+        const result = await sut.exists(nodePath.join(pending, 'file.txt'));
+
+        // Assert
+        expect(result).toBe(false);
+        await cleanup();
+      });
+    });
+  });
+
+  describe('Given a root created after the adapter was built', () => {
+    describe('When writing a file under it', () => {
+      it('Then the write succeeds', async () => {
+        // Arrange
+        const { rootA, cleanup } = await makeMultiRootFs();
+        const pending = nodePath.join(nodePath.dirname(rootA), 'created-later');
+        const sut = new NodeFileSystem([rootA, pending]);
+        await sut.exists(nodePath.join(pending, 'file.txt'));
+        await fsPromises.mkdir(pending, { recursive: true });
+
+        // Act
+        await sut.writeUtf8(nodePath.join(pending, 'file.txt'), 'late');
+
+        // Assert
+        expect(await fsPromises.readFile(nodePath.join(pending, 'file.txt'), 'utf-8')).toBe('late');
+        await cleanup();
+      });
+    });
+  });
+});

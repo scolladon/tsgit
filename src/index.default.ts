@@ -15,6 +15,9 @@ import { MemoryHashService } from './adapters/memory/memory-hash-service.js';
 import { MemoryHttpTransport } from './adapters/memory/memory-http-transport.js';
 import { SHA1_CONFIG, SHA256_CONFIG } from './domain/objects/hash-config.js';
 import { createLruCache } from './domain/storage/lru-cache.js';
+import { fileSystemLayoutProbe } from './repository/file-system-layout-probe.js';
+import { findLayout } from './repository/find-layout.js';
+import { portablePosixPolicy } from './repository/portable-posix-policy.js';
 import {
   type OpenRepositoryOptions,
   openRepository as openRepositoryCore,
@@ -46,13 +49,24 @@ export const openRepository = async (
     opts.files === undefined
       ? { rootDir: DEFAULT_WORK_DIR }
       : { rootDir: DEFAULT_WORK_DIR, files: opts.files };
+  const fs = new MemoryFileSystem(fsOptions);
+  const cwd = opts.cwd ?? DEFAULT_WORK_DIR;
+  // `portablePosixPolicy`, not the node-backed `posixPolicy`: this entry is the
+  // runtime-agnostic default condition, and a value import of the node policy
+  // would drag `node:path` into runtimes that lack it. Safe subset: the core
+  // rejects a non-absolute `cwd` and the default is `/repo`.
+  const layout = (await findLayout(fileSystemLayoutProbe(fs), cwd, portablePosixPolicy)) ?? {
+    workDir: DEFAULT_WORK_DIR,
+    gitDir: DEFAULT_GIT_DIR,
+    bare: false,
+  };
   const fallback = {
-    fs: new MemoryFileSystem(fsOptions),
+    fs,
     hash: new MemoryHashService(algorithm),
     compressor: new MemoryCompressor(),
     transport: new MemoryHttpTransport(),
     runtime: 'memory' as const,
-    layout: { workDir: DEFAULT_WORK_DIR, gitDir: DEFAULT_GIT_DIR, bare: false },
+    layout,
     hashConfig: algorithm === 'sha256' ? SHA256_CONFIG : SHA1_CONFIG,
     deltaCache: createLruCache<Uint8Array>(DEFAULT_DELTA_CACHE_BYTES),
   };

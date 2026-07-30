@@ -32,6 +32,7 @@ import { noopProgress } from './progress.js';
 import { composeAdapters } from './repository/compose-adapters.js';
 import { deepFreeze } from './repository/deep-freeze.js';
 import { defaultCwd } from './repository/default-cwd.js';
+import { layoutRootsOf } from './repository/layout-roots.js';
 import { validateOptions } from './repository/validate-options.js';
 import { wrapFsValidator } from './repository/wrap-fs-validator.js';
 import { wrapTransportValidator } from './repository/wrap-transport-validator.js';
@@ -117,10 +118,9 @@ export interface OpenRepositoryOptions {
 }
 
 /**
- * Caller-supplied physical layout for the in-construction Context.'s
- * design defers full layout discovery (walk up from cwd until `.git` is found)
- * to a follow-up; for this iteration the caller must provide the resolved
- * layout explicitly (the runtime shims do this in Step 5).
+ * Caller-supplied physical layout for the in-construction Context. The
+ * runtime shims resolve this by walking up from `cwd` until a `.git` entry is
+ * found (`findLayout`); mirrors `RepositoryLayout` (`ports/context.ts`).
  *
  * @internal
  */
@@ -128,6 +128,12 @@ export interface RepositoryLayoutInput {
   readonly workDir: string;
   readonly gitDir: string;
   readonly bare: boolean;
+  /**
+   * Shared common git dir — set only for a linked worktree, whose `gitDir` is
+   * its own admin dir while shared state (objects, refs, config) lives here.
+   * Absent for a normal repo or the main worktree (equals `gitDir`).
+   */
+  readonly commonDir?: string;
   readonly homeDir?: string;
 }
 
@@ -375,35 +381,31 @@ export const openRepository = async (
   validateOptions(opts);
   const cwd = opts.cwd ?? defaultCwd();
   const detected = composeAdapters(opts, fallback);
-  // Containment is rooted at the REPO (layout.workDir), not the user's cwd —
+  // Containment is rooted at the layout's containment-minimised root set
+  // (workDir, gitDir, commonDir — see `layoutRootsOf`), not the user's cwd —
   // when cwd is a sub-directory of the repo, primitives still need to read
-  // files anywhere under the workDir (e.g., gitDir/HEAD lives at the repo root,
-  // not under the sub-directory). The security goal is "no paths outside
-  // the repo," which is exactly the layout.workDir boundary.
+  // files anywhere under those roots (e.g., gitDir/HEAD lives at the repo
+  // root, not under the sub-directory; a linked worktree's shared state lives
+  // under commonDir, outside workDir entirely). The security goal is "no
+  // paths outside the repo's own roots."
+  const layoutRoots = layoutRootsOf(fallback.layout);
   const adapters =
     opts.unsafeRawAdapters === true
       ? detected
       : {
           ...detected,
-          fs: wrapFsValidator(
-            detected.fs,
-            fallback.layout.workDir,
-            computeConfigScopePaths(detected.fs),
-          ),
+          fs: wrapFsValidator(detected.fs, layoutRoots, computeConfigScopePaths(detected.fs)),
           transport: wrapTransportValidator(detected.transport, opts.config),
         };
   // ADR-298: a linked worktree lives outside workDir and a worktree Context must
-  // reach BOTH the worktree path and the common dir. `worktreeFs` asks the
-  // runtime for a raw fs wide enough to reach the worktree paths (the node shim
-  // roots a fresh adapter at the common ancestor), then confines it with a
-  // multi-root validator to exactly those subtrees (or returns the raw fs when
-  // containment is opted out). The facade opens a main/normal repo
-  // (linked-worktree discovery is deferred, ADR-296), so its common dir is the
-  // gitDir.
-  const commonDir = fallback.layout.gitDir;
+  // reach BOTH the worktree path and the layout roots (workDir/gitDir/commonDir).
+  // `worktreeFs` asks the runtime for a raw fs wide enough to reach the worktree
+  // paths (the node shim roots a fresh adapter at the common ancestor), then
+  // confines it with a multi-root validator to exactly those subtrees (or
+  // returns the raw fs when containment is opted out).
   const worktreeFs = (worktreePath: string | ReadonlyArray<string>): FileSystem => {
     const paths = typeof worktreePath === 'string' ? [worktreePath] : worktreePath;
-    const roots = [...paths, commonDir];
+    const roots = [...paths, ...layoutRoots];
     const raw = fallback.makeWorktreeFs?.(roots) ?? detected.fs;
     if (opts.unsafeRawAdapters === true) return raw;
     return wrapFsValidator(raw, roots, computeConfigScopePaths(raw));

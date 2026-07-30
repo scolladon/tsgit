@@ -19,6 +19,7 @@ import type { Context } from '../../ports/context.js';
 import type { ParsedConfig } from '../primitives/config-read.js';
 import { readConfig } from '../primitives/config-read.js';
 import { createTag } from '../primitives/create-tag.js';
+import { commonGitDir, perWorktreeRefDir } from '../primitives/path-layout.js';
 import { readObject } from '../primitives/read-object.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import { updateRef } from '../primitives/update-ref.js';
@@ -64,7 +65,7 @@ const TAGS_PREFIX = 'refs/tags/';
 
 export const tagList = async (ctx: Context): Promise<TagListResult> => {
   await assertOperationalRepository(ctx);
-  const dir = `${ctx.layout.gitDir}/refs/tags`;
+  const dir = `${commonGitDir(ctx)}/refs/tags`;
   if (!(await ctx.fs.exists(dir))) return { tags: [] };
   const entries = await ctx.fs.readdir(dir);
   const tags: TagInfo[] = [];
@@ -205,7 +206,7 @@ const updateTagRef = async (
 export const tagDelete = async (ctx: Context, input: TagDeleteInput): Promise<TagDeleteResult> => {
   await assertOperationalRepository(ctx);
   const name = validateRefName(`${TAGS_PREFIX}${input.name}`);
-  if (!(await ctx.fs.exists(`${ctx.layout.gitDir}/${name}`))) {
+  if (!(await ctx.fs.exists(`${perWorktreeRefDir(ctx, name)}/${name}`))) {
     throw tagNotFound(name);
   }
   await updateRef(ctx, name, ZERO_OID, { delete: true });

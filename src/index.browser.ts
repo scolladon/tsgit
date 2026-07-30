@@ -11,6 +11,7 @@ import { BrowserHashService } from './adapters/browser/browser-hash-service.js';
 import { BrowserHttpTransport } from './adapters/browser/browser-http-transport.js';
 import { SHA1_CONFIG } from './domain/objects/hash-config.js';
 import { createLruCache } from './domain/storage/lru-cache.js';
+import { resolveFixedEntryLayout } from './repository/fixed-entry-layout.js';
 import {
   type OpenRepositoryOptions,
   openRepository as openRepositoryCore,
@@ -39,17 +40,24 @@ export interface OpenBrowserRepositoryOptions extends OpenRepositoryOptions {
 
 export const openRepository = async (opts: OpenBrowserRepositoryOptions): Promise<Repository> => {
   const gitDirName = opts.gitDirName ?? DEFAULT_GIT_DIR_NAME;
+  const fs = new BrowserFileSystem(opts.rootHandle);
+  // A walk-up is meaningless in OPFS (`dirname('/') === '/'` terminates on
+  // the first iteration), so — unlike the node/memory shims — the browser
+  // resolves its fixed `/{gitDirName}` entry pointer-aware via
+  // `resolveFixedEntryLayout` rather than calling `findLayout`.
+  const layout = await resolveFixedEntryLayout(
+    fs,
+    ROOT_WORK_DIR,
+    `${ROOT_WORK_DIR}${gitDirName}`,
+    opts.bare ?? false,
+  );
   const fallback = {
-    fs: new BrowserFileSystem(opts.rootHandle),
+    fs,
     hash: new BrowserHashService(),
     compressor: new BrowserCompressor(),
     transport: new BrowserHttpTransport(),
     runtime: 'browser' as const,
-    layout: {
-      workDir: ROOT_WORK_DIR,
-      gitDir: `${ROOT_WORK_DIR}${gitDirName}`,
-      bare: opts.bare ?? false,
-    },
+    layout,
     hashConfig: SHA1_CONFIG,
     deltaCache: createLruCache<Uint8Array>(
       opts.deltaCacheMaxBytes ?? DEFAULT_DELTA_CACHE_BYTES,

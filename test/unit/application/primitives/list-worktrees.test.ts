@@ -79,6 +79,104 @@ describe('listWorktrees', () => {
     });
   });
 
+  describe('Given a bare repository whose gitDir has no /.git suffix (bare.git)', () => {
+    describe('When listWorktrees runs', () => {
+      it('Then the main entry path is the gitdir itself and bare stays true', async () => {
+        // Arrange — the `bare.git` shape: nothing to strip, so the derived
+        // main path is the gitdir; the bare flag is layout-driven, unchanged.
+        const base = await buildSeededContext();
+        const gitDir = `${base.layout.workDir}/bare.git`;
+        const ctx: Context = { ...base, layout: { ...base.layout, gitDir, bare: true } };
+        await ctx.fs.writeUtf8(`${gitDir}/HEAD`, 'ref: refs/heads/main\n');
+
+        // Act
+        const result = await listWorktrees(ctx);
+
+        // Assert
+        expect(result).toEqual([
+          {
+            path: gitDir,
+            detached: false,
+            bare: true,
+            main: true,
+          },
+        ]);
+      });
+    });
+  });
+
+  describe('Given a repository with a separate git dir (no /.git suffix, no commonDir override)', () => {
+    describe('When listWorktrees runs', () => {
+      it('Then the main entry path is the gitdir itself, not workDir — the divergence fix', async () => {
+        // Arrange — gitDir named `sep.git` (no `/.git` suffix to strip) and no
+        // `commonDir` override, matching a real `--separate-git-dir` main
+        // worktree. Kept under the memory adapter's sandboxed root.
+        const base = await buildSeededContext();
+        const gitDir = `${base.layout.workDir}/sep.git`;
+        const ctx: Context = { ...base, layout: { ...base.layout, gitDir } };
+        await ctx.fs.writeUtf8(`${gitDir}/HEAD`, 'ref: refs/heads/main\n');
+        await ctx.fs.writeUtf8(`${gitDir}/refs/heads/main`, `${OID_MAIN}\n`);
+
+        // Act
+        const result = await listWorktrees(ctx);
+
+        // Assert
+        expect(result).toEqual([
+          {
+            path: gitDir,
+            head: OID_MAIN,
+            branch: 'refs/heads/main',
+            detached: false,
+            bare: false,
+            main: true,
+          },
+        ]);
+      });
+    });
+  });
+
+  describe('Given a Context opened at a linked worktree', () => {
+    describe('When listWorktrees runs', () => {
+      it('Then the main entry path is derived from the common dir, not the opened workDir', async () => {
+        // Arrange — the child's own admin gitdir is deliberately kept OUTSIDE
+        // `<common>/worktrees/` so listWorktrees' linked-entry scan (which is
+        // empty here) never sees it; this test targets only the main entry's
+        // path derivation, not full worktree registration.
+        const ctx = await buildSeededContext({
+          refs: [{ name: 'refs/heads/main' as RefName, id: OID_MAIN }],
+        });
+        await seedMainHead(ctx);
+        const adminGitDir = `${ctx.layout.workDir}/wts/self/.git`;
+        const sut: Context = {
+          ...ctx,
+          layout: {
+            ...ctx.layout,
+            workDir: '/repo/wts/self',
+            gitDir: adminGitDir,
+            commonDir: ctx.layout.gitDir,
+          },
+        };
+        await ctx.fs.writeUtf8(`${adminGitDir}/HEAD`, 'ref: refs/heads/main\n');
+
+        // Act
+        const result = await listWorktrees(sut);
+
+        // Assert — derived from the common dir (strips its `/.git` suffix),
+        // NOT `sut.layout.workDir` (the opened linked worktree's own path).
+        expect(result).toEqual([
+          {
+            path: ctx.layout.workDir,
+            head: OID_MAIN,
+            branch: 'refs/heads/main',
+            detached: false,
+            bare: false,
+            main: true,
+          },
+        ]);
+      });
+    });
+  });
+
   describe('Given a linked branch worktree', () => {
     describe('When listWorktrees runs', () => {
       it('Then it reports the branch and resolved head', async () => {

@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { TsgitError } from '../../../../src/domain/error.js';
 import {
   branchCheckedOut,
+  gitfileInvalidFormat,
+  gitfileNoPath,
   notAWorktree,
   worktreeDirty,
   worktreeLocked,
@@ -70,6 +72,30 @@ describe('worktree errors', () => {
 
         // Assert
         expect(result.data).toEqual({ code: 'NOT_A_WORKTREE', path: '/abs/wt' });
+      });
+    });
+  });
+
+  describe('Given gitfileInvalidFormat', () => {
+    describe('When constructed', () => {
+      it('Then carries the code and path', () => {
+        // Arrange + Act
+        const result = gitfileInvalidFormat('/wt/.git');
+
+        // Assert
+        expect(result.data).toEqual({ code: 'GITFILE_INVALID_FORMAT', path: '/wt/.git' });
+      });
+    });
+  });
+
+  describe('Given gitfileNoPath', () => {
+    describe('When constructed', () => {
+      it('Then carries the code and path', () => {
+        // Arrange + Act
+        const result = gitfileNoPath('/wt/.git');
+
+        // Assert
+        expect(result.data).toEqual({ code: 'GITFILE_NO_PATH', path: '/wt/.git' });
       });
     });
   });

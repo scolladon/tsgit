@@ -8,7 +8,7 @@ import { invalidReflogEntry } from '../../domain/reflog/error.js';
 import type { ReflogEntry } from '../../domain/reflog/reflog-entry.js';
 import { parseReflog, serializeReflogLine } from '../../domain/reflog/reflog-format.js';
 import type { Context } from '../../ports/context.js';
-import { logsDir, perWorktreeRefDir, reflogPath } from './path-layout.js';
+import { commonGitDir, logsDir, perWorktreeRefDir, reflogPath } from './path-layout.js';
 import { MAX_REFLOG_BYTES } from './types.js';
 
 /** Append one entry to `ref`'s reflog, creating the file and parents as needed. */
@@ -50,11 +50,26 @@ export async function deleteReflog(ctx: Context, ref: RefName): Promise<void> {
   }
 }
 
-/** Every reflog under `.git/logs/`, each as the `RefName` it logs. */
+/**
+ * Every reflog under `logs/`, each as the `RefName` it logs. Reflogs live
+ * under two roots for a linked worktree: the worktree's own gitdir (HEAD's
+ * per-worktree log) and the common dir (every shared ref's log). For a
+ * normal repo / the main worktree the two roots are one and the same string,
+ * so the walk runs once; the `Set<RefName>` below collapses the cross-root
+ * duplicates that remain in the split case.
+ */
 export async function listReflogs(ctx: Context): Promise<ReadonlyArray<RefName>> {
-  const root = logsDir(ctx.layout.gitDir);
-  if (!(await ctx.fs.exists(root))) return [];
-  return collectReflogs(ctx, root, '');
+  const own = logsDir(ctx.layout.gitDir);
+  const common = logsDir(commonGitDir(ctx));
+  const roots = own === common ? [own] : [own, common];
+  const names = new Set<RefName>();
+  for (const root of roots) {
+    if (!(await ctx.fs.exists(root))) continue;
+    for (const name of await collectReflogs(ctx, root, '')) {
+      names.add(name);
+    }
+  }
+  return [...names];
 }
 
 async function collectReflogs(

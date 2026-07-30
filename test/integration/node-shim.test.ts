@@ -9,7 +9,7 @@
  *   bucket:  coverage-gap
  *   unique:  src/index.node.ts runtime-shim adapter construction path the unit suite cannot reach
  */
-import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
@@ -146,6 +146,58 @@ describe('Node shim — findLayout walk-up', () => {
   });
 });
 
+describe('Node shim — linked worktree discovery', () => {
+  describe('Given a repo with a commit, When repo.worktree.add creates a linked worktree and openRepository opens it', () => {
+    it('Then it resolves workDir/gitDir/commonDir', async () => {
+      // Arrange — seed a repo with one commit, then create a linked worktree.
+      // The sibling worktree path is built from the REALPATHED tmpdir (not the
+      // raw one) — openRepository realpaths cwd internally, so a worktree path
+      // built off the raw form would root the two sibling directories under
+      // different (mismatched) prefixes on a symlinked tmp hierarchy (macOS
+      // /var -> /private/var).
+      const realTmpdir = await realpath(tmpdir);
+      const setup = await openRepository({ cwd: tmpdir });
+      await setup.init();
+      await writeFile(path.join(tmpdir, 'a.txt'), 'hello\n');
+      await setup.add(['a.txt']);
+      await setup.commit({ message: 'first', author });
+      const wt = `${realTmpdir}-wt`;
+      const { id } = await setup.worktree.add({ path: wt, branch: 'wt' });
+      await setup.dispose();
+
+      // Act — open a fresh repo at the linked worktree path.
+      const sut = await openRepository({ cwd: wt });
+      try {
+        // Assert
+        expect(sut.ctx.layout.workDir).toBe(wt);
+        expect(sut.ctx.layout.gitDir).toBe(path.join(realTmpdir, '.git', 'worktrees', id));
+        expect(sut.ctx.layout.commonDir).toBe(path.join(realTmpdir, '.git'));
+      } finally {
+        await sut.dispose();
+        await rm(wt, { recursive: true, force: true });
+      }
+    });
+  });
+
+  describe('Given a plain (non-worktree) repo, When openRepository runs', () => {
+    it('Then the layout carries no commonDir key', async () => {
+      // Arrange
+      const setup = await openRepository({ cwd: tmpdir });
+      await setup.init();
+      await setup.dispose();
+
+      // Act
+      const sut = await openRepository({ cwd: tmpdir });
+      try {
+        // Assert
+        expect('commonDir' in sut.ctx.layout).toBe(false);
+      } finally {
+        await sut.dispose();
+      }
+    });
+  });
+});
+
 describe('Node shim — dispose', () => {
   describe('Given a disposed repo, When any bound method is invoked', () => {
     it('Then it throws REPOSITORY_DISPOSED', async () => {
@@ -183,6 +235,98 @@ describe('Node shim — dispose', () => {
         // dispose() itself is no-op past abort; calling it cleans up the controller.
         await sut.dispose();
       }
+    });
+  });
+});
+
+/**
+ * A linked worktree and the main repo are siblings, so their common ancestor
+ * is a directory that belongs to neither. Rooting the raw adapter there would
+ * make every sibling readable and writable through a symlink planted inside
+ * the worktree — the facade's multi-root validator is purely lexical and
+ * never resolves the link.
+ */
+const seedWorktreeWithEscapeLink = async (): Promise<{
+  readonly worktreePath: string;
+  readonly secretFile: string;
+  readonly cleanup: () => Promise<void>;
+}> => {
+  const realTmpdir = await realpath(tmpdir);
+  const secretDir = `${realTmpdir}-secret`;
+  await mkdir(secretDir, { recursive: true });
+  await writeFile(path.join(secretDir, 'key.txt'), 'secret content\n');
+  const setup = await openRepository({ cwd: realTmpdir });
+  await setup.init();
+  await writeFile(path.join(realTmpdir, 'a.txt'), 'hello\n');
+  await setup.add(['a.txt']);
+  await setup.commit({ message: 'first', author });
+  const worktreePath = `${realTmpdir}-wt`;
+  await setup.worktree.add({ path: worktreePath, branch: 'wt' });
+  await setup.dispose();
+  await symlink(secretDir, path.join(worktreePath, 'link'));
+  return {
+    worktreePath,
+    secretFile: path.join(secretDir, 'key.txt'),
+    cleanup: async () => {
+      await rm(worktreePath, { recursive: true, force: true });
+      await rm(secretDir, { recursive: true, force: true });
+    },
+  };
+};
+
+describe('Node shim — linked-worktree containment', () => {
+  describe('Given a linked worktree holding a symlink to a directory outside every layout root', () => {
+    describe('When adding a path through that symlink', () => {
+      it('Then the pathspec is refused and nothing is staged', async () => {
+        // Arrange
+        const { worktreePath, cleanup } = await seedWorktreeWithEscapeLink();
+        const sut = await openRepository({ cwd: worktreePath });
+
+        try {
+          // Act
+          let caught: unknown;
+          try {
+            await sut.add(['link/key.txt']);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect((caught as { data: { code: string } }).data.code).toBe('PATHSPEC_NO_MATCH');
+          expect((await sut.status()).changes).toHaveLength(0);
+        } finally {
+          await sut.dispose();
+          await cleanup();
+        }
+      });
+    });
+
+    describe('When reading the outside file through the raw adapter', () => {
+      it('Then it throws PERMISSION_DENIED', async () => {
+        // Arrange — `unsafeRawAdapters` bypasses the lexical facade validator,
+        // leaving the adapter's realpath containment as the only gate.
+        const { worktreePath, secretFile, cleanup } = await seedWorktreeWithEscapeLink();
+        const sut = await openRepository({ cwd: worktreePath, unsafeRawAdapters: true });
+
+        try {
+          // Act
+          let caught: unknown;
+          try {
+            await sut.ctx.fs.readUtf8(secretFile);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect((caught as { data: unknown }).data).toEqual({
+            code: 'PERMISSION_DENIED',
+            path: secretFile,
+          });
+        } finally {
+          await sut.dispose();
+          await cleanup();
+        }
+      });
     });
   });
 });

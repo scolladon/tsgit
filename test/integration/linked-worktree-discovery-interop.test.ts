@@ -1,0 +1,677 @@
+/**
+ * Cross-tool interop — linked-worktree, submodule, and `--separate-git-dir`
+ * discovery. Builds each on-disk layout shape with canonical git, then proves
+ * `openRepository`'s discovery walk resolves the identical `gitDir` /
+ * `commonDir` pair git itself reports (`git rev-parse --git-dir
+ * --git-common-dir`), and that read commands (`revParse`, `log`, `status`,
+ * `diff`) agree with git run from the same cwd. Also pins the discovery
+ * refusals (malformed / no-path / dangling gitfile) co-refused by both tools,
+ * and the `repo.worktree.add` → `openRepository` round trip.
+ *
+ * @proves
+ *   surface:        openRepository
+ *   bucket:         cross-tool-interop
+ *   unique:         linked-worktree, submodule and separate-git-dir discovery matches git rev-parse
+ *   interopSurface: worktree
+ */
+import { existsSync } from 'node:fs';
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import type { AuthorIdentity } from '../../src/domain/objects/index.js';
+import { openRepository } from '../../src/index.node.js';
+import type { Repository } from '../../src/repository.js';
+import { GIT_AVAILABLE, git, runGit, runGitEnv, tryRunGitWithExit } from './interop-helpers.js';
+
+const SETUP_TIMEOUT = 60_000;
+
+const AUTHOR: AuthorIdentity = {
+  name: 'Ada',
+  email: 'ada@example.com',
+  timestamp: 1_700_000_000,
+  timezoneOffset: '+0000',
+};
+
+const COMMIT_ENV: NodeJS.ProcessEnv = {
+  ...runGitEnv(),
+  GIT_AUTHOR_NAME: AUTHOR.name,
+  GIT_AUTHOR_EMAIL: AUTHOR.email,
+  GIT_AUTHOR_DATE: `${AUTHOR.timestamp} ${AUTHOR.timezoneOffset}`,
+  GIT_COMMITTER_NAME: AUTHOR.name,
+  GIT_COMMITTER_EMAIL: AUTHOR.email,
+  GIT_COMMITTER_DATE: `${AUTHOR.timestamp} ${AUTHOR.timezoneOffset}`,
+};
+
+const commit = (dir: string, message: string): void => {
+  runGit(['-C', dir, 'commit', '-q', '-m', message], { env: COMMIT_ENV });
+};
+
+/** A fresh, realpath-resolved tmpdir root for one scenario group. */
+const mkRoot = async (slug: string): Promise<string> =>
+  realpath(await mkdtemp(path.join(os.tmpdir(), `tsgit-interop-lwd-${slug}-`)));
+
+/** `git rev-parse --path-format=absolute --git-dir --git-common-dir`, split into a pair. */
+const gitDirPair = (cwd: string): readonly [string, string] => {
+  const [gitDir, commonDir] = git(
+    cwd,
+    'rev-parse',
+    '--path-format=absolute',
+    '--git-dir',
+    '--git-common-dir',
+  )
+    .trim()
+    .split('\n');
+  if (gitDir === undefined || commonDir === undefined) {
+    throw new Error(`unexpected rev-parse output for ${cwd}`);
+  }
+  return [gitDir, commonDir];
+};
+
+/** One entry parsed from `git worktree list --porcelain` output. */
+interface PorcelainWorktreeEntry {
+  readonly path: string;
+  readonly head?: string;
+  readonly branch?: string;
+  readonly detached: boolean;
+  readonly bare: boolean;
+}
+
+/**
+ * Reconstruct `git worktree list --porcelain`'s entries as structured fields
+ * — blank-line-separated blocks, each a `key value` line per field (or a
+ * bare `detached` / `bare` keyword line).
+ */
+const parseWorktreePorcelain = (output: string): ReadonlyArray<PorcelainWorktreeEntry> =>
+  output
+    .trim()
+    .split('\n\n')
+    .filter((block) => block.length > 0)
+    .map((block) => {
+      let path = '';
+      let head: string | undefined;
+      let branch: string | undefined;
+      let detached = false;
+      let bare = false;
+      for (const line of block.split('\n')) {
+        if (line.startsWith('worktree ')) path = line.slice('worktree '.length);
+        else if (line.startsWith('HEAD ')) head = line.slice('HEAD '.length);
+        else if (line.startsWith('branch ')) branch = line.slice('branch '.length);
+        else if (line === 'detached') detached = true;
+        else if (line === 'bare') bare = true;
+      }
+      return {
+        path,
+        detached,
+        bare,
+        ...(head !== undefined ? { head } : {}),
+        ...(branch !== undefined ? { branch } : {}),
+      };
+    });
+
+describe.skipIf(!GIT_AVAILABLE)('linked-worktree discovery interop', () => {
+  describe('Given a git-built linked worktree checked out at HEAD~1 (scenarios A, D)', () => {
+    let root: string;
+    let wt: string;
+    let repo: Repository;
+
+    beforeAll(async () => {
+      root = await mkRoot('a');
+      const main = path.join(root, 'main');
+      runGit(['init', '-q', '-b', 'main', main]);
+      await writeFile(path.join(main, 'a.txt'), 'one\n');
+      git(main, 'add', 'a.txt');
+      commit(main, 'c1');
+      await writeFile(path.join(main, 'a.txt'), 'two\n');
+      git(main, 'add', 'a.txt');
+      commit(main, 'c2');
+      wt = path.join(root, 'wt');
+      git(main, 'worktree', 'add', '-q', wt, 'HEAD~1');
+      await mkdir(path.join(wt, 'sub', 'dir'), { recursive: true });
+      repo = await openRepository({ cwd: wt });
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      await repo?.dispose();
+      if (root !== undefined) await rm(root, { recursive: true, force: true });
+    });
+
+    describe('When opened at the worktree root (scenario A)', () => {
+      it('Then layout.gitDir/commonDir match git rev-parse --git-dir --git-common-dir', () => {
+        // Arrange
+        const [expectedGitDir, expectedCommonDir] = gitDirPair(wt);
+
+        // Act
+        const result = repo.ctx.layout;
+
+        // Assert
+        expect(result.gitDir).toBe(expectedGitDir);
+        expect(result.commonDir).toBe(expectedCommonDir);
+      });
+
+      it('Then revParse(HEAD) matches git rev-parse HEAD', async () => {
+        // Arrange
+        const expected = git(wt, 'rev-parse', 'HEAD').trim();
+
+        // Act
+        const result = await repo.revParse('HEAD');
+
+        // Assert
+        expect(result).toBe(expected);
+      });
+
+      it('Then log oids match git log --format=%H', async () => {
+        // Arrange
+        const expected = git(wt, 'log', '--format=%H').trim().split('\n');
+
+        // Act
+        const result = await repo.log();
+
+        // Assert
+        expect(result.map((entry) => entry.id)).toEqual(expected);
+      });
+
+      it('Then status reports clean, matching an empty git status --porcelain', async () => {
+        // Arrange
+        const expectedClean = git(wt, 'status', '--porcelain').trim() === '';
+
+        // Act
+        const result = await repo.status();
+
+        // Assert
+        expect(expectedClean).toBe(true);
+        expect(result.clean).toBe(true);
+      });
+
+      it('Then diff(to: main) matches git diff --name-only HEAD main', async () => {
+        // Arrange — HEAD (this worktree's detached commit, c1) vs the shared
+        // branch tip main (c2, read from the common dir) differ by a.txt.
+        const expectedPath = git(wt, 'diff', '--name-only', 'HEAD', 'main').trim();
+
+        // Act
+        const result = await repo.diff({ to: 'main' });
+
+        // Assert
+        expect(result.changes).toHaveLength(1);
+        expect((result.changes[0] as { path: string }).path).toBe(expectedPath);
+      });
+    });
+
+    describe('When opened at a nested sub-directory of the worktree (scenario D)', () => {
+      it('Then findLayout walks up to the identical gitDir/commonDir pair', async () => {
+        // Arrange
+        const sub = path.join(wt, 'sub', 'dir');
+        const [expectedGitDir, expectedCommonDir] = gitDirPair(wt);
+
+        // Act
+        const nested = await openRepository({ cwd: sub });
+        try {
+          // Assert
+          expect(nested.ctx.layout.gitDir).toBe(expectedGitDir);
+          expect(nested.ctx.layout.commonDir).toBe(expectedCommonDir);
+          expect(await nested.revParse('HEAD')).toBe(await repo.revParse('HEAD'));
+        } finally {
+          await nested.dispose();
+        }
+      });
+    });
+
+    describe('When worktree.list runs from inside the worktree (scenario I, normal shape)', () => {
+      it('Then entries match git worktree list --porcelain: main first, main path derived from the common dir', async () => {
+        // Arrange
+        const expected = parseWorktreePorcelain(git(wt, 'worktree', 'list', '--porcelain'));
+
+        // Act
+        const result = await repo.worktree.list();
+
+        // Assert
+        expect(result.entries).toHaveLength(expected.length);
+        const [mainExpected] = expected;
+        const [mainActual] = result.entries;
+        expect(mainActual?.main).toBe(true);
+        expect(mainActual?.path).toBe(mainExpected?.path);
+        expect(mainActual?.head).toBe(mainExpected?.head);
+        expect(mainActual?.branch).toBe(mainExpected?.branch);
+        expect(mainActual?.detached).toBe(mainExpected?.detached);
+        expect(mainActual?.bare).toBe(mainExpected?.bare);
+      });
+    });
+  });
+
+  describe('Given a real git submodule working directory (scenario E)', () => {
+    let root: string;
+    let mainDir: string;
+    let submodulePath: string;
+
+    beforeAll(async () => {
+      root = await mkRoot('e');
+      const subDir = path.join(root, 'sub');
+      runGit(['init', '-q', '-b', 'main', subDir]);
+      await writeFile(path.join(subDir, 's.txt'), 'sub\n');
+      git(subDir, 'add', 's.txt');
+      commit(subDir, 'sub commit');
+
+      mainDir = path.join(root, 'main');
+      runGit(['init', '-q', '-b', 'main', mainDir]);
+      await writeFile(path.join(mainDir, 'r.txt'), 'root\n');
+      git(mainDir, 'add', 'r.txt');
+      commit(mainDir, 'root commit');
+      runGit(
+        [
+          '-c',
+          'protocol.file.allow=always',
+          '-C',
+          mainDir,
+          'submodule',
+          'add',
+          '-q',
+          '../sub',
+          'sub',
+        ],
+        { env: COMMIT_ENV },
+      );
+      commit(mainDir, 'add submodule');
+      submodulePath = path.join(mainDir, 'sub');
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      if (root !== undefined) await rm(root, { recursive: true, force: true });
+    });
+
+    describe('When opened at the submodule working directory', () => {
+      it('Then revParse(HEAD) resolves the submodule HEAD, not the superproject HEAD', async () => {
+        // Arrange
+        const expectedSubHead = git(submodulePath, 'rev-parse', 'HEAD').trim();
+        const superprojectHead = git(mainDir, 'rev-parse', 'HEAD').trim();
+        const repo = await openRepository({ cwd: submodulePath });
+
+        try {
+          // Act
+          const result = await repo.revParse('HEAD');
+
+          // Assert
+          expect(result).toBe(expectedSubHead);
+          expect(result).not.toBe(superprojectHead);
+        } finally {
+          await repo.dispose();
+        }
+      });
+    });
+  });
+
+  describe('Given a git init --separate-git-dir repository (scenario F)', () => {
+    let root: string;
+    let workDir: string;
+
+    beforeAll(async () => {
+      root = await mkRoot('f');
+      workDir = path.join(root, 'work');
+      const gitDir = path.join(root, 'sep.git');
+      runGit(['init', '-q', '-b', 'main', `--separate-git-dir=${gitDir}`, workDir]);
+      await writeFile(path.join(workDir, 'a.txt'), 'x\n');
+      git(workDir, 'add', 'a.txt');
+      commit(workDir, 'c1');
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      if (root !== undefined) await rm(root, { recursive: true, force: true });
+    });
+
+    describe('When opened at the working directory', () => {
+      it('Then commonDir is absent and gitDir matches git --git-dir', async () => {
+        // Arrange
+        const [expectedGitDir] = gitDirPair(workDir);
+        const repo = await openRepository({ cwd: workDir });
+
+        try {
+          // Act
+          const result = repo.ctx.layout;
+
+          // Assert
+          expect(result.gitDir).toBe(expectedGitDir);
+          expect(result.commonDir).toBeUndefined();
+        } finally {
+          await repo.dispose();
+        }
+      });
+
+      it('Then revParse(HEAD) matches git rev-parse HEAD', async () => {
+        // Arrange
+        const expected = git(workDir, 'rev-parse', 'HEAD').trim();
+        const repo = await openRepository({ cwd: workDir });
+
+        try {
+          // Act
+          const result = await repo.revParse('HEAD');
+
+          // Assert
+          expect(result).toBe(expected);
+        } finally {
+          await repo.dispose();
+        }
+      });
+    });
+
+    describe('When worktree.list runs from the working directory (scenario I, separate-git-dir shape)', () => {
+      it('Then the main entry path matches git worktree list --porcelain: the gitdir, not the working directory', async () => {
+        // Arrange — the divergence fix: a separate-git-dir main worktree has
+        // no `/.git` suffix to strip, so git reports the gitdir itself.
+        const expected = parseWorktreePorcelain(git(workDir, 'worktree', 'list', '--porcelain'));
+        const repo = await openRepository({ cwd: workDir });
+
+        try {
+          // Act
+          const result = await repo.worktree.list();
+
+          // Assert
+          expect(result.entries).toHaveLength(expected.length);
+          const [mainExpected] = expected;
+          const [mainActual] = result.entries;
+          expect(mainActual?.main).toBe(true);
+          expect(mainActual?.path).toBe(mainExpected?.path);
+          expect(mainActual?.path).not.toBe(workDir);
+          expect(mainActual?.head).toBe(mainExpected?.head);
+          expect(mainActual?.branch).toBe(mainExpected?.branch);
+          expect(mainActual?.detached).toBe(mainExpected?.detached);
+        } finally {
+          await repo.dispose();
+        }
+      });
+    });
+  });
+
+  describe('Given an outer repo with malformed / no-path / dangling inner gitfiles (scenario G)', () => {
+    let root: string;
+    let outer: string;
+
+    beforeAll(async () => {
+      root = await mkRoot('g');
+      outer = path.join(root, 'outer');
+      runGit(['init', '-q', '-b', 'main', outer]);
+      await writeFile(path.join(outer, 'a.txt'), 'x\n');
+      git(outer, 'add', 'a.txt');
+      commit(outer, 'c1');
+
+      for (const name of ['malformed', 'nopath', 'dangling']) {
+        await mkdir(path.join(outer, name));
+      }
+      await writeFile(path.join(outer, 'malformed', '.git'), 'gitdir:nospace\n');
+      await writeFile(path.join(outer, 'nopath', '.git'), 'gitdir: \n');
+      await writeFile(path.join(outer, 'dangling', '.git'), 'gitdir: /nonexistent/path\n');
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      if (root !== undefined) await rm(root, { recursive: true, force: true });
+    });
+
+    /** Opens `dir` and returns the rejection — fails the test if it resolves. */
+    const openAndCatch = async (dir: string): Promise<unknown> => {
+      try {
+        await openRepository({ cwd: dir });
+      } catch (err) {
+        return err;
+      }
+      expect.unreachable('expected openRepository to reject');
+    };
+
+    /**
+     * tsgit throws the structured refusal with the exact path, and canonical
+     * git co-refuses with exit 128; neither falls back to the enclosing
+     * (valid) outer repository.
+     */
+    const assertRefused = (
+      caught: unknown,
+      dir: string,
+      expectedCode: string,
+      expectedPath: string,
+    ): void => {
+      const data = (caught as { data: { code: string; path: string } }).data;
+      expect(data.code).toBe(expectedCode);
+      expect(data.path).toBe(expectedPath);
+      expect(tryRunGitWithExit(['-C', dir, 'rev-parse', '--git-dir']).exitCode).toBe(128);
+    };
+
+    describe('When opened at a directory whose .git file lacks the gitdir: prefix', () => {
+      it('Then tsgit throws GITFILE_INVALID_FORMAT with the gitfile path', async () => {
+        // Arrange
+        const dir = path.join(outer, 'malformed');
+
+        // Act
+        const caught = await openAndCatch(dir);
+
+        // Assert
+        assertRefused(caught, dir, 'GITFILE_INVALID_FORMAT', path.join(dir, '.git'));
+      });
+    });
+
+    describe('When opened at a directory whose .git file has an empty path', () => {
+      it('Then tsgit throws GITFILE_NO_PATH with the gitfile path', async () => {
+        // Arrange
+        const dir = path.join(outer, 'nopath');
+
+        // Act
+        const caught = await openAndCatch(dir);
+
+        // Assert
+        assertRefused(caught, dir, 'GITFILE_NO_PATH', path.join(dir, '.git'));
+      });
+    });
+
+    describe('When opened at a directory whose .git file points at a non-existent target', () => {
+      it('Then tsgit throws NOT_A_REPOSITORY with the worktree directory path', async () => {
+        // Arrange
+        const dir = path.join(outer, 'dangling');
+
+        // Act
+        const caught = await openAndCatch(dir);
+
+        // Assert
+        assertRefused(caught, dir, 'NOT_A_REPOSITORY', dir);
+      });
+    });
+  });
+
+  describe('Given a tsgit repo (scenario H)', () => {
+    describe('When repo.worktree.add creates a worktree, then openRepository opens it', () => {
+      it('Then git and tsgit agree on --git-dir/--git-common-dir', async () => {
+        // Arrange
+        const root = await mkRoot('h');
+        const mainDir = path.join(root, 'main');
+        await mkdir(mainDir, { recursive: true });
+        const repo = await openRepository({ cwd: mainDir });
+        try {
+          await repo.init();
+          await writeFile(path.join(mainDir, 'a.txt'), 'x\n');
+          await repo.add(['a.txt']);
+          await repo.commit({ message: 'c1', author: AUTHOR });
+          const wt = path.join(root, 'wt');
+
+          // Act
+          await repo.worktree.add({ path: wt, branch: 'wt' });
+          const opened = await openRepository({ cwd: wt });
+          try {
+            const [expectedGitDir, expectedCommonDir] = gitDirPair(wt);
+
+            // Assert
+            expect(opened.ctx.layout.gitDir).toBe(expectedGitDir);
+            expect(opened.ctx.layout.commonDir).toBe(expectedCommonDir);
+          } finally {
+            await opened.dispose();
+          }
+        } finally {
+          await repo.dispose();
+          await rm(root, { recursive: true, force: true });
+        }
+      });
+    });
+  });
+
+  describe('Given a git-built linked worktree on a packed branch, with packed refs and a commit-graph (scenario B)', () => {
+    let root: string;
+    let main: string;
+    let wt: string;
+    let repo: Repository;
+    let extraBranchId: string;
+    let extraTagId: string;
+
+    beforeAll(async () => {
+      root = await mkRoot('b');
+      main = path.join(root, 'main');
+      runGit(['init', '-q', '-b', 'main', main]);
+      await writeFile(path.join(main, 'a.txt'), 'one\n');
+      git(main, 'add', 'a.txt');
+      commit(main, 'c1');
+      // `feature` is the branch the worktree checks out; packing it (and
+      // main/v1) proves reads resolve names via the common packed-refs, not
+      // just loose files.
+      git(main, 'branch', 'feature');
+      git(main, 'tag', 'v1');
+      git(main, 'pack-refs', '--all');
+      git(main, 'commit-graph', 'write', '--reachable');
+      git(main, 'repack', '-adq');
+
+      wt = path.join(root, 'wt');
+      git(main, 'worktree', 'add', '-q', wt, 'feature');
+
+      // Created AFTER packing, from the worktree: these live only as loose
+      // files under the common dir, never in packed-refs.
+      git(wt, 'branch', 'extra-branch');
+      extraBranchId = git(wt, 'rev-parse', 'extra-branch').trim();
+      git(wt, 'tag', 'extra-tag');
+      extraTagId = git(wt, 'rev-parse', 'extra-tag').trim();
+
+      repo = await openRepository({ cwd: wt });
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      await repo?.dispose();
+      if (root !== undefined) await rm(root, { recursive: true, force: true });
+    });
+
+    describe('When log walks from the packed branch tip', () => {
+      it('Then results match git log, and the admin gitdir never grows an objects dir', async () => {
+        // Arrange
+        const expected = git(wt, 'log', '--format=%H').trim().split('\n');
+        const [adminGitDir] = gitDirPair(wt);
+
+        // Act
+        const result = await repo.log();
+
+        // Assert
+        expect(result.map((entry) => entry.id)).toEqual(expected);
+        expect(existsSync(path.join(adminGitDir, 'objects'))).toBe(false);
+      });
+    });
+
+    describe('When branch.list runs from the worktree', () => {
+      it('Then it finds the loose branch created after packing, from the common dir', async () => {
+        // Arrange & Act
+        const result = await repo.branch.list();
+
+        // Assert
+        const found = result.branches.find((b) => b.name === 'refs/heads/extra-branch');
+        expect(found?.id).toBe(extraBranchId);
+      });
+    });
+
+    describe('When tag.list runs from the worktree', () => {
+      it('Then it finds the loose tag created after packing, from the common dir', async () => {
+        // Arrange & Act
+        const result = await repo.tag.list();
+
+        // Assert
+        const found = result.tags.find((t) => t.name === 'refs/tags/extra-tag');
+        expect(found?.id).toBe(extraTagId);
+      });
+    });
+  });
+
+  describe('Given a tsgit repo with a linked worktree, writing through the worktree Context (scenario C)', () => {
+    let root: string;
+    let wt: string;
+    let main: string;
+
+    beforeAll(async () => {
+      root = await mkRoot('c');
+      main = path.join(root, 'main');
+      await mkdir(main, { recursive: true });
+      const repo = await openRepository({ cwd: main });
+      try {
+        await repo.init();
+        await writeFile(path.join(main, 'a.txt'), 'one\n');
+        await repo.add(['a.txt']);
+        await repo.commit({ message: 'c1', author: AUTHOR });
+        wt = path.join(root, 'wt');
+        await repo.worktree.add({ path: wt, branch: 'feature' });
+      } finally {
+        await repo.dispose();
+      }
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      if (root !== undefined) await rm(root, { recursive: true, force: true });
+    });
+
+    describe('When commit, config.set, stash.push, branch.create and tag.create run from the worktree', () => {
+      it('Then new objects/config/stash/refs land in the common dir, HEAD/index stay in the admin dir, and git reads the moved branch tip', async () => {
+        // Arrange
+        const [gitDir, commonDir] = gitDirPair(wt);
+        const repo = await openRepository({ cwd: wt });
+
+        try {
+          // Act
+          await writeFile(path.join(wt, 'b.txt'), 'two\n');
+          await repo.add(['b.txt']);
+          const committed = await repo.commit({ message: 'c2', author: AUTHOR });
+          await repo.config.set({ key: 'wt.marker', value: 'yes', scope: 'local' });
+          await writeFile(path.join(wt, 'c.txt'), 'dirty\n');
+          await repo.stash.push({ includeUntracked: true });
+          await repo.branch.create({ name: 'wt-branch' });
+          await repo.tag.create({ name: 'wt-tag' });
+
+          // Assert — new commit object lands under the common objects dir
+          const objectRel = path.join('objects', committed.id.slice(0, 2), committed.id.slice(2));
+          expect(existsSync(path.join(commonDir, objectRel))).toBe(true);
+          expect(existsSync(path.join(gitDir, objectRel))).toBe(false);
+
+          // Assert — config key lands under the common config
+          const configText = await readFile(path.join(commonDir, 'config'), 'utf8');
+          expect(configText).toContain('marker = yes');
+          expect(existsSync(path.join(gitDir, 'config'))).toBe(false);
+
+          // Assert — refs/stash lands under the common dir
+          expect(existsSync(path.join(commonDir, 'refs', 'stash'))).toBe(true);
+          expect(existsSync(path.join(gitDir, 'refs', 'stash'))).toBe(false);
+
+          // Assert — the checked-out branch (`feature`)'s ref move lands under
+          // the common dir: git, run from the main worktree, sees the new tip.
+          expect(existsSync(path.join(commonDir, 'refs', 'heads', 'feature'))).toBe(true);
+          expect(existsSync(path.join(gitDir, 'refs', 'heads', 'feature'))).toBe(false);
+          const featureLog = git(main, 'log', '--format=%H', 'feature').trim().split('\n');
+          expect(featureLog[0]).toBe(committed.id);
+
+          // Assert — branch.create / tag.create land under the common refs dir
+          expect(existsSync(path.join(commonDir, 'refs', 'heads', 'wt-branch'))).toBe(true);
+          expect(existsSync(path.join(gitDir, 'refs', 'heads', 'wt-branch'))).toBe(false);
+          expect(existsSync(path.join(commonDir, 'refs', 'tags', 'wt-tag'))).toBe(true);
+          expect(existsSync(path.join(gitDir, 'refs', 'tags', 'wt-tag'))).toBe(false);
+
+          // Assert — the moved branch's reflog lands under the common logs
+          // dir while logs/HEAD stays per-worktree in the admin dir
+          expect(existsSync(path.join(commonDir, 'logs', 'refs', 'heads', 'feature'))).toBe(true);
+          expect(existsSync(path.join(gitDir, 'logs', 'refs', 'heads', 'feature'))).toBe(false);
+          expect(existsSync(path.join(gitDir, 'logs', 'HEAD'))).toBe(true);
+
+          // Assert — HEAD and the index stay under the admin (per-worktree) dir
+          expect(existsSync(path.join(gitDir, 'HEAD'))).toBe(true);
+          expect(existsSync(path.join(gitDir, 'index'))).toBe(true);
+
+          // Assert — git reads the new object straight out of the common dir
+          expect(git(main, 'cat-file', '-t', committed.id).trim()).toBe('commit');
+        } finally {
+          await repo.dispose();
+        }
+      });
+    });
+  });
+});

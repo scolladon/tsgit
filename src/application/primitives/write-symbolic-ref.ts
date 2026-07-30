@@ -12,7 +12,7 @@ import { serializeSymbolicRef } from '../../domain/refs/loose-ref.js';
 import { validateRefName } from '../../domain/refs/ref-validation.js';
 import type { Context } from '../../ports/context.js';
 import { atomicWriteRef } from './atomic-write.js';
-import { looseRefPath } from './path-layout.js';
+import { looseRefPath, perWorktreeRefDir } from './path-layout.js';
 
 const TEXT_ENCODER = new TextEncoder();
 
@@ -32,7 +32,7 @@ export const writeSymbolicRef = async (
 ): Promise<void> => {
   const validatedName = validateRefName(name);
   const validatedTarget = validateRefName(target);
-  const path = looseRefPath(ctx.layout.gitDir, validatedName);
+  const path = looseRefPath(perWorktreeRefDir(ctx, validatedName), validatedName);
   const content = TEXT_ENCODER.encode(serializeSymbolicRef(validatedTarget));
   await atomicWriteRef(ctx, validatedName, path, content);
 };

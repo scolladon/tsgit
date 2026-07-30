@@ -16,7 +16,7 @@ import type { PromisorRemote } from '../../ports/promisor.js';
 import { readConfig } from '../primitives/config-read.js';
 import { fetchPack } from '../primitives/fetch-pack.js';
 import { createPackRegistry, type PackRegistry } from '../primitives/pack-registry.js';
-import { looseObjectPath } from '../primitives/path-layout.js';
+import { commonGitDir, looseObjectPath } from '../primitives/path-layout.js';
 import { negotiateDiscovery, negotiatePackBytes } from './internal/fetch-negotiation.js';
 import { openGitSession } from './internal/git-service-session.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
@@ -53,7 +53,7 @@ const objectExistsLocally = async (
   registry: PackRegistry,
   id: ObjectId,
 ): Promise<boolean> => {
-  if (await ctx.fs.exists(looseObjectPath(ctx.layout.gitDir, id))) return true;
+  if (await ctx.fs.exists(looseObjectPath(commonGitDir(ctx), id))) return true;
   return (await registry.lookup(id)) !== undefined;
 };
 

@@ -6,7 +6,7 @@
  * `bare` flag) must be exercised here — the integration suite does not feed
  * the mutation runner.
  */
-import { mkdir, mkdtemp, realpath, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
@@ -25,6 +25,17 @@ beforeEach(async () => {
 afterEach(async () => {
   await rm(tmpdir, { recursive: true, force: true });
 });
+
+/**
+ * Marks `dir` as a valid git directory: `objects/`, `refs/`, and a `HEAD`
+ * file. `findLayout`'s directory validation skips a `.git` that lacks these,
+ * continuing the walk upward instead of accepting a bare `mkdir`.
+ */
+const makeGitDir = async (dir: string): Promise<void> => {
+  await mkdir(path.join(dir, 'objects'), { recursive: true });
+  await mkdir(path.join(dir, 'refs'), { recursive: true });
+  await writeFile(path.join(dir, 'HEAD'), 'ref: refs/heads/main\n');
+};
 
 describe('Node shim — allowInsecureHttp default', () => {
   describe('Given no allowInsecureHttp option', () => {
@@ -141,13 +152,13 @@ describe('Node shim — deltaCacheMaxEntries option', () => {
   });
 });
 
-describe('Node shim — discoverLayout bare flag', () => {
+describe('Node shim — findLayout bare flag', () => {
   describe('Given a cwd whose parent contains a real .git directory', () => {
     describe('When openRepository runs', () => {
       it('Then the discovered layout has bare:false', async () => {
-        // Arrange — a real .git directory so discoverLayout returns its own
+        // Arrange — a valid .git directory so findLayout returns its own
         // object literal (not the synthetic fallback).
-        await mkdir(path.join(tmpdir, '.git'), { recursive: true });
+        await makeGitDir(path.join(tmpdir, '.git'));
         const sub = path.join(tmpdir, 'nested');
         await mkdir(sub, { recursive: true });
 
@@ -155,7 +166,7 @@ describe('Node shim — discoverLayout bare flag', () => {
         const sut = await openRepository({ cwd: sub });
 
         try {
-          // Assert — discoverLayout found the parent .git and reported bare:false.
+          // Assert — findLayout found the parent .git and reported bare:false.
           expect(sut.ctx.layout.bare).toBe(false);
           expect(sut.ctx.layout.gitDir).toContain('.git');
         } finally {
@@ -169,7 +180,7 @@ describe('Node shim — discoverLayout bare flag', () => {
         // match, block body, parent===current terminator) would yield the
         // synthetic fallback rooted at `nested` instead of the discovered
         // ancestor, so asserting the exact discovered workDir kills them all.
-        await mkdir(path.join(tmpdir, '.git'), { recursive: true });
+        await makeGitDir(path.join(tmpdir, '.git'));
         const sub = path.join(tmpdir, 'nested');
         await mkdir(sub, { recursive: true });
         const ancestor = await realpath(tmpdir);
@@ -194,7 +205,7 @@ describe('Node shim — synthetic fallback layout', () => {
     describe('When openRepository runs', () => {
       it('Then the fallback layout is a non-bare gitDir under the resolved cwd', async () => {
         // Arrange — a fresh tmpdir with no `.git` on the walk forces
-        // discoverLayout to return undefined, exercising the synthetic
+        // findLayout to return undefined, exercising the synthetic
         // fallback object literal. Pins its `gitDir` (`<workDir>/.git`, killing
         // the StringLiteral `.git` → `""` mutant that would collapse it to
         // `workDir`) and its `bare: false` field (killing the BooleanLiteral
@@ -273,24 +284,22 @@ describe('Node shim — ssh/env/runtime context wiring', () => {
 
 describe('Node shim — worktreeFs raw adapter root', () => {
   describe('Given the raw worktree filesystem (unsafeRawAdapters)', () => {
-    describe('When a path inside the repo/worktree common ancestor is probed', () => {
-      // Runs on every platform: makeWorktreeFs roots the raw adapter at
-      // `commonAncestor`, which now resolves through the native `PathPolicy`
-      // (native separator, drive/UNC aware) instead of assuming POSIX
-      // shape — so the emitted root matches the real filesystem's own
-      // separator on Windows just as it does on POSIX.
-      it('Then the raw adapter is rooted at the common ancestor and reaches it', async () => {
+    describe('When a path inside the repo workDir is probed', () => {
+      // Runs on every platform: makeWorktreeFs hands the raw adapter the
+      // repo's workDir followed by the caller's paths, and the adapter
+      // compares them through the native `PathPolicy` (native separator,
+      // drive/UNC aware) instead of assuming POSIX shape.
+      it('Then the raw adapter is rooted at the workDir and reaches it', async () => {
         // Arrange — unsafeRawAdapters:true exposes the raw NodeFileSystem the
-        // Node shim builds via makeWorktreeFs, rooted at the common ancestor of
-        // the workDir and the worktree paths (here the resolved cwd). The L87
-        // ArrayDeclaration mutant swaps that argument array for `[]`, so
-        // commonAncestor([], nativePolicy) collapses to policy.sep, whose
-        // containment prefix rejects every real absolute path with
-        // PERMISSION_DENIED. A directory inside the repo must therefore stay
-        // reachable — the correct root contains it (exists resolves), the
-        // mutant root refuses it. Every path is derived from the repo's own
-        // resolved workDir so the created directory, the worktree root and the
-        // probe all share one canonical form — the containment prefix stays
+        // Node shim builds via makeWorktreeFs, rooted at the workDir plus the
+        // worktree paths (here derived from the resolved cwd). The
+        // ArrayDeclaration mutant swaps that argument array for `[]`, leaving
+        // the adapter with no root at all — it then refuses to construct
+        // (UNSUPPORTED_OPERATION), so building the fs throws instead of
+        // returning one. A directory inside the repo must therefore stay
+        // reachable. Every path is derived from the repo's own resolved
+        // workDir so the created directory, the worktree root and the probe
+        // all share one canonical form — the containment prefix stays
         // case-exact on every platform (incl. Windows, where tmpdir's 8.3
         // short form would otherwise diverge from realpath).
         const sut = await openRepository({ cwd: tmpdir, unsafeRawAdapters: true });

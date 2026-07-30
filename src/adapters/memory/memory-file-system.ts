@@ -6,6 +6,7 @@ import {
   permissionDenied,
   unsupportedOperation,
 } from '../../domain/index.js';
+import { collapsePosixSegments } from '../../domain/path/collapse-posix-segments.js';
 import type { DirEntry, FileHandle, FileStat, FileSystem } from '../../ports/file-system.js';
 
 const DEFAULT_HOME = '/home/user';
@@ -141,7 +142,11 @@ export class MemoryFileSystem implements FileSystem {
   private static readonly SYMLINK_FOLLOW_LIMIT = 40;
 
   stat = async (path: string): Promise<FileStat> => {
-    return this.statFollowing(path, path, 0);
+    // `return await` (not a bare `return`) attaches the rejection handler
+    // synchronously; the bare form leaves the inner promise handler-less for one
+    // microtask, which workerd reports as an unhandled rejection when `resolve`
+    // throws synchronously (e.g. probing an absent path during discovery).
+    return await this.statFollowing(path, path, 0);
   };
 
   private async statFollowing(
@@ -156,7 +161,7 @@ export class MemoryFileSystem implements FileSystem {
     const normalized = this.resolve(currentPath);
     const target = this.symlinks.get(normalized);
     if (target !== undefined) {
-      return this.statFollowing(target, originalPath, hops + 1);
+      return await this.statFollowing(target, originalPath, hops + 1);
     }
     return this.buildStat(normalized, originalPath);
   }
@@ -517,17 +522,7 @@ export class MemoryFileSystem implements FileSystem {
 
 function normalizePath(rootDir: string, path: string): string {
   const joined = path.startsWith('/') ? path : `${rootDir}/${path}`;
-  const segments = joined.split('/');
-  const resolved: string[] = [];
-  for (const segment of segments) {
-    if (segment === '' || segment === '.') continue;
-    if (segment === '..') {
-      resolved.pop();
-      continue;
-    }
-    resolved.push(segment);
-  }
-  return `/${resolved.join('/')}`;
+  return collapsePosixSegments(joined);
 }
 
 /**

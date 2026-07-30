@@ -1,0 +1,126 @@
+import { describe, expect, it } from 'vitest';
+import { MemoryFileSystem } from '../../../src/adapters/memory/memory-file-system.js';
+import type { FileSystem } from '../../../src/ports/file-system.js';
+import { fileSystemLayoutProbe } from '../../../src/repository/file-system-layout-probe.js';
+
+describe('fileSystemLayoutProbe', () => {
+  describe('Given an fs whose stat and readUtf8 always reject', () => {
+    const fs = {
+      stat: async () => {
+        throw new Error('boom');
+      },
+      readUtf8: async () => {
+        throw new Error('boom');
+      },
+    } as unknown as FileSystem;
+
+    describe('When stat runs', () => {
+      it('Then it resolves to undefined instead of rejecting', async () => {
+        // Arrange
+        const sut = fileSystemLayoutProbe(fs);
+
+        // Act
+        const result = await sut.stat('/anything');
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+
+    describe('When readUtf8 runs', () => {
+      it('Then it resolves to undefined instead of rejecting', async () => {
+        // Arrange
+        const sut = fileSystemLayoutProbe(fs);
+
+        // Act
+        const result = await sut.readUtf8('/anything');
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a MemoryFileSystem and a path outside its rootDir', () => {
+    describe('When stat runs on the outside path', () => {
+      it('Then it resolves to undefined (the PERMISSION_DENIED narrowing)', async () => {
+        // Arrange
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        const sut = fileSystemLayoutProbe(fs);
+
+        // Act
+        const result = await sut.stat('/outside');
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a MemoryFileSystem with a directory at a path', () => {
+    describe('When stat runs on that path', () => {
+      it('Then it resolves with isDirectory true and isFile false', async () => {
+        // Arrange
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await fs.mkdir('/repo/.git');
+        const sut = fileSystemLayoutProbe(fs);
+
+        // Act
+        const result = await sut.stat('/repo/.git');
+
+        // Assert
+        expect(result).toStrictEqual({ isDirectory: true, isFile: false, size: 0 });
+      });
+    });
+  });
+
+  describe('Given a MemoryFileSystem with a regular file at a path', () => {
+    describe('When stat runs on that path', () => {
+      it('Then it resolves with isFile true and isDirectory false', async () => {
+        // Arrange
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await fs.writeUtf8('/repo/.git', 'gitdir: /elsewhere\n');
+        const sut = fileSystemLayoutProbe(fs);
+
+        // Act
+        const result = await sut.stat('/repo/.git');
+
+        // Assert
+        expect(result).toStrictEqual({ isDirectory: false, isFile: true, size: 19 });
+      });
+    });
+  });
+
+  describe('Given a MemoryFileSystem with a file at a path', () => {
+    describe('When readUtf8 runs on that path', () => {
+      it('Then it resolves with the file content', async () => {
+        // Arrange
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await fs.writeUtf8('/repo/.git', 'gitdir: /elsewhere\n');
+        const sut = fileSystemLayoutProbe(fs);
+
+        // Act
+        const result = await sut.readUtf8('/repo/.git');
+
+        // Assert
+        expect(result).toBe('gitdir: /elsewhere\n');
+      });
+    });
+  });
+
+  describe('Given a MemoryFileSystem with no file at a path', () => {
+    describe('When readUtf8 runs on that path', () => {
+      it('Then it resolves to undefined', async () => {
+        // Arrange
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        const sut = fileSystemLayoutProbe(fs);
+
+        // Act
+        const result = await sut.readUtf8('/repo/missing');
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+});
