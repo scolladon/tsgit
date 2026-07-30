@@ -69,6 +69,33 @@ async function collectIds(iter: AsyncIterable<DateWalkStep>): Promise<ObjectId[]
   return out;
 }
 
+async function collectCommits(iter: AsyncIterable<DateWalkStep>): Promise<Commit[]> {
+  const out: Commit[] = [];
+  for await (const step of iter) out.push(step.commit);
+  return out;
+}
+
+async function linearChain(
+  ctx: Awaited<ReturnType<typeof buildSeededContext>>,
+  n: number,
+): Promise<ObjectId[]> {
+  const treeId = await emptyTree(ctx);
+  const ids: ObjectId[] = [];
+  let parent: ObjectId[] = [];
+  for (let i = 0; i < n; i += 1) {
+    const id = await createCommit(ctx, {
+      tree: treeId,
+      parents: parent,
+      author: { ...AUTHOR, timestamp: 1700000000 + i },
+      committer: { ...AUTHOR, timestamp: 1700000000 + i },
+      message: `c${i}`,
+    });
+    ids.push(id);
+    parent = [id];
+  }
+  return ids;
+}
+
 describe('commit-date-walk core', () => {
   describe('selectParents', () => {
     describe('Given a two-parent merge commit', () => {
@@ -163,6 +190,66 @@ describe('commit-date-walk core', () => {
         });
       });
     });
+
+    describe('Given a hand-written .git/shallow file and no shallow option', () => {
+      describe('When walking from the tip', () => {
+        it('Then the walk auto-loads the file and stops at the boundary', async () => {
+          // Arrange — linear chain of 3; .git/shallow names the middle commit.
+          const ctx = await buildSeededContext();
+          const ids = await linearChain(ctx, 3);
+          const tip = ids[2] as ObjectId;
+          const boundary = ids[1] as ObjectId;
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/shallow`, `${boundary}\n`);
+
+          // Act — no `shallow` option at all.
+          const result = await collectIds(commitDateWalk(ctx, { from: [tip] }));
+
+          // Assert
+          expect(result).toEqual([tip, boundary]);
+        });
+      });
+    });
+
+    describe('Given a .git/shallow file and an explicit empty override', () => {
+      describe('When walking from the tip', () => {
+        it('Then the caller-supplied empty set wins and the walk is not stopped', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const ids = await linearChain(ctx, 3);
+          const tip = ids[2] as ObjectId;
+          const boundary = ids[1] as ObjectId;
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/shallow`, `${boundary}\n`);
+
+          // Act
+          const result = await collectIds(
+            commitDateWalk(ctx, { from: [tip], shallow: new Set<ObjectId>() }),
+          );
+
+          // Assert — the escape hatch: repository state is not consulted.
+          expect(result.length).toBe(3);
+        });
+      });
+    });
+
+    describe('Given an auto-loaded shallow boundary', () => {
+      describe('When the boundary commit is yielded', () => {
+        it('Then its reported parents are empty, not just skipped from the frontier', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const ids = await linearChain(ctx, 3);
+          const tip = ids[2] as ObjectId;
+          const boundary = ids[1] as ObjectId;
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/shallow`, `${boundary}\n`);
+
+          // Act
+          const commits = await collectCommits(commitDateWalk(ctx, { from: [tip] }));
+
+          // Assert — the yielded object is grafted, not merely frontier-skipped.
+          const boundaryCommit = commits.find((c) => c.id === boundary);
+          expect(boundaryCommit?.data.parents).toEqual([]);
+        });
+      });
+    });
   });
 });
 
@@ -224,7 +311,12 @@ describe('commitDateWalk — early graph-confirmed push under ignoreMissing=fals
         });
       const stale = await commit('stale', 1);
       const fresh = await commit('fresh', 2);
-      const readOpts = { verifyHash: false, ignoreMissing: false, missing: new Set<string>() };
+      const readOpts = {
+        verifyHash: false,
+        ignoreMissing: false,
+        missing: new Set<string>(),
+        shallow: new Set<ObjectId>(),
+      };
       const commits = await Promise.all(
         [stale, fresh].map(async (id) => (await readCommit(ctx, id, readOpts))!),
       );
@@ -275,7 +367,12 @@ describe('commitDateWalk — stale commit-graph under ignoreMissing', () => {
       const kept = await commit('kept', 2, []);
       const merge = await commit('merge', 3, [pruned, kept]);
       const tip = await commit('tip', 4, [merge]);
-      const readOpts = { verifyHash: false, ignoreMissing: false, missing: new Set<string>() };
+      const readOpts = {
+        verifyHash: false,
+        ignoreMissing: false,
+        missing: new Set<string>(),
+        shallow: new Set<ObjectId>(),
+      };
       const commits = await Promise.all(
         [pruned, kept, merge, tip].map(async (id) => (await readCommit(ctx, id, readOpts))!),
       );

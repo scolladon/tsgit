@@ -1,9 +1,11 @@
 import { BinaryHeap } from '../../domain/commit/binary-heap.js';
+import { applyGraft } from '../../domain/commit/graft.js';
 import { precedes, type QueueEntry } from '../../domain/commit/priority-queue.js';
 import { invalidWalkInput } from '../../domain/error.js';
 import type { Commit } from '../../domain/objects/index.js';
 import type { ObjectId } from '../../domain/objects/object-id.js';
 import type { Context } from '../../ports/context.js';
+import { loadShallowSet } from './internal/shallow-set.js';
 import { readObject } from './read-object.js';
 
 const PARENT1 = 1;
@@ -28,7 +30,8 @@ const makeReadCommit = (ctx: Context): ReadCommit => {
     // `undefined` and is killed by every commit-resolving test).
     if (!cache.has(id)) {
       const obj = await readObject(ctx, id);
-      cache.set(id, obj.type === 'commit' ? obj : undefined);
+      const shallow = await loadShallowSet(ctx);
+      cache.set(id, obj.type === 'commit' ? applyGraft(obj, shallow) : undefined);
     }
     return cache.get(id);
   };

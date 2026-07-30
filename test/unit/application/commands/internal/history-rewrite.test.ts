@@ -47,6 +47,28 @@ describe('history-rewrite helpers', () => {
       });
     });
 
+    describe('Given a shallow boundary named by .git/shallow', () => {
+      describe('When read', () => {
+        it('Then its parents are masked to empty though the raw object carries a real parent', async () => {
+          // Arrange
+          const { ctx, head: root } = await seedCommit();
+          await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'b');
+          await add(ctx, ['b.txt']);
+          const { id: child } = await commit(ctx, { message: 'second', author });
+          const rawChild = await readObject(ctx, child);
+          const rawParents = rawChild.type === 'commit' ? rawChild.data.parents : undefined;
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/shallow`, `${child}\n`);
+
+          // Act
+          const result = await readCommitData(ctx, child);
+
+          // Assert
+          expect(rawParents).toEqual([root]);
+          expect(result.parents).toEqual([]);
+        });
+      });
+    });
+
     describe('Given a non-commit (blob) oid', () => {
       describe('When read', () => {
         it('Then throws UNEXPECTED_OBJECT_TYPE naming commit vs blob', async () => {

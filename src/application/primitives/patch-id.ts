@@ -15,22 +15,14 @@
  * binary patch-id path) so distinct binary content yields distinct ids.
  */
 import { type DiffChange, isBinary, renderPatch } from '../../domain/diff/index.js';
-import type { CommitData } from '../../domain/objects/commit.js';
-import { unexpectedObjectType } from '../../domain/objects/error.js';
 import type { ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import { diffTrees } from './diff-trees.js';
+import { readCommitData } from './internal/read-commit-data.js';
 import { materialisePatchFiles } from './materialise-patch-files.js';
-import { readObject } from './read-object.js';
 
 const ENCODER = new TextEncoder();
 const EMPTY = new Uint8Array();
-
-const readCommitData = async (ctx: Context, id: ObjectId): Promise<CommitData> => {
-  const obj = await readObject(ctx, id);
-  if (obj.type !== 'commit') throw unexpectedObjectType('commit', obj.type, id);
-  return obj.data;
-};
 
 /** Drop the line-number `@@` headers and base-oid `index` lines, then strip
  *  whitespace — the bytes that distinguish a change from an equivalent one. */

@@ -8,6 +8,7 @@
  */
 import {
   invalidOption,
+  invalidSequencerTodo,
   mergeHasConflicts,
   noInitialCommit,
   noOperationInProgress,
@@ -59,6 +60,7 @@ import { resolveRef } from '../primitives/resolve-ref.js';
 import { runHook, runInformationalHook } from '../primitives/run-hook.js';
 import { synthesizeTreeFromIndex } from '../primitives/synthesize-tree-from-index.js';
 import { updateRef } from '../primitives/update-ref.js';
+import { REASON_SKIP_TARGET_PARENTLESS } from '../primitives/validators.js';
 import { walkCommits } from '../primitives/walk-commits.js';
 import { writeSymbolicRef } from '../primitives/write-symbolic-ref.js';
 import { conflictMergeMsg } from './internal/cherry-pick-state.js';
@@ -725,13 +727,16 @@ const fastForwardOnto = async (ctx: Context, target: ObjectId): Promise<void> =>
 };
 
 /** Create a replayed commit and advance the detached HEAD to it. `parent` is the
- *  new commit's first parent; `expected` is the current HEAD (which `parent` and
- *  `expected` differ for a reword amend, where the produced commit sits between). */
+ *  new commit's first parent — `undefined` when the commit being replaced has a
+ *  masked/empty parent list (a shallow boundary behaves as a root commit, so its
+ *  replacement is a root commit too); `expected` is the current HEAD (which
+ *  `parent` and `expected` differ for a reword amend, where the produced commit
+ *  sits between). */
 const commitAndAdvance = async (
   ctx: Context,
   spec: {
     readonly tree: ObjectId;
-    readonly parent: ObjectId;
+    readonly parent: ObjectId | undefined;
     readonly expected: ObjectId;
     readonly author: CommitData['author'];
     readonly message: string;
@@ -741,7 +746,7 @@ const commitAndAdvance = async (
   const committer = await resolveCurrentIdentity(ctx);
   const created = await createCommit(ctx, {
     tree: spec.tree,
-    parents: [spec.parent],
+    parents: spec.parent === undefined ? [] : [spec.parent],
     author: spec.author,
     committer,
     message: spec.message,
@@ -850,7 +855,7 @@ const stepReword = async (
   const producedData = await readCommitData(ctx, produced.created);
   const created = await commitAndAdvance(ctx, {
     tree: producedData.tree,
-    parent: producedData.parents[0] as ObjectId,
+    parent: producedData.parents[0],
     expected: produced.created,
     author: producedData.author,
     message,
@@ -998,7 +1003,7 @@ const meldGroupMember = async (
     : template;
   const created = await commitAndAdvance(ctx, {
     tree: outcome.mergedTree,
-    parent: headData.parents[0] as ObjectId,
+    parent: headData.parents[0],
     expected: head,
     author: headData.author,
     message,
@@ -1154,7 +1159,7 @@ const rebaseContinueInteractive = async (
     const message = sanitizeMessage(stripComments(state.message), { allowEmpty: false });
     resumeHead = await commitAndAdvance(ctx, {
       tree,
-      parent: baseData.parents[0] as ObjectId,
+      parent: baseData.parents[0],
       expected: currentHead,
       author: baseData.author,
       message,
@@ -1168,7 +1173,7 @@ const rebaseContinueInteractive = async (
     } else {
       resumeHead = await commitAndAdvance(ctx, {
         tree,
-        parent: amendCommit.parents[0] as ObjectId,
+        parent: amendCommit.parents[0],
         expected: currentHead,
         author: state.author,
         message: amendCommit.message,
@@ -1192,14 +1197,20 @@ const rebaseContinueInteractive = async (
   return replayInteractive(ctx, ic, resumeHead, { applied: [], rewritten });
 };
 
+/** Dropping an edit'd commit moves HEAD to that commit's first parent. A
+ *  parentless amend target (a masked shallow boundary edited in place) has no
+ *  parent to return to — refuse rather than write an undefined ref target. */
+const skipTargetOf = async (ctx: Context, amend: ObjectId): Promise<ObjectId> => {
+  const parent = (await readCommitData(ctx, amend)).parents[0];
+  if (parent === undefined) throw invalidSequencerTodo(REASON_SKIP_TARGET_PARENTLESS);
+  return parent;
+};
+
 /** Skip the stopped instruction (drop the edit'd commit, or discard the
  *  conflicted pick) and replay the remaining todo. */
 const rebaseSkipInteractive = async (ctx: Context, state: RebaseState): Promise<RebaseResult> => {
   const currentHead = await resolveRef(ctx, HEAD);
-  const target =
-    state.amend !== undefined
-      ? ((await readCommitData(ctx, state.amend)).parents[0] as ObjectId)
-      : currentHead;
+  const target = state.amend !== undefined ? await skipTargetOf(ctx, state.amend) : currentHead;
   // An edit stop already committed the edit'd commit, so dropping it moves the
   // detached HEAD back to its parent; a conflict stop never committed, so HEAD
   // already sits at the last good pick — writing it back to itself is a no-op.

@@ -757,6 +757,24 @@ describe('domain error — AdapterError', () => {
         });
       });
     });
+
+    describe('Given SHALLOW_FILE_MALFORMED', () => {
+      describe('When TsgitError.message is read', () => {
+        it('Then it equals the documented format with line number and reason', () => {
+          // Arrange & Act
+          const result = new TsgitErrorClass({
+            code: 'SHALLOW_FILE_MALFORMED',
+            reason: 'bad shallow line',
+            lineNumber: 3,
+          });
+
+          // Assert
+          expect(result.message).toBe(
+            'SHALLOW_FILE_MALFORMED: bad shallow file at line 3: bad shallow line',
+          );
+        });
+      });
+    });
   });
 
   describe('CommandError — mv refusals', () => {

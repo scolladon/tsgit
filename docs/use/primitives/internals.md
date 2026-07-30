@@ -62,7 +62,7 @@ Alphabetical.
 `reflog-store.ts`. Read entries for one ref.
 
 ### `readShallow`
-`shallow-file.ts`. Read `.git/shallow` boundaries.
+`shallow-file.ts`. Read `.git/shallow` boundaries. Parses git's strict grammar at the repository's oid width; throws `SHALLOW_FILE_MALFORMED` on malformed content or more than 500 000 entries.
 
 ### `readSparsePatternText`
 `read-sparse-checkout.ts`. Read raw `.git/info/sparse-checkout` text (no compilation).
@@ -86,7 +86,7 @@ Alphabetical.
 `synthesize-tree-from-index.ts`. Inverse of `buildIndexFromTree` — synthesize a tree from staged entries. Used by [`checkout`](../commands/checkout.md) (`{ paths, source: 'index' }`).
 
 ### `updateShallow`
-`shallow-file.ts`. Write `.git/shallow` boundaries.
+`shallow-file.ts`. Write `.git/shallow` boundaries. Refuses (`SHALLOW_FILE_MALFORMED`) before writing when the resulting set would exceed the entry cap or an added oid's width doesn't match the repository hash.
 
 ### `writeSparsePatternText`
 `write-sparse-checkout.ts`. Write raw `.git/info/sparse-checkout` text.

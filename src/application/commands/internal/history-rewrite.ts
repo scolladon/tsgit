@@ -5,18 +5,12 @@
  * rather than being copied per command.
  */
 import { unsupportedOperation } from '../../../domain/index.js';
-import type { CommitData } from '../../../domain/objects/commit.js';
-import { unexpectedObjectType } from '../../../domain/objects/error.js';
 import type { ObjectId, RefName } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
+import { readCommitData } from '../../primitives/internal/read-commit-data.js';
 import { readHeadRaw } from '../../primitives/internal/repo-state.js';
-import { readObject } from '../../primitives/read-object.js';
 
-export const readCommitData = async (ctx: Context, id: ObjectId): Promise<CommitData> => {
-  const obj = await readObject(ctx, id);
-  if (obj.type !== 'commit') throw unexpectedObjectType('commit', obj.type, id);
-  return obj.data;
-};
+export { readCommitData };
 
 export const treeOf = async (ctx: Context, commitId: ObjectId): Promise<ObjectId> =>
   (await readCommitData(ctx, commitId)).tree;

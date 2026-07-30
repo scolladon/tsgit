@@ -192,6 +192,24 @@ describe('computePatchId', () => {
     });
   });
 
+  describe('Given a commit made a shallow boundary via .git/shallow, When the patch-id is computed', () => {
+    it('Then it equals a root commit introducing the identical content (masked to the empty tree)', async () => {
+      // Arrange
+      const ctx = await buildSeededContext();
+      const base = await commitFile(ctx, 'l1\nl2\n', []);
+      const c = await commitFile(ctx, 'l1\nl2\nl3\n', [base]);
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/shallow`, `${c}\n`);
+      const root = await commitFile(ctx, 'l1\nl2\nl3\n', []);
+
+      // Act
+      const boundaryId = await computePatchId(ctx, c);
+      const rootId = await computePatchId(ctx, root);
+
+      // Assert
+      expect(boundaryId).toBe(rootId);
+    });
+  });
+
   describe('Given two commits introducing the same submodule pointer, When patch-ids are computed', () => {
     it('Then the patch-ids are equal (Subproject commit line is stable in the equivalence key)', async () => {
       // Arrange — both commits introduce the same gitlink oid at path `sub`

@@ -45,6 +45,11 @@ export type ApplicationError =
       readonly objectCount: number;
       readonly limit: number;
     }
+  | {
+      readonly code: 'SHALLOW_FILE_MALFORMED';
+      readonly reason: string;
+      readonly lineNumber: number;
+    }
   | { readonly code: 'SNAPSHOT_REQUIRED'; readonly reason: string }
   | {
       readonly code: 'WORKDIR_RACE';
@@ -144,6 +149,16 @@ export const networkError = (reason: string): TsgitError =>
 
 export const invalidWalkInput = (reason: string): TsgitError =>
   new TsgitError({ code: 'INVALID_WALK_INPUT', reason });
+
+/**
+ * `.git/shallow` violates git's strict line grammar (blank/short/non-hex
+ * line, or exceeds the parser's entry-count cap). Carries a `reason` and the
+ * 1-based `lineNumber` of the offending line — never the raw line bytes,
+ * since `.git/shallow` content is remote-influenced (a fetch persists
+ * whatever `shallow` pkt-lines the server sends).
+ */
+export const shallowFileMalformed = (reason: string, lineNumber: number): TsgitError =>
+  new TsgitError({ code: 'SHALLOW_FILE_MALFORMED', reason, lineNumber });
 
 export const operationAborted = (): TsgitError => new TsgitError({ code: 'OPERATION_ABORTED' });
 
@@ -276,6 +291,8 @@ function extractDetail(data: TsgitErrorData): string {
       return `${data.resource} locked: ${basename(data.path)}`;
     case 'PACK_TOO_LARGE':
       return `pack contains ${data.objectCount} objects, exceeds limit ${data.limit}`;
+    case 'SHALLOW_FILE_MALFORMED':
+      return `bad shallow file at line ${data.lineNumber}: ${data.reason}`;
     case 'NOT_A_REPOSITORY':
       return `not a git repository: ${basename(data.path)}`;
     case 'BARE_REPOSITORY':

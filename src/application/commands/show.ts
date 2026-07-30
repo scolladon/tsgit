@@ -10,6 +10,7 @@
  * headers, dates, the unified patch, combined-diff for merges) from these fields
  * is the caller's concern.
  */
+import { applyGraft } from '../../domain/commit/graft.js';
 import type { StatTreeDiff, TreeDiff } from '../../domain/diff/index.js';
 import type {
   Commit,
@@ -22,6 +23,7 @@ import type {
   Tree,
 } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
+import { loadShallowSet } from '../primitives/internal/shallow-set.js';
 import { readObject } from '../primitives/read-object.js';
 import { diffCommitAgainstParent } from './internal/commit-diff.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
@@ -46,6 +48,12 @@ export interface ShowTreeEntry {
 export interface ShowCommitResult<D = TreeDiff> {
   readonly kind: 'commit';
   readonly id: ObjectId;
+  /**
+   * The commit's data with shallow-boundary parents masked (a boundary
+   * commit reports `parents: []`, as in git). For a masked commit `id` is
+   * the true oid while `commit` no longer hashes to it — re-read through
+   * `readObject`/`catFile` before re-serialising; never write this back.
+   */
   readonly commit: CommitData;
   /** Diff against the single parent (root: against the empty tree). Absent for merges. */
   readonly patch?: D;
@@ -119,7 +127,7 @@ async function buildResult(ctx: Context, obj: GitObject, withStat: boolean): Pro
     case 'tree':
       return buildTree(obj);
     case 'commit':
-      return buildCommit(ctx, obj, withStat);
+      return buildCommit(ctx, applyGraft(obj, await loadShallowSet(ctx)), withStat);
     case 'tag':
       return buildTag(ctx, obj, withStat);
   }

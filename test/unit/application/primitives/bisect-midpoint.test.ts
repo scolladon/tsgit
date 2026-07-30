@@ -321,4 +321,25 @@ describe('bisectMidpoint', () => {
       });
     });
   });
+
+  describe('Given a shallow boundary between good and bad', () => {
+    describe('When bisectMidpoint runs', () => {
+      it('Then the boundary halts the candidate walk before its real parent', async () => {
+        // Arrange — linear chain root ← boundary ← bad; no `good` seed.
+        const ctx = await buildSeededContext();
+        const commits = await buildLinear(ctx, 3);
+        const boundary = commits[1]!;
+        const bad = commits[2]!;
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/shallow`, `${boundary}\n`);
+
+        // Act — candidates would be {bad, boundary, root} unmasked; masked, root
+        // is never reached because the boundary's parent list is empty.
+        const result = await bisectMidpoint(ctx, [], bad);
+
+        // Assert
+        expect(result).not.toBeUndefined();
+        expect(result?.candidateCount).toBe(2);
+      });
+    });
+  });
 });

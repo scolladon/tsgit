@@ -314,6 +314,66 @@ describe('walkCommitsByDate', () => {
     });
   });
 
+  describe('Given a hand-written .git/shallow file and no shallow option', () => {
+    describe('When walkCommitsByDate is called from tip', () => {
+      it('Then the walk auto-loads the file and stops at the boundary', async () => {
+        // Arrange — linear chain of 4; .git/shallow names the second-from-tip.
+        const ctx = await buildSeededContext();
+        const ids = await linearChain(ctx, 4);
+        const tip = ids.at(-1)!;
+        const boundary = ids.at(-2)!;
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/shallow`, `${boundary}\n`);
+
+        // Act — no `shallow` option at all.
+        const commits = await collect(walkCommitsByDate(ctx, { from: [tip] }));
+
+        // Assert
+        expect(idsOf(commits)).toEqual([tip, boundary]);
+      });
+    });
+  });
+
+  describe('Given a .git/shallow file and an explicit empty override', () => {
+    describe('When walkCommitsByDate is called from tip', () => {
+      it('Then the caller-supplied empty set wins and the walk is not stopped', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const ids = await linearChain(ctx, 4);
+        const tip = ids.at(-1)!;
+        const boundary = ids.at(-2)!;
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/shallow`, `${boundary}\n`);
+
+        // Act
+        const commits = await collect(
+          walkCommitsByDate(ctx, { from: [tip], shallow: new Set<ObjectId>() }),
+        );
+
+        // Assert — the escape hatch: repository state is not consulted.
+        expect(idsOf(commits).length).toBe(4);
+      });
+    });
+  });
+
+  describe('Given an auto-loaded shallow boundary', () => {
+    describe('When the boundary commit is yielded', () => {
+      it('Then its reported parents are empty, not just skipped from the frontier', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const ids = await linearChain(ctx, 4);
+        const tip = ids.at(-1)!;
+        const boundary = ids.at(-2)!;
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/shallow`, `${boundary}\n`);
+
+        // Act
+        const commits = await collect(walkCommitsByDate(ctx, { from: [tip] }));
+
+        // Assert — the yielded object is grafted, not merely frontier-skipped.
+        const boundaryCommit = commits.find((c) => c.id === boundary);
+        expect(boundaryCommit?.data.parents).toEqual([]);
+      });
+    });
+  });
+
   describe('Given ignoreMissing=true and a missing parent', () => {
     describe('When walkCommitsByDate is called', () => {
       it('Then the child is yielded without error', async () => {

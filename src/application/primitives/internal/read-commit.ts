@@ -1,3 +1,4 @@
+import { applyGraft } from '../../../domain/commit/graft.js';
 import { TsgitError } from '../../../domain/error.js';
 import type { Commit, ObjectId } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
@@ -8,6 +9,8 @@ export interface ReadCommitOptions {
   readonly ignoreMissing: boolean;
   /** Sink recording oids skipped under `ignoreMissing` — the caller's read-dedup memo. */
   readonly missing: Set<string>;
+  /** Shallow-boundary oids: a commit in this set is yielded with `parents` masked to empty. */
+  readonly shallow: ReadonlySet<ObjectId>;
 }
 
 /**
@@ -22,7 +25,7 @@ export const readCommit = async (
 ): Promise<Commit | undefined> => {
   try {
     const object = await readObject(ctx, id, { verifyHash: opts.verifyHash });
-    return object.type === 'commit' ? object : undefined;
+    return object.type === 'commit' ? applyGraft(object, opts.shallow) : undefined;
   } catch (error) {
     if (opts.ignoreMissing && isObjectNotFound(error)) {
       opts.missing.add(id);

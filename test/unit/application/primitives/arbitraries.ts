@@ -10,6 +10,7 @@ import type {
   Tree,
 } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
+import { arbObjectId } from '../../domain/objects/arbitraries.js';
 
 /**
  * Shared property-test arbitraries for the application/primitives family.
@@ -441,3 +442,65 @@ export const changedPathSpecsArb = (): fc.Arbitrary<ReadonlyArray<ChangedPathSpe
     })
     .map((entries) => entries.map((e) => ({ path: e.name as FilePath, kind: e.kind })));
 };
+
+// ---------------------------------------------------------------------------
+// `.git/shallow` line-grammar generators
+// ---------------------------------------------------------------------------
+
+/** A single 40-lowercase-hex-char shallow oid. */
+export const arbShallowOid = (): fc.Arbitrary<ObjectId> => arbObjectId(40);
+
+/** A set of 0–6 distinct shallow oids. */
+export const arbShallowOidSet = (): fc.Arbitrary<ReadonlySet<ObjectId>> =>
+  fc.uniqueArray(arbShallowOid(), { maxLength: 6 }).map((oids) => new Set(oids));
+
+/**
+ * Junk trailing an oid on its line: anything but LF, which the grammar
+ * ignores past the 40-char prefix (git's "rest of the line" tolerance).
+ */
+const arbShallowLineJunk = (): fc.Arbitrary<string> =>
+  fc.string({ maxLength: 8 }).filter((s) => !s.includes('\n'));
+
+/**
+ * One well-formed shallow-file line body (no LF): a 40-hex oid, optionally
+ * uppercased, optionally followed by trailing junk after a space.
+ */
+const arbShallowFileLine = (): fc.Arbitrary<string> =>
+  fc.tuple(arbShallowOid(), fc.boolean(), arbShallowLineJunk()).map(([oid, uppercase, junk]) => {
+    const rendered = uppercase ? oid.toUpperCase() : oid;
+    return junk.length === 0 ? rendered : `${rendered} ${junk}`;
+  });
+
+/**
+ * A line whose 40-char oid prefix can never be all-hex: `k` hex chars
+ * (k ∈ [0, 39]) followed by a non-hex character inside the prefix window,
+ * then arbitrary LF-free rest. Placing the corruption at an arbitrary index —
+ * not always index 0 — discriminates a mutated prefix length or a shortened
+ * hex-run quantifier.
+ */
+export const arbNonHexShallowLine = (): fc.Arbitrary<string> =>
+  fc
+    .tuple(
+      fc.integer({ min: 0, max: 39 }),
+      arbShallowOid(),
+      fc.string({ maxLength: 19 }).filter((s) => !s.includes('\n')),
+    )
+    .map(([k, oid, rest]) => `${oid.slice(0, k)}g${oid.slice(k + 1)}${rest}`);
+
+/**
+ * Arbitrary well-formed `.git/shallow` text: 0–20 LF-separated lines, each a
+ * 40-hex oid (optionally uppercase, optionally with trailing junk), with an
+ * optional trailing LF. Always parseable by `parseShallowFile` — the "safe
+ * subset" the totality property draws from.
+ */
+export const arbShallowFileText = (): fc.Arbitrary<{
+  readonly text: string;
+  readonly lineCount: number;
+}> =>
+  fc
+    .tuple(fc.array(arbShallowFileLine(), { maxLength: 20 }), fc.boolean())
+    .map(([lines, trailingNewline]) => {
+      if (lines.length === 0) return { text: '', lineCount: 0 };
+      const joined = lines.join('\n');
+      return { text: trailingNewline ? `${joined}\n` : joined, lineCount: lines.length };
+    });

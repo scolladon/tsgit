@@ -100,6 +100,28 @@ describe('Given a linear history that modifies one line and appends another', ()
   });
 });
 
+describe('Given a shallow boundary hand-written mid-chain over a modified file', () => {
+  describe('When blaming the file', () => {
+    it('Then the boundary commit is a boundary and its real parent is never read', async () => {
+      // Arrange — c1 introduces line1; c2 appends line2. Without grafting, line1
+      // would blame to c1 (unmodified, passed through). Marking c2 shallow must
+      // stop the walk there instead, attributing every surviving line to c2.
+      const ctx = await seed();
+      await commitFile(ctx, 'c1', 'f.txt', 'line1\n');
+      const c2 = await commitFile(ctx, 'c2', 'f.txt', 'line1\nline2\n');
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/shallow`, `${c2}\n`);
+
+      // Act
+      const result = await blame(ctx, 'f.txt');
+
+      // Assert
+      expect(committedLines(result).map((l) => l.commit)).toEqual([c2, c2]);
+      expect(committedLines(result).every((l) => l.boundary)).toBe(true);
+      expect(result.lines.every((l) => l.previous === undefined)).toBe(true);
+    });
+  });
+});
+
 describe('Given a commit that prepends lines above existing content', () => {
   describe('When blaming the file', () => {
     it('Then surviving lines keep their source line but gain a new final line', async () => {

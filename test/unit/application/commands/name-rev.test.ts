@@ -496,6 +496,49 @@ describe('nameRev', () => {
       });
     });
   });
+
+  describe('Given a shallow boundary masking the flood before the true root', () => {
+    const buildChain = async (
+      ctx: Context,
+    ): Promise<{ root: ObjectId; boundary: ObjectId; head: ObjectId }> => {
+      const tree = await treeOf(ctx, await commitFile(ctx, 'seed'));
+      const root = await writeCommit(ctx, tree, []);
+      const boundary = await writeCommit(ctx, tree, [root]);
+      const head = await writeCommit(ctx, tree, [boundary]);
+      await pointBranch(ctx, 'main', head);
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/shallow`, `${boundary}\n`);
+      return { root, boundary, head };
+    };
+
+    describe('When name-rev runs on HEAD', () => {
+      it('Then HEAD still resolves via the branch name', async () => {
+        // Arrange
+        const ctx = await seed();
+        const { head } = await buildChain(ctx);
+
+        // Act
+        const result = await nameRev(ctx, head);
+
+        // Assert
+        expect(result.ref).toBe(RefName.from('refs/heads/main'));
+        expect(result.steps).toEqual([]);
+      });
+    });
+
+    describe('When name-rev runs on the true root', () => {
+      it('Then the root is unnamed — the flood never reaches past the boundary', async () => {
+        // Arrange
+        const ctx = await seed();
+        const { root } = await buildChain(ctx);
+
+        // Act
+        const result = await nameRev(ctx, root);
+
+        // Assert
+        expect(result).toEqual({ oid: root, ref: undefined, tagDeref: false, steps: [] });
+      });
+    });
+  });
 });
 
 const withCountedObjectReads = (ctx: Context): { counted: Context; reads: () => number } => {

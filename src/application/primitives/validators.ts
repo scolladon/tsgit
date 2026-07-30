@@ -31,6 +31,13 @@ export function exceedsMaxWalkSeeds(from: ReadonlyArray<unknown>): boolean {
   return from.length > MAX_WALK_SEEDS;
 }
 
+/* ──────────────── .git/shallow grammar ──────────────── */
+
+export const REASON_SHALLOW_BAD_LINE = 'bad shallow line' as const;
+export const REASON_SHALLOW_TOO_MANY_ENTRIES = 'shallow entry count exceeds bound' as const;
+export const REASON_SHALLOW_OID_WIDTH =
+  'shallow oid width does not match the repository hash' as const;
+
 /* ──────────────── createCommit ──────────────── */
 
 export const REASON_MESSAGE_CONTAINS_NUL = 'message contains NUL' as const;
@@ -41,6 +48,19 @@ export const REASON_EXTRA_HEADER_INJECTION =
   'extraHeader value contains header-boundary chars' as const;
 export const REASON_EXTRA_HEADER_KEY_INVALID =
   'extraHeader key contains forbidden characters' as const;
+export const REASON_PARENT_INVALID = 'parent is not a well-formed object id' as const;
+
+/* ──────────────── rebase ──────────────── */
+
+export const REASON_SKIP_TARGET_PARENTLESS =
+  'cannot skip: the stopped commit has no parent' as const;
+
+/** Last-gate parent check before commit serialisation: `ObjectId` is a branded
+ *  string, so a single bad cast upstream would otherwise flow a non-oid (or
+ *  `undefined`) verbatim into a `parent <x>` header. */
+export function isMalformedParentOid(parent: string | undefined): boolean {
+  return parent === undefined || !looksLikeObjectId(parent);
+}
 
 export function messageContainsNul(message: string): boolean {
   return message.includes('\0');

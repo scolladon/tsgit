@@ -1,9 +1,11 @@
 import type { BisectCandidate } from '../../domain/bisect/index.js';
 import { estimateSteps, findBisection } from '../../domain/bisect/index.js';
 import { BinaryHeap } from '../../domain/commit/binary-heap.js';
+import { applyGraft } from '../../domain/commit/graft.js';
 import { invalidWalkInput } from '../../domain/error.js';
 import type { ObjectId } from '../../domain/objects/object-id.js';
 import type { Context } from '../../ports/context.js';
+import { loadShallowSet } from './internal/shallow-set.js';
 import { readObject } from './read-object.js';
 import type { BisectMidpoint } from './types.js';
 
@@ -15,7 +17,8 @@ type CommitEntry = {
 const readCommitEntry = async (ctx: Context, id: ObjectId): Promise<CommitEntry> => {
   const obj = await readObject(ctx, id);
   if (obj.type !== 'commit') throw invalidWalkInput(`bisectMidpoint: ${id} is not a commit`);
-  return { date: obj.data.committer.timestamp, parents: obj.data.parents };
+  const grafted = applyGraft(obj, await loadShallowSet(ctx));
+  return { date: grafted.data.committer.timestamp, parents: grafted.data.parents };
 };
 
 /**

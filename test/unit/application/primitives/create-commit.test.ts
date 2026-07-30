@@ -48,6 +48,115 @@ describe('createCommit', () => {
     });
   });
 
+  describe('Given a parent that is not a well-formed object id', () => {
+    describe('When createCommit is called', () => {
+      it('Then throws INVALID_COMMIT /parent is not a well-formed object id/', async () => {
+        // Arrange — ObjectId is a branded string, so a bad upstream cast can
+        // smuggle any string here; this is the last gate before serialisation.
+        const ctx = await buildSeededContext();
+        const tree = await emptyTreeId(ctx);
+
+        // Act
+        try {
+          await createCommit(ctx, {
+            tree,
+            parents: ['not-an-oid' as ObjectId],
+            author: AUTHOR,
+            committer: AUTHOR,
+            message: 'msg',
+          });
+          // Assert
+          expect.unreachable();
+        } catch (error) {
+          expect((error as TsgitError).data.code).toBe('INVALID_COMMIT');
+          expect((error as TsgitError).message).toMatch(/parent is not a well-formed object id/);
+        }
+      });
+    });
+  });
+
+  describe('Given a parent that is undefined (a bad cast upstream)', () => {
+    describe('When createCommit is called', () => {
+      it('Then throws INVALID_COMMIT instead of serialising a `parent undefined` header', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const tree = await emptyTreeId(ctx);
+
+        // Act
+        try {
+          await createCommit(ctx, {
+            tree,
+            parents: [undefined as unknown as ObjectId],
+            author: AUTHOR,
+            committer: AUTHOR,
+            message: 'msg',
+          });
+          // Assert
+          expect.unreachable();
+        } catch (error) {
+          expect((error as TsgitError).data.code).toBe('INVALID_COMMIT');
+          expect((error as TsgitError).message).toMatch(/parent is not a well-formed object id/);
+        }
+      });
+    });
+  });
+
+  describe('Given a 64-hex parent in a sha1 repository', () => {
+    describe('When createCommit is called', () => {
+      it('Then throws INVALID_COMMIT: a foreign-width oid is an unresolvable link here', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const tree = await emptyTreeId(ctx);
+
+        // Act
+        try {
+          await createCommit(ctx, {
+            tree,
+            parents: ['a'.repeat(64) as ObjectId],
+            author: AUTHOR,
+            committer: AUTHOR,
+            message: 'msg',
+          });
+          // Assert
+          expect.unreachable();
+        } catch (error) {
+          expect((error as TsgitError).data.code).toBe('INVALID_COMMIT');
+          expect((error as TsgitError).message).toMatch(/parent is not a well-formed object id/);
+        }
+      });
+    });
+  });
+
+  describe('Given a well-formed parent oid', () => {
+    describe('When createCommit is called', () => {
+      it('Then the parent passes validation and the commit is written', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const tree = await emptyTreeId(ctx);
+        const parent = await createCommit(ctx, {
+          tree,
+          parents: [],
+          author: AUTHOR,
+          committer: AUTHOR,
+          message: 'root',
+        });
+
+        // Act
+        const id = await createCommit(ctx, {
+          tree,
+          parents: [parent],
+          author: AUTHOR,
+          committer: AUTHOR,
+          message: 'child',
+        });
+        const read = await readObject(ctx, id);
+
+        // Assert
+        expect((read as Commit).data.parents).toEqual([parent]);
+      });
+    });
+  });
+
   describe('Given message containing NUL', () => {
     describe('When createCommit is called', () => {
       it('Then throws INVALID_COMMIT /message contains NUL/', async () => {

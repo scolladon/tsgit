@@ -1,4 +1,5 @@
 import { revparseUnresolved } from '../../domain/commands/error.js';
+import { applyGraft } from '../../domain/commit/graft.js';
 import { objectNotFound } from '../../domain/objects/error.js';
 import {
   type ObjectId,
@@ -12,6 +13,7 @@ import { refCandidates, validateRefName } from '../../domain/refs/index.js';
 import type { Context } from '../../ports/context.js';
 import { peel } from '../primitives/internal/peel.js';
 import { descendTreePath } from '../primitives/internal/resolve-tree-path.js';
+import { loadShallowSet } from '../primitives/internal/shallow-set.js';
 import { readIndex } from '../primitives/read-index.js';
 import { readObject } from '../primitives/read-object.js';
 import { readTree } from '../primitives/read-tree.js';
@@ -182,8 +184,8 @@ const applyOperation = async (ctx: Context, id: ObjectId, op: RevOperation): Pro
 const getNthParent = async (ctx: Context, id: ObjectId, n: number): Promise<ObjectId> => {
   const obj = await readObject(ctx, id);
   if (obj.type !== 'commit') throw objectNotFound(id);
-  const parents = obj.data.parents;
-  const parent = parents[n - 1];
+  const grafted = applyGraft(obj, await loadShallowSet(ctx));
+  const parent = grafted.data.parents[n - 1];
   if (parent === undefined) throw objectNotFound(id);
   return parent;
 };

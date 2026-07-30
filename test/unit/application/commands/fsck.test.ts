@@ -487,6 +487,46 @@ describe('Given a reachable root commit (no parents)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// SHALLOW BOUNDARY — the masked parent is neither missing nor broken-link
+// ---------------------------------------------------------------------------
+
+describe('Given a shallow-universe boundary whose real parent was never fetched', () => {
+  describe('When fsck runs', () => {
+    it('Then the boundary surfaces only as a root, with a clean exit bitmask', async () => {
+      // Arrange — the boundary's raw parent oid is never written, simulating a
+      // shallow clone; without masking this would be a `missing`/`broken-link`
+      // finding instead of a `root` finding.
+      const ctx = await initBareCtx();
+      const missingRoot = 'a'.repeat(40) as ObjectId;
+      const treeId = await writeObject(ctx, makeTree([]));
+      const boundaryId = await writeObject(ctx, makeCommit(treeId, [missingRoot]));
+      const tipId = await writeObject(ctx, makeCommit(treeId, [boundaryId]));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${tipId}\n`);
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/shallow`, `${boundaryId}\n`);
+
+      // Act
+      const result = await fsck(ctx, { strict: true });
+
+      // Assert
+      const faultTypes = [
+        'dangling',
+        'unreachable',
+        'missing',
+        'broken-link',
+        'bad-object',
+        'hash-mismatch',
+        'bad-ref',
+      ];
+      const faults = result.findings.filter((f) => faultTypes.includes(f.type));
+      expect(faults).toHaveLength(0);
+      const roots = result.findings.filter((f) => f.type === 'root');
+      expect(roots).toEqual([{ type: 'root', id: boundaryId }]);
+      expect(result.exitCode).toBe(0);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // TAGGED — ref pointing to annotated tag
 // ---------------------------------------------------------------------------
 

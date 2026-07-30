@@ -6,6 +6,7 @@
  * peel), and the ordered `~`/`^` navigation steps. The library renders no name
  * string and abbreviates no ref — assembling `tags/v2.0~3^2~1` is the caller's.
  */
+import { applyGraft } from '../../domain/commit/graft.js';
 import {
   buildRefFilter,
   commitIsBeforeCutoff,
@@ -21,6 +22,7 @@ import type { Commit, ObjectId, RefName } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import { enumerateRefs } from '../primitives/enumerate-refs.js';
 import { peelRefToCommit } from '../primitives/internal/peel-ref-to-commit.js';
+import { loadShallowSet } from '../primitives/internal/shallow-set.js';
 import { readObject } from '../primitives/read-object.js';
 import { getRefStore } from '../primitives/ref-store.js';
 import { parseNameRevOptions } from './internal/name-rev-options.js';
@@ -102,6 +104,7 @@ const seedRef = async (
   const tip = await peelRefToCommit(ctx, resolved.id);
   if (tip === undefined) return undefined;
   if (commitIsBeforeCutoff(tip.commit.data.committer.timestamp, cutoff)) return undefined;
+  const commit = applyGraft(tip.commit, await loadShallowSet(ctx));
   const seed: RevName = {
     ref,
     tagDeref: tip.viaTag,
@@ -111,7 +114,7 @@ const seedRef = async (
     distance: 0,
     steps: [],
   };
-  return accept(revNames, tip.commit.id, seed) ? tip.commit : undefined;
+  return accept(revNames, commit.id, seed) ? commit : undefined;
 };
 
 /** Name each parent of `commit` and return the parent commits whose name improved and are not pruned. */
@@ -122,14 +125,16 @@ const expandParents = async (
   revNames: Map<ObjectId, RevName>,
   cutoff: number,
 ): Promise<Commit[]> => {
+  const shallow = await loadShallowSet(ctx);
   const queued: Commit[] = [];
   const parents = commit.data.parents;
   for (let index = 0; index < parents.length; index += 1) {
     const parentOid = parents[index] as ObjectId;
     const candidate = index === 0 ? firstParentName(name) : mergeParentName(name, index + 1);
     if (!accept(revNames, parentOid, candidate)) continue;
-    const parent = await readObject(ctx, parentOid);
-    if (parent.type !== 'commit') continue;
+    const parentObj = await readObject(ctx, parentOid);
+    if (parentObj.type !== 'commit') continue;
+    const parent = applyGraft(parentObj, shallow);
     if (commitIsBeforeCutoff(parent.data.committer.timestamp, cutoff)) continue;
     queued.push(parent);
   }

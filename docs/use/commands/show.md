@@ -95,6 +95,10 @@ if (merge.kind === 'commit') console.log(merge.perParent?.length); // parent cou
 - Annotated tags are **not** auto-peeled: `show('v1.0')` returns the tag object
   (recursing into its target via `target`), never just the target.
 - `<rev>:<path>` resolves a blob/tree by path inside any tree-ish.
+- **Shallow boundary commits are masked**, as in git: `commit.parents` is `[]`
+  and `patch` diffs against the empty tree (the root-commit shape). The masked
+  `commit` no longer hashes to `id` — re-read through `readObject`/`catFile`
+  before re-serialising a boundary commit; never write the masked shape back.
 
 ## Rendering is the caller's job
 

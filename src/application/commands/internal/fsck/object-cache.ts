@@ -1,5 +1,7 @@
+import { applyGraft } from '../../../../domain/commit/graft.js';
 import type { GitObject, ObjectId } from '../../../../domain/objects/index.js';
 import type { Context } from '../../../../ports/context.js';
+import { loadShallowSet } from '../../../primitives/internal/shallow-set.js';
 import { readObject } from '../../../primitives/read-object.js';
 
 // ---------------------------------------------------------------------------
@@ -21,10 +23,12 @@ export async function buildObjectCache(
   universe: ReadonlySet<ObjectId>,
 ): Promise<ReadonlyMap<ObjectId, CachedGitObject>> {
   const cache = new Map<ObjectId, CachedGitObject>();
+  const shallow = await loadShallowSet(ctx);
   for (const id of universe) {
     try {
       // Stryker disable next-line ObjectLiteral,BooleanLiteral: equivalent — verifyHash defaults true; any hash-verification throw is caught → stored as null, same as with verifyHash:false.
-      cache.set(id, await readObject(ctx, id, { verifyHash: false }));
+      const obj = await readObject(ctx, id, { verifyHash: false });
+      cache.set(id, obj.type === 'commit' ? applyGraft(obj, shallow) : obj);
       // Stryker disable next-line BlockStatement: equivalent — cache.get(id) returns undefined when null not set; undefined==null is true so all obj==null guards behave identically.
     } catch {
       cache.set(id, null);

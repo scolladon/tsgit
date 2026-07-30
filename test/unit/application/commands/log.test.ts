@@ -538,6 +538,28 @@ describe('log', () => {
     });
   });
 
+  describe('Given a shallow repository (auto-loaded .git/shallow, no explicit option)', () => {
+    describe('When log runs with maxParents:0', () => {
+      it('Then the boundary commit is returned with an empty parents list', async () => {
+        // Arrange — 3-commit chain; .git/shallow names the middle commit, so
+        // it is the walk's boundary even though its real parent still exists.
+        const ctx = createMemoryContext();
+        const c1 = await writeCommitAt(ctx, [], 1000, 'oldest');
+        const c2 = await writeCommitAt(ctx, [c1], 2000, 'middle');
+        const c3 = await writeCommitAt(ctx, [c2], 3000, 'newest');
+        await seedRepo(ctx, { refs: { 'refs/heads/main': c3 } });
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/shallow`, `${c2}\n`);
+
+        // Act
+        const result = await log(ctx, { maxParents: 0 });
+
+        // Assert
+        expect(result.map((e) => e.id)).toEqual([c2]);
+        expect(result[0]?.parents).toEqual([]);
+      });
+    });
+  });
+
   describe('Given an octopus merge (3 parents)', () => {
     describe('When log runs with minParents:3', () => {
       it('Then only the octopus commit is yielded', async () => {

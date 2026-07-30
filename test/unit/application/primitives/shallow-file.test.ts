@@ -11,9 +11,37 @@
 import { describe, expect, it } from 'vitest';
 
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
+import { MAX_SHALLOW_ENTRIES } from '../../../../src/application/primitives/internal/parse-shallow.js';
 import { readShallow, updateShallow } from '../../../../src/application/primitives/shallow-file.js';
-import { TsgitError } from '../../../../src/domain/index.js';
+import {
+  REASON_SHALLOW_BAD_LINE,
+  REASON_SHALLOW_OID_WIDTH,
+  REASON_SHALLOW_TOO_MANY_ENTRIES,
+} from '../../../../src/application/primitives/validators.js';
+import { notADirectory, TsgitError } from '../../../../src/domain/index.js';
 import { ObjectId } from '../../../../src/domain/objects/object-id.js';
+import type { Context } from '../../../../src/ports/context.js';
+
+const expectMalformedAt = async (raw: string, lineNumber: number): Promise<void> => {
+  const ctx = createMemoryContext();
+  await ctx.fs.mkdir(ctx.layout.gitDir);
+  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/shallow`, raw);
+
+  // Act
+  try {
+    await readShallow(ctx);
+    throw new Error('expected throw');
+  } catch (err) {
+    // Assert
+    expect(err).toBeInstanceOf(TsgitError);
+    if (!(err instanceof TsgitError)) throw err;
+    expect(err.data.code).toBe('SHALLOW_FILE_MALFORMED');
+    expect(err.data.code === 'SHALLOW_FILE_MALFORMED' && err.data.reason).toBe(
+      REASON_SHALLOW_BAD_LINE,
+    );
+    expect(err.data.code === 'SHALLOW_FILE_MALFORMED' && err.data.lineNumber).toBe(lineNumber);
+  }
+};
 
 const OID_A = ObjectId.from('a'.repeat(40));
 const OID_B = ObjectId.from('b'.repeat(40));
@@ -58,51 +86,43 @@ describe('shallow-file', () => {
 
     describe('Given a .git/shallow with only a trailing newline', () => {
       describe('When read', () => {
-        it('Then returns an empty Set', async () => {
-          // Arrange
-          const ctx = createMemoryContext();
-          await ctx.fs.mkdir(ctx.layout.gitDir);
-          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/shallow`, '\n');
-
-          // Act
-          const result = await readShallow(ctx);
-
-          // Assert
-          expect(result.size).toBe(0);
+        it('Then throws SHALLOW_FILE_MALFORMED at line 1', async () => {
+          // Arrange & Act & Assert — a lone LF is one blank line; git refuses it.
+          await expectMalformedAt('\n', 1);
         });
       });
     });
 
     describe('Given a .git/shallow with whitespace between oids', () => {
       describe('When read', () => {
-        it('Then ignores blank lines', async () => {
-          // Arrange
-          const ctx = createMemoryContext();
-          await ctx.fs.mkdir(ctx.layout.gitDir);
-          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/shallow`, `${OID_A}\n\n${OID_B}\n`);
-
-          // Act
-          const result = await readShallow(ctx);
-
-          // Assert
-          expect(result.size).toBe(2);
+        it('Then throws SHALLOW_FILE_MALFORMED at line 2', async () => {
+          // Arrange & Act & Assert — an embedded blank line is refused, not skipped.
+          await expectMalformedAt(`${OID_A}\n\n${OID_B}\n`, 2);
         });
       });
     });
 
     describe('Given a .git/shallow with malformed lines (non-oid)', () => {
       describe('When read', () => {
-        it('Then skips them silently', async () => {
-          // Arrange — kill the `if (!isShallowOid(trimmed)) continue` survivor.
+        it('Then throws SHALLOW_FILE_MALFORMED at line 1', async () => {
+          // Arrange & Act & Assert — a non-hex line is refused, not skipped.
+          await expectMalformedAt(`not-an-oid\n${OID_A}\nzzz\n`, 1);
+        });
+      });
+    });
+
+    describe('Given a .git/shallow oid with no corresponding object in the store', () => {
+      describe('When read', () => {
+        it('Then the oid is still returned (readShallow does no existence check)', async () => {
+          // Arrange
           const ctx = createMemoryContext();
           await ctx.fs.mkdir(ctx.layout.gitDir);
-          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/shallow`, `not-an-oid\n${OID_A}\nzzz\n`);
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/shallow`, `${OID_A}\n`);
 
           // Act
           const result = await readShallow(ctx);
 
           // Assert
-          expect(result.size).toBe(1);
           expect(result.has(OID_A)).toBe(true);
         });
       });
@@ -111,7 +131,7 @@ describe('shallow-file', () => {
     describe('Given readUtf8 throws a non-FILE_NOT_FOUND error', () => {
       describe('When readShallow runs', () => {
         it('Then the error propagates', async () => {
-          // Arrange — kill the `if (isFileNotFound(err)) return new Set()` survivor.
+          // Arrange — kill the `if (isAbsentShallowFile(err)) return new Set()` survivor.
           const ctx = createMemoryContext();
           const boomCtx = {
             ...ctx,
@@ -141,10 +161,10 @@ describe('shallow-file', () => {
     describe('Given readUtf8 throws a TsgitError that is NOT FILE_NOT_FOUND', () => {
       describe('When readShallow runs', () => {
         it('Then the error propagates', async () => {
-          // Arrange — pins the RHS of `error instanceof TsgitError && error.data.code === 'FILE_NOT_FOUND'`.
-          // Without this case, the `=== 'FILE_NOT_FOUND'` mutant survives because
-          // the "plain Error" propagation test above hits the LHS (instanceof) check
-          // not the RHS code comparison.
+          // Arrange — pins the code-comparison disjuncts inside the shared
+          // `isAbsentShallowFile` predicate. Without this case, a code-literal
+          // mutant survives because the "plain Error" propagation test above
+          // hits only the `instanceof` check, never the code comparison.
           const ctx = createMemoryContext();
           const boomCtx = {
             ...ctx,
@@ -173,20 +193,10 @@ describe('shallow-file', () => {
 
     describe('Given a .git/shallow with a leading-space oid line', () => {
       describe('When read', () => {
-        it('Then the trimmed oid is captured (kills the line.trim() → line mutant)', async () => {
-          // Arrange — without `trim()`, the regex `^[0-9a-f]{40}$` fails on
-          // `"  ${OID_A}  "` because of the surrounding spaces. The original
-          // code trims, the mutant doesn't — the difference is observable.
-          const ctx = createMemoryContext();
-          await ctx.fs.mkdir(ctx.layout.gitDir);
-          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/shallow`, `  ${OID_A}  \n`);
-
-          // Act
-          const result = await readShallow(ctx);
-
-          // Assert
-          expect(result.size).toBe(1);
-          expect(result.has(OID_A)).toBe(true);
+        it('Then throws SHALLOW_FILE_MALFORMED at line 1 (git does not trim)', async () => {
+          // Arrange & Act & Assert — a leading space shifts the 40-hex prefix
+          // window, so it no longer matches; canonical git does not trim lines.
+          await expectMalformedAt(`  ${OID_A}  \n`, 1);
         });
       });
     });
@@ -467,6 +477,189 @@ describe('shallow-file', () => {
           const written = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/shallow`);
           expect(written).toBe(`${OID_A}\n`);
         });
+      });
+    });
+
+    describe('Given an update whose resulting set would exceed the entry cap', () => {
+      describe('When updateShallow runs', () => {
+        it('Then refuses before writing and leaves repository state untouched', async () => {
+          // Arrange — the write side enforces the reader bound, so a hostile
+          // server cannot persist a file every later read would refuse. The
+          // pre-seeded file pins the ordering: refusal fires before any write.
+          const ctx = createMemoryContext();
+          await ctx.fs.mkdir(ctx.layout.gitDir);
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/shallow`, `${OID_A}\n`);
+          const sut = updateShallow;
+          const overCap = Array.from(
+            { length: MAX_SHALLOW_ENTRIES + 1 },
+            (_, i) => i.toString(16).padStart(40, '0') as ObjectId,
+          );
+
+          // Act
+          let caught: unknown;
+          try {
+            await sut(ctx, { shallow: overCap, unshallow: [] });
+            expect.unreachable();
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          if (!(caught instanceof TsgitError)) throw caught;
+          expect(caught.data.code).toBe('SHALLOW_FILE_MALFORMED');
+          expect(caught.data.code === 'SHALLOW_FILE_MALFORMED' && caught.data.reason).toBe(
+            REASON_SHALLOW_TOO_MANY_ENTRIES,
+          );
+          expect(caught.data.code === 'SHALLOW_FILE_MALFORMED' && caught.data.lineNumber).toBe(
+            MAX_SHALLOW_ENTRIES + 2,
+          );
+          expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/shallow`)).toBe(`${OID_A}\n`);
+        });
+
+        it('Then a resulting set exactly at the cap is written', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await ctx.fs.mkdir(ctx.layout.gitDir);
+          const sut = updateShallow;
+          const atCap = Array.from(
+            { length: MAX_SHALLOW_ENTRIES },
+            (_, i) => i.toString(16).padStart(40, '0') as ObjectId,
+          );
+
+          // Act
+          await sut(ctx, { shallow: atCap, unshallow: [] });
+
+          // Assert
+          const written = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/shallow`);
+          expect(written.length).toBe(MAX_SHALLOW_ENTRIES * 41);
+        });
+      });
+    });
+  });
+
+  describe('sha256 repositories', () => {
+    describe('Given a sha256 repository with a 64-hex shallow line', () => {
+      describe('When read', () => {
+        it('Then returns the full 64-hex oid untruncated', async () => {
+          // Arrange
+          const ctx = createMemoryContext({ algorithm: 'sha256' });
+          await ctx.fs.mkdir(ctx.layout.gitDir);
+          const oid64 = ObjectId.from('d'.repeat(64));
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/shallow`, `${oid64}\n`);
+          const sut = readShallow;
+
+          // Act
+          const result = await sut(ctx);
+
+          // Assert
+          expect(result.has(oid64)).toBe(true);
+          expect(result.size).toBe(1);
+        });
+      });
+
+      describe('When round-tripped through updateShallow', () => {
+        it('Then the re-read set carries the full 64-hex oid', async () => {
+          // Arrange
+          const ctx = createMemoryContext({ algorithm: 'sha256' });
+          await ctx.fs.mkdir(ctx.layout.gitDir);
+          const oid64 = ObjectId.from('e'.repeat(64));
+          const sut = updateShallow;
+
+          // Act
+          await sut(ctx, { shallow: [oid64], unshallow: [] });
+          const result = await readShallow(ctx);
+
+          // Assert
+          expect(result.has(oid64)).toBe(true);
+          expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/shallow`)).toBe(`${oid64}\n`);
+        });
+      });
+    });
+
+    describe('Given a sha1 repository and a 64-hex oid to persist', () => {
+      describe('When updateShallow runs', () => {
+        it('Then refuses: persisting a foreign-width oid would truncate on the next read', async () => {
+          // Arrange — the wire parser accepts either width, so the write gate
+          // is what keeps the on-disk file readable at the repository width.
+          const ctx = createMemoryContext();
+          await ctx.fs.mkdir(ctx.layout.gitDir);
+          const sut = updateShallow;
+          const oid64 = ObjectId.from('f'.repeat(64));
+
+          // Act
+          let caught: unknown;
+          try {
+            await sut(ctx, { shallow: [oid64], unshallow: [] });
+            expect.unreachable();
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          if (!(caught instanceof TsgitError)) throw caught;
+          expect(caught.data.code).toBe('SHALLOW_FILE_MALFORMED');
+          expect(caught.data.code === 'SHALLOW_FILE_MALFORMED' && caught.data.reason).toBe(
+            REASON_SHALLOW_OID_WIDTH,
+          );
+          expect(caught.data.code === 'SHALLOW_FILE_MALFORMED' && caught.data.lineNumber).toBe(1);
+          expect(await ctx.fs.exists(`${ctx.layout.gitDir}/shallow`)).toBe(false);
+        });
+      });
+    });
+
+    describe('Given a sha256 repository with a 40-hex shallow line', () => {
+      describe('When read', () => {
+        it('Then refuses: the line is short of the repository oid length', async () => {
+          // Arrange
+          const ctx = createMemoryContext({ algorithm: 'sha256' });
+          await ctx.fs.mkdir(ctx.layout.gitDir);
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/shallow`, `${OID_A}\n`);
+          const sut = readShallow;
+
+          // Act
+          let caught: unknown;
+          try {
+            await sut(ctx);
+            expect.unreachable();
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          if (!(caught instanceof TsgitError)) throw caught;
+          expect(caught.data.code).toBe('SHALLOW_FILE_MALFORMED');
+          expect(caught.data.code === 'SHALLOW_FILE_MALFORMED' && caught.data.reason).toBe(
+            REASON_SHALLOW_BAD_LINE,
+          );
+        });
+      });
+    });
+  });
+
+  describe('Given a git dir whose path component is not a directory', () => {
+    describe('When read', () => {
+      it('Then NOT_A_DIRECTORY counts as absent — same predicate as the per-Context memo', async () => {
+        // Arrange
+        const base = createMemoryContext();
+        const ctx: Context = {
+          ...base,
+          fs: {
+            ...base.fs,
+            readUtf8: async () => {
+              throw notADirectory(`${base.layout.gitDir}/shallow`);
+            },
+          },
+        };
+        const sut = readShallow;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result.size).toBe(0);
       });
     });
   });
