@@ -461,7 +461,7 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
         // Arrange
         const repo = await openRepository({ cwd: f1 });
 
-        const bundleOut = path.join(f1, '..', 'a33.bundle');
+        const bundleOut = path.join(await tmp('a33'), 'a33.bundle');
         const gitBundle = tryRunGitWithExit([
           '-C',
           f1,
@@ -694,6 +694,61 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
   });
 
   describe('Given F4 copied with .git/shallow={C4} (F4c2: parents still present locally)', () => {
+    describe('When enumeratePushObjects walks from the tip', () => {
+      it('Then the closure stops at the cut even though the parents exist locally', async () => {
+        // Arrange — the discriminating variant of the F1 enumeration row: here
+        // every ancestor object IS present, so `ignoreMissing` cannot silently
+        // absorb an unmasked walk — only the graft stops the closure, and git's
+        // own `rev-list --objects` co-stops.
+        const repo = await openRepository({ cwd: f4c2 });
+        const gitObjects = runGit(['-C', f4c2, 'rev-list', '--objects', f4Ids[4] as string])
+          .trim()
+          .split('\n')
+          .filter(Boolean)
+          .map((line) => line.slice(0, 40))
+          .sort();
+
+        // Act
+        const objects: ObjectId[] = [];
+        for await (const id of enumeratePushObjects(repo.ctx, {
+          wants: [f4Ids[4] as ObjectId],
+          haves: [],
+        })) {
+          objects.push(id);
+        }
+
+        // Assert
+        expect([...objects].sort()).toEqual(gitObjects);
+      });
+    });
+
+    describe('When a bundle is created', () => {
+      it('Then the object count matches git: only the graft bounds it, not missing objects', async () => {
+        // Arrange
+        const repo = await openRepository({ cwd: f4c2 });
+        const bundleOut = path.join(await tmp('a33-c2'), 'a33.bundle');
+        const gitBundle = tryRunGitWithExit([
+          '-C',
+          f4c2,
+          'bundle',
+          'create',
+          bundleOut,
+          '--branches',
+        ]);
+        const gitObjectCount = runGit(['-C', f4c2, 'rev-list', '--objects', '--branches'])
+          .trim()
+          .split('\n')
+          .filter(Boolean).length;
+
+        // Act
+        const result = await repo.bundle.create({ branches: true });
+
+        // Assert
+        expect(gitBundle.exitCode).toBe(0);
+        expect(result.objectCount).toBe(gitObjectCount);
+      });
+    });
+
     describe('When walkCommits and log both run', () => {
       it('Then masking wins over an available, graph-known parent', async () => {
         // Arrange — C2. This is a regression row, not the gate's own

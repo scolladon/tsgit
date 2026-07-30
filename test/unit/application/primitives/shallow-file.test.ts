@@ -131,7 +131,7 @@ describe('shallow-file', () => {
     describe('Given readUtf8 throws a non-FILE_NOT_FOUND error', () => {
       describe('When readShallow runs', () => {
         it('Then the error propagates', async () => {
-          // Arrange — kill the `if (isFileNotFound(err)) return new Set()` survivor.
+          // Arrange — kill the `if (isAbsentShallowFile(err)) return new Set()` survivor.
           const ctx = createMemoryContext();
           const boomCtx = {
             ...ctx,
@@ -161,10 +161,10 @@ describe('shallow-file', () => {
     describe('Given readUtf8 throws a TsgitError that is NOT FILE_NOT_FOUND', () => {
       describe('When readShallow runs', () => {
         it('Then the error propagates', async () => {
-          // Arrange — pins the RHS of `error instanceof TsgitError && error.data.code === 'FILE_NOT_FOUND'`.
-          // Without this case, the `=== 'FILE_NOT_FOUND'` mutant survives because
-          // the "plain Error" propagation test above hits the LHS (instanceof) check
-          // not the RHS code comparison.
+          // Arrange — pins the code-comparison disjuncts inside the shared
+          // `isAbsentShallowFile` predicate. Without this case, a code-literal
+          // mutant survives because the "plain Error" propagation test above
+          // hits only the `instanceof` check, never the code comparison.
           const ctx = createMemoryContext();
           const boomCtx = {
             ...ctx,
@@ -484,9 +484,12 @@ describe('shallow-file', () => {
       describe('When updateShallow runs', () => {
         it('Then refuses before writing and leaves repository state untouched', async () => {
           // Arrange — the write side enforces the reader bound, so a hostile
-          // server cannot persist a file every later read would refuse.
+          // server cannot persist a file every later read would refuse. The
+          // pre-seeded file pins the ordering: refusal fires before any write.
           const ctx = createMemoryContext();
           await ctx.fs.mkdir(ctx.layout.gitDir);
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/shallow`, `${OID_A}\n`);
+          const sut = updateShallow;
           const overCap = Array.from(
             { length: MAX_SHALLOW_ENTRIES + 1 },
             (_, i) => i.toString(16).padStart(40, '0') as ObjectId,
@@ -495,7 +498,7 @@ describe('shallow-file', () => {
           // Act
           let caught: unknown;
           try {
-            await updateShallow(ctx, { shallow: overCap, unshallow: [] });
+            await sut(ctx, { shallow: overCap, unshallow: [] });
             expect.unreachable();
           } catch (err) {
             caught = err;
@@ -509,22 +512,23 @@ describe('shallow-file', () => {
             REASON_SHALLOW_TOO_MANY_ENTRIES,
           );
           expect(caught.data.code === 'SHALLOW_FILE_MALFORMED' && caught.data.lineNumber).toBe(
-            MAX_SHALLOW_ENTRIES + 1,
+            MAX_SHALLOW_ENTRIES + 2,
           );
-          expect(await ctx.fs.exists(`${ctx.layout.gitDir}/shallow`)).toBe(false);
+          expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/shallow`)).toBe(`${OID_A}\n`);
         });
 
         it('Then a resulting set exactly at the cap is written', async () => {
           // Arrange
           const ctx = createMemoryContext();
           await ctx.fs.mkdir(ctx.layout.gitDir);
+          const sut = updateShallow;
           const atCap = Array.from(
             { length: MAX_SHALLOW_ENTRIES },
             (_, i) => i.toString(16).padStart(40, '0') as ObjectId,
           );
 
           // Act
-          await updateShallow(ctx, { shallow: atCap, unshallow: [] });
+          await sut(ctx, { shallow: atCap, unshallow: [] });
 
           // Assert
           const written = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/shallow`);
@@ -543,9 +547,10 @@ describe('shallow-file', () => {
           await ctx.fs.mkdir(ctx.layout.gitDir);
           const oid64 = ObjectId.from('d'.repeat(64));
           await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/shallow`, `${oid64}\n`);
+          const sut = readShallow;
 
           // Act
-          const result = await readShallow(ctx);
+          const result = await sut(ctx);
 
           // Assert
           expect(result.has(oid64)).toBe(true);
@@ -559,9 +564,10 @@ describe('shallow-file', () => {
           const ctx = createMemoryContext({ algorithm: 'sha256' });
           await ctx.fs.mkdir(ctx.layout.gitDir);
           const oid64 = ObjectId.from('e'.repeat(64));
+          const sut = updateShallow;
 
           // Act
-          await updateShallow(ctx, { shallow: [oid64], unshallow: [] });
+          await sut(ctx, { shallow: [oid64], unshallow: [] });
           const result = await readShallow(ctx);
 
           // Assert
@@ -578,12 +584,13 @@ describe('shallow-file', () => {
           // is what keeps the on-disk file readable at the repository width.
           const ctx = createMemoryContext();
           await ctx.fs.mkdir(ctx.layout.gitDir);
+          const sut = updateShallow;
           const oid64 = ObjectId.from('f'.repeat(64));
 
           // Act
           let caught: unknown;
           try {
-            await updateShallow(ctx, { shallow: [oid64], unshallow: [] });
+            await sut(ctx, { shallow: [oid64], unshallow: [] });
             expect.unreachable();
           } catch (err) {
             caught = err;
@@ -609,11 +616,12 @@ describe('shallow-file', () => {
           const ctx = createMemoryContext({ algorithm: 'sha256' });
           await ctx.fs.mkdir(ctx.layout.gitDir);
           await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/shallow`, `${OID_A}\n`);
+          const sut = readShallow;
 
           // Act
           let caught: unknown;
           try {
-            await readShallow(ctx);
+            await sut(ctx);
             expect.unreachable();
           } catch (err) {
             caught = err;
@@ -645,9 +653,10 @@ describe('shallow-file', () => {
             },
           },
         };
+        const sut = readShallow;
 
         // Act
-        const result = await readShallow(ctx);
+        const result = await sut(ctx);
 
         // Assert
         expect(result.size).toBe(0);

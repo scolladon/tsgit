@@ -307,4 +307,48 @@ describe('loadShallowSet / isShallowRepository', () => {
       });
     });
   });
+
+  describe('Given a pending load invalidated and reloaded before it rejects', () => {
+    describe('When the stale load finally rejects', () => {
+      it('Then the fresh memo survives: no extra read on the next accessor call', async () => {
+        // Arrange — the eviction guard must remove only ITS OWN entry; an
+        // unconditional delete would tear down the fresh reload and force a
+        // third read.
+        const base = await buildSeededContext();
+        await base.fs.writeUtf8(shallowFilePath(base.layout.gitDir), `${OID_A}\n`);
+        let rejectFirst: ((reason: unknown) => void) | undefined;
+        let reads = 0;
+        const realRead = base.fs.readUtf8.bind(base.fs);
+        const ctx: Context = {
+          ...base,
+          fs: {
+            ...base.fs,
+            readUtf8: (p: string): Promise<string> => {
+              reads += 1;
+              if (reads === 1) {
+                return new Promise((_resolve, reject) => {
+                  rejectFirst = reject;
+                });
+              }
+              return realRead(p);
+            },
+          },
+        };
+        const stale = loadShallowSet(ctx);
+        invalidateShallowSet(ctx);
+        const fresh = await loadShallowSet(ctx);
+        rejectFirst?.(permissionDenied(shallowFilePath(base.layout.gitDir)));
+        await stale.catch(() => undefined);
+        const sut = loadShallowSet;
+
+        // Act
+        const afterRejection = await sut(ctx);
+
+        // Assert
+        expect(fresh.has(OID_A)).toBe(true);
+        expect(afterRejection.has(OID_A)).toBe(true);
+        expect(reads).toBe(2);
+      });
+    });
+  });
 });

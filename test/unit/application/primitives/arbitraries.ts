@@ -485,7 +485,7 @@ export const arbNonHexShallowLine = (): fc.Arbitrary<string> =>
       arbShallowOid(),
       fc.string({ maxLength: 19 }).filter((s) => !s.includes('\n')),
     )
-    .map(([k, oid, rest]) => `${oid.slice(0, k)}g${rest}`);
+    .map(([k, oid, rest]) => `${oid.slice(0, k)}g${oid.slice(k + 1)}${rest}`);
 
 /**
  * Arbitrary well-formed `.git/shallow` text: 0–20 LF-separated lines, each a
