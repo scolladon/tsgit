@@ -144704,19 +144704,11 @@
 		},
 		{
 			"kind": "code",
-			"text": "`status`"
+			"text": "`log`"
 		},
 		{
 			"kind": "text",
-			"text": " (dirty tree) | **1.22× faster** |\n| "
-		},
-		{
-			"kind": "code",
-			"text": "`clone`"
-		},
-		{
-			"kind": "text",
-			"text": " (small repo) | 1.09× (parity) |\n| "
+			"text": " (5000-commit walk) | **18.6× faster** |\n| "
 		},
 		{
 			"kind": "code",
@@ -144724,7 +144716,39 @@
 		},
 		{
 			"kind": "text",
-			"text": " (cold cache) | 0.70× (slower) |\n\n_Measured on a GitHub Actions runner; ±20% variance — trust direction, not absolute numbers._ → [Full benchmarks + methodology]("
+			"text": " (cold pack, 5000-commit repo) | **8.6× faster** |\n| "
+		},
+		{
+			"kind": "code",
+			"text": "`status`"
+		},
+		{
+			"kind": "text",
+			"text": " (dirty tree) | **1.26× faster** |\n| "
+		},
+		{
+			"kind": "code",
+			"text": "`clone`"
+		},
+		{
+			"kind": "text",
+			"text": " (small repo) | 1.10× (parity) |\n| "
+		},
+		{
+			"kind": "code",
+			"text": "`readBlob`"
+		},
+		{
+			"kind": "text",
+			"text": " (cold cache, small pack) | 0.82× (slower) |\n| "
+		},
+		{
+			"kind": "code",
+			"text": "`status`"
+		},
+		{
+			"kind": "text",
+			"text": " (clean tree) | 0.40–0.46× (slower) |\n\n_Measured on a GitHub Actions runner; ±20% variance — trust direction, not absolute numbers._ → [Full benchmarks + methodology]("
 		},
 		{
 			"kind": "relative-link",
