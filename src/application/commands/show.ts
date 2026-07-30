@@ -10,6 +10,7 @@
  * headers, dates, the unified patch, combined-diff for merges) from these fields
  * is the caller's concern.
  */
+import { applyGraft } from '../../domain/commit/graft.js';
 import type { StatTreeDiff, TreeDiff } from '../../domain/diff/index.js';
 import type {
   Commit,
@@ -22,6 +23,7 @@ import type {
   Tree,
 } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
+import { loadShallowSet } from '../primitives/internal/shallow-set.js';
 import { readObject } from '../primitives/read-object.js';
 import { diffCommitAgainstParent } from './internal/commit-diff.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
@@ -119,7 +121,7 @@ async function buildResult(ctx: Context, obj: GitObject, withStat: boolean): Pro
     case 'tree':
       return buildTree(obj);
     case 'commit':
-      return buildCommit(ctx, obj, withStat);
+      return buildCommit(ctx, applyGraft(obj, await loadShallowSet(ctx)), withStat);
     case 'tag':
       return buildTag(ctx, obj, withStat);
   }

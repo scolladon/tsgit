@@ -11,7 +11,7 @@
  * needs to re-serialise a read commit must read the raw object instead of
  * reusing a walked one.
  */
-import type { Commit } from '../objects/commit.js';
+import type { Commit, CommitData } from '../objects/commit.js';
 import type { ObjectId } from '../objects/object-id.js';
 
 const NO_PARENTS: ReadonlyArray<ObjectId> = Object.freeze([]);
@@ -41,4 +41,20 @@ export const applyGraft = (commit: Commit, shallow: ReadonlySet<ObjectId>): Comm
   const parents = graftedParents(commit.id, commit.data.parents, shallow);
   if (parents === commit.data.parents) return commit;
   return { ...commit, data: { ...commit.data, parents } };
+};
+
+/**
+ * Apply the shallow-boundary mask to bare `CommitData` read for `id`. Bare
+ * data carries no `id` field of its own, so the caller supplies the oid it
+ * asked for — the identical short-circuit and every non-`parents` field are
+ * otherwise the same contract as `applyGraft`.
+ */
+export const applyGraftToData = (
+  id: ObjectId,
+  data: CommitData,
+  shallow: ReadonlySet<ObjectId>,
+): CommitData => {
+  const parents = graftedParents(id, data.parents, shallow);
+  if (parents === data.parents) return data;
+  return { ...data, parents };
 };

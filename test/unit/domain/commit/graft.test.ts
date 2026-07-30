@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { applyGraft, graftedParents } from '../../../../src/domain/commit/graft.js';
+import {
+  applyGraft,
+  applyGraftToData,
+  graftedParents,
+} from '../../../../src/domain/commit/graft.js';
 import type { AuthorIdentity, Commit, ObjectId } from '../../../../src/domain/objects/index.js';
 
 const AUTHOR: AuthorIdentity = {
@@ -112,6 +116,67 @@ describe('applyGraft', () => {
 
         // Assert
         expect(result.data.parents).toEqual([]);
+      });
+    });
+  });
+});
+
+describe('applyGraftToData', () => {
+  describe('Given an empty shallow set', () => {
+    describe('When applyGraftToData runs', () => {
+      it('Then returns the identical data reference', () => {
+        // Arrange
+        const sut = applyGraftToData;
+        const id = 'c'.repeat(40) as ObjectId;
+        const data = makeCommit(id, ['p'.repeat(40)]).data;
+
+        // Act
+        const result = sut(id, data, new Set());
+
+        // Assert
+        expect(result).toBe(data);
+      });
+    });
+  });
+
+  describe('Given a non-empty shallow set that does not contain the id', () => {
+    describe('When applyGraftToData runs', () => {
+      it('Then returns the identical data reference', () => {
+        // Arrange
+        const sut = applyGraftToData;
+        const id = 'c'.repeat(40) as ObjectId;
+        const data = makeCommit(id, ['p'.repeat(40)]).data;
+        const shallow = new Set<ObjectId>(['d'.repeat(40) as ObjectId]);
+
+        // Act
+        const result = sut(id, data, shallow);
+
+        // Assert
+        expect(result).toBe(data);
+      });
+    });
+  });
+
+  describe('Given a shallow set containing the id', () => {
+    describe('When applyGraftToData runs', () => {
+      it('Then parents become empty and every other field is preserved', () => {
+        // Arrange
+        const sut = applyGraftToData;
+        const id = 'c'.repeat(40) as ObjectId;
+        const data = makeCommit(id, ['p'.repeat(40)]).data;
+        const shallow = new Set<ObjectId>([id]);
+
+        // Act
+        const result = sut(id, data, shallow);
+
+        // Assert
+        expect(result.parents).toEqual([]);
+        expect(result.tree).toBe(data.tree);
+        expect(result.author).toBe(data.author);
+        expect(result.committer).toBe(data.committer);
+        expect(result.message).toBe(data.message);
+        expect(result.gpgSignature).toBe(data.gpgSignature);
+        expect(result.extraHeaders).toBe(data.extraHeaders);
       });
     });
   });

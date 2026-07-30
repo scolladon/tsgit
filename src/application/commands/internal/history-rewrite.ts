@@ -4,18 +4,20 @@
  * Each replay command consumes the same building blocks, so they live here
  * rather than being copied per command.
  */
+import { applyGraftToData } from '../../../domain/commit/graft.js';
 import { unsupportedOperation } from '../../../domain/index.js';
 import type { CommitData } from '../../../domain/objects/commit.js';
 import { unexpectedObjectType } from '../../../domain/objects/error.js';
 import type { ObjectId, RefName } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
 import { readHeadRaw } from '../../primitives/internal/repo-state.js';
+import { loadShallowSet } from '../../primitives/internal/shallow-set.js';
 import { readObject } from '../../primitives/read-object.js';
 
 export const readCommitData = async (ctx: Context, id: ObjectId): Promise<CommitData> => {
   const obj = await readObject(ctx, id);
   if (obj.type !== 'commit') throw unexpectedObjectType('commit', obj.type, id);
-  return obj.data;
+  return applyGraftToData(id, obj.data, await loadShallowSet(ctx));
 };
 
 export const treeOf = async (ctx: Context, commitId: ObjectId): Promise<ObjectId> =>

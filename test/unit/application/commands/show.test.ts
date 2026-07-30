@@ -82,6 +82,25 @@ describe('show', () => {
     });
   });
 
+  describe('Given a shallow boundary hand-written over a non-root commit, When show() runs on it', () => {
+    it('Then parents are empty and the patch is against the empty tree (a full add)', async () => {
+      // Arrange
+      const ctx = await seedTwoCommits();
+      const head = await revParse(ctx, 'HEAD');
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/shallow`, `${head}\n`);
+
+      // Act
+      const result = await show(ctx, head);
+
+      // Assert
+      if (result.kind !== 'commit') throw new Error('expected commit');
+      expect(result.commit.parents).toEqual([]);
+      expect(result.patch?.changes).toEqual([
+        expect.objectContaining({ type: 'add', newPath: 'a.txt' }),
+      ]);
+    });
+  });
+
   describe('Given a commit touching a nested directory, When show() runs', () => {
     it('Then the patch recurses to the per-file change', async () => {
       // Arrange — a commit whose tree has a sub-directory; the single-level

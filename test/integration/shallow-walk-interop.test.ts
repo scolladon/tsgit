@@ -783,4 +783,135 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
       });
     });
   });
+
+  describe('Given the boundary commit C4 shown directly (F1)', () => {
+    describe('When show() runs on it', () => {
+      it('Then parents are empty and the patch adds every locally-visible file, matching git show', async () => {
+        // Arrange — A24
+        const repo = await openRepository({ cwd: f1 });
+        const c4 = ids[3] as ObjectId;
+        const gitShow = runGit([
+          '-C',
+          f1,
+          'show',
+          '--no-ext-diff',
+          '--stat',
+          '--format=%H p=[%P]',
+          c4,
+        ]);
+        const gitAdded = runGit(['-C', f1, 'diff', '--numstat', EMPTY_TREE, c4])
+          .trim()
+          .split('\n')
+          .map((line) => line.split('\t')[2])
+          .sort();
+
+        // Act
+        const result = await repo.show(c4);
+
+        // Assert
+        if (result.kind !== 'commit') throw new Error('expected commit');
+        expect(result.commit.parents).toEqual([]);
+        expect(gitShow.startsWith(`${c4} p=[]`)).toBe(true);
+        const tsgitAdded = (result.patch?.changes ?? [])
+          .filter((change) => change.type === 'add')
+          .map((change) => change.newPath as string)
+          .sort();
+        expect(tsgitAdded).toEqual(gitAdded);
+      });
+    });
+  });
+
+  describe('Given the boundary commit C4 blamed directly on the file it introduced (F1)', () => {
+    describe('When blame() runs', () => {
+      it('Then the line is a boundary attributed to C4, matching git blame --line-porcelain', async () => {
+        // Arrange — A27
+        const repo = await openRepository({ cwd: f1 });
+        const c4 = ids[3] as ObjectId;
+        const gitPorcelain = runGit(['-C', f1, 'blame', '--line-porcelain', 'f3.txt']);
+
+        // Act
+        const result = await repo.blame('f3.txt');
+
+        // Assert
+        expect(result.lines).toHaveLength(1);
+        const line = result.lines[0];
+        if (line?.committed !== true) throw new Error('expected a committed line');
+        expect(line.commit).toBe(c4);
+        expect(line.boundary).toBe(true);
+        expect(gitPorcelain.startsWith(c4)).toBe(true);
+        expect(gitPorcelain).toContain('\nboundary\n');
+      });
+    });
+  });
+
+  describe('Given a shallow clone with a local commit that further modifies the boundary-introduced file', () => {
+    describe('When repo.revert.run reverts the boundary', () => {
+      it('Then it conflicts as modify/delete against the empty tree, matching git revert', async () => {
+        // Arrange — A35. revert mutates the worktree, so it gets its own fs.cp
+        // copy of F1 (one for tsgit, one for the git co-refusal), built here.
+        const c4 = ids[3] as ObjectId;
+        const oursDir = await tmp('a35-ours');
+        await cp(f1, oursDir, { recursive: true });
+        const theirsDir = await tmp('a35-theirs');
+        await cp(f1, theirsDir, { recursive: true });
+        for (const dir of [oursDir, theirsDir]) {
+          await writeFile(path.join(dir, 'f3.txt'), 'modified-locally\n');
+          runGit(['-C', dir, 'add', 'f3.txt']);
+          runGit(['-C', dir, 'commit', '-q', '-m', 'modify f3 locally'], { env: identityEnv(40) });
+        }
+        const repo = await openRepository({ cwd: oursDir });
+        const gitResult = tryRunGitWithExit(
+          ['-C', theirsDir, '-c', 'core.editor=true', 'revert', '--no-edit', c4],
+          { env: identityEnv(41) },
+        );
+
+        // Act
+        const result = await repo.revert.run({ commits: [c4] });
+
+        // Assert
+        expect(result.kind).toBe('conflict');
+        if (result.kind !== 'conflict') throw new Error('expected conflict');
+        expect(result.conflicts).toContainEqual(
+          expect.objectContaining({ path: 'f3.txt', type: 'modify-delete' }),
+        );
+        expect(gitResult.exitCode).toBe(1);
+      });
+    });
+  });
+
+  describe('Given a shallow clone with a local commit that independently diverges the boundary-introduced file', () => {
+    describe('When repo.cherryPick.run picks the boundary', () => {
+      it('Then it conflicts as add/add, matching git cherry-pick (the boundary behaves as a root)', async () => {
+        // Arrange — A36. cherry-pick mutates the worktree, so it gets its own
+        // fs.cp copy of F1 (one for tsgit, one for the git co-refusal).
+        const c4 = ids[3] as ObjectId;
+        const oursDir = await tmp('a36-ours');
+        await cp(f1, oursDir, { recursive: true });
+        const theirsDir = await tmp('a36-theirs');
+        await cp(f1, theirsDir, { recursive: true });
+        for (const dir of [oursDir, theirsDir]) {
+          await writeFile(path.join(dir, 'f3.txt'), 'diverged-locally\n');
+          runGit(['-C', dir, 'add', 'f3.txt']);
+          runGit(['-C', dir, 'commit', '-q', '-m', 'diverge f3 locally'], {
+            env: identityEnv(42),
+          });
+        }
+        const repo = await openRepository({ cwd: oursDir });
+        const gitResult = tryRunGitWithExit(['-C', theirsDir, 'cherry-pick', c4], {
+          env: identityEnv(43),
+        });
+
+        // Act
+        const result = await repo.cherryPick.run({ commits: [c4] });
+
+        // Assert
+        expect(result.kind).toBe('conflict');
+        if (result.kind !== 'conflict') throw new Error('expected conflict');
+        expect(result.conflicts).toContainEqual(
+          expect.objectContaining({ path: 'f3.txt', type: 'add-add' }),
+        );
+        expect(gitResult.exitCode).toBe(1);
+      });
+    });
+  });
 });
