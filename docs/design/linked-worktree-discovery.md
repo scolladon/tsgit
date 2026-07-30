@@ -426,9 +426,11 @@ validator above it is purely lexical — so the raw adapter must be confined to
 exactly the layout roots, never their common ancestor (which would admit
 everything between them, and for a cross-top-level layout degrades to the whole
 filesystem). The first root stays the primary (relative-path base). A root that
-does not yet exist contributes no canonical prefix and is re-probed until it
-exists (`worktree add` probes its own not-yet-created target through this
-adapter). For a normal repo the set collapses to `[workDir]` — unchanged.
+does not yet exist derives its canonical prefix from the realpath of its
+nearest existing ancestor plus the missing tail, memoised once (`worktree add`
+probes its own not-yet-created target — possibly beneath a symlinked ancestor
+such as macOS `/tmp` — through this adapter). For a normal repo the set
+collapses to `[workDir]` — unchanged.
 `makeWorktreeFs` (L89–93) passes its full root list the same way.
 
 ADR-495's cross-volume limitation no longer applies to the adapter root: with

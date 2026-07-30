@@ -397,12 +397,10 @@ export class NodeFileSystem implements FileSystem {
    * leaf and keep their own per-entry post-check.
    *
    * Invariants:
-   * - The key is the parent path alone: the root set is fixed for the
-   *   adapter's lifetime, so no verdict can be reused across root sets.
-   *   The one way the set moves is a root that did not exist at first
-   *   resolution gaining a canonical prefix once created — it only ever
-   *   widens, so a verdict cached under the narrower set can deny but never
-   *   over-admit.
+   * - The key is the parent path alone: the root set is resolved once and
+   *   frozen for the adapter's lifetime (every root contributes a canonical
+   *   prefix, missing ones via their nearest existing ancestor), so every
+   *   cached verdict shares one root set.
    * - Only EXISTING parents are cached. ENOENT walks fall back to
    *   `realpathNearestExisting` (creation) or propagate (lstat) and are
    *   never recorded.
@@ -432,15 +430,6 @@ export class NodeFileSystem implements FileSystem {
    */
   private resolvedRootSet: RootSet | undefined = undefined;
 
-  /**
-   * Memoised `{ normalized, withSep }` pair per RAW root. `rootDirs` is
-   * `readonly` for the adapter's lifetime, so a single normalisation (and
-   * its `+sep` prefix) per root is amortised across every containment
-   * check. Each pair is bundled in one value — never two — so a prefix can
-   * never diverge from the root it was derived from.
-   */
-  private normalizedRootDirPrefixes: ReadonlyArray<RootPrefix> | undefined = undefined;
-
   constructor(
     rootDir: string | ReadonlyArray<string>,
     pathPolicy: PathPolicy = nativePolicy,
@@ -461,14 +450,12 @@ export class NodeFileSystem implements FileSystem {
   }
 
   /**
-   * Lazily normalises each raw root and its `+sep` prefix, memoised for the
-   * adapter's lifetime.
+   * Normalises each raw root and its `+sep` prefix. Runs once per successful
+   * root-set resolution — `loadRootSet` memoises the whole `RootSet`, so no
+   * per-call memo is needed here.
    */
   private getRootDirPrefixes(): ReadonlyArray<RootPrefix> {
-    if (this.normalizedRootDirPrefixes === undefined) {
-      this.normalizedRootDirPrefixes = this.rootDirs.map((root) => this.toRootPrefix(root));
-    }
-    return this.normalizedRootDirPrefixes;
+    return this.rootDirs.map((root) => this.toRootPrefix(root));
   }
 
   private toRootPrefix(root: string): RootPrefix {
@@ -492,7 +479,18 @@ export class NodeFileSystem implements FileSystem {
           return await this.fsOps.realpath(root);
         } catch (err) {
           if (isErrnoException(err) && err.code === 'ENOENT') {
-            return realpathNearestExisting(root, this.pathPolicy, this.fsOps);
+            // The nearest-existing walk itself can ENOENT at the volume root
+            // (an unmounted Windows drive / offline UNC share — unreachable on
+            // POSIX, where realpath('/') always succeeds). Fall back to the
+            // lexical root: its raw prefix still gates, and every op under the
+            // unreachable volume fails closed on its own realpath instead of
+            // rejecting the whole adapter with an unmapped errno.
+            return realpathNearestExisting(root, this.pathPolicy, this.fsOps).catch(
+              (nestedErr: unknown) => {
+                if (isErrnoException(nestedErr) && nestedErr.code === 'ENOENT') return root;
+                throw nestedErr;
+              },
+            );
           }
           throw err;
         }

@@ -363,7 +363,7 @@ describe('findLayout', () => {
 
   describe('Given a .git file of exactly the size cap (boundary)', () => {
     describe('When findLayout runs', () => {
-      it('Then the size cap admits it and the refusal is grammar-shaped, not size-shaped', async () => {
+      it('Then the size cap admits it and the refusal is layout-shaped, not size-shaped', async () => {
         // Arrange — a pointer padded to exactly 65536 bytes. The grammar
         // keeps every byte after `gitdir: ` as the path, so the padded path
         // does not exist — but the SIZE cap must admit exactly-65536.

@@ -3177,22 +3177,16 @@ describe('NodeFileSystem — containment prefix precompute (DI)', () => {
     });
   });
 
-  describe('Given the first realpath(rootDir) rejects', () => {
-    describe('When a second containment check runs', () => {
-      it('Then the canonical +sep prefix is recomputed (not stale)', async () => {
-        // Arrange — first realpath(rootDir) fails (transient ENOENT), second
-        // succeeds with a DIFFERENT canonical root than rootDir itself. A
-        // child contained only by the retried canonical root must be
-        // admitted — proving the +sep prefix was recomputed, not served stale.
+  describe('Given a rootDir whose realpath differs from the raw root', () => {
+    describe('When a child of the canonical root is lstat-ed', () => {
+      it('Then it is admitted via the canonical +sep prefix', async () => {
+        // Arrange — realpath(rootDir) resolves to a DIFFERENT canonical root.
+        // A child contained only by the canonical form must be admitted,
+        // proving the canonical prefix is unioned into the root set.
         const rootDir = '/root';
         const canonicalRoot = '/canonical-root';
-        let callCount = 0;
         const realpath = vi.fn().mockImplementation(async (input: string) => {
-          if (input === rootDir) {
-            callCount += 1;
-            if (callCount === 1) throw enoent();
-            return canonicalRoot;
-          }
+          if (input === rootDir) return canonicalRoot;
           if (input === canonicalRoot) return canonicalRoot;
           throw enoent();
         });
@@ -3202,14 +3196,52 @@ describe('NodeFileSystem — containment prefix precompute (DI)', () => {
         });
         const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
 
-        // Act — first call fails on the transient ENOENT.
-        await sut.lstat('/root/leaf').catch(() => undefined);
-        // Second call retries; the child is contained only via the
-        // canonical root's fresh +sep prefix, not the raw rootDir.
+        // Act
         const result = await sut.lstat('/canonical-root/leaf');
 
         // Assert
         expect(result.isFile).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a root whose entire path is unresolvable (unmounted volume)', () => {
+    describe('When exists probes a child of that root', () => {
+      it('Then the lexical root gates it and no raw errno escapes', async () => {
+        // Arrange — every realpath (root, ancestors, volume root) ENOENTs,
+        // the unmounted-drive shape. The root must fall back to its lexical
+        // form rather than rejecting the whole adapter unmapped.
+        const realpath = vi.fn().mockRejectedValue(enoent());
+        const sut = new NodeFileSystem('/gone', posixPolicy, fakeFsOps({ realpath }));
+
+        // Act
+        const result = await sut.exists('/gone/file');
+
+        // Assert — inside the lexical root, target absent.
+        expect(result).toBe(false);
+      });
+    });
+
+    describe('When the nearest-existing walk fails with a non-ENOENT errno', () => {
+      it('Then that errno propagates instead of being swallowed', async () => {
+        // Arrange — realpath('/gone/missing') ENOENTs (triggering the
+        // nearest-existing fallback) but the ancestor probe EACCESes.
+        const realpath = vi.fn().mockImplementation(async (input: string) => {
+          if (input === '/gone/missing') throw enoent();
+          throw eacces();
+        });
+        const sut = new NodeFileSystem('/gone/missing', posixPolicy, fakeFsOps({ realpath }));
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut.exists('/gone/missing/file');
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as NodeJS.ErrnoException).code).toBe('EACCES');
       });
     });
   });
