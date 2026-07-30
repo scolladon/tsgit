@@ -5,14 +5,7 @@ import { createMemoryContext } from '../../../../src/adapters/memory/memory-adap
 import { parseShallowFile } from '../../../../src/application/primitives/internal/parse-shallow.js';
 import { readShallow, updateShallow } from '../../../../src/application/primitives/shallow-file.js';
 import { TsgitError } from '../../../../src/domain/index.js';
-import { arbShallowFileText, arbShallowOidSet } from './arbitraries.js';
-
-/** A line whose first 40 characters can never be all-hex — 'g' at index 0 always fails the prefix regex. */
-const arbNonHexLine = (): fc.Arbitrary<string> =>
-  fc
-    .string({ maxLength: 59 })
-    .filter((s) => !s.includes('\n'))
-    .map((rest) => `g${rest}`);
+import { arbNonHexShallowLine, arbShallowFileText, arbShallowOidSet } from './arbitraries.js';
 
 describe('shallow-file properties', () => {
   describe('Given an arbitrary shallow oid set', () => {
@@ -56,7 +49,7 @@ describe('shallow-file properties', () => {
       it('Then it always throws SHALLOW_FILE_MALFORMED', () => {
         // Arrange + Act + Assert
         fc.assert(
-          fc.property(arbNonHexLine(), (line) => {
+          fc.property(arbNonHexShallowLine(), (line) => {
             let caught: unknown;
             try {
               parseShallowFile(`${line}\n`, 40);

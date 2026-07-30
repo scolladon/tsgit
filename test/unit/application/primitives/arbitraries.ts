@@ -472,6 +472,22 @@ const arbShallowFileLine = (): fc.Arbitrary<string> =>
   });
 
 /**
+ * A line whose 40-char oid prefix can never be all-hex: `k` hex chars
+ * (k ∈ [0, 39]) followed by a non-hex character inside the prefix window,
+ * then arbitrary LF-free rest. Placing the corruption at an arbitrary index —
+ * not always index 0 — discriminates a mutated prefix length or a shortened
+ * hex-run quantifier.
+ */
+export const arbNonHexShallowLine = (): fc.Arbitrary<string> =>
+  fc
+    .tuple(
+      fc.integer({ min: 0, max: 39 }),
+      arbShallowOid(),
+      fc.string({ maxLength: 19 }).filter((s) => !s.includes('\n')),
+    )
+    .map(([k, oid, rest]) => `${oid.slice(0, k)}g${rest}`);
+
+/**
  * Arbitrary well-formed `.git/shallow` text: 0–20 LF-separated lines, each a
  * 40-hex oid (optionally uppercase, optionally with trailing junk), with an
  * optional trailing LF. Always parseable by `parseShallowFile` — the "safe

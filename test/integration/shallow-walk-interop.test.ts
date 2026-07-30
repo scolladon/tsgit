@@ -13,6 +13,7 @@
  *   unique:         shallow-boundary parent masking matches git rev-list/log on a --depth clone
  *   interopSurface: shallowWalk
  */
+import { existsSync } from 'node:fs';
 import { cp, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -79,7 +80,7 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
   let f4: string;
   let f4Ids: readonly ObjectId[];
 
-  // Cheap fs.cp copies of F4 (Part 3 — commit-graph disabled by shallow presence).
+  // Cheap fs.cp copies of F4 for the commit-graph-disabled-by-shallow-presence rows.
   let f4c2: string; // .git/shallow = {C4}: parents still present locally
   let f4c3: string; // .git/shallow = {C2}: mid-history boundary
   let f5NoShallow: string; // C3's loose object deleted, no shallow file (C4, git-side only)
@@ -386,7 +387,14 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
         // Arrange
         const repo = await openRepository({ cwd: f1 });
         const c4 = ids[3] as ObjectId;
-        const gitAdded = runGit(['-C', f1, 'diff', '--name-status', EMPTY_TREE, c4])
+        // git's own rendering of the boundary entry — the faithfulness peer —
+        // with the empty-tree diff kept as a secondary structural check.
+        const gitAdded = runGit(['-C', f1, 'log', '--name-status', '--format=%H', '-1', c4])
+          .split('\n')
+          .filter((line) => line.startsWith('A\t'))
+          .map((line) => line.split('\t')[1])
+          .sort();
+        const gitEmptyTreeAdded = runGit(['-C', f1, 'diff', '--name-status', EMPTY_TREE, c4])
           .trim()
           .split('\n')
           .map((line) => line.split('\t')[1])
@@ -403,6 +411,7 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
         // Assert
         expect(boundaryEntry?.parents).toEqual([]);
         expect(tsgitAdded).toEqual(gitAdded);
+        expect(tsgitAdded).toEqual(gitEmptyTreeAdded);
       });
     });
 
@@ -435,12 +444,15 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
         // Arrange
         const repo = await openRepository({ cwd: f1 });
 
+        const gitShortlog = runGit(['-C', f1, 'shortlog', '-s', '-n', 'HEAD']).trim();
+
         // Act — A31
         const groups = await repo.shortlog({});
 
-        // Assert
+        // Assert — reconstruct git's `<count>\t<name>` line from the fields
         expect(groups).toHaveLength(1);
         expect(groups[0]?.commits).toHaveLength(2);
+        expect(gitShortlog).toBe(`${groups[0]?.commits.length}\t${groups[0]?.name}`);
       });
     });
 
@@ -449,11 +461,26 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
         // Arrange
         const repo = await openRepository({ cwd: f1 });
 
+        const bundleOut = path.join(f1, '..', 'a33.bundle');
+        const gitBundle = tryRunGitWithExit([
+          '-C',
+          f1,
+          'bundle',
+          'create',
+          bundleOut,
+          '--branches',
+        ]);
+        const gitObjectCount = runGit(['-C', f1, 'rev-list', '--objects', '--branches'])
+          .trim()
+          .split('\n')
+          .filter(Boolean).length;
+
         // Act — A33
         const result = await repo.bundle.create({ branches: true });
 
-        // Assert
-        expect(result.objectCount).toBeGreaterThan(0);
+        // Assert — git succeeds from the shallow clone; identical enumeration
+        expect(gitBundle.exitCode).toBe(0);
+        expect(result.objectCount).toBe(gitObjectCount);
       });
     });
 
@@ -471,9 +498,14 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
           objects.push(id);
         }
 
-        // Assert — completes without OBJECT_NOT_FOUND past the boundary
-        expect(objects).toContain(ids[3]);
-        expect(objects).toContain(ids[4]);
+        // Assert — the exact closure git enumerates: nothing beyond the cut
+        const gitObjects = runGit(['-C', f1, 'rev-list', '--objects', ids[4] as string])
+          .trim()
+          .split('\n')
+          .filter(Boolean)
+          .map((line) => line.slice(0, 40))
+          .sort();
+        expect([...objects].sort()).toEqual(gitObjects);
       });
     });
   });
@@ -615,8 +647,9 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
   describe('Given a linked worktree of the shallow clone (F6: no .git/shallow in the worktree admin dir)', () => {
     describe('When walkCommits and log both run through the worktree Context', () => {
       it('Then the shared shallow set resolves through the common dir, identical masking to F1', async () => {
-        // Arrange — E1/E2/E3
+        // Arrange — E1/E3 (E2, `--is-shallow-repository`, has no tsgit surface)
         const repo = await openRepository({ cwd: f6worktree });
+        const adminDir = path.join(f1, '.git', 'worktrees', path.basename(f6worktree));
 
         // Act
         const walked: ObjectId[] = [];
@@ -628,6 +661,10 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
         // Assert
         expect(walked).toEqual([ids[4], ids[3]]);
         expect(boundary.map((e) => e.id)).toEqual([ids[3]]);
+        // E1: the per-worktree admin dir holds no `shallow` — the file lives
+        // only in the common dir.
+        expect(existsSync(path.join(adminDir, 'shallow'))).toBe(false);
+        expect(existsSync(path.join(f1, '.git', 'shallow'))).toBe(true);
       });
     });
   });
@@ -659,8 +696,8 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
   describe('Given F4 copied with .git/shallow={C4} (F4c2: parents still present locally)', () => {
     describe('When walkCommits and log both run', () => {
       it('Then masking wins over an available, graph-known parent', async () => {
-        // Arrange — C2. This is a regression row, not this part's gate
-        // discriminator: Part 2's readCommit/applyGraft guards
+        // Arrange — C2. This is a regression row, not the gate's own
+        // discriminator: the readCommit/applyGraft guards
         // (resolveFrontierEntry skips the boundary's graph header,
         // enqueueParents reads the already-grafted parent list) already pass
         // it. The unit suite in read-commit-graph.test.ts is what actually
@@ -922,15 +959,26 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
 
   describe('Given the boundary at HEAD~1 (F1)', () => {
     describe('When revParse walks the parent chain past it', () => {
-      it('Then HEAD~1 resolves to the boundary and HEAD~2/C4^ refuse, matching git', async () => {
-        // Arrange — A12/A13
+      it('Then HEAD~1 resolves to the boundary, matching git', async () => {
+        // Arrange — A12
         const repo = await openRepository({ cwd: f1 });
         const c4 = ids[3] as ObjectId;
         const gitHead1 = runGit(['-C', f1, 'rev-parse', 'HEAD~1']).trim();
-        const gitHead2 = tryRunGitWithExit(['-C', f1, 'rev-parse', 'HEAD~2']);
 
         // Act
         const head1 = await repo.revParse('HEAD~1');
+
+        // Assert
+        expect(head1).toBe(c4);
+        expect(gitHead1).toBe(c4);
+      });
+
+      it('Then HEAD~2 refuses past the boundary, co-refusing with git', async () => {
+        // Arrange — A13
+        const repo = await openRepository({ cwd: f1 });
+        const gitHead2 = tryRunGitWithExit(['-C', f1, 'rev-parse', 'HEAD~2']);
+
+        // Act
         let head2Caught: unknown;
         try {
           await repo.revParse('HEAD~2');
@@ -938,6 +986,19 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
         } catch (error) {
           head2Caught = error;
         }
+
+        // Assert
+        expect((head2Caught as TsgitError).data.code).toBe('OBJECT_NOT_FOUND');
+        expect(gitHead2.exitCode).toBe(128);
+      });
+
+      it('Then the boundary caret form C4^ refuses like git', async () => {
+        // Arrange — A13 (caret spelling)
+        const repo = await openRepository({ cwd: f1 });
+        const c4 = ids[3] as ObjectId;
+        const gitCaret = tryRunGitWithExit(['-C', f1, 'rev-parse', `${c4}^`]);
+
+        // Act
         let caretCaught: unknown;
         try {
           await repo.revParse(`${c4}^`);
@@ -947,11 +1008,8 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
         }
 
         // Assert
-        expect(head1).toBe(c4);
-        expect(gitHead1).toBe(c4);
-        expect((head2Caught as TsgitError).data.code).toBe('OBJECT_NOT_FOUND');
-        expect(gitHead2.exitCode).toBe(128);
         expect((caretCaught as TsgitError).data.code).toBe('OBJECT_NOT_FOUND');
+        expect(gitCaret.exitCode).toBe(128);
       });
     });
   });
@@ -1004,8 +1062,12 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
   // an independent subset — the distinct operation `--independent` performs.
   // tsgit exposes no primitive that reduces an arbitrary input commit set this
   // way, so only git's side is recorded here — an honest, out-of-scope
-  // divergence, consistent with A11/A22's "no tsgit surface" treatment. No
-  // option is invented to close it.
+  // divergence. The same treatment covers two more pinned rows with no tsgit
+  // surface, deliberately not asserted anywhere in this suite: A11
+  // (`git rev-list --boundary` — the walk yields structured commits with no
+  // boundary-marker line to reconstruct) and A22 (pathspec-filtered
+  // `git log -- <path>` — `log` takes no pathspec). No option is invented to
+  // close any of the three.
   describe('Given the boundary compared against HEAD under --independent (F1, git-side only)', () => {
     describe('When git merge-base --independent runs', () => {
       it('Then it reduces {HEAD, C4} to {C5} — A21 has no tsgit surface', () => {

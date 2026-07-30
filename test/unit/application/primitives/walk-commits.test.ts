@@ -983,6 +983,28 @@ describe('walkCommits', () => {
   });
 
   describe('commit-graph integration', () => {
+    describe('Given a commit-graph, NO shallow file, and an explicit shallow override', () => {
+      describe('When walkCommits runs from the tip', () => {
+        it('Then the walk stops at the override boundary instead of enqueueing its graph parents', async () => {
+          // Arrange — the one configuration where the graph stays enabled
+          // (no `.git/shallow` file) while a boundary set is in force: the
+          // frontier guard is the only thing stopping `commitHeader` from
+          // enqueueing the boundary's parents straight from the graph.
+          const ctx = await buildSeededContext();
+          const ids = await linearChain(ctx, 3);
+          await writeCommitGraph(ctx, [await asCommits(ctx, ids)]);
+
+          // Act
+          const result = await collect(
+            walkCommits(ctx, { from: [ids[2]!], shallow: new Set([ids[1]!]) }),
+          );
+
+          // Assert
+          expect(result.map((commit) => commit.id)).toEqual([ids[2], ids[1]]);
+        });
+      });
+    });
+
     describe('Given a single-file commit-graph covering the whole diamond', () => {
       describe('When walkCommits is called from the merge', () => {
         it('Then the yielded set/order is identical to the graph-absent walk', async () => {
