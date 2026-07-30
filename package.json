@@ -809,12 +809,12 @@
   "devDependencies": {
     "@arethetypeswrong/cli": "0.18.5",
     "@biomejs/biome": "2.5.6",
-    "@cloudflare/vitest-pool-workers": "0.19.0",
+    "@cloudflare/vitest-pool-workers": "0.19.1",
     "@cloudflare/workers-types": "5.20260730.1",
     "@commitlint/cli": "21.2.1",
     "@commitlint/config-conventional": "21.2.0",
     "@ls-lint/ls-lint": "2.3.1",
-    "@playwright/test": "1.62.0",
+    "@playwright/test": "1.62.1",
     "@rollup/plugin-node-resolve": "16.0.3",
     "@rollup/plugin-terser": "1.0.0",
     "@rollup/plugin-typescript": "12.3.0",
@@ -841,6 +841,6 @@
     "typescript": "6.0.3",
     "vitest": "4.1.10",
     "wireit": "0.14.13",
-    "wrangler": "4.115.0"
+    "wrangler": "4.116.0"
   }
 }
