@@ -35,6 +35,21 @@ powers their `streamInflate`.
 comparison against native `DecompressionStream` on large inputs is clearly better;
 otherwise fall back to option 1.
 
+## Outcome of the gate
+
+**The bench said no; the fallback applies.** Measured on this host over a 64 KiB / 1 MiB /
+8 MiB ladder in both compressible and incompressible payloads, native
+`DecompressionStream` beat the bundled decoder at **every** size — by 2.5× at 64 KiB
+widening to 6.6× at 8 MiB — in both runs and both profiles. That is the opposite of the
+failure mode this ADR guarded against (a decoder that wins small and loses large); the
+pure-JS decoder loses at every scale and increasingly so. Option 2 is therefore **not**
+taken: `BrowserCompressor.inflate` and `MemoryCompressor.inflate` are unchanged and the
+Node-only win of option 1 stands. The bench is committed so the decision is reproducible
+rather than asserted, and the numbers are in the design's Results section.
+
+Because no adapter changed, the `test:parity:workers` / `deno` / `bun` obligation below
+does not arise for this decision.
+
 ## Consequences
 
 This is the one decision that is settled as a *conditional*, so the plan carries both
