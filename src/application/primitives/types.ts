@@ -126,11 +126,14 @@ export interface WalkCommitsOptions {
   /**
    * Commits whose parents must NOT be enqueued (shallow boundaries). Omitted
    * ⇒ the repository's `.git/shallow` set is loaded automatically; supplied
-   * (including an explicit empty `Set`) ⇒ the caller's set wins and no
-   * repository state is consulted. The commit itself is still yielded — only
-   * its parents are skipped. Callers that want to also skip the boundary
-   * commit pass it in `until`. A shallow set is trusted repository state, so
-   * reachability answers a walk produces are relative to it.
+   * (including an explicit empty `Set`) ⇒ the caller's set governs which
+   * commits are masked. The commit-graph presence gate is independent of
+   * this option: an existing `.git/shallow` file still disables graph
+   * consultation (one probe per `Context`) whatever set is passed. The
+   * commit itself is still yielded — only its parents are skipped. Callers
+   * that want to also skip the boundary commit pass it in `until`. A shallow
+   * set is trusted repository state, so reachability answers a walk produces
+   * are relative to it.
    */
   readonly shallow?: ReadonlySet<ObjectId>;
 }
@@ -147,10 +150,12 @@ export interface WalkCommitsByDateOptions {
   /**
    * Commits whose parents must NOT be walked (shallow boundaries). Omitted ⇒
    * the repository's `.git/shallow` set is loaded automatically; supplied
-   * (including an explicit empty `Set`) ⇒ the caller's set wins and no
-   * repository state is consulted. The commit itself is still yielded — only
-   * its parents are skipped. A shallow set is trusted repository state, so
-   * reachability answers a walk produces are relative to it.
+   * (including an explicit empty `Set`) ⇒ the caller's set governs which
+   * commits are masked. The commit-graph presence gate is independent of
+   * this option: an existing `.git/shallow` file still disables graph
+   * consultation whatever set is passed. The commit itself is still yielded —
+   * only its parents are skipped. A shallow set is trusted repository state,
+   * so reachability answers a walk produces are relative to it.
    */
   readonly shallow?: ReadonlySet<ObjectId>;
   readonly ignoreMissing?: boolean;

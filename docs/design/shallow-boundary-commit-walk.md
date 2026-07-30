@@ -373,7 +373,9 @@ Shallow-file parse refusals are decision candidate **#4**.
 
 ### §6 — Performance
 
-- Non-shallow repos (the overwhelming majority): one extra `fs.exists` per `Context`,
+- Non-shallow repos (the overwhelming majority): one extra absence-tolerated
+  `readUtf8` per `Context` (a single syscall serving both the presence and the
+  content signal — cheaper than an `exists`+read pair on shallow repos),
   memoised. `applyGraft` short-circuits on an empty set. Requirement 8.
 - Shallow repos: the commit-graph is disabled (requirement 5 / pin C5), which costs the
   graph's prefetch parallelism lever. The mitigation is intrinsic — a shallow repo has

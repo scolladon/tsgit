@@ -45,6 +45,10 @@ export function isAbsentShallowFile(error: unknown): boolean {
 }
 
 async function loadStateUncached(ctx: Context): Promise<ShallowState> {
+  // A single throwing readUtf8, deliberately NOT the `exists`-gates-the-read
+  // rule read-commit-graph.ts follows: here presence AND content are both
+  // needed, so one call covers either branch — an exists+read pair would
+  // spend two syscalls on every shallow repository.
   let raw: string;
   try {
     raw = await ctx.fs.readUtf8(shallowFilePath(commonGitDir(ctx)));
@@ -73,6 +77,17 @@ function loadState(ctx: Context): Promise<ShallowState> {
 /** The repository's shallow-boundary oids, loaded once per `Context`. */
 export const loadShallowSet = async (ctx: Context): Promise<ReadonlySet<ObjectId>> =>
   (await loadState(ctx)).set;
+
+/**
+ * The shallow set a walk should mask with: the caller's explicit override
+ * (including an empty `Set`, the no-masking escape hatch) or the repository's
+ * own `.git/shallow` set. One definition shared by both walk cores, so the
+ * override semantics cannot drift between them.
+ */
+export const resolveShallow = async (
+  ctx: Context,
+  override: ReadonlySet<ObjectId> | undefined,
+): Promise<ReadonlySet<ObjectId>> => override ?? loadShallowSet(ctx);
 
 /** Whether `.git/shallow` exists at all — presence, independent of content. */
 export const isShallowRepository = async (ctx: Context): Promise<boolean> =>

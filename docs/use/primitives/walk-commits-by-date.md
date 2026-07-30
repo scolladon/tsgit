@@ -29,13 +29,14 @@ interface WalkCommitsByDateOptions {
 - `until` excludes a commit before it is read — neither yielded nor expanded.
 - `shallow` boundaries are yielded but their parents are not walked. Omitted ⇒
   the repository's `.git/shallow` set is loaded automatically; supplied
-  (including an explicit empty `Set`) ⇒ the caller's set wins and no
-  repository state is consulted.
+  (including an explicit empty `Set`) ⇒ the caller's set governs which commits
+  are masked (the commit-graph presence gate still probes `.git/shallow` once
+  per `Context`, whatever set is passed).
 - Reads eagerly to order the frontier, so a fake/missing parent cannot enter the
   queue; the frontier is bounded by the reachable-commit count.
 - Throws `INVALID_WALK_INPUT` on an empty or over-cap `from`, and aborts at the
   next loop head when `ctx.signal` is aborted.
-- When `.git/objects/info/commit-graph` is present (single-file or chain/split form), parents and dates are served from it, falling back to object reads for any commit it doesn't cover. Results are identical with or without a graph; a corrupt or stale graph is treated as absent.
+- When `.git/objects/info/commit-graph` is present (single-file or chain/split form), parents and dates are served from it, falling back to object reads for any commit it doesn't cover. Results are identical with or without a graph; a corrupt or stale graph is treated as absent, and the presence of a `.git/shallow` file (even 0-byte) disables graph consultation entirely — a stale graph can never re-introduce a masked parent.
 
 ## Ordering scope
 

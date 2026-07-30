@@ -6,7 +6,7 @@ import type { Context } from '../../../ports/context.js';
 import { type BoundedReader, createBoundedReader } from './bounded-reader.js';
 import { readCommit } from './read-commit.js';
 import { commitHeader, DEFAULT_PREFETCH_CONCURRENCY } from './read-commit-graph.js';
-import { loadShallowSet } from './shallow-set.js';
+import { resolveShallow } from './shallow-set.js';
 
 type CommitBodies = BoundedReader<Commit | undefined>;
 
@@ -29,8 +29,11 @@ export interface CommitDateWalkOptions {
   readonly from: ReadonlyArray<ObjectId>;
   readonly until?: ReadonlyArray<ObjectId>;
   /**
-   * Commits whose parents must NOT be walked (shallow boundary). The commit
-   * itself is still yielded — only its parents are skipped.
+   * Boundary override. Omitted ⇒ the repository's `.git/shallow` set is
+   * loaded automatically (once per `Context`); supplied — including an
+   * explicit empty `Set` — ⇒ the caller's set governs which commits are
+   * masked. A boundary commit is still yielded with `parents: []`; only its
+   * parents are skipped.
    */
   readonly shallow?: ReadonlySet<ObjectId>;
   /** Follow only the first parent through merges (git's `--first-parent`). */
@@ -79,7 +82,7 @@ export async function* commitDateWalk(
   ctx: Context,
   options: CommitDateWalkOptions,
 ): AsyncIterable<DateWalkStep> {
-  const shallow = options.shallow ?? (await loadShallowSet(ctx));
+  const shallow = await resolveShallow(ctx, options.shallow);
   const verifyHash = options.verifyHash ?? true;
   const ignoreMissing = options.ignoreMissing ?? false;
   // `seen` already prevents any re-read, so the reader's missing-memo is inert

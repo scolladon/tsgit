@@ -4,7 +4,7 @@ import type { Context } from '../../ports/context.js';
 import { type BoundedReader, createBoundedReader } from './internal/bounded-reader.js';
 import { readCommit } from './internal/read-commit.js';
 import { commitHeader, DEFAULT_PREFETCH_CONCURRENCY } from './internal/read-commit-graph.js';
-import { loadShallowSet } from './internal/shallow-set.js';
+import { resolveShallow } from './internal/shallow-set.js';
 import { MAX_WALK_QUEUE_SIZE, type WalkCommitsOptions } from './types.js';
 import {
   exceedsMaxWalkSeeds,
@@ -35,21 +35,11 @@ interface WalkSession {
   readonly ignoreMissing: boolean;
 }
 
-/**
- * The shallow set this walk should use: the caller's explicit override
- * (including an empty `Set`, the escape hatch) or the repository's own
- * `.git/shallow` set, loaded once per `Context`.
- */
-const resolveShallow = async (
-  ctx: Context,
-  options: WalkCommitsOptions,
-): Promise<ReadonlySet<ObjectId>> => options.shallow ?? loadShallowSet(ctx);
-
 async function createWalkSession(ctx: Context, options: WalkCommitsOptions): Promise<WalkSession> {
   const order = options.order ?? 'topo';
   const ignoreMissing = options.ignoreMissing ?? false;
   const verifyHash = options.verifyHash ?? true;
-  const shallow = await resolveShallow(ctx, options);
+  const shallow = await resolveShallow(ctx, options.shallow);
   const state: WalkState = {
     queue: [...options.from],
     visited: new Set<string>(),

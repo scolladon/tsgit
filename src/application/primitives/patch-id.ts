@@ -14,29 +14,15 @@
  * binary patches apart; their blob oids are folded into the key (mirroring git's
  * binary patch-id path) so distinct binary content yields distinct ids.
  */
-import { applyGraftToData } from '../../domain/commit/graft.js';
 import { type DiffChange, isBinary, renderPatch } from '../../domain/diff/index.js';
-import type { CommitData } from '../../domain/objects/commit.js';
-import { unexpectedObjectType } from '../../domain/objects/error.js';
 import type { ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import { diffTrees } from './diff-trees.js';
-import { loadShallowSet } from './internal/shallow-set.js';
+import { readCommitData } from './internal/read-commit-data.js';
 import { materialisePatchFiles } from './materialise-patch-files.js';
-import { readObject } from './read-object.js';
 
 const ENCODER = new TextEncoder();
 const EMPTY = new Uint8Array();
-
-// Byte-identical to `commands/internal/history-rewrite.ts`'s `readCommitData`,
-// deliberately duplicated rather than imported: this module lives in the
-// primitives tier, and importing a commands-tier helper would cross the
-// `repository → commands → primitives → domain` dependency rule upward.
-const readCommitData = async (ctx: Context, id: ObjectId): Promise<CommitData> => {
-  const obj = await readObject(ctx, id);
-  if (obj.type !== 'commit') throw unexpectedObjectType('commit', obj.type, id);
-  return applyGraftToData(id, obj.data, await loadShallowSet(ctx));
-};
 
 /** Drop the line-number `@@` headers and base-oid `index` lines, then strip
  *  whitespace — the bytes that distinguish a change from an equivalent one. */

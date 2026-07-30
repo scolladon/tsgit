@@ -99667,7 +99667,15 @@
 									},
 									{
 										"kind": "text",
-										"text": ") ⇒ the caller's set wins and no\nrepository state is consulted. The commit itself is still yielded — only\nits parents are skipped. A shallow set is trusted repository state, so\nreachability answers a walk produces are relative to it."
+										"text": ") ⇒ the caller's set governs which\ncommits are masked. The commit-graph presence gate is independent of\nthis option: an existing "
+									},
+									{
+										"kind": "code",
+										"text": "`.git/shallow`"
+									},
+									{
+										"kind": "text",
+										"text": " file still disables graph\nconsultation whatever set is passed. The commit itself is still yielded —\nonly its parents are skipped. A shallow set is trusted repository state,\nso reachability answers a walk produces are relative to it."
 									}
 								]
 							},
@@ -99836,7 +99844,23 @@
 									},
 									{
 										"kind": "text",
-										"text": ") ⇒ the caller's set wins and no\nrepository state is consulted. The commit itself is still yielded — only\nits parents are skipped. Callers that want to also skip the boundary\ncommit pass it in "
+										"text": ") ⇒ the caller's set governs which\ncommits are masked. The commit-graph presence gate is independent of\nthis option: an existing "
+									},
+									{
+										"kind": "code",
+										"text": "`.git/shallow`"
+									},
+									{
+										"kind": "text",
+										"text": " file still disables graph\nconsultation (one probe per "
+									},
+									{
+										"kind": "code",
+										"text": "`Context`"
+									},
+									{
+										"kind": "text",
+										"text": ") whatever set is passed. The\ncommit itself is still yielded — only its parents are skipped. Callers\nthat want to also skip the boundary commit pass it in "
 									},
 									{
 										"kind": "code",
@@ -99844,7 +99868,7 @@
 									},
 									{
 										"kind": "text",
-										"text": ". A shallow set is trusted repository state, so\nreachability answers a walk produces are relative to it."
+										"text": ". A shallow\nset is trusted repository state, so reachability answers a walk produces\nare relative to it."
 									}
 								]
 							},
