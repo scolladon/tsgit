@@ -13,7 +13,7 @@
  *   unique:         shallow-boundary parent masking matches git rev-list/log on a --depth clone
  *   interopSurface: shallowWalk
  */
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -45,6 +45,10 @@ const cloneDepth = (bare: string, depth: number, dest: string): void => {
   runGit(['clone', '-q', '--depth', String(depth), `file://${bare}`, dest]);
 };
 
+/** Path to a repo's loose object on disk, from its 2/38 split oid prefix. */
+const looseObjectPath = (repoDir: string, id: ObjectId): string =>
+  path.join(repoDir, '.git', 'objects', id.slice(0, 2), id.slice(2));
+
 describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
   // F1 fixture: bare + source with 5 linear commits c1..c5 on main.
   let bare1: string;
@@ -68,6 +72,20 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
   // F7a/F7b: mutated inside their own `it` (Arrange), not in beforeAll.
   let f7a: string;
   let f7b: string;
+
+  // F4 fixture: `git init` in place (not a clone — C5 needs a deletable LOOSE
+  // object), 5 commits, a written commit-graph, no shallow file. Its own
+  // [C1..C5] chain — different oids from F1's `ids`, kept separately.
+  let f4: string;
+  let f4Ids: readonly ObjectId[];
+
+  // Cheap fs.cp copies of F4 (Part 3 — commit-graph disabled by shallow presence).
+  let f4c2: string; // .git/shallow = {C4}: parents still present locally
+  let f4c3: string; // .git/shallow = {C2}: mid-history boundary
+  let f5NoShallow: string; // C3's loose object deleted, no shallow file (C4, git-side only)
+  let f5: string; // C3 deleted + .git/shallow = {C1} (masks nothing real)
+  let f5empty: string; // C3 deleted + a 0-byte .git/shallow
+  let f5restored: string; // 0-byte .git/shallow, C3 NOT deleted
 
   const allDirs: string[] = [];
   const tmp = async (slug: string): Promise<string> => {
@@ -141,6 +159,45 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
     runGit(['-C', source3, 'push', '-q', 'origin', 'main']);
     f3 = await tmp('f3');
     cloneDepth(bare3, 2, f3);
+
+    // ── F4: git init in place (NOT a clone — a clone packs objects, and C5
+    // needs a deletable LOOSE object), 5 commits, a written commit-graph, no
+    // shallow file. Its own [C1..C5] chain is distinct from F1's `ids`. ──
+    f4 = await tmp('f4');
+    runGit(['init', '-q', '-b', 'main', f4]);
+    for (let i = 0; i < 5; i += 1) {
+      await writeFile(path.join(f4, `g${i}.txt`), `${i}\n`);
+      runGit(['-C', f4, 'add', '.']);
+      runGit(['-C', f4, 'commit', '-q', '-m', `g${i + 1}`], { env: identityEnv(30 + i) });
+    }
+    runGit(['-C', f4, 'commit-graph', 'write', '--reachable']);
+    f4Ids = runGit(['-C', f4, 'rev-list', '--reverse', 'HEAD']).trim().split('\n') as ObjectId[];
+
+    f4c2 = await tmp('f4c2');
+    await cp(f4, f4c2, { recursive: true });
+    await writeFile(path.join(f4c2, '.git', 'shallow'), `${f4Ids[3]}\n`);
+
+    f4c3 = await tmp('f4c3');
+    await cp(f4, f4c3, { recursive: true });
+    await writeFile(path.join(f4c3, '.git', 'shallow'), `${f4Ids[1]}\n`);
+
+    f5NoShallow = await tmp('f5-no-shallow');
+    await cp(f4, f5NoShallow, { recursive: true });
+    await rm(looseObjectPath(f5NoShallow, f4Ids[2] as ObjectId));
+
+    f5 = await tmp('f5');
+    await cp(f4, f5, { recursive: true });
+    await rm(looseObjectPath(f5, f4Ids[2] as ObjectId));
+    await writeFile(path.join(f5, '.git', 'shallow'), `${f4Ids[0]}\n`);
+
+    f5empty = await tmp('f5empty');
+    await cp(f4, f5empty, { recursive: true });
+    await rm(looseObjectPath(f5empty, f4Ids[2] as ObjectId));
+    await writeFile(path.join(f5empty, '.git', 'shallow'), '');
+
+    f5restored = await tmp('f5restored');
+    await cp(f4, f5restored, { recursive: true });
+    await writeFile(path.join(f5restored, '.git', 'shallow'), '');
   }, 60_000);
 
   afterAll(async () => {
@@ -566,6 +623,163 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
         // Assert
         expect(walked).toEqual([ids[4], ids[3]]);
         expect(boundary.map((e) => e.id)).toEqual([ids[3]]);
+      });
+    });
+  });
+
+  describe('Given a git-init-in-place repo with a written commit-graph and no shallow file (F4)', () => {
+    describe('When walkCommits and log both run', () => {
+      it('Then the full history is reachable, matching git', async () => {
+        // Arrange — C1
+        const repo = await openRepository({ cwd: f4 });
+        const gitCount = Number(runGit(['-C', f4, 'rev-list', '--count', 'HEAD']).trim());
+        const gitRoot = runGit(['-C', f4, 'rev-list', '--max-parents=0', 'HEAD']).trim();
+
+        // Act
+        const walked: ObjectId[] = [];
+        for await (const c of repo.primitives.walkCommits({ from: [f4Ids[4] as ObjectId] })) {
+          walked.push(c.id);
+        }
+        const root = await repo.log({ maxParents: 0 });
+
+        // Assert
+        expect(walked.length).toBe(5);
+        expect(walked.length).toBe(gitCount);
+        expect(root.map((e) => e.id)).toEqual([f4Ids[0]]);
+        expect(root[0]?.id).toBe(gitRoot);
+      });
+    });
+  });
+
+  describe('Given F4 copied with .git/shallow={C4} (F4c2: parents still present locally)', () => {
+    describe('When walkCommits and log both run', () => {
+      it('Then masking wins over an available, graph-known parent', async () => {
+        // Arrange — C2. This is a regression row, not this part's gate
+        // discriminator: Part 2's readCommit/applyGraft guards
+        // (resolveFrontierEntry skips the boundary's graph header,
+        // enqueueParents reads the already-grafted parent list) already pass
+        // it. The unit suite in read-commit-graph.test.ts is what actually
+        // proves the graph is disabled by shallow-file presence; this row
+        // only proves the graph gate does not regress walk-level masking.
+        const repo = await openRepository({ cwd: f4c2 });
+
+        // Act
+        const walked: ObjectId[] = [];
+        for await (const c of repo.primitives.walkCommits({ from: [f4Ids[4] as ObjectId] })) {
+          walked.push(c.id);
+        }
+        const boundary = await repo.log({ maxParents: 0 });
+
+        // Assert
+        expect(walked).toEqual([f4Ids[4], f4Ids[3]]);
+        expect(boundary.map((e) => e.id)).toEqual([f4Ids[3]]);
+        expect(boundary[0]?.parents).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given F4 copied with .git/shallow={C2} (F4c3: a mid-history boundary)', () => {
+    describe('When walkCommits and log both run', () => {
+      it('Then masking is applied by oid, independent of object availability', async () => {
+        // Arrange — C3, likewise a regression row (see F4c2 above): every
+        // masked parent here is still locally present.
+        const repo = await openRepository({ cwd: f4c3 });
+
+        // Act
+        const walked: ObjectId[] = [];
+        for await (const c of repo.primitives.walkCommits({ from: [f4Ids[4] as ObjectId] })) {
+          walked.push(c.id);
+        }
+        const boundary = await repo.log({ maxParents: 0 });
+
+        // Assert
+        expect(walked).toEqual([f4Ids[4], f4Ids[3], f4Ids[2], f4Ids[1]]);
+        expect(boundary.map((e) => e.id)).toEqual([f4Ids[1]]);
+      });
+    });
+  });
+
+  describe("Given F4 with C3's loose object deleted and no shallow file (F5-no-shallow)", () => {
+    describe('When git rev-list walks purely from the commit-graph', () => {
+      it('Then git succeeds without ever reading the missing object', () => {
+        // Arrange — C4. git traverses purely from the commit-graph and never
+        // reads C3's (deleted) object. tsgit's own walks always await the
+        // commit body (resolveFrontierEntry/enqueueCommit), so tsgit refuses
+        // here TODAY, before this part's change — a pre-existing divergence
+        // this part neither introduces nor fixes (the graph gate is
+        // orthogonal to "does a walk ever read a missing object"). Asserted
+        // on the git side only; no tsgit assertion is added for this row.
+        const gitResult = tryRunGitWithExit(['-C', f5NoShallow, 'rev-list', 'HEAD']);
+
+        // Assert
+        expect(gitResult.exitCode).toBe(0);
+        expect(gitResult.stdout.trim().split('\n')).toHaveLength(5);
+      });
+    });
+  });
+
+  describe('Given F5 (C3 deleted, .git/shallow={C1} masks nothing real)', () => {
+    describe('When walkCommits and git rev-list both run', () => {
+      it('Then both refuse to traverse the missing object', async () => {
+        // Arrange — C5
+        const repo = await openRepository({ cwd: f5 });
+        const gitResult = tryRunGitWithExit(['-C', f5, 'rev-list', 'HEAD']);
+
+        // Act & Assert
+        let caught: unknown;
+        try {
+          for await (const _c of repo.primitives.walkCommits({ from: [f4Ids[4] as ObjectId] })) {
+            // draining is enough to trigger the read
+          }
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+        expect((caught as TsgitError).data.code).toBe('OBJECT_NOT_FOUND');
+        expect(gitResult.exitCode).toBe(128);
+      });
+    });
+  });
+
+  describe('Given F5empty (C3 deleted, .git/shallow is a 0-byte file)', () => {
+    describe('When walkCommits and git rev-list both run', () => {
+      it('Then both refuse identically — the decisive presence-not-content pin', async () => {
+        // Arrange — C6
+        const repo = await openRepository({ cwd: f5empty });
+        const gitResult = tryRunGitWithExit(['-C', f5empty, 'rev-list', 'HEAD']);
+
+        // Act & Assert
+        let caught: unknown;
+        try {
+          for await (const _c of repo.primitives.walkCommits({ from: [f4Ids[4] as ObjectId] })) {
+            // draining is enough to trigger the read
+          }
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+        expect((caught as TsgitError).data.code).toBe('OBJECT_NOT_FOUND');
+        expect(gitResult.exitCode).toBe(128);
+      });
+    });
+  });
+
+  describe('Given F5restored (C3 restored, .git/shallow is a 0-byte file)', () => {
+    describe('When walkCommits and git rev-list both run', () => {
+      it('Then both walk the full 5-commit history with the graph disabled', async () => {
+        // Arrange — C7
+        const repo = await openRepository({ cwd: f5restored });
+        const gitCount = Number(runGit(['-C', f5restored, 'rev-list', '--count', 'HEAD']).trim());
+
+        // Act
+        const walked: ObjectId[] = [];
+        for await (const c of repo.primitives.walkCommits({ from: [f4Ids[4] as ObjectId] })) {
+          walked.push(c.id);
+        }
+
+        // Assert
+        expect(walked.length).toBe(5);
+        expect(walked.length).toBe(gitCount);
       });
     });
   });

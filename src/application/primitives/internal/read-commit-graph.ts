@@ -27,6 +27,7 @@ import {
   commitGraphPath,
   commonGitDir,
 } from '../path-layout.js';
+import { isShallowRepository } from './shallow-set.js';
 
 /** `RepositoryConfig.parallelism`'s own default — reused as the prefetch bound. */
 export const DEFAULT_PREFETCH_CONCURRENCY = 8;
@@ -53,6 +54,16 @@ const graphCache = new WeakMap<Context, Promise<LoadedGraph | undefined>>();
 // Per-Repository resolved-header cache (oid → header), populated as the graph
 // is consulted. Cheap: avoids repeating the cross-layer position arithmetic
 // for an oid every walk in the repo's lifetime re-visits.
+//
+// Cannot serve a header computed under a stale shallow-gate verdict: every
+// entry is populated by `commitHeader` only after `loadGraph(ctx)` resolves,
+// and `loadGraph`'s own promise (`graphCache`) is itself computed once, atomically,
+// from the shallow presence check at the top of `loadGraphUncached` — the
+// graph is either consulted for a Context's *entire* lifetime or never is,
+// never a mix. A `.git/shallow` write mid-`Context` (`updateShallow`) is the
+// same "stale per-Context cache" class as a graph rewritten mid-`Context` —
+// already covered by the "construct a fresh `Context` after every write"
+// discipline this module's other caches rely on; it is not a new hazard.
 const headerCache = new WeakMap<Context, Map<ObjectId, CommitHeader>>();
 
 function isFileNotFound(error: unknown): boolean {
@@ -128,7 +139,18 @@ function computeLayerOffsets(layers: readonly CommitGraphLayer[]): readonly numb
   return offsets;
 }
 
+// Git's own `commit_graph_compatible` rule: a shallow repository never
+// consults the commit-graph, because a graph layer records the true (pre-cut)
+// parent list, and a graph-only walk never reaches `readCommit`'s grafting.
+// Gated on FILE PRESENCE, not `(await loadShallowSet(ctx)).size > 0` — an
+// empty `.git/shallow` already disables the graph on the git side. The probe
+// is itself memoised per `Context` (`shallow-set.ts`), so this costs at most
+// one extra `readUtf8` for the lifetime of a `Context`, and it happens here —
+// inside the function whose promise `graphCache` stores — so it is paid once
+// per repo, never once per oid.
 async function loadGraphUncached(ctx: Context): Promise<LoadedGraph | undefined> {
+  if (await isShallowRepository(ctx)) return undefined;
+
   const gitDir = commonGitDir(ctx);
 
   try {

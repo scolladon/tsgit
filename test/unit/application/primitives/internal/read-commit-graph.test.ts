@@ -631,5 +631,58 @@ describe('read-commit-graph', () => {
         });
       });
     });
+
+    describe('Given a commit-graph covering an oid, with no .git/shallow file', () => {
+      describe('When commitHeader is called for that oid', () => {
+        it('Then it resolves the header from the graph (control — proves the shallow cases below are not vacuous)', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const { c0, c1, c2, c3, c4 } = await buildFiveCommitHistory(ctx);
+          await writeCommitGraph(ctx, [[c0, c1, c2, c3, c4]]);
+
+          // Act
+          const header = await commitHeader(ctx, c0.id);
+
+          // Assert
+          expect(header).toBeDefined();
+        });
+      });
+    });
+
+    describe('Given a commit-graph covering an oid, with a non-empty .git/shallow present', () => {
+      describe('When commitHeader is called for that oid', () => {
+        it('Then it returns undefined — the graph is ignored while a shallow file is present', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const { c0, c1, c2, c3, c4 } = await buildFiveCommitHistory(ctx);
+          await writeCommitGraph(ctx, [[c0, c1, c2, c3, c4]]);
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/shallow`, `${c3.id}\n`);
+
+          // Act
+          const header = await commitHeader(ctx, c0.id);
+
+          // Assert
+          expect(header).toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given a commit-graph covering an oid, with a 0-byte .git/shallow present', () => {
+      describe('When commitHeader is called for that oid', () => {
+        it('Then it also returns undefined — presence, not content, gates the graph', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const { c0, c1, c2, c3, c4 } = await buildFiveCommitHistory(ctx);
+          await writeCommitGraph(ctx, [[c0, c1, c2, c3, c4]]);
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/shallow`, '');
+
+          // Act
+          const header = await commitHeader(ctx, c0.id);
+
+          // Assert
+          expect(header).toBeUndefined();
+        });
+      });
+    });
   });
 });
