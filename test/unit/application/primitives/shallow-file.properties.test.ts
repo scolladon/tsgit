@@ -42,7 +42,7 @@ describe('shallow-file properties', () => {
         // Arrange + Act + Assert
         fc.assert(
           fc.property(arbShallowFileText(), ({ text, lineCount }) => {
-            const result = parseShallowFile(text);
+            const result = parseShallowFile(text, 40);
             expect(result.length).toBe(lineCount);
           }),
           { numRuns: 100 },
@@ -59,7 +59,7 @@ describe('shallow-file properties', () => {
           fc.property(arbNonHexLine(), (line) => {
             let caught: unknown;
             try {
-              parseShallowFile(`${line}\n`);
+              parseShallowFile(`${line}\n`, 40);
               throw new Error('expected throw');
             } catch (err) {
               caught = err;

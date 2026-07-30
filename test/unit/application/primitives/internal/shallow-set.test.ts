@@ -6,8 +6,13 @@ import {
 } from '../../../../../src/application/primitives/internal/shallow-set.js';
 import { shallowFilePath } from '../../../../../src/application/primitives/path-layout.js';
 import { updateShallow } from '../../../../../src/application/primitives/shallow-file.js';
-import type { TsgitError } from '../../../../../src/domain/error.js';
+import {
+  notADirectory,
+  permissionDenied,
+  type TsgitError,
+} from '../../../../../src/domain/error.js';
 import type { ObjectId } from '../../../../../src/domain/objects/index.js';
+import type { Context } from '../../../../../src/ports/context.js';
 import { buildSeededContext, instrumentedContext } from '../fixtures.js';
 
 const OID_A = 'a'.repeat(40) as ObjectId;
@@ -202,6 +207,103 @@ describe('loadShallowSet / isShallowRepository', () => {
           caught = error;
         }
         expect((caught as TsgitError).data.code).toBe('SHALLOW_FILE_MALFORMED');
+      });
+    });
+  });
+
+  describe('Given a git dir whose path component is not a directory', () => {
+    describe('When both accessors run', () => {
+      it('Then loadShallowSet treats NOT_A_DIRECTORY as absent and returns an empty set', async () => {
+        // Arrange
+        const base = await buildSeededContext();
+        const ctx: Context = {
+          ...base,
+          fs: {
+            ...base.fs,
+            readUtf8: async () => {
+              throw notADirectory(shallowFilePath(base.layout.gitDir));
+            },
+          },
+        };
+        const sut = loadShallowSet;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result.size).toBe(0);
+      });
+
+      it('Then isShallowRepository treats NOT_A_DIRECTORY as absent and returns false', async () => {
+        // Arrange
+        const base = await buildSeededContext();
+        const ctx: Context = {
+          ...base,
+          fs: {
+            ...base.fs,
+            readUtf8: async () => {
+              throw notADirectory(shallowFilePath(base.layout.gitDir));
+            },
+          },
+        };
+        const sut = isShallowRepository;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a read that fails with a non-absence error', () => {
+    describe('When loadShallowSet runs', () => {
+      it('Then the foreign error propagates unchanged', async () => {
+        // Arrange
+        const base = await buildSeededContext();
+        const ctx: Context = {
+          ...base,
+          fs: {
+            ...base.fs,
+            readUtf8: async () => {
+              throw permissionDenied(shallowFilePath(base.layout.gitDir));
+            },
+          },
+        };
+        const sut = loadShallowSet;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx);
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+      });
+    });
+  });
+
+  describe('Given a malformed .git/shallow file later rewritten well-formed', () => {
+    describe('When loadShallowSet runs again without an explicit invalidation', () => {
+      it('Then the rejection was not memoised and the new set is returned', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const path = shallowFilePath(ctx.layout.gitDir);
+        await ctx.fs.writeUtf8(path, 'not-an-oid\n');
+        const sut = loadShallowSet;
+        await sut(ctx).catch(() => undefined);
+        await ctx.fs.writeUtf8(path, `${OID_A}\n`);
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result.has(OID_A)).toBe(true);
       });
     });
   });

@@ -3,9 +3,10 @@
  *
  * When the server emits `shallow <oid>` / `unshallow <oid>` pkt-lines in
  * response to a `deepen <N>` request, the client persists the resulting
- * cut-point set under `.git/shallow`. A subsequent `walkCommits` with
- * `shallow: <readShallow result>` terminates parent traversal at every
- * boundary.
+ * cut-point set under `.git/shallow`. Commit traversals load this set
+ * automatically (per-`Context`, via `internal/shallow-set.ts`) and mask a
+ * boundary commit's parents; `readShallow` is the raw-file accessor for
+ * callers that need the set itself.
  *
  * @writes
  *   surface: shallowFile
@@ -21,20 +22,23 @@
  * Mirrors `atomicWriteRef`'s lock-rename pattern without taking a
  * RefName (the shallow file is not a ref).
  */
-import { TsgitError } from '../../domain/error.js';
+import { shallowFileMalformed, TsgitError } from '../../domain/error.js';
 import type { ObjectId } from '../../domain/objects/object-id.js';
 import type { Context } from '../../ports/context.js';
-import { parseShallowFile } from './internal/parse-shallow.js';
-import { invalidateShallowSet } from './internal/shallow-set.js';
+import { MAX_SHALLOW_ENTRIES, parseShallowFile } from './internal/parse-shallow.js';
+import { invalidateShallowSet, isAbsentShallowFile } from './internal/shallow-set.js';
 import { commonGitDir, shallowFilePath, shallowLockPath } from './path-layout.js';
+import { REASON_SHALLOW_TOO_MANY_ENTRIES } from './validators.js';
 
 const isFileNotFound = (error: unknown): boolean =>
   error instanceof TsgitError && error.data.code === 'FILE_NOT_FOUND';
 
 /**
- * Read `.git/shallow`. Returns an empty set when the file does not exist.
- * Parses each line with git's strict grammar (`internal/parse-shallow.ts`):
- * malformed content — a blank line, a short/non-hex 40-char prefix, or more
+ * Read `.git/shallow`. Returns an empty set when the file is absent (same
+ * absence predicate as the per-`Context` memo, so the two readers of this
+ * file can never disagree). Parses each line with git's strict grammar
+ * (`internal/parse-shallow.ts`) at the repository's oid hex length:
+ * malformed content — a blank line, a short/non-hex oid prefix, or more
  * than `MAX_SHALLOW_ENTRIES` lines — throws `SHALLOW_FILE_MALFORMED` rather
  * than being silently skipped. A shallow set is trusted repository state;
  * reachability answers produced by a walk are relative to it.
@@ -44,10 +48,10 @@ export const readShallow = async (ctx: Context): Promise<ReadonlySet<ObjectId>> 
   try {
     raw = await ctx.fs.readUtf8(shallowFilePath(commonGitDir(ctx)));
   } catch (err) {
-    if (isFileNotFound(err)) return new Set();
+    if (isAbsentShallowFile(err)) return new Set();
     throw err;
   }
-  return new Set(parseShallowFile(raw));
+  return new Set(parseShallowFile(raw, ctx.hashConfig.hexLength));
 };
 
 interface ShallowUpdate {
@@ -58,12 +62,18 @@ interface ShallowUpdate {
 /**
  * Apply a set of shallow / unshallow updates to `.git/shallow`. Writes
  * atomically via lock-rename; deletes the file when the resulting set is
- * empty.
+ * empty. Refuses (`SHALLOW_FILE_MALFORMED`) when the resulting set would
+ * exceed `MAX_SHALLOW_ENTRIES`: the write side enforces the same bound as
+ * the reader, so a hostile server cannot persist a file every later read
+ * would refuse — the refusal fires here, before repository state changes.
  */
 export const updateShallow = async (ctx: Context, updates: ShallowUpdate): Promise<void> => {
   const current = new Set(await readShallow(ctx));
   for (const id of updates.shallow) current.add(id);
   for (const id of updates.unshallow) current.delete(id);
+  if (current.size > MAX_SHALLOW_ENTRIES) {
+    throw shallowFileMalformed(REASON_SHALLOW_TOO_MANY_ENTRIES, current.size);
+  }
 
   const path = shallowFilePath(commonGitDir(ctx));
   if (current.size === 0) {

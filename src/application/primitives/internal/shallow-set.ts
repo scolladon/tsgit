@@ -29,7 +29,15 @@ const EMPTY_SHALLOW_STATE: ShallowState = { present: false, set: new Set() };
 
 const shallowCache = new WeakMap<Context, Promise<ShallowState>>();
 
-function isAbsentShallowFile(error: unknown): boolean {
+/**
+ * Shared absence predicate for `.git/shallow` — used by this memo AND by
+ * `shallow-file.ts`'s `readShallow`, so the two readers of the file agree
+ * on what "absent" means. `NOT_A_DIRECTORY` counts as absent for the same
+ * reason as `internal/loose-oid-cache.ts`'s fanout probe: a `Context`
+ * whose git dir does not exist at all is routine in unit tests and must
+ * not make every read throw.
+ */
+export function isAbsentShallowFile(error: unknown): boolean {
   return (
     error instanceof TsgitError &&
     (error.data.code === 'FILE_NOT_FOUND' || error.data.code === 'NOT_A_DIRECTORY')
@@ -44,19 +52,22 @@ async function loadStateUncached(ctx: Context): Promise<ShallowState> {
     if (isAbsentShallowFile(error)) return EMPTY_SHALLOW_STATE;
     throw error;
   }
-  return { present: true, set: new Set(parseShallowFile(raw)) };
+  return { present: true, set: new Set(parseShallowFile(raw, ctx.hashConfig.hexLength)) };
 }
 
 function loadState(ctx: Context): Promise<ShallowState> {
-  let cached = shallowCache.get(ctx);
-  if (cached === undefined) {
-    cached = loadStateUncached(ctx);
-    shallowCache.set(ctx, cached);
-    // Never memoize a rejection: a transient fs failure (or a malformed file
-    // later fixed) must not permanently poison every later read.
-    cached.catch(() => shallowCache.delete(ctx));
-  }
-  return cached;
+  const existing = shallowCache.get(ctx);
+  if (existing !== undefined) return existing;
+  const created = loadStateUncached(ctx);
+  shallowCache.set(ctx, created);
+  // Never memoize a rejection: a transient fs failure (or a malformed file
+  // later fixed) must not permanently poison every later read. Only evict
+  // our own entry — an invalidate-then-reload interleaving may have stored
+  // a fresh promise this rejection must not tear down.
+  created.catch(() => {
+    if (shallowCache.get(ctx) === created) shallowCache.delete(ctx);
+  });
+  return created;
 }
 
 /** The repository's shallow-boundary oids, loaded once per `Context`. */

@@ -91605,6 +91605,54 @@
 							"flags": {
 								"isReadonly": true
 							},
+							"comment": {
+								"summary": [
+									{
+										"kind": "text",
+										"text": "The commit's data with shallow-boundary parents masked (a boundary\ncommit reports "
+									},
+									{
+										"kind": "code",
+										"text": "`parents: []`"
+									},
+									{
+										"kind": "text",
+										"text": ", as in git). For a masked commit "
+									},
+									{
+										"kind": "code",
+										"text": "`id`"
+									},
+									{
+										"kind": "text",
+										"text": " is\nthe true oid while "
+									},
+									{
+										"kind": "code",
+										"text": "`commit`"
+									},
+									{
+										"kind": "text",
+										"text": " no longer hashes to it — re-read through\n"
+									},
+									{
+										"kind": "code",
+										"text": "`readObject`"
+									},
+									{
+										"kind": "text",
+										"text": "/"
+									},
+									{
+										"kind": "code",
+										"text": "`catFile`"
+									},
+									{
+										"kind": "text",
+										"text": " before re-serialising; never write this back."
+									}
+								]
+							},
 							"type": {
 								"type": "reference",
 								"target": 3434,
@@ -124347,7 +124395,15 @@
 									},
 									{
 										"kind": "text",
-										"text": ". Returns an empty set when the file does not exist.\nParses each line with git's strict grammar ("
+										"text": ". Returns an empty set when the file is absent (same\nabsence predicate as the per-"
+									},
+									{
+										"kind": "code",
+										"text": "`Context`"
+									},
+									{
+										"kind": "text",
+										"text": " memo, so the two readers of this\nfile can never disagree). Parses each line with git's strict grammar\n("
 									},
 									{
 										"kind": "code",
@@ -124355,7 +124411,7 @@
 									},
 									{
 										"kind": "text",
-										"text": "):\nmalformed content — a blank line, a short/non-hex 40-char prefix, or more\nthan "
+										"text": ") at the repository's oid hex length:\nmalformed content — a blank line, a short/non-hex oid prefix, or more\nthan "
 									},
 									{
 										"kind": "code",
@@ -131456,7 +131512,23 @@
 									},
 									{
 										"kind": "text",
-										"text": ". Writes\natomically via lock-rename; deletes the file when the resulting set is\nempty."
+										"text": ". Writes\natomically via lock-rename; deletes the file when the resulting set is\nempty. Refuses ("
+									},
+									{
+										"kind": "code",
+										"text": "`SHALLOW_FILE_MALFORMED`"
+									},
+									{
+										"kind": "text",
+										"text": ") when the resulting set would\nexceed "
+									},
+									{
+										"kind": "code",
+										"text": "`MAX_SHALLOW_ENTRIES`"
+									},
+									{
+										"kind": "text",
+										"text": ": the write side enforces the same bound as\nthe reader, so a hostile server cannot persist a file every later read\nwould refuse — the refusal fires here, before repository state changes."
 									}
 								]
 							},

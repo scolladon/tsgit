@@ -46,6 +46,21 @@ export const REASON_EXTRA_HEADER_INJECTION =
   'extraHeader value contains header-boundary chars' as const;
 export const REASON_EXTRA_HEADER_KEY_INVALID =
   'extraHeader key contains forbidden characters' as const;
+export const REASON_PARENT_INVALID = 'parent is not a well-formed object id' as const;
+
+/* ──────────────── rebase ──────────────── */
+
+export const REASON_SKIP_TARGET_PARENTLESS =
+  'cannot skip: the stopped commit has no parent' as const;
+
+const PARENT_OID_RE = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+
+/** Last-gate parent check before commit serialisation: `ObjectId` is a branded
+ *  string, so a single bad cast upstream would otherwise flow a non-oid (or
+ *  `undefined`) verbatim into a `parent <x>` header. */
+export function isMalformedParentOid(parent: string | undefined): boolean {
+  return parent === undefined || !PARENT_OID_RE.test(parent);
+}
 
 export function messageContainsNul(message: string): boolean {
   return message.includes('\0');

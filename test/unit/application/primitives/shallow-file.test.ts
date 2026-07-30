@@ -11,10 +11,15 @@
 import { describe, expect, it } from 'vitest';
 
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
+import { MAX_SHALLOW_ENTRIES } from '../../../../src/application/primitives/internal/parse-shallow.js';
 import { readShallow, updateShallow } from '../../../../src/application/primitives/shallow-file.js';
-import { REASON_SHALLOW_BAD_LINE } from '../../../../src/application/primitives/validators.js';
-import { TsgitError } from '../../../../src/domain/index.js';
+import {
+  REASON_SHALLOW_BAD_LINE,
+  REASON_SHALLOW_TOO_MANY_ENTRIES,
+} from '../../../../src/application/primitives/validators.js';
+import { notADirectory, TsgitError } from '../../../../src/domain/index.js';
 import { ObjectId } from '../../../../src/domain/objects/object-id.js';
+import type { Context } from '../../../../src/ports/context.js';
 
 const expectMalformedAt = async (raw: string, lineNumber: number): Promise<void> => {
   const ctx = createMemoryContext();
@@ -471,6 +476,149 @@ describe('shallow-file', () => {
           const written = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/shallow`);
           expect(written).toBe(`${OID_A}\n`);
         });
+      });
+    });
+
+    describe('Given an update whose resulting set would exceed the entry cap', () => {
+      describe('When updateShallow runs', () => {
+        it('Then refuses before writing and leaves repository state untouched', async () => {
+          // Arrange — the write side enforces the reader bound, so a hostile
+          // server cannot persist a file every later read would refuse.
+          const ctx = createMemoryContext();
+          await ctx.fs.mkdir(ctx.layout.gitDir);
+          const overCap = Array.from(
+            { length: MAX_SHALLOW_ENTRIES + 1 },
+            (_, i) => i.toString(16).padStart(40, '0') as ObjectId,
+          );
+
+          // Act
+          let caught: unknown;
+          try {
+            await updateShallow(ctx, { shallow: overCap, unshallow: [] });
+            expect.unreachable();
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          if (!(caught instanceof TsgitError)) throw caught;
+          expect(caught.data.code).toBe('SHALLOW_FILE_MALFORMED');
+          expect(caught.data.code === 'SHALLOW_FILE_MALFORMED' && caught.data.reason).toBe(
+            REASON_SHALLOW_TOO_MANY_ENTRIES,
+          );
+          expect(caught.data.code === 'SHALLOW_FILE_MALFORMED' && caught.data.lineNumber).toBe(
+            MAX_SHALLOW_ENTRIES + 1,
+          );
+          expect(await ctx.fs.exists(`${ctx.layout.gitDir}/shallow`)).toBe(false);
+        });
+
+        it('Then a resulting set exactly at the cap is written', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await ctx.fs.mkdir(ctx.layout.gitDir);
+          const atCap = Array.from(
+            { length: MAX_SHALLOW_ENTRIES },
+            (_, i) => i.toString(16).padStart(40, '0') as ObjectId,
+          );
+
+          // Act
+          await updateShallow(ctx, { shallow: atCap, unshallow: [] });
+
+          // Assert
+          const written = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/shallow`);
+          expect(written.length).toBe(MAX_SHALLOW_ENTRIES * 41);
+        });
+      });
+    });
+  });
+
+  describe('sha256 repositories', () => {
+    describe('Given a sha256 repository with a 64-hex shallow line', () => {
+      describe('When read', () => {
+        it('Then returns the full 64-hex oid untruncated', async () => {
+          // Arrange
+          const ctx = createMemoryContext({ algorithm: 'sha256' });
+          await ctx.fs.mkdir(ctx.layout.gitDir);
+          const oid64 = ObjectId.from('d'.repeat(64));
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/shallow`, `${oid64}\n`);
+
+          // Act
+          const result = await readShallow(ctx);
+
+          // Assert
+          expect(result.has(oid64)).toBe(true);
+          expect(result.size).toBe(1);
+        });
+      });
+
+      describe('When round-tripped through updateShallow', () => {
+        it('Then the re-read set carries the full 64-hex oid', async () => {
+          // Arrange
+          const ctx = createMemoryContext({ algorithm: 'sha256' });
+          await ctx.fs.mkdir(ctx.layout.gitDir);
+          const oid64 = ObjectId.from('e'.repeat(64));
+
+          // Act
+          await updateShallow(ctx, { shallow: [oid64], unshallow: [] });
+          const result = await readShallow(ctx);
+
+          // Assert
+          expect(result.has(oid64)).toBe(true);
+          expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/shallow`)).toBe(`${oid64}\n`);
+        });
+      });
+    });
+
+    describe('Given a sha256 repository with a 40-hex shallow line', () => {
+      describe('When read', () => {
+        it('Then refuses: the line is short of the repository oid length', async () => {
+          // Arrange
+          const ctx = createMemoryContext({ algorithm: 'sha256' });
+          await ctx.fs.mkdir(ctx.layout.gitDir);
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/shallow`, `${OID_A}\n`);
+
+          // Act
+          let caught: unknown;
+          try {
+            await readShallow(ctx);
+            expect.unreachable();
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          if (!(caught instanceof TsgitError)) throw caught;
+          expect(caught.data.code).toBe('SHALLOW_FILE_MALFORMED');
+          expect(caught.data.code === 'SHALLOW_FILE_MALFORMED' && caught.data.reason).toBe(
+            REASON_SHALLOW_BAD_LINE,
+          );
+        });
+      });
+    });
+  });
+
+  describe('Given a git dir whose path component is not a directory', () => {
+    describe('When read', () => {
+      it('Then NOT_A_DIRECTORY counts as absent — same predicate as the per-Context memo', async () => {
+        // Arrange
+        const base = createMemoryContext();
+        const ctx: Context = {
+          ...base,
+          fs: {
+            ...base.fs,
+            readUtf8: async () => {
+              throw notADirectory(`${base.layout.gitDir}/shallow`);
+            },
+          },
+        };
+
+        // Act
+        const result = await readShallow(ctx);
+
+        // Assert
+        expect(result.size).toBe(0);
       });
     });
   });

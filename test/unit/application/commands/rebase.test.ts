@@ -14,13 +14,15 @@ import {
   rebaseSkip,
 } from '../../../../src/application/commands/rebase.js';
 import { createCommit } from '../../../../src/application/primitives/create-commit.js';
+import { invalidateShallowSet } from '../../../../src/application/primitives/internal/shallow-set.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
 import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
 import { resolveRef } from '../../../../src/application/primitives/resolve-ref.js';
 import { updateRef } from '../../../../src/application/primitives/update-ref.js';
+import { REASON_SKIP_TARGET_PARENTLESS } from '../../../../src/application/primitives/validators.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../src/application/primitives/write-tree.js';
-import type { TsgitError } from '../../../../src/domain/error.js';
+import { TsgitError } from '../../../../src/domain/error.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import type {
   AuthorIdentity,
@@ -2292,6 +2294,61 @@ describe('rebase — hooks', () => {
         const stdin = postRewrite[0]?.stdin ?? '';
         expect(stdin.startsWith(`${t1} `)).toBe(true);
         expect(stdin.split('\n').filter(Boolean)).toHaveLength(3); // t1 + resolved-t2 + reworded-t3
+      });
+    });
+  });
+});
+
+describe('rebase at a shallow boundary', () => {
+  describe('Given an edit stop whose amend commit is a masked shallow boundary', () => {
+    describe('When skip is called', () => {
+      it('Then refuses INVALID_SEQUENCER_TODO: there is no parent to return to', async () => {
+        // Arrange — masking the edit'd commit makes it parentless, so "drop
+        // the commit and move HEAD to its parent" has no destination.
+        const { ctx, base, c1 } = await seedLinear();
+        await rebaseRun(ctx, { upstream: base, interactive: [{ action: 'edit', oid: c1 }] });
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/shallow`, `${c1}\n`);
+        invalidateShallowSet(ctx);
+
+        // Act
+        let caught: unknown;
+        try {
+          await rebaseSkip(ctx);
+          expect.unreachable();
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        if (!(caught instanceof TsgitError)) throw caught;
+        expect(caught.data.code).toBe('INVALID_SEQUENCER_TODO');
+        expect(caught.data.code === 'INVALID_SEQUENCER_TODO' && caught.data.reason).toBe(
+          REASON_SKIP_TARGET_PARENTLESS,
+        );
+      });
+    });
+
+    describe('When the working tree is amended then continued', () => {
+      it('Then the replacement commit is a root commit — the masked parent list carries over', async () => {
+        // Arrange — same masking; the amended replacement inherits the grafted
+        // (empty) parent list instead of writing a phantom parent header.
+        const { ctx, base, c1 } = await seedLinear();
+        await rebaseRun(ctx, { upstream: base, interactive: [{ action: 'edit', oid: c1 }] });
+        await ctx.fs.writeUtf8(work(ctx, 'extra.txt'), 'extra\n');
+        await add(ctx, ['extra.txt']);
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/shallow`, `${c1}\n`);
+        invalidateShallowSet(ctx);
+
+        // Act
+        const result = await rebaseContinue(ctx);
+
+        // Assert
+        expect(result.kind).toBe('rebased');
+        const tip = await mainTipOid(ctx);
+        expect(tip).not.toBe(c1);
+        const tipData = await readCommit(ctx, tip);
+        expect(tipData.parents).toEqual([]);
       });
     });
   });

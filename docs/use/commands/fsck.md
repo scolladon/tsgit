@@ -100,6 +100,11 @@ findings.filter(f => f.type === 'tagged')
 
 ## Behaviour
 
+- **Verdicts are relative to the shallow set.** In a shallow repository a
+  boundary commit's parents are masked (as in git), so a "no missing objects"
+  verdict does not cover ancestors beyond the `.git/shallow` cut — they are
+  out of scope by construction, and a boundary commit surfaces as a `root`
+  finding like any other parentless commit.
 - **Non-repository is the only refusal.** `repo.fsck` calls `assertRepository`
   (not `assertOperationalRepository`): a broken `[core]` config or an
   unborn/dangling HEAD symref is tolerated, because fsck must run on exactly

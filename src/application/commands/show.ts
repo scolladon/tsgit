@@ -48,6 +48,12 @@ export interface ShowTreeEntry {
 export interface ShowCommitResult<D = TreeDiff> {
   readonly kind: 'commit';
   readonly id: ObjectId;
+  /**
+   * The commit's data with shallow-boundary parents masked (a boundary
+   * commit reports `parents: []`, as in git). For a masked commit `id` is
+   * the true oid while `commit` no longer hashes to it — re-read through
+   * `readObject`/`catFile` before re-serialising; never write this back.
+   */
   readonly commit: CommitData;
   /** Diff against the single parent (root: against the empty tree). Absent for merges. */
   readonly patch?: D;

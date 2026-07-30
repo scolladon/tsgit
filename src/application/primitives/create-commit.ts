@@ -11,16 +11,27 @@ import {
   hasHeaderInjectionChars,
   hasSignatureInjectionChars,
   isInvalidExtraHeaderKey,
+  isMalformedParentOid,
   messageContainsNul,
   REASON_EXTRA_HEADER_INJECTION,
   REASON_EXTRA_HEADER_KEY_INVALID,
   REASON_GPG_SIGNATURE_INJECTION,
   REASON_MESSAGE_CONTAINS_NUL,
   REASON_MESSAGE_EXCEEDS_MAX,
+  REASON_PARENT_INVALID,
 } from './validators.js';
 import { writeObject } from './write-object.js';
 
+/** `ObjectId` is a branded string, so a bad upstream cast could smuggle any
+ *  value into a `parent <x>` header — this is the last gate before bytes. */
+function assertWellFormedParents(parents: ReadonlyArray<ObjectId>): void {
+  for (const parent of parents) {
+    if (isMalformedParentOid(parent)) throw invalidCommit(REASON_PARENT_INVALID);
+  }
+}
+
 export async function createCommit(ctx: Context, input: CreateCommitInput): Promise<ObjectId> {
+  assertWellFormedParents(input.parents);
   if (messageContainsNul(input.message)) {
     throw invalidCommit(REASON_MESSAGE_CONTAINS_NUL);
   }
