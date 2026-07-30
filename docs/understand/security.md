@@ -87,6 +87,7 @@ Every object read through `readObject` is hashed and verified against the reques
 | `TREE_DEPTH_EXCEEDED` | 4096 | Recursive tree walks. |
 | `TREE_ENTRY_LIMIT_EXCEEDED` | configured | Tree parsers. |
 | `DELTA_CHAIN_TOO_DEEP` | configured | Pack delta resolution. |
+| `SHALLOW_FILE_MALFORMED` | 500 000 entries (`MAX_SHALLOW_ENTRIES`) | `.git/shallow` reader. |
 
 ## Glob matcher — ReDoS protection
 

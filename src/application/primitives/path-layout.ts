@@ -52,6 +52,10 @@ export const reflogPath = (gitDir: string, ref: RefName): string => `${gitDir}/l
 
 export const sparseCheckoutPath = (gitDir: string): string => `${gitDir}/info/sparse-checkout`;
 
+export const shallowFilePath = (gitDir: string): string => `${gitDir}/shallow`;
+
+export const shallowLockPath = (gitDir: string): string => `${gitDir}/shallow.lock`;
+
 /** The single-file commit-graph. Absent when the repo has no commit-graph or uses the chain form. */
 export const commitGraphPath = (gitDir: string): string => `${gitDir}/objects/info/commit-graph`;
 

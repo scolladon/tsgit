@@ -31,6 +31,11 @@ export function exceedsMaxWalkSeeds(from: ReadonlyArray<unknown>): boolean {
   return from.length > MAX_WALK_SEEDS;
 }
 
+/* ──────────────── .git/shallow grammar ──────────────── */
+
+export const REASON_SHALLOW_BAD_LINE = 'bad shallow line' as const;
+export const REASON_SHALLOW_TOO_MANY_ENTRIES = 'shallow entry count exceeds bound' as const;
+
 /* ──────────────── createCommit ──────────────── */
 
 export const REASON_MESSAGE_CONTAINS_NUL = 'message contains NUL' as const;

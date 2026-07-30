@@ -12,8 +12,30 @@ import { describe, expect, it } from 'vitest';
 
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { readShallow, updateShallow } from '../../../../src/application/primitives/shallow-file.js';
+import { REASON_SHALLOW_BAD_LINE } from '../../../../src/application/primitives/validators.js';
 import { TsgitError } from '../../../../src/domain/index.js';
 import { ObjectId } from '../../../../src/domain/objects/object-id.js';
+
+const expectMalformedAt = async (raw: string, lineNumber: number): Promise<void> => {
+  const ctx = createMemoryContext();
+  await ctx.fs.mkdir(ctx.layout.gitDir);
+  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/shallow`, raw);
+
+  // Act
+  try {
+    await readShallow(ctx);
+    throw new Error('expected throw');
+  } catch (err) {
+    // Assert
+    expect(err).toBeInstanceOf(TsgitError);
+    if (!(err instanceof TsgitError)) throw err;
+    expect(err.data.code).toBe('SHALLOW_FILE_MALFORMED');
+    expect(err.data.code === 'SHALLOW_FILE_MALFORMED' && err.data.reason).toBe(
+      REASON_SHALLOW_BAD_LINE,
+    );
+    expect(err.data.code === 'SHALLOW_FILE_MALFORMED' && err.data.lineNumber).toBe(lineNumber);
+  }
+};
 
 const OID_A = ObjectId.from('a'.repeat(40));
 const OID_B = ObjectId.from('b'.repeat(40));
@@ -58,51 +80,43 @@ describe('shallow-file', () => {
 
     describe('Given a .git/shallow with only a trailing newline', () => {
       describe('When read', () => {
-        it('Then returns an empty Set', async () => {
-          // Arrange
-          const ctx = createMemoryContext();
-          await ctx.fs.mkdir(ctx.layout.gitDir);
-          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/shallow`, '\n');
-
-          // Act
-          const result = await readShallow(ctx);
-
-          // Assert
-          expect(result.size).toBe(0);
+        it('Then throws SHALLOW_FILE_MALFORMED at line 1', async () => {
+          // Arrange & Act & Assert — a lone LF is one blank line; git refuses it.
+          await expectMalformedAt('\n', 1);
         });
       });
     });
 
     describe('Given a .git/shallow with whitespace between oids', () => {
       describe('When read', () => {
-        it('Then ignores blank lines', async () => {
-          // Arrange
-          const ctx = createMemoryContext();
-          await ctx.fs.mkdir(ctx.layout.gitDir);
-          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/shallow`, `${OID_A}\n\n${OID_B}\n`);
-
-          // Act
-          const result = await readShallow(ctx);
-
-          // Assert
-          expect(result.size).toBe(2);
+        it('Then throws SHALLOW_FILE_MALFORMED at line 2', async () => {
+          // Arrange & Act & Assert — an embedded blank line is refused, not skipped.
+          await expectMalformedAt(`${OID_A}\n\n${OID_B}\n`, 2);
         });
       });
     });
 
     describe('Given a .git/shallow with malformed lines (non-oid)', () => {
       describe('When read', () => {
-        it('Then skips them silently', async () => {
-          // Arrange — kill the `if (!isShallowOid(trimmed)) continue` survivor.
+        it('Then throws SHALLOW_FILE_MALFORMED at line 1', async () => {
+          // Arrange & Act & Assert — a non-hex line is refused, not skipped.
+          await expectMalformedAt(`not-an-oid\n${OID_A}\nzzz\n`, 1);
+        });
+      });
+    });
+
+    describe('Given a .git/shallow oid with no corresponding object in the store', () => {
+      describe('When read', () => {
+        it('Then the oid is still returned (readShallow does no existence check)', async () => {
+          // Arrange
           const ctx = createMemoryContext();
           await ctx.fs.mkdir(ctx.layout.gitDir);
-          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/shallow`, `not-an-oid\n${OID_A}\nzzz\n`);
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/shallow`, `${OID_A}\n`);
 
           // Act
           const result = await readShallow(ctx);
 
           // Assert
-          expect(result.size).toBe(1);
           expect(result.has(OID_A)).toBe(true);
         });
       });
@@ -173,20 +187,10 @@ describe('shallow-file', () => {
 
     describe('Given a .git/shallow with a leading-space oid line', () => {
       describe('When read', () => {
-        it('Then the trimmed oid is captured (kills the line.trim() → line mutant)', async () => {
-          // Arrange — without `trim()`, the regex `^[0-9a-f]{40}$` fails on
-          // `"  ${OID_A}  "` because of the surrounding spaces. The original
-          // code trims, the mutant doesn't — the difference is observable.
-          const ctx = createMemoryContext();
-          await ctx.fs.mkdir(ctx.layout.gitDir);
-          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/shallow`, `  ${OID_A}  \n`);
-
-          // Act
-          const result = await readShallow(ctx);
-
-          // Assert
-          expect(result.size).toBe(1);
-          expect(result.has(OID_A)).toBe(true);
+        it('Then throws SHALLOW_FILE_MALFORMED at line 1 (git does not trim)', async () => {
+          // Arrange & Act & Assert — a leading space shifts the 40-hex prefix
+          // window, so it no longer matches; canonical git does not trim lines.
+          await expectMalformedAt(`  ${OID_A}  \n`, 1);
         });
       });
     });

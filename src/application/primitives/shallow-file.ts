@@ -23,45 +23,31 @@
  */
 import { TsgitError } from '../../domain/error.js';
 import type { ObjectId } from '../../domain/objects/object-id.js';
-import { ObjectId as OID } from '../../domain/objects/object-id.js';
 import type { Context } from '../../ports/context.js';
-import { commonGitDir } from './path-layout.js';
-
-const SHALLOW_FILE = 'shallow';
-const SHALLOW_LOCK = 'shallow.lock';
-
-const shallowPath = (ctx: Context): string => `${commonGitDir(ctx)}/${SHALLOW_FILE}`;
-const shallowLockPath = (ctx: Context): string => `${commonGitDir(ctx)}/${SHALLOW_LOCK}`;
+import { parseShallowFile } from './internal/parse-shallow.js';
+import { commonGitDir, shallowFilePath, shallowLockPath } from './path-layout.js';
 
 const isFileNotFound = (error: unknown): boolean =>
   error instanceof TsgitError && error.data.code === 'FILE_NOT_FOUND';
 
 /**
- * Read `.git/shallow`. Returns an empty set when the file does not exist or
- * contains no oids. Malformed lines are tolerated (skipped) — canonical
- * git behaves the same; a corrupted shallow file should not block a fetch.
+ * Read `.git/shallow`. Returns an empty set when the file does not exist.
+ * Parses each line with git's strict grammar (`internal/parse-shallow.ts`):
+ * malformed content — a blank line, a short/non-hex 40-char prefix, or more
+ * than `MAX_SHALLOW_ENTRIES` lines — throws `SHALLOW_FILE_MALFORMED` rather
+ * than being silently skipped. A shallow set is trusted repository state;
+ * reachability answers produced by a walk are relative to it.
  */
 export const readShallow = async (ctx: Context): Promise<ReadonlySet<ObjectId>> => {
   let raw: string;
   try {
-    raw = await ctx.fs.readUtf8(shallowPath(ctx));
+    raw = await ctx.fs.readUtf8(shallowFilePath(commonGitDir(ctx)));
   } catch (err) {
     if (isFileNotFound(err)) return new Set();
     throw err;
   }
-  const out = new Set<ObjectId>();
-  for (const line of raw.split('\n')) {
-    const trimmed = line.trim();
-    // Stryker disable next-line ConditionalExpression: equivalent — dropping this guard is observable-equivalent; the next guard `!isShallowOid(trimmed)` rejects the empty string anyway since `SHA_ANY_RE` requires 40 hex chars. Kept as a micro-optimization skipping the regex test for blank lines.
-    if (trimmed.length === 0) continue;
-    if (!isShallowOid(trimmed)) continue;
-    out.add(OID.from(trimmed));
-  }
-  return out;
+  return new Set(parseShallowFile(raw));
 };
-
-const SHA_ANY_RE = /^[0-9a-f]{40}([0-9a-f]{24})?$/i;
-const isShallowOid = (s: string): boolean => SHA_ANY_RE.test(s);
 
 interface ShallowUpdate {
   readonly shallow: ReadonlyArray<ObjectId>;
@@ -78,7 +64,7 @@ export const updateShallow = async (ctx: Context, updates: ShallowUpdate): Promi
   for (const id of updates.shallow) current.add(id);
   for (const id of updates.unshallow) current.delete(id);
 
-  const path = shallowPath(ctx);
+  const path = shallowFilePath(commonGitDir(ctx));
   if (current.size === 0) {
     await deleteIfPresent(ctx, path);
     return;
@@ -90,7 +76,7 @@ export const updateShallow = async (ctx: Context, updates: ShallowUpdate): Promi
 };
 
 const atomicWrite = async (ctx: Context, path: string, content: Uint8Array): Promise<void> => {
-  const lockPath = shallowLockPath(ctx);
+  const lockPath = shallowLockPath(commonGitDir(ctx));
   // writeExclusive rejects with FILE_EXISTS if the lock is already held —
   // a concurrent fetch trying to update shallow surfaces as a real error.
   await ctx.fs.writeExclusive(lockPath, content);
