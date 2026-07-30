@@ -46,6 +46,7 @@ interface FetchUpdate {
 - **No-op short-circuit:** when every wanted object already exists locally, `fetch` skips the pack round-trip entirely — no `fetch`/upload-pack exchange, no packfile written.
 - **Atomic ref updates:** all ref updates land under a single lock or none do.
 - **Reflog:** updates land in `.git/logs/` via the standard `recordRefUpdate` writer.
+- **Shallow boundaries:** after a shallow fetch, commit traversals (e.g. [`walkCommits`](../primitives/walk-commits.md)) automatically stop at the recorded `.git/shallow` boundaries — no caller action needed.
 
 ## Examples
 
@@ -70,6 +71,7 @@ console.log(result.prunedRefs);
 - `NETWORK_ERROR` — transport failure (reason varies; SSH surfaces the `ssh` child's exit code).
 - `REFSPEC_INVALID` — refspec syntactically invalid.
 - `REMOTE_FILTER_UNSUPPORTED` — the repo's stored `partialclonefilter` can't be re-applied because the server's capabilities lack `filter` support (v1 capability list or v2 `fetch` command's sub-features).
+- `SHALLOW_FILE_MALFORMED` — persisting the server's `shallow`/`unshallow` lines would exceed the entry cap or include a foreign-width oid; refuses before any repository state changes (refs unmoved).
 
 ## See also
 

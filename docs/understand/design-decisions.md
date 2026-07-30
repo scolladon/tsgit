@@ -213,6 +213,16 @@ ADRs are ordered chronologically in the `adr/` folder. This page groups them by 
 - [ADR-441 — OpenSSH-only argv, variant detection deferred](../adr/441-openssh-only-argv-variant-detection-deferred.md) — a documented faithfulness deferral (ADR-226): PuTTY/plink/tortoiseplink get OpenSSH-shaped flags for now
 - Design: [`docs/design/ssh-transport.md`](../design/ssh-transport.md)
 
+## Shallow-boundary commit walk (grafted parents)
+
+- [ADR-542 — Shallow masking is a grafted commit-read tier](../adr/542-grafted-commit-read-tier.md) — masking applies at the commit-read tier (`readCommit`/`readCommitData`), not as a walk-time filter; `cat-file` stays raw
+- [ADR-543 — Walk `shallow` option: auto-load with caller-override semantics](../adr/543-walk-shallow-option-override-semantics.md) — omitted ⇒ loads `.git/shallow`; explicit (including `new Set()`) ⇒ the caller's set wins
+- [ADR-544 — Commit-graph reader disabled by shallow-file presence](../adr/544-commit-graph-disabled-on-shallow-presence.md) — matches git's `commit_graph_compatible` gate; file presence, not set non-emptiness, disables the graph
+- [ADR-545 — `.git/shallow` parser: strict grammar plus entry cap](../adr/545-strict-shallow-parser-with-entry-cap.md) — git-faithful strictness (`SHALLOW_FILE_MALFORMED`) plus a `MAX_SHALLOW_ENTRIES` DoS cap
+- [ADR-546 — Per-Context shallow-set memo](../adr/546-per-context-shallow-set-memo.md) — `WeakMap` memo with `invalidateShallowSet`, mirroring the loose-object fanout cache
+- [ADR-547 — Masked commits keep their oid](../adr/547-masked-commit-in-place-shape.md) — graft in place; the `id ≡ hash(data)` desync is confined to masked commits and documented
+- Design: [`docs/design/shallow-boundary-commit-walk.md`](../design/shallow-boundary-commit-walk.md)
+
 ## Reading order tips
 
 - **Onboarding to the codebase?** Read ADR-001, ADR-004, ADR-091 in order. They set the architectural ground rules.
