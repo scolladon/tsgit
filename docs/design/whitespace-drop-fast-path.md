@@ -1337,9 +1337,17 @@ priority over the content sniff on every surface — `numstatBinaryOverride` /
 
 ## Decision candidates
 
-DC-1 … DC-14 are **settled** — see §Settled decisions and ADRs 548–561. The three below are
-raised by ADR-558's rewrite of §D1 and ADR-561's `MAX_DIFF_LINES` requirement, and are the
-user's to settle.
+**All decision candidates are settled.** DC-1 … DC-14 are recorded in §Settled decisions and
+ADRs 548–561. The three below were raised by ADR-558's rewrite of §D1 and ADR-561's
+`MAX_DIFF_LINES` requirement, and are now settled too — each **as recommended**:
+
+| # | outcome | record |
+|---|---|---|
+| DC-15 | **A** — the fold lives in `whitespace.ts`; `digestNormalizedLine` re-expressed as a thin whole-line driver, signature unchanged | ADR-562 |
+| DC-16 | **B** — delete the input-size pre-check; activate `MAX_DIFF_EDIT_DISTANCE` at its existing 10 000; `MAX_DIFF_LINES` stays exported, export-only | ADR-563 |
+| DC-17 | **A** — the `capsExceeded` observation scaffold, deleted by the cap-fix commit | ADR-564 |
+
+The table below is retained as the reasoning behind those three outcomes.
 
 | # | Choice | Alternatives (≤3) | Recommendation | Why |
 |---|---|---|---|---|
