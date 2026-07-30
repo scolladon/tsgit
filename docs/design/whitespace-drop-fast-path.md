@@ -1739,3 +1739,58 @@ Notes the planner needs:
   (`bytesConsumed`), untouched.
 - **Raising `MAX_CONCURRENT_OBJECT_LOADS`** (ADR-553) — a measurement to run *after* the arm
   cost changes, not a design decision to take now.
+
+## Results (measured)
+
+Local go/no-go numbers from this host only (darwin 25.5.0, Node v22.22.3, arm64) — **not**
+the published authority. The published authority is the nightly `bench.yml` artifact
+(§Measurement protocol 3); this section exists so Part 14's after-numbers have a same-host
+before-number to sit next to.
+
+### Whitespace drop-pass diff, before (`main`)
+
+Fixture: `buildWhitespacePairsScratch()` — 2,500 files (~50/directory) committed once, then
+every space doubled and committed again (whitespace-only), built through the library's own
+API into a fresh `mkdtemp` scratch repo, never touching the shared `~/.cache/tsgit-bench`
+fixture. `sut = repo.diff({ from: 'HEAD~1', to: 'HEAD', recursive: true, ignoreWhitespace:
+'all' })`. Two runs, 10 samples each.
+
+| variant | run | min | mean | max |
+|---|---|---|---|---|
+| loose (as committed) | 1 | 257.92 ms | 261.18 ms | 268.74 ms |
+| loose (as committed) | 2 | 256.76 ms | 263.88 ms | 276.35 ms |
+| packed (`git repack -ad`) | 1 | 168.60 ms | 171.27 ms | 172.98 ms |
+| packed (`git repack -ad`) | 2 | 166.62 ms | 169.27 ms | 171.98 ms |
+
+Matches §Pin B's reference numbers (loose 258–271 ms warm, packed 165–176 ms warm) within
+this host's run-to-run spread. Target for Part 14: loose ≤ 130 ms, packed ≤ 100 ms cold.
+
+**After (branch tip): TBD — Part 14.**
+
+### The existing `MEDIUM_FIXTURE` scenario — confirmed non-regression watch, not a predicate measurement
+
+Mean 0.475 ms / 0.476 ms per iteration across two runs (1,000+ samples each) — two orders of
+magnitude below the whitespace-pairs scenario, consistent with never entering
+`isWhitespaceOnlyModify`. Confirmed directly, not just inferred from the timing gap: a
+`vi.spyOn` on `isWhitespaceOnlyModify`, wrapped around this scenario's fixture resolution and
+`sut` call, recorded **zero invocations** across a full run (temporary instrumentation, not
+committed — see the TDD steps above). `changeShouldDrop` returns at `change.type !==
+'modify'` before the predicate is ever reached, because `MEDIUM_FIXTURE`'s `multi` build
+strategy writes 4 brand-new paths on every commit, so `HEAD~1..HEAD` is entirely `add`
+changes.
+
+### The fold micro-bench (`digestNormalizedLine`), before (`main`) — go/no-go for the incremental-fold part
+
+Mean ms/call, two runs, no fixture, no `git`:
+
+| mode | 5,000 short lines (run 1 / run 2) | one 70,000-byte line (run 1 / run 2) |
+|---|---|---|
+| `all` | 0.0959 / 0.0965 | 0.0553 / 0.0529 |
+| `change` | 0.1172 / 0.1187 | 0.0701 / 0.0737 |
+| `at-eol` | 0.1463 / 0.1465 | 0.1136 / 0.1128 |
+| `none` | 0.0899 / 0.0886 | 0.0700 / 0.0702 |
+
+**After (branch tip, once the fold lands): TBD — Part 14.** §Measurement protocol 2a expects
+a win from replacing the native `indexOf(LF)` pass plus a JS fold pass with a single JS pass
+that also finds the terminator, and from removing every per-line allocation; a regression
+here is a design signal, not a tuning task to code around.
