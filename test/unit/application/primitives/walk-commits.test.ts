@@ -918,6 +918,68 @@ describe('walkCommits', () => {
         });
       });
     });
+
+    describe('Given a hand-written .git/shallow file and no shallow option', () => {
+      describe('When walking', () => {
+        it('Then the walk auto-loads the file and stops at the boundary', async () => {
+          // Arrange — linear chain c0 ← c1 ← c2; .git/shallow names c1 directly,
+          // bypassing the shallow-file writer/parser.
+          const ctx = await buildSeededContext();
+          const ids = await linearChain(ctx, 3);
+          const seed = ids[2] as ObjectId;
+          const boundary = ids[1] as ObjectId;
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/shallow`, `${boundary}\n`);
+
+          // Act — no `shallow` option at all.
+          const seen = await collect(walkCommits(ctx, { from: [seed] }));
+
+          // Assert
+          expect(seen.map((c) => c.id)).toEqual([seed, boundary]);
+        });
+      });
+    });
+
+    describe('Given a .git/shallow file and an explicit empty override', () => {
+      describe('When walking', () => {
+        it('Then the caller-supplied empty set wins and the walk is not stopped', async () => {
+          // Arrange — same fixture as the auto-load case, but the caller opts out.
+          const ctx = await buildSeededContext();
+          const ids = await linearChain(ctx, 3);
+          const seed = ids[2] as ObjectId;
+          const boundary = ids[1] as ObjectId;
+          const root = ids[0] as ObjectId;
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/shallow`, `${boundary}\n`);
+
+          // Act
+          const seen = await collect(
+            walkCommits(ctx, { from: [seed], shallow: new Set<ObjectId>() }),
+          );
+
+          // Assert — the escape hatch: repository state is not consulted.
+          expect(seen.map((c) => c.id)).toEqual([seed, boundary, root]);
+        });
+      });
+    });
+
+    describe('Given an auto-loaded shallow boundary', () => {
+      describe('When the boundary commit is yielded', () => {
+        it('Then its reported parents are empty, not just skipped from the frontier', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const ids = await linearChain(ctx, 3);
+          const seed = ids[2] as ObjectId;
+          const boundary = ids[1] as ObjectId;
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/shallow`, `${boundary}\n`);
+
+          // Act
+          const seen = await collect(walkCommits(ctx, { from: [seed] }));
+
+          // Assert — the yielded object is grafted, not merely frontier-skipped.
+          const boundaryCommit = seen.find((c) => c.id === boundary);
+          expect(boundaryCommit?.data.parents).toEqual([]);
+        });
+      });
+    });
   });
 
   describe('commit-graph integration', () => {

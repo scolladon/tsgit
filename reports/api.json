@@ -99603,7 +99603,23 @@
 								"summary": [
 									{
 										"kind": "text",
-										"text": "Commits whose parents must NOT be walked (shallow boundary). The commit\nitself is still yielded — only its parents are skipped."
+										"text": "Commits whose parents must NOT be walked (shallow boundaries). Omitted ⇒\nthe repository's "
+									},
+									{
+										"kind": "code",
+										"text": "`.git/shallow`"
+									},
+									{
+										"kind": "text",
+										"text": " set is loaded automatically; supplied\n(including an explicit empty "
+									},
+									{
+										"kind": "code",
+										"text": "`Set`"
+									},
+									{
+										"kind": "text",
+										"text": ") ⇒ the caller's set wins and no\nrepository state is consulted. The commit itself is still yielded — only\nits parents are skipped. A shallow set is trusted repository state, so\nreachability answers a walk produces are relative to it."
 									}
 								]
 							},
@@ -99756,7 +99772,23 @@
 								"summary": [
 									{
 										"kind": "text",
-										"text": "Commits whose parents must NOT be enqueued. Used for shallow boundaries\n. The commit itself is still yielded — only its parents are\nskipped. Callers that want to also skip the boundary commit pass it in\n"
+										"text": "Commits whose parents must NOT be enqueued (shallow boundaries). Omitted\n⇒ the repository's "
+									},
+									{
+										"kind": "code",
+										"text": "`.git/shallow`"
+									},
+									{
+										"kind": "text",
+										"text": " set is loaded automatically; supplied\n(including an explicit empty "
+									},
+									{
+										"kind": "code",
+										"text": "`Set`"
+									},
+									{
+										"kind": "text",
+										"text": ") ⇒ the caller's set wins and no\nrepository state is consulted. The commit itself is still yielded — only\nits parents are skipped. Callers that want to also skip the boundary\ncommit pass it in "
 									},
 									{
 										"kind": "code",
@@ -99764,7 +99796,7 @@
 									},
 									{
 										"kind": "text",
-										"text": "."
+										"text": ". A shallow set is trusted repository state, so\nreachability answers a walk produces are relative to it."
 									}
 								]
 							},

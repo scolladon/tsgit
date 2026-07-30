@@ -27,7 +27,10 @@ interface WalkCommitsByDateOptions {
 - Each reachable commit is yielded exactly once; a diamond's shared base appears
   once.
 - `until` excludes a commit before it is read — neither yielded nor expanded.
-- `shallow` boundaries are yielded but their parents are not walked.
+- `shallow` boundaries are yielded but their parents are not walked. Omitted ⇒
+  the repository's `.git/shallow` set is loaded automatically; supplied
+  (including an explicit empty `Set`) ⇒ the caller's set wins and no
+  repository state is consulted.
 - Reads eagerly to order the frontier, so a fake/missing parent cannot enter the
   queue; the frontier is bounded by the reachable-commit count.
 - Throws `INVALID_WALK_INPUT` on an empty or over-cap `from`, and aborts at the

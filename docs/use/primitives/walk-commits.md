@@ -11,6 +11,7 @@ interface WalkCommitsOptions {
   readonly from?: RefName | ObjectId;       // default 'HEAD'
   readonly excluding?: ReadonlyArray<RefName | ObjectId>;  // stops
   readonly firstParent?: boolean;
+  readonly shallow?: ReadonlySet<ObjectId>; // yielded, but parents not walked
 }
 ```
 
@@ -21,6 +22,7 @@ interface WalkCommitsOptions {
 - `firstParent: true` mirrors [`log`](../commands/log.md)'s semantics.
 - Back-pressure: only advances when the consumer pulls.
 - When `.git/objects/info/commit-graph` is present (single-file or chain/split form), parents and dates are served from it, falling back to object reads for any commit it doesn't cover. Results are identical with or without a graph; a corrupt or stale graph is treated as absent.
+- `shallow` omitted ⇒ the repository's `.git/shallow` set is loaded automatically, so the walk stops at a fetched shallow boundary without the caller doing anything; supplied (including an explicit empty `Set`) ⇒ the caller's set wins and no repository state is consulted. A boundary commit is still yielded — only its parents are skipped, and the yielded commit's own `data.parents` reports empty, matching the boundary's true git-faithful shape.
 
 ## Example
 

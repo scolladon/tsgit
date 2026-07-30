@@ -6,6 +6,7 @@ import type { Context } from '../../../ports/context.js';
 import { type BoundedReader, createBoundedReader } from './bounded-reader.js';
 import { readCommit } from './read-commit.js';
 import { commitHeader, DEFAULT_PREFETCH_CONCURRENCY } from './read-commit-graph.js';
+import { loadShallowSet } from './shallow-set.js';
 
 type CommitBodies = BoundedReader<Commit | undefined>;
 
@@ -78,7 +79,7 @@ export async function* commitDateWalk(
   ctx: Context,
   options: CommitDateWalkOptions,
 ): AsyncIterable<DateWalkStep> {
-  const shallow = options.shallow ?? new Set<ObjectId>();
+  const shallow = options.shallow ?? (await loadShallowSet(ctx));
   const verifyHash = options.verifyHash ?? true;
   const ignoreMissing = options.ignoreMissing ?? false;
   // `seen` already prevents any re-read, so the reader's missing-memo is inert
@@ -91,7 +92,7 @@ export async function* commitDateWalk(
     until: new Set<ObjectId>(options.until ?? []),
     firstParent: options.firstParent ?? false,
     bodies: createBoundedReader(bound, (id) =>
-      readCommit(ctx, id, { verifyHash, ignoreMissing, missing }),
+      readCommit(ctx, id, { verifyHash, ignoreMissing, missing, shallow }),
     ),
     ignoreMissing,
   };

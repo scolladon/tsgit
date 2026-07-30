@@ -25,6 +25,7 @@ import { TsgitError } from '../../domain/error.js';
 import type { ObjectId } from '../../domain/objects/object-id.js';
 import type { Context } from '../../ports/context.js';
 import { parseShallowFile } from './internal/parse-shallow.js';
+import { invalidateShallowSet } from './internal/shallow-set.js';
 import { commonGitDir, shallowFilePath, shallowLockPath } from './path-layout.js';
 
 const isFileNotFound = (error: unknown): boolean =>
@@ -67,12 +68,14 @@ export const updateShallow = async (ctx: Context, updates: ShallowUpdate): Promi
   const path = shallowFilePath(commonGitDir(ctx));
   if (current.size === 0) {
     await deleteIfPresent(ctx, path);
+    invalidateShallowSet(ctx);
     return;
   }
 
   const sorted = [...current].sort();
   const content = new TextEncoder().encode(sorted.map((id) => `${id}\n`).join(''));
   await atomicWrite(ctx, path, content);
+  invalidateShallowSet(ctx);
 };
 
 const atomicWrite = async (ctx: Context, path: string, content: Uint8Array): Promise<void> => {

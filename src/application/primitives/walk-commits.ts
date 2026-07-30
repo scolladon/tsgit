@@ -4,6 +4,7 @@ import type { Context } from '../../ports/context.js';
 import { type BoundedReader, createBoundedReader } from './internal/bounded-reader.js';
 import { readCommit } from './internal/read-commit.js';
 import { commitHeader, DEFAULT_PREFETCH_CONCURRENCY } from './internal/read-commit-graph.js';
+import { loadShallowSet } from './internal/shallow-set.js';
 import { MAX_WALK_QUEUE_SIZE, type WalkCommitsOptions } from './types.js';
 import {
   exceedsMaxWalkSeeds,
@@ -34,23 +35,35 @@ interface WalkSession {
   readonly ignoreMissing: boolean;
 }
 
-function createWalkSession(ctx: Context, options: WalkCommitsOptions): WalkSession {
+/**
+ * The shallow set this walk should use: the caller's explicit override
+ * (including an empty `Set`, the escape hatch) or the repository's own
+ * `.git/shallow` set, loaded once per `Context`.
+ */
+const resolveShallow = async (
+  ctx: Context,
+  options: WalkCommitsOptions,
+): Promise<ReadonlySet<ObjectId>> => options.shallow ?? loadShallowSet(ctx);
+
+async function createWalkSession(ctx: Context, options: WalkCommitsOptions): Promise<WalkSession> {
   const order = options.order ?? 'topo';
   const ignoreMissing = options.ignoreMissing ?? false;
   const verifyHash = options.verifyHash ?? true;
+  const shallow = await resolveShallow(ctx, options);
   const state: WalkState = {
     queue: [...options.from],
     visited: new Set<string>(),
     missing: new Set<string>(),
     until: new Set(options.until ?? []),
-    shallow: options.shallow ?? new Set<ObjectId>(),
+    shallow,
   };
   const bound = ctx.config?.parallelism ?? DEFAULT_PREFETCH_CONCURRENCY;
   const bodies: CommitBodies = createBoundedReader(bound, (id) =>
-    readCommit(ctx, id, { verifyHash, ignoreMissing, missing: state.missing }),
+    readCommit(ctx, id, { verifyHash, ignoreMissing, missing: state.missing, shallow }),
   );
   // Prime the initial seeds so their reads overlap instead of starting only
-  // as each is individually popped.
+  // as each is individually popped. Must happen AFTER shallow resolves —
+  // priming already triggers grafted reads.
   for (const seed of state.queue) bodies.start(seed);
   return { state, bodies, order, ignoreMissing };
 }
@@ -97,7 +110,7 @@ export async function* walkCommits(
   options: WalkCommitsOptions,
 ): AsyncIterable<Commit> {
   validateOptions(options);
-  const session = createWalkSession(ctx, options);
+  const session = await createWalkSession(ctx, options);
   const { state, bodies, order } = session;
 
   while (state.queue.length > 0) {
