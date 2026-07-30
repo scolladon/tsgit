@@ -101,6 +101,32 @@ describe('createCommit', () => {
     });
   });
 
+  describe('Given a 64-hex parent in a sha1 repository', () => {
+    describe('When createCommit is called', () => {
+      it('Then throws INVALID_COMMIT: a foreign-width oid is an unresolvable link here', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const tree = await emptyTreeId(ctx);
+
+        // Act
+        try {
+          await createCommit(ctx, {
+            tree,
+            parents: ['a'.repeat(64) as ObjectId],
+            author: AUTHOR,
+            committer: AUTHOR,
+            message: 'msg',
+          });
+          // Assert
+          expect.unreachable();
+        } catch (error) {
+          expect((error as TsgitError).data.code).toBe('INVALID_COMMIT');
+          expect((error as TsgitError).message).toMatch(/parent is not a well-formed object id/);
+        }
+      });
+    });
+  });
+
   describe('Given a well-formed parent oid', () => {
     describe('When createCommit is called', () => {
       it('Then the parent passes validation and the commit is written', async () => {

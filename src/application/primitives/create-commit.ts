@@ -23,15 +23,19 @@ import {
 import { writeObject } from './write-object.js';
 
 /** `ObjectId` is a branded string, so a bad upstream cast could smuggle any
- *  value into a `parent <x>` header — this is the last gate before bytes. */
-function assertWellFormedParents(parents: ReadonlyArray<ObjectId>): void {
+ *  value into a `parent <x>` header — this is the last gate before bytes.
+ *  Width is checked against the repository hash: a foreign-width oid is
+ *  well-formed hex but a permanently unresolvable link in this repo. */
+function assertWellFormedParents(parents: ReadonlyArray<ObjectId>, hexLength: 40 | 64): void {
   for (const parent of parents) {
-    if (isMalformedParentOid(parent)) throw invalidCommit(REASON_PARENT_INVALID);
+    if (isMalformedParentOid(parent) || parent.length !== hexLength) {
+      throw invalidCommit(REASON_PARENT_INVALID);
+    }
   }
 }
 
 export async function createCommit(ctx: Context, input: CreateCommitInput): Promise<ObjectId> {
-  assertWellFormedParents(input.parents);
+  assertWellFormedParents(input.parents, ctx.hashConfig.hexLength);
   if (messageContainsNul(input.message)) {
     throw invalidCommit(REASON_MESSAGE_CONTAINS_NUL);
   }

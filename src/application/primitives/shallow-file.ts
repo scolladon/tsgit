@@ -72,11 +72,13 @@ interface ShallowUpdate {
  */
 export const updateShallow = async (ctx: Context, updates: ShallowUpdate): Promise<void> => {
   const current = new Set(await readShallow(ctx));
-  updates.shallow.forEach((id, index) => {
+  let entry = 0;
+  for (const id of updates.shallow) {
+    entry += 1;
     if (id.length !== ctx.hashConfig.hexLength) {
-      throw shallowFileMalformed(REASON_SHALLOW_OID_WIDTH, index + 1);
+      throw shallowFileMalformed(REASON_SHALLOW_OID_WIDTH, entry);
     }
-  });
+  }
   for (const id of updates.shallow) current.add(id);
   for (const id of updates.unshallow) current.delete(id);
   if (current.size > MAX_SHALLOW_ENTRIES) {
