@@ -33,9 +33,12 @@ export const portablePosixPolicy: PathPolicy = {
     const cut = normalized.lastIndexOf('/');
     return cut <= 0 ? '/' : normalized.slice(0, cut);
   },
+  // No root special-case needed: `normalizeAbsolutePosixPath` always returns
+  // a leading slash, so for '/' `lastIndexOf('/') + 1` is 1 and the slice is
+  // already '' — identical to what an explicit `=== '/'` guard would return.
   basename: (path) => {
     const normalized = normalizeAbsolutePosixPath(path);
-    return normalized === '/' ? '' : normalized.slice(normalized.lastIndexOf('/') + 1);
+    return normalized.slice(normalized.lastIndexOf('/') + 1);
   },
   rootOf: (path) => (path.startsWith('/') ? '/' : ''),
   normalizeForCompare: (path) => path,

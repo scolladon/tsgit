@@ -1121,6 +1121,32 @@ describe('openRepository — worktreeFs capability', () => {
     });
   });
 
+  describe('Given a linked-worktree path that is a sibling of workDir, not nested under it', () => {
+    describe('When operating on a worktree-scoped fs under that worktree path', () => {
+      it('Then the worktree path is admitted as a root and write/read round-trips', async () => {
+        // Arrange — '/root' is the memory adapter's containment boundary;
+        // layoutRoots minimizes to ['/root/repo'] (workDir), which does NOT
+        // contain the sibling '/root/wt': only a roots array that explicitly
+        // carries the worktree path admits this write.
+        const fs = new MemoryFileSystem({ rootDir: '/root' });
+        const fallback: RuntimeFallback = {
+          ...makeFallback(),
+          fs,
+          layout: { workDir: '/root/repo', gitDir: '/root/repo/.git', bare: false },
+        };
+        const sut = await openRepository({ cwd: '/root/repo' }, fallback);
+        const worktreeFs = worktreeScopedFs(sut, '/root/wt');
+
+        // Act
+        await worktreeFs.writeUtf8('/root/wt/tracked.txt', 'inside');
+        const roundTripped = await worktreeFs.readUtf8('/root/wt/tracked.txt');
+
+        // Assert
+        expect(roundTripped).toBe('inside');
+      });
+    });
+  });
+
   describe('Given unsafeRawAdapters: true and a custom fs', () => {
     describe('When resolving a worktree-scoped fs', () => {
       it('Then it returns the raw adapter unwrapped (reference-equal)', async () => {

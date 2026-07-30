@@ -66,6 +66,19 @@ describe('portablePosixPolicy', () => {
     });
   });
 
+  describe('Given multiple path segments passed as separate arguments', () => {
+    describe('When resolve runs', () => {
+      it('Then it joins them with a separator like node:path/posix.resolve', () => {
+        // Arrange & Act
+        const result = portablePosixPolicy.resolve('/repo', 'wt');
+
+        // Assert
+        expect(result).toBe(nodePosix.resolve('/repo', 'wt'));
+        expect(result).toBe('/repo/wt');
+      });
+    });
+  });
+
   describe('Given an absolute path with a "../.." segment', () => {
     describe('When resolve runs', () => {
       it('Then it collapses the segment like node:path/posix.resolve', () => {
