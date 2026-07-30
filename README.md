@@ -57,9 +57,9 @@ Competitive with `isomorphic-git`, the mainstream pure-TypeScript git library �
 
 | Scenario | tsgit vs isomorphic-git |
 |---|---|
-| `status` (dirty tree) | **1.22× faster** |
-| `clone` (small repo) | 1.09× (parity) |
-| `readBlob` (cold cache) | 0.70× (slower) |
+| `status` (dirty tree) | **1.26× faster** |
+| `clone` (small repo) | 1.10× (parity) |
+| `readBlob` (cold cache, small pack) | 0.82× (slower) |
 
 _Measured on a GitHub Actions runner; ±20% variance — trust direction, not absolute numbers._ → [Full benchmarks + methodology](docs/understand/performance.md)
 

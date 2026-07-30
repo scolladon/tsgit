@@ -6,11 +6,11 @@ To report a vulnerability, see [`SECURITY.md`](../../SECURITY.md) at the repo ro
 
 ## Path containment
 
-Every `FileSystem` adapter enforces that every input path resolves to a location **inside the adapter's root**. Escapes via:
+Every `FileSystem` adapter enforces that every input path resolves to a location **inside one of the adapter's containment roots**. For a normal repository (and a main worktree) that set is a single root, `workDir`. Opening a linked worktree, a submodule working directory, or a `--separate-git-dir` layout widens it to the resolved layout's `{ workDir, gitDir, commonDir }`, minimised so any root already contained in another is dropped — a normal repo still collapses to exactly `[workDir]`, byte-identical to before ([ADR-541](../adr/541-raw-node-adapter-layout-root-set.md)). Escapes via:
 
 - `..` traversal
 - sibling-directory string tricks (`/repo-evil` vs `/repo`)
-- symlinks pointing outside the root
+- symlinks pointing outside every root in the set
 
 …all throw `PERMISSION_DENIED` before any data is read or written.
 
@@ -23,6 +23,8 @@ Every `FileSystem` adapter enforces that every input path resolves to a location
 | **read** | Full `realpath` of the target path. |
 | **lstat** | `realpath` of the parent directory only — preserves lstat semantics for the leaf. |
 | **creation** | `realpathNearestExisting` + leaf symlink check. |
+
+This realpath-aware gate is the *only* symlink-aware containment layer, so the raw Node adapter is confined to exactly the layout's root set — never their common ancestor, which would admit everything between them (and degrade to the whole filesystem for a cross-top-level layout). Each mode is applied independently at every root. A root that doesn't exist yet (e.g. the not-yet-created target of `worktree add`) derives its canonical prefix from the realpath of its nearest existing ancestor plus the missing tail.
 
 8.3 short-name reconciliation on Windows (`C:\PROGRA~1` vs `C:\Program Files`) is handled by a lazy canonical-root cache ([ADR-042](../adr/042-canonical-root-lazy-realpath.md)). `\\?\` extended-length prefixes are stripped during comparison.
 

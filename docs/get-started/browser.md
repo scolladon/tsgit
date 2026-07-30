@@ -90,6 +90,8 @@ Optionally override the in-OPFS `.git` directory name with `gitDirName` (useful 
 await openRepository({ rootHandle, gitDirName: 'git' });
 ```
 
+That entry can be a directory or a `gitdir:` pointer file — e.g. a submodule's gitfile pointing at an external admin directory. tsgit resolves the pointer the same way the Node adapter does, splitting shared vs per-worktree paths via `commonDir`; a pointer that resolves outside the OPFS root surfaces the adapter's own containment error rather than a special case.
+
 ## What works in the browser
 
 - Every command and primitive that doesn't depend on Node-only APIs

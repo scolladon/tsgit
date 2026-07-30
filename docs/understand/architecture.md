@@ -72,7 +72,10 @@ template: a conscious, documented, interop-pinned divergence).
 Every command and primitive takes a `Context` — a frozen record that carries:
 
 - The adapter set (`fs`, `hash`, `compressor`, `transport`)
-- The repository layout (`workDir`, `gitDir`, `bare`, `homeDir`)
+- The repository layout (`workDir`, `gitDir`, `commonDir`, `bare`, `homeDir`) —
+  `commonDir` is derived by resolving `.git` gitfile pointers (linked
+  worktrees, submodule working directories, `--separate-git-dir`) and differs
+  from `gitDir` only in those layouts; see [`worktree`](../use/commands/worktree.md)
 - The progress reporter and `AbortSignal`
 - The hash configuration (SHA-1 today; SHA-256 reserved for v4)
 - The delta cache (LRU, configurable)
@@ -117,7 +120,7 @@ See [`performance.md`](performance.md) for measured numbers. The strategy:
 
 See [`security.md`](security.md) for the full table. Highlights:
 
-- **Path containment** — every path resolves to a location inside the adapter's root. Escapes via `..`, sibling-directory string tricks, or symlinks pointing outside the root all throw `PERMISSION_DENIED`.
+- **Path containment** — every path resolves to a location inside one of the adapter's containment roots: `[workDir]` for a normal repo, widened (and minimised) to `{ workDir, gitDir, commonDir }` for a linked worktree or similar layout. Escapes via `..`, sibling-directory string tricks, or symlinks pointing outside every root all throw `PERMISSION_DENIED`.
 - **Lock files** — `writeExclusive` (`{ flag: 'wx' }`) provides atomic create-or-fail. Used by ref / index update primitives.
 - **TLS enforcement** — `http://` rejected by default; opt-in via `allowInsecureHttp`. Certificate validation never disabled.
 - **Defensive copying** in the Memory adapter — every read / write clones the `Uint8Array`.

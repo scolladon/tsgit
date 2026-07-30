@@ -1,21 +1,30 @@
 # Performance
 
-This document explains what tsgit measures, how it measures, and how to read the numbers. The bottom line first: tsgit is competitive with isomorphic-git — it wins on `status:dirty`, `readBlob:warm`, and `clone`, and is currently slower on `status:clean`, `readBlob:cold`, and `log:walk` (the `lstat`-heavy and full-commit-parse paths). The v4 perf pass (Phase 26) is closing those gaps against a stable surface.
+This document explains what tsgit measures, how it measures, and how to read the numbers. The bottom line first: tsgit is competitive with isomorphic-git — it wins on `status:dirty`, `readBlob:warm` (a cached read), `clone`, and `log:walk`, and is currently slower on `status:clean`, `readBlob:cold` (small pack, or any first read against a fresh repo), and `delta-chain` (cold) — the shared `lstat`-heavy / containment-check paths. The v4 perf pass (Phase 26) is closing those gaps against a stable surface.
 
 ## Current measured numbers
 
 Source: the CI **nightly benchmark artifact** (`bench.yml`, a dedicated GitHub Actions runner). The numbers below are hand-transcribed from a dated run so they stay citable; regenerate the raw report anytime with `npm run bench:summary` (writes `reports/benchmarks/summary.md`, uncommitted). They are **not** measured on a personal machine — a host under interactive load biases tsgit's `lstat`-heavy paths (isomorphic-git, a pinned dependency, itself measures 1.2–2.4× slower under load), so its numbers are not citable. See [ADR-483](../adr/483-committed-hand-transcribed-benchmark-snapshot.md).
 
-Measured on the CI nightly runner: `linux-x64`, AMD EPYC 7763, Node 22.23.1 · isomorphic-git 1.38.7 · captured 2026-07-13.
+Measured on the CI nightly runner: `linux-x64`, AMD EPYC 7763, Node 22.23.1 · isomorphic-git 1.38.7 · captured 2026-07-30.
 
-| Scenario | tsgit | isomorphic-git | tsgit/iso |
-|---|---|---|---|
-| `clone:small-repo` | 28.5 ms | 31.1 ms | 1.09× (parity) |
-| `log:walk-50-commits` | 20.2 ms | 15.7 ms | **0.78× (slower)** |
-| `readBlob:cold-cache` | 0.61 ms | 0.42 ms | **0.70× (slower)** |
-| `readBlob:warm-cache` | 0.33 ms | 0.40 ms | **1.21× (faster)** |
-| `status:clean` | 14.4 ms | 9.6 ms | **0.67× (slower)** |
-| `status:dirty-25-files` | 12.8 ms | 15.7 ms | **1.22× (faster)** |
+| Scenario | tsgit/iso |
+|---|---|
+| `clone:small-repo` (local http) | 1.10× (parity) |
+| `log:walk` (small) | **9.38× (faster)** |
+| `log:walk` (medium, 5000 commits) | **18.61× (faster)** |
+| `readBlob:cold-cache` (small pack) | **0.82× (slower)** |
+| `readBlob:cold-cache` (medium pack) | **8.59× (faster)** |
+| `readBlob:cold-cache` (fresh repo, empty LRU) | **0.64× (slower)** |
+| `readBlob:warm-cache` (small, cached read) | **292× (faster)** |
+| `readBlob:warm-cache` (medium, cached read) | **~21,000× (faster)** |
+| `delta-chain` (cold) | **0.34× (slower)** |
+| `delta-chain` (warm, cached read) | **327× (faster)** |
+| `status:clean` (small) | **0.46× (slower)** |
+| `status:clean` (medium) | **0.40× (slower)** |
+| `status:dirty-25-files` | **1.26× (faster)** |
+
+The `warm`/cached-read rows (`readBlob:warm-cache`, `delta-chain` warm) compare a tsgit read served entirely from its LRU delta-base cache against isomorphic-git re-reading and re-inflating the object from disk on every call — the two aren't doing the same amount of work, so the outsized ratio reflects the cache's presence, not a general throughput multiplier. Read it as "a repeated read of the same blob amortises to near-zero," not as "tsgit's raw read path is 300× faster."
 
 GitHub Actions runners introduce ±20% variance — trust direction more than absolute numbers. Re-run on your hardware before extrapolating to your workload.
 
@@ -48,10 +57,10 @@ For context, two other libraries are sometimes weighed against tsgit — but nei
 | Hashing | `node:crypto` (Node) / `SubtleCrypto` (Browser). Both natively accelerated. |
 | I/O | Bounded-concurrency parallel reads (8-wide where it helps; serial where order matters). |
 
-## Why status:clean / readBlob:cold / log:walk are currently slower
+## Why status:clean / readBlob:cold / delta-chain:cold are currently slower
 
-- **`status:clean` and `readBlob:cold-cache`:** both are `lstat`-heavy, and tsgit adds a **containment check** (an extra `lstat` / path-policy step per path) that `isomorphic-git` skips. The check is a security property — it keeps a repository from reading or writing outside its working tree (see [security.md](security.md)). `status` stats every working-tree entry, so on a clean tree this per-path cost shows up directly, where iso-git can short-circuit unchanged files. A same-host historical bench (current `main` vs a pre-containment-optimisation commit, on one machine) confirmed **no regression**: `main`'s `status:clean` floor is faster than the earlier commit, so the 0.67× shift versus the earlier 1.10× snapshot is a cross-OS / stale-baseline artifact, not code drift. A `status` CPU profile then attributed the iso-git gap to the containment path itself — `resolveForMode` plus `checkContainment` accounted for ~46% of `status` self-time, well ahead of the `lstat` syscall — confirming the gap is the tax, not the diff logic. That hot path has since been amortised further (precomputed root prefixes, a single child-normalise per check, and a per-parent containment-verdict cache), with the check's verdict left unchanged. The tax itself is inherent — iso-git skips the security check entirely — so `status:clean` may still show as a loss even after amortisation.
-- **`log:walk-50-commits`:** tsgit parses every commit fully (author/committer/message/parents) on the walk. `isomorphic-git`'s walker can skip the message body for the common "I just want oids" case. The path is in scope for Phase 26.
+- **`status:clean`, `readBlob:cold-cache` (small pack, and any first read against a fresh repo), and `delta-chain` (cold):** all three pay a shared **containment check** (an extra `lstat` / path-policy step per path) that `isomorphic-git` skips. The check is a security property — it keeps a repository from reading or writing outside its working tree (see [security.md](security.md)). `status` stats every working-tree entry, so on a clean tree this per-path cost shows up directly, where iso-git can short-circuit unchanged files; a cold read or a cold delta-chain replay pays the same first-touch tax before tsgit's own LRU delta-base cache is primed — which is exactly what flips both to a large win once warm (`readBlob:warm-cache`, `delta-chain` warm). A `status` CPU profile attributed the iso-git gap to the containment path itself — `resolveForMode` plus `checkContainment` accounted for ~46% of `status` self-time, well ahead of the `lstat` syscall — confirming the gap is the tax, not the diff logic. That hot path has since been amortised further (precomputed root prefixes, a single child-normalise per check, and a per-parent containment-verdict cache), with the check's verdict left unchanged. The tax itself is inherent — iso-git skips the security check entirely — so these scenarios may still show as a loss even after amortisation.
+- **`log:walk`:** used to trail here on the full-commit-parse cost (tsgit parses every commit fully — author/committer/message/parents — on the walk, where `isomorphic-git`'s walker can skip the message body). The current nightly numbers show tsgit ahead on both fixture sizes (9.38× small, 18.61× medium) — kept as a note here in case an older comparison is still in circulation.
 
 ## Bundle size
 
@@ -72,7 +81,7 @@ The limits are CI gates. Real measured bytes (`npm run reports:bundle-sizes`) an
 ## Roadmap
 
 - **Phase 26.3** — Per-command profile capture (`npm run profile <cmd>`); commit baseline.
-- **Phase 26.4** — Hot-path optimisations from 26.3 findings. Targets: `log:walk` ≥ 1.5× (currently 0.66×), `readBlob:cold` ≥ 1.0× (currently 0.67×).
+- **Phase 26.4** — Hot-path optimisations from 26.3 findings. Targets: `log:walk` ≥ 1.5× (currently 9.38× small / 18.61× medium), `readBlob:cold` ≥ 1.0× (currently 0.82× small pack / 8.59× medium pack).
 - **Phase 26.5** — Regression gate in CI: the PR `benchmark-compare` job benches the base branch and the PR head on the **same runner** and flags any `tsgit` scenario whose median runtime regresses beyond ~10% (improvements never flag). It is **advisory** (`continue-on-error`) — same-runner benchmarking is too noisy to block a merge, so it posts the per-scenario deltas as a PR comment rather than gating. Comparison logic lives in `tooling/bench-check.ts`. The gate is **hot-path-scoped**: it compares only the operations listed in [`../perf/hot-paths.json`](../perf/hot-paths.json), a list derived from absolute nightly `bench.yml` timings cross-checked against the Phase-26 revealed optimisation effort (ADR-501) and re-derived each major version (ADR-505).
 - **Phase 26.7** — Competitor benchmark comparison: a head-to-head vs `isomorphic-git` (the one mature pure-JS peer, published above and in the README's "Why tsgit" slice), with `simple-git` (native `git`) and `wasm-git` (libgit2-WASM) as labelled reference points and `nodegit` excluded. Refreshed per release from the CI nightly artifact.
 - **Phase 26.8** — Bundle measurements as regenerable artifacts (`reports/bundle/{sizes,treeshake,load-time}.md`).
