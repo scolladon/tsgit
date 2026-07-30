@@ -1794,3 +1794,29 @@ Mean ms/call, two runs, no fixture, no `git`:
 a win from replacing the native `indexOf(LF)` pass plus a JS fold pass with a single JS pass
 that also finds the terminator, and from removing every per-line allocation; a regression
 here is a design signal, not a tuning task to code around.
+
+### Adapter buffered inflate — bundled decoder vs native `DecompressionStream` (branch decision)
+
+`inflateZlibMember` (the bundled, synchronous, zero-dependency whole-member decoder already
+powering `streamInflate` on the browser and memory adapters) vs the native
+`Blob → DecompressionStream → Response` pipeline those adapters' `inflate` uses today. Zlib
+members built with `CompressionStream('deflate')` so both decoders see the same input. Two
+runs, mean ms/call:
+
+| payload | size | bundled decoder (run 1 / run 2) | native `DecompressionStream` (run 1 / run 2) | native is faster by |
+|---|---|---|---|---|
+| highly compressible | 64 KiB | 0.3767 / 0.3794 | 0.1211 / 0.1184 | ~3.1–3.2× |
+| highly compressible | 1 MiB | 5.7244 / 5.7303 | 0.9477 / 1.0753 | ~5.3–6.0× |
+| highly compressible | 8 MiB | 46.0517 / 45.5461 | 6.9332 / 7.2058 | ~6.3–6.6× |
+| incompressible | 64 KiB | 0.2741 / 0.2741 | 0.1068 / 0.1078 | ~2.5–2.6× |
+| incompressible | 1 MiB | 4.3440 / 4.3457 | 1.0450 / 1.0366 | ~4.2× |
+| incompressible | 8 MiB | 34.6179 / 34.5971 | 7.9020 / 7.9208 | ~4.4× |
+
+**Branch taken: B — no adapter change.** The branch rule requires the bundled decoder to win
+at every size ≥ 1 MiB with no size losing by more than measurement noise. Here the native
+stream wins at **every** size measured, including the two ≥ 1 MiB sizes, by 4–7×, consistent
+across both runs and both compressibility profiles (rme well under the gap in every row) —
+the opposite of "clearly better". §Pin D-5's premise (adapter-neutral win) is refuted the
+other direction from what it flagged as the risk: the pure-JS Huffman decode is markedly
+slower than the platform's native zlib binding at every scale tried, not merely at small
+ones. `BrowserCompressor.inflate` and `MemoryCompressor.inflate` are unchanged.
