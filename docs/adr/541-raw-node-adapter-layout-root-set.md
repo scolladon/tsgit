@@ -32,9 +32,9 @@ empty root set fails closed.
 
 ## Consequences
 
-`commonAncestor` loses its last production consumer (retained short-term as a
-tested utility; deleting it — and folding ADR-495's path-algebra note here —
-is a structural call left to the refactoring pass). ADR-495's cross-volume
+`commonAncestor` lost its last production consumer and has since been deleted
+(the refactoring pass; ADR-495's path-algebra note is folded in here — that
+design doc stays as historical record). ADR-495's cross-volume
 limitation no longer applies to the adapter root: each volume's root stands on
 its own. Through-adapter symlink escapes from linked worktrees are refused
 exactly as in a normal repo, pinned by unit and integration regressions; the
