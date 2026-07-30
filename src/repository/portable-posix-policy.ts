@@ -1,4 +1,5 @@
 import type { PathPolicy } from '../adapters/node/path-policy.js';
+import { collapsePosixSegments } from '../domain/path/collapse-posix-segments.js';
 
 /**
  * Collapses `.`/`..`/duplicate-slash segments in an already-absolute POSIX
@@ -7,18 +8,7 @@ import type { PathPolicy } from '../adapters/node/path-policy.js';
  * not implement `path.posix.resolve`'s relative-to-cwd fallback, which OPFS
  * (the browser shim's only consumer) has no equivalent of anyway.
  */
-const normalizeAbsolutePosixPath = (path: string): string => {
-  const resolved: string[] = [];
-  for (const segment of path.split('/')) {
-    if (segment === '' || segment === '.') continue;
-    if (segment === '..') {
-      resolved.pop();
-      continue;
-    }
-    resolved.push(segment);
-  }
-  return `/${resolved.join('/')}`;
-};
+const normalizeAbsolutePosixPath = collapsePosixSegments;
 
 /**
  * Dependency-free stand-in for `adapters/node/path-policy.ts`'s

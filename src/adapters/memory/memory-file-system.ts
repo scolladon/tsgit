@@ -6,6 +6,7 @@ import {
   permissionDenied,
   unsupportedOperation,
 } from '../../domain/index.js';
+import { collapsePosixSegments } from '../../domain/path/collapse-posix-segments.js';
 import type { DirEntry, FileHandle, FileStat, FileSystem } from '../../ports/file-system.js';
 
 const DEFAULT_HOME = '/home/user';
@@ -521,17 +522,7 @@ export class MemoryFileSystem implements FileSystem {
 
 function normalizePath(rootDir: string, path: string): string {
   const joined = path.startsWith('/') ? path : `${rootDir}/${path}`;
-  const segments = joined.split('/');
-  const resolved: string[] = [];
-  for (const segment of segments) {
-    if (segment === '' || segment === '.') continue;
-    if (segment === '..') {
-      resolved.pop();
-      continue;
-    }
-    resolved.push(segment);
-  }
-  return `/${resolved.join('/')}`;
+  return collapsePosixSegments(joined);
 }
 
 /**
