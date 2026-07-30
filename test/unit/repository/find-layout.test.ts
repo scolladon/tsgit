@@ -361,6 +361,66 @@ describe('findLayout', () => {
     });
   });
 
+  describe('Given a .git file of exactly the size cap (boundary)', () => {
+    describe('When findLayout runs', () => {
+      it('Then the size cap admits it and the refusal is grammar-shaped, not size-shaped', async () => {
+        // Arrange — a pointer padded to exactly 65536 bytes. The grammar
+        // keeps every byte after `gitdir: ` as the path, so the padded path
+        // does not exist — but the SIZE cap must admit exactly-65536.
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        const head = 'gitdir: /repo/admin';
+        await fs.writeUtf8('/repo/wt/.git', `${head}${'x'.repeat(65_536 - head.length)}`);
+
+        // Act
+        let caught: unknown;
+        try {
+          await findLayout(fileSystemLayoutProbe(fs), '/repo/wt', posixPolicy);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — NOT_A_REPOSITORY (the padded target is missing), never
+        // GITFILE_INVALID_FORMAT: proves the cap is `>` not `>=`.
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data).toEqual({
+          code: 'NOT_A_REPOSITORY',
+          path: '/repo/wt',
+        });
+      });
+    });
+  });
+
+  describe('Given an admin dir whose commondir file is exactly the size cap (boundary)', () => {
+    describe('When findLayout runs', () => {
+      it('Then the commondir is read and the refusal is layout-shaped, not size-shaped', async () => {
+        // Arrange — a commondir value padded with trailing spaces to exactly
+        // 65536 bytes: spaces are kept by the grammar, so the resolved dir is
+        // missing and the layout is invalid — but the SIZE cap must admit it.
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await fs.writeUtf8('/repo/admin/HEAD', 'ref: refs/heads/main\n');
+        const value = '/repo/common';
+        await fs.writeUtf8('/repo/admin/commondir', `${value}${' '.repeat(65_536 - value.length)}`);
+        await fs.writeUtf8('/repo/wt/.git', 'gitdir: /repo/admin\n');
+
+        // Act
+        let caught: unknown;
+        try {
+          await findLayout(fileSystemLayoutProbe(fs), '/repo/wt', posixPolicy);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — NOT_A_REPOSITORY (space-suffixed common dir lacks
+        // objects/refs), never GITFILE_INVALID_FORMAT: proves `>` not `>=`.
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data).toEqual({
+          code: 'NOT_A_REPOSITORY',
+          path: '/repo/wt',
+        });
+      });
+    });
+  });
+
   describe('Given an admin dir whose commondir file is larger than the size cap', () => {
     describe('When findLayout runs', () => {
       it('Then it throws GITFILE_INVALID_FORMAT naming the commondir path', async () => {

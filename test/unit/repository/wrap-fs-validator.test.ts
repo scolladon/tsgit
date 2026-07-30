@@ -485,4 +485,49 @@ describe('wrapFsValidator — coverage of every wrapped method', () => {
       });
     });
   });
+
+  describe('Given a single-string root that sanitises away', () => {
+    describe('When wrapFsValidator is constructed', () => {
+      it('Then it fails closed naming that root (the string form of the throw)', () => {
+        // Arrange
+        const fs = stubFs();
+
+        // Act
+        let caught: unknown;
+        try {
+          wrapFsValidator(fs, '/repo/../etc');
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data).toEqual({
+          code: 'PATHSPEC_OUTSIDE_REPO',
+          path: '/repo/../etc',
+        });
+      });
+    });
+  });
+
+  describe('Given an empty root array', () => {
+    describe('When wrapFsValidator is constructed', () => {
+      it('Then it fails closed with an empty path (the ?? fallback)', () => {
+        // Arrange
+        const fs = stubFs();
+
+        // Act
+        let caught: unknown;
+        try {
+          wrapFsValidator(fs, []);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data).toEqual({ code: 'PATHSPEC_OUTSIDE_REPO', path: '' });
+      });
+    });
+  });
 });

@@ -374,34 +374,32 @@ describe('NodeFileSystem — canonical-root cache (DI)', () => {
     });
   });
 
-  describe('Given the root does not exist on the first realpath(rootDir)', () => {
-    describe('When `exists` is called again', () => {
-      it('Then realpath is retried (an incomplete root set is never memoised)', async () => {
-        // Arrange — a missing root is tolerated (it contributes no canonical
-        // prefix) but must NOT freeze: a caller about to create the root — a
-        // `worktree add` target — needs the next call to pick up its
-        // canonical form.
+  describe('Given a not-yet-existing root beneath a symlinked ancestor', () => {
+    describe('When a file is created under that root', () => {
+      it('Then the canonical prefix derives from the nearest existing ancestor and the write is admitted', async () => {
+        // Arrange — the `worktree add` shape on macOS: the target root
+        // `C:\canonical\missing` does not exist yet and its parent
+        // `C:\canonical` is a symlink to `C:\real`. Dropping the missing
+        // root's canonical prefix would deny the realpathed leaf
+        // (`C:\real\missing\f`); deriving it via the nearest existing
+        // ancestor admits it.
         const rootDir = 'C:\\canonical\\missing';
-        let callCount = 0;
         const realpath = vi.fn().mockImplementation(async (input: string) => {
-          if (input === rootDir) {
-            callCount += 1;
-            if (callCount === 1) throw enoent();
-            return rootDir;
-          }
+          if (input === 'C:\\canonical') return 'C:\\real';
           throw enoent();
         });
-        const sut = new NodeFileSystem(rootDir, windowsPolicy, fakeFsOps({ realpath }));
+        const fsOps = fakeFsOps({ realpath });
+        const sut = new NodeFileSystem(rootDir, windowsPolicy, fsOps);
 
         // Act
-        await sut.exists('C:\\canonical\\missing\\a').catch(() => undefined);
-        await sut.exists('C:\\canonical\\missing\\b').catch(() => undefined);
+        await sut.writeUtf8('C:\\canonical\\missing\\f', 'x');
 
         // Assert
-        const rootCalls = realpath.mock.calls.filter(
-          ([arg]: readonly unknown[]) => arg === rootDir,
-        );
-        expect(rootCalls.length).toBe(2);
+        expect(fsOps.writeFile).toHaveBeenCalledTimes(1);
+        const [writtenPath] = (fsOps.writeFile as ReturnType<typeof vi.fn>).mock.calls[0] as [
+          string,
+        ];
+        expect(writtenPath).toBe('C:\\real\\missing\\f');
       });
     });
   });

@@ -419,8 +419,7 @@ export class NodeFileSystem implements FileSystem {
   /**
    * Lazy canonicalisation of every containment root, resolving to the whole
    * `RootSet`. Promise so concurrent first calls share one round of
-   * `realpath`s; cleared on rejection so a transient error can be retried,
-   * and cleared on an incomplete resolution (see `loadRootSet`).
+   * `realpath`s; cleared on rejection so a transient error can be retried.
    */
   private rootSetPromise: Promise<RootSet> | undefined = undefined;
 
@@ -477,33 +476,29 @@ export class NodeFileSystem implements FileSystem {
   }
 
   /**
-   * Realpaths every root. A root that does not exist contributes NO
-   * canonical prefix and marks the resolution incomplete: a not-yet-created
-   * directory is a legitimate root (`worktree add` probes its own target
-   * before creating it) and has no realpath to admit, so dropping it is
-   * fail-closed — its RAW prefix still serves the lexical gate. Any other
-   * errno rejects the whole resolution rather than being swallowed.
+   * Realpaths every root. A root that does not exist yet is a legitimate
+   * root (`worktree add` probes its own target before creating it); its
+   * canonical prefix is derived from the realpath of its nearest EXISTING ancestor
+   * and re-joining the missing tail — exactly the form `realpathForCreation`
+   * later produces for leaves under it, so a target beneath a symlinked
+   * ancestor (macOS `/tmp` → `/private/tmp`) is admitted rather than
+   * spuriously denied. Any non-ENOENT errno rejects the whole resolution
+   * rather than being swallowed.
    */
-  private async canonicalizeRoots(): Promise<{
-    readonly canonical: ReadonlyArray<RootPrefix>;
-    readonly complete: boolean;
-  }> {
+  private async canonicalizeRoots(): Promise<ReadonlyArray<RootPrefix>> {
     const resolved = await Promise.all(
       this.rootDirs.map(async (root) => {
         try {
           return await this.fsOps.realpath(root);
         } catch (err) {
-          if (isErrnoException(err) && err.code === 'ENOENT') return undefined;
+          if (isErrnoException(err) && err.code === 'ENOENT') {
+            return realpathNearestExisting(root, this.pathPolicy, this.fsOps);
+          }
           throw err;
         }
       }),
     );
-    return {
-      canonical: resolved
-        .filter((root) => root !== undefined)
-        .map((root) => this.toRootPrefix(root)),
-      complete: !resolved.includes(undefined),
-    };
+    return resolved.map((root) => this.toRootPrefix(root));
   }
 
   /**
@@ -511,25 +506,17 @@ export class NodeFileSystem implements FileSystem {
    * promise chain — callers thread the returned value onward, so there is no
    * synchronous "trust it's been set" field read: the type system proves
    * the value is defined via the `await`'s return, not a nullable field.
+   * Every root contributes a canonical prefix (nearest-existing fallback
+   * above), so the set is always complete and memoises on first resolution.
    */
   private async loadRootSet(): Promise<RootSet> {
     if (this.rootSetPromise === undefined) {
       this.rootSetPromise = this.canonicalizeRoots()
-        .then(({ canonical, complete }) => {
+        .then((canonical) => {
           const rootSet: RootSet = {
             canonical,
             all: unionRootPrefixes(this.getRootDirPrefixes(), canonical),
           };
-          if (!complete) {
-            // A root that does not exist YET must not be frozen as "missing"
-            // for the adapter's lifetime: the caller is about to create it
-            // (a worktree target) and its canonical form differs from its raw
-            // one under any symlinked ancestor. Drop the memo so the next
-            // call re-probes; the fail-closed set is still returned to THIS
-            // caller.
-            this.rootSetPromise = undefined;
-            return rootSet;
-          }
           this.resolvedRootSet = rootSet;
           return rootSet;
         })
@@ -546,13 +533,13 @@ export class NodeFileSystem implements FileSystem {
    * Synchronous-first-path accessor for the roots: returns the
    * already-settled `resolvedRootSet` field when populated (no `await`, no
    * microtask), falling back to `loadRootSet()` only on the first call or
-   * after a rejection / incomplete resolution cleared the field. Used by
+   * after a rejection cleared the field. Used by
    * every hot-path call site (`checkContainment`, `exists`, `symlink`)
    * instead of an unconditional `await this.loadRootSet()`.
    */
   private async resolveRootSet(): Promise<RootSet> {
     let rootSet = this.resolvedRootSet;
-    // Stryker disable next-line ConditionalExpression: equivalent — when `resolvedRootSet` is already set, `loadRootSet()` returns the memoised promise resolving to that same `RootSet` (set in lockstep in its resolve arm, cleared with the promise on rejection or an incomplete resolution), so forcing this guard true reassigns the identical value with no extra `realpath`; only the await fast-path is dropped.
+    // Stryker disable next-line ConditionalExpression: equivalent — when `resolvedRootSet` is already set, `loadRootSet()` returns the memoised promise resolving to that same `RootSet` (set in lockstep in its resolve arm, cleared with the promise on rejection), so forcing this guard true reassigns the identical value with no extra `realpath`; only the await fast-path is dropped.
     if (rootSet === undefined) {
       rootSet = await this.loadRootSet();
     }

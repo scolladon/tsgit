@@ -40,7 +40,7 @@ export const findLayout = async (
       const layout = await layoutFor(probe, current, candidate, pathPolicy);
       if (layout !== undefined) return layout;
     } else if (stat?.isFile === true) {
-      return layoutFromGitfile(probe, current, candidate, pathPolicy);
+      return layoutFromGitfile(probe, current, candidate, pathPolicy, stat.size);
     }
     const parent = pathPolicy.dirname(current);
     if (parent === current) return undefined; // reached filesystem root
@@ -51,15 +51,18 @@ export const findLayout = async (
 /**
  * Resolves a worktree's `.git` gitfile to its layout. Extracted so the
  * browser shim can reuse the exact same pointer-resolution logic instead of
- * re-implementing it.
+ * re-implementing it. `gitfileSize` is the byte size the caller's own `stat`
+ * of the gitfile reported — every caller has just stat'ed the entry to learn
+ * it IS a file, so threading the size avoids a redundant probe.
  */
 export const layoutFromGitfile = async (
   probe: LayoutProbe,
   workDir: string,
   gitfilePath: string,
   pathPolicy: PathPolicy,
+  gitfileSize: number,
 ): Promise<RepositoryLayoutInput> => {
-  const gitDir = await resolvePointer(probe, gitfilePath, workDir, pathPolicy);
+  const gitDir = await resolvePointer(probe, gitfilePath, workDir, pathPolicy, gitfileSize);
   const layout = await layoutFor(probe, workDir, gitDir, pathPolicy);
   if (layout === undefined) throw notARepository(workDir as FilePath);
   return layout;
@@ -75,23 +78,22 @@ const GITFILE_MAX_BYTES = 65536;
 
 /**
  * Parses and resolves a gitfile's `gitdir:` pointer. The gitfile path was
- * already `stat`ed as a file by the caller, so `readUtf8` returning
- * `undefined` here means unreadable-or-vanished, not "absent". The probe
- * contract collapses every failure to `undefined`, so an EACCES is not
- * distinguishable from a race-removed file; both map to the gitfile-format
- * refusal because the invariant that matters is the hard stop — discovery
- * must never walk up past a `.git` file it could not use.
+ * already `stat`ed as a file by the caller (which is where `gitfileSize`
+ * comes from), so `readUtf8` returning `undefined` here means
+ * unreadable-or-vanished, not "absent". The probe contract collapses every
+ * failure to `undefined`, so an EACCES is not distinguishable from a
+ * race-removed file; both map to the gitfile-format refusal because the
+ * invariant that matters is the hard stop — discovery must never walk up
+ * past a `.git` file it could not use.
  */
 const resolvePointer = async (
   probe: LayoutProbe,
   gitfilePath: string,
   baseDir: string,
   pathPolicy: PathPolicy,
+  gitfileSize: number,
 ): Promise<string> => {
-  const stat = await probe.stat(gitfilePath);
-  if (stat === undefined || stat.size > GITFILE_MAX_BYTES) {
-    throw gitfileInvalidFormat(gitfilePath);
-  }
+  if (gitfileSize > GITFILE_MAX_BYTES) throw gitfileInvalidFormat(gitfilePath);
   const raw = await probe.readUtf8(gitfilePath);
   if (raw === undefined) throw gitfileInvalidFormat(gitfilePath);
   const parsed = parseGitfilePointer(raw);

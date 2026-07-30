@@ -24,7 +24,13 @@ export const resolveFixedEntryLayout = async (
   const probe = fileSystemLayoutProbe(fs);
   const entry = await probe.stat(gitDir);
   if (entry?.isFile === true) {
-    const resolved = await layoutFromGitfile(probe, workDir, gitDir, portablePosixPolicy);
+    const resolved = await layoutFromGitfile(
+      probe,
+      workDir,
+      gitDir,
+      portablePosixPolicy,
+      entry.size,
+    );
     return { ...resolved, bare };
   }
   return { workDir, gitDir, bare };

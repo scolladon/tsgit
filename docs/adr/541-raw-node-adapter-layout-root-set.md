@@ -24,14 +24,20 @@ layouts), where real git refuses (`pathspec … is beyond a symbolic link`).
 
 The raw node adapter (and `makeWorktreeFs`) takes a **root set**: first root is
 primary (relative-path base); containment passes when the path is under any
-root, raw or canonical. A root that does not yet exist contributes no canonical
-prefix and is re-probed until it exists (needed by `worktree add`, which probes
-its own target pre-creation); non-ENOENT realpath errors still surface. An
+root, raw or canonical. A root that does not yet exist derives its canonical
+prefix from the realpath of its nearest EXISTING ancestor plus the missing
+tail (needed by `worktree add`, whose target may sit beneath a symlinked
+ancestor such as macOS `/tmp`); non-ENOENT realpath errors still surface. An
 empty root set fails closed.
 
 ## Consequences
 
-`commonAncestor` loses its discovery-time consumer (it remains a tested
-utility; ADR-495's cross-platform model still governs path comparison).
-Symlink escapes from linked worktrees are refused exactly as in a normal repo,
-pinned by unit and integration regressions.
+`commonAncestor` loses its last production consumer (retained short-term as a
+tested utility; deleting it — and folding ADR-495's path-algebra note here —
+is a structural call left to the refactoring pass). ADR-495's cross-volume
+limitation no longer applies to the adapter root: each volume's root stands on
+its own. Through-adapter symlink escapes from linked worktrees are refused
+exactly as in a normal repo, pinned by unit and integration regressions; the
+guarantee is through-adapter — the pre-existing per-parent realpath-cache
+TOCTOU under a concurrent external writer is recorded in the design's
+Out-of-scope and is not widened by this decision.

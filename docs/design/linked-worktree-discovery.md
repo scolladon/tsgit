@@ -431,10 +431,9 @@ exists (`worktree add` probes its own not-yet-created target through this
 adapter). For a normal repo the set collapses to `[workDir]` — unchanged.
 `makeWorktreeFs` (L89–93) passes its full root list the same way.
 
-Cross-volume worktrees on Windows remain the documented ADR-495 limitation
-(the cross-volume root admits nothing after native resolution, so the operation
-fails closed with `PATHSPEC_OUTSIDE_REPO` rather than silently reading the
-wrong tree).
+ADR-495's cross-volume limitation no longer applies to the adapter root: with
+a root set, each volume's root stands on its own and admits its own subtree
+(`commonAncestor` no longer participates in production rooting).
 
 `discoverLayout` (L112–126) is deleted; the shim calls the shared `findLayout`
 with a `LayoutProbe` backed by raw `node:fs/promises` (preserving the "before the
@@ -703,3 +702,12 @@ whose `@writes` surface changes must keep a named interop proof;
   config, which the first bullet's config-driven-layout exclusion already
   covers. The main entry's *path* is derived correctly in every shape
   (ADR-540); only the flag stays layout-driven.
+- Closing the node adapter's per-parent realpath-cache TOCTOU: the
+  `parentRealpathCache` memoises a parent's realpath and containment verdict
+  (invalidated by `rename`/`rmRecursive`), trading an unbounded
+  concurrent-EXTERNAL-writer window on the `creation`/`rm`/`readlink`/
+  `openWithNoFollow` arms for the per-parent walk amortisation. Through-adapter
+  mutations invalidate correctly; the exposure needs a concurrent local writer
+  racing the cache, pre-dates this change, and is inherited unchanged by the
+  root-set generalisation. Recorded here so the symlink-refusal guarantee is
+  read as through-adapter, not adversarially concurrent.

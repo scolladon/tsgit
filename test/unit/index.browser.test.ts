@@ -3,9 +3,11 @@ import { openRepository } from '../../src/index.browser.js';
 import type { FileSystem } from '../../src/ports/file-system.js';
 import { resolveFixedEntryLayout } from '../../src/repository/fixed-entry-layout.js';
 
-// The browser shim only stores the `rootHandle` (BrowserFileSystem's
-// constructor never touches it) and `openRepository` performs no eager
-// I/O, so a stub handle is sufficient to assert the ctx it builds.
+// The stub handle makes every OPFS call reject; `fileSystemLayoutProbe`
+// maps those rejections to "absent", so `openRepository`'s fixed-entry
+// probe falls through to the literal layout. These tests therefore ALSO
+// pin the absent-`/.git` (pre-`init`) branch of `resolveFixedEntryLayout`
+// — including the `entry?.isFile` optional chain — not just the ctx shape.
 const fakeHandle = {} as unknown as FileSystemDirectoryHandle;
 
 describe('browser shim — openRepository', () => {

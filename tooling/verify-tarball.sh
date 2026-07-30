@@ -28,9 +28,11 @@ SIZE_CAP=$((750 * 1024))
 PACKDIR=""
 INVENTORY=""
 BUNDLE=""
+DEFAULT_ENTRY_DIR=""
 cleanup() {
   rm -f "$INVENTORY" "$BUNDLE"
   if [ -n "$PACKDIR" ]; then rm -rf "$PACKDIR"; fi
+  if [ -n "$DEFAULT_ENTRY_DIR" ]; then rm -rf "$DEFAULT_ENTRY_DIR"; fi
 }
 trap cleanup EXIT
 
