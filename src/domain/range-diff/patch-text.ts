@@ -19,6 +19,7 @@ import {
   type PatchFile,
 } from '../diff/index.js';
 import { splitLines } from '../diff/line-diff.js';
+import { assertPatchTextFits } from '../diff/patch-length.js';
 import type { ObjectId } from '../objects/index.js';
 import { findFuncLine } from './funcname.js';
 
@@ -148,7 +149,9 @@ export const renderRangePatch = (input: CommitPatchInput): RenderedPatch => {
   for (const file of input.files) {
     const header = ` ## ${fileHeader(file.change)} ##`;
     const { lines, count } = renderFileDiff(file);
-    patch += `\n${header}\n${lines.map((line) => `${line}\n`).join('')}`;
+    const block = `\n${header}\n${lines.map((line) => `${line}\n`).join('')}`;
+    assertPatchTextFits(patch.length + block.length);
+    patch += block;
     diffsize += 1 + count; // the file header line plus every rendered diff line
   }
   const diffOffset = input.files.length > 0 ? head.length + 1 : 0;

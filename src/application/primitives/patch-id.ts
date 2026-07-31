@@ -25,13 +25,24 @@ const ENCODER = new TextEncoder();
 const EMPTY = new Uint8Array();
 
 /** Drop the line-number `@@` headers and base-oid `index` lines, then strip
- *  whitespace — the bytes that distinguish a change from an equivalent one. */
-const canonicalise = (patchText: string): string =>
-  patchText
-    .split('\n')
-    .filter((line) => !line.startsWith('@@ ') && !line.startsWith('index '))
-    .map((line) => line.replace(/\s/g, ''))
-    .join('');
+ *  whitespace — the bytes that distinguish a change from an equivalent one.
+ *  Walked one line at a time rather than `split`/`filter`/`map`/`join`, which
+ *  holds every line AND every stripped line alongside the patch text: the peak
+ *  is the text plus the kept output, not three copies of it. */
+const canonicalise = (patchText: string): string => {
+  const kept: string[] = [];
+  let start = 0;
+  while (start <= patchText.length) {
+    const lineFeed = patchText.indexOf('\n', start);
+    const end = lineFeed === -1 ? patchText.length : lineFeed;
+    const line = patchText.slice(start, end);
+    if (!line.startsWith('@@ ') && !line.startsWith('index ')) {
+      kept.push(line.replace(/\s/g, ''));
+    }
+    start = end + 1;
+  }
+  return kept.join('');
+};
 
 /** Both blob oids carried by a change, in old→new order (absent side → empty). */
 const oidsOf = (change: DiffChange): string => {

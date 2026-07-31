@@ -10,6 +10,7 @@ import type {
 } from './diff-change.js';
 import { invalidDiffInput } from './error.js';
 import { diffLines, type LineHunk, splitLines } from './line-diff.js';
+import { assertPatchTextFits } from './patch-length.js';
 import { MAX_SCORE, toSimilarityPercent } from './similarity.js';
 import { isBlankLine, type LineKey, NONE_KEY } from './whitespace.js';
 
@@ -830,14 +831,21 @@ export function renderPatch(files: ReadonlyArray<PatchFile>, opts?: PatchOptions
   for (const file of files) assertSafePaths(file.change, prefix);
   const emit: EmitOptions | undefined = buildEmitOptions(opts);
   const lines: string[] = [];
+  // Each line carries its own '\n' separator, and the trailing '' pushed below
+  // consumes the last one — so this running sum is exactly the joined length.
+  let chars = 0;
   for (const file of files) {
     const block = renderFile(file, prefix, contextLines, emit);
-    for (const line of block) lines.push(line);
+    for (const line of block) {
+      lines.push(line);
+      chars += line.length + 1;
+    }
   }
   // When all file blocks are blank-suppressed, lines stays empty and we return ''.
   // Otherwise push the trailing '' separator and join.
   // Stryker disable next-line ConditionalExpression: equivalent — when `lines` is empty the fallthrough pushes one '' and joins, and [''].join('\n') === '' === [].join('\n'), so both branches return ''.
   if (lines.length === 0) return '';
+  assertPatchTextFits(chars);
   lines.push('');
   return lines.join('\n');
 }
