@@ -1,3 +1,4 @@
+import { sideIsBinary } from './binary-decision.js';
 import type {
   AddChange,
   CopyChange,
@@ -8,7 +9,8 @@ import type {
   TypeChangeChange,
 } from './diff-change.js';
 import { invalidDiffInput } from './error.js';
-import { diffLines, isBinary, type LineHunk, splitLines } from './line-diff.js';
+import { diffLines, type LineHunk, splitLines } from './line-diff.js';
+import { assertPatchTextFits, joinedLineLength, MAX_PATCH_TEXT_CHARS } from './patch-length.js';
 import { MAX_SCORE, toSimilarityPercent } from './similarity.js';
 import { isBlankLine, type LineKey, NONE_KEY } from './whitespace.js';
 
@@ -48,10 +50,6 @@ const DEFAULT_PREFIX: PatchPathPrefix = { old: 'a/', new: 'b/' };
 const DEFAULT_CONTEXT_LINES = 3;
 const NO_NEWLINE_MARKER = '\\ No newline at end of file';
 const NEWLINE_CODE = 0x0a;
-
-/** Resolve the binary verdict for one side, honouring an optional patch override. */
-const sideIsBinary = (bytes: Uint8Array, override: 'binary' | 'text' | undefined): boolean =>
-  override === undefined ? isBinary(bytes) : override === 'binary';
 
 // Stryker disable next-line ObjectLiteral: equivalent — TextDecoder's default `fatal` option is already `false`, so `{}` behaves identically to `{ fatal: false }`.
 const decoder = new TextDecoder('utf-8', { fatal: false });
@@ -335,11 +333,14 @@ function trailingNoNewline(edit: Edit, ctx: NoNewlineCtx): boolean {
     edit.kind !== 'delete' &&
     edit.newIndex === ctx.lastNewIdx &&
     ctx.lastNewIdx === ctx.newTotal - 1;
-  // Stryker disable next-line ConditionalExpression,BlockStatement: equivalent — for a context edit, `isLastOld && !oldHasTrailingNewline` can only be true when the matched line is the file's true terminal on both sides (a byte-identical context match forces equal trailing-newline state), which forces `isLastNew && !newHasTrailingNewline` true too — so skipping straight to `return isLastNew && !ctx.newHasTrailingNewline` yields the same result as the OR below.
-  if (edit.kind === 'context') {
-    // Stryker disable next-line LogicalOperator,ConditionalExpression: equivalent — per the proof above, the two operands of this OR are always equal for a context edit, so OR, AND-of-both, and either operand alone agree.
-    return (isLastOld && !ctx.oldHasTrailingNewline) || (isLastNew && !ctx.newHasTrailingNewline);
-  }
+  // git renders a context line from the postimage and derives the no-newline
+  // marker from the postimage's termination alone (C4): once a whitespace-only
+  // context match can straddle differing termination, the preimage side must
+  // not be consulted here. The branch is kept rather than folded into the
+  // fallthrough it currently agrees with: it is what states the rule for a
+  // context line, and an insert-side change must not silently move it.
+  // NOTE: forcing this branch's own condition false is therefore an equivalent mutant — a context edit falls past the `delete` test to the final return, which is this same expression. Left unannotated because three sibling ConditionalExpression mutants on this line are real, killed mutants, and Stryker's next-line disable can't distinguish one variant from another.
+  if (edit.kind === 'context') return isLastNew && !ctx.newHasTrailingNewline;
   if (edit.kind === 'delete') return isLastOld && !ctx.oldHasTrailingNewline;
   return isLastNew && !ctx.newHasTrailingNewline;
 }
@@ -826,6 +827,20 @@ function buildEmitOptions(opts: PatchOptions | undefined): EmitOptions | undefin
 }
 
 export function renderPatch(files: ReadonlyArray<PatchFile>, opts?: PatchOptions): string {
+  return renderPatchWithBound(files, opts, MAX_PATCH_TEXT_CHARS);
+}
+
+// Test-only seam: every production call site goes through `renderPatch` above,
+// which always runs at the engine's own string ceiling. This direct-bound entry
+// lets unit tests pin the refusal — and the running character count feeding it —
+// at a small bound, instead of rendering the half a gigabyte of patch text the
+// real ceiling would take. Deliberately not re-exported from
+// domain/diff/index.ts or public-types.ts: it must never become public API.
+export function renderPatchWithBound(
+  files: ReadonlyArray<PatchFile>,
+  opts: PatchOptions | undefined,
+  maxChars: number,
+): string {
   const contextLines = resolveContextLines(opts?.contextLines);
   // Stryker disable next-line ConditionalExpression: equivalent — an empty `files` array leaves `lines` empty after the loop below, and the `lines.length === 0` guard further down returns `''` regardless of this early return.
   if (files.length === 0) return '';
@@ -833,9 +848,20 @@ export function renderPatch(files: ReadonlyArray<PatchFile>, opts?: PatchOptions
   for (const file of files) assertSafePaths(file.change, prefix);
   const emit: EmitOptions | undefined = buildEmitOptions(opts);
   const lines: string[] = [];
+  // Each line carries its own '\n' separator, and the trailing '' pushed below
+  // consumes the last one — so this running sum is exactly the joined length.
+  let chars = 0;
   for (const file of files) {
     const block = renderFile(file, prefix, contextLines, emit);
-    for (const line of block) lines.push(line);
+    for (const line of block) {
+      lines.push(line);
+      chars += joinedLineLength(line);
+      // Checked here, not after the loop: asserting on the total would let the
+      // whole line array accumulate first, turning an out-of-memory crash into
+      // a refusal only once the memory had already been spent. This refuses on
+      // the line that crosses the bound.
+      assertPatchTextFits(chars, maxChars);
+    }
   }
   // When all file blocks are blank-suppressed, lines stays empty and we return ''.
   // Otherwise push the trailing '' separator and join.

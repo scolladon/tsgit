@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import type { DiffChange, PatchFile } from '../../../../src/domain/diff/index.js';
 import { MAX_SCORE } from '../../../../src/domain/diff/similarity.js';
+import { TsgitError } from '../../../../src/domain/error.js';
 import { FILE_MODE, type FilePath, type ObjectId } from '../../../../src/domain/objects/index.js';
 import {
   type CommitPatchInput,
   renderRangePatch,
+  renderRangePatchWithBound,
 } from '../../../../src/domain/range-diff/patch-text.js';
 
 const oid = (char: string): ObjectId => char.repeat(40) as ObjectId;
@@ -313,6 +315,54 @@ describe('renderRangePatch', () => {
 
       // Assert
       expect(result.diff).toContain('+TWO\n \\ No newline at end of file\n');
+    });
+  });
+});
+
+// The block is weighed before it is built, and the weight is only ever read by
+// the refusal — so at the engine's real ceiling neither the measurement nor the
+// guard is reachable from a test. The direct-bound seam brings both into reach.
+describe('renderRangePatchWithBound', () => {
+  const input = baseInput({ files: [modify('f.txt', 'one\ntwo\n', 'one\nTWO\n')] });
+  const full = renderRangePatch(input);
+
+  describe('Given a bound one character below what the commit renders to', () => {
+    describe('When renderRangePatchWithBound is called', () => {
+      it('Then it refuses with INVALID_DIFF_INPUT naming the count and the bound', () => {
+        // Arrange
+        const maxChars = full.patch.length - 1;
+        const sut = renderRangePatchWithBound;
+
+        // Act + Assert
+        try {
+          sut(input, maxChars);
+          expect.unreachable();
+        } catch (error) {
+          expect(error).toBeInstanceOf(TsgitError);
+          const data = (error as TsgitError).data;
+          expect(data.code).toBe('INVALID_DIFF_INPUT');
+          if (data.code === 'INVALID_DIFF_INPUT') {
+            expect(data.reason).toBe(
+              `rendered patch is ${full.patch.length} characters; the maximum is ${maxChars}`,
+            );
+          }
+        }
+      });
+    });
+  });
+
+  describe('Given a bound exactly equal to what the commit renders to', () => {
+    describe('When renderRangePatchWithBound is called', () => {
+      it('Then it renders the whole patch — the block weight is its built length, exactly', () => {
+        // Arrange
+        const sut = renderRangePatchWithBound;
+
+        // Act
+        const result = sut(input, full.patch.length);
+
+        // Assert
+        expect(result.patch).toBe(full.patch);
+      });
     });
   });
 });

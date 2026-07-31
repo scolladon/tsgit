@@ -154,7 +154,9 @@
         "pullCounter",
         "throwingAt",
         "awaitable",
-        "abortableRange"
+        "abortableRange",
+        "createLineDigestScanner",
+        "createLineDigestFold"
       ]
     },
     "integrationProof": {

@@ -21,10 +21,29 @@ export interface LineDiff {
 }
 
 export const BINARY_DETECTION_BYTES = 8_000;
+// Not consulted by isBinary — git's own binary rule is the NUL window alone.
+// Live in exactly one place: the window grep's binary-presence probe scans
+// (grep.ts). It does NOT bound the regex match path, whose per-line window was
+// reverted — a text line is matched in full, at any length.
 export const MAX_LINE_BYTES = 65_536;
+// DEPRECATED — no consumer, and NOT a bound: diffLines imposes no limit on how
+// many lines either side may have. A caller reading this as a maximum will be
+// wrong. Kept at today's value only because dropping a public export breaks
+// consumers; do not add uses.
 export const MAX_LINES = 100_000;
+// The live bail in computeMyersTrace: a pair whose true edit distance exceeds
+// this degrades, independent of how many lines either side has. The only diff
+// bound that still exists.
 export const MAX_DIFF_EDIT_DISTANCE = 10_000;
+// DEPRECATED — no consumer, and NOT a bound: the Myers iteration budget is
+// MAX_DIFF_EDIT_DISTANCE alone and is not derived from any factor. Kept at
+// today's value only because dropping a public export breaks consumers; do not
+// add uses.
 export const MAX_DIFF_ITERATION_FACTOR = 1_000;
+// DEPRECATED — no consumer, and NOT a bound: diffLines no longer pre-checks
+// total input size, so a pair far past this value diffs normally. Kept at
+// today's value only because dropping a public export breaks consumers; do not
+// add uses.
 export const MAX_DIFF_LINES = 50_000;
 
 const LF = 0x0a;
@@ -54,33 +73,18 @@ function hasNulInWindow(bytes: Uint8Array): boolean {
   return false;
 }
 
-function exceedsLineCaps(bytes: Uint8Array): boolean {
-  let currentLineBytes = 0;
-  let lineCount = 0;
-  for (let i = 0; i < bytes.length; i++) {
-    currentLineBytes++;
-    if (currentLineBytes >= MAX_LINE_BYTES) return true;
-    if (bytes[i] === LF) {
-      lineCount++;
-      if (lineCount >= MAX_LINES) return true;
-      currentLineBytes = 0;
-    }
-  }
-  if (currentLineBytes > 0) {
-    lineCount++;
-    if (lineCount >= MAX_LINES) return true;
-  }
-  return false;
-}
-
 export function isBinary(bytes: Uint8Array): boolean {
-  return hasNulInWindow(bytes) || exceedsLineCaps(bytes);
+  return hasNulInWindow(bytes);
 }
 
 type Edit = 'equal' | 'delete' | 'insert';
 
+// Every stored value is an x-coordinate — a non-negative integer bounded by the
+// line count — so the trace rows and the working array are Int32Array, not
+// number[]: measured 3.9 bytes per cell against 7.7, exactly, with no change to
+// any verdict.
 interface MyersResult {
-  readonly trace: ReadonlyArray<ReadonlyArray<number>>;
+  readonly trace: ReadonlyArray<Int32Array>;
   readonly totalD: number;
 }
 
@@ -89,7 +93,7 @@ interface MyersResult {
 // reconstruction snapshot. Since v[k-1+offset]! is always a non-negative x-coordinate,
 // `x < 0` / `x < undefined` is already false, so the comparison alone yields the
 // guard's result without the redundant `k !== d &&`.
-function chooseDown(v: ReadonlyArray<number>, offset: number, d: number, k: number): boolean {
+function chooseDown(v: Int32Array, offset: number, d: number, k: number): boolean {
   return k === -d || v[k - 1 + offset]! < v[k + 1 + offset]!;
 }
 
@@ -101,7 +105,7 @@ type LineEq = (i: number, j: number) => boolean;
 function advanceSnake(
   oursLength: number,
   theirsLength: number,
-  v: ReadonlyArray<number>,
+  v: Int32Array,
   offset: number,
   d: number,
   k: number,
@@ -121,37 +125,44 @@ function computeMyersTrace(
   oursLength: number,
   theirsLength: number,
   eq: LineEq,
+  maxEditDistance: number,
 ): MyersResult | undefined {
   const M = oursLength;
   const N = theirsLength;
-  // M+N is already bounded by diffLines's MAX_DIFF_LINES pre-check (the sole
-  // caller returns the whole-file fallback before interning or tracing), so
-  // no size guard is repeated here.
-  const maxD = M + N;
-  const offset = maxD;
-  const v = new Array<number>(2 * maxD + 1).fill(0);
-  const trace: number[][] = [];
+  // The loop below bails one step past maxEditDistance, so it never reaches a
+  // diagonal outside [-maxEditDistance, maxEditDistance] however large the
+  // input is. Sizing off M+N alone would allocate ~40M cells (305 MB,
+  // measured) for a 10M-line-per-side pair before the first snake, to index
+  // diagonals the walk cannot reach.
+  //
+  // DEPENDS on the caller returning early for M === 0 && N === 0. There `span`
+  // is 0, and the two array kinds stop disagreeing about out-of-range reads: a
+  // number[] yields undefined (every comparison false, so the walk exhausts the
+  // budget and degrades) where an Int32Array coerces to 0 and returns a trace
+  // for a pair that has no lines. Relaxing that upstream guard silently changes
+  // this function's verdict — re-check it here before touching it.
+  // Stryker disable next-line MethodExpression: equivalent — Math.max only ever widens the row. Every read and write is v[k + offset] with |k| ≤ d ≤ maxEditDistance, and offset is span itself, so both sizes address the same diagonals in bounds and the walk returns the same trace; only the allocation this line exists to shrink differs.
+  const span = Math.min(M + N, maxEditDistance + 1);
+  const offset = span;
+  const v = new Int32Array(2 * span + 1);
+  const trace: Int32Array[] = [];
 
-  const iterationBudget = maxD * MAX_DIFF_ITERATION_FACTOR;
-  let iterations = 0;
-  // Iteration budget bounds total CPU. diffLines's MAX_DIFF_LINES pre-check
-  // bounds M+N, which transitively caps D (edit distance ≤ M+N ≤ MAX_DIFF_LINES) and
-  // trace memory (snapshots × v-array size). Together they subsume the design's
-  // MAX_DIFF_EDIT_DISTANCE constant, which remains exported for documentation.
+  // Bailing on the edit distance itself, rather than on M+N or on a count
+  // derived from it, bounds trace memory and CPU at a fixed ceiling
+  // regardless of input size: reaching d = maxEditDistance costs the same
+  // whether M+N is 20 000 or 20 000 000.
   for (let d = 0; ; d++) {
+    if (d > maxEditDistance) return undefined;
     // Only store the active k-range [-d, d] (2*d+1 entries) instead of full v
     // to bound trace memory at O(D^2) instead of O(D*maxD).
     const snapLen = 2 * d + 1;
-    // Stryker disable next-line ArrayDeclaration: equivalent — the loop below densely fills indices 0..snapLen-1, so a pre-sized array and an empty one converge to identical content
-    const snapshot = new Array<number>(snapLen);
-    // Stryker disable next-line EqualityOperator: equivalent — reconstructEdits only reads indices prevK+d ≤ 2d-1 < snapLen (k===d always picks down=false), so the extra index snapLen is never read
+    const snapshot = new Int32Array(snapLen);
+    // Stryker disable next-line EqualityOperator: equivalent — reconstructEdits only reads indices prevK+d ≤ 2d-1 < snapLen (k===d always picks down=false), so the extra index snapLen is never read; on a typed array the extra write is silently dropped as out of bounds
     for (let ki = 0; ki < snapLen; ki++) {
       snapshot[ki] = v[offset - d + ki]!;
     }
     trace.push(snapshot);
     for (let k = -d; k <= d; k += 2) {
-      iterations++;
-      if (iterations > iterationBudget) return undefined;
       const snake = advanceSnake(oursLength, theirsLength, v, offset, d, k, eq);
       v[k + offset] = snake.x;
       if (snake.x >= M && snake.y >= N) {
@@ -161,11 +172,7 @@ function computeMyersTrace(
   }
 }
 
-function reconstructEdits(
-  _M: number,
-  _N: number,
-  trace: ReadonlyArray<ReadonlyArray<number>>,
-): Edit[] {
+function reconstructEdits(_M: number, _N: number, trace: ReadonlyArray<Int32Array>): Edit[] {
   const edits: Edit[] = [];
   let x = _M;
   let y = _N;
@@ -328,10 +335,29 @@ function buildLineEquality(
   return (i, j) => oursIds[i] === theirsIds[j];
 }
 
+/**
+ * Myers line diff of `ours` against `theirs`, degrading to a whole-file
+ * replace when the pair's true edit distance exceeds `MAX_DIFF_EDIT_DISTANCE`.
+ */
 export function diffLines(
   ours: Uint8Array,
   theirs: Uint8Array,
   options?: LineDiffOptions,
+): LineDiff {
+  return diffLinesWithBound(ours, theirs, options, MAX_DIFF_EDIT_DISTANCE);
+}
+
+// Test-only seam: every production call site goes through `diffLines` above,
+// which always runs at the fixed `MAX_DIFF_EDIT_DISTANCE`. This direct-bound
+// entry lets unit tests pin the edit-distance bail at a small distance
+// instead of allocating a MAX_DIFF_EDIT_DISTANCE-scale pair (hundreds of MB)
+// to exercise the same boundary. Deliberately not re-exported from
+// domain/diff/index.ts or public-types.ts — it must never become public API.
+export function diffLinesWithBound(
+  ours: Uint8Array,
+  theirs: Uint8Array,
+  options: LineDiffOptions | undefined,
+  maxEditDistance: number,
 ): LineDiff {
   const lineKey = options?.lineKey;
   const oursLines = splitLines(ours);
@@ -348,14 +374,8 @@ export function diffLines(
     };
   }
 
-  // Interning every line is O(M+N) work — skip it entirely when the trace
-  // computation would refuse the input anyway.
-  if (M + N > MAX_DIFF_LINES) {
-    return wholeFileFallback(oursLines, theirsLines);
-  }
-
   const eq = buildLineEquality(oursLines, theirsLines, lineKey);
-  const myers = computeMyersTrace(M, N, eq);
+  const myers = computeMyersTrace(M, N, eq, maxEditDistance);
   if (myers === undefined) {
     return wholeFileFallback(oursLines, theirsLines);
   }

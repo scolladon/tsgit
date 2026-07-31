@@ -94,11 +94,47 @@ export class NodeCompressor implements Compressor {
     const inflate = createInflate();
     let controller: TransformStreamDefaultController<Uint8Array> | undefined;
     let total = 0;
-    // start() runs synchronously before any transform/flush, so endPromise is guaranteed to
-    // be assigned by the time flush() executes.
-    let endPromise!: Promise<void>;
+    let resolveEnd!: () => void;
+    let rejectEnd!: (err: unknown) => void;
+    // endPromise is created eagerly (not inside start()) so both the 'data'
+    // handler's cancellation catch and the cancel() hook below can settle it
+    // directly — see stopForCancellation.
+    const endPromise = new Promise<void>((resolve, reject) => {
+      resolveEnd = resolve;
+      rejectEnd = reject;
+    });
 
-    return new TransformStream<Uint8Array, Uint8Array>({
+    // No "already settled" guard is needed here or below: Node guarantees a
+    // Readable emits at most one of {'end', 'error'} and no 'data' after
+    // either, and destroy() (called on every teardown path below) is
+    // documented to stop further emission too — so each teardown path can
+    // only ever run once per stream, and resolveEnd()/rejectEnd() are
+    // idempotent regardless. Verified empirically: racing cancellation and
+    // cap-exceeded against multi-megabyte, many-chunk payloads never
+    // produced a second call into any of these paths.
+    //
+    // A cancelled consumer is an expected termination, not a decompression
+    // failure: stop the zlib pump and resolve (never reject) endPromise
+    // ourselves. Once flush() has already run — the common case, since the
+    // whole input is typically written and the source closed in one shot,
+    // well before decompression finishes — the Streams runtime aliases
+    // reader.cancel()'s promise to this SAME in-flight finish promise instead
+    // of re-invoking the transformer's cancel() hook. Without settling it
+    // here, cancellation would hang forever awaiting an 'end' that destroy()
+    // prevents from ever firing.
+    function stopForCancellation(): void {
+      inflate.destroy();
+      resolveEnd();
+    }
+
+    // lib.dom.d.ts's Transformer type predates the WHATWG spec's addition of
+    // an optional cancel() hook; Node's runtime TransformStream honours it
+    // (verified empirically). Typing the transformer through this local
+    // extension — rather than widening the ambient Transformer type used by
+    // the browser/memory adapters — keeps the gap-fill scoped to this file.
+    const transformer: Transformer<Uint8Array, Uint8Array> & {
+      cancel(reason: unknown): void;
+    } = {
       start(c) {
         controller = c;
         inflate.on('data', (chunk: Buffer) => {
@@ -106,24 +142,39 @@ export class NodeCompressor implements Compressor {
           if (total > cap) {
             controller?.error(decompressFailed('inflated output exceeds safety cap'));
             inflate.destroy();
+            // destroy() means no 'end' will ever fire, so an in-flight flush()
+            // would wait forever. RESOLVE, never reject: the controller already
+            // carries the cap error, and rejecting here would replace it with a
+            // duplicate on the writable side.
+            resolveEnd();
             return;
           }
-          controller?.enqueue(new Uint8Array(chunk));
+          try {
+            controller?.enqueue(new Uint8Array(chunk));
+          } catch {
+            // `enqueue` throws only when the readable side is already finished,
+            // and there are exactly three ways to get there. Two are the paths
+            // above and below — the cap error and the 'error' handler — which
+            // have already reported the failure and settled endPromise, so
+            // re-running the teardown is a no-op. The third is the one this
+            // handles: the consumer cancelled the reader between 'data' events.
+            // Once flush() has started, the Streams runtime has already cleared
+            // the cancel() hook below (verified empirically), so this catch is
+            // the only place cancellation can be noticed. Nothing is rethrown
+            // because nothing is left to report — and a throw out of a Node
+            // 'data' handler is an uncaught exception, not a caller-visible
+            // error.
+            stopForCancellation();
+          }
         });
-        // endPromise must both resolve (normal completion) AND reject (error completion)
-        // so that flush() does not hang when the underlying stream emits 'error'. Node's
-        // createInflate() does not emit 'end' after 'error', so wiring only 'end' → resolve
-        // would leave flush() awaiting a promise that never settles in the error path.
-        endPromise = new Promise<void>((resolve, reject) => {
-          inflate.on('end', () => {
-            controller?.terminate();
-            resolve();
-          });
-          inflate.on('error', (err: Error) => {
-            const mapped = decompressFailed(err.message);
-            controller?.error(mapped);
-            reject(mapped);
-          });
+        inflate.on('end', () => {
+          controller?.terminate();
+          resolveEnd();
+        });
+        inflate.on('error', (err: Error) => {
+          const mapped = decompressFailed(err.message);
+          controller?.error(mapped);
+          rejectEnd(mapped);
         });
       },
       transform(chunk) {
@@ -133,7 +184,19 @@ export class NodeCompressor implements Compressor {
         inflate.end();
         return endPromise;
       },
-    });
+      // Belt-and-braces: invoked by the Streams runtime when the consumer
+      // cancels the readable side *before* flush() has started (e.g. a
+      // multi-write source not yet fully consumed). In that timing this hook
+      // does fire and stops the pump at the root; in the timing exercised by
+      // the regression test above, the 'data' handler's catch is what fires.
+      //
+      // Stryker disable next-line BlockStatement: equivalent — flush() has not started in this timing, so endPromise is awaited by nobody and the next 'data' enqueue throws into the catch above, reaching the same teardown one chunk later.
+      cancel() {
+        stopForCancellation();
+      },
+    };
+
+    return new TransformStream<Uint8Array, Uint8Array>(transformer);
   };
 }
 

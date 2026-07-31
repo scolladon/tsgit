@@ -1155,5 +1155,171 @@ describe.skipIf(!GIT_AVAILABLE)(
         }
       });
     });
+
+    // C8 — a NUL-free single line over MAX_LINE_BYTES with a real content change,
+    // on the plain path (no whitespace mode active). The line-length cap no longer
+    // decides isBinary, so numstat now reports the real 1/1 counts, matching git.
+    describe('Given a NUL-free single line over MAX_LINE_BYTES with a real content change, When diffing with no whitespace mode', () => {
+      it('Then numstat reports real counts (1 1), matching live git', async () => {
+        // Arrange
+        const pair = await makePeerPair('c8-longline');
+        try {
+          runGit(['init', '-q', '-b', 'main', pair.peer]);
+          const before = `${'a'.repeat(70_000)}\n`;
+          const after = `${'a'.repeat(69_999)}b\n`;
+          await writePeerFile(pair.peer, 'f.txt', before);
+          runGit(['-C', pair.peer, 'add', 'f.txt']);
+          gitCommit(pair.peer, 'first');
+          await writePeerFile(pair.peer, 'f.txt', after);
+          runGit(['-C', pair.peer, 'add', 'f.txt']);
+          gitCommit(pair.peer, 'second');
+          const liveNumstat = git(
+            pair.peer,
+            'diff',
+            '--no-ext-diff',
+            '--numstat',
+            'HEAD~1',
+            'HEAD',
+          ).trim();
+
+          const ctx = createMemoryContext();
+          await init(ctx);
+          await writeCtxFile(ctx, 'f.txt', before);
+          await add(ctx, ['f.txt']);
+          const c1 = await commit(ctx, { message: 'first', author });
+          await writeCtxFile(ctx, 'f.txt', after);
+          await add(ctx, ['f.txt']);
+          const c2 = await commit(ctx, { message: 'second', author });
+
+          // Act
+          const result = await diff(ctx, { from: c1.id, to: c2.id, withStat: true });
+
+          // Assert
+          const tsgitNumstat = numstatRowsFrom(result as StatTreeDiff).join('\n');
+          expect(tsgitNumstat).toBe(liveNumstat);
+          expect(tsgitNumstat).toBe('1\t1\tf.txt');
+        } finally {
+          await pair.dispose();
+        }
+      });
+    });
+
+    // C8 — the NUL-boundary control pair, on the plain path: a NUL at offset 7 999
+    // (inside git's [0, 8 000) window) is binary; at offset 8 000 (just outside) it is
+    // text. `hasNulInWindow` already implements this exactly, so both sides of the
+    // boundary must match live git before and after this change.
+    describe('Given a NUL at the binary-detection-window boundary, When diffing with no whitespace mode', () => {
+      const nulAt = (offset: number, totalLength: number): string =>
+        `${'a'.repeat(offset)}\0${'a'.repeat(totalLength - offset - 1)}\n`;
+      const TOTAL_LENGTH = 8_200;
+
+      it.each([
+        { label: 'a NUL at offset 7 999 (inside the window)', offset: 7_999, expectBinary: true },
+        { label: 'a NUL at offset 8 000 (outside the window)', offset: 8_000, expectBinary: false },
+      ])('Then $label matches live git numstat', async ({ offset, expectBinary }) => {
+        // Arrange
+        const pair = await makePeerPair(`c8-nul-${offset}`);
+        try {
+          runGit(['init', '-q', '-b', 'main', pair.peer]);
+          const before = `${'a'.repeat(TOTAL_LENGTH)}\n`;
+          const after = nulAt(offset, TOTAL_LENGTH);
+          await writePeerFile(pair.peer, 'f.txt', before);
+          runGit(['-C', pair.peer, 'add', 'f.txt']);
+          gitCommit(pair.peer, 'first');
+          await writePeerFile(pair.peer, 'f.txt', after);
+          runGit(['-C', pair.peer, 'add', 'f.txt']);
+          gitCommit(pair.peer, 'second');
+          const liveNumstat = git(
+            pair.peer,
+            'diff',
+            '--no-ext-diff',
+            '--numstat',
+            'HEAD~1',
+            'HEAD',
+          ).trim();
+
+          const ctx = createMemoryContext();
+          await init(ctx);
+          await writeCtxFile(ctx, 'f.txt', before);
+          await add(ctx, ['f.txt']);
+          const c1 = await commit(ctx, { message: 'first', author });
+          await writeCtxFile(ctx, 'f.txt', after);
+          await add(ctx, ['f.txt']);
+          const c2 = await commit(ctx, { message: 'second', author });
+
+          // Act
+          const result = await diff(ctx, { from: c1.id, to: c2.id, withStat: true });
+
+          // Assert
+          const tsgitNumstat = numstatRowsFrom(result as StatTreeDiff).join('\n');
+          expect(tsgitNumstat).toBe(liveNumstat);
+          expect(tsgitNumstat).toBe(expectBinary ? '-\t-\tf.txt' : '1\t1\tf.txt');
+        } finally {
+          await pair.dispose();
+        }
+      });
+    });
+
+    // C8/DC-16 — a NUL-free file with over MAX_LINES lines but a single-line real
+    // content change, on the plain path (no whitespace mode active). The edit
+    // distance of this pair is 2 (one delete, one insert), far under the cap, so
+    // it no longer degrades — numstat and the patch body now report git's real
+    // values instead of a whole-file replace.
+    describe('Given a NUL-free file with over MAX_LINES lines and a single-line real content change, When diffing with no whitespace mode', () => {
+      it('Then numstat and the patch body match live git (real hunks, no Binary files)', async () => {
+        // Arrange
+        const pair = await makePeerPair('c8-manylines');
+        try {
+          runGit(['init', '-q', '-b', 'main', pair.peer]);
+          const count = 100_001;
+          const changeAt = 5;
+          const beforeLines = Array.from({ length: count }, (_, i) =>
+            i === changeAt ? 'mid line' : `line-${i}`,
+          );
+          const afterLines = [...beforeLines];
+          afterLines[changeAt] = 'mid line CHANGED';
+          const before = `${beforeLines.join('\n')}\n`;
+          const after = `${afterLines.join('\n')}\n`;
+          await writePeerFile(pair.peer, 'f.txt', before);
+          runGit(['-C', pair.peer, 'add', 'f.txt']);
+          gitCommit(pair.peer, 'first');
+          await writePeerFile(pair.peer, 'f.txt', after);
+          runGit(['-C', pair.peer, 'add', 'f.txt']);
+          gitCommit(pair.peer, 'second');
+          const liveNumstat = git(
+            pair.peer,
+            'diff',
+            '--no-ext-diff',
+            '--numstat',
+            'HEAD~1',
+            'HEAD',
+          ).trim();
+          const livePatch = git(pair.peer, 'diff', '--no-ext-diff', '--no-color', 'HEAD~1', 'HEAD');
+
+          const ctx = createMemoryContext();
+          await init(ctx);
+          await writeCtxFile(ctx, 'f.txt', before);
+          await add(ctx, ['f.txt']);
+          const c1 = await commit(ctx, { message: 'first', author });
+          await writeCtxFile(ctx, 'f.txt', after);
+          await add(ctx, ['f.txt']);
+          const c2 = await commit(ctx, { message: 'second', author });
+
+          // Act
+          const result = await diff(ctx, { from: c1.id, to: c2.id, withStat: true });
+          const tsgitPatch = await reconstructPatch(ctx, result);
+
+          // Assert
+          const tsgitNumstat = numstatRowsFrom(result as StatTreeDiff).join('\n');
+          expect(tsgitNumstat).toBe(liveNumstat);
+          expect(tsgitNumstat).toBe('1\t1\tf.txt');
+          expect(livePatch.includes('Binary files')).toBe(false);
+          expect(tsgitPatch.includes('Binary files')).toBe(false);
+          expect(tsgitPatch).toContain('@@ -3,7 +3,7 @@');
+        } finally {
+          await pair.dispose();
+        }
+      });
+    });
   },
 );

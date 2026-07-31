@@ -9,9 +9,14 @@ import { readObject } from '../../../../src/application/primitives/read-object.j
 import { MAX_PEEL_DEPTH } from '../../../../src/application/primitives/types.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../src/application/primitives/write-tree.js';
-import type { LineKey, WhitespaceMode } from '../../../../src/domain/diff/index.js';
+import {
+  type LineKey,
+  MAX_DIFF_LINES,
+  type WhitespaceMode,
+} from '../../../../src/domain/diff/index.js';
 import * as rawTreeDiffMod from '../../../../src/domain/diff/raw-tree-diff.js';
 import { MAX_SCORE } from '../../../../src/domain/diff/similarity.js';
+import * as statFieldsMod from '../../../../src/domain/diff/stat-fields.js';
 import * as encodingMod from '../../../../src/domain/objects/encoding.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import { SHA1_CONFIG } from '../../../../src/domain/objects/hash-config.js';
@@ -1446,12 +1451,12 @@ describe('diffTrees', () => {
 
   describe('Given a type-change with identical content, ignoreWhitespace:all, and withStat:true', () => {
     describe('When diffTrees is called', () => {
-      it('Then the type-change is never dropped (shouldDrop is type-gated, not just added/deleted/binary)', async () => {
+      it('Then the type-change is never dropped (dropVerdict is type-gated, not just added/deleted/binary)', async () => {
         // Arrange — same content on both sides (added=0, deleted=0, binary=false),
         // only the mode differs (regular -> symlink); withStat:true routes through
-        // applyStatPass, which calls shouldDrop directly for every file (unlike the
+        // applyStatPass, which calls dropVerdict directly for every file (unlike the
         // streaming predicate path, which filters non-modify changes before ever
-        // reaching shouldDrop)
+        // reaching dropVerdict)
         const ctx = await buildSeededContext();
         const fileId = await blob(ctx, '   ');
         const linkId = await blob(ctx, '   ');
@@ -1473,10 +1478,10 @@ describe('diffTrees', () => {
 
   describe('Given a pure-deletion modify (added=0, deleted>0), ignoreWhitespace:all, and withStat:true', () => {
     describe('When diffTrees is called', () => {
-      it('Then the modify is kept (shouldDrop requires BOTH added===0 AND deleted===0)', async () => {
+      it('Then the modify is kept (dropVerdict sees the deleted line via the scanner, not stat counts)', async () => {
         // Arrange — one line removed, nothing added; withStat:true routes through
-        // applyStatPass so shouldDrop's own deleted===0 check (not the streaming
-        // predicate) decides the verdict
+        // applyStatPass so dropVerdict's own scanner ladder (not the added/deleted
+        // counts computed alongside it for the stat surface) decides the verdict
         const ctx = await buildSeededContext();
         const oldId = await blob(ctx, 'a\nXYZ\n');
         const newId = await blob(ctx, 'a\n');
@@ -1499,6 +1504,105 @@ describe('diffTrees', () => {
           deleted: 1,
           binary: false,
         });
+      });
+    });
+  });
+
+  describe('Given a whitespace-only modify whose two sides together exceed MAX_DIFF_LINES, and withStat:true', () => {
+    describe('When diffTrees is called with ignoreWhitespace:all', () => {
+      it('Then the modify is dropped (the stat arm never runs diffLines to decide the verdict)', async () => {
+        // Arrange — MAX_DIFF_LINES/2 + 1 lines per side, so the combined line count
+        // exceeds MAX_DIFF_LINES and diffLines (if it still fed the verdict) would
+        // degrade to its whole-file fallback with added===deleted===lineCount
+        const ctx = await buildSeededContext();
+        const lineCount = MAX_DIFF_LINES / 2 + 1;
+        const filler = 'x\n'.repeat(lineCount - 1);
+        const oldId = await blob(ctx, `mid line\n${filler}`);
+        const newId = await blob(ctx, `mid  line\n${filler}`);
+        const before = await writeTree(ctx, [
+          { name: 'f.txt', mode: FILE_MODE.REGULAR, id: oldId },
+        ]);
+        const after = await writeTree(ctx, [{ name: 'f.txt', mode: FILE_MODE.REGULAR, id: newId }]);
+
+        // Act
+        const result = await diffTrees(ctx, before, after, {
+          ignoreWhitespace: 'all',
+          withStat: true,
+        });
+
+        // Assert
+        expect(result.changes).toHaveLength(0);
+      });
+    });
+  });
+
+  describe('Given a real modify whose two sides together exceed MAX_DIFF_LINES, and withStat:true', () => {
+    describe('When diffTrees is called with ignoreWhitespace:all', () => {
+      it('Then the modify survives with real counts (edit distance is tiny, so diffLines no longer degrades)', async () => {
+        // Arrange — same shape as the ws-only case above, but the first line's
+        // content genuinely differs (not whitespace-only), so the file must
+        // survive. There is no more size-based diffLines cap: the filler is
+        // identical on both sides, so the true edit distance is 2 (one delete,
+        // one insert), far under the edit-distance bail, and the counts reflect
+        // that single-line change rather than a whole-file replace.
+        const ctx = await buildSeededContext();
+        const lineCount = MAX_DIFF_LINES / 2 + 1;
+        const filler = 'x\n'.repeat(lineCount - 1);
+        const oldId = await blob(ctx, `mid line\n${filler}`);
+        const newId = await blob(ctx, `CHANGED\n${filler}`);
+        const before = await writeTree(ctx, [
+          { name: 'f.txt', mode: FILE_MODE.REGULAR, id: oldId },
+        ]);
+        const after = await writeTree(ctx, [{ name: 'f.txt', mode: FILE_MODE.REGULAR, id: newId }]);
+
+        // Act
+        const result = await diffTrees(ctx, before, after, {
+          ignoreWhitespace: 'all',
+          withStat: true,
+        });
+
+        // Assert — real single-line counts, not a whole-file replace
+        expect(result.changes).toHaveLength(1);
+        expect(result.changes[0]).toMatchObject({
+          type: 'modify',
+          added: 1,
+          deleted: 1,
+          binary: false,
+        });
+      });
+    });
+  });
+
+  describe('Given a NUL-bearing modify whose text otherwise differs only by whitespace, and withStat:true', () => {
+    describe('When diffTrees is called with ignoreWhitespace:all', () => {
+      it('Then the modify is kept (a binary side is never dropped on the stat arm either)', async () => {
+        // Arrange — NUL forces binary detection on both sides; the only textual
+        // difference besides the NUL is whitespace
+        const ctx = await buildSeededContext();
+        const oldId = await writeObject(ctx, {
+          type: 'blob',
+          content: new Uint8Array([104, 101, 108, 108, 111, 0, 32, 119, 111, 114, 108, 100]),
+          id: '' as ObjectId,
+        });
+        const newId = await writeObject(ctx, {
+          type: 'blob',
+          content: new Uint8Array([104, 101, 108, 108, 111, 0, 32, 32, 119, 111, 114, 108, 100]),
+          id: '' as ObjectId,
+        });
+        const before = await writeTree(ctx, [
+          { name: 'f.txt', mode: FILE_MODE.REGULAR, id: oldId },
+        ]);
+        const after = await writeTree(ctx, [{ name: 'f.txt', mode: FILE_MODE.REGULAR, id: newId }]);
+
+        // Act
+        const result = await diffTrees(ctx, before, after, {
+          ignoreWhitespace: 'all',
+          withStat: true,
+        });
+
+        // Assert
+        expect(result.changes).toHaveLength(1);
+        expect(result.changes[0]?.type).toBe('modify');
       });
     });
   });
@@ -1669,7 +1773,8 @@ describe('diffTrees', () => {
     describe('When diffTrees is called with ignoreWhitespace: all and content differs only in spaces', () => {
       it('Then the change is NOT dropped (forced-binary modify is kept even when whitespace-only diff)', async () => {
         // Arrange — whitespace-only content: without -diff the lineKey pass would drop this;
-        // with -diff the forced-binary override makes binary:true, so shouldDrop returns false
+        // with -diff the forced-binary override sets numstatBinaryOverride='binary', so
+        // dropVerdict returns false (kept) before the scanner ever runs
         const ctx = createMemoryContext();
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, '*.dat -diff\n');
         const enc = new TextEncoder();
@@ -1702,6 +1807,85 @@ describe('diffTrees', () => {
     });
   });
 
+  describe('Given a bare-diff-attribute modify over NUL content whose change is whitespace-only', () => {
+    // Real git (`f.bin diff`, `hello\0world  \n` -> `hello\0world\t\n`):
+    // `git diff -w --name-only` is empty and `git diff --name-only` lists the
+    // file — the forced-text attribute suppresses the NUL sniff on the drop
+    // verdict exactly as it already does on the numstat counts.
+    const forceTextNulTrees = async (): Promise<{
+      readonly ctx: Ctx;
+      readonly before: ObjectId;
+      readonly after: ObjectId;
+    }> => {
+      const ctx = createMemoryContext();
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, 'f.bin diff\n');
+      const writeBlobId = async (content: Uint8Array): Promise<ObjectId> =>
+        writeObject(ctx, { type: 'blob', content, id: '' as ObjectId });
+      // "hello\0world  \n" -> "hello\0world\t\n"
+      const oldId = await writeBlobId(
+        new Uint8Array([
+          0x68, 0x65, 0x6c, 0x6c, 0x6f, 0x00, 0x77, 0x6f, 0x72, 0x6c, 0x64, 0x20, 0x20, 0x0a,
+        ]),
+      );
+      const newId = await writeBlobId(
+        new Uint8Array([
+          0x68, 0x65, 0x6c, 0x6c, 0x6f, 0x00, 0x77, 0x6f, 0x72, 0x6c, 0x64, 0x09, 0x0a,
+        ]),
+      );
+      const before = await writeTree(ctx, [{ name: 'f.bin', mode: FILE_MODE.REGULAR, id: oldId }]);
+      const after = await writeTree(ctx, [{ name: 'f.bin', mode: FILE_MODE.REGULAR, id: newId }]);
+      return { ctx, before, after };
+    };
+
+    describe('When diffTrees is called with ignoreWhitespace:all and withStat:true', () => {
+      it('Then the change is dropped (the forced-text attribute suppresses the NUL rule on the stat path)', async () => {
+        // Arrange
+        const { ctx, before, after } = await forceTextNulTrees();
+
+        // Act
+        const result = await diffTrees(ctx, before, after, {
+          ignoreWhitespace: 'all',
+          withStat: true,
+        });
+
+        // Assert
+        expect(result.changes).toHaveLength(0);
+      });
+    });
+
+    describe('When diffTrees is called with ignoreWhitespace:all and withStat omitted', () => {
+      it('Then the change is dropped (the forced-text attribute suppresses the NUL rule on the predicate path)', async () => {
+        // Arrange
+        const { ctx, before, after } = await forceTextNulTrees();
+
+        // Act
+        const result = await diffTrees(ctx, before, after, { ignoreWhitespace: 'all' });
+
+        // Assert
+        expect(result.changes).toHaveLength(0);
+      });
+    });
+
+    describe('When diffTrees is called without a whitespace mode and withStat:true', () => {
+      it('Then the change survives with real line counts (the attribute forces text, so no binary row)', async () => {
+        // Arrange
+        const { ctx, before, after } = await forceTextNulTrees();
+
+        // Act
+        const result = await diffTrees(ctx, before, after, { withStat: true });
+
+        // Assert
+        expect(result.changes).toHaveLength(1);
+        expect(result.changes[0]).toMatchObject({
+          type: 'modify',
+          added: 1,
+          deleted: 1,
+          binary: false,
+        });
+      });
+    });
+  });
+
   describe('Given a whitespace-only modify with ignoreWhitespace:all and withStat omitted', () => {
     describe('When diffTrees is called', () => {
       it('Then the modify is dropped WITHOUT materialising blobs (streaming predicate)', async () => {
@@ -1721,15 +1905,53 @@ describe('diffTrees', () => {
         // Assert — dropped via the streaming predicate; the full materialise pass never ran
         expect(result.changes).toHaveLength(0);
         expect(materialiseSpy).not.toHaveBeenCalled();
+
+        materialiseSpy.mockRestore();
       });
     });
   });
 
-  describe('Given a single unterminated line longer than the line cap, whitespace-only change', () => {
+  describe('Given a whitespace-only modify beside a real modify, ignoreWhitespace:all and withStat:true', () => {
+    describe('When diffTrees is called', () => {
+      it('Then the counts are computed only for the surviving file (the dropped one costs no line diff)', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const wsOld = await blob(ctx, 'hello world\n');
+        const wsNew = await blob(ctx, 'hello  world\n');
+        const realOld = await blob(ctx, 'alpha\n');
+        const realNew = await blob(ctx, 'beta\n');
+        const before = await writeTree(ctx, [
+          { name: 'real.txt', mode: FILE_MODE.REGULAR, id: realOld },
+          { name: 'ws.txt', mode: FILE_MODE.REGULAR, id: wsOld },
+        ]);
+        const after = await writeTree(ctx, [
+          { name: 'real.txt', mode: FILE_MODE.REGULAR, id: realNew },
+          { name: 'ws.txt', mode: FILE_MODE.REGULAR, id: wsNew },
+        ]);
+        const statFieldsSpy = vi.spyOn(statFieldsMod, 'computeStatFields');
+
+        // Act
+        const result = await diffTrees(ctx, before, after, {
+          ignoreWhitespace: 'all',
+          withStat: true,
+        });
+
+        // Assert — one surviving change, and exactly one line-diff pass: the
+        // dropped file's counts would have been discarded, so they are never
+        // computed (the call that DID happen proves the spy is wired).
+        expect(result.changes).toHaveLength(1);
+        expect(result.changes[0]).toMatchObject({ type: 'modify', path: 'real.txt' });
+        expect(statFieldsSpy).toHaveBeenCalledTimes(1);
+
+        statFieldsSpy.mockRestore();
+      });
+    });
+  });
+
+  describe('Given a whitespace-only change on a very long unterminated line', () => {
     describe('When diffTrees is called with ignoreWhitespace:all and withStat omitted', () => {
-      it('Then the file is kept (binary via the incremental cap, never buffered whole)', async () => {
-        // Arrange — one 70,000-byte line with no LF: over MAX_LINE_BYTES, so
-        // the predicate must flag binary from the PENDING bytes and bail early
+      it('Then the file is dropped, like git', async () => {
+        // Arrange
         const ctx = await buildSeededContext();
         const longLine = 'x'.repeat(70_000);
         const oldId = await blob(ctx, `${longLine} a`);
@@ -1744,8 +1966,8 @@ describe('diffTrees', () => {
         // Act
         const result = await diffTrees(ctx, before, after, { ignoreWhitespace: 'all' });
 
-        // Assert — a binary side is never dropped, matching the stat path
-        expect(result.changes).toHaveLength(1);
+        // Assert
+        expect(result.changes).toHaveLength(0);
       });
     });
   });
@@ -1769,6 +1991,8 @@ describe('diffTrees', () => {
         // Assert — real content change survives; the full materialise pass never ran
         expect(result.changes).toHaveLength(1);
         expect(materialiseSpy).not.toHaveBeenCalled();
+
+        materialiseSpy.mockRestore();
       });
     });
   });
@@ -1791,6 +2015,8 @@ describe('diffTrees', () => {
 
         // Assert
         expect(materialiseSpy).toHaveBeenCalled();
+
+        materialiseSpy.mockRestore();
       });
     });
   });
@@ -2263,10 +2489,10 @@ describe('diffTrees', () => {
   describe('Given a modify change with a -diff attribute, ignoreWhitespace:all and withStat omitted', () => {
     describe('When diffTrees is called', () => {
       it('Then the change is kept (materialised attribute verdict overrides the streaming whitespace-only drop)', async () => {
-        // Arrange — -diff forces binary on the numstat surface; shouldDrop only fires
-        // for non-binary content, so the materialised path must KEEP this pair even
-        // though its raw bytes are whitespace-only (which the streaming predicate,
-        // blind to attributes, would otherwise drop).
+        // Arrange — -diff forces numstatBinaryOverride='binary'; dropVerdict never
+        // drops when that override is set, so the materialised path must KEEP this
+        // pair even though its raw bytes are whitespace-only (which the streaming
+        // predicate, blind to attributes, would otherwise drop).
         const ctx = createMemoryContext();
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, 'f.txt -diff\n');
         const oldId = await blob(ctx, 'hello world\n');
@@ -2279,7 +2505,7 @@ describe('diffTrees', () => {
         // Act
         const result = await diffTrees(ctx, before, after, { ignoreWhitespace: 'all' });
 
-        // Assert — kept: -diff's binary override means shouldDrop's !stats.binary guard fails
+        // Assert — kept: -diff's binary override makes dropVerdict's numstatBinaryOverride guard fire
         expect(result.changes).toHaveLength(1);
       });
     });
@@ -2288,7 +2514,7 @@ describe('diffTrees', () => {
   describe('Given a bare-diff-attribute modify change whose whitespace-only verdict depends on lineKey normalization, withStat omitted', () => {
     describe('When diffTrees is called with ignoreWhitespace:all', () => {
       it('Then the change is dropped (materialisedShouldDrop forwards lineKeyActive into the stat pass)', async () => {
-        // Arrange — bare diff forces text (non-binary), so shouldDrop's verdict here
+        // Arrange — bare diff forces text (non-binary), so dropVerdict's verdict here
         // hinges entirely on whether the lineKey normalization was actually applied.
         const ctx = createMemoryContext();
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, 'f.txt diff\n');

@@ -153,6 +153,38 @@ describe('NodeCompressor', () => {
       });
     });
 
+    describe('Given the cap is exceeded after flush() has already been entered', () => {
+      describe('When the writable side is closed', () => {
+        it('Then the close settles instead of waiting forever on the inflate end', async () => {
+          // Arrange — close() enters flush() before the 'data' event carrying the
+          // over-cap chunk arrives, so flush()'s promise is the one that must be
+          // settled by the cap teardown.
+          const sut = new NodeCompressor({ maxInflatedBytes: 4 });
+          const deflated = await sut.deflate(new TextEncoder().encode('aaaaaaaaaaaaaaaaaaaa'));
+          const transform = sut.createInflateStream();
+          const reader = transform.readable.getReader();
+          const writer = transform.writable.getWriter();
+
+          // Act — close() is queued behind the write without awaiting it, so
+          // flush() is entered before the over-cap chunk is decoded.
+          const written = writer.write(deflated);
+          const closed = writer.close().then(
+            () => 'settled',
+            () => 'settled',
+          );
+          const read = reader.read();
+          const outcome = await Promise.race([
+            closed,
+            new Promise((resolve) => setTimeout(() => resolve('pending'), 250)),
+          ]);
+          await Promise.allSettled([written, read]);
+
+          // Assert
+          expect(outcome).toBe('settled');
+        });
+      });
+    });
+
     describe('Given a streamInflate roundtrip whose output equals the cap EXACTLY', () => {
       describe('When streamInflate runs', () => {
         it('Then it succeeds (boundary is strictly greater-than, not >=)', async () => {
@@ -438,6 +470,121 @@ describe('NodeCompressor', () => {
           expect(caught).toBeInstanceOf(TsgitError);
           expect((caught as TsgitError).data.code).toBe('DECOMPRESS_FAILED');
         });
+      });
+    });
+
+    describe('Given a large payload inflating across multiple data chunks', () => {
+      describe('When the consumer reads one chunk then cancels the reader mid-stream', () => {
+        it('Then the reader settles promptly without throwing ERR_INVALID_STATE', async () => {
+          // Arrange — 256 KiB forces several zlib 'data' events, so the pump is
+          // still actively enqueueing when cancel() lands mid-stream.
+          const sut = new NodeCompressor();
+          const size = 256 * 1024;
+          const payload = new Uint8Array(size);
+          for (let i = 0; i < size; i += 1) payload[i] = i & 0xff;
+          const deflated = await sut.deflate(payload);
+          const source = new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(deflated);
+              controller.close();
+            },
+          });
+          const reader = source.pipeThrough(sut.createInflateStream()).getReader();
+
+          // Act
+          await reader.read();
+          let caught: unknown;
+          try {
+            await reader.cancel();
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert — cancellation is a clean, expected termination, not a thrown error
+          expect(caught).toBeUndefined();
+        }, 5000);
+      });
+    });
+
+    describe('Given a truncated zlib stream the decoder can never finish on its own', () => {
+      describe('When the consumer reads one chunk then cancels the reader', () => {
+        it('Then the cancel resolves instead of surfacing the truncation as a failure', async () => {
+          // Arrange — dropping the last bytes removes the natural 'end' that
+          // would otherwise settle flush()'s promise for free, so the
+          // cancellation teardown is the ONLY thing that can settle it. Left
+          // running, the decoder reaches the truncation and reports
+          // DECOMPRESS_FAILED — a cancelled consumer must never be told that.
+          const sut = new NodeCompressor();
+          const size = 256 * 1024;
+          const payload = new Uint8Array(size);
+          for (let i = 0; i < size; i += 1) payload[i] = i & 0xff;
+          const deflated = await sut.deflate(payload);
+          const truncated = deflated.subarray(0, deflated.length - 5);
+          const source = new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(truncated);
+              controller.close();
+            },
+          });
+          const reader = source.pipeThrough(sut.createInflateStream()).getReader();
+
+          // Act
+          await reader.read();
+          let caught: unknown;
+          try {
+            await reader.cancel();
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeUndefined();
+        }, 5000);
+      });
+    });
+
+    describe('Given a multi-write source whose next chunk has not arrived yet', () => {
+      describe('When the consumer cancels before the source closes (before flush() starts)', () => {
+        it('Then the cancel() hook stops the pump and the reader settles cleanly', async () => {
+          // Arrange — 256 KiB forces several zlib 'data' events from the single
+          // chunk already written, so the pump is genuinely mid-flight. The
+          // source's second pull() never resolves, so it never closes — the
+          // TransformStream's writable side stays open and flush() never runs.
+          // In that timing the Streams runtime invokes the transformer's
+          // cancel() hook directly, rather than aliasing to flush()'s promise
+          // (contrast with the "reads one chunk then cancels" test above,
+          // whose single-enqueue-then-close source lets flush() start first).
+          const sut = new NodeCompressor();
+          const size = 256 * 1024;
+          const payload = new Uint8Array(size);
+          for (let i = 0; i < size; i += 1) payload[i] = i & 0xff;
+          const deflated = await sut.deflate(payload);
+          const neverResolves = new Promise<void>(() => {});
+          let pullCount = 0;
+          const source = new ReadableStream<Uint8Array>({
+            async pull(controller) {
+              pullCount += 1;
+              if (pullCount === 1) {
+                controller.enqueue(deflated);
+                return;
+              }
+              await neverResolves;
+            },
+          });
+          const reader = source.pipeThrough(sut.createInflateStream()).getReader();
+
+          // Act
+          await reader.read();
+          let caught: unknown;
+          try {
+            await reader.cancel();
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert — cancellation resolves cleanly, not as a decompression failure
+          expect(caught).toBeUndefined();
+        }, 5000);
       });
     });
   });

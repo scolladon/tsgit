@@ -205,6 +205,49 @@ describe.skipIf(!GIT_AVAILABLE)('merge interop — non-conflict materialisation'
     });
   });
 
+  describe('Given diverged histories on a many-line file with non-overlapping single-line edits', () => {
+    describe('When the clean content merge runs on both tools', () => {
+      it('Then HEAD, index, and working tree match git, with both edits merged and no conflict markers', async () => {
+        // Arrange — a 100 001-line base file; theirs edits one line near the
+        // start, ours edits a different line far away — non-overlapping, so
+        // both tools auto-merge cleanly. The file is over MAX_LINES and over
+        // MAX_DIFF_LINES, but each side's edit distance from base is 2 (one
+        // delete, one insert) — this is the surface a size-based diff cap
+        // would have made worse (a whole-file conflict where git merges clean).
+        const count = 100_001;
+        const baseLines = Array.from({ length: count }, (_, i) => `line-${i}`);
+        const base = `${baseLines.join('\n')}\n`;
+        await writeBoth('file.txt', base);
+        await commitBoth('base', ['file.txt']);
+        await branchBoth('theirs');
+        const theirsLines = [...baseLines];
+        theirsLines[5] = 'THEIRS';
+        await writeBoth('file.txt', `${theirsLines.join('\n')}\n`);
+        await commitBoth('theirs-edit', ['file.txt']);
+        await checkoutBoth('main');
+        const oursLines = [...baseLines];
+        oursLines[count - 5] = 'OURS';
+        await writeBoth('file.txt', `${oursLines.join('\n')}\n`);
+        await commitBoth('ours-edit', ['file.txt']);
+
+        // Act
+        await mergeBoth('theirs', 'merge theirs');
+
+        // Assert — identical merge commit + index, both edits present, and no
+        // conflict markers (a whole-file conflict is what this pair produced
+        // before the edit-distance bail replaced the input-size cap).
+        expect(snapshot(pair.ours)).toEqual(snapshot(pair.peer));
+        const merged = await readMaybe(pair.ours, 'file.txt');
+        expect(merged).not.toBeNull();
+        expect(merged).toContain('THEIRS');
+        expect(merged).toContain('OURS');
+        expect(merged).not.toContain('<<<<<<<');
+        expect(merged).not.toContain('=======');
+        expect(merged).not.toContain('>>>>>>>');
+      });
+    });
+  });
+
   describe('Given theirs deletes a file ours leaves untouched', () => {
     describe('When the clean true-merge runs on both tools', () => {
       it('Then HEAD, index, and working tree match git, with the file removed', async () => {

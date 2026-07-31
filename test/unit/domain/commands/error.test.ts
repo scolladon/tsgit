@@ -27,6 +27,7 @@ import {
   emptyCommitMessage,
   emptyPathspec,
   gitignoreFileTooLarge,
+  grepLineTooLong,
   hookFailed,
   invalidOption,
   invalidPushDefault,
@@ -1703,6 +1704,22 @@ describe('domain commands error — extractDetail message formatting', () => {
           value: 'bogus',
           source: '/abs/.git/config',
           line: 9,
+        });
+      });
+    });
+  });
+
+  describe('Given the grepLineTooLong error helper', () => {
+    describe('When called with a byte length and the decode limit', () => {
+      it('Then data carries code, length, and limit', () => {
+        // Arrange & Act
+        const result = grepLineTooLong(536_870_889, 536_870_888);
+        // Assert
+        expect(result).toBeInstanceOf(TsgitError);
+        expect(result.data).toEqual({
+          code: 'GREP_LINE_TOO_LONG',
+          length: 536_870_889,
+          limit: 536_870_888,
         });
       });
     });

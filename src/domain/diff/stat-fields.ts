@@ -1,5 +1,6 @@
+import { type BinaryOverride, pairIsBinary } from './binary-decision.js';
 import type { DiffChange } from './diff-change.js';
-import { diffLines, isBinary, type LineDiff, type LineHunk } from './line-diff.js';
+import { diffLines, type LineDiff, type LineHunk } from './line-diff.js';
 import { isBlankLine, type LineKey, NONE_KEY } from './whitespace.js';
 
 /**
@@ -81,8 +82,8 @@ export const computeStatFields = (
   next: Uint8Array,
   options?: StatFieldsOptions,
 ): StatFields => {
-  const override = options?.numstatBinaryOverride;
-  if (override === 'binary' || (override === undefined && (isBinary(old) || isBinary(next)))) {
+  const override: BinaryOverride | undefined = options?.numstatBinaryOverride;
+  if (pairIsBinary(old, next, override)) {
     return { added: 0, deleted: 0, binary: true };
   }
   const lineKey = options?.lineKey;

@@ -1,4 +1,5 @@
-import { invalidOption } from '../commands/error.js';
+import { grepLineTooLong, invalidOption } from '../commands/error.js';
+import { MAX_STRING_LENGTH } from '../engine-limits.js';
 
 export interface MatchSpan {
   readonly start: number;
@@ -42,10 +43,48 @@ function isWordByte(b: number): boolean {
   );
 }
 
+/**
+ * The engine's string ceiling, in the unit a line is counted in: `latin1Decode`
+ * builds one code unit per byte, so bytes and code units are the same number
+ * here and a line past this many bytes cannot be decoded for RegExp matching at
+ * all. Fixed-string patterns never reach this — `fixedSpans` matches on raw
+ * bytes, with no decode.
+ */
+export const MAX_DECODABLE_LINE_BYTES = MAX_STRING_LENGTH;
+
+/** Refuses a line whose bytes cannot be decoded to a string for RegExp matching. */
+export function assertLineDecodable(byteLength: number): void {
+  if (byteLength > MAX_DECODABLE_LINE_BYTES) {
+    throw grepLineTooLong(byteLength, MAX_DECODABLE_LINE_BYTES);
+  }
+}
+
+/**
+ * Code units built per `String.fromCharCode` call — comfortably under every
+ * engine's argument-count ceiling, so no line length can overflow the call.
+ */
+const LATIN1_DECODE_CHUNK = 8_192;
+
+/**
+ * One code unit per byte, built a chunk at a time and joined once. The obvious
+ * `s += String.fromCharCode(b)` per byte is what the refusal above exists to
+ * bound, and it defeats it: appending byte by byte builds a rope whose peak
+ * heap runs to many times the line's own length, so lines well under the
+ * refusal threshold exhaust memory and abort the process instead of returning
+ * the structured refusal. Chunking keeps the peak proportional to the result.
+ *
+ * `TextDecoder('latin1')` is NOT a substitute: the Encoding Standard aliases
+ * that label to windows-1252, which remaps 0x80–0x9F to other code points —
+ * the spans this returns would no longer be byte offsets.
+ */
 function latin1Decode(line: Uint8Array): string {
-  let s = '';
-  for (const b of line) s += String.fromCharCode(b);
-  return s;
+  assertLineDecodable(line.length);
+  const parts: string[] = [];
+  // NOTE: this line's EqualityOperator mutant relaxing `<` to `<=` is equivalent: the extra iteration it admits starts at i === line.length, where `subarray(i, i + LATIN1_DECODE_CHUNK)` is empty and `String.fromCharCode()` returns '' — an empty part cannot change `parts.join('')`, at a length that is an exact multiple of the chunk or at zero alike. Left unannotated because the sibling `>=` variant on this same line is a real, killed mutant, and Stryker's next-line disable can't distinguish variant from variant of the same mutator.
+  for (let i = 0; i < line.length; i += LATIN1_DECODE_CHUNK) {
+    parts.push(String.fromCharCode(...line.subarray(i, i + LATIN1_DECODE_CHUNK)));
+  }
+  return parts.join('');
 }
 
 function regexSpans(line: Uint8Array, clone: RegExp): ReadonlyArray<MatchSpan> {

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   ambiguousOidPrefix,
   cleanFilterFailed,
+  grepLineTooLong,
   invalidPushDefault,
   invalidSequencerTodo,
   noPromisorRemote,
@@ -1543,6 +1544,22 @@ describe('invalidPushDefault error', () => {
         // Assert
         expect(result.message).toBe(
           "INVALID_PUSH_DEFAULT: bad config variable 'push.default' in file '/abs/.git/config' at line 9",
+        );
+      });
+    });
+  });
+});
+
+describe('grepLineTooLong error', () => {
+  describe('Given grepLineTooLong factory', () => {
+    describe('When reading .message', () => {
+      it('Then message names the offending length and the decode limit', () => {
+        // Arrange & Act
+        const result = grepLineTooLong(536_870_889, 536_870_888);
+
+        // Assert
+        expect(result.message).toBe(
+          'GREP_LINE_TOO_LONG: grep line too long to decode: 536870889 bytes exceeds the 536870888-byte limit',
         );
       });
     });

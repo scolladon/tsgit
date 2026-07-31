@@ -5,44 +5,31 @@ import type {
   WhitespaceMode,
 } from '../../../../src/domain/diff/whitespace.js';
 import {
+  createLineDigestFold,
   digestIsBlank,
   digestNormalizedLine,
   digestsEqual,
   isBlankLine,
   lineKeyIsActive,
   linesEqualUnder,
+  NO_TERMINATOR,
   NONE_KEY,
   normalizeLine,
   resolveLineKey,
 } from '../../../../src/domain/diff/whitespace.js';
+import { expectedDigest } from './digest-oracle.js';
 
 const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
 
 // Build a line exactly as splitLines would return it: content + optional LF terminator
 const line = (s: string): Uint8Array => enc(s);
 
-// Independent oracle for digestNormalizedLine: FNV-1a folded over normalizeLine's
-// OWN output (content bytes, plus a trailing LF byte when normalized ends in one).
-// normalizeLine is a genuinely separate code path from the digest* helpers under
-// test, so a branch/off-by-one/reset bug in the digest side almost never
-// coincidentally reproduces the same {length, terminated, hash} triple.
-const FNV_OFFSET_BASIS = 0x811c9dc5;
-const FNV_PRIME = 0x01000193;
-
-function fnvFold(bytes: Uint8Array): number {
-  let hash = FNV_OFFSET_BASIS;
-  for (const byte of bytes) {
-    hash = Math.imul(hash ^ byte, FNV_PRIME) >>> 0;
-  }
-  return hash;
-}
-
-function expectedDigest(input: Uint8Array, key: LineKey): LineDigest {
-  const normalized = normalizeLine(input, key);
-  const terminated = normalized.length > 0 && normalized[normalized.length - 1] === 0x0a;
-  const length = terminated ? normalized.length - 1 : normalized.length;
-  return { length, terminated, hash: fnvFold(normalized) };
-}
+const ALL_LINE_KEYS: ReadonlyArray<LineKey> = (
+  ['all', 'change', 'at-eol', 'none'] as const
+).flatMap((mode) => [
+  { mode, ignoreCrAtEol: false },
+  { mode, ignoreCrAtEol: true },
+]);
 
 describe('normalizeLine', () => {
   describe("Given mode 'all' (ignore all space/tab)", () => {
@@ -52,18 +39,20 @@ describe('normalizeLine', () => {
       it.each([
         {
           input: 'a b\n',
-          expected: 'ab\n',
-          label: 'internal spaces are dropped, exactly one trailing LF preserved (W1)',
+          expected: 'ab',
+          label:
+            'internal spaces are dropped and the terminator is stripped under an active key (W1, C4)',
         },
         {
           input: '\tbeta gamma\n',
-          expected: 'betagamma\n',
-          label: 'a tab byte is dropped along with space bytes (W1)',
+          expected: 'betagamma',
+          label: 'a tab byte is dropped along with space bytes and the terminator (W1, C4)',
         },
         {
           input: 'a\r\n',
-          expected: 'a\n',
-          label: 'a trailing CR is dropped as part of all-whitespace removal (CR1)',
+          expected: 'a',
+          label:
+            'a trailing CR is dropped as part of all-whitespace removal, and the terminator too (CR1, C4)',
         },
         {
           input: 'a b',
@@ -159,8 +148,9 @@ describe('normalizeLine', () => {
       it.each([
         {
           input: 'a b \n',
-          expected: 'a b\n',
-          label: 'a run ending a terminated line drops the collapsed trailing space (keeps the LF)',
+          expected: 'a b',
+          label:
+            'a run ending a terminated line drops the collapsed trailing space and the terminator (C4)',
         },
         {
           input: 'a b   ',
@@ -170,8 +160,9 @@ describe('normalizeLine', () => {
         {
           // guards the pop against firing on a non-space last byte
           input: 'ab\n',
-          expected: 'ab\n',
-          label: 'the line ending in a non-whitespace byte leaves the final byte intact',
+          expected: 'ab',
+          label:
+            'the line ending in a non-whitespace byte leaves the final byte intact, terminator stripped (C4)',
         },
       ])('Then $label', ({ input, expected }) => {
         // Arrange + Act
@@ -200,14 +191,15 @@ describe('normalizeLine', () => {
         {
           // pins the terminator byte, not just cross-line equality
           input: 'a   \n',
-          expected: 'a\n',
+          expected: 'a',
           label:
-            'trailing whitespace preceding the LF terminator drops the run and re-appends exactly one LF',
+            'trailing whitespace preceding the LF terminator drops the run and, under an active key, the terminator too (C4)',
         },
         {
           input: '   \n',
-          expected: '\n',
-          label: 'a line entirely whitespace before the LF collapses to a bare LF',
+          expected: '',
+          label:
+            'a line entirely whitespace before the LF collapses to empty content, terminator stripped (C4)',
         },
         {
           input: 'a   ',
@@ -309,32 +301,69 @@ describe('normalizeLine', () => {
       });
     });
 
+    describe('When a trailing CR ends an incomplete final line (no LF)', () => {
+      it('Then the CR is kept as content, not stripped as whitespace (C6)', () => {
+        // Arrange & Act
+        const result = normalizeLine(line('x y\r'), key);
+        // Assert
+        expect(result).toEqual(enc('x y\r'));
+      });
+    });
+
     describe('When the CR guard is evaluated near unterminated or CR-free content', () => {
       it.each([
         {
           input: 'a\r',
-          expected: 'a',
+          expected: 'a\r',
           label:
-            'a trailing CR ending unterminated content (no final LF) drops the CR without appending an LF',
+            'a trailing CR ending unterminated content (no final LF) is content, not whitespace, and is kept (C6)',
         },
         {
-          // exercises the crPos === 0 boundary of the CR guard
+          // the crPos === 0 boundary of the CR guard is exercised by the
+          // terminated counterpart of this input, in the branch-exhaustive suite
           input: '\r',
-          expected: '',
-          label:
-            'unterminated content that is a single CR drops it to an empty line (CR at index 0)',
+          expected: '\r',
+          label: 'unterminated content that is a single CR is kept as content, not dropped (C6)',
         },
         {
           input: 'a  \n',
-          expected: 'a  \n',
+          expected: 'a  ',
           label:
-            'when no CR is present, trailing space is preserved (ignoreCrAtEol does not touch spaces)',
+            'when no CR is present, trailing space is preserved but the terminator is stripped (ignoreCrAtEol activates the key, C4)',
         },
       ])('Then $label', ({ input, expected }) => {
         // Arrange + Act
         const result = normalizeLine(line(input), key);
         // Assert
         expect(result).toEqual(enc(expected));
+      });
+    });
+  });
+
+  describe('Given a long line whose normalization removes bytes', () => {
+    // The output is built in ONE buffer sized for the input and returned as a
+    // view of it. A per-byte `number[]` accumulator would instead cost ~8 bytes
+    // plus growth slack per INPUT byte before the copy — an order-of-magnitude
+    // amplification on a line whose length is bounded only by the blob's.
+    const input = enc(`${'a   b\t\t\tc'.repeat(1_000)}\n`);
+
+    describe("When normalizeLine runs under mode 'all'", () => {
+      it('Then the result views a buffer sized for the input, not one sized for the output', () => {
+        // Arrange & Act
+        const result = normalizeLine(input, { mode: 'all', ignoreCrAtEol: false });
+        // Assert
+        expect(result.length).toBeLessThan(input.length);
+        expect(result.buffer.byteLength).toBe(input.length);
+      });
+    });
+
+    describe("When normalizeLine runs under mode 'change'", () => {
+      it('Then the result views a buffer sized for the input, not one sized for the output', () => {
+        // Arrange & Act
+        const result = normalizeLine(input, { mode: 'change', ignoreCrAtEol: false });
+        // Assert
+        expect(result.length).toBeLessThan(input.length);
+        expect(result.buffer.byteLength).toBe(input.length);
       });
     });
   });
@@ -349,6 +378,57 @@ describe('normalizeLine', () => {
         const b = normalizeLine(enc('a   '), key);
         // Assert
         expect(a).toEqual(b);
+      });
+    });
+  });
+});
+
+describe('normalizeLine — C4: a final-line terminator is whitespace under an active key', () => {
+  const ACTIVE_SHAPES: ReadonlyArray<{ readonly label: string; readonly key: LineKey }> = [
+    { label: "mode 'all'", key: { mode: 'all', ignoreCrAtEol: false } },
+    { label: "mode 'change'", key: { mode: 'change', ignoreCrAtEol: false } },
+    { label: "mode 'at-eol'", key: { mode: 'at-eol', ignoreCrAtEol: false } },
+    { label: "mode 'none' with ignoreCrAtEol", key: { mode: 'none', ignoreCrAtEol: true } },
+  ];
+
+  describe('Given every active key shape, When a terminated line is compared to its unterminated counterpart', () => {
+    it.each(
+      ACTIVE_SHAPES.flatMap(({ label, key }) => [
+        {
+          key,
+          terminated: 'ab\n',
+          unterminated: 'ab',
+          label: `${label}, a non-blank line`,
+        },
+        {
+          key,
+          terminated: '\n',
+          unterminated: '',
+          label: `${label}, a blank line`,
+        },
+      ]),
+    )(
+      'Then $label normalizes both forms to the same bytes',
+      ({ key, terminated, unterminated }) => {
+        // Arrange + Act
+        const withLf = normalizeLine(enc(terminated), key);
+        const withoutLf = normalizeLine(enc(unterminated), key);
+        // Assert
+        expect(withLf).toEqual(withoutLf);
+      },
+    );
+  });
+
+  describe("Given the inactive key ({ mode: 'none', ignoreCrAtEol: false })", () => {
+    describe('When a terminated line is compared to its unterminated counterpart', () => {
+      it('Then the two forms remain distinct (the terminator stays significant)', () => {
+        // Arrange
+        const key: LineKey = { mode: 'none', ignoreCrAtEol: false };
+        // Act
+        const withLf = normalizeLine(enc('ab\n'), key);
+        const withoutLf = normalizeLine(enc('ab'), key);
+        // Assert
+        expect(withLf).not.toEqual(withoutLf);
       });
     });
   });
@@ -453,6 +533,15 @@ describe('linesEqualUnder', () => {
         expect(result).toBe(false);
       });
     });
+
+    describe('When only the final terminator differs (C4)', () => {
+      it('Then returns true (linesEqualUnder inherits the C4 rule)', () => {
+        // Arrange & Act
+        const result = linesEqualUnder(line('a'), line('a\n'), key);
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
   });
 
   describe("Given mode 'none'", () => {
@@ -462,6 +551,15 @@ describe('linesEqualUnder', () => {
       it('Then returns false (exact compare)', () => {
         // Arrange & Act
         const result = linesEqualUnder(line('a\n'), line('a   \n'), key);
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+
+    describe('When only the final terminator differs (C4 does not apply, inactive key)', () => {
+      it('Then returns false (the terminator stays significant)', () => {
+        // Arrange & Act
+        const result = linesEqualUnder(line('a'), line('a\n'), key);
         // Assert
         expect(result).toBe(false);
       });
@@ -707,6 +805,41 @@ describe('digestNormalizedLine', () => {
       expect(digestsEqual(withCr, withoutCr)).toBe(true);
     });
   });
+
+  describe('Given ignoreCrAtEol true with mode none, When digesting an incomplete final line ending in CR', () => {
+    const key: LineKey = { mode: 'none', ignoreCrAtEol: true };
+
+    it('Then the CR is content, not whitespace — the digest differs from its terminated counterpart (C6)', () => {
+      // Arrange & Act
+      const unterminated = digestNormalizedLine(new TextEncoder().encode('x y\r'), key);
+      const terminated = digestNormalizedLine(new TextEncoder().encode('x y\r\n'), key);
+
+      // Assert
+      expect(digestsEqual(unterminated, terminated)).toBe(false);
+    });
+  });
+});
+
+describe('digestNormalizedLine — C4: a final-line terminator is whitespace under an active key', () => {
+  describe('Given "x y" (unterminated) and "x y\\n" (terminated), When digesting both under every LineKey shape', () => {
+    it.each(
+      ALL_LINE_KEYS.map((key) => ({
+        key,
+        active: lineKeyIsActive(key),
+        label: `mode ${key.mode} ignoreCrAtEol=${key.ignoreCrAtEol}`,
+      })),
+    )('Then $label digests equal iff the key is active', ({ key, active }) => {
+      // Arrange
+      const terminated = digestNormalizedLine(enc('x y\n'), key);
+      const unterminated = digestNormalizedLine(enc('x y'), key);
+
+      // Act
+      const result = digestsEqual(terminated, unterminated);
+
+      // Assert
+      expect(result).toBe(active);
+    });
+  });
 });
 
 describe('digestNormalizedLine — branch-exhaustive cross-check', () => {
@@ -833,6 +966,239 @@ describe('digestNormalizedLine — branch-exhaustive cross-check', () => {
   });
 });
 
+describe('digestNormalizedLine — tail-grammar exhaustive rows', () => {
+  // The four worked cases from the tail grammar TAIL := WS* CR?, each run
+  // against every LineKey shape and both termination states.
+  const TAIL_CASES = ['a  \r', 'a \r ', 'a\r\r', 'a  \r  '] as const;
+
+  describe('Given every LineKey shape and termination state, When a tail-grammar line is digested', () => {
+    const rows = ALL_LINE_KEYS.flatMap((key) =>
+      [false, true].flatMap((terminated) =>
+        TAIL_CASES.map((tail) => {
+          const input = terminated ? `${tail}\n` : tail;
+          const shape = `mode ${key.mode} ignoreCrAtEol=${key.ignoreCrAtEol} ${
+            terminated ? 'terminated' : 'unterminated'
+          }`;
+          return { key, input, label: `${shape} "${tail.replace(/\r/g, '\\r')}"` };
+        }),
+      ),
+    );
+
+    it.each(rows)('Then $label matches the independent oracle', ({ key, input }) => {
+      // Arrange
+      const bytes = enc(input);
+
+      // Act
+      const result = digestNormalizedLine(bytes, key);
+
+      // Assert
+      expect(result).toEqual(expectedDigest(bytes, key));
+    });
+  });
+
+  describe('Given a leading whitespace run, When digesting under change vs at-eol', () => {
+    it.each([
+      {
+        mode: 'change' as const,
+        input: '  a',
+        label: "mode 'change' collapses a leading space run to one SPACE",
+      },
+      {
+        mode: 'change' as const,
+        input: '\ta',
+        label: "mode 'change' collapses a leading tab run to one SPACE",
+      },
+      {
+        mode: 'at-eol' as const,
+        input: '  a',
+        label: "mode 'at-eol' preserves a leading space run verbatim",
+      },
+      {
+        mode: 'at-eol' as const,
+        input: '\ta',
+        label: "mode 'at-eol' preserves a leading tab run verbatim",
+      },
+    ])('Then $label, matching the independent oracle', ({ mode, input }) => {
+      // Arrange
+      const key: LineKey = { mode, ignoreCrAtEol: false };
+      const bytes = enc(input);
+
+      // Act
+      const result = digestNormalizedLine(bytes, key);
+
+      // Assert
+      expect(result).toEqual(expectedDigest(bytes, key));
+    });
+  });
+
+  describe('Given a line whose whole content is tail, When digesting under every LineKey shape', () => {
+    const ALL_TAIL_CASES = ['   ', '\r', '', '\n'] as const;
+    const rows = ALL_LINE_KEYS.flatMap((key) =>
+      ALL_TAIL_CASES.map((input) => ({
+        key,
+        input,
+        label: `mode ${key.mode} ignoreCrAtEol=${key.ignoreCrAtEol} on ${JSON.stringify(input)}`,
+      })),
+    );
+
+    it.each(rows)('Then $label matches the independent oracle', ({ key, input }) => {
+      // Arrange
+      const bytes = enc(input);
+
+      // Act
+      const result = digestNormalizedLine(bytes, key);
+
+      // Assert
+      expect(result).toEqual(expectedDigest(bytes, key));
+    });
+  });
+
+  describe('Given a reviewer-adversarial CR-adjacent shape, When digesting under every LineKey shape', () => {
+    // blind-spot 5: multiple CRs sharing a line with whitespace runs, and a CR
+    // as the very first content byte.
+    const BLIND_SPOT_CASES = ['a\r \r', '  \r  \r', '\r', '\ra'] as const;
+    const rows = ALL_LINE_KEYS.flatMap((key) =>
+      BLIND_SPOT_CASES.map((input) => ({
+        key,
+        input,
+        label: `mode ${key.mode} ignoreCrAtEol=${key.ignoreCrAtEol} on ${JSON.stringify(input)}`,
+      })),
+    );
+
+    it.each(rows)('Then $label matches the independent oracle', ({ key, input }) => {
+      // Arrange
+      const bytes = enc(input);
+
+      // Act
+      const result = digestNormalizedLine(bytes, key);
+
+      // Assert
+      expect(result).toEqual(expectedDigest(bytes, key));
+    });
+  });
+});
+
+describe('createLineDigestFold', () => {
+  describe('Given a fresh fold, When no byte has been pushed yet', () => {
+    it('Then lineHasBytes is false', () => {
+      // Arrange
+      const sut = createLineDigestFold(NONE_KEY);
+
+      // Act & Assert
+      expect(sut.lineHasBytes).toBe(false);
+    });
+  });
+
+  describe('Given a fold that has received a content byte, When lineHasBytes is read', () => {
+    it('Then lineHasBytes is true', () => {
+      // Arrange
+      const sut = createLineDigestFold(NONE_KEY);
+
+      // Act
+      sut.pushChunk(enc('a'), 0, 1);
+
+      // Assert
+      expect(sut.lineHasBytes).toBe(true);
+    });
+  });
+
+  describe('Given a fold handed an empty range, When lineHasBytes is read', () => {
+    it('Then lineHasBytes is still false', () => {
+      // Arrange
+      const sut = createLineDigestFold(NONE_KEY);
+
+      // Act
+      sut.pushChunk(enc('a'), 1, 1);
+
+      // Assert
+      expect(sut.lineHasBytes).toBe(false);
+    });
+  });
+
+  describe('Given a fold that just finished a line, When endLine resets the per-line state', () => {
+    it('Then lineHasBytes reports false again', () => {
+      // Arrange
+      const sut = createLineDigestFold(NONE_KEY);
+      sut.pushChunk(enc('a\n'), 0, 2);
+
+      // Act
+      sut.endLine();
+
+      // Assert
+      expect(sut.lineHasBytes).toBe(false);
+    });
+  });
+
+  describe('Given a range holding no LF terminator, When pushChunk folds it', () => {
+    it('Then pushChunk returns NO_TERMINATOR', () => {
+      // Arrange
+      const bytes = enc('ab');
+      const sut = createLineDigestFold(NONE_KEY);
+
+      // Act
+      const result = sut.pushChunk(bytes, 0, bytes.length);
+
+      // Assert
+      expect(result).toBe(NO_TERMINATOR);
+    });
+  });
+
+  describe('Given a range whose LF terminator is followed by more bytes, When pushChunk folds it', () => {
+    it('Then pushChunk returns the index just past that terminator', () => {
+      // Arrange
+      const bytes = enc('ab\ncd\n');
+      const sut = createLineDigestFold(NONE_KEY);
+
+      // Act
+      const result = sut.pushChunk(bytes, 0, bytes.length);
+
+      // Assert
+      expect(result).toBe(3);
+    });
+  });
+
+  describe('Given a fold driven over a whole line in one range, When endLine is called', () => {
+    it('Then the emitted digest matches digestNormalizedLine over the same bytes', () => {
+      // Arrange
+      const key: LineKey = { mode: 'change', ignoreCrAtEol: true };
+      const bytes = enc('a  b\r\n');
+      const sut = createLineDigestFold(key);
+      sut.pushChunk(bytes, 0, bytes.length);
+
+      // Act
+      const result = sut.endLine();
+
+      // Assert
+      expect(result).toEqual(digestNormalizedLine(bytes, key));
+    });
+  });
+
+  describe('Given a line split across two ranges mid-tail, When endLine is called', () => {
+    it.each([
+      { label: "mode 'all'", key: { mode: 'all', ignoreCrAtEol: false } as LineKey },
+      { label: "mode 'change'", key: { mode: 'change', ignoreCrAtEol: false } as LineKey },
+      { label: "mode 'at-eol'", key: { mode: 'at-eol', ignoreCrAtEol: false } as LineKey },
+      {
+        label: "mode 'none' with ignoreCrAtEol",
+        key: { mode: 'none', ignoreCrAtEol: true } as LineKey,
+      },
+    ])('Then the emitted digest matches the whole-line fold under $label', ({ key }) => {
+      // Arrange
+      const bytes = enc('a  b \r c\r\n');
+      const split = 6; // mid whitespace-and-CR tail
+      const sut = createLineDigestFold(key);
+      sut.pushChunk(bytes, 0, split);
+      sut.pushChunk(bytes, split, bytes.length);
+
+      // Act
+      const result = sut.endLine();
+
+      // Assert
+      expect(result).toEqual(digestNormalizedLine(bytes, key));
+    });
+  });
+});
+
 describe('digestsEqual', () => {
   describe('Given two digests whose length differs but terminated and hash match, When comparing them', () => {
     it('Then returns false (length is significant, not shadowed by hash agreement)', () => {
@@ -856,6 +1222,44 @@ describe('digestsEqual', () => {
 
       // Act
       const result = digestsEqual(a, b);
+
+      // Assert
+      expect(result).toBe(false);
+    });
+  });
+});
+
+// The pair below is a real 32-bit FNV-1a collision (both fold to 0x37bf0293),
+// found by search over 8-byte alphanumeric lines. It pins how far the digest
+// actually reaches: `digestsEqual` cannot tell these two apart, and is not
+// asked to — a drop verdict is settled by the exact normalizer, never by the
+// fold (`contentsEqualUnder`, `line-digest-scanner.ts`).
+describe('digestsEqual — the fold cannot distinguish a colliding pair', () => {
+  const COLLIDING_LEFT = enc('a1d6h5c6');
+  const COLLIDING_RIGHT = enc('l2z1p8e0');
+
+  describe('Given two distinct lines that collide in the 32-bit FNV-1a lane, When their digests are compared', () => {
+    it('Then digestsEqual reports them equal — the digest is a difference filter, not proof', () => {
+      // Arrange
+      const left = digestNormalizedLine(COLLIDING_LEFT, NONE_KEY);
+      const right = digestNormalizedLine(COLLIDING_RIGHT, NONE_KEY);
+      const sut = digestsEqual;
+
+      // Act
+      const result = sut(left, right);
+
+      // Assert
+      expect(result).toBe(true);
+    });
+  });
+
+  describe('Given the same colliding pair, When the exact normalizer compares them', () => {
+    it('Then linesEqualUnder reports them different', () => {
+      // Arrange
+      const sut = linesEqualUnder;
+
+      // Act
+      const result = sut(COLLIDING_LEFT, COLLIDING_RIGHT, NONE_KEY);
 
       // Assert
       expect(result).toBe(false);
@@ -912,6 +1316,15 @@ describe('isBlankLine', () => {
         const result = isBlankLine(line('a\n'), key);
         // Assert
         expect(result).toBe(false);
+      });
+    });
+
+    describe('When the same spaces-only line is unterminated (C4 regression)', () => {
+      it('Then it is still blank — isBlankLine is unaffected by the terminator fix', () => {
+        // Arrange & Act
+        const result = isBlankLine(line('   '), key);
+        // Assert
+        expect(result).toBe(true);
       });
     });
   });

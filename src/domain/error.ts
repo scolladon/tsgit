@@ -540,6 +540,8 @@ function extractDetail(data: TsgitErrorData): string {
       return 'the upstream branch of your current branch does not match the name of your current branch';
     case 'INVALID_PUSH_DEFAULT':
       return `bad config variable 'push.default' in file '${data.source}' at line ${data.line}`;
+    case 'GREP_LINE_TOO_LONG':
+      return `grep line too long to decode: ${data.length} bytes exceeds the ${data.limit}-byte limit`;
     default: {
       const _exhaustive: never = data;
       return String(_exhaustive);

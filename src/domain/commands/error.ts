@@ -264,7 +264,8 @@ export type CommandError =
       readonly value: string;
       readonly source: string;
       readonly line: number;
-    };
+    }
+  | { readonly code: 'GREP_LINE_TOO_LONG'; readonly length: number; readonly limit: number };
 
 const sanitizeForDisplay = (s: string): string => {
   let out = '';
@@ -814,3 +815,12 @@ export const pushUpstreamNameMismatch = (branch: RefName, upstream: RefName): Ts
 // case-sensitive.
 export const invalidPushDefault = (value: string, source: string, line: number): TsgitError =>
   new TsgitError({ code: 'INVALID_PUSH_DEFAULT', value, source, line });
+
+// `grep` refusal: a single line's bytes exceed the JS engine's maximum string
+// length, so the byte->Latin-1 decode that lets a caller `RegExp` run over the
+// line (`domain/grep/matcher.ts`) cannot materialise it as a string at all —
+// decoding it would otherwise throw a bare `RangeError: Invalid string length`.
+// `length` is the line's byte count, `limit` the decode ceiling. Fixed-string
+// patterns never reach this: they match on raw bytes, with no decode.
+export const grepLineTooLong = (length: number, limit: number): TsgitError =>
+  new TsgitError({ code: 'GREP_LINE_TOO_LONG', length, limit });

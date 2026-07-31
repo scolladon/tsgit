@@ -19,6 +19,12 @@ import {
   type PatchFile,
 } from '../diff/index.js';
 import { splitLines } from '../diff/line-diff.js';
+import {
+  assertPatchTextFits,
+  joinedLength,
+  joinedLineLength,
+  MAX_PATCH_TEXT_CHARS,
+} from '../diff/patch-length.js';
 import type { ObjectId } from '../objects/index.js';
 import { findFuncLine } from './funcname.js';
 
@@ -141,14 +147,31 @@ const renderBinary = (file: PatchFile, oldBytes: Uint8Array, newBytes: Uint8Arra
   return ` Binary files ${oldLabel} and ${newLabel} differ`;
 };
 
-export const renderRangePatch = (input: CommitPatchInput): RenderedPatch => {
+// Test-only seam: every production call site goes through `renderRangePatch`
+// below, which always runs at the engine's own string ceiling. This direct-bound
+// entry lets unit tests pin the refusal — and the block measurement feeding it —
+// at a small bound, instead of rendering the half a gigabyte of patch text the
+// real ceiling would take. Deliberately not re-exported from
+// domain/range-diff/index.ts: it must never become public API.
+export const renderRangePatchWithBound = (
+  input: CommitPatchInput,
+  maxChars: number,
+): RenderedPatch => {
   const head = renderHead(input);
   let patch = head;
   let diffsize = 0;
   for (const file of input.files) {
     const header = ` ## ${fileHeader(file.change)} ##`;
     const { lines, count } = renderFileDiff(file);
-    patch += `\n${header}\n${lines.map((line) => `${line}\n`).join('')}`;
+    // Weighed, then built. Joining first and asserting afterwards is no bound
+    // at all: the join is the allocation that fails, so a single oversized
+    // file would still die on the bare RangeError this refusal replaces. The
+    // block is a leading empty line, the header, then the body — each carrying
+    // its own separator, exactly as the join below writes them.
+    const blockChars = joinedLineLength('') + joinedLineLength(header) + joinedLength(lines);
+    assertPatchTextFits(patch.length + blockChars, maxChars);
+    const block = `\n${header}\n${lines.map((line) => `${line}\n`).join('')}`;
+    patch += block;
     diffsize += 1 + count; // the file header line plus every rendered diff line
   }
   const diffOffset = input.files.length > 0 ? head.length + 1 : 0;
@@ -160,3 +183,6 @@ export const renderRangePatch = (input: CommitPatchInput): RenderedPatch => {
     diffsize,
   };
 };
+
+export const renderRangePatch = (input: CommitPatchInput): RenderedPatch =>
+  renderRangePatchWithBound(input, MAX_PATCH_TEXT_CHARS);

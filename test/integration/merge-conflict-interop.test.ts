@@ -115,9 +115,10 @@ describe.skipIf(!GIT_AVAILABLE)('merge interop — per-region conflict materiali
    * tsgit implements git's default 2-way `merge.conflictStyle`.
    */
   const mergeBothConflict = async (): Promise<void> => {
-    const peerMerge = tryRunGit(['-C', pair.peer, 'merge', '--no-ff', '-m', 'm', 'theirs'], {
-      env: COMMIT_ENV,
-    });
+    const peerMerge = tryRunGit(
+      ['-C', pair.peer, '-c', 'merge.conflictStyle=merge', 'merge', '--no-ff', '-m', 'm', 'theirs'],
+      { env: COMMIT_ENV },
+    );
     const result = await repo.merge.run({ rev: 'theirs', message: 'm', author: AUTHOR });
     expect(peerMerge.ok).toBe(false);
     expect(result.kind).toBe('conflict');
@@ -182,6 +183,28 @@ describe.skipIf(!GIT_AVAILABLE)('merge interop — per-region conflict materiali
 
         // Assert
         await expectConflictMatch();
+      });
+    });
+  });
+
+  describe('Given a single NUL-free 70 000-byte line edited differently on both sides (over MAX_LINE_BYTES)', () => {
+    describe('When the content merge conflicts on both tools', () => {
+      it('Then a textual conflict wraps the whole line, not a binary refusal, matching git', async () => {
+        // Arrange — the line-length cap no longer decides isBinary, so this is a real
+        // textual conflict over the whole 70 000-byte line, exactly as git merges it.
+        const base = `${'a'.repeat(70_000)}\n`;
+        const oursContent = `${'a'.repeat(69_999)}X\n`;
+        const theirsContent = `${'a'.repeat(69_999)}Y\n`;
+        await divergeFile(base, oursContent, theirsContent);
+
+        // Act
+        await mergeBothConflict();
+
+        // Assert
+        await expectConflictMatch();
+        expect(normaliseMarkers(await read(pair.ours, 'file.txt'))).toBe(
+          `<<<<<<<\n${oursContent}=======\n${theirsContent}>>>>>>>\n`,
+        );
       });
     });
   });

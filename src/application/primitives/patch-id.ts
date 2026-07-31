@@ -25,13 +25,26 @@ const ENCODER = new TextEncoder();
 const EMPTY = new Uint8Array();
 
 /** Drop the line-number `@@` headers and base-oid `index` lines, then strip
- *  whitespace — the bytes that distinguish a change from an equivalent one. */
-const canonicalise = (patchText: string): string =>
-  patchText
-    .split('\n')
-    .filter((line) => !line.startsWith('@@ ') && !line.startsWith('index '))
-    .map((line) => line.replace(/\s/g, ''))
-    .join('');
+ *  whitespace — the bytes that distinguish a change from an equivalent one.
+ *  Walked one line at a time rather than `split`/`filter`/`map`/`join`, which
+ *  holds every line AND every stripped line alongside the patch text: the peak
+ *  is the text plus the kept output, not three copies of it. */
+const canonicalise = (patchText: string): string => {
+  // Stryker disable next-line ArrayDeclaration: equivalent — a seeded element is prepended to every canonicalisation alike, and the result is only ever hashed: a constant prefix keeps distinct canonical texts distinct, so which commits collide is unchanged, and no caller compares an id to a fixed value (the hex is never persisted or surfaced).
+  const kept: string[] = [];
+  let start = 0;
+  // NOTE: this line's EqualityOperator mutant relaxing `<=` to `<` is equivalent: the only iteration it drops is the one at start === patchText.length, where indexOf finds no separator and the slice is empty — an empty line starts with neither prefix, so it is pushed onto `kept`, and an empty element cannot change `kept.join('')`. Left unannotated because the sibling `>` variant on this same line is a real, killed mutant, and Stryker's next-line disable can't distinguish variant from variant of the same mutator.
+  while (start <= patchText.length) {
+    const lineFeed = patchText.indexOf('\n', start);
+    const end = lineFeed === -1 ? patchText.length : lineFeed;
+    const line = patchText.slice(start, end);
+    if (!line.startsWith('@@ ') && !line.startsWith('index ')) {
+      kept.push(line.replace(/\s/g, ''));
+    }
+    start = end + 1;
+  }
+  return kept.join('');
+};
 
 /** Both blob oids carried by a change, in old→new order (absent side → empty). */
 const oidsOf = (change: DiffChange): string => {
