@@ -346,7 +346,7 @@ describe('openBlobSource', () => {
         // scope, since every real caller only ever resolves blob ids here).
         const content = ENC.encode('tree-like content for pack-base type test');
         const ctx = await buildSeededContext();
-        const ids = await writeSyntheticPack(ctx, 'pack-base-nonblob', [
+        const ids = await writeSyntheticPack(ctx, 'pack-base-non-blob', [
           { kind: 'base', type: 'tree', content },
         ]);
         const id = ids[0] as ObjectId;

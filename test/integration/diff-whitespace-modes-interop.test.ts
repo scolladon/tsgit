@@ -700,6 +700,10 @@ describe.skipIf(!GIT_AVAILABLE)(
       'Given the $label divergence-ledger row, When comparing tsgit against live git',
       (row) => {
         it('Then tsgit matches its pinned verdict — a known divergence, or agreement', async () => {
+          // Arrange + Act + Assert — inseparable for a ledger row: the row and
+          // the suite-wide fixture repo are the arrangement, and assertLedgerRow
+          // resolves the row's commit pair, runs both tsgit arms plus the peer
+          // git invocation, and asserts the verdicts agree.
           await assertLedgerRow(ledgerRepo, ledgerDir, shaByFixture, row);
         });
       },

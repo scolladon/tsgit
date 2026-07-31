@@ -30,7 +30,7 @@ costs 0.2 ms, so `MAX_LINE_BYTES` buys nothing on the diff path at all.
 3. **Raise `MAX_DIFF_LINES`** to a large constant, keeping the pre-check's shape — cons:
    re-values a public constant whose *literal value is its type* (`reports/api.json` churn
    plus a public type change), moves the cliff instead of removing it, and multiplies
-   worst-case trace memory roughly twentyfold because the budget is proportional to
+   worst-case trace memory roughly twenty times over because the budget is proportional to
    `M + N`.
 
 ## Decision

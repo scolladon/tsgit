@@ -311,7 +311,7 @@ describe('whitespace normalizer properties', () => {
 
   // Lens 2 (compositional aggregator): closeRun's promotion/drop invariants,
   // independent of the bit-identity oracle above.
-  describe('Given closeRun invariants', () => {
+  describe('closeRun invariants', () => {
     describe('Given an empty line, When digestNormalizedLine folds it under an arbitrary key', () => {
       it('Then the result is the identity digest', () => {
         // Arrange
