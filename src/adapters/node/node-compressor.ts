@@ -94,46 +94,109 @@ export class NodeCompressor implements Compressor {
     const inflate = createInflate();
     let controller: TransformStreamDefaultController<Uint8Array> | undefined;
     let total = 0;
-    // start() runs synchronously before any transform/flush, so endPromise is guaranteed to
-    // be assigned by the time flush() executes.
-    let endPromise!: Promise<void>;
+    // Guards every path that tears the pump down (cap exceeded, decode error,
+    // or the consumer cancelling) so a later Node stream event cannot settle
+    // an already-settled endPromise or touch an already-torn-down controller.
+    let settled = false;
+    let resolveEnd!: () => void;
+    let rejectEnd!: (err: unknown) => void;
+    // endPromise is created eagerly (not inside start()) so both the 'data'
+    // handler's cancellation guard and the cancel() hook below can settle it
+    // directly — see stopForCancellation.
+    const endPromise = new Promise<void>((resolve, reject) => {
+      resolveEnd = resolve;
+      rejectEnd = reject;
+    });
 
-    return new TransformStream<Uint8Array, Uint8Array>({
+    // A cancelled consumer is an expected termination, not a decompression
+    // failure: stop the zlib pump and resolve (never reject) endPromise
+    // ourselves. Once flush() has already run — the common case, since the
+    // whole input is typically written and the source closed in one shot,
+    // well before decompression finishes — the Streams runtime aliases
+    // reader.cancel()'s promise to this SAME in-flight finish promise instead
+    // of re-invoking the transformer's cancel() hook. Without settling it
+    // here, cancellation would hang forever awaiting an 'end' that destroy()
+    // prevents from ever firing.
+    function stopForCancellation(): void {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      inflate.destroy();
+      resolveEnd();
+    }
+
+    // lib.dom.d.ts's Transformer type predates the WHATWG spec's addition of
+    // an optional cancel() hook; Node's runtime TransformStream honours it
+    // (verified empirically). Typing the transformer through this local
+    // extension — rather than widening the ambient Transformer type used by
+    // the browser/memory adapters — keeps the gap-fill scoped to this file.
+    const transformer: Transformer<Uint8Array, Uint8Array> & {
+      cancel(reason: unknown): void;
+    } = {
       start(c) {
         controller = c;
         inflate.on('data', (chunk: Buffer) => {
+          if (settled) {
+            return;
+          }
           total += chunk.length;
           if (total > cap) {
+            settled = true;
             controller?.error(decompressFailed('inflated output exceeds safety cap'));
             inflate.destroy();
             return;
           }
-          controller?.enqueue(new Uint8Array(chunk));
+          try {
+            controller?.enqueue(new Uint8Array(chunk));
+          } catch {
+            // Empirically verified: once flush() has already started, the
+            // cancel() hook below is never invoked (the Streams runtime clears
+            // it as soon as the writable side begins closing), so this catch
+            // is what actually carries cancellation handling — the controller
+            // can no longer accept output because the consumer cancelled the
+            // reader between 'data' events.
+            stopForCancellation();
+          }
         });
-        // endPromise must both resolve (normal completion) AND reject (error completion)
-        // so that flush() does not hang when the underlying stream emits 'error'. Node's
-        // createInflate() does not emit 'end' after 'error', so wiring only 'end' → resolve
-        // would leave flush() awaiting a promise that never settles in the error path.
-        endPromise = new Promise<void>((resolve, reject) => {
-          inflate.on('end', () => {
-            controller?.terminate();
-            resolve();
-          });
-          inflate.on('error', (err: Error) => {
-            const mapped = decompressFailed(err.message);
-            controller?.error(mapped);
-            reject(mapped);
-          });
+        inflate.on('end', () => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          controller?.terminate();
+          resolveEnd();
+        });
+        inflate.on('error', (err: Error) => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          const mapped = decompressFailed(err.message);
+          controller?.error(mapped);
+          rejectEnd(mapped);
         });
       },
       transform(chunk) {
-        inflate.write(chunk);
+        if (!settled) {
+          inflate.write(chunk);
+        }
       },
       flush() {
         inflate.end();
         return endPromise;
       },
-    });
+      // Belt-and-braces: invoked by the Streams runtime when the consumer
+      // cancels the readable side *before* flush() has started (e.g. a
+      // multi-write source not yet fully consumed). In that timing this hook
+      // does fire and stops the pump at the root; in the timing exercised by
+      // the regression test above, the 'data' handler's catch is what fires.
+      cancel() {
+        stopForCancellation();
+      },
+    };
+
+    return new TransformStream<Uint8Array, Uint8Array>(transformer);
   };
 }
 

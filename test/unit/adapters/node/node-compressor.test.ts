@@ -440,5 +440,38 @@ describe('NodeCompressor', () => {
         });
       });
     });
+
+    describe('Given a large payload inflating across multiple data chunks', () => {
+      describe('When the consumer reads one chunk then cancels the reader mid-stream', () => {
+        it('Then the reader settles promptly without throwing ERR_INVALID_STATE', async () => {
+          // Arrange — 256 KiB forces several zlib 'data' events, so the pump is
+          // still actively enqueueing when cancel() lands mid-stream.
+          const sut = new NodeCompressor();
+          const size = 256 * 1024;
+          const payload = new Uint8Array(size);
+          for (let i = 0; i < size; i += 1) payload[i] = i & 0xff;
+          const deflated = await sut.deflate(payload);
+          const source = new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(deflated);
+              controller.close();
+            },
+          });
+          const reader = source.pipeThrough(sut.createInflateStream()).getReader();
+
+          // Act
+          await reader.read();
+          let caught: unknown;
+          try {
+            await reader.cancel();
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert — cancellation is a clean, expected termination, not a thrown error
+          expect(caught).toBeUndefined();
+        }, 5000);
+      });
+    });
   });
 });
