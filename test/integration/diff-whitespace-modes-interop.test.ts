@@ -191,6 +191,15 @@ describe.skipIf(!GIT_AVAILABLE)(
   },
 );
 
+/** `hello\0world  \n` — NUL-bearing content git's own sniff calls binary. */
+const NUL_BEFORE = new Uint8Array([
+  0x68, 0x65, 0x6c, 0x6c, 0x6f, 0x00, 0x77, 0x6f, 0x72, 0x6c, 0x64, 0x20, 0x20, 0x0a,
+]);
+/** `hello\0world\t\n` — the same content, differing only in trailing whitespace. */
+const NUL_AFTER = new Uint8Array([
+  0x68, 0x65, 0x6c, 0x6c, 0x6f, 0x00, 0x77, 0x6f, 0x72, 0x6c, 0x64, 0x09, 0x0a,
+]);
+
 describe.skipIf(!GIT_AVAILABLE)(
   'integration — whitespace predicate honours .gitattributes diff overrides',
   { timeout: 60_000 },
@@ -209,21 +218,25 @@ describe.skipIf(!GIT_AVAILABLE)(
 
       await writeFile(
         path.join(attrDir, '.gitattributes'),
-        'nodiff.txt -diff\nconv.txt diff=identity\n',
+        'nodiff.txt -diff\nconv.txt diff=identity\nforcetext.bin diff\n',
       );
       await writeFile(path.join(attrDir, 'nodiff.txt'), 'a b\n');
       await writeFile(path.join(attrDir, 'conv.txt'), 'a b\n');
       await writeFile(path.join(attrDir, 'plain.txt'), 'a b\n');
+      // A bare `diff` attribute forces text on content the NUL sniff would
+      // otherwise call binary — git then applies the whitespace flags to it.
+      await writeFile(path.join(attrDir, 'forcetext.bin'), NUL_BEFORE);
       await runGitAsync(['-C', attrDir, 'add', '.']);
       await runGitAsync(['-C', attrDir, 'commit', '-q', '-m', 'base'], {
         env: { ...runGitEnv(), ...IDENTITY },
       });
       attrFrom = (await runGitAsync(['-C', attrDir, 'rev-parse', 'HEAD'])).trim();
 
-      // Whitespace-only edits to all three files.
+      // Whitespace-only edits to all four files.
       await writeFile(path.join(attrDir, 'nodiff.txt'), 'a  b\n');
       await writeFile(path.join(attrDir, 'conv.txt'), 'a  b\n');
       await writeFile(path.join(attrDir, 'plain.txt'), 'a  b\n');
+      await writeFile(path.join(attrDir, 'forcetext.bin'), NUL_AFTER);
       await runGitAsync(['-C', attrDir, 'add', '.']);
       await runGitAsync(['-C', attrDir, 'commit', '-q', '-m', 'ws-only'], {
         env: { ...runGitEnv(), ...IDENTITY },
@@ -238,7 +251,7 @@ describe.skipIf(!GIT_AVAILABLE)(
       await rm(attrDir, { recursive: true, force: true });
     });
 
-    describe('Given whitespace-only edits to a -diff file, a textconv file, and a plain file', () => {
+    describe('Given whitespace-only edits to a -diff file, a textconv file, a forced-text NUL file, and a plain file', () => {
       describe('When diffing with ignoreWhitespace on the predicate path, the stat path, and real git', () => {
         it('Then all three agree — the -diff file survives (binary attr), the plain file drops', async () => {
           // Arrange
@@ -279,6 +292,66 @@ describe.skipIf(!GIT_AVAILABLE)(
           expect(livePaths).not.toContain('plain.txt');
           expect(survivors(predicateResult)).toEqual(livePaths);
           expect(survivors(statResult)).toEqual(livePaths);
+        });
+
+        it('Then all three agree — the forced-text NUL file drops, and its plain-diff counts are real lines', async () => {
+          // Arrange — git's verdicts for the bare-`diff` NUL file: dropped under
+          // -w, present with text counts without it (`- -` would mean binary).
+          const liveWhitespacePaths = (
+            await runGitAsync([
+              '-C',
+              attrDir,
+              'diff',
+              '--no-ext-diff',
+              '--name-only',
+              '--ignore-all-space',
+              attrFrom,
+              attrTo,
+            ])
+          ).split('\n');
+          const liveNumstat = await runGitAsync([
+            '-C',
+            attrDir,
+            'diff',
+            '--no-ext-diff',
+            '--numstat',
+            attrFrom,
+            attrTo,
+            '--',
+            'forcetext.bin',
+          ]);
+
+          // Act
+          const predicateResult = await attrRepo.diff({
+            from: attrFrom,
+            to: attrTo,
+            ignoreWhitespace: 'all',
+          });
+          const statResult = await attrRepo.diff({
+            from: attrFrom,
+            to: attrTo,
+            ignoreWhitespace: 'all',
+            withStat: true,
+          });
+          const plainStatResult = await attrRepo.diff({
+            from: attrFrom,
+            to: attrTo,
+            withStat: true,
+          });
+          const forcetext = (treeDiff: TreeDiff): boolean =>
+            treeDiff.changes.some((c) => 'path' in c && c.path === 'forcetext.bin');
+
+          // Assert — the attribute forces text, so the whitespace flags apply to
+          // NUL-bearing content exactly as they do to any other text file
+          expect(liveWhitespacePaths).not.toContain('forcetext.bin');
+          expect(forcetext(predicateResult)).toBe(false);
+          expect(forcetext(statResult)).toBe(false);
+          expect(liveNumstat.trim()).toBe('1\t1\tforcetext.bin');
+          expect(findModifyChange(plainStatResult.changes, 'forcetext.bin')).toMatchObject({
+            added: 1,
+            deleted: 1,
+            binary: false,
+          });
         });
       });
     });

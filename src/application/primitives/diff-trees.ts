@@ -1,4 +1,5 @@
 import { resolveAttribute } from '../../domain/attributes/index.js';
+import type { BinaryOverride } from '../../domain/diff/binary-decision.js';
 import { primaryPath } from '../../domain/diff/change-path.js';
 import {
   type FlatTree,
@@ -21,7 +22,6 @@ import {
   type StatTreeDiff,
   type TreeDiff,
 } from '../../domain/diff/index.js';
-import { hasNulInWindow } from '../../domain/diff/line-diff.js';
 import { scanEqual } from '../../domain/diff/line-digest-scanner.js';
 import { diffRawTrees } from '../../domain/diff/raw-tree-diff.js';
 import type { RenameDetectOptions } from '../../domain/diff/rename-detect.js';
@@ -134,7 +134,7 @@ function statOptionsFor(
   lineKey: LineKey,
   lineKeyActive: boolean,
   ignoreBlankLines: boolean,
-  numstatBinaryOverride: 'binary' | 'text' | undefined,
+  numstatBinaryOverride: BinaryOverride | undefined,
 ): StatFieldsOptions | undefined {
   const override = numstatBinaryOverride !== undefined ? { numstatBinaryOverride } : {};
   // equivalent-mutant: `if (lineKeyActive)` -> `if (true)` — when lineKeyActive is false the key is mode 'none' + no ignoreCrAtEol, so normalizeLine is the identity and computeStatFields treats { lineKey: <none> } identically to omitting lineKey; counts are unchanged.
@@ -347,9 +347,12 @@ async function changeShouldDrop(
  * The stat path's drop verdict — routed through the same synchronous scanner
  * and ladder the predicate-only path drives (`scanEqual`,
  * `line-digest-scanner.ts`), so the two paths cannot answer differently for
- * the same pair of blobs. Only `modify` changes are ever dropped; a
- * `.gitattributes` binary override short-circuits first, then a NUL-bearing
- * side, then the scanner's own verdict.
+ * the same pair of blobs. Only `modify` changes are ever dropped. The
+ * `.gitattributes` binary override is threaded into the scanner rather than
+ * pre-empted here, so all three of its states are honoured by one decision:
+ * a forced-binary side is never dropped, a forced-text side drops a
+ * whitespace-only change even over NUL bytes (matching git), and an
+ * unattributed path keeps git's NUL-window content sniff.
  */
 function dropVerdict(
   change: DiffChange,
@@ -357,12 +360,10 @@ function dropVerdict(
   newContent: Uint8Array,
   lineKey: LineKey,
   ignoreBlankLines: boolean,
-  numstatBinaryOverride: 'binary' | 'text' | undefined,
+  numstatBinaryOverride: BinaryOverride | undefined,
 ): boolean {
   if (change.type !== 'modify') return false;
-  if (numstatBinaryOverride === 'binary') return false;
-  if (hasNulInWindow(oldContent) || hasNulInWindow(newContent)) return false;
-  return scanEqual(oldContent, newContent, lineKey, ignoreBlankLines);
+  return scanEqual(oldContent, newContent, lineKey, ignoreBlankLines, numstatBinaryOverride);
 }
 
 /**

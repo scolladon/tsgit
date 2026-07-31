@@ -1,3 +1,4 @@
+import { sideIsBinary } from './binary-decision.js';
 import type {
   AddChange,
   CopyChange,
@@ -8,7 +9,7 @@ import type {
   TypeChangeChange,
 } from './diff-change.js';
 import { invalidDiffInput } from './error.js';
-import { diffLines, isBinary, type LineHunk, splitLines } from './line-diff.js';
+import { diffLines, type LineHunk, splitLines } from './line-diff.js';
 import { MAX_SCORE, toSimilarityPercent } from './similarity.js';
 import { isBlankLine, type LineKey, NONE_KEY } from './whitespace.js';
 
@@ -48,10 +49,6 @@ const DEFAULT_PREFIX: PatchPathPrefix = { old: 'a/', new: 'b/' };
 const DEFAULT_CONTEXT_LINES = 3;
 const NO_NEWLINE_MARKER = '\\ No newline at end of file';
 const NEWLINE_CODE = 0x0a;
-
-/** Resolve the binary verdict for one side, honouring an optional patch override. */
-const sideIsBinary = (bytes: Uint8Array, override: 'binary' | 'text' | undefined): boolean =>
-  override === undefined ? isBinary(bytes) : override === 'binary';
 
 // Stryker disable next-line ObjectLiteral: equivalent — TextDecoder's default `fatal` option is already `false`, so `{}` behaves identically to `{ fatal: false }`.
 const decoder = new TextDecoder('utf-8', { fatal: false });

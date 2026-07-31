@@ -1,3 +1,4 @@
+import { type BinaryOverride, forcesBinary, sniffDecides } from './binary-decision.js';
 import { BINARY_DETECTION_BYTES } from './line-diff.js';
 import {
   createLineDigestFold,
@@ -22,8 +23,9 @@ export interface LineDigestScanner {
   end(): void;
   /** Next significant digest, or why not. Never throws. */
   next(): ScanStep;
-  /** NUL in the first BINARY_DETECTION_BYTES — the ONLY binary rule. Once
-   *  set, `next()` answers `exhausted`. */
+  /** The side's binary verdict: the path's `diff` attribute when it decided
+   *  one (`binary-decision.ts`), otherwise NUL in the first
+   *  BINARY_DETECTION_BYTES. Once set, `next()` answers `exhausted`. */
   readonly binary: boolean;
 }
 
@@ -42,13 +44,13 @@ interface ScannerState {
   binary: boolean;
 }
 
-function createScannerState(): ScannerState {
+function createScannerState(binaryOverride: BinaryOverride | undefined): ScannerState {
   return {
     chunk: EMPTY_CHUNK,
     cursor: 0,
     ended: false,
     nulScanOffset: 0,
-    binary: false,
+    binary: forcesBinary(binaryOverride),
   };
 }
 
@@ -107,17 +109,24 @@ function computeNextStep(
  * A synchronous, chunk-fed scanner over one blob's significant line digests.
  * Feeds chunks through the incremental digest fold (`whitespace.ts`) and the
  * NUL-window binary check, never buffering or accumulating the blob.
+ *
+ * `binaryOverride` carries the path's `diff` attribute verdict: a forced-binary
+ * side is binary before a byte is read, and a forced-text side never runs the
+ * NUL scan at all — the sniff is suppressed here, not merely second-guessed by
+ * a caller, so a forced-text NUL-bearing blob really does compare as text.
  */
 export function createLineDigestScanner(
   key: LineKey,
   ignoreBlankLines: boolean,
+  binaryOverride?: BinaryOverride,
 ): LineDigestScanner {
   const fold = createLineDigestFold(key);
-  const state = createScannerState();
+  const state = createScannerState(binaryOverride);
+  const sniffs = sniffDecides(binaryOverride);
 
   return {
     push(chunk: Uint8Array): void {
-      scanForNul(state, chunk);
+      if (sniffs) scanForNul(state, chunk);
       state.chunk = chunk;
       state.cursor = 0;
     },
@@ -166,15 +175,18 @@ export function applyLadder(
  * The predicate's buffered arm and the stat path's drop verdict both call
  * this directly, so a pair of blobs compares identically however it was
  * reached — one function, not two independently maintained copies.
+ * `binaryOverride` is threaded into both scanners, so an attribute-decided
+ * path is answered by the same single binary decision the counts use.
  */
 export function scanEqual(
   oldContent: Uint8Array,
   newContent: Uint8Array,
   key: LineKey,
   ignoreBlankLines: boolean,
+  binaryOverride?: BinaryOverride,
 ): boolean {
-  const oldScanner = createLineDigestScanner(key, ignoreBlankLines);
-  const newScanner = createLineDigestScanner(key, ignoreBlankLines);
+  const oldScanner = createLineDigestScanner(key, ignoreBlankLines, binaryOverride);
+  const newScanner = createLineDigestScanner(key, ignoreBlankLines, binaryOverride);
   oldScanner.push(oldContent);
   oldScanner.end();
   newScanner.push(newContent);

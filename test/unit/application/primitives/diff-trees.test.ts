@@ -1806,6 +1806,85 @@ describe('diffTrees', () => {
     });
   });
 
+  describe('Given a bare-diff-attribute modify over NUL content whose change is whitespace-only', () => {
+    // Real git (`f.bin diff`, `hello\0world  \n` -> `hello\0world\t\n`):
+    // `git diff -w --name-only` is empty and `git diff --name-only` lists the
+    // file — the forced-text attribute suppresses the NUL sniff on the drop
+    // verdict exactly as it already does on the numstat counts.
+    const forceTextNulTrees = async (): Promise<{
+      readonly ctx: Ctx;
+      readonly before: ObjectId;
+      readonly after: ObjectId;
+    }> => {
+      const ctx = createMemoryContext();
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, 'f.bin diff\n');
+      const writeBlobId = async (content: Uint8Array): Promise<ObjectId> =>
+        writeObject(ctx, { type: 'blob', content, id: '' as ObjectId });
+      // "hello\0world  \n" -> "hello\0world\t\n"
+      const oldId = await writeBlobId(
+        new Uint8Array([
+          0x68, 0x65, 0x6c, 0x6c, 0x6f, 0x00, 0x77, 0x6f, 0x72, 0x6c, 0x64, 0x20, 0x20, 0x0a,
+        ]),
+      );
+      const newId = await writeBlobId(
+        new Uint8Array([
+          0x68, 0x65, 0x6c, 0x6c, 0x6f, 0x00, 0x77, 0x6f, 0x72, 0x6c, 0x64, 0x09, 0x0a,
+        ]),
+      );
+      const before = await writeTree(ctx, [{ name: 'f.bin', mode: FILE_MODE.REGULAR, id: oldId }]);
+      const after = await writeTree(ctx, [{ name: 'f.bin', mode: FILE_MODE.REGULAR, id: newId }]);
+      return { ctx, before, after };
+    };
+
+    describe('When diffTrees is called with ignoreWhitespace:all and withStat:true', () => {
+      it('Then the change is dropped (the forced-text attribute suppresses the NUL rule on the stat path)', async () => {
+        // Arrange
+        const { ctx, before, after } = await forceTextNulTrees();
+
+        // Act
+        const result = await diffTrees(ctx, before, after, {
+          ignoreWhitespace: 'all',
+          withStat: true,
+        });
+
+        // Assert
+        expect(result.changes).toHaveLength(0);
+      });
+    });
+
+    describe('When diffTrees is called with ignoreWhitespace:all and withStat omitted', () => {
+      it('Then the change is dropped (the forced-text attribute suppresses the NUL rule on the predicate path)', async () => {
+        // Arrange
+        const { ctx, before, after } = await forceTextNulTrees();
+
+        // Act
+        const result = await diffTrees(ctx, before, after, { ignoreWhitespace: 'all' });
+
+        // Assert
+        expect(result.changes).toHaveLength(0);
+      });
+    });
+
+    describe('When diffTrees is called without a whitespace mode and withStat:true', () => {
+      it('Then the change survives with real line counts (the attribute forces text, so no binary row)', async () => {
+        // Arrange
+        const { ctx, before, after } = await forceTextNulTrees();
+
+        // Act
+        const result = await diffTrees(ctx, before, after, { withStat: true });
+
+        // Assert
+        expect(result.changes).toHaveLength(1);
+        expect(result.changes[0]).toMatchObject({
+          type: 'modify',
+          added: 1,
+          deleted: 1,
+          binary: false,
+        });
+      });
+    });
+  });
+
   describe('Given a whitespace-only modify with ignoreWhitespace:all and withStat omitted', () => {
     describe('When diffTrees is called', () => {
       it('Then the modify is dropped WITHOUT materialising blobs (streaming predicate)', async () => {
