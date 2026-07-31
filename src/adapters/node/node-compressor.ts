@@ -142,17 +142,28 @@ export class NodeCompressor implements Compressor {
           if (total > cap) {
             controller?.error(decompressFailed('inflated output exceeds safety cap'));
             inflate.destroy();
+            // destroy() means no 'end' will ever fire, so an in-flight flush()
+            // would wait forever. RESOLVE, never reject: the controller already
+            // carries the cap error, and rejecting here would replace it with a
+            // duplicate on the writable side.
+            resolveEnd();
             return;
           }
           try {
             controller?.enqueue(new Uint8Array(chunk));
           } catch {
-            // Empirically verified: once flush() has already started, the
-            // cancel() hook below is never invoked (the Streams runtime clears
-            // it as soon as the writable side begins closing), so this catch
-            // is what actually carries cancellation handling — the controller
-            // can no longer accept output because the consumer cancelled the
-            // reader between 'data' events.
+            // `enqueue` throws only when the readable side is already finished,
+            // and there are exactly three ways to get there. Two are the paths
+            // above and below — the cap error and the 'error' handler — which
+            // have already reported the failure and settled endPromise, so
+            // re-running the teardown is a no-op. The third is the one this
+            // handles: the consumer cancelled the reader between 'data' events.
+            // Once flush() has started, the Streams runtime has already cleared
+            // the cancel() hook below (verified empirically), so this catch is
+            // the only place cancellation can be noticed. Nothing is rethrown
+            // because nothing is left to report — and a throw out of a Node
+            // 'data' handler is an uncaught exception, not a caller-visible
+            // error.
             stopForCancellation();
           }
         });

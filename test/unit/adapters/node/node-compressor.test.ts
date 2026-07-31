@@ -153,6 +153,38 @@ describe('NodeCompressor', () => {
       });
     });
 
+    describe('Given the cap is exceeded after flush() has already been entered', () => {
+      describe('When the writable side is closed', () => {
+        it('Then the close settles instead of waiting forever on the inflate end', async () => {
+          // Arrange — close() enters flush() before the 'data' event carrying the
+          // over-cap chunk arrives, so flush()'s promise is the one that must be
+          // settled by the cap teardown.
+          const sut = new NodeCompressor({ maxInflatedBytes: 4 });
+          const deflated = await sut.deflate(new TextEncoder().encode('aaaaaaaaaaaaaaaaaaaa'));
+          const transform = sut.createInflateStream();
+          const reader = transform.readable.getReader();
+          const writer = transform.writable.getWriter();
+
+          // Act — close() is queued behind the write without awaiting it, so
+          // flush() is entered before the over-cap chunk is decoded.
+          const written = writer.write(deflated);
+          const closed = writer.close().then(
+            () => 'settled',
+            () => 'settled',
+          );
+          const read = reader.read();
+          const outcome = await Promise.race([
+            closed,
+            new Promise((resolve) => setTimeout(() => resolve('pending'), 250)),
+          ]);
+          await Promise.allSettled([written, read]);
+
+          // Assert
+          expect(outcome).toBe('settled');
+        });
+      });
+    });
+
     describe('Given a streamInflate roundtrip whose output equals the cap EXACTLY', () => {
       describe('When streamInflate runs', () => {
         it('Then it succeeds (boundary is strictly greater-than, not >=)', async () => {
