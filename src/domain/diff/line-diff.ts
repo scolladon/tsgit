@@ -28,8 +28,16 @@ export const MAX_LINE_BYTES = 65_536;
 // Not consulted by isBinary or by diffLines — no live consumer. Kept exported
 // at today's value for documentation and backward compatibility only.
 export const MAX_LINES = 100_000;
+// The live bail in computeMyersTrace: a pair whose true edit distance exceeds
+// this degrades, independent of how many lines either side has.
 export const MAX_DIFF_EDIT_DISTANCE = 10_000;
+// Not consulted any more — computeMyersTrace's iteration budget used to be
+// derived from this factor; it is now bounded by MAX_DIFF_EDIT_DISTANCE alone.
+// Kept exported at today's value for documentation and backward compatibility.
 export const MAX_DIFF_ITERATION_FACTOR = 1_000;
+// Not consulted any more — diffLines no longer pre-checks total input size;
+// only the edit distance is bounded (MAX_DIFF_EDIT_DISTANCE above). Kept
+// exported at today's value for documentation and backward compatibility.
 export const MAX_DIFF_LINES = 50_000;
 
 const LF = 0x0a;
@@ -110,21 +118,20 @@ function computeMyersTrace(
 ): MyersResult | undefined {
   const M = oursLength;
   const N = theirsLength;
-  // M+N is already bounded by diffLines's MAX_DIFF_LINES pre-check (the sole
-  // caller returns the whole-file fallback before interning or tracing), so
-  // no size guard is repeated here.
+  // The v-array and trace are still sized off M+N — the only upper bound on a
+  // diagonal's position known up front — but nothing here bounds M+N itself
+  // any more; the loop below is what bounds the work.
   const maxD = M + N;
   const offset = maxD;
   const v = new Array<number>(2 * maxD + 1).fill(0);
   const trace: number[][] = [];
 
-  const iterationBudget = maxD * MAX_DIFF_ITERATION_FACTOR;
-  let iterations = 0;
-  // Iteration budget bounds total CPU. diffLines's MAX_DIFF_LINES pre-check
-  // bounds M+N, which transitively caps D (edit distance ≤ M+N ≤ MAX_DIFF_LINES) and
-  // trace memory (snapshots × v-array size). Together they subsume the design's
-  // MAX_DIFF_EDIT_DISTANCE constant, which remains exported for documentation.
+  // Bailing on the edit distance itself, rather than on M+N or on a count
+  // derived from it, bounds trace memory and CPU at a fixed ceiling
+  // regardless of input size: reaching d = MAX_DIFF_EDIT_DISTANCE costs the
+  // same whether M+N is 20 000 or 20 000 000.
   for (let d = 0; ; d++) {
+    if (d > MAX_DIFF_EDIT_DISTANCE) return undefined;
     // Only store the active k-range [-d, d] (2*d+1 entries) instead of full v
     // to bound trace memory at O(D^2) instead of O(D*maxD).
     const snapLen = 2 * d + 1;
@@ -136,8 +143,6 @@ function computeMyersTrace(
     }
     trace.push(snapshot);
     for (let k = -d; k <= d; k += 2) {
-      iterations++;
-      if (iterations > iterationBudget) return undefined;
       const snake = advanceSnake(oursLength, theirsLength, v, offset, d, k, eq);
       v[k + offset] = snake.x;
       if (snake.x >= M && snake.y >= N) {
@@ -332,12 +337,6 @@ export function diffLines(
       theirsLines,
       degraded: false,
     };
-  }
-
-  // Interning every line is O(M+N) work — skip it entirely when the trace
-  // computation would refuse the input anyway.
-  if (M + N > MAX_DIFF_LINES) {
-    return wholeFileFallback(oursLines, theirsLines);
   }
 
   const eq = buildLineEquality(oursLines, theirsLines, lineKey);

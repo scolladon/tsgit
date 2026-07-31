@@ -394,19 +394,12 @@ const LEDGER_ROWS: readonly LabeledLedgerRow[] = [
   // any more, so both agree with git here too.
   ledgerRow('lines-99999.txt', '-w', IGNORE_ALL),
   // C8 — the line-length cap used to mark a plain (no whitespace flag) real
-  // change binary too. `longline.txt` (single over-cap line) is now fixed and
-  // fully covered by dedicated per-consumer interop cases elsewhere, so its row
-  // is deleted here. `manylines.txt` (over MAX_LINES, also over MAX_DIFF_LINES)
-  // moves from wrongly-binary to wrongly-degraded — Part 13 finishes it.
-  ledgerRow(
-    'manylines.txt',
-    undefined,
-    {},
-    {
-      numstat: [100_001, 100_001],
-      patchIsBinary: false,
-    },
-  ),
+  // change binary too, and the edit-distance-driven degrade that followed it
+  // for oversized inputs. Both `longline.txt` (single over-cap line) and
+  // `manylines.txt` (many lines, one-line edit — its edit distance is tiny) are
+  // now fixed and fully covered by dedicated per-consumer interop cases
+  // elsewhere, so their rows are deleted here.
+  ledgerRow('manylines.txt', undefined, {}),
   // The NUL-boundary pair — a permanent control proving git's own binary
   // window ([0, 8 000)) is already matched exactly.
   ledgerRow('nul-7999.txt', undefined, {}),

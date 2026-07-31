@@ -265,4 +265,63 @@ runs('range-diff interop', () => {
       });
     });
   });
+
+  // C8/DC-16 — a NUL-free file with over MAX_LINES lines, differing by a single
+  // line on each side: the edit distance from either parent to the shared base
+  // is 2 (one delete, one insert), far under the cap, so each commit's per-file
+  // diff carries full text hunks instead of collapsing into a whole-file
+  // replace. Isolated repo/series, matching the longline series above.
+  describe('Given a series introducing a many-line file with a single differing line on each side', () => {
+    let manyRoot: string;
+    let manyCtx: Context;
+    let manyBase: string;
+
+    beforeAll(async () => {
+      manyRoot = await mkdtemp(path.join(os.tmpdir(), 'tsgit-rangediff-manylines-'));
+      runGit(['-C', manyRoot, 'init', '-q', '-b', 'main'], { env: datedEnv(clock) });
+      manyCtx = createNodeContext({ workDir: manyRoot });
+
+      const count = 100_001;
+      const baseLines = Array.from({ length: count }, (_, i) => `line-${i}`);
+      const base = `${baseLines.join('\n')}\n`;
+      await writeAndCommit(manyRoot, 'manylines.txt', base, 'seed');
+      manyBase = git(manyRoot, 'rev-parse', 'HEAD').trim();
+
+      runGit(['-C', manyRoot, 'checkout', '-q', '-b', 'mv1'], { env: datedEnv(clock) });
+      const v1Lines = [...baseLines];
+      v1Lines[5] = 'V1 CHANGE';
+      await writeAndCommit(manyRoot, 'manylines.txt', `${v1Lines.join('\n')}\n`, 'feat many');
+
+      runGit(['-C', manyRoot, 'checkout', '-q', manyBase], { env: datedEnv(clock) });
+      runGit(['-C', manyRoot, 'checkout', '-q', '-b', 'mv2'], { env: datedEnv(clock) });
+      const v2Lines = [...baseLines];
+      v2Lines[5] = 'V2 CHANGE';
+      await writeAndCommit(manyRoot, 'manylines.txt', `${v2Lines.join('\n')}\n`, 'feat many');
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      if (manyRoot) await rm(manyRoot, { recursive: true, force: true });
+    });
+
+    describe('When range-diff -s runs', () => {
+      it('Then the pair is reported changed, reconstructs byte-for-byte, and carries real hunks', async () => {
+        // Arrange
+        const expected = git(manyRoot, 'range-diff', '-s', `${manyBase}..mv1`, `${manyBase}..mv2`);
+
+        // Act
+        const entries = await rangeDiffCmd(manyCtx, {
+          old: range(manyBase, 'mv1'),
+          new: range(manyBase, 'mv2'),
+        });
+
+        // Assert — status matches git's own verdict, and the matched pair's
+        // diff-of-diffs is non-trivial: a collapsed whole-file replace would
+        // never surface the specific line-level difference.
+        expect(reconstructS(entries)).toBe(expected);
+        const changed = entries.find((e) => e.status === 'changed');
+        expect(changed?.diffOfDiffs).toBeDefined();
+        expect(changed?.diffOfDiffs?.hunks.some((h) => h.kind !== 'common')).toBe(true);
+      });
+    });
+  });
 });

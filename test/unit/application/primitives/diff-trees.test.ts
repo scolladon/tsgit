@@ -1537,10 +1537,13 @@ describe('diffTrees', () => {
 
   describe('Given a real modify whose two sides together exceed MAX_DIFF_LINES, and withStat:true', () => {
     describe('When diffTrees is called with ignoreWhitespace:all', () => {
-      it('Then the modify survives with the degraded fallback counts unchanged (only the verdict moved, not the stat surface)', async () => {
+      it('Then the modify survives with real counts (edit distance is tiny, so diffLines no longer degrades)', async () => {
         // Arrange — same shape as the ws-only case above, but the first line's
-        // content genuinely differs (not whitespace-only), so the file must survive;
-        // its added/deleted counts still come from diffLines's whole-file fallback
+        // content genuinely differs (not whitespace-only), so the file must
+        // survive. There is no more size-based diffLines cap: the filler is
+        // identical on both sides, so the true edit distance is 2 (one delete,
+        // one insert), far under the edit-distance bail, and the counts reflect
+        // that single-line change rather than a whole-file replace.
         const ctx = await buildSeededContext();
         const lineCount = MAX_DIFF_LINES / 2 + 1;
         const filler = 'x\n'.repeat(lineCount - 1);
@@ -1557,12 +1560,12 @@ describe('diffTrees', () => {
           withStat: true,
         });
 
-        // Assert — degraded diffLines fallback counts every line on each side
+        // Assert — real single-line counts, not a whole-file replace
         expect(result.changes).toHaveLength(1);
         expect(result.changes[0]).toMatchObject({
           type: 'modify',
-          added: lineCount,
-          deleted: lineCount,
+          added: 1,
+          deleted: 1,
           binary: false,
         });
       });

@@ -393,4 +393,28 @@ describe('computePatchId', () => {
       expect(result).toBe(other);
     });
   });
+
+  describe('Given the same change padded past MAX_DIFF_LINES with identical, unrelated context, When patch-ids are computed', () => {
+    it('Then the patch-ids are equal — the padding never enters the diff at all', async () => {
+      // Arrange — cA is a small file with the change in immediate context; cB
+      // pads well past what used to be MAX_DIFF_LINES with lines the change
+      // never touches. Before this fix, M+N over that cap forced a whole-file
+      // replace, folding every padding line into the id as a spurious
+      // delete+insert pair; the true edit distance here is 2 either way, so
+      // this file's real hunk is unaffected by the padding's size.
+      const ctx = await buildSeededContext();
+      const pad = Array.from({ length: 60_000 }, (_, i) => `pad-${i}`).join('\n');
+      const baseA = await commitFile(ctx, 'c1\nc2\nc3\ntarget\nd1\nd2\nd3\n', []);
+      const cA = await commitFile(ctx, 'c1\nc2\nc3\nCHANGED\nd1\nd2\nd3\n', [baseA]);
+      const baseB = await commitFile(ctx, `${pad}\nc1\nc2\nc3\ntarget\nd1\nd2\nd3\n`, []);
+      const cB = await commitFile(ctx, `${pad}\nc1\nc2\nc3\nCHANGED\nd1\nd2\nd3\n`, [baseB]);
+
+      // Act
+      const result = await computePatchId(ctx, cA);
+      const other = await computePatchId(ctx, cB);
+
+      // Assert
+      expect(result).toBe(other);
+    });
+  });
 });
