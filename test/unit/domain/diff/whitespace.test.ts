@@ -1163,8 +1163,8 @@ describe('digestsEqual', () => {
   describe('Given two digests whose length differs but terminated and hash match, When comparing them', () => {
     it('Then returns false (length is significant, not shadowed by hash agreement)', () => {
       // Arrange
-      const a: LineDigest = { length: 1, terminated: true, hash: 99 };
-      const b: LineDigest = { length: 2, terminated: true, hash: 99 };
+      const a: LineDigest = { length: 1, terminated: true, hash: 99, altHash: 7 };
+      const b: LineDigest = { length: 2, terminated: true, hash: 99, altHash: 7 };
 
       // Act
       const result = digestsEqual(a, b);
@@ -1177,11 +1177,45 @@ describe('digestsEqual', () => {
   describe('Given two digests whose terminated flag differs but length and hash match, When comparing them', () => {
     it('Then returns false (terminated is significant, not shadowed by hash agreement)', () => {
       // Arrange
-      const a: LineDigest = { length: 1, terminated: true, hash: 99 };
-      const b: LineDigest = { length: 1, terminated: false, hash: 99 };
+      const a: LineDigest = { length: 1, terminated: true, hash: 99, altHash: 7 };
+      const b: LineDigest = { length: 1, terminated: false, hash: 99, altHash: 7 };
 
       // Act
       const result = digestsEqual(a, b);
+
+      // Assert
+      expect(result).toBe(false);
+    });
+  });
+});
+
+// The pair below is a real 32-bit FNV-1a collision (both fold to 0x37bf0293),
+// found by search over 8-byte alphanumeric lines. It stands in for the class of
+// input a single-lane digest would silently declare unchanged.
+describe('digestsEqual — a single-lane collision does not vanish a change', () => {
+  const COLLIDING_LEFT = enc('a1d6h5c6');
+  const COLLIDING_RIGHT = enc('l2z1p8e0');
+
+  describe('Given two distinct lines that collide in the 32-bit FNV-1a lane, When both are digested', () => {
+    it('Then the premise still holds: the digests agree on length and on the primary lane', () => {
+      // Arrange
+      const left = digestNormalizedLine(COLLIDING_LEFT, NONE_KEY);
+      const right = digestNormalizedLine(COLLIDING_RIGHT, NONE_KEY);
+
+      // Act
+      const result = { length: left.length === right.length, hash: left.hash === right.hash };
+
+      // Assert
+      expect(result).toEqual({ length: true, hash: true });
+    });
+
+    it('Then digestsEqual still reports them different', () => {
+      // Arrange
+      const left = digestNormalizedLine(COLLIDING_LEFT, NONE_KEY);
+      const right = digestNormalizedLine(COLLIDING_RIGHT, NONE_KEY);
+
+      // Act
+      const result = digestsEqual(left, right);
 
       // Assert
       expect(result).toBe(false);

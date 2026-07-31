@@ -10,7 +10,7 @@ import {
   normalizeLine,
 } from '../../../../src/domain/diff/whitespace.js';
 import { bytesEqual } from '../../../../src/domain/objects/encoding.js';
-import { expectedDigest, FNV_OFFSET_BASIS } from './digest-oracle.js';
+import { ALT_OFFSET_BASIS, expectedDigest, FNV_OFFSET_BASIS } from './digest-oracle.js';
 
 // Arbitrary: a UTF-8 line (ASCII printable, no space/tab) plus optional LF terminator
 function arbPrintableBytes(withLf: boolean): fc.Arbitrary<Uint8Array> {
@@ -320,7 +320,12 @@ describe('whitespace normalizer properties', () => {
             // Act
             const result = digestNormalizedLine(new Uint8Array(0), key);
             // Assert
-            expect(result).toEqual({ length: 0, terminated: false, hash: FNV_OFFSET_BASIS });
+            expect(result).toEqual({
+              length: 0,
+              terminated: false,
+              hash: FNV_OFFSET_BASIS,
+              altHash: ALT_OFFSET_BASIS,
+            });
           }),
           { numRuns: 100 },
         );

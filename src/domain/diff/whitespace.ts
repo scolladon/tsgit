@@ -170,22 +170,38 @@ export function lineKeyIsActive(key: LineKey): boolean {
 
 /**
  * A rolling-hash fingerprint of one line's normalized form — `length` (0 means
- * blank), `terminated` (had a trailing LF), and a 32-bit FNV-1a `hash` folded
- * over the normalized bytes. Lets a streaming predicate compare lines for
- * equality under a `LineKey` without ever allocating the normalized
- * `Uint8Array` (`normalizeLine` does, per line, on every comparison).
+ * blank), `terminated` (had a trailing LF), and TWO independent 32-bit FNV-1a
+ * lanes folded over the normalized bytes in the same pass. Lets a streaming
+ * predicate compare lines for equality under a `LineKey` without ever
+ * allocating the normalized `Uint8Array` (`normalizeLine` does, per line, on
+ * every comparison).
+ *
+ * Two lanes, not one: a drop verdict decides whether a genuinely changed file
+ * disappears from the diff, so a 2^-32 collision floor is too close for a
+ * byte-for-byte contract. Distinct lines have to collide in BOTH lanes to be
+ * mistaken for each other, which costs one extra `Math.imul` per byte and takes
+ * the floor to ~2^-64.
  */
 export interface LineDigest {
   readonly length: number;
   readonly terminated: boolean;
   readonly hash: number;
+  readonly altHash: number;
 }
 
 const FNV_OFFSET_BASIS = 0x811c9dc5;
 const FNV_PRIME = 0x01000193;
+// The second lane: a different offset basis and a different odd multiplier, so
+// the two lanes are distinct functions of the same byte sequence.
+const ALT_OFFSET_BASIS = 0x9dc5811c;
+const ALT_PRIME = 0x85ebca6b;
 
 function fnvMix(hash: number, byte: number): number {
   return Math.imul(hash ^ byte, FNV_PRIME) >>> 0;
+}
+
+function altMix(hash: number, byte: number): number {
+  return Math.imul(hash ^ byte, ALT_PRIME) >>> 0;
 }
 
 /**
@@ -197,8 +213,10 @@ function fnvMix(hash: number, byte: number): number {
  */
 interface FoldState {
   committedHash: number;
+  committedAltHash: number;
   committedLength: number;
   tentHash: number;
+  tentAltHash: number;
   tentLength: number;
   pendingWs: boolean;
   pendingCr: boolean;
@@ -209,8 +227,10 @@ interface FoldState {
 function createFoldState(): FoldState {
   return {
     committedHash: FNV_OFFSET_BASIS,
+    committedAltHash: ALT_OFFSET_BASIS,
     committedLength: 0,
     tentHash: FNV_OFFSET_BASIS,
+    tentAltHash: ALT_OFFSET_BASIS,
     tentLength: 0,
     pendingWs: false,
     pendingCr: false,
@@ -221,8 +241,10 @@ function createFoldState(): FoldState {
 
 function resetLine(state: FoldState): void {
   state.committedHash = FNV_OFFSET_BASIS;
+  state.committedAltHash = ALT_OFFSET_BASIS;
   state.committedLength = 0;
   state.tentHash = FNV_OFFSET_BASIS;
+  state.tentAltHash = ALT_OFFSET_BASIS;
   state.tentLength = 0;
   state.pendingWs = false;
   state.pendingCr = false;
@@ -243,11 +265,13 @@ function isSoftCr(byte: number, key: LineKey): boolean {
 
 function foldTentative(state: FoldState, byte: number): void {
   state.tentHash = fnvMix(state.tentHash, byte);
+  state.tentAltHash = altMix(state.tentAltHash, byte);
   state.tentLength++;
 }
 
 function promoteTentative(state: FoldState): void {
   state.committedHash = state.tentHash;
+  state.committedAltHash = state.tentAltHash;
   state.committedLength = state.tentLength;
 }
 
@@ -306,6 +330,7 @@ function applyContentByte(state: FoldState, key: LineKey, byte: number): void {
 /** One of the fold's `committed`/`tentative` hash+length pairs (§D1.3's doc comment). */
 interface FoldPair {
   readonly hash: number;
+  readonly altHash: number;
   readonly length: number;
 }
 
@@ -319,19 +344,26 @@ interface FoldPair {
 function selectedPair(state: FoldState, key: LineKey): FoldPair {
   const useTentative = state.pendingCr && key.mode === 'none' && !state.sawLf;
   return useTentative
-    ? { hash: state.tentHash, length: state.tentLength }
-    : { hash: state.committedHash, length: state.committedLength };
+    ? { hash: state.tentHash, altHash: state.tentAltHash, length: state.tentLength }
+    : { hash: state.committedHash, altHash: state.committedAltHash, length: state.committedLength };
 }
 
 function emitDigest(state: FoldState, key: LineKey, keyIsActive: boolean): LineDigest {
   // `terminated` is true only when the line actually ended in LF AND the key
   // is inactive (C4) — under an active key the final line's LF is whitespace,
-  // so it is suppressed at construction: neither folded into the hash nor
+  // so it is suppressed at construction: neither folded into either lane nor
   // reported.
   const pair = selectedPair(state, key);
   const terminated = state.sawLf && !keyIsActive;
-  const hash = terminated ? fnvMix(pair.hash, LF) : pair.hash;
-  return { length: pair.length, terminated, hash };
+  if (!terminated) {
+    return { length: pair.length, terminated, hash: pair.hash, altHash: pair.altHash };
+  }
+  return {
+    length: pair.length,
+    terminated,
+    hash: fnvMix(pair.hash, LF),
+    altHash: altMix(pair.altHash, LF),
+  };
 }
 
 export interface LineDigestFold {
@@ -394,7 +426,12 @@ export function digestNormalizedLine(bytes: Uint8Array, key: LineKey): LineDiges
 }
 
 export function digestsEqual(a: LineDigest, b: LineDigest): boolean {
-  return a.length === b.length && a.terminated === b.terminated && a.hash === b.hash;
+  return (
+    a.length === b.length &&
+    a.terminated === b.terminated &&
+    a.hash === b.hash &&
+    a.altHash === b.altHash
+  );
 }
 
 /** A digest is blank when its normalized content (excluding a trailing LF) is empty. */
