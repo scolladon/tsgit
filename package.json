@@ -809,7 +809,7 @@
   "devDependencies": {
     "@arethetypeswrong/cli": "0.18.5",
     "@biomejs/biome": "2.5.6",
-    "@cloudflare/vitest-pool-workers": "0.19.1",
+    "@cloudflare/vitest-pool-workers": "0.20.0",
     "@cloudflare/workers-types": "5.20260731.1",
     "@commitlint/cli": "21.2.1",
     "@commitlint/config-conventional": "21.2.0",
@@ -841,6 +841,6 @@
     "typescript": "6.0.3",
     "vitest": "4.1.10",
     "wireit": "0.14.13",
-    "wrangler": "4.116.0"
+    "wrangler": "4.117.0"
   }
 }
