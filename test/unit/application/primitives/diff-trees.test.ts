@@ -1727,9 +1727,10 @@ describe('diffTrees', () => {
 
   describe('Given a single unterminated line longer than the line cap, whitespace-only change', () => {
     describe('When diffTrees is called with ignoreWhitespace:all and withStat omitted', () => {
-      it('Then the file is kept (binary via the incremental cap, never buffered whole)', async () => {
+      it('Then the file is kept (the cap scaffold flags it, reproducing the pre-existing binary verdict)', async () => {
         // Arrange — one 70,000-byte line with no LF: over MAX_LINE_BYTES, so
-        // the predicate must flag binary from the PENDING bytes and bail early
+        // the scanner's temporary cap scaffold trips once the line is fully
+        // scanned and emitted, and the predicate reads it off the scaffold
         const ctx = await buildSeededContext();
         const longLine = 'x'.repeat(70_000);
         const oldId = await blob(ctx, `${longLine} a`);

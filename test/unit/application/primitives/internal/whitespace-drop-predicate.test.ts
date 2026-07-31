@@ -1,194 +1,399 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
 import { isWhitespaceOnlyModify } from '../../../../../src/application/primitives/internal/whitespace-drop-predicate.js';
-import type { BlobStream } from '../../../../../src/application/primitives/stream-blob.js';
-import * as streamBlobMod from '../../../../../src/application/primitives/stream-blob.js';
+import { writeObject } from '../../../../../src/application/primitives/write-object.js';
+import { writeTree } from '../../../../../src/application/primitives/write-tree.js';
 import type { ModifyChange } from '../../../../../src/domain/diff/diff-change.js';
-import {
-  BINARY_DETECTION_BYTES,
-  MAX_LINE_BYTES,
-  MAX_LINES,
-} from '../../../../../src/domain/diff/line-diff.js';
-import { NONE_KEY } from '../../../../../src/domain/diff/whitespace.js';
+import { MAX_LINE_BYTES, MAX_LINES } from '../../../../../src/domain/diff/line-diff.js';
+import { type LineKey, NONE_KEY } from '../../../../../src/domain/diff/whitespace.js';
+import { TsgitError } from '../../../../../src/domain/error.js';
 import { FILE_MODE } from '../../../../../src/domain/objects/file-mode.js';
-import type { FilePath, ObjectId } from '../../../../../src/domain/objects/index.js';
+import type { Blob, FilePath, ObjectId } from '../../../../../src/domain/objects/index.js';
+import { computeLooseObjectPath } from '../../../../../src/domain/storage/loose-path.js';
+import type { Compressor } from '../../../../../src/ports/compressor.js';
+import type { Context } from '../../../../../src/ports/context.js';
+import { buildSeededContext } from '../fixtures.js';
 
 const enc = new TextEncoder();
-const OLD_ID = 'a'.repeat(40) as ObjectId;
-const NEW_ID = 'b'.repeat(40) as ObjectId;
-const ctx = createMemoryContext();
+const ALL_KEY: LineKey = { mode: 'all', ignoreCrAtEol: false };
+const MANY_SHORT_LINES = 'x'.repeat(99).concat('\n').repeat(700);
 
-const change: ModifyChange = {
-  type: 'modify',
-  path: 'f.txt' as FilePath,
-  oldId: OLD_ID,
-  newId: NEW_ID,
-  oldMode: FILE_MODE.REGULAR,
-  newMode: FILE_MODE.REGULAR,
-};
-
-// Yields exactly the given chunks, in order — gives each test precise control
-// over chunk boundaries, which real (compressed/decompressed) blob storage
-// cannot guarantee.
-function chunkedStream(chunks: readonly Uint8Array[]): BlobStream {
+function changeFor(oldId: ObjectId, newId: ObjectId): ModifyChange {
   return {
-    materialised: false,
-    [Symbol.asyncIterator](): AsyncIterator<Uint8Array> {
-      let index = 0;
-      return {
-        next: (): Promise<IteratorResult<Uint8Array>> => {
-          if (index < chunks.length) {
-            const value = chunks[index] as Uint8Array;
-            index += 1;
-            return Promise.resolve({ done: false, value });
-          }
-          return Promise.resolve({ done: true, value: undefined });
-        },
-      };
-    },
+    type: 'modify',
+    path: 'f.txt' as FilePath,
+    oldId,
+    newId,
+    oldMode: FILE_MODE.REGULAR,
+    newMode: FILE_MODE.REGULAR,
   };
 }
 
-function stubStreams(oldChunks: readonly Uint8Array[], newChunks: readonly Uint8Array[]): void {
-  vi.spyOn(streamBlobMod, 'streamBlob').mockImplementation(async (_ctx, id) => {
-    if (id === OLD_ID) return chunkedStream(oldChunks);
-    if (id === NEW_ID) return chunkedStream(newChunks);
-    throw new Error(`unexpected blob id in test: ${id}`);
-  });
+async function writeBlob(ctx: Context, content: Uint8Array): Promise<ObjectId> {
+  const blob: Blob = { type: 'blob', content, id: '' as ObjectId };
+  return writeObject(ctx, blob);
 }
 
-describe('isWhitespaceOnlyModify', () => {
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
+/** Deterministic, deflate-resistant bytes — big enough on disk to land the
+ *  loose arm over the buffered gate regardless of compression. */
+function incompressibleBytes(size: number): Uint8Array {
+  const out = new Uint8Array(size);
+  const QUOTA = 65_536; // Web Crypto's per-call getRandomValues ceiling.
+  for (let start = 0; start < size; start += QUOTA) {
+    crypto.getRandomValues(out.subarray(start, Math.min(start + QUOTA, size)));
+  }
+  return out;
+}
 
-  describe('Given a NUL byte in the chunk immediately after the NUL-detection window closes', () => {
-    describe('When isWhitespaceOnlyModify runs on byte-identical streams', () => {
-      it('Then the trailing NUL is ignored and the modify is dropped (nulScanOffset only ever grows)', async () => {
-        // Arrange — the first chunk exactly exhausts the BINARY_DETECTION_BYTES
-        // window; a NUL leading the second chunk must be ignored, not detected.
-        const firstChunk = new Uint8Array(BINARY_DETECTION_BYTES).fill(0x78); // 'x' * 8000
-        const secondChunk = new Uint8Array([0x00, 0x0a]); // NUL then LF, completes the line
-        const chunks = [firstChunk, secondChunk];
-        stubStreams(chunks, chunks);
+/** Wraps a real Compressor, counting `createInflateStream` calls — the
+ *  observable, timing-free signal of "this side streamed". */
+function countingCompressor(base: Compressor): {
+  readonly compressor: Compressor;
+  readonly streamCount: () => number;
+} {
+  let count = 0;
+  const compressor: Compressor = {
+    ...base,
+    createInflateStream: () => {
+      count += 1;
+      return base.createInflateStream();
+    },
+  };
+  return { compressor, streamCount: () => count };
+}
+
+async function countingContext(): Promise<{
+  readonly ctx: Context;
+  readonly streamCount: () => number;
+}> {
+  const base = await buildSeededContext();
+  const { compressor, streamCount } = countingCompressor(base.compressor);
+  return { ctx: { ...base, compressor }, streamCount };
+}
+
+interface VerdictRow {
+  readonly label: string;
+  readonly oldText: string;
+  readonly newText: string;
+  readonly lineKey: LineKey;
+  readonly expected: boolean;
+}
+
+const VERDICT_TABLE: readonly VerdictRow[] = [
+  {
+    label: 'a whitespace-run-only change under ignoreWhitespace:all is dropped',
+    oldText: 'hello world\n',
+    newText: 'hello  world\n',
+    lineKey: ALL_KEY,
+    expected: true,
+  },
+  {
+    label: 'a real content change under ignoreWhitespace:all is kept',
+    oldText: 'hello\n',
+    newText: 'world\n',
+    lineKey: ALL_KEY,
+    expected: false,
+  },
+  {
+    label: 'two empty blobs are dropped',
+    oldText: '',
+    newText: '',
+    lineKey: ALL_KEY,
+    expected: true,
+  },
+  {
+    label: 'an empty blob against a non-empty one is kept',
+    oldText: '',
+    newText: 'x\n',
+    lineKey: ALL_KEY,
+    expected: false,
+  },
+  {
+    label: 'two single-LF (blank-line) blobs are dropped',
+    oldText: '\n',
+    newText: '\n',
+    lineKey: ALL_KEY,
+    expected: true,
+  },
+  {
+    label: 'a single-LF blob against an empty one is kept',
+    oldText: '\n',
+    newText: '',
+    lineKey: ALL_KEY,
+    expected: false,
+  },
+  {
+    label: 'an unterminated final line with a whitespace-only change is dropped',
+    oldText: 'abc',
+    newText: 'a  bc',
+    lineKey: ALL_KEY,
+    expected: true,
+  },
+  {
+    label: 'a real content change confined to the final unterminated line is kept',
+    oldText: 'same\nold-tail',
+    newText: 'same\nnew-tail',
+    lineKey: NONE_KEY,
+    expected: false,
+  },
+  {
+    label:
+      'many short terminated lines summing past MAX_LINE_BYTES with identical content are dropped',
+    oldText: MANY_SHORT_LINES,
+    newText: MANY_SHORT_LINES,
+    lineKey: NONE_KEY,
+    expected: true,
+  },
+];
+
+describe('isWhitespaceOnlyModify', () => {
+  describe('Given both blobs resolve under the buffered gate', () => {
+    describe('When isWhitespaceOnlyModify runs at the default gate', () => {
+      it('Then no createInflateStream call is made (both sides buffer)', async () => {
+        // Arrange
+        const { ctx, streamCount } = await countingContext();
+        const oldId = await writeBlob(ctx, enc.encode('hello world\n'));
+        const newId = await writeBlob(ctx, enc.encode('hello  world\n'));
 
         // Act
-        const result = await isWhitespaceOnlyModify(ctx, change, NONE_KEY, false);
+        await isWhitespaceOnlyModify(ctx, changeFor(oldId, newId), ALL_KEY, false);
 
         // Assert
-        expect(result).toBe(true);
+        expect(streamCount()).toBe(0);
       });
     });
   });
 
-  describe('Given a NUL byte exactly one position past the NUL-detection window on a partially-consumed budget', () => {
-    describe('When isWhitespaceOnlyModify runs on byte-identical streams', () => {
-      it('Then the out-of-window NUL is ignored and the modify is dropped', async () => {
-        // Arrange — 7,995 bytes pre-consume the window (5 remain); the NUL sits
-        // at chunk2[5], the first position the shrunk window must NOT scan.
-        const firstChunk = new Uint8Array(BINARY_DETECTION_BYTES - 5).fill(0x78);
-        const secondChunk = new Uint8Array(10).fill(0x79); // 'y'
-        secondChunk[5] = 0x00;
-        const chunks = [firstChunk, secondChunk];
-        stubStreams(chunks, chunks);
+  describe('Given both blobs resolve over the buffered gate', () => {
+    describe('When isWhitespaceOnlyModify runs at the default gate', () => {
+      it('Then createInflateStream is called once per side (both sides stream)', async () => {
+        // Arrange
+        const { ctx, streamCount } = await countingContext();
+        const oldId = await writeBlob(ctx, incompressibleBytes(70_000));
+        const newId = await writeBlob(ctx, incompressibleBytes(70_000));
 
         // Act
-        const result = await isWhitespaceOnlyModify(ctx, change, NONE_KEY, false);
+        await isWhitespaceOnlyModify(ctx, changeFor(oldId, newId), ALL_KEY, false);
 
         // Assert
-        expect(result).toBe(true);
+        expect(streamCount()).toBe(2);
+      });
+    });
+  });
+
+  describe('Given one blob resolves under and the other over the buffered gate', () => {
+    describe('When isWhitespaceOnlyModify runs at the default gate', () => {
+      it('Then createInflateStream is called once, for the streamed side only', async () => {
+        // Arrange
+        const { ctx, streamCount } = await countingContext();
+        const oldId = await writeBlob(ctx, enc.encode('hello world\n'));
+        const newId = await writeBlob(ctx, incompressibleBytes(70_000));
+
+        // Act
+        await isWhitespaceOnlyModify(ctx, changeFor(oldId, newId), ALL_KEY, false);
+
+        // Assert
+        expect(streamCount()).toBe(1);
+      });
+    });
+  });
+
+  describe('Given a table of whitespace-only and real-content modify pairs', () => {
+    describe('When isWhitespaceOnlyModify runs at the default gate and forced onto the streaming arm (gate 0)', () => {
+      it.each(VERDICT_TABLE)(
+        'Then $label, identically on both arms',
+        async ({ oldText, newText, lineKey, expected }) => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const oldId = await writeBlob(ctx, enc.encode(oldText));
+          const newId = await writeBlob(ctx, enc.encode(newText));
+          const change = changeFor(oldId, newId);
+
+          // Act
+          const buffered = await isWhitespaceOnlyModify(ctx, change, lineKey, false);
+          const streamed = await isWhitespaceOnlyModify(ctx, change, lineKey, false, 0);
+
+          // Assert
+          expect(buffered).toBe(expected);
+          expect(streamed).toBe(expected);
+        },
+      );
+    });
+  });
+
+  describe('Given a NUL byte inside the binary-detection window on one side only', () => {
+    describe('When isWhitespaceOnlyModify runs, at the default gate and forced onto the streaming arm', () => {
+      it('Then the modify is kept — a binary side is never dropped', async () => {
+        // Arrange
+        const clean = enc.encode('same content\n');
+        const withNul = new Uint8Array(clean.length + 1);
+        withNul[0] = 0x00;
+        withNul.set(clean, 1);
+        const ctx = await buildSeededContext();
+        const oldId = await writeBlob(ctx, withNul);
+        const newId = await writeBlob(ctx, clean);
+        const change = changeFor(oldId, newId);
+
+        // Act
+        const buffered = await isWhitespaceOnlyModify(ctx, change, ALL_KEY, false);
+        const streamed = await isWhitespaceOnlyModify(ctx, change, ALL_KEY, false, 0);
+
+        // Assert
+        expect(buffered).toBe(false);
+        expect(streamed).toBe(false);
       });
     });
   });
 
   describe('Given a single LF-terminated line whose length lands exactly on the MAX_LINE_BYTES cap', () => {
-    describe('When isWhitespaceOnlyModify runs on byte-identical streams', () => {
+    describe('When isWhitespaceOnlyModify runs on byte-identical streams, at the default gate and forced onto the streaming arm', () => {
       it('Then the line trips the per-line cap and the modify is kept, not dropped', async () => {
-        // Arrange — delivered as ONE chunk so the LF is found immediately and
-        // the line completes through trackLineCaps, not the pending-bytes guard.
+        // Arrange
         const line = new Uint8Array(MAX_LINE_BYTES).fill(0x78);
         line[MAX_LINE_BYTES - 1] = 0x0a;
-        const chunks = [line];
-        stubStreams(chunks, chunks);
+        const ctx = await buildSeededContext();
+        const oldId = await writeBlob(ctx, line);
+        const newId = await writeBlob(ctx, line);
+        const change = changeFor(oldId, newId);
 
         // Act
-        const result = await isWhitespaceOnlyModify(ctx, change, NONE_KEY, false);
+        const buffered = await isWhitespaceOnlyModify(ctx, change, NONE_KEY, false);
+        const streamed = await isWhitespaceOnlyModify(ctx, change, NONE_KEY, false, 0);
 
         // Assert
-        expect(result).toBe(false);
+        expect(buffered).toBe(false);
+        expect(streamed).toBe(false);
       });
     });
   });
 
   describe('Given exactly MAX_LINES worth of blank lines on byte-identical streams', () => {
-    describe('When isWhitespaceOnlyModify runs', () => {
+    describe('When isWhitespaceOnlyModify runs, at the default gate and forced onto the streaming arm', () => {
       it('Then the line-count cap trips at the boundary and the modify is kept, not dropped', async () => {
-        // Arrange — MAX_LINES single-byte blank lines in one chunk; the
-        // MAX_LINES-th completed line must trip the cap, not a later one.
-        const chunks = [new Uint8Array(MAX_LINES).fill(0x0a)];
-        stubStreams(chunks, chunks);
+        // Arrange
+        const lines = new Uint8Array(MAX_LINES).fill(0x0a);
+        const ctx = await buildSeededContext();
+        const oldId = await writeBlob(ctx, lines);
+        const newId = await writeBlob(ctx, lines);
+        const change = changeFor(oldId, newId);
 
         // Act
-        const result = await isWhitespaceOnlyModify(ctx, change, NONE_KEY, false);
+        const buffered = await isWhitespaceOnlyModify(ctx, change, NONE_KEY, false);
+        const streamed = await isWhitespaceOnlyModify(ctx, change, NONE_KEY, false, 0);
 
         // Assert
-        expect(result).toBe(false);
+        expect(buffered).toBe(false);
+        expect(streamed).toBe(false);
       });
     });
   });
 
-  describe('Given many short terminated lines whose cumulative length exceeds MAX_LINE_BYTES but no single line does', () => {
-    describe('When isWhitespaceOnlyModify runs on byte-identical streams', () => {
-      it('Then the per-line cap never trips and the modify is dropped (currentLineBytes resets each line)', async () => {
-        // Arrange — 700 lines x 100 bytes = 70,000 bytes cumulative (over
-        // MAX_LINE_BYTES), but every individual line is far under the cap.
-        const oneLine = new Uint8Array(100).fill(0x78);
-        oneLine[99] = 0x0a;
-        const bytes = new Uint8Array(700 * 100);
-        for (let i = 0; i < 700; i++) bytes.set(oneLine, i * 100);
-        const chunks = [bytes];
-        stubStreams(chunks, chunks);
+  describe('Given a missing object id', () => {
+    describe('When isWhitespaceOnlyModify is called', () => {
+      it('Then throws objectNotFound with the missing id', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const missing = 'f'.repeat(40) as ObjectId;
+        const change = changeFor(missing, missing);
 
-        // Act
-        const result = await isWhitespaceOnlyModify(ctx, change, NONE_KEY, false);
-
-        // Assert
-        expect(result).toBe(true);
+        // Act + Assert
+        try {
+          await isWhitespaceOnlyModify(ctx, change, ALL_KEY, false);
+          expect.unreachable();
+        } catch (error) {
+          expect(error).toBeInstanceOf(TsgitError);
+          const data = (error as TsgitError).data;
+          expect(data.code).toBe('OBJECT_NOT_FOUND');
+          if (data.code === 'OBJECT_NOT_FOUND') {
+            expect(data.id).toBe(missing);
+          }
+        }
       });
     });
   });
 
-  describe('Given a real content difference confined to the final unterminated line', () => {
-    describe('When isWhitespaceOnlyModify runs', () => {
-      it('Then the differing final line is kept, not silently dropped at EOF', async () => {
-        // Arrange — both sides share a terminated first line; their final,
-        // unterminated lines differ in real (non-whitespace) content.
-        stubStreams([enc.encode('same\nold-tail')], [enc.encode('same\nnew-tail')]);
+  describe('Given a change pointing at a tree oid, small enough to resolve buffered', () => {
+    describe('When isWhitespaceOnlyModify is called at the default gate', () => {
+      it('Then throws unexpectedObjectType, refused on the buffered arm (zero stream calls)', async () => {
+        // Arrange
+        const { ctx, streamCount } = await countingContext();
+        const leafId = await writeBlob(ctx, enc.encode('leaf\n'));
+        const treeId = await writeTree(ctx, [
+          { name: 'leaf.txt', mode: FILE_MODE.REGULAR, id: leafId },
+        ]);
+        const change = changeFor(treeId, treeId);
 
-        // Act
-        const result = await isWhitespaceOnlyModify(ctx, change, NONE_KEY, false);
-
-        // Assert
-        expect(result).toBe(false);
+        // Act + Assert
+        try {
+          await isWhitespaceOnlyModify(ctx, change, ALL_KEY, false);
+          expect.unreachable();
+        } catch (error) {
+          expect(error).toBeInstanceOf(TsgitError);
+          const data = (error as TsgitError).data;
+          expect(data.code).toBe('UNEXPECTED_OBJECT_TYPE');
+          if (data.code === 'UNEXPECTED_OBJECT_TYPE') {
+            expect(data.expected).toBe('blob');
+            expect(data.actual).toBe('tree');
+            expect(data.id).toBe(treeId);
+          }
+        }
+        expect(streamCount()).toBe(0);
       });
     });
   });
 
-  describe('Given the old side becomes binary exactly when the new side reaches a clean EOF', () => {
-    describe('When isWhitespaceOnlyModify runs', () => {
-      it('Then the modify is kept — a binary side alone must never be dropped', async () => {
-        // Arrange — NEW ends cleanly after "same\n"; OLD continues into a
-        // separate chunk carrying a NUL byte, delivered after "same\n" is
-        // taken so the binary flag flips on OLD's second read, not NEW's.
-        const oldChunks = [enc.encode('same\n'), new Uint8Array([0x00])];
-        const newChunks = [enc.encode('same\n')];
-        stubStreams(oldChunks, newChunks);
+  describe('Given a corrupted loose blob resolved buffered', () => {
+    describe('When isWhitespaceOnlyModify is called at the default gate', () => {
+      it('Then throws objectHashMismatch', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, enc.encode('original\n'));
+        const corruptContent = enc.encode('CORRUPTED\n');
+        const corruptBytes = enc.encode(`blob ${corruptContent.length}\0`);
+        const fullCorrupt = new Uint8Array(corruptBytes.length + corruptContent.length);
+        fullCorrupt.set(corruptBytes, 0);
+        fullCorrupt.set(corruptContent, corruptBytes.length);
+        const compressed = await ctx.compressor.deflate(fullCorrupt);
+        const loosePath = `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(id)}`;
+        await ctx.fs.write(loosePath, compressed);
+        const change = changeFor(id, id);
 
-        // Act
-        const result = await isWhitespaceOnlyModify(ctx, change, NONE_KEY, false);
+        // Act + Assert
+        try {
+          await isWhitespaceOnlyModify(ctx, change, ALL_KEY, false);
+          expect.unreachable();
+        } catch (error) {
+          expect(error).toBeInstanceOf(TsgitError);
+          const data = (error as TsgitError).data;
+          expect(data.code).toBe('OBJECT_HASH_MISMATCH');
+          if (data.code === 'OBJECT_HASH_MISMATCH') {
+            expect(data.expected).toBe(id);
+            expect(data.actual).not.toBe(id);
+          }
+        }
+      });
+    });
+  });
 
-        // Assert
-        expect(result).toBe(false);
+  describe('Given a ctx.signal aborted before the call', () => {
+    describe('When isWhitespaceOnlyModify is called', () => {
+      it('Then throws operationAborted', async () => {
+        // Arrange
+        const controller = new AbortController();
+        const ctx = await buildSeededContext({ signal: controller.signal });
+        controller.abort();
+        const someId = 'a'.repeat(40) as ObjectId;
+        const change = changeFor(someId, someId);
+
+        // Act + Assert
+        try {
+          await isWhitespaceOnlyModify(ctx, change, ALL_KEY, false);
+          expect.unreachable();
+        } catch (error) {
+          expect(error).toBeInstanceOf(TsgitError);
+          const data = (error as TsgitError).data;
+          expect(data.code).toBe('OPERATION_ABORTED');
+        }
       });
     });
   });
