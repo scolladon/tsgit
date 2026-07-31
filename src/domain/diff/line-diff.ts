@@ -22,22 +22,27 @@ export interface LineDiff {
 
 export const BINARY_DETECTION_BYTES = 8_000;
 // Not consulted by isBinary — git's own binary rule is the NUL window alone.
-// Kept exported at today's value as grep's binary-presence-probe bound
-// (grep.ts's scanBlob), the only surviving consumer.
+// Still live as grep's own bound, in both of its branches: the binary-presence
+// probe and the per-line match window (grep.ts).
 export const MAX_LINE_BYTES = 65_536;
-// Not consulted by isBinary or by diffLines — no live consumer. Kept exported
-// at today's value for documentation and backward compatibility only.
+// DEPRECATED — no consumer, and NOT a bound: diffLines imposes no limit on how
+// many lines either side may have. A caller reading this as a maximum will be
+// wrong. Kept at today's value only because dropping a public export breaks
+// consumers; do not add uses.
 export const MAX_LINES = 100_000;
 // The live bail in computeMyersTrace: a pair whose true edit distance exceeds
-// this degrades, independent of how many lines either side has.
+// this degrades, independent of how many lines either side has. The only diff
+// bound that still exists.
 export const MAX_DIFF_EDIT_DISTANCE = 10_000;
-// Not consulted any more — computeMyersTrace's iteration budget used to be
-// derived from this factor; it is now bounded by MAX_DIFF_EDIT_DISTANCE alone.
-// Kept exported at today's value for documentation and backward compatibility.
+// DEPRECATED — no consumer, and NOT a bound: the Myers iteration budget is
+// MAX_DIFF_EDIT_DISTANCE alone and is not derived from any factor. Kept at
+// today's value only because dropping a public export breaks consumers; do not
+// add uses.
 export const MAX_DIFF_ITERATION_FACTOR = 1_000;
-// Not consulted any more — diffLines no longer pre-checks total input size;
-// only the edit distance is bounded (MAX_DIFF_EDIT_DISTANCE above). Kept
-// exported at today's value for documentation and backward compatibility.
+// DEPRECATED — no consumer, and NOT a bound: diffLines no longer pre-checks
+// total input size, so a pair far past this value diffs normally. Kept at
+// today's value only because dropping a public export breaks consumers; do not
+// add uses.
 export const MAX_DIFF_LINES = 50_000;
 
 const LF = 0x0a;
