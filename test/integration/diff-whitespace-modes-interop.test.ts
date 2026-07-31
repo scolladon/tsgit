@@ -335,7 +335,7 @@ const IGNORE_AT_EOL: ScenarioDiffOpts = { ignoreWhitespace: 'at-eol' };
 const IGNORE_CR: ScenarioDiffOpts = { ignoreCrAtEol: true };
 const IGNORE_ALL_AND_BLANK: ScenarioDiffOpts = { ignoreWhitespace: 'all', ignoreBlankLines: true };
 
-const KEEPS_ON_BOTH_ARMS = { predicateSurvives: true, statSurvives: true } as const;
+const KEEPS_ON_STAT_ARM = { statSurvives: true } as const;
 
 /** A fixture pinned to already agree with git under all four active-key flags — a control. */
 const controlRows = (fixture: string): readonly LabeledLedgerRow[] => [
@@ -377,10 +377,10 @@ const LEDGER_ROWS: readonly LabeledLedgerRow[] = [
   // C5 — the line-length/line-count caps mark a whitespace-only change binary,
   // and a binary side is never dropped (later fix commits delete these rows).
   // Cost control: `-w` only.
-  ledgerRow('tail-ws.txt', '-w', IGNORE_ALL, KEEPS_ON_BOTH_ARMS), // 345 B on disk — buffered arm
-  ledgerRow('rand-1line.txt', '-w', IGNORE_ALL, KEEPS_ON_BOTH_ARMS), // >64 KiB on disk — streaming arm
-  ledgerRow('len-65536.txt', '-w', IGNORE_ALL, KEEPS_ON_BOTH_ARMS),
-  ledgerRow('lines-100000.txt', '-w', IGNORE_ALL, KEEPS_ON_BOTH_ARMS),
+  ledgerRow('tail-ws.txt', '-w', IGNORE_ALL, KEEPS_ON_STAT_ARM), // 345 B on disk — buffered arm
+  ledgerRow('rand-1line.txt', '-w', IGNORE_ALL, KEEPS_ON_STAT_ARM), // >64 KiB on disk — streaming arm
+  ledgerRow('len-65536.txt', '-w', IGNORE_ALL, KEEPS_ON_STAT_ARM),
+  ledgerRow('lines-100000.txt', '-w', IGNORE_ALL, KEEPS_ON_STAT_ARM),
   // Survives on both (a real change is never dropped) — but the line-length cap
   // still marks it binary for numstat/patch purposes, same as the C8 rows below.
   ledgerRow('long-line-txt.txt', '-w', IGNORE_ALL, { numstat: ['-', '-'], patchIsBinary: true }),

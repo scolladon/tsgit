@@ -4,7 +4,6 @@ import { isWhitespaceOnlyModify } from '../../../../../src/application/primitive
 import { writeObject } from '../../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../../src/application/primitives/write-tree.js';
 import type { ModifyChange } from '../../../../../src/domain/diff/diff-change.js';
-import { MAX_LINE_BYTES, MAX_LINES } from '../../../../../src/domain/diff/line-diff.js';
 import { type LineKey, NONE_KEY } from '../../../../../src/domain/diff/whitespace.js';
 import { TsgitError } from '../../../../../src/domain/error.js';
 import { FILE_MODE } from '../../../../../src/domain/objects/file-mode.js';
@@ -237,49 +236,6 @@ describe('isWhitespaceOnlyModify', () => {
         // Act
         const buffered = await isWhitespaceOnlyModify(ctx, change, ALL_KEY, false);
         const streamed = await isWhitespaceOnlyModify(ctx, change, ALL_KEY, false, 0);
-
-        // Assert
-        expect(buffered).toBe(false);
-        expect(streamed).toBe(false);
-      });
-    });
-  });
-
-  describe('Given a single LF-terminated line whose length lands exactly on the MAX_LINE_BYTES cap', () => {
-    describe('When isWhitespaceOnlyModify runs on byte-identical streams, at the default gate and forced onto the streaming arm', () => {
-      it('Then the line trips the per-line cap and the modify is kept, not dropped', async () => {
-        // Arrange
-        const line = new Uint8Array(MAX_LINE_BYTES).fill(0x78);
-        line[MAX_LINE_BYTES - 1] = 0x0a;
-        const ctx = await buildSeededContext();
-        const oldId = await writeBlob(ctx, line);
-        const newId = await writeBlob(ctx, line);
-        const change = changeFor(oldId, newId);
-
-        // Act
-        const buffered = await isWhitespaceOnlyModify(ctx, change, NONE_KEY, false);
-        const streamed = await isWhitespaceOnlyModify(ctx, change, NONE_KEY, false, 0);
-
-        // Assert
-        expect(buffered).toBe(false);
-        expect(streamed).toBe(false);
-      });
-    });
-  });
-
-  describe('Given exactly MAX_LINES worth of blank lines on byte-identical streams', () => {
-    describe('When isWhitespaceOnlyModify runs, at the default gate and forced onto the streaming arm', () => {
-      it('Then the line-count cap trips at the boundary and the modify is kept, not dropped', async () => {
-        // Arrange
-        const lines = new Uint8Array(MAX_LINES).fill(0x0a);
-        const ctx = await buildSeededContext();
-        const oldId = await writeBlob(ctx, lines);
-        const newId = await writeBlob(ctx, lines);
-        const change = changeFor(oldId, newId);
-
-        // Act
-        const buffered = await isWhitespaceOnlyModify(ctx, change, NONE_KEY, false);
-        const streamed = await isWhitespaceOnlyModify(ctx, change, NONE_KEY, false, 0);
 
         // Assert
         expect(buffered).toBe(false);

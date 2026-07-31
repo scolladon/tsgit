@@ -38,7 +38,7 @@ function refuseNonBlob(id: ObjectId, source: BlobSource): void {
 type LadderVerdict = boolean | 'continue';
 
 /**
- * The shared verdict ladder both arms drive. Binary/caps precede the digest
+ * The shared verdict ladder both arms drive. Binary precedes the digest
  * comparison on purpose (an emitted-then-flagged line must never let a
  * `true` verdict slip through before the flag is observed).
  */
@@ -48,14 +48,7 @@ function applyLadder(
   oldStep: ScanStep,
   newStep: ScanStep,
 ): LadderVerdict {
-  // Temporary: reproduces today's line-length/line-count cap verdict exactly,
-  // by reading the scaffold the scanner exposes for this purpose alone.
-  if (
-    oldScanner.binary ||
-    oldScanner.capsExceeded ||
-    newScanner.binary ||
-    newScanner.capsExceeded
-  ) {
+  if (oldScanner.binary || newScanner.binary) {
     return false;
   }
   const oldDigest = oldStep.kind === 'digest' ? oldStep.digest : undefined;
@@ -154,8 +147,7 @@ async function compareStreamed(
 /**
  * `true` when `change` has zero significant lines added/deleted under `key`
  * (and `ignoreBlankLines`) — the drop-pass equivalent of `shouldDrop` fed by
- * `computeStatFields`. A binary side (NUL-in-window or over the line-count/
- * length caps, matching `isBinary`) is never dropped.
+ * `computeStatFields`. A binary side (NUL-in-window) is never dropped.
  *
  * `maxBufferedBytes` selects, per blob, whether it resolves buffered or
  * streamed (see `openBlobSource`); it defaults to the library-wide

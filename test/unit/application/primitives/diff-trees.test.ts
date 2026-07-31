@@ -1725,12 +1725,10 @@ describe('diffTrees', () => {
     });
   });
 
-  describe('Given a single unterminated line longer than the line cap, whitespace-only change', () => {
+  describe('Given a whitespace-only change on a very long unterminated line', () => {
     describe('When diffTrees is called with ignoreWhitespace:all and withStat omitted', () => {
-      it('Then the file is kept (the cap scaffold flags it, reproducing the pre-existing binary verdict)', async () => {
-        // Arrange — one 70,000-byte line with no LF: over MAX_LINE_BYTES, so
-        // the scanner's temporary cap scaffold trips once the line is fully
-        // scanned and emitted, and the predicate reads it off the scaffold
+      it('Then the file is dropped, like git', async () => {
+        // Arrange
         const ctx = await buildSeededContext();
         const longLine = 'x'.repeat(70_000);
         const oldId = await blob(ctx, `${longLine} a`);
@@ -1745,8 +1743,8 @@ describe('diffTrees', () => {
         // Act
         const result = await diffTrees(ctx, before, after, { ignoreWhitespace: 'all' });
 
-        // Assert — a binary side is never dropped, matching the stat path
-        expect(result.changes).toHaveLength(1);
+        // Assert
+        expect(result.changes).toHaveLength(0);
       });
     });
   });

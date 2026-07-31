@@ -1,9 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  BINARY_DETECTION_BYTES,
-  MAX_LINE_BYTES,
-  MAX_LINES,
-} from '../../../../src/domain/diff/line-diff.js';
+import { BINARY_DETECTION_BYTES } from '../../../../src/domain/diff/line-diff.js';
 import {
   createLineDigestScanner,
   type LineDigestScanner,
@@ -130,83 +126,6 @@ describe('createLineDigestScanner', () => {
       // Assert
       expect(first.kind).toBe('exhausted');
       expect(second.kind).toBe('exhausted');
-    });
-  });
-
-  describe('Given a single LF-terminated line whose length lands exactly on the MAX_LINE_BYTES cap, When it is drained', () => {
-    it('Then capsExceeded becomes true', () => {
-      // Arrange — delivered as ONE chunk so the line completes through the
-      // scaffold's line-emit path.
-      const line = new Uint8Array(MAX_LINE_BYTES).fill(0x78);
-      line[MAX_LINE_BYTES - 1] = 0x0a;
-      const sut = createLineDigestScanner(NONE_KEY, false);
-
-      // Act
-      sut.push(line);
-      sut.end();
-      drainAll(sut);
-
-      // Assert
-      expect(sut.capsExceeded).toBe(true);
-    });
-  });
-
-  describe('Given exactly MAX_LINES worth of blank lines, When they are drained', () => {
-    it('Then capsExceeded becomes true (the line-count cap trips, not the length cap)', () => {
-      // Arrange — MAX_LINES single-byte blank lines in one chunk; no single
-      // line is anywhere near MAX_LINE_BYTES.
-      const chunk = new Uint8Array(MAX_LINES).fill(0x0a);
-      const sut = createLineDigestScanner(NONE_KEY, false);
-
-      // Act
-      sut.push(chunk);
-      sut.end();
-      drainAll(sut);
-
-      // Assert
-      expect(sut.capsExceeded).toBe(true);
-    });
-  });
-
-  describe('Given many short terminated lines whose cumulative length exceeds MAX_LINE_BYTES but no single line does, When they are drained', () => {
-    it('Then capsExceeded never trips (currentLineBytes resets on every terminated line)', () => {
-      // Arrange — 700 lines x 100 bytes = 70,000 bytes cumulative (over
-      // MAX_LINE_BYTES), but every individual line is far under the cap.
-      const oneLine = new Uint8Array(100).fill(0x78);
-      oneLine[99] = 0x0a;
-      const bytes = new Uint8Array(700 * 100);
-      for (let i = 0; i < 700; i++) bytes.set(oneLine, i * 100);
-      const sut = createLineDigestScanner(NONE_KEY, false);
-
-      // Act
-      sut.push(bytes);
-      sut.end();
-      drainAll(sut);
-
-      // Assert
-      expect(sut.capsExceeded).toBe(false);
-    });
-  });
-
-  describe('Given the same shape under an active key (C4 suppresses LineDigest.terminated), When they are drained', () => {
-    it('Then capsExceeded still never trips (cap-tracking uses the raw LF boundary, not the suppressed digest field)', () => {
-      // Arrange — identical to the sibling case above, but under an active
-      // key: LineDigest.terminated is now always false for equality purposes
-      // (C4), so the cap tracker must not key its line-boundary reset off it.
-      const key: LineKey = { mode: 'all', ignoreCrAtEol: false };
-      const oneLine = new Uint8Array(100).fill(0x78);
-      oneLine[99] = 0x0a;
-      const bytes = new Uint8Array(700 * 100);
-      for (let i = 0; i < 700; i++) bytes.set(oneLine, i * 100);
-      const sut = createLineDigestScanner(key, false);
-
-      // Act
-      sut.push(bytes);
-      sut.end();
-      drainAll(sut);
-
-      // Assert
-      expect(sut.capsExceeded).toBe(false);
     });
   });
 
