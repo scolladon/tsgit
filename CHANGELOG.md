@@ -1,5 +1,23 @@
 # Changelog
 
+## [3.2.0](https://github.com/scolladon/tsgit/compare/v3.1.2...v3.2.0) (2026-07-31)
+
+
+### Features
+
+* ship a single-file no-build browser bundle ([#257](https://github.com/scolladon/tsgit/issues/257)) ([70ae1ee](https://github.com/scolladon/tsgit/commit/70ae1ee5e5b5911d6ef818ad2e599ef2ef83e0b6))
+
+
+### Bug Fixes
+
+* mask shallow-boundary parents so commit walks stop at the cut ([#260](https://github.com/scolladon/tsgit/issues/260)) ([09224d4](https://github.com/scolladon/tsgit/commit/09224d4925e6ae53d85c09c8235c051fdc30c561))
+* open repositories through .git gitfile pointers (linked worktrees, submodules, separate git dirs) ([#259](https://github.com/scolladon/tsgit/issues/259)) ([3e90991](https://github.com/scolladon/tsgit/commit/3e909914d76e8387aaaad31824e9606677ee6308))
+
+
+### Performance
+
+* compare small whitespace-mode blob pairs without streaming ([#261](https://github.com/scolladon/tsgit/issues/261)) ([6107c65](https://github.com/scolladon/tsgit/commit/6107c65e9e5532934d5be60907537304de01929b))
+
 ## [3.1.2](https://github.com/scolladon/tsgit/compare/v3.1.1...v3.1.2) (2026-07-28)
 
 
