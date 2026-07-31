@@ -95,13 +95,14 @@ function dropTrailingCr(bytes: Uint8Array): Uint8Array {
   return out;
 }
 
-// The CR cross-mode rule: trailing CR is droppable under all/change/at-eol modes
-// AND under ignoreCrAtEol. Apply CR drop before the mode-specific transform.
+// The CR cross-mode rule: trailing CR is droppable under all/change/at-eol
+// modes unconditionally, and under ignoreCrAtEol only when it ends a
+// terminated line — a CR ending an incomplete final line is content, not
+// whitespace, there (C6). Apply CR drop before the mode-specific transform.
 function applyCrRule(bytes: Uint8Array, key: LineKey): Uint8Array {
-  if (key.ignoreCrAtEol || key.mode === 'all' || key.mode === 'change' || key.mode === 'at-eol') {
-    return dropTrailingCr(bytes);
-  }
-  return bytes;
+  const terminated = lfIndex(bytes) < bytes.length;
+  const crApplies = key.mode !== 'none' || (key.ignoreCrAtEol && terminated);
+  return crApplies ? dropTrailingCr(bytes) : bytes;
 }
 
 function normalizeUnderMode(bytes: Uint8Array, key: LineKey): Uint8Array {
@@ -299,14 +300,35 @@ function applyContentByte(state: FoldState, key: LineKey, byte: number): void {
   onHard(state, key, byte);
 }
 
-function emitDigest(state: FoldState, keyIsActive: boolean): LineDigest {
+/** One of the fold's `committed`/`tentative` hash+length pairs (§D1.3's doc comment). */
+interface FoldPair {
+  readonly hash: number;
+  readonly length: number;
+}
+
+// Which pair `emitDigest` reports (C6, §D1.4): `tentative` — the pending
+// droppable tail kept as-if it were content — wins only for an incomplete
+// final line's trailing CR under `ignoreCrAtEol` with mode 'none', where the
+// CR is significant, not whitespace. Every other shape reports `committed`:
+// under any other mode a trailing CR is ordinary whitespace and always
+// droppable regardless of termination (isSoftCr never sets `pendingCr` for
+// an inactive key, so this stays dead there too).
+function selectedPair(state: FoldState, key: LineKey): FoldPair {
+  const useTentative = state.pendingCr && key.mode === 'none' && !state.sawLf;
+  return useTentative
+    ? { hash: state.tentHash, length: state.tentLength }
+    : { hash: state.committedHash, length: state.committedLength };
+}
+
+function emitDigest(state: FoldState, key: LineKey, keyIsActive: boolean): LineDigest {
   // `terminated` is true only when the line actually ended in LF AND the key
   // is inactive (C4) — under an active key the final line's LF is whitespace,
   // so it is suppressed at construction: neither folded into the hash nor
-  // reported. The pending tail is always discarded — `committed` always wins.
+  // reported.
+  const pair = selectedPair(state, key);
   const terminated = state.sawLf && !keyIsActive;
-  const hash = terminated ? fnvMix(state.committedHash, LF) : state.committedHash;
-  return { length: state.committedLength, terminated, hash };
+  const hash = terminated ? fnvMix(pair.hash, LF) : pair.hash;
+  return { length: pair.length, terminated, hash };
 }
 
 export interface LineDigestFold {
@@ -341,7 +363,7 @@ export function createLineDigestFold(key: LineKey): LineDigestFold {
   }
 
   function endLine(): LineDigest {
-    const digest = emitDigest(state, keyIsActive);
+    const digest = emitDigest(state, key, keyIsActive);
     resetLine(state);
     return digest;
   }

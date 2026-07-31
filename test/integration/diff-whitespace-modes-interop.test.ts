@@ -368,14 +368,12 @@ const LEDGER_ROWS: readonly LabeledLedgerRow[] = [
   ledgerRow('ctx-gain.txt', '-w', IGNORE_ALL),
   ledgerRow('ctx-loss.txt', '-w', IGNORE_ALL),
   // C6 — a CR ending an incomplete final line is significant to git under
-  // --ignore-cr-at-eol; tsgit strips it unconditionally (a later fix commit deletes this row).
+  // --ignore-cr-at-eol, matching git (the fix commit that landed this deleted
+  // the tsgitDivergence entry; the row now falls back to git's own live verdict).
   ledgerRow('cr-no-eol.txt', '-w', IGNORE_ALL), // control: both drop
   ledgerRow('cr-no-eol.txt', '-b', IGNORE_CHANGE), // control: both drop
   ledgerRow('cr-no-eol.txt', '--ignore-space-at-eol', IGNORE_AT_EOL), // control: both drop
-  ledgerRow('cr-no-eol.txt', '--ignore-cr-at-eol', IGNORE_CR, {
-    predicateSurvives: false,
-    statSurvives: false,
-  }),
+  ledgerRow('cr-no-eol.txt', '--ignore-cr-at-eol', IGNORE_CR),
   // C5 — the line-length/line-count caps mark a whitespace-only change binary,
   // and a binary side is never dropped (later fix commits delete these rows).
   // Cost control: `-w` only.

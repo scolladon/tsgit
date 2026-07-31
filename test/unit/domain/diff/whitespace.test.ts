@@ -300,20 +300,29 @@ describe('normalizeLine', () => {
       });
     });
 
+    describe('When a trailing CR ends an incomplete final line (no LF)', () => {
+      it('Then the CR is kept as content, not stripped as whitespace (C6)', () => {
+        // Arrange & Act
+        const result = normalizeLine(line('x y\r'), key);
+        // Assert
+        expect(result).toEqual(enc('x y\r'));
+      });
+    });
+
     describe('When the CR guard is evaluated near unterminated or CR-free content', () => {
       it.each([
         {
           input: 'a\r',
-          expected: 'a',
+          expected: 'a\r',
           label:
-            'a trailing CR ending unterminated content (no final LF) drops the CR without appending an LF',
+            'a trailing CR ending unterminated content (no final LF) is content, not whitespace, and is kept (C6)',
         },
         {
-          // exercises the crPos === 0 boundary of the CR guard
+          // the crPos === 0 boundary of the CR guard is exercised by the
+          // terminated counterpart of this input, in the branch-exhaustive suite
           input: '\r',
-          expected: '',
-          label:
-            'unterminated content that is a single CR drops it to an empty line (CR at index 0)',
+          expected: '\r',
+          label: 'unterminated content that is a single CR is kept as content, not dropped (C6)',
         },
         {
           input: 'a  \n',
@@ -765,6 +774,19 @@ describe('digestNormalizedLine', () => {
 
       // Assert
       expect(digestsEqual(withCr, withoutCr)).toBe(true);
+    });
+  });
+
+  describe('Given ignoreCrAtEol true with mode none, When digesting an incomplete final line ending in CR', () => {
+    const key: LineKey = { mode: 'none', ignoreCrAtEol: true };
+
+    it('Then the CR is content, not whitespace — the digest differs from its terminated counterpart (C6)', () => {
+      // Arrange & Act
+      const unterminated = digestNormalizedLine(new TextEncoder().encode('x y\r'), key);
+      const terminated = digestNormalizedLine(new TextEncoder().encode('x y\r\n'), key);
+
+      // Assert
+      expect(digestsEqual(unterminated, terminated)).toBe(false);
     });
   });
 });
