@@ -189,6 +189,8 @@ export class NodeCompressor implements Compressor {
       // multi-write source not yet fully consumed). In that timing this hook
       // does fire and stops the pump at the root; in the timing exercised by
       // the regression test above, the 'data' handler's catch is what fires.
+      //
+      // Stryker disable next-line BlockStatement: equivalent — flush() has not started in this timing, so endPromise is awaited by nobody and the next 'data' enqueue throws into the catch above, reaching the same teardown one chunk later.
       cancel() {
         stopForCancellation();
       },

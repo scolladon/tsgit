@@ -73,9 +73,9 @@ async function advanceSide(side: ScanSide): Promise<ScanStep> {
     const chunk = await side.iterator.next();
     if (chunk.done === true) {
       side.scanner.end();
-    } else {
-      side.scanner.push(chunk.value);
+      return side.scanner.next();
     }
+    side.scanner.push(chunk.value);
     step = side.scanner.next();
   }
   return step;
@@ -152,6 +152,11 @@ async function compareStreamed(
 }
 
 function concatBytes(head: Uint8Array, tail: Uint8Array): Uint8Array {
+  // NOTE: forcing this guard to `false` is equivalent — the copy below yields
+  // the same bytes as `tail`, and no caller observes array identity, so only
+  // the allocation differs. Left unannotated because the opposite variants
+  // (`true`, `!==`) are real, killed mutants on this same line, and Stryker's
+  // next-line disable matches by mutator+line, not by which variant.
   if (head.length === 0) return tail;
   const out = new Uint8Array(head.length + tail.length);
   out.set(head, 0);
@@ -205,14 +210,28 @@ async function* significantLines(
   if (last !== undefined) yield last;
 }
 
-/** Walks both sides' significant lines in lockstep, comparing normalized bytes. */
+/**
+ * Walks both sides' significant lines in lockstep, comparing normalized bytes.
+ *
+ * The one-sided `done` this handles cannot arise from its only caller: the
+ * ladder answers `true` only when both scanners exhaust on the SAME step, and
+ * `significantLines` yields exactly one line per digest the scanner emits, so
+ * the two iterators always finish together. Every mutant that only changes how
+ * a one-sided `done` is treated is therefore equivalent — the two that a
+ * next-line disable can bind are annotated below; the `ConditionalExpression`
+ * variants cannot be (killed siblings share their lines). The count check stays
+ * regardless: this is a total predicate over the iterators it is handed, and
+ * must not quietly depend on an invariant its caller happens to establish.
+ */
 async function linesAgree(
   oldLines: AsyncIterator<Uint8Array>,
   newLines: AsyncIterator<Uint8Array>,
 ): Promise<boolean> {
   for (;;) {
     const [oldLine, newLine] = await Promise.all([oldLines.next(), newLines.next()]);
+    // Stryker disable next-line LogicalOperator: equivalent — both sides always finish on the same step, so `&&` enters this branch on exactly the steps `||` does.
     if (oldLine.done === true || newLine.done === true) {
+      // Stryker disable next-line LogicalOperator: equivalent — reached only with both sides done, where `||` and `&&` both answer `true`.
       return oldLine.done === true && newLine.done === true;
     }
     if (!bytesEqual(oldLine.value, newLine.value)) return false;
