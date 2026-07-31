@@ -11,6 +11,10 @@ import type { Blob, FilePath, ObjectId } from '../../../../../src/domain/objects
 import { computeLooseObjectPath } from '../../../../../src/domain/storage/loose-path.js';
 import type { Compressor } from '../../../../../src/ports/compressor.js';
 import type { Context } from '../../../../../src/ports/context.js';
+import {
+  DIGEST_COLLISION_LINE_A,
+  DIGEST_COLLISION_LINE_B,
+} from '../../../../fixtures/digest-collision-pair.js';
 import { pseudoRandomBytes } from '../../../../fixtures/pseudo-random-bytes.js';
 import { buildSeededContext } from '../fixtures.js';
 
@@ -185,6 +189,34 @@ const VERDICT_TABLE: readonly VerdictRow[] = [
     lineKey: NONE_KEY,
     expected: true,
   },
+  {
+    label: "a digest-colliding pair of distinct lines is kept under ignoreWhitespace:'all'",
+    oldText: DIGEST_COLLISION_LINE_A,
+    newText: DIGEST_COLLISION_LINE_B,
+    lineKey: ALL_KEY,
+    expected: false,
+  },
+  {
+    label: "a digest-colliding pair of distinct lines is kept under ignoreWhitespace:'change'",
+    oldText: DIGEST_COLLISION_LINE_A,
+    newText: DIGEST_COLLISION_LINE_B,
+    lineKey: { mode: 'change', ignoreCrAtEol: false },
+    expected: false,
+  },
+  {
+    label: "a digest-colliding pair of distinct lines is kept under ignoreWhitespace:'at-eol'",
+    oldText: DIGEST_COLLISION_LINE_A,
+    newText: DIGEST_COLLISION_LINE_B,
+    lineKey: { mode: 'at-eol', ignoreCrAtEol: false },
+    expected: false,
+  },
+  {
+    label: 'a digest-colliding line surrounded by identical lines is kept',
+    oldText: `head\n${DIGEST_COLLISION_LINE_A}\ntail\n`,
+    newText: `head\n${DIGEST_COLLISION_LINE_B}\ntail\n`,
+    lineKey: ALL_KEY,
+    expected: false,
+  },
 ];
 
 describe('isWhitespaceOnlyModify', () => {
@@ -259,6 +291,100 @@ describe('isWhitespaceOnlyModify', () => {
           expect(streamed).toBe(expected);
         },
       );
+    });
+  });
+
+  describe('Given two streamed blobs whose digests differ', () => {
+    describe('When isWhitespaceOnlyModify is forced onto the streaming arm (gate 0)', () => {
+      it('Then each blob is inflated once — a "differs" verdict never re-reads', async () => {
+        // Arrange
+        const { ctx, streamCount } = await countingContext();
+        const oldId = await writeBlob(ctx, enc.encode('hello\n'));
+        const newId = await writeBlob(ctx, enc.encode('world\n'));
+
+        // Act
+        const result = await isWhitespaceOnlyModify(
+          ctx,
+          changeFor(oldId, newId),
+          ALL_KEY,
+          false,
+          0,
+        );
+
+        // Assert
+        expect(result).toBe(false);
+        expect(streamCount()).toBe(2);
+      });
+    });
+  });
+
+  describe('Given two streamed blobs whose digests agree', () => {
+    describe('When isWhitespaceOnlyModify is forced onto the streaming arm (gate 0)', () => {
+      it('Then each blob is inflated twice — the drop verdict is confirmed by a re-read', async () => {
+        // Arrange
+        const { ctx, streamCount } = await countingContext();
+        const oldId = await writeBlob(ctx, enc.encode('hello world\n'));
+        const newId = await writeBlob(ctx, enc.encode('hello  world\n'));
+
+        // Act
+        const result = await isWhitespaceOnlyModify(
+          ctx,
+          changeFor(oldId, newId),
+          ALL_KEY,
+          false,
+          0,
+        );
+
+        // Assert
+        expect(result).toBe(true);
+        expect(streamCount()).toBe(4);
+      });
+    });
+  });
+
+  describe('Given streamed blobs equal only once blank lines are skipped', () => {
+    describe('When isWhitespaceOnlyModify runs with ignoreBlankLines on the streaming arm (gate 0)', () => {
+      it('Then the confirmation skips the blank lines too and the change is dropped', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const oldId = await writeBlob(ctx, enc.encode('a\n\n\nb\n'));
+        const newId = await writeBlob(ctx, enc.encode('\na\nb\n\n'));
+
+        // Act
+        const result = await isWhitespaceOnlyModify(
+          ctx,
+          changeFor(oldId, newId),
+          NONE_KEY,
+          true,
+          0,
+        );
+
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a streamed blob whose final line is unterminated and differs', () => {
+    describe('When isWhitespaceOnlyModify is forced onto the streaming arm (gate 0)', () => {
+      it('Then the change is kept — the confirmation sees the unterminated tail', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const oldId = await writeBlob(ctx, enc.encode(`same\n${DIGEST_COLLISION_LINE_A}`));
+        const newId = await writeBlob(ctx, enc.encode(`same\n${DIGEST_COLLISION_LINE_B}`));
+
+        // Act
+        const result = await isWhitespaceOnlyModify(
+          ctx,
+          changeFor(oldId, newId),
+          ALL_KEY,
+          false,
+          0,
+        );
+
+        // Assert
+        expect(result).toBe(false);
+      });
     });
   });
 

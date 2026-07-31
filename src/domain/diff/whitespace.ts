@@ -156,12 +156,22 @@ export function resolveLineKey(fields: {
 export const NONE_KEY: LineKey = { mode: 'none', ignoreCrAtEol: false };
 
 /**
+ * A normalized line is blank when its content (excluding a trailing LF) is
+ * empty. Split out from `isBlankLine` so a caller holding the normalized bytes
+ * already — the drop pass's exact confirmation does — answers the question
+ * from the same rule instead of normalizing a second time.
+ */
+export function normalizedIsBlank(normalized: Uint8Array): boolean {
+  return lfIndex(normalized) === 0;
+}
+
+/**
  * A line is blank when its content (excluding a trailing LF) is empty after
  * normalization under the active key — so a spaces-only line counts as blank
  * only under a whitespace mode, not under ignore-blank-lines alone.
  */
 export function isBlankLine(line: Uint8Array, key: LineKey): boolean {
-  return lfIndex(normalizeLine(line, key)) === 0;
+  return normalizedIsBlank(normalizeLine(line, key));
 }
 
 export function lineKeyIsActive(key: LineKey): boolean {
@@ -170,38 +180,32 @@ export function lineKeyIsActive(key: LineKey): boolean {
 
 /**
  * A rolling-hash fingerprint of one line's normalized form — `length` (0 means
- * blank), `terminated` (had a trailing LF), and TWO independent 32-bit FNV-1a
- * lanes folded over the normalized bytes in the same pass. Lets a streaming
- * predicate compare lines for equality under a `LineKey` without ever
- * allocating the normalized `Uint8Array` (`normalizeLine` does, per line, on
- * every comparison).
+ * blank), `terminated` (had a trailing LF), and a 32-bit FNV-1a fold over the
+ * normalized bytes, all in one pass. Lets a streaming predicate reject a
+ * DIFFERENCE under a `LineKey` without ever allocating the normalized
+ * `Uint8Array` (`normalizeLine` does, per line, on every comparison).
  *
- * Two lanes, not one: a drop verdict decides whether a genuinely changed file
- * disappears from the diff, so a 2^-32 collision floor is too close for a
- * byte-for-byte contract. Distinct lines have to collide in BOTH lanes to be
- * mistaken for each other, which costs one extra `Math.imul` per byte and takes
- * the floor to ~2^-64.
+ * A difference filter, never proof of equality. Unequal digests prove unequal
+ * normalized lines (the fold is a function of those bytes), so a mismatch is a
+ * sound, cheap "differs". Equal digests prove nothing an attacker cannot
+ * arrange: a narrow FNV chain admits chosen-input multicollisions, so a
+ * would-be-drop verdict is confirmed against the actual normalized bytes
+ * before anything leaves the diff (`contentsEqualUnder`,
+ * `line-digest-scanner.ts`). A second lane once guarded the equality claim
+ * here; with the exact confirmation owning it, that lane bought nothing but a
+ * `Math.imul` and an XOR per byte on the hot path, and is gone.
  */
 export interface LineDigest {
   readonly length: number;
   readonly terminated: boolean;
   readonly hash: number;
-  readonly altHash: number;
 }
 
 const FNV_OFFSET_BASIS = 0x811c9dc5;
 const FNV_PRIME = 0x01000193;
-// The second lane: a different offset basis and a different odd multiplier, so
-// the two lanes are distinct functions of the same byte sequence.
-const ALT_OFFSET_BASIS = 0x9dc5811c;
-const ALT_PRIME = 0x85ebca6b;
 
 function fnvMix(hash: number, byte: number): number {
   return Math.imul(hash ^ byte, FNV_PRIME) >>> 0;
-}
-
-function altMix(hash: number, byte: number): number {
-  return Math.imul(hash ^ byte, ALT_PRIME) >>> 0;
 }
 
 /**
@@ -213,10 +217,8 @@ function altMix(hash: number, byte: number): number {
  */
 interface FoldState {
   committedHash: number;
-  committedAltHash: number;
   committedLength: number;
   tentHash: number;
-  tentAltHash: number;
   tentLength: number;
   pendingWs: boolean;
   pendingCr: boolean;
@@ -227,10 +229,8 @@ interface FoldState {
 function createFoldState(): FoldState {
   return {
     committedHash: FNV_OFFSET_BASIS,
-    committedAltHash: ALT_OFFSET_BASIS,
     committedLength: 0,
     tentHash: FNV_OFFSET_BASIS,
-    tentAltHash: ALT_OFFSET_BASIS,
     tentLength: 0,
     pendingWs: false,
     pendingCr: false,
@@ -241,10 +241,8 @@ function createFoldState(): FoldState {
 
 function resetLine(state: FoldState): void {
   state.committedHash = FNV_OFFSET_BASIS;
-  state.committedAltHash = ALT_OFFSET_BASIS;
   state.committedLength = 0;
   state.tentHash = FNV_OFFSET_BASIS;
-  state.tentAltHash = ALT_OFFSET_BASIS;
   state.tentLength = 0;
   state.pendingWs = false;
   state.pendingCr = false;
@@ -265,13 +263,11 @@ function isSoftCr(byte: number, key: LineKey): boolean {
 
 function foldTentative(state: FoldState, byte: number): void {
   state.tentHash = fnvMix(state.tentHash, byte);
-  state.tentAltHash = altMix(state.tentAltHash, byte);
   state.tentLength++;
 }
 
 function promoteTentative(state: FoldState): void {
   state.committedHash = state.tentHash;
-  state.committedAltHash = state.tentAltHash;
   state.committedLength = state.tentLength;
 }
 
@@ -330,7 +326,6 @@ function applyContentByte(state: FoldState, key: LineKey, byte: number): void {
 /** One of the fold's `committed`/`tentative` hash+length pairs (§D1.3's doc comment). */
 interface FoldPair {
   readonly hash: number;
-  readonly altHash: number;
   readonly length: number;
 }
 
@@ -344,8 +339,8 @@ interface FoldPair {
 function selectedPair(state: FoldState, key: LineKey): FoldPair {
   const useTentative = state.pendingCr && key.mode === 'none' && !state.sawLf;
   return useTentative
-    ? { hash: state.tentHash, altHash: state.tentAltHash, length: state.tentLength }
-    : { hash: state.committedHash, altHash: state.committedAltHash, length: state.committedLength };
+    ? { hash: state.tentHash, length: state.tentLength }
+    : { hash: state.committedHash, length: state.committedLength };
 }
 
 function emitDigest(state: FoldState, key: LineKey, keyIsActive: boolean): LineDigest {
@@ -356,14 +351,9 @@ function emitDigest(state: FoldState, key: LineKey, keyIsActive: boolean): LineD
   const pair = selectedPair(state, key);
   const terminated = state.sawLf && !keyIsActive;
   if (!terminated) {
-    return { length: pair.length, terminated, hash: pair.hash, altHash: pair.altHash };
+    return { length: pair.length, terminated, hash: pair.hash };
   }
-  return {
-    length: pair.length,
-    terminated,
-    hash: fnvMix(pair.hash, LF),
-    altHash: altMix(pair.altHash, LF),
-  };
+  return { length: pair.length, terminated, hash: fnvMix(pair.hash, LF) };
 }
 
 export interface LineDigestFold {
@@ -413,9 +403,11 @@ export function createLineDigestFold(key: LineKey): LineDigestFold {
 }
 
 /**
- * Digest one line's normalized form under `key` — equality-preserving with
- * `normalizeLine`/`bytesEqual` (`digestsEqual(digest(a,k), digest(b,k))` agrees
- * with `linesEqualUnder(a,b,k)`) but without allocating the normalized array.
+ * Digest one line's normalized form under `key`, without allocating the
+ * normalized array. One direction is guaranteed and is the only one anything
+ * relies on: `linesEqualUnder(a,b,k)` implies `digestsEqual(digest(a,k),
+ * digest(b,k))`, so a digest MISMATCH is always a real difference. The
+ * converse does not hold — see `LineDigest`.
  */
 export function digestNormalizedLine(bytes: Uint8Array, key: LineKey): LineDigest {
   const fold = createLineDigestFold(key);
@@ -425,13 +417,10 @@ export function digestNormalizedLine(bytes: Uint8Array, key: LineKey): LineDiges
   return fold.endLine();
 }
 
+/** False proves the two normalized lines differ; true is only evidence they
+ *  match (see `LineDigest`). */
 export function digestsEqual(a: LineDigest, b: LineDigest): boolean {
-  return (
-    a.length === b.length &&
-    a.terminated === b.terminated &&
-    a.hash === b.hash &&
-    a.altHash === b.altHash
-  );
+  return a.length === b.length && a.terminated === b.terminated && a.hash === b.hash;
 }
 
 /** A digest is blank when its normalized content (excluding a trailing LF) is empty. */

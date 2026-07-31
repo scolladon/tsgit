@@ -11,7 +11,7 @@ import {
 } from '../../../../src/domain/diff/whitespace.js';
 import { bytesEqual } from '../../../../src/domain/objects/encoding.js';
 import { arbLineKey } from './arbitraries.js';
-import { ALT_OFFSET_BASIS, expectedDigest, FNV_OFFSET_BASIS } from './digest-oracle.js';
+import { expectedDigest, FNV_OFFSET_BASIS } from './digest-oracle.js';
 
 // Arbitrary: a UTF-8 line (ASCII printable, no space/tab) plus optional LF terminator
 function arbPrintableBytes(withLf: boolean): fc.Arbitrary<Uint8Array> {
@@ -214,6 +214,12 @@ describe('whitespace normalizer properties', () => {
     });
   });
 
+  // Only one direction is a guarantee: equal normalized lines always digest
+  // equal, so a digest MISMATCH is always a real difference. The converse
+  // holds across the space drawn here — which is what makes the digest a good
+  // difference filter — but it is not a contract: chosen input collides the
+  // fold on purpose, and that is why a drop verdict is confirmed against the
+  // real bytes rather than trusted here (`contentsEqualUnder`).
   describe('Given arbitrary CR-bearing lines a and b and an arbitrary key k', () => {
     describe('When digestsEqual(digest(a,k), digest(b,k)) is compared to linesEqualUnder(a,b,k)', () => {
       it('Then the predicate digest and the stat-path normalizer agree', () => {
@@ -300,7 +306,6 @@ describe('whitespace normalizer properties', () => {
             expect(result.length).toBe(expected.length);
             expect(result.terminated).toBe(expected.terminated);
             expect(result.hash).toBe(expected.hash);
-            expect(result.altHash).toBe(expected.altHash);
           }),
           { numRuns: 200 },
         );
@@ -323,7 +328,6 @@ describe('whitespace normalizer properties', () => {
               length: 0,
               terminated: false,
               hash: FNV_OFFSET_BASIS,
-              altHash: ALT_OFFSET_BASIS,
             });
           }),
           { numRuns: 100 },

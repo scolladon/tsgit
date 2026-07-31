@@ -1,12 +1,14 @@
 import { type BinaryOverride, forcesBinary, sniffDecides } from './binary-decision.js';
-import { BINARY_DETECTION_BYTES } from './line-diff.js';
+import { BINARY_DETECTION_BYTES, splitLines } from './line-diff.js';
 import {
   createLineDigestFold,
   digestIsBlank,
   digestsEqual,
+  isBlankLine,
   type LineDigest,
   type LineDigestFold,
   type LineKey,
+  linesEqualUnder,
 } from './whitespace.js';
 
 const NUL = 0x00;
@@ -151,6 +153,12 @@ export type LadderVerdict = boolean | 'continue';
  * line must never let a `true` verdict slip through before the flag is
  * observed. One ladder, one place, so the different comparison shapes that
  * feed it cannot answer differently for the same bytes.
+ *
+ * `false` is FINAL — a digest mismatch, a binary side or a line-count mismatch
+ * each prove a difference outright. `true` is NOT: it rests on digest evidence,
+ * which chosen input can forge. Every caller owes a `true` an exact
+ * confirmation over the real bytes before it drops anything from a diff
+ * (`contentsEqualUnder` here; `confirmStreamedEqual` on the streamed arm).
  */
 export function applyLadder(
   oldScanner: LineDigestScanner,
@@ -169,6 +177,52 @@ export function applyLadder(
   return 'continue';
 }
 
+// Index of the next line at or after `from` that the key counts as
+// significant. With ignoreBlankLines off every line counts, so the scan is
+// skipped entirely rather than run over a predicate that can never fire.
+function nextSignificant(
+  lines: ReadonlyArray<Uint8Array>,
+  from: number,
+  key: LineKey,
+  ignoreBlankLines: boolean,
+): number {
+  if (!ignoreBlankLines) return from;
+  let index = from;
+  while (index < lines.length && isBlankLine(lines[index] as Uint8Array, key)) index++;
+  return index;
+}
+
+/**
+ * What "equal" actually means for a drop verdict: the two sides' significant
+ * lines, compared as NORMALIZED BYTES, in order. The digest ladder above only
+ * ever proves a DIFFERENCE cheaply; a genuinely changed file must never
+ * disappear from a diff because two narrow FNV chains were made to agree, and
+ * a chosen-input multicollision over them costs an attacker seconds.
+ *
+ * Reached only when the ladder is about to answer `true`, so the dominant
+ * "differs" path never pays for it and still returns on the first mismatching
+ * digest.
+ */
+function contentsEqualUnder(
+  oldContent: Uint8Array,
+  newContent: Uint8Array,
+  key: LineKey,
+  ignoreBlankLines: boolean,
+): boolean {
+  const oldLines = splitLines(oldContent);
+  const newLines = splitLines(newContent);
+  let oldIndex = nextSignificant(oldLines, 0, key, ignoreBlankLines);
+  let newIndex = nextSignificant(newLines, 0, key, ignoreBlankLines);
+  while (oldIndex < oldLines.length && newIndex < newLines.length) {
+    const oldLine = oldLines[oldIndex] as Uint8Array;
+    const newLine = newLines[newIndex] as Uint8Array;
+    if (!linesEqualUnder(oldLine, newLine, key)) return false;
+    oldIndex = nextSignificant(oldLines, oldIndex + 1, key, ignoreBlankLines);
+    newIndex = nextSignificant(newLines, newIndex + 1, key, ignoreBlankLines);
+  }
+  return oldIndex === oldLines.length && newIndex === newLines.length;
+}
+
 /**
  * Fully synchronous whole-buffer comparison: pushes each side's entire
  * content into its own scanner, then drives the shared ladder to a verdict.
@@ -177,6 +231,10 @@ export function applyLadder(
  * reached — one function, not two independently maintained copies.
  * `binaryOverride` is threaded into both scanners, so an attribute-decided
  * path is answered by the same single binary decision the counts use.
+ *
+ * Both blobs are already resident here, so the ladder's `true` is confirmed
+ * against their bytes on the spot — no re-read, and nothing extra on the
+ * "differs" path.
  */
 export function scanEqual(
   oldContent: Uint8Array,
@@ -194,6 +252,7 @@ export function scanEqual(
 
   for (;;) {
     const verdict = applyLadder(oldScanner, newScanner, oldScanner.next(), newScanner.next());
-    if (verdict !== 'continue') return verdict;
+    if (verdict === 'continue') continue;
+    return verdict && contentsEqualUnder(oldContent, newContent, key, ignoreBlankLines);
   }
 }

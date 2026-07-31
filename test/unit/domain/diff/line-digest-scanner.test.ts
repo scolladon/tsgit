@@ -3,6 +3,7 @@ import { BINARY_DETECTION_BYTES } from '../../../../src/domain/diff/line-diff.js
 import {
   createLineDigestScanner,
   type LineDigestScanner,
+  scanEqual,
 } from '../../../../src/domain/diff/line-digest-scanner.js';
 import {
   digestNormalizedLine,
@@ -10,9 +11,16 @@ import {
   type LineDigest,
   type LineKey,
   NONE_KEY,
+  type WhitespaceMode,
 } from '../../../../src/domain/diff/whitespace.js';
+import {
+  DIGEST_COLLISION_LINE_A,
+  DIGEST_COLLISION_LINE_B,
+} from '../../../fixtures/digest-collision-pair.js';
 
 const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
+
+const WHITESPACE_MODES: readonly WhitespaceMode[] = ['all', 'change', 'at-eol'];
 
 // Drains a scanner that has already received every chunk it will ever get
 // (push(...) calls followed by end()) down to `exhausted`, collecting every
@@ -339,6 +347,99 @@ describe('createLineDigestScanner', () => {
       if (result.kind === 'digest') {
         expect(result.digest).toEqual(digestNormalizedLine(original, NONE_KEY));
       }
+    });
+  });
+});
+
+describe('scanEqual', () => {
+  describe('Given two distinct lines that collide on the digest, When each is folded under an active whitespace mode', () => {
+    it.each(WHITESPACE_MODES)(
+      'Then their digests are equal under mode %s — the digest alone cannot tell them apart',
+      (mode) => {
+        // Arrange
+        const key: LineKey = { mode, ignoreCrAtEol: false };
+        const sut = digestNormalizedLine;
+
+        // Act
+        const digestA = sut(enc(DIGEST_COLLISION_LINE_A), key);
+        const digestB = sut(enc(DIGEST_COLLISION_LINE_B), key);
+
+        // Assert
+        expect(digestsEqual(digestA, digestB)).toBe(true);
+      },
+    );
+  });
+
+  describe('Given two single-line blobs whose only line is the colliding pair', () => {
+    it.each(WHITESPACE_MODES)('Then scanEqual reports them unequal under mode %s', (mode) => {
+      // Arrange
+      const key: LineKey = { mode, ignoreCrAtEol: false };
+      const sut = scanEqual;
+
+      // Act
+      const result = sut(enc(DIGEST_COLLISION_LINE_A), enc(DIGEST_COLLISION_LINE_B), key, false);
+
+      // Assert
+      expect(result).toBe(false);
+    });
+  });
+
+  describe('Given multi-line blobs differing only in a colliding line surrounded by identical lines', () => {
+    it.each(WHITESPACE_MODES)('Then scanEqual reports them unequal under mode %s', (mode) => {
+      // Arrange
+      const key: LineKey = { mode, ignoreCrAtEol: false };
+      const sut = scanEqual;
+
+      // Act
+      const result = sut(
+        enc(`head\n${DIGEST_COLLISION_LINE_A}\ntail\n`),
+        enc(`head\n${DIGEST_COLLISION_LINE_B}\ntail\n`),
+        key,
+        false,
+      );
+
+      // Assert
+      expect(result).toBe(false);
+    });
+  });
+
+  describe('Given two blobs that really are equal under the key, When scanEqual compares them', () => {
+    it('Then the confirmation still reports them equal', () => {
+      // Arrange
+      const key: LineKey = { mode: 'all', ignoreCrAtEol: false };
+      const sut = scanEqual;
+
+      // Act
+      const result = sut(enc('hello world\nsecond\n'), enc('hello  world\nsec ond\n'), key, false);
+
+      // Assert
+      expect(result).toBe(true);
+    });
+  });
+
+  describe('Given blobs equal only after blank lines are skipped, When ignoreBlankLines is true', () => {
+    it('Then scanEqual reports them equal', () => {
+      // Arrange
+      const sut = scanEqual;
+
+      // Act
+      const result = sut(enc('a\n\n\nb\n'), enc('\na\nb\n\n'), NONE_KEY, true);
+
+      // Assert
+      expect(result).toBe(true);
+    });
+  });
+
+  describe('Given blobs whose only difference is a trailing blank line, When ignoreBlankLines is false', () => {
+    it('Then scanEqual reports them unequal', () => {
+      // Arrange
+      const sut = scanEqual;
+
+      // Act
+      const result = sut(enc('a\n\n'), enc('a\n'), NONE_KEY, false);
+
+      // Assert
+      expect(result).toBe(false);
     });
   });
 });

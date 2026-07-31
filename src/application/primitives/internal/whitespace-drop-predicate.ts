@@ -15,6 +15,11 @@
  * Both arms drive the same `LineDigestScanner` and share one verdict ladder
  * (`applyLadder`, `line-digest-scanner.ts`), so "identical semantics" holds
  * by construction rather than by two independently maintained copies.
+ *
+ * On BOTH arms the ladder's `true` is a digest verdict — evidence, never proof
+ * (`LineDigest`). Nothing is dropped until it is confirmed against the real
+ * normalized bytes: the buffered arm confirms inside `scanEqual` over blobs it
+ * already holds, the streamed arm re-reads (`confirmStreamedEqual`).
  */
 import type { ModifyChange } from '../../../domain/diff/diff-change.js';
 import {
@@ -24,11 +29,15 @@ import {
   type ScanStep,
   scanEqual,
 } from '../../../domain/diff/line-digest-scanner.js';
-import type { LineKey } from '../../../domain/diff/whitespace.js';
+import { type LineKey, normalizedIsBlank, normalizeLine } from '../../../domain/diff/whitespace.js';
+import { bytesEqual } from '../../../domain/objects/encoding.js';
 import { unexpectedObjectType } from '../../../domain/objects/error.js';
 import type { ObjectId } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
 import { type BlobSource, MAX_BUFFERED_BLOB_BYTES, openBlobSource } from './blob-source.js';
+
+const LF = 0x0a;
+const EMPTY = new Uint8Array(0);
 
 // The seam only REPORTS type; the blob-only refusal is this caller's concern
 // (mirrors streamBlob's own wrap-tail check). `type` is `undefined` only on
@@ -142,6 +151,100 @@ async function compareStreamed(
   }
 }
 
+function concatBytes(head: Uint8Array, tail: Uint8Array): Uint8Array {
+  if (head.length === 0) return tail;
+  const out = new Uint8Array(head.length + tail.length);
+  out.set(head, 0);
+  out.set(tail, head.length);
+  return out;
+}
+
+/** The source's bytes as chunks, whichever arm it resolved on. */
+async function* sourceChunks(source: BlobSource): AsyncIterable<Uint8Array> {
+  if (source.kind === 'bytes') {
+    yield source.content;
+    return;
+  }
+  yield* source.stream;
+}
+
+/** The line's normalized bytes, or `undefined` when the key does not count it. */
+function significantOf(
+  line: Uint8Array,
+  lineKey: LineKey,
+  ignoreBlankLines: boolean,
+): Uint8Array | undefined {
+  const normalized = normalizeLine(line, lineKey);
+  if (ignoreBlankLines && normalizedIsBlank(normalized)) return undefined;
+  return normalized;
+}
+
+/**
+ * One side's significant lines as normalized bytes, streamed. Splits on LF —
+ * `splitLines`' own rule, re-derived here only because the source arrives in
+ * chunks — so at most ONE line is ever resident, and a blob far past any
+ * buffering gate is confirmed without being materialised.
+ */
+async function* significantLines(
+  source: BlobSource,
+  lineKey: LineKey,
+  ignoreBlankLines: boolean,
+): AsyncIterable<Uint8Array> {
+  let pending: Uint8Array = EMPTY;
+  for await (const chunk of sourceChunks(source)) {
+    let buffered = concatBytes(pending, chunk);
+    for (let lf = buffered.indexOf(LF); lf !== -1; lf = buffered.indexOf(LF)) {
+      const line = significantOf(buffered.subarray(0, lf + 1), lineKey, ignoreBlankLines);
+      if (line !== undefined) yield line;
+      buffered = buffered.subarray(lf + 1);
+    }
+    pending = buffered;
+  }
+  if (pending.length === 0) return;
+  const last = significantOf(pending, lineKey, ignoreBlankLines);
+  if (last !== undefined) yield last;
+}
+
+/** Walks both sides' significant lines in lockstep, comparing normalized bytes. */
+async function linesAgree(
+  oldLines: AsyncIterator<Uint8Array>,
+  newLines: AsyncIterator<Uint8Array>,
+): Promise<boolean> {
+  for (;;) {
+    const [oldLine, newLine] = await Promise.all([oldLines.next(), newLines.next()]);
+    if (oldLine.done === true || newLine.done === true) {
+      return oldLine.done === true && newLine.done === true;
+    }
+    if (!bytesEqual(oldLine.value, newLine.value)) return false;
+  }
+}
+
+/**
+ * Exact confirmation for the streamed arm's would-be-drop verdict. Re-opens
+ * both blobs and compares their significant lines byte for byte — the one
+ * thing the digests cannot establish (`applyLadder`). The re-read is the price
+ * of not buffering: a streamed side is over the gate precisely because it does
+ * not fit in memory, so materialising it to confirm would trade a silent
+ * wrong answer for an unbounded allocation. Paid only when a change is about
+ * to vanish from the diff; a "differs" verdict never reaches here.
+ */
+async function confirmStreamedEqual(
+  ctx: Context,
+  change: ModifyChange,
+  lineKey: LineKey,
+  ignoreBlankLines: boolean,
+  maxBufferedBytes: number,
+): Promise<boolean> {
+  const [oldSrc, newSrc] = await openBothSources(ctx, change, maxBufferedBytes);
+  const oldLines = significantLines(oldSrc, lineKey, ignoreBlankLines)[Symbol.asyncIterator]();
+  const newLines = significantLines(newSrc, lineKey, ignoreBlankLines)[Symbol.asyncIterator]();
+  try {
+    return await linesAgree(oldLines, newLines);
+  } finally {
+    await Promise.all([oldLines.return?.(), newLines.return?.()]);
+  }
+}
+
 /**
  * `true` when `change` has zero significant lines added/deleted under `key`
  * (and `ignoreBlankLines`) — the streaming twin of the stat path's
@@ -164,5 +267,6 @@ export async function isWhitespaceOnlyModify(
   if (oldSrc.kind === 'bytes' && newSrc.kind === 'bytes') {
     return scanEqual(oldSrc.content, newSrc.content, lineKey, ignoreBlankLines);
   }
-  return await compareStreamed(oldSrc, newSrc, lineKey, ignoreBlankLines);
+  if (!(await compareStreamed(oldSrc, newSrc, lineKey, ignoreBlankLines))) return false;
+  return await confirmStreamedEqual(ctx, change, lineKey, ignoreBlankLines, maxBufferedBytes);
 }
