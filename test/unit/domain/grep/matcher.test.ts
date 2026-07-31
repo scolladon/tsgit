@@ -728,3 +728,69 @@ describe('buildGrepMatcher', () => {
     });
   });
 });
+
+// The regex arm decodes a line to a latin1 string one code unit per byte. The
+// decode is chunked, so these pin the two things chunking can break: every one
+// of the 256 byte values must survive the round trip, and a match must still be
+// found — at the right offset — when it straddles a chunk boundary.
+describe('buildGrepMatcher — chunked latin1 decode', () => {
+  const CHUNK = 8_192;
+
+  describe('Given a line cycling through all 256 byte values across several decode chunks', () => {
+    describe('When a regex matching one specific byte value runs over it', () => {
+      it('Then every occurrence is found, at byte-exact offsets', () => {
+        // Arrange — 4 chunks' worth, so the pattern recurs in every chunk.
+        const length = CHUNK * 4;
+        const line = new Uint8Array(length);
+        for (let i = 0; i < length; i++) line[i] = i % 256;
+        const sut = buildGrepMatcher([/ÿ/]);
+        const expected = [];
+        for (let i = 0; i < length; i++)
+          if (line[i] === 0xff) expected.push({ start: i, end: i + 1 });
+
+        // Act
+        const result = sut.matchLine(line);
+
+        // Assert
+        expect(result.returned).toBe(true);
+        expect(result.spans).toEqual(expected);
+      });
+    });
+  });
+
+  describe('Given a needle placed so that it straddles a decode chunk boundary', () => {
+    describe('When a regex for that needle runs over the line', () => {
+      it('Then the span is reported at the boundary-straddling offset', () => {
+        // Arrange
+        const needle = enc('boundary');
+        const start = CHUNK - 3;
+        const line = new Uint8Array(CHUNK * 2).fill(0x2e); // '.'
+        line.set(needle, start);
+        const sut = buildGrepMatcher([/boundary/]);
+
+        // Act
+        const result = sut.matchLine(line);
+
+        // Assert
+        expect(result.spans).toEqual([{ start, end: start + needle.length }]);
+      });
+    });
+  });
+
+  describe('Given a line exactly one decode chunk long', () => {
+    describe('When a regex anchored at end-of-line runs over it', () => {
+      it('Then the final byte is matched — the chunk loop leaves nothing behind', () => {
+        // Arrange
+        const line = new Uint8Array(CHUNK).fill(0x61); // 'a'
+        line[CHUNK - 1] = 0x7a; // 'z'
+        const sut = buildGrepMatcher([/z$/]);
+
+        // Act
+        const result = sut.matchLine(line);
+
+        // Assert
+        expect(result.spans).toEqual([{ start: CHUNK - 1, end: CHUNK }]);
+      });
+    });
+  });
+});

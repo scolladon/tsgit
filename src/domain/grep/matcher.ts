@@ -60,11 +60,31 @@ export function assertLineDecodable(byteLength: number): void {
   }
 }
 
+/**
+ * Code units built per `String.fromCharCode` call — comfortably under every
+ * engine's argument-count ceiling, so no line length can overflow the call.
+ */
+const LATIN1_DECODE_CHUNK = 8_192;
+
+/**
+ * One code unit per byte, built a chunk at a time and joined once. The obvious
+ * `s += String.fromCharCode(b)` per byte is what the refusal above exists to
+ * bound, and it defeats it: appending byte by byte builds a rope whose peak
+ * heap runs to many times the line's own length, so lines well under the
+ * refusal threshold exhaust memory and abort the process instead of returning
+ * the structured refusal. Chunking keeps the peak proportional to the result.
+ *
+ * `TextDecoder('latin1')` is NOT a substitute: the Encoding Standard aliases
+ * that label to windows-1252, which remaps 0x80–0x9F to other code points —
+ * the spans this returns would no longer be byte offsets.
+ */
 function latin1Decode(line: Uint8Array): string {
   assertLineDecodable(line.length);
-  let s = '';
-  for (const b of line) s += String.fromCharCode(b);
-  return s;
+  const parts: string[] = [];
+  for (let i = 0; i < line.length; i += LATIN1_DECODE_CHUNK) {
+    parts.push(String.fromCharCode(...line.subarray(i, i + LATIN1_DECODE_CHUNK)));
+  }
+  return parts.join('');
 }
 
 function regexSpans(line: Uint8Array, clone: RegExp): ReadonlyArray<MatchSpan> {
