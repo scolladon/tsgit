@@ -40,11 +40,16 @@ export function joinedLength(lines: ReadonlyArray<string>): number {
   return total;
 }
 
-/** Refuses a patch that could not be materialised as one string. */
-export function assertPatchTextFits(chars: number): void {
-  if (chars > MAX_PATCH_TEXT_CHARS) {
-    throw invalidDiffInput(
-      `rendered patch is ${chars} characters; the maximum is ${MAX_PATCH_TEXT_CHARS}`,
-    );
+/**
+ * Refuses a patch that could not be materialised as one string.
+ *
+ * `maxChars` is an internal seam, defaulted to the engine's own ceiling that
+ * every production call inherits: a unit test cannot render half a gigabyte of
+ * patch text, so without a settable bound neither the refusal nor the character
+ * count a renderer feeds it is ever exercised.
+ */
+export function assertPatchTextFits(chars: number, maxChars: number = MAX_PATCH_TEXT_CHARS): void {
+  if (chars > maxChars) {
+    throw invalidDiffInput(`rendered patch is ${chars} characters; the maximum is ${maxChars}`);
   }
 }

@@ -93,6 +93,50 @@ function trackedReadable(
   });
 }
 
+/** Re-slices a readable into fixed-size pieces, so a line's bytes are
+ *  guaranteed to arrive split across chunks rather than whole. */
+function rechunked(source: ReadableStream<Uint8Array>, size: number): ReadableStream<Uint8Array> {
+  const reader = source.getReader();
+  let pending = new Uint8Array(0);
+  return new ReadableStream<Uint8Array>({
+    pull: async (controller) => {
+      while (pending.length < size) {
+        const { done, value } = await reader.read();
+        if (done) {
+          if (pending.length > 0) controller.enqueue(pending);
+          controller.close();
+          return;
+        }
+        const merged = new Uint8Array(pending.length + value.length);
+        merged.set(pending, 0);
+        merged.set(value, pending.length);
+        pending = merged;
+      }
+      controller.enqueue(pending.slice(0, size));
+      pending = pending.slice(size);
+    },
+    cancel: async (reason) => {
+      await reader.cancel(reason);
+    },
+  });
+}
+
+/** A context whose inflate output arrives in `size`-byte chunks, so the
+ *  streamed arm really has to reassemble a line across chunk boundaries. */
+async function rechunkingContext(size: number): Promise<Context> {
+  const base = await buildSeededContext();
+  return {
+    ...base,
+    compressor: {
+      ...base.compressor,
+      createInflateStream: () => {
+        const inner = base.compressor.createInflateStream();
+        return { readable: rechunked(inner.readable, size), writable: inner.writable };
+      },
+    },
+  };
+}
+
 /** A context whose inflate streams report how many were cancelled — an
  *  un-cancelled stream is exactly the leaked reader/inflate instance. */
 async function cancelTrackingContext(): Promise<{
@@ -171,6 +215,13 @@ const VERDICT_TABLE: readonly VerdictRow[] = [
     label: 'an unterminated final line with a whitespace-only change is dropped',
     oldText: 'abc',
     newText: 'a  bc',
+    lineKey: ALL_KEY,
+    expected: true,
+  },
+  {
+    label: 'a final line that differs only in its LF terminator is dropped under an active key',
+    oldText: 'x\n',
+    newText: 'x',
     lineKey: ALL_KEY,
     expected: true,
   },
@@ -389,6 +440,50 @@ describe('isWhitespaceOnlyModify', () => {
 
         // Assert
         expect(result).toBe(true);
+      });
+    });
+  });
+
+  describe('Given streamed blobs whose only line spans several inflate chunks, split at different offsets', () => {
+    describe('When the confirmation re-read reassembles each side (gate 0)', () => {
+      it('Then the whitespace-only change is dropped — no chunk prefix is lost', async () => {
+        // Arrange — 8-byte chunks put each side's loose header in its own chunk
+        // and then cut the single line at a DIFFERENT in-line offset per side
+        // (the contents differ in length), so a confirmation that dropped the
+        // carried-over prefix would compare 'rld' against 'orld'.
+        const ctx = await rechunkingContext(8);
+        const oldId = await writeBlob(ctx, enc.encode('hello world\n'));
+        const newId = await writeBlob(ctx, enc.encode('hello  world\n'));
+
+        // Act
+        const result = await isWhitespaceOnlyModify(
+          ctx,
+          changeFor(oldId, newId),
+          ALL_KEY,
+          false,
+          0,
+        );
+
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+  });
+
+  describe('Given streamed blobs whose digests collide, compared with ignoreBlankLines on', () => {
+    describe('When isWhitespaceOnlyModify is forced onto the streaming arm (gate 0)', () => {
+      it('Then the change is kept — ignoring blank lines never discards the significant ones', async () => {
+        // Arrange — the colliding lines are non-blank, so ignoreBlankLines must
+        // leave both of them in the confirmation's comparison.
+        const ctx = await buildSeededContext();
+        const oldId = await writeBlob(ctx, enc.encode(DIGEST_COLLISION_LINE_A));
+        const newId = await writeBlob(ctx, enc.encode(DIGEST_COLLISION_LINE_B));
+
+        // Act
+        const result = await isWhitespaceOnlyModify(ctx, changeFor(oldId, newId), ALL_KEY, true, 0);
+
+        // Assert
+        expect(result).toBe(false);
       });
     });
   });

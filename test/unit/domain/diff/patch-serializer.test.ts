@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import type { PatchFile, PatchOptions } from '../../../../src/domain/diff/patch-serializer.js';
-import { computeHunks, renderPatch } from '../../../../src/domain/diff/patch-serializer.js';
+import {
+  computeHunks,
+  renderPatch,
+  renderPatchWithBound,
+} from '../../../../src/domain/diff/patch-serializer.js';
 import { MAX_SCORE } from '../../../../src/domain/diff/similarity.js';
+import { TsgitError } from '../../../../src/domain/error.js';
 import type { FilePath, ObjectId } from '../../../../src/domain/objects/index.js';
 import { FILE_MODE } from '../../../../src/domain/objects/index.js';
 
@@ -2897,6 +2902,56 @@ describe('patch-serializer', () => {
             '',
           ].join('\n'),
         );
+      });
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // The length refusal, driven through the direct-bound seam: the running count
+  // is only ever read by the refusal, so at the engine's real ceiling neither
+  // the count nor the guard is reachable from a test.
+  // ---------------------------------------------------------------------------
+
+  describe('Given a bound one character below what the files render to', () => {
+    describe('When renderPatchWithBound is called', () => {
+      it('Then it refuses with INVALID_DIFF_INPUT naming the count and the bound', () => {
+        // Arrange — the running count crosses the bound on the patch's last line.
+        const files = [modifyFile('f.txt', 'one\ntwo\n', 'one\nTWO\n')];
+        const full = renderPatch(files);
+        const maxChars = full.length - 1;
+        const sut = renderPatchWithBound;
+
+        // Act + Assert
+        try {
+          sut(files, undefined, maxChars);
+          expect.unreachable();
+        } catch (error) {
+          expect(error).toBeInstanceOf(TsgitError);
+          const data = (error as TsgitError).data;
+          expect(data.code).toBe('INVALID_DIFF_INPUT');
+          if (data.code === 'INVALID_DIFF_INPUT') {
+            expect(data.reason).toBe(
+              `rendered patch is ${full.length} characters; the maximum is ${maxChars}`,
+            );
+          }
+        }
+      });
+    });
+  });
+
+  describe('Given a bound exactly equal to what the files render to', () => {
+    describe('When renderPatchWithBound is called', () => {
+      it('Then it renders the whole patch — the count is the joined length, exactly', () => {
+        // Arrange
+        const files = [modifyFile('f.txt', 'one\ntwo\n', 'one\nTWO\n')];
+        const full = renderPatch(files);
+        const sut = renderPatchWithBound;
+
+        // Act
+        const result = sut(files, undefined, full.length);
+
+        // Assert
+        expect(result).toBe(full);
       });
     });
   });

@@ -10,7 +10,7 @@ import type {
 } from './diff-change.js';
 import { invalidDiffInput } from './error.js';
 import { diffLines, type LineHunk, splitLines } from './line-diff.js';
-import { assertPatchTextFits, joinedLineLength } from './patch-length.js';
+import { assertPatchTextFits, joinedLineLength, MAX_PATCH_TEXT_CHARS } from './patch-length.js';
 import { MAX_SCORE, toSimilarityPercent } from './similarity.js';
 import { isBlankLine, type LineKey, NONE_KEY } from './whitespace.js';
 
@@ -824,6 +824,20 @@ function buildEmitOptions(opts: PatchOptions | undefined): EmitOptions | undefin
 }
 
 export function renderPatch(files: ReadonlyArray<PatchFile>, opts?: PatchOptions): string {
+  return renderPatchWithBound(files, opts, MAX_PATCH_TEXT_CHARS);
+}
+
+// Test-only seam: every production call site goes through `renderPatch` above,
+// which always runs at the engine's own string ceiling. This direct-bound entry
+// lets unit tests pin the refusal — and the running character count feeding it —
+// at a small bound, instead of rendering the half a gigabyte of patch text the
+// real ceiling would take. Deliberately not re-exported from
+// domain/diff/index.ts or public-types.ts: it must never become public API.
+export function renderPatchWithBound(
+  files: ReadonlyArray<PatchFile>,
+  opts: PatchOptions | undefined,
+  maxChars: number,
+): string {
   const contextLines = resolveContextLines(opts?.contextLines);
   // Stryker disable next-line ConditionalExpression: equivalent — an empty `files` array leaves `lines` empty after the loop below, and the `lines.length === 0` guard further down returns `''` regardless of this early return.
   if (files.length === 0) return '';
@@ -843,7 +857,7 @@ export function renderPatch(files: ReadonlyArray<PatchFile>, opts?: PatchOptions
       // whole line array accumulate first, turning an out-of-memory crash into
       // a refusal only once the memory had already been spent. This refuses on
       // the line that crosses the bound.
-      assertPatchTextFits(chars);
+      assertPatchTextFits(chars, maxChars);
     }
   }
   // When all file blocks are blank-suppressed, lines stays empty and we return ''.
