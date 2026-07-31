@@ -186,6 +186,12 @@ describe('line-diff — isBinary', () => {
   });
 });
 
+// The bail under test is `d > maxEditDistance`, whose boundary behaviour is
+// identical at every bound. Driving it through diffLines' internal bound keeps
+// the boundary cases cheap; one full-scale case below pins the production
+// default (MAX_DIFF_EDIT_DISTANCE) the bound falls back to.
+const SMALL_EDIT_DISTANCE = 20;
+
 describe('line-diff — diffLines', () => {
   function hunkSummary(hunk: {
     readonly kind: string;
@@ -333,39 +339,39 @@ describe('line-diff — diffLines', () => {
     });
   });
 
-  describe('Given ours past the edit-distance cap and empty theirs', () => {
+  describe('Given ours past the edit-distance bound and empty theirs', () => {
     describe('When diffLines called', () => {
       it('Then fallback hunks omit theirs-only (empty theirs)', () => {
         // Arrange — theirs is empty, so no ours line can ever match: the edit
-        // distance equals M exactly. One line past the cap forces the bail.
-        const M = MAX_DIFF_EDIT_DISTANCE + 1;
+        // distance equals M exactly. One line past the bound forces the bail.
+        const M = SMALL_EDIT_DISTANCE + 1;
         const ours = enc(Array.from({ length: M }, (_, i) => `l${i}\n`).join(''));
         const theirs = new Uint8Array(0);
 
         // Act
-        const result = diffLines(ours, theirs);
+        const result = diffLines(ours, theirs, undefined, SMALL_EDIT_DISTANCE);
 
         // Assert
         expect(result.degraded).toBe(true);
         expect(result.hunks).toEqual([
           { kind: 'ours-only', oursStart: 0, oursEnd: M, theirsStart: 0, theirsEnd: 0 },
         ]);
-      }, 60_000);
+      });
     });
   });
 
-  describe('Given empty ours and theirs past the edit-distance cap', () => {
+  describe('Given empty ours and theirs past the edit-distance bound', () => {
     describe('When diffLines called', () => {
       it('Then fallback hunks omit ours-only (empty ours)', () => {
         // Arrange — ours is empty, so no theirs line can ever match: the edit
-        // distance equals N exactly. One line past the cap forces the bail.
+        // distance equals N exactly. One line past the bound forces the bail.
         // The whole-file fallback must skip the ours-only hunk when oursLines is empty.
-        const N = MAX_DIFF_EDIT_DISTANCE + 1;
+        const N = SMALL_EDIT_DISTANCE + 1;
         const ours = new Uint8Array(0);
         const theirs = enc(Array.from({ length: N }, (_, i) => `l${i}\n`).join(''));
 
         // Act
-        const result = diffLines(ours, theirs);
+        const result = diffLines(ours, theirs, undefined, SMALL_EDIT_DISTANCE);
 
         // Assert
         expect(result.degraded).toBe(true);
@@ -378,7 +384,7 @@ describe('line-diff — diffLines', () => {
             theirsEnd: N,
           },
         ]);
-      }, 60_000);
+      });
     });
   });
 
@@ -397,26 +403,6 @@ describe('line-diff — diffLines', () => {
         // Assert — identical inputs always produce a single common hunk, not degraded
         expect(result.degraded).toBe(false);
       }, 30_000);
-    });
-  });
-
-  describe('Given inputs whose edit distance exceeds MAX_DIFF_EDIT_DISTANCE', () => {
-    describe('When diffLines called', () => {
-      it('Then degraded via the edit-distance bail', () => {
-        // Arrange — 25001 fully-disjoint lines per side (no 'a' line ever equals
-        // a 'b' line), so the edit distance is exactly M+N = 50002 — one past
-        // MAX_DIFF_EDIT_DISTANCE (10000). There is no size-based pre-check any
-        // more: the trace runs until the bail fires, it is not skipped up front.
-        const half = 25_001;
-        const a = enc('a\n'.repeat(half));
-        const b = enc('b\n'.repeat(half));
-
-        // Act
-        const result = diffLines(a, b);
-
-        // Assert
-        expect(result.degraded).toBe(true);
-      }, 60_000);
     });
   });
 
@@ -627,12 +613,57 @@ describe('line-diff — diffLines', () => {
     });
   });
 
-  describe('Given disjoint inputs whose edit distance sits exactly at the cap', () => {
+  describe('Given disjoint inputs whose edit distance sits exactly at the bound', () => {
     describe('When diffLines called', () => {
       it('Then it completes without degrading (bail check is strictly greater-than)', () => {
-        // Arrange — M=N=5000 fully-disjoint lines, so the edit distance is exactly
-        // M+N = 10000 = MAX_DIFF_EDIT_DISTANCE. A `>=` bail would degrade here;
-        // the correct `>` bail must not.
+        // Arrange — M=N=10 fully-disjoint lines, so the edit distance is exactly
+        // M+N = SMALL_EDIT_DISTANCE. A `>=` bail would degrade here; the correct
+        // `>` bail must not.
+        const M = SMALL_EDIT_DISTANCE / 2;
+        const N = SMALL_EDIT_DISTANCE / 2;
+        const ours = enc(Array.from({ length: M }, (_, i) => `p${i}\n`).join(''));
+        const theirs = enc(Array.from({ length: N }, (_, i) => `q${i}\n`).join(''));
+
+        // Act
+        const result = diffLines(ours, theirs, undefined, SMALL_EDIT_DISTANCE);
+
+        // Assert — an at-bound run still completes via real Myers (not the fallback)
+        expect(result.degraded).toBe(false);
+        expect(result.hunks).toEqual([
+          { kind: 'ours-only', oursStart: 0, oursEnd: M, theirsStart: 0, theirsEnd: 0 },
+          { kind: 'theirs-only', oursStart: M, oursEnd: M, theirsStart: 0, theirsEnd: N },
+        ]);
+      });
+    });
+  });
+
+  describe('Given disjoint inputs whose edit distance is exactly one past the bound', () => {
+    describe('When diffLines called', () => {
+      it('Then it degrades via the edit-distance bail', () => {
+        // Arrange — M=10, N=11 fully-disjoint lines, so the edit distance is
+        // exactly M+N = SMALL_EDIT_DISTANCE + 1.
+        const M = SMALL_EDIT_DISTANCE / 2;
+        const N = SMALL_EDIT_DISTANCE / 2 + 1;
+        const ours = enc(Array.from({ length: M }, (_, i) => `p${i}\n`).join(''));
+        const theirs = enc(Array.from({ length: N }, (_, i) => `q${i}\n`).join(''));
+
+        // Act
+        const result = diffLines(ours, theirs, undefined, SMALL_EDIT_DISTANCE);
+
+        // Assert
+        expect(result.degraded).toBe(true);
+      });
+    });
+  });
+
+  describe('Given disjoint inputs whose edit distance sits exactly at MAX_DIFF_EDIT_DISTANCE', () => {
+    describe('When diffLines called without an explicit bound', () => {
+      it('Then it completes — the omitted bound really defaults to that constant', () => {
+        // Arrange — the one full-scale case left: M=N=5000 fully-disjoint lines,
+        // an edit distance of exactly MAX_DIFF_EDIT_DISTANCE. Every other bail
+        // case runs at SMALL_EDIT_DISTANCE, so this is what pins the production
+        // default a caller who passes no bound gets. A default lowered below
+        // 10 000 degrades here and fails.
         const M = MAX_DIFF_EDIT_DISTANCE / 2;
         const N = MAX_DIFF_EDIT_DISTANCE / 2;
         const ours = enc(Array.from({ length: M }, (_, i) => `p${i}\n`).join(''));
@@ -641,31 +672,12 @@ describe('line-diff — diffLines', () => {
         // Act
         const result = diffLines(ours, theirs);
 
-        // Assert — at-cap run still completes via real Myers (not the degraded fallback)
+        // Assert
         expect(result.degraded).toBe(false);
         expect(result.hunks).toEqual([
           { kind: 'ours-only', oursStart: 0, oursEnd: M, theirsStart: 0, theirsEnd: 0 },
           { kind: 'theirs-only', oursStart: M, oursEnd: M, theirsStart: 0, theirsEnd: N },
         ]);
-      }, 60_000);
-    });
-  });
-
-  describe('Given disjoint inputs whose edit distance is exactly one past the cap', () => {
-    describe('When diffLines called', () => {
-      it('Then it degrades via the edit-distance bail', () => {
-        // Arrange — M=5000, N=5001 fully-disjoint lines, so the edit distance is
-        // exactly M+N = 10001 = MAX_DIFF_EDIT_DISTANCE + 1.
-        const M = MAX_DIFF_EDIT_DISTANCE / 2;
-        const N = MAX_DIFF_EDIT_DISTANCE / 2 + 1;
-        const ours = enc(Array.from({ length: M }, (_, i) => `p${i}\n`).join(''));
-        const theirs = enc(Array.from({ length: N }, (_, i) => `q${i}\n`).join(''));
-
-        // Act
-        const result = diffLines(ours, theirs);
-
-        // Assert
-        expect(result.degraded).toBe(true);
       }, 60_000);
     });
   });

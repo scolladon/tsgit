@@ -124,25 +124,26 @@ function computeMyersTrace(
   oursLength: number,
   theirsLength: number,
   eq: LineEq,
+  maxEditDistance: number,
 ): MyersResult | undefined {
   const M = oursLength;
   const N = theirsLength;
-  // The loop below bails one step past MAX_DIFF_EDIT_DISTANCE, so it never
-  // reaches a diagonal outside [-MAX_DIFF_EDIT_DISTANCE, MAX_DIFF_EDIT_DISTANCE]
-  // however large the input is. Sizing off M+N alone would allocate ~40M cells
-  // (305 MB, measured) for a 10M-line-per-side pair before the first snake, to
-  // index diagonals the walk cannot reach.
-  const span = Math.min(M + N, MAX_DIFF_EDIT_DISTANCE + 1);
+  // The loop below bails one step past maxEditDistance, so it never reaches a
+  // diagonal outside [-maxEditDistance, maxEditDistance] however large the
+  // input is. Sizing off M+N alone would allocate ~40M cells (305 MB,
+  // measured) for a 10M-line-per-side pair before the first snake, to index
+  // diagonals the walk cannot reach.
+  const span = Math.min(M + N, maxEditDistance + 1);
   const offset = span;
   const v = new Int32Array(2 * span + 1);
   const trace: Int32Array[] = [];
 
   // Bailing on the edit distance itself, rather than on M+N or on a count
   // derived from it, bounds trace memory and CPU at a fixed ceiling
-  // regardless of input size: reaching d = MAX_DIFF_EDIT_DISTANCE costs the
-  // same whether M+N is 20 000 or 20 000 000.
+  // regardless of input size: reaching d = maxEditDistance costs the same
+  // whether M+N is 20 000 or 20 000 000.
   for (let d = 0; ; d++) {
-    if (d > MAX_DIFF_EDIT_DISTANCE) return undefined;
+    if (d > maxEditDistance) return undefined;
     // Only store the active k-range [-d, d] (2*d+1 entries) instead of full v
     // to bound trace memory at O(D^2) instead of O(D*maxD).
     const snapLen = 2 * d + 1;
@@ -325,10 +326,18 @@ function buildLineEquality(
   return (i, j) => oursIds[i] === theirsIds[j];
 }
 
+/**
+ * Myers line diff of `ours` against `theirs`, degrading to a whole-file
+ * replace when the pair's true edit distance exceeds the bound.
+ *
+ * `maxEditDistance` is that bound; it defaults to the library-wide
+ * `MAX_DIFF_EDIT_DISTANCE` and no production call site overrides it.
+ */
 export function diffLines(
   ours: Uint8Array,
   theirs: Uint8Array,
   options?: LineDiffOptions,
+  maxEditDistance: number = MAX_DIFF_EDIT_DISTANCE,
 ): LineDiff {
   const lineKey = options?.lineKey;
   const oursLines = splitLines(ours);
@@ -346,7 +355,7 @@ export function diffLines(
   }
 
   const eq = buildLineEquality(oursLines, theirsLines, lineKey);
-  const myers = computeMyersTrace(M, N, eq);
+  const myers = computeMyersTrace(M, N, eq, maxEditDistance);
   if (myers === undefined) {
     return wholeFileFallback(oursLines, theirsLines);
   }
