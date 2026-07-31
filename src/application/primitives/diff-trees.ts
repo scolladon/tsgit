@@ -354,7 +354,7 @@ async function changeShouldDrop(
  * `line-digest-scanner.ts`), so the two paths cannot answer differently for
  * the same pair of blobs. Only `modify` changes are ever dropped. The
  * `.gitattributes` binary override is threaded into the scanner rather than
- * pre-empted here, so all three of its states are honoured by one decision:
+ * short-circuited here, so all three of its states are honoured by one decision:
  * a forced-binary side is never dropped, a forced-text side drops a
  * whitespace-only change even over NUL bytes (matching git), and an
  * unattributed path keeps git's NUL-window content sniff.

@@ -60,7 +60,7 @@ function collapseRuns(bytes: Uint8Array): Uint8Array {
     }
   }
   // `inWs` still set means the content ended inside a whitespace run, whose
-  // collapsed SPACE is the last byte written — unwrite it, the run is trailing.
+  // collapsed SPACE is the last byte written — take it back, the run is trailing.
   if (inWs) length--;
   if (end < bytes.length) out[length++] = LF;
   return out.subarray(0, length);

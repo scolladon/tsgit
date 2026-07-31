@@ -218,14 +218,14 @@ describe.skipIf(!GIT_AVAILABLE)(
 
       await writeFile(
         path.join(attrDir, '.gitattributes'),
-        'nodiff.txt -diff\nconv.txt diff=identity\nforcetext.bin diff\n',
+        'nodiff.txt -diff\nconv.txt diff=identity\nforce-text.bin diff\n',
       );
       await writeFile(path.join(attrDir, 'nodiff.txt'), 'a b\n');
       await writeFile(path.join(attrDir, 'conv.txt'), 'a b\n');
       await writeFile(path.join(attrDir, 'plain.txt'), 'a b\n');
       // A bare `diff` attribute forces text on content the NUL sniff would
       // otherwise call binary — git then applies the whitespace flags to it.
-      await writeFile(path.join(attrDir, 'forcetext.bin'), NUL_BEFORE);
+      await writeFile(path.join(attrDir, 'force-text.bin'), NUL_BEFORE);
       await runGitAsync(['-C', attrDir, 'add', '.']);
       await runGitAsync(['-C', attrDir, 'commit', '-q', '-m', 'base'], {
         env: { ...runGitEnv(), ...IDENTITY },
@@ -236,7 +236,7 @@ describe.skipIf(!GIT_AVAILABLE)(
       await writeFile(path.join(attrDir, 'nodiff.txt'), 'a  b\n');
       await writeFile(path.join(attrDir, 'conv.txt'), 'a  b\n');
       await writeFile(path.join(attrDir, 'plain.txt'), 'a  b\n');
-      await writeFile(path.join(attrDir, 'forcetext.bin'), NUL_AFTER);
+      await writeFile(path.join(attrDir, 'force-text.bin'), NUL_AFTER);
       await runGitAsync(['-C', attrDir, 'add', '.']);
       await runGitAsync(['-C', attrDir, 'commit', '-q', '-m', 'ws-only'], {
         env: { ...runGitEnv(), ...IDENTITY },
@@ -318,7 +318,7 @@ describe.skipIf(!GIT_AVAILABLE)(
             attrFrom,
             attrTo,
             '--',
-            'forcetext.bin',
+            'force-text.bin',
           ]);
 
           // Act
@@ -338,16 +338,16 @@ describe.skipIf(!GIT_AVAILABLE)(
             to: attrTo,
             withStat: true,
           });
-          const forcetext = (treeDiff: TreeDiff): boolean =>
-            treeDiff.changes.some((c) => 'path' in c && c.path === 'forcetext.bin');
+          const forceTextSurvives = (treeDiff: TreeDiff): boolean =>
+            treeDiff.changes.some((c) => 'path' in c && c.path === 'force-text.bin');
 
           // Assert — the attribute forces text, so the whitespace flags apply to
           // NUL-bearing content exactly as they do to any other text file
-          expect(liveWhitespacePaths).not.toContain('forcetext.bin');
-          expect(forcetext(predicateResult)).toBe(false);
-          expect(forcetext(statResult)).toBe(false);
-          expect(liveNumstat.trim()).toBe('1\t1\tforcetext.bin');
-          expect(findModifyChange(plainStatResult.changes, 'forcetext.bin')).toMatchObject({
+          expect(liveWhitespacePaths).not.toContain('force-text.bin');
+          expect(forceTextSurvives(predicateResult)).toBe(false);
+          expect(forceTextSurvives(statResult)).toBe(false);
+          expect(liveNumstat.trim()).toBe('1\t1\tforce-text.bin');
+          expect(findModifyChange(plainStatResult.changes, 'force-text.bin')).toMatchObject({
             added: 1,
             deleted: 1,
             binary: false,
