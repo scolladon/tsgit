@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { BINARY_DETECTION_BYTES } from '../../../../src/domain/diff/line-diff.js';
 import {
+  applyLadder,
   createLineDigestScanner,
   type LineDigestScanner,
   scanEqual,
@@ -22,15 +23,35 @@ const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
 
 const WHITESPACE_MODES: readonly WhitespaceMode[] = ['all', 'change', 'at-eol'];
 
+const EMPTY_CONTENT = new Uint8Array(0);
+const NUL_ONLY_CONTENT = new Uint8Array([0x00]);
+
+// A scanner that has been closed owes `exhausted`, so a drain that never gets
+// there is a defect rather than a slow test. The bound keeps such a scanner
+// from spinning the whole run instead of failing this one test — `next()` is
+// synchronous, so a test timeout could never fire on it.
+const MAX_DRAIN_STEPS = 1_000;
+
 // Drains a scanner that has already received every chunk it will ever get
 // (push(...) calls followed by end()) down to `exhausted`, collecting every
 // emitted digest in order.
 function drainAll(sut: LineDigestScanner): LineDigest[] {
   const digests: LineDigest[] = [];
-  for (let step = sut.next(); step.kind !== 'exhausted'; step = sut.next()) {
+  for (let steps = 0; steps < MAX_DRAIN_STEPS; steps++) {
+    const step = sut.next();
+    if (step.kind === 'exhausted') return digests;
     if (step.kind === 'digest') digests.push(step.digest);
   }
-  return digests;
+  throw new Error(`scanner did not reach exhausted within ${MAX_DRAIN_STEPS} steps`);
+}
+
+// A ladder input in its terminal shape: the whole content pushed, then closed,
+// so the very first next() is already the step the ladder is handed.
+function fedScanner(content: Uint8Array): LineDigestScanner {
+  const scanner = createLineDigestScanner(NONE_KEY, false);
+  scanner.push(content);
+  scanner.end();
+  return scanner;
 }
 
 describe('createLineDigestScanner', () => {
@@ -439,6 +460,91 @@ describe('scanEqual', () => {
       const result = sut(enc('a\n\n'), enc('a\n'), NONE_KEY, false);
 
       // Assert
+      expect(result).toBe(false);
+    });
+  });
+});
+
+// The ladder is exported and driven by the streamed arm too, where a side can
+// be flagged binary *after* it has emitted digests and where the two sides run
+// dry on different steps. Those shapes never reach it from `scanEqual` — both
+// blobs are whole there, so a binary side is flagged before the first step and
+// an exact confirmation answers every `true`. They are pinned here directly,
+// against the ladder's own contract, rather than through a caller that would
+// mask a wrong verdict behind its confirmation.
+describe('applyLadder', () => {
+  describe('Given an old side flagged binary and a new side that also yields no digest, When the ladder is applied to both first steps', () => {
+    it('Then it answers false — a binary side is a difference, not a pair of silent scanners', () => {
+      // Arrange
+      const oldScanner = fedScanner(NUL_ONLY_CONTENT);
+      const newScanner = fedScanner(EMPTY_CONTENT);
+      const oldStep = oldScanner.next();
+      const newStep = newScanner.next();
+      const sut = applyLadder;
+
+      // Act
+      const result = sut(oldScanner, newScanner, oldStep, newStep);
+
+      // Assert
+      expect(oldScanner.binary).toBe(true);
+      expect(newScanner.binary).toBe(false);
+      expect(result).toBe(false);
+    });
+  });
+
+  describe('Given a new side flagged binary and an old side that also yields no digest, When the ladder is applied to both first steps', () => {
+    it('Then it answers false — either side alone is enough to refuse', () => {
+      // Arrange
+      const oldScanner = fedScanner(EMPTY_CONTENT);
+      const newScanner = fedScanner(NUL_ONLY_CONTENT);
+      const oldStep = oldScanner.next();
+      const newStep = newScanner.next();
+      const sut = applyLadder;
+
+      // Act
+      const result = sut(oldScanner, newScanner, oldStep, newStep);
+
+      // Assert
+      expect(oldScanner.binary).toBe(false);
+      expect(newScanner.binary).toBe(true);
+      expect(result).toBe(false);
+    });
+  });
+
+  describe('Given an old side that still yields a digest and a new side already exhausted, When the ladder is applied to both steps', () => {
+    it('Then it answers false — one side outliving the other is a line-count difference', () => {
+      // Arrange
+      const oldScanner = fedScanner(enc('a\n'));
+      const newScanner = fedScanner(EMPTY_CONTENT);
+      const oldStep = oldScanner.next();
+      const newStep = newScanner.next();
+      const sut = applyLadder;
+
+      // Act
+      const result = sut(oldScanner, newScanner, oldStep, newStep);
+
+      // Assert
+      expect(oldStep.kind).toBe('digest');
+      expect(newStep.kind).toBe('exhausted');
+      expect(result).toBe(false);
+    });
+  });
+
+  describe('Given an old side already exhausted and a new side that still yields a digest, When the ladder is applied to both steps', () => {
+    it('Then it answers false — the shorter side running dry first does not make the pair equal', () => {
+      // Arrange
+      const oldScanner = fedScanner(EMPTY_CONTENT);
+      const newScanner = fedScanner(enc('a\n'));
+      const oldStep = oldScanner.next();
+      const newStep = newScanner.next();
+      const sut = applyLadder;
+
+      // Act
+      const result = sut(oldScanner, newScanner, oldStep, newStep);
+
+      // Assert
+      expect(oldStep.kind).toBe('exhausted');
+      expect(newStep.kind).toBe('digest');
       expect(result).toBe(false);
     });
   });

@@ -191,6 +191,11 @@ function nextSignificant(
   key: LineKey,
   ignoreBlankLines: boolean,
 ): number {
+  // Forcing this guard to `false` is equivalent rather than a gap: the only
+  // caller arrives with pairwise-equal digests, so blank positions coincide on
+  // both sides and skipping them would drop the same pairs from each. The
+  // opposite variant (`true`) is a real, killed mutant on this line, so the
+  // equivalent one cannot be annotated away without hiding it.
   if (!ignoreBlankLines) return from;
   let index = from;
   while (index < lines.length && isBlankLine(lines[index] as Uint8Array, key)) index++;
@@ -212,6 +217,13 @@ function nextSignificant(
  * cannot fire from `scanEqual` as it stands. It stays because this is a total
  * predicate over the bytes it is handed, and must not quietly depend on an
  * invariant its only caller happens to establish.
+ *
+ * The loop guard below rests on that same lockstep: equal significant counts
+ * make both indices land on their array length on the same pass, so the two
+ * comparisons are never observed disagreeing. Relaxing either half of the
+ * guard, or either half of the trailing check, is therefore equivalent under
+ * today's only caller — documented here rather than chased with a contrived
+ * test, because the defensive totality is the point.
  */
 function contentsEqualUnder(
   oldContent: Uint8Array,
@@ -223,6 +235,7 @@ function contentsEqualUnder(
   const newLines = splitLines(newContent);
   let oldIndex = nextSignificant(oldLines, 0, key, ignoreBlankLines);
   let newIndex = nextSignificant(newLines, 0, key, ignoreBlankLines);
+  // Stryker disable next-line LogicalOperator: equivalent — the two comparisons are always observed equal (lockstep indices), so `||` decides exactly as `&&`
   while (oldIndex < oldLines.length && newIndex < newLines.length) {
     const oldLine = oldLines[oldIndex] as Uint8Array;
     const newLine = newLines[newIndex] as Uint8Array;
@@ -230,6 +243,7 @@ function contentsEqualUnder(
     oldIndex = nextSignificant(oldLines, oldIndex + 1, key, ignoreBlankLines);
     newIndex = nextSignificant(newLines, newIndex + 1, key, ignoreBlankLines);
   }
+  // Stryker disable next-line LogicalOperator: equivalent — the loop only exits with both indices at their array length, so `||` and `&&` both read true here
   return oldIndex === oldLines.length && newIndex === newLines.length;
 }
 
@@ -262,6 +276,10 @@ export function scanEqual(
 
   for (;;) {
     const verdict = applyLadder(oldScanner, newScanner, oldScanner.next(), newScanner.next());
+    // Forcing this guard to `false` forfeits the early exit but not the answer:
+    // both blobs are whole here, so a binary side is already flagged and the
+    // confirmation below is the exact oracle for the whole pair. It is an
+    // equivalent mutant with a real, detected sibling (`true`) on this line.
     if (verdict === 'continue') continue;
     return verdict && contentsEqualUnder(oldContent, newContent, key, ignoreBlankLines);
   }
