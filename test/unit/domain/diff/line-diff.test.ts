@@ -4,6 +4,7 @@ import type { LineDiffOptions } from '../../../../src/domain/diff/line-diff.js';
 import {
   BINARY_DETECTION_BYTES,
   diffLines,
+  diffLinesWithBound,
   isBinary,
   MAX_DIFF_EDIT_DISTANCE,
   MAX_DIFF_LINES,
@@ -187,9 +188,10 @@ describe('line-diff — isBinary', () => {
 });
 
 // The bail under test is `d > maxEditDistance`, whose boundary behaviour is
-// identical at every bound. Driving it through diffLines' internal bound keeps
-// the boundary cases cheap; one full-scale case below pins the production
-// default (MAX_DIFF_EDIT_DISTANCE) the bound falls back to.
+// identical at every bound. Driving it through diffLinesWithBound (the
+// test-only direct-bound seam) keeps the boundary cases cheap; one full-scale
+// case below pins the production default (MAX_DIFF_EDIT_DISTANCE) diffLines
+// falls back to.
 const SMALL_EDIT_DISTANCE = 20;
 
 describe('line-diff — diffLines', () => {
@@ -340,7 +342,7 @@ describe('line-diff — diffLines', () => {
   });
 
   describe('Given ours past the edit-distance bound and empty theirs', () => {
-    describe('When diffLines called', () => {
+    describe('When diffLinesWithBound called', () => {
       it('Then fallback hunks omit theirs-only (empty theirs)', () => {
         // Arrange — theirs is empty, so no ours line can ever match: the edit
         // distance equals M exactly. One line past the bound forces the bail.
@@ -349,7 +351,7 @@ describe('line-diff — diffLines', () => {
         const theirs = new Uint8Array(0);
 
         // Act
-        const result = diffLines(ours, theirs, undefined, SMALL_EDIT_DISTANCE);
+        const result = diffLinesWithBound(ours, theirs, undefined, SMALL_EDIT_DISTANCE);
 
         // Assert
         expect(result.degraded).toBe(true);
@@ -361,7 +363,7 @@ describe('line-diff — diffLines', () => {
   });
 
   describe('Given empty ours and theirs past the edit-distance bound', () => {
-    describe('When diffLines called', () => {
+    describe('When diffLinesWithBound called', () => {
       it('Then fallback hunks omit ours-only (empty ours)', () => {
         // Arrange — ours is empty, so no theirs line can ever match: the edit
         // distance equals N exactly. One line past the bound forces the bail.
@@ -371,7 +373,7 @@ describe('line-diff — diffLines', () => {
         const theirs = enc(Array.from({ length: N }, (_, i) => `l${i}\n`).join(''));
 
         // Act
-        const result = diffLines(ours, theirs, undefined, SMALL_EDIT_DISTANCE);
+        const result = diffLinesWithBound(ours, theirs, undefined, SMALL_EDIT_DISTANCE);
 
         // Assert
         expect(result.degraded).toBe(true);
@@ -614,7 +616,7 @@ describe('line-diff — diffLines', () => {
   });
 
   describe('Given disjoint inputs whose edit distance sits exactly at the bound', () => {
-    describe('When diffLines called', () => {
+    describe('When diffLinesWithBound called', () => {
       it('Then it completes without degrading (bail check is strictly greater-than)', () => {
         // Arrange — M=N=10 fully-disjoint lines, so the edit distance is exactly
         // M+N = SMALL_EDIT_DISTANCE. A `>=` bail would degrade here; the correct
@@ -625,7 +627,7 @@ describe('line-diff — diffLines', () => {
         const theirs = enc(Array.from({ length: N }, (_, i) => `q${i}\n`).join(''));
 
         // Act
-        const result = diffLines(ours, theirs, undefined, SMALL_EDIT_DISTANCE);
+        const result = diffLinesWithBound(ours, theirs, undefined, SMALL_EDIT_DISTANCE);
 
         // Assert — an at-bound run still completes via real Myers (not the fallback)
         expect(result.degraded).toBe(false);
@@ -638,7 +640,7 @@ describe('line-diff — diffLines', () => {
   });
 
   describe('Given disjoint inputs whose edit distance is exactly one past the bound', () => {
-    describe('When diffLines called', () => {
+    describe('When diffLinesWithBound called', () => {
       it('Then it degrades via the edit-distance bail', () => {
         // Arrange — M=10, N=11 fully-disjoint lines, so the edit distance is
         // exactly M+N = SMALL_EDIT_DISTANCE + 1.
@@ -648,7 +650,7 @@ describe('line-diff — diffLines', () => {
         const theirs = enc(Array.from({ length: N }, (_, i) => `q${i}\n`).join(''));
 
         // Act
-        const result = diffLines(ours, theirs, undefined, SMALL_EDIT_DISTANCE);
+        const result = diffLinesWithBound(ours, theirs, undefined, SMALL_EDIT_DISTANCE);
 
         // Assert
         expect(result.degraded).toBe(true);

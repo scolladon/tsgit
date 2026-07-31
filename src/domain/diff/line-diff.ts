@@ -328,16 +328,27 @@ function buildLineEquality(
 
 /**
  * Myers line diff of `ours` against `theirs`, degrading to a whole-file
- * replace when the pair's true edit distance exceeds the bound.
- *
- * `maxEditDistance` is that bound; it defaults to the library-wide
- * `MAX_DIFF_EDIT_DISTANCE` and no production call site overrides it.
+ * replace when the pair's true edit distance exceeds `MAX_DIFF_EDIT_DISTANCE`.
  */
 export function diffLines(
   ours: Uint8Array,
   theirs: Uint8Array,
   options?: LineDiffOptions,
-  maxEditDistance: number = MAX_DIFF_EDIT_DISTANCE,
+): LineDiff {
+  return diffLinesWithBound(ours, theirs, options, MAX_DIFF_EDIT_DISTANCE);
+}
+
+// Test-only seam: every production call site goes through `diffLines` above,
+// which always runs at the fixed `MAX_DIFF_EDIT_DISTANCE`. This direct-bound
+// entry lets unit tests pin the edit-distance bail at a small distance
+// instead of allocating a MAX_DIFF_EDIT_DISTANCE-scale pair (hundreds of MB)
+// to exercise the same boundary. Deliberately not re-exported from
+// domain/diff/index.ts or public-types.ts — it must never become public API.
+export function diffLinesWithBound(
+  ours: Uint8Array,
+  theirs: Uint8Array,
+  options: LineDiffOptions | undefined,
+  maxEditDistance: number,
 ): LineDiff {
   const lineKey = options?.lineKey;
   const oursLines = splitLines(ours);
