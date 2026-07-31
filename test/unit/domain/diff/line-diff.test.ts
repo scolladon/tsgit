@@ -193,6 +193,8 @@ describe('line-diff — isBinary', () => {
 // case below pins the production default (MAX_DIFF_EDIT_DISTANCE) diffLines
 // falls back to.
 const SMALL_EDIT_DISTANCE = 20;
+// Appending one line costs one insert, and nothing else.
+const ONE_INSERT_EDIT_DISTANCE = 1;
 
 describe('line-diff — diffLines', () => {
   function hunkSummary(hunk: {
@@ -337,6 +339,31 @@ describe('line-diff — diffLines', () => {
         // Assert
         expect(result.degraded).toBe(false);
         expect(result.hunks.length).toBeGreaterThan(0);
+      });
+    });
+  });
+
+  describe('Given a pair whose edit distance is exactly the bound', () => {
+    describe('When diffLinesWithBound called', () => {
+      it('Then it completes without degrading — the walk still has a row to walk', () => {
+        // Arrange — appending a line is one insert, so this pair's distance is
+        // ONE_INSERT_EDIT_DISTANCE, run at exactly that bound. The working row
+        // is sized off the bound and the very first snake reads the diagonal
+        // above its own: a row sized off the bound alone leaves that read out
+        // of range, and the whole pair degrades instead of matching.
+        const ours = enc('a\n');
+        const theirs = enc('a\nb\n');
+        const sut = diffLinesWithBound;
+
+        // Act
+        const result = sut(ours, theirs, undefined, ONE_INSERT_EDIT_DISTANCE);
+
+        // Assert
+        expect(result.degraded).toBe(false);
+        expect(result.hunks).toEqual([
+          { kind: 'common', oursStart: 0, oursEnd: 1, theirsStart: 0, theirsEnd: 1 },
+          { kind: 'theirs-only', oursStart: 1, oursEnd: 1, theirsStart: 1, theirsEnd: 2 },
+        ]);
       });
     });
   });

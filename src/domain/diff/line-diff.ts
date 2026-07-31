@@ -141,6 +141,7 @@ function computeMyersTrace(
   // budget and degrades) where an Int32Array coerces to 0 and returns a trace
   // for a pair that has no lines. Relaxing that upstream guard silently changes
   // this function's verdict — re-check it here before touching it.
+  // Stryker disable next-line MethodExpression: equivalent — Math.max only ever widens the row. Every read and write is v[k + offset] with |k| ≤ d ≤ maxEditDistance, and offset is span itself, so both sizes address the same diagonals in bounds and the walk returns the same trace; only the allocation this line exists to shrink differs.
   const span = Math.min(M + N, maxEditDistance + 1);
   const offset = span;
   const v = new Int32Array(2 * span + 1);
