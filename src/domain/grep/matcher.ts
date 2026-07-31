@@ -1,4 +1,4 @@
-import { invalidOption } from '../commands/error.js';
+import { grepLineTooLong, invalidOption } from '../commands/error.js';
 
 export interface MatchSpan {
   readonly start: number;
@@ -42,7 +42,26 @@ function isWordByte(b: number): boolean {
   );
 }
 
+/**
+ * V8's maximum string length on 64-bit builds (2^29 - 24 UTF-16 code units).
+ * `latin1Decode` builds one code unit per byte, so a line at or past this many
+ * bytes cannot be materialised as a string at all — decoding it would
+ * otherwise throw a bare `RangeError: Invalid string length`. An engine
+ * limit, not a policy choice, so it is expressed exactly rather than rounded.
+ * Fixed-string patterns never reach this: `fixedSpans` matches on raw bytes,
+ * with no decode.
+ */
+export const MAX_DECODABLE_LINE_BYTES = 536_870_888;
+
+/** Refuses a line whose bytes cannot be decoded to a string for RegExp matching. */
+export function assertLineDecodable(byteLength: number): void {
+  if (byteLength > MAX_DECODABLE_LINE_BYTES) {
+    throw grepLineTooLong(byteLength, MAX_DECODABLE_LINE_BYTES);
+  }
+}
+
 function latin1Decode(line: Uint8Array): string {
+  assertLineDecodable(line.length);
   let s = '';
   for (const b of line) s += String.fromCharCode(b);
   return s;

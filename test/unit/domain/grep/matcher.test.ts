@@ -1,7 +1,55 @@
 import { describe, expect, it } from 'vitest';
-import { buildGrepMatcher } from '../../../../src/domain/grep/matcher.js';
+import { TsgitError } from '../../../../src/domain/error.js';
+import {
+  assertLineDecodable,
+  buildGrepMatcher,
+  MAX_DECODABLE_LINE_BYTES,
+} from '../../../../src/domain/grep/matcher.js';
 
 const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
+
+describe('assertLineDecodable', () => {
+  describe('Given a byte length exactly at the decode ceiling', () => {
+    describe('When the length is asserted', () => {
+      it('Then it returns without throwing (the bound is inclusive)', () => {
+        // Arrange
+        const sut = assertLineDecodable;
+
+        // Act
+        const result = (): void => {
+          sut(MAX_DECODABLE_LINE_BYTES);
+        };
+
+        // Assert
+        expect(result).not.toThrow();
+      });
+    });
+  });
+
+  describe('Given a byte length one past the decode ceiling', () => {
+    describe('When the length is asserted', () => {
+      it('Then it throws GREP_LINE_TOO_LONG naming the length and the limit', () => {
+        // Arrange
+        const sut = assertLineDecodable;
+        const length = MAX_DECODABLE_LINE_BYTES + 1;
+
+        // Act + Assert
+        try {
+          sut(length);
+          expect.unreachable();
+        } catch (error) {
+          expect(error).toBeInstanceOf(TsgitError);
+          const data = (error as TsgitError).data;
+          expect(data.code).toBe('GREP_LINE_TOO_LONG');
+          if (data.code === 'GREP_LINE_TOO_LONG') {
+            expect(data.length).toBe(length);
+            expect(data.limit).toBe(MAX_DECODABLE_LINE_BYTES);
+          }
+        }
+      });
+    });
+  });
+});
 
 describe('buildGrepMatcher', () => {
   describe('Given a pattern with the u flag', () => {

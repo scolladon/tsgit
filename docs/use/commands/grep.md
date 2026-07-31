@@ -104,6 +104,28 @@ interface GrepResult {
   is already bounded per line). Binary blobs are an incidental search target, so the
   window is a deliberate safety bound.
 
+## Performance
+
+- **A `RegExp` pattern runs over the full bytes of every text line, uncapped.**
+  A pathological backtracking pattern searched against one very long,
+  non-matching line is quadratic in the line's byte length: measured with
+  `.*foo.*bar`, a 64 KiB line takes ≈4.2 s and a 256 KiB line ≈70.4 s to
+  search. This is not a tsgit-specific gap — `git grep` runs the same class of
+  pattern through its own regex engine and pays the same backtracking cost on
+  pathological input, so bounding it here would be a divergence from git, not
+  a fix. A caller searching very long, untrusted, or otherwise unbounded lines
+  with an attacker-influenced `RegExp` should validate the pattern or cap
+  input size itself.
+- **Fixed-string patterns (`{ fixed: '...' }`) are immune.** They match
+  directly on the line's raw bytes — no decode to a JS string, no `RegExp`,
+  no backtracking — so their cost is linear in the line length regardless of
+  pattern shape. Prefer `{ fixed }` over an equivalent literal `RegExp` when
+  searching content whose length or pattern origin you don't control.
+- **A single line whose bytes exceed the JS engine's maximum string length**
+  (~512 MiB) cannot be decoded to run a `RegExp` at all; `GREP_LINE_TOO_LONG`
+  is thrown in its place rather than letting a bare engine `RangeError`
+  escape. Fixed-string patterns never decode, so they are unaffected.
+
 ## Examples
 
 ```ts
@@ -139,6 +161,11 @@ await repo.grep({ patterns: [/^\s*\/\//], invert: true });
   carries the `u` flag (`option: 'pattern'`, unsupported over byte content).
 - `OBJECT_NOT_FOUND` / `REVPARSE_UNRESOLVED` — a `{ treeish }` target cannot be
   resolved.
+- `GREP_LINE_TOO_LONG` — a single line's bytes exceed the JS engine's maximum
+  string length and cannot be decoded to run a `RegExp` pattern (`length` /
+  `limit` name the offending byte count and the decode ceiling). Only regex
+  patterns can trigger this; `{ fixed }` patterns match on raw bytes and never
+  decode.
 
 ## See also
 
