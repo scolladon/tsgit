@@ -1760,10 +1760,14 @@ Notes the planner needs:
 
 ## Results (measured)
 
-Local go/no-go numbers from this host only (darwin 25.5.0, Node v22.22.3, arm64) — **not**
-the published authority. The published authority is the nightly `bench.yml` artifact
-(§Measurement protocol 3); this section exists so Part 14's after-numbers have a same-host
-before-number to sit next to.
+Local go/no-go numbers from this host only (darwin 25.5.0, Node v22.22.3, git 2.55.0, arm64)
+— **not** the published authority. The published authority is the nightly `bench.yml`
+artifact (§Measurement protocol 3); this section exists so Part 14's after-numbers have a
+same-host before-number to sit next to. Session load biases syscall-heavy paths, which is
+exactly why the numbers below are a same-sitting before/after pair (§Part 14 recipe: a
+`git clone --local --branch main` of this worktree, both bench files copied in so both sides
+run byte-identical measurement code) rather than a fresh run compared against an
+older-session historical figure.
 
 ### Whitespace drop-pass diff, before (`main`)
 
@@ -1783,7 +1787,35 @@ fixture. `sut = repo.diff({ from: 'HEAD~1', to: 'HEAD', recursive: true, ignoreW
 Matches §Pin B's reference numbers (loose 258–271 ms warm, packed 165–176 ms warm) within
 this host's run-to-run spread. Target for Part 14: loose ≤ 130 ms, packed ≤ 100 ms cold.
 
-**After (branch tip): TBD — Part 14.**
+### Whitespace drop-pass diff, after (branch tip) — Part 14
+
+Same fixture and `sut`, same clone-pair sitting as the before numbers above. Three runs
+(the third added specifically to settle the loose variant against its target), 10 samples
+each:
+
+| variant | run | min | mean | max |
+|---|---|---|---|---|
+| loose (as committed) | 1 | 130.31 ms | 132.48 ms | 134.13 ms |
+| loose (as committed) | 2 | 128.27 ms | 130.68 ms | 134.35 ms |
+| loose (as committed) | 3 | 129.09 ms | 133.37 ms | 146.93 ms |
+| packed (`git repack -ad`) | 1 | 78.78 ms | 80.07 ms | 82.57 ms |
+| packed (`git repack -ad`) | 2 | 76.00 ms | 77.83 ms | 83.46 ms |
+| packed (`git repack -ad`) | 3 | 78.68 ms | 82.72 ms | 90.86 ms |
+
+| variant | before (mean) | after (mean) | delta | target | verdict |
+|---|---|---|---|---|---|
+| loose | ~261–264 ms | ~130.7–133.4 ms (grand mean ≈ 132.2 ms) | **−49.6 %** | ≤ 130 ms | **MISS** — grand mean is ≈ 2.2 ms / 1.7 % over target; every one of the three per-run means (132.48, 130.68, 133.37) individually exceeds 130 ms too, so this is not one noisy sample |
+| packed | ~169–171 ms | ~77.8–82.7 ms (grand mean ≈ 80.2 ms) | **−53.0 %** | ≤ 100 ms cold | **PASS** — comfortably under target, and within a few ms of native git's 77 ms (§Pin B) |
+
+**Reported as a miss, not rounded to a pass.** §Requirements 7 and the plan's Part 14 gate
+both require this: "report `{ part, reason, ≤3 options }` — do not quietly record a miss as
+a pass." The gap is small (≈1.7 % over a target that itself represents a ≈50 % cut from
+baseline, and Pin B's own projection for this variant was "loose ≈ 120 ms," a projection
+explicitly not meant to reconcile arithmetically with a hard bound) and it does not touch
+either of the two correctness-adjacent measurements (§Measurement protocol 2b, below) — but
+it is a real, reproducible miss of the stated number, on this host, under session load, and
+is recorded as such. See the final message to the orchestrator for the reason and options;
+this part does not choose among them (docs-only, no `src/` change in scope).
 
 ### The existing `MEDIUM_FIXTURE` scenario — confirmed non-regression watch, not a predicate measurement
 
@@ -1808,10 +1840,55 @@ Mean ms/call, two runs, no fixture, no `git`:
 | `at-eol` | 0.1463 / 0.1465 | 0.1136 / 0.1128 |
 | `none` | 0.0899 / 0.0886 | 0.0700 / 0.0702 |
 
-**After (branch tip, once the fold lands): TBD — Part 14.** §Measurement protocol 2a expects
-a win from replacing the native `indexOf(LF)` pass plus a JS fold pass with a single JS pass
-that also finds the terminator, and from removing every per-line allocation; a regression
-here is a design signal, not a tuning task to code around.
+### The fold micro-bench (`digestNormalizedLine`), after (branch tip) — Part 14
+
+Same clone-pair sitting, same script, two runs, mean ms/call:
+
+| mode | 5,000 short lines (run 1 / run 2) | one 70,000-byte line (run 1 / run 2) |
+|---|---|---|
+| `all` | 1.3531 / 1.3359 | 0.4670 / 0.4719 |
+| `change` | 1.5008 / 1.4536 | 0.5311 / 0.5266 |
+| `at-eol` | 1.3778 / 1.3486 | 0.5531 / 0.5508 |
+| `none` | 1.3496 / 1.4391 | 0.5492 / 0.5495 |
+
+| mode | before (short lines) | after (short lines) | ×slower | before (long line) | after (long line) | ×slower |
+|---|---|---|---|---|---|---|
+| `all` | 0.0962 | 1.3445 | **14.0×** | 0.0541 | 0.4695 | **8.7×** |
+| `change` | 0.1180 | 1.4772 | **12.5×** | 0.0719 | 0.5289 | **7.4×** |
+| `at-eol` | 0.1464 | 1.3632 | **9.3×** | 0.1132 | 0.5520 | **4.9×** |
+| `none` | 0.0893 | 1.3944 | **15.6×** | 0.0701 | 0.5494 | **7.8×** |
+
+**This is a regression, an order of magnitude, reproducible across both runs and all four
+modes — recorded exactly as measured, not reframed.** §Measurement protocol 2a named the
+call correctly in advance: *"a regression here is a design signal, not a tuning task."* The
+cause is visible in the shape of the change, not just the number: the pre-fold path
+(`dropAllWs` / `collapseRuns` / `dropTrailingWs`) is one tight per-line loop over a plain
+byte array, which V8 inlines and vectorises well; the incremental fold (§D1) replaces it with
+a `push(byte)` call **per byte**, and each call chains through
+`applyContentByte → isSoftWs`/`isSoftCr` → `onHard`/`onSoftWs`/`onSoftCr` → `foldTentative`
+(`Math.imul` FNV mix) — five-plus function calls per byte where the old code had one loop
+iteration. For a ~12-byte short line that is call overhead dominating actual work; for a
+70,000-byte line the same per-byte multiplier applies at scale, which is why even `'none'`
+(no whitespace ever active, every byte routes straight through `onHard`) regresses by
+7.8–15.6× — **the design's own predicted fix (an `indexOf`-assisted fast path for the
+inactive-key case) would not fully explain the `'all'`/`'change'`/`'at-eol'` regressions**,
+which are intrinsic to the fold's byte-at-a-time dispatch, not specific to `'none'`.
+
+**Why the end-to-end drop-pass diff still wins by ~50 % despite this.** The fold's absolute
+cost stays small relative to what §D2/§D9 removed. This fixture folds ≈556 KB total across
+both commits; at the after-rate (≈7–20 ns/byte) that is single-digit milliseconds of total
+fold work, against a ≈128 ms (loose) / ≈78 ms (packed) after-total — a few percent. §Pin A's
+web-streams/zlib-stream/`NodeError` machinery this design removes was **16.4 % + 6.18 % +
+4.39 % ≈ 27 %** of the *pre-change* total, an order of magnitude more absolute time than the
+fold's regression adds back. The re-profile below (§Measurement protocol 3) confirms this
+directly rather than by inference: the "actual scan" frames stay a comparably small share of
+a much smaller total, while the streaming/zlib-async/`NodeError` frames disappear entirely.
+
+**Verdict: recorded as a real regression, not tuned away in this part.** §Measurement
+protocol 2a's stated purpose was exactly this — surface the number so a follow-up fold
+optimisation (the `indexOf`-assisted fast path, and possibly narrowing the per-byte dispatch
+chain for the active-key modes too) can be scoped with real data, not a guess. This part is
+docs-only; no `src/` change is in scope here. See the final message to the orchestrator.
 
 ### Adapter buffered inflate — bundled decoder vs native `DecompressionStream` (branch decision)
 
@@ -1838,3 +1915,113 @@ the opposite of "clearly better". §Pin D-5's premise (adapter-neutral win) is r
 other direction from what it flagged as the risk: the pure-JS Huffman decode is markedly
 slower than the platform's native zlib binding at every scale tried, not merely at small
 ones. `BrowserCompressor.inflate` and `MemoryCompressor.inflate` are unchanged.
+
+### `diffLines` under DC-16, before/after (§Pin G re-run) — Part 14
+
+§Pin G's numbers (recorded earlier in this document) are the **before**: they were measured
+against this branch's dist **before** the DC-16→B commit (`fix(diff): bound the diff by edit
+distance instead of input size`) landed, i.e. against the old `M + N > MAX_DIFF_LINES`
+input-size pre-check. The **after** numbers below are the same script
+(`diffLines` called directly, `node --expose-gc --max-old-space-size=6144`, heap deltas
+around a `gc()`), rebuilt against the branch tip, same warm-up sequence (10 000 → 20 000 →
+24 999 lines) so the recorded cases are not the first, cold `diffLines` call in the process —
+two runs:
+
+| # | input | before time / heap | after time / heap (run 1 / run 2) | target | verdict |
+|---|---|---|---|---|---|
+| G-3 | 24 999×2 lines (M+N=49 998, just under the old cap), 1-line edit | 3.6 ms / 7.8 MB | 3.3 ms / 7.8 MB · 3.2 ms / 7.8 MB | (informational — common-case cost) | unchanged, as expected: DC-16 changes what bounds the work, not the cost of a small edit |
+| G-5 | 24 999×2 lines fully different (M+N=49 998, under the old cap) — the worst case | **958 ms / 769 MB** | 914.6 ms / 769.5 MB · 829.4 ms / 769.5 MB | **must not grow** | **PASS** — memory flat (769 → 769.5 MB), time within run-to-run noise (829–958 ms band, both before and after) |
+| G-6 | one 70 000-byte line, ws-only change | 0.2 ms / ~0 MB | 0.2 ms / 0.0 MB · 0.3 ms / 0.0 MB | (informational — `MAX_LINE_BYTES` never drove diff cost) | unchanged, as expected |
+| **new** | 100 001×2 lines (M+N=200 002, **over** the old 50 000-line cap), 1-line edit | `degraded: true` (old pre-check bailed instantly; no real diff, no timing recorded) | **15.0 ms / 26.4 MB, `degraded: false`** · 14.6 ms / 26.3 MB | **must become finite and fast** | **PASS** — the pair that the old input-size cliff refused outright now gets a real, correct diff (4 hunks, matching G-3's edit shape) in ~15 ms, because DC-16 bounds the search by edit distance (tiny here) instead of by input size |
+
+**Both correctness-adjacent claims hold.** G-5's worst-case trace memory did not grow —
+deleting the input-size pre-check and activating `MAX_DIFF_EDIT_DISTANCE = 10 000` as a live
+edit-distance bail reproduces today's ceiling almost exactly (769 MB before and after; the
+~15 % run-to-run time spread, 829–958 ms, appears on **both** sides and is GC/host noise, not
+a design-attributable change). And the very-large-input case that used to bail with no real
+answer now completes a correct diff in low double-digit milliseconds — "finite and fast" as
+required, not just "did not crash."
+
+### Non-regression watch — Part 14
+
+`diff.bench.ts`, `diff-recursive.bench.ts`, `pack-read.bench.ts`, `loose-read.bench.ts`, one
+run each, same clone-pair sitting as the drop-pass numbers above (main = before, branch tip =
+after):
+
+| scenario | before (mean) | after (mean) | delta |
+|---|---|---|---|
+| `diff.bench.ts` — medium repo, `HEAD~1..HEAD` | 0.5191 ms | 0.5351 ms | +3.1 % (noise) |
+| `diff-recursive.bench.ts` — small repo, `HEAD~1..HEAD` recursive | 0.5010 ms | 0.5131 ms | +2.4 % (noise) |
+| `diff-recursive.bench.ts` — medium repo, `HEAD~1..HEAD` recursive | 0.4534 ms | 0.4666 ms | +2.9 % (noise) |
+| `diff-recursive.bench.ts` — small repo, empty tree vs `HEAD` | 0.3558 ms | 0.3763 ms | +5.8 % (noise) |
+| `diff-recursive.bench.ts` — medium repo, empty tree vs `HEAD` | 13.8303 ms | 13.6889 ms | −1.0 % |
+| `diff-recursive.bench.ts` — small repo, per-shard modify | 0.5369 ms | 0.5569 ms | +3.7 % (noise) |
+| `diff-recursive.bench.ts` — medium repo, per-shard modify | 6.2403 ms | 6.1434 ms | −1.6 % |
+| `pack-read.bench.ts` — small repo, cold pack | 0.5499 ms | 0.5873 ms | +6.8 % (rme 2.57 %, noise) |
+| `pack-read.bench.ts` — medium repo, cold pack | 5.7175 ms | 5.7188 ms | +0.02 % |
+| `pack-read.bench.ts` — small repo, warm pack | 0.0020 ms | 0.0020 ms | unchanged |
+| `pack-read.bench.ts` — medium repo, warm pack | 0.0020 ms | 0.0020 ms | unchanged |
+| `loose-read.bench.ts` — cold LRU cache | 0.3119 ms | 0.3260 ms | +4.5 % (noise) |
+
+**No regression.** Every delta is within normal single-run bench noise (all reported `rme`
+values in the 0.5–3 % band on both sides); none of these paths touch the whitespace
+drop-pass predicate or the blob-source buffered/streamed gate for objects this small, so an
+unchanged result is the expected outcome, not a coincidence.
+
+### Re-profile — which Pin A frames left the workload — Part 14
+
+`npm run profile`'s registered `diff` command profiles `MEDIUM_FIXTURE`'s `HEAD~1..HEAD`
+diff, which — per §Pin D-3 and the bench file's own doc comment — is **all-`add`** and never
+reaches the whitespace drop-pass predicate at all; it was never the source of Pin A's frames
+and re-running it cannot answer whether those frames left. Pin A's capture was a bespoke
+`node --cpu-prof` run directly over the **whitespace-pairs** workload (the fixture this
+document's "Empirically pinned matrices" intro describes: 2 500 files, 50 dirs, ~56 bytes
+each, committed twice, second commit whitespace-only), 5 iterations, against
+`dist-profile/esm` for readable frame names. Part 14 reproduces that exact methodology
+against the branch tip: the fixture is built once, unprofiled, then a fresh `node --cpu-prof`
+process opens the pre-built repo and loops
+`repo.diff({ from: 'HEAD~1', to: 'HEAD', recursive: true, ignoreWhitespace: 'all' })` 5
+times, so only the diff loop — not the fixture build — is sampled.
+
+Total sampled: **779.5 ms** for 5 iterations (Pin A: 1 458.7 ms for 5 iterations) — a 46.6 %
+cut in raw sampled time, consistent with the ~50 % wall-clock cut measured directly above.
+
+| Pin A frame (before) | self-time (before) | self-time (after) | verdict |
+|---|---|---|---|
+| Web-streams machinery (`ReadableStream`/`WritableStream`/`TransformStream`) | 16.4 % / 238.7 ms | **0.000 % / 0.00 ms** | **gone** |
+| `NodeError` (the `terminate()`-on-completion stack-capture tax) | 4.39 % / 64.1 ms | **0.000 % / 0.00 ms** | **gone** |
+| `node:zlib` | 6.18 % / 90.2 ms | 4.50 % / 35.0 ms | present, smaller, and now via the **sync** `inflateSync`/`processChunkSync` path (`resolveLoose`'s buffered arm — §D2), not `createInflateStream`'s async pipeline |
+| `realpath` + `realpath@promises` + `isContainedInAnyRoot` (containment gate) | 2.76 % + 1.21 % + 0.88 % / 70.6 ms | 3.79 % + 2.72 % + 2.15 % / 67.6 ms | **flat in absolute ms** (70.6 → 67.6 ms), larger as a % only because the denominator shrank — exactly Pin A's "paid by both designs" prediction |
+| the actual scan (`isWhitespaceOnlyModify`/`nextLine`/`nextSignificantDigest`/`takeLine`, now `advanceLine`/`scanForNul`/`scanEqual`/`createLineDigestScanner`/`applyLadder`/`createLineDigestFold`) | 2.83 % / 41.3 ms | ≈4.53 % / ≈35.3 ms | comparable absolute cost — the fold micro-regression above does not show up as a workload-level regression, because it is a few percent of a total dominated by I/O and the containment gate, not by the scan itself |
+
+**The original hypothesis holds, confirmed directly rather than by inference.** The
+streaming/zlib-async/`NodeError` frames Pin A blamed for the tax do leave this workload
+entirely once objects this small (≈56 bytes) route through the buffered gate (§D2,
+`MAX_BUFFERED_BLOB_BYTES = 65 536`) instead of the WHATWG streaming pipeline. The
+containment gate's absolute cost is unchanged, as predicted ("paid by both designs"). The
+one number this profile does **not** flatter is the fold: its regression is real, it is
+simply small relative to what the streaming removal saves — visible here as "comparable
+absolute cost," not as a further win.
+
+### Part 14 summary — go/no-go verdict
+
+| # | measurement | verdict |
+|---|---|---|
+| 1 | drop-pass diff, loose | **MISS** — ≈132.2 ms mean vs ≤ 130 ms target (≈1.7 % over), reproducible across 3 runs; still a ≈50 % cut from the ≈261–264 ms before |
+| 2 | drop-pass diff, packed | **PASS** — ≈80.2 ms mean vs ≤ 100 ms cold target |
+| 3 | `digestNormalizedLine` fold micro-bench | **REGRESSION, recorded as a design signal** — 4.9×–15.6× slower per call across all four modes; does not propagate to a workload-level regression (see re-profile) |
+| 4 | `diffLines` under DC-16 (Pin G-3, G-5, G-6 + the 100 001-line pair) | **PASS on both correctness-adjacent claims** — G-5 did not grow (769 → 769.5 MB); the 100 001-line/1-line-edit pair became finite and fast (15 ms, `degraded: false`, was an instant-bail non-answer before) |
+| 5 | non-regression watch (`diff`, `diff-recursive`, `pack-read`, `loose-read`) | **PASS** — every delta within single-run bench noise |
+| 6 | re-profile | **PASS** — web-streams and `NodeError` frames are entirely gone from this workload; containment gate cost is flat in absolute ms, as predicted |
+
+**Non-goal, restated:** beating native git. Native `git diff-tree -r -w` on the packed
+variant is 77 ms (§Pin B); this branch measures ≈80.2 ms mean on the same fixture — within a
+few ms of native, not below it. The residual is the loose/pack read itself plus the
+containment gate (`realpath` + `isContainedInAnyRoot`, still ≈2.7–3.8 % each above), which is
+out of scope for this design.
+
+**One miss, one recorded regression, both honestly reported rather than rounded away** —
+per §Requirements 7 ("measured, not asserted") and the plan's explicit instruction not to
+quietly record a miss as a pass. Neither blocks either correctness-adjacent claim (G-5's
+memory ceiling, the very-large-input case's finiteness), and neither is acted on in this
+docs-only part; both are carried to the orchestrator as the part's closing report.
