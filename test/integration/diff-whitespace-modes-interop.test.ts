@@ -469,10 +469,8 @@ const LEDGER_ROWS: readonly LabeledLedgerRow[] = [
   ledgerRow('lines-99999.txt', '-w', IGNORE_ALL),
   // C8 — the line-length cap used to mark a plain (no whitespace flag) real
   // change binary too, and the edit-distance-driven degrade that followed it
-  // for oversized inputs. Both `longline.txt` (single over-cap line) and
-  // `manylines.txt` (many lines, one-line edit — its edit distance is tiny) are
-  // now fixed and fully covered by dedicated per-consumer interop cases
-  // elsewhere, so their rows are deleted here.
+  // for oversized inputs. `manylines.txt` (many lines, one-line edit — its edit
+  // distance is tiny) is fixed, so its row is a control now.
   ledgerRow('manylines.txt', undefined, {}),
   // The NUL-boundary pair — a permanent control proving git's own binary
   // window ([0, 8 000)) is already matched exactly.
@@ -546,7 +544,6 @@ const LEDGER_FIXTURES: Readonly<Record<string, LedgerFixture>> = {
   'lines-100000.txt': buildLinesPair(100_000, 50_000, 'mid line', 'mid  line'),
   'long-line-txt.txt': { before: `${'a'.repeat(70_000)}\n`, after: `${'a'.repeat(69_999)}b\n` },
   'lines-99999.txt': buildLinesPair(99_999, 50_000, 'mid line', 'mid  line'),
-  'longline.txt': { before: `${'a'.repeat(70_000)}\n`, after: `${'a'.repeat(69_999)}b\n` },
   'manylines.txt': buildLinesPair(100_001, 50_000, 'mid line', 'mid line CHANGED'),
   'nul-7999.txt': { before: `${'a'.repeat(8_200)}\n`, after: nulAt(7_999, 8_200) },
   'nul-8000.txt': { before: `${'a'.repeat(8_200)}\n`, after: nulAt(8_000, 8_200) },
