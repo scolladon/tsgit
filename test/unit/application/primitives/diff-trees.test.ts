@@ -16,6 +16,7 @@ import {
 } from '../../../../src/domain/diff/index.js';
 import * as rawTreeDiffMod from '../../../../src/domain/diff/raw-tree-diff.js';
 import { MAX_SCORE } from '../../../../src/domain/diff/similarity.js';
+import * as statFieldsMod from '../../../../src/domain/diff/stat-fields.js';
 import * as encodingMod from '../../../../src/domain/objects/encoding.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import { SHA1_CONFIG } from '../../../../src/domain/objects/hash-config.js';
@@ -1904,6 +1905,45 @@ describe('diffTrees', () => {
         // Assert — dropped via the streaming predicate; the full materialise pass never ran
         expect(result.changes).toHaveLength(0);
         expect(materialiseSpy).not.toHaveBeenCalled();
+
+        materialiseSpy.mockRestore();
+      });
+    });
+  });
+
+  describe('Given a whitespace-only modify beside a real modify, ignoreWhitespace:all and withStat:true', () => {
+    describe('When diffTrees is called', () => {
+      it('Then the counts are computed only for the surviving file (the dropped one costs no line diff)', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const wsOld = await blob(ctx, 'hello world\n');
+        const wsNew = await blob(ctx, 'hello  world\n');
+        const realOld = await blob(ctx, 'alpha\n');
+        const realNew = await blob(ctx, 'beta\n');
+        const before = await writeTree(ctx, [
+          { name: 'real.txt', mode: FILE_MODE.REGULAR, id: realOld },
+          { name: 'ws.txt', mode: FILE_MODE.REGULAR, id: wsOld },
+        ]);
+        const after = await writeTree(ctx, [
+          { name: 'real.txt', mode: FILE_MODE.REGULAR, id: realNew },
+          { name: 'ws.txt', mode: FILE_MODE.REGULAR, id: wsNew },
+        ]);
+        const statFieldsSpy = vi.spyOn(statFieldsMod, 'computeStatFields');
+
+        // Act
+        const result = await diffTrees(ctx, before, after, {
+          ignoreWhitespace: 'all',
+          withStat: true,
+        });
+
+        // Assert — one surviving change, and exactly one line-diff pass: the
+        // dropped file's counts would have been discarded, so they are never
+        // computed (the call that DID happen proves the spy is wired).
+        expect(result.changes).toHaveLength(1);
+        expect(result.changes[0]).toMatchObject({ type: 'modify', path: 'real.txt' });
+        expect(statFieldsSpy).toHaveBeenCalledTimes(1);
+
+        statFieldsSpy.mockRestore();
       });
     });
   });
@@ -1951,6 +1991,8 @@ describe('diffTrees', () => {
         // Assert — real content change survives; the full materialise pass never ran
         expect(result.changes).toHaveLength(1);
         expect(materialiseSpy).not.toHaveBeenCalled();
+
+        materialiseSpy.mockRestore();
       });
     });
   });
@@ -1973,6 +2015,8 @@ describe('diffTrees', () => {
 
         // Assert
         expect(materialiseSpy).toHaveBeenCalled();
+
+        materialiseSpy.mockRestore();
       });
     });
   });

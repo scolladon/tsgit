@@ -176,6 +176,11 @@ async function applyLinePassAndStat(
  * attaches per-file counts to every surviving change. Consistency between
  * the two paths holds by construction: both run the same scanner, rather
  * than two independently maintained verdicts.
+ *
+ * The verdict runs BEFORE the counts, and both are pure functions of the same
+ * two buffers: a dropped file's counts would be discarded, so computing them
+ * would be a whole `diffLines` interning pass plus Myers trace thrown away —
+ * on a whitespace-only commit, for every file in it.
  */
 async function applyStatPass(
   ctx: Context,
@@ -191,11 +196,6 @@ async function applyStatPass(
   for (const file of files) {
     const oldContent = file.oldContent ?? EMPTY;
     const newContent = file.newContent ?? EMPTY;
-    const stats = computeStatFields(
-      oldContent,
-      newContent,
-      statOptionsFor(lineKey, lineKeyActive, ignoreBlankLines, file.numstatBinaryOverride),
-    );
     const dropped =
       lineKeyActive &&
       dropVerdict(
@@ -207,6 +207,11 @@ async function applyStatPass(
         file.numstatBinaryOverride,
       );
     if (dropped) continue;
+    const stats = computeStatFields(
+      oldContent,
+      newContent,
+      statOptionsFor(lineKey, lineKeyActive, ignoreBlankLines, file.numstatBinaryOverride),
+    );
     surviving.push(withStat ? { ...file.change, ...stats } : file.change);
   }
   return { changes: surviving };
