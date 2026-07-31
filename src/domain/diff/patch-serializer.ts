@@ -10,7 +10,7 @@ import type {
 } from './diff-change.js';
 import { invalidDiffInput } from './error.js';
 import { diffLines, type LineHunk, splitLines } from './line-diff.js';
-import { assertPatchTextFits } from './patch-length.js';
+import { assertPatchTextFits, joinedLineLength } from './patch-length.js';
 import { MAX_SCORE, toSimilarityPercent } from './similarity.js';
 import { isBlankLine, type LineKey, NONE_KEY } from './whitespace.js';
 
@@ -838,14 +838,18 @@ export function renderPatch(files: ReadonlyArray<PatchFile>, opts?: PatchOptions
     const block = renderFile(file, prefix, contextLines, emit);
     for (const line of block) {
       lines.push(line);
-      chars += line.length + 1;
+      chars += joinedLineLength(line);
+      // Checked here, not after the loop: asserting on the total would let the
+      // whole line array accumulate first, turning an out-of-memory crash into
+      // a refusal only once the memory had already been spent. This refuses on
+      // the line that crosses the bound.
+      assertPatchTextFits(chars);
     }
   }
   // When all file blocks are blank-suppressed, lines stays empty and we return ''.
   // Otherwise push the trailing '' separator and join.
   // Stryker disable next-line ConditionalExpression: equivalent — when `lines` is empty the fallthrough pushes one '' and joins, and [''].join('\n') === '' === [].join('\n'), so both branches return ''.
   if (lines.length === 0) return '';
-  assertPatchTextFits(chars);
   lines.push('');
   return lines.join('\n');
 }

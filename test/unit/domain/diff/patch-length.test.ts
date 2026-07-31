@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   assertPatchTextFits,
+  joinedLength,
+  joinedLineLength,
   MAX_PATCH_TEXT_CHARS,
 } from '../../../../src/domain/diff/patch-length.js';
 import { TsgitError } from '../../../../src/domain/error.js';
@@ -41,6 +43,64 @@ describe('assertPatchTextFits', () => {
           );
         }
       }
+    });
+  });
+});
+
+describe('joinedLineLength', () => {
+  describe('Given a rendered line, When its joined length is taken', () => {
+    it('Then it counts the line plus the separator that follows it', () => {
+      // Arrange
+      const sut = joinedLineLength;
+
+      // Act
+      const result = sut('+abc');
+
+      // Assert
+      expect(result).toBe('+abc\n'.length);
+    });
+  });
+
+  describe('Given an empty rendered line, When its joined length is taken', () => {
+    it('Then it counts the separator alone', () => {
+      // Arrange
+      const sut = joinedLineLength;
+
+      // Act
+      const result = sut('');
+
+      // Assert
+      expect(result).toBe(1);
+    });
+  });
+});
+
+describe('joinedLength', () => {
+  describe('Given no lines at all, When the joined length is taken', () => {
+    it('Then it is zero — an empty patch renders as the empty string', () => {
+      // Arrange
+      const sut = joinedLength;
+
+      // Act
+      const result = sut([]);
+
+      // Assert
+      expect(result).toBe(['', ''].slice(1).join('\n').length);
+      expect(result).toBe(0);
+    });
+  });
+
+  describe('Given a handful of rendered lines, When the joined length is taken', () => {
+    it('Then it equals the length of the string the renderer actually materialises', () => {
+      // Arrange
+      const lines = ['diff --git a/f b/f', '@@ -1 +1 @@', '-old', '+new', ''];
+      const sut = joinedLength;
+
+      // Act
+      const result = sut(lines);
+
+      // Assert
+      expect(result).toBe([...lines, ''].join('\n').length);
     });
   });
 });

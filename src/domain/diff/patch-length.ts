@@ -17,6 +17,28 @@ import { invalidDiffInput } from './error.js';
  */
 export const MAX_PATCH_TEXT_CHARS = 536_870_888;
 
+/**
+ * A rendered line's contribution to the joined patch: its own characters plus
+ * the single separator that follows it. Every patch renderer joins on `\n`
+ * with a trailing separator, so this — not `line.length` — is the unit the
+ * refusal above counts in. One definition, so a renderer counting its own way
+ * cannot drift from the bound it is checked against.
+ */
+export function joinedLineLength(line: string): number {
+  return line.length + 1;
+}
+
+/**
+ * The exact length of `[...lines, ''].join('\n')` — the string a renderer
+ * materialises from these lines. Lets a renderer weigh a block BEFORE building
+ * it, so an oversized one is refused rather than assembled and then reported.
+ */
+export function joinedLength(lines: ReadonlyArray<string>): number {
+  let total = 0;
+  for (const line of lines) total += joinedLineLength(line);
+  return total;
+}
+
 /** Refuses a patch that could not be materialised as one string. */
 export function assertPatchTextFits(chars: number): void {
   if (chars > MAX_PATCH_TEXT_CHARS) {

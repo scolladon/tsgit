@@ -19,7 +19,7 @@ import {
   type PatchFile,
 } from '../diff/index.js';
 import { splitLines } from '../diff/line-diff.js';
-import { assertPatchTextFits } from '../diff/patch-length.js';
+import { assertPatchTextFits, joinedLength, joinedLineLength } from '../diff/patch-length.js';
 import type { ObjectId } from '../objects/index.js';
 import { findFuncLine } from './funcname.js';
 
@@ -149,8 +149,14 @@ export const renderRangePatch = (input: CommitPatchInput): RenderedPatch => {
   for (const file of input.files) {
     const header = ` ## ${fileHeader(file.change)} ##`;
     const { lines, count } = renderFileDiff(file);
+    // Weighed, then built. Joining first and asserting afterwards is no bound
+    // at all: the join is the allocation that fails, so a single oversized
+    // file would still die on the bare RangeError this refusal replaces. The
+    // block is a leading empty line, the header, then the body — each carrying
+    // its own separator, exactly as the join below writes them.
+    const blockChars = joinedLineLength('') + joinedLineLength(header) + joinedLength(lines);
+    assertPatchTextFits(patch.length + blockChars);
     const block = `\n${header}\n${lines.map((line) => `${line}\n`).join('')}`;
-    assertPatchTextFits(patch.length + block.length);
     patch += block;
     diffsize += 1 + count; // the file header line plus every rendered diff line
   }
