@@ -339,6 +339,34 @@ describe('normalizeLine', () => {
     });
   });
 
+  describe('Given a long line whose normalization removes bytes', () => {
+    // The output is built in ONE buffer sized for the input and returned as a
+    // view of it. A per-byte `number[]` accumulator would instead cost ~8 bytes
+    // plus growth slack per INPUT byte before the copy — an order-of-magnitude
+    // amplification on a line whose length is bounded only by the blob's.
+    const input = enc(`${'a   b\t\t\tc'.repeat(1_000)}\n`);
+
+    describe("When normalizeLine runs under mode 'all'", () => {
+      it('Then the result views a buffer sized for the input, not one sized for the output', () => {
+        // Arrange & Act
+        const result = normalizeLine(input, { mode: 'all', ignoreCrAtEol: false });
+        // Assert
+        expect(result.length).toBeLessThan(input.length);
+        expect(result.buffer.byteLength).toBe(input.length);
+      });
+    });
+
+    describe("When normalizeLine runs under mode 'change'", () => {
+      it('Then the result views a buffer sized for the input, not one sized for the output', () => {
+        // Arrange & Act
+        const result = normalizeLine(input, { mode: 'change', ignoreCrAtEol: false });
+        // Assert
+        expect(result.length).toBeLessThan(input.length);
+        expect(result.buffer.byteLength).toBe(input.length);
+      });
+    });
+  });
+
   describe('Given an unterminated line (no trailing LF, as with last line in no-newline file)', () => {
     const key: LineKey = { mode: 'at-eol', ignoreCrAtEol: false };
 

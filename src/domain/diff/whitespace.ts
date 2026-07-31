@@ -24,43 +24,46 @@ function lfIndex(bytes: Uint8Array): number {
 }
 
 // Drop all space/tab bytes from content (before terminator). Preserves the LF.
+// Normalization only ever removes bytes, so one buffer the size of the input
+// holds any output — written in place and returned as a view, never grown as a
+// per-byte number array (~8 bytes plus slack per INPUT byte) and copied.
 function dropAllWs(bytes: Uint8Array): Uint8Array {
   const end = lfIndex(bytes);
-  const out: number[] = [];
+  const out = new Uint8Array(bytes.length);
+  let length = 0;
   for (let i = 0; i < end; i++) {
     const b = bytes[i] as number;
-    if (!isWs(b)) out.push(b);
+    if (!isWs(b)) out[length++] = b;
   }
-  if (end < bytes.length) out.push(LF);
-  return new Uint8Array(out);
+  if (end < bytes.length) out[length++] = LF;
+  return out.subarray(0, length);
 }
 
 // Collapse each run of space/tab to a single space; drop trailing run.
 // Leading run is kept as a single space (so presence is preserved, amount is not).
+// Same single pre-sized buffer as dropAllWs above.
 function collapseRuns(bytes: Uint8Array): Uint8Array {
   const end = lfIndex(bytes);
-  const out: number[] = [];
+  const out = new Uint8Array(bytes.length);
+  let length = 0;
   let inWs = false;
   for (let i = 0; i < end; i++) {
     const b = bytes[i] as number;
     if (isWs(b)) {
       if (!inWs) {
-        out.push(SPACE);
+        out[length++] = SPACE;
         inWs = true;
       }
     } else {
       inWs = false;
-      out.push(b);
+      out[length++] = b;
     }
   }
-  // drop trailing space that was added for the trailing ws run
-  // Stryker disable next-line ConditionalExpression: equivalent — `out.length > 0` forced true still short-circuits safely: when out is empty, out[-1] is undefined !== SPACE, so the pop is skipped regardless.
-  // NOTE: the EqualityOperator variant of this guard (`out.length > 0` -> `>= 0`) is equally equivalent but left unannotated — this line also carries a killable EqualityOperator mutant on `out[out.length - 1] === SPACE` -> `!==` (kills via existing tests), and Stryker's next-line disable matches by mutator+line, not sub-expression, so annotating EqualityOperator here would blind that real mutant too.
-  if (out.length > 0 && out[out.length - 1] === SPACE) {
-    out.pop();
-  }
-  if (end < bytes.length) out.push(LF);
-  return new Uint8Array(out);
+  // `inWs` still set means the content ended inside a whitespace run, whose
+  // collapsed SPACE is the last byte written — unwrite it, the run is trailing.
+  if (inWs) length--;
+  if (end < bytes.length) out[length++] = LF;
+  return out.subarray(0, length);
 }
 
 // Drop the trailing whitespace run (before terminator or end of unterminated content).
