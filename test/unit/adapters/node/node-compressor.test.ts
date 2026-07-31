@@ -506,6 +506,43 @@ describe('NodeCompressor', () => {
       });
     });
 
+    describe('Given a truncated zlib stream the decoder can never finish on its own', () => {
+      describe('When the consumer reads one chunk then cancels the reader', () => {
+        it('Then the cancel resolves instead of surfacing the truncation as a failure', async () => {
+          // Arrange — dropping the last bytes removes the natural 'end' that
+          // would otherwise settle flush()'s promise for free, so the
+          // cancellation teardown is the ONLY thing that can settle it. Left
+          // running, the decoder reaches the truncation and reports
+          // DECOMPRESS_FAILED — a cancelled consumer must never be told that.
+          const sut = new NodeCompressor();
+          const size = 256 * 1024;
+          const payload = new Uint8Array(size);
+          for (let i = 0; i < size; i += 1) payload[i] = i & 0xff;
+          const deflated = await sut.deflate(payload);
+          const truncated = deflated.subarray(0, deflated.length - 5);
+          const source = new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(truncated);
+              controller.close();
+            },
+          });
+          const reader = source.pipeThrough(sut.createInflateStream()).getReader();
+
+          // Act
+          await reader.read();
+          let caught: unknown;
+          try {
+            await reader.cancel();
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeUndefined();
+        }, 5000);
+      });
+    });
+
     describe('Given a multi-write source whose next chunk has not arrived yet', () => {
       describe('When the consumer cancels before the source closes (before flush() starts)', () => {
         it('Then the cancel() hook stops the pump and the reader settles cleanly', async () => {
