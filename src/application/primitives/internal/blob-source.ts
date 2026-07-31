@@ -190,7 +190,14 @@ async function resolvePackBase(
   gate: BufferGate,
 ): Promise<BlobSource> {
   const type = packTypeName(baseType);
-  if (fitsBuffer(payload.length, gate.maxBufferedBytes)) {
+  // Both conditions: the compressed payload is the gated quantity everywhere,
+  // but a pack base entry also knows its inflated size for free from the entry
+  // header, and compressed size alone is no bound on it — deflate reaches
+  // 1029:1, so a 64 KiB payload can inflate to ~64 MiB.
+  if (
+    fitsBuffer(payload.length, gate.maxBufferedBytes) &&
+    fitsBuffer(declaredSize, gate.maxBufferedBytes)
+  ) {
     const content = await ctx.compressor.inflate(payload);
     await verifyPackBaseBytes(ctx, id, declaredSize, content, gate.verifyHash);
     return { kind: 'bytes', type, content };

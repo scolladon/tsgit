@@ -217,6 +217,35 @@ describe('openBlobSource', () => {
     });
   });
 
+  describe('Given a packed base blob whose payload fits the gate but whose inflated size does not', () => {
+    describe('When openBlobSource is called with the gate over the payload length', () => {
+      it('Then resolves streamed, so the inflated bytes are never materialised', async () => {
+        // Arrange — 512 KiB of one byte deflates to a few hundred bytes, so the
+        // compressed length alone would wave it through the buffered arm.
+        const content = new Uint8Array(512 * 1024).fill(0x61);
+        const ctx = await buildSeededContext();
+        const ids = await writeSyntheticPack(ctx, 'gate-base-inflated', [
+          { kind: 'base', type: 'blob', content },
+        ]);
+        const id = ids[0] as ObjectId;
+        const payloadLen = (await ctx.compressor.deflate(content)).length;
+
+        // Act
+        const result = await openBlobSource(ctx, id, MAX_BUFFERED_BLOB_BYTES);
+
+        // Assert
+        expect(payloadLen).toBeLessThan(MAX_BUFFERED_BLOB_BYTES);
+        expect(content.length).toBeGreaterThan(MAX_BUFFERED_BLOB_BYTES);
+        expect(result.kind).toBe('stream');
+        if (result.kind === 'stream') {
+          expect(result.type).toBe('blob');
+          const drained = await collect(result.stream);
+          expect(drained).toEqual(content);
+        }
+      });
+    });
+  });
+
   describe('Given a deltified packed blob', () => {
     describe('When openBlobSource is called with the gate at 0', () => {
       it('Then resolves as a bytes source (the gate is a no-op for deltas)', async () => {
