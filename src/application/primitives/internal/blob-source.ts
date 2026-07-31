@@ -59,8 +59,9 @@ export type BlobSource =
        * Cancels the inflate pipeline behind `stream` for a caller that decides
        * NOT to drain it (a sibling side failed, a type refusal fired). Without
        * it the pipeline — and the adapter's inflate instance — survives until
-       * GC. A no-op once `stream` has been iterated: the iterator holds the
-       * reader from then on, and its own `return` does the cancelling.
+       * GC. Never rejects: it runs on paths that are already reporting a
+       * failure, and a stream with nothing left to release must not overwrite
+       * that failure with one of its own.
        */
       release(): Promise<void>;
     };
@@ -275,11 +276,19 @@ function inflateOneShot(ctx: Context, bytes: Uint8Array): ReadableStream<Uint8Ar
   return source.pipeThrough(ctx.compressor.createInflateStream());
 }
 
-// A locked stream is already owned by an iterator, whose own `return` cancels
-// it; cancelling here as well would throw on the lock.
+// Cancelling can reject for two reasons, and neither is this caller's news to
+// carry: an already-errored readable rejects with the error it stored, and a
+// locked one (already owned by an iterator, whose own `return` does the
+// cancelling) rejects on the lock. Both mean "there is nothing left here to
+// release" — and a release runs *while another failure is being reported*, so
+// letting either escape would replace the real error with this one. Same
+// swallow, and the same reason, as `readableStreamToAsyncIterable`'s `return`.
 async function cancelUnread(stream: ReadableStream<Uint8Array>): Promise<void> {
-  if (stream.locked) return;
-  await stream.cancel();
+  try {
+    await stream.cancel();
+  } catch {
+    // already errored or already owned; nothing left to release
+  }
 }
 
 /** Result of stripping the git object header from accumulated inflate chunks. */

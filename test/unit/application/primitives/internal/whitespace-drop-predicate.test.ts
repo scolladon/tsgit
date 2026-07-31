@@ -548,6 +548,48 @@ describe('isWhitespaceOnlyModify', () => {
     });
   });
 
+  describe('Given one side fails to open while the other opened a stream that has errored', () => {
+    describe('When isWhitespaceOnlyModify is forced onto the streaming arm (gate 0)', () => {
+      it('Then the open failure is reported, not the survivor’s release rejection', async () => {
+        // Arrange — releasing the survivor cancels an already-errored readable,
+        // which rejects with the stored error; that must not displace the real
+        // one the caller is being told about.
+        const base = await buildSeededContext();
+        const inflateFailure = new Error('inflate blew up');
+        const ctx: Context = {
+          ...base,
+          compressor: {
+            ...base.compressor,
+            createInflateStream: () => ({
+              readable: new ReadableStream<Uint8Array>({
+                start: (controller) => {
+                  controller.error(inflateFailure);
+                },
+              }),
+              writable: new WritableStream<Uint8Array>(),
+            }),
+          },
+        };
+        const missing = 'f'.repeat(40) as ObjectId;
+        const blobId = await writeBlob(base, enc.encode('content\n'));
+        const change = changeFor(missing, blobId);
+
+        // Act + Assert
+        try {
+          await isWhitespaceOnlyModify(ctx, change, ALL_KEY, false, 0);
+          expect.unreachable();
+        } catch (error) {
+          expect(error).toBeInstanceOf(TsgitError);
+          const data = (error as TsgitError).data;
+          expect(data.code).toBe('OBJECT_NOT_FOUND');
+          if (data.code === 'OBJECT_NOT_FOUND') {
+            expect(data.id).toBe(missing);
+          }
+        }
+      });
+    });
+  });
+
   describe('Given a ctx.signal aborted before the call', () => {
     describe('When isWhitespaceOnlyModify is called', () => {
       it('Then throws operationAborted', async () => {

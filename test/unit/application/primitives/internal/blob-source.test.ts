@@ -515,6 +515,41 @@ describe('openBlobSource', () => {
     });
   });
 
+  describe('Given a streamed source whose inflate readable has already errored', () => {
+    describe('When release() is called on it', () => {
+      it('Then it resolves instead of re-throwing the stream’s stored error', async () => {
+        // Arrange — cancelling an errored readable rejects with the error the
+        // stream stored, which would replace whatever the caller is really
+        // reporting. Nothing is left to release at that point.
+        const blob: Blob = { type: 'blob', content: ENC.encode('content'), id: '' as ObjectId };
+        const base = await buildSeededContext({ objects: [blob] });
+        const id = await writeObject(base, blob);
+        const inflateFailure = new Error('inflate blew up');
+        const ctx = {
+          ...base,
+          compressor: {
+            ...base.compressor,
+            createInflateStream: () => ({
+              readable: new ReadableStream<Uint8Array>({
+                start: (controller) => {
+                  controller.error(inflateFailure);
+                },
+              }),
+              writable: new WritableStream<Uint8Array>(),
+            }),
+          },
+        };
+        const source = await openBlobSource(ctx, id, 0);
+
+        // Act + Assert
+        expect(source.kind).toBe('stream');
+        if (source.kind === 'stream') {
+          await expect(source.release()).resolves.toBeUndefined();
+        }
+      });
+    });
+  });
+
   describe('Given a ctx.signal aborted before the call', () => {
     describe('When openBlobSource is called', () => {
       it('Then throws operationAborted', async () => {
