@@ -360,25 +360,18 @@ describe.skipIf(!GIT_AVAILABLE)(
 );
 
 /**
- * The divergence ledger — pins today's known disagreements between tsgit and
- * live git, plus controls that must not move, as an executable oracle. Every
- * `tsgitDivergence` field a fix commit corrects is deleted by that commit,
- * which is the visible statement of what it changed: once deleted, the
- * assertion falls back to git's own live verdict, so the suite stays green
- * only if the fix actually landed.
+ * The divergence ledger — the fixtures whose verdicts once disagreed with live
+ * git, kept as an executable oracle over every consumer at once: each row
+ * asserts tsgit's predicate arm, stat arm, numstat and patch body against what
+ * live git answers for the same commit pair under the same flag. Every pin has
+ * been cleared, so no row carries a tsgit-specific expectation any more — git
+ * is the only oracle here, and a row fails the moment a consumer drifts from
+ * it. A future divergence is pinned by fixing it, not by recording it.
  */
 interface LedgerRow {
   readonly fixture: string;
   readonly gitFlag: string | undefined;
   readonly diffOpts: ScenarioDiffOpts;
-  /** What tsgit is KNOWN to answer where it differs from git today. Absent ⇒ tsgit
-   *  must agree with git. Each fix commit deletes exactly its own entries. */
-  readonly tsgitDivergence?: {
-    readonly predicateSurvives?: boolean;
-    readonly statSurvives?: boolean;
-    readonly numstat?: readonly [number | '-', number | '-'];
-    readonly patchIsBinary?: boolean;
-  };
 }
 
 interface LabeledLedgerRow extends LedgerRow {
@@ -394,13 +387,11 @@ const ledgerRow = (
   fixture: string,
   gitFlag: string | undefined,
   diffOpts: ScenarioDiffOpts,
-  tsgitDivergence?: LedgerRow['tsgitDivergence'],
 ): LabeledLedgerRow => ({
   fixture,
   gitFlag,
   diffOpts,
   label: `${fixture} ${gitFlag ?? 'plain'}`,
-  ...(tsgitDivergence !== undefined ? { tsgitDivergence } : {}),
 });
 
 const IGNORE_ALL: ScenarioDiffOpts = { ignoreWhitespace: 'all' };
@@ -419,8 +410,7 @@ const controlRows = (fixture: string): readonly LabeledLedgerRow[] => [
 
 const LEDGER_ROWS: readonly LabeledLedgerRow[] = [
   // C4 — a final-terminator difference is whitespace under every active key,
-  // matching git (the fix commit that landed this deleted every tsgitDivergence
-  // entry in this family; each row now falls back to git's own live verdict).
+  // matching git; this whole family is a control now.
   ...controlRows('lf-gain.txt'),
   ...controlRows('lf-loss.txt'),
   ...controlRows('lf-gain-multi.txt'),
@@ -440,8 +430,7 @@ const LEDGER_ROWS: readonly LabeledLedgerRow[] = [
   ledgerRow('ctx-gain.txt', '-w', IGNORE_ALL),
   ledgerRow('ctx-loss.txt', '-w', IGNORE_ALL),
   // C6 — a CR ending an incomplete final line is significant to git under
-  // --ignore-cr-at-eol, matching git (the fix commit that landed this deleted
-  // the tsgitDivergence entry; the row now falls back to git's own live verdict).
+  // --ignore-cr-at-eol, and tsgit now agrees with it.
   ledgerRow('cr-no-eol.txt', '-w', IGNORE_ALL), // control: both drop
   ledgerRow('cr-no-eol.txt', '-b', IGNORE_CHANGE), // control: both drop
   ledgerRow('cr-no-eol.txt', '--ignore-space-at-eol', IGNORE_AT_EOL), // control: both drop
@@ -660,9 +649,9 @@ const tsgitLedgerVerdict = async (
 
 /**
  * Assert one ledger row: the predicate/stat survivor verdicts always; the
- * numstat and patch-binary verdicts only when both git and tsgit's stat arm
- * agree the file is present (git omits a dropped file from `--numstat`/`-p`,
- * and a fully-dropped tsgit side has no `StatDiffChange` to compare).
+ * numstat and patch-binary verdicts only when the file survives (git omits a
+ * dropped file from `--numstat`/`-p`, and a dropped tsgit side has no
+ * `StatDiffChange` to compare).
  */
 const assertLedgerRow = async (
   repo: Awaited<ReturnType<typeof openRepository>>,
@@ -674,17 +663,19 @@ const assertLedgerRow = async (
   const gitSurvives = await gitLedgerSurvives(dir, row.gitFlag, from, to);
   const tsgit = await tsgitLedgerVerdict(repo, from, to, row.diffOpts, row.fixture);
 
-  expect(tsgit.predicateSurvives).toBe(row.tsgitDivergence?.predicateSurvives ?? gitSurvives);
-  expect(tsgit.statSurvives).toBe(row.tsgitDivergence?.statSurvives ?? gitSurvives);
+  expect(tsgit.predicateSurvives).toBe(gitSurvives);
+  expect(tsgit.statSurvives).toBe(gitSurvives);
 
-  if (!gitSurvives || !tsgit.statSurvives) return;
+  // Both arms just matched git, so a dropped file has no StatDiffChange on
+  // either side to compare — and git omits it from `--numstat`/`-p` too.
+  if (!gitSurvives) return;
 
   const statChange = findModifyChange(tsgit.statResult.changes, row.fixture)!;
   const tsgitNumstat: readonly [number | '-', number | '-'] = statChange.binary
     ? ['-', '-']
     : [statChange.added, statChange.deleted];
   const gitNumstat = await gitLedgerNumstat(dir, row.gitFlag, from, to);
-  expect(tsgitNumstat).toEqual(row.tsgitDivergence?.numstat ?? gitNumstat);
+  expect(tsgitNumstat).toEqual(gitNumstat);
 
   const tsgitPatch = await reconstructPatch(
     repo.ctx,
@@ -692,9 +683,7 @@ const assertLedgerRow = async (
     patchOptionsFor(row.diffOpts),
   );
   const gitPatchIsBinary = await gitLedgerPatchIsBinary(dir, row.gitFlag, from, to);
-  expect(tsgitPatch.includes('Binary files')).toBe(
-    row.tsgitDivergence?.patchIsBinary ?? gitPatchIsBinary,
-  );
+  expect(tsgitPatch.includes('Binary files')).toBe(gitPatchIsBinary);
 };
 
 describe.skipIf(!GIT_AVAILABLE)(
