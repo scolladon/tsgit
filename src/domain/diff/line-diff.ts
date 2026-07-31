@@ -22,8 +22,9 @@ export interface LineDiff {
 
 export const BINARY_DETECTION_BYTES = 8_000;
 // Not consulted by isBinary — git's own binary rule is the NUL window alone.
-// Still live as grep's own bound, in both of its branches: the binary-presence
-// probe and the per-line match window (grep.ts).
+// Live in exactly one place: the window grep's binary-presence probe scans
+// (grep.ts). It does NOT bound the regex match path, whose per-line window was
+// reverted — a text line is matched in full, at any length.
 export const MAX_LINE_BYTES = 65_536;
 // DEPRECATED — no consumer, and NOT a bound: diffLines imposes no limit on how
 // many lines either side may have. A caller reading this as a maximum will be
@@ -133,6 +134,13 @@ function computeMyersTrace(
   // input is. Sizing off M+N alone would allocate ~40M cells (305 MB,
   // measured) for a 10M-line-per-side pair before the first snake, to index
   // diagonals the walk cannot reach.
+  //
+  // DEPENDS on the caller returning early for M === 0 && N === 0. There `span`
+  // is 0, and the two array kinds stop disagreeing about out-of-range reads: a
+  // number[] yields undefined (every comparison false, so the walk exhausts the
+  // budget and degrades) where an Int32Array coerces to 0 and returns a trace
+  // for a pair that has no lines. Relaxing that upstream guard silently changes
+  // this function's verdict — re-check it here before touching it.
   const span = Math.min(M + N, maxEditDistance + 1);
   const offset = span;
   const v = new Int32Array(2 * span + 1);

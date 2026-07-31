@@ -8,14 +8,15 @@
  * the length the renderer has already counted turns it into an ordinary domain
  * refusal at a documented bound.
  */
+import { MAX_STRING_LENGTH } from '../engine-limits.js';
 import { invalidDiffInput } from './error.js';
 
 /**
- * V8's maximum string length on 64-bit builds (2^29 - 24 characters). It is an
- * engine limit rather than a policy choice, so it is expressed exactly rather
- * than rounded: everything below it renders, nothing above it can.
+ * The engine's string ceiling, in the unit a patch is counted in: one
+ * character per rendered character. A patch past it cannot be joined at all,
+ * so the renderer refuses instead of dying inside `Array.join`.
  */
-export const MAX_PATCH_TEXT_CHARS = 536_870_888;
+export const MAX_PATCH_TEXT_CHARS = MAX_STRING_LENGTH;
 
 /**
  * A rendered line's contribution to the joined patch: its own characters plus

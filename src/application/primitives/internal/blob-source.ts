@@ -210,6 +210,15 @@ async function resolvePackBase(
   // but a pack base entry also knows its inflated size for free from the entry
   // header, and compressed size alone is no bound on it — deflate reaches
   // 1029:1, so a 64 KiB payload can inflate to ~64 MiB.
+  //
+  // What this actually buys, stated honestly: `declaredSize` is read from the
+  // entry header, so it holds an HONEST entry to the gate and nothing more. A
+  // crafted entry can declare a tiny size and carry a maximally-compressible
+  // payload, pass both tests, and still inflate to ~64 MiB before the hash
+  // check rejects it. That is no worse than the loose arm, whose ceiling is the
+  // same 64 KiB-compressed bound, and both sit under the compressor port's
+  // 2 GiB inflate cap. Bounding a lying header would take streaming the entry
+  // and counting bytes, which is a different gate than this one.
   if (
     fitsBuffer(payload.length, gate.maxBufferedBytes) &&
     fitsBuffer(declaredSize, gate.maxBufferedBytes)
