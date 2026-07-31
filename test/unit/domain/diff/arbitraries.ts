@@ -1,4 +1,5 @@
 import fc from 'fast-check';
+import type { LineKey, WhitespaceMode } from '../../../../src/domain/diff/whitespace.js';
 import type { FileMode, ObjectId, Tree, TreeEntry } from '../../../../src/domain/objects/index.js';
 import { FILE_MODE } from '../../../../src/domain/objects/index.js';
 import {
@@ -6,6 +7,17 @@ import {
   arbTreeEntryAnyMode,
   dedupeTreeEntriesByName,
 } from '../objects/arbitraries.js';
+
+const ALL_MODES: ReadonlyArray<WhitespaceMode> = ['all', 'change', 'at-eol', 'none'];
+
+/** Every whitespace mode crossed with both CR-at-eol settings — the full key
+ *  space every digest/normalizer property sweeps. */
+export function arbLineKey(): fc.Arbitrary<LineKey> {
+  return fc.record({
+    mode: fc.constantFrom(...ALL_MODES),
+    ignoreCrAtEol: fc.boolean(),
+  });
+}
 
 export function arbBlobBytes(): fc.Arbitrary<Uint8Array> {
   return fc

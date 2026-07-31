@@ -10,6 +10,7 @@ import {
   normalizeLine,
 } from '../../../../src/domain/diff/whitespace.js';
 import { bytesEqual } from '../../../../src/domain/objects/encoding.js';
+import { arbLineKey } from './arbitraries.js';
 import { ALT_OFFSET_BASIS, expectedDigest, FNV_OFFSET_BASIS } from './digest-oracle.js';
 
 // Arbitrary: a UTF-8 line (ASCII printable, no space/tab) plus optional LF terminator
@@ -58,15 +59,6 @@ function arbResprinkle(base: Uint8Array): fc.Arbitrary<Uint8Array> {
       if (hasLf) result.push(0x0a);
       return new Uint8Array(result);
     });
-}
-
-const ALL_MODES: ReadonlyArray<WhitespaceMode> = ['all', 'change', 'at-eol', 'none'];
-
-function arbLineKey(): fc.Arbitrary<LineKey> {
-  return fc.record({
-    mode: fc.constantFrom(...ALL_MODES),
-    ignoreCrAtEol: fc.boolean(),
-  });
 }
 
 // Extends arbLineWithWhitespace's alphabet with CR, so a property drawing from
