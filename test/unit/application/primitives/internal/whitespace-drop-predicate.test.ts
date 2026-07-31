@@ -318,6 +318,34 @@ describe('isWhitespaceOnlyModify', () => {
     });
   });
 
+  describe('Given streamed blobs whose digests agree but whose bytes do not', () => {
+    describe('When the confirmation re-read abandons them at the first differing line (gate 0)', () => {
+      it('Then both re-opened streams are cancelled, not left to GC', async () => {
+        // Arrange — the colliding pair drives the ladder to a would-be-drop, so
+        // the confirmation runs and then bails on the second line, leaving both
+        // of its streams part-read.
+        const { ctx, cancelCount } = await cancelTrackingContext();
+        const oldId = await writeBlob(ctx, enc.encode(`head\n${DIGEST_COLLISION_LINE_A}\ntail\n`));
+        const newId = await writeBlob(ctx, enc.encode(`head\n${DIGEST_COLLISION_LINE_B}\ntail\n`));
+
+        // Act
+        const result = await isWhitespaceOnlyModify(
+          ctx,
+          changeFor(oldId, newId),
+          ALL_KEY,
+          false,
+          0,
+        );
+
+        // Assert — both cancels come from the confirmation: the digest pass ran
+        // each side to EOF, and a stream already closed by its last read has
+        // nothing left to cancel.
+        expect(result).toBe(false);
+        expect(cancelCount()).toBe(2);
+      });
+    });
+  });
+
   describe('Given two streamed blobs whose digests agree', () => {
     describe('When isWhitespaceOnlyModify is forced onto the streaming arm (gate 0)', () => {
       it('Then each blob is inflated twice — the drop verdict is confirmed by a re-read', async () => {

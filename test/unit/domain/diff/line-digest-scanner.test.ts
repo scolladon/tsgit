@@ -370,8 +370,8 @@ describe('scanEqual', () => {
     );
   });
 
-  describe('Given two single-line blobs whose only line is the colliding pair', () => {
-    it.each(WHITESPACE_MODES)('Then scanEqual reports them unequal under mode %s', (mode) => {
+  describe('Given two single-line blobs whose only line is the colliding pair, When scanEqual compares them under an active whitespace mode', () => {
+    it.each(WHITESPACE_MODES)('Then it reports them unequal under mode %s', (mode) => {
       // Arrange
       const key: LineKey = { mode, ignoreCrAtEol: false };
       const sut = scanEqual;
@@ -384,8 +384,8 @@ describe('scanEqual', () => {
     });
   });
 
-  describe('Given multi-line blobs differing only in a colliding line surrounded by identical lines', () => {
-    it.each(WHITESPACE_MODES)('Then scanEqual reports them unequal under mode %s', (mode) => {
+  describe('Given multi-line blobs differing only in a colliding line surrounded by identical lines, When scanEqual compares them under an active whitespace mode', () => {
+    it.each(WHITESPACE_MODES)('Then it reports them unequal under mode %s', (mode) => {
       // Arrange
       const key: LineKey = { mode, ignoreCrAtEol: false };
       const sut = scanEqual;
