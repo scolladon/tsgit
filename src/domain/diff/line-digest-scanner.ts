@@ -201,7 +201,12 @@ function nextSignificant(
  *
  * Reached only when the ladder is about to answer `true`, so the dominant
  * "differs" path never pays for it and still returns on the first mismatching
- * digest.
+ * digest. That entry condition also means both sides already hold the same
+ * number of significant lines — a digest carries its line's exact length, so
+ * blankness cannot disagree — and the trailing count check below therefore
+ * cannot fire from `scanEqual` as it stands. It stays because this is a total
+ * predicate over the bytes it is handed, and must not quietly depend on an
+ * invariant its only caller happens to establish.
  */
 function contentsEqualUnder(
   oldContent: Uint8Array,
