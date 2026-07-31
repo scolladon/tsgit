@@ -80,6 +80,42 @@ async function releaseSide(side: ScanSide): Promise<void> {
   await side.iterator?.return?.();
 }
 
+/** Cancels a source nothing has iterated yet — the sibling-failed case, where
+ *  the survivor would otherwise strand its inflate pipeline until GC. */
+async function releaseSource(source: BlobSource): Promise<void> {
+  if (source.kind === 'bytes') return;
+  await source.release();
+}
+
+/** Releases a side that opened successfully; a side that rejected has nothing
+ *  to release, and its rejection is already carried by the caller. */
+async function releaseOpened(opened: Promise<BlobSource>): Promise<void> {
+  await opened.then(releaseSource, () => undefined);
+}
+
+/** Opens both sides and applies the blob-only refusal under one failure
+ *  handler, so neither a failed open nor a refused type can leave the other
+ *  side's stream un-cancelled. `Promise.all` keeps today's error selection. */
+async function openBothSources(
+  ctx: Context,
+  change: ModifyChange,
+  maxBufferedBytes: number,
+): Promise<readonly [BlobSource, BlobSource]> {
+  const opened = [
+    openBlobSource(ctx, change.oldId, maxBufferedBytes),
+    openBlobSource(ctx, change.newId, maxBufferedBytes),
+  ] as const;
+  try {
+    const sources = await Promise.all(opened);
+    refuseNonBlob(change.oldId, sources[0]);
+    refuseNonBlob(change.newId, sources[1]);
+    return sources;
+  } catch (error) {
+    await Promise.all(opened.map(releaseOpened));
+    throw error;
+  }
+}
+
 /** Keeps today's structure and concurrency: both sides advance under one
  *  `Promise.all` per step, so a two-large-blob diff still overlaps its I/O.
  *  A side that resolved buffered never touches its iterator, so the mixed
@@ -93,13 +129,16 @@ async function compareStreamed(
   const oldSide = createScanSide(oldSrc, lineKey, ignoreBlankLines);
   const newSide = createScanSide(newSrc, lineKey, ignoreBlankLines);
 
-  for (;;) {
-    const [oldStep, newStep] = await Promise.all([advanceSide(oldSide), advanceSide(newSide)]);
-    const verdict = applyLadder(oldSide.scanner, newSide.scanner, oldStep, newStep);
-    if (verdict !== 'continue') {
-      await Promise.all([releaseSide(oldSide), releaseSide(newSide)]);
-      return verdict;
+  try {
+    for (;;) {
+      const [oldStep, newStep] = await Promise.all([advanceSide(oldSide), advanceSide(newSide)]);
+      const verdict = applyLadder(oldSide.scanner, newSide.scanner, oldStep, newStep);
+      if (verdict !== 'continue') return verdict;
     }
+  } finally {
+    // Also the abort / hash-mismatch / lazy-refusal path: a side that rejects
+    // must not strand its sibling's reader.
+    await Promise.all([releaseSide(oldSide), releaseSide(newSide)]);
   }
 }
 
@@ -120,12 +159,7 @@ export async function isWhitespaceOnlyModify(
   ignoreBlankLines: boolean,
   maxBufferedBytes: number = MAX_BUFFERED_BLOB_BYTES,
 ): Promise<boolean> {
-  const [oldSrc, newSrc] = await Promise.all([
-    openBlobSource(ctx, change.oldId, maxBufferedBytes),
-    openBlobSource(ctx, change.newId, maxBufferedBytes),
-  ]);
-  refuseNonBlob(change.oldId, oldSrc);
-  refuseNonBlob(change.newId, newSrc);
+  const [oldSrc, newSrc] = await openBothSources(ctx, change, maxBufferedBytes);
 
   if (oldSrc.kind === 'bytes' && newSrc.kind === 'bytes') {
     return scanEqual(oldSrc.content, newSrc.content, lineKey, ignoreBlankLines);

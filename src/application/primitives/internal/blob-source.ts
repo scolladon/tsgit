@@ -45,6 +45,14 @@ export type BlobSource =
       readonly type: ObjectType | undefined;
       readonly stream: AsyncIterable<Uint8Array>;
       readonly materialised: boolean;
+      /**
+       * Cancels the inflate pipeline behind `stream` for a caller that decides
+       * NOT to drain it (a sibling side failed, a type refusal fired). Without
+       * it the pipeline — and the adapter's inflate instance — survives until
+       * GC. A no-op once `stream` has been iterated: the iterator holds the
+       * reader from then on, and its own `return` does the cancelling.
+       */
+      release(): Promise<void>;
     };
 
 interface BufferGate {
@@ -163,11 +171,13 @@ async function resolveLoose(
     await verifyBufferedBytes(ctx, id, inflated, gate.verifyHash);
     return toBytesSource(inflated);
   }
+  const inflated = inflateOneShot(ctx, compressed);
   return {
     kind: 'stream',
     type: undefined,
     materialised: false,
-    stream: yieldAndVerifyChunks(ctx, id, inflateOneShot(ctx, compressed), gate.verifyHash),
+    stream: yieldAndVerifyChunks(ctx, id, readableStreamToAsyncIterable(inflated), gate.verifyHash),
+    release: () => cancelUnread(inflated),
   };
 }
 
@@ -185,6 +195,7 @@ async function resolvePackBase(
     await verifyPackBaseBytes(ctx, id, declaredSize, content, gate.verifyHash);
     return { kind: 'bytes', type, content };
   }
+  const inflated = inflateOneShot(ctx, payload);
   return {
     kind: 'stream',
     type,
@@ -192,10 +203,11 @@ async function resolvePackBase(
     stream: yieldAndVerifyPackedBaseChunks(
       ctx,
       id,
-      inflateOneShot(ctx, payload),
+      readableStreamToAsyncIterable(inflated),
       declaredSize,
       gate.verifyHash,
     ),
+    release: () => cancelUnread(inflated),
   };
 }
 
@@ -230,15 +242,21 @@ async function finalizeHash(hasher: Hasher | undefined, id: ObjectId): Promise<v
   if (actual !== id) throw objectHashMismatch(id, actual);
 }
 
-function inflateOneShot(ctx: Context, bytes: Uint8Array): AsyncIterable<Uint8Array> {
+function inflateOneShot(ctx: Context, bytes: Uint8Array): ReadableStream<Uint8Array> {
   const source = new ReadableStream<Uint8Array>({
     start(controller) {
       controller.enqueue(bytes);
       controller.close();
     },
   });
-  const inflated = source.pipeThrough(ctx.compressor.createInflateStream());
-  return readableStreamToAsyncIterable(inflated);
+  return source.pipeThrough(ctx.compressor.createInflateStream());
+}
+
+// A locked stream is already owned by an iterator, whose own `return` cancels
+// it; cancelling here as well would throw on the lock.
+async function cancelUnread(stream: ReadableStream<Uint8Array>): Promise<void> {
+  if (stream.locked) return;
+  await stream.cancel();
 }
 
 /** Result of stripping the git object header from accumulated inflate chunks. */
@@ -290,29 +308,37 @@ async function* yieldAndVerifyChunks(
   const hasher: Hasher | undefined = verifyHash ? ctx.hash.createHasher() : undefined;
   const iter = chunks[Symbol.asyncIterator]();
 
-  const firstChunk = await iter.next();
-  if (firstChunk.done === true) {
-    throw invalidObjectHeader(`inflate stream produced no output for object ${id}`);
-  }
-
-  const stripped = await stripHeader(id, iter, firstChunk.value);
-
-  hasher?.update(stripped.headerBytes);
-
-  if (stripped.content.length > 0) {
-    hasher?.update(stripped.content);
-    yield stripped.content;
-  }
-
-  for await (const chunk of { [Symbol.asyncIterator]: () => iter }) {
-    if (ctx.signal?.aborted === true) {
-      throw operationAborted();
+  // The header yield below sits outside the `for await`, so an early return
+  // there would otherwise abandon `iter` — and the reader behind it — without
+  // cancelling. Cancelling a spent iterator is a no-op, so this is safe on the
+  // normal path too.
+  try {
+    const firstChunk = await iter.next();
+    if (firstChunk.done === true) {
+      throw invalidObjectHeader(`inflate stream produced no output for object ${id}`);
     }
-    hasher?.update(chunk);
-    yield chunk;
-  }
 
-  await finalizeHash(hasher, id);
+    const stripped = await stripHeader(id, iter, firstChunk.value);
+
+    hasher?.update(stripped.headerBytes);
+
+    if (stripped.content.length > 0) {
+      hasher?.update(stripped.content);
+      yield stripped.content;
+    }
+
+    for await (const chunk of { [Symbol.asyncIterator]: () => iter }) {
+      if (ctx.signal?.aborted === true) {
+        throw operationAborted();
+      }
+      hasher?.update(chunk);
+      yield chunk;
+    }
+
+    await finalizeHash(hasher, id);
+  } finally {
+    await iter.return?.();
+  }
 }
 
 /**

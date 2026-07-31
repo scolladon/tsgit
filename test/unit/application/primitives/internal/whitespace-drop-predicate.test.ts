@@ -70,6 +70,52 @@ async function countingContext(): Promise<{
   return { ctx: { ...base, compressor }, streamCount };
 }
 
+/** Re-exposes a readable through an underlying source whose `cancel` hook is
+ *  observable — the release signal a leaked reader would never produce. */
+function trackedReadable(
+  source: ReadableStream<Uint8Array>,
+  onCancel: () => void,
+): ReadableStream<Uint8Array> {
+  const reader = source.getReader();
+  return new ReadableStream<Uint8Array>({
+    pull: async (controller) => {
+      const { done, value } = await reader.read();
+      if (done) {
+        controller.close();
+        return;
+      }
+      controller.enqueue(value);
+    },
+    cancel: async (reason) => {
+      onCancel();
+      await reader.cancel(reason);
+    },
+  });
+}
+
+/** A context whose inflate streams report how many were cancelled — an
+ *  un-cancelled stream is exactly the leaked reader/inflate instance. */
+async function cancelTrackingContext(): Promise<{
+  readonly ctx: Context;
+  readonly cancelCount: () => number;
+}> {
+  const base = await buildSeededContext();
+  let cancels = 0;
+  const compressor: Compressor = {
+    ...base.compressor,
+    createInflateStream: () => {
+      const inner = base.compressor.createInflateStream();
+      return {
+        readable: trackedReadable(inner.readable, () => {
+          cancels += 1;
+        }),
+        writable: inner.writable,
+      };
+    },
+  };
+  return { ctx: { ...base, compressor }, cancelCount: () => cancels };
+}
+
 interface VerdictRow {
   readonly label: string;
   readonly oldText: string;
@@ -327,6 +373,55 @@ describe('isWhitespaceOnlyModify', () => {
             expect(data.actual).not.toBe(id);
           }
         }
+      });
+    });
+  });
+
+  describe('Given one side refuses mid-stream while the other side streams', () => {
+    describe('When isWhitespaceOnlyModify is forced onto the streaming arm (gate 0)', () => {
+      it('Then both sides are cancelled instead of leaking their readers', async () => {
+        // Arrange
+        const { ctx, cancelCount } = await cancelTrackingContext();
+        const leafId = await writeBlob(ctx, enc.encode('leaf\n'));
+        const treeId = await writeTree(ctx, [
+          { name: 'leaf.txt', mode: FILE_MODE.REGULAR, id: leafId },
+        ]);
+        const blobId = await writeBlob(ctx, enc.encode('content\n'));
+        const change = changeFor(treeId, blobId);
+
+        // Act + Assert
+        try {
+          await isWhitespaceOnlyModify(ctx, change, ALL_KEY, false, 0);
+          expect.unreachable();
+        } catch (error) {
+          expect(error).toBeInstanceOf(TsgitError);
+          const data = (error as TsgitError).data;
+          expect(data.code).toBe('UNEXPECTED_OBJECT_TYPE');
+        }
+        expect(cancelCount()).toBe(2);
+      });
+    });
+  });
+
+  describe('Given one side fails to open while the other opens a stream', () => {
+    describe('When isWhitespaceOnlyModify is forced onto the streaming arm (gate 0)', () => {
+      it('Then the side that opened is cancelled instead of leaking its reader', async () => {
+        // Arrange
+        const { ctx, cancelCount } = await cancelTrackingContext();
+        const missing = 'f'.repeat(40) as ObjectId;
+        const blobId = await writeBlob(ctx, enc.encode('content\n'));
+        const change = changeFor(missing, blobId);
+
+        // Act + Assert
+        try {
+          await isWhitespaceOnlyModify(ctx, change, ALL_KEY, false, 0);
+          expect.unreachable();
+        } catch (error) {
+          expect(error).toBeInstanceOf(TsgitError);
+          const data = (error as TsgitError).data;
+          expect(data.code).toBe('OBJECT_NOT_FOUND');
+        }
+        expect(cancelCount()).toBe(1);
       });
     });
   });
