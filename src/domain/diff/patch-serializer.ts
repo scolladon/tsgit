@@ -336,7 +336,10 @@ function trailingNoNewline(edit: Edit, ctx: NoNewlineCtx): boolean {
   // git renders a context line from the postimage and derives the no-newline
   // marker from the postimage's termination alone (C4): once a whitespace-only
   // context match can straddle differing termination, the preimage side must
-  // not be consulted here.
+  // not be consulted here. The branch is kept rather than folded into the
+  // fallthrough it currently agrees with: it is what states the rule for a
+  // context line, and an insert-side change must not silently move it.
+  // NOTE: forcing this branch's own condition false is therefore an equivalent mutant — a context edit falls past the `delete` test to the final return, which is this same expression. Left unannotated because three sibling ConditionalExpression mutants on this line are real, killed mutants, and Stryker's next-line disable can't distinguish one variant from another.
   if (edit.kind === 'context') return isLastNew && !ctx.newHasTrailingNewline;
   if (edit.kind === 'delete') return isLastOld && !ctx.oldHasTrailingNewline;
   return isLastNew && !ctx.newHasTrailingNewline;

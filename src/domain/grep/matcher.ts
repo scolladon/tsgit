@@ -80,6 +80,7 @@ const LATIN1_DECODE_CHUNK = 8_192;
 function latin1Decode(line: Uint8Array): string {
   assertLineDecodable(line.length);
   const parts: string[] = [];
+  // NOTE: this line's EqualityOperator mutant relaxing `<` to `<=` is equivalent: the extra iteration it admits starts at i === line.length, where `subarray(i, i + LATIN1_DECODE_CHUNK)` is empty and `String.fromCharCode()` returns '' — an empty part cannot change `parts.join('')`, at a length that is an exact multiple of the chunk or at zero alike. Left unannotated because the sibling `>=` variant on this same line is a real, killed mutant, and Stryker's next-line disable can't distinguish variant from variant of the same mutator.
   for (let i = 0; i < line.length; i += LATIN1_DECODE_CHUNK) {
     parts.push(String.fromCharCode(...line.subarray(i, i + LATIN1_DECODE_CHUNK)));
   }
