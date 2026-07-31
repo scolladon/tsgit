@@ -414,6 +414,36 @@ describe('openBlobSource', () => {
     });
   });
 
+  describe('Given a packed base entry indexed under an id its bytes do not hash to', () => {
+    describe('When openBlobSource resolves it buffered (gate over the entry size)', () => {
+      it('Then throws objectHashMismatch, verified against the synthetic type header', async () => {
+        // Arrange — the buffered pack-base arm rebuilds `<type> <size>\0` from
+        // the entry header and hashes it with the content; a lying index entry
+        // is the only way that rebuild can disagree with the id.
+        const content = ENC.encode('packed base content indexed under the wrong id');
+        const ctx = await buildSeededContext();
+        const wrongId = 'b'.repeat(40) as ObjectId;
+        await writeSyntheticPack(ctx, 'pack-base-hash-mismatch', [
+          { kind: 'base', type: 'blob', content, idOverride: wrongId },
+        ]);
+
+        // Act + Assert
+        try {
+          await openBlobSource(ctx, wrongId, MAX_BUFFERED_BLOB_BYTES);
+          expect.unreachable();
+        } catch (error) {
+          expect(error).toBeInstanceOf(TsgitError);
+          const data = (error as TsgitError).data;
+          expect(data.code).toBe('OBJECT_HASH_MISMATCH');
+          if (data.code === 'OBJECT_HASH_MISMATCH') {
+            expect(data.expected).toBe(wrongId);
+            expect(data.actual).not.toBe(wrongId);
+          }
+        }
+      });
+    });
+  });
+
   describe('Given a corrupted loose object resolved buffered', () => {
     describe('When openBlobSource is called with verifyHash default (true)', () => {
       it('Then throws objectHashMismatch before returning (eager verification)', async () => {
