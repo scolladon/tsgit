@@ -586,6 +586,18 @@ subtlety, and they fall straight out of the classifier below.
 
 #### D1.3 — the classifier and the transitions
 
+**Implementation note (post-acceptance).** The classifier and transitions below are
+presented as per-byte functions (`onHard`/`onSoftWs`/`onSoftCr`, calling `isSoftWs`/
+`isSoftCr` to classify) because that is how the fold was first implemented and proved
+(§D1.5) — and, measured at Part 14 (§Results), that per-byte call chain regressed the fold
+4.9×–15.6×. A later performance refactor restructured the *same* transitions into one
+chunk-range loop (`foldRange`, folding `chunk[from, to)` per call) that classifies each
+byte by reading a precomputed 256-entry byte-kind table instead of calling `isSoftWs`/
+`isSoftCr`, and collapses `pendingWs`/`pendingCr` into one `tail` state
+(`TAIL_NONE`/`TAIL_WS`/`TAIL_CR`). The classification rules below, the tail grammar
+(§D1.2), and the bit-identity proof (§D1.5) are unchanged by that restructuring — only the
+call shape is. §Results ("The fold refactor") has the measured recovery.
+
 State (all scalars, all `O(1)`, all carried across `push` boundaries):
 
 ```ts
@@ -851,6 +863,42 @@ Home: `src/domain/diff/`, beside `line-diff.ts` whose `hasNulInWindow` / `splitL
 scanner mirrors, and beside `whitespace.ts` whose fold it drives. Zero platform dependency, so
 it belongs in domain (ADR-551).
 
+#### D1.8 — the digest is a difference filter, not proof of equality (post-acceptance)
+
+Not part of the plan this design was built from — added after Part 14, by a security
+review of the shipped fold. Recorded here because it is the single most important
+correctness property in this change: **faster must never mean a genuinely changed file
+can vanish from a diff.**
+
+`LineDigest` carries one 32-bit FNV-1a `hash`, not two. An interim hardening pass widened
+it to two independent lanes — a second offset basis and a second odd multiplier folded
+over the same bytes — reasoning that a drop verdict decides whether a changed file
+disappears from the diff, so a bare 2⁻³² collision floor was too close for a byte-for-byte
+contract. The review found that reasoning insufficient: two *narrow* FNV chains folded
+over the same byte sequence are not independent against a chosen-input attacker, and a
+multicollision defeating both lanes at once was demonstrated in ~2²⁰ work — nowhere near
+the ~2⁻⁶⁴ floor the two-lane design assumed.
+
+The fix is not a wider or better hash; it is to stop asking the digest to prove equality
+at all. An **unequal** digest still proves the normalized lines differ (the fold is a pure
+function of those bytes, so unequal output requires unequal input) — that half of the
+contract was always sound and stays the fast path: the dominant "differs" case returns on
+the first mismatching digest, exactly as before. An **equal** digest proves nothing an
+attacker cannot arrange, so nothing is dropped from a diff on digest evidence alone —
+every `true` the verdict ladder (`applyLadder`) produces is confirmed against the real
+normalized bytes before it reaches the caller:
+
+- the buffered arm confirms inline, over blobs it already holds
+  (`contentsEqualUnder`, `line-digest-scanner.ts`, called from `scanEqual`);
+- the streamed arm re-reads both blobs and walks their significant lines byte for byte
+  (`confirmStreamedEqual`, `whitespace-drop-predicate.ts`) — the price of not buffering: a
+  streamed side is over the gate precisely because it does not fit in memory, so
+  materialising it to confirm would trade the attack surface for an unbounded allocation.
+
+Both confirmations are paid **only** on the path about to drop a change, so the design's
+"differs" cost analysis (§D1, §Pin A) is unaffected. `LineDigest` is a fast pre-filter; the
+exact byte comparison is the proof.
+
 ### D2 — the blob-source seam and the size gate
 
 The gate cannot live in the predicate: from outside, a blob's size is unknowable without
@@ -947,6 +995,10 @@ removes the 16.4 % + 6.2 % + 4.4 % + 3.7 % of Pin A. `isWhitespaceOnlyModify` st
 `async` (the seam is async), so this arm is `return compareBuffered(…)` returning a plain
 boolean; the streamed arm is `return await compareStreamed(…)` — never a bare
 `return <promise>`, which is this repo's recurring workerd unhandled-rejection class.
+(Post-acceptance: the shared implementation is `scanEqual`, not a standalone
+`compareBuffered`, and — §D1.8 — the ladder's `true` here is not returned bare, it is
+confirmed against the real bytes first. The zero-promises/zero-microtasks cost accounting
+above is unaffected: the confirmation is synchronous too.)
 
 `compareStreamed` keeps today's structure and its **concurrency**: both sides still advance
 under one `Promise.all` per step, so a two-large-blob diff keeps overlapping its I/O.
@@ -1863,16 +1915,18 @@ modes — recorded exactly as measured, not reframed.** §Measurement protocol 2
 call correctly in advance: *"a regression here is a design signal, not a tuning task."* The
 cause is visible in the shape of the change, not just the number: the pre-fold path
 (`dropAllWs` / `collapseRuns` / `dropTrailingWs`) is one tight per-line loop over a plain
-byte array, which V8 inlines and vectorises well; the incremental fold (§D1) replaces it with
-a `push(byte)` call **per byte**, and each call chains through
-`applyContentByte → isSoftWs`/`isSoftCr` → `onHard`/`onSoftWs`/`onSoftCr` → `foldTentative`
-(`Math.imul` FNV mix) — five-plus function calls per byte where the old code had one loop
-iteration. For a ~12-byte short line that is call overhead dominating actual work; for a
-70,000-byte line the same per-byte multiplier applies at scale, which is why even `'none'`
-(no whitespace ever active, every byte routes straight through `onHard`) regresses by
+byte array, which V8 inlines and vectorises well; the incremental fold (§D1.3, as it stood
+at this measurement) replaces it with a `push(byte)` call **per byte**, and each call chains
+through `applyContentByte → isSoftWs`/`isSoftCr` → `onHard`/`onSoftWs`/`onSoftCr` →
+`foldTentative` (`Math.imul` FNV mix) — five-plus function calls per byte where the old code
+had one loop iteration. For a ~12-byte short line that is call overhead dominating actual
+work; for a 70,000-byte line the same per-byte multiplier applies at scale, which is why even
+`'none'` (no whitespace ever active, every byte routes straight through `onHard`) regresses by
 7.8–15.6× — **the design's own predicted fix (an `indexOf`-assisted fast path for the
 inactive-key case) would not fully explain the `'all'`/`'change'`/`'at-eol'` regressions**,
-which are intrinsic to the fold's byte-at-a-time dispatch, not specific to `'none'`.
+which are intrinsic to the fold's byte-at-a-time dispatch, not specific to `'none'`. (This
+per-byte driver was later replaced by a chunk-range fold — §D1.3's implementation note, and
+"The fold refactor" below.)
 
 **Why the end-to-end drop-pass diff still wins by ~50 % despite this.** The fold's absolute
 cost stays small relative to what §D2/§D9 removed. This fixture folds ≈556 KB total across
@@ -1889,6 +1943,36 @@ protocol 2a's stated purpose was exactly this — surface the number so a follow
 optimisation (the `indexOf`-assisted fast path, and possibly narrowing the per-byte dispatch
 chain for the active-key modes too) can be scoped with real data, not a guess. This part is
 docs-only; no `src/` change is in scope here. See the final message to the orchestrator.
+(A follow-up part did land a fold optimisation — not the `indexOf` fast path predicted
+above, but a chunk-range restructuring with the same goal. See "The fold refactor" next.)
+
+### The fold refactor — a chunk-range driver replaces the byte-at-a-time push (post-Part-14)
+
+The regression above was not left as recorded. A follow-up performance refactor — landed
+after Part 14's numbers and after the digest was exactly-confirmed (§D1.8) — replaced the
+`push(byte)`-per-call driver with `pushChunk(chunk, from, to)`, folding a whole `[from, to)`
+range in one call instead of one byte: classification (`hard` / `soft-WS` / `soft-CR` /
+terminator) now reads a precomputed 256-entry byte-kind lookup table instead of calling
+`isSoftWs`/`isSoftCr` per byte, and the two `pendingWs`/`pendingCr` booleans collapse into
+one `tail` state (`TAIL_NONE`/`TAIL_WS`/`TAIL_CR`) — the committed/tentative hash-and-length
+pairs and the tail live in loop locals for the whole range and are written back to the
+fold's state once per chunk, not once per byte (§D1.3's implementation note).
+
+Re-run against the same fold micro-bench above, the refactor recovers **1.46–2.51×** across
+the four modes and both fixture shapes (short lines and the 70,000-byte line) — a real win
+on the fold itself. It is **not** a full recovery of the pre-fold (`main`) baseline, and is
+not claimed as one; the regression recorded above stands as measured at Part 14, on the
+driver that stood at that time.
+
+**Flat at the workload level, and that is expected, not a miss.** Re-run against the same
+whitespace-pairs drop-pass bench Part 14 used, the loose/packed numbers do not move outside
+run-to-run noise. The accounting two paragraphs up already explains why: this fixture folds
+≈556 KB total across both commits, single-digit milliseconds of total fold work against a
+≈128 ms (loose) / ≈78 ms (packed) after-total — the fixture is object-resolution-dominated
+(blob read + inflate + tree walk), not fold-dominated, so a 1.46–2.51× win on a few-percent
+slice does not surface end-to-end. The loose-target miss recorded above (≈132.2 ms mean vs
+≤ 130 ms) stands **unchanged** by this refactor — it is not reframed as closed, and neither
+is the flat end-to-end result reframed as a win.
 
 ### Adapter buffered inflate — bundled decoder vs native `DecompressionStream` (branch decision)
 
@@ -2009,7 +2093,7 @@ absolute cost," not as a further win.
 |---|---|---|
 | 1 | drop-pass diff, loose | **MISS** — ≈132.2 ms mean vs ≤ 130 ms target (≈1.7 % over), reproducible across 3 runs; still a ≈50 % cut from the ≈261–264 ms before |
 | 2 | drop-pass diff, packed | **PASS** — ≈80.2 ms mean vs ≤ 100 ms cold target |
-| 3 | `digestNormalizedLine` fold micro-bench | **REGRESSION, recorded as a design signal** — 4.9×–15.6× slower per call across all four modes; does not propagate to a workload-level regression (see re-profile) |
+| 3 | `digestNormalizedLine` fold micro-bench | **REGRESSION, recorded as a design signal** — 4.9×–15.6× slower per call across all four modes; does not propagate to a workload-level regression (see re-profile). A later chunk-range refactor recovered 1.46–2.51× on the fold itself ("The fold refactor" above) — flat end-to-end on this fixture, as expected for an object-resolution-dominated workload |
 | 4 | `diffLines` under DC-16 (Pin G-3, G-5, G-6 + the 100 001-line pair) | **PASS on both correctness-adjacent claims** — G-5 did not grow (769 → 769.5 MB); the 100 001-line/1-line-edit pair became finite and fast (15 ms, `degraded: false`, was an instant-bail non-answer before) |
 | 5 | non-regression watch (`diff`, `diff-recursive`, `pack-read`, `loose-read`) | **PASS** — every delta within single-run bench noise |
 | 6 | re-profile | **PASS** — web-streams and `NodeError` frames are entirely gone from this workload; containment gate cost is flat in absolute ms, as predicted |

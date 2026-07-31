@@ -63,9 +63,10 @@ interface GrepResult {
 - **Searchable content.** Only regular and executable file blobs are searched;
   **symlinks and gitlinks (submodules) are skipped** on every target — matching
   `git grep`. A tracked file absent from the working tree is silently skipped.
-- **Binary blobs.** A binary blob (NUL in the first 8 KiB, or over-long lines) is
-  not line-scanned; if it contains a match the path is reported with
-  `binaryMatch: true` and empty `hits` (git's `Binary file X matches`, exit 0).
+- **Binary blobs.** A binary blob (NUL in the first 8 KiB — git's own rule, no
+  line-length or line-count heuristic) is not line-scanned; if it contains a
+  match the path is reported with `binaryMatch: true` and empty `hits` (git's
+  `Binary file X matches`, exit 0).
 - **Line numbering** is 1-based; `line` carries the raw bytes including the
   trailing LF that `splitLines` preserves.
 - **Match spans** are **byte offsets** into `line` — `line.subarray(start, end)`

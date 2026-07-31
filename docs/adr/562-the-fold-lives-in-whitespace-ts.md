@@ -43,3 +43,17 @@ property has an independent oracle without anyone writing one. All ~40 existing
 `digestNormalizedLine` rows keep passing unchanged, and they are the regression net for
 the rewrite. `digestNormalizedLine` survives as a wrapper whose signature does not move,
 so every current caller is unaffected.
+
+## Later refinement (post-acceptance)
+
+The push-byte / end-line shape described above — `applyContentByte` classifying one byte
+at a time via `isSoftWs`/`isSoftCr` and dispatching to `onHard`/`onSoftWs`/`onSoftCr` —
+was replaced by a separate performance refactor after this ADR was accepted: a fold
+micro-benchmark (design's Results section) showed the per-byte call chain regressing
+4.9×–15.6× against the four whole-line folders it replaced. The driver now folds a
+`[from, to)` chunk range per call (`pushChunk`, not a per-byte `push`), classifies each
+byte through a precomputed 256-entry byte-kind lookup table instead of two per-byte
+predicate calls, and collapses the two `pendingWs`/`pendingCr` booleans into one `tail`
+state. The decision this ADR records is unaffected: the fold still lives in
+`whitespace.ts`, and `digestNormalizedLine` is still the thin whole-line driver over it,
+signature unchanged.
