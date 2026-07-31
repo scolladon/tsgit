@@ -11,6 +11,7 @@ import type { Blob, FilePath, ObjectId } from '../../../../../src/domain/objects
 import { computeLooseObjectPath } from '../../../../../src/domain/storage/loose-path.js';
 import type { Compressor } from '../../../../../src/ports/compressor.js';
 import type { Context } from '../../../../../src/ports/context.js';
+import { pseudoRandomBytes } from '../../../../fixtures/pseudo-random-bytes.js';
 import { buildSeededContext } from '../fixtures.js';
 
 const enc = new TextEncoder();
@@ -33,16 +34,11 @@ async function writeBlob(ctx: Context, content: Uint8Array): Promise<ObjectId> {
   return writeObject(ctx, blob);
 }
 
-/** Deterministic, deflate-resistant bytes — big enough on disk to land the
- *  loose arm over the buffered gate regardless of compression. */
-function incompressibleBytes(size: number): Uint8Array {
-  const out = new Uint8Array(size);
-  const QUOTA = 65_536; // Web Crypto's per-call getRandomValues ceiling.
-  for (let start = 0; start < size; start += QUOTA) {
-    crypto.getRandomValues(out.subarray(start, Math.min(start + QUOTA, size)));
-  }
-  return out;
-}
+/** Deflate-resistant even at this size, so the blob lands on disk over the
+ *  buffered gate and its side really streams. `pseudoRandomBytes` excludes
+ *  NUL/LF/CR, so a streamed side folds every chunk into one line's digest
+ *  instead of bailing binary before the first comparison. */
+const STREAMED_BLOB_BYTES = 70_000;
 
 /** Wraps a real Compressor, counting `createInflateStream` calls — the
  *  observable, timing-free signal of "this side streamed". */
@@ -214,8 +210,8 @@ describe('isWhitespaceOnlyModify', () => {
       it('Then createInflateStream is called once per side (both sides stream)', async () => {
         // Arrange
         const { ctx, streamCount } = await countingContext();
-        const oldId = await writeBlob(ctx, incompressibleBytes(70_000));
-        const newId = await writeBlob(ctx, incompressibleBytes(70_000));
+        const oldId = await writeBlob(ctx, pseudoRandomBytes(STREAMED_BLOB_BYTES, 1));
+        const newId = await writeBlob(ctx, pseudoRandomBytes(STREAMED_BLOB_BYTES, 2));
 
         // Act
         await isWhitespaceOnlyModify(ctx, changeFor(oldId, newId), ALL_KEY, false);
@@ -232,7 +228,7 @@ describe('isWhitespaceOnlyModify', () => {
         // Arrange
         const { ctx, streamCount } = await countingContext();
         const oldId = await writeBlob(ctx, enc.encode('hello world\n'));
-        const newId = await writeBlob(ctx, incompressibleBytes(70_000));
+        const newId = await writeBlob(ctx, pseudoRandomBytes(STREAMED_BLOB_BYTES, 3));
 
         // Act
         await isWhitespaceOnlyModify(ctx, changeFor(oldId, newId), ALL_KEY, false);

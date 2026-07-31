@@ -27,6 +27,7 @@ import type {
 } from '../../src/domain/diff/index.js';
 import { resolveLineKey } from '../../src/domain/diff/index.js';
 import { openRepository } from '../../src/index.node.js';
+import { pseudoRandomBytes } from '../fixtures/pseudo-random-bytes.js';
 import { reconstructPatch } from './diff-reconstruct.js';
 import { GIT_AVAILABLE, runGitAsync, runGitEnv } from './interop-helpers.js';
 
@@ -491,28 +492,6 @@ const buildLinesPair = (
   const afterLines = [...beforeLines];
   afterLines[changeAt] = changedAfter;
   return { before: `${beforeLines.join('\n')}\n`, after: `${afterLines.join('\n')}\n` };
-};
-
-/** A 32-bit integer hash with strong avalanche (triple32) — each byte comes from
- *  hashing its own index, not a chained generator, so consecutive bytes carry no
- *  exploitable correlation for deflate's matcher. */
-const mix32 = (x: number): number => {
-  let h = x >>> 0;
-  h = Math.imul(h ^ (h >>> 16), 0x45d9f3b) >>> 0;
-  h = Math.imul(h ^ (h >>> 16), 0x45d9f3b) >>> 0;
-  return (h ^ (h >>> 16)) >>> 0;
-};
-
-/** A deterministic byte stream over a near-full range (excluding NUL/LF/CR) — dense
- *  enough that deflate cannot find useful matches, so its compressed size stays close
- *  to its raw size instead of shrinking well below it. */
-const pseudoRandomBytes = (length: number, seed: number): Uint8Array => {
-  const bytes = new Uint8Array(length);
-  for (let i = 0; i < length; i++) {
-    const candidate = mix32((seed * 1_000_003 + i) >>> 0) & 0xff;
-    bytes[i] = candidate === 0x00 || candidate === 0x0a || candidate === 0x0d ? 0x01 : candidate;
-  }
-  return bytes;
 };
 
 const concatBytes = (...parts: readonly Uint8Array[]): Uint8Array => {
