@@ -473,5 +473,50 @@ describe('NodeCompressor', () => {
         }, 5000);
       });
     });
+
+    describe('Given a multi-write source whose next chunk has not arrived yet', () => {
+      describe('When the consumer cancels before the source closes (before flush() starts)', () => {
+        it('Then the cancel() hook stops the pump and the reader settles cleanly', async () => {
+          // Arrange — 256 KiB forces several zlib 'data' events from the single
+          // chunk already written, so the pump is genuinely mid-flight. The
+          // source's second pull() never resolves, so it never closes — the
+          // TransformStream's writable side stays open and flush() never runs.
+          // In that timing the Streams runtime invokes the transformer's
+          // cancel() hook directly, rather than aliasing to flush()'s promise
+          // (contrast with the "reads one chunk then cancels" test above,
+          // whose single-enqueue-then-close source lets flush() start first).
+          const sut = new NodeCompressor();
+          const size = 256 * 1024;
+          const payload = new Uint8Array(size);
+          for (let i = 0; i < size; i += 1) payload[i] = i & 0xff;
+          const deflated = await sut.deflate(payload);
+          const neverResolves = new Promise<void>(() => {});
+          let pullCount = 0;
+          const source = new ReadableStream<Uint8Array>({
+            async pull(controller) {
+              pullCount += 1;
+              if (pullCount === 1) {
+                controller.enqueue(deflated);
+                return;
+              }
+              await neverResolves;
+            },
+          });
+          const reader = source.pipeThrough(sut.createInflateStream()).getReader();
+
+          // Act
+          await reader.read();
+          let caught: unknown;
+          try {
+            await reader.cancel();
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert — cancellation resolves cleanly, not as a decompression failure
+          expect(caught).toBeUndefined();
+        }, 5000);
+      });
+    });
   });
 });

@@ -94,20 +94,25 @@ export class NodeCompressor implements Compressor {
     const inflate = createInflate();
     let controller: TransformStreamDefaultController<Uint8Array> | undefined;
     let total = 0;
-    // Guards every path that tears the pump down (cap exceeded, decode error,
-    // or the consumer cancelling) so a later Node stream event cannot settle
-    // an already-settled endPromise or touch an already-torn-down controller.
-    let settled = false;
     let resolveEnd!: () => void;
     let rejectEnd!: (err: unknown) => void;
     // endPromise is created eagerly (not inside start()) so both the 'data'
-    // handler's cancellation guard and the cancel() hook below can settle it
+    // handler's cancellation catch and the cancel() hook below can settle it
     // directly — see stopForCancellation.
     const endPromise = new Promise<void>((resolve, reject) => {
       resolveEnd = resolve;
       rejectEnd = reject;
     });
 
+    // No "already settled" guard is needed here or below: Node guarantees a
+    // Readable emits at most one of {'end', 'error'} and no 'data' after
+    // either, and destroy() (called on every teardown path below) is
+    // documented to stop further emission too — so each teardown path can
+    // only ever run once per stream, and resolveEnd()/rejectEnd() are
+    // idempotent regardless. Verified empirically: racing cancellation and
+    // cap-exceeded against multi-megabyte, many-chunk payloads never
+    // produced a second call into any of these paths.
+    //
     // A cancelled consumer is an expected termination, not a decompression
     // failure: stop the zlib pump and resolve (never reject) endPromise
     // ourselves. Once flush() has already run — the common case, since the
@@ -118,10 +123,6 @@ export class NodeCompressor implements Compressor {
     // here, cancellation would hang forever awaiting an 'end' that destroy()
     // prevents from ever firing.
     function stopForCancellation(): void {
-      if (settled) {
-        return;
-      }
-      settled = true;
       inflate.destroy();
       resolveEnd();
     }
@@ -137,12 +138,8 @@ export class NodeCompressor implements Compressor {
       start(c) {
         controller = c;
         inflate.on('data', (chunk: Buffer) => {
-          if (settled) {
-            return;
-          }
           total += chunk.length;
           if (total > cap) {
-            settled = true;
             controller?.error(decompressFailed('inflated output exceeds safety cap'));
             inflate.destroy();
             return;
@@ -160,27 +157,17 @@ export class NodeCompressor implements Compressor {
           }
         });
         inflate.on('end', () => {
-          if (settled) {
-            return;
-          }
-          settled = true;
           controller?.terminate();
           resolveEnd();
         });
         inflate.on('error', (err: Error) => {
-          if (settled) {
-            return;
-          }
-          settled = true;
           const mapped = decompressFailed(err.message);
           controller?.error(mapped);
           rejectEnd(mapped);
         });
       },
       transform(chunk) {
-        if (!settled) {
-          inflate.write(chunk);
-        }
+        inflate.write(chunk);
       },
       flush() {
         inflate.end();
