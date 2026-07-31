@@ -337,14 +337,6 @@ const IGNORE_ALL_AND_BLANK: ScenarioDiffOpts = { ignoreWhitespace: 'all', ignore
 
 const KEEPS_ON_BOTH_ARMS = { predicateSurvives: true, statSurvives: true } as const;
 
-/** The C4 family's four active-key flags, all diverging the same way today (git drops, tsgit keeps). */
-const c4DivergentRows = (fixture: string): readonly LabeledLedgerRow[] => [
-  ledgerRow(fixture, '-w', IGNORE_ALL, KEEPS_ON_BOTH_ARMS),
-  ledgerRow(fixture, '-b', IGNORE_CHANGE, KEEPS_ON_BOTH_ARMS),
-  ledgerRow(fixture, '--ignore-space-at-eol', IGNORE_AT_EOL, KEEPS_ON_BOTH_ARMS),
-  ledgerRow(fixture, '--ignore-cr-at-eol', IGNORE_CR, KEEPS_ON_BOTH_ARMS),
-];
-
 /** A fixture pinned to already agree with git under all four active-key flags — a control. */
 const controlRows = (fixture: string): readonly LabeledLedgerRow[] => [
   ledgerRow(fixture, '-w', IGNORE_ALL),
@@ -354,24 +346,16 @@ const controlRows = (fixture: string): readonly LabeledLedgerRow[] => [
 ];
 
 const LEDGER_ROWS: readonly LabeledLedgerRow[] = [
-  // C4 — a final-terminator difference is significant to tsgit under every active
-  // key, where git treats it as whitespace (a later fix commit deletes these rows).
-  ...c4DivergentRows('lf-gain.txt'),
-  ...c4DivergentRows('lf-loss.txt'),
-  ...c4DivergentRows('lf-gain-multi.txt'),
-  ledgerRow('sp-no-eol.txt', '-w', IGNORE_ALL, KEEPS_ON_BOTH_ARMS),
-  ledgerRow('sp-no-eol.txt', '-b', IGNORE_CHANGE, KEEPS_ON_BOTH_ARMS),
-  // Divergent, not a control: both sides normalize to an empty line here too, so
-  // the terminator difference alone still trips `digestsEqual` — verified
-  // directly against the fold (`digestNormalizedLine`/`digestsEqual`).
-  ledgerRow('sp-no-eol.txt', '--ignore-space-at-eol', IGNORE_AT_EOL, KEEPS_ON_BOTH_ARMS),
-  ledgerRow('sp-no-eol.txt', '--ignore-cr-at-eol', IGNORE_CR), // control: both keep
-  ledgerRow('tab-no-eol.txt', '-w', IGNORE_ALL, KEEPS_ON_BOTH_ARMS),
-  ledgerRow('tab-no-eol.txt', '-b', IGNORE_CHANGE, KEEPS_ON_BOTH_ARMS),
-  ledgerRow('tab-no-eol.txt', '--ignore-space-at-eol', IGNORE_AT_EOL, KEEPS_ON_BOTH_ARMS),
-  ledgerRow('tab-no-eol.txt', '--ignore-cr-at-eol', IGNORE_CR), // control: both keep
-  ledgerRow('lf-gain-plus-ws.txt', '-w', IGNORE_ALL, KEEPS_ON_BOTH_ARMS),
-  ledgerRow('lf-gain-plus-ws.txt', '-b', IGNORE_CHANGE, KEEPS_ON_BOTH_ARMS),
+  // C4 — a final-terminator difference is whitespace under every active key,
+  // matching git (the fix commit that landed this deleted every tsgitDivergence
+  // entry in this family; each row now falls back to git's own live verdict).
+  ...controlRows('lf-gain.txt'),
+  ...controlRows('lf-loss.txt'),
+  ...controlRows('lf-gain-multi.txt'),
+  ...controlRows('sp-no-eol.txt'),
+  ...controlRows('tab-no-eol.txt'),
+  ledgerRow('lf-gain-plus-ws.txt', '-w', IGNORE_ALL),
+  ledgerRow('lf-gain-plus-ws.txt', '-b', IGNORE_CHANGE),
   ledgerRow('lf-gain-plus-ws.txt', '--ignore-space-at-eol', IGNORE_AT_EOL), // control: both keep
   ledgerRow('lf-gain-plus-ws.txt', '--ignore-cr-at-eol', IGNORE_CR), // control: both keep
   // Controls that must NOT move.
@@ -379,10 +363,10 @@ const LEDGER_ROWS: readonly LabeledLedgerRow[] = [
   ...controlRows('lf-gain-empty.txt'),
   ledgerRow('lf-gain-empty.txt', '-w --ignore-blank-lines', IGNORE_ALL_AND_BLANK), // control: both drop
   ...controlRows('cr-then-lf.txt'),
-  // C4 is also a numstat divergence: the real change on line 1 plus the
-  // terminator-only change on line 2 both count as changed today.
-  ledgerRow('ctx-gain.txt', '-w', IGNORE_ALL, { numstat: [2, 2] }),
-  ledgerRow('ctx-loss.txt', '-w', IGNORE_ALL, { numstat: [2, 2] }),
+  // C4's numstat half is cleared too: the terminator-only change on line 2 no
+  // longer counts once the last line pair interns to one id under -w.
+  ledgerRow('ctx-gain.txt', '-w', IGNORE_ALL),
+  ledgerRow('ctx-loss.txt', '-w', IGNORE_ALL),
   // C6 — a CR ending an incomplete final line is significant to git under
   // --ignore-cr-at-eol; tsgit strips it unconditionally (a later fix commit deletes this row).
   ledgerRow('cr-no-eol.txt', '-w', IGNORE_ALL), // control: both drop

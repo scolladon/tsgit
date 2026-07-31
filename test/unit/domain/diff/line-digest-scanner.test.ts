@@ -188,6 +188,28 @@ describe('createLineDigestScanner', () => {
     });
   });
 
+  describe('Given the same shape under an active key (C4 suppresses LineDigest.terminated), When they are drained', () => {
+    it('Then capsExceeded still never trips (cap-tracking uses the raw LF boundary, not the suppressed digest field)', () => {
+      // Arrange — identical to the sibling case above, but under an active
+      // key: LineDigest.terminated is now always false for equality purposes
+      // (C4), so the cap tracker must not key its line-boundary reset off it.
+      const key: LineKey = { mode: 'all', ignoreCrAtEol: false };
+      const oneLine = new Uint8Array(100).fill(0x78);
+      oneLine[99] = 0x0a;
+      const bytes = new Uint8Array(700 * 100);
+      for (let i = 0; i < 700; i++) bytes.set(oneLine, i * 100);
+      const sut = createLineDigestScanner(key, false);
+
+      // Act
+      sut.push(bytes);
+      sut.end();
+      drainAll(sut);
+
+      // Assert
+      expect(sut.capsExceeded).toBe(false);
+    });
+  });
+
   describe('Given a blob with no trailing LF at all, When it is drained', () => {
     it('Then the final digest is unterminated and matches the independent oracle', () => {
       // Arrange

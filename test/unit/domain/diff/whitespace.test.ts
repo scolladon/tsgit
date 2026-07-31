@@ -38,18 +38,20 @@ describe('normalizeLine', () => {
       it.each([
         {
           input: 'a b\n',
-          expected: 'ab\n',
-          label: 'internal spaces are dropped, exactly one trailing LF preserved (W1)',
+          expected: 'ab',
+          label:
+            'internal spaces are dropped and the terminator is stripped under an active key (W1, C4)',
         },
         {
           input: '\tbeta gamma\n',
-          expected: 'betagamma\n',
-          label: 'a tab byte is dropped along with space bytes (W1)',
+          expected: 'betagamma',
+          label: 'a tab byte is dropped along with space bytes and the terminator (W1, C4)',
         },
         {
           input: 'a\r\n',
-          expected: 'a\n',
-          label: 'a trailing CR is dropped as part of all-whitespace removal (CR1)',
+          expected: 'a',
+          label:
+            'a trailing CR is dropped as part of all-whitespace removal, and the terminator too (CR1, C4)',
         },
         {
           input: 'a b',
@@ -145,8 +147,9 @@ describe('normalizeLine', () => {
       it.each([
         {
           input: 'a b \n',
-          expected: 'a b\n',
-          label: 'a run ending a terminated line drops the collapsed trailing space (keeps the LF)',
+          expected: 'a b',
+          label:
+            'a run ending a terminated line drops the collapsed trailing space and the terminator (C4)',
         },
         {
           input: 'a b   ',
@@ -156,8 +159,9 @@ describe('normalizeLine', () => {
         {
           // guards the pop against firing on a non-space last byte
           input: 'ab\n',
-          expected: 'ab\n',
-          label: 'the line ending in a non-whitespace byte leaves the final byte intact',
+          expected: 'ab',
+          label:
+            'the line ending in a non-whitespace byte leaves the final byte intact, terminator stripped (C4)',
         },
       ])('Then $label', ({ input, expected }) => {
         // Arrange + Act
@@ -186,14 +190,15 @@ describe('normalizeLine', () => {
         {
           // pins the terminator byte, not just cross-line equality
           input: 'a   \n',
-          expected: 'a\n',
+          expected: 'a',
           label:
-            'trailing whitespace preceding the LF terminator drops the run and re-appends exactly one LF',
+            'trailing whitespace preceding the LF terminator drops the run and, under an active key, the terminator too (C4)',
         },
         {
           input: '   \n',
-          expected: '\n',
-          label: 'a line entirely whitespace before the LF collapses to a bare LF',
+          expected: '',
+          label:
+            'a line entirely whitespace before the LF collapses to empty content, terminator stripped (C4)',
         },
         {
           input: 'a   ',
@@ -312,9 +317,9 @@ describe('normalizeLine', () => {
         },
         {
           input: 'a  \n',
-          expected: 'a  \n',
+          expected: 'a  ',
           label:
-            'when no CR is present, trailing space is preserved (ignoreCrAtEol does not touch spaces)',
+            'when no CR is present, trailing space is preserved but the terminator is stripped (ignoreCrAtEol activates the key, C4)',
         },
       ])('Then $label', ({ input, expected }) => {
         // Arrange + Act
@@ -335,6 +340,57 @@ describe('normalizeLine', () => {
         const b = normalizeLine(enc('a   '), key);
         // Assert
         expect(a).toEqual(b);
+      });
+    });
+  });
+});
+
+describe('normalizeLine — C4: a final-line terminator is whitespace under an active key', () => {
+  const ACTIVE_SHAPES: ReadonlyArray<{ readonly label: string; readonly key: LineKey }> = [
+    { label: "mode 'all'", key: { mode: 'all', ignoreCrAtEol: false } },
+    { label: "mode 'change'", key: { mode: 'change', ignoreCrAtEol: false } },
+    { label: "mode 'at-eol'", key: { mode: 'at-eol', ignoreCrAtEol: false } },
+    { label: "mode 'none' with ignoreCrAtEol", key: { mode: 'none', ignoreCrAtEol: true } },
+  ];
+
+  describe('Given every active key shape, When a terminated line is compared to its unterminated counterpart', () => {
+    it.each(
+      ACTIVE_SHAPES.flatMap(({ label, key }) => [
+        {
+          key,
+          terminated: 'ab\n',
+          unterminated: 'ab',
+          label: `${label}, a non-blank line`,
+        },
+        {
+          key,
+          terminated: '\n',
+          unterminated: '',
+          label: `${label}, a blank line`,
+        },
+      ]),
+    )(
+      'Then $label normalizes both forms to the same bytes',
+      ({ key, terminated, unterminated }) => {
+        // Arrange + Act
+        const withLf = normalizeLine(enc(terminated), key);
+        const withoutLf = normalizeLine(enc(unterminated), key);
+        // Assert
+        expect(withLf).toEqual(withoutLf);
+      },
+    );
+  });
+
+  describe("Given the inactive key ({ mode: 'none', ignoreCrAtEol: false })", () => {
+    describe('When a terminated line is compared to its unterminated counterpart', () => {
+      it('Then the two forms remain distinct (the terminator stays significant)', () => {
+        // Arrange
+        const key: LineKey = { mode: 'none', ignoreCrAtEol: false };
+        // Act
+        const withLf = normalizeLine(enc('ab\n'), key);
+        const withoutLf = normalizeLine(enc('ab'), key);
+        // Assert
+        expect(withLf).not.toEqual(withoutLf);
       });
     });
   });
@@ -439,6 +495,15 @@ describe('linesEqualUnder', () => {
         expect(result).toBe(false);
       });
     });
+
+    describe('When only the final terminator differs (C4)', () => {
+      it('Then returns true (linesEqualUnder inherits the C4 rule)', () => {
+        // Arrange & Act
+        const result = linesEqualUnder(line('a'), line('a\n'), key);
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
   });
 
   describe("Given mode 'none'", () => {
@@ -448,6 +513,15 @@ describe('linesEqualUnder', () => {
       it('Then returns false (exact compare)', () => {
         // Arrange & Act
         const result = linesEqualUnder(line('a\n'), line('a   \n'), key);
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+
+    describe('When only the final terminator differs (C4 does not apply, inactive key)', () => {
+      it('Then returns false (the terminator stays significant)', () => {
+        // Arrange & Act
+        const result = linesEqualUnder(line('a'), line('a\n'), key);
         // Assert
         expect(result).toBe(false);
       });
@@ -691,6 +765,28 @@ describe('digestNormalizedLine', () => {
 
       // Assert
       expect(digestsEqual(withCr, withoutCr)).toBe(true);
+    });
+  });
+});
+
+describe('digestNormalizedLine — C4: a final-line terminator is whitespace under an active key', () => {
+  describe('Given "x y" (unterminated) and "x y\\n" (terminated), When digesting both under every LineKey shape', () => {
+    it.each(
+      ALL_LINE_KEYS.map((key) => ({
+        key,
+        active: lineKeyIsActive(key),
+        label: `mode ${key.mode} ignoreCrAtEol=${key.ignoreCrAtEol}`,
+      })),
+    )('Then $label digests equal iff the key is active', ({ key, active }) => {
+      // Arrange
+      const terminated = digestNormalizedLine(enc('x y\n'), key);
+      const unterminated = digestNormalizedLine(enc('x y'), key);
+
+      // Act
+      const result = digestsEqual(terminated, unterminated);
+
+      // Assert
+      expect(result).toBe(active);
     });
   });
 });
@@ -1092,6 +1188,15 @@ describe('isBlankLine', () => {
         const result = isBlankLine(line('a\n'), key);
         // Assert
         expect(result).toBe(false);
+      });
+    });
+
+    describe('When the same spaces-only line is unterminated (C4 regression)', () => {
+      it('Then it is still blank — isBlankLine is unaffected by the terminator fix', () => {
+        // Arrange & Act
+        const result = isBlankLine(line('   '), key);
+        // Assert
+        expect(result).toBe(true);
       });
     });
   });

@@ -97,15 +97,28 @@ function updateCaps(state: ScannerState, lineLength: number, terminated: boolean
 }
 
 type AdvanceOutcome =
-  | { readonly kind: 'digest'; readonly digest: LineDigest; readonly rawLength: number }
+  | {
+      readonly kind: 'digest';
+      readonly digest: LineDigest;
+      readonly rawLength: number;
+      /** Whether this line actually ended in an LF byte — the raw boundary
+       *  signal, independent of `digest.terminated` (which C4 suppresses
+       *  under an active key for equality purposes only). The cap tracker
+       *  needs the true boundary to know when a logical line ended. */
+      readonly rawTerminated: boolean;
+    }
   | { readonly kind: 'needs-input' }
   | { readonly kind: 'exhausted' };
 
-function emitLine(state: ScannerState, fold: LineDigestFold): AdvanceOutcome {
+function emitLine(
+  state: ScannerState,
+  fold: LineDigestFold,
+  rawTerminated: boolean,
+): AdvanceOutcome {
   const digest = fold.endLine();
   const rawLength = state.lineRawLength;
   state.lineRawLength = 0;
-  return { kind: 'digest', digest, rawLength };
+  return { kind: 'digest', digest, rawLength, rawTerminated };
 }
 
 // Advances the fold from the cursor to the next LF, to the end of the
@@ -115,10 +128,10 @@ function advanceLine(state: ScannerState, fold: LineDigestFold): AdvanceOutcome 
     const byte = state.chunk[state.cursor]!;
     state.cursor++;
     state.lineRawLength++;
-    if (fold.push(byte)) return emitLine(state, fold);
+    if (fold.push(byte)) return emitLine(state, fold, true);
   }
   if (!state.ended) return { kind: 'needs-input' };
-  return fold.lineHasBytes ? emitLine(state, fold) : { kind: 'exhausted' };
+  return fold.lineHasBytes ? emitLine(state, fold, false) : { kind: 'exhausted' };
 }
 
 function computeNextStep(
@@ -130,7 +143,7 @@ function computeNextStep(
     if (state.binary) return { kind: 'exhausted' };
     const outcome = advanceLine(state, fold);
     if (outcome.kind !== 'digest') return outcome;
-    updateCaps(state, outcome.rawLength, outcome.digest.terminated);
+    updateCaps(state, outcome.rawLength, outcome.rawTerminated);
     if (!ignoreBlankLines || !digestIsBlank(outcome.digest)) {
       return { kind: 'digest', digest: outcome.digest };
     }

@@ -2836,4 +2836,68 @@ describe('patch-serializer', () => {
       });
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // C4 — once a final-line pair can be common with differing termination
+  // (whitespace.ts's terminator-strip), the no-newline marker must follow
+  // git's postimage-only rule, not the pre-fix OR of both sides.
+  // ---------------------------------------------------------------------------
+
+  describe('Given a context edit at EOF whose postimage gained the trailing newline (C4, ctx-gain)', () => {
+    describe('When renderPatch is called with mode:all', () => {
+      it("Then emits no no-newline marker (git's rule reads the postimage only)", () => {
+        // Arrange — "b" (old, unterminated) and "b\n" (new, terminated) are equal
+        // under mode:all once the terminator is whitespace, so they render as one
+        // context line from the (terminated) postimage; line 1 is a real change.
+        const file = modifyFile('f.txt', 'a\nb', 'A\nb\n');
+
+        // Act
+        const result = renderPatch([file], { lineKey: { mode: 'all', ignoreCrAtEol: false } });
+
+        // Assert
+        expect(result).toBe(
+          [
+            'diff --git a/f.txt b/f.txt',
+            'index aaaaaaa..bbbbbbb 100644',
+            '--- a/f.txt',
+            '+++ b/f.txt',
+            '@@ -1,2 +1,2 @@',
+            '-a',
+            '+A',
+            ' b',
+            '',
+          ].join('\n'),
+        );
+      });
+    });
+  });
+
+  describe('Given a context edit at EOF whose postimage lost the trailing newline (C4, ctx-loss)', () => {
+    describe('When renderPatch is called with mode:all', () => {
+      it('Then emits the no-newline marker (the postimage is unterminated)', () => {
+        // Arrange — "b\n" (old, terminated) and "b" (new, unterminated) are equal
+        // under mode:all; the postimage's own termination alone decides the marker.
+        const file = modifyFile('f.txt', 'a\nb\n', 'A\nb');
+
+        // Act
+        const result = renderPatch([file], { lineKey: { mode: 'all', ignoreCrAtEol: false } });
+
+        // Assert
+        expect(result).toBe(
+          [
+            'diff --git a/f.txt b/f.txt',
+            'index aaaaaaa..bbbbbbb 100644',
+            '--- a/f.txt',
+            '+++ b/f.txt',
+            '@@ -1,2 +1,2 @@',
+            '-a',
+            '+A',
+            ' b',
+            '\\ No newline at end of file',
+            '',
+          ].join('\n'),
+        );
+      });
+    });
+  });
 });

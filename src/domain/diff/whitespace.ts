@@ -104,18 +104,33 @@ function applyCrRule(bytes: Uint8Array, key: LineKey): Uint8Array {
   return bytes;
 }
 
-export function normalizeLine(bytes: Uint8Array, key: LineKey): Uint8Array {
-  const afterCr = applyCrRule(bytes, key);
+function normalizeUnderMode(bytes: Uint8Array, key: LineKey): Uint8Array {
   switch (key.mode) {
     case 'all':
-      return dropAllWs(afterCr);
+      return dropAllWs(bytes);
     case 'change':
-      return collapseRuns(afterCr);
+      return collapseRuns(bytes);
     case 'at-eol':
-      return dropTrailingWs(afterCr);
+      return dropTrailingWs(bytes);
     case 'none':
-      return afterCr;
+      return bytes;
   }
+}
+
+// A line's trailing LF is part of its identity iff the line key is inactive
+// (C4): git ignores a difference in the final line's terminator under every
+// flag that makes it compare content at all, symmetrically (LF gained or
+// lost). The rule can only ever bite the last line pair — every non-final
+// line is terminated on both sides by construction — so this strip is safe
+// to apply unconditionally to any single normalized line.
+function stripTerminator(bytes: Uint8Array): Uint8Array {
+  const end = lfIndex(bytes);
+  return end < bytes.length ? bytes.subarray(0, end) : bytes;
+}
+
+export function normalizeLine(bytes: Uint8Array, key: LineKey): Uint8Array {
+  const normalized = normalizeUnderMode(applyCrRule(bytes, key), key);
+  return lineKeyIsActive(key) ? stripTerminator(normalized) : normalized;
 }
 
 export function linesEqualUnder(a: Uint8Array, b: Uint8Array, key: LineKey): boolean {
@@ -284,10 +299,12 @@ function applyContentByte(state: FoldState, key: LineKey, byte: number): void {
   onHard(state, key, byte);
 }
 
-function emitDigest(state: FoldState): LineDigest {
-  // Today's unconditional rules (pre-fix): the LF always decides `terminated`,
-  // and the pending tail is always discarded — `committed` always wins.
-  const terminated = state.sawLf;
+function emitDigest(state: FoldState, keyIsActive: boolean): LineDigest {
+  // `terminated` is true only when the line actually ended in LF AND the key
+  // is inactive (C4) — under an active key the final line's LF is whitespace,
+  // so it is suppressed at construction: neither folded into the hash nor
+  // reported. The pending tail is always discarded — `committed` always wins.
+  const terminated = state.sawLf && !keyIsActive;
   const hash = terminated ? fnvMix(state.committedHash, LF) : state.committedHash;
   return { length: state.committedLength, terminated, hash };
 }
@@ -311,6 +328,7 @@ export interface LineDigestFold {
  */
 export function createLineDigestFold(key: LineKey): LineDigestFold {
   const state = createFoldState();
+  const keyIsActive = lineKeyIsActive(key);
 
   function push(byte: number): boolean {
     state.lineHasBytes = true;
@@ -323,7 +341,7 @@ export function createLineDigestFold(key: LineKey): LineDigestFold {
   }
 
   function endLine(): LineDigest {
-    const digest = emitDigest(state);
+    const digest = emitDigest(state, keyIsActive);
     resetLine(state);
     return digest;
   }

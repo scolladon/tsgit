@@ -335,11 +335,11 @@ function trailingNoNewline(edit: Edit, ctx: NoNewlineCtx): boolean {
     edit.kind !== 'delete' &&
     edit.newIndex === ctx.lastNewIdx &&
     ctx.lastNewIdx === ctx.newTotal - 1;
-  // Stryker disable next-line ConditionalExpression,BlockStatement: equivalent — for a context edit, `isLastOld && !oldHasTrailingNewline` can only be true when the matched line is the file's true terminal on both sides (a byte-identical context match forces equal trailing-newline state), which forces `isLastNew && !newHasTrailingNewline` true too — so skipping straight to `return isLastNew && !ctx.newHasTrailingNewline` yields the same result as the OR below.
-  if (edit.kind === 'context') {
-    // Stryker disable next-line LogicalOperator,ConditionalExpression: equivalent — per the proof above, the two operands of this OR are always equal for a context edit, so OR, AND-of-both, and either operand alone agree.
-    return (isLastOld && !ctx.oldHasTrailingNewline) || (isLastNew && !ctx.newHasTrailingNewline);
-  }
+  // git renders a context line from the postimage and derives the no-newline
+  // marker from the postimage's termination alone (C4): once a whitespace-only
+  // context match can straddle differing termination, the preimage side must
+  // not be consulted here.
+  if (edit.kind === 'context') return isLastNew && !ctx.newHasTrailingNewline;
   if (edit.kind === 'delete') return isLastOld && !ctx.oldHasTrailingNewline;
   return isLastNew && !ctx.newHasTrailingNewline;
 }
