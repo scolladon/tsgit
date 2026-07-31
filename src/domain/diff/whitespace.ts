@@ -35,6 +35,7 @@ function dropAllWs(bytes: Uint8Array): Uint8Array {
     const b = bytes[i] as number;
     if (!isWs(b)) out[length++] = b;
   }
+  // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — 'all' is an active key, so normalizeLine always strips this LF straight back off: forcing the write on appends a byte stripTerminator then removes, forcing it off drops a byte stripTerminator would have removed. Only a line carrying an interior LF separates the two, and a line never carries one.
   if (end < bytes.length) out[length++] = LF;
   return out.subarray(0, length);
 }
@@ -62,6 +63,7 @@ function collapseRuns(bytes: Uint8Array): Uint8Array {
   // `inWs` still set means the content ended inside a whitespace run, whose
   // collapsed SPACE is the last byte written — take it back, the run is trailing.
   if (inWs) length--;
+  // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — 'change' is an active key, so normalizeLine always strips this LF straight back off: forcing the write on appends a byte stripTerminator then removes, forcing it off drops a byte stripTerminator would have removed. Only a line carrying an interior LF separates the two, and a line never carries one.
   if (end < bytes.length) out[length++] = LF;
   return out.subarray(0, length);
 }
@@ -129,6 +131,10 @@ function normalizeUnderMode(bytes: Uint8Array, key: LineKey): Uint8Array {
 // to apply unconditionally to any single normalized line.
 function stripTerminator(bytes: Uint8Array): Uint8Array {
   const end = lfIndex(bytes);
+  // NOTE: forcing this test to `true`, or relaxing `<` to `<=`, is equivalent — an unterminated
+  // line has end === bytes.length, where subarray(0, end) yields the same bytes. Left unannotated
+  // because the opposite-direction variants (`false`, `>=`) are real, killed mutants on this same
+  // line, and Stryker's next-line disable matches by mutator+line, not by which variant.
   return end < bytes.length ? bytes.subarray(0, end) : bytes;
 }
 
@@ -406,6 +412,11 @@ interface FoldPair {
 // droppable regardless of termination (a soft CR is never pending for an
 // inactive key, so this stays dead there too).
 function selectedPair(state: FoldState, key: LineKey): FoldPair {
+  // NOTE: forcing the first operand (`state.tail === TAIL_CR`) to `true` is equivalent — the
+  // conjunction still demands mode 'none', under which whitespace is never soft, so `tail` only
+  // ever holds TAIL_CR or TAIL_NONE; and TAIL_NONE means both lanes already carry the same pair
+  // (every hard byte copies tentative into committed, and both start at the basis). Left
+  // unannotated because four ConditionalExpression mutants on this line are real and killed.
   const useTentative = state.tail === TAIL_CR && key.mode === 'none' && !state.sawLf;
   return useTentative
     ? { hash: state.tentHash, length: state.tentLength }
