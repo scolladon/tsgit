@@ -4,23 +4,27 @@
  * Answers "does any significant change survive normalization?" for one
  * `modify` change, over one of two arms selected per blob by
  * `openBlobSource`'s buffered/streamed gate (`blob-source.ts`):
- *  - `compareBuffered` — both blobs resolve under the gate: fully
- *    synchronous, zero promises, zero stream machinery.
+ *  - buffered — both blobs resolve under the gate: `scanEqual`
+ *    (`line-digest-scanner.ts`) runs fully synchronously, zero promises,
+ *    zero stream machinery. The stat path's drop verdict calls the same
+ *    `scanEqual`, so the two paths cannot answer differently.
  *  - `compareStreamed` — at least one blob resolves over the gate: today's
  *    concurrent advance-both-sides loop, now consulting the synchronous
  *    scanner first and only awaiting a side that actually needs a chunk.
  *
- * Both arms drive the same `LineDigestScanner` (`line-digest-scanner.ts`)
- * and share one verdict ladder (`applyLadder`), so "identical semantics"
- * holds by construction rather than by two independently maintained copies.
+ * Both arms drive the same `LineDigestScanner` and share one verdict ladder
+ * (`applyLadder`, `line-digest-scanner.ts`), so "identical semantics" holds
+ * by construction rather than by two independently maintained copies.
  */
 import type { ModifyChange } from '../../../domain/diff/diff-change.js';
 import {
+  applyLadder,
   createLineDigestScanner,
   type LineDigestScanner,
   type ScanStep,
+  scanEqual,
 } from '../../../domain/diff/line-digest-scanner.js';
-import { digestsEqual, type LineKey } from '../../../domain/diff/whitespace.js';
+import type { LineKey } from '../../../domain/diff/whitespace.js';
 import { unexpectedObjectType } from '../../../domain/objects/error.js';
 import type { ObjectId } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
@@ -32,51 +36,6 @@ import { type BlobSource, MAX_BUFFERED_BLOB_BYTES, openBlobSource } from './blob
 function refuseNonBlob(id: ObjectId, source: BlobSource): void {
   if (source.type !== undefined && source.type !== 'blob') {
     throw unexpectedObjectType('blob', source.type, id);
-  }
-}
-
-type LadderVerdict = boolean | 'continue';
-
-/**
- * The shared verdict ladder both arms drive. Binary precedes the digest
- * comparison on purpose (an emitted-then-flagged line must never let a
- * `true` verdict slip through before the flag is observed).
- */
-function applyLadder(
-  oldScanner: LineDigestScanner,
-  newScanner: LineDigestScanner,
-  oldStep: ScanStep,
-  newStep: ScanStep,
-): LadderVerdict {
-  if (oldScanner.binary || newScanner.binary) {
-    return false;
-  }
-  const oldDigest = oldStep.kind === 'digest' ? oldStep.digest : undefined;
-  const newDigest = newStep.kind === 'digest' ? newStep.digest : undefined;
-  if (oldDigest === undefined && newDigest === undefined) return true;
-  if (oldDigest === undefined || newDigest === undefined) return false;
-  if (!digestsEqual(oldDigest, newDigest)) return false;
-  return 'continue';
-}
-
-/** Fully synchronous: both sides are already resident, so the whole
- *  comparison is one pass over each scanner with zero promises. */
-function compareBuffered(
-  oldContent: Uint8Array,
-  newContent: Uint8Array,
-  lineKey: LineKey,
-  ignoreBlankLines: boolean,
-): boolean {
-  const oldScanner = createLineDigestScanner(lineKey, ignoreBlankLines);
-  const newScanner = createLineDigestScanner(lineKey, ignoreBlankLines);
-  oldScanner.push(oldContent);
-  oldScanner.end();
-  newScanner.push(newContent);
-  newScanner.end();
-
-  for (;;) {
-    const verdict = applyLadder(oldScanner, newScanner, oldScanner.next(), newScanner.next());
-    if (verdict !== 'continue') return verdict;
   }
 }
 
@@ -146,8 +105,9 @@ async function compareStreamed(
 
 /**
  * `true` when `change` has zero significant lines added/deleted under `key`
- * (and `ignoreBlankLines`) — the drop-pass equivalent of `shouldDrop` fed by
- * `computeStatFields`. A binary side (NUL-in-window) is never dropped.
+ * (and `ignoreBlankLines`) — the streaming twin of the stat path's
+ * `dropVerdict` (`diff-trees.ts`), which drives the same scanner and ladder.
+ * A binary side (NUL-in-window) is never dropped.
  *
  * `maxBufferedBytes` selects, per blob, whether it resolves buffered or
  * streamed (see `openBlobSource`); it defaults to the library-wide
@@ -168,7 +128,7 @@ export async function isWhitespaceOnlyModify(
   refuseNonBlob(change.newId, newSrc);
 
   if (oldSrc.kind === 'bytes' && newSrc.kind === 'bytes') {
-    return compareBuffered(oldSrc.content, newSrc.content, lineKey, ignoreBlankLines);
+    return scanEqual(oldSrc.content, newSrc.content, lineKey, ignoreBlankLines);
   }
   return await compareStreamed(oldSrc, newSrc, lineKey, ignoreBlankLines);
 }

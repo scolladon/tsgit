@@ -46,7 +46,7 @@ export function splitLines(bytes: Uint8Array): ReadonlyArray<Uint8Array> {
   return lines;
 }
 
-function hasNulInWindow(bytes: Uint8Array): boolean {
+export function hasNulInWindow(bytes: Uint8Array): boolean {
   const end = Math.min(bytes.length, BINARY_DETECTION_BYTES);
   for (let i = 0; i < end; i++) {
     if (bytes[i] === NUL) return true;

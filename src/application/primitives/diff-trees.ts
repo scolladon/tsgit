@@ -17,11 +17,12 @@ import {
   type ModifyChange,
   resolveLineKey,
   type StatDiffChange,
-  type StatFields,
   type StatFieldsOptions,
   type StatTreeDiff,
   type TreeDiff,
 } from '../../domain/diff/index.js';
+import { hasNulInWindow } from '../../domain/diff/line-diff.js';
+import { scanEqual } from '../../domain/diff/line-digest-scanner.js';
 import { diffRawTrees } from '../../domain/diff/raw-tree-diff.js';
 import type { RenameDetectOptions } from '../../domain/diff/rename-detect.js';
 import {
@@ -169,10 +170,12 @@ async function applyLinePassAndStat(
 
 /**
  * Materialise blobs once, run the drop pass and stat in a single traversal.
- * When `lineKeyActive`, drops modify changes that yield zero real hunks under
- * the active line-key mode. When `withStat`, attaches per-file counts to
- * every surviving change. The stat and drop predicate share one
- * `computeStatFields` call per modify so drop and counts are mutually consistent.
+ * When `lineKeyActive`, drops modify changes whose drop verdict comes from
+ * `dropVerdict` — the same synchronous scanner and ladder the predicate-only
+ * path drives, not the stat counts computed alongside it. When `withStat`,
+ * attaches per-file counts to every surviving change. Consistency between
+ * the two paths holds by construction: both run the same scanner, rather
+ * than two independently maintained verdicts.
  */
 async function applyStatPass(
   ctx: Context,
@@ -186,12 +189,24 @@ async function applyStatPass(
   const files = await materialisePatchFiles(ctx, changes, { applyTextconv: true });
   const surviving: Array<DiffChange | StatDiffChange> = [];
   for (const file of files) {
+    const oldContent = file.oldContent ?? EMPTY;
+    const newContent = file.newContent ?? EMPTY;
     const stats = computeStatFields(
-      file.oldContent ?? EMPTY,
-      file.newContent ?? EMPTY,
+      oldContent,
+      newContent,
       statOptionsFor(lineKey, lineKeyActive, ignoreBlankLines, file.numstatBinaryOverride),
     );
-    if (lineKeyActive && shouldDrop(file.change, stats)) continue;
+    const dropped =
+      lineKeyActive &&
+      dropVerdict(
+        file.change,
+        oldContent,
+        newContent,
+        lineKey,
+        ignoreBlankLines,
+        file.numstatBinaryOverride,
+      );
+    if (dropped) continue;
     surviving.push(withStat ? { ...file.change, ...stats } : file.change);
   }
   return { changes: surviving };
@@ -276,12 +291,14 @@ async function materialisedShouldDrop(
   // boundedMap (materialisePatchFiles' worker) returns exactly one result per input
   // change or rejects — never fewer — so a 1-element input always yields files[0].
   const file = files[0]!;
-  const stats = computeStatFields(
+  return dropVerdict(
+    file.change,
     file.oldContent ?? EMPTY,
     file.newContent ?? EMPTY,
-    statOptionsFor(lineKey, true, ignoreBlankLines, file.numstatBinaryOverride),
+    lineKey,
+    ignoreBlankLines,
+    file.numstatBinaryOverride,
   );
-  return shouldDrop(file.change, stats);
 }
 
 /**
@@ -327,13 +344,25 @@ async function changeShouldDrop(
 }
 
 /**
- * Drop predicate for the whitespace drop pass.
- * Only `modify` changes with zero added+deleted non-binary lines are dropped.
- * Type-changes, renames, copies, adds, and deletes are never dropped.
- * Binary modifies are never dropped (binary detection ignores whitespace flags).
+ * The stat path's drop verdict — routed through the same synchronous scanner
+ * and ladder the predicate-only path drives (`scanEqual`,
+ * `line-digest-scanner.ts`), so the two paths cannot answer differently for
+ * the same pair of blobs. Only `modify` changes are ever dropped; a
+ * `.gitattributes` binary override short-circuits first, then a NUL-bearing
+ * side, then the scanner's own verdict.
  */
-function shouldDrop(change: DiffChange, stats: StatFields): boolean {
-  return change.type === 'modify' && stats.added === 0 && stats.deleted === 0 && !stats.binary;
+function dropVerdict(
+  change: DiffChange,
+  oldContent: Uint8Array,
+  newContent: Uint8Array,
+  lineKey: LineKey,
+  ignoreBlankLines: boolean,
+  numstatBinaryOverride: 'binary' | 'text' | undefined,
+): boolean {
+  if (change.type !== 'modify') return false;
+  if (numstatBinaryOverride === 'binary') return false;
+  if (hasNulInWindow(oldContent) || hasNulInWindow(newContent)) return false;
+  return scanEqual(oldContent, newContent, lineKey, ignoreBlankLines);
 }
 
 /**

@@ -2,6 +2,7 @@ import { BINARY_DETECTION_BYTES } from './line-diff.js';
 import {
   createLineDigestFold,
   digestIsBlank,
+  digestsEqual,
   type LineDigest,
   type LineDigestFold,
   type LineKey,
@@ -130,4 +131,57 @@ export function createLineDigestScanner(
       return state.binary;
     },
   };
+}
+
+export type LadderVerdict = boolean | 'continue';
+
+/**
+ * The shared verdict ladder every drop-verdict comparison drives — the
+ * predicate's buffered and streamed arms, and the stat path's `scanEqual`.
+ * Binary precedes the digest comparison on purpose: an emitted-then-flagged
+ * line must never let a `true` verdict slip through before the flag is
+ * observed. One ladder, one place, so the different comparison shapes that
+ * feed it cannot answer differently for the same bytes.
+ */
+export function applyLadder(
+  oldScanner: LineDigestScanner,
+  newScanner: LineDigestScanner,
+  oldStep: ScanStep,
+  newStep: ScanStep,
+): LadderVerdict {
+  if (oldScanner.binary || newScanner.binary) {
+    return false;
+  }
+  const oldDigest = oldStep.kind === 'digest' ? oldStep.digest : undefined;
+  const newDigest = newStep.kind === 'digest' ? newStep.digest : undefined;
+  if (oldDigest === undefined && newDigest === undefined) return true;
+  if (oldDigest === undefined || newDigest === undefined) return false;
+  if (!digestsEqual(oldDigest, newDigest)) return false;
+  return 'continue';
+}
+
+/**
+ * Fully synchronous whole-buffer comparison: pushes each side's entire
+ * content into its own scanner, then drives the shared ladder to a verdict.
+ * The predicate's buffered arm and the stat path's drop verdict both call
+ * this directly, so a pair of blobs compares identically however it was
+ * reached — one function, not two independently maintained copies.
+ */
+export function scanEqual(
+  oldContent: Uint8Array,
+  newContent: Uint8Array,
+  key: LineKey,
+  ignoreBlankLines: boolean,
+): boolean {
+  const oldScanner = createLineDigestScanner(key, ignoreBlankLines);
+  const newScanner = createLineDigestScanner(key, ignoreBlankLines);
+  oldScanner.push(oldContent);
+  oldScanner.end();
+  newScanner.push(newContent);
+  newScanner.end();
+
+  for (;;) {
+    const verdict = applyLadder(oldScanner, newScanner, oldScanner.next(), newScanner.next());
+    if (verdict !== 'continue') return verdict;
+  }
 }
