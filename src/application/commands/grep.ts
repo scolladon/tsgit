@@ -130,20 +130,6 @@ async function enumerateCandidates(
   return candidates;
 }
 
-/**
- * The bytes of one line actually handed to the matcher. Bounded by the same
- * MAX_LINE_BYTES the binary presence probe uses, and for the same reason:
- * `matchLine` decodes its input to a string and runs the caller's RegExp over
- * the whole of it, so an unbounded line lets an ordinary polynomial pattern
- * (`.*x.*y`) turn one blob into minutes of blocked event loop. Only the MATCH
- * VIEW is bounded — the returned line stays whole — so the trade-off is the one
- * the probe already documents: a match past the first 64 KiB of a single line
- * is not reported.
- */
-function matchWindow(line: Uint8Array): Uint8Array {
-  return line.length > MAX_LINE_BYTES ? line.subarray(0, MAX_LINE_BYTES) : line;
-}
-
 function scanBlob(
   matcher: GrepMatcher,
   binaryProbeMatcher: GrepMatcher,
@@ -166,7 +152,7 @@ function scanBlob(
   const lines = splitLines(bytes);
   const hits: GrepLineHit[] = [];
   lines.forEach((line, i) => {
-    const verdict = matcher.matchLine(matchWindow(line));
+    const verdict = matcher.matchLine(line);
     if (verdict.returned) {
       hits.push({ lineNumber: i + 1, line, spans: verdict.spans });
     }
