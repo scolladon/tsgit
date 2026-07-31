@@ -9,6 +9,7 @@ import {
   type LineDigestFold,
   type LineKey,
   linesEqualUnder,
+  NO_TERMINATOR,
 } from './whitespace.js';
 
 const NUL = 0x00;
@@ -83,13 +84,17 @@ function emitLine(fold: LineDigestFold): ScanStep {
 }
 
 // Advances the fold from the cursor to the next LF, to the end of the
-// current chunk, or — once ended() — to the final unterminated line.
+// current chunk, or — once ended() — to the final unterminated line. The
+// scan itself runs inside the fold, over the whole remaining range, so the
+// per-line cursor bookkeeping here is not paid per byte.
 function advanceLine(state: ScannerState, fold: LineDigestFold): ScanStep {
-  while (state.cursor < state.chunk.length) {
-    const byte = state.chunk[state.cursor]!;
-    state.cursor++;
-    if (fold.push(byte)) return emitLine(fold);
+  const chunk = state.chunk;
+  const stop = fold.pushChunk(chunk, state.cursor, chunk.length);
+  if (stop !== NO_TERMINATOR) {
+    state.cursor = stop;
+    return emitLine(fold);
   }
+  state.cursor = chunk.length;
   if (!state.ended) return { kind: 'needs-input' };
   return fold.lineHasBytes ? emitLine(fold) : { kind: 'exhausted' };
 }

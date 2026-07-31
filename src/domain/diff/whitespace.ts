@@ -209,6 +209,15 @@ function fnvMix(hash: number, byte: number): number {
 }
 
 /**
+ * What the fold has pending behind it: nothing, an open whitespace run, or a
+ * CR that would be dropped if the line ended right here. Exactly the `WS* CR?`
+ * tail grammar, as one value — the fold reads it once per byte.
+ */
+const TAIL_NONE = 0;
+const TAIL_WS = 1;
+const TAIL_CR = 2;
+
+/**
  * Per-line fold state (§D1.3). `committed` is the fold over everything
  * definitely part of the normalized line; `tentative` is `committed` plus the
  * pending droppable tail (`WS* CR?`), folded as it would be if the tail turned
@@ -220,8 +229,7 @@ interface FoldState {
   committedLength: number;
   tentHash: number;
   tentLength: number;
-  pendingWs: boolean;
-  pendingCr: boolean;
+  tail: number;
   sawLf: boolean;
   lineHasBytes: boolean;
 }
@@ -232,8 +240,7 @@ function createFoldState(): FoldState {
     committedLength: 0,
     tentHash: FNV_OFFSET_BASIS,
     tentLength: 0,
-    pendingWs: false,
-    pendingCr: false,
+    tail: TAIL_NONE,
     sawLf: false,
     lineHasBytes: false,
   };
@@ -244,83 +251,145 @@ function resetLine(state: FoldState): void {
   state.committedLength = 0;
   state.tentHash = FNV_OFFSET_BASIS;
   state.tentLength = 0;
-  state.pendingWs = false;
-  state.pendingCr = false;
+  state.tail = TAIL_NONE;
   state.sawLf = false;
   state.lineHasBytes = false;
 }
 
-// A byte is soft-WS when it could be part of a droppable trailing run.
-function isSoftWs(byte: number, key: LineKey): boolean {
-  return isWs(byte) && key.mode !== 'none';
-}
+/**
+ * How the fold treats one byte, decided once per key rather than re-derived
+ * per byte. `SOFT_WS`/`SOFT_CR` are the two droppable-tail bytes; a key that
+ * does not ignore them classifies them `HARD` like anything else.
+ */
+const HARD = 0;
+const SOFT_WS = 1;
+const SOFT_CR = 2;
+const TERMINATOR = 3;
+const BYTE_VALUES = 256;
 
-// A byte is soft-CR when it could be a droppable trailing CR — today's
-// unconditional-on-termination rule (mirrors digestContentEnd's `crApplies`).
-function isSoftCr(byte: number, key: LineKey): boolean {
-  return byte === CR && (key.ignoreCrAtEol || key.mode !== 'none');
-}
-
-function foldTentative(state: FoldState, byte: number): void {
-  state.tentHash = fnvMix(state.tentHash, byte);
-  state.tentLength++;
-}
-
-function promoteTentative(state: FoldState): void {
-  state.committedHash = state.tentHash;
-  state.committedLength = state.tentLength;
-}
-
-// Close a pending whitespace run that turned out to be internal, not trailing.
-function closeRun(state: FoldState, key: LineKey): void {
-  // 'all' drops the run everywhere (nothing to fold); 'at-eol' already folded
-  // it verbatim during the run (mirrors commitRun); 'none' never reaches here
-  // (whitespace is hard there). Only 'change' owes the run one collapsed SPACE
-  // (mirrors digestCollapseRuns' pendingSpace).
-  if (key.mode === 'change') foldTentative(state, SPACE);
-}
-
-function onHard(state: FoldState, key: LineKey, byte: number): void {
-  if (state.pendingWs) closeRun(state, key);
-  state.pendingWs = false;
-  state.pendingCr = false;
-  foldTentative(state, byte);
-  promoteTentative(state);
-}
-
-function onSoftWs(state: FoldState, key: LineKey, byte: number): void {
-  if (state.pendingCr) {
-    // The previous CR is followed by more content — it is internal, not trailing.
-    promoteTentative(state);
-    state.pendingCr = false;
+function buildByteKinds(wsIsSoft: boolean, crIsSoft: boolean): Uint8Array {
+  const kinds = new Uint8Array(BYTE_VALUES);
+  kinds[LF] = TERMINATOR;
+  if (crIsSoft) kinds[CR] = SOFT_CR;
+  if (wsIsSoft) {
+    kinds[SPACE] = SOFT_WS;
+    kinds[TAB] = SOFT_WS;
   }
-  if (key.mode === 'at-eol') foldTentative(state, byte);
-  state.pendingWs = true;
+  return kinds;
 }
 
-function onSoftCr(state: FoldState, key: LineKey): void {
-  if (state.pendingCr) {
-    // A second CR follows the first — the first is internal, not trailing.
-    promoteTentative(state);
-  } else if (state.pendingWs) {
-    // The run does not promote just because a CR follows it (§D1.2 row 1).
-    closeRun(state, key);
-  }
-  state.pendingWs = false;
-  foldTentative(state, CR);
-  state.pendingCr = true;
+// The three classifications a `LineKey` can produce: whitespace is soft under
+// every mode but 'none', and a CR is soft under those same modes or under
+// `ignoreCrAtEol` (mirrors `applyCrRule`'s `crApplies`) — so "soft whitespace,
+// hard CR" is not a reachable shape.
+const WS_AND_CR_SOFT = buildByteKinds(true, true);
+const CR_SOFT_ONLY = buildByteKinds(false, true);
+const NOTHING_SOFT = buildByteKinds(false, false);
+
+function byteKindsFor(key: LineKey): Uint8Array {
+  if (key.mode !== 'none') return WS_AND_CR_SOFT;
+  return key.ignoreCrAtEol ? CR_SOFT_ONLY : NOTHING_SOFT;
 }
 
-function applyContentByte(state: FoldState, key: LineKey, byte: number): void {
-  if (isSoftWs(byte, key)) {
-    onSoftWs(state, key, byte);
-    return;
+/**
+ * Everything `foldRange` needs to know about a `LineKey`, resolved once per
+ * fold. The mode is a string; resolving it here keeps the scan loop asking
+ * only about numbers, and lets that loop live at module scope instead of
+ * closing over the key.
+ */
+interface FoldRules {
+  readonly kinds: Uint8Array;
+  /** 'at-eol' keeps an internal run's bytes verbatim. */
+  readonly foldsSoftWs: boolean;
+  /** 'change' owes an internal run one collapsed SPACE (mirrors digestCollapseRuns). */
+  readonly collapsesRuns: boolean;
+}
+
+function compileRules(key: LineKey): FoldRules {
+  return {
+    kinds: byteKindsFor(key),
+    foldsSoftWs: key.mode === 'at-eol',
+    collapsesRuns: key.mode === 'change',
+  };
+}
+
+/**
+ * Folds `chunk[from, to)` into `state`, stopping just past the line's LF
+ * terminator — the scan that `pushChunk` exposes.
+ *
+ * Both hash lanes, their lengths and the pending tail live in loop locals for
+ * the whole range and are written back to `state` once, at the end. That is
+ * the entire point of folding a RANGE rather than a byte: a per-byte call
+ * boundary forces every one of them through the state object on every byte,
+ * which costs more than the fold itself.
+ */
+function foldRange(
+  state: FoldState,
+  rules: FoldRules,
+  chunk: Uint8Array,
+  from: number,
+  to: number,
+): number {
+  const { kinds, foldsSoftWs, collapsesRuns } = rules;
+  let committedHash = state.committedHash;
+  let committedLength = state.committedLength;
+  let tentHash = state.tentHash;
+  let tentLength = state.tentLength;
+  let tail = state.tail;
+  let stop = NO_TERMINATOR;
+
+  for (let i = from; i < to; i++) {
+    const byte = chunk[i] as number;
+    const kind = kinds[byte] as number;
+    if (kind === TERMINATOR) {
+      state.sawLf = true;
+      stop = i + 1;
+      break;
+    }
+    if (kind === HARD) {
+      // A hard byte proves any tail internal and commits the line through
+      // itself. Nothing is owed to the run it closes: 'change' folded that
+      // run's collapsed SPACE when the run opened.
+      tentHash = fnvMix(tentHash, byte);
+      tentLength++;
+      committedHash = tentHash;
+      committedLength = tentLength;
+      tail = TAIL_NONE;
+      continue;
+    }
+    // A soft byte behind a pending CR proves that CR internal, not trailing —
+    // promote. Behind an open run it promotes nothing (§D1.2 row 1), and
+    // behind nothing the commit is already current.
+    if (tail === TAIL_CR) {
+      committedHash = tentHash;
+      committedLength = tentLength;
+    }
+    if (kind === SOFT_CR) {
+      tentHash = fnvMix(tentHash, CR);
+      tentLength++;
+      tail = TAIL_CR;
+      continue;
+    }
+    // Whether this run turns out internal is not known yet, so 'change' folds
+    // its one SPACE into the TENTATIVE lane as the run opens: a trailing run's
+    // tentative lane is discarded wholesale, so folding early costs a run that
+    // never closes exactly nothing.
+    if (foldsSoftWs) {
+      tentHash = fnvMix(tentHash, byte);
+      tentLength++;
+    } else if (collapsesRuns && tail !== TAIL_WS) {
+      tentHash = fnvMix(tentHash, SPACE);
+      tentLength++;
+    }
+    tail = TAIL_WS;
   }
-  if (isSoftCr(byte, key)) {
-    onSoftCr(state, key);
-    return;
-  }
-  onHard(state, key, byte);
+
+  state.committedHash = committedHash;
+  state.committedLength = committedLength;
+  state.tentHash = tentHash;
+  state.tentLength = tentLength;
+  state.tail = tail;
+  return stop;
 }
 
 /** One of the fold's `committed`/`tentative` hash+length pairs (§D1.3's doc comment). */
@@ -334,10 +403,10 @@ interface FoldPair {
 // final line's trailing CR under `ignoreCrAtEol` with mode 'none', where the
 // CR is significant, not whitespace. Every other shape reports `committed`:
 // under any other mode a trailing CR is ordinary whitespace and always
-// droppable regardless of termination (isSoftCr never sets `pendingCr` for
-// an inactive key, so this stays dead there too).
+// droppable regardless of termination (a soft CR is never pending for an
+// inactive key, so this stays dead there too).
 function selectedPair(state: FoldState, key: LineKey): FoldPair {
-  const useTentative = state.pendingCr && key.mode === 'none' && !state.sawLf;
+  const useTentative = state.tail === TAIL_CR && key.mode === 'none' && !state.sawLf;
   return useTentative
     ? { hash: state.tentHash, length: state.tentLength }
     : { hash: state.committedHash, length: state.committedLength };
@@ -356,10 +425,15 @@ function emitDigest(state: FoldState, key: LineKey, keyIsActive: boolean): LineD
   return { length: pair.length, terminated, hash: fnvMix(pair.hash, LF) };
 }
 
+/** `pushChunk`'s answer when the range ran out before any LF terminator. */
+export const NO_TERMINATOR = -1;
+
 export interface LineDigestFold {
-  /** Fold one raw byte of the line. Returns true when the byte was the line's
-   *  LF terminator — the caller must then call `endLine()` before folding more. */
-  push(byte: number): boolean;
+  /** Fold the bytes of `chunk` in `[from, to)` up to and including the line's
+   *  LF terminator. Returns the index just past that terminator — the caller
+   *  must then call `endLine()` before folding more — or `NO_TERMINATOR` when
+   *  the range ran out first. */
+  pushChunk(chunk: Uint8Array, from: number, to: number): number;
   /** Emit the finished line's digest and reset the per-line state. */
   endLine(): LineDigest;
   /** False when nothing has been folded since the last `endLine()` — lets a
@@ -370,21 +444,24 @@ export interface LineDigestFold {
 /**
  * Folds one line's bytes into a `LineDigest` incrementally, in `O(1)` memory —
  * the line is never buffered. A "line" here is exactly what `splitLines`
- * emits: at most one LF terminator, always the last byte pushed. Feeding an
+ * emits: at most one LF terminator, always the last byte folded. Feeding an
  * interior LF is outside this contract.
+ *
+ * The scan runs to the terminator INSIDE the fold rather than a byte at a
+ * time from outside it, so the two hash lanes, their lengths and the pending
+ * tail flags live in loop locals and are written back to `state` once per
+ * chunk. That is the whole reason `pushChunk` takes a range instead of a
+ * byte: a per-byte call boundary forces every one of them through the state
+ * object on every byte, which measurably dominates the fold itself.
  */
 export function createLineDigestFold(key: LineKey): LineDigestFold {
   const state = createFoldState();
   const keyIsActive = lineKeyIsActive(key);
+  const rules = compileRules(key);
 
-  function push(byte: number): boolean {
-    state.lineHasBytes = true;
-    if (byte === LF) {
-      state.sawLf = true;
-      return true;
-    }
-    applyContentByte(state, key, byte);
-    return false;
+  function pushChunk(chunk: Uint8Array, from: number, to: number): number {
+    if (to > from) state.lineHasBytes = true;
+    return foldRange(state, rules, chunk, from, to);
   }
 
   function endLine(): LineDigest {
@@ -394,7 +471,7 @@ export function createLineDigestFold(key: LineKey): LineDigestFold {
   }
 
   return {
-    push,
+    pushChunk,
     endLine,
     get lineHasBytes(): boolean {
       return state.lineHasBytes;
@@ -411,9 +488,7 @@ export function createLineDigestFold(key: LineKey): LineDigestFold {
  */
 export function digestNormalizedLine(bytes: Uint8Array, key: LineKey): LineDigest {
   const fold = createLineDigestFold(key);
-  for (let i = 0; i < bytes.length; i++) {
-    fold.push(bytes[i]!);
-  }
+  fold.pushChunk(bytes, 0, bytes.length);
   return fold.endLine();
 }
 

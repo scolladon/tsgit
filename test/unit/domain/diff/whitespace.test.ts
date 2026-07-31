@@ -12,6 +12,7 @@ import {
   isBlankLine,
   lineKeyIsActive,
   linesEqualUnder,
+  NO_TERMINATOR,
   NONE_KEY,
   normalizeLine,
   resolveLineKey,
@@ -1094,10 +1095,23 @@ describe('createLineDigestFold', () => {
       const sut = createLineDigestFold(NONE_KEY);
 
       // Act
-      sut.push(0x61); // 'a'
+      sut.pushChunk(enc('a'), 0, 1);
 
       // Assert
       expect(sut.lineHasBytes).toBe(true);
+    });
+  });
+
+  describe('Given a fold handed an empty range, When lineHasBytes is read', () => {
+    it('Then lineHasBytes is still false', () => {
+      // Arrange
+      const sut = createLineDigestFold(NONE_KEY);
+
+      // Act
+      sut.pushChunk(enc('a'), 1, 1);
+
+      // Assert
+      expect(sut.lineHasBytes).toBe(false);
     });
   });
 
@@ -1105,8 +1119,7 @@ describe('createLineDigestFold', () => {
     it('Then lineHasBytes reports false again', () => {
       // Arrange
       const sut = createLineDigestFold(NONE_KEY);
-      sut.push(0x61); // 'a'
-      sut.push(0x0a); // LF
+      sut.pushChunk(enc('a\n'), 0, 2);
 
       // Act
       sut.endLine();
@@ -1116,39 +1129,66 @@ describe('createLineDigestFold', () => {
     });
   });
 
-  describe('Given a byte that is not the LF terminator, When push is called', () => {
-    it('Then push returns false', () => {
+  describe('Given a range holding no LF terminator, When pushChunk folds it', () => {
+    it('Then pushChunk returns NO_TERMINATOR', () => {
       // Arrange
+      const bytes = enc('ab');
       const sut = createLineDigestFold(NONE_KEY);
 
       // Act
-      const result = sut.push(0x61); // 'a'
+      const result = sut.pushChunk(bytes, 0, bytes.length);
 
       // Assert
-      expect(result).toBe(false);
+      expect(result).toBe(NO_TERMINATOR);
     });
   });
 
-  describe('Given the LF terminator byte, When push is called', () => {
-    it('Then push returns true', () => {
+  describe('Given a range whose LF terminator is followed by more bytes, When pushChunk folds it', () => {
+    it('Then pushChunk returns the index just past that terminator', () => {
       // Arrange
+      const bytes = enc('ab\ncd\n');
       const sut = createLineDigestFold(NONE_KEY);
 
       // Act
-      const result = sut.push(0x0a);
+      const result = sut.pushChunk(bytes, 0, bytes.length);
 
       // Assert
-      expect(result).toBe(true);
+      expect(result).toBe(3);
     });
   });
 
-  describe('Given a fold driven byte-by-byte over a whole line, When endLine is called', () => {
+  describe('Given a fold driven over a whole line in one range, When endLine is called', () => {
     it('Then the emitted digest matches digestNormalizedLine over the same bytes', () => {
       // Arrange
       const key: LineKey = { mode: 'change', ignoreCrAtEol: true };
       const bytes = enc('a  b\r\n');
       const sut = createLineDigestFold(key);
-      for (let i = 0; i < bytes.length; i++) sut.push(bytes[i] as number);
+      sut.pushChunk(bytes, 0, bytes.length);
+
+      // Act
+      const result = sut.endLine();
+
+      // Assert
+      expect(result).toEqual(digestNormalizedLine(bytes, key));
+    });
+  });
+
+  describe('Given a line split across two ranges mid-tail, When endLine is called', () => {
+    it.each([
+      { label: "mode 'all'", key: { mode: 'all', ignoreCrAtEol: false } as LineKey },
+      { label: "mode 'change'", key: { mode: 'change', ignoreCrAtEol: false } as LineKey },
+      { label: "mode 'at-eol'", key: { mode: 'at-eol', ignoreCrAtEol: false } as LineKey },
+      {
+        label: "mode 'none' with ignoreCrAtEol",
+        key: { mode: 'none', ignoreCrAtEol: true } as LineKey,
+      },
+    ])('Then the emitted digest matches the whole-line fold under $label', ({ key }) => {
+      // Arrange
+      const bytes = enc('a  b \r c\r\n');
+      const split = 6; // mid whitespace-and-CR tail
+      const sut = createLineDigestFold(key);
+      sut.pushChunk(bytes, 0, split);
+      sut.pushChunk(bytes, split, bytes.length);
 
       // Act
       const result = sut.endLine();
