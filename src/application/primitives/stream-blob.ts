@@ -1,7 +1,7 @@
 import { unexpectedObjectType } from '../../domain/objects/error.js';
 import type { ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
-import { openBlobSource } from './internal/blob-source.js';
+import { NEVER_BUFFER, openBlobSource } from './internal/blob-source.js';
 
 export interface StreamBlobOptions {
   readonly verifyHash?: boolean;
@@ -16,7 +16,7 @@ export async function streamBlob(
   id: ObjectId,
   options?: StreamBlobOptions,
 ): Promise<BlobStream> {
-  const source = await openBlobSource(ctx, id, 0, options);
+  const source = await openBlobSource(ctx, id, NEVER_BUFFER, options);
 
   if (source.type !== undefined && source.type !== 'blob') {
     // Refusing discards the stream, so cancel its inflate pipeline first.

@@ -38,6 +38,16 @@ import type { StreamBlobOptions } from '../stream-blob.js';
 /** 64 KiB of compressed/on-disk bytes — the uniform buffered/streamed gate. */
 export const MAX_BUFFERED_BLOB_BYTES = 65_536;
 
+/**
+ * The closed gate, and deliberately two things at once: it fails every
+ * `fitsBuffer` test AND, being not greater than zero, skips the delta-cache
+ * probe entirely. A caller that wants nothing materialised wants both — a
+ * cache hit IS a whole materialised object, so honouring it would defeat the
+ * first meaning. Anything that ever wants one without the other needs a real
+ * second knob, not this constant.
+ */
+export const NEVER_BUFFER = 0;
+
 export type BlobSource =
   | { readonly kind: 'bytes'; readonly type: ObjectType; readonly content: Uint8Array }
   | {
@@ -122,8 +132,12 @@ function toBytesSource(looseFormatBytes: Uint8Array): BlobSource {
   return { kind: 'bytes', type, content };
 }
 
-function syntheticBlobHeader(declaredSize: number): Uint8Array {
-  return new TextEncoder().encode(`blob ${declaredSize}\0`);
+// The canonical loose-format header a pack entry's inflated bytes are missing.
+// Built from the entry's OWN type: a non-blob entry then verifies cleanly and
+// is reported for the caller to refuse, instead of dying here on a hash rebuilt
+// as if it were a blob.
+function syntheticObjectHeader(type: ObjectType, declaredSize: number): Uint8Array {
+  return new TextEncoder().encode(`${type} ${declaredSize}\0`);
 }
 
 async function verifyBufferedBytes(
@@ -140,12 +154,13 @@ async function verifyBufferedBytes(
 async function verifyPackBaseBytes(
   ctx: Context,
   id: ObjectId,
+  type: ObjectType,
   declaredSize: number,
   content: Uint8Array,
   verifyHash: boolean,
 ): Promise<void> {
   const hasher: Hasher | undefined = verifyHash ? ctx.hash.createHasher() : undefined;
-  hasher?.update(syntheticBlobHeader(declaredSize));
+  hasher?.update(syntheticObjectHeader(type, declaredSize));
   hasher?.update(content);
   await finalizeHash(hasher, id);
 }
@@ -199,7 +214,7 @@ async function resolvePackBase(
     fitsBuffer(declaredSize, gate.maxBufferedBytes)
   ) {
     const content = await ctx.compressor.inflate(payload);
-    await verifyPackBaseBytes(ctx, id, declaredSize, content, gate.verifyHash);
+    await verifyPackBaseBytes(ctx, id, type, declaredSize, content, gate.verifyHash);
     return { kind: 'bytes', type, content };
   }
   const inflated = inflateOneShot(ctx, payload);
@@ -211,6 +226,7 @@ async function resolvePackBase(
       ctx,
       id,
       readableStreamToAsyncIterable(inflated),
+      type,
       declaredSize,
       gate.verifyHash,
     ),
@@ -351,21 +367,23 @@ async function* yieldAndVerifyChunks(
 /**
  * Streaming tail for packed BASE entries. Pack base entries hold raw content
  * bytes (no loose-format header in the inflated output). The canonical header
- * `blob <declaredSize>\0` is built from the pack entry header's declared inflated
- * size — known before inflation — so chunks can be yielded as they arrive.
- * A wrong declared size is caught: the incremental hash over the synthetic header
- * plus the true inflated bytes will not equal id, so objectHashMismatch fires.
+ * `<type> <declaredSize>\0` is built from the pack entry header's own type and
+ * declared inflated size — both known before inflation — so chunks can be
+ * yielded as they arrive. A wrong declared size is caught: the incremental hash
+ * over the synthetic header plus the true inflated bytes will not equal id, so
+ * objectHashMismatch fires.
  */
 async function* yieldAndVerifyPackedBaseChunks(
   ctx: Context,
   id: ObjectId,
   chunks: AsyncIterable<Uint8Array>,
+  type: ObjectType,
   declaredSize: number,
   verifyHash: boolean,
 ): AsyncIterable<Uint8Array> {
   const hasher: Hasher | undefined = verifyHash ? ctx.hash.createHasher() : undefined;
 
-  hasher?.update(syntheticBlobHeader(declaredSize));
+  hasher?.update(syntheticObjectHeader(type, declaredSize));
 
   for await (const chunk of chunks) {
     if (ctx.signal?.aborted === true) {

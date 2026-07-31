@@ -368,11 +368,8 @@ describe('openBlobSource', () => {
 
   describe('Given a packed base non-blob (tree) object', () => {
     describe('When openBlobSource resolves it streamed (gate at 0)', () => {
-      it('Then reports the real type and does not refuse on drain', async () => {
-        // Arrange — verifyHash is off: the streaming tail's synthetic hash header
-        // is the blob-specific canonical form (the seam's type check is a caller
-        // concern; hash reconstruction for a non-blob pack-base entry is out of
-        // scope, since every real caller only ever resolves blob ids here).
+      it('Then reports the real type and verifies against that type header', async () => {
+        // Arrange
         const content = ENC.encode('tree-like content for pack-base type test');
         const ctx = await buildSeededContext();
         const ids = await writeSyntheticPack(ctx, 'pack-base-non-blob', [
@@ -381,7 +378,7 @@ describe('openBlobSource', () => {
         const id = ids[0] as ObjectId;
 
         // Act
-        const result = await openBlobSource(ctx, id, 0, { verifyHash: false });
+        const result = await openBlobSource(ctx, id, 0);
 
         // Assert
         expect(result.kind).toBe('stream');
@@ -389,6 +386,29 @@ describe('openBlobSource', () => {
           expect(result.type).toBe('tree');
           const drained = await collect(result.stream);
           expect(drained).toEqual(content);
+        }
+      });
+    });
+
+    describe('When openBlobSource resolves it buffered (gate over the entry size)', () => {
+      it('Then reports the real type instead of failing the blob-shaped hash', async () => {
+        // Arrange — the seam only REPORTS type, so a non-blob must reach the
+        // caller's refusal rather than dying on a hash rebuilt as `blob <n>`.
+        const content = ENC.encode('tree-like content for the buffered type test');
+        const ctx = await buildSeededContext();
+        const ids = await writeSyntheticPack(ctx, 'pack-base-non-blob-buffered', [
+          { kind: 'base', type: 'tree', content },
+        ]);
+        const id = ids[0] as ObjectId;
+
+        // Act
+        const result = await openBlobSource(ctx, id, MAX_BUFFERED_BLOB_BYTES);
+
+        // Assert
+        expect(result.kind).toBe('bytes');
+        if (result.kind === 'bytes') {
+          expect(result.type).toBe('tree');
+          expect(result.content).toEqual(content);
         }
       });
     });
