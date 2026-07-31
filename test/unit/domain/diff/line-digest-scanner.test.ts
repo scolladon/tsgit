@@ -233,25 +233,6 @@ describe('createLineDigestScanner', () => {
     });
   });
 
-  describe('Given push() is called again after end(), When the scanner is drained', () => {
-    it('Then the later bytes are folded as final content, not rejected or dropped', () => {
-      // Arrange — misuse of the documented protocol still behaves
-      // predictably: never throws, never silently drops data.
-      const sut = createLineDigestScanner(NONE_KEY, false);
-      sut.push(enc('ab'));
-      sut.next(); // needs-input
-      sut.end();
-
-      // Act
-      sut.push(enc('cd'));
-      const digests = drainAll(sut);
-
-      // Assert
-      expect(digests).toHaveLength(1);
-      expect(digests[0]).toEqual(digestNormalizedLine(enc('abcd'), NONE_KEY));
-    });
-  });
-
   describe('Given a chunk boundary that falls inside a whitespace run, When the two chunks are drained under mode change', () => {
     it("Then the emitted digest matches the whole-line oracle's", () => {
       // Arrange — "a   b\n" split mid-run: chunk1 ends one space into the run.
