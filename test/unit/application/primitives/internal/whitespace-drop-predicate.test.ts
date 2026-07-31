@@ -95,7 +95,7 @@ function trackedReadable(
 
 /** Re-slices a readable into fixed-size pieces, so a line's bytes are
  *  guaranteed to arrive split across chunks rather than whole. */
-function rechunked(source: ReadableStream<Uint8Array>, size: number): ReadableStream<Uint8Array> {
+function resliced(source: ReadableStream<Uint8Array>, size: number): ReadableStream<Uint8Array> {
   const reader = source.getReader();
   let pending = new Uint8Array(0);
   return new ReadableStream<Uint8Array>({
@@ -131,7 +131,7 @@ async function rechunkingContext(size: number): Promise<Context> {
       ...base.compressor,
       createInflateStream: () => {
         const inner = base.compressor.createInflateStream();
-        return { readable: rechunked(inner.readable, size), writable: inner.writable };
+        return { readable: resliced(inner.readable, size), writable: inner.writable };
       },
     },
   };
@@ -450,7 +450,7 @@ describe('isWhitespaceOnlyModify', () => {
         // Arrange — 8-byte chunks put each side's loose header in its own chunk
         // and then cut the single line at a DIFFERENT in-line offset per side
         // (the contents differ in length), so a confirmation that dropped the
-        // carried-over prefix would compare 'rld' against 'orld'.
+        // carried-over prefix would compare a truncated tail against the full one.
         const ctx = await rechunkingContext(8);
         const oldId = await writeBlob(ctx, enc.encode('hello world\n'));
         const newId = await writeBlob(ctx, enc.encode('hello  world\n'));
