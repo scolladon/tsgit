@@ -118,6 +118,12 @@ describe.skipIf(!GIT_AVAILABLE)('grep interop', () => {
     ]);
     await writeFile(path.join(dir, 'b.bin'), binContent);
 
+    // longline.txt: a single NUL-free line over MAX_LINE_BYTES, with NEEDLE embedded —
+    // pins #LL1: the line-length cap no longer decides isBinary, so this is a text
+    // hit with a real line number, not a binaryMatch. Controls against #B1 above.
+    const longLine = `${'a'.repeat(35_000)}NEEDLE${'a'.repeat(34_994)}\n`;
+    await writeFile(path.join(dir, 'longline.txt'), longLine);
+
     // wt_only_unstaged: a TRACKED file committed with no-match content, then
     // modified in the working tree (but NOT staged) to contain NEEDLE.
     // git grep (working tree) sees the modified working-tree bytes (#T1).
@@ -362,6 +368,30 @@ describe.skipIf(!GIT_AVAILABLE)('grep interop', () => {
 
         // Reconstruct "Binary file X matches" text from the datum; compare to git output
         expect(gitOutput.trim()).toContain('Binary file b.bin matches');
+      });
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // #LL1 — a single NUL-free line over MAX_LINE_BYTES: a text hit with a real
+  // line number, not a binaryMatch (the line-length cap no longer decides).
+  // ---------------------------------------------------------------------------
+  describe('Given a NUL-free single line over MAX_LINE_BYTES that contains NEEDLE', () => {
+    describe('When grepping the working tree for the literal', () => {
+      it('Then tsgit reports a text hit with lineNumber 1, and git grep agrees', async () => {
+        // Arrange & Act
+        const result = await grep(ctx, { patterns: [{ fixed: LIT }] });
+        const gitOutput = git(dir, 'grep', '-n', '-F', LIT, '--', 'longline.txt').trim();
+
+        // Assert tsgit structured data
+        const longResult = result.paths.find((p) => p.path === 'longline.txt');
+        expect(longResult).toBeDefined();
+        expect(longResult?.binaryMatch).toBe(false);
+        expect(longResult?.hits).toHaveLength(1);
+        expect(longResult?.hits[0]?.lineNumber).toBe(1);
+
+        // Reconstruct "path:lineNumber:" prefix and compare to git grep -n output
+        expect(gitOutput).toContain(`longline.txt:${longResult?.hits[0]?.lineNumber}:`);
       });
     });
   });

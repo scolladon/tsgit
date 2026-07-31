@@ -381,18 +381,32 @@ const LEDGER_ROWS: readonly LabeledLedgerRow[] = [
   ledgerRow('rand-1line.txt', '-w', IGNORE_ALL), // >64 KiB on disk — streaming arm
   ledgerRow('len-65536.txt', '-w', IGNORE_ALL),
   ledgerRow('lines-100000.txt', '-w', IGNORE_ALL),
-  // Survives on both (a real change is never dropped) — but the line-length cap
-  // still marks it binary for numstat/patch purposes, same as the C8 rows below.
-  ledgerRow('long-line-txt.txt', '-w', IGNORE_ALL, { numstat: ['-', '-'], patchIsBinary: true }),
+  // Survives on both (a real change is never dropped); the line-length cap no
+  // longer decides isBinary, so numstat/patch now agree with git here too.
+  ledgerRow('long-line-txt.txt', '-w', IGNORE_ALL),
+  // The same fixture, on the plain path (no whitespace flag): the line-length
+  // cap used to mark it binary there too — a divergence the C5 fix above never
+  // swept since it only pinned this fixture's survive verdict. Now a control.
+  ledgerRow('long-line-txt.txt', undefined, {}),
   // C7 — under the line-count cap but over the diff-size cap: the stat arm's
   // `diffLines` whole-file fallback used to disagree with the predicate arm and
   // git (kept where both drop). Neither arm decides its verdict via `diffLines`
   // any more, so both agree with git here too.
   ledgerRow('lines-99999.txt', '-w', IGNORE_ALL),
-  // C8 — the same caps mark a plain (no whitespace flag) real change binary too
-  // (later fix commits update, then delete, these rows).
-  ledgerRow('longline.txt', undefined, {}, { numstat: ['-', '-'], patchIsBinary: true }),
-  ledgerRow('manylines.txt', undefined, {}, { numstat: ['-', '-'], patchIsBinary: true }),
+  // C8 — the line-length cap used to mark a plain (no whitespace flag) real
+  // change binary too. `longline.txt` (single over-cap line) is now fixed and
+  // fully covered by dedicated per-consumer interop cases elsewhere, so its row
+  // is deleted here. `manylines.txt` (over MAX_LINES, also over MAX_DIFF_LINES)
+  // moves from wrongly-binary to wrongly-degraded — Part 13 finishes it.
+  ledgerRow(
+    'manylines.txt',
+    undefined,
+    {},
+    {
+      numstat: [100_001, 100_001],
+      patchIsBinary: false,
+    },
+  ),
   // The NUL-boundary pair — a permanent control proving git's own binary
   // window ([0, 8 000)) is already matched exactly.
   ledgerRow('nul-7999.txt', undefined, {}),

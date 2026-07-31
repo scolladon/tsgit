@@ -149,29 +149,31 @@ describe('line-diff — isBinary', () => {
       {
         bytes: new Uint8Array(MAX_LINE_BYTES - 1).fill(0x61),
         expected: false,
-        label: 'MAX_LINE_BYTES - 1 bytes on one line returns false',
+        label: 'MAX_LINE_BYTES - 1 bytes on one line, no NUL, returns false',
       },
       {
         bytes: new Uint8Array(MAX_LINE_BYTES).fill(0x61),
-        expected: true,
-        label: 'MAX_LINE_BYTES bytes on one line returns true',
+        expected: false,
+        label:
+          'MAX_LINE_BYTES bytes on one line, no NUL, returns false (line length no longer decides)',
       },
       {
         bytes: linesOf(MAX_LINES - 1),
         expected: false,
-        label: 'MAX_LINES - 1 lines (all short, all non-NUL) returns false',
+        label: 'MAX_LINES - 1 lines, all short, no NUL, returns false',
       },
       {
         bytes: linesOf(MAX_LINES),
-        expected: true,
-        label: 'MAX_LINES lines (all short, all non-NUL) returns true',
+        expected: false,
+        label: 'MAX_LINES lines, all short, no NUL, returns false (line count no longer decides)',
       },
       {
         // (MAX_LINES - 1) lines 'a\n' followed by a trailing 'a' (no LF).
-        // Exercises the tail branch that counts the trailing incomplete line.
+        // No longer trips isBinary — line count no longer decides.
         bytes: linesWithTrailingIncomplete(MAX_LINES - 1),
-        expected: true,
-        label: 'MAX_LINES reached via trailing incomplete line (no final LF) returns true',
+        expected: false,
+        label:
+          'MAX_LINES reached via trailing incomplete line (no final LF), no NUL, returns false',
       },
     ])('Then $label', ({ bytes, expected }) => {
       // Arrange + Act

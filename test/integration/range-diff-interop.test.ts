@@ -203,4 +203,66 @@ runs('range-diff interop', () => {
       });
     });
   });
+
+  // C8 — a NUL-free single line over MAX_LINE_BYTES: the line-length cap no longer
+  // decides isBinary, so each commit's per-file diff carries full text hunks instead
+  // of collapsing to an identical "Binary files … differ" line. Before the fix both
+  // sides render that identical binary line regardless of content, so the pair looks
+  // unchanged; after the fix the real content difference surfaces as `changed`, with a
+  // non-trivial diff-of-diffs — matching git. Isolated repo/series: a huge single-line
+  // file would otherwise disturb the funcname/cost matching pinned by the tests above.
+  describe('Given a series introducing a NUL-free over-cap single line differently on each side', () => {
+    let longRoot: string;
+    let longCtx: Context;
+    let longBase: string;
+
+    beforeAll(async () => {
+      longRoot = await mkdtemp(path.join(os.tmpdir(), 'tsgit-rangediff-longline-'));
+      runGit(['-C', longRoot, 'init', '-q', '-b', 'main'], { env: datedEnv(clock) });
+      longCtx = createNodeContext({ workDir: longRoot });
+
+      await writeAndCommit(longRoot, 'seed.txt', 'seed\n', 'seed');
+      longBase = git(longRoot, 'rev-parse', 'HEAD').trim();
+
+      runGit(['-C', longRoot, 'checkout', '-q', '-b', 'lv1'], { env: datedEnv(clock) });
+      await writeAndCommit(longRoot, 'longline.txt', `${'a'.repeat(69_999)}X\n`, 'feat long');
+
+      runGit(['-C', longRoot, 'checkout', '-q', longBase], { env: datedEnv(clock) });
+      runGit(['-C', longRoot, 'checkout', '-q', '-b', 'lv2'], { env: datedEnv(clock) });
+      await writeAndCommit(longRoot, 'longline.txt', `${'a'.repeat(69_999)}Y\n`, 'feat long');
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      if (longRoot) await rm(longRoot, { recursive: true, force: true });
+    });
+
+    describe('When range-diff -s runs with --creation-factor=999 (so the pair actually matches)', () => {
+      it('Then the pair is reported changed, reconstructs byte-for-byte, and carries real hunks', async () => {
+        // Arrange
+        const expected = git(
+          longRoot,
+          'range-diff',
+          '-s',
+          '--creation-factor=999',
+          `${longBase}..lv1`,
+          `${longBase}..lv2`,
+        );
+
+        // Act
+        const entries = await rangeDiffCmd(longCtx, {
+          old: range(longBase, 'lv1'),
+          new: range(longBase, 'lv2'),
+          creationFactor: 999,
+        });
+
+        // Assert — status matches git's own verdict, and the matched pair's
+        // diff-of-diffs is non-trivial: a collapsed "Binary files" line would be
+        // byte-identical on both sides and never surface as a real difference.
+        expect(reconstructS(entries)).toBe(expected);
+        const changed = entries.find((e) => e.status === 'changed');
+        expect(changed?.diffOfDiffs).toBeDefined();
+        expect(changed?.diffOfDiffs?.hunks.some((h) => h.kind !== 'common')).toBe(true);
+      });
+    });
+  });
 });

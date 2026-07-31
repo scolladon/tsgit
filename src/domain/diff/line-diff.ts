@@ -21,7 +21,12 @@ export interface LineDiff {
 }
 
 export const BINARY_DETECTION_BYTES = 8_000;
+// Not consulted by isBinary — git's own binary rule is the NUL window alone.
+// Kept exported at today's value as grep's binary-presence-probe bound
+// (grep.ts's scanBlob), the only surviving consumer.
 export const MAX_LINE_BYTES = 65_536;
+// Not consulted by isBinary or by diffLines — no live consumer. Kept exported
+// at today's value for documentation and backward compatibility only.
 export const MAX_LINES = 100_000;
 export const MAX_DIFF_EDIT_DISTANCE = 10_000;
 export const MAX_DIFF_ITERATION_FACTOR = 1_000;
@@ -54,27 +59,8 @@ export function hasNulInWindow(bytes: Uint8Array): boolean {
   return false;
 }
 
-function exceedsLineCaps(bytes: Uint8Array): boolean {
-  let currentLineBytes = 0;
-  let lineCount = 0;
-  for (let i = 0; i < bytes.length; i++) {
-    currentLineBytes++;
-    if (currentLineBytes >= MAX_LINE_BYTES) return true;
-    if (bytes[i] === LF) {
-      lineCount++;
-      if (lineCount >= MAX_LINES) return true;
-      currentLineBytes = 0;
-    }
-  }
-  if (currentLineBytes > 0) {
-    lineCount++;
-    if (lineCount >= MAX_LINES) return true;
-  }
-  return false;
-}
-
 export function isBinary(bytes: Uint8Array): boolean {
-  return hasNulInWindow(bytes) || exceedsLineCaps(bytes);
+  return hasNulInWindow(bytes);
 }
 
 type Edit = 'equal' | 'delete' | 'insert';

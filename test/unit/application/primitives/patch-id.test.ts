@@ -4,6 +4,7 @@ import { createCommit } from '../../../../src/application/primitives/create-comm
 import { computePatchId } from '../../../../src/application/primitives/patch-id.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../src/application/primitives/write-tree.js';
+import { MAX_LINE_BYTES } from '../../../../src/domain/diff/index.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import type { AuthorIdentity, ObjectId } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
@@ -368,6 +369,28 @@ describe('computePatchId', () => {
       // Assert — patch-ids are equal (same logical change) and textconv was NOT invoked
       expect(patchIdA).toBe(patchIdB);
       expect(runnerCallCount).toBe(0);
+    });
+  });
+
+  describe('Given two commits whose diffs differ only by intra-line whitespace on an over-cap NUL-free single line, When patch-ids are computed', () => {
+    it('Then the patch-ids are equal (the line no longer lands in the binaryKey oid list)', async () => {
+      // Arrange — a single line over MAX_LINE_BYTES with no NUL. Before this fix, the
+      // line-length cap forced isBinary true, so patch-id folded the differing blob oid
+      // into binaryKey and the ids would diverge. After the fix the line is text, so
+      // intra-line whitespace is stripped from the canonicalised diff, same as the
+      // short-line whitespace case above — proving the file no longer takes the binary path.
+      const ctx = await buildSeededContext();
+      const longPrefix = 'a'.repeat(MAX_LINE_BYTES);
+      const base = await commitFile(ctx, 'x\n', []);
+      const cA = await commitFile(ctx, `${longPrefix} y\n`, [base]);
+      const cB = await commitFile(ctx, `${longPrefix}  y\n`, [base]);
+
+      // Act
+      const result = await computePatchId(ctx, cA);
+      const other = await computePatchId(ctx, cB);
+
+      // Assert
+      expect(result).toBe(other);
     });
   });
 });

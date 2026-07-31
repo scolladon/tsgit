@@ -78,6 +78,7 @@ interface CommitPair {
 }
 
 let b1ForceBinary: CommitPair;
+let b1LongLineForceBinary: CommitPair;
 let bnRestoredText: CommitPair;
 let baForceBinaryAdd: CommitPair;
 let bdForceBinaryDelete: CommitPair;
@@ -129,6 +130,17 @@ describe.skipIf(!GIT_AVAILABLE)('diff-attr binary-vs-text override interop', () 
     git(dir, 'add', 'file.forced');
     const b1head = doCommit('modify file.forced');
     b1ForceBinary = { from: b1base, to: b1head };
+
+    // C8 control — -diff still forces binary on a NUL-free single line over
+    // MAX_LINE_BYTES, proving the override takes exact priority over the content
+    // sniff regardless of whether the line-length cap itself decides isBinary.
+    await writeFile(path.join(dir, 'longline.forced'), `${'a'.repeat(70_000)}\n`);
+    git(dir, 'add', 'longline.forced');
+    const b1LongBase = doCommit('add longline.forced');
+    await writeFile(path.join(dir, 'longline.forced'), `${'a'.repeat(69_999)}b\n`);
+    git(dir, 'add', 'longline.forced');
+    const b1LongHead = doCommit('modify longline.forced');
+    b1LongLineForceBinary = { from: b1LongBase, to: b1LongHead };
 
     // Bn — remove -diff from .gitattributes, restoring text detection
     await writeFile(
@@ -305,6 +317,16 @@ describe.skipIf(!GIT_AVAILABLE)('diff-attr binary-vs-text override interop', () 
         find: findByPath('new.forced'),
         requireDefined: true,
         expected: { type: 'delete', added: 0, deleted: 0, binary: true },
+      },
+    },
+    {
+      label: '-diff still forces binary on an over-cap NUL-free line (C8 control)',
+      getPair: () => b1LongLineForceBinary,
+      pathFilter: 'longline.forced',
+      changeCheck: {
+        find: findByPath('longline.forced'),
+        requireDefined: true,
+        expected: { type: 'modify', added: 0, deleted: 0, binary: true },
       },
     },
     {
