@@ -415,6 +415,50 @@ describe('Given a binary blob whose only match lies beyond the first 64 KiB, Whe
   });
 });
 
+describe('Given a text blob with one line longer than 64 KiB', () => {
+  const NEEDLE = 'DEEP_MATCH';
+  const longLine = (matchAt: number): string => {
+    const tail = MAX_LINE_BYTES + 64 - matchAt - NEEDLE.length;
+    return `${'a'.repeat(matchAt)}${NEEDLE}${'a'.repeat(tail)}\n`;
+  };
+
+  describe('When grep runs a pattern matching only past the first 64 KiB of that line', () => {
+    it('Then the line is not reported (the match view is bounded to MAX_LINE_BYTES)', async () => {
+      // Arrange
+      const ctx = await seedRepo();
+      await writeAndStage(ctx, 'long.txt', longLine(MAX_LINE_BYTES + 10));
+      await commitAll(ctx);
+
+      // Act
+      const result: GrepResult = await grep(ctx, { patterns: [{ fixed: NEEDLE }] });
+
+      // Assert
+      expect(result.paths).toHaveLength(0);
+    });
+  });
+
+  describe('When grep runs a pattern matching inside the first 64 KiB of that line', () => {
+    it('Then the hit is reported and carries the whole line, not the bounded view', async () => {
+      // Arrange
+      const ctx = await seedRepo();
+      const content = longLine(10);
+      await writeAndStage(ctx, 'long.txt', content);
+      await commitAll(ctx);
+
+      // Act
+      const result: GrepResult = await grep(ctx, { patterns: [{ fixed: NEEDLE }] });
+
+      // Assert
+      expect(result.paths).toHaveLength(1);
+      const hits = (result.paths[0] as GrepPathResult).hits;
+      expect(hits).toHaveLength(1);
+      const hit = hits[0] as GrepLineHit;
+      expect(hit.line).toEqual(enc(content));
+      expect(hit.spans).toEqual([{ start: 10, end: 10 + NEEDLE.length }]);
+    });
+  });
+});
+
 // ─── Working-tree type changes & non-searchable modes ────────────────────────
 
 describe('Given a tracked file replaced on disk by a directory, When grep runs the default target', () => {
