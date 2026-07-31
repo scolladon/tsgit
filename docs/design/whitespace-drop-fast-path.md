@@ -242,6 +242,24 @@ not to agree. **Shown = survives.** `k` = kept, `d` = dropped.
 *(cell = `git` / `tsgit`; ✗ marks a divergence. `lf-gain-empty` is dropped by **both** under
 `-w --ignore-blank-lines` — the added line is blank, so the blank-skip covers it.)*
 
+> **Two corrections to the tables above, found by executing them.** Building the
+> divergence ledger turned these matrices into running assertions, and two cells did not
+> survive contact:
+>
+> 1. **`sp-no-eol` under `--ignore-space-at-eol` is divergent, not `d d`.** The digests
+>    are `{length: 0, terminated: false}` versus `{length: 0, terminated: true}` — the
+>    terminator alone still trips `digestsEqual`, so tsgit keeps what git drops, exactly
+>    as it does under that fixture's other three flags. The C4 fix covers it; the row was
+>    mis-recorded here.
+> 2. **`long-line-txt` under `-w` is also a numstat/patch divergence.** E-2 pinned only
+>    its survive verdict (both tools keep it — it is a real content change). But
+>    `MAX_LINE_BYTES` marks it binary for counting purposes too, so tsgit reports `- -`
+>    where git reports real counts — the same mechanism as the C8 rows, on a fixture
+>    §Pin F never swept. **The C8 fix therefore clears one row more than §Pin F lists.**
+>
+> Both were confirmed twice: by the live ledger run and by a standalone trace against
+> `digestNormalizedLine` / `digestsEqual`. The ledger, not this table, is the oracle.
+
 **C4 rule, as pinned.** git ignores a difference in the final line's terminator under
 **every** flag that sets `diff_from_contents` — `-w`, `-b`, `--ignore-space-at-eol` **and
 `--ignore-cr-at-eol`** — and it is **symmetric** (LF gained and LF lost behave identically).
