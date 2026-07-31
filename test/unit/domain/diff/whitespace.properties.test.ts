@@ -283,19 +283,26 @@ describe('whitespace normalizer properties', () => {
   });
 
   // Lens 3 (total function over an algebraic grammar): no caps bound the fold
-  // any more, so totality over the safe subset is itself the finding.
+  // any more, so totality over the whole safe subset is itself a finding — and
+  // it falls out of the oracle comparison, which a throw fails just as loudly
+  // as a wrong field. The alphabet here is every byte the subset admits, not
+  // the five the dense CR case above draws from.
   describe('Given an arbitrary line over the safe subset (no NUL, no interior LF), and an arbitrary key', () => {
     describe('When digestNormalizedLine folds it', () => {
-      it('Then it never throws and always returns a digest', () => {
+      it('Then the digest matches the independent normalizeLine+FNV oracle, field by field', () => {
         // Arrange
         fc.assert(
           fc.property(arbSafeLine(), arbLineKey(), (lineBytes, key) => {
             // Act
             const result = digestNormalizedLine(lineBytes, key);
+            const expected = expectedDigest(lineBytes, key);
             // Assert
-            expect(result).toBeDefined();
+            expect(result.length).toBe(expected.length);
+            expect(result.terminated).toBe(expected.terminated);
+            expect(result.hash).toBe(expected.hash);
+            expect(result.altHash).toBe(expected.altHash);
           }),
-          { numRuns: 100 },
+          { numRuns: 200 },
         );
       });
     });
