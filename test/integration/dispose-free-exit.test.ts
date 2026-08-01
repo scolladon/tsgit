@@ -21,7 +21,7 @@
  * @proves
  *   surface:        pack-registry
  *   bucket:         cross-tool-interop
- *   unique:         dispose-free-exit — persistent per-pack handles never keep the event loop alive; explicit dispose() closes them; a concurrent read burst orphans no handle to the GC
+ *   unique:         dispose-free-exit — persistent per-pack handles never keep the event loop alive; a concurrent read burst then dispose() orphans no descriptor to the GC (GC-close-warning oracle)
  */
 import { execFile } from 'node:child_process';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
@@ -182,7 +182,7 @@ describe.skipIf(!GIT_AVAILABLE)('dispose-free exit (A4/B8)', () => {
     });
 
     describe('When a child process opens it, runs one diff, and calls dispose() explicitly', () => {
-      it('Then no active handles remain after dispose (no fd leak)', async () => {
+      it('Then nothing references the event loop after dispose (handle count returns to baseline)', async () => {
         // Arrange + Act
         const { stdout } = await execFileAsync(process.execPath, [scriptPath, repoDir, 'dispose'], {
           timeout: EXIT_TIMEOUT_MS,

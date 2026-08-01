@@ -11,7 +11,7 @@ import {
   unsupportedOperation,
 } from '../../../../src/domain/error.js';
 import type { ObjectId } from '../../../../src/domain/objects/index.js';
-import type { DirEntry, FileStat } from '../../../../src/ports/file-system.js';
+import type { DirEntry, FileHandle, FileStat } from '../../../../src/ports/file-system.js';
 import { buildSeededContext } from './fixtures.js';
 import { withHandleLedger } from './handle-ledger.js';
 import { writeSyntheticPack } from './pack-fixture.js';
@@ -169,8 +169,8 @@ describe('pack-registry', () => {
   });
 
   describe('Given a cached scan', () => {
-    describe('When refresh() is called', () => {
-      it('Then the next all() re-scans the pack directory', async () => {
+    describe('When all() is called twice', () => {
+      it('Then the pack directory is scanned once', async () => {
         // Arrange
         const ctx = await buildSeededContext();
         const ledger = withHandleLedger({
@@ -183,15 +183,35 @@ describe('pack-registry', () => {
         });
         const sut = createPackRegistry(ledger.ctx);
 
-        // Act & Assert — first all() scans, the second is served from the cache.
+        // Act
         await sut.all();
         await sut.all();
+
         // Assert
         expect(ledger.readdirCalls()).toBe(1);
+      });
+    });
 
-        // refresh() drops the cache, so the next all() re-scans.
+    describe('When refresh() runs and all() is called again', () => {
+      it('Then the pack directory is re-scanned', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const ledger = withHandleLedger({
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            exists: async () => true,
+            readdir: async (): Promise<ReadonlyArray<DirEntry>> => [],
+          },
+        });
+        const sut = createPackRegistry(ledger.ctx);
+        await sut.all();
+
+        // Act
         sut.refresh();
         await sut.all();
+
+        // Assert
         expect(ledger.readdirCalls()).toBe(2);
       });
     });
@@ -985,17 +1005,15 @@ describe('PackRegistry.refresh — after dispose', () => {
         const pack = (await registry.all())[0]!;
         await pack.readSlice(0, 4);
         await registry.dispose();
-        const readdirCallsBeforeRefresh = ledger.readdirCalls();
-        const opensBeforeRefresh = ledger.opens();
 
         // Act
         registry.refresh();
         const packsAfterRefresh = await registry.all();
         await packsAfterRefresh[0]!.readSlice(0, 4);
 
-        // Assert
-        expect(ledger.readdirCalls()).toBe(readdirCallsBeforeRefresh);
-        expect(ledger.opens()).toBe(opensBeforeRefresh);
+        // Assert — the one pre-dispose scan and the one pre-dispose open stand alone
+        expect(ledger.readdirCalls()).toBe(1);
+        expect(ledger.opens()).toBe(1);
       });
     });
   });
@@ -1011,9 +1029,15 @@ describe('PackRegistry — single-flight scan', () => {
         const sut = createPackRegistry(ledger.ctx);
 
         // Act
-        expect(() => sut.refresh()).not.toThrow();
+        let thrown: unknown;
+        try {
+          sut.refresh();
+        } catch (error) {
+          thrown = error;
+        }
 
         // Assert
+        expect(thrown).toBeUndefined();
         expect(ledger.readdirCalls()).toBe(0);
         expect(ledger.closes()).toBe(0);
       });
@@ -1066,6 +1090,7 @@ describe('PackRegistry — single-flight scan', () => {
 
         // Assert
         expect(ledger.readdirCalls()).toBe(1);
+        expect(hits.every((hit) => hit !== undefined)).toBe(true);
         for (const hit of hits) {
           expect(hit?.pack).toBe(hits[0]?.pack);
         }
@@ -1134,9 +1159,7 @@ describe('PackRegistry — single-flight scan', () => {
         expect(ledger.opens()).toBe(0);
       });
     });
-  });
 
-  describe('Given a gated scan (call 0) in flight', () => {
     describe('When dispose() is started, call 0 settles, and the disposal is awaited', () => {
       it('Then the scan settles before dispose resolves, and a later read by the scan caller opens no handle', async () => {
         // Arrange
@@ -1306,6 +1329,134 @@ describe('PackRegistry — single-flight scan', () => {
         } finally {
           process.removeListener('unhandledRejection', onUnhandledRejection);
         }
+      });
+    });
+  });
+});
+
+describe('PackRegistry — read path after dispose', () => {
+  describe('Given a disposed registry that never scanned', () => {
+    describe('When all() and lookup() are called', () => {
+      it('Then both resolve empty without ever scanning the pack directory', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'disposed-cold', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('c') },
+        ]);
+        const ledger = withHandleLedger(ctx);
+        const sut = createPackRegistry(ledger.ctx);
+        await sut.dispose();
+
+        // Act
+        const packs = await sut.all();
+        const hit = await sut.lookup('0000000000000000000000000000000000000000' as ObjectId);
+
+        // Assert — no scan may start after disposal: its packs would be
+        // unreachable from refresh() and dispose(), so nothing could ever
+        // close their handles.
+        expect(packs).toEqual([]);
+        expect(hit).toBeUndefined();
+        expect(ledger.readdirCalls()).toBe(0);
+        expect(ledger.opens()).toBe(0);
+      });
+    });
+  });
+
+  describe('Given a registry whose pack was read once before dispose()', () => {
+    describe('When all() is called after disposal', () => {
+      it('Then it returns the same retired set without a new scan or open', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'disposed-warm', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('w') },
+        ]);
+        const ledger = withHandleLedger(ctx);
+        const sut = createPackRegistry(ledger.ctx);
+        const before = await sut.all();
+        await before[0]!.readSlice(0, 4);
+        await sut.dispose();
+
+        // Act
+        const after = await sut.all();
+
+        // Assert
+        expect(after).toBe(before);
+        expect(ledger.readdirCalls()).toBe(1);
+        expect(ledger.opens()).toBe(1);
+      });
+    });
+  });
+});
+
+describe('PackRegistry.dispose — idempotence', () => {
+  describe('Given two packs that were each read once', () => {
+    describe('When dispose() is awaited twice', () => {
+      it('Then both handles are closed once and the second call resolves', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'dispose-twice-a', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('a') },
+        ]);
+        await writeSyntheticPack(ctx, 'dispose-twice-b', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('b') },
+        ]);
+        const ledger = withHandleLedger(ctx);
+        const sut = createPackRegistry(ledger.ctx);
+        const packs = await sut.all();
+        await Promise.all(packs.map((pack) => pack.readSlice(0, 4)));
+        await sut.dispose();
+
+        // Act
+        let thrown: unknown;
+        try {
+          await sut.dispose();
+        } catch (error) {
+          thrown = error;
+        }
+
+        // Assert
+        expect(thrown).toBeUndefined();
+        expect(ledger.closes()).toBe(2);
+        expect(ledger.outstanding()).toBe(0);
+      });
+    });
+  });
+});
+
+describe('RegisteredPack.readSlice — errno-mapped UNSUPPORTED_OPERATION', () => {
+  describe('Given an fs whose openWithNoFollow rejects with UNSUPPORTED_OPERATION from errno mapping (operation "filesystem")', () => {
+    describe('When readSlice is called', () => {
+      it('Then the fault is rethrown instead of rerouting through the per-call fallback', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const content = new TextEncoder().encode('errno-content');
+        await writeSyntheticPack(ctx, 'errno-pack', [{ kind: 'base', type: 'blob', content }]);
+        const ledger = withHandleLedger({
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            openWithNoFollow: async (): Promise<FileHandle> => {
+              throw unsupportedOperation('filesystem', 'EMFILE');
+            },
+          },
+        });
+        const sut = createPackRegistry(ledger.ctx);
+        const packs = await sut.all();
+
+        // Act
+        let caught: unknown;
+        try {
+          await packs[0]!.readSlice(0, 4);
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        const data = (caught as { data?: { code?: string; operation?: string } }).data;
+        expect(data?.code).toBe('UNSUPPORTED_OPERATION');
+        expect(data?.operation).toBe('filesystem');
+        expect(ledger.perCallReads()).toBe(0);
       });
     });
   });

@@ -102,8 +102,10 @@ export function withHandleLedger(base: Context, opts?: { gateReaddir?: boolean }
     fs: {
       ...base.fs,
       openWithNoFollow: async (path: string, mode: 'read' | 'write'): Promise<FileHandle> => {
-        opens += 1;
+        // Count only successful opens: a rejected open never yields a handle,
+        // so counting it would make outstanding() report a phantom leak.
         const handle = await base.fs.openWithNoFollow(path, mode);
+        opens += 1;
         return {
           ...handle,
           close: async () => {

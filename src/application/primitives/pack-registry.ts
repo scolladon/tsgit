@@ -17,8 +17,17 @@ import { createPromiseMemo } from './internal/promise-memo.js';
 import { commonGitDir, packsDir } from './path-layout.js';
 import { exceedsMaxPackIdxBytes, REASON_PACK_IDX_EXCEEDS_MAX } from './validators.js';
 
+// Discriminates "this adapter cannot open persistent handles" (the browser
+// adapter's openWithNoFollow refusal) from errno-mapped faults that share the
+// same code — mapErrno folds unrecognised errnos (EMFILE, EIO, …) into
+// UNSUPPORTED_OPERATION with operation 'filesystem', and those must surface,
+// not silently reroute every later read through the per-call fallback.
 function isUnsupportedOperation(err: unknown): boolean {
-  return err instanceof TsgitError && err.data.code === 'UNSUPPORTED_OPERATION';
+  return (
+    err instanceof TsgitError &&
+    err.data.code === 'UNSUPPORTED_OPERATION' &&
+    err.data.operation === 'openWithNoFollow'
+  );
 }
 
 export interface PackOffsetTable {
@@ -194,7 +203,7 @@ export function nextOffsetForEntry(table: PackOffsetTable, offset: number): numb
   return sortedOffsets[rank + 1] as number;
 }
 
-const NO_PACKS: ReadonlyArray<RegisteredPack> = [];
+const NO_PACKS: ReadonlyArray<RegisteredPack> = Object.freeze([]);
 
 export function createPackRegistry(ctx: Context): PackRegistry {
   const scanPacks = async (): Promise<ReadonlyArray<RegisteredPack>> => {
@@ -223,11 +232,25 @@ export function createPackRegistry(ctx: Context): PackRegistry {
   };
 
   const drainPendingCloses = async (): Promise<void> => {
-    await Promise.all([...pendingCloses]);
+    // allSettled, not all: the drain must never re-raise — a tracked batch is
+    // allSettled-derived and cannot reject, but the drain does not rest on
+    // that invariant holding forever.
+    await Promise.allSettled([...pendingCloses]);
+  };
+
+  // Terminal disposal binds the read path too: once disposed, never start a
+  // scan — its packs would be unreachable from refresh() (a no-op by then)
+  // and from dispose() (already resolved), so nothing could ever close their
+  // handles. A memo still populated keeps returning the closed, retired set;
+  // an empty one (never scanned, or self-cleared by a scan rejection)
+  // resolves empty instead of scanning.
+  const allPacks = (): Promise<ReadonlyArray<RegisteredPack>> => {
+    if (!disposed) return scan.get();
+    return scan.peek() ?? Promise.resolve(NO_PACKS);
   };
 
   return {
-    all: scan.get,
+    all: allPacks,
     refresh(): void {
       if (disposed) return;
       // The outgoing packs may hold open persistent handles; close them before
@@ -245,7 +268,7 @@ export function createPackRegistry(ctx: Context): PackRegistry {
       );
     },
     async lookup(id: ObjectId): Promise<PackLookupHit | undefined> {
-      const packs = await scan.get();
+      const packs = await allPacks();
       for (const pack of packs) {
         const offset = lookupPackIndex(pack.index, id);
         if (offset !== undefined) {
@@ -259,9 +282,9 @@ export function createPackRegistry(ctx: Context): PackRegistry {
       // A registry that never scanned the pack directory has no handles to
       // close — skip the scan entirely rather than triggering one just to
       // find nothing. Peek, not clear: all() keeps returning the closed,
-      // retired set after disposal, exactly as before this change. A refresh
-      // that ran before this dispose may still have a close batch in flight,
-      // so this arm must still drain it.
+      // retired set after disposal. A refresh that ran before this dispose
+      // may still have a close batch in flight, so this arm must still
+      // drain it.
       const pending = scan.peek();
       if (pending === undefined) return drainPendingCloses();
       // A pending scan's own rejection already has an owner — the all()/
