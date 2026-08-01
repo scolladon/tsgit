@@ -12,12 +12,21 @@ import {
   parsePackIndex,
 } from '../../domain/storage/index.js';
 import type { Context } from '../../ports/context.js';
-import type { FileHandle } from '../../ports/file-system.js';
+import { createPromiseMemo } from './internal/promise-memo.js';
 import { commonGitDir, packsDir } from './path-layout.js';
 import { exceedsMaxPackIdxBytes, REASON_PACK_IDX_EXCEEDS_MAX } from './validators.js';
 
+// Discriminates "this adapter cannot open persistent handles" (the browser
+// adapter's openWithNoFollow refusal) from errno-mapped faults that share the
+// same code — mapErrno folds unrecognised errnos (EMFILE, EIO, …) into
+// UNSUPPORTED_OPERATION with operation 'filesystem', and those must surface,
+// not silently reroute every later read through the per-call fallback.
 function isUnsupportedOperation(err: unknown): boolean {
-  return err instanceof TsgitError && err.data.code === 'UNSUPPORTED_OPERATION';
+  return (
+    err instanceof TsgitError &&
+    err.data.code === 'UNSUPPORTED_OPERATION' &&
+    err.data.operation === 'openWithNoFollow'
+  );
 }
 
 export interface PackOffsetTable {
@@ -90,9 +99,7 @@ async function loadPack(ctx: Context, dir: string, entryName: string): Promise<R
   const name = entryName.slice(0, -'.idx'.length);
   const packPath = `${dir}/${name}.pack`;
 
-  let cachedTable: PackOffsetTable | undefined;
-  const offsetTable = async (): Promise<PackOffsetTable> => {
-    if (cachedTable !== undefined) return cachedTable;
+  const buildOffsetTable = async (): Promise<PackOffsetTable> => {
     const stat = await ctx.fs.stat(packPath);
     const packFileSize = stat.size;
     const raw = entryOffsets(index);
@@ -103,15 +110,17 @@ async function loadPack(ctx: Context, dir: string, entryName: string): Promise<R
     if (trailerStart < 0) {
       throw invalidPackIndex('pack file too small to contain a trailer');
     }
-    cachedTable = { sortedOffsets, packFileSize, trailerStart };
-    return cachedTable;
+    return { sortedOffsets, packFileSize, trailerStart };
   };
+  const offsetTable = createPromiseMemo(buildOffsetTable).get;
 
   // Lazily-opened, memoised persistent handle for this pack's slice reads.
-  // Cleared back to `undefined` whenever the open attempt is known-unsupported
-  // (browser OPFS), so `close()` never has to unwind a rejected memo and every
-  // `readSlice` call after that point falls back cleanly.
-  let handlePromise: Promise<FileHandle> | undefined;
+  // The memo clears itself on any open rejection (a transient EMFILE must
+  // not pin later reads — or dispose() — to a stale fault), and the
+  // known-unsupported arm below (browser OPFS) clears it too so every later
+  // `readSlice` falls back cleanly; `close()` tolerates a rejected memo and
+  // closes nothing.
+  const handleMemo = createPromiseMemo(() => ctx.fs.openWithNoFollow(packPath, 'read'));
   // `refresh()` closes outgoing packs while sibling reads may still be
   // mid-slice on this instance: in-flight reads are tracked so `close()`
   // drains them first, and a read arriving after `close()` falls back to the
@@ -121,11 +130,8 @@ async function loadPack(ctx: Context, dir: string, entryName: string): Promise<R
 
   const readSlice = async (offset: number, length: number): Promise<Uint8Array> => {
     if (retired) return ctx.fs.readSlice(packPath, offset, length);
-    if (handlePromise === undefined) {
-      handlePromise = ctx.fs.openWithNoFollow(packPath, 'read');
-    }
     const read = (async (): Promise<Uint8Array> => {
-      const handle = await handlePromise;
+      const handle = await handleMemo.get();
       const buffer = new Uint8Array(length);
       const bytesRead = await handle.read(buffer, 0, length, offset);
       return buffer.subarray(0, bytesRead);
@@ -135,7 +141,7 @@ async function loadPack(ctx: Context, dir: string, entryName: string): Promise<R
       return await read;
     } catch (err) {
       if (!isUnsupportedOperation(err)) throw err;
-      handlePromise = undefined;
+      handleMemo.clear();
       return ctx.fs.readSlice(packPath, offset, length);
     } finally {
       // NOTE: this block's BlockStatement mutant (`{}`) is equivalent — inFlight's only
@@ -155,13 +161,15 @@ async function loadPack(ctx: Context, dir: string, entryName: string): Promise<R
 
   const close = async (): Promise<void> => {
     retired = true;
-    const pending = handlePromise;
+    const pending = handleMemo.clear();
     if (pending === undefined) return;
-    handlePromise = undefined;
     // Let sibling reads that already hold the handle finish before closing
     // it under them (their own rejections surface to their callers).
     await Promise.allSettled(inFlight);
-    const handle = await pending;
+    // A pending open that rejected has no handle to close; its error already
+    // surfaced to the read that triggered it and must not resurface here.
+    const handle = await pending.catch(() => undefined);
+    if (handle === undefined) return;
     await handle.close();
   };
 
@@ -185,7 +193,7 @@ function bisectLeft(arr: ReadonlyArray<number>, value: number): number {
 export function nextOffsetForEntry(table: PackOffsetTable, offset: number): number {
   const { sortedOffsets, trailerStart } = table;
   const rank = bisectLeft(sortedOffsets, offset);
-  // Stryker disable next-line EqualityOperator: equivalent — bisectLeft returns rank in [0, len], so rank > len is unreachable; at rank===len sortedOffsets[len] is undefined !== any numeric offset, so the second clause fires the identical throw
+  // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — bisectLeft returns rank in [0, len], so rank > len is unreachable; at rank===len sortedOffsets[len] is undefined !== any numeric offset, so whether the first clause is forced always-false or its >= is mutated, the second clause fires the identical throw
   if (rank >= sortedOffsets.length || sortedOffsets[rank] !== offset) {
     throw invalidPackIndex('offset not in pack index: corrupt index');
   }
@@ -195,39 +203,76 @@ export function nextOffsetForEntry(table: PackOffsetTable, offset: number): numb
   return sortedOffsets[rank + 1] as number;
 }
 
-export function createPackRegistry(ctx: Context): PackRegistry {
-  let cache: ReadonlyArray<RegisteredPack> | undefined;
+const NO_PACKS: ReadonlyArray<RegisteredPack> = Object.freeze([]);
 
-  async function loadAll(): Promise<ReadonlyArray<RegisteredPack>> {
-    if (cache !== undefined) return cache;
+export function createPackRegistry(ctx: Context): PackRegistry {
+  const scanPacks = async (): Promise<ReadonlyArray<RegisteredPack>> => {
     const dir = packsDir(commonGitDir(ctx));
-    if (!(await ctx.fs.exists(dir))) {
-      cache = [];
-      return cache;
-    }
+    if (!(await ctx.fs.exists(dir))) return NO_PACKS;
     const entries = await ctx.fs.readdir(dir);
     const packs: RegisteredPack[] = [];
     for (const entry of entries) {
       if (!isCandidate(entry)) continue;
       packs.push(await loadPack(ctx, dir, entry.name));
     }
-    cache = packs;
-    return cache;
-  }
+    return packs;
+  };
+  const scan = createPromiseMemo(scanPacks);
+
+  let disposed = false;
+  const pendingCloses = new Set<Promise<unknown>>();
+
+  // Only ever handed a promise that cannot reject (Promise.allSettled never does),
+  // or this bookkeeping .finally would become an unhandled rejection of its own.
+  const trackClose = (settled: Promise<unknown>): void => {
+    pendingCloses.add(settled);
+    // Stryker disable next-line BlockStatement: equivalent — a never-shrinking pendingCloses only makes drainPendingCloses's Promise.allSettled await already-settled entries too, which resolves immediately with no observable outcome change; the only effect is the settled reference staying reachable instead of becoming eligible for GC
+    void settled.finally(() => {
+      pendingCloses.delete(settled);
+    });
+  };
+
+  const drainPendingCloses = async (): Promise<void> => {
+    // allSettled, not all: the drain must never re-raise — a tracked batch is
+    // allSettled-derived and cannot reject, but the drain does not rest on
+    // that invariant holding forever.
+    await Promise.allSettled([...pendingCloses]);
+  };
+
+  // Terminal disposal binds the read path too: once disposed, never start a
+  // scan — its packs would be unreachable from refresh() (a no-op by then)
+  // and from dispose() (already resolved), so nothing could ever close their
+  // handles. A memo still populated keeps returning the closed, retired set —
+  // including a pending scan that later rejects, whose error reaches these
+  // read callers exactly as it reaches pre-dispose joiners. An empty memo
+  // (never scanned, or self-cleared by a scan rejection) resolves empty
+  // instead of scanning.
+  const allPacks = (): Promise<ReadonlyArray<RegisteredPack>> => {
+    if (!disposed) return scan.get();
+    return scan.peek() ?? Promise.resolve(NO_PACKS);
+  };
 
   return {
-    all: loadAll,
+    all: allPacks,
     refresh(): void {
+      if (disposed) return;
       // The outgoing packs may hold open persistent handles; close them before
       // dropping the references or every refresh leaks one fd per touched pack.
-      const outgoing = cache;
-      cache = undefined;
-      if (outgoing !== undefined) {
-        void Promise.allSettled(outgoing.map((pack) => pack.close()));
-      }
+      const outgoing = scan.clear();
+      if (outgoing === undefined) return;
+      trackClose(
+        outgoing.then(
+          (packs) => Promise.allSettled(packs.map((pack) => pack.close())),
+          // A rejected scan produced no packs and therefore no handles. The error is
+          // not discarded: it is delivered to the all()/lookup() caller that triggered
+          // the scan — this arm only declines to close a set that does not exist.
+          // Stryker disable next-line ArrowFunction: equivalent — this .then result is consumed only by trackClose, which discards it via Promise.allSettled; returning undefined instead of NO_PACKS changes nothing observable (unlike dispose()'s `.catch(() => NO_PACKS)` below, whose result feeds packs.map and whose mutant was killed)
+          () => NO_PACKS,
+        ),
+      );
     },
     async lookup(id: ObjectId): Promise<PackLookupHit | undefined> {
-      const packs = await loadAll();
+      const packs = await allPacks();
       for (const pack of packs) {
         const offset = lookupPackIndex(pack.index, id);
         if (offset !== undefined) {
@@ -237,12 +282,22 @@ export function createPackRegistry(ctx: Context): PackRegistry {
       return undefined;
     },
     async dispose(): Promise<void> {
+      disposed = true;
       // A registry that never scanned the pack directory has no handles to
       // close — skip the scan entirely rather than triggering one just to
-      // find nothing.
-      if (cache === undefined) return;
+      // find nothing. Peek, not clear: all() keeps returning the closed,
+      // retired set after disposal. A refresh that ran before this dispose
+      // may still have a close batch in flight, so this arm must still
+      // drain it.
+      const pending = scan.peek();
+      if (pending === undefined) return drainPendingCloses();
+      // A pending scan's own rejection already has an owner — the all()/
+      // lookup() caller that triggered it. Absorb it here without closing
+      // anything: a rejected scan produced no packs and therefore no handles.
+      const packs = await pending.catch(() => NO_PACKS);
       // Settle every close so one failing handle cannot strand the others.
-      const results = await Promise.allSettled(cache.map((pack) => pack.close()));
+      const results = await Promise.allSettled(packs.map((pack) => pack.close()));
+      await drainPendingCloses();
       const failure = results.find(
         (outcome): outcome is PromiseRejectedResult => outcome.status === 'rejected',
       );

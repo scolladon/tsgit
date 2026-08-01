@@ -16,6 +16,9 @@ Alphabetical.
 ### `computeChangeset`
 `compute-changeset.ts`. Tree-vs-working-tree diff for the dirty-tree guard. Used by [`checkout`](../commands/checkout.md), [`reset`](../commands/reset.md), [`status`](../commands/status.md).
 
+### `createPackRegistry`
+`pack-registry.ts`. Fully internal. Lazy, single-flight scan of `.git/objects/pack/` — one scan no matter how many concurrent first readers — plus one persistent, promise-memoised `FileHandle` per pack for delta-chain reads. `refresh()` retires and closes the outgoing pack set after a lazy fetch; `dispose()` awaits any in-flight scan, closes every handle it ever opened, and is terminal. One registry per `Context`, behind every packed-object read ([`readObject`](read-object.md), [`readBlob`](read-blob.md), [`streamBlob`](stream-blob.md)) and [`fsck`](../commands/fsck.md)'s enumeration.
+
 ### `enumerateObjects`
 `enumerate-objects.ts`. Enumerate every object id in the database (loose ∪ pack-index), sorted and de-duplicated. Used by [`fsck`](../commands/fsck.md).
 

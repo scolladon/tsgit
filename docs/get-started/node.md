@@ -77,6 +77,8 @@ await repo.dispose();
 
 `dispose()` aborts the internal `AbortSignal`, lets in-flight reads/writes unwind, and tears down the adapters. After it resolves, every bound method throws `REPOSITORY_DISPOSED`.
 
+When it resolves, every file descriptor the repository opened — including the persistent pack handles behind concurrent read bursts — has been closed; nothing is left for the garbage collector. That matters on Node 26, which turns a GC-collected open `FileHandle` (the `DEP0137` deprecation on earlier majors) into a fatal error.
+
 It's idempotent — safe to call twice, safe to call from a `finally` block, safe to call after an external `AbortController.abort()`:
 
 ```ts

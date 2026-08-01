@@ -11,8 +11,9 @@ import {
   unsupportedOperation,
 } from '../../../../src/domain/error.js';
 import type { ObjectId } from '../../../../src/domain/objects/index.js';
-import type { DirEntry, FileStat } from '../../../../src/ports/file-system.js';
+import type { DirEntry, FileHandle, FileStat } from '../../../../src/ports/file-system.js';
 import { buildSeededContext } from './fixtures.js';
+import { withHandleLedger } from './handle-ledger.js';
 import { writeSyntheticPack } from './pack-fixture.js';
 
 const dirEntry = (name: string): DirEntry => ({
@@ -168,34 +169,50 @@ describe('pack-registry', () => {
   });
 
   describe('Given a cached scan', () => {
-    describe('When refresh() is called', () => {
-      it('Then the next all() re-scans the pack directory', async () => {
+    describe('When all() is called twice', () => {
+      it('Then the pack directory is scanned once', async () => {
         // Arrange
         const ctx = await buildSeededContext();
-        let readdirCalls = 0;
-        const wrapped = {
+        const ledger = withHandleLedger({
           ...ctx,
           fs: {
             ...ctx.fs,
             exists: async () => true,
-            readdir: async (): Promise<ReadonlyArray<DirEntry>> => {
-              readdirCalls += 1;
-              return [];
-            },
+            readdir: async (): Promise<ReadonlyArray<DirEntry>> => [],
           },
-        };
-        const sut = createPackRegistry(wrapped);
+        });
+        const sut = createPackRegistry(ledger.ctx);
 
-        // Act & Assert — first all() scans, the second is served from the cache.
+        // Act
         await sut.all();
         await sut.all();
+
         // Assert
-        expect(readdirCalls).toBe(1);
+        expect(ledger.readdirCalls()).toBe(1);
+      });
+    });
 
-        // refresh() drops the cache, so the next all() re-scans.
+    describe('When refresh() runs and all() is called again', () => {
+      it('Then the pack directory is re-scanned', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const ledger = withHandleLedger({
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            exists: async () => true,
+            readdir: async (): Promise<ReadonlyArray<DirEntry>> => [],
+          },
+        });
+        const sut = createPackRegistry(ledger.ctx);
+        await sut.all();
+
+        // Act
         sut.refresh();
         await sut.all();
-        expect(readdirCalls).toBe(2);
+
+        // Assert
+        expect(ledger.readdirCalls()).toBe(2);
       });
     });
   });
@@ -467,6 +484,102 @@ describe('RegisteredPack.offsetTable', () => {
       });
     });
   });
+
+  describe('Given a cold pack obtained from all() with the stat counter reset', () => {
+    describe('When 8 offsetTable() calls run under Promise.all', () => {
+      it('Then ctx.fs.stat was called exactly once and all 8 results are the same object reference', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const content1 = new Uint8Array([10, 20, 30]);
+        const content2 = new Uint8Array([40, 50, 60, 70]);
+        await writeSyntheticPack(ctx, 'concurrent-offset-table', [
+          { kind: 'base', type: 'blob', content: content1 },
+          { kind: 'base', type: 'blob', content: content2 },
+        ]);
+        let statCallCount = 0;
+        const countingCtx = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            stat: async (path: string) => {
+              statCallCount += 1;
+              return ctx.fs.stat(path);
+            },
+          },
+        };
+        const registry = createPackRegistry(countingCtx);
+        const packs = await registry.all();
+        const pack = packs[0]!;
+        // Stat was called during loadPack (for readBoundedIdx); reset the counter
+        // so only offsetTable()'s own stat calls are measured.
+        statCallCount = 0;
+        const sut = pack.offsetTable;
+
+        // Act — 8 concurrent calls under Promise.all
+        const results = await Promise.all(Array.from({ length: 8 }, () => sut()));
+
+        // Assert — single-flight: exactly one stat, identical object across all callers
+        expect(statCallCount).toBe(1);
+        for (const result of results) {
+          expect(result).toBe(results[0]);
+        }
+      });
+    });
+  });
+
+  describe('Given a pack whose stat makes trailerStart negative', () => {
+    describe('When offsetTable() rejects and is called again', () => {
+      it('Then stat ran twice and the second rejection carries INVALID_PACK_INDEX with reason containing "pack file too small"', async () => {
+        // Arrange — stat returns size=10 (< digestLength=20), so trailerStart = 10 - 20 = -10 each time.
+        const ctx = await buildSeededContext();
+        const content1 = new Uint8Array([1, 2, 3]);
+        await writeSyntheticPack(ctx, 'tiny-pack-retried', [
+          { kind: 'base', type: 'blob', content: content1 },
+        ]);
+        const tinySize = 10; // less than digestLength (20 for SHA-1)
+        let statCallCount = 0;
+        const wrappedCtx = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            stat: async (path: string) => {
+              const real = await ctx.fs.stat(path);
+              if (path.endsWith('.pack')) {
+                statCallCount += 1;
+                return { ...real, size: tinySize };
+              }
+              return real;
+            },
+          },
+        };
+        const registry = createPackRegistry(wrappedCtx);
+        const packs = await registry.all();
+        const pack = packs[0]!;
+        const sut = pack.offsetTable;
+
+        // Act
+        let firstCaught: unknown;
+        try {
+          await sut();
+        } catch (error) {
+          firstCaught = error;
+        }
+        let secondCaught: unknown;
+        try {
+          await sut();
+        } catch (error) {
+          secondCaught = error;
+        }
+
+        // Assert — rejection is never memoised: stat runs again on the second call
+        expect(firstCaught).toBeDefined();
+        expect(statCallCount).toBe(2);
+        const data = (secondCaught as { data?: { code?: string; reason?: string } }).data;
+        expect(data?.code).toBe('INVALID_PACK_INDEX');
+        expect(data?.reason).toContain('pack file too small');
+      });
+    });
+  });
 });
 
 describe('RegisteredPack.readSlice — persistent handle (A4)', () => {
@@ -605,23 +718,8 @@ describe('RegisteredPack retired reads', () => {
         const ctx = await buildSeededContext();
         const content = new TextEncoder().encode('retired-read');
         await writeSyntheticPack(ctx, 'retired-read', [{ kind: 'base', type: 'blob', content }]);
-        let opens = 0;
-        let perCallReads = 0;
-        const wrapped = {
-          ...ctx,
-          fs: {
-            ...ctx.fs,
-            openWithNoFollow: async (path: string, mode: 'read' | 'write') => {
-              opens += 1;
-              return ctx.fs.openWithNoFollow(path, mode);
-            },
-            readSlice: async (path: string, offset: number, length: number) => {
-              perCallReads += 1;
-              return ctx.fs.readSlice(path, offset, length);
-            },
-          },
-        };
-        const registry = createPackRegistry(wrapped);
+        const ledger = withHandleLedger(ctx);
+        const registry = createPackRegistry(ledger.ctx);
         const pack = (await registry.all())[0]!;
         await pack.readSlice(0, 4);
         await pack.close();
@@ -632,8 +730,8 @@ describe('RegisteredPack retired reads', () => {
 
         // Assert — one open total (never re-opened), the post-close read went
         // through the per-call path, bytes identical
-        expect(opens).toBe(1);
-        expect(perCallReads).toBe(1);
+        expect(ledger.opens()).toBe(1);
+        expect(ledger.perCallReads()).toBe(1);
         expect(Array.from(result)).toEqual(Array.from(direct));
       });
     });
@@ -657,6 +755,33 @@ describe('RegisteredPack retired reads', () => {
         // Assert
         const direct = await ctx.fs.readSlice(pack.packPath, 0, 4);
         expect(Array.from(result)).toEqual(Array.from(direct));
+      });
+    });
+  });
+});
+
+describe('HandleLedger.outstanding', () => {
+  describe('Given a pack read once through the ledger', () => {
+    describe('When close() has run', () => {
+      it('Then outstanding() was 1 before the close and is 0 after', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const content = new TextEncoder().encode('outstanding-arithmetic');
+        await writeSyntheticPack(ctx, 'outstanding-arithmetic', [
+          { kind: 'base', type: 'blob', content },
+        ]);
+        const sut = withHandleLedger(ctx);
+        const registry = createPackRegistry(sut.ctx);
+        const pack = (await registry.all())[0]!;
+        await pack.readSlice(0, 4);
+        const beforeClose = sut.outstanding();
+
+        // Act
+        await pack.close();
+
+        // Assert
+        expect(beforeClose).toBe(1);
+        expect(sut.outstanding()).toBe(0);
       });
     });
   });
@@ -710,40 +835,24 @@ describe('RegisteredPack.close', () => {
 
 describe('PackRegistry.refresh', () => {
   describe('Given a pack that was read once (persistent handle opened)', () => {
-    describe('When refresh is called', () => {
+    describe('When refresh is called and dispose() is awaited', () => {
       it('Then the outgoing pack handle is closed (no fd leak across refreshes)', async () => {
         // Arrange
         const ctx = await buildSeededContext();
         await writeSyntheticPack(ctx, 'refresh-leak', [
           { kind: 'base', type: 'blob', content: new TextEncoder().encode('r') },
         ]);
-        let closeCalls = 0;
-        const wrapped = {
-          ...ctx,
-          fs: {
-            ...ctx.fs,
-            openWithNoFollow: async (path: string, mode: 'read' | 'write') => {
-              const handle = await ctx.fs.openWithNoFollow(path, mode);
-              return {
-                ...handle,
-                close: async () => {
-                  closeCalls += 1;
-                  await handle.close();
-                },
-              };
-            },
-          },
-        };
-        const registry = createPackRegistry(wrapped);
+        const ledger = withHandleLedger(ctx);
+        const registry = createPackRegistry(ledger.ctx);
         const packs = await registry.all();
         await packs[0]!.readSlice(0, 4);
 
         // Act
         registry.refresh();
-        await new Promise((resolve) => setTimeout(resolve, 0));
+        await registry.dispose();
 
         // Assert
-        expect(closeCalls).toBe(1);
+        expect(ledger.closes()).toBe(1);
       });
     });
   });
@@ -761,24 +870,8 @@ describe('PackRegistry.dispose', () => {
         await writeSyntheticPack(ctx, 'dispose-b', [
           { kind: 'base', type: 'blob', content: new TextEncoder().encode('b') },
         ]);
-        let closeCalls = 0;
-        const wrapped = {
-          ...ctx,
-          fs: {
-            ...ctx.fs,
-            openWithNoFollow: async (path: string, mode: 'read' | 'write') => {
-              const handle = await ctx.fs.openWithNoFollow(path, mode);
-              return {
-                ...handle,
-                close: async () => {
-                  closeCalls += 1;
-                  await handle.close();
-                },
-              };
-            },
-          },
-        };
-        const registry = createPackRegistry(wrapped);
+        const ledger = withHandleLedger(ctx);
+        const registry = createPackRegistry(ledger.ctx);
         const packs = await registry.all();
         for (const pack of packs) {
           await pack.readSlice(0, 4);
@@ -788,7 +881,7 @@ describe('PackRegistry.dispose', () => {
         await registry.dispose();
 
         // Assert
-        expect(closeCalls).toBe(2);
+        expect(ledger.closes()).toBe(2);
       });
     });
   });
@@ -841,24 +934,580 @@ describe('PackRegistry.dispose', () => {
       it('Then resolves without scanning the pack directory', async () => {
         // Arrange
         const ctx = await buildSeededContext();
-        let readdirCalls = 0;
-        const wrapped = {
-          ...ctx,
-          fs: {
-            ...ctx.fs,
-            readdir: async (path: string): Promise<ReadonlyArray<DirEntry>> => {
-              readdirCalls += 1;
-              return ctx.fs.readdir(path);
-            },
-          },
-        };
-        const registry = createPackRegistry(wrapped);
+        const ledger = withHandleLedger(ctx);
+        const registry = createPackRegistry(ledger.ctx);
 
         // Act
         await registry.dispose();
 
         // Assert
-        expect(readdirCalls).toBe(0);
+        expect(ledger.readdirCalls()).toBe(0);
+      });
+    });
+  });
+
+  describe('Given a pack read once and then refresh()ed', () => {
+    describe('When dispose() is awaited', () => {
+      it('Then outstanding() is 0 and closes() is 1 at the moment dispose() resolves', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'dispose-drains-refresh', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('d') },
+        ]);
+        const ledger = withHandleLedger(ctx);
+        // Delay the handle's close by a real turn so a dispose() that fails to
+        // drain refresh's fire-and-forget close batch observes it still
+        // outstanding. The ledger stays the inner layer, so it still counts
+        // the completion once the delayed close runs.
+        const slowClose = {
+          ...ledger.ctx,
+          fs: {
+            ...ledger.ctx.fs,
+            openWithNoFollow: async (path: string, mode: 'read' | 'write') => {
+              const handle = await ledger.ctx.fs.openWithNoFollow(path, mode);
+              return {
+                ...handle,
+                close: async () => {
+                  await new Promise((resolve) => setTimeout(resolve, 5));
+                  await handle.close();
+                },
+              };
+            },
+          },
+        };
+        const registry = createPackRegistry(slowClose);
+        const pack = (await registry.all())[0]!;
+        await pack.readSlice(0, 4);
+
+        // Act
+        registry.refresh();
+        await registry.dispose();
+
+        // Assert
+        expect(ledger.outstanding()).toBe(0);
+        expect(ledger.closes()).toBe(1);
+      });
+    });
+  });
+});
+
+describe('PackRegistry.refresh — after dispose', () => {
+  describe('Given a disposed registry whose pack was read once', () => {
+    describe('When refresh() then all() then readSlice run', () => {
+      it('Then the pack directory is not re-scanned and no handle is opened', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'refresh-after-dispose', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('r') },
+        ]);
+        const ledger = withHandleLedger(ctx);
+        const registry = createPackRegistry(ledger.ctx);
+        const pack = (await registry.all())[0]!;
+        await pack.readSlice(0, 4);
+        await registry.dispose();
+
+        // Act
+        registry.refresh();
+        const packsAfterRefresh = await registry.all();
+        await packsAfterRefresh[0]!.readSlice(0, 4);
+
+        // Assert — the one pre-dispose scan and the one pre-dispose open stand alone
+        expect(ledger.readdirCalls()).toBe(1);
+        expect(ledger.opens()).toBe(1);
+      });
+    });
+  });
+});
+
+describe('PackRegistry — single-flight scan', () => {
+  describe('Given a registry that never scanned', () => {
+    describe('When refresh() is called', () => {
+      it('Then it neither throws nor triggers a readdir or a close', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const ledger = withHandleLedger(ctx);
+        const sut = createPackRegistry(ledger.ctx);
+
+        // Act
+        let thrown: unknown;
+        try {
+          sut.refresh();
+        } catch (error) {
+          thrown = error;
+        }
+
+        // Assert
+        expect(thrown).toBeUndefined();
+        expect(ledger.readdirCalls()).toBe(0);
+        expect(ledger.closes()).toBe(0);
+      });
+    });
+  });
+
+  describe('Given a cold registry over a repo with 2 packs', () => {
+    describe('When 8 all() calls run under Promise.all', () => {
+      it('Then readdir runs once and every result is the same array reference', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'burst-a', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('a') },
+        ]);
+        await writeSyntheticPack(ctx, 'burst-b', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('b') },
+        ]);
+        const ledger = withHandleLedger(ctx);
+        const sut = createPackRegistry(ledger.ctx);
+
+        // Act
+        const results = await Promise.all(Array.from({ length: 8 }, () => sut.all()));
+
+        // Assert
+        expect(ledger.readdirCalls()).toBe(1);
+        for (const result of results) {
+          expect(result).toBe(results[0]);
+        }
+      });
+    });
+  });
+
+  describe('Given the same shape of repo, indexed by a synthetic id', () => {
+    describe('When 8 lookup(id) calls run concurrently', () => {
+      it('Then every hit carries the identical pack reference and readdir runs once', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const idsA = await writeSyntheticPack(ctx, 'burst-lookup-a', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('a') },
+        ]);
+        await writeSyntheticPack(ctx, 'burst-lookup-b', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('b') },
+        ]);
+        const ledger = withHandleLedger(ctx);
+        const sut = createPackRegistry(ledger.ctx);
+        const id = idsA[0] as ObjectId;
+
+        // Act
+        const hits = await Promise.all(Array.from({ length: 8 }, () => sut.lookup(id)));
+
+        // Assert
+        expect(ledger.readdirCalls()).toBe(1);
+        expect(hits.every((hit) => hit !== undefined)).toBe(true);
+        for (const hit of hits) {
+          expect(hit?.pack).toBe(hits[0]?.pack);
+        }
+      });
+    });
+  });
+
+  describe('Given a cold registry over a repo with 2 packs (read burst)', () => {
+    describe('When each of 8 concurrent all() callers reads every pack in its own result and dispose() is awaited', () => {
+      it('Then exactly one handle per pack is opened and none is left outstanding', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'burst-read-a', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('a') },
+        ]);
+        await writeSyntheticPack(ctx, 'burst-read-b', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('b') },
+        ]);
+        const ledger = withHandleLedger(ctx);
+        const sut = createPackRegistry(ledger.ctx);
+
+        // Act — every one of the 8 racing callers reads every pack in its own
+        // result: pre-fix, each caller built its own set and opened its own
+        // handle (8 sets × 2 packs); this is the reported crash in unit form.
+        const results = await Promise.all(Array.from({ length: 8 }, () => sut.all()));
+        await Promise.all(
+          results.map((packs) => Promise.all(packs.map((pack) => pack.readSlice(0, 4)))),
+        );
+        await sut.dispose();
+
+        // Assert
+        expect(ledger.opens()).toBe(2);
+        expect(ledger.outstanding()).toBe(0);
+      });
+    });
+  });
+
+  describe('Given a gated scan (call 0) in flight', () => {
+    describe('When refresh() runs, call 0 settles, the original caller reads a stale pack, and all() runs again', () => {
+      it('Then a second scan runs and the stale read never opens a handle', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'gated-refresh', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('r') },
+        ]);
+        const ledger = withHandleLedger(ctx, { gateReaddir: true });
+        const sut = createPackRegistry(ledger.ctx);
+
+        // Act
+        const p1 = sut.all();
+        await ledger.readdirGate.arrived(0);
+        sut.refresh();
+        ledger.readdirGate.settle(0);
+        const packs = await p1;
+        await packs[0]!.readSlice(0, 4);
+        // Pre-release call 1's gate: whether or not a second scan happens is
+        // exactly what this test observes, so it must not block on that
+        // outcome to make progress.
+        ledger.readdirGate.settle(1);
+        await sut.all();
+
+        // Assert — the second scan ran (a fresh readdir, not the cached
+        // pre-refresh one), and the stale, now-retired pack's read never
+        // opened a handle.
+        expect(ledger.readdirCalls()).toBe(2);
+        expect(ledger.opens()).toBe(0);
+      });
+    });
+
+    describe('When dispose() is started, call 0 settles, and the disposal is awaited', () => {
+      it('Then the scan settles before dispose resolves, and a later read by the scan caller opens no handle', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'gated-dispose', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('d') },
+        ]);
+        const ledger = withHandleLedger(ctx, { gateReaddir: true });
+        const sut = createPackRegistry(ledger.ctx);
+        const order: string[] = [];
+
+        // Act
+        const p1 = sut.all();
+        await ledger.readdirGate.arrived(0);
+        const scanDone = p1.then(() => {
+          order.push('scan-settled');
+        });
+        const disposal = sut.dispose().then(() => {
+          order.push('dispose-resolved');
+        });
+        ledger.readdirGate.settle(0);
+        await Promise.all([scanDone, disposal]);
+        const packs = await p1;
+        await packs[0]!.readSlice(0, 4);
+
+        // Assert
+        expect(order).toEqual(['scan-settled', 'dispose-resolved']);
+        expect(ledger.opens()).toBe(0);
+        expect(ledger.outstanding()).toBe(0);
+      });
+    });
+  });
+
+  describe('Given a gated scan whose call 0 is failed with PERMISSION_DENIED', () => {
+    describe('When all() is awaited', () => {
+      it('Then the rejection carries PERMISSION_DENIED and a second all() re-scans and resolves normally', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'gated-retry', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('t') },
+        ]);
+        const ledger = withHandleLedger(ctx, { gateReaddir: true });
+        const sut = createPackRegistry(ledger.ctx);
+
+        // Act
+        const p1 = sut.all();
+        await ledger.readdirGate.arrived(0);
+        ledger.readdirGate.fail(0, permissionDenied('/fake/pack/dir'));
+        let caught: unknown;
+        try {
+          await p1;
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+        const p2 = sut.all();
+        await ledger.readdirGate.arrived(1);
+        ledger.readdirGate.settle(1);
+        const packs = await p2;
+
+        // Assert
+        const data = (caught as { data?: { code?: string } }).data;
+        expect(data?.code).toBe('PERMISSION_DENIED');
+        expect(packs).toHaveLength(1);
+      });
+    });
+  });
+
+  describe('Given gated scans', () => {
+    describe('When refresh() runs between two overlapping scans and the first is failed while the second settles', () => {
+      it('Then the first scan rejects, the second resolves, and a third all() performs no further scan', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'gated-identity', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('i') },
+        ]);
+        const ledger = withHandleLedger(ctx, { gateReaddir: true });
+        const sut = createPackRegistry(ledger.ctx);
+        const err = permissionDenied('/fake/pack/dir');
+
+        // Act
+        const p1 = sut.all();
+        await ledger.readdirGate.arrived(0);
+        sut.refresh();
+        const p2 = sut.all();
+        await ledger.readdirGate.arrived(1);
+        ledger.readdirGate.fail(0, err);
+        ledger.readdirGate.settle(1);
+
+        let p1Caught: unknown;
+        try {
+          await p1;
+          expect.unreachable();
+        } catch (error) {
+          p1Caught = error;
+        }
+        const p2Result = await p2;
+        const p3Result = await sut.all();
+
+        // Assert
+        expect(p1Caught).toBe(err);
+        expect(p2Result).toHaveLength(1);
+        expect(p3Result).toBe(p2Result);
+        expect(ledger.readdirCalls()).toBe(2);
+      });
+    });
+  });
+
+  describe('Given a gated scan whose call 0 is failed', () => {
+    describe('When dispose() is awaited concurrently', () => {
+      it('Then it resolves without throwing and closes no handle', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'gated-dispose-fail', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('x') },
+        ]);
+        const ledger = withHandleLedger(ctx, { gateReaddir: true });
+        const sut = createPackRegistry(ledger.ctx);
+        const err = permissionDenied('/fake/pack/dir');
+
+        // Act
+        const p1 = sut.all();
+        // Owned here — the disposal absorbs this same rejection separately;
+        // without this the test's own p1 rejection would be unhandled.
+        p1.catch(() => {});
+        await ledger.readdirGate.arrived(0);
+        const disposal = sut.dispose();
+        ledger.readdirGate.fail(0, err);
+
+        // Assert
+        await expect(disposal).resolves.toBeUndefined();
+        expect(ledger.closes()).toBe(0);
+      });
+    });
+  });
+
+  describe('Given a gated scan that is failed while a refresh() ran during it', () => {
+    describe('When one macrotask has passed', () => {
+      it('Then no unhandledRejection is ever raised', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'gated-unhandled', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('u') },
+        ]);
+        const ledger = withHandleLedger(ctx, { gateReaddir: true });
+        const sut = createPackRegistry(ledger.ctx);
+        const err = permissionDenied('/fake/pack/dir');
+        let unhandled = false;
+        const onUnhandledRejection = (): void => {
+          unhandled = true;
+        };
+        process.on('unhandledRejection', onUnhandledRejection);
+
+        try {
+          // Act
+          const p1 = sut.all();
+          // Owned here — separate from refresh's own () => NO_PACKS handler,
+          // which is exactly what this test is pinning.
+          p1.catch(() => {});
+          await ledger.readdirGate.arrived(0);
+          sut.refresh();
+          ledger.readdirGate.fail(0, err);
+          await new Promise((resolve) => setTimeout(resolve, 0));
+
+          // Assert
+          expect(unhandled).toBe(false);
+        } finally {
+          process.removeListener('unhandledRejection', onUnhandledRejection);
+        }
+      });
+    });
+  });
+});
+
+describe('PackRegistry — read path after dispose', () => {
+  describe('Given a disposed registry that never scanned', () => {
+    describe('When all() and lookup() are called', () => {
+      it('Then both resolve empty without ever scanning the pack directory', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'disposed-cold', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('c') },
+        ]);
+        const ledger = withHandleLedger(ctx);
+        const sut = createPackRegistry(ledger.ctx);
+        await sut.dispose();
+
+        // Act
+        const packs = await sut.all();
+        const hit = await sut.lookup('0000000000000000000000000000000000000000' as ObjectId);
+
+        // Assert — no scan may start after disposal: its packs would be
+        // unreachable from refresh() and dispose(), so nothing could ever
+        // close their handles.
+        expect(packs).toEqual([]);
+        expect(hit).toBeUndefined();
+        expect(ledger.readdirCalls()).toBe(0);
+        expect(ledger.opens()).toBe(0);
+      });
+    });
+  });
+
+  describe('Given a registry whose pack was read once before dispose()', () => {
+    describe('When all() is called after disposal', () => {
+      it('Then it returns the same retired set without a new scan or open', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'disposed-warm', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('w') },
+        ]);
+        const ledger = withHandleLedger(ctx);
+        const sut = createPackRegistry(ledger.ctx);
+        const before = await sut.all();
+        await before[0]!.readSlice(0, 4);
+        await sut.dispose();
+
+        // Act
+        const after = await sut.all();
+
+        // Assert
+        expect(after).toBe(before);
+        expect(ledger.readdirCalls()).toBe(1);
+        expect(ledger.opens()).toBe(1);
+      });
+    });
+  });
+});
+
+describe('PackRegistry.dispose — idempotence', () => {
+  describe('Given two packs that were each read once', () => {
+    describe('When dispose() is awaited twice', () => {
+      it('Then both handles are closed once and the second call resolves', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'dispose-twice-a', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('a') },
+        ]);
+        await writeSyntheticPack(ctx, 'dispose-twice-b', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('b') },
+        ]);
+        const ledger = withHandleLedger(ctx);
+        const sut = createPackRegistry(ledger.ctx);
+        const packs = await sut.all();
+        await Promise.all(packs.map((pack) => pack.readSlice(0, 4)));
+        await sut.dispose();
+
+        // Act
+        let thrown: unknown;
+        try {
+          await sut.dispose();
+        } catch (error) {
+          thrown = error;
+        }
+
+        // Assert
+        expect(thrown).toBeUndefined();
+        expect(ledger.closes()).toBe(2);
+        expect(ledger.outstanding()).toBe(0);
+      });
+    });
+  });
+});
+
+describe('RegisteredPack.readSlice — errno-mapped UNSUPPORTED_OPERATION', () => {
+  describe('Given an fs whose openWithNoFollow rejects with UNSUPPORTED_OPERATION from errno mapping (operation "filesystem")', () => {
+    describe('When readSlice is called', () => {
+      it('Then the fault is rethrown instead of rerouting through the per-call fallback', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const content = new TextEncoder().encode('errno-content');
+        await writeSyntheticPack(ctx, 'errno-pack', [{ kind: 'base', type: 'blob', content }]);
+        const ledger = withHandleLedger({
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            openWithNoFollow: async (): Promise<FileHandle> => {
+              throw unsupportedOperation('filesystem', 'EMFILE');
+            },
+          },
+        });
+        const sut = createPackRegistry(ledger.ctx);
+        const packs = await sut.all();
+
+        // Act
+        let caught: unknown;
+        try {
+          await packs[0]!.readSlice(0, 4);
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        const data = (caught as { data?: { code?: string; operation?: string } }).data;
+        expect(data?.code).toBe('UNSUPPORTED_OPERATION');
+        expect(data?.operation).toBe('filesystem');
+        expect(ledger.perCallReads()).toBe(0);
+      });
+    });
+  });
+
+  describe('Given an fs whose openWithNoFollow rejects once with an errno-mapped fault and then recovers', () => {
+    describe('When readSlice is called again and dispose() is awaited', () => {
+      it('Then the retry re-opens and succeeds and dispose() resolves cleanly', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const content = new TextEncoder().encode('recovery-content');
+        await writeSyntheticPack(ctx, 'recovery-pack', [{ kind: 'base', type: 'blob', content }]);
+        let openCalls = 0;
+        const ledger = withHandleLedger({
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            openWithNoFollow: async (path: string, mode: 'read' | 'write'): Promise<FileHandle> => {
+              openCalls += 1;
+              if (openCalls === 1) throw unsupportedOperation('filesystem', 'EMFILE');
+              return ctx.fs.openWithNoFollow(path, mode);
+            },
+          },
+        });
+        const registry = createPackRegistry(ledger.ctx);
+        const packs = await registry.all();
+        const sut = packs[0]!;
+        let firstError: unknown;
+        try {
+          await sut.readSlice(0, 4);
+        } catch (error) {
+          firstError = error;
+        }
+
+        // Act
+        const bytes = await sut.readSlice(0, 4);
+        let disposeError: unknown;
+        try {
+          await registry.dispose();
+        } catch (error) {
+          disposeError = error;
+        }
+
+        // Assert — the rejected open was never memoised: the second read
+        // re-opened and succeeded, and dispose() closed the recovered handle
+        // instead of replaying the stale fault.
+        expect((firstError as { data?: { reason?: string } }).data?.reason).toBe('EMFILE');
+        expect(bytes.length).toBeGreaterThan(0);
+        expect(openCalls).toBe(2);
+        expect(ledger.opens()).toBe(1);
+        expect(disposeError).toBeUndefined();
+        expect(ledger.outstanding()).toBe(0);
       });
     });
   });

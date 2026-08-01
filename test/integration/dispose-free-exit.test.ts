@@ -5,9 +5,14 @@
  * requests/sockets/watchers/un-`unref`'d timers do. A child process that
  * opens a repo, runs one diff against a real packed repository, and returns
  * without calling `dispose()` must still exit on its own. A second scenario
- * proves an explicit `dispose()` actually closes the persistent handle
- * (`process._getActiveHandles()` is empty afterwards), not merely that the
- * process happens to be able to exit anyway.
+ * proves an explicit `dispose()` leaves nothing referencing the event loop
+ * (`process._getActiveHandles()` returns to its baseline), not merely that
+ * the process happens to be able to exit anyway. A third scenario — a
+ * concurrent read burst — proves the underlying descriptors are actually
+ * closed, not merely unreferenced: `FileHandle` is an `AsyncWrap`, not a
+ * `HandleWrap`, so it never appears in `process._getActiveHandles()` at all;
+ * the oracle that does observe it is Node's own GC-close warning, counted
+ * after an explicit `global.gc()`.
  *
  * Runs against the BUILT `dist/esm/index.node.js`, not `src/`: a plain
  * `node` child process cannot resolve this source tree's
@@ -16,7 +21,7 @@
  * @proves
  *   surface:        pack-registry
  *   bucket:         cross-tool-interop
- *   unique:         dispose-free-exit — persistent per-pack handles never keep the event loop alive; explicit dispose() closes them
+ *   unique:         dispose-free-exit — persistent per-pack handles never keep the event loop alive; a concurrent read burst then dispose() orphans no descriptor to the GC (GC-close-warning oracle)
  */
 import { execFile } from 'node:child_process';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
@@ -33,7 +38,8 @@ const execFileAsync = promisify(execFile);
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const DIST_ENTRY = path.join(ROOT, 'dist', 'esm', 'index.node.js');
 const EXIT_TIMEOUT_MS = 5000;
-const BUILD_TIMEOUT_MS = 120_000;
+const BURST_TIMEOUT_MS = 30_000;
+const BUILD_TIMEOUT_MS = 600_000;
 
 const IDENTITY = {
   GIT_AUTHOR_NAME: 'Ada',
@@ -58,6 +64,16 @@ const IDENTITY = {
 const childScript = (distEntryHref: string): string => `
 import { openRepository } from '${distEntryHref}';
 
+// Installed before the repo is ever opened: Node emits one
+// "Closing file descriptor <n> on garbage collection" warning (plus one
+// DEP0137 deprecation) per FileHandle collected while still open, so
+// counting messages that mention garbage collection is a direct oracle for
+// an orphaned descriptor.
+const gcClosedFds = [];
+process.on('warning', (warning) => {
+  if (warning.message.includes('garbage collection')) gcClosedFds.push(warning.message);
+});
+
 // Touch stdout before the baseline measurement: Node lazily creates its
 // underlying pipe handle on first access, and the reporting write below is
 // otherwise the first access — which would misattribute that handle to the
@@ -72,13 +88,34 @@ const mode = process.argv[3];
 const baseline = activeHandleCount();
 
 const repo = await openRepository({ cwd: repoPath });
-await repo.diff({ from: 'HEAD~1', to: 'HEAD' });
 
-if (mode === 'dispose') {
-  await repo.dispose();
-  process.stdout.write(\`ACTIVE_HANDLES_DELTA=\${activeHandleCount() - baseline}\\n\`);
+if (mode === 'burst') {
+  // Without --expose-gc this branch cannot prove anything; fail loudly
+  // instead of silently reporting a vacuous zero count.
+  if (typeof global.gc !== 'function') {
+    process.stdout.write('GC_UNAVAILABLE\\n');
+  } else {
+    const BURST = 64;
+    await Promise.all(
+      Array.from({ length: BURST }, () => repo.diff({ from: 'HEAD~1', to: 'HEAD' })),
+    );
+    await repo.dispose();
+    global.gc();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    global.gc();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    process.stdout.write(\`GC_CLOSED_FDS=\${gcClosedFds.length}\\n\`);
+    process.stdout.write(\`ACTIVE_HANDLES_DELTA=\${activeHandleCount() - baseline}\\n\`);
+  }
+  process.stdout.write('DONE\\n');
+} else {
+  await repo.diff({ from: 'HEAD~1', to: 'HEAD' });
+  if (mode === 'dispose') {
+    await repo.dispose();
+    process.stdout.write(\`ACTIVE_HANDLES_DELTA=\${activeHandleCount() - baseline}\\n\`);
+  }
+  process.stdout.write('DONE\\n');
 }
-process.stdout.write('DONE\\n');
 `;
 
 let repoDir = '';
@@ -145,13 +182,32 @@ describe.skipIf(!GIT_AVAILABLE)('dispose-free exit (A4/B8)', () => {
     });
 
     describe('When a child process opens it, runs one diff, and calls dispose() explicitly', () => {
-      it('Then no active handles remain after dispose (no fd leak)', async () => {
+      it('Then nothing references the event loop after dispose (handle count returns to baseline)', async () => {
         // Arrange + Act
         const { stdout } = await execFileAsync(process.execPath, [scriptPath, repoDir, 'dispose'], {
           timeout: EXIT_TIMEOUT_MS,
         });
 
         // Assert
+        expect(stdout).toContain('ACTIVE_HANDLES_DELTA=0');
+        expect(stdout).toContain('DONE');
+      });
+    });
+
+    describe('When a child process opens it, runs a concurrent read burst, and calls dispose()', () => {
+      it('Then no handle is left for the GC to close and no active handles remain', async () => {
+        // Arrange + Act
+        const { stdout } = await execFileAsync(
+          process.execPath,
+          ['--expose-gc', scriptPath, repoDir, 'burst'],
+          { timeout: BURST_TIMEOUT_MS },
+        );
+
+        // Assert — ACTIVE_HANDLES_DELTA=0 proves nothing is left referencing
+        // the event loop; GC_CLOSED_FDS=0 proves every descriptor a
+        // concurrent first scan may have opened was actually closed (the
+        // delta alone cannot see an open FileHandle at all).
+        expect(stdout).toContain('GC_CLOSED_FDS=0');
         expect(stdout).toContain('ACTIVE_HANDLES_DELTA=0');
         expect(stdout).toContain('DONE');
       });
