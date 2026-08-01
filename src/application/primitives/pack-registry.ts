@@ -12,7 +12,6 @@ import {
   parsePackIndex,
 } from '../../domain/storage/index.js';
 import type { Context } from '../../ports/context.js';
-import type { FileHandle } from '../../ports/file-system.js';
 import { createPromiseMemo } from './internal/promise-memo.js';
 import { commonGitDir, packsDir } from './path-layout.js';
 import { exceedsMaxPackIdxBytes, REASON_PACK_IDX_EXCEEDS_MAX } from './validators.js';
@@ -116,10 +115,12 @@ async function loadPack(ctx: Context, dir: string, entryName: string): Promise<R
   const offsetTable = createPromiseMemo(buildOffsetTable).get;
 
   // Lazily-opened, memoised persistent handle for this pack's slice reads.
-  // Cleared back to `undefined` whenever the open attempt is known-unsupported
-  // (browser OPFS), so `close()` never has to unwind a rejected memo and every
-  // `readSlice` call after that point falls back cleanly.
-  let handlePromise: Promise<FileHandle> | undefined;
+  // The memo clears itself on any open rejection (a transient EMFILE must
+  // not pin later reads — or dispose() — to a stale fault), and the
+  // known-unsupported arm below (browser OPFS) clears it too so every later
+  // `readSlice` falls back cleanly; `close()` tolerates a rejected memo and
+  // closes nothing.
+  const handleMemo = createPromiseMemo(() => ctx.fs.openWithNoFollow(packPath, 'read'));
   // `refresh()` closes outgoing packs while sibling reads may still be
   // mid-slice on this instance: in-flight reads are tracked so `close()`
   // drains them first, and a read arriving after `close()` falls back to the
@@ -129,19 +130,8 @@ async function loadPack(ctx: Context, dir: string, entryName: string): Promise<R
 
   const readSlice = async (offset: number, length: number): Promise<Uint8Array> => {
     if (retired) return ctx.fs.readSlice(packPath, offset, length);
-    if (handlePromise === undefined) {
-      const opening = ctx.fs.openWithNoFollow(packPath, 'read');
-      handlePromise = opening;
-      // Never memoise a rejected open: a transient fault (EMFILE under fd
-      // pressure) must not pin every later read — and dispose() — to a stale
-      // rejection. Identity-guarded so a rejected read's own memo, or a
-      // successor open, is never clobbered.
-      void opening.catch(() => {
-        if (handlePromise === opening) handlePromise = undefined;
-      });
-    }
     const read = (async (): Promise<Uint8Array> => {
-      const handle = await handlePromise;
+      const handle = await handleMemo.get();
       const buffer = new Uint8Array(length);
       const bytesRead = await handle.read(buffer, 0, length, offset);
       return buffer.subarray(0, bytesRead);
@@ -151,7 +141,7 @@ async function loadPack(ctx: Context, dir: string, entryName: string): Promise<R
       return await read;
     } catch (err) {
       if (!isUnsupportedOperation(err)) throw err;
-      handlePromise = undefined;
+      handleMemo.clear();
       return ctx.fs.readSlice(packPath, offset, length);
     } finally {
       // NOTE: this block's BlockStatement mutant (`{}`) is equivalent — inFlight's only
@@ -171,9 +161,8 @@ async function loadPack(ctx: Context, dir: string, entryName: string): Promise<R
 
   const close = async (): Promise<void> => {
     retired = true;
-    const pending = handlePromise;
+    const pending = handleMemo.clear();
     if (pending === undefined) return;
-    handlePromise = undefined;
     // Let sibling reads that already hold the handle finish before closing
     // it under them (their own rejections surface to their callers).
     await Promise.allSettled(inFlight);
