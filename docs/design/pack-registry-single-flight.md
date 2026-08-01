@@ -412,6 +412,7 @@ initialization and one identity comparison per rejection.
 | Path | Today, K concurrent cold callers | After |
 |---|---|---|
 | Pack scan | K × (`exists` + `readdir` + per-`.idx` `stat` + full `.idx` `read` + `parsePackIndex`) | 1 × |
+| Warm `all()` / `lookup()` / `offsetTable()` call | 1 promise allocated per call (each memo read went through an `async` wrapper) | 0 — the synchronous `get` returns the memoised promise itself |
 | Peak `.idx` bytes resident | K × idx size (each bounded by `MAX_PACK_IDX_BYTES` = 64 MiB **individually**, so K legitimate concurrent scans can allocate K × 64 MiB) | 1 × |
 | `offsetTable` | K × (`stat` + `entryOffsets` copy + `O(n log n)` sort over every pack entry) | 1 × |
 | Open fds after `dispose()` | up to K − 1 per pack, closed only by GC | 0 |
