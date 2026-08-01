@@ -27,7 +27,7 @@ export interface ReaddirGate {
 export interface HandleLedger {
   /** The wrapped Context to hand to createPackRegistry. */
   readonly ctx: Context;
-  /** ctx.fs.openWithNoFollow call count. */
+  /** Successful ctx.fs.openWithNoFollow calls (a rejected open yields no handle). */
   readonly opens: () => number;
   /** Completed close() calls on handles this ledger handed out. */
   readonly closes: () => number;

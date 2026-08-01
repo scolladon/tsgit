@@ -994,7 +994,7 @@ describe('PackRegistry.dispose', () => {
 describe('PackRegistry.refresh — after dispose', () => {
   describe('Given a disposed registry whose pack was read once', () => {
     describe('When refresh() then all() then readSlice run', () => {
-      it('Then readdirCalls() and opens() are unchanged from their pre-refresh() values', async () => {
+      it('Then the pack directory is not re-scanned and no handle is opened', async () => {
         // Arrange
         const ctx = await buildSeededContext();
         await writeSyntheticPack(ctx, 'refresh-after-dispose', [
@@ -1457,6 +1457,57 @@ describe('RegisteredPack.readSlice — errno-mapped UNSUPPORTED_OPERATION', () =
         expect(data?.code).toBe('UNSUPPORTED_OPERATION');
         expect(data?.operation).toBe('filesystem');
         expect(ledger.perCallReads()).toBe(0);
+      });
+    });
+  });
+
+  describe('Given an fs whose openWithNoFollow rejects once with an errno-mapped fault and then recovers', () => {
+    describe('When readSlice is called again and dispose() is awaited', () => {
+      it('Then the retry re-opens and succeeds and dispose() resolves cleanly', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const content = new TextEncoder().encode('recovery-content');
+        await writeSyntheticPack(ctx, 'recovery-pack', [{ kind: 'base', type: 'blob', content }]);
+        let openCalls = 0;
+        const ledger = withHandleLedger({
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            openWithNoFollow: async (path: string, mode: 'read' | 'write'): Promise<FileHandle> => {
+              openCalls += 1;
+              if (openCalls === 1) throw unsupportedOperation('filesystem', 'EMFILE');
+              return ctx.fs.openWithNoFollow(path, mode);
+            },
+          },
+        });
+        const registry = createPackRegistry(ledger.ctx);
+        const packs = await registry.all();
+        const sut = packs[0]!;
+        let firstError: unknown;
+        try {
+          await sut.readSlice(0, 4);
+        } catch (error) {
+          firstError = error;
+        }
+
+        // Act
+        const bytes = await sut.readSlice(0, 4);
+        let disposeError: unknown;
+        try {
+          await registry.dispose();
+        } catch (error) {
+          disposeError = error;
+        }
+
+        // Assert — the rejected open was never memoised: the second read
+        // re-opened and succeeded, and dispose() closed the recovered handle
+        // instead of replaying the stale fault.
+        expect((firstError as { data?: { reason?: string } }).data?.reason).toBe('EMFILE');
+        expect(bytes.length).toBeGreaterThan(0);
+        expect(openCalls).toBe(2);
+        expect(ledger.opens()).toBe(1);
+        expect(disposeError).toBeUndefined();
+        expect(ledger.outstanding()).toBe(0);
       });
     });
   });

@@ -130,7 +130,15 @@ async function loadPack(ctx: Context, dir: string, entryName: string): Promise<R
   const readSlice = async (offset: number, length: number): Promise<Uint8Array> => {
     if (retired) return ctx.fs.readSlice(packPath, offset, length);
     if (handlePromise === undefined) {
-      handlePromise = ctx.fs.openWithNoFollow(packPath, 'read');
+      const opening = ctx.fs.openWithNoFollow(packPath, 'read');
+      handlePromise = opening;
+      // Never memoise a rejected open: a transient fault (EMFILE under fd
+      // pressure) must not pin every later read — and dispose() — to a stale
+      // rejection. Identity-guarded so a rejected read's own memo, or a
+      // successor open, is never clobbered.
+      void opening.catch(() => {
+        if (handlePromise === opening) handlePromise = undefined;
+      });
     }
     const read = (async (): Promise<Uint8Array> => {
       const handle = await handlePromise;
@@ -169,7 +177,10 @@ async function loadPack(ctx: Context, dir: string, entryName: string): Promise<R
     // Let sibling reads that already hold the handle finish before closing
     // it under them (their own rejections surface to their callers).
     await Promise.allSettled(inFlight);
-    const handle = await pending;
+    // A pending open that rejected has no handle to close; its error already
+    // surfaced to the read that triggered it and must not resurface here.
+    const handle = await pending.catch(() => undefined);
+    if (handle === undefined) return;
     await handle.close();
   };
 
@@ -241,9 +252,11 @@ export function createPackRegistry(ctx: Context): PackRegistry {
   // Terminal disposal binds the read path too: once disposed, never start a
   // scan — its packs would be unreachable from refresh() (a no-op by then)
   // and from dispose() (already resolved), so nothing could ever close their
-  // handles. A memo still populated keeps returning the closed, retired set;
-  // an empty one (never scanned, or self-cleared by a scan rejection)
-  // resolves empty instead of scanning.
+  // handles. A memo still populated keeps returning the closed, retired set —
+  // including a pending scan that later rejects, whose error reaches these
+  // read callers exactly as it reaches pre-dispose joiners. An empty memo
+  // (never scanned, or self-cleared by a scan rejection) resolves empty
+  // instead of scanning.
   const allPacks = (): Promise<ReadonlyArray<RegisteredPack>> => {
     if (!disposed) return scan.get();
     return scan.peek() ?? Promise.resolve(NO_PACKS);
