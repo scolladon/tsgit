@@ -193,7 +193,7 @@ function bisectLeft(arr: ReadonlyArray<number>, value: number): number {
 export function nextOffsetForEntry(table: PackOffsetTable, offset: number): number {
   const { sortedOffsets, trailerStart } = table;
   const rank = bisectLeft(sortedOffsets, offset);
-  // Stryker disable next-line EqualityOperator: equivalent — bisectLeft returns rank in [0, len], so rank > len is unreachable; at rank===len sortedOffsets[len] is undefined !== any numeric offset, so the second clause fires the identical throw
+  // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — bisectLeft returns rank in [0, len], so rank > len is unreachable; at rank===len sortedOffsets[len] is undefined !== any numeric offset, so whether the first clause is forced always-false or its >= is mutated, the second clause fires the identical throw
   if (rank >= sortedOffsets.length || sortedOffsets[rank] !== offset) {
     throw invalidPackIndex('offset not in pack index: corrupt index');
   }
@@ -226,6 +226,7 @@ export function createPackRegistry(ctx: Context): PackRegistry {
   // or this bookkeeping .finally would become an unhandled rejection of its own.
   const trackClose = (settled: Promise<unknown>): void => {
     pendingCloses.add(settled);
+    // Stryker disable next-line BlockStatement: equivalent — a never-shrinking pendingCloses only makes drainPendingCloses's Promise.allSettled await already-settled entries too, which resolves immediately with no observable outcome change; the only effect is the settled reference staying reachable instead of becoming eligible for GC
     void settled.finally(() => {
       pendingCloses.delete(settled);
     });
@@ -265,6 +266,7 @@ export function createPackRegistry(ctx: Context): PackRegistry {
           // A rejected scan produced no packs and therefore no handles. The error is
           // not discarded: it is delivered to the all()/lookup() caller that triggered
           // the scan — this arm only declines to close a set that does not exist.
+          // Stryker disable next-line ArrowFunction: equivalent — this .then result is consumed only by trackClose, which discards it via Promise.allSettled; returning undefined instead of NO_PACKS changes nothing observable (unlike dispose()'s `.catch(() => NO_PACKS)` below, whose result feeds packs.map and whose mutant was killed)
           () => NO_PACKS,
         ),
       );
