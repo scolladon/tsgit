@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.2.1](https://github.com/scolladon/tsgit/compare/v3.2.0...v3.2.1) (2026-08-01)
+
+
+### Bug Fixes
+
+* single-flight the pack registry so no FileHandle is orphaned to the garbage collector ([#263](https://github.com/scolladon/tsgit/issues/263)) ([8229724](https://github.com/scolladon/tsgit/commit/8229724cf4f66f3164b0620aae68418e247cdf59))
+
 ## [3.2.0](https://github.com/scolladon/tsgit/compare/v3.1.2...v3.2.0) (2026-07-31)
 
 
