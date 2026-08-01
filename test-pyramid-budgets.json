@@ -90,7 +90,6 @@
         "open",
         "openUnavailable",
         "openGitSession",
-
         "fileSystemLayoutProbe",
         "createCachingIndexResolver",
         "createFsWorkdirEnumerator",
@@ -99,6 +98,8 @@
         "createSingleFlightIndexResolver",
         "createRawTreeResolver",
         "createPackRegistry",
+        "createPromiseMemo",
+        "withHandleLedger",
         "createRefStore",
         "acquireIndexLock",
         "createWorkdirEntry",
@@ -113,7 +114,6 @@
         "createCounterGenerationView",
         "createInMemoryWriteEventBus",
         "createConcurrencyLimiter",
-
         "withRetry",
         "withLogging",
         "withAuth",
@@ -133,7 +133,6 @@
         "compileGlob",
         "bindRebaseNamespace",
         "consoleProgress",
-
         "tarArchive",
         "zipArchive",
         "streamBlob",
