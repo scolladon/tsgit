@@ -36,3 +36,12 @@ makes every lifecycle-matrix row observable through the `FileSystem` port — no
 mocking. The integration scenario pins the consumer-visible guarantee on real
 descriptors; its `@proves` header gains the new scenario so the test-pyramid detector
 keeps passing, and no new tier entry is needed because no new file is created.
+
+**Planning-time correction (empirically pinned, Node v22.22.3):** the scenario's oracle
+cannot be `ACTIVE_HANDLES_DELTA=0` alone — `process._getActiveHandles()` does not observe
+open `FileHandle`s (they are AsyncWraps, not HandleWraps), so a burst asserting only that
+delta is green even before the fix. The scenario keeps everything this ADR chose (file,
+tier, built entry point, mkdtemp repo, `git gc`, baseline delta) and asserts the oracle
+that does observe the leak: zero `garbage collection` close warnings in the child after an
+explicit `global.gc()` — red pre-fix, green post-fix, cross-platform. The seam/tier
+decision above is unchanged.
