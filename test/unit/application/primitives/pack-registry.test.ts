@@ -467,6 +467,102 @@ describe('RegisteredPack.offsetTable', () => {
       });
     });
   });
+
+  describe('Given a cold pack obtained from all() with the stat counter reset', () => {
+    describe('When 8 offsetTable() calls run under Promise.all', () => {
+      it('Then ctx.fs.stat was called exactly once and all 8 results are the same object reference', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const content1 = new Uint8Array([10, 20, 30]);
+        const content2 = new Uint8Array([40, 50, 60, 70]);
+        await writeSyntheticPack(ctx, 'concurrent-offset-table', [
+          { kind: 'base', type: 'blob', content: content1 },
+          { kind: 'base', type: 'blob', content: content2 },
+        ]);
+        let statCallCount = 0;
+        const countingCtx = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            stat: async (path: string) => {
+              statCallCount += 1;
+              return ctx.fs.stat(path);
+            },
+          },
+        };
+        const registry = createPackRegistry(countingCtx);
+        const packs = await registry.all();
+        const pack = packs[0]!;
+        // Stat was called during loadPack (for readBoundedIdx); reset the counter
+        // so only offsetTable()'s own stat calls are measured.
+        statCallCount = 0;
+        const sut = pack.offsetTable;
+
+        // Act — 8 concurrent calls under Promise.all
+        const results = await Promise.all(Array.from({ length: 8 }, () => sut()));
+
+        // Assert — single-flight: exactly one stat, identical object across all callers
+        expect(statCallCount).toBe(1);
+        for (const result of results) {
+          expect(result).toBe(results[0]);
+        }
+      });
+    });
+  });
+
+  describe('Given a pack whose stat makes trailerStart negative', () => {
+    describe('When offsetTable() rejects and is called again', () => {
+      it('Then stat ran twice and the second rejection carries INVALID_PACK_INDEX with reason containing "pack file too small"', async () => {
+        // Arrange — stat returns size=10 (< digestLength=20), so trailerStart = 10 - 20 = -10 each time.
+        const ctx = await buildSeededContext();
+        const content1 = new Uint8Array([1, 2, 3]);
+        await writeSyntheticPack(ctx, 'tiny-pack-retried', [
+          { kind: 'base', type: 'blob', content: content1 },
+        ]);
+        const tinySize = 10; // less than digestLength (20 for SHA-1)
+        let statCallCount = 0;
+        const wrappedCtx = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            stat: async (path: string) => {
+              const real = await ctx.fs.stat(path);
+              if (path.endsWith('.pack')) {
+                statCallCount += 1;
+                return { ...real, size: tinySize };
+              }
+              return real;
+            },
+          },
+        };
+        const registry = createPackRegistry(wrappedCtx);
+        const packs = await registry.all();
+        const pack = packs[0]!;
+        const sut = pack.offsetTable;
+
+        // Act
+        let firstCaught: unknown;
+        try {
+          await sut();
+        } catch (error) {
+          firstCaught = error;
+        }
+        let secondCaught: unknown;
+        try {
+          await sut();
+        } catch (error) {
+          secondCaught = error;
+        }
+
+        // Assert — rejection is never memoised: stat runs again on the second call
+        expect(firstCaught).toBeDefined();
+        expect(statCallCount).toBe(2);
+        const data = (secondCaught as { data?: { code?: string; reason?: string } }).data;
+        expect(data?.code).toBe('INVALID_PACK_INDEX');
+        expect(data?.reason).toContain('pack file too small');
+      });
+    });
+  });
 });
 
 describe('RegisteredPack.readSlice — persistent handle (A4)', () => {

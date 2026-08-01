@@ -13,6 +13,7 @@ import {
 } from '../../domain/storage/index.js';
 import type { Context } from '../../ports/context.js';
 import type { FileHandle } from '../../ports/file-system.js';
+import { createPromiseMemo } from './internal/promise-memo.js';
 import { commonGitDir, packsDir } from './path-layout.js';
 import { exceedsMaxPackIdxBytes, REASON_PACK_IDX_EXCEEDS_MAX } from './validators.js';
 
@@ -90,9 +91,7 @@ async function loadPack(ctx: Context, dir: string, entryName: string): Promise<R
   const name = entryName.slice(0, -'.idx'.length);
   const packPath = `${dir}/${name}.pack`;
 
-  let cachedTable: PackOffsetTable | undefined;
-  const offsetTable = async (): Promise<PackOffsetTable> => {
-    if (cachedTable !== undefined) return cachedTable;
+  const buildOffsetTable = async (): Promise<PackOffsetTable> => {
     const stat = await ctx.fs.stat(packPath);
     const packFileSize = stat.size;
     const raw = entryOffsets(index);
@@ -103,9 +102,9 @@ async function loadPack(ctx: Context, dir: string, entryName: string): Promise<R
     if (trailerStart < 0) {
       throw invalidPackIndex('pack file too small to contain a trailer');
     }
-    cachedTable = { sortedOffsets, packFileSize, trailerStart };
-    return cachedTable;
+    return { sortedOffsets, packFileSize, trailerStart };
   };
+  const offsetTable = createPromiseMemo(buildOffsetTable).get;
 
   // Lazily-opened, memoised persistent handle for this pack's slice reads.
   // Cleared back to `undefined` whenever the open attempt is known-unsupported
