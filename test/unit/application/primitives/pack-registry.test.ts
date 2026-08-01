@@ -815,7 +815,7 @@ describe('RegisteredPack.close', () => {
 
 describe('PackRegistry.refresh', () => {
   describe('Given a pack that was read once (persistent handle opened)', () => {
-    describe('When refresh is called', () => {
+    describe('When refresh is called and dispose() is awaited', () => {
       it('Then the outgoing pack handle is closed (no fd leak across refreshes)', async () => {
         // Arrange
         const ctx = await buildSeededContext();
@@ -829,7 +829,7 @@ describe('PackRegistry.refresh', () => {
 
         // Act
         registry.refresh();
-        await new Promise((resolve) => setTimeout(resolve, 0));
+        await registry.dispose();
 
         // Assert
         expect(ledger.closes()).toBe(1);
@@ -922,6 +922,80 @@ describe('PackRegistry.dispose', () => {
 
         // Assert
         expect(ledger.readdirCalls()).toBe(0);
+      });
+    });
+  });
+
+  describe('Given a pack read once and then refresh()ed', () => {
+    describe('When dispose() is awaited', () => {
+      it('Then outstanding() is 0 and closes() is 1 at the moment dispose() resolves', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'dispose-drains-refresh', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('d') },
+        ]);
+        const ledger = withHandleLedger(ctx);
+        // Delay the handle's close by a real turn so a dispose() that fails to
+        // drain refresh's fire-and-forget close batch observes it still
+        // outstanding. The ledger stays the inner layer, so it still counts
+        // the completion once the delayed close runs.
+        const slowClose = {
+          ...ledger.ctx,
+          fs: {
+            ...ledger.ctx.fs,
+            openWithNoFollow: async (path: string, mode: 'read' | 'write') => {
+              const handle = await ledger.ctx.fs.openWithNoFollow(path, mode);
+              return {
+                ...handle,
+                close: async () => {
+                  await new Promise((resolve) => setTimeout(resolve, 5));
+                  await handle.close();
+                },
+              };
+            },
+          },
+        };
+        const registry = createPackRegistry(slowClose);
+        const pack = (await registry.all())[0]!;
+        await pack.readSlice(0, 4);
+
+        // Act
+        registry.refresh();
+        await registry.dispose();
+
+        // Assert
+        expect(ledger.outstanding()).toBe(0);
+        expect(ledger.closes()).toBe(1);
+      });
+    });
+  });
+});
+
+describe('PackRegistry.refresh — after dispose', () => {
+  describe('Given a disposed registry whose pack was read once', () => {
+    describe('When refresh() then all() then readSlice run', () => {
+      it('Then readdirCalls() and opens() are unchanged from their pre-refresh() values', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'refresh-after-dispose', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('r') },
+        ]);
+        const ledger = withHandleLedger(ctx);
+        const registry = createPackRegistry(ledger.ctx);
+        const pack = (await registry.all())[0]!;
+        await pack.readSlice(0, 4);
+        await registry.dispose();
+        const readdirCallsBeforeRefresh = ledger.readdirCalls();
+        const opensBeforeRefresh = ledger.opens();
+
+        // Act
+        registry.refresh();
+        const packsAfterRefresh = await registry.all();
+        await packsAfterRefresh[0]!.readSlice(0, 4);
+
+        // Assert
+        expect(ledger.readdirCalls()).toBe(readdirCallsBeforeRefresh);
+        expect(ledger.opens()).toBe(opensBeforeRefresh);
       });
     });
   });

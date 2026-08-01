@@ -210,19 +210,38 @@ export function createPackRegistry(ctx: Context): PackRegistry {
   };
   const scan = createPromiseMemo(scanPacks);
 
+  let disposed = false;
+  const pendingCloses = new Set<Promise<unknown>>();
+
+  // Only ever handed a promise that cannot reject (Promise.allSettled never does),
+  // or this bookkeeping .finally would become an unhandled rejection of its own.
+  const trackClose = (settled: Promise<unknown>): void => {
+    pendingCloses.add(settled);
+    void settled.finally(() => {
+      pendingCloses.delete(settled);
+    });
+  };
+
+  const drainPendingCloses = async (): Promise<void> => {
+    await Promise.all([...pendingCloses]);
+  };
+
   return {
     all: scan.get,
     refresh(): void {
+      if (disposed) return;
       // The outgoing packs may hold open persistent handles; close them before
       // dropping the references or every refresh leaks one fd per touched pack.
       const outgoing = scan.clear();
       if (outgoing === undefined) return;
-      void outgoing.then(
-        (packs) => Promise.allSettled(packs.map((pack) => pack.close())),
-        // A rejected scan produced no packs and therefore no handles. The error is
-        // not discarded: it is delivered to the all()/lookup() caller that triggered
-        // the scan — this arm only declines to close a set that does not exist.
-        () => NO_PACKS,
+      trackClose(
+        outgoing.then(
+          (packs) => Promise.allSettled(packs.map((pack) => pack.close())),
+          // A rejected scan produced no packs and therefore no handles. The error is
+          // not discarded: it is delivered to the all()/lookup() caller that triggered
+          // the scan — this arm only declines to close a set that does not exist.
+          () => NO_PACKS,
+        ),
       );
     },
     async lookup(id: ObjectId): Promise<PackLookupHit | undefined> {
@@ -236,18 +255,22 @@ export function createPackRegistry(ctx: Context): PackRegistry {
       return undefined;
     },
     async dispose(): Promise<void> {
+      disposed = true;
       // A registry that never scanned the pack directory has no handles to
       // close — skip the scan entirely rather than triggering one just to
       // find nothing. Peek, not clear: all() keeps returning the closed,
-      // retired set after disposal, exactly as before this change.
+      // retired set after disposal, exactly as before this change. A refresh
+      // that ran before this dispose may still have a close batch in flight,
+      // so this arm must still drain it.
       const pending = scan.peek();
-      if (pending === undefined) return;
+      if (pending === undefined) return drainPendingCloses();
       // A pending scan's own rejection already has an owner — the all()/
       // lookup() caller that triggered it. Absorb it here without closing
       // anything: a rejected scan produced no packs and therefore no handles.
       const packs = await pending.catch(() => NO_PACKS);
       // Settle every close so one failing handle cannot strand the others.
       const results = await Promise.allSettled(packs.map((pack) => pack.close()));
+      await drainPendingCloses();
       const failure = results.find(
         (outcome): outcome is PromiseRejectedResult => outcome.status === 'rejected',
       );
