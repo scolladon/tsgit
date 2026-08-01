@@ -926,3 +926,313 @@ describe('PackRegistry.dispose', () => {
     });
   });
 });
+
+describe('PackRegistry — single-flight scan', () => {
+  describe('Given a registry that never scanned', () => {
+    describe('When refresh() is called', () => {
+      it('Then it neither throws nor triggers a readdir or a close', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const ledger = withHandleLedger(ctx);
+        const sut = createPackRegistry(ledger.ctx);
+
+        // Act
+        expect(() => sut.refresh()).not.toThrow();
+
+        // Assert
+        expect(ledger.readdirCalls()).toBe(0);
+        expect(ledger.closes()).toBe(0);
+      });
+    });
+  });
+
+  describe('Given a cold registry over a repo with 2 packs', () => {
+    describe('When 8 all() calls run under Promise.all', () => {
+      it('Then readdir runs once and every result is the same array reference', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'burst-a', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('a') },
+        ]);
+        await writeSyntheticPack(ctx, 'burst-b', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('b') },
+        ]);
+        const ledger = withHandleLedger(ctx);
+        const sut = createPackRegistry(ledger.ctx);
+
+        // Act
+        const results = await Promise.all(Array.from({ length: 8 }, () => sut.all()));
+
+        // Assert
+        expect(ledger.readdirCalls()).toBe(1);
+        for (const result of results) {
+          expect(result).toBe(results[0]);
+        }
+      });
+    });
+  });
+
+  describe('Given the same shape of repo, indexed by a synthetic id', () => {
+    describe('When 8 lookup(id) calls run concurrently', () => {
+      it('Then every hit carries the identical pack reference and readdir runs once', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const idsA = await writeSyntheticPack(ctx, 'burst-lookup-a', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('a') },
+        ]);
+        await writeSyntheticPack(ctx, 'burst-lookup-b', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('b') },
+        ]);
+        const ledger = withHandleLedger(ctx);
+        const sut = createPackRegistry(ledger.ctx);
+        const id = idsA[0] as ObjectId;
+
+        // Act
+        const hits = await Promise.all(Array.from({ length: 8 }, () => sut.lookup(id)));
+
+        // Assert
+        expect(ledger.readdirCalls()).toBe(1);
+        for (const hit of hits) {
+          expect(hit?.pack).toBe(hits[0]?.pack);
+        }
+      });
+    });
+  });
+
+  describe('Given a cold registry over a repo with 2 packs (read burst)', () => {
+    describe('When each of 8 concurrent all() callers reads every pack in its own result and dispose() is awaited', () => {
+      it('Then exactly one handle per pack is opened and none is left outstanding', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'burst-read-a', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('a') },
+        ]);
+        await writeSyntheticPack(ctx, 'burst-read-b', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('b') },
+        ]);
+        const ledger = withHandleLedger(ctx);
+        const sut = createPackRegistry(ledger.ctx);
+
+        // Act — every one of the 8 racing callers reads every pack in its own
+        // result: pre-fix, each caller built its own set and opened its own
+        // handle (8 sets × 2 packs); this is the reported crash in unit form.
+        const results = await Promise.all(Array.from({ length: 8 }, () => sut.all()));
+        await Promise.all(
+          results.map((packs) => Promise.all(packs.map((pack) => pack.readSlice(0, 4)))),
+        );
+        await sut.dispose();
+
+        // Assert
+        expect(ledger.opens()).toBe(2);
+        expect(ledger.outstanding()).toBe(0);
+      });
+    });
+  });
+
+  describe('Given a gated scan (call 0) in flight', () => {
+    describe('When refresh() runs, call 0 settles, the original caller reads a stale pack, and all() runs again', () => {
+      it('Then a second scan runs and the stale read never opens a handle', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'gated-refresh', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('r') },
+        ]);
+        const ledger = withHandleLedger(ctx, { gateReaddir: true });
+        const sut = createPackRegistry(ledger.ctx);
+
+        // Act
+        const p1 = sut.all();
+        await ledger.readdirGate.arrived(0);
+        sut.refresh();
+        ledger.readdirGate.settle(0);
+        const packs = await p1;
+        await packs[0]!.readSlice(0, 4);
+        // Pre-release call 1's gate: whether or not a second scan happens is
+        // exactly what this test observes, so it must not block on that
+        // outcome to make progress.
+        ledger.readdirGate.settle(1);
+        await sut.all();
+
+        // Assert — the second scan ran (a fresh readdir, not the cached
+        // pre-refresh one), and the stale, now-retired pack's read never
+        // opened a handle.
+        expect(ledger.readdirCalls()).toBe(2);
+        expect(ledger.opens()).toBe(0);
+      });
+    });
+  });
+
+  describe('Given a gated scan (call 0) in flight', () => {
+    describe('When dispose() is started, call 0 settles, and the disposal is awaited', () => {
+      it('Then the scan settles before dispose resolves, and a later read by the scan caller opens no handle', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'gated-dispose', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('d') },
+        ]);
+        const ledger = withHandleLedger(ctx, { gateReaddir: true });
+        const sut = createPackRegistry(ledger.ctx);
+        const order: string[] = [];
+
+        // Act
+        const p1 = sut.all();
+        await ledger.readdirGate.arrived(0);
+        const scanDone = p1.then(() => {
+          order.push('scan-settled');
+        });
+        const disposal = sut.dispose().then(() => {
+          order.push('dispose-resolved');
+        });
+        ledger.readdirGate.settle(0);
+        await Promise.all([scanDone, disposal]);
+        const packs = await p1;
+        await packs[0]!.readSlice(0, 4);
+
+        // Assert
+        expect(order).toEqual(['scan-settled', 'dispose-resolved']);
+        expect(ledger.opens()).toBe(0);
+        expect(ledger.outstanding()).toBe(0);
+      });
+    });
+  });
+
+  describe('Given a gated scan whose call 0 is failed with PERMISSION_DENIED', () => {
+    describe('When all() is awaited', () => {
+      it('Then the rejection carries PERMISSION_DENIED and a second all() re-scans and resolves normally', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'gated-retry', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('t') },
+        ]);
+        const ledger = withHandleLedger(ctx, { gateReaddir: true });
+        const sut = createPackRegistry(ledger.ctx);
+
+        // Act
+        const p1 = sut.all();
+        await ledger.readdirGate.arrived(0);
+        ledger.readdirGate.fail(0, permissionDenied('/fake/pack/dir'));
+        let caught: unknown;
+        try {
+          await p1;
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+        const p2 = sut.all();
+        await ledger.readdirGate.arrived(1);
+        ledger.readdirGate.settle(1);
+        const packs = await p2;
+
+        // Assert
+        const data = (caught as { data?: { code?: string } }).data;
+        expect(data?.code).toBe('PERMISSION_DENIED');
+        expect(packs).toHaveLength(1);
+      });
+    });
+  });
+
+  describe('Given gated scans', () => {
+    describe('When refresh() runs between two overlapping scans and the first is failed while the second settles', () => {
+      it('Then the first scan rejects, the second resolves, and a third all() performs no further scan', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'gated-identity', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('i') },
+        ]);
+        const ledger = withHandleLedger(ctx, { gateReaddir: true });
+        const sut = createPackRegistry(ledger.ctx);
+        const err = permissionDenied('/fake/pack/dir');
+
+        // Act
+        const p1 = sut.all();
+        await ledger.readdirGate.arrived(0);
+        sut.refresh();
+        const p2 = sut.all();
+        await ledger.readdirGate.arrived(1);
+        ledger.readdirGate.fail(0, err);
+        ledger.readdirGate.settle(1);
+
+        let p1Caught: unknown;
+        try {
+          await p1;
+          expect.unreachable();
+        } catch (error) {
+          p1Caught = error;
+        }
+        const p2Result = await p2;
+        const p3Result = await sut.all();
+
+        // Assert
+        expect(p1Caught).toBe(err);
+        expect(p2Result).toHaveLength(1);
+        expect(p3Result).toBe(p2Result);
+        expect(ledger.readdirCalls()).toBe(2);
+      });
+    });
+  });
+
+  describe('Given a gated scan whose call 0 is failed', () => {
+    describe('When dispose() is awaited concurrently', () => {
+      it('Then it resolves without throwing and closes no handle', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'gated-dispose-fail', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('x') },
+        ]);
+        const ledger = withHandleLedger(ctx, { gateReaddir: true });
+        const sut = createPackRegistry(ledger.ctx);
+        const err = permissionDenied('/fake/pack/dir');
+
+        // Act
+        const p1 = sut.all();
+        // Owned here — the disposal absorbs this same rejection separately;
+        // without this the test's own p1 rejection would be unhandled.
+        p1.catch(() => {});
+        await ledger.readdirGate.arrived(0);
+        const disposal = sut.dispose();
+        ledger.readdirGate.fail(0, err);
+
+        // Assert
+        await expect(disposal).resolves.toBeUndefined();
+        expect(ledger.closes()).toBe(0);
+      });
+    });
+  });
+
+  describe('Given a gated scan that is failed while a refresh() ran during it', () => {
+    describe('When one macrotask has passed', () => {
+      it('Then no unhandledRejection is ever raised', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'gated-unhandled', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('u') },
+        ]);
+        const ledger = withHandleLedger(ctx, { gateReaddir: true });
+        const sut = createPackRegistry(ledger.ctx);
+        const err = permissionDenied('/fake/pack/dir');
+        let unhandled = false;
+        const onUnhandledRejection = (): void => {
+          unhandled = true;
+        };
+        process.on('unhandledRejection', onUnhandledRejection);
+
+        try {
+          // Act
+          const p1 = sut.all();
+          // Owned here — separate from refresh's own () => NO_PACKS handler,
+          // which is exactly what this test is pinning.
+          p1.catch(() => {});
+          await ledger.readdirGate.arrived(0);
+          sut.refresh();
+          ledger.readdirGate.fail(0, err);
+          await new Promise((resolve) => setTimeout(resolve, 0));
+
+          // Assert
+          expect(unhandled).toBe(false);
+        } finally {
+          process.removeListener('unhandledRejection', onUnhandledRejection);
+        }
+      });
+    });
+  });
+});

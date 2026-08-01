@@ -194,39 +194,39 @@ export function nextOffsetForEntry(table: PackOffsetTable, offset: number): numb
   return sortedOffsets[rank + 1] as number;
 }
 
-export function createPackRegistry(ctx: Context): PackRegistry {
-  let cache: ReadonlyArray<RegisteredPack> | undefined;
+const NO_PACKS: ReadonlyArray<RegisteredPack> = [];
 
-  async function loadAll(): Promise<ReadonlyArray<RegisteredPack>> {
-    if (cache !== undefined) return cache;
+export function createPackRegistry(ctx: Context): PackRegistry {
+  const scanPacks = async (): Promise<ReadonlyArray<RegisteredPack>> => {
     const dir = packsDir(commonGitDir(ctx));
-    if (!(await ctx.fs.exists(dir))) {
-      cache = [];
-      return cache;
-    }
+    if (!(await ctx.fs.exists(dir))) return NO_PACKS;
     const entries = await ctx.fs.readdir(dir);
     const packs: RegisteredPack[] = [];
     for (const entry of entries) {
       if (!isCandidate(entry)) continue;
       packs.push(await loadPack(ctx, dir, entry.name));
     }
-    cache = packs;
-    return cache;
-  }
+    return packs;
+  };
+  const scan = createPromiseMemo(scanPacks);
 
   return {
-    all: loadAll,
+    all: scan.get,
     refresh(): void {
       // The outgoing packs may hold open persistent handles; close them before
       // dropping the references or every refresh leaks one fd per touched pack.
-      const outgoing = cache;
-      cache = undefined;
-      if (outgoing !== undefined) {
-        void Promise.allSettled(outgoing.map((pack) => pack.close()));
-      }
+      const outgoing = scan.clear();
+      if (outgoing === undefined) return;
+      void outgoing.then(
+        (packs) => Promise.allSettled(packs.map((pack) => pack.close())),
+        // A rejected scan produced no packs and therefore no handles. The error is
+        // not discarded: it is delivered to the all()/lookup() caller that triggered
+        // the scan — this arm only declines to close a set that does not exist.
+        () => NO_PACKS,
+      );
     },
     async lookup(id: ObjectId): Promise<PackLookupHit | undefined> {
-      const packs = await loadAll();
+      const packs = await scan.get();
       for (const pack of packs) {
         const offset = lookupPackIndex(pack.index, id);
         if (offset !== undefined) {
@@ -238,10 +238,16 @@ export function createPackRegistry(ctx: Context): PackRegistry {
     async dispose(): Promise<void> {
       // A registry that never scanned the pack directory has no handles to
       // close — skip the scan entirely rather than triggering one just to
-      // find nothing.
-      if (cache === undefined) return;
+      // find nothing. Peek, not clear: all() keeps returning the closed,
+      // retired set after disposal, exactly as before this change.
+      const pending = scan.peek();
+      if (pending === undefined) return;
+      // A pending scan's own rejection already has an owner — the all()/
+      // lookup() caller that triggered it. Absorb it here without closing
+      // anything: a rejected scan produced no packs and therefore no handles.
+      const packs = await pending.catch(() => NO_PACKS);
       // Settle every close so one failing handle cannot strand the others.
-      const results = await Promise.allSettled(cache.map((pack) => pack.close()));
+      const results = await Promise.allSettled(packs.map((pack) => pack.close()));
       const failure = results.find(
         (outcome): outcome is PromiseRejectedResult => outcome.status === 'rejected',
       );
