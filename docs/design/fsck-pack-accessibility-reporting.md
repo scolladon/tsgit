@@ -9,7 +9,7 @@
 > registry, emit structured findings, and compose the exit bit — without regressing ADR-572's
 > lookup-position gate.
 >
-> Status: **revised against ADR-581 … ADR-590** (2026-08-07). All ten decision candidates are
+> Status: **revised against ADR-581 … ADR-591** (2026-08-07). All ten decision candidates are
 > settled — eight adopted as recommended, two ruled by the user against this document's own reading:
 > **DC-8** closes the `--connectivity-only` `dangling unknown` divergence *fully* (ADR-588, option
 > (a)), overriding the design's "leave it, name it"; **DC-10** — raised by the pins that ruling
@@ -18,7 +18,14 @@
 > below as real design content: the classification closure is **§D12**, the reject mechanism
 > **§D13**. The rows they reach are pinned empirically in **§Pin P**, **§Pin Q** and **§Pin R** —
 > the last commissioned by ADR-590, because the ruling's phrase *"opened but undecodable"* has a
-> boundary no code reading fixes. Nothing in this document is open.
+> boundary no code reading fixes.
+>
+> **ADR-591** then closes the one residual those pins left standing (§D11.16): an unreachable object
+> is typed from its **recovered header**, so `objectType: 'unknown'` becomes a *reserved* verdict —
+> the exact set git prints `dangling unknown` for — rather than tsgit's generic read-failure label.
+> The mechanism is **§D13.8**; it reuses what §D13.1 and §D13.2 already compute and changes no abort
+> verdict, no exit code and no public type. Its one previously unpinned leg — a **delta-stored**
+> packed entry — is **§Pin R13**. Nothing in this document is open.
 
 ## Context
 
@@ -97,9 +104,9 @@ fourth (D-D) is the *unreadable-object classification* axis that ADR-588 pulled 
 | P3 | **new** `src/application/commands/internal/fsck/pack-health.ts` → the third sibling of `runContentValidationPass` / `runRefsVerifyPass` (ADR-589) | command-internal |
 | P4 | `src/application/commands/internal/fsck/exit-codes.ts` → `EXIT_PACK = 4` **and** `EXIT_PACK_REV_INDEX = 64` (ADR-586) | command-internal |
 | P5 | `src/application/commands/internal/fsck/types.ts` → three new `FsckFinding` variants (ADR-583, ADR-584, ADR-586); the `dangling` / `unreachable` `objectType` widens to `FsckObjectType \| 'unknown'` (ADR-588, §D12); the shared `UnreadableMode` (`'skip' \| 'classify'`) both §D12 and §D13 key on — **not** re-exported, so it stays out of `api.json`; **and** `FsckResult.exitCode`'s doc-comment, which today reads *"0=clean, 2=missing/broken-link"* and is already stale (it names neither bit 1 nor bit 8) | command-internal (**public**) |
-| P5b | `src/application/commands/internal/fsck/reachability.ts` → `collectTypeFindings` (`:204-217`) stops skipping null-cache entries under the connectivity-only gate (ADR-588, §D12); the stale `// Stryker disable` at `:163` is **removed**, not re-justified (§D12.4) | command-internal |
-| P5c | `src/application/commands/internal/fsck/object-cache.ts` → `buildObjectCache` (`:21-38`) takes the mode, returns `{ cache, unrecoverable }` instead of the bare map, and its blanket `catch` gains the narrow header-recovery probe plus the `assertTypesRecoverable` guard (ADR-590, §D13); the `// Stryker disable` at `:32` is **removed** (§D13.6) | command-internal |
-| P6 | `src/application/commands/fsck.ts` → call the pass, OR its bit into `exitCode` (`:101`), narrow the universe (`:35`), compute `UnreadableMode` once and thread it into `buildObjectCache` (`:40`) and `collectTypeFindings` (`:93-94`), call the recoverability guard after `classifyObjects` (`:70`) | command |
+| P5b | `src/application/commands/internal/fsck/reachability.ts` → `collectTypeFindings` (`:204-217`) stops skipping null-cache entries under the connectivity-only gate (ADR-588, §D12) and both it and `resolveObjectType` (`:220-226`) take the retention map (ADR-591, §D13.8); the stale `// Stryker disable` at `:163` is **removed**, not re-justified (§D12.4) | command-internal |
+| P5c | `src/application/commands/internal/fsck/object-cache.ts` → `buildObjectCache` (`:21-38`) takes the mode, returns `{ cache, unrecoverable, recovered }` instead of the bare map, and its blanket `catch` gains the one probe that answers both the abort question (ADR-590, §D13) and the stored-type question (ADR-591, §D13.8), plus the `assertTypesRecoverable` guard; the `// Stryker disable` at `:32` is **removed** (§D13.6) | command-internal |
+| P6 | `src/application/commands/fsck.ts` → call the pass, OR its bit into `exitCode` (`:101`), narrow the universe (`:35`), compute `UnreadableMode` once and thread it into `buildObjectCache` (`:40`) and `collectTypeFindings` (`:93-94`), thread the retention map into `collectTypeFindings` and `resolveObjectType` (`:87`), call the recoverability guard after `classifyObjects` (`:70`) | command |
 | P7 | `test/unit/application/primitives/pack-registry.test.ts` → the health matrix | test |
 | P8 | `test/unit/application/commands/fsck.test.ts` → pass, gating and composition matrix; `test/unit/application/commands/fsck.properties.test.ts` → two added lens-2 invariants (§Test strategy) | test |
 | P9 | **new** `test/integration/fsck-pack-accessibility-interop.test.ts` | test |
@@ -124,6 +131,11 @@ all (DC-10), and those two rulings are the reason this document was revised twic
 | DC-8 | **588** | **(a) close the `dangling unknown` divergence fully — deviates** from the design's (b) |
 | DC-9 | **589** | (a) the pass lives in `internal/fsck/pack-health.ts` — as recommended |
 | DC-10 | **590** | **(a) `fsck` rejects on an undecodable loose object in `connectivityOnly`** — user-ratified against no recommendation; mechanism in §D13 |
+
+One further ruling is not a decision candidate but a **residual closure**: **ADR-591** settles the
+type-resolution residual §D11.16 named, which no DC raised because it only became visible once
+ADR-588's closure started emitting the field. It refines ADR-588 rather than re-opening it —
+mechanism in **§D13.8**.
 
 ### Constraining prior decisions
 
@@ -399,8 +411,9 @@ before an interop row could assert a count. It was **probe contamination, not gi
 Commissioned by ADR-590. The ruling says `fsck` rejects on an object git can *open* but not
 *decode* — and that phrase has a boundary the code cannot supply: which faults abort, over which
 objects, and whether another copy of the object changes the answer. Same isolation discipline as
-Pin P (`chmod u+w` before every mutation, since git writes loose objects `0444`); the repo has no
-packs except in the two rows that say otherwise. Columns are `git fsck --connectivity-only` and
+Pin P (`chmod u+w` before every mutation, since git writes loose objects `0444` — and copied pack
+files inherit the same read-only mode, which silently defeated the first run of R13); the repo has no
+packs except in the three rows that say otherwise. Columns are `git fsck --connectivity-only` and
 plain `git fsck`, the second given because it is what tsgit must keep unchanged.
 
 | # | object's state | reachability | `--connectivity-only` | default |
@@ -420,6 +433,7 @@ plain `git fsck`, the second given because it is what tsgit must keep unchanged.
 | R10d | valid zlib, header `tree 4\0` over 4 junk bytes | dangling | **0** — `dangling tree <oid>`, **typed**; stderr `too-short tree object` | 1 |
 | R11 | R3's and R4's fixtures under `--connectivity-only --no-full` | dangling | **128** / **0 + `dangling unknown`** — identical to the `--connectivity-only` column | — |
 | R12 | corrupt `.idx` (bit-64 territory, Pin K) **plus** R3's undecodable dangling object | dangling | **128**, stdout empty — the die beats the rev-index bit outright | 79 (64\|8\|4\|2\|1); `--no-full` 75 |
+| R13 | **delta-stored** packed-only object, one byte flipped in the **delta** body — run twice, `REF_DELTA` and `OFS_DELTA` | dangling | **0** — `dangling blob <oid>`, **typed**, both encodings | **4** — `index CRC mismatch` + `failed to unpack compressed delta` + `cannot unpack <oid> … at offset <n>` |
 
 **Rules, as pinned.**
 
@@ -448,6 +462,17 @@ plain `git fsck`, the second given because it is what tsgit must keep unchanged.
   types from its pack-entry header, and a garbled loose file whose oid also sits in a healthy pack is
   served from the pack. git aborts only when *no* source can type the object — a property tsgit's
   loose-before-pack read order does not have for free (§D13.2).
+- **The pack-entry type survives delta encoding** (R13, commissioned by ADR-591). A corrupt entry
+  whose stored type is `REF_DELTA` or `OFS_DELTA` still prints `dangling blob`: git resolves the type
+  by walking base links through **entry headers only** and never inflates the body it cannot read.
+  Both encodings were run because they name the base differently (20-byte oid versus back-offset
+  varint) and tsgit's chain walker branches on exactly that. The row is what makes §D13.8's pack arm
+  a pinned behaviour rather than an inference from R7's single non-delta entry.
+  *Recipe:* two ~20 KiB blobs differing in three bytes, written with `git hash-object -w` and packed
+  by `git pack-objects --window=250 --depth=50 --no-reuse-delta [--delta-base-offset]` over their two
+  oids alone — so both land packed-only **and** dangling in a fresh target repo — then one byte of
+  the delta entry's deflate stream flipped, trailer left as-is, not restamped (`--connectivity-only` does not
+  verify it, which is what R7's default column already showed).
 - **`--no-full` does not move the class** (R11): combined with `--connectivity-only` every cell
   equals the `--connectivity-only` column, and alone it equals the default column (Pin P). Requirement
   6's gate on `connectivityOnly` **alone** survives the combination — the one option pair that could
@@ -594,17 +619,24 @@ Verifiable at ship time.
     variants (ADR-588).** `reports/api.json` **will** change for all three; the regenerated report
     must be committed (prepush `check:doc-typedoc`). **ADR-590 adds nothing to that list** — its
     types are command-internal and its reject reuses two existing `TsgitError` codes (§D13.4) — but
-    it is a caller-visible behaviour change and `docs/use/commands/fsck.md` must say so.
+    it is a caller-visible behaviour change and `docs/use/commands/fsck.md` must say so. **ADR-591
+    adds nothing either**: it narrows *when* the already-declared `'unknown'` member occurs and keeps
+    its retention map on the command-internal `ObjectCacheResult` (§D13.8) — also a caller-visible
+    behaviour change the same page must state.
 15. **Nothing is written.** `tooling/audit-write-surfaces.ts` stays green with no annotation or
     allowlist edit (§D8).
 16. **Hash-agnostic.** No branch on `ctx.hashConfig` anywhere in the pass (§D9).
 17. **In `connectivityOnly` mode an object in the universe that cannot be read is classified, not
     dropped** (ADR-588) — every such object except the one class requirement 19 rejects on. It
-    appears as `unreachable` and — when no *readable* object references it — also as `dangling`, in
-    both cases with `objectType: 'unknown'`. This holds whichever layer made
-    it unreadable: a refused pack's ids (Pin M7, cardinality per Pin Q) and an unreadable *loose*
-    object (Pin P2, P3) take the same path. Four boundaries are part of the requirement, each with
-    its own pin:
+    appears as `unreachable` and — when no *readable* object references it — also as `dangling`. Its
+    `objectType` is **the type its stored header declares** whenever one can be recovered — the loose
+    `<type> <size>\0` or the pack-entry header, delta entries resolved through their base
+    (ADR-591, §D13.8; Pin R7, R9, R10c, R10d, R13) — and `'unknown'` when **no** stored header can be
+    obtained at all: an unopenable file, an empty file, or an id only a refused pack supplies
+    (Pin P2, P3, R4, M7). That split is git's own, not an approximation of it. The requirement holds
+    whichever layer made the object unreadable: a refused pack's ids (Pin M7, cardinality per Pin Q)
+    and an unreadable *loose* object (Pin P2, P3) take the same path. Five boundaries are part of the
+    requirement, each with its own pin:
     - it does **not** fire in default or `full: false` mode, where git computes no such entry at all
       (Pin P2–P6 plus the P-a projection probe);
     - it does **not** fire for a *reachable* unreadable object, where git is silent (Pin P7, P8, O15,
@@ -613,7 +645,12 @@ Verifiable at ship time.
       type in both tools (Pin P6, O14);
     - it does **not** fire for an object whose header cannot be recovered — that object is
       requirement 19's, and the run ends before any finding is returned (Pin P4, P5, Pin R3, R8,
-      R10a, R10b).
+      R10a, R10b);
+    - it does **not** emit `'unknown'` for an object some store can still type — a recovered loose
+      header over a body that will not parse, a corrupt pack entry (delta or not), or a garbled loose
+      copy shadowing a healthy packed one all carry a real type (Pin R7, R9, R10c, R10d, R13). The
+      retention that supplies it cannot change any verdict above: it only replaces `'unknown'` with a
+      type (§D13.8).
 18. **The classification is emission-only.** `classifyObjects`, `buildInEdgeMap` and
     `buildReachableSet` keep their current behaviour exactly; only `collectTypeFindings` changes
     (Pin Q5/Q6 show git's dangling-vs-unreachable rule is unchanged for objects it cannot type).
@@ -830,11 +867,11 @@ pinned against **2.55.0** and the comment must say so rather than silently widen
 | refused pack, **`full: false`** | **none** — the ids never enter the universe | 0 | exit 0, silent (Pin M8) |
 | **unopenable or empty** loose object, unreferenced, `connectivityOnly` | `unreachable` + `dangling`, `objectType: 'unknown'` | 0 | exit 0, `dangling unknown <oid>` (Pin P2, P3, R4) |
 | **header-unrecoverable** loose object, not reached, `connectivityOnly` | **none — `fsck` rejects** with the recovery fault (§D13.4) | n/a — no result | exit **128**, stdout empty (Pin P4, P5, R2, R3, R6, R8, R10a, R10b) |
-| loose object with a **recovered** header over a bad body, not reached, `connectivityOnly` | `unreachable` + `dangling` with the header's real type | 0 | exit 0, `dangling blob` / `dangling tree` (Pin R10c, R10d) |
+| loose object with a **recovered** header over a bad body, not reached, `connectivityOnly` | `unreachable` + `dangling` with the header's real type (§D13.8) | 0 | exit 0, `dangling blob` / `dangling tree` (Pin R10c, R10d) |
 | unreadable **loose** object, unreferenced, default / `full: false` | `bad-object` from the content pass; **no** `dangling`, **no** `unreachable`, **no** reject | 1 — except an *IO*-fault read, which throws today and is out of scope (§D11.13) | exit 1, no reachability line (Pin P2–P5, P-a, Pin R3/R8/R10a/R10b default column) |
 | unreadable **loose** object, **reachable**, `connectivityOnly` | **none** | 0 | exit 0, silent (Pin P7, P8, R1, R5) |
-| **packed** object whose body will not inflate, dangling, `connectivityOnly` | `unreachable` + `dangling`, `objectType: 'unknown'`; **no reject** | 0 | exit 0, `dangling blob` — git types it from the pack-entry header (Pin R7, type residual §D11.16) |
-| loose file garbled, **healthy packed copy**, dangling, `connectivityOnly` | `unreachable` + `dangling`, `objectType: 'unknown'`; **no reject** | 0 | exit 0, `dangling blob` — git reads the packed copy (Pin R9, type residual §D11.16) |
+| **packed** object whose body will not inflate, dangling, `connectivityOnly` | `unreachable` + `dangling` with the **pack-entry header's** type; **no reject** | 0 | exit 0, `dangling blob` — git types it from the pack-entry header, delta entries included (Pin R7, R13; §D13.8) |
+| loose file garbled, **healthy packed copy**, dangling, `connectivityOnly` | `unreachable` + `dangling` with the **packed copy's** type; **no reject** | 0 | exit 0, `dangling blob` — git reads the packed copy (Pin R9; §D13.8) |
 | a fault outside both allow-lists | `health()` **rejects**; `fsck` propagates | n/a | n/a — tsgit-side guardrail |
 
 Per ADR-249 the wording is ours; the condition and the exit integer are git's.
@@ -910,6 +947,7 @@ report is a caller who may gate CI on the exit code.
 | T-8 | **Symlinked `.pack`.** git registers a pack whose `.pack` is a symlink to a regular file (its sibling test resolves the target); tsgit's lstat-based regular-files-only listing drops it at scan, so it reports as an orphan — silent, exit 0. A deliberate extension of the no-follow policy (28.1 §D9.1), unchanged here, but the reporting surface makes it observable for the first time. | pre-existing, named |
 | T-9 | **One byte now denies the whole report.** After ADR-590 an attacker with repo-write access can, by garbling a single unreachable loose object, make `fsck({ connectivityOnly: true })` reject — no findings, no exit code, nothing a CI gate can read *except* the failure. That is strictly more disruptive than T-4's exit-bit denial, and it is nonetheless the faithful shape: git `die()`s on the same byte (Pin R3, R6). The mitigation is that the other two modes are untouched — a caller who needs a report from a damaged repo has `fsck()` and `fsck({ full: false })`, both of which classify the same object as a `bad-object` content error and still return everything else. | accepted, and bounded to one mode |
 | T-10 | **The reject must not be reachable from a *reachable* object.** If the guard were fed the universe instead of the `unreachable` array, any repo whose *checked-out* tree holds one damaged blob would stop reporting entirely — a self-inflicted denial on the most common corruption there is, where git says nothing at all (Pin R1). The scoping is what keeps the blast radius equal to git's, and §Test strategy pins it with a row that must assert a *resolved* result. | design constraint, tested |
+| T-11 | **ADR-591 types an object from attacker-controlled bytes.** The retained type comes from a header inside a file or pack entry an attacker with repo-write access wrote. It crosses the boundary as one of four enum values and nothing else: `parseHeader` rejects any type name outside `blob\|tree\|commit\|tag` (it is the `INVALID_OBJECT_HEADER` that makes Pin R10a an *abort* row), and arm 2's walk stops at a non-delta entry whose `PACK_ENTRY_TYPE` is likewise a closed four-value set. So the widest thing an attacker gains is mislabelling a corrupt dangling object as a `tree` instead of a `blob` — which is exactly what git reports for the same bytes. No path, no size and no attacker-chosen string is retained. | bounded by the enum, and git-equal |
 
 ### §D11 — blind spots, named
 
@@ -985,15 +1023,19 @@ report is a caller who may gate CI on the exit code.
     `splitObject` (`git-object.ts:24`) raises the same code for the second. Any implementation that
     classifies the *caught error* rather than re-running the recovery will therefore be wrong on
     R10c, and wrong in the direction that loses a report (§D13.1).
-16. **A type-resolution residual sits beside the abort, and this change makes it visible.** git types
-    an unreachable object from its **header** (loose) or its **pack-entry header** (packed); tsgit
-    types it from a successful `parseObject`. So for an object whose header is fine but whose body
-    tsgit cannot parse (Pin R10d), whose body is packed and undecodable (Pin R7), or whose garbled
-    loose copy shadows a healthy packed one (Pin R9), §D12 emits `objectType: 'unknown'` where git
-    prints `tree` / `blob`. It is a *findings* divergence on the type field only — both tools agree
-    on the id, the `dangling`/`unreachable` verdict and the exit code — it belongs to ADR-588's
-    closure rather than to ADR-590's abort, and closing it would mean a second type-recovery path
-    beside `resolveObjectType`. Named in §Out of scope, not designed.
+16. **`'unknown'` is a reserved verdict, not the generic read-failure label — and everything about
+    the surrounding code invites the opposite reading.** git types an unreachable object from its
+    **header** (loose) or its **pack-entry header** (packed); tsgit typed it from a successful
+    `parseObject`, so an object whose header is fine but whose body tsgit cannot parse (Pin R10d),
+    whose body is packed and undecodable (Pin R7, R13), or whose garbled loose copy shadows a healthy
+    packed one (Pin R9) came out `'unknown'` where git prints `tree` / `blob`. **ADR-591 rules that
+    closed** — §D13.8 retains the recovered header's type — which inverts the rule a reviewer will
+    otherwise infer from the null cache entry: after this change `'unknown'` means *no stored header
+    could be obtained at all* (unopenable file, empty file, refused pack) and nothing else. The trap
+    is that `resolveObjectType`'s fallback still reads `obj != null ? obj.type : 'unknown'` and looks
+    complete on its own; the retention map is the second half of the sentence and lives one file away.
+    The two rows that hold the boundary in place are the `chmod 000` row (still `'unknown'`, Pin P2)
+    and the R10d row (now `tree`) — dropping either lets the field drift back to a generic label.
 
 ### §D12 — the unreadable-object classification closure (ADR-588)
 
@@ -1019,7 +1061,7 @@ The skip becomes conditional on the mode (§D12.2) and the type is resolved rath
 ```ts
 for (const id of ids) {
   if (objectCache.get(id) == null && unreadable === 'skip') continue;
-  findings.push({ type, id, objectType: resolveObjectType(id, objectCache) });
+  findings.push({ type, id, objectType: resolveObjectType(id, objectCache, recovered) });
 }
 ```
 
@@ -1027,7 +1069,9 @@ for (const id of ids) {
 already the one place `fsck.ts:87` resolves a type it may not know — so the closure introduces no new
 concept and no second `'unknown'` derivation. Routing through it also preserves the
 `object-cache.ts:32` equivalence proof, which depends on the cache being read with a **loose**
-`!= null` test (§D12.4).
+`!= null` test (§D12.4). Its third argument is ADR-591's retention map (§D13.8), which is consulted
+**only** when the cache entry is null and is empty in every mode but `connectivityOnly` — so the
+single-site property survives the later ruling instead of sprouting a second resolver.
 
 Everything upstream is untouched (requirement 18), and Pin Q6 is why that is *sufficient* rather than
 merely convenient: git applies its ordinary dangling-vs-unreachable rule to objects it cannot type, and
@@ -1048,8 +1092,8 @@ Pin P is unambiguous: an unreadable loose object yields `dangling unknown` **onl
 entry, and probe P-a proves that is a computation difference, not a print filter. So:
 
 ```ts
-collectTypeFindings(unreachable, 'unreachable', findings, objectCache, unreadableMode);
-collectTypeFindings(dangling,   'dangling',    findings, objectCache, unreadableMode);
+collectTypeFindings(unreachable, 'unreachable', findings, objectCache, recovered, unreadableMode);
+collectTypeFindings(dangling,   'dangling',    findings, objectCache, recovered, unreadableMode);
 // at the fsck.ts call site:
 const unreadableMode = opts.connectivityOnly === true ? 'classify' : 'skip';
 ```
@@ -1116,14 +1160,16 @@ owns it:
 4. So the refused pack's ids **enter the universe** from its still-readable `.idx`, exactly as
    ADR-575 keeps `all()` ungated for.
 5. `buildObjectCache` reads each and fails — the registry refuses the pack at the header gate
-   (ADR-572/573) — and stores `null` for each. No throw: `OBJECT_NOT_FOUND` is caught, and it is
-   also the code §D13.1's step 0 excludes, so ADR-590's reject class is unreachable on this path no
-   matter how many of the pack's objects fail.
+   (ADR-572/573) — and stores `null` for each. No throw: `OBJECT_NOT_FOUND` is caught, and it is the
+   code **both** probe gates exclude — §D13.1's step 0 and §D13.8's `isDecodeFault` — so ADR-590's
+   reject class is unreachable on this path no matter how many of the pack's objects fail, and
+   ADR-591's retention never runs for them either.
 6. `buildInEdgeMap` records no edges for them; `buildReachableSet` never reaches them (no root
    resolves into a refused pack); `classifyObjects` puts all of them in `unreachable`, and — no
    readable object referencing them — in `dangling` too.
 7. `collectTypeFindings` with `unreadableMode = 'classify'` emits `unreachable/unknown` and
-   `dangling/unknown` for each.
+   `dangling/unknown` for each — `'unknown'` by *entitlement* rather than by default, since the
+   refusal makes the pack unable to type its own ids and git says the same (§D13.8, Pin M7).
 8. Exit code stays **0**: no pack pass runs in this mode (requirement 6), no bit 64 unless the fault
    was index-layer (ADR-586), and dangling is not an error (Pin K, Pin Q).
 
@@ -1142,6 +1188,7 @@ own bytes" — which is why one closure covers both layers and Pin P and Pin M7 
 | `reports/api.json` | changes for the two widened fields, on top of the three variants and ADR-585's knob — one regeneration covers all of it (requirement 14) |
 | `docs/use/commands/fsck.md` | the union block (lines 19–22), the finding-reference rows for `dangling` and `unreachable` (both currently say plain `objectType`), and the rendering example at line 180 — `` `dangling ${f.objectType} ${f.id}` `` already prints `'unknown'` correctly with no code change, which is worth stating because it is the one place the widening is *free* |
 | existing consumers | a caller that `switch`es on `f.objectType` for a `dangling` finding gains a reachable case. tsgit ships no such consumer; the parity and interop suites read the field as data |
+| ADR-591's retention | **nothing on this table.** It changes *which* of the already-declared members a row carries, never the member set, and its map is command-internal (§D13.8) |
 | `FsckResult.exitCode` | **unchanged by this closure** — every Pin P and Pin M7 cell it touches is exit 0 on both sides. It is a findings-only change, which is why it composes with ADR-586's exit work without interacting |
 
 #### §D12.7 — the residual the pins exposed, and its ruling
@@ -1184,27 +1231,36 @@ type HeaderRecovery =
 async function recoverLooseHeader(ctx: Context, id: ObjectId): Promise<HeaderRecovery>;
 ```
 
+*(ADR-591 splits `tolerated` into `typed` / `untyped` and renames the helper `recoverStoredType`,
+because the type it recovers is now kept rather than discarded — §D13.8. Everything below is the
+**abort** discriminator and is unchanged by that ruling, which is the whole of the compatibility
+argument between the two ADRs.)*
+
 Five steps, each with the pin that forbids removing it:
 
-0. **Pre-filter on the caught code** — `isRecoveryCandidate(err)`: the probe runs only when
-   `readObject` threw `DECOMPRESS_FAILED` or `INVALID_OBJECT_HEADER`. This is not the decider
-   (steps 1–4 are); it is what keeps the probe off an object whose *first* read already failed at the
-   I/O layer. Without it, Pin P2's `chmod 000` object would have its `ctx.fs.read` retried inside the
-   probe, the `PERMISSION_DENIED` would propagate, and a row git exits 0 on would reject instead. It
-   can only shrink the candidate set — every abort row in Pin R arrives with one of the two codes.
-1. `looseCompressedBytes(ctx, id)` returns `undefined` ⇒ **tolerated**: the object is not loose, so
-   whatever failed was a pack read (Pin R7). No I/O — `probeLooseOid` answers from the per-prefix
+0. **Pre-filter on the caught code** — `isRecoveryCandidate(err)`: the **abort** verdict is reachable
+   only when `readObject` threw `DECOMPRESS_FAILED` or `INVALID_OBJECT_HEADER`. This is not the
+   decider (steps 1–4 are); it is what keeps the probe off an object whose *first* read already
+   failed at the I/O layer. Without it, Pin P2's `chmod 000` object would have its `ctx.fs.read`
+   retried inside the probe, the `PERMISSION_DENIED` would propagate, and a row git exits 0 on would
+   reject instead. It can only shrink the candidate set — every abort row in Pin R arrives with one
+   of the two codes. §D13.8 widens the code set that *enters* the probe and leaves this two-code test
+   in place as the abort gate, so the widening cannot manufacture an abort.
+1. `looseCompressedBytes(ctx, id)` returns `undefined` ⇒ **tolerated** (ADR-591: `typed` from the
+   pack entry — arm 2): the object is not loose, so whatever failed was a pack read (Pin R7). No I/O — `probeLooseOid` answers from the per-prefix
    fanout set, which the very read that just failed already warmed (`loose-oid-cache.ts`, one
    `readdir` per `objects/xx` per `Context`). (A refused pack's ids never get this far: their read
    fails `OBJECT_NOT_FOUND`, which step 0 already excludes.)
-2. `bytes.length === 0` ⇒ **tolerated** (Pin P3, R4: git treats an empty file as one it could not
-   read, not as one whose type it failed to recover).
+2. `bytes.length === 0` ⇒ **tolerated** — and ADR-591's `untyped`, since there is no header to
+   recover (Pin P3, R4: git treats an empty file as one it could not read, not as one whose type it
+   failed to recover).
 3. `parseHeader(await ctx.compressor.inflate(bytes))` throws ⇒ **unrecoverable**, carrying the thrown
    error (Pin P4, P5, R3, R8, R10a, R10b). `parseHeader`, **not** `splitObject` — that one line is
    what keeps Pin R10c out of the class, because `splitObject` adds the size check git does not make
    here.
-4. it returns ⇒ **tolerated** (Pin R10c, R10d, P6: a recovered type is a reported type, whatever the
-   body does behind it).
+4. it returns ⇒ **tolerated** — and ADR-591 keeps the `type` field it just returned (arm 1), which is
+   what finally makes Pin R10c/R10d's *"a recovered type is a reported type, whatever the body does
+   behind it"* true of tsgit and not only of git (P6).
 
 The catch in step 3 is narrow — `DECOMPRESS_FAILED` and `INVALID_OBJECT_HEADER` are the only codes
 `inflate` and `parseHeader` can raise — and rethrows everything else, so a file that changed under
@@ -1217,17 +1273,19 @@ strategy exist here for the same reason they exist for `health()`.
 Pin R9 is the row ADR-590's one-line description could not anticipate. A garbled loose file whose oid
 *also* sits in a healthy pack exits 0 in git, because git types it from the pack. tsgit reads
 **loose-before-pack**, so its `readObject` fails on the shadowed copy — a pre-existing read-path
-divergence (§D11.16) that this mechanism would otherwise amplify from "one null cache entry" into
-"the whole report withheld". So step 3's `unrecoverable` verdict is confirmed by one last question,
+divergence (§Out of scope, *loose-before-pack read order*) that this mechanism would otherwise
+amplify from "one null cache entry" into "the whole report withheld". So step 3's `unrecoverable`
+verdict is confirmed by one last question,
 asked only for a genuine abort candidate and therefore never on a healthy path:
 
 ```ts
 (await registry.lookup(id)) === undefined   // ADR-572's ordinary lazy gate — never health()
 ```
 
-An id a pack index still claims is **tolerated**. The cell stays divergent on the *type*
-(`'unknown'` versus git's `blob`, §D11.16) and that is not closed here — but it is not an abort, and
-the abort axis is the one ADR-590 binds. Three notes on the shape:
+An id a pack index still claims is **tolerated**. ADR-590 bound only the abort axis, so this section
+left the cell divergent on the *type* (`'unknown'` versus git's `blob`); **ADR-591 closes that half**
+by typing the object from the very `PackLookupHit` this condition produces — one lookup, two answers
+(§D13.8). Three notes on the shape:
 
 - **It lives inside `recoverLooseHeader`**, which reaches the registry through `getPackRegistry(ctx)`
   — the per-`Context` instance `readObject` has already been using, so no scan and no second
@@ -1249,16 +1307,21 @@ export interface ObjectCacheResult {
   readonly cache: ReadonlyMap<ObjectId, CachedGitObject>;
   /** oid → the fault that made its type unrecoverable. Always empty unless `unreadable === 'classify'`. */
   readonly unrecoverable: ReadonlyMap<ObjectId, TsgitError>;
+  /** oid → the type its *stored header* declares, for an object whose body would not parse
+   *  (ADR-591, §D13.8). Always empty unless `unreadable === 'classify'`. */
+  readonly recovered: ReadonlyMap<ObjectId, FsckObjectType>;
 }
 ```
 
-The cache's `catch` arm keeps its one statement and gains one branch:
+The cache's `catch` arm keeps its one statement and gains one branch — the probe answers both
+questions in one pass, which is why ADR-591 adds a map and not a second traversal:
 
 ```ts
 } catch (err) {
   cache.set(id, null);
-  if (unreadable === 'classify' && isRecoveryCandidate(err)) {
-    const recovery = await recoverLooseHeader(ctx, id);
+  if (unreadable === 'classify' && isDecodeFault(err)) {
+    const recovery = await recoverStoredType(ctx, id, err);
+    if (recovery.kind === 'typed') recovered.set(id, recovery.objectType);
     if (recovery.kind === 'unrecoverable') unrecoverable.set(id, recovery.cause);
   }
 }
@@ -1347,6 +1410,13 @@ the per-pack degradation warns.
   plus — only if it is an abort candidate — one `registry.lookup`. It is the only place in this
   design an object is read twice, it is bounded by the damage, and the run it slows down is the run
   that is about to reject.
+- **ADR-591's retention adds nothing to the first three bullets** and, to the fourth, only what the
+  type actually costs: arm 1 is free (the type is a field of the value step 3 already produced), and
+  arms 2 and 3 add one memoised `registry.lookup` — already performed on the arm-3 path — plus one
+  small `readSlice` per damaged object and one more per delta link (§D13.8). The widened
+  `isDecodeFault` entry set means a *body*-parse failure now pays the loose probe too (Pin R10d):
+  one read and one inflate of an object whose read already failed, in the one mode that does no
+  content pass.
 
 #### §D13.6 — the mutation consequences, including a third dead equivalence proof
 
@@ -1368,23 +1438,148 @@ the per-pack degradation warns.
 
 #### §D13.7 — the whole class, row by row, as the implementer will need it
 
+The `probe verdict` column carries ADR-591's outcome (§D13.8) as well as ADR-590's, because one probe
+answers both questions. **No row moved into or out of the rejecting set when ADR-591 landed** — only
+the type column of four already-resolving rows changed.
+
 | pinned row | what tsgit's read throws | probe verdict | tsgit result in `connectivityOnly` |
 |---|---|---|---|
-| P2 / O11 — `chmod 000` | `PERMISSION_DENIED` | not a candidate (step 0) | `dangling` + `unreachable`, `'unknown'`, exit 0 |
-| P3 / R4 — empty file | `DECOMPRESS_FAILED` | tolerated (step 2) | `dangling` + `unreachable`, `'unknown'`, exit 0 |
+| P2 / O11 — `chmod 000` | `PERMISSION_DENIED` | not a candidate (`isDecodeFault`) | `dangling` + `unreachable`, `'unknown'`, exit 0 — **faithful** |
+| P3 / R4 — empty file | `DECOMPRESS_FAILED` | **untyped** (step 2) | `dangling` + `unreachable`, `'unknown'`, exit 0 — **faithful** |
 | P4 / R3 — non-zlib garbage, dangling | `DECOMPRESS_FAILED` | **unrecoverable** | **rejects** `DECOMPRESS_FAILED` |
 | P5 — truncated to 8 bytes | `DECOMPRESS_FAILED` | **unrecoverable** | **rejects** `DECOMPRESS_FAILED` |
 | R8 — valid zlib, no NUL in 32 bytes | `INVALID_OBJECT_HEADER` (*missing null terminator*) | **unrecoverable** | **rejects** `INVALID_OBJECT_HEADER` |
 | R10a — header `widget 5\0` | `INVALID_OBJECT_HEADER` (*unknown object type*) | **unrecoverable** | **rejects** `INVALID_OBJECT_HEADER` |
 | R10b — header `blob abc\0` | `INVALID_OBJECT_HEADER` (*invalid size*) | **unrecoverable** | **rejects** `INVALID_OBJECT_HEADER` |
-| R10c — header `blob 99\0`, 2 content bytes | `INVALID_OBJECT_HEADER` (*size mismatch*, from `splitObject`) | tolerated (step 4) | `dangling`/`blob`, exit 0 — **faithful** |
-| R10d — header `tree 4\0`, junk body | `INVALID_TREE_ENTRY` | not a candidate (step 0) | `dangling`/`'unknown'`, exit 0 — type residual §D11.16 |
+| R10c — header `blob 99\0`, 2 content bytes | `INVALID_OBJECT_HEADER` (*size mismatch*, from `splitObject`) | **typed `blob`** (step 4, arm 1) | `dangling`/`blob`, exit 0 — **faithful** |
+| R10d — header `tree 4\0`, junk body | `INVALID_TREE_ENTRY` | **typed `tree`** (step 4, arm 1 — entered via `isDecodeFault`, never an abort candidate) | `dangling`/`tree`, exit 0 — **faithful** |
 | P6 / O14 — hash-path mismatch | *nothing — it decodes* | never reached | `dangling`/`blob`, exit 0 — **faithful** |
 | R2 — undecodable, unreachable, referenced | `DECOMPRESS_FAILED` | **unrecoverable** | **rejects** — the id is in `unreachable`, not in `dangling` |
 | R1 / P8 — undecodable, **reachable** | `DECOMPRESS_FAILED` | unrecoverable, but **never in `unreachable`** | no finding, exit 0 — **faithful** |
-| R7 — packed entry body corrupt | `DECOMPRESS_FAILED` | tolerated (step 1) | `dangling`/`'unknown'`, exit 0 — type residual §D11.16 |
-| R9 — loose garbled, healthy packed copy | `DECOMPRESS_FAILED` | tolerated (§D13.2) | `dangling`/`'unknown'`, exit 0 — type residual §D11.16 |
-| M7 — refused pack's ids | `OBJECT_NOT_FOUND` | not a candidate (step 0) | `dangling` + `unreachable`, `'unknown'` ×N, exit 0 |
+| R7 — packed entry body corrupt | `DECOMPRESS_FAILED` | **typed `blob`** from the pack entry (step 1, arm 2) | `dangling`/`blob`, exit 0 — **faithful** |
+| R13 — packed **delta** entry body corrupt | `DECOMPRESS_FAILED` | **typed `blob`** from the delta base's entry (arm 2, base-link walk) | `dangling`/`blob`, exit 0 — **faithful** |
+| R9 — loose garbled, healthy packed copy | `DECOMPRESS_FAILED` | **typed `blob`** from the packed copy (§D13.2's hit, arm 3) | `dangling`/`blob`, exit 0 — **faithful** |
+| M7 — refused pack's ids | `OBJECT_NOT_FOUND` | not a candidate (`isDecodeFault`) | `dangling` + `unreachable`, `'unknown'` ×N, exit 0 — **faithful** |
+
+Every row now reads **faithful** or **rejects**; the `type residual §D11.16` annotation that stood
+against R7, R9 and R10d is gone, and R10c is the row worth pausing on — the previous revision already
+claimed `blob` for it while the mechanism it described produced `'unknown'` (the read throws inside
+`splitObject`, so the cache entry is null and `resolveObjectType` had nothing else to consult). ADR-591
+is what makes that cell true rather than asserted.
+
+#### §D13.8 — the type the probe already recovered, retained (ADR-591)
+
+§D11.16 named the last residual: git types an unreachable object from its **stored header**, tsgit
+from a successful `parseObject`, so three rows reported `'unknown'` where git prints a real type. The
+user ruled it closed. The closure asks **no new question** — §D13.1's step 3 already parses the loose
+header and §D13.2 already asks whether a pack claims the oid; both compute exactly what git prints
+and then throw it away. Retention keeps it.
+
+**What `'unknown'` means afterwards.** tsgit emits it when — and only when — *no stored header could
+be obtained at all*: an unopenable file (Pin P2), an empty one (Pin P3, R4) and a refused pack's ids
+(Pin M7). That is precisely the set git prints `dangling unknown` for. A loose object whose header is
+unrecoverable reaches the question only when a pack still claims its oid — that is arm 3, Pin R9;
+otherwise requirement 19 rejects on it before any finding exists.
+
+**Three arms, one map.**
+
+| the read failed because | where the type comes from | pins |
+|---|---|---|
+| the loose header parsed but the **body** did not | `parseHeader`'s own `type`, already in hand at §D13.1 step 3 — **no extra I/O whatsoever** | R10c, R10d |
+| the object is **not loose** — the failure was a pack read | the **pack-entry header** at `lookup`'s offset; a delta entry resolves to its base's type by walking base links through entry headers only, never inflating a body | R7, **R13** |
+| the loose header is unrecoverable but a **pack claims the oid** | the same pack-entry read, on the hit §D13.2 already holds | R9 |
+
+Arms 2 and 3 are one code path reached from two places, which is why the pack arm costs one function
+and not two. It reads the entry header through `PackLookupHit` + `parsePackEntryHeader` — the pair
+`resolvePackChain` already uses — and follows `OFS_DELTA` / `REF_DELTA` base links exactly as that
+walker does, stopping at the first non-delta entry's type. Pin R13 is what makes that a pinned
+behaviour rather than an inference from R7's single non-delta entry, and it was run in both encodings
+because the walker branches on which one it sees.
+
+**Where the retained type flows.** `buildObjectCache` returns it in `recovered` (§D13.3);
+`fsck.ts` threads that map into `collectTypeFindings` beside the cache; `collectTypeFindings`
+resolves through the **same** `resolveObjectType` §D12.1 already routes through, which gains one
+fallback line and no new `'unknown'` derivation:
+
+```ts
+export function resolveObjectType(
+  id: ObjectId,
+  objectCache: ReadonlyMap<ObjectId, CachedGitObject>,
+  recovered: ReadonlyMap<ObjectId, FsckObjectType>,
+): FsckObjectType | 'unknown' {
+  const obj = objectCache.get(id);
+  if (obj != null) return obj.type;
+  return recovered.get(id) ?? 'unknown';
+}
+```
+
+so the retained type reaches exactly the two finding kinds ADR-588 widened — `dangling` and
+`unreachable` — and nothing else. `fsck.ts:87`'s `missing` call site passes the same map and is
+unchanged **by construction**: a missing id is by definition outside the universe, so it has neither a
+cache entry nor a recovery entry. One resolver, two call sites, one meaning.
+
+**It stays emission-only** (requirement 18). `recovered` is a *sibling* of the cache, never a
+substitute entry inside it. Putting a `{ type }` stub in `cache` would be the shorter diff and is
+wrong: `buildInEdgeMap` and `buildReachableSet` both branch on `obj == null`, so a stub would turn an
+undecodable object into a readable one with no out-edges and change reachability on exactly the rows
+Pin R1 / P7 require to stay silent — and `visitObject` would then read fields a stub does not have.
+The map is consulted at emission and nowhere else.
+
+**Retention is monotone, and that is the whole compatibility argument with ADR-590.** It can only
+replace `'unknown'` with a real type. It adds no finding, removes none, touches no exit bit, and
+**cannot change an abort verdict**: requirement 19's four conjuncts are computed by §D13.1 steps 1–4
+and §D13.2 exactly as before, and the `unrecoverable` verdict remains gated on §D13.1 step 0's
+unchanged two-code test. A reviewer checking ADR-591 against ADR-590 needs only that sentence and the
+§D13.7 table, in which **no row moved into or out of the rejecting set**.
+
+**The entry gate, and why it may over-approximate but not under-protect.** R10d's read throws
+`INVALID_TREE_ENTRY`, which step 0 deliberately excludes — so retention cannot hang off the abort
+candidate set. It hangs off a wider one: `isDecodeFault(err)`, a membership test over the closed set
+of codes reachable **once the object's bytes are already in hand** — `DECOMPRESS_FAILED` and
+`INVALID_OBJECT_HEADER` (§D13.1's two) plus the codes `parseObject` raises after `parseHeader` has
+succeeded: `INVALID_TREE_ENTRY`, `INVALID_COMMIT`, `INVALID_TAG`, `INVALID_IDENTITY`,
+`INVALID_FILE_MODE`, `INVALID_OBJECT_ID`, `TREE_ENTRY_LIMIT_EXCEEDED`.
+
+Three properties make that list safe to write down rather than a drift hazard:
+
+- **It is an allow-list, so it fails toward today.** A parse code missing from it yields
+  `'unknown'` — the pre-ADR-591 answer — never a wrong type and never an abort. A deny-list over I/O
+  codes would fail the other way: one unlisted access code and Pin P2's `chmod 000` object gets its
+  read retried inside the probe, the `PERMISSION_DENIED` propagates, and a run git completes rejects.
+  That asymmetry, not brevity, is why the longer list wins.
+- **Not one of its members can come from `ctx.fs`**, so the two pinned negatives hold structurally:
+  `PERMISSION_DENIED` (P2) and `OBJECT_NOT_FOUND` (M7, a refused pack's ids) are outside it and
+  neither ever enters the probe.
+- **It is a `Set` membership test, not a `||` chain**, so it is one `ArrayDeclaration` / one
+  `MethodExpression` mutant rather than nine `LogicalOperator` operands — the isolated-guard rule
+  costs one row here, not one per code (§Mutation).
+
+**Two boundaries it deliberately does not cross.**
+
+- **A refused pack's ids stay `'unknown'`.** The pack arm goes through `lookup`, ADR-572's
+  header-gated read path, so a refused pack yields no hit and no type. That is not a shortfall — git
+  refuses the pack too and prints `dangling unknown` (Pin M7). The gate is what keeps the two tools
+  equal, and routing the arm through `health()` instead would silently *break* M7 (§D11.5).
+- **The pack arm is reached only from the two arms above, never as a general fallback.** So a loose
+  file that is unopenable (P2) or empty (R4) *and* whose oid a pack also claims stays `'unknown'`
+  where git would print the packed type: the first never enters the probe at all (step 0's reasoning
+  applies unchanged to `isDecodeFault`, and reaching it would mean re-reading the file the pre-filter
+  exists to leave alone), the second answers `untyped` at step 2. Both cells are unpinned on **both**
+  sides — P2's, R4's and R9's fixtures each hold exactly one source — and both are facets of the
+  pre-existing loose-before-pack read order already in §Out of scope. Widening the arm to fire
+  wherever the loose form yields no type would be a plausible generalisation of R9's rule and is
+  declined for the reason §D11.14 gives: every branch here defends a pinned row, and this one would
+  defend none.
+
+**Cost.** Arm 1 is free — the type is a field of a value step 3 already produced. Arms 2 and 3 add one
+memoised `registry.lookup` (the `.idx` is already parsed; for arm 3 it is the lookup §D13.2 performs
+anyway) and one small `readSlice` per **damaged** object, plus one more per delta link. Nothing on a
+healthy repo, nothing in `'skip'` mode, and nothing on the refused-pack row (§D13.5).
+
+**Surface.** Zero delta beyond ADR-588's: `FsckObjectType | 'unknown'` is unchanged as a *type* —
+ADR-591 narrows *when* the `'unknown'` member occurs, which is behaviour, not surface. `recovered`
+lives on the command-internal `ObjectCacheResult`, and `resolveObjectType` /`collectTypeFindings` are
+command-internal too, so `reports/api.json` gains nothing from this ruling (requirement 14).
 
 ## Decision candidates
 
@@ -1573,10 +1768,12 @@ means shipping a known divergent cell rather than filing it. *(Superseded: the u
 > - it does not fire when another source can type the object: a packed body that will not inflate,
 >   or a garbled loose file shadowing a healthy packed copy, both exit 0 in git (Pin R7, R9).
 >
-> One residual the pins exposed and this ruling does **not** cover is carried into §D11.16 and
-> §Out of scope: git types an unreachable object from its header, tsgit from a successful parse, so
-> three unpinned-until-now rows keep `objectType: 'unknown'` where git prints a real type. It is a
-> findings-shape residual of ADR-588's closure, on a different axis from the abort.
+> One residual the pins exposed and this ruling does **not** cover was carried forward on a different
+> axis from the abort: git types an unreachable object from its header, tsgit from a successful parse,
+> so three rows kept `objectType: 'unknown'` where git prints a real type. It was a findings-shape
+> residual of ADR-588's closure and is **now settled by ADR-591** — §D13.8 retains the recovered
+> type, §D11.16 states the reserved meaning of `'unknown'` that follows, and Pin R13 pins the one leg
+> (a delta-stored entry) that no earlier row reached. Nothing about the abort moved.
 
 *Constraint:* within `--connectivity-only`, git splits unreadable objects by fault class (Pin P).
 An object it cannot **open** (EACCES) or that is **empty** becomes `dangling unknown` and the run
@@ -1661,7 +1858,10 @@ opposite directions (Pin O: nine findings must disappear as the bit appears).
 
 `sut` = `fsck`. Every row asserts the `objectType` **value**, never just the finding's presence: the
 whole change is that one field can now be `'unknown'`, and a presence-only assertion passes on the
-old code for the typed rows and on a mis-keyed widening for the untyped ones.
+old code for the typed rows and on a mis-keyed widening for the untyped ones. After ADR-591 the
+`'unknown'` rows below are also the *boundary* rows for §D13.8's retention — an unopenable file and a
+refused pack's ids must stay `'unknown'` because no store can type them, and a retention that reached
+them would pass every other row in the matrix (§D13.8's two boundaries).
 
 | case | arrangement | expectation |
 |---|---|---|
@@ -1684,6 +1884,12 @@ type-only assertion passes on either. Every tolerating row asserts a **resolved*
 passes on a run that rejected for a different reason. Each row is its own `it`: they are the four
 conjuncts of requirement 19 and no two may share an arrangement.
 
+After ADR-591 the `objectType` assertion is doing **two** jobs on the tolerating rows: it proves the
+run resolved *and* it proves which store typed the object. The three rows that must stay `'unknown'`
+— unopenable (P2), empty (P3/R4) and the refused-pack ids (M7) — are that claim's boundary and are
+already in this matrix and the §D12 one; they are what stops a retention that types everything, just
+as the retention rows are what stops a `'unknown'` that means "read failed".
+
 | case | arrangement | expectation |
 |---|---|---|
 | **undecodable, dangling, `connectivityOnly`** | one loose object whose bytes are non-zlib garbage, no packs | **rejects**; `.data.code === 'DECOMPRESS_FAILED'` (Pin P4, R3) |
@@ -1692,14 +1898,16 @@ conjuncts of requirement 19 and no two may share an arrangement.
 | same fixture, **`connectivityOnly` + `full: false`** | — | **rejects** — the combination Pin R11 pins, and the row that fails if the gate ever consults `full` |
 | **unrecoverable header**, dangling, `connectivityOnly` | valid zlib whose inflated bytes have no NUL in the first 32 | **rejects**; `.data.code === 'INVALID_OBJECT_HEADER'` and `.data.reason` asserted (Pin R8) |
 | **unknown type name**, dangling, `connectivityOnly` | valid zlib, header `widget 5\0` | **rejects**; `.data.reason` names the type — own `it` (isolated-guard rule over the recovery's two-code catch) (Pin R10a) |
-| **size mismatch**, dangling, `connectivityOnly` | valid zlib, header `blob 99\0` over 2 content bytes | **resolves**; `dangling`/**`blob`** — the row that forbids keying the abort on `INVALID_OBJECT_HEADER` as a code (Pin R10c, §D11.15) |
-| **unparseable body, valid header**, dangling, `connectivityOnly` | header `tree 4\0` over 4 junk bytes | **resolves**; `dangling` present, `exitCode` 0 — proves the pre-filter excludes `INVALID_TREE_ENTRY` (Pin R10d) |
+| **size mismatch**, dangling, `connectivityOnly` | valid zlib, header `blob 99\0` over 2 content bytes | **resolves**; `dangling`/**`blob`** — the row that forbids keying the abort on `INVALID_OBJECT_HEADER` as a code (Pin R10c, §D11.15). Its `blob` is now *produced* by arm 1 rather than assumed, which is what the previous revision's §D13.7 got wrong |
+| **unparseable body, valid header**, dangling, `connectivityOnly` | header `tree 4\0` over 4 junk bytes | **resolves**; `dangling`/**`tree`**, `exitCode` 0 — one row, two claims: the *abort* pre-filter excludes `INVALID_TREE_ENTRY`, and `isDecodeFault` admits it so arm 1 types it (Pin R10d, §D13.8) |
+| **same fixture, default** | — | **resolves**; `bad-object`, **no** `dangling`/`unreachable` — the row that proves the retention map is mode-gated, i.e. empty in `'skip'` mode, and its own `it` for the same reason the other mode pairs are |
 | **empty file**, dangling, `connectivityOnly` | loose file truncated to 0 bytes | **resolves**; `dangling`/`'unknown'` — the `length === 0` row (Pin P3, R4) |
 | **unopenable**, dangling, `connectivityOnly` | loose read rejects `PERMISSION_DENIED` | **resolves**; `dangling`/`'unknown'` — the step-0 row, and the one that fails loudly if the probe re-reads (Pin P2) |
 | **reachable** undecodable, `connectivityOnly` | garbage blob referenced by a reachable tree | **resolves**; no finding for that oid, `exitCode` 0 (Pin R1) — second killer of the `reachability.ts:163` mutant (§D13.6) |
 | **unreachable but referenced**, `connectivityOnly` | garbage blob referenced by a *dangling* readable tree | **rejects** (Pin R2) — the only row that fails if the guard is fed `dangling` instead of `unreachable` |
-| **packed** object with an undecodable body, dangling, `connectivityOnly` | corrupt entry in an otherwise accessible pack; the oid is not loose | **resolves**; `dangling`/`'unknown'`, `exitCode` 0 — the step-1 row (Pin R7) |
-| **loose garbled + healthy packed copy**, dangling, `connectivityOnly` | same oid loose (garbled) and in a healthy pack | **resolves**; `exitCode` 0 — the **only** row that kills the §D13.2 lookup condition (Pin R9) |
+| **packed** object with an undecodable body, dangling, `connectivityOnly` | corrupt **base** entry in an otherwise accessible pack; the oid is not loose | **resolves**; `dangling`/**`blob`**, `exitCode` 0 — the step-1 row, and arm 2's non-delta leg (Pin R7) |
+| **packed *delta* entry** with an undecodable body, dangling, `connectivityOnly` | corrupt `OFS_DELTA` entry whose base is healthy; a second `it` for the `REF_DELTA` encoding | **resolves**; `dangling`/**`blob`**, `exitCode` 0 — the base-link walk; the **only** rows that fail if arm 2 stops at the entry's stored type (Pin R13) |
+| **loose garbled + healthy packed copy**, dangling, `connectivityOnly` | same oid loose (garbled) and in a healthy pack | **resolves**; `dangling`/**`blob`**, `exitCode` 0 — the **only** row that kills the §D13.2 lookup condition, and arm 3's only row (Pin R9) |
 | **two damaged objects**, `connectivityOnly` | one healthy dangling blob + one undecodable dangling blob | **rejects**, and the healthy object's findings are unobservable (Pin R6) — asserts the abort, not which oid |
 | refused pack, `connectivityOnly` (existing row above) | v99 pack, ids supplied by nothing else | **resolves** with `dangling`/`'unknown'` ×N — doubles as the proof that `OBJECT_NOT_FOUND` never enters the candidate set (Pin M7) |
 | corrupt `.idx` **+** undecodable dangling object, `connectivityOnly` | both faults in one repo | **rejects** — the bit-64 term ADR-586 computes in this mode is not observable through a reject (Pin R12); the row exists to forbid a test that asserts `exitCode === 64` here |
@@ -1732,9 +1940,11 @@ two interop suites drift on the one recipe that must stay identical.
   `git repack` sees a stale loose view. Every row here writes with `git` first.
 - Delete each fixture's `.rev` before mutating, or the reverse-index axis contaminates the pack rows
   (the same discipline the pins used).
-- **`chmod u+w` before mutating any loose object** (K-22 … K-35): git writes them `0444`, and a
-  helper that skips this silently measures a *healthy* repo — the failure mode that produced five
-  false cells on the first run of Pin P and one dead row on the first run of Pin R.
+- **`chmod u+w` before mutating any loose object** (K-22 … K-37) **and any copied pack file**
+  (K-34 … K-36): git writes loose objects `0444` and a copied `.pack` keeps that mode, and a helper
+  that skips this silently measures a *healthy* repo — the failure mode that produced five false
+  cells on the first run of Pin P, one dead row on the first run of Pin R, and a `PermissionError`
+  on the first run of Pin R13.
 - **Each loose-object row gets its own repo**, not a shared one with several damaged objects. The
   abort rows withhold the whole report (Pin R6), so a second damaged object in the same fixture can
   mask exactly the assertion the row exists to make — and the reject's determinism is defined by
@@ -1775,8 +1985,10 @@ two interop suites drift on the one recipe that must stay identical.
 | K-31 | **valid zlib / unrecoverable header** (`widget 5\0`), `--connectivity-only` (Pin R10a) | exit 128 | rejects, `.data.code === 'INVALID_OBJECT_HEADER'` |
 | K-32 | **valid header / size disagreement** (`blob 99\0`), `--connectivity-only` (Pin R10c) | exit 0, `dangling blob <oid>` | resolves; `dangling` with `objectType === 'blob'` — the row that pins the split as header-recovery, not error code |
 | K-33 | **healthy dangling object + undecodable dangling object**, `--connectivity-only` (Pin R6) | exit 128 and the healthy `dangling` line is **absent** from stdout | rejects — neither tool emits a partial report |
-| K-34 | **packed-only object with a corrupt entry body**, `--connectivity-only` (Pin R7) | exit 0, `dangling blob <oid>` | resolves, `exitCode` 0 — **abort axis only**; the `objectType` differs (`'unknown'`) and that residual is §D11.16's, asserted as a documented difference rather than a match |
-| K-35 | **garbled loose copy + healthy packed copy**, `--connectivity-only` (Pin R9) | exit 0, `dangling blob <oid>` | resolves, `exitCode` 0 — abort axis only, same residual note as K-34 |
+| K-34 | **packed-only object with a corrupt entry body**, `--connectivity-only` (Pin R7) | exit 0, `dangling blob <oid>` | resolves, `exitCode` 0 **and `objectType === 'blob'`** — after ADR-591 this row is a full match on id, verdict, type and exit; the `'unknown'` caveat the previous revision carried here is gone |
+| K-35 | **garbled loose copy + healthy packed copy**, `--connectivity-only` (Pin R9) | exit 0, `dangling blob <oid>` | resolves, `exitCode` 0 **and `objectType === 'blob'`** — full match, same as K-34 |
+| K-36 | **packed *delta* entry with a corrupt body**, `--connectivity-only` (Pin R13) — run for `OFS_DELTA` **and** `REF_DELTA` | exit 0, `dangling blob <oid>` | resolves, `objectType === 'blob'`, `exitCode` 0 — the base-link walk against real git-written deltas, which no synthetic single-entry fixture exercises. Fixture per Pin R13's recipe: `git pack-objects --no-reuse-delta [--delta-base-offset]` over two near-identical blob oids, dropped into a fresh repo so both entries are dangling |
+| K-37 | **valid header over an unparseable body**, `--connectivity-only` (Pin R10d) | exit 0, `dangling tree <oid>` | resolves, `objectType === 'tree'` — the loose arm of the retention, and the row where git's `too-short tree object` stderr is *not* compared (ADR-249: verdict line only) |
 
 **Fixture precondition for K-20 (Pin Q).** The donor repo's file bodies must be **distinct** from the
 target repo's. Both are built by the same helper, so the default is *identical* content, which makes
@@ -1818,6 +2030,14 @@ three must map a dead stream to `DECOMPRESS_FAILED` for the discriminator to see
 A decoder that returned empty bytes instead of throwing would silently move the object from the
 reject class into `dangling unknown` on that adapter alone.
 
+ADR-591's retention rides the same fixture with one added assertion rather than a fourth leg: the
+v99 pack's ids must come back `'unknown'` on all three adapters (the pack is refused, so `lookup`
+yields nothing — §D13.8's first boundary), while the scenario's healthy pack contributes the arm-2
+read, which is the one place the retention touches `pack.readSlice` and therefore the browser tier's
+handle-less fallback (ADR-510/28.1 §D7). Asserting the type *value* per adapter is what makes an
+adapter that silently returns short bytes from `readSlice` fail here instead of downgrading one
+finding to `'unknown'` in production.
+
 ### Property-based testing — **lens 2 applies**; extend the existing sibling
 
 `test/unit/application/commands/fsck.properties.test.ts` already exists and already works lens 2
@@ -1852,12 +2072,16 @@ classifier. `numRuns: 50` — each run constructs a repo and crafts a pack fixtu
 expensive tier, and all three invariants are structural rather than statistical. I8 runs `fsck`
 twice per case; it stays in the same tier because the second run reuses the fixture.
 
-**No property can trip ADR-590's reject, and that is a precondition rather than a coincidence.** All
-three arbitraries damage a *pack* and leave every loose object intact, so a generated repo's failing
-reads are `OBJECT_NOT_FOUND` — excluded at §D13.1's step 0. Any later arbitrary that learns to damage
-a loose object must state which side of the header-recovery split it generates, or I8's
-`connectivityOnly` leg starts rejecting on some draws and shrinking to a counterexample that looks
-like a classification bug and is not.
+**No property can trip ADR-590's reject or ADR-591's retention, and that is a precondition rather
+than a coincidence.** All three arbitraries damage a *pack* and leave every loose object intact, so a
+generated repo's failing reads are `OBJECT_NOT_FOUND` — excluded by §D13.1's step 0 **and** by
+§D13.8's `isDecodeFault`. That is what makes I8's literal `'unknown'` expectation stable across
+arbitrary graphs rather than a hostage to which store could have typed the object. Any later
+arbitrary that learns to damage a loose object, or to damage a *readable* pack's entry bodies rather
+than its header, must state which side of the header-recovery split it generates **and** whether the
+id can still be typed — otherwise I8's `connectivityOnly` leg starts either rejecting on some draws or
+returning a real type where the property demands `'unknown'`, and shrinks to a counterexample that
+looks like a classification bug and is not.
 
 The lenses that do **not** fit, stated so the omissions are deliberate: no **round-trip pair**
 (nothing serialises a health report); no **total function over an algebraic grammar** (the fault
@@ -1928,6 +2152,21 @@ sweep is clearer than an arbitrary); no **idempotence** axis beyond I7's bit fol
   (which must stay `'blob'`), and one replacing it with `obj.type` is killed by the unreadable rows.
   Both directions need a row; only one of them is the "interesting" case, which is why the negative
   row is listed in the unit matrix rather than left to the interop suite.
+- **ADR-591's retention adds three mutation targets and no new class of row** (§D13.8):
+  - `resolveObjectType`'s new fallback is one `ConditionalExpression` plus the `??` operand. Forcing
+    it to `'unknown'` is killed by any retention row (R7, R9, R10c, R10d, R13); deleting the
+    `?? 'unknown'` and returning `undefined` is killed by the rows that must **stay** `'unknown'`
+    (P2, R4, M7) — the same pairing §D13.8 calls the boundary, so neither side may be pruned as
+    "asserting nothing happens".
+  - `isDecodeFault` is a **`Set` membership test over a named constant array**, not a `||` chain, so
+    the isolated-guard rule costs one row rather than one per code: the `ArrayDeclaration -> []`
+    mutant is killed by R10d (the only pinned member outside §D13.1's two abort codes), and forcing
+    the predicate true is killed by the `chmod 000` row (P2), which must not re-read. This is the
+    deliberate shape reason §D13.8 gives for a `Set` over a disjunction.
+  - Arm 2's delta-link walk is a loop with a `ConditionalExpression` on the entry's stored type. Only
+    the two Pin R13 rows reach it; the non-delta R7 row exits before the first iteration, so R7 alone
+    leaves a `while`-body `BlockStatement` mutant surviving. That is why R13 is two `it`s in the unit
+    matrix and one interop row, not a variant of R7's arrangement.
 
 ### Gates
 
@@ -1941,7 +2180,9 @@ sweep is clearer than an arbitrary); no **idempotence** axis beyond I7's bit fol
   prepush `check:doc-typedoc` gate fails; a large typedoc-id diff is normal. **ADR-590 adds nothing
   to this list** — `UnreadableMode`, `ObjectCacheResult` and the guard are command-internal and the
   reject reuses two existing error codes (§D13.4), so the reject is a documented behaviour with no
-  type-surface delta at all.
+  type-surface delta at all. **ADR-591 adds nothing either**, for the same reason: the retention map
+  hangs off `ObjectCacheResult` and the widened member it narrows was already declared by ADR-588
+  (§D13.8).
 - **`docs/use/commands/fsck.md`** — six places, not three, and the sixth is new prose rather than a
   table edit: **`fsck` can now reject** in `connectivityOnly` mode (ADR-590), which is the first
   input-independent failure the command has, so the page needs a short "when `fsck` throws" section
@@ -1953,7 +2194,11 @@ sweep is clearer than an arbitrary); no **idempotence** axis beyond I7's bit fol
   the finding-reference table (the `dangling` and `unreachable` rows gain the `'unknown'` case and
   the mode in which it occurs), the new pack-finding rows, and the rendering example at line 180 —
   which already prints `` `dangling ${f.objectType} ${f.id}` `` and therefore reproduces git's
-  `dangling unknown` line with no change, worth stating so nobody "fixes" it.
+  `dangling unknown` line with no change, worth stating so nobody "fixes" it. The finding-reference
+  rows must also carry ADR-591's rule, because it is the caller-facing half of the widening: for a
+  `dangling` / `unreachable` finding, `objectType` is the type the object's **stored header**
+  declares, and `'unknown'` means no header could be obtained at all (unreadable file, empty file, or
+  an id only an unusable pack supplies) — not "tsgit failed to read it".
 - **`docs/use/primitives/internals.md`** — for ADR-585's knob.
 - **`check:doc-coverage`** for any newly public symbol — **none**: ADR-589 keeps the pass
   command-internal, and ADR-588's widening touches existing documented fields only.
@@ -1983,18 +2228,19 @@ sweep is clearer than an arbitrary); no **idempotence** axis beyond I7's bit fol
   boundary is §Pin R. The entry is kept struck through rather than deleted because the previous
   revision of this document listed it here as open, and a reader comparing revisions must be able to
   see it moved rather than vanished.
-- **Type recovery for an object tsgit cannot parse** (§D11.16). git types an unreachable object from
-  its `<type> <size>\0` header, or from the pack-entry header; tsgit types it from a successful
-  `parseObject`. So a valid header over an unparseable body (Pin R10d), a packed body that will not
-  inflate (Pin R7) and a garbled loose copy shadowing a healthy packed one (Pin R9) all report
-  `objectType: 'unknown'` where git prints `tree` / `blob`. Both tools agree on the id, the
-  `dangling`/`unreachable` verdict and the exit code, so it is a type-field residual of **ADR-588's**
-  closure, not of ADR-590's abort — closing it means a second type-recovery path beside
-  `resolveObjectType`, reading headers tsgit currently only reads inside the content pass.
+- ~~**Type recovery for an object tsgit cannot parse**~~ (§D11.16) — **in scope now.** The user ruled
+  it closed (ADR-591): an unreachable object is typed from its recovered header — loose, pack-entry,
+  or the pack-entry of a delta's base — so Pin R10c, R10d, R7, R13 and R9 all carry a real type and
+  `'unknown'` is reserved for the objects git reserves it for. The mechanism is §D13.8 and the
+  delta leg is §Pin R13. Kept struck through rather than deleted for the same reason the entry below
+  it is: a reader comparing revisions must see it move rather than vanish. What remains out of scope
+  is the *unpinned* corner §D13.8 names — an unopenable or empty loose file whose oid a pack also
+  claims, which stays `'unknown'` because the probe never reaches the pack arm for it.
 - **tsgit's loose-before-pack read order** — a corrupt loose copy shadows a readable packed copy of
   the same oid (Pin R9), where git serves the packed one. A read-path property that predates this
   change and affects every command, not only `fsck`; §D13.2 keeps it from *escalating* into an abort
-  here, and does not fix it.
+  here and §D13.8 keeps it from *showing* in the type field, but neither fixes the read order itself:
+  every other command still fails on the shadowed copy.
 - **Two pre-existing loose-object divergences in the *full* modes** (§D11.13), both surfaced by
   these pins and neither touched by this change: tsgit propagates `PERMISSION_DENIED` out of `fsck`
   where git records exit bit 1 (Pin O11, O15), and tsgit reports a hash-mismatched object as
