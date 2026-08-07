@@ -110,7 +110,14 @@ async function stubRegistry(
     };
     return { pack, offset: match.offset };
   };
-  return { all: async () => [], refresh: () => undefined, lookup, dispose: noopDispose };
+  return {
+    all: async () => [],
+    refresh: () => undefined,
+    lookup,
+    dispose: noopDispose,
+    health: async () => ({ accessible: [], unusable: [] }),
+    indexFaults: async () => [],
+  };
 }
 
 describe('object-resolver', () => {
@@ -1166,6 +1173,8 @@ describe('object-resolver', () => {
             lookup: async (lookupId) =>
               lookupId === id ? { pack, offset: entryOffset } : undefined,
             dispose: noopDispose,
+            health: async () => ({ accessible: [pack], unusable: [] }),
+            indexFaults: async () => [],
           };
           const sut = resolveObject;
 
@@ -1222,6 +1231,8 @@ describe('object-resolver', () => {
             refresh: () => undefined,
             lookup: async (id) => (id === targetId ? { pack, offset: entryOffset } : undefined),
             dispose: noopDispose,
+            health: async () => ({ accessible: [pack], unusable: [] }),
+            indexFaults: async () => [],
           };
           const sut = resolveObject;
 
@@ -1284,6 +1295,8 @@ describe('object-resolver', () => {
             refresh: () => undefined,
             lookup: async (id) => (id === targetId ? { pack, offset: entryOffset } : undefined),
             dispose: noopDispose,
+            health: async () => ({ accessible: [pack], unusable: [] }),
+            indexFaults: async () => [],
           };
           const sut = resolveObject;
 
@@ -1342,6 +1355,8 @@ describe('object-resolver', () => {
             refresh: () => undefined,
             lookup: async (id) => (id === targetId ? { pack, offset: entryOffset } : undefined),
             dispose: noopDispose,
+            health: async () => ({ accessible: [pack], unusable: [] }),
+            indexFaults: async () => [],
           };
           const sut = resolveObject;
 

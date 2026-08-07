@@ -218,13 +218,14 @@ export function encodeOfsDistance(distance: number): Uint8Array {
   return new Uint8Array(result);
 }
 
-const TYPE_TO_OBJECT_TYPE: ReadonlyMap<PackEntryType, ObjectType> = new Map([
-  [PACK_ENTRY_TYPE.COMMIT, 'commit'],
-  [PACK_ENTRY_TYPE.TREE, 'tree'],
-  [PACK_ENTRY_TYPE.BLOB, 'blob'],
-  [PACK_ENTRY_TYPE.TAG, 'tag'],
-]);
+const TYPE_TO_OBJECT_TYPE: Readonly<Record<BasePackEntryType, ObjectType>> = {
+  [PACK_ENTRY_TYPE.COMMIT]: 'commit',
+  [PACK_ENTRY_TYPE.TREE]: 'tree',
+  [PACK_ENTRY_TYPE.BLOB]: 'blob',
+  [PACK_ENTRY_TYPE.TAG]: 'tag',
+};
 
-export function packEntryTypeToObjectType(type: PackEntryType): ObjectType | undefined {
-  return TYPE_TO_OBJECT_TYPE.get(type);
+/** Total over the four base entry types — delta entries carry no object type. */
+export function packEntryTypeToObjectType(type: BasePackEntryType): ObjectType {
+  return TYPE_TO_OBJECT_TYPE[type];
 }

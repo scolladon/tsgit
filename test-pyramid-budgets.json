@@ -156,7 +156,8 @@
         "awaitable",
         "abortableRange",
         "createLineDigestScanner",
-        "createLineDigestFold"
+        "createLineDigestFold",
+        "trackedNodeContext"
       ]
     },
     "integrationProof": {

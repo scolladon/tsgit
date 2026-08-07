@@ -661,6 +661,720 @@ describe('PackRegistry.scan — per-pack idx degradation and orphan exclusion', 
   });
 });
 
+describe('PackRegistry.health — per-pack accessibility', () => {
+  describe('Given one healthy pack', () => {
+    describe('When health() is called', () => {
+      it('Then the pack is accessible and nothing is unusable', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const content = new TextEncoder().encode('health-healthy-content');
+        await writeSyntheticPack(ctx, 'health-healthy', [{ kind: 'base', type: 'blob', content }]);
+        const sut = createPackRegistry(ctx);
+
+        // Act
+        const result = await sut.health();
+
+        // Assert
+        expect(result.accessible.map((pack) => pack.name)).toEqual(['pack-health-healthy']);
+        expect(result.unusable).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a pack whose header reports an unsupported version', () => {
+    describe('When health() is called', () => {
+      it('Then the pack is unusable at the pack layer with the version reason', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const content = new TextEncoder().encode('health-v99-content');
+        await writeSyntheticPack(ctx, 'health-v99', [{ kind: 'base', type: 'blob', content }]);
+        const packPath = `${ctx.layout.gitDir}/objects/pack/pack-health-v99.pack`;
+        await restampPackHeader(ctx, packPath, { version: 99 });
+        const sut = createPackRegistry(ctx);
+
+        // Act
+        const result = await sut.health();
+
+        // Assert
+        expect(result.accessible).toEqual([]);
+        expect(result.unusable).toHaveLength(1);
+        const entry = result.unusable[0]!;
+        expect(entry.layer).toBe('pack');
+        expect(entry.data.code).toBe('INVALID_PACK_HEADER');
+        expect((entry.data as { reason?: string }).reason).toContain(
+          'unsupported version: expected 2 or 3, got 99',
+        );
+      });
+    });
+  });
+
+  describe('Given a pack whose header objectCount disagrees with its index', () => {
+    describe('When health() is called', () => {
+      it('Then the pack is unusable with a reason naming both counts', async () => {
+        // Arrange — isolates the header/index cross-check from parsePackHeader's
+        // own throws (magic/version/truncation), which are distinct code paths.
+        const ctx = await buildSeededContext();
+        const content = new TextEncoder().encode('health-count-mismatch-content');
+        await writeSyntheticPack(ctx, 'health-count-mismatch', [
+          { kind: 'base', type: 'blob', content },
+        ]);
+        const packPath = `${ctx.layout.gitDir}/objects/pack/pack-health-count-mismatch.pack`;
+        await restampPackHeader(ctx, packPath, { objectCount: 2 });
+        const sut = createPackRegistry(ctx);
+
+        // Act
+        const result = await sut.health();
+
+        // Assert
+        expect(result.accessible).toEqual([]);
+        const entry = result.unusable[0]!;
+        expect(entry.layer).toBe('pack');
+        expect((entry.data as { reason?: string }).reason).toBe(
+          'object count disagrees with index: pack 2, index 1',
+        );
+      });
+    });
+  });
+
+  describe('Given a pack with an invalid magic signature', () => {
+    describe('When health() is called', () => {
+      it('Then the pack is unusable with an invalid-magic reason', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const content = new TextEncoder().encode('health-bad-magic-content');
+        await writeSyntheticPack(ctx, 'health-bad-magic', [
+          { kind: 'base', type: 'blob', content },
+        ]);
+        const packPath = `${ctx.layout.gitDir}/objects/pack/pack-health-bad-magic.pack`;
+        await restampPackHeader(ctx, packPath, { magic: 0x5041435a });
+        const sut = createPackRegistry(ctx);
+
+        // Act
+        const result = await sut.health();
+
+        // Assert
+        const entry = result.unusable[0]!;
+        expect(entry.layer).toBe('pack');
+        expect((entry.data as { reason?: string }).reason).toContain('invalid magic');
+      });
+    });
+  });
+
+  describe('Given a pack file truncated below the 12-byte header', () => {
+    describe('When health() is called', () => {
+      it('Then the pack is unusable with a truncated reason', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const content = new TextEncoder().encode('health-short-pack-content');
+        await writeSyntheticPack(ctx, 'health-short-pack', [
+          { kind: 'base', type: 'blob', content },
+        ]);
+        const packPath = `${ctx.layout.gitDir}/objects/pack/pack-health-short-pack.pack`;
+        const bytes = await ctx.fs.read(packPath);
+        await ctx.fs.write(packPath, bytes.slice(0, 8));
+        const sut = createPackRegistry(ctx);
+
+        // Act
+        const result = await sut.health();
+
+        // Assert
+        const entry = result.unusable[0]!;
+        expect(entry.layer).toBe('pack');
+        expect((entry.data as { reason?: string }).reason).toContain('truncated');
+      });
+    });
+  });
+
+  describe('Given the .pack file is missing when the header is probed', () => {
+    describe('When health() is called', () => {
+      it('Then the pack is unusable at the pack layer with FILE_NOT_FOUND', async () => {
+        // Arrange — isolates the FILE_NOT_FOUND arm of isSkippableIoFault at the
+        // pack layer, alone.
+        const ctx = await buildSeededContext();
+        const content = new TextEncoder().encode('health-pack-missing-content');
+        await writeSyntheticPack(ctx, 'health-pack-missing', [
+          { kind: 'base', type: 'blob', content },
+        ]);
+        const wrapped: Context = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            readSlice: async (path: string, offset: number, length: number) => {
+              if (path.endsWith('.pack')) throw fileNotFound(path);
+              return ctx.fs.readSlice(path, offset, length);
+            },
+          },
+        };
+        const sut = createPackRegistry(wrapped);
+
+        // Act
+        const result = await sut.health();
+
+        // Assert
+        const entry = result.unusable[0]!;
+        expect(entry.layer).toBe('pack');
+        expect(entry.data.code).toBe('FILE_NOT_FOUND');
+      });
+    });
+  });
+
+  describe('Given the .pack read rejects with PERMISSION_DENIED when the header is probed', () => {
+    describe('When health() is called', () => {
+      it('Then the pack is unusable at the pack layer with PERMISSION_DENIED', async () => {
+        // Arrange — isolates the PERMISSION_DENIED arm of isSkippableIoFault at
+        // the pack layer, alone.
+        const ctx = await buildSeededContext();
+        const content = new TextEncoder().encode('health-pack-denied-content');
+        await writeSyntheticPack(ctx, 'health-pack-denied', [
+          { kind: 'base', type: 'blob', content },
+        ]);
+        const wrapped: Context = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            readSlice: async (path: string, offset: number, length: number) => {
+              if (path.endsWith('.pack')) throw permissionDenied(path);
+              return ctx.fs.readSlice(path, offset, length);
+            },
+          },
+        };
+        const sut = createPackRegistry(wrapped);
+
+        // Act
+        const result = await sut.health();
+
+        // Assert
+        const entry = result.unusable[0]!;
+        expect(entry.layer).toBe('pack');
+        expect(entry.data.code).toBe('PERMISSION_DENIED');
+      });
+    });
+  });
+
+  describe('Given an unparseable .idx with its sibling .pack present', () => {
+    describe('When health() is called', () => {
+      it('Then the pack is unusable at the index layer and absent from accessible', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeGarbageIdx(ctx, 'health-unparseable');
+        const sut = createPackRegistry(ctx);
+
+        // Act
+        const result = await sut.health();
+
+        // Assert
+        expect(result.accessible).toEqual([]);
+        const entry = result.unusable[0]!;
+        expect(entry.layer).toBe('index');
+        expect(entry.data.code).toBe('INVALID_PACK_INDEX');
+      });
+    });
+  });
+
+  describe('Given the .idx read rejects with PERMISSION_DENIED', () => {
+    describe('When health() is called', () => {
+      it('Then the pack is unusable at the index layer with PERMISSION_DENIED', async () => {
+        // Arrange — isolates the PERMISSION_DENIED arm of isSkippableIoFault at
+        // the index layer, alone.
+        const ctx = await buildSeededContext();
+        const content = new TextEncoder().encode('health-idx-denied-content');
+        await writeSyntheticPack(ctx, 'health-idx-denied', [
+          { kind: 'base', type: 'blob', content },
+        ]);
+        const wrapped: Context = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            read: async (path: string) => {
+              if (path.endsWith('.idx')) throw permissionDenied(path);
+              return ctx.fs.read(path);
+            },
+          },
+        };
+        const sut = createPackRegistry(wrapped);
+
+        // Act
+        const result = await sut.health();
+
+        // Assert
+        const entry = result.unusable[0]!;
+        expect(entry.layer).toBe('index');
+        expect(entry.data.code).toBe('PERMISSION_DENIED');
+      });
+    });
+  });
+
+  describe('Given the .idx vanishes between readdir and stat', () => {
+    describe('When health() is called', () => {
+      it('Then the pack is unusable at the index layer with FILE_NOT_FOUND', async () => {
+        // Arrange — isolates the FILE_NOT_FOUND arm of isSkippableIoFault at the
+        // index layer, alone.
+        const ctx = await buildSeededContext();
+        const content = new TextEncoder().encode('health-idx-vanish-content');
+        await writeSyntheticPack(ctx, 'health-idx-vanish', [
+          { kind: 'base', type: 'blob', content },
+        ]);
+        const wrapped: Context = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            stat: async (path: string) => {
+              if (path.endsWith('.idx')) throw fileNotFound(path);
+              return ctx.fs.stat(path);
+            },
+          },
+        };
+        const sut = createPackRegistry(wrapped);
+
+        // Act
+        const result = await sut.health();
+
+        // Assert
+        const entry = result.unusable[0]!;
+        expect(entry.layer).toBe('index');
+        expect(entry.data.code).toBe('FILE_NOT_FOUND');
+      });
+    });
+  });
+
+  describe('Given an .idx whose stat reports > MAX_PACK_IDX_BYTES', () => {
+    describe('When health() is called', () => {
+      it('Then the pack is unusable at the index layer without issuing a read', async () => {
+        // Arrange — kills the mutant where the pre-read size guard is removed:
+        // without it, read() would be reached and a multi-GiB array allocated.
+        const ctx = await buildSeededContext();
+        const reads: string[] = [];
+        const oversized = 64 * 1024 * 1024 + 1;
+        const wrapped: Context = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            exists: async () => true,
+            readdir: async () => [
+              {
+                name: 'pack-health-oversize.idx',
+                isFile: true,
+                isDirectory: false,
+                isSymbolicLink: false,
+              },
+              {
+                name: 'pack-health-oversize.pack',
+                isFile: true,
+                isDirectory: false,
+                isSymbolicLink: false,
+              },
+            ],
+            stat: async (p: string) => {
+              const base = await ctx.fs.stat(p).catch(() => undefined);
+              return { ...(base ?? makeStat()), size: oversized };
+            },
+            read: async (path: string) => {
+              reads.push(path);
+              throw new Error('should not be reached');
+            },
+          },
+        };
+        const sut = createPackRegistry(wrapped);
+
+        // Act
+        const result = await sut.health();
+
+        // Assert
+        expect(result.accessible).toEqual([]);
+        const entry = result.unusable[0]!;
+        expect(entry.layer).toBe('index');
+        expect((entry.data as { reason?: string }).reason).toBe(REASON_PACK_IDX_EXCEEDS_MAX);
+        expect(reads).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given an orphaned .idx whose sibling .pack was never present', () => {
+    describe('When health() is called', () => {
+      it('Then the pack is absent from both accessible and unusable', async () => {
+        // Arrange — the orphan and index-fault arms sit five lines apart in
+        // loadCandidatePack and both must stay excluded from the report.
+        const ctx = await buildSeededContext();
+        const content = new TextEncoder().encode('health-orphan-content');
+        await writeSyntheticPack(ctx, 'health-orphan', [{ kind: 'base', type: 'blob', content }]);
+        const packPath = `${ctx.layout.gitDir}/objects/pack/pack-health-orphan.pack`;
+        await ctx.fs.rm(packPath);
+        const sut = createPackRegistry(ctx);
+
+        // Act
+        const result = await sut.health();
+
+        // Assert
+        expect(result.accessible).toEqual([]);
+        expect(result.unusable).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a .pack file with no sibling .idx', () => {
+    describe('When health() is called', () => {
+      it('Then the pack is absent from both accessible and unusable', async () => {
+        // Arrange — scanPacks only ever iterates .idx candidates, so a lone
+        // .pack is never even considered.
+        const ctx = await buildSeededContext();
+        const content = new TextEncoder().encode('health-idx-less-content');
+        await writeSyntheticPack(ctx, 'health-idx-less', [{ kind: 'base', type: 'blob', content }]);
+        const idxPath = `${ctx.layout.gitDir}/objects/pack/pack-health-idx-less.idx`;
+        await ctx.fs.rm(idxPath);
+        const sut = createPackRegistry(ctx);
+
+        // Act
+        const result = await sut.health();
+
+        // Assert
+        expect(result.accessible).toEqual([]);
+        expect(result.unusable).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given an errno-mapped UNSUPPORTED_OPERATION fault probing the pack header', () => {
+    describe('When health() is called', () => {
+      it('Then health() rejects instead of reporting the pack as unusable', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const content = new TextEncoder().encode('health-unsupported-pack-content');
+        await writeSyntheticPack(ctx, 'health-unsupported-pack', [
+          { kind: 'base', type: 'blob', content },
+        ]);
+        const fault = unsupportedOperation('filesystem', 'EMFILE');
+        const wrapped: Context = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            readSlice: async (path: string, offset: number, length: number) => {
+              if (path.endsWith('.pack')) throw fault;
+              return ctx.fs.readSlice(path, offset, length);
+            },
+          },
+        };
+        const sut = createPackRegistry(wrapped);
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut.health();
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual(fault.data);
+      });
+    });
+  });
+
+  describe('Given an errno-mapped UNSUPPORTED_OPERATION fault reading the .idx', () => {
+    describe('When health() is called', () => {
+      it('Then health() rejects instead of reporting the pack as unusable', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const content = new TextEncoder().encode('health-unsupported-idx-content');
+        await writeSyntheticPack(ctx, 'health-unsupported-idx', [
+          { kind: 'base', type: 'blob', content },
+        ]);
+        const fault = unsupportedOperation('filesystem', 'EMFILE');
+        const wrapped: Context = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            read: async (path: string) => {
+              if (path.endsWith('.idx')) throw fault;
+              return ctx.fs.read(path);
+            },
+          },
+        };
+        const sut = createPackRegistry(wrapped);
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut.health();
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual(fault.data);
+      });
+    });
+  });
+
+  describe('Given a non-TsgitError rejection reading the .idx', () => {
+    describe('When health() is called', () => {
+      it('Then the plain error propagates instead of being treated as skippable', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const content = new TextEncoder().encode('health-unexpected-error-content');
+        await writeSyntheticPack(ctx, 'health-unexpected-error', [
+          { kind: 'base', type: 'blob', content },
+        ]);
+        const wrapped: Context = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            read: async (path: string) => {
+              if (path.endsWith('.idx')) throw new Error('boom');
+              return ctx.fs.read(path);
+            },
+          },
+        };
+        const sut = createPackRegistry(wrapped);
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut.health();
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as Error).message).toBe('boom');
+      });
+    });
+  });
+
+  describe('Given a healthy pack', () => {
+    describe('When health() is called, then lookup() resolves the same pack', () => {
+      it('Then exactly one 12-byte header readSlice is issued in total', async () => {
+        // Arrange — health() warms pack.header()'s memo; a later lookup() must
+        // reuse it rather than re-probing (requirement 10, no second gate).
+        const ctx = await buildSeededContext();
+        const content = new TextEncoder().encode('health-memo-warm-content');
+        const ids = await writeSyntheticPack(ctx, 'health-memo-warm', [
+          { kind: 'base', type: 'blob', content },
+        ]);
+        const id = ids[0] as ObjectId;
+        const packPath = `${ctx.layout.gitDir}/objects/pack/pack-health-memo-warm.pack`;
+        const ledger = withHandleLedger(ctx);
+        const sut = createPackRegistry(ledger.ctx);
+
+        // Act
+        await sut.health();
+        await sut.lookup(id);
+
+        // Assert
+        expect(ledger.slices()).toEqual([{ path: packPath, offset: 0, length: PACK_HEADER_SIZE }]);
+      });
+    });
+  });
+
+  describe('Given a pack whose header is invalid', () => {
+    describe('When health() is called, then lookup() probes the same pack again', () => {
+      it('Then two header probes are issued — the memo clears on rejection', async () => {
+        // Arrange — no negative cache: a rejected probe must not pin later
+        // callers to a stale fault.
+        const ctx = await buildSeededContext();
+        const content = new TextEncoder().encode('health-no-negative-cache-content');
+        const ids = await writeSyntheticPack(ctx, 'health-no-negative-cache', [
+          { kind: 'base', type: 'blob', content },
+        ]);
+        const id = ids[0] as ObjectId;
+        const packPath = `${ctx.layout.gitDir}/objects/pack/pack-health-no-negative-cache.pack`;
+        await restampPackHeader(ctx, packPath, { version: 99 });
+        const ledger = withHandleLedger(ctx);
+        const sut = createPackRegistry(ledger.ctx);
+
+        // Act
+        await sut.health();
+        await sut.lookup(id);
+
+        // Assert
+        expect(ledger.slices().filter((s) => s.path === packPath)).toHaveLength(2);
+      });
+    });
+  });
+
+  describe('Given a pack whose header is invalid', () => {
+    describe('When health() is called, then all() is called', () => {
+      it('Then all() still lists the pack (requirement 9)', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const content = new TextEncoder().encode('health-all-unchanged-content');
+        await writeSyntheticPack(ctx, 'health-all-unchanged', [
+          { kind: 'base', type: 'blob', content },
+        ]);
+        const packPath = `${ctx.layout.gitDir}/objects/pack/pack-health-all-unchanged.pack`;
+        await restampPackHeader(ctx, packPath, { version: 99 });
+        const sut = createPackRegistry(ctx);
+
+        // Act
+        await sut.health();
+        const packs = await sut.all();
+
+        // Assert
+        expect(packs).toHaveLength(1);
+        expect(packs[0]!.name).toBe('pack-health-all-unchanged');
+      });
+    });
+  });
+
+  describe('Given a disposed registry that already scanned one healthy pack', () => {
+    describe('When health() is called', () => {
+      it('Then it resolves against the peeked generation without a new readdir', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const content = new TextEncoder().encode('health-disposed-content');
+        await writeSyntheticPack(ctx, 'health-disposed', [{ kind: 'base', type: 'blob', content }]);
+        const ledger = withHandleLedger(ctx);
+        const sut = createPackRegistry(ledger.ctx);
+        await sut.all();
+        await sut.dispose();
+        const readdirCallsBeforeHealth = ledger.readdirCalls();
+
+        // Act
+        const result = await sut.health();
+
+        // Assert
+        expect(ledger.readdirCalls()).toBe(readdirCallsBeforeHealth);
+        expect(result.accessible).toHaveLength(1);
+        expect(result.unusable).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given health() probed a pack before the registry is disposed', () => {
+    describe('When dispose() runs', () => {
+      it('Then no FileHandle is left outstanding (requirement 11)', async () => {
+        // Arrange — health() only ever reads through ctx.fs.readSlice, never
+        // opens a persistent handle, so dispose() must still close cleanly.
+        const ctx = await buildSeededContext();
+        const content = new TextEncoder().encode('health-handle-ledger-content');
+        await writeSyntheticPack(ctx, 'health-handle-ledger', [
+          { kind: 'base', type: 'blob', content },
+        ]);
+        const ledger = withHandleLedger(ctx);
+        const sut = createPackRegistry(ledger.ctx);
+
+        // Act
+        await sut.health();
+        await sut.dispose();
+
+        // Assert
+        expect(ledger.outstanding()).toBe(0);
+      });
+    });
+  });
+
+  describe('Given a healthy pack', () => {
+    describe('When health() is called twice without a refresh', () => {
+      it('Then the header is probed once per generation — the per-run cost contract', async () => {
+        // Arrange
+        const base = await buildSeededContext();
+        const content = new TextEncoder().encode('health-memo-content');
+        await writeSyntheticPack(base, 'health-memo', [{ kind: 'base', type: 'blob', content }]);
+        const ledger = withHandleLedger(base);
+        const sut = createPackRegistry(ledger.ctx);
+
+        // Act
+        await sut.health();
+        await sut.health();
+
+        // Assert
+        const headerProbes = ledger
+          .slices()
+          .filter((call) => call.path.endsWith('.pack') && call.offset === 0);
+        expect(headerProbes).toHaveLength(1);
+      });
+    });
+  });
+
+  describe('Given a pack refused at the header gate, then repaired without a refresh', () => {
+    describe('When health() is called again', () => {
+      it('Then the memoised verdict still reports it unusable until refresh()', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const content = new TextEncoder().encode('health-stability-content');
+        await writeSyntheticPack(ctx, 'health-stability', [
+          { kind: 'base', type: 'blob', content },
+        ]);
+        const packPath = `${ctx.layout.gitDir}/objects/pack/pack-health-stability.pack`;
+        const goodPackBytes = await ctx.fs.read(packPath);
+        await restampPackHeader(ctx, packPath, { version: 99 });
+        const sut = createPackRegistry(ctx);
+
+        // Act
+        const before = await sut.health();
+        await ctx.fs.write(packPath, goodPackBytes);
+        const repairedNoRefresh = await sut.health();
+        sut.refresh();
+        const repairedRefreshed = await sut.health();
+
+        // Assert — one consistent verdict per generation, by design: the
+        // report may not flap mid-run; refresh() is the only reset.
+        expect(before.unusable).toHaveLength(1);
+        expect(repairedNoRefresh.unusable).toHaveLength(1);
+        expect(repairedRefreshed.unusable).toEqual([]);
+        expect(repairedRefreshed.accessible).toHaveLength(1);
+      });
+    });
+  });
+
+  describe('Given a pack whose .idx was corrupt, then repaired, then refreshed', () => {
+    describe('When health() is called before and after the repair', () => {
+      it('Then the pack moves from unusable to accessible with nothing remembered as bad', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const content = new TextEncoder().encode('health-refresh-content');
+        await writeSyntheticPack(ctx, 'health-refresh', [{ kind: 'base', type: 'blob', content }]);
+        const idxPath = `${ctx.layout.gitDir}/objects/pack/pack-health-refresh.idx`;
+        const goodIdxBytes = await ctx.fs.read(idxPath);
+        await ctx.fs.write(idxPath, garbageIdxBytes());
+        const sut = createPackRegistry(ctx);
+
+        // Act
+        const before = await sut.health();
+        await ctx.fs.write(idxPath, goodIdxBytes);
+        sut.refresh();
+        const after = await sut.health();
+
+        // Assert
+        expect(before.accessible).toEqual([]);
+        expect(before.unusable).toHaveLength(1);
+        expect(before.unusable[0]!.layer).toBe('index');
+        expect(after.unusable).toEqual([]);
+        expect(after.accessible).toHaveLength(1);
+        expect(after.accessible[0]!.name).toBe('pack-health-refresh');
+      });
+    });
+  });
+
+  describe('Given one pack with an invalid header and one pack with a corrupt .idx', () => {
+    describe('When health() is called', () => {
+      it('Then two unusable entries are reported, one per layer', async () => {
+        // Arrange — kills an `ArrayDeclaration -> []` mutant and a
+        // `break`-for-`continue` mutant in the pack-layer loop.
+        const ctx = await buildSeededContext();
+        const content = new TextEncoder().encode('health-two-unusable-content');
+        await writeSyntheticPack(ctx, 'health-two-unusable-pack', [
+          { kind: 'base', type: 'blob', content },
+        ]);
+        const badPackPath = `${ctx.layout.gitDir}/objects/pack/pack-health-two-unusable-pack.pack`;
+        await restampPackHeader(ctx, badPackPath, { version: 99 });
+        await writeGarbageIdx(ctx, 'health-two-unusable-idx');
+        const sut = createPackRegistry(ctx);
+
+        // Act
+        const result = await sut.health();
+
+        // Assert
+        expect(result.accessible).toEqual([]);
+        expect(result.unusable).toHaveLength(2);
+        expect(result.unusable.map((entry) => entry.layer).sort()).toEqual(['index', 'pack']);
+      });
+    });
+  });
+});
+
 describe('nextOffsetForEntry', () => {
   describe('Given a table with sortedOffsets=[100, 500, 900], packFileSize=1000, trailerStart=980', () => {
     const table: PackOffsetTable = {

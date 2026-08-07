@@ -544,10 +544,10 @@ function parsePackEntryHeader(
 ### 7.6 Mapping Pack Entry Types to Object Types
 
 ```typescript
-function packEntryTypeToObjectType(type: PackEntryType): ObjectType | undefined;
+function packEntryTypeToObjectType(type: BasePackEntryType): ObjectType;
 ```
 
-Maps types 1–4 to `'commit'`, `'tree'`, `'blob'`, `'tag'`. Returns `undefined` for delta types (6, 7) since deltas resolve to a base type.
+Maps types 1–4 to `'commit'`, `'tree'`, `'blob'`, `'tag'`. Total over `BasePackEntryType` — delta types (6, 7) are excluded by the parameter type, since a delta carries no object type of its own.
 
 ---
 
@@ -979,7 +979,7 @@ function encodePackEntryHeader(type: PackEntryType, size: number): Uint8Array;
 function encodeOfsDistance(distance: number): Uint8Array;
 
 // Type mapping
-function packEntryTypeToObjectType(type: PackEntryType): ObjectType | undefined;
+function packEntryTypeToObjectType(type: BasePackEntryType): ObjectType;
 ```
 
 ### loose-path.ts

@@ -6,8 +6,16 @@ import type { ObjectId, RefName } from '../../../../domain/objects/index.js';
 // ---------------------------------------------------------------------------
 
 export type FsckFinding =
-  | { readonly type: 'dangling'; readonly id: ObjectId; readonly objectType: FsckObjectType }
-  | { readonly type: 'unreachable'; readonly id: ObjectId; readonly objectType: FsckObjectType }
+  | {
+      readonly type: 'dangling';
+      readonly id: ObjectId;
+      readonly objectType: FsckObjectType | 'unknown';
+    }
+  | {
+      readonly type: 'unreachable';
+      readonly id: ObjectId;
+      readonly objectType: FsckObjectType | 'unknown';
+    }
   | {
       readonly type: 'missing';
       readonly id: ObjectId;
@@ -47,7 +55,41 @@ export type FsckFinding =
       readonly objectType: FsckObjectType;
       readonly tagName: string;
       readonly tag: ObjectId;
+    }
+  | {
+      readonly type: 'pack-inaccessible';
+      /**
+       * Pack base name (`pack-<sha>`) — the same value the registry's
+       * scan-boundary filter already vetted: no path separator, no `..`, no
+       * control character, so it is safe against traversal and line
+       * injection. It is NOT shell-safe (spaces, quotes, `$`, backticks
+       * survive the filter) — quote it before interpolating into a shell or
+       * composing a path from it.
+       */
+      readonly pack: string;
+      readonly reason: string;
+    }
+  | {
+      readonly type: 'pack-index-unusable';
+      /** Pack base name (`pack-<sha>`) — see `pack-inaccessible`'s doc-comment. */
+      readonly pack: string;
+      readonly reason: string;
+    }
+  | {
+      readonly type: 'pack-rev-index-unusable';
+      /** Pack base name (`pack-<sha>`) — see `pack-inaccessible`'s doc-comment. */
+      readonly pack: string;
+      readonly reason: string;
     };
+
+/**
+ * How `collectTypeFindings` treats a universe object whose cache entry is
+ * `null` (unreadable). `'skip'` is today's default/`full: false` behaviour —
+ * git turns unreadable loose objects into content errors there. `'classify'`
+ * is `connectivityOnly` only (Pin P) — git yields `dangling unknown` there
+ * instead. Not re-exported from `fsck.ts`: internal to the reachability pass.
+ */
+export type UnreadableMode = 'skip' | 'classify';
 
 // ---------------------------------------------------------------------------
 // Public options type — re-exported by fsck.ts
@@ -74,6 +116,11 @@ export interface FsckOptions {
 
 export interface FsckResult {
   readonly findings: ReadonlyArray<FsckFinding>;
-  /** Composite exit bitmask: 0=clean, 2=missing/broken-link. */
+  /**
+   * Composite exit bitmask, bits compose by OR: 0=clean, 1=content error
+   * (corrupt/hash-mismatch/strict-upgraded warn), 2=missing/broken-link,
+   * 4=pack inaccessible or index not opened, 8=refs-verify content failure,
+   * 64=pack reverse-index unusable.
+   */
   readonly exitCode: number;
 }

@@ -2,7 +2,7 @@ import type { FsckObjectType } from '../../../../domain/fsck/index.js';
 import { FILE_MODE } from '../../../../domain/objects/file-mode.js';
 import type { GitObject, ObjectId } from '../../../../domain/objects/index.js';
 import type { CachedGitObject } from './object-cache.js';
-import type { FsckFinding } from './types.js';
+import type { FsckFinding, UnreadableMode } from './types.js';
 
 // ---------------------------------------------------------------------------
 // In-edge map (needed for dangling vs merely-unreachable classification)
@@ -44,14 +44,14 @@ export function buildInEdgeMap(
 // Reachability walk
 // ---------------------------------------------------------------------------
 
-interface GraphEdge {
+export interface GraphEdge {
   readonly fromId: ObjectId;
   readonly fromType: FsckObjectType;
   readonly toId: ObjectId;
   readonly toType: FsckObjectType | 'unknown';
 }
 
-interface TagRef {
+export interface TagRef {
   readonly tagId: ObjectId;
   readonly tagName: string;
   readonly targetId: ObjectId;
@@ -160,7 +160,6 @@ export function buildReachableSet(
       continue;
     }
     const obj = objectCache.get(id);
-    // Stryker disable next-line BlockStatement: equivalent — corrupt objects (obj==null) are not emitted as findings by collectTypeFindings (skips null-cache entries); whether reached.add is called or not, no finding difference.
     if (obj == null) {
       // Corrupt/unreadable — mark reached, no further edges
       state.reached.add(id);
@@ -201,26 +200,105 @@ export function classifyObjects(
 // Finding assembly helpers
 // ---------------------------------------------------------------------------
 
-export function collectTypeFindings(
-  ids: ReadonlyArray<ObjectId>,
-  type: 'unreachable' | 'dangling',
-  findings: FsckFinding[],
-  objectCache: ReadonlyMap<ObjectId, CachedGitObject>,
-): void {
-  for (const id of ids) {
-    const obj = objectCache.get(id);
-    if (obj != null) {
-      findings.push({ type, id, objectType: obj.type });
-    }
-    // null (unreadable) — skip (already in reached/not reachable anyway)
-  }
+/** Everything needed to type an oid for a finding, grouped once. */
+export interface TypeResolution {
+  readonly objectCache: ReadonlyMap<ObjectId, CachedGitObject>;
+  readonly recovered: ReadonlyMap<ObjectId, FsckObjectType>;
+  readonly unreadable: UnreadableMode;
 }
 
-/** Determine the object type for an oid from the cache. */
-export function resolveObjectType(
-  id: ObjectId,
-  objectCache: ReadonlyMap<ObjectId, CachedGitObject>,
-): FsckObjectType | 'unknown' {
-  const obj = objectCache.get(id);
-  return obj != null ? obj.type : 'unknown';
+function collectTypeFindings(
+  ids: ReadonlyArray<ObjectId>,
+  type: 'unreachable' | 'dangling',
+  resolution: TypeResolution,
+): ReadonlyArray<FsckFinding> {
+  const findings: FsckFinding[] = [];
+  for (const id of ids) {
+    if (resolution.objectCache.get(id) == null && resolution.unreadable === 'skip') continue;
+    findings.push({ type, id, objectType: resolveObjectType(id, resolution) });
+  }
+  return findings;
+}
+
+/**
+ * Determine the object type for an oid from the cache, falling back to the
+ * header-recovery probe's retained type — never a new 'unknown' derivation:
+ * `'unknown'` means no stored header could be obtained at all.
+ */
+function resolveObjectType(id: ObjectId, resolution: TypeResolution): FsckObjectType | 'unknown' {
+  const obj = resolution.objectCache.get(id);
+  if (obj != null) return obj.type;
+  return resolution.recovered.get(id) ?? 'unknown';
+}
+
+/** The connectivity walk's classified output, as `assembleConnectivityFindings` consumes it. */
+export interface ConnectivityClassification {
+  readonly missingIds: ReadonlySet<ObjectId>;
+  readonly brokenEdges: ReadonlyArray<GraphEdge>;
+  readonly unreachable: ReadonlyArray<ObjectId>;
+  readonly dangling: ReadonlyArray<ObjectId>;
+  readonly rootCommits: ReadonlyArray<ObjectId>;
+  readonly tagRefs: ReadonlyArray<TagRef>;
+}
+
+/** Missing ids first (typed from the referring edge where one exists — git
+ *  emits the type it expected from context, avoiding a read of an object
+ *  known absent), then every broken-link edge. */
+function missingAndBrokenLinkFindings(
+  missingIds: ReadonlySet<ObjectId>,
+  brokenEdges: ReadonlyArray<GraphEdge>,
+  resolution: TypeResolution,
+): ReadonlyArray<FsckFinding> {
+  const missingTypeFromEdge = new Map<ObjectId, FsckObjectType | 'unknown'>();
+  for (const edge of brokenEdges) {
+    if (!missingTypeFromEdge.has(edge.toId)) {
+      missingTypeFromEdge.set(edge.toId, edge.toType);
+    }
+  }
+  const findings: FsckFinding[] = [];
+  for (const id of missingIds) {
+    const objectType = missingTypeFromEdge.get(id) ?? resolveObjectType(id, resolution);
+    findings.push({ type: 'missing', id, objectType });
+  }
+  for (const edge of brokenEdges) {
+    findings.push({ type: 'broken-link', ...edge });
+  }
+  return findings;
+}
+
+function rootAndTagFindings(
+  rootCommits: ReadonlyArray<ObjectId>,
+  tagRefs: ReadonlyArray<TagRef>,
+): ReadonlyArray<FsckFinding> {
+  const findings: FsckFinding[] = [];
+  for (const id of rootCommits) findings.push({ type: 'root', id });
+  for (const { tagId, tagName, targetId, targetType } of tagRefs) {
+    findings.push({ type: 'tagged', id: targetId, objectType: targetType, tagName, tag: tagId });
+  }
+  return findings;
+}
+
+/** Loop-appends, never `push(...spread)` — the unreachable/dangling sets are
+ *  sized by the repository's object count, and an argument spread overflows
+ *  the call stack in the low six figures. */
+function appendAll(target: FsckFinding[], source: ReadonlyArray<FsckFinding>): void {
+  for (const finding of source) target.push(finding);
+}
+
+/**
+ * Assemble every connectivity-derived finding, in emission order: missing,
+ * broken-link, unreachable/dangling (typed via `TypeResolution`), root and
+ * tagged.
+ */
+export function assembleConnectivityFindings(
+  classification: ConnectivityClassification,
+  resolution: TypeResolution,
+): ReadonlyArray<FsckFinding> {
+  const { missingIds, brokenEdges, unreachable, dangling, rootCommits, tagRefs } = classification;
+  const findings: FsckFinding[] = [];
+  appendAll(findings, missingAndBrokenLinkFindings(missingIds, brokenEdges, resolution));
+  appendAll(findings, collectTypeFindings(unreachable, 'unreachable', resolution));
+  appendAll(findings, collectTypeFindings(dangling, 'dangling', resolution));
+  appendAll(findings, rootAndTagFindings(rootCommits, tagRefs));
+  return findings;
 }
