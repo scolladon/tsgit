@@ -60,9 +60,11 @@ export type FsckFinding =
       readonly type: 'pack-inaccessible';
       /**
        * Pack base name (`pack-<sha>`) — the same value the registry's
-       * scan-boundary filter already vetted (no `/`, `\`, `..`, or control
-       * character), so it crosses the library boundary as data no further
-       * sanitiser needs to touch.
+       * scan-boundary filter already vetted: no path separator, no `..`, no
+       * control character, so it is safe against traversal and line
+       * injection. It is NOT shell-safe (spaces, quotes, `$`, backticks
+       * survive the filter) — quote it before interpolating into a shell or
+       * composing a path from it.
        */
       readonly pack: string;
       readonly reason: string;

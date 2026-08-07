@@ -40612,6 +40612,14 @@
 							"variant": "signature",
 							"kind": 4096,
 							"flags": {},
+							"comment": {
+								"summary": [
+									{
+										"kind": "text",
+										"text": "Total over the four base entry types — delta entries carry no object type."
+									}
+								]
+							},
 							"parameters": [
 								{
 									"id": 8528,
@@ -40621,26 +40629,17 @@
 									"flags": {},
 									"type": {
 										"type": "reference",
-										"target": 8502,
-										"name": "PackEntryType",
+										"target": 8495,
+										"name": "BasePackEntryType",
 										"package": "@scolladon/tsgit"
 									}
 								}
 							],
 							"type": {
-								"type": "union",
-								"types": [
-									{
-										"type": "reference",
-										"target": 3596,
-										"name": "ObjectType",
-										"package": "@scolladon/tsgit"
-									},
-									{
-										"type": "intrinsic",
-										"name": "undefined"
-									}
-								]
+								"type": "reference",
+								"target": 3596,
+								"name": "ObjectType",
+								"package": "@scolladon/tsgit"
 							}
 						}
 					]
@@ -106870,23 +106869,23 @@
 													},
 													{
 														"kind": "text",
-														"text": ") — the same value the registry's\nscan-boundary filter already vetted (no "
+														"text": ") — the same value the registry's\nscan-boundary filter already vetted: no path separator, no "
 													},
 													{
 														"kind": "code",
-														"text": "`/`"
+														"text": "`..`"
 													},
 													{
 														"kind": "text",
-														"text": ", "
+														"text": ", no\ncontrol character, so it is safe against traversal and line\ninjection. It is NOT shell-safe (spaces, quotes, "
 													},
 													{
 														"kind": "code",
-														"text": "`\\`, `"
+														"text": "`$`"
 													},
 													{
 														"kind": "text",
-														"text": "..`, or control\ncharacter), so it crosses the library boundary as data no further\nsanitiser needs to touch."
+														"text": ", backticks\nsurvive the filter) — quote it before interpolating into a shell or\ncomposing a path from it."
 													}
 												]
 											},

@@ -1,6 +1,7 @@
 import type { ObjectId } from '../../domain/objects/index.js';
 import { allObjectIds } from '../../domain/storage/pack-index.js';
 import type { Context } from '../../ports/context.js';
+import type { RegisteredPack } from './pack-registry.js';
 import { commonGitDir, objectsDir } from './path-layout.js';
 import { getPackRegistry } from './read-object.js';
 
@@ -29,7 +30,9 @@ export async function enumerateObjects(
 
   await collectLooseObjectIds(ctx, ids);
   if (includePacks) {
-    await collectPackedObjectIds(ctx, ids, accessiblePacksOnly);
+    const registry = getPackRegistry(ctx);
+    const packs = accessiblePacksOnly ? (await registry.health()).accessible : await registry.all();
+    collectPackedObjectIds(packs, ids);
   }
 
   return [...ids].sort();
@@ -49,13 +52,7 @@ async function collectLooseObjectIds(ctx: Context, ids: Set<ObjectId>): Promise<
   }
 }
 
-async function collectPackedObjectIds(
-  ctx: Context,
-  ids: Set<ObjectId>,
-  accessiblePacksOnly: boolean,
-): Promise<void> {
-  const registry = getPackRegistry(ctx);
-  const packs = accessiblePacksOnly ? (await registry.health()).accessible : await registry.all();
+function collectPackedObjectIds(packs: ReadonlyArray<RegisteredPack>, ids: Set<ObjectId>): void {
   for (const pack of packs) {
     for (const id of allObjectIds(pack.index)) {
       ids.add(id);

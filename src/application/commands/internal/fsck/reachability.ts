@@ -44,14 +44,14 @@ export function buildInEdgeMap(
 // Reachability walk
 // ---------------------------------------------------------------------------
 
-interface GraphEdge {
+export interface GraphEdge {
   readonly fromId: ObjectId;
   readonly fromType: FsckObjectType;
   readonly toId: ObjectId;
   readonly toType: FsckObjectType | 'unknown';
 }
 
-interface TagRef {
+export interface TagRef {
   readonly tagId: ObjectId;
   readonly tagName: string;
   readonly targetId: ObjectId;
@@ -200,18 +200,24 @@ export function classifyObjects(
 // Finding assembly helpers
 // ---------------------------------------------------------------------------
 
-export function collectTypeFindings(
+/** Everything needed to type an oid for a finding, grouped once. */
+export interface TypeResolution {
+  readonly objectCache: ReadonlyMap<ObjectId, CachedGitObject>;
+  readonly recovered: ReadonlyMap<ObjectId, FsckObjectType>;
+  readonly unreadable: UnreadableMode;
+}
+
+function collectTypeFindings(
   ids: ReadonlyArray<ObjectId>,
   type: 'unreachable' | 'dangling',
-  findings: FsckFinding[],
-  objectCache: ReadonlyMap<ObjectId, CachedGitObject>,
-  recovered: ReadonlyMap<ObjectId, FsckObjectType>,
-  unreadable: UnreadableMode,
-): void {
+  resolution: TypeResolution,
+): ReadonlyArray<FsckFinding> {
+  const findings: FsckFinding[] = [];
   for (const id of ids) {
-    if (objectCache.get(id) == null && unreadable === 'skip') continue;
-    findings.push({ type, id, objectType: resolveObjectType(id, objectCache, recovered) });
+    if (resolution.objectCache.get(id) == null && resolution.unreadable === 'skip') continue;
+    findings.push({ type, id, objectType: resolveObjectType(id, resolution) });
   }
+  return findings;
 }
 
 /**
@@ -219,12 +225,54 @@ export function collectTypeFindings(
  * header-recovery probe's retained type — never a new 'unknown' derivation:
  * `'unknown'` means no stored header could be obtained at all.
  */
-export function resolveObjectType(
-  id: ObjectId,
-  objectCache: ReadonlyMap<ObjectId, CachedGitObject>,
-  recovered: ReadonlyMap<ObjectId, FsckObjectType>,
-): FsckObjectType | 'unknown' {
-  const obj = objectCache.get(id);
+function resolveObjectType(id: ObjectId, resolution: TypeResolution): FsckObjectType | 'unknown' {
+  const obj = resolution.objectCache.get(id);
   if (obj != null) return obj.type;
-  return recovered.get(id) ?? 'unknown';
+  return resolution.recovered.get(id) ?? 'unknown';
+}
+
+/** The connectivity walk's classified output, as `assembleConnectivityFindings` consumes it. */
+export interface ConnectivityClassification {
+  readonly missingIds: ReadonlySet<ObjectId>;
+  readonly brokenEdges: ReadonlyArray<GraphEdge>;
+  readonly unreachable: ReadonlyArray<ObjectId>;
+  readonly dangling: ReadonlyArray<ObjectId>;
+  readonly rootCommits: ReadonlyArray<ObjectId>;
+  readonly tagRefs: ReadonlyArray<TagRef>;
+}
+
+/**
+ * Assemble every connectivity-derived finding: missing (typed from the
+ * referring edge where one exists — git emits the type it expected from
+ * context, avoiding a read of an object known absent), broken-link,
+ * unreachable/dangling (typed via `TypeResolution`), root and tagged.
+ */
+export function assembleConnectivityFindings(
+  classification: ConnectivityClassification,
+  resolution: TypeResolution,
+): ReadonlyArray<FsckFinding> {
+  const { missingIds, brokenEdges, unreachable, dangling, rootCommits, tagRefs } = classification;
+
+  const missingTypeFromEdge = new Map<ObjectId, FsckObjectType | 'unknown'>();
+  for (const edge of brokenEdges) {
+    if (!missingTypeFromEdge.has(edge.toId)) {
+      missingTypeFromEdge.set(edge.toId, edge.toType);
+    }
+  }
+
+  const findings: FsckFinding[] = [];
+  for (const id of missingIds) {
+    const objectType = missingTypeFromEdge.get(id) ?? resolveObjectType(id, resolution);
+    findings.push({ type: 'missing', id, objectType });
+  }
+  for (const edge of brokenEdges) {
+    findings.push({ type: 'broken-link', ...edge });
+  }
+  findings.push(...collectTypeFindings(unreachable, 'unreachable', resolution));
+  findings.push(...collectTypeFindings(dangling, 'dangling', resolution));
+  for (const id of rootCommits) findings.push({ type: 'root', id });
+  for (const { tagId, tagName, targetId, targetType } of tagRefs) {
+    findings.push({ type: 'tagged', id: targetId, objectType: targetType, tagName, tag: tagId });
+  }
+  return findings;
 }

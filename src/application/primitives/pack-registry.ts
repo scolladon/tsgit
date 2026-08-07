@@ -70,6 +70,10 @@ function isSkippableIdxFault(err: unknown): err is TsgitError {
 const faultContext = (data: TsgitErrorData): Readonly<Record<string, string>> =>
   'reason' in data ? { code: data.code, reason: data.reason } : { code: data.code };
 
+/** The one narrowing of a fault's display reason — shared with the fsck pack pass. */
+export const faultReason = (data: TsgitErrorData): string =>
+  'reason' in data ? data.reason : data.code;
+
 export interface PackOffsetTable {
   readonly sortedOffsets: ReadonlyArray<number>;
   readonly packFileSize: number;
@@ -115,7 +119,11 @@ export interface PackLookupHit {
   readonly offset: number;
 }
 
-/** A pack or index `health()` could not use, and at which layer. */
+/**
+ * A pack or index `health()` could not use, and at which layer. `data` is the
+ * raw fault and may carry an absolute `path` — never forward it across the
+ * library boundary; project to `code`/`reason` as the fsck pack pass does.
+ */
 export interface UnusablePack {
   readonly name: string;
   readonly layer: 'pack' | 'index';
@@ -144,9 +152,19 @@ export interface PackRegistry {
    * never call it from a read path. Costs one 12-byte `ctx.fs.readSlice` per
    * registered pack whose header memo is not already settled, and opens no
    * `FileHandle`. Rejects — never reports — on a fault outside the two
-   * allow-lists.
+   * allow-lists. The verdict is memoised per generation so every consumer in
+   * one run sees ONE consistent report (`refresh()` resets it); the per-pack
+   * header memo itself still clears on rejection, so the read path keeps its
+   * no-negative-cache property.
    */
   health(): Promise<PackHealth>;
+  /**
+   * The scan layer's skip records alone — every `.idx` the generation
+   * excluded, with its fault. Derived from the memoised scan: never probes a
+   * pack header, never opens anything. The cheap half of `health()` for
+   * consumers (fsck's ungated rev-index term) that must not pay the probe.
+   */
+  indexFaults(): Promise<ReadonlyArray<UnusablePack>>;
 }
 
 // Control characters are rejected at this boundary so a hostile filename can
@@ -423,10 +441,53 @@ export function createPackRegistry(ctx: Context): PackRegistry {
   const allPacks = (): Promise<ReadonlyArray<RegisteredPack>> =>
     currentGeneration().then((generation) => generation.packs);
 
+  const indexFaultEntries = async (): Promise<UnusablePack[]> => {
+    const generation = await currentGeneration();
+    return generation.indexFaults.map((fault) => unusableEntry(fault.name, 'index', fault.data));
+  };
+
+  // The one site that classifies a pack-open refusal — lookup() and health()
+  // both call it, so the refusal reason cannot drift between them. Returns
+  // the fault when the pack is unusable, undefined when healthy; anything
+  // outside the allow-list propagates. Awaits the same header memo
+  // everywhere: a failed probe clears it (no negative cache).
+  const probeHeader = async (pack: RegisteredPack): Promise<TsgitError | undefined> => {
+    try {
+      await pack.header(); // git's open_packed_git_1 / is_pack_valid gate
+      return undefined;
+    } catch (err) {
+      if (!isSkippablePackFault(err)) throw err;
+      ctx.logger?.warn?.('packRegistry: skipping unusable pack', {
+        pack: pack.name,
+        ...faultContext(err.data),
+      });
+      return err;
+    }
+  };
+
+  const computeHealth = async (): Promise<PackHealth> => {
+    const generation = await currentGeneration();
+    const unusable: UnusablePack[] = await indexFaultEntries();
+    const accessible: RegisteredPack[] = [];
+    for (const pack of generation.packs) {
+      const fault = await probeHeader(pack);
+      if (fault === undefined) accessible.push(pack);
+      else unusable.push(unusableEntry(pack.name, 'pack', fault.data));
+    }
+    return { accessible, unusable };
+  };
+  // Memoised per generation: every health() consumer in one fsck run sees ONE
+  // consistent verdict — a pack cannot be excluded from the universe by the
+  // first call yet report healthy at the second. refresh() resets it with the
+  // scan; a rejected compute self-clears (promise-memo), so an environmental
+  // fault is never cached.
+  const healthMemo = createPromiseMemo(computeHealth);
+
   return {
     all: allPacks,
     refresh(): void {
       if (disposed) return;
+      healthMemo.clear();
       // The outgoing packs may hold open persistent handles; close them before
       // dropping the references or every refresh leaks one fd per touched pack.
       const outgoing = scan.clear();
@@ -443,46 +504,20 @@ export function createPackRegistry(ctx: Context): PackRegistry {
       );
     },
     async lookup(id: ObjectId): Promise<PackLookupHit | undefined> {
-      const packs = await allPacks();
+      const { packs } = await currentGeneration();
       for (const pack of packs) {
         const offset = lookupPackIndex(pack.index, id);
         if (offset === undefined) continue; // an unclaimed pack is never opened
-        try {
-          await pack.header(); // git's open_packed_git_1 / is_pack_valid gate
-        } catch (err) {
-          if (!isSkippablePackFault(err)) throw err;
-          ctx.logger?.warn?.('packRegistry: skipping unusable pack', {
-            pack: pack.name,
-            ...faultContext(err.data),
-          });
-          continue;
-        }
+        const fault = await probeHeader(pack);
+        if (fault !== undefined) continue;
         return { pack, offset };
       }
       return undefined;
     },
-    async health(): Promise<PackHealth> {
-      const generation = await currentGeneration();
-      const unusable: UnusablePack[] = generation.indexFaults.map((fault) =>
-        unusableEntry(fault.name, 'index', fault.data),
-      );
-      const accessible: RegisteredPack[] = [];
-      for (const pack of generation.packs) {
-        try {
-          await pack.header(); // the same memo lookup() awaits — no negative cache, no second gate
-        } catch (err) {
-          if (!isSkippablePackFault(err)) throw err;
-          ctx.logger?.warn?.('packRegistry: skipping unusable pack', {
-            pack: pack.name,
-            ...faultContext(err.data),
-          });
-          unusable.push(unusableEntry(pack.name, 'pack', err.data));
-          continue;
-        }
-        accessible.push(pack);
-      }
-      return { accessible, unusable };
+    health(): Promise<PackHealth> {
+      return healthMemo.get();
     },
+    indexFaults: indexFaultEntries,
     async dispose(): Promise<void> {
       disposed = true;
       // A registry that never scanned the pack directory has no handles to

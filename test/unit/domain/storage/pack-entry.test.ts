@@ -512,15 +512,13 @@ describe('pack-entry', () => {
   });
 
   describe('packEntryTypeToObjectType', () => {
-    describe('Given a pack entry type', () => {
+    describe('Given a base pack entry type', () => {
       describe('When mapping', () => {
         it.each([
           { type: PACK_ENTRY_TYPE.COMMIT, expected: 'commit', label: 'COMMIT(1)' },
           { type: PACK_ENTRY_TYPE.TREE, expected: 'tree', label: 'TREE(2)' },
           { type: PACK_ENTRY_TYPE.BLOB, expected: 'blob', label: 'BLOB(3)' },
           { type: PACK_ENTRY_TYPE.TAG, expected: 'tag', label: 'TAG(4)' },
-          { type: PACK_ENTRY_TYPE.OFS_DELTA, expected: undefined, label: 'OFS_DELTA(6)' },
-          { type: PACK_ENTRY_TYPE.REF_DELTA, expected: undefined, label: 'REF_DELTA(7)' },
         ])('Then $label maps to $expected', ({ type, expected }) => {
           // Arrange & Act
           const result = packEntryTypeToObjectType(type);

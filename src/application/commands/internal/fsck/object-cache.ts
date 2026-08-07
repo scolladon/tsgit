@@ -1,8 +1,9 @@
 import { applyGraft } from '../../../../domain/commit/graft.js';
-import { TsgitError } from '../../../../domain/error.js';
+import { decompressFailed, TsgitError } from '../../../../domain/error.js';
 import type { FsckObjectType } from '../../../../domain/fsck/index.js';
 import type { GitObject, ObjectId } from '../../../../domain/objects/index.js';
-import { parseHeader } from '../../../../domain/objects/index.js';
+import { invalidObjectHeader, parseHeader } from '../../../../domain/objects/index.js';
+import { MAX_DELTA_CHAIN_DEPTH } from '../../../../domain/storage/delta.js';
 import {
   PACK_ENTRY_TYPE,
   packEntryTypeToObjectType,
@@ -73,6 +74,29 @@ function isDecodeFault(err: unknown): boolean {
   return err instanceof TsgitError && RECOVERABLE_DECODE_CODES.has(err.data.code);
 }
 
+/**
+ * Store damage degrades; the environment does not. A fault that is not a
+ * `TsgitError` (a programming error) or that `mapErrno` folded into
+ * `UNSUPPORTED_OPERATION` (`EMFILE`, `EIO`, …) must surface — degrading it
+ * would report a false integrity verdict under load. One policy for every
+ * lookup and walk in this file.
+ */
+function isStoreFault(err: unknown): boolean {
+  return err instanceof TsgitError && err.data.code !== 'UNSUPPORTED_OPERATION';
+}
+
+async function lookupIfClaimed(
+  registry: PackRegistry,
+  id: ObjectId,
+): Promise<PackLookupHit | undefined> {
+  try {
+    return await registry.lookup(id);
+  } catch (err) {
+    if (!isStoreFault(err)) throw err;
+    return undefined;
+  }
+}
+
 type TypedOrUntyped =
   | { readonly kind: 'typed'; readonly objectType: FsckObjectType }
   | { readonly kind: 'untyped' };
@@ -86,14 +110,8 @@ type RecoveryOutcome =
  * SHA-256 REF_DELTA base id) — 38 bytes for either hash width, rounded up. */
 const ENTRY_HEADER_PROBE_BYTES = 64;
 
-/**
- * Delta-chain hop cap for the pack-entry-header walk — mirrors
- * `object-resolver.ts`'s own bound so a corrupt or cyclic chain cannot spin.
- */
-const MAX_DELTA_CHAIN_DEPTH = 50;
-
 function untypedFault(ctx: Context, id: ObjectId, reason: string): TypedOrUntyped {
-  ctx.logger?.warn?.('fsck: stored type unrecoverable', { objectId: id, reason });
+  ctx.logger?.warn?.('fsck: stored type probe degraded', { objectId: id, reason });
   return { kind: 'untyped' };
 }
 
@@ -103,10 +121,10 @@ function untypedFault(ctx: Context, id: ObjectId, reason: string): TypedOrUntype
  * body, which is why a corrupt delta body still types (R13). Reached from
  * two places (arm 2: not loose at all; arm 3: loose but header-unrecoverable
  * with a healthy packed twin) — one code path, one function. This never
- * rejects: any fault while walking (a corrupt entry header, an unreadable
- * slice, an unresolvable base) degrades to 'untyped', because a packed
- * object's stored-type recovery can only improve a report, never abort one —
- * retention is monotone.
+ * rejects on store damage: a corrupt entry header, an unreadable slice, or an
+ * unresolvable base degrades to 'untyped', because a packed object's
+ * stored-type recovery can only improve a report, never abort one — retention
+ * is monotone. Environmental faults propagate (`isStoreFault`).
  */
 async function typeFromEntry(
   ctx: Context,
@@ -116,7 +134,8 @@ async function typeFromEntry(
 ): Promise<TypedOrUntyped> {
   try {
     return await walkDeltaChain(ctx, registry, id, hit);
-  } catch {
+  } catch (err) {
+    if (!isStoreFault(err)) throw err;
     return untypedFault(ctx, id, 'pack entry unreadable');
   }
 }
@@ -147,14 +166,7 @@ async function walkDeltaChain(
       continue;
     }
 
-    const objectType = packEntryTypeToObjectType(header.type);
-    if (objectType === undefined) {
-      // Unreachable by construction: OFS_DELTA and REF_DELTA are excluded
-      // above, so `header.type` is narrowed to the four base types here, and
-      // packEntryTypeToObjectType maps all four.
-      return untypedFault(ctx, id, 'unrecognised pack entry type');
-    }
-    return { kind: 'typed', objectType };
+    return { kind: 'typed', objectType: packEntryTypeToObjectType(header.type) };
   }
   return untypedFault(ctx, id, 'delta chain exceeds max depth');
 }
@@ -169,7 +181,7 @@ async function packedStoredType(
   registry: PackRegistry,
   id: ObjectId,
 ): Promise<TypedOrUntyped> {
-  const hit = await registry.lookup(id).catch(() => undefined);
+  const hit = await lookupIfClaimed(registry, id);
   if (hit === undefined) {
     return untypedFault(ctx, id, 'not loose and claimed by no accessible pack');
   }
@@ -183,7 +195,11 @@ async function packedStoredType(
  * would abort a row git resolves (a header that parsed perfectly, with a
  * body shorter or longer than declared).
  */
-async function recoverStoredType(ctx: Context, id: ObjectId): Promise<RecoveryOutcome> {
+async function recoverStoredType(
+  ctx: Context,
+  id: ObjectId,
+  readErr: unknown,
+): Promise<RecoveryOutcome> {
   const registry = getPackRegistry(ctx);
   const looseBytes = await looseCompressedBytes(ctx, id);
   if (looseBytes === undefined) {
@@ -202,9 +218,14 @@ async function recoverStoredType(ctx: Context, id: ObjectId): Promise<RecoveryOu
     // fault, e.g. UNSUPPORTED_OPERATION) surfaces its own fault instead of
     // being laundered into an abort.
     if (!isRecoveryCandidate(probeErr)) throw probeErr;
-    const hit = await registry.lookup(id);
+    const hit = await lookupIfClaimed(registry, id);
     if (hit === undefined) {
-      return { kind: 'unrecoverable', cause: probeErr };
+      // The reject verdict is gated on the ORIGINAL read failure, not the
+      // probe's — the settled two-code test; the rethrown cause is the
+      // store's own error. A file whose damage class changed under the probe
+      // stays a tolerated 'unknown'.
+      if (isRecoveryCandidate(readErr)) return { kind: 'unrecoverable', cause: readErr };
+      return { kind: 'untyped' };
     }
     return await typeFromEntry(ctx, registry, id, hit);
   }
@@ -239,7 +260,7 @@ async function recordUnreadable(
 ): Promise<void> {
   acc.cache.set(id, null);
   if (unreadable !== 'classify' || !isDecodeFault(err)) return;
-  const recovery = await recoverStoredType(ctx, id);
+  const recovery = await recoverStoredType(ctx, id, err);
   if (recovery.kind === 'typed') acc.recovered.set(id, recovery.objectType);
   if (recovery.kind === 'unrecoverable') acc.unrecoverable.set(id, recovery.cause);
 }
@@ -279,6 +300,21 @@ export async function buildObjectCache(
  * `check_unreachable_object` domain), never `dangling` (its in-edge-free
  * subset, which would silently pass a referenced-but-unreachable object).
  */
+const MAX_REASON_LENGTH = 200;
+
+/**
+ * A reject reason can embed attacker-chosen bytes (an object header's type
+ * and size fields are raw store bytes), and the display sanitiser
+ * deliberately preserves tab and newline — so strip every control character
+ * and cap the length before the reason reaches the logger or the thrown
+ * error's message.
+ */
+function sanitizeReason(reason: string): string {
+  return [...reason.slice(0, MAX_REASON_LENGTH)]
+    .filter((ch) => ch.charCodeAt(0) >= 0x20 && ch.charCodeAt(0) !== 0x7f)
+    .join('');
+}
+
 export function assertTypesRecoverable(
   ctx: Context,
   unreachable: ReadonlyArray<ObjectId>,
@@ -287,10 +323,16 @@ export function assertTypesRecoverable(
   for (const id of unreachable) {
     const cause = unrecoverable.get(id);
     if (cause === undefined) continue;
+    const reason = sanitizeReason(cause.data.reason);
     ctx.logger?.warn?.('fsck: object type unrecoverable', {
       objectId: id,
-      reason: cause.data.reason,
+      code: cause.data.code,
+      reason,
     });
-    throw cause;
+    // Same class and code as the store's own error — only the
+    // attacker-influenced reason is sanitised on its way across the boundary.
+    throw cause.data.code === 'DECOMPRESS_FAILED'
+      ? decompressFailed(reason)
+      : invalidObjectHeader(reason);
   }
 }
