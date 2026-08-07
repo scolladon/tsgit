@@ -241,12 +241,9 @@ export interface ConnectivityClassification {
   readonly tagRefs: ReadonlyArray<TagRef>;
 }
 
-/**
- * Assemble every connectivity-derived finding: missing (typed from the
- * referring edge where one exists — git emits the type it expected from
- * context, avoiding a read of an object known absent), broken-link,
- * unreachable/dangling (typed via `TypeResolution`), root and tagged.
- */
+/** Missing ids first (typed from the referring edge where one exists — git
+ *  emits the type it expected from context, avoiding a read of an object
+ *  known absent), then every broken-link edge. */
 function missingAndBrokenLinkFindings(
   missingIds: ReadonlySet<ObjectId>,
   brokenEdges: ReadonlyArray<GraphEdge>,
@@ -288,6 +285,11 @@ function appendAll(target: FsckFinding[], source: ReadonlyArray<FsckFinding>): v
   for (const finding of source) target.push(finding);
 }
 
+/**
+ * Assemble every connectivity-derived finding, in emission order: missing,
+ * broken-link, unreachable/dangling (typed via `TypeResolution`), root and
+ * tagged.
+ */
 export function assembleConnectivityFindings(
   classification: ConnectivityClassification,
   resolution: TypeResolution,

@@ -3832,7 +3832,7 @@ describe('Given an undecodable dangling loose object whose header type token emb
     it('Then the thrown reason carries the byte hex-escaped, never verbatim', async () => {
       // Arrange
       const ctx = await initBareCtx();
-      await writeMalformedLooseObject(ctx, enc.encode('wid\u0001get 0\0'));
+      await writeMalformedLooseObject(ctx, enc.encode('wid\u0001g~t\u007f 0\0'));
 
       // Act
       let caught: unknown;
@@ -3846,14 +3846,16 @@ describe('Given an undecodable dangling loose object whose header type token emb
       expect(caught).toBeInstanceOf(TsgitError);
       expect((caught as TsgitError).data.code).toBe('INVALID_OBJECT_HEADER');
       const reason = ((caught as TsgitError).data as { reason: string }).reason;
-      expect(reason).toBe('unknown object type: wid\\x01get');
+      // `~` pins the 0x7e upper bound; DEL pins the boundary above it and
+      // forces a letter into the hex, pinning the upper-case escape.
+      expect(reason).toBe('unknown object type: wid\\x01g~t\\x7F');
     });
   });
 });
 
 describe('Given an undecodable dangling loose object whose header type token exceeds the reason cap', () => {
   describe('When fsck runs with connectivityOnly: true', () => {
-    it('Then the thrown reason is capped at exactly 200 code points', async () => {
+    it('Then the thrown reason is capped at exactly 200 output units', async () => {
       // Arrange
       const ctx = await initBareCtx();
       await writeMalformedLooseObject(ctx, enc.encode(`${'a'.repeat(300)} 0\0`));
@@ -3872,6 +3874,30 @@ describe('Given an undecodable dangling loose object whose header type token exc
       const reason = ((caught as TsgitError).data as { reason: string }).reason;
       expect(reason).toHaveLength(200);
       expect(reason.startsWith('unknown object type: aaa')).toBe(true);
+    });
+  });
+});
+
+describe('Given an undecodable dangling loose object whose header type token is all control bytes', () => {
+  describe('When fsck runs with connectivityOnly: true', () => {
+    it('Then escape expansion stays inside the cap and never emits a truncated escape', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      await writeMalformedLooseObject(ctx, enc.encode(`${'\u0001'.repeat(100)} 0\0`));
+
+      // Act
+      let caught: unknown;
+      try {
+        await fsck(ctx, { connectivityOnly: true });
+      } catch (error) {
+        caught = error;
+      }
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      const reason = ((caught as TsgitError).data as { reason: string }).reason;
+      expect(reason.length).toBeLessThanOrEqual(200);
+      expect(/\\x[0-9A-F]{2}$/.test(reason)).toBe(true);
     });
   });
 });
@@ -4032,6 +4058,8 @@ describe('Given a loose garbled copy whose packed twin header probe rejects with
       // Assert
       expect(caught).toBeInstanceOf(TsgitError);
       expect((caught as TsgitError).data.code).toBe('DECOMPRESS_FAILED');
+      const reason = ((caught as TsgitError).data as { reason: string }).reason;
+      expect(reason).not.toContain('mid-read corruption');
     });
   });
 });
@@ -4041,12 +4069,11 @@ describe('Given a corrupt-idx pack beside a pack whose header probe would reject
     it('Then it resolves and still reports the rev-index finding — the ungated term never probes a header', async () => {
       // Arrange
       const ctx = await initBareCtx();
-      const [blobId] = await writeSyntheticPack(
+      await writeSyntheticPack(
         ctx,
         'd13-ungated-poison',
         onePackEntry('d13-ungated-poison-content'),
       );
-      void blobId;
       const corruptContent = enc.encode('d13-ungated-corrupt-idx');
       await writeSyntheticPack(ctx, 'd13-ungated-corrupt', [
         { kind: 'base', type: 'blob', content: corruptContent },

@@ -1265,9 +1265,9 @@ describe('PackRegistry.health — per-pack accessibility', () => {
     });
   });
 
-  describe('Given a healthy pack and a memoised health verdict', () => {
+  describe('Given a healthy pack', () => {
     describe('When health() is called twice without a refresh', () => {
-      it('Then the pack header is probed exactly once', async () => {
+      it('Then the header is probed once per generation — the per-run cost contract', async () => {
         // Arrange
         const base = await buildSeededContext();
         const content = new TextEncoder().encode('health-memo-content');

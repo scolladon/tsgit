@@ -547,7 +547,7 @@ function parsePackEntryHeader(
 function packEntryTypeToObjectType(type: BasePackEntryType): ObjectType;
 ```
 
-Maps types 1–4 to `'commit'`, `'tree'`, `'blob'`, `'tag'`. Returns `undefined` for delta types (6, 7) since deltas resolve to a base type.
+Maps types 1–4 to `'commit'`, `'tree'`, `'blob'`, `'tag'`. Total over `BasePackEntryType` — delta types (6, 7) are excluded by the parameter type, since a delta carries no object type of its own.
 
 ---
 

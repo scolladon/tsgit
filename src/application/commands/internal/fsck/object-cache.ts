@@ -295,26 +295,30 @@ export async function buildObjectCache(
   return acc;
 }
 
-const MAX_REASON_CODE_POINTS = 200;
+const MAX_REASON_LENGTH = 200;
 
 /**
  * A reject reason can embed attacker-chosen bytes (an object header's type
  * and size fields are raw store bytes), and it reaches the thrown error's
  * message with no other sanitiser on the way. Allow-list, mirroring the
- * display sanitiser's convention but stricter: printable ASCII survives,
- * everything else — tab, newline, C1 controls, bidi overrides — is
- * hex-escaped; the cap counts code points so a split surrogate cannot leak.
+ * display sanitiser's variable-width `\xHH…` convention (not reversible —
+ * the value is diagnostic, never canonical) but stricter: printable ASCII
+ * survives, everything else — tab, newline, C1 controls, bidi overrides —
+ * is hex-escaped. Iterates the string lazily by code point (never splits a
+ * surrogate, never materialises the input) and bounds the OUTPUT at
+ * `MAX_REASON_LENGTH` ASCII units, so both the work done and the string
+ * emitted are capped regardless of the input's size or escape expansion.
  */
 function sanitizeReason(reason: string): string {
-  return [...reason]
-    .slice(0, MAX_REASON_CODE_POINTS)
-    .map((ch) => {
-      const code = ch.codePointAt(0) ?? 0;
-      return code >= 0x20 && code <= 0x7e
-        ? ch
-        : `\\x${code.toString(16).toUpperCase().padStart(2, '0')}`;
-    })
-    .join('');
+  let out = '';
+  for (const ch of reason) {
+    const code = ch.codePointAt(0) ?? 0;
+    const piece =
+      code >= 0x20 && code <= 0x7e ? ch : `\\x${code.toString(16).toUpperCase().padStart(2, '0')}`;
+    if (out.length + piece.length > MAX_REASON_LENGTH) break;
+    out += piece;
+  }
+  return out;
 }
 
 /**
