@@ -107,6 +107,8 @@ describe('pack-registry', () => {
         ['slash (no dot-dot, no backslash)', 'pac/k.idx'],
         ['backslash (no dot-dot, no slash)', 'pac\\k.idx'],
         ['dot-dot (no slash, no backslash)', 'pa..k.idx'],
+        ['newline (a control character a log sink would honour)', 'pac\nk.idx'],
+        ['unit separator (0x1f, the last rejected code point)', 'pac\x1fk.idx'],
       ])('Then loadPack is never reached for the unsafe path', async (_label, badName) => {
         // Arrange
         // Each bad name carries exactly ONE of the three forbidden substrings so a
@@ -138,15 +140,19 @@ describe('pack-registry', () => {
         const sut = createPackRegistry(wrapped);
 
         // Act
+        let caught: unknown;
         try {
           await sut.all();
-        } catch {
-          // parsePackIndex will throw on our fake bytes; that's expected.
+        } catch (error) {
+          caught = error;
         }
 
-        // Assert — good entry is statted; the unsafe one must have been filtered out.
+        // Assert — good entry is statted; the unsafe one must have been filtered
+        // out; and the plain (non-TsgitError) read failure propagates rather
+        // than being laundered into a per-pack skip.
         expect(statsSeen.some((p) => p.includes('pack-good'))).toBe(true);
         expect(statsSeen.some((p) => p.includes(badName))).toBe(false);
+        expect((caught as Error).message).toBe('parse fail — intentional');
       });
     });
   });
@@ -401,7 +407,9 @@ describe('PackRegistry.scan — per-pack idx degradation and orphan exclusion', 
         expect(packs).toEqual([]);
         expect(warn).toHaveBeenCalledTimes(1);
         const [, context] = warn.mock.calls[0] ?? [];
-        expect((context as { code?: string } | undefined)?.code).toBe('PERMISSION_DENIED');
+        // toStrictEqual: a { code, reason: undefined } leak from the
+        // fault-context ternary must fail, not slip past a toEqual.
+        expect(context).toStrictEqual({ idx: 'pack-h7-locked.idx', code: 'PERMISSION_DENIED' });
       });
     });
   });
@@ -434,7 +442,7 @@ describe('PackRegistry.scan — per-pack idx degradation and orphan exclusion', 
         expect(packs).toEqual([]);
         expect(warn).toHaveBeenCalledTimes(1);
         const [, context] = warn.mock.calls[0] ?? [];
-        expect((context as { code?: string } | undefined)?.code).toBe('FILE_NOT_FOUND');
+        expect(context).toStrictEqual({ idx: 'pack-h5-race.idx', code: 'FILE_NOT_FOUND' });
       });
     });
   });
@@ -1907,6 +1915,10 @@ describe('PackRegistry.lookup — header gate', () => {
         // Assert
         expect(result).toBeUndefined();
         expect(ledger.slices().filter((s) => s.path === packPath)).toEqual([]);
+        // Guards the pin against a future probe-through-handle rewrite: the
+        // slices ledger only observes ctx.fs.readSlice, so opens() must stay
+        // zero for the laziness claim to remain meaningful.
+        expect(ledger.opens()).toBe(0);
         expect(warn).not.toHaveBeenCalled();
       });
     });
@@ -1929,7 +1941,7 @@ describe('PackRegistry.lookup — header gate', () => {
         const badPackPath = `${ctx.layout.gitDir}/objects/pack/pack-sibling-bad.pack`;
         await restampPackHeader(ctx, badPackPath, { version: 99 });
         const orderedNames = ['pack-sibling-bad.idx', 'pack-sibling-good.idx'];
-        const observedOrder: string[] = [];
+        const consultedIdxOrder: string[] = [];
         const warn = vi.fn();
         const wrapped: Context = {
           ...ctx,
@@ -1940,13 +1952,20 @@ describe('PackRegistry.lookup — header gate', () => {
               const entries = await ctx.fs.readdir(dir);
               const byName = new Map(entries.map((entry) => [entry.name, entry]));
               const ordered = orderedNames.map((name) => byName.get(name)!);
-              observedOrder.push(...ordered.map((entry) => entry.name));
               // The reordering above deliberately narrows the listing to the two
               // .idx entries; the sibling .pack files must still be present in
               // what scanPacks sees, or the scan-layer orphan filter excludes
               // both packs before the lookup-layer behaviour under test ever runs.
               const packSiblings = entries.filter((entry) => entry.name.endsWith('.pack'));
               return [...ordered, ...packSiblings];
+            },
+            stat: async (path: string) => {
+              // Records the order the PRODUCTION scan consults the indexes —
+              // stat is loadPack's first op per .idx — so the bad-pack-first
+              // premise is observed, not restated from the fixture's own input.
+              const name = path.split('/').pop() ?? path;
+              if (name.endsWith('.idx')) consultedIdxOrder.push(name);
+              return ctx.fs.stat(path);
             },
           },
         };
@@ -1956,7 +1975,7 @@ describe('PackRegistry.lookup — header gate', () => {
         const result = await sut(wrapped, oidA);
 
         // Assert
-        expect(observedOrder).toEqual(orderedNames);
+        expect(consultedIdxOrder).toEqual(orderedNames);
         expect(result.type).toBe('blob');
         expect((result as Blob).content).toEqual(goodContent);
         expect(warn).toHaveBeenCalledTimes(1);

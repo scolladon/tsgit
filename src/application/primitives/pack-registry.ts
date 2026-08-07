@@ -46,7 +46,7 @@ function isSkippableIoFault(err: unknown): boolean {
 // ONLY — INVALID_PACK_INDEX is deliberately absent, because nextOffsetForEntry
 // and buildOffsetTable throw it for a MID-READ corruption, and folding those in
 // would turn a detected corruption into a silent miss after the gate passed.
-function isSkippablePackFault(err: unknown): boolean {
+function isSkippablePackFault(err: unknown): err is TsgitError {
   return (
     (err instanceof TsgitError && err.data.code === 'INVALID_PACK_HEADER') ||
     isSkippableIoFault(err)
@@ -58,7 +58,7 @@ function isSkippablePackFault(err: unknown): boolean {
 // INVALID_PACK_INDEX is skippable only here, where the parse happens; at the
 // lookup layer it also means a mid-read corruption, which must never be
 // laundered into "this pack has no objects".
-function isSkippableIdxFault(err: unknown): boolean {
+function isSkippableIdxFault(err: unknown): err is TsgitError {
   return (
     (err instanceof TsgitError && err.data.code === 'INVALID_PACK_INDEX') || isSkippableIoFault(err)
   );
@@ -126,8 +126,15 @@ export interface PackRegistry {
   dispose(): Promise<void>;
 }
 
+// Control characters are rejected at this boundary so a hostile filename can
+// never carry a newline into a line-oriented logger sink downstream — the
+// display sanitiser deliberately preserves tab and newline.
 function isSafePackName(name: string): boolean {
-  return !name.includes('/') && !name.includes('\\') && !name.includes('..');
+  if (name.includes('/') || name.includes('\\') || name.includes('..')) return false;
+  for (let i = 0; i < name.length; i++) {
+    if (name.charCodeAt(i) < 0x20) return false;
+  }
+  return true;
 }
 
 function isCandidate(entry: { isFile: boolean; name: string }): boolean {
@@ -286,10 +293,10 @@ async function loadCandidatePack(
   ctx: Context,
   dir: string,
   entry: { readonly name: string },
-  packFileNames: ReadonlySet<string>,
+  fileNames: ReadonlySet<string>,
 ): Promise<RegisteredPack | undefined> {
   const name = packBaseName(entry.name);
-  if (!packFileNames.has(`${name}.pack`)) {
+  if (!fileNames.has(`${name}.pack`)) {
     ctx.logger?.warn?.('packRegistry: skipping pack index with no pack file', {
       idx: entry.name,
     });
@@ -301,7 +308,7 @@ async function loadCandidatePack(
     if (!isSkippableIdxFault(err)) throw err;
     ctx.logger?.warn?.('packRegistry: skipping unreadable pack index', {
       idx: entry.name,
-      ...faultContext((err as TsgitError).data),
+      ...faultContext(err.data),
     });
     return undefined;
   }
@@ -315,11 +322,13 @@ export function createPackRegistry(ctx: Context): PackRegistry {
     // git registers a pack only when its .pack exists by name — an orphaned
     // .idx is garbage, never a pack. The listing already in hand is the same
     // data, so the check costs no I/O.
-    const packFileNames = new Set(entries.filter((entry) => entry.isFile).map((e) => e.name));
+    // Regular files only: a symlinked .pack is out of scope by the same
+    // no-follow policy the data reads enforce, so its .idx drops here too.
+    const fileNames = new Set(entries.filter((entry) => entry.isFile).map((entry) => entry.name));
     const packs: RegisteredPack[] = [];
     for (const entry of entries) {
       if (!isCandidate(entry)) continue;
-      const pack = await loadCandidatePack(ctx, dir, entry, packFileNames);
+      const pack = await loadCandidatePack(ctx, dir, entry, fileNames);
       if (pack !== undefined) packs.push(pack);
     }
     return packs;
@@ -389,7 +398,7 @@ export function createPackRegistry(ctx: Context): PackRegistry {
           if (!isSkippablePackFault(err)) throw err;
           ctx.logger?.warn?.('packRegistry: skipping unusable pack', {
             pack: pack.name,
-            ...faultContext((err as TsgitError).data),
+            ...faultContext(err.data),
           });
           continue;
         }
