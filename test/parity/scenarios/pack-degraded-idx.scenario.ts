@@ -18,15 +18,8 @@
  */
 
 import { getPackRegistry } from '../../../src/application/primitives/read-object.ts';
-import { hexToBytes } from '../../../src/domain/objects/encoding.ts';
-import type { ObjectId } from '../../../src/domain/objects/index.ts';
-import {
-  PACK_ENTRY_TYPE,
-  serializePackfile,
-  serializePackIndex,
-} from '../../../src/domain/storage/index.ts';
-import { computeLooseObjectPath } from '../../../src/domain/storage/loose-path.ts';
 import { AUTHOR, FILES, MESSAGES } from '../fixtures.ts';
+import { writeScenarioPackPair } from './pack-pair.ts';
 import type { Scenario } from './types.ts';
 
 interface PackDegradedIdxResult {
@@ -39,13 +32,6 @@ interface PackDegradedIdxResult {
 }
 
 const VANISHED_BLOB_CONTENT = 'packed then vanished\n';
-
-function concatBytes(a: Uint8Array, b: Uint8Array): Uint8Array {
-  const out = new Uint8Array(a.length + b.length);
-  out.set(a, 0);
-  out.set(b, a.length);
-  return out;
-}
 
 // Header (8) + fanout table (1024) is the parser's minimum-size gate; this
 // buffer clears it so the failure is specifically the v2 magic check, not a
@@ -92,32 +78,11 @@ export const packDegradedIdxScenario: Scenario<PackDegradedIdxResult> = {
 
     // Arm 3 — a valid pack pair whose .pack vanishes after the scan. The
     // blob's loose copy is removed so the pack is its only source.
-    const content = new TextEncoder().encode(VANISHED_BLOB_CONTENT);
-    const vanishedId = await repo.primitives.writeObject({
-      type: 'blob',
-      id: '' as ObjectId,
-      content,
+    const vanishedId = await writeScenarioPackPair(repo, {
+      name: 'pack-degraded-vanish',
+      content: VANISHED_BLOB_CONTENT,
     });
-    const { data, entries } = serializePackfile([
-      {
-        type: PACK_ENTRY_TYPE.BLOB,
-        uncompressedSize: content.length,
-        compressedData: await repo.ctx.compressor.deflate(content),
-      },
-    ]);
-    const entry = entries[0];
-    if (entry === undefined) throw new Error('pack-degraded-idx: missing pack entry');
-    const trailer = await repo.ctx.hash.hash(data);
-    const vanishPackBytes = concatBytes(data, trailer);
-    const idxBody = serializePackIndex(
-      [{ id: vanishedId, crc32: entry.crc32, offset: entry.offset }],
-      trailer,
-    );
-    const idxBytes = concatBytes(idxBody, hexToBytes(await repo.ctx.hash.hashHex(idxBody)));
     const vanishBase = `${packDir}/pack-degraded-vanish`;
-    await repo.ctx.fs.write(`${vanishBase}.pack`, vanishPackBytes);
-    await repo.ctx.fs.write(`${vanishBase}.idx`, idxBytes);
-    await repo.ctx.fs.rm(`${repo.ctx.layout.gitDir}/objects/${computeLooseObjectPath(vanishedId)}`);
 
     // A fresh generation registers the vanish pack (arms 1+2 stay excluded)
     // WITHOUT probing its header — all() touches only the parsed idx.
