@@ -546,7 +546,8 @@ What the fold changes, stated as a before/after over the Pin H rows:
 | H2 v99 pack | pack silently parsed **as v2** | lookup-layer skip; object *missing*; one warn per lookup hit |
 | H3 count disagreement | undetected; a wrong `nextOffsetForEntry` bound may surface later as `INVALID_PACK_ENTRY` | lookup-layer skip; object *missing*; one warn per lookup hit |
 | H4 `.pack` unopenable | `lookup` hits, then `offsetTable()`'s `ctx.fs.stat` or the handle open surfaces the adapter fault to the caller | lookup-layer skip; object *missing* |
-| H5 `.idx` with no `.pack` | same as H4 — `loadPack` never touches the `.pack`, so the fault surfaces from `offsetTable()` (`pack-registry.ts:103`) | lookup-layer skip at the 12-byte probe; object *missing* |
+| H5 orphan `.idx` at scan | same as H4 — `loadPack` never touches the `.pack`, so the fault surfaces later from `offsetTable()`'s stat | scan-layer exclusion (the sibling-`.pack` check); `all()` omits it; one warn per generation |
+| H5 race — `.pack` vanishes after the scan | as H4 | lookup-layer skip at the 12-byte probe; object *missing* |
 | H6 `.idx` corrupt | `parsePackIndex` throws out of `loadPack` → the memoised scan rejects → **every** read through that `Context` fails | scan-layer skip; the pack leaves the generation; every other read unaffected |
 | H7 `.idx` unreadable | as H6 | as H6 |
 
@@ -697,12 +698,15 @@ change.
 
 1. **`registry.all()` consumers bypass the lookup gate** (§D3). Deliberate under ADR-572, and
    after the fold the enumeration axis is faithful on every Pin H row — H5 included, since
-   ADR-579 excludes an orphaned `.idx` at scan exactly as git does. One residue: tsgit's `fsck`
-   lacking git's `packfile … cannot be accessed` + exit bit 4, an integrity-reporting gap
-   deferred by ADR-572.
+   ADR-579 excludes an orphaned `.idx` at scan exactly as git does. Two residues: tsgit's
+   `fsck` lacking git's `packfile … cannot be accessed` + exit bit 4, an integrity-reporting
+   gap deferred by ADR-572; and a **symlinked `.pack`**, which git registers (its sibling test
+   is by name, with no file-type filter) but tsgit's regular-files-only listing drops at scan —
+   a deliberate extension of the existing no-follow policy, noted in the sibling-check comment.
 2. **Browser / memory adapters.** `ctx.fs.readSlice` is a `FileSystem` port method every adapter
-   implements — it is already the registry's fallback reader (`pack-registry.ts:132`, `:145`) —
-   so the gate needs no adapter work. Worth one parity scenario, not a design branch.
+   implements — it is already `RegisteredPack.readSlice`'s fallback reader on the retired path
+   and on adapters that cannot open persistent handles — so the gate needs no adapter work.
+   Worth one parity scenario, not a design branch.
 3. **`refresh()` re-probes.** Each refresh discards the header memos with the pack set, so a
    long-lived Context that refreshes N times pays N × 12 bytes per touched pack. Bounded and
    correct: a pack file can be replaced between generations.

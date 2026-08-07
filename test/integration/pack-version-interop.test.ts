@@ -397,7 +397,18 @@ describe.skipIf(!GIT_AVAILABLE)(
         await writePack(dir, 'bad', v99PackBytes, v99IdxBytes);
         await writePack(dir, 'good', basePackBytes, baseIdxBytes);
         const warn = vi.fn();
-        const sut: Context = { ...createNodeContext({ workDir: dir }), logger: { warn } };
+        const baseCtx = createNodeContext({ workDir: dir });
+        // Raw readdir order is filesystem-dependent; sorting pins the bad pack
+        // first so the skip arm provably fires on every host.
+        const sut: Context = {
+          ...baseCtx,
+          logger: { warn },
+          fs: {
+            ...baseCtx.fs,
+            readdir: async (path: string) =>
+              [...(await baseCtx.fs.readdir(path))].sort((a, b) => a.name.localeCompare(b.name)),
+          },
+        };
 
         // Act
         const gitPayload = catFileRaw(dir, packedOid);

@@ -101,21 +101,24 @@ describe('pack-registry', () => {
     });
   });
 
-  describe('Given a readdir entry whose name contains a %s', () => {
+  describe('Given a readdir entry whose unsafe name contains %s', () => {
     describe('When all() is called', () => {
       it.each([
-        ['slash (no dot-dot, no backslash)', 'pac/k.idx'],
-        ['backslash (no dot-dot, no slash)', 'pac\\k.idx'],
-        ['dot-dot (no slash, no backslash)', 'pa..k.idx'],
-        ['newline (a control character a log sink would honour)', 'pac\nk.idx'],
-        ['unit separator (0x1f, the last rejected code point)', 'pac\x1fk.idx'],
-      ])('Then loadPack is never reached for the unsafe path', async (_label, badName) => {
+        ['a slash (no dot-dot, no backslash)', 'pac/k.idx'],
+        ['a backslash (no dot-dot, no slash)', 'pac\\k.idx'],
+        ['a dot-dot (no slash, no backslash)', 'pa..k.idx'],
+        ['a newline (a control character a log sink would honour)', 'pac\nk.idx'],
+        ['a unit separator (0x1f, the last rejected code point)', 'pac\x1fk.idx'],
+      ])('Then loadPack is never reached for the name carrying %s', async (_label, badName) => {
         // Arrange
-        // Each bad name carries exactly ONE of the three forbidden substrings so a
-        // per-operand mutation of `isSafePackName` (`&&` -> `||`, or any operand
-        // forced true) lets that specific name through. loadPack's first op is
-        // `fs.stat`; tracking stat calls reveals whether the unsafe entry was
-        // accepted. The good entry stat is allowed; the bad path must never appear.
+        // Each bad name carries exactly ONE forbidden feature — one of the three
+        // path substrings, or one control character — so a per-operand mutation
+        // of `isSafePackName` (`&&` -> `||`, or any operand forced true) lets
+        // that specific name through. The bad name's own sibling `.pack` is in
+        // the listing, so the orphan filter cannot mask the guard: the ONLY
+        // thing that can keep the bad `.idx` out of loadPack is `isSafePackName`
+        // itself. loadPack's first op is `fs.stat`; tracking stat calls reveals
+        // whether the unsafe entry was accepted.
         const ctx = await buildSeededContext();
         const statsSeen: string[] = [];
         const wrapped = {
@@ -125,6 +128,7 @@ describe('pack-registry', () => {
             exists: async () => true,
             readdir: async (): Promise<ReadonlyArray<DirEntry>> => [
               dirEntry(badName),
+              dirEntry(`${badName.slice(0, -'.idx'.length)}.pack`),
               dirEntry('pack-good.idx'),
               dirEntry('pack-good.pack'),
             ],
@@ -152,6 +156,50 @@ describe('pack-registry', () => {
         // than being laundered into a per-pack skip.
         expect(statsSeen.some((p) => p.includes('pack-good'))).toBe(true);
         expect(statsSeen.some((p) => p.includes(badName))).toBe(false);
+        expect((caught as Error).message).toBe('parse fail — intentional');
+      });
+    });
+  });
+
+  describe('Given a readdir entry whose name contains a space (0x20, the first allowed code point)', () => {
+    describe('When all() is called', () => {
+      it('Then the entry passes the name guard and loadPack is reached', async () => {
+        // Arrange — kills the `< 0x20` -> `<= 0x20` boundary mutant, which
+        // would misclassify a space-bearing name as unsafe.
+        const ctx = await buildSeededContext();
+        const spacedName = 'pack sp.idx';
+        const statsSeen: string[] = [];
+        const wrapped = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            exists: async () => true,
+            readdir: async (): Promise<ReadonlyArray<DirEntry>> => [
+              dirEntry(spacedName),
+              dirEntry('pack sp.pack'),
+            ],
+            stat: async (path: string): Promise<FileStat> => {
+              statsSeen.push(path);
+              return makeStat();
+            },
+            read: async (): Promise<Uint8Array> => {
+              throw new Error('parse fail — intentional');
+            },
+          },
+        };
+        const sut = createPackRegistry(wrapped);
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut.all();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert — the spaced name was statted (the guard admitted it) and the
+        // planted read failure propagated, proving loadPack genuinely ran.
+        expect(statsSeen.some((p) => p.includes(spacedName))).toBe(true);
         expect((caught as Error).message).toBe('parse fail — intentional');
       });
     });

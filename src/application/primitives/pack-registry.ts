@@ -129,12 +129,15 @@ export interface PackRegistry {
 // Control characters are rejected at this boundary so a hostile filename can
 // never carry a newline into a line-oriented logger sink downstream — the
 // display sanitiser deliberately preserves tab and newline.
+const isControlChar = (ch: string): boolean => ch.charCodeAt(0) < 0x20;
+
 function isSafePackName(name: string): boolean {
-  if (name.includes('/') || name.includes('\\') || name.includes('..')) return false;
-  for (let i = 0; i < name.length; i++) {
-    if (name.charCodeAt(i) < 0x20) return false;
-  }
-  return true;
+  return (
+    !name.includes('/') &&
+    !name.includes('\\') &&
+    !name.includes('..') &&
+    ![...name].some(isControlChar)
+  );
 }
 
 function isCandidate(entry: { isFile: boolean; name: string }): boolean {
