@@ -6,6 +6,7 @@ import { disposePackRegistry } from '../../../../src/application/primitives/read
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import {
   decompressFailed,
+  fileNotFound,
   permissionDenied,
   TsgitError,
   unsupportedOperation,
@@ -22,7 +23,12 @@ import { invalidPackIndex } from '../../../../src/domain/storage/index.js';
 import type { Context } from '../../../../src/ports/context.js';
 import { buildSeededContext } from '../primitives/fixtures.js';
 import { withHandleLedger } from '../primitives/handle-ledger.js';
-import { restampPackHeader, writeSyntheticPack } from '../primitives/pack-fixture.js';
+import {
+  buildSyntheticPack,
+  type EntrySpec,
+  restampPackHeader,
+  writeSyntheticPack,
+} from '../primitives/pack-fixture.js';
 import { findingIds } from './fsck-finding-ids.js';
 
 const enc = new TextEncoder();
@@ -2583,6 +2589,24 @@ describe('Given a v99-header pack whose objects exist nowhere else', () => {
         expect(carriedIds.has(id as ObjectId)).toBe(false);
       }
     });
+
+    it('Then no pack-rev-index-unusable finding is emitted and bit 64 is absent (the pack layer is not the index layer)', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      await writeSyntheticPack(
+        ctx,
+        'refused-pack-layer',
+        onePackEntry('refused-pack-layer-content'),
+      );
+      await restampPackHeader(ctx, packFilePath(ctx, 'refused-pack-layer'), { version: 99 });
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      expect(result.findings.some((f) => f.type === 'pack-rev-index-unusable')).toBe(false);
+      expect(result.exitCode & 64).toBe(0);
+    });
   });
 });
 
@@ -3169,6 +3193,31 @@ async function corruptTrailingPackEntryByte(ctx: Context, packPath: string): Pro
 
 const GARBAGE_BYTES = new Uint8Array([0xde, 0xad, 0xbe, 0xef]);
 
+interface WarnCall {
+  readonly message: string;
+  readonly context: Readonly<Record<string, unknown>> | undefined;
+}
+
+/**
+ * Wrap `ctx` with a stub logger that records every `warn` call. The recovery
+ * probe's degrade reasons reach `ctx.logger?.warn?.(message, context)` —
+ * optional chaining short-circuits BEFORE evaluating either argument when no
+ * logger is present, so a context without one never observes which reason
+ * string a given degrade path chose, nor even evaluates it.
+ */
+function withWarnLog(ctx: Context): { readonly ctx: Context; readonly calls: WarnCall[] } {
+  const calls: WarnCall[] = [];
+  const wrapped: Context = {
+    ...ctx,
+    logger: {
+      warn: (message: string, context?: Readonly<Record<string, unknown>>) => {
+        calls.push({ message, context });
+      },
+    },
+  };
+  return { ctx: wrapped, calls };
+}
+
 describe('Given a loose object with non-zlib garbage bytes, unreferenced (dangling)', () => {
   describe('When fsck runs with connectivityOnly: true', () => {
     it('Then fsck rejects with DECOMPRESS_FAILED', async () => {
@@ -3495,6 +3544,47 @@ describe('Given a dangling OFS_DELTA-encoded blob with a corrupt delta body, bas
   });
 });
 
+describe('Given an OFS_DELTA chain one hop deeper than the walker can afford, tip corrupt', () => {
+  describe('When fsck runs with connectivityOnly: true', () => {
+    it("Then resolves with dangling/'unknown' and logs the depth-cap reason", async () => {
+      // Arrange — base + 50 chained OFS deltas: reconstructing the tip needs
+      // 51 header reads (50 delta hops + the base), but the walker's
+      // `depth < MAX_DELTA_CHAIN_DEPTH` loop allows only 50 — one short of
+      // the base. Corrupting the tip's own body (the last-written entry)
+      // decode-faults the INITIAL read on its very first inflate, before any
+      // chain walking; the recovery probe then re-walks headers only (never
+      // inflating a body) and hits the cap.
+      const ctx = await initBareCtx();
+      const baseContent = enc.encode('depth-cap-base');
+      const entries: EntrySpec[] = [{ kind: 'base', type: 'blob', content: baseContent }];
+      for (let i = 0; i < 50; i += 1) {
+        entries.push({
+          kind: 'ofs-delta',
+          baseIndex: i,
+          targetContent: enc.encode(`depth-cap-hop-${i}`),
+        });
+      }
+      const ids = await writeSyntheticPack(ctx, 'depth-cap', entries);
+      const tipId = ids.at(-1) as ObjectId;
+      await corruptTrailingPackEntryByte(ctx, packFilePath(ctx, 'depth-cap'));
+      const { ctx: logged, calls } = withWarnLog(ctx);
+
+      // Act
+      const result = await fsck(logged, { connectivityOnly: true });
+
+      // Assert
+      const dangling = result.findings.find(
+        (f) => f.type === 'dangling' && (f as { id: ObjectId }).id === tipId,
+      );
+      expect(dangling).toBeDefined();
+      expect((dangling as { objectType: string }).objectType).toBe('unknown');
+      const warned = calls.find((c) => c.context?.objectId === tipId);
+      expect(warned?.message).toBe('fsck: stored type probe degraded');
+      expect(warned?.context?.reason).toBe('delta chain exceeds max depth');
+    });
+  });
+});
+
 describe('Given a dangling REF_DELTA-encoded blob with a corrupt delta body, base intact', () => {
   describe('When fsck runs with connectivityOnly: true', () => {
     it("Then resolves with dangling/'blob' (the walker branches on the REF_DELTA encoding)", async () => {
@@ -3552,6 +3642,131 @@ describe('Given a loose garbled copy shadowing a healthy packed copy of the same
   });
 });
 
+describe('Given a loose garbled copy shadowing a packed OFS_DELTA whose base distance points before the pack body', () => {
+  describe('When fsck runs with connectivityOnly: true', () => {
+    it("Then resolves with dangling/'unknown' and logs the out-of-range reason", async () => {
+      // Arrange — loose-before-pack precedence means the INITIAL read never
+      // touches the pack at all, so the walker's own header-only recovery
+      // walk is the only code that ever reads this entry. A distance far
+      // larger than the entry's own offset drives `baseOffset` deeply
+      // negative.
+      const ctx = await initBareCtx();
+      const baseContent = enc.encode('d13-neg-offset-base');
+      const targetContent = enc.encode('d13-neg-offset-baseTAIL');
+      const ids = await writeSyntheticPack(ctx, 'd13-neg-offset', [
+        { kind: 'base', type: 'blob', content: baseContent },
+        { kind: 'ofs-delta', baseIndex: 0, targetContent, distanceOverride: 1_000_000 },
+      ]);
+      const deltaId = ids[1] as ObjectId;
+      await writeGarbageLooseObject(ctx, deltaId, GARBAGE_BYTES);
+      const { ctx: logged, calls } = withWarnLog(ctx);
+
+      // Act
+      const result = await fsck(logged, { connectivityOnly: true });
+
+      // Assert
+      const dangling = result.findings.find(
+        (f) => f.type === 'dangling' && (f as { id: ObjectId }).id === deltaId,
+      );
+      expect(dangling).toBeDefined();
+      expect((dangling as { objectType: string }).objectType).toBe('unknown');
+      const warned = calls.find((c) => c.context?.objectId === deltaId);
+      expect(warned?.message).toBe('fsck: stored type probe degraded');
+      expect(warned?.context?.reason).toBe('OFS_DELTA base offset out of range');
+    });
+  });
+});
+
+describe('Given a loose garbled copy shadowing a packed OFS_DELTA whose base distance lands exactly on offset 0', () => {
+  describe('When fsck runs with connectivityOnly: true', () => {
+    it('Then the guard does not trip — kills the baseOffset<=0 mutant, which would degrade here', async () => {
+      // Arrange — distance equal to the delta's own real offset drives
+      // `baseOffset` to exactly 0. `baseOffset < 0` is false there (the
+      // walker proceeds into whatever offset 0 holds); the `<=0` mutant would
+      // instead trip the guard and degrade with the OFS-out-of-range reason.
+      const ctx = await initBareCtx();
+      const baseContent = enc.encode('d13-zero-offset-base');
+      const targetContent = enc.encode('d13-zero-offset-baseTAIL');
+      const probeEntries: EntrySpec[] = [
+        { kind: 'base', type: 'blob', content: baseContent },
+        { kind: 'ofs-delta', baseIndex: 0, targetContent },
+      ];
+      const probe = await buildSyntheticPack(ctx, probeEntries);
+      const deltaOffset = probe.offsets[1]!;
+      const ids = await writeSyntheticPack(ctx, 'd13-zero-offset', [
+        { kind: 'base', type: 'blob', content: baseContent },
+        { kind: 'ofs-delta', baseIndex: 0, targetContent, distanceOverride: deltaOffset },
+      ]);
+      const deltaId = ids[1] as ObjectId;
+      await writeGarbageLooseObject(ctx, deltaId, GARBAGE_BYTES);
+      const { ctx: logged, calls } = withWarnLog(ctx);
+
+      // Act
+      const result = await fsck(logged, { connectivityOnly: true });
+
+      // Assert
+      const dangling = result.findings.find(
+        (f) => f.type === 'dangling' && (f as { id: ObjectId }).id === deltaId,
+      );
+      expect(dangling).toBeDefined();
+      expect((dangling as { objectType: string }).objectType).toBe('unknown');
+      const warned = calls.find((c) => c.context?.objectId === deltaId);
+      // Offset 0 lands on the pack's own 12-byte magic header, not an entry —
+      // the SUBSEQUENT header parse fails, caught by typeFromEntry's own
+      // store-fault handling (Pin: distinct reason from the guard's own).
+      expect(warned?.context?.reason).toBe('pack entry unreadable');
+      expect(result.exitCode).toBe(0);
+    });
+  });
+});
+
+describe('Given a loose-only undecodable object whose file is gone by the time the recovery probe rereads it', () => {
+  describe('When fsck runs with connectivityOnly: true', () => {
+    it("Then resolves with dangling/'unknown' and logs the not-claimed reason — arm 2's own no-pack case", async () => {
+      // Arrange — the object is loose-only, never packed. The INITIAL read
+      // finds the garbage bytes fine (decode-faults on inflate). The recovery
+      // probe rereads the SAME loose path a second time; an external pruner
+      // removing it in between (git-faithfully a miss, per
+      // `readLooseCompressed`'s own vanished-file handling) degrades
+      // `looseCompressedBytes` to undefined exactly like an object that was
+      // never loose — landing in arm 2, where `lookupIfClaimed` finds nothing
+      // either, since this id was never packed.
+      const ctx = await initBareCtx();
+      const garbageId = 'dbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdb' as ObjectId;
+      await writeGarbageLooseObject(ctx, garbageId, GARBAGE_BYTES);
+      const loosePath = looseObjectPath(ctx.layout.gitDir, garbageId);
+      let rereadCount = 0;
+      const wrapped: Context = {
+        ...ctx,
+        fs: {
+          ...ctx.fs,
+          read: async (path: string) => {
+            if (path !== loosePath) return ctx.fs.read(path);
+            rereadCount += 1;
+            if (rereadCount === 1) return ctx.fs.read(path);
+            throw fileNotFound(path);
+          },
+        },
+      };
+      const { ctx: logged, calls } = withWarnLog(wrapped);
+
+      // Act
+      const result = await fsck(logged, { connectivityOnly: true });
+
+      // Assert
+      const dangling = result.findings.find(
+        (f) => f.type === 'dangling' && (f as { id: ObjectId }).id === garbageId,
+      );
+      expect(dangling).toBeDefined();
+      expect((dangling as { objectType: string }).objectType).toBe('unknown');
+      expect(result.exitCode).toBe(0);
+      const warned = calls.find((c) => c.context?.objectId === garbageId);
+      expect(warned?.message).toBe('fsck: stored type probe degraded');
+      expect(warned?.context?.reason).toBe('not loose and claimed by no accessible pack');
+    });
+  });
+});
+
 describe('Given one healthy dangling blob and one undecodable dangling blob', () => {
   describe('When fsck runs with connectivityOnly: true', () => {
     it("Then fsck rejects, and the healthy object's findings are unobservable", async () => {
@@ -3560,11 +3775,12 @@ describe('Given one healthy dangling blob and one undecodable dangling blob', ()
       await writeObject(ctx, makeBlob('d13-healthy-dangling'));
       const garbageId = 'd7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7' as ObjectId;
       await writeGarbageLooseObject(ctx, garbageId, GARBAGE_BYTES);
+      const { ctx: logged, calls } = withWarnLog(ctx);
 
       // Act
       let caught: unknown;
       try {
-        await fsck(ctx, { connectivityOnly: true });
+        await fsck(logged, { connectivityOnly: true });
       } catch (error) {
         caught = error;
       }
@@ -3572,6 +3788,10 @@ describe('Given one healthy dangling blob and one undecodable dangling blob', ()
       // Assert
       expect(caught).toBeInstanceOf(TsgitError);
       expect((caught as TsgitError).data.code).toBe('DECOMPRESS_FAILED');
+      const warned = calls.find((c) => c.context?.objectId === garbageId);
+      expect(warned?.message).toBe('fsck: object type unrecoverable');
+      expect(warned?.context?.code).toBe('DECOMPRESS_FAILED');
+      expect(typeof warned?.context?.reason).toBe('string');
     });
   });
 });
@@ -3668,9 +3888,10 @@ describe('Given a loose garbled copy whose packed twin rejects entry reads with 
           },
         },
       };
+      const { ctx: logged, calls } = withWarnLog(wrapped);
 
       // Act
-      const result = await fsck(wrapped, { connectivityOnly: true });
+      const result = await fsck(logged, { connectivityOnly: true });
 
       // Assert
       const dangling = result.findings.find(
@@ -3679,6 +3900,9 @@ describe('Given a loose garbled copy whose packed twin rejects entry reads with 
       expect(dangling).toBeDefined();
       expect((dangling as { objectType: string }).objectType).toBe('unknown');
       expect(result.exitCode).toBe(0);
+      const warned = calls.find((c) => c.context?.objectId === id);
+      expect(warned?.message).toBe('fsck: stored type probe degraded');
+      expect(warned?.context?.reason).toBe('pack entry unreadable');
     });
   });
 });
@@ -3745,9 +3969,10 @@ describe('Given a dangling REF_DELTA-encoded blob whose base pack was never writ
       ]);
       const deltaId = deltaIds[0] as ObjectId;
       await corruptTrailingPackEntryByte(ctx, packFilePath(ctx, 'd13-absent-base-delta'));
+      const { ctx: logged, calls } = withWarnLog(ctx);
 
       // Act
-      const result = await fsck(ctx, { connectivityOnly: true });
+      const result = await fsck(logged, { connectivityOnly: true });
 
       // Assert
       const dangling = result.findings.find(
@@ -3756,6 +3981,9 @@ describe('Given a dangling REF_DELTA-encoded blob whose base pack was never writ
       expect(dangling).toBeDefined();
       expect((dangling as { objectType: string }).objectType).toBe('unknown');
       expect(result.exitCode).toBe(0);
+      const warned = calls.find((c) => c.context?.objectId === deltaId);
+      expect(warned?.message).toBe('fsck: stored type probe degraded');
+      expect(warned?.context?.reason).toBe('REF_DELTA base not claimed by any accessible pack');
     });
   });
 });

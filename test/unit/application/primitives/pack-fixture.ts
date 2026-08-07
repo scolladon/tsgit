@@ -46,6 +46,13 @@ export interface OfsDeltaSpec {
    * entry at `baseIndex`.
    */
   readonly targetContent: Uint8Array;
+  /**
+   * Encode this exact byte distance instead of the entry's real offset delta
+   * — the only way to plant an OFS_DELTA whose declared base distance sends
+   * the walker before the pack body (negative-offset degrade fixtures). The
+   * index and content still resolve normally; only the on-disk distance lies.
+   */
+  readonly distanceOverride?: number;
 }
 
 export interface RefDeltaSpec {
@@ -64,6 +71,9 @@ export interface PackBuildResult {
   readonly idxBytes: Uint8Array;
   /** Target content + id for each entry (deltas report their reconstructed target). */
   readonly ids: ReadonlyArray<string>;
+  /** Each entry's start offset within `packBytes` — lets a caller derive a
+   * `distanceOverride` relative to an entry's own real position. */
+  readonly offsets: ReadonlyArray<number>;
 }
 
 export async function buildSyntheticPack(
@@ -100,7 +110,7 @@ export async function buildSyntheticPack(
       const compressed = await ctx.compressor.deflate(delta);
       const typeHeader = encodePackEntryHeader(PACK_ENTRY_TYPE.OFS_DELTA, delta.length);
       const baseOffset = offsets[spec.baseIndex]!;
-      const distance = currentOffset - baseOffset;
+      const distance = spec.distanceOverride ?? currentOffset - baseOffset;
       const ofsBytes = encodeOfsDistance(distance);
       entryBytes = concat(typeHeader, ofsBytes, compressed);
     } else {
@@ -144,7 +154,7 @@ export async function buildSyntheticPack(
   const idxChecksumHex = await ctx.hash.hashHex(idxFromWriter);
   const idxBytes = concat(idxFromWriter, hexToBytes(idxChecksumHex));
 
-  return { packBytes, idxBytes, ids };
+  return { packBytes, idxBytes, ids, offsets };
 }
 
 /**
