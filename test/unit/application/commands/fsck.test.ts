@@ -3,7 +3,11 @@ import { createMemoryContext } from '../../../../src/adapters/memory/memory-adap
 import { type FsckFinding, fsck } from '../../../../src/application/commands/fsck.js';
 import { looseObjectPath, objectsDir } from '../../../../src/application/primitives/path-layout.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
-import { permissionDenied, TsgitError } from '../../../../src/domain/error.js';
+import {
+  permissionDenied,
+  TsgitError,
+  unsupportedOperation,
+} from '../../../../src/domain/error.js';
 import {
   FILE_MODE,
   type ObjectId,
@@ -3138,6 +3142,507 @@ describe('Given a healthy repo with no damage', () => {
       expect(result.findings.filter((f) => f.type === 'dangling')).toHaveLength(0);
       expect(result.findings.filter((f) => f.type === 'unreachable')).toHaveLength(0);
       expect(result.exitCode).toBe(0);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// REJECT ON UNRECOVERABLE HEADERS, TYPE FROM A RECOVERED ONE
+// ---------------------------------------------------------------------------
+
+/** Write raw bytes directly at an arbitrary 40-hex oid's loose path — present
+ * in the object store's directory listing, unreferenced, never zlib-valid. */
+async function writeGarbageLooseObject(
+  ctx: Context,
+  id: ObjectId,
+  bytes: Uint8Array,
+): Promise<void> {
+  const dir = objectsDir(ctx.layout.gitDir, id.slice(0, 2));
+  await ctx.fs.mkdir(dir);
+  await ctx.fs.write(looseObjectPath(ctx.layout.gitDir, id), bytes);
+}
+
+/** Flip the last byte before a written pack's trailer — inside the LAST
+ * entry's compressed (zlib) stream, corrupting its Adler-32 trailer so
+ * inflate fails deterministically without touching the entry header. */
+async function corruptTrailingPackEntryByte(ctx: Context, packPath: string): Promise<void> {
+  const bytes = await ctx.fs.read(packPath);
+  const idx = bytes.length - ctx.hashConfig.digestLength - 1;
+  bytes[idx] = (bytes[idx] ?? 0) ^ 0xff;
+  await ctx.fs.write(packPath, bytes);
+}
+
+const GARBAGE_BYTES = new Uint8Array([0xde, 0xad, 0xbe, 0xef]);
+
+describe('Given a loose object with non-zlib garbage bytes, unreferenced (dangling)', () => {
+  describe('When fsck runs with connectivityOnly: true', () => {
+    it('Then fsck rejects with DECOMPRESS_FAILED', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const garbageId = 'd1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1' as ObjectId;
+      await writeGarbageLooseObject(ctx, garbageId, GARBAGE_BYTES);
+
+      // Act
+      let caught: unknown;
+      try {
+        await fsck(ctx, { connectivityOnly: true });
+      } catch (error) {
+        caught = error;
+      }
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      expect((caught as TsgitError).data.code).toBe('DECOMPRESS_FAILED');
+    });
+  });
+
+  describe('When fsck runs (default mode)', () => {
+    it('Then resolves with a bad-object finding, exit bit 1, and no dangling/unreachable finding for that oid', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const garbageId = 'd2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2' as ObjectId;
+      await writeGarbageLooseObject(ctx, garbageId, GARBAGE_BYTES);
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      const badObject = result.findings.find(
+        (f) => f.type === 'bad-object' && (f as { id: ObjectId }).id === garbageId,
+      );
+      expect(badObject).toBeDefined();
+      expect(result.exitCode & 1).toBe(1);
+      const dangerousTypes = result.findings.filter(
+        (f) =>
+          (f.type === 'dangling' || f.type === 'unreachable') &&
+          (f as { id: ObjectId }).id === garbageId,
+      );
+      expect(dangerousTypes).toHaveLength(0);
+    });
+  });
+
+  describe('When fsck runs with full: false', () => {
+    it('Then resolves the same as default mode: bad-object finding, exit bit 1', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const garbageId = 'd3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3' as ObjectId;
+      await writeGarbageLooseObject(ctx, garbageId, GARBAGE_BYTES);
+
+      // Act
+      const result = await fsck(ctx, { full: false });
+
+      // Assert
+      const badObject = result.findings.find(
+        (f) => f.type === 'bad-object' && (f as { id: ObjectId }).id === garbageId,
+      );
+      expect(badObject).toBeDefined();
+      expect(result.exitCode & 1).toBe(1);
+    });
+  });
+
+  describe('When fsck runs with connectivityOnly: true and full: false', () => {
+    it('Then fsck still rejects with DECOMPRESS_FAILED (full is never consulted by the guard)', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const garbageId = 'd4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4' as ObjectId;
+      await writeGarbageLooseObject(ctx, garbageId, GARBAGE_BYTES);
+
+      // Act
+      let caught: unknown;
+      try {
+        await fsck(ctx, { connectivityOnly: true, full: false });
+      } catch (error) {
+        caught = error;
+      }
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      expect((caught as TsgitError).data.code).toBe('DECOMPRESS_FAILED');
+    });
+  });
+});
+
+describe('Given a loose object whose inflated bytes carry no NUL terminator at all', () => {
+  describe('When fsck runs with connectivityOnly: true', () => {
+    it('Then fsck rejects with INVALID_OBJECT_HEADER and the reason is asserted', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const rawBytes = new Uint8Array(40).fill(0x41);
+      await writeMalformedLooseObject(ctx, rawBytes);
+
+      // Act
+      let caught: unknown;
+      try {
+        await fsck(ctx, { connectivityOnly: true });
+      } catch (error) {
+        caught = error;
+      }
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      expect((caught as TsgitError).data.code).toBe('INVALID_OBJECT_HEADER');
+      expect((caught as { data: { reason: string } }).data.reason).toBe('missing null terminator');
+    });
+  });
+});
+
+describe('Given a loose object whose header declares an unknown type name ("widget")', () => {
+  describe('When fsck runs with connectivityOnly: true', () => {
+    it('Then fsck rejects with INVALID_OBJECT_HEADER and the reason names the type', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const rawBytes = buildLooseBytes('widget', enc.encode('hello'));
+      await writeMalformedLooseObject(ctx, rawBytes);
+
+      // Act
+      let caught: unknown;
+      try {
+        await fsck(ctx, { connectivityOnly: true });
+      } catch (error) {
+        caught = error;
+      }
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      expect((caught as TsgitError).data.code).toBe('INVALID_OBJECT_HEADER');
+      expect((caught as { data: { reason: string } }).data.reason).toBe(
+        'unknown object type: widget',
+      );
+    });
+  });
+});
+
+describe('Given a loose object whose header declares a size larger than its actual content', () => {
+  describe('When fsck runs with connectivityOnly: true', () => {
+    it("Then resolves with dangling/'blob' (a size mismatch never aborts)", async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const header = enc.encode('blob 99\0');
+      const body = enc.encode('hi');
+      const rawBytes = new Uint8Array(header.length + body.length);
+      rawBytes.set(header);
+      rawBytes.set(body, header.length);
+      const blobId = await writeMalformedLooseObject(ctx, rawBytes);
+
+      // Act
+      const result = await fsck(ctx, { connectivityOnly: true });
+
+      // Assert
+      const dangling = result.findings.find(
+        (f) => f.type === 'dangling' && (f as { id: ObjectId }).id === blobId,
+      );
+      expect(dangling).toBeDefined();
+      expect((dangling as { objectType: string }).objectType).toBe('blob');
+    });
+  });
+});
+
+describe('Given a loose object with a valid header but an unparseable tree body', () => {
+  describe('When fsck runs with connectivityOnly: true', () => {
+    it("Then resolves with dangling/'tree', exit code 0", async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const header = enc.encode('tree 4\0');
+      const body = new Uint8Array([0x01, 0x02, 0x03, 0x04]);
+      const rawBytes = new Uint8Array(header.length + body.length);
+      rawBytes.set(header);
+      rawBytes.set(body, header.length);
+      const treeId = await writeMalformedLooseObject(ctx, rawBytes);
+
+      // Act
+      const result = await fsck(ctx, { connectivityOnly: true });
+
+      // Assert
+      const dangling = result.findings.find(
+        (f) => f.type === 'dangling' && (f as { id: ObjectId }).id === treeId,
+      );
+      expect(dangling).toBeDefined();
+      expect((dangling as { objectType: string }).objectType).toBe('tree');
+      expect(result.exitCode).toBe(0);
+    });
+  });
+
+  describe('When fsck runs (default mode)', () => {
+    it('Then resolves with a bad-object finding, exit bit 1, and no dangling/unreachable finding for that oid (retention is mode-gated)', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const header = enc.encode('tree 4\0');
+      const body = new Uint8Array([0x01, 0x02, 0x03, 0x04]);
+      const rawBytes = new Uint8Array(header.length + body.length);
+      rawBytes.set(header);
+      rawBytes.set(body, header.length);
+      const treeId = await writeMalformedLooseObject(ctx, rawBytes);
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      const badObject = result.findings.find(
+        (f) => f.type === 'bad-object' && (f as { id: ObjectId }).id === treeId,
+      );
+      expect(badObject).toBeDefined();
+      expect(result.exitCode & 1).toBe(1);
+      const dangerousTypes = result.findings.filter(
+        (f) =>
+          (f.type === 'dangling' || f.type === 'unreachable') &&
+          (f as { id: ObjectId }).id === treeId,
+      );
+      expect(dangerousTypes).toHaveLength(0);
+    });
+  });
+});
+
+describe('Given a garbage blob referenced by a reachable tree, connectivityOnly: true', () => {
+  describe('When fsck runs with connectivityOnly: true', () => {
+    it('Then resolves with no finding for that oid, exit code 0', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const garbageId = 'd5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5' as ObjectId;
+      await writeGarbageLooseObject(ctx, garbageId, GARBAGE_BYTES);
+      const treeId = await writeObject(
+        ctx,
+        makeTree([{ mode: FILE_MODE.REGULAR, name: 'garbage.bin', id: garbageId }]),
+      );
+      const commitId = await writeObject(ctx, makeCommit(treeId, []));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+
+      // Act
+      const result = await fsck(ctx, { connectivityOnly: true });
+
+      // Assert
+      const carriedIds = result.findings.flatMap((f) => findingIds(f));
+      expect(carriedIds).not.toContain(garbageId);
+      expect(result.exitCode).toBe(0);
+    });
+  });
+});
+
+describe('Given a garbage blob referenced only by a dangling readable tree (no ref anywhere)', () => {
+  describe('When fsck runs with connectivityOnly: true', () => {
+    it('Then fsck rejects — the guard is fed unreachable, not dangling', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const garbageId = 'd6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6' as ObjectId;
+      await writeGarbageLooseObject(ctx, garbageId, GARBAGE_BYTES);
+      await writeObject(
+        ctx,
+        makeTree([{ mode: FILE_MODE.REGULAR, name: 'garbage.bin', id: garbageId }]),
+      );
+      // No ref: the tree itself is readable but unreferenced (dangling), which
+      // still records an in-edge for the garbage blob via buildInEdgeMap — the
+      // blob is unreachable but NOT dangling.
+
+      // Act
+      let caught: unknown;
+      try {
+        await fsck(ctx, { connectivityOnly: true });
+      } catch (error) {
+        caught = error;
+      }
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      expect((caught as TsgitError).data.code).toBe('DECOMPRESS_FAILED');
+    });
+  });
+});
+
+describe('Given a dangling blob packed only (not loose) with a corrupt entry body', () => {
+  describe('When fsck runs with connectivityOnly: true', () => {
+    it("Then resolves with dangling/'blob', exit code 0", async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const [blobId] = await writeSyntheticPack(
+        ctx,
+        'd13-corrupt-base',
+        onePackEntry('d13-corrupt-base-content'),
+      );
+      await corruptTrailingPackEntryByte(ctx, packFilePath(ctx, 'd13-corrupt-base'));
+
+      // Act
+      const result = await fsck(ctx, { connectivityOnly: true });
+
+      // Assert
+      const dangling = result.findings.find(
+        (f) => f.type === 'dangling' && (f as { id: ObjectId }).id === blobId,
+      );
+      expect(dangling).toBeDefined();
+      expect((dangling as { objectType: string }).objectType).toBe('blob');
+      expect(result.exitCode).toBe(0);
+    });
+  });
+});
+
+describe('Given a dangling OFS_DELTA-encoded blob with a corrupt delta body, base intact', () => {
+  describe('When fsck runs with connectivityOnly: true', () => {
+    it("Then resolves with dangling/'blob' (typed via the base-link walk)", async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const baseContent = enc.encode('d13-ofs-base-content');
+      const targetContent = enc.encode('d13-ofs-base-contentTAIL');
+      const ids = await writeSyntheticPack(ctx, 'd13-ofs-delta', [
+        { kind: 'base', type: 'blob', content: baseContent },
+        { kind: 'ofs-delta', baseIndex: 0, targetContent },
+      ]);
+      const deltaId = ids[1] as ObjectId;
+      await corruptTrailingPackEntryByte(ctx, packFilePath(ctx, 'd13-ofs-delta'));
+
+      // Act
+      const result = await fsck(ctx, { connectivityOnly: true });
+
+      // Assert
+      const dangling = result.findings.find(
+        (f) => f.type === 'dangling' && (f as { id: ObjectId }).id === deltaId,
+      );
+      expect(dangling).toBeDefined();
+      expect((dangling as { objectType: string }).objectType).toBe('blob');
+    });
+  });
+});
+
+describe('Given a dangling REF_DELTA-encoded blob with a corrupt delta body, base intact', () => {
+  describe('When fsck runs with connectivityOnly: true', () => {
+    it("Then resolves with dangling/'blob' (the walker branches on the REF_DELTA encoding)", async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const baseContent = enc.encode('d13-ref-base-content');
+      const baseIds = await writeSyntheticPack(ctx, 'd13-ref-base', [
+        { kind: 'base', type: 'blob', content: baseContent },
+      ]);
+      const baseId = baseIds[0]!;
+      const targetContent = enc.encode('d13-ref-base-contentTAIL');
+      const deltaIds = await writeSyntheticPack(ctx, 'd13-ref-delta', [
+        { kind: 'ref-delta', baseId, baseUncompressed: baseContent, targetContent },
+      ]);
+      const deltaId = deltaIds[0] as ObjectId;
+      await corruptTrailingPackEntryByte(ctx, packFilePath(ctx, 'd13-ref-delta'));
+
+      // Act
+      const result = await fsck(ctx, { connectivityOnly: true });
+
+      // Assert
+      const dangling = result.findings.find(
+        (f) => f.type === 'dangling' && (f as { id: ObjectId }).id === deltaId,
+      );
+      expect(dangling).toBeDefined();
+      expect((dangling as { objectType: string }).objectType).toBe('blob');
+    });
+  });
+});
+
+describe('Given a loose garbled copy shadowing a healthy packed copy of the same oid', () => {
+  describe('When fsck runs with connectivityOnly: true', () => {
+    it("Then resolves with dangling/'blob', exit code 0 (typed from the packed copy)", async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const [blobId] = await writeSyntheticPack(
+        ctx,
+        'd13-shadow-healthy',
+        onePackEntry('d13-shadow-content'),
+      );
+      const id = blobId as ObjectId;
+      await writeGarbageLooseObject(ctx, id, GARBAGE_BYTES);
+
+      // Act
+      const result = await fsck(ctx, { connectivityOnly: true });
+
+      // Assert
+      const dangling = result.findings.find(
+        (f) => f.type === 'dangling' && (f as { id: ObjectId }).id === id,
+      );
+      expect(dangling).toBeDefined();
+      expect((dangling as { objectType: string }).objectType).toBe('blob');
+      expect(result.exitCode).toBe(0);
+    });
+  });
+});
+
+describe('Given one healthy dangling blob and one undecodable dangling blob', () => {
+  describe('When fsck runs with connectivityOnly: true', () => {
+    it("Then fsck rejects, and the healthy object's findings are unobservable", async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      await writeObject(ctx, makeBlob('d13-healthy-dangling'));
+      const garbageId = 'd7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7' as ObjectId;
+      await writeGarbageLooseObject(ctx, garbageId, GARBAGE_BYTES);
+
+      // Act
+      let caught: unknown;
+      try {
+        await fsck(ctx, { connectivityOnly: true });
+      } catch (error) {
+        caught = error;
+      }
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      expect((caught as TsgitError).data.code).toBe('DECOMPRESS_FAILED');
+    });
+  });
+});
+
+describe('Given a pack with a corrupt .idx and a separate undecodable dangling loose object', () => {
+  describe('When fsck runs with connectivityOnly: true', () => {
+    it('Then fsck rejects (the bit-64 term is not observable through a reject)', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      await writeSyntheticPack(ctx, 'd13-corrupt-idx', onePackEntry('d13-corrupt-idx-content'));
+      await ctx.fs.write(idxFilePath(ctx, 'd13-corrupt-idx'), new Uint8Array(1072));
+      const garbageId = 'd8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8' as ObjectId;
+      await writeGarbageLooseObject(ctx, garbageId, GARBAGE_BYTES);
+
+      // Act
+      let caught: unknown;
+      try {
+        await fsck(ctx, { connectivityOnly: true });
+      } catch (error) {
+        caught = error;
+      }
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      expect((caught as TsgitError).data.code).toBe('DECOMPRESS_FAILED');
+    });
+  });
+});
+
+describe('Given an undecodable dangling loose object whose probe re-inflate hits an unrelated adapter fault', () => {
+  describe('When fsck runs with connectivityOnly: true', () => {
+    it('Then fsck rejects with that exact UNSUPPORTED_OPERATION, not a laundered abort', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const garbageId = 'd9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9' as ObjectId;
+      await writeGarbageLooseObject(ctx, garbageId, GARBAGE_BYTES);
+      let inflateCalls = 0;
+      const wrapped: Context = {
+        ...ctx,
+        compressor: {
+          ...ctx.compressor,
+          inflate: async (bytes: Uint8Array) => {
+            inflateCalls += 1;
+            if (inflateCalls === 2) {
+              throw unsupportedOperation('filesystem', 'simulated adapter fault');
+            }
+            return ctx.compressor.inflate(bytes);
+          },
+        },
+      };
+
+      // Act
+      let caught: unknown;
+      try {
+        await fsck(wrapped, { connectivityOnly: true });
+      } catch (error) {
+        caught = error;
+      }
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      expect((caught as TsgitError).data).toEqual({
+        code: 'UNSUPPORTED_OPERATION',
+        operation: 'filesystem',
+        reason: 'simulated adapter fault',
+      });
     });
   });
 });

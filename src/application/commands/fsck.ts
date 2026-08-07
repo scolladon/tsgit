@@ -7,7 +7,7 @@ import {
   runContentValidationPass,
 } from './internal/fsck/content-validation.js';
 import { EXIT_MISSING } from './internal/fsck/exit-codes.js';
-import { buildObjectCache } from './internal/fsck/object-cache.js';
+import { assertTypesRecoverable, buildObjectCache } from './internal/fsck/object-cache.js';
 import { packPassEnabled, runPackHealthPass } from './internal/fsck/pack-health.js';
 import {
   buildInEdgeMap,
@@ -40,9 +40,15 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
   });
   const universe = new Set(allIds);
 
+  const unreadable: UnreadableMode = opts.connectivityOnly === true ? 'classify' : 'skip';
+
   // Build the shared object cache — every universe object is decoded exactly
   // once here; all subsequent passes consume this map instead of re-reading.
-  const objectCache = await buildObjectCache(ctx, universe);
+  const {
+    cache: objectCache,
+    unrecoverable,
+    recovered,
+  } = await buildObjectCache(ctx, universe, unreadable);
 
   // Build blob→filename map for special-file content checks (.gitmodules, .gitattributes).
   // Skipped when connectivityOnly since content checks are also skipped in that mode.
@@ -76,6 +82,7 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
   );
 
   const { unreachable, dangling } = classifyObjects(universe, reached, inEdgePresent);
+  assertTypesRecoverable(ctx, unreachable, unrecoverable);
 
   const findings: FsckFinding[] = [
     ...contentResult.findings,
@@ -96,15 +103,14 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
   }
 
   for (const id of missingIds) {
-    const objectType = missingTypeFromEdge.get(id) ?? resolveObjectType(id, objectCache);
+    const objectType = missingTypeFromEdge.get(id) ?? resolveObjectType(id, objectCache, recovered);
     findings.push({ type: 'missing', id, objectType });
   }
   for (const edge of brokenEdges) {
     findings.push({ type: 'broken-link', ...edge });
   }
-  const unreadable: UnreadableMode = opts.connectivityOnly === true ? 'classify' : 'skip';
-  collectTypeFindings(unreachable, 'unreachable', findings, objectCache, unreadable);
-  collectTypeFindings(dangling, 'dangling', findings, objectCache, unreadable);
+  collectTypeFindings(unreachable, 'unreachable', findings, objectCache, recovered, unreadable);
+  collectTypeFindings(dangling, 'dangling', findings, objectCache, recovered, unreadable);
   for (const id of rootCommits) findings.push({ type: 'root', id });
   for (const { tagId, tagName, targetId, targetType } of tagRefs) {
     findings.push({ type: 'tagged', id: targetId, objectType: targetType, tagName, tag: tagId });

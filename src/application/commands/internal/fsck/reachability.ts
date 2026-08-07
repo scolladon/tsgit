@@ -205,19 +205,26 @@ export function collectTypeFindings(
   type: 'unreachable' | 'dangling',
   findings: FsckFinding[],
   objectCache: ReadonlyMap<ObjectId, CachedGitObject>,
+  recovered: ReadonlyMap<ObjectId, FsckObjectType>,
   unreadable: UnreadableMode,
 ): void {
   for (const id of ids) {
     if (objectCache.get(id) == null && unreadable === 'skip') continue;
-    findings.push({ type, id, objectType: resolveObjectType(id, objectCache) });
+    findings.push({ type, id, objectType: resolveObjectType(id, objectCache, recovered) });
   }
 }
 
-/** Determine the object type for an oid from the cache. */
+/**
+ * Determine the object type for an oid from the cache, falling back to the
+ * header-recovery probe's retained type — never a new 'unknown' derivation:
+ * `'unknown'` means no stored header could be obtained at all.
+ */
 export function resolveObjectType(
   id: ObjectId,
   objectCache: ReadonlyMap<ObjectId, CachedGitObject>,
+  recovered: ReadonlyMap<ObjectId, FsckObjectType>,
 ): FsckObjectType | 'unknown' {
   const obj = objectCache.get(id);
-  return obj != null ? obj.type : 'unknown';
+  if (obj != null) return obj.type;
+  return recovered.get(id) ?? 'unknown';
 }
