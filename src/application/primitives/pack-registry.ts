@@ -2,15 +2,20 @@
  * Lazy scan + cache of .idx files under .git/objects/pack/.
  * Returns a PackRegistry facade used by object-resolver and readObject.
  */
-import { TsgitError } from '../../domain/error.js';
+import { TsgitError, type TsgitErrorData } from '../../domain/error.js';
 import type { ObjectId } from '../../domain/objects/index.js';
-import { invalidPackIndex } from '../../domain/storage/error.js';
+import { invalidPackHeader, invalidPackIndex } from '../../domain/storage/error.js';
 import {
   entryOffsets,
   lookupPackIndex,
   type PackIndex,
   parsePackIndex,
 } from '../../domain/storage/index.js';
+import {
+  PACK_HEADER_SIZE,
+  type PackHeader,
+  parsePackHeader,
+} from '../../domain/storage/pack-entry.js';
 import type { Context } from '../../ports/context.js';
 import { createPromiseMemo } from './internal/promise-memo.js';
 import { commonGitDir, packsDir } from './path-layout.js';
@@ -29,6 +34,42 @@ function isUnsupportedOperation(err: unknown): boolean {
   );
 }
 
+function isSkippableIoFault(err: unknown): boolean {
+  return (
+    err instanceof TsgitError &&
+    (err.data.code === 'FILE_NOT_FOUND' || err.data.code === 'PERMISSION_DENIED')
+  );
+}
+
+// The pack file itself is unusable: bad signature, short file, version outside
+// 2|3, or a header/index object-count disagreement. Scoped to the lookup layer
+// ONLY — INVALID_PACK_INDEX is deliberately absent, because nextOffsetForEntry
+// and buildOffsetTable throw it for a MID-READ corruption, and folding those in
+// would turn a detected corruption into a silent miss after the gate passed.
+function isSkippablePackFault(err: unknown): err is TsgitError {
+  return (
+    (err instanceof TsgitError && err.data.code === 'INVALID_PACK_HEADER') ||
+    isSkippableIoFault(err)
+  );
+}
+
+// Scan layer: the .idx cannot be turned into a PackIndex (a corrupt or
+// unreadable index). Deliberately NOT unioned with isSkippablePackFault —
+// INVALID_PACK_INDEX is skippable only here, where the parse happens; at the
+// lookup layer it also means a mid-read corruption, which must never be
+// laundered into "this pack has no objects".
+function isSkippableIdxFault(err: unknown): err is TsgitError {
+  return (
+    (err instanceof TsgitError && err.data.code === 'INVALID_PACK_INDEX') || isSkippableIoFault(err)
+  );
+}
+
+// Flat and string-valued on purpose: the Logger port sanitises TOP-LEVEL string
+// values only, and a pack name comes from a readdir entry an attacker with repo
+// write access controls. Nesting `err.data` would route it round the sanitiser.
+const faultContext = (data: TsgitErrorData): Readonly<Record<string, string>> =>
+  'reason' in data ? { code: data.code, reason: data.reason } : { code: data.code };
+
 export interface PackOffsetTable {
   readonly sortedOffsets: ReadonlyArray<number>;
   readonly packFileSize: number;
@@ -40,13 +81,29 @@ export interface RegisteredPack {
   readonly index: PackIndex;
   readonly packPath: string;
   readonly idxPath: string;
-  /** Lazily-built, cached sorted entry offsets + trailer bound for this pack. */
+  /**
+   * Memoised 12-byte header read + validation — git's `open_packed_git_1` gate.
+   * Rejects with `INVALID_PACK_HEADER` for a bad signature, a short file, a
+   * version outside 2|3, or a header/index `objectCount` disagreement. One read
+   * per pack per successful validation; a rejection clears the memo, so a
+   * refused pack is re-probed on the next lookup that hits its index.
+   */
+  readonly header: () => Promise<PackHeader>;
+  /**
+   * Lazily-built, cached sorted entry offsets + trailer bound for this pack.
+   * Callers must hold a `PackLookupHit` from `lookup` — the header gate's
+   * completeness rests on every pack-byte read passing through `lookup` first,
+   * and nothing here structurally forces that to stay true.
+   */
   readonly offsetTable: () => Promise<PackOffsetTable>;
   /**
    * Read `length` bytes at `offset` via a lazily-opened, memoised persistent
    * `FileHandle` — one `open` per pack for its whole delta-chain walk, not one
    * per step. Falls back to a per-call `ctx.fs.readSlice` on adapters that
    * cannot open a handle (browser OPFS throws `UNSUPPORTED_OPERATION`).
+   * Callers must hold a `PackLookupHit` from `lookup` — the header gate's
+   * completeness rests on every pack-byte read passing through `lookup` first,
+   * and nothing here structurally forces that to stay true.
    */
   readonly readSlice: (offset: number, length: number) => Promise<Uint8Array>;
   /** Release the persistent handle, if one was ever opened. Idempotent. */
@@ -69,13 +126,27 @@ export interface PackRegistry {
   dispose(): Promise<void>;
 }
 
+// Control characters are rejected at this boundary so a hostile filename can
+// never carry a newline into a line-oriented logger sink downstream — the
+// display sanitiser deliberately preserves tab and newline.
+const isControlChar = (ch: string): boolean => ch.charCodeAt(0) < 0x20;
+
 function isSafePackName(name: string): boolean {
-  return !name.includes('/') && !name.includes('\\') && !name.includes('..');
+  return (
+    !name.includes('/') &&
+    !name.includes('\\') &&
+    !name.includes('..') &&
+    ![...name].some(isControlChar)
+  );
 }
 
 function isCandidate(entry: { isFile: boolean; name: string }): boolean {
   return entry.isFile && entry.name.endsWith('.idx') && isSafePackName(entry.name);
 }
+
+// Single source for the `.idx` → base-name rule: both the scan layer's
+// sibling-.pack check and loadPack's own packPath derivation depend on it.
+const packBaseName = (idxEntryName: string): string => idxEntryName.slice(0, -'.idx'.length);
 
 async function readBoundedIdx(ctx: Context, idxPath: string): Promise<Uint8Array> {
   // Pre-check stat; reject .idx files large enough to exhaust heap before
@@ -96,8 +167,18 @@ async function loadPack(ctx: Context, dir: string, entryName: string): Promise<R
   const idxPath = `${dir}/${entryName}`;
   const idxBytes = await readBoundedIdx(ctx, idxPath);
   const index = parsePackIndex(idxBytes);
-  const name = entryName.slice(0, -'.idx'.length);
+  const name = packBaseName(entryName);
   const packPath = `${dir}/${name}.pack`;
+
+  const headerMemo = createPromiseMemo(async (): Promise<PackHeader> => {
+    const header = parsePackHeader(await ctx.fs.readSlice(packPath, 0, PACK_HEADER_SIZE));
+    if (header.objectCount !== index.objectCount) {
+      throw invalidPackHeader(
+        `object count disagrees with index: pack ${header.objectCount}, index ${index.objectCount}`,
+      );
+    }
+    return header;
+  });
 
   const buildOffsetTable = async (): Promise<PackOffsetTable> => {
     const stat = await ctx.fs.stat(packPath);
@@ -173,7 +254,7 @@ async function loadPack(ctx: Context, dir: string, entryName: string): Promise<R
     await handle.close();
   };
 
-  return { name, index, packPath, idxPath, offsetTable, readSlice, close };
+  return { name, index, packPath, idxPath, header: headerMemo.get, offsetTable, readSlice, close };
 }
 
 function bisectLeft(arr: ReadonlyArray<number>, value: number): number {
@@ -205,15 +286,53 @@ export function nextOffsetForEntry(table: PackOffsetTable, offset: number): numb
 
 const NO_PACKS: ReadonlyArray<RegisteredPack> = Object.freeze([]);
 
+/**
+ * Resolve one `.idx` candidate to a `RegisteredPack`, or `undefined` when it
+ * must be excluded from the generation: an orphan (no sibling `.pack` in the
+ * scan's own listing) or a skippable idx-layer fault (unreadable/unparseable
+ * `.idx`). An unrecognised fault still propagates to the caller.
+ */
+async function loadCandidatePack(
+  ctx: Context,
+  dir: string,
+  entry: { readonly name: string },
+  fileNames: ReadonlySet<string>,
+): Promise<RegisteredPack | undefined> {
+  const name = packBaseName(entry.name);
+  if (!fileNames.has(`${name}.pack`)) {
+    ctx.logger?.warn?.('packRegistry: skipping pack index with no pack file', {
+      idx: entry.name,
+    });
+    return undefined;
+  }
+  try {
+    return await loadPack(ctx, dir, entry.name);
+  } catch (err) {
+    if (!isSkippableIdxFault(err)) throw err;
+    ctx.logger?.warn?.('packRegistry: skipping unreadable pack index', {
+      idx: entry.name,
+      ...faultContext(err.data),
+    });
+    return undefined;
+  }
+}
+
 export function createPackRegistry(ctx: Context): PackRegistry {
   const scanPacks = async (): Promise<ReadonlyArray<RegisteredPack>> => {
     const dir = packsDir(commonGitDir(ctx));
     if (!(await ctx.fs.exists(dir))) return NO_PACKS;
     const entries = await ctx.fs.readdir(dir);
+    // git registers a pack only when its .pack exists by name — an orphaned
+    // .idx is garbage, never a pack. The listing already in hand is the same
+    // data, so the check costs no I/O.
+    // Regular files only: a symlinked .pack is out of scope by the same
+    // no-follow policy the data reads enforce, so its .idx drops here too.
+    const fileNames = new Set(entries.filter((entry) => entry.isFile).map((entry) => entry.name));
     const packs: RegisteredPack[] = [];
     for (const entry of entries) {
       if (!isCandidate(entry)) continue;
-      packs.push(await loadPack(ctx, dir, entry.name));
+      const pack = await loadCandidatePack(ctx, dir, entry, fileNames);
+      if (pack !== undefined) packs.push(pack);
     }
     return packs;
   };
@@ -275,9 +394,18 @@ export function createPackRegistry(ctx: Context): PackRegistry {
       const packs = await allPacks();
       for (const pack of packs) {
         const offset = lookupPackIndex(pack.index, id);
-        if (offset !== undefined) {
-          return { pack, offset };
+        if (offset === undefined) continue; // an unclaimed pack is never opened
+        try {
+          await pack.header(); // git's open_packed_git_1 / is_pack_valid gate
+        } catch (err) {
+          if (!isSkippablePackFault(err)) throw err;
+          ctx.logger?.warn?.('packRegistry: skipping unusable pack', {
+            pack: pack.name,
+            ...faultContext(err.data),
+          });
+          continue;
         }
+        return { pack, offset };
       }
       return undefined;
     },

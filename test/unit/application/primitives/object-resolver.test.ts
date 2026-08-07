@@ -96,6 +96,7 @@ async function stubRegistry(
       index: fillerIndex,
       packPath,
       idxPath: `${packPath}.idx`,
+      header: async () => ({ version: 2, objectCount: fillerIndex.objectCount }),
       offsetTable: async () => {
         const stat = await ctx.fs.stat(packPath);
         const packFileSize = stat.size;
@@ -1208,6 +1209,7 @@ describe('object-resolver', () => {
             index: fillerIndex,
             packPath,
             idxPath: `${packPath}.idx`,
+            header: async () => ({ version: 2, objectCount: fillerIndex.objectCount }),
             offsetTable: async () => ({
               sortedOffsets: [entryOffset],
               packFileSize: entryOffset + 5,
@@ -1269,6 +1271,7 @@ describe('object-resolver', () => {
             index: fillerIndex,
             packPath,
             idxPath: `${packPath}.idx`,
+            header: async () => ({ version: 2, objectCount: fillerIndex.objectCount }),
             offsetTable: async () => ({
               sortedOffsets: [entryOffset],
               packFileSize: entryOffset + digestLength,
@@ -1326,6 +1329,7 @@ describe('object-resolver', () => {
             index: fillerIndex,
             packPath,
             idxPath: `${packPath}.idx`,
+            header: async () => ({ version: 2, objectCount: fillerIndex.objectCount }),
             offsetTable: async () => ({
               sortedOffsets: [entryOffset, entryOffset + 1000],
               packFileSize: entryOffset + 500,

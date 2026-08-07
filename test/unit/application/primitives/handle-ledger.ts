@@ -24,6 +24,12 @@ export interface ReaddirGate {
   readonly fail: (call: number, error: unknown) => void;
 }
 
+export interface SliceCall {
+  readonly path: string;
+  readonly offset: number;
+  readonly length: number;
+}
+
 export interface HandleLedger {
   /** The wrapped Context to hand to createPackRegistry. */
   readonly ctx: Context;
@@ -37,6 +43,9 @@ export interface HandleLedger {
   readonly readdirCalls: () => number;
   /** ctx.fs.readSlice call count — the per-call fallback path. */
   readonly perCallReads: () => number;
+  /** Every ctx.fs.readSlice call, in order — lets a test separate the 12-byte
+   *  header probe from an entry read on the same pack. */
+  readonly slices: () => ReadonlyArray<SliceCall>;
   /** Gates each readdir call; only takes effect when `gateReaddir` was requested. */
   readonly readdirGate: ReaddirGate;
 }
@@ -94,6 +103,7 @@ export function withHandleLedger(base: Context, opts?: { gateReaddir?: boolean }
   let readdirCalls = 0;
   let perCallReads = 0;
   let nextCall = 0;
+  const sliceCalls: SliceCall[] = [];
   const gateReaddir = opts?.gateReaddir ?? false;
   const { gate, awaitTurn } = createReaddirGateHarness();
 
@@ -125,6 +135,7 @@ export function withHandleLedger(base: Context, opts?: { gateReaddir?: boolean }
       },
       readSlice: async (path: string, offset: number, length: number): Promise<Uint8Array> => {
         perCallReads += 1;
+        sliceCalls.push({ path, offset, length });
         return base.fs.readSlice(path, offset, length);
       },
     },
@@ -137,6 +148,7 @@ export function withHandleLedger(base: Context, opts?: { gateReaddir?: boolean }
     outstanding: () => opens - closes,
     readdirCalls: () => readdirCalls,
     perCallReads: () => perCallReads,
+    slices: () => sliceCalls.slice(),
     readdirGate: gate,
   };
 }
