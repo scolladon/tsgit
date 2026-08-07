@@ -18,6 +18,7 @@ import {
 } from './internal/fsck/reachability.js';
 import { runRefsVerifyPass } from './internal/fsck/refs-verify.js';
 import { collectRoots } from './internal/fsck/roots.js';
+import type { UnreadableMode } from './internal/fsck/types.js';
 import { assertRepository } from './internal/repo-state.js';
 
 export type { FsckObjectType, FsckSeverity } from '../../domain/fsck/index.js';
@@ -101,8 +102,9 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
   for (const edge of brokenEdges) {
     findings.push({ type: 'broken-link', ...edge });
   }
-  collectTypeFindings(unreachable, 'unreachable', findings, objectCache);
-  collectTypeFindings(dangling, 'dangling', findings, objectCache);
+  const unreadable: UnreadableMode = opts.connectivityOnly === true ? 'classify' : 'skip';
+  collectTypeFindings(unreachable, 'unreachable', findings, objectCache, unreadable);
+  collectTypeFindings(dangling, 'dangling', findings, objectCache, unreadable);
   for (const id of rootCommits) findings.push({ type: 'root', id });
   for (const { tagId, tagName, targetId, targetType } of tagRefs) {
     findings.push({ type: 'tagged', id: targetId, objectType: targetType, tagName, tag: tagId });

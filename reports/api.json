@@ -106129,10 +106129,19 @@
 												"isReadonly": true
 											},
 											"type": {
-												"type": "reference",
-												"target": 1497,
-												"name": "FsckObjectType",
-												"package": "@scolladon/tsgit"
+												"type": "union",
+												"types": [
+													{
+														"type": "reference",
+														"target": 1497,
+														"name": "FsckObjectType",
+														"package": "@scolladon/tsgit"
+													},
+													{
+														"type": "literal",
+														"value": "unknown"
+													}
+												]
 											}
 										},
 										{
@@ -106194,10 +106203,19 @@
 												"isReadonly": true
 											},
 											"type": {
-												"type": "reference",
-												"target": 1497,
-												"name": "FsckObjectType",
-												"package": "@scolladon/tsgit"
+												"type": "union",
+												"types": [
+													{
+														"type": "reference",
+														"target": 1497,
+														"name": "FsckObjectType",
+														"package": "@scolladon/tsgit"
+													},
+													{
+														"type": "literal",
+														"value": "unknown"
+													}
+												]
 											}
 										},
 										{

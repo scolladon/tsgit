@@ -6,8 +6,16 @@ import type { ObjectId, RefName } from '../../../../domain/objects/index.js';
 // ---------------------------------------------------------------------------
 
 export type FsckFinding =
-  | { readonly type: 'dangling'; readonly id: ObjectId; readonly objectType: FsckObjectType }
-  | { readonly type: 'unreachable'; readonly id: ObjectId; readonly objectType: FsckObjectType }
+  | {
+      readonly type: 'dangling';
+      readonly id: ObjectId;
+      readonly objectType: FsckObjectType | 'unknown';
+    }
+  | {
+      readonly type: 'unreachable';
+      readonly id: ObjectId;
+      readonly objectType: FsckObjectType | 'unknown';
+    }
   | {
       readonly type: 'missing';
       readonly id: ObjectId;
@@ -71,6 +79,15 @@ export type FsckFinding =
       readonly pack: string;
       readonly reason: string;
     };
+
+/**
+ * How `collectTypeFindings` treats a universe object whose cache entry is
+ * `null` (unreadable). `'skip'` is today's default/`full: false` behaviour —
+ * git turns unreadable loose objects into content errors there. `'classify'`
+ * is `connectivityOnly` only (Pin P) — git yields `dangling unknown` there
+ * instead. Not re-exported from `fsck.ts`: internal to the reachability pass.
+ */
+export type UnreadableMode = 'skip' | 'classify';
 
 // ---------------------------------------------------------------------------
 // Public options type — re-exported by fsck.ts

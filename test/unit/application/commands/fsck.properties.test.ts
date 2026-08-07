@@ -371,6 +371,35 @@ async function applyPackFault(ctx: Context, name: string, shape: PackFaultShape)
   }
 }
 
+/**
+ * Pack-layer-only subset of PACK_FAULT_SHAPES for I8: an index-layer fault
+ * (garbage-idx, truncated-idx) leaves the .idx unparseable, so the pack
+ * contributes no ids to the universe in ANY mode — S would be empty and the
+ * connectivityOnly half of the property would be vacuous — and its ungated
+ * pack-rev-index-unusable finding would falsify "zero pack findings" for
+ * otherwise-correct behaviour.
+ */
+const PACK_LAYER_FAULT_SHAPES: ReadonlyArray<PackFaultShape> = [
+  'v99',
+  'bad-signature',
+  'short-pack',
+  'count-disagreement',
+];
+
+/** Collect every ObjectId-shaped value a finding may carry, across all variants. */
+const findingIds = (finding: {
+  readonly type: string;
+  readonly [key: string]: unknown;
+}): ReadonlyArray<ObjectId> => {
+  const ids: ObjectId[] = [];
+  if ('id' in finding) ids.push(finding.id as ObjectId);
+  if ('fromId' in finding) ids.push(finding.fromId as ObjectId, finding.toId as ObjectId);
+  if ('actual' in finding) ids.push(finding.actual as ObjectId);
+  if ('target' in finding && finding.target !== undefined) ids.push(finding.target as ObjectId);
+  if ('tag' in finding) ids.push(finding.tag as ObjectId);
+  return ids;
+};
+
 const isGatedPackFinding = (f: { readonly type: string }): boolean =>
   f.type === 'pack-inaccessible' || f.type === 'pack-index-unusable';
 
@@ -476,6 +505,80 @@ describe('Given an arbitrary healthy repo plus N unusable packs', () => {
             // Assert
             const gated = result.findings.filter(isGatedPackFinding);
             return gated.length === packCount && (result.exitCode & 4) === 4;
+          },
+        ),
+        { numRuns: 50 },
+      );
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// I8: mode complementarity — default and connectivityOnly report complementary
+// halves of a refused pack's ids; no option set produces both halves.
+// ---------------------------------------------------------------------------
+
+describe('Given an arbitrary healthy repo plus one pack-layer-faulted pack whose object exists nowhere else', () => {
+  describe('When fsck runs in default mode vs connectivityOnly mode', () => {
+    it('Then default reports the pack finding with none of the pack ids, and connectivityOnly reports none of the pack findings but classifies every pack id dangling and unreachable as unknown', async () => {
+      await fc.assert(
+        fc.asyncProperty(
+          arbBlobContent(),
+          arbBlobContent(),
+          fc.constantFrom(...PACK_LAYER_FAULT_SHAPES),
+          async (healthyContent, packContent, shape) => {
+            // The pack's object must be distinct from the repo's own objects,
+            // or S (the pack-only id set) silently shrinks toward empty and
+            // the property proves nothing while staying green.
+            fc.pre(packContent !== healthyContent);
+
+            // Arrange — a healthy repo plus one pack-layer-faulted pack whose
+            // sole object exists nowhere else. Every loose object stays
+            // intact, so a generated repo's failing reads are
+            // OBJECT_NOT_FOUND — outside Part 5's undecodable-bytes probe.
+            const ctx = await buildSeededContext();
+            await seedHealthyRepo(ctx, healthyContent);
+            const [packObjectId] = await writeSyntheticPack(ctx, 'i8-fault-pack', [
+              { kind: 'base', type: 'blob', content: enc.encode(packContent) },
+            ]);
+            await applyPackFault(ctx, 'i8-fault-pack', shape);
+            const packIds: ReadonlySet<ObjectId> = new Set([packObjectId as ObjectId]);
+
+            // Act
+            const defaultResult = await fsck(ctx);
+            const connOnlyResult = await fsck(ctx, { connectivityOnly: true });
+
+            // Assert — default: ≥1 pack finding, zero findings carry an id in S
+            const defaultPackFindings = defaultResult.findings.filter((f) =>
+              f.type.startsWith('pack-'),
+            );
+            const defaultCarriesS = defaultResult.findings.some((f) =>
+              findingIds(f).some((id) => packIds.has(id)),
+            );
+
+            // Assert — connectivityOnly: zero pack findings, exactly one
+            // dangling/'unknown' and one unreachable/'unknown' per id in S
+            const connPackFindings = connOnlyResult.findings.filter((f) =>
+              f.type.startsWith('pack-'),
+            );
+            const connDangling = connOnlyResult.findings.filter(
+              (f) => f.type === 'dangling' && packIds.has((f as { id: ObjectId }).id),
+            );
+            const connUnreachable = connOnlyResult.findings.filter(
+              (f) => f.type === 'unreachable' && packIds.has((f as { id: ObjectId }).id),
+            );
+            const connTypesAreUnknown =
+              connDangling.every((f) => (f as { objectType: string }).objectType === 'unknown') &&
+              connUnreachable.every((f) => (f as { objectType: string }).objectType === 'unknown');
+
+            return (
+              defaultPackFindings.length >= 1 &&
+              !defaultCarriesS &&
+              connPackFindings.length === 0 &&
+              connDangling.length === packIds.size &&
+              connUnreachable.length === packIds.size &&
+              connTypesAreUnknown
+            );
           },
         ),
         { numRuns: 50 },

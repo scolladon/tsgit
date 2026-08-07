@@ -2,7 +2,7 @@ import type { FsckObjectType } from '../../../../domain/fsck/index.js';
 import { FILE_MODE } from '../../../../domain/objects/file-mode.js';
 import type { GitObject, ObjectId } from '../../../../domain/objects/index.js';
 import type { CachedGitObject } from './object-cache.js';
-import type { FsckFinding } from './types.js';
+import type { FsckFinding, UnreadableMode } from './types.js';
 
 // ---------------------------------------------------------------------------
 // In-edge map (needed for dangling vs merely-unreachable classification)
@@ -160,7 +160,6 @@ export function buildReachableSet(
       continue;
     }
     const obj = objectCache.get(id);
-    // Stryker disable next-line BlockStatement: equivalent — corrupt objects (obj==null) are not emitted as findings by collectTypeFindings (skips null-cache entries); whether reached.add is called or not, no finding difference.
     if (obj == null) {
       // Corrupt/unreadable — mark reached, no further edges
       state.reached.add(id);
@@ -206,13 +205,11 @@ export function collectTypeFindings(
   type: 'unreachable' | 'dangling',
   findings: FsckFinding[],
   objectCache: ReadonlyMap<ObjectId, CachedGitObject>,
+  unreadable: UnreadableMode,
 ): void {
   for (const id of ids) {
-    const obj = objectCache.get(id);
-    if (obj != null) {
-      findings.push({ type, id, objectType: obj.type });
-    }
-    // null (unreadable) — skip (already in reached/not reachable anyway)
+    if (objectCache.get(id) == null && unreadable === 'skip') continue;
+    findings.push({ type, id, objectType: resolveObjectType(id, objectCache) });
   }
 }
 

@@ -3,7 +3,7 @@ import { createMemoryContext } from '../../../../src/adapters/memory/memory-adap
 import { type FsckFinding, fsck } from '../../../../src/application/commands/fsck.js';
 import { looseObjectPath, objectsDir } from '../../../../src/application/primitives/path-layout.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
-import { TsgitError } from '../../../../src/domain/error.js';
+import { permissionDenied, TsgitError } from '../../../../src/domain/error.js';
 import {
   FILE_MODE,
   type ObjectId,
@@ -776,6 +776,14 @@ async function writeMalformedLooseObject(ctx: Context, rawBytes: Uint8Array): Pr
   const compressed = await ctx.compressor.deflate(rawBytes);
   await ctx.fs.writeExclusive(looseObjectPath(ctx.layout.gitDir, id), compressed);
   return id;
+}
+
+/** Write a zero-byte file at the oid's loose path — present in the object
+ * store's directory listing but unreadable inside the cache. */
+async function writeEmptyLooseObject(ctx: Context, id: ObjectId): Promise<void> {
+  const dir = objectsDir(ctx.layout.gitDir, id.slice(0, 2));
+  await ctx.fs.mkdir(dir);
+  await ctx.fs.write(looseObjectPath(ctx.layout.gitDir, id), new Uint8Array(0));
 }
 
 const enc2 = new TextEncoder();
@@ -2795,6 +2803,341 @@ describe('Given a pack with a corrupt .idx', () => {
       expect(result.exitCode & 64).toBe(64);
       expect(result.exitCode & 4).toBe(0);
       expect(result.findings.some((f) => f.type === 'pack-index-unusable')).toBe(false);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CONNECTIVITY-ONLY — CLASSIFY UNREADABLE OBJECTS (§D12)
+// ---------------------------------------------------------------------------
+
+describe('Given a v99-header pack whose objects exist nowhere else, connectivity classification', () => {
+  describe('When fsck runs with connectivityOnly: true', () => {
+    it('Then each pack object id gets a dangling/unknown and unreachable/unknown finding, and exit code is 0', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const packIds = await writeSyntheticPack(
+        ctx,
+        'd12-refused',
+        onePackEntry('d12-refused-content'),
+      );
+      await restampPackHeader(ctx, packFilePath(ctx, 'd12-refused'), { version: 99 });
+
+      // Act
+      const result = await fsck(ctx, { connectivityOnly: true });
+
+      // Assert
+      for (const id of packIds) {
+        const dangling = result.findings.find(
+          (f) => f.type === 'dangling' && (f as { id: ObjectId }).id === id,
+        );
+        const unreachable = result.findings.find(
+          (f) => f.type === 'unreachable' && (f as { id: ObjectId }).id === id,
+        );
+        expect(dangling).toBeDefined();
+        expect((dangling as { objectType: string }).objectType).toBe('unknown');
+        expect(unreachable).toBeDefined();
+        expect((unreachable as { objectType: string }).objectType).toBe('unknown');
+      }
+      expect(result.exitCode).toBe(0);
+    });
+  });
+
+  describe('When fsck runs (default mode)', () => {
+    it('Then no dangling or unreachable finding carries a pack object id', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const packIds = await writeSyntheticPack(
+        ctx,
+        'd12-refused-default',
+        onePackEntry('d12-refused-default-content'),
+      );
+      await restampPackHeader(ctx, packFilePath(ctx, 'd12-refused-default'), { version: 99 });
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      const dangling = result.findings.filter(
+        (f) => f.type === 'dangling' && packIds.includes((f as { id: ObjectId }).id),
+      );
+      const unreachable = result.findings.filter(
+        (f) => f.type === 'unreachable' && packIds.includes((f as { id: ObjectId }).id),
+      );
+      expect(dangling).toHaveLength(0);
+      expect(unreachable).toHaveLength(0);
+    });
+  });
+
+  describe('When fsck runs with full: false', () => {
+    it('Then no finding of any kind carries a pack object id', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const packIds = await writeSyntheticPack(
+        ctx,
+        'd12-refused-fullfalse',
+        onePackEntry('d12-refused-fullfalse-content'),
+      );
+      await restampPackHeader(ctx, packFilePath(ctx, 'd12-refused-fullfalse'), { version: 99 });
+
+      // Act
+      const result = await fsck(ctx, { full: false });
+
+      // Assert
+      const carriedIds = new Set(result.findings.flatMap((f) => findingIds(f)));
+      for (const id of packIds) {
+        expect(carriedIds.has(id as ObjectId)).toBe(false);
+      }
+    });
+  });
+});
+
+describe('Given an unreferenced loose object whose read rejects with PERMISSION_DENIED', () => {
+  describe('When fsck runs with connectivityOnly: true', () => {
+    it('Then emits a dangling/unknown and an unreachable/unknown finding, and exit code is 0', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const blobId = await writeObject(ctx, makeBlob('unopenable-content'));
+      const blobPath = looseObjectPath(ctx.layout.gitDir, blobId);
+      const wrapped: Context = {
+        ...ctx,
+        fs: {
+          ...ctx.fs,
+          read: async (path: string) => {
+            if (path === blobPath) throw permissionDenied(path);
+            return ctx.fs.read(path);
+          },
+        },
+      };
+
+      // Act
+      const result = await fsck(wrapped, { connectivityOnly: true });
+
+      // Assert
+      const dangling = result.findings.find(
+        (f) => f.type === 'dangling' && (f as { id: ObjectId }).id === blobId,
+      );
+      const unreachable = result.findings.find(
+        (f) => f.type === 'unreachable' && (f as { id: ObjectId }).id === blobId,
+      );
+      expect(dangling).toBeDefined();
+      expect((dangling as { objectType: string }).objectType).toBe('unknown');
+      expect(unreachable).toBeDefined();
+      expect((unreachable as { objectType: string }).objectType).toBe('unknown');
+      expect(result.exitCode).toBe(0);
+    });
+  });
+});
+
+describe('Given an unreferenced empty-file loose object (zero bytes)', () => {
+  describe('When fsck runs with connectivityOnly: true', () => {
+    it('Then emits a dangling/unknown and an unreachable/unknown finding, and exit code is 0', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const emptyId = 'e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5' as ObjectId;
+      await writeEmptyLooseObject(ctx, emptyId);
+
+      // Act
+      const result = await fsck(ctx, { connectivityOnly: true });
+
+      // Assert
+      const dangling = result.findings.find(
+        (f) => f.type === 'dangling' && (f as { id: ObjectId }).id === emptyId,
+      );
+      const unreachable = result.findings.find(
+        (f) => f.type === 'unreachable' && (f as { id: ObjectId }).id === emptyId,
+      );
+      expect(dangling).toBeDefined();
+      expect((dangling as { objectType: string }).objectType).toBe('unknown');
+      expect(unreachable).toBeDefined();
+      expect((unreachable as { objectType: string }).objectType).toBe('unknown');
+      expect(result.exitCode).toBe(0);
+    });
+  });
+
+  describe('When fsck runs (default mode)', () => {
+    it('Then no dangling or unreachable finding is emitted, a bad-object finding is present, and exit code has bit 1', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const emptyId = 'e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6' as ObjectId;
+      await writeEmptyLooseObject(ctx, emptyId);
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      const dangling = result.findings.find(
+        (f) => f.type === 'dangling' && (f as { id: ObjectId }).id === emptyId,
+      );
+      const unreachable = result.findings.find(
+        (f) => f.type === 'unreachable' && (f as { id: ObjectId }).id === emptyId,
+      );
+      const badObject = result.findings.find(
+        (f) => f.type === 'bad-object' && (f as { id: ObjectId }).id === emptyId,
+      );
+      expect(dangling).toBeUndefined();
+      expect(unreachable).toBeUndefined();
+      expect(badObject).toBeDefined();
+      expect(result.exitCode & 1).toBe(1);
+    });
+  });
+});
+
+describe('Given a reachable tree entry pointing at an unreadable (empty-file) blob', () => {
+  describe('When fsck runs with connectivityOnly: true', () => {
+    it('Then no dangling, unreachable, or missing finding is emitted, and exit code is 0', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const damagedId = 'd7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7' as ObjectId;
+      await writeEmptyLooseObject(ctx, damagedId);
+      const treeId = await writeObject(
+        ctx,
+        makeTree([{ mode: FILE_MODE.REGULAR, name: 'damaged.bin', id: damagedId }]),
+      );
+      const commitId = await writeObject(ctx, makeCommit(treeId, []));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+
+      // Act
+      const result = await fsck(ctx, { connectivityOnly: true });
+
+      // Assert
+      expect(result.findings.filter((f) => f.type === 'dangling')).toHaveLength(0);
+      expect(result.findings.filter((f) => f.type === 'unreachable')).toHaveLength(0);
+      expect(result.findings.filter((f) => f.type === 'missing')).toHaveLength(0);
+      expect(result.exitCode).toBe(0);
+    });
+  });
+});
+
+describe('Given a loose object whose content hash does not match its path (hash-path mismatch), connectivityOnly: true', () => {
+  describe('When fsck runs with connectivityOnly: true', () => {
+    it("Then emits a dangling finding with the real decoded type, not 'unknown'", async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const blobId1 = await writeObject(ctx, makeBlob('hello'));
+      const blobId2 = await writeObject(ctx, makeBlob('world'));
+      const blob2Path = looseObjectPath(ctx.layout.gitDir, blobId2);
+      const blob2Compressed = await ctx.fs.read(blob2Path);
+      const blob1Path = looseObjectPath(ctx.layout.gitDir, blobId1);
+      await ctx.fs.write(blob1Path, blob2Compressed);
+
+      // Act
+      const result = await fsck(ctx, { connectivityOnly: true });
+
+      // Assert — decodes fine (real type 'blob'), not corrupt: the widening
+      // must key on the null cache entry, not on "content pass complained"
+      // (content pass does not even run in connectivityOnly mode).
+      const dangling = result.findings.find(
+        (f) => f.type === 'dangling' && (f as { id: ObjectId }).id === blobId1,
+      );
+      expect(dangling).toBeDefined();
+      expect((dangling as { objectType: string }).objectType).toBe('blob');
+    });
+  });
+});
+
+describe('Given two unreadable objects, one referenced by a readable object and one referenced by nobody', () => {
+  describe('When fsck runs with connectivityOnly: true', () => {
+    it('Then the referenced one is unreachable only, and the unreferenced one is unreachable and dangling', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const referencedId = 'a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9' as ObjectId;
+      const orphanId = 'b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9' as ObjectId;
+      await writeEmptyLooseObject(ctx, referencedId);
+      await writeEmptyLooseObject(ctx, orphanId);
+      await writeObject(
+        ctx,
+        makeTree([{ mode: FILE_MODE.REGULAR, name: 'ref.bin', id: referencedId }]),
+      );
+
+      // Act
+      const result = await fsck(ctx, { connectivityOnly: true });
+
+      // Assert
+      const referencedDangling = result.findings.some(
+        (f) => f.type === 'dangling' && (f as { id: ObjectId }).id === referencedId,
+      );
+      const referencedUnreachable = result.findings.some(
+        (f) => f.type === 'unreachable' && (f as { id: ObjectId }).id === referencedId,
+      );
+      const orphanDangling = result.findings.some(
+        (f) => f.type === 'dangling' && (f as { id: ObjectId }).id === orphanId,
+      );
+      const orphanUnreachable = result.findings.some(
+        (f) => f.type === 'unreachable' && (f as { id: ObjectId }).id === orphanId,
+      );
+      expect(referencedDangling).toBe(false);
+      expect(referencedUnreachable).toBe(true);
+      expect(orphanDangling).toBe(true);
+      expect(orphanUnreachable).toBe(true);
+    });
+  });
+});
+
+describe('Given a healthy repo with no damage', () => {
+  describe('When fsck runs (default mode)', () => {
+    it('Then no dangling or unreachable finding is emitted and exit code is 0', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const blobId = await writeObject(ctx, makeBlob('healthy-content'));
+      const treeId = await writeObject(
+        ctx,
+        makeTree([{ mode: FILE_MODE.REGULAR, name: 'file.txt', id: blobId }]),
+      );
+      const commitId = await writeObject(ctx, makeCommit(treeId, []));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      expect(result.findings.filter((f) => f.type === 'dangling')).toHaveLength(0);
+      expect(result.findings.filter((f) => f.type === 'unreachable')).toHaveLength(0);
+      expect(result.exitCode).toBe(0);
+    });
+  });
+
+  describe('When fsck runs with connectivityOnly: true', () => {
+    it('Then no dangling or unreachable finding is emitted and exit code is 0', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const blobId = await writeObject(ctx, makeBlob('healthy-content'));
+      const treeId = await writeObject(
+        ctx,
+        makeTree([{ mode: FILE_MODE.REGULAR, name: 'file.txt', id: blobId }]),
+      );
+      const commitId = await writeObject(ctx, makeCommit(treeId, []));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+
+      // Act
+      const result = await fsck(ctx, { connectivityOnly: true });
+
+      // Assert
+      expect(result.findings.filter((f) => f.type === 'dangling')).toHaveLength(0);
+      expect(result.findings.filter((f) => f.type === 'unreachable')).toHaveLength(0);
+      expect(result.exitCode).toBe(0);
+    });
+  });
+
+  describe('When fsck runs with full: false', () => {
+    it('Then no dangling or unreachable finding is emitted and exit code is 0', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const blobId = await writeObject(ctx, makeBlob('healthy-content'));
+      const treeId = await writeObject(
+        ctx,
+        makeTree([{ mode: FILE_MODE.REGULAR, name: 'file.txt', id: blobId }]),
+      );
+      const commitId = await writeObject(ctx, makeCommit(treeId, []));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+
+      // Act
+      const result = await fsck(ctx, { full: false });
+
+      // Assert
+      expect(result.findings.filter((f) => f.type === 'dangling')).toHaveLength(0);
+      expect(result.findings.filter((f) => f.type === 'unreachable')).toHaveLength(0);
+      expect(result.exitCode).toBe(0);
     });
   });
 });
