@@ -75,9 +75,8 @@ export const packV3ReadScenario: Scenario<PackV3ReadResult> = {
     const trailer = await repo.ctx.hash.hash(data);
     const packBytes = concatBytes(data, trailer);
 
-    // The writer emits only the pack-checksum half of the 40-byte idx
-    // trailer (test/unit/application/primitives/pack-fixture.ts:140-145) —
-    // append the idx-checksum half ourselves.
+    // serializePackIndex emits only the pack-checksum half of the 40-byte
+    // idx trailer — append the idx-checksum half ourselves.
     const idxBody = serializePackIndex([{ id, crc32: entry.crc32, offset: entry.offset }], trailer);
     const idxBytes = concatBytes(idxBody, hexToBytes(await repo.ctx.hash.hashHex(idxBody)));
 
@@ -85,8 +84,8 @@ export const packV3ReadScenario: Scenario<PackV3ReadResult> = {
     await repo.ctx.fs.write(`${packBase}.pack`, packBytes);
     await repo.ctx.fs.write(`${packBase}.idx`, idxBytes);
 
-    // The loose copy must go, or the loose probe answers first
-    // (object-resolver.ts:60-75) and the pack is never consulted — this
+    // The loose copy must go — resolveObject consults the loose store before
+    // the pack registry, so with it present the pack is never consulted; this
     // deletion is the scenario's whole point.
     await repo.ctx.fs.rm(`${repo.ctx.layout.gitDir}/objects/${computeLooseObjectPath(id)}`);
 

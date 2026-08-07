@@ -16,11 +16,11 @@
  *   interopSurface: packfile
  */
 import { execFileSync, spawnSync } from 'node:child_process';
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import { bundleVerify } from '../../src/application/commands/bundle-verify.js';
 import { enumerateObjects } from '../../src/application/primitives/enumerate-objects.js';
@@ -28,12 +28,17 @@ import { walkPackEntries } from '../../src/application/primitives/fetch-pack.js'
 import { getPackRegistry, readObject } from '../../src/application/primitives/read-object.js';
 import type { TsgitError } from '../../src/domain/error.js';
 import type { GitObject, ObjectId } from '../../src/domain/objects/index.js';
+import type { Context } from '../../src/ports/context.js';
 import { GIT_AVAILABLE, git, runGit, runGitEnv, tryRunGitWithExit } from './interop-helpers.js';
 
 // ---------------------------------------------------------------------------
 // Crafting helpers — restamp/corrupt pack and idx bytes so the only thing
-// wrong with a fixture is exactly what a row asks for.
+// wrong with a fixture is exactly what a row asks for. The pack subsystem is
+// SHA-1-only end to end (the idx reader and writer both fix a 20-byte digest),
+// so these helpers hard-code SHA-1 rather than imply a genericity they lack.
 // ---------------------------------------------------------------------------
+
+const DIGEST_LENGTH = 20;
 
 function sha1(bytes: Uint8Array): Buffer {
   return createHash('sha1').update(bytes).digest();
@@ -41,19 +46,14 @@ function sha1(bytes: Uint8Array): Buffer {
 
 /**
  * Rewrite the pack-version field (u32 BE at `origin + 4`) and re-fix the pack
- * trailer over `[origin, len - digestLength)`. `origin` defaults to 0 for a
+ * trailer over `[origin, len - DIGEST_LENGTH)`. `origin` defaults to 0 for a
  * standalone pack file; a pack embedded further into a larger byte stream
  * (a bundle) passes the offset of its own signature instead.
  */
-function restampPackVersion(
-  packBytes: Uint8Array,
-  version: number,
-  digestLength: number,
-  origin = 0,
-): Buffer {
+function restampPackVersion(packBytes: Uint8Array, version: number, origin = 0): Buffer {
   const buf = Buffer.from(packBytes);
   buf.writeUInt32BE(version, origin + 4);
-  const trailerStart = buf.length - digestLength;
+  const trailerStart = buf.length - DIGEST_LENGTH;
   sha1(buf.subarray(origin, trailerStart)).copy(buf, trailerStart);
   return buf;
 }
@@ -64,39 +64,35 @@ function restampPackVersion(
  * mutated after its `.idx` was already built and the mutation makes the pack
  * impossible to re-index normally (e.g. an unsupported header version).
  */
-function restampIdxForPack(
-  idxBytes: Uint8Array,
-  packTrailer: Uint8Array,
-  digestLength: number,
-): Buffer {
+function restampIdxForPack(idxBytes: Uint8Array, packTrailer: Uint8Array): Buffer {
   const buf = Buffer.from(idxBytes);
-  const packChecksumOffset = buf.length - 2 * digestLength;
+  const packChecksumOffset = buf.length - 2 * DIGEST_LENGTH;
   Buffer.from(packTrailer).copy(buf, packChecksumOffset);
-  const idxTrailerStart = buf.length - digestLength;
+  const idxTrailerStart = buf.length - DIGEST_LENGTH;
   sha1(buf.subarray(0, idxTrailerStart)).copy(buf, idxTrailerStart);
   return buf;
 }
 
 /**
- * Overwrite a `.idx` with random bytes of the same length as the original —
- * the shape that survives a naive length-only validity check and forces the
- * parser itself to reject the file.
+ * Overwrite a `.idx` with a deterministic byte ramp of the same length — the
+ * shape that survives a naive length-only validity check and forces the
+ * parser itself to reject the file, reproducibly on every run.
  */
 function corruptIdxSameLength(idxBytes: Uint8Array): Buffer {
-  return randomBytes(idxBytes.length);
+  return Buffer.from(Uint8Array.from({ length: idxBytes.length }, (_, i) => i % 256));
 }
 
 /** Rewrite the pack header's object-count field (u32 BE at offset 8) and re-fix the trailer. */
-function setHeaderObjectCount(packBytes: Uint8Array, count: number, digestLength: number): Buffer {
+function setHeaderObjectCount(packBytes: Uint8Array, count: number): Buffer {
   const buf = Buffer.from(packBytes);
   buf.writeUInt32BE(count, 8);
-  const trailerStart = buf.length - digestLength;
+  const trailerStart = buf.length - DIGEST_LENGTH;
   sha1(buf.subarray(0, trailerStart)).copy(buf, trailerStart);
   return buf;
 }
 
-function trailerOf(bytes: Uint8Array, digestLength: number): Uint8Array {
-  return bytes.subarray(bytes.length - digestLength);
+function trailerOf(bytes: Uint8Array): Uint8Array {
+  return bytes.subarray(bytes.length - DIGEST_LENGTH);
 }
 
 // ---------------------------------------------------------------------------
@@ -112,13 +108,20 @@ function catFileRaw(dir: string, oid: string): Buffer {
 function batchCheck(
   dir: string,
   oid: string,
-): { readonly stdout: string; readonly exitCode: number } {
+): { readonly stdout: string; readonly stderr: string; readonly exitCode: number } {
   const result = spawnSync('git', ['-C', dir, 'cat-file', '--batch-check'], {
     input: `${oid}\n`,
     env: runGitEnv(),
     encoding: 'utf8',
   });
-  return { stdout: result.stdout ?? '', exitCode: result.status ?? 1 };
+  return { stdout: result.stdout ?? '', stderr: result.stderr ?? '', exitCode: result.status ?? 1 };
+}
+
+/** Packed object ids only — enumeration minus the loose-only enumeration. */
+async function collectPackedIds(ctx: Context): Promise<ReadonlyArray<ObjectId>> {
+  const all = await enumerateObjects(ctx);
+  const loose = new Set(await enumerateObjects(ctx, { includePacks: false }));
+  return all.filter((id) => !loose.has(id));
 }
 
 interface PackCounts {
@@ -257,7 +260,6 @@ describe.skipIf(!GIT_AVAILABLE)(
     let basePackBytes: Buffer = Buffer.alloc(0);
     let baseIdxBytes: Buffer = Buffer.alloc(0);
     let objectCount = 0;
-    let digestLength: 20 | 32 = 20;
     let packedOid: ObjectId = '' as ObjectId;
     let looseOid: ObjectId = '' as ObjectId;
     let looseRawBytes: Buffer = Buffer.alloc(0);
@@ -281,9 +283,6 @@ describe.skipIf(!GIT_AVAILABLE)(
       baseIdxBytes = solePack.idxBytes;
       objectCount = basePackBytes.readUInt32BE(8);
 
-      const baseCtx = createNodeContext({ workDir: base });
-      digestLength = baseCtx.hashConfig.digestLength;
-
       packedOid = git(base, 'rev-parse', `HEAD:${PACKED_FILE}`).trim() as ObjectId;
 
       looseOid = runGit(['-C', base, 'hash-object', '-w', '--stdin'], {
@@ -301,7 +300,7 @@ describe.skipIf(!GIT_AVAILABLE)(
     describe('Given a git-produced pack restamped to header version 3, When git ingests it via index-pack and tsgit walks its entries', () => {
       it('Then both accept it: git exits 0 and walkPackEntries resolves the same object count', async () => {
         // Arrange
-        const v3PackBytes = restampPackVersion(basePackBytes, 3, digestLength);
+        const v3PackBytes = restampPackVersion(basePackBytes, 3);
         const dir = await freshRepo('v3-ingest');
         const { packPath, idxPath } = await writePackOnly(dir, 'v3', v3PackBytes);
         const sut = createNodeContext({ workDir: dir });
@@ -319,7 +318,7 @@ describe.skipIf(!GIT_AVAILABLE)(
     describe('Given a git-produced pack restamped to header version 99, When git ingests it via index-pack and tsgit walks its entries', () => {
       it('Then both refuse it: git exits 128 with the unsupported-version refusal and walkPackEntries rejects INVALID_PACK_HEADER', async () => {
         // Arrange
-        const v99PackBytes = restampPackVersion(basePackBytes, 99, digestLength);
+        const v99PackBytes = restampPackVersion(basePackBytes, 99);
         const dir = await freshRepo('v99-ingest');
         const { packPath, idxPath } = await writePackOnly(dir, 'v99', v99PackBytes);
         const sut = createNodeContext({ workDir: dir });
@@ -347,7 +346,7 @@ describe.skipIf(!GIT_AVAILABLE)(
     describe('Given a fresh repo holding only a version-3 pack (its .idx built by git index-pack), When both git and tsgit read the packed blob', () => {
       it('Then git cat-file -p and readObject return byte-identical content', async () => {
         // Arrange
-        const v3PackBytes = restampPackVersion(basePackBytes, 3, digestLength);
+        const v3PackBytes = restampPackVersion(basePackBytes, 3);
         const dir = await freshRepo('v3-local-read');
         const { packPath, idxPath } = await writePackOnly(dir, 'v3', v3PackBytes);
         git(dir, 'index-pack', '-o', idxPath, packPath);
@@ -366,12 +365,8 @@ describe.skipIf(!GIT_AVAILABLE)(
     describe('Given a fresh repo holding only a version-99 pack, with the packed object absent from every other source, When both git and tsgit look it up', () => {
       it('Then git reports it missing at exit 0 and readObject rejects OBJECT_NOT_FOUND', async () => {
         // Arrange
-        const v99PackBytes = restampPackVersion(basePackBytes, 99, digestLength);
-        const v99IdxBytes = restampIdxForPack(
-          baseIdxBytes,
-          trailerOf(v99PackBytes, digestLength),
-          digestLength,
-        );
+        const v99PackBytes = restampPackVersion(basePackBytes, 99);
+        const v99IdxBytes = restampIdxForPack(baseIdxBytes, trailerOf(v99PackBytes));
         const dir = await freshRepo('v99-object-missing-elsewhere');
         await writePack(dir, 'v99', v99PackBytes, v99IdxBytes);
         const sut = createNodeContext({ workDir: dir });
@@ -396,16 +391,13 @@ describe.skipIf(!GIT_AVAILABLE)(
     describe('Given a fresh repo holding a version-99 pack and a good sibling pack, both containing the same object, When both git and tsgit read it', () => {
       it('Then git cat-file -p and readObject return byte-identical content', async () => {
         // Arrange
-        const v99PackBytes = restampPackVersion(basePackBytes, 99, digestLength);
-        const v99IdxBytes = restampIdxForPack(
-          baseIdxBytes,
-          trailerOf(v99PackBytes, digestLength),
-          digestLength,
-        );
+        const v99PackBytes = restampPackVersion(basePackBytes, 99);
+        const v99IdxBytes = restampIdxForPack(baseIdxBytes, trailerOf(v99PackBytes));
         const dir = await freshRepo('v99-with-good-sibling');
         await writePack(dir, 'bad', v99PackBytes, v99IdxBytes);
         await writePack(dir, 'good', basePackBytes, baseIdxBytes);
-        const sut = createNodeContext({ workDir: dir });
+        const warn = vi.fn();
+        const sut: Context = { ...createNodeContext({ workDir: dir }), logger: { warn } };
 
         // Act
         const gitPayload = catFileRaw(dir, packedOid);
@@ -414,6 +406,13 @@ describe.skipIf(!GIT_AVAILABLE)(
         // Assert
         expect(object.type).toBe('blob');
         expect(Buffer.compare(gitPayload, Buffer.from(blobContent(object)))).toBe(0);
+        // Scan order is raw readdir order — without this pin the row would
+        // pass whenever the good pack happens to be consulted first.
+        expect(warn).toHaveBeenCalledTimes(1);
+        expect(warn).toHaveBeenCalledWith(
+          'packRegistry: skipping unusable pack',
+          expect.objectContaining({ pack: 'pack-bad' }),
+        );
       });
     });
 
@@ -427,12 +426,8 @@ describe.skipIf(!GIT_AVAILABLE)(
         git(decoyDir, 'commit', '-m', 'decoy');
         git(decoyDir, 'repack', '-adq');
         const decoy = await readSolePackPair(decoyDir);
-        const decoyBadPackBytes = restampPackVersion(decoy.packBytes, 99, digestLength);
-        const decoyBadIdxBytes = restampIdxForPack(
-          decoy.idxBytes,
-          trailerOf(decoyBadPackBytes, digestLength),
-          digestLength,
-        );
+        const decoyBadPackBytes = restampPackVersion(decoy.packBytes, 99);
+        const decoyBadIdxBytes = restampIdxForPack(decoy.idxBytes, trailerOf(decoyBadPackBytes));
 
         const dir = await freshRepo('v99-unclaimed-with-sibling');
         await writePack(dir, 'bad', decoyBadPackBytes, decoyBadIdxBytes);
@@ -459,7 +454,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         git(base, 'bundle', 'create', bundlePath, '--all');
         const bundleBytes = await readFile(bundlePath);
         const packStart = findPackSignature(bundleBytes);
-        const v3BundleBytes = restampPackVersion(bundleBytes, 3, digestLength, packStart);
+        const v3BundleBytes = restampPackVersion(bundleBytes, 3, packStart);
         const v3BundlePath = path.join(dir, 'v3.bundle');
         await writeFile(v3BundlePath, v3BundleBytes);
         const sut = createNodeContext({ workDir: dir });
@@ -479,7 +474,7 @@ describe.skipIf(!GIT_AVAILABLE)(
     describe('Given one version-3 pack byte array, When it drives both a tsgit ingest and a local open in the same repo that git also reads', () => {
       it('Then walkPackEntries accepts it and readObject reads the same oid git cat-file -p reads from that repo', async () => {
         // Arrange
-        const v3PackBytes = restampPackVersion(basePackBytes, 3, digestLength);
+        const v3PackBytes = restampPackVersion(basePackBytes, 3);
         const dir = await freshRepo('v3-roundtrip');
         const { packPath, idxPath } = await writePackOnly(dir, 'v3', v3PackBytes);
         git(dir, 'index-pack', '-o', idxPath, packPath);
@@ -605,11 +600,7 @@ describe.skipIf(!GIT_AVAILABLE)(
     describe('Given a fresh repo whose only pack disagrees with its own .idx on object count, When both git and tsgit look up an object', () => {
       it('Then git reports it missing while count-objects still counts the pack off the idx, and readObject rejects OBJECT_NOT_FOUND while the registry still lists the pack', async () => {
         // Arrange
-        const mismatchedPackBytes = setHeaderObjectCount(
-          basePackBytes,
-          objectCount + 1,
-          digestLength,
-        );
+        const mismatchedPackBytes = setHeaderObjectCount(basePackBytes, objectCount + 1);
         const dir = await freshRepo('header-count-mismatch');
         await writePack(dir, 'mismatch', mismatchedPackBytes, baseIdxBytes);
         const sut = createNodeContext({ workDir: dir });
@@ -629,6 +620,9 @@ describe.skipIf(!GIT_AVAILABLE)(
         // Assert
         expect(gitBatch.exitCode).toBe(0);
         expect(gitBatch.stdout).toContain(`${packedOid} missing`);
+        // The count disagreement — not the stale idx checksum — must be the
+        // fault git trips on, or the fixture is not testing what it claims.
+        expect(gitBatch.stderr).toContain('claims to have');
         expect(gitCount.packs).toBe(1);
         expect(gitCount.inPack).toBe(objectCount);
         expect((caught as TsgitError).data).toEqual({ code: 'OBJECT_NOT_FOUND', id: packedOid });
@@ -639,12 +633,8 @@ describe.skipIf(!GIT_AVAILABLE)(
     describe('Given one repo with a version-99 pack (a lookup-layer fault) and another with a corrupt-.idx pack (a scan-layer fault), When git and tsgit each enumerate the pack set of both repos', () => {
       it('Then count-objects and the registry agree: the version-99 repo still counts its pack, the corrupt-idx repo counts none', async () => {
         // Arrange
-        const v99PackBytes = restampPackVersion(basePackBytes, 99, digestLength);
-        const v99IdxBytes = restampIdxForPack(
-          baseIdxBytes,
-          trailerOf(v99PackBytes, digestLength),
-          digestLength,
-        );
+        const v99PackBytes = restampPackVersion(basePackBytes, 99);
+        const v99IdxBytes = restampIdxForPack(baseIdxBytes, trailerOf(v99PackBytes));
         const lookupFaultDir = await freshRepo('enum-lookup-fault');
         await writePack(lookupFaultDir, 'v99', v99PackBytes, v99IdxBytes);
         const lookupFaultCtx = createNodeContext({ workDir: lookupFaultDir });
@@ -659,13 +649,21 @@ describe.skipIf(!GIT_AVAILABLE)(
         const scanFaultCount = countObjects(scanFaultDir);
         const lookupFaultPacks = await getPackRegistry(lookupFaultCtx).all();
         const scanFaultPacks = await getPackRegistry(scanFaultCtx).all();
+        const lookupFaultEnumerated = await collectPackedIds(lookupFaultCtx);
+        const scanFaultEnumerated = await collectPackedIds(scanFaultCtx);
 
         // Assert
         expect(lookupFaultCount.packs).toBe(1);
+        expect(lookupFaultCount.inPack).toBe(objectCount);
         expect(scanFaultCount.packs).toBe(0);
         expect(scanFaultCount.inPack).toBe(0);
         expect(lookupFaultPacks).toHaveLength(1);
         expect(scanFaultPacks).toHaveLength(0);
+        // Enumeration mirrors count-objects on both sides: the v99 pack's
+        // objects stay listed (counted off the still-readable idx), the
+        // corrupt-idx pack's objects vanish with it.
+        expect(lookupFaultEnumerated).toHaveLength(objectCount);
+        expect(scanFaultEnumerated).toHaveLength(0);
       });
     });
   },
