@@ -34,3 +34,9 @@ One `api.json` delta and one doc-page row. `health()` runs twice per fsck in ful
 the second call re-probes only failed packs (12 bytes each) and doubles their
 per-generation logger warn — matching git's own repeated `error:` lines for the same
 no-negative-cache reason.
+
+**Post-review note (same change, hardening):** the double `health()` call this
+section priced is now memoised per generation in the registry — both consumers
+see one consistent verdict (a flapping pack can no longer be excluded from the
+universe yet report healthy), and the failed-pack re-probe cost is gone. The
+knob and its layering rationale are unchanged.

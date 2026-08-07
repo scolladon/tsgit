@@ -821,12 +821,14 @@ Consequences worth stating rather than discovering:
   absent — including one that was only in the refused pack and is referenced from a loose commit or
   a ref — still produces `missing` + `broken-link` + bit 2, composing with bit 4 exactly as Pin L's
   `v99 + deleted tree` and Pin M5 rows do.
-- **`health()` is called twice per `fsck` run** under ADR-585's knob — once inside `enumerateObjects`, once
-  by the pass. The scan memo and every *successful* header memo are settled by then, so the second
-  call re-probes only the **failed** packs, at 12 bytes each, and emits a second logger warn for
-  each. That is not a regression against git, which re-emits its own `error:` line many times per
-  run (Pin J8: seven times) for the identical no-negative-cache reason. Passing the report down
-  instead was option (b)'s upside, recorded in DC-5's consequence column and knowingly not taken.
+- **`health()` is consulted twice per `fsck` run** under ADR-585's knob — once inside
+  `enumerateObjects`, once by the pass — but the verdict is **memoised per generation** (review
+  hardening): both consumers see ONE consistent report, so a pack cannot be excluded from the
+  universe by the first consult yet report healthy at the second — the flapping-pack false-clean
+  the security review named. `refresh()` resets the memo with the scan; the per-pack header memo
+  still clears on rejection, so the READ path's no-negative-cache property is untouched (`lookup`
+  re-probes per hit, exactly as before). In the two ungated modes the pass consumes only the scan
+  layer's skip records via `indexFaults()` and the header probe never runs at all.
 
 ### §D5 — exit-code semantics
 
@@ -879,7 +881,9 @@ Per ADR-249 the wording is ours; the condition and the exit integer are git's.
 ### §D7 — performance
 
 Cost: **one 12-byte `ctx.fs.readSlice` per registered pack whose header memo is not already
-settled**, once (twice, for failed packs, via ADR-585's knob) per `fsck` run in full mode. Against what
+settled**, once per `fsck` run in full mode (the health verdict is memoised per generation —
+review hardening; `connectivityOnly` / `full: false` consume only the scan layer's skip records
+and never probe a header). Against what
 `fsck` already does — `enumerateObjects` reads and parses every `.idx`, `buildObjectCache` decodes
 *every object in the repository*, `runContentValidationPass` inflates and re-hashes each one — the
 probe is not measurable. git pays the same 12 bytes per pack for the same reason.
@@ -938,7 +942,7 @@ report is a caller who may gate CI on the exit code.
 | # | concern | assessment |
 |---|---|---|
 | T-1 | **Reporting is the security content.** Today an attacker who flips one byte in a pack header makes nine objects vanish from every read *and* makes tsgit's integrity command report `badType` on them (Pin O3), or — at the index layer — report nothing at all (Pin O5) while `git fsck` exits 68. A repository can be silently degraded today and still pass tsgit's own integrity check. Closing that is the point of the change; it strictly *adds* signal. | — |
-| T-2 | **Eager probing is a new I/O surface.** `health()` reads 12 bytes from every registered pack, so an attacker who drops N `.idx`/`.pack` pairs makes `fsck` issue N extra reads. Bounded by the same directory listing `scanPacks` already walks and already reads a full `.idx` from, so the marginal cost is 12 bytes against a multi-KiB index read — not an amplification vector. No new path is constructed: `packPath` is the value `loadPack` already derived. | accepted |
+| T-2 | **Eager probing is a new I/O surface.** `health()` reads 12 bytes from every registered pack, so an attacker who drops N `.idx`/`.pack` pairs makes `fsck` issue N extra reads. Bounded by the same directory listing `scanPacks` already walks and already reads a full `.idx` from, so the marginal cost is 12 bytes against a multi-KiB index read — not an amplification vector. No new path is constructed: `packPath` is the value `loadPack` already derived. The probe runs in FULL mode only (review hardening: the ungated modes consume `indexFaults()` and open no pack); `connectivityOnly` / `full: false` still pay the `.idx` scan itself — readdir + a bounded read/parse per `.idx` (`MAX_PACK_IDX_BYTES`-capped) — which `full: false` never paid before this change (ADR-586's accepted cost, stated here so T-2's bound covers every mode). | accepted |
 | T-3 | **The finding carries a pack identifier out of the library as data no sanitiser touches.** `RegisteredPack.name` comes from a `readdir` entry an attacker controls, and the Logger port's sanitiser applies to log arguments, **not** to return values. `isSafePackName` (`pack-registry.ts:134`) already rejects `/`, `\`, `..` and every control character below `0x20` at the scan boundary — that is what makes the name safe to hand out, because no newline can be smuggled into a line-oriented sink downstream. **Load-bearing for ADR-584:** the chosen identifier must be one `isSafePackName` has already constrained, and a `path` field would additionally disclose the gitdir layout to a consumer that may not have it. | mitigated by the existing scan-boundary filter; re-state it in the finding's doc-comment |
 | T-4 | **A new denial vector on the exit code.** One flipped byte now moves `fsck` from exit 0 to 4 or 68, failing any CI gate keyed on it. This is *faithful* — git does the same — and is the honest signal, not a regression. Suppressing the report requires making the pack healthy again, which is not a suppression. | accepted, and intended |
 | T-5 | **The allow-lists must not widen.** They deliberately differ by one code each (`INVALID_PACK_HEADER` at the pack layer, `INVALID_PACK_INDEX` at the index layer). A DRY pass that unioned them would make a **mid-read** `INVALID_PACK_INDEX` from `nextOffsetForEntry` / `buildOffsetTable` (`pack-registry.ts:279`, `:192`) skippable at the lookup layer, converting a detected corruption into a silent miss (28.1 §D9.9). Reporting gives that mistake a *second* way to be wrong: a corruption detected mid-read would then be reported as a whole-pack accessibility fault. The shared helper stays `isSkippableIoFault` and nothing more. | design constraint, tested by the propagation rows |
@@ -1371,11 +1375,17 @@ whatever the pack pass computed, so the guard may sit before or after that pass 
 a caller observes. Placing it after `classifyObjects` is a readability choice, not a correctness one,
 and no test may assert the pack pass's side effects on a rejecting row.
 
-#### §D13.4 — the error shape: the store's own error, rethrown
+#### §D13.4 — the error shape: the store's own error class, reason sanitised
 
-The reject carries **the `TsgitError` the recovery produced** — `DECOMPRESS_FAILED { reason }`
-(Pin P4, P5, R3) or `INVALID_OBJECT_HEADER { reason }` (Pin R8, R10a, R10b) — rethrown, not
-re-wrapped, not re-coded. Three reasons in decreasing weight:
+The reject carries a `TsgitError` of **the same class and code the original read failure
+produced** — `DECOMPRESS_FAILED { reason }` (Pin P4, P5, R3) or `INVALID_OBJECT_HEADER { reason }`
+(Pin R8, R10a, R10b) — never re-coded. Two review hardenings refine the original "rethrown
+verbatim" wording without changing the observable class/code: the verdict is **gated on the
+ORIGINAL read failure's two-code test** (a file whose damage class changed under the probe stays a
+tolerated 'unknown'), and the `reason` — which can embed attacker-chosen header bytes — is
+**control-char-stripped and length-capped** before it reaches the logger or the thrown error's
+message (the display sanitiser deliberately preserves newline, so the scrub happens at this
+boundary). Three reasons for keeping the store's own code, in decreasing weight:
 
 - It is the same value `readObject(ctx, <oid>)` already throws for that object, so `fsck`'s reject
   and every other command's failure on the same damage are indistinguishable — which is honest: they
@@ -1392,7 +1402,8 @@ Its one real cost is that neither code carries the object id, and `error.ts` has
 `OBJECT_HASH_MISMATCH` and `OBJECT_TOO_LARGE` would each be a lie, and inventing one is the surface
 delta the previous bullet declines. The id therefore leaves on the channel this repo already uses for
 a fault it reports rather than returns: one
-`ctx.logger?.warn?.('fsck: object type unrecoverable', { objectId, reason })` at the reject site,
+`ctx.logger?.warn?.('fsck: object type unrecoverable', { objectId, code, reason })` at the reject
+site (reason sanitised as above),
 flat string values only, per the Logger port's top-level-string sanitiser and `pack-registry.ts:70`'s
 `faultContext` precedent. Exactly one warn per aborted run — never one per object, never one for a
 `tolerated` fault — so a healthy repo's log volume is unchanged and the warn cannot be mistaken for

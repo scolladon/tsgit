@@ -40,3 +40,9 @@ the prime directive binds refusal conditions.
 the connectivity-only path propagates the undecodable-stream fault instead of caching
 `null`. ADR-411's maximal-taxonomy premise gains a mode-scoped exception, recorded
 here. The design doc specifies the mechanism, the error shape, and the pins.
+
+**Post-review note (same change, hardening):** the rethrown error keeps the
+store's own class and code, but its attacker-influenced `reason` is
+control-char-stripped and length-capped at the reject boundary, and the
+verdict is gated on the ORIGINAL read failure's two-code test — a file whose
+damage class changes under the probe stays a tolerated `unknown`.

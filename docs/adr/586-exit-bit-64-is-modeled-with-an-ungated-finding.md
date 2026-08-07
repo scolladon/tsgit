@@ -34,3 +34,8 @@ Three public finding variants. The ungated evaluation makes `fsck({ full: false 
 read and parse every `.idx` in the repository — it loses its loose-only property, as
 git's own `--no-full` does. The constant names a subsystem tsgit does not yet have; its
 doc-comment says so, and 28.3's real `.rev` reader lands with nothing to correct.
+
+**Post-review note (same change, hardening):** the ungated term now consumes
+only the scan layer's retained skip records (`registry.indexFaults()`), so
+`full: false` / `connectivityOnly` read and parse every `.idx` but never open
+a `.pack` — the header probe runs only where the bit-4 report consumes it.
