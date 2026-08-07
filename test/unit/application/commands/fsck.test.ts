@@ -2879,10 +2879,10 @@ describe('Given a v99-header pack whose objects exist nowhere else, connectivity
       const ctx = await initBareCtx();
       const packIds = await writeSyntheticPack(
         ctx,
-        'd12-refused-fullfalse',
-        onePackEntry('d12-refused-fullfalse-content'),
+        'd12-refused-no-full',
+        onePackEntry('d12-refused-no-full-content'),
       );
-      await restampPackHeader(ctx, packFilePath(ctx, 'd12-refused-fullfalse'), { version: 99 });
+      await restampPackHeader(ctx, packFilePath(ctx, 'd12-refused-no-full'), { version: 99 });
 
       // Act
       const result = await fsck(ctx, { full: false });

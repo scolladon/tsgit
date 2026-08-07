@@ -13,8 +13,8 @@ must be drawn deliberately, not deferred.
 
 ## Options considered
 
-1. **Accessibility only** (designer's recommendation) — the header gate and index
-   openability, exactly what the registry already computes; zero new parsing.
+1. **Accessibility only** (designer's recommendation) — the header gate and whether
+   the index opens, exactly what the registry already computes; zero new parsing.
 2. **Plus the pack trailer checksum** — turns the O(packs) probe into O(pack-bytes) on
    every fsck, the trade 28.1 declined for the read path.
 3. **Full `verify_pack`** — complete bit-4 parity; a different feature by size,

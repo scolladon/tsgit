@@ -1112,8 +1112,8 @@ describe('PackRegistry.health — per-pack accessibility', () => {
       it('Then the plain error propagates instead of being treated as skippable', async () => {
         // Arrange
         const ctx = await buildSeededContext();
-        const content = new TextEncoder().encode('health-nonstd-error-content');
-        await writeSyntheticPack(ctx, 'health-nonstd-error', [
+        const content = new TextEncoder().encode('health-unexpected-error-content');
+        await writeSyntheticPack(ctx, 'health-unexpected-error', [
           { kind: 'base', type: 'blob', content },
         ]);
         const wrapped: Context = {

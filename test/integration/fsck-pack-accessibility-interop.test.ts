@@ -362,8 +362,8 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
   describe('Given a pack whose signature is not "PACK", When fsck runs (row K-5)', () => {
     it('Then git cites the bad signature and fsck reports the invalid-magic reason', async () => {
       // Arrange
-      const packxBytes = corruptSignature(basePackBytes);
-      const dir = await bareTargetWithPack('k5', 'bad', packxBytes, baseIdxBytes);
+      const badSignatureBytes = corruptSignature(basePackBytes);
+      const dir = await bareTargetWithPack('k5', 'bad', badSignatureBytes, baseIdxBytes);
       const gitResult = gitFsck(dir);
       const sut = createNodeContext({ workDir: dir });
 
@@ -534,7 +534,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
     it('Then both are silent: git exits 0 and fsck reports no finding', async () => {
       // Arrange
       const dir = await freshRepo('k12');
-      await writePackOnly(dir, 'nopack', basePackBytes);
+      await writePackOnly(dir, 'no-pack', basePackBytes);
       const gitResult = gitFsck(dir);
       const sut = createNodeContext({ workDir: dir });
 
@@ -555,9 +555,9 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
       const dir = await freshRepo('k13');
       const v99PackBytes = restampPackVersion(basePackBytes, 99);
       const v99IdxBytes = restampIdxForPack(baseIdxBytes, trailerOf(v99PackBytes));
-      const packxBytes = corruptSignature(basePackBytes);
+      const badSignatureBytes = corruptSignature(basePackBytes);
       await writePack(dir, 'aaa', v99PackBytes, v99IdxBytes);
-      await writePack(dir, 'bbb', packxBytes, baseIdxBytes);
+      await writePack(dir, 'bbb', badSignatureBytes, baseIdxBytes);
       const gitResult = gitFsck(dir);
       const sut = createNodeContext({ workDir: dir });
 
