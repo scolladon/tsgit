@@ -1,5 +1,13 @@
 # Changelog
 
+## [3.2.2](https://github.com/scolladon/tsgit/compare/v3.2.1...v3.2.2) (2026-08-07)
+
+
+### Bug Fixes
+
+* accept pack version 3 and degrade unusable packs per-pack like git ([#265](https://github.com/scolladon/tsgit/issues/265)) ([e6e1d7e](https://github.com/scolladon/tsgit/commit/e6e1d7e577324359f4c25806bb2ba4daf0b4c0db))
+* report inaccessible packs and unreadable objects from fsck like git ([#267](https://github.com/scolladon/tsgit/issues/267)) ([7bf4469](https://github.com/scolladon/tsgit/commit/7bf44695d9028a84b4135f698d4b46d37e4886ec))
+
 ## [3.2.1](https://github.com/scolladon/tsgit/compare/v3.2.0...v3.2.1) (2026-08-01)
 
 
