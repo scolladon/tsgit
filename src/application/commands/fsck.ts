@@ -8,6 +8,7 @@ import {
 } from './internal/fsck/content-validation.js';
 import { EXIT_MISSING } from './internal/fsck/exit-codes.js';
 import { buildObjectCache } from './internal/fsck/object-cache.js';
+import { packPassEnabled, runPackHealthPass } from './internal/fsck/pack-health.js';
 import {
   buildInEdgeMap,
   buildReachableSet,
@@ -32,7 +33,10 @@ import type { FsckFinding, FsckOptions, FsckResult } from './internal/fsck/types
 export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckResult> {
   await assertRepository(ctx);
 
-  const allIds = await enumerateObjects(ctx, { includePacks: opts.full !== false });
+  const allIds = await enumerateObjects(ctx, {
+    includePacks: opts.full !== false,
+    accessiblePacksOnly: packPassEnabled(opts),
+  });
   const universe = new Set(allIds);
 
   // Build the shared object cache — every universe object is decoded exactly
@@ -58,6 +62,9 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
   // Refs-verify pass
   const refsResult = await runRefsVerifyPass(ctx, universe, opts.checkReferences !== false);
 
+  // Pack-health pass — reports packs the registry could not open or index.
+  const packResult = await runPackHealthPass(ctx, opts);
+
   const roots = await collectRoots(ctx, opts, universe);
   const inEdgePresent = buildInEdgeMap(universe, objectCache);
 
@@ -69,7 +76,11 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
 
   const { unreachable, dangling } = classifyObjects(universe, reached, inEdgePresent);
 
-  const findings: FsckFinding[] = [...contentResult.findings, ...refsResult.findings];
+  const findings: FsckFinding[] = [
+    ...contentResult.findings,
+    ...refsResult.findings,
+    ...packResult.findings,
+  ];
 
   // Build map of absent-object id → type using broken-edge records.
   // Every broken edge carries the target type derived from the referring object
@@ -98,7 +109,8 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
   }
 
   const connectivityBit = missingIds.size > 0 || brokenEdges.length > 0 ? EXIT_MISSING : 0;
-  const exitCode = contentResult.exitBit | connectivityBit | refsResult.exitBit;
+  const exitCode =
+    contentResult.exitBit | connectivityBit | refsResult.exitBit | packResult.exitBit;
 
   return { findings, exitCode };
 }

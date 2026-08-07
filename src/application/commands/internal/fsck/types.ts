@@ -47,6 +47,29 @@ export type FsckFinding =
       readonly objectType: FsckObjectType;
       readonly tagName: string;
       readonly tag: ObjectId;
+    }
+  | {
+      readonly type: 'pack-inaccessible';
+      /**
+       * Pack base name (`pack-<sha>`) — the same value the registry's
+       * scan-boundary filter already vetted (no `/`, `\`, `..`, or control
+       * character), so it crosses the library boundary as data no further
+       * sanitiser needs to touch.
+       */
+      readonly pack: string;
+      readonly reason: string;
+    }
+  | {
+      readonly type: 'pack-index-unusable';
+      /** Pack base name (`pack-<sha>`) — see `pack-inaccessible`'s doc-comment. */
+      readonly pack: string;
+      readonly reason: string;
+    }
+  | {
+      readonly type: 'pack-rev-index-unusable';
+      /** Pack base name (`pack-<sha>`) — see `pack-inaccessible`'s doc-comment. */
+      readonly pack: string;
+      readonly reason: string;
     };
 
 // ---------------------------------------------------------------------------
@@ -74,6 +97,11 @@ export interface FsckOptions {
 
 export interface FsckResult {
   readonly findings: ReadonlyArray<FsckFinding>;
-  /** Composite exit bitmask: 0=clean, 2=missing/broken-link. */
+  /**
+   * Composite exit bitmask, bits compose by OR: 0=clean, 1=content error
+   * (corrupt/hash-mismatch/strict-upgraded warn), 2=missing/broken-link,
+   * 4=pack inaccessible or index not opened, 8=refs-verify content failure,
+   * 64=pack reverse-index unusable.
+   */
   readonly exitCode: number;
 }

@@ -4,11 +4,16 @@ import { type FsckFinding, fsck } from '../../../../src/application/commands/fsc
 import { looseObjectPath, objectsDir } from '../../../../src/application/primitives/path-layout.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { TsgitError } from '../../../../src/domain/error.js';
-import { FILE_MODE, type ObjectId, type TreeEntry } from '../../../../src/domain/objects/index.js';
+import {
+  FILE_MODE,
+  type ObjectId,
+  serializeTreeContent,
+  type TreeEntry,
+} from '../../../../src/domain/objects/index.js';
 import type { FilePath } from '../../../../src/domain/objects/object-id.js';
 import type { Context } from '../../../../src/ports/context.js';
 import { buildSeededContext } from '../primitives/fixtures.js';
-import { writeSyntheticPack } from '../primitives/pack-fixture.js';
+import { restampPackHeader, writeSyntheticPack } from '../primitives/pack-fixture.js';
 
 const enc = new TextEncoder();
 
@@ -2504,6 +2509,292 @@ describe('Given loose object with inflated header missing NUL terminator', () =>
       );
       expect(badObj).toBeDefined();
       expect((badObj as { msgId: string }).msgId).toBe('unterminatedHeader');
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PACK-HEALTH PASS — inaccessible packs and unusable pack indexes
+// ---------------------------------------------------------------------------
+
+const packFilePath = (ctx: Context, name: string): string =>
+  `${ctx.layout.gitDir}/objects/pack/pack-${name}.pack`;
+const idxFilePath = (ctx: Context, name: string): string =>
+  `${ctx.layout.gitDir}/objects/pack/pack-${name}.idx`;
+
+const onePackEntry = (content: string) => [
+  { kind: 'base' as const, type: 'blob' as const, content: enc.encode(content) },
+];
+
+/** Collect every ObjectId-shaped value a finding may carry, across all variants. */
+const findingIds = (finding: FsckFinding): ReadonlyArray<ObjectId> => {
+  const ids: ObjectId[] = [];
+  if ('id' in finding) ids.push(finding.id);
+  if ('fromId' in finding) ids.push(finding.fromId, finding.toId);
+  if ('actual' in finding) ids.push(finding.actual);
+  if ('target' in finding && finding.target !== undefined) ids.push(finding.target);
+  if ('tag' in finding) ids.push(finding.tag);
+  return ids;
+};
+
+describe('Given a repo with one healthy pack and no unusable packs', () => {
+  describe('When fsck runs', () => {
+    it('Then no pack finding is emitted and exit bit 4 is unset', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      await writeSyntheticPack(ctx, 'healthy', onePackEntry('healthy-content'));
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      const packFindings = result.findings.filter((f) => f.type.startsWith('pack-'));
+      expect(packFindings).toHaveLength(0);
+      expect(result.exitCode & 4).toBe(0);
+    });
+  });
+});
+
+describe('Given a v99-header pack whose objects exist nowhere else', () => {
+  describe('When fsck runs', () => {
+    it("Then exactly one pack-inaccessible finding names the pack, bit 4 is set, and no finding carries the pack's object ids", async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const packIds = await writeSyntheticPack(ctx, 'refused', onePackEntry('refused-content'));
+      await restampPackHeader(ctx, packFilePath(ctx, 'refused'), { version: 99 });
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      const inaccessible = result.findings.filter((f) => f.type === 'pack-inaccessible');
+      expect(inaccessible).toHaveLength(1);
+      expect((inaccessible[0] as { pack: string }).pack).toBe('pack-refused');
+      expect(result.exitCode & 4).toBe(4);
+      const carriedIds = new Set(result.findings.flatMap((f) => findingIds(f)));
+      for (const id of packIds) {
+        expect(carriedIds.has(id as ObjectId)).toBe(false);
+      }
+    });
+  });
+});
+
+describe('Given a pack whose header object count disagrees with its index', () => {
+  describe('When fsck runs', () => {
+    it('Then one pack-inaccessible finding is emitted whose reason names both counts, and bit 4 is set', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      await writeSyntheticPack(ctx, 'count-mismatch', onePackEntry('count-mismatch-content'));
+      await restampPackHeader(ctx, packFilePath(ctx, 'count-mismatch'), { objectCount: 2 });
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      const inaccessible = result.findings.filter((f) => f.type === 'pack-inaccessible');
+      expect(inaccessible).toHaveLength(1);
+      expect((inaccessible[0] as { reason: string }).reason).toBe(
+        'object count disagrees with index: pack 2, index 1',
+      );
+      expect(result.exitCode & 4).toBe(4);
+    });
+  });
+});
+
+describe('Given a pack whose .idx is corrupt (magic mismatch)', () => {
+  describe('When fsck runs', () => {
+    it('Then one pack-index-unusable and one pack-rev-index-unusable finding are emitted, and bits 4 and 64 are both set', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      await writeSyntheticPack(ctx, 'corrupt-idx', onePackEntry('corrupt-idx-content'));
+      await ctx.fs.write(idxFilePath(ctx, 'corrupt-idx'), new Uint8Array(1072));
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      const indexUnusable = result.findings.filter((f) => f.type === 'pack-index-unusable');
+      const revIndexUnusable = result.findings.filter((f) => f.type === 'pack-rev-index-unusable');
+      expect(indexUnusable).toHaveLength(1);
+      expect(revIndexUnusable).toHaveLength(1);
+      expect((indexUnusable[0] as { pack: string }).pack).toBe('pack-corrupt-idx');
+      expect((revIndexUnusable[0] as { pack: string }).pack).toBe('pack-corrupt-idx');
+      expect(result.exitCode & 4).toBe(4);
+      expect(result.exitCode & 64).toBe(64);
+    });
+  });
+});
+
+describe('Given an orphan .idx with no sibling .pack file', () => {
+  describe('When fsck runs', () => {
+    it('Then no finding is emitted and exit code is exactly 0', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      await writeSyntheticPack(ctx, 'orphan', onePackEntry('orphan-content'));
+      await ctx.fs.rm(packFilePath(ctx, 'orphan'));
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      expect(result.findings).toHaveLength(0);
+      expect(result.exitCode).toBe(0);
+    });
+  });
+});
+
+describe('Given two packs both header-refused', () => {
+  describe('When fsck runs', () => {
+    it('Then two pack-inaccessible findings are emitted and bit 4 is set exactly once', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      await writeSyntheticPack(ctx, 'refused-a', onePackEntry('refused-a-content'));
+      await restampPackHeader(ctx, packFilePath(ctx, 'refused-a'), { version: 99 });
+      await writeSyntheticPack(ctx, 'refused-b', onePackEntry('refused-b-content'));
+      await restampPackHeader(ctx, packFilePath(ctx, 'refused-b'), { version: 99 });
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      const inaccessible = result.findings.filter((f) => f.type === 'pack-inaccessible');
+      expect(inaccessible).toHaveLength(2);
+      expect(result.exitCode & 4).toBe(4);
+    });
+  });
+});
+
+describe('Given a v99-refused pack and a healthy twin pack holding the same object ids', () => {
+  describe('When fsck runs', () => {
+    it('Then the shared object is still classified dangling/unreachable via the healthy twin, and the refused pack is reported', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const entries = onePackEntry('twin-content');
+      const healthyIds = await writeSyntheticPack(ctx, 'twin-healthy', entries);
+      await writeSyntheticPack(ctx, 'twin-refused', entries);
+      await restampPackHeader(ctx, packFilePath(ctx, 'twin-refused'), { version: 99 });
+      const [blobId] = healthyIds;
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      const isDangling = result.findings.some(
+        (f) => f.type === 'dangling' && (f as { id: ObjectId }).id === blobId,
+      );
+      const isUnreachable = result.findings.some(
+        (f) => f.type === 'unreachable' && (f as { id: ObjectId }).id === blobId,
+      );
+      const inaccessible = result.findings.filter((f) => f.type === 'pack-inaccessible');
+      expect(isDangling).toBe(true);
+      expect(isUnreachable).toBe(true);
+      expect(inaccessible).toHaveLength(1);
+      expect((inaccessible[0] as { pack: string }).pack).toBe('pack-twin-refused');
+    });
+  });
+});
+
+describe('Given a v99-refused pack holding the only reachable tree beneath a loose root commit', () => {
+  describe('When fsck runs', () => {
+    it('Then a missing and a broken-link finding are emitted alongside the pack finding, with bits 2 and 4 both set', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const emptyTreeBody = serializeTreeContent(makeTree([]), ctx.hashConfig);
+      const [treeId] = await writeSyntheticPack(ctx, 'row8-refused', [
+        { kind: 'base', type: 'tree', content: emptyTreeBody },
+      ]);
+      await restampPackHeader(ctx, packFilePath(ctx, 'row8-refused'), { version: 99 });
+      const commitId = await writeObject(ctx, makeCommit(treeId as ObjectId, []));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      const missing = result.findings.filter(
+        (f) => f.type === 'missing' && (f as { id: ObjectId }).id === treeId,
+      );
+      const brokenLink = result.findings.filter(
+        (f) => f.type === 'broken-link' && (f as { toId: ObjectId }).toId === treeId,
+      );
+      const inaccessible = result.findings.filter((f) => f.type === 'pack-inaccessible');
+      expect(missing).toHaveLength(1);
+      expect(brokenLink).toHaveLength(1);
+      expect(inaccessible).toHaveLength(1);
+      expect(result.exitCode & 2).toBe(2);
+      expect(result.exitCode & 4).toBe(4);
+    });
+  });
+});
+
+describe('Given a header-refused pack', () => {
+  describe('When fsck runs with connectivityOnly: true', () => {
+    it('Then no pack-inaccessible finding is emitted and bit 4 is absent', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      await writeSyntheticPack(ctx, 'conn-only-refused', onePackEntry('conn-only-content'));
+      await restampPackHeader(ctx, packFilePath(ctx, 'conn-only-refused'), { version: 99 });
+
+      // Act
+      const result = await fsck(ctx, { connectivityOnly: true });
+
+      // Assert
+      expect(result.findings.some((f) => f.type === 'pack-inaccessible')).toBe(false);
+      expect(result.exitCode & 4).toBe(0);
+    });
+  });
+
+  describe('When fsck runs with full: false', () => {
+    it('Then no pack-inaccessible finding is emitted and bit 4 is absent', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      await writeSyntheticPack(ctx, 'full-false-refused', onePackEntry('full-false-content'));
+      await restampPackHeader(ctx, packFilePath(ctx, 'full-false-refused'), { version: 99 });
+
+      // Act
+      const result = await fsck(ctx, { full: false });
+
+      // Assert
+      expect(result.findings.some((f) => f.type === 'pack-inaccessible')).toBe(false);
+      expect(result.exitCode & 4).toBe(0);
+    });
+  });
+
+  describe('When fsck runs with strict: true', () => {
+    it('Then bit 4 stays set for the refused pack, same as without strict', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      await writeSyntheticPack(ctx, 'strict-refused', onePackEntry('strict-content'));
+      await restampPackHeader(ctx, packFilePath(ctx, 'strict-refused'), { version: 99 });
+
+      // Act
+      const withoutStrict = await fsck(ctx);
+      const withStrict = await fsck(ctx, { strict: true });
+
+      // Assert
+      expect(withoutStrict.exitCode & 4).toBe(4);
+      expect(withStrict.exitCode & 4).toBe(4);
+    });
+  });
+});
+
+describe('Given a pack with a corrupt .idx', () => {
+  describe('When fsck runs with connectivityOnly: true', () => {
+    it('Then pack-rev-index-unusable is present, bit 64 is set, and bit 4 is absent', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      await writeSyntheticPack(ctx, 'conn-corrupt-idx', onePackEntry('conn-corrupt-idx-content'));
+      await ctx.fs.write(idxFilePath(ctx, 'conn-corrupt-idx'), new Uint8Array(1072));
+
+      // Act
+      const result = await fsck(ctx, { connectivityOnly: true });
+
+      // Assert
+      const revIndexUnusable = result.findings.filter((f) => f.type === 'pack-rev-index-unusable');
+      expect(revIndexUnusable).toHaveLength(1);
+      expect(result.exitCode & 64).toBe(64);
+      expect(result.exitCode & 4).toBe(0);
+      expect(result.findings.some((f) => f.type === 'pack-index-unusable')).toBe(false);
     });
   });
 });
