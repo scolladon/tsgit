@@ -16,8 +16,7 @@
  *   interopSurface: packfile
  */
 import { execFileSync, spawnSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -30,70 +29,19 @@ import type { TsgitError } from '../../src/domain/error.js';
 import type { GitObject, ObjectId } from '../../src/domain/objects/index.js';
 import type { Context } from '../../src/ports/context.js';
 import { GIT_AVAILABLE, git, runGit, runGitEnv, tryRunGitWithExit } from './interop-helpers.js';
-
-// ---------------------------------------------------------------------------
-// Crafting helpers — restamp/corrupt pack and idx bytes so the only thing
-// wrong with a fixture is exactly what a row asks for. The pack subsystem is
-// SHA-1-only end to end (the idx reader and writer both fix a 20-byte digest),
-// so these helpers hard-code SHA-1 rather than imply a genericity they lack.
-// ---------------------------------------------------------------------------
-
-const DIGEST_LENGTH = 20;
-
-function sha1(bytes: Uint8Array): Buffer {
-  return createHash('sha1').update(bytes).digest();
-}
-
-/**
- * Rewrite the pack-version field (u32 BE at `origin + 4`) and re-fix the pack
- * trailer over `[origin, len - DIGEST_LENGTH)`. `origin` defaults to 0 for a
- * standalone pack file; a pack embedded further into a larger byte stream
- * (a bundle) passes the offset of its own signature instead.
- */
-function restampPackVersion(packBytes: Uint8Array, version: number, origin = 0): Buffer {
-  const buf = Buffer.from(packBytes);
-  buf.writeUInt32BE(version, origin + 4);
-  const trailerStart = buf.length - DIGEST_LENGTH;
-  sha1(buf.subarray(origin, trailerStart)).copy(buf, trailerStart);
-  return buf;
-}
-
-/**
- * Re-stamp a `.idx`'s recorded pack-checksum to match `packTrailer`, then
- * re-fix the idx's own trailer over its own bytes. Needed when a pack is
- * mutated after its `.idx` was already built and the mutation makes the pack
- * impossible to re-index normally (e.g. an unsupported header version).
- */
-function restampIdxForPack(idxBytes: Uint8Array, packTrailer: Uint8Array): Buffer {
-  const buf = Buffer.from(idxBytes);
-  const packChecksumOffset = buf.length - 2 * DIGEST_LENGTH;
-  Buffer.from(packTrailer).copy(buf, packChecksumOffset);
-  const idxTrailerStart = buf.length - DIGEST_LENGTH;
-  sha1(buf.subarray(0, idxTrailerStart)).copy(buf, idxTrailerStart);
-  return buf;
-}
-
-/**
- * Overwrite a `.idx` with a deterministic byte ramp of the same length — the
- * shape that survives a naive length-only validity check and forces the
- * parser itself to reject the file, reproducibly on every run.
- */
-function corruptIdxSameLength(idxBytes: Uint8Array): Buffer {
-  return Buffer.from(Uint8Array.from({ length: idxBytes.length }, (_, i) => i % 256));
-}
-
-/** Rewrite the pack header's object-count field (u32 BE at offset 8) and re-fix the trailer. */
-function setHeaderObjectCount(packBytes: Uint8Array, count: number): Buffer {
-  const buf = Buffer.from(packBytes);
-  buf.writeUInt32BE(count, 8);
-  const trailerStart = buf.length - DIGEST_LENGTH;
-  sha1(buf.subarray(0, trailerStart)).copy(buf, trailerStart);
-  return buf;
-}
-
-function trailerOf(bytes: Uint8Array): Uint8Array {
-  return bytes.subarray(bytes.length - DIGEST_LENGTH);
-}
+import {
+  corruptIdxSameLength,
+  countObjects,
+  readSolePackPair,
+  restampIdxForPack,
+  restampPackVersion,
+  setHeaderObjectCount,
+  trailerOf,
+  writeIdxOnly,
+  writeLooseObject,
+  writePack,
+  writePackOnly,
+} from './pack-fixture-helpers.js';
 
 // ---------------------------------------------------------------------------
 // git-invocation + output-parsing helpers
@@ -124,22 +72,6 @@ async function collectPackedIds(ctx: Context): Promise<ReadonlyArray<ObjectId>> 
   return all.filter((id) => !loose.has(id));
 }
 
-interface PackCounts {
-  readonly packs: number;
-  readonly inPack: number;
-  readonly garbage: number;
-}
-
-/** Parses the `label: N` lines out of `git count-objects -v` — git's observable pack-set size. */
-function countObjects(dir: string): PackCounts {
-  const stdout = git(dir, 'count-objects', '-v');
-  const field = (label: string): number => {
-    const match = new RegExp(`^${label}: (\\d+)$`, 'm').exec(stdout);
-    return match === null ? 0 : Number(match[1]);
-  };
-  return { packs: field('packs'), inPack: field('in-pack'), garbage: field('garbage') };
-}
-
 const PACK_SIGNATURE = Buffer.from('PACK');
 
 /** Locates a pack's own signature inside a larger byte stream (a bundle carries header text first). */
@@ -147,75 +79,6 @@ function findPackSignature(bytes: Uint8Array): number {
   const offset = Buffer.from(bytes).indexOf(PACK_SIGNATURE);
   if (offset === -1) throw new Error('PACK signature not found in the given bytes');
   return offset;
-}
-
-// ---------------------------------------------------------------------------
-// Filesystem crafting helpers
-// ---------------------------------------------------------------------------
-
-function packStemPaths(
-  dir: string,
-  stem: string,
-): { readonly packPath: string; readonly idxPath: string } {
-  const packDir = path.join(dir, '.git', 'objects', 'pack');
-  return {
-    packPath: path.join(packDir, `pack-${stem}.pack`),
-    idxPath: path.join(packDir, `pack-${stem}.idx`),
-  };
-}
-
-async function ensurePackDir(dir: string): Promise<void> {
-  await mkdir(path.join(dir, '.git', 'objects', 'pack'), { recursive: true });
-}
-
-async function writePack(
-  dir: string,
-  stem: string,
-  packBytes: Uint8Array,
-  idxBytes: Uint8Array,
-): Promise<{ readonly packPath: string; readonly idxPath: string }> {
-  await ensurePackDir(dir);
-  const paths = packStemPaths(dir, stem);
-  await writeFile(paths.packPath, packBytes);
-  await writeFile(paths.idxPath, idxBytes);
-  return paths;
-}
-
-async function writePackOnly(
-  dir: string,
-  stem: string,
-  packBytes: Uint8Array,
-): Promise<{ readonly packPath: string; readonly idxPath: string }> {
-  await ensurePackDir(dir);
-  const paths = packStemPaths(dir, stem);
-  await writeFile(paths.packPath, packBytes);
-  return paths;
-}
-
-async function writeIdxOnly(dir: string, stem: string, idxBytes: Uint8Array): Promise<void> {
-  await ensurePackDir(dir);
-  const { idxPath } = packStemPaths(dir, stem);
-  await writeFile(idxPath, idxBytes);
-}
-
-async function writeLooseObject(dir: string, oid: string, raw: Uint8Array): Promise<void> {
-  const objDir = path.join(dir, '.git', 'objects', oid.slice(0, 2));
-  await mkdir(objDir, { recursive: true });
-  await writeFile(path.join(objDir, oid.slice(2)), raw);
-}
-
-/** Reads the single `.pack`/`.idx` pair a `git repack` produced under a repo's pack directory. */
-async function readSolePackPair(
-  dir: string,
-): Promise<{ readonly packBytes: Buffer; readonly idxBytes: Buffer }> {
-  const packDir = path.join(dir, '.git', 'objects', 'pack');
-  const entries = await readdir(packDir);
-  const packName = entries.find((entry) => entry.endsWith('.pack'));
-  if (packName === undefined) throw new Error(`no .pack file found under ${packDir}`);
-  const stem = packName.slice(0, -'.pack'.length);
-  const packBytes = await readFile(path.join(packDir, packName));
-  const idxBytes = await readFile(path.join(packDir, `${stem}.idx`));
-  return { packBytes, idxBytes };
 }
 
 // ---------------------------------------------------------------------------
