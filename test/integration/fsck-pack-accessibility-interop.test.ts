@@ -20,14 +20,30 @@ import { chmod, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promis
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { deflateSync } from 'node:zlib';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import type { FsckFinding, FsckOptions } from '../../src/application/commands/fsck.js';
 import { fsck } from '../../src/application/commands/fsck.js';
+import { disposePackRegistry } from '../../src/application/primitives/read-object.js';
 import { TsgitError } from '../../src/domain/error.js';
 import { SHA1_CONFIG } from '../../src/domain/objects/hash-config.js';
 import { parsePackEntryHeader } from '../../src/domain/storage/index.js';
 import type { Context } from '../../src/ports/context.js';
+
+// Every context a row builds is disposed after the row — the packed-read rows
+// open persistent FileHandles (pack.readSlice via the retention walk), and an
+// undisposed registry surfaces as the GC-close warning the handle-lifecycle
+// work treats as its leak oracle.
+const liveContexts: Context[] = [];
+function trackedNodeContext(workDir: string): Context {
+  const ctx = createNodeContext({ workDir });
+  liveContexts.push(ctx);
+  return ctx;
+}
+afterEach(async () => {
+  await Promise.all(liveContexts.splice(0).map((ctx) => disposePackRegistry(ctx)));
+});
+
 import { GIT_AVAILABLE, git, runGit, runGitEnv, tryRunGitWithExit } from './interop-helpers.js';
 import {
   corruptIdxSameLength,
@@ -275,7 +291,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
       // Arrange
       const dir = await bareTargetWithPack('k1', 'good', basePackBytes, baseIdxBytes);
       const gitResult = gitFsck(dir);
-      const sut = createNodeContext({ workDir: dir });
+      const sut = trackedNodeContext(dir);
 
       // Act
       const result = await fsck(sut);
@@ -295,7 +311,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
       const v3IdxBytes = restampIdxForPack(baseIdxBytes, trailerOf(v3PackBytes));
       const dir = await bareTargetWithPack('k2', 'good', v3PackBytes, v3IdxBytes);
       const gitResult = gitFsck(dir);
-      const sut = createNodeContext({ workDir: dir });
+      const sut = trackedNodeContext(dir);
 
       // Act
       const result = await fsck(sut);
@@ -314,7 +330,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
       const v99IdxBytes = restampIdxForPack(baseIdxBytes, trailerOf(v99PackBytes));
       const dir = await bareTargetWithPack('k3', 'bad', v99PackBytes, v99IdxBytes);
       const gitResult = gitFsck(dir);
-      const sut = createNodeContext({ workDir: dir });
+      const sut = trackedNodeContext(dir);
 
       // Act
       const result = await fsck(sut);
@@ -337,7 +353,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
       const mismatchedPackBytes = setHeaderObjectCount(basePackBytes, objectCount + 1);
       const dir = await bareTargetWithPack('k4', 'bad', mismatchedPackBytes, baseIdxBytes);
       const gitResult = gitFsck(dir);
-      const sut = createNodeContext({ workDir: dir });
+      const sut = trackedNodeContext(dir);
 
       // Act
       const result = await fsck(sut);
@@ -365,7 +381,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
       const badSignatureBytes = corruptSignature(basePackBytes);
       const dir = await bareTargetWithPack('k5', 'bad', badSignatureBytes, baseIdxBytes);
       const gitResult = gitFsck(dir);
-      const sut = createNodeContext({ workDir: dir });
+      const sut = trackedNodeContext(dir);
 
       // Act
       const result = await fsck(sut);
@@ -389,7 +405,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
       const truncatedBytes = basePackBytes.subarray(0, 8);
       const dir = await bareTargetWithPack('k6', 'bad', truncatedBytes, baseIdxBytes);
       const gitResult = gitFsck(dir);
-      const sut = createNodeContext({ workDir: dir });
+      const sut = trackedNodeContext(dir);
 
       // Act
       const result = await fsck(sut);
@@ -413,7 +429,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
       const dir = await bareTargetWithPack('k7', 'bad', basePackBytes, baseIdxBytes);
       await chmod(path.join(dir, PACK_DIR, 'pack-bad.pack'), 0o000);
       const gitResult = gitFsck(dir);
-      const sut = createNodeContext({ workDir: dir });
+      const sut = trackedNodeContext(dir);
 
       // Act
       const result = await fsck(sut);
@@ -442,7 +458,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
         corruptIdxSameLength(baseIdxBytes),
       );
       const gitResult = gitFsck(dir);
-      const sut = createNodeContext({ workDir: dir });
+      const sut = trackedNodeContext(dir);
 
       // Act
       const result = await fsck(sut);
@@ -465,7 +481,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
       // Arrange
       const dir = await bareTargetWithPack('k9', 'bad', basePackBytes, baseIdxBytes.subarray(0, 8));
       const gitResult = gitFsck(dir);
-      const sut = createNodeContext({ workDir: dir });
+      const sut = trackedNodeContext(dir);
 
       // Act
       const result = await fsck(sut);
@@ -488,7 +504,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
       const dir = await bareTargetWithPack('k10', 'bad', basePackBytes, baseIdxBytes);
       await chmod(path.join(dir, PACK_DIR, 'pack-bad.idx'), 0o000);
       const gitResult = gitFsck(dir);
-      const sut = createNodeContext({ workDir: dir });
+      const sut = trackedNodeContext(dir);
 
       // Act
       const result = await fsck(sut);
@@ -517,7 +533,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
       const dir = await freshRepo('k11');
       await writeIdxOnly(dir, 'orphan', baseIdxBytes);
       const gitResult = gitFsck(dir);
-      const sut = createNodeContext({ workDir: dir });
+      const sut = trackedNodeContext(dir);
 
       // Act
       const result = await fsck(sut);
@@ -536,7 +552,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
       const dir = await freshRepo('k12');
       await writePackOnly(dir, 'no-pack', basePackBytes);
       const gitResult = gitFsck(dir);
-      const sut = createNodeContext({ workDir: dir });
+      const sut = trackedNodeContext(dir);
 
       // Act
       const result = await fsck(sut);
@@ -559,7 +575,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
       await writePack(dir, 'aaa', v99PackBytes, v99IdxBytes);
       await writePack(dir, 'bbb', badSignatureBytes, baseIdxBytes);
       const gitResult = gitFsck(dir);
-      const sut = createNodeContext({ workDir: dir });
+      const sut = trackedNodeContext(dir);
 
       // Act
       const result = await fsck(sut);
@@ -584,7 +600,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
       await writePack(dir, 'bad', v99PackBytes, v99IdxBytes);
       await writePack(dir, 'good', basePackBytes, baseIdxBytes);
       const gitResult = gitFsck(dir);
-      const sut = createNodeContext({ workDir: dir });
+      const sut = trackedNodeContext(dir);
 
       // Act
       const result = await fsck(sut);
@@ -611,8 +627,8 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
       await writePack(withPackDir, 'bad', v99PackBytes, v99IdxBytes);
       const gitBaseline = gitFsck(baselineDir);
       const gitWithPack = gitFsck(withPackDir);
-      const sutBaseline = createNodeContext({ workDir: baselineDir });
-      const sutWithPack = createNodeContext({ workDir: withPackDir });
+      const sutBaseline = trackedNodeContext(baselineDir);
+      const sutWithPack = trackedNodeContext(withPackDir);
 
       // Act
       const resultBaseline = await fsck(sutBaseline);
@@ -644,8 +660,8 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
       await corruptSolePackToV99(withPackDir);
       const gitBaseline = gitFsck(baselineDir);
       const gitWithPack = gitFsck(withPackDir);
-      const sutBaseline = createNodeContext({ workDir: baselineDir });
-      const sutWithPack = createNodeContext({ workDir: withPackDir });
+      const sutBaseline = trackedNodeContext(baselineDir);
+      const sutWithPack = trackedNodeContext(withPackDir);
 
       // Act
       const resultBaseline = await fsck(sutBaseline);
@@ -676,7 +692,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
         corruptIdxSameLength(baseIdxBytes),
       );
       const gitResult = gitFsck(dir);
-      const sut = createNodeContext({ workDir: dir });
+      const sut = trackedNodeContext(dir);
 
       // Act
       const result = await fsck(sut);
@@ -765,7 +781,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
                 corruptIdxSameLength(baseIdxBytes),
               );
         const gitResult = gitFsck(dir, ...gitFlags);
-        const sut = createNodeContext({ workDir: dir });
+        const sut = trackedNodeContext(dir);
 
         // Act
         const result = await fsck(sut, fsckOptions);
@@ -784,7 +800,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
       const v99IdxBytes = restampIdxForPack(baseIdxBytes, trailerOf(v99PackBytes));
       const dir = await bareTargetWithPack('k18', 'bad', v99PackBytes, v99IdxBytes);
       const gitResult = gitFsck(dir, '--strict');
-      const sut = createNodeContext({ workDir: dir });
+      const sut = trackedNodeContext(dir);
 
       // Act
       const result = await fsck(sut, { strict: true });
@@ -810,7 +826,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
       it('Then the dangling-unknown oid set matches exactly, sized off the donor pack itself', async () => {
         // Arrange
         const gitResult = gitFsck(targetDir, '--connectivity-only');
-        const sut = createNodeContext({ workDir: targetDir });
+        const sut = trackedNodeContext(targetDir);
 
         // Act
         const result = await fsck(sut, { connectivityOnly: true });
@@ -841,7 +857,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
       it('Then neither tool reports anything for the pack', async () => {
         // Arrange
         const gitResult = gitFsck(targetDir, '--no-full');
-        const sut = createNodeContext({ workDir: targetDir });
+        const sut = trackedNodeContext(targetDir);
 
         // Act
         const result = await fsck(sut, { full: false });
@@ -1024,7 +1040,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         const oid = hashObjectW(dir, 'k22-content\n');
         await chmod(looseObjectPath(dir, oid), 0o000);
         const gitResult = gitFsck(dir, '--connectivity-only');
-        const sut = createNodeContext({ workDir: dir });
+        const sut = trackedNodeContext(dir);
 
         // Act
         const result = await fsck(sut, { connectivityOnly: true });
@@ -1047,7 +1063,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         await chmod(looseObjectPath(dir, oid), 0o000);
         const gitDefault = gitFsck(dir);
         const gitWithProjectionFlags = gitFsck(dir, '--dangling', '--unreachable');
-        const sut = createNodeContext({ workDir: dir });
+        const sut = trackedNodeContext(dir);
 
         // Assert — git: unchanged by the projection flags (Pin P-a) — this is
         // what makes it a computation difference, not a print filter
@@ -1074,7 +1090,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         const oid = git(dir, 'rev-parse', 'HEAD:reach.txt').trim();
         await chmod(looseObjectPath(dir, oid), 0o000);
         const gitResult = gitFsck(dir, '--connectivity-only');
-        const sut = createNodeContext({ workDir: dir });
+        const sut = trackedNodeContext(dir);
 
         // Act
         const result = await fsck(sut, { connectivityOnly: true });
@@ -1099,7 +1115,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         const oid = syntheticOid('k25-mismatch-target');
         await writeLooseObject(dir, oid, craftedLooseBytes(`blob ${content.length}`, content));
         const gitResult = gitFsck(dir, '--connectivity-only');
-        const sut = createNodeContext({ workDir: dir });
+        const sut = trackedNodeContext(dir);
 
         // Act
         const result = await fsck(sut, { connectivityOnly: true });
@@ -1121,7 +1137,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         const oid = syntheticOid('k26-garbage');
         await writeLooseObject(dir, oid, NON_ZLIB_GARBAGE);
         const gitResult = gitFsck(dir, '--connectivity-only');
-        const sut = createNodeContext({ workDir: dir });
+        const sut = trackedNodeContext(dir);
 
         // Assert — git
         expect(gitResult.exitCode).toBe(128);
@@ -1140,7 +1156,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         const oid = syntheticOid('k27-garbage');
         await writeLooseObject(dir, oid, NON_ZLIB_GARBAGE);
         const gitResult = gitFsck(dir);
-        const sut = createNodeContext({ workDir: dir });
+        const sut = trackedNodeContext(dir);
 
         // Act
         const result = await fsck(sut);
@@ -1165,7 +1181,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         await chmod(looseObjectPath(dir, oid), 0o644);
         await writeFile(looseObjectPath(dir, oid), NON_ZLIB_GARBAGE);
         const gitResult = gitFsck(dir, '--connectivity-only');
-        const sut = createNodeContext({ workDir: dir });
+        const sut = trackedNodeContext(dir);
 
         // Act
         const result = await fsck(sut, { connectivityOnly: true });
@@ -1192,7 +1208,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         await chmod(looseObjectPath(dir, blobOid), 0o644);
         await writeFile(looseObjectPath(dir, blobOid), NON_ZLIB_GARBAGE);
         const gitResult = gitFsck(dir, '--connectivity-only');
-        const sut = createNodeContext({ workDir: dir });
+        const sut = trackedNodeContext(dir);
 
         // Assert — git
         expect(gitResult.exitCode).toBe(128);
@@ -1212,7 +1228,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         await chmod(looseObjectPath(dir, oid), 0o644);
         await writeFile(looseObjectPath(dir, oid), new Uint8Array(0));
         const gitResult = gitFsck(dir, '--connectivity-only');
-        const sut = createNodeContext({ workDir: dir });
+        const sut = trackedNodeContext(dir);
 
         // Act
         const result = await fsck(sut, { connectivityOnly: true });
@@ -1234,7 +1250,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         const oid = syntheticOid('k31-widget');
         await writeLooseObject(dir, oid, craftedLooseBytes('widget 5', Buffer.from('abcde')));
         const gitResult = gitFsck(dir, '--connectivity-only');
-        const sut = createNodeContext({ workDir: dir });
+        const sut = trackedNodeContext(dir);
 
         // Assert — git
         expect(gitResult.exitCode).toBe(128);
@@ -1253,7 +1269,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         const oid = syntheticOid('k32-size-mismatch');
         await writeLooseObject(dir, oid, craftedLooseBytes('blob 99', Buffer.from('hi')));
         const gitResult = gitFsck(dir, '--connectivity-only');
-        const sut = createNodeContext({ workDir: dir });
+        const sut = trackedNodeContext(dir);
 
         // Act
         const result = await fsck(sut, { connectivityOnly: true });
@@ -1276,7 +1292,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         const garbageOid = syntheticOid('k33-garbage');
         await writeLooseObject(dir, garbageOid, NON_ZLIB_GARBAGE);
         const gitResult = gitFsck(dir, '--connectivity-only');
-        const sut = createNodeContext({ workDir: dir });
+        const sut = trackedNodeContext(dir);
 
         // Assert — git: an abort is the whole report withheld, not one finding
         // replaced by an error — the already-computed healthy line is absent
@@ -1303,7 +1319,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         );
         const dir = await bareTargetWithPack('k34', 'corrupt', corruptedPackBytes, donor.idxBytes);
         const gitResult = gitFsck(dir, '--connectivity-only');
-        const sut = createNodeContext({ workDir: dir });
+        const sut = trackedNodeContext(dir);
 
         // Act
         const result = await fsck(sut, { connectivityOnly: true });
@@ -1327,7 +1343,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         const dir = await bareTargetWithPack('k35', 'healthy', donor.packBytes, donor.idxBytes);
         await writeLooseObject(dir, donor.oid, NON_ZLIB_GARBAGE);
         const gitResult = gitFsck(dir, '--connectivity-only');
-        const sut = createNodeContext({ workDir: dir });
+        const sut = trackedNodeContext(dir);
 
         // Act
         const result = await fsck(sut, { connectivityOnly: true });
@@ -1356,7 +1372,7 @@ describe.skipIf(!GIT_AVAILABLE)(
           const built = await buildDeltaPackPair(slug, deltaBaseOffset);
           const dir = await bareTargetWithPack(slug, 'delta', built.packBytes, built.idxBytes);
           const gitResult = gitFsck(dir, '--connectivity-only');
-          const sut = createNodeContext({ workDir: dir });
+          const sut = trackedNodeContext(dir);
 
           // Act
           const result = await fsck(sut, { connectivityOnly: true });
@@ -1386,7 +1402,7 @@ describe.skipIf(!GIT_AVAILABLE)(
           craftedLooseBytes('tree 4', Buffer.from([0x00, 0x01, 0x02, 0x03])),
         );
         const gitResult = gitFsck(dir, '--connectivity-only');
-        const sut = createNodeContext({ workDir: dir });
+        const sut = trackedNodeContext(dir);
 
         // Act
         const result = await fsck(sut, { connectivityOnly: true });

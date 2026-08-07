@@ -38,6 +38,9 @@ interface FsckDegradedStoreResult {
   readonly connectivityExitCode: number;
   readonly connectivityObjectTypeCensus: ReadonlyArray<string>;
   readonly connectivityRejectCode: string;
+  readonly v99IdType: string;
+  readonly corruptEntryIdType: string;
+  readonly defaultAfterBadObjectCount: number;
 }
 
 // Header (8) + fanout table (1024) is the parser's minimum-size gate; this
@@ -68,7 +71,7 @@ function concatBytes(a: Uint8Array, b: Uint8Array): Uint8Array {
  * it — the one path that exercises the stored-type recovery's non-loose arm
  * (`pack.readSlice` on a packed-only object with no loose twin).
  */
-async function writeCorruptEntryPack(repo: Repository, name: string): Promise<void> {
+async function writeCorruptEntryPack(repo: Repository, name: string): Promise<ObjectId> {
   const id = (await repo.ctx.hash.hashHex(
     new TextEncoder().encode(`${name}-object-id-seed`),
   )) as ObjectId;
@@ -87,6 +90,7 @@ async function writeCorruptEntryPack(repo: Repository, name: string): Promise<vo
   const packBase = `${repo.ctx.layout.gitDir}/objects/pack/${name}`;
   await repo.ctx.fs.write(`${packBase}.pack`, packBytes);
   await repo.ctx.fs.write(`${packBase}.idx`, idxBytes);
+  return id;
 }
 
 export const fsckDegradedStoreScenario: Scenario<FsckDegradedStoreResult> = {
@@ -112,6 +116,17 @@ export const fsckDegradedStoreScenario: Scenario<FsckDegradedStoreResult> = {
     // multiset over both finding types, not a deduplicated set.
     connectivityObjectTypeCensus: ['blob', 'blob', 'unknown', 'unknown'],
     connectivityRejectCode: 'DECOMPRESS_FAILED',
+    // Per-arm attribution — a cross-arm swap of types would leave the census
+    // above identical, so the two boundary oids are typed by name: the v99
+    // pack's id can never be probed (its pack cannot be opened), the corrupt
+    // entry's id types from its pack entry header despite its dead body.
+    v99IdType: 'unknown',
+    corruptEntryIdType: 'blob',
+    // Default mode after the undecodable loose object lands: the content
+    // pass reports it as one more bad-object (arm 3's corrupt entry is the
+    // other) — the loose reject class stays a content error outside
+    // connectivityOnly.
+    defaultAfterBadObjectCount: 2,
   },
   run: async (repo, inputs) => {
     // Arrange — seed a healthy root commit so the reachable graph is
@@ -132,14 +147,14 @@ export const fsckDegradedStoreScenario: Scenario<FsckDegradedStoreResult> = {
     // enumerates under connectivityOnly, so a refused pack's ids are still
     // reported) but the pack itself cannot be opened, so the type-recovery
     // probe never runs — the type comes back 'unknown'.
-    await writeScenarioPackPair(repo, {
+    const { id: v99Id } = await writeScenarioPackPair(repo, {
       name: 'fsck-degraded-v99',
       content: V99_CONTENT,
       version: 99,
     });
 
     // Arm 3 — a healthy, openable pack whose one entry will not inflate.
-    await writeCorruptEntryPack(repo, 'fsck-degraded-corrupt-entry');
+    const corruptEntryId = await writeCorruptEntryPack(repo, 'fsck-degraded-corrupt-entry');
 
     // Act — both modes over the 3-arm base fixture, before the reject fault
     // (arm 4) exists, since an abort withholds the whole report.
@@ -165,6 +180,10 @@ export const fsckDegradedStoreScenario: Scenario<FsckDegradedStoreResult> = {
         (error as { data?: { code?: string } }).data?.code ?? 'unexpected-shape';
     }
 
+    // Default mode over the SAME four-arm store: the reject class stays a
+    // content error here — the run resolves and reports, never aborts.
+    const defaultAfter = await repo.fsck();
+
     // Assert — project to deterministic fields only, no oids: a sorted
     // census of dangling/unreachable object types rather than a count keyed
     // to a specific oid.
@@ -172,6 +191,15 @@ export const fsckDegradedStoreScenario: Scenario<FsckDegradedStoreResult> = {
       .filter((finding) => finding.type === 'dangling' || finding.type === 'unreachable')
       .map((finding) => finding.objectType)
       .sort();
+
+    const connectivityTypeOf = (id: ObjectId): string => {
+      for (const finding of connectivityResult.findings) {
+        if ((finding.type === 'dangling' || finding.type === 'unreachable') && finding.id === id) {
+          return finding.objectType;
+        }
+      }
+      return 'absent';
+    };
 
     return {
       defaultExitCode: defaultResult.exitCode,
@@ -184,6 +212,11 @@ export const fsckDegradedStoreScenario: Scenario<FsckDegradedStoreResult> = {
       connectivityExitCode: connectivityResult.exitCode,
       connectivityObjectTypeCensus,
       connectivityRejectCode,
+      v99IdType: connectivityTypeOf(v99Id),
+      corruptEntryIdType: connectivityTypeOf(corruptEntryId),
+      defaultAfterBadObjectCount: defaultAfter.findings.filter(
+        (finding) => finding.type === 'bad-object',
+      ).length,
     };
   },
 };

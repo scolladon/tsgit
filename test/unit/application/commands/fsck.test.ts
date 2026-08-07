@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { type FsckFinding, fsck } from '../../../../src/application/commands/fsck.js';
 import { looseObjectPath, objectsDir } from '../../../../src/application/primitives/path-layout.js';
+import { disposePackRegistry } from '../../../../src/application/primitives/read-object.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import {
   permissionDenied,
@@ -17,7 +18,9 @@ import {
 import type { FilePath } from '../../../../src/domain/objects/object-id.js';
 import type { Context } from '../../../../src/ports/context.js';
 import { buildSeededContext } from '../primitives/fixtures.js';
+import { withHandleLedger } from '../primitives/handle-ledger.js';
 import { restampPackHeader, writeSyntheticPack } from '../primitives/pack-fixture.js';
+import { findingIds } from './fsck-finding-ids.js';
 
 const enc = new TextEncoder();
 
@@ -2538,17 +2541,6 @@ const onePackEntry = (content: string) => [
   { kind: 'base' as const, type: 'blob' as const, content: enc.encode(content) },
 ];
 
-/** Collect every ObjectId-shaped value a finding may carry, across all variants. */
-const findingIds = (finding: FsckFinding): ReadonlyArray<ObjectId> => {
-  const ids: ObjectId[] = [];
-  if ('id' in finding) ids.push(finding.id);
-  if ('fromId' in finding) ids.push(finding.fromId, finding.toId);
-  if ('actual' in finding) ids.push(finding.actual);
-  if ('target' in finding && finding.target !== undefined) ids.push(finding.target);
-  if ('tag' in finding) ids.push(finding.tag);
-  return ids;
-};
-
 describe('Given a repo with one healthy pack and no unusable packs', () => {
   describe('When fsck runs', () => {
     it('Then no pack finding is emitted and exit bit 4 is unset', async () => {
@@ -3643,6 +3635,182 @@ describe('Given an undecodable dangling loose object whose probe re-inflate hits
         operation: 'filesystem',
         reason: 'simulated adapter fault',
       });
+    });
+  });
+});
+
+describe('Given a loose garbled copy whose packed twin rejects entry reads with PERMISSION_DENIED', () => {
+  describe('When fsck runs with connectivityOnly: true', () => {
+    it("Then resolves with dangling/'unknown' — the walk degrades on store damage, never aborts", async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const [blobId] = await writeSyntheticPack(
+        ctx,
+        'd13-degrade-walk',
+        onePackEntry('d13-degrade-walk-content'),
+      );
+      const id = blobId as ObjectId;
+      await writeGarbageLooseObject(ctx, id, GARBAGE_BYTES);
+      const packPath = packFilePath(ctx, 'd13-degrade-walk');
+      const wrapped: Context = {
+        ...ctx,
+        fs: {
+          ...ctx.fs,
+          openWithNoFollow: async (path: string, mode: 'read' | 'write') => {
+            // The 12-byte header probe reads via fs.readSlice and stays
+            // healthy — only the entry walk's persistent-handle open fails,
+            // so the degrade under test is the walk's own, not the gate's.
+            if (path === packPath) throw permissionDenied(path);
+            return ctx.fs.openWithNoFollow(path, mode);
+          },
+        },
+      };
+
+      // Act
+      const result = await fsck(wrapped, { connectivityOnly: true });
+
+      // Assert
+      const dangling = result.findings.find(
+        (f) => f.type === 'dangling' && (f as { id: ObjectId }).id === id,
+      );
+      expect(dangling).toBeDefined();
+      expect((dangling as { objectType: string }).objectType).toBe('unknown');
+      expect(result.exitCode).toBe(0);
+    });
+  });
+});
+
+describe('Given a loose garbled copy whose packed twin rejects entry reads with UNSUPPORTED_OPERATION', () => {
+  describe('When fsck runs with connectivityOnly: true', () => {
+    it('Then fsck rejects with that exact fault — environmental faults are never degraded', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const [blobId] = await writeSyntheticPack(
+        ctx,
+        'd13-env-walk',
+        onePackEntry('d13-env-walk-content'),
+      );
+      const id = blobId as ObjectId;
+      await writeGarbageLooseObject(ctx, id, GARBAGE_BYTES);
+      const packPath = packFilePath(ctx, 'd13-env-walk');
+      const wrapped: Context = {
+        ...ctx,
+        fs: {
+          ...ctx.fs,
+          openWithNoFollow: async (path: string, mode: 'read' | 'write') => {
+            if (path === packPath) {
+              throw unsupportedOperation('filesystem', 'simulated descriptor exhaustion');
+            }
+            return ctx.fs.openWithNoFollow(path, mode);
+          },
+        },
+      };
+
+      // Act
+      let caught: unknown;
+      try {
+        await fsck(wrapped, { connectivityOnly: true });
+      } catch (error) {
+        caught = error;
+      }
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      expect((caught as TsgitError).data).toEqual({
+        code: 'UNSUPPORTED_OPERATION',
+        operation: 'filesystem',
+        reason: 'simulated descriptor exhaustion',
+      });
+    });
+  });
+});
+
+describe('Given a dangling REF_DELTA-encoded blob whose base pack was never written', () => {
+  describe('When fsck runs with connectivityOnly: true', () => {
+    it("Then resolves with dangling/'unknown' — an unclaimed base degrades the walk", async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const baseContent = enc.encode('d13-absent-base-content');
+      const baseId = await writeObject(ctx, makeBlob('d13-absent-base-content'));
+      const targetContent = enc.encode('d13-absent-base-contentTAIL');
+      const deltaIds = await writeSyntheticPack(ctx, 'd13-absent-base-delta', [
+        { kind: 'ref-delta', baseId, baseUncompressed: baseContent, targetContent },
+      ]);
+      const deltaId = deltaIds[0] as ObjectId;
+      await corruptTrailingPackEntryByte(ctx, packFilePath(ctx, 'd13-absent-base-delta'));
+
+      // Act
+      const result = await fsck(ctx, { connectivityOnly: true });
+
+      // Assert
+      const dangling = result.findings.find(
+        (f) => f.type === 'dangling' && (f as { id: ObjectId }).id === deltaId,
+      );
+      expect(dangling).toBeDefined();
+      expect((dangling as { objectType: string }).objectType).toBe('unknown');
+      expect(result.exitCode).toBe(0);
+    });
+  });
+});
+
+describe('Given an unreferenced loose object whose read rejects with PERMISSION_DENIED, default mode', () => {
+  describe('When fsck runs', () => {
+    it('Then fsck rejects with PERMISSION_DENIED — the pre-existing default-mode divergence, pinned', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const blobId = await writeObject(ctx, makeBlob('unopenable-default-content'));
+      const blobPath = looseObjectPath(ctx.layout.gitDir, blobId);
+      const wrapped: Context = {
+        ...ctx,
+        fs: {
+          ...ctx.fs,
+          read: async (path: string) => {
+            if (path === blobPath) throw permissionDenied(path);
+            return ctx.fs.read(path);
+          },
+        },
+      };
+
+      // Act
+      let caught: unknown;
+      try {
+        await fsck(wrapped);
+      } catch (error) {
+        caught = error;
+      }
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+    });
+  });
+});
+
+describe('Given a corrupt-bodied packed blob typed via the entry walk', () => {
+  describe('When fsck runs with connectivityOnly: true and the registry is disposed', () => {
+    it('Then no file handle is left outstanding — the retention path honours the handle lifecycle', async () => {
+      // Arrange
+      const base = await initBareCtx();
+      const [blobId] = await writeSyntheticPack(
+        base,
+        'd13-ledger-entry',
+        onePackEntry('d13-ledger-entry-content'),
+      );
+      const id = blobId as ObjectId;
+      await corruptTrailingPackEntryByte(base, packFilePath(base, 'd13-ledger-entry'));
+      const ledger = withHandleLedger(base);
+
+      // Act
+      const result = await fsck(ledger.ctx, { connectivityOnly: true });
+      await disposePackRegistry(ledger.ctx);
+
+      // Assert
+      const dangling = result.findings.find(
+        (f) => f.type === 'dangling' && (f as { id: ObjectId }).id === id,
+      );
+      expect(dangling).toBeDefined();
+      expect((dangling as { objectType: string }).objectType).toBe('blob');
+      expect(ledger.outstanding()).toBe(0);
     });
   });
 });

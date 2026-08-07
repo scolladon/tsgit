@@ -23,6 +23,7 @@ import type { ObjectId } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
 import { buildSeededContext } from '../primitives/fixtures.js';
 import { restampPackHeader, writeSyntheticPack } from '../primitives/pack-fixture.js';
+import { findingIds } from './fsck-finding-ids.js';
 
 // ---------------------------------------------------------------------------
 // Arbitraries
@@ -385,20 +386,6 @@ const PACK_LAYER_FAULT_SHAPES: ReadonlyArray<PackFaultShape> = [
   'short-pack',
   'count-disagreement',
 ];
-
-/** Collect every ObjectId-shaped value a finding may carry, across all variants. */
-const findingIds = (finding: {
-  readonly type: string;
-  readonly [key: string]: unknown;
-}): ReadonlyArray<ObjectId> => {
-  const ids: ObjectId[] = [];
-  if ('id' in finding) ids.push(finding.id as ObjectId);
-  if ('fromId' in finding) ids.push(finding.fromId as ObjectId, finding.toId as ObjectId);
-  if ('actual' in finding) ids.push(finding.actual as ObjectId);
-  if ('target' in finding && finding.target !== undefined) ids.push(finding.target as ObjectId);
-  if ('tag' in finding) ids.push(finding.tag as ObjectId);
-  return ids;
-};
 
 const isGatedPackFinding = (f: { readonly type: string }): boolean =>
   f.type === 'pack-inaccessible' || f.type === 'pack-index-unusable';
