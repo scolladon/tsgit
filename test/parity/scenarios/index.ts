@@ -8,6 +8,7 @@ import { configScenario } from './config.scenario.ts';
 import { describeScenario } from './describe.scenario.ts';
 import { diffPipelineScenario } from './diff-pipeline.scenario.ts';
 import { fsckScenario } from './fsck.scenario.ts';
+import { fsckDegradedStoreScenario } from './fsck-degraded-store.scenario.ts';
 import { grepScenario } from './grep.scenario.ts';
 import { initAddCommitStatusScenario } from './init-add-commit-status.scenario.ts';
 import { mergeAbortScenario } from './merge-abort.scenario.ts';
@@ -75,4 +76,5 @@ export const SCENARIOS: ReadonlyArray<Scenario<unknown>> = [
   shallowWalkScenario,
   packV3ReadScenario,
   packDegradedIdxScenario,
+  fsckDegradedStoreScenario,
 ];

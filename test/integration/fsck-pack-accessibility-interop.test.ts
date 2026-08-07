@@ -19,10 +19,15 @@
 import { chmod, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { deflateSync } from 'node:zlib';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import type { FsckFinding, FsckOptions } from '../../src/application/commands/fsck.js';
 import { fsck } from '../../src/application/commands/fsck.js';
+import { TsgitError } from '../../src/domain/error.js';
+import { SHA1_CONFIG } from '../../src/domain/objects/hash-config.js';
+import { parsePackEntryHeader } from '../../src/domain/storage/index.js';
+import type { Context } from '../../src/ports/context.js';
 import { GIT_AVAILABLE, git, runGit, runGitEnv, tryRunGitWithExit } from './interop-helpers.js';
 import {
   corruptIdxSameLength,
@@ -34,6 +39,7 @@ import {
   sha1,
   trailerOf,
   writeIdxOnly,
+  writeLooseObject,
   writePack,
   writePackOnly,
 } from './pack-fixture-helpers.js';
@@ -852,3 +858,547 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Loose-object axis (K-22 … K-37) — its own top-level describe: unlike K-1…K-21
+// above, these repos have no packs at all (except the three rows that build
+// one on purpose), so every cell is attributable to the one damaged loose
+// object. git writes loose objects `0444`; `chmod u+w` before mutating any of
+// them, or the row silently measures a healthy repo instead.
+// ---------------------------------------------------------------------------
+
+const PACK_HEADER_SIZE = 12;
+
+/** Bytes that can never be a valid zlib stream: 0xff's top nibble (0xf) is not the deflate CMF value (8), so every adapter's inflate rejects it on the first byte. */
+const NON_ZLIB_GARBAGE = Buffer.alloc(64, 0xff);
+
+function looseObjectPath(dir: string, oid: string): string {
+  return path.join(dir, '.git', 'objects', oid.slice(0, 2), oid.slice(2));
+}
+
+/** `git hash-object -w --stdin` — writes a real loose object and returns its oid. Content may be binary (a `Uint8Array`, written verbatim); a plain string goes through as UTF-8. */
+function hashObjectW(dir: string, content: string | Uint8Array): string {
+  return runGit(['-C', dir, 'hash-object', '-w', '--stdin'], { input: content }).trim();
+}
+
+/** `git mktree --stdin` — writes a tree object from `<mode> blob <oid>\t<name>\n` lines and returns its oid. Never referenced by any ref, so the tree itself stays dangling. */
+function mktree(dir: string, entryLine: string): string {
+  return runGit(['-C', dir, 'mktree'], { input: entryLine }).trim();
+}
+
+/** Deterministic 40-hex-char oid for a hand-crafted loose object whose path is never derived from its own content hash — fsck's loose-object discovery is a directory scan keyed on path alone (K-25's whole point). */
+function syntheticOid(seed: string): string {
+  return sha1(Buffer.from(seed)).toString('hex');
+}
+
+/** Deflates an already-assembled `<header>\0<body>` byte sequence the way git stores a loose object — for rows whose header is itself the fault under test (unrecoverable type, size disagreeing with body) and so cannot be produced through `git hash-object`. */
+function craftedLooseBytes(header: string, body: Uint8Array): Buffer {
+  return deflateSync(Buffer.concat([Buffer.from(`${header}\0`, 'ascii'), Buffer.from(body)]));
+}
+
+/** Runs `fsck` and catches its rejection — every reject row (K-26, K-29, K-31, K-33) shares this shape, so each `it` body reads as arrangement, then one assertion on the caught cause. Rethrows anything that is not a `TsgitError` and fails the test if `fsck` resolves instead of rejecting. */
+async function catchFsckRejection(ctx: Context, opts: FsckOptions): Promise<TsgitError> {
+  try {
+    await fsck(ctx, opts);
+  } catch (error) {
+    if (error instanceof TsgitError) return error;
+    throw error;
+  }
+  throw new Error('expected fsck to reject, but it resolved');
+}
+
+/** One row of `git verify-pack -v` — oid, its exact byte span in the pack (`sizeInPackfile` at `offset`), and whether it is delta-encoded (a trailing depth + base-sha pair appears only for delta entries). */
+interface VerifyPackRow {
+  readonly oid: string;
+  readonly sizeInPackfile: number;
+  readonly offset: number;
+  readonly isDelta: boolean;
+}
+
+function verifyPackRows(dir: string, idxPath: string): ReadonlyArray<VerifyPackRow> {
+  const rows: VerifyPackRow[] = [];
+  for (const line of git(dir, 'verify-pack', '-v', idxPath).split('\n')) {
+    const fields = line.trim().split(/\s+/);
+    const oid = fields[0];
+    if (fields.length < 5 || oid === undefined || !/^[0-9a-f]{40}$/.test(oid)) continue;
+    rows.push({
+      oid,
+      sizeInPackfile: Number(fields[3]),
+      offset: Number(fields[4]),
+      isDelta: fields.length >= 7,
+    });
+  }
+  return rows;
+}
+
+/** Flips one byte inside an entry's compressed body — never its header — located via `parsePackEntryHeader`'s own `dataOffset`, so the corruption can only land past the type/size/base-link bytes the type-recovery walk still needs to read. */
+function flipEntryBodyByte(packBytes: Buffer, entryOffset: number, entryEnd: number): Buffer {
+  const buf = Buffer.from(packBytes);
+  const header = parsePackEntryHeader(buf, entryOffset, SHA1_CONFIG);
+  const mid = header.dataOffset + Math.floor((entryEnd - header.dataOffset) / 2);
+  buf[mid] = (buf[mid] ?? 0) ^ 0xff;
+  return buf;
+}
+
+/** Deterministic pseudo-random bytes (no external entropy) — large enough (~20 KiB) that `git pack-objects` always prefers a delta over storing the second blob whole. */
+function pseudoRandomBytes(length: number, seed: number): Buffer {
+  const buf = Buffer.alloc(length);
+  let state = seed >>> 0;
+  for (let i = 0; i < length; i += 1) {
+    state = (Math.imul(state, 1103515245) + 12345) >>> 0;
+    buf[i] = (state >>> 16) & 0xff;
+  }
+  return buf;
+}
+
+/** Packs a single blob into its own donor-only pack — nothing else to delta against, so the entry is always stored whole (K-34, K-35's shared base). */
+async function buildSingleObjectPack(
+  slug: string,
+  content: string,
+): Promise<{ readonly oid: string; readonly packBytes: Buffer; readonly idxBytes: Buffer }> {
+  const donor = await freshRepo(`${slug}-donor`);
+  const oid = hashObjectW(donor, content);
+  const base = path.join(donor, PACK_DIR, `pack-${slug}`);
+  runGit(['-C', donor, 'pack-objects', base], { input: `${oid}\n` });
+  const { packBytes, idxBytes } = await readSolePackPair(donor);
+  return { oid, packBytes, idxBytes };
+}
+
+/**
+ * Two ~20 KiB blobs differing in three bytes, packed with `--no-reuse-delta`
+ * so the second is always freshly delta-encoded against the first, then one
+ * byte of the delta entry's own compressed body flipped (trailer left as-is —
+ * `--connectivity-only` never checks it). `deltaBaseOffset` selects OFS_DELTA
+ * over the default REF_DELTA (K-36 runs both encodings, per R13).
+ */
+async function buildDeltaPackPair(
+  slug: string,
+  deltaBaseOffset: boolean,
+): Promise<{
+  readonly corruptedOid: string;
+  readonly packBytes: Buffer;
+  readonly idxBytes: Buffer;
+}> {
+  const donor = await freshRepo(`${slug}-donor`);
+  const baseBytes = pseudoRandomBytes(20_000, 0xc0ffee);
+  const deltaBytes = Buffer.from(baseBytes);
+  for (const i of [100, 8000, 16000]) deltaBytes[i] = ((deltaBytes[i] ?? 0) + 1) % 256;
+
+  const baseOid = hashObjectW(donor, baseBytes);
+  const deltaOid = hashObjectW(donor, deltaBytes);
+  const base = path.join(donor, PACK_DIR, `pack-${slug}`);
+  const flags = ['--window=250', '--depth=50', '--no-reuse-delta'];
+  if (deltaBaseOffset) flags.push('--delta-base-offset');
+  runGit(['-C', donor, 'pack-objects', ...flags, base], { input: `${baseOid}\n${deltaOid}\n` });
+
+  const { packBytes, idxBytes } = await readSolePackPair(donor);
+  const idxName = (await readdir(path.join(donor, PACK_DIR))).find((entry) =>
+    entry.endsWith('.idx'),
+  );
+  if (idxName === undefined) throw new Error(`${slug}: no .idx produced`);
+  const deltaRow = verifyPackRows(donor, path.join(donor, PACK_DIR, idxName)).find(
+    (row) => row.isDelta,
+  );
+  if (deltaRow === undefined)
+    throw new Error(`${slug}: pack-objects did not produce a delta entry`);
+
+  const corruptedPackBytes = flipEntryBodyByte(
+    packBytes,
+    deltaRow.offset,
+    deltaRow.offset + deltaRow.sizeInPackfile,
+  );
+  return { corruptedOid: deltaRow.oid, packBytes: corruptedPackBytes, idxBytes };
+}
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'fsck loose-object accessibility reporting, against real git',
+  () => {
+    afterAll(async () => {
+      await Promise.all(tmpDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+    });
+
+    describe('Given a chmod-000 loose object, unreferenced, When fsck runs with connectivityOnly (row K-22, node tier only)', () => {
+      it('Then git exits 0 with dangling unknown once, and fsck reports one dangling finding typed unknown', async () => {
+        // Arrange
+        const dir = await freshRepo('k22');
+        const oid = hashObjectW(dir, 'k22-content\n');
+        await chmod(looseObjectPath(dir, oid), 0o000);
+        const gitResult = gitFsck(dir, '--connectivity-only');
+        const sut = createNodeContext({ workDir: dir });
+
+        // Act
+        const result = await fsck(sut, { connectivityOnly: true });
+
+        // Assert
+        expect(gitResult.exitCode).toBe(0);
+        expect(occurrences(gitResult.stdout, `dangling unknown ${oid}`)).toBe(1);
+        expect(result.exitCode).toBe(0);
+        const danglingFindings = findingsOfType(result.findings, 'dangling');
+        expect(danglingFindings).toHaveLength(1);
+        expect(danglingFindings[0]?.objectType).toBe('unknown');
+      });
+    });
+
+    describe('Given the same chmod-000 loose object, When fsck runs in default mode (row K-23)', () => {
+      it('Then git computes no dangling/unreachable line for it even with the projection flags on, and fsck rejects with the pre-existing IO-fault gap', async () => {
+        // Arrange — same fixture recipe as K-22, its own repo
+        const dir = await freshRepo('k23');
+        const oid = hashObjectW(dir, 'k23-content\n');
+        await chmod(looseObjectPath(dir, oid), 0o000);
+        const gitDefault = gitFsck(dir);
+        const gitWithProjectionFlags = gitFsck(dir, '--dangling', '--unreachable');
+        const sut = createNodeContext({ workDir: dir });
+
+        // Assert — git: unchanged by the projection flags (Pin P-a) — this is
+        // what makes it a computation difference, not a print filter
+        expect(gitDefault.exitCode).toBe(1);
+        expect(gitWithProjectionFlags.exitCode).toBe(1);
+        expect(gitWithProjectionFlags.stdout).not.toContain(`dangling ${oid}`);
+        expect(gitWithProjectionFlags.stdout).not.toContain(`unreachable ${oid}`);
+
+        // Act + Assert — tsgit: the pre-existing IO-fault gap (§D11.13) — an
+        // unreadable loose object throws today in default mode instead of
+        // resolving with a bad-object finding, unlike the decode-fault rows
+        // below (K-27); either way there is no dangling/unreachable finding.
+        const error = await catchFsckRejection(sut, {});
+        expect(error.data.code).toBe('PERMISSION_DENIED');
+      });
+    });
+
+    describe('Given a chmod-000 loose object that is reachable, When fsck runs with connectivityOnly (row K-24, node tier only)', () => {
+      it('Then both are silent: git exits 0 with empty stdout, and fsck reports no finding for that object', async () => {
+        // Arrange
+        const dir = await freshRepo('k24');
+        await writeFile(path.join(dir, 'reach.txt'), 'k24-content\n');
+        commitSeed(dir);
+        const oid = git(dir, 'rev-parse', 'HEAD:reach.txt').trim();
+        await chmod(looseObjectPath(dir, oid), 0o000);
+        const gitResult = gitFsck(dir, '--connectivity-only');
+        const sut = createNodeContext({ workDir: dir });
+
+        // Act
+        const result = await fsck(sut, { connectivityOnly: true });
+
+        // Assert
+        expect(gitResult.exitCode).toBe(0);
+        expect(gitResult.stdout).toBe('');
+        expect(result.exitCode).toBe(0);
+        expect(result.findings.some((finding) => 'id' in finding && finding.id === oid)).toBe(
+          false,
+        );
+      });
+    });
+
+    describe('Given a loose object whose path does not match its content hash, When fsck runs with connectivityOnly (row K-25)', () => {
+      it('Then both type it from the header alone: git exits 0 with dangling blob, and fsck reports one dangling finding typed blob', async () => {
+        // Arrange — the object's real content hashes to a different oid than
+        // the path it is filed under; connectivity-only reads the header and
+        // never hashes the body, so it types the object anyway
+        const dir = await freshRepo('k25');
+        const content = Buffer.from('k25-mismatch-content\n');
+        const oid = syntheticOid('k25-mismatch-target');
+        await writeLooseObject(dir, oid, craftedLooseBytes(`blob ${content.length}`, content));
+        const gitResult = gitFsck(dir, '--connectivity-only');
+        const sut = createNodeContext({ workDir: dir });
+
+        // Act
+        const result = await fsck(sut, { connectivityOnly: true });
+
+        // Assert
+        expect(gitResult.exitCode).toBe(0);
+        expect(occurrences(gitResult.stdout, `dangling blob ${oid}`)).toBe(1);
+        expect(result.exitCode).toBe(0);
+        const danglingFindings = findingsOfType(result.findings, 'dangling');
+        expect(danglingFindings).toHaveLength(1);
+        expect(danglingFindings[0]?.objectType).toBe('blob');
+      });
+    });
+
+    describe('Given an undecodable loose object, dangling, When fsck runs with connectivityOnly (row K-26)', () => {
+      it('Then both reject: git exits 128 with empty stdout, and fsck rejects with a DECOMPRESS_FAILED cause', async () => {
+        // Arrange
+        const dir = await freshRepo('k26');
+        const oid = syntheticOid('k26-garbage');
+        await writeLooseObject(dir, oid, NON_ZLIB_GARBAGE);
+        const gitResult = gitFsck(dir, '--connectivity-only');
+        const sut = createNodeContext({ workDir: dir });
+
+        // Assert — git
+        expect(gitResult.exitCode).toBe(128);
+        expect(gitResult.stdout).toBe('');
+
+        // Act + Assert — tsgit
+        const error = await catchFsckRejection(sut, { connectivityOnly: true });
+        expect(error.data.code).toBe('DECOMPRESS_FAILED');
+      });
+    });
+
+    describe('Given the same undecodable loose object, When fsck runs in default mode (row K-27)', () => {
+      it('Then git exits 1, and fsck resolves with exit bit 1 and a bad-object finding — the mode boundary on the same bytes as K-26', async () => {
+        // Arrange — same fixture recipe as K-26, its own repo
+        const dir = await freshRepo('k27');
+        const oid = syntheticOid('k27-garbage');
+        await writeLooseObject(dir, oid, NON_ZLIB_GARBAGE);
+        const gitResult = gitFsck(dir);
+        const sut = createNodeContext({ workDir: dir });
+
+        // Act
+        const result = await fsck(sut);
+
+        // Assert
+        expect(gitResult.exitCode).toBe(1);
+        expect(result.exitCode).toBe(1);
+        const badObject = findingsOfType(result.findings, 'bad-object').find(
+          (finding) => finding.id === oid,
+        );
+        expect(badObject).toBeDefined();
+      });
+    });
+
+    describe('Given a reachable undecodable object, When fsck runs with connectivityOnly (row K-28)', () => {
+      it('Then both are fully silent: git exits 0 with empty stdout and stderr, and fsck resolves with no finding for that object', async () => {
+        // Arrange
+        const dir = await freshRepo('k28');
+        await writeFile(path.join(dir, 'reach.txt'), 'k28-content\n');
+        commitSeed(dir);
+        const oid = git(dir, 'rev-parse', 'HEAD:reach.txt').trim();
+        await chmod(looseObjectPath(dir, oid), 0o644);
+        await writeFile(looseObjectPath(dir, oid), NON_ZLIB_GARBAGE);
+        const gitResult = gitFsck(dir, '--connectivity-only');
+        const sut = createNodeContext({ workDir: dir });
+
+        // Act
+        const result = await fsck(sut, { connectivityOnly: true });
+
+        // Assert
+        expect(gitResult.exitCode).toBe(0);
+        expect(gitResult.stdout).toBe('');
+        expect(gitResult.stderr).toBe('');
+        expect(result.exitCode).toBe(0);
+        expect(result.findings.some((finding) => 'id' in finding && finding.id === oid)).toBe(
+          false,
+        );
+      });
+    });
+
+    describe('Given an unreachable undecodable object referenced by a readable dangling tree, When fsck runs with connectivityOnly (row K-29)', () => {
+      it('Then both reject: git exits 128 with empty stdout, and fsck rejects with the same decode fault, scoped to the unreached set rather than the dangling subset', async () => {
+        // Arrange — the corrupt blob has an in-edge from the tree, so it is
+        // merely unreachable (not dangling); the tree itself stays dangling
+        // and readable
+        const dir = await freshRepo('k29');
+        const blobOid = hashObjectW(dir, 'k29-content\n');
+        mktree(dir, `100644 blob ${blobOid}\ttarget.txt\n`);
+        await chmod(looseObjectPath(dir, blobOid), 0o644);
+        await writeFile(looseObjectPath(dir, blobOid), NON_ZLIB_GARBAGE);
+        const gitResult = gitFsck(dir, '--connectivity-only');
+        const sut = createNodeContext({ workDir: dir });
+
+        // Assert — git
+        expect(gitResult.exitCode).toBe(128);
+        expect(gitResult.stdout).toBe('');
+
+        // Act + Assert — tsgit
+        const error = await catchFsckRejection(sut, { connectivityOnly: true });
+        expect(error.data.code).toBe('DECOMPRESS_FAILED');
+      });
+    });
+
+    describe('Given an empty loose object, dangling, When fsck runs with connectivityOnly (row K-30)', () => {
+      it('Then both resolve: git exits 0 with dangling unknown, and fsck reports one dangling finding typed unknown', async () => {
+        // Arrange
+        const dir = await freshRepo('k30');
+        const oid = hashObjectW(dir, 'k30-content\n');
+        await chmod(looseObjectPath(dir, oid), 0o644);
+        await writeFile(looseObjectPath(dir, oid), new Uint8Array(0));
+        const gitResult = gitFsck(dir, '--connectivity-only');
+        const sut = createNodeContext({ workDir: dir });
+
+        // Act
+        const result = await fsck(sut, { connectivityOnly: true });
+
+        // Assert
+        expect(gitResult.exitCode).toBe(0);
+        expect(occurrences(gitResult.stdout, `dangling unknown ${oid}`)).toBe(1);
+        expect(result.exitCode).toBe(0);
+        const danglingFindings = findingsOfType(result.findings, 'dangling');
+        expect(danglingFindings).toHaveLength(1);
+        expect(danglingFindings[0]?.objectType).toBe('unknown');
+      });
+    });
+
+    describe('Given a loose object with an unrecoverable header, When fsck runs with connectivityOnly (row K-31)', () => {
+      it('Then both reject: git exits 128, and fsck rejects with an INVALID_OBJECT_HEADER cause', async () => {
+        // Arrange
+        const dir = await freshRepo('k31');
+        const oid = syntheticOid('k31-widget');
+        await writeLooseObject(dir, oid, craftedLooseBytes('widget 5', Buffer.from('abcde')));
+        const gitResult = gitFsck(dir, '--connectivity-only');
+        const sut = createNodeContext({ workDir: dir });
+
+        // Assert — git
+        expect(gitResult.exitCode).toBe(128);
+
+        // Act + Assert — tsgit
+        const error = await catchFsckRejection(sut, { connectivityOnly: true });
+        expect(error.data.code).toBe('INVALID_OBJECT_HEADER');
+      });
+    });
+
+    describe('Given a loose object whose header disagrees with its content size, When fsck runs with connectivityOnly (row K-32)', () => {
+      it('Then both resolve, typed from the recovered header: git exits 0 with dangling blob, and fsck reports one dangling finding typed blob', async () => {
+        // Arrange — pins the split as header-recovery, not error code: the
+        // header parses fine, so nothing here aborts
+        const dir = await freshRepo('k32');
+        const oid = syntheticOid('k32-size-mismatch');
+        await writeLooseObject(dir, oid, craftedLooseBytes('blob 99', Buffer.from('hi')));
+        const gitResult = gitFsck(dir, '--connectivity-only');
+        const sut = createNodeContext({ workDir: dir });
+
+        // Act
+        const result = await fsck(sut, { connectivityOnly: true });
+
+        // Assert
+        expect(gitResult.exitCode).toBe(0);
+        expect(occurrences(gitResult.stdout, `dangling blob ${oid}`)).toBe(1);
+        expect(result.exitCode).toBe(0);
+        const danglingFindings = findingsOfType(result.findings, 'dangling');
+        expect(danglingFindings).toHaveLength(1);
+        expect(danglingFindings[0]?.objectType).toBe('blob');
+      });
+    });
+
+    describe('Given a healthy dangling object and an undecodable dangling object in the same repo, When fsck runs with connectivityOnly (row K-33)', () => {
+      it('Then both withhold the whole report: git exits 128 with the healthy line absent from stdout, and fsck rejects', async () => {
+        // Arrange
+        const dir = await freshRepo('k33');
+        const healthyOid = hashObjectW(dir, 'k33-healthy\n');
+        const garbageOid = syntheticOid('k33-garbage');
+        await writeLooseObject(dir, garbageOid, NON_ZLIB_GARBAGE);
+        const gitResult = gitFsck(dir, '--connectivity-only');
+        const sut = createNodeContext({ workDir: dir });
+
+        // Assert — git: an abort is the whole report withheld, not one finding
+        // replaced by an error — the already-computed healthy line is absent
+        expect(gitResult.exitCode).toBe(128);
+        expect(gitResult.stdout).toBe('');
+        expect(gitResult.stdout).not.toContain(`dangling blob ${healthyOid}`);
+
+        // Act + Assert — tsgit
+        const error = await catchFsckRejection(sut, { connectivityOnly: true });
+        expect(error.data.code).toBe('DECOMPRESS_FAILED');
+      });
+    });
+
+    describe('Given a packed-only object with a corrupt entry body, When fsck runs with connectivityOnly (row K-34)', () => {
+      it('Then both resolve, typed from the pack-entry header alone: git exits 0 with dangling blob, and fsck reports one dangling finding typed blob', async () => {
+        // Arrange — a donor pack with one healthy entry, then one byte of its
+        // own compressed body flipped; the idx keeps the original (now stale)
+        // CRC, which connectivity-only never checks
+        const donor = await buildSingleObjectPack('k34', 'k34-content\n');
+        const corruptedPackBytes = flipEntryBodyByte(
+          donor.packBytes,
+          PACK_HEADER_SIZE,
+          donor.packBytes.length - DIGEST_LENGTH,
+        );
+        const dir = await bareTargetWithPack('k34', 'corrupt', corruptedPackBytes, donor.idxBytes);
+        const gitResult = gitFsck(dir, '--connectivity-only');
+        const sut = createNodeContext({ workDir: dir });
+
+        // Act
+        const result = await fsck(sut, { connectivityOnly: true });
+
+        // Assert
+        expect(gitResult.exitCode).toBe(0);
+        expect(occurrences(gitResult.stdout, `dangling blob ${donor.oid}`)).toBe(1);
+        expect(result.exitCode).toBe(0);
+        const danglingFindings = findingsOfType(result.findings, 'dangling').filter(
+          (finding) => finding.id === donor.oid,
+        );
+        expect(danglingFindings).toHaveLength(1);
+        expect(danglingFindings[0]?.objectType).toBe('blob');
+      });
+    });
+
+    describe('Given a garbled loose copy shadowing a healthy packed copy, When fsck runs with connectivityOnly (row K-35)', () => {
+      it('Then both resolve, served from the healthy pack: git exits 0 with dangling blob, and fsck reports one dangling finding typed blob', async () => {
+        // Arrange
+        const donor = await buildSingleObjectPack('k35', 'k35-content\n');
+        const dir = await bareTargetWithPack('k35', 'healthy', donor.packBytes, donor.idxBytes);
+        await writeLooseObject(dir, donor.oid, NON_ZLIB_GARBAGE);
+        const gitResult = gitFsck(dir, '--connectivity-only');
+        const sut = createNodeContext({ workDir: dir });
+
+        // Act
+        const result = await fsck(sut, { connectivityOnly: true });
+
+        // Assert
+        expect(gitResult.exitCode).toBe(0);
+        expect(occurrences(gitResult.stdout, `dangling blob ${donor.oid}`)).toBe(1);
+        expect(result.exitCode).toBe(0);
+        const danglingFindings = findingsOfType(result.findings, 'dangling').filter(
+          (finding) => finding.id === donor.oid,
+        );
+        expect(danglingFindings).toHaveLength(1);
+        expect(danglingFindings[0]?.objectType).toBe('blob');
+      });
+    });
+
+    describe.each([
+      { label: 'REF_DELTA', deltaBaseOffset: false },
+      { label: 'OFS_DELTA', deltaBaseOffset: true },
+    ])(
+      'Given a packed delta entry ($label) with a corrupt body, When fsck runs with connectivityOnly (row K-36)',
+      ({ label, deltaBaseOffset }) => {
+        it('Then both resolve, typed by walking the delta base link: git exits 0 with dangling blob, and fsck reports one dangling finding typed blob', async () => {
+          // Arrange
+          const slug = `k36-${label.toLowerCase()}`;
+          const built = await buildDeltaPackPair(slug, deltaBaseOffset);
+          const dir = await bareTargetWithPack(slug, 'delta', built.packBytes, built.idxBytes);
+          const gitResult = gitFsck(dir, '--connectivity-only');
+          const sut = createNodeContext({ workDir: dir });
+
+          // Act
+          const result = await fsck(sut, { connectivityOnly: true });
+
+          // Assert
+          expect(gitResult.exitCode).toBe(0);
+          expect(occurrences(gitResult.stdout, `dangling blob ${built.corruptedOid}`)).toBe(1);
+          expect(result.exitCode).toBe(0);
+          const danglingFindings = findingsOfType(result.findings, 'dangling').filter(
+            (finding) => finding.id === built.corruptedOid,
+          );
+          expect(danglingFindings).toHaveLength(1);
+          expect(danglingFindings[0]?.objectType).toBe('blob');
+        });
+      },
+    );
+
+    describe('Given a valid header over an unparseable tree body, When fsck runs with connectivityOnly (row K-37)', () => {
+      it('Then both resolve, typed from the header alone: git exits 0 with dangling tree, and fsck reports one dangling finding typed tree', async () => {
+        // Arrange — git's own "too-short tree object" stderr is not compared
+        // (verdict line only)
+        const dir = await freshRepo('k37');
+        const oid = syntheticOid('k37-tree-junk');
+        await writeLooseObject(
+          dir,
+          oid,
+          craftedLooseBytes('tree 4', Buffer.from([0x00, 0x01, 0x02, 0x03])),
+        );
+        const gitResult = gitFsck(dir, '--connectivity-only');
+        const sut = createNodeContext({ workDir: dir });
+
+        // Act
+        const result = await fsck(sut, { connectivityOnly: true });
+
+        // Assert
+        expect(gitResult.exitCode).toBe(0);
+        expect(occurrences(gitResult.stdout, `dangling tree ${oid}`)).toBe(1);
+        expect(result.exitCode).toBe(0);
+        const danglingFindings = findingsOfType(result.findings, 'dangling');
+        expect(danglingFindings).toHaveLength(1);
+        expect(danglingFindings[0]?.objectType).toBe('tree');
+      });
+    });
+  },
+);
