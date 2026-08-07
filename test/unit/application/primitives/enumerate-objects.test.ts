@@ -3,6 +3,7 @@ import { enumerateObjects } from '../../../../src/application/primitives/enumera
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import type { GitObject, ObjectId } from '../../../../src/domain/objects/index.js';
 import { buildSeededContext } from './fixtures.js';
+import { restampPackHeader, writeSyntheticPack } from './pack-fixture.js';
 
 const blob = (content: string): GitObject => ({
   type: 'blob',
@@ -140,6 +141,101 @@ describe('enumerateObjects', () => {
         expect(result).toContain(blobId);
         expect(result.every((id) => id.length === 40)).toBe(true);
         expect(result).not.toContain(`${prefix}subdir`);
+      });
+    });
+  });
+
+  describe('Given a repo holding one healthy pack, one header-refused pack and one loose object', () => {
+    describe('When enumerateObjects runs with default options', () => {
+      it('Then the ids include the refused pack ids', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeObject(ctx, blob('loose-content'));
+        await writeSyntheticPack(ctx, 'healthy', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('healthy-content') },
+        ]);
+        const refusedIds = await writeSyntheticPack(ctx, 'refused', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('refused-content') },
+        ]);
+        const refusedPackPath = `${ctx.layout.gitDir}/objects/pack/pack-refused.pack`;
+        await restampPackHeader(ctx, refusedPackPath, { version: 99 });
+
+        // Act
+        const result = await enumerateObjects(ctx);
+
+        // Assert
+        expect(result).toContain(refusedIds[0] as ObjectId);
+      });
+    });
+
+    describe('When enumerateObjects runs with accessiblePacksOnly: true', () => {
+      it('Then the refused pack ids are absent and the healthy pack and loose ids are present', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const looseId = await writeObject(ctx, blob('loose-content'));
+        const healthyIds = await writeSyntheticPack(ctx, 'healthy', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('healthy-content') },
+        ]);
+        const refusedIds = await writeSyntheticPack(ctx, 'refused', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('refused-content') },
+        ]);
+        const refusedPackPath = `${ctx.layout.gitDir}/objects/pack/pack-refused.pack`;
+        await restampPackHeader(ctx, refusedPackPath, { version: 99 });
+
+        // Act
+        const result = await enumerateObjects(ctx, { accessiblePacksOnly: true });
+
+        // Assert
+        expect(result).not.toContain(refusedIds[0] as ObjectId);
+        expect(result).toContain(healthyIds[0] as ObjectId);
+        expect(result).toContain(looseId);
+      });
+    });
+
+    describe('When enumerateObjects runs with includePacks: false and accessiblePacksOnly: true', () => {
+      it('Then the result equals the loose ids alone', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const looseId = await writeObject(ctx, blob('loose-content'));
+        await writeSyntheticPack(ctx, 'healthy', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('healthy-content') },
+        ]);
+        await writeSyntheticPack(ctx, 'refused', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('refused-content') },
+        ]);
+        const refusedPackPath = `${ctx.layout.gitDir}/objects/pack/pack-refused.pack`;
+        await restampPackHeader(ctx, refusedPackPath, { version: 99 });
+
+        // Act
+        const result = await enumerateObjects(ctx, {
+          includePacks: false,
+          accessiblePacksOnly: true,
+        });
+
+        // Assert
+        expect(result).toEqual([looseId]);
+      });
+    });
+  });
+
+  describe('Given an oid present both loose and in the header-refused pack', () => {
+    describe('When enumerateObjects runs with accessiblePacksOnly: true', () => {
+      it('Then that oid is still enumerated', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const sharedContent = 'shared-content';
+        const looseId = await writeObject(ctx, blob(sharedContent));
+        await writeSyntheticPack(ctx, 'refused', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode(sharedContent) },
+        ]);
+        const refusedPackPath = `${ctx.layout.gitDir}/objects/pack/pack-refused.pack`;
+        await restampPackHeader(ctx, refusedPackPath, { version: 99 });
+
+        // Act
+        const result = await enumerateObjects(ctx, { accessiblePacksOnly: true });
+
+        // Assert
+        expect(result).toContain(looseId);
       });
     });
   });
