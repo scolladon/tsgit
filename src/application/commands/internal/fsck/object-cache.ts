@@ -173,7 +173,7 @@ async function packedStoredType(
   if (hit === undefined) {
     return untypedFault(ctx, id, 'not loose and claimed by no accessible pack');
   }
-  return typeFromEntry(ctx, registry, id, hit);
+  return await typeFromEntry(ctx, registry, id, hit);
 }
 
 /**
@@ -187,7 +187,7 @@ async function recoverStoredType(ctx: Context, id: ObjectId): Promise<RecoveryOu
   const registry = getPackRegistry(ctx);
   const looseBytes = await looseCompressedBytes(ctx, id);
   if (looseBytes === undefined) {
-    return packedStoredType(ctx, registry, id);
+    return await packedStoredType(ctx, registry, id);
   }
   if (looseBytes.length === 0) {
     // Git treats an empty file as one it could not read, not one whose type
@@ -206,7 +206,7 @@ async function recoverStoredType(ctx: Context, id: ObjectId): Promise<RecoveryOu
     if (hit === undefined) {
       return { kind: 'unrecoverable', cause: probeErr };
     }
-    return typeFromEntry(ctx, registry, id, hit);
+    return await typeFromEntry(ctx, registry, id, hit);
   }
 }
 
