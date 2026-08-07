@@ -163,6 +163,39 @@ export async function writeSyntheticPack(
   return result.ids;
 }
 
+export interface PackHeaderOverride {
+  readonly magic?: number;
+  readonly version?: number;
+  readonly objectCount?: number;
+}
+
+/**
+ * Rewrite a written pack's 12-byte header in place and re-stamp its trailer over
+ * `bytes[0 .. len − digestLength)`, so the only thing wrong with the pack is what
+ * the caller asked for.
+ */
+export async function restampPackHeader(
+  ctx: Context,
+  packPath: string,
+  override: PackHeaderOverride,
+): Promise<void> {
+  const bytes = await ctx.fs.read(packPath);
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  if (override.magic !== undefined) {
+    view.setUint32(0, override.magic);
+  }
+  if (override.version !== undefined) {
+    view.setUint32(4, override.version);
+  }
+  if (override.objectCount !== undefined) {
+    view.setUint32(8, override.objectCount);
+  }
+  const digestLength = ctx.hashConfig.digestLength;
+  const checksumHex = await ctx.hash.hashHex(bytes.subarray(0, bytes.length - digestLength));
+  bytes.set(hexToBytes(checksumHex), bytes.length - digestLength);
+  await ctx.fs.write(packPath, bytes);
+}
+
 /* ──────────────── helpers ──────────────── */
 
 function typeNameToPackType(name: BaseEntrySpec['type']): PackEntryType {

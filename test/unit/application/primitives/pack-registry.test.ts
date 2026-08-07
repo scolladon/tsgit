@@ -4,17 +4,21 @@ import {
   nextOffsetForEntry,
   type PackOffsetTable,
 } from '../../../../src/application/primitives/pack-registry.js';
+import { readObject } from '../../../../src/application/primitives/read-object.js';
 import { REASON_PACK_IDX_EXCEEDS_MAX } from '../../../../src/application/primitives/validators.js';
 import {
+  fileNotFound,
   permissionDenied,
   type TsgitError,
   unsupportedOperation,
 } from '../../../../src/domain/error.js';
-import type { ObjectId } from '../../../../src/domain/objects/index.js';
+import type { Blob, ObjectId } from '../../../../src/domain/objects/index.js';
+import { PACK_HEADER_SIZE } from '../../../../src/domain/storage/pack-entry.js';
+import type { Context } from '../../../../src/ports/context.js';
 import type { DirEntry, FileHandle, FileStat } from '../../../../src/ports/file-system.js';
 import { buildSeededContext } from './fixtures.js';
 import { withHandleLedger } from './handle-ledger.js';
-import { writeSyntheticPack } from './pack-fixture.js';
+import { restampPackHeader, writeSyntheticPack } from './pack-fixture.js';
 
 const dirEntry = (name: string): DirEntry => ({
   name,
@@ -1507,6 +1511,454 @@ describe('RegisteredPack.readSlice — errno-mapped UNSUPPORTED_OPERATION', () =
         expect(openCalls).toBe(2);
         expect(ledger.opens()).toBe(1);
         expect(disposeError).toBeUndefined();
+        expect(ledger.outstanding()).toBe(0);
+      });
+    });
+  });
+});
+
+describe('PackRegistry.lookup — header gate', () => {
+  describe('Given a v3 pack whose header objectCount matches its index', () => {
+    describe('When lookup resolves a hit and readObject reads the object', () => {
+      it('Then the hit exposes a header() resolving the v3 header and the object round-trips', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const content = new TextEncoder().encode('v3-header-content');
+        const ids = await writeSyntheticPack(ctx, 'v3-header', [
+          { kind: 'base', type: 'blob', content },
+        ]);
+        const id = ids[0] as ObjectId;
+        const packPath = `${ctx.layout.gitDir}/objects/pack/pack-v3-header.pack`;
+        await restampPackHeader(ctx, packPath, { version: 3 });
+        const sut = createPackRegistry(ctx);
+
+        // Act
+        const hit = await sut.lookup(id);
+        const header = await hit?.pack.header();
+        const result = await readObject(ctx, id);
+
+        // Assert
+        expect(hit).toBeDefined();
+        expect(header).toEqual({ version: 3, objectCount: 1 });
+        expect(result.type).toBe('blob');
+        expect((result as Blob).content).toEqual(content);
+      });
+    });
+  });
+
+  describe('Given a pack whose index does not claim the requested oid', () => {
+    describe('When lookup is called', () => {
+      it('Then resolves undefined without probing the header or logging a warning', async () => {
+        // Arrange — the pack's header is itself invalid (v99); if the gate were
+        // reached it would fail loudly, so a clean undefined here proves the
+        // pack was never opened at all.
+        const ctx = await buildSeededContext();
+        const content = new TextEncoder().encode('lazy-lookup-content');
+        await writeSyntheticPack(ctx, 'lazy-lookup', [{ kind: 'base', type: 'blob', content }]);
+        const packPath = `${ctx.layout.gitDir}/objects/pack/pack-lazy-lookup.pack`;
+        await restampPackHeader(ctx, packPath, { version: 99 });
+        const warn = vi.fn();
+        const ledger = withHandleLedger({ ...ctx, logger: { warn } });
+        const sut = createPackRegistry(ledger.ctx);
+        const absentId = 'a'.repeat(40) as ObjectId;
+
+        // Act
+        const result = await sut.lookup(absentId);
+
+        // Assert
+        expect(result).toBeUndefined();
+        expect(ledger.slices().filter((s) => s.path === packPath)).toEqual([]);
+        expect(warn).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('Given a bad pack (invalid header) and a good pack both indexing the same oid, bad pack scanned first', () => {
+    describe('When readObject is called for that oid', () => {
+      it('Then it skips the bad pack, serves the object from the good pack, and warns exactly once naming the bad pack', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const goodContent = new TextEncoder().encode('sibling-good-content');
+        const badContent = new TextEncoder().encode('sibling-bad-content-wrong-bytes');
+        const goodIds = await writeSyntheticPack(ctx, 'sibling-good', [
+          { kind: 'base', type: 'blob', content: goodContent },
+        ]);
+        const oidA = goodIds[0] as ObjectId;
+        await writeSyntheticPack(ctx, 'sibling-bad', [
+          { kind: 'base', type: 'blob', content: badContent, idOverride: oidA },
+        ]);
+        const badPackPath = `${ctx.layout.gitDir}/objects/pack/pack-sibling-bad.pack`;
+        await restampPackHeader(ctx, badPackPath, { version: 99 });
+        const orderedNames = ['pack-sibling-bad.idx', 'pack-sibling-good.idx'];
+        const observedOrder: string[] = [];
+        const warn = vi.fn();
+        const wrapped: Context = {
+          ...ctx,
+          logger: { warn },
+          fs: {
+            ...ctx.fs,
+            readdir: async (dir: string) => {
+              const entries = await ctx.fs.readdir(dir);
+              const byName = new Map(entries.map((entry) => [entry.name, entry]));
+              const ordered = orderedNames.map((name) => byName.get(name)!);
+              observedOrder.push(...ordered.map((entry) => entry.name));
+              return ordered;
+            },
+          },
+        };
+        const sut = readObject;
+
+        // Act
+        const result = await sut(wrapped, oidA);
+
+        // Assert
+        expect(observedOrder).toEqual(orderedNames);
+        expect(result.type).toBe('blob');
+        expect((result as Blob).content).toEqual(goodContent);
+        expect(warn).toHaveBeenCalledTimes(1);
+        const [message, context] = warn.mock.calls[0] ?? [];
+        expect(message).toBe('packRegistry: skipping unusable pack');
+        expect(context).toMatchObject({ pack: 'pack-sibling-bad', code: 'INVALID_PACK_HEADER' });
+      });
+    });
+  });
+
+  describe('Given a pack with an invalid header whose index claims the requested oid, and no sibling pack', () => {
+    describe('When readObject is called', () => {
+      it('Then rejects with OBJECT_NOT_FOUND after warning once', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const content = new TextEncoder().encode('only-pack-content');
+        const ids = await writeSyntheticPack(ctx, 'only-pack', [
+          { kind: 'base', type: 'blob', content },
+        ]);
+        const id = ids[0] as ObjectId;
+        const packPath = `${ctx.layout.gitDir}/objects/pack/pack-only-pack.pack`;
+        await restampPackHeader(ctx, packPath, { version: 99 });
+        const warn = vi.fn();
+        const wrapped: Context = { ...ctx, logger: { warn } };
+        const sut = readObject;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(wrapped, id);
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({ code: 'OBJECT_NOT_FOUND', id });
+        expect(warn).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
+
+  describe('Given a pack with an invalid header', () => {
+    describe('When lookup(id) is called twice', () => {
+      it('Then each call re-probes the header and warns again — no negative cache', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const content = new TextEncoder().encode('no-negative-cache-content');
+        const ids = await writeSyntheticPack(ctx, 'no-negative-cache', [
+          { kind: 'base', type: 'blob', content },
+        ]);
+        const id = ids[0] as ObjectId;
+        const packPath = `${ctx.layout.gitDir}/objects/pack/pack-no-negative-cache.pack`;
+        await restampPackHeader(ctx, packPath, { version: 99 });
+        const warn = vi.fn();
+        const ledger = withHandleLedger({ ...ctx, logger: { warn } });
+        const sut = createPackRegistry(ledger.ctx);
+
+        // Act
+        await sut.lookup(id);
+        await sut.lookup(id);
+
+        // Assert
+        const probes = ledger
+          .slices()
+          .filter((s) => s.path === packPath && s.offset === 0 && s.length === PACK_HEADER_SIZE);
+        expect(probes).toHaveLength(2);
+        expect(warn).toHaveBeenCalledTimes(2);
+      });
+    });
+  });
+
+  describe('Given a valid v2 pack', () => {
+    describe('When lookup(id) is called twice', () => {
+      it('Then the header is probed exactly once (memoised on success)', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const content = new TextEncoder().encode('positive-memo-content');
+        const ids = await writeSyntheticPack(ctx, 'positive-memo', [
+          { kind: 'base', type: 'blob', content },
+        ]);
+        const id = ids[0] as ObjectId;
+        const packPath = `${ctx.layout.gitDir}/objects/pack/pack-positive-memo.pack`;
+        const ledger = withHandleLedger(ctx);
+        const sut = createPackRegistry(ledger.ctx);
+
+        // Act
+        await sut.lookup(id);
+        await sut.lookup(id);
+
+        // Assert
+        const probes = ledger
+          .slices()
+          .filter((s) => s.path === packPath && s.offset === 0 && s.length === PACK_HEADER_SIZE);
+        expect(probes).toHaveLength(1);
+      });
+    });
+  });
+
+  describe('Given a pack with a corrupted magic signature', () => {
+    describe('When lookup is called', () => {
+      it('Then skips the pack and warns with a reason mentioning the magic mismatch', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const content = new TextEncoder().encode('bad-magic-content');
+        const ids = await writeSyntheticPack(ctx, 'bad-magic', [
+          { kind: 'base', type: 'blob', content },
+        ]);
+        const id = ids[0] as ObjectId;
+        const packPath = `${ctx.layout.gitDir}/objects/pack/pack-bad-magic.pack`;
+        await restampPackHeader(ctx, packPath, { magic: 0x50414358 }); // 'PACX'
+        const warn = vi.fn();
+        const sut = createPackRegistry({ ...ctx, logger: { warn } });
+
+        // Act
+        const result = await sut.lookup(id);
+
+        // Assert
+        expect(result).toBeUndefined();
+        expect(warn).toHaveBeenCalledTimes(1);
+        const [, context] = warn.mock.calls[0] ?? [];
+        expect((context as { reason?: string } | undefined)?.reason).toContain('magic');
+      });
+    });
+  });
+
+  describe('Given a pack file truncated to 8 bytes', () => {
+    describe('When lookup is called', () => {
+      it('Then skips the pack and warns with a reason mentioning truncation', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const content = new TextEncoder().encode('short-pack-content');
+        const ids = await writeSyntheticPack(ctx, 'short-pack', [
+          { kind: 'base', type: 'blob', content },
+        ]);
+        const id = ids[0] as ObjectId;
+        const packPath = `${ctx.layout.gitDir}/objects/pack/pack-short-pack.pack`;
+        const bytes = await ctx.fs.read(packPath);
+        await ctx.fs.write(packPath, bytes.subarray(0, 8));
+        const warn = vi.fn();
+        const sut = createPackRegistry({ ...ctx, logger: { warn } });
+
+        // Act
+        const result = await sut.lookup(id);
+
+        // Assert
+        expect(result).toBeUndefined();
+        expect(warn).toHaveBeenCalledTimes(1);
+        const [, context] = warn.mock.calls[0] ?? [];
+        expect((context as { reason?: string } | undefined)?.reason).toContain('truncated');
+      });
+    });
+  });
+
+  describe('Given a v2 pack whose header objectCount disagrees with its index by one', () => {
+    describe('When lookup is called', () => {
+      it('Then skips the pack and warns with a reason naming both counts', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const content = new TextEncoder().encode('count-mismatch-content');
+        const ids = await writeSyntheticPack(ctx, 'count-mismatch', [
+          { kind: 'base', type: 'blob', content },
+        ]);
+        const id = ids[0] as ObjectId;
+        const packPath = `${ctx.layout.gitDir}/objects/pack/pack-count-mismatch.pack`;
+        await restampPackHeader(ctx, packPath, { objectCount: 2 });
+        const warn = vi.fn();
+        const sut = createPackRegistry({ ...ctx, logger: { warn } });
+
+        // Act
+        const result = await sut.lookup(id);
+
+        // Assert
+        expect(result).toBeUndefined();
+        expect(warn).toHaveBeenCalledTimes(1);
+        const [, context] = warn.mock.calls[0] ?? [];
+        expect((context as { reason?: string } | undefined)?.reason).toBe(
+          'object count disagrees with index: pack 2, index 1',
+        );
+      });
+    });
+  });
+
+  describe('Given a pack whose header probe rejects PERMISSION_DENIED for the .pack file', () => {
+    describe('When readObject is called', () => {
+      it('Then skips the pack, rejects with OBJECT_NOT_FOUND, and warns once', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const content = new TextEncoder().encode('permission-denied-content');
+        const ids = await writeSyntheticPack(ctx, 'permission-denied', [
+          { kind: 'base', type: 'blob', content },
+        ]);
+        const id = ids[0] as ObjectId;
+        const warn = vi.fn();
+        const wrapped: Context = {
+          ...ctx,
+          logger: { warn },
+          fs: {
+            ...ctx.fs,
+            readSlice: async (path: string, offset: number, length: number) => {
+              if (path.endsWith('.pack')) throw permissionDenied(path);
+              return ctx.fs.readSlice(path, offset, length);
+            },
+          },
+        };
+        const sut = readObject;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(wrapped, id);
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({ code: 'OBJECT_NOT_FOUND', id });
+        expect(warn).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
+
+  describe('Given a pack file unlinked between scan and probe (header probe rejects FILE_NOT_FOUND)', () => {
+    describe('When readObject is called', () => {
+      it('Then skips the pack, rejects with OBJECT_NOT_FOUND, and warns once', async () => {
+        // Arrange — the .pack is still listed by readdir (the sibling check
+        // sees it), but a concurrent repack removed it before the probe read.
+        const ctx = await buildSeededContext();
+        const content = new TextEncoder().encode('unlinked-content');
+        const ids = await writeSyntheticPack(ctx, 'unlinked-pack', [
+          { kind: 'base', type: 'blob', content },
+        ]);
+        const id = ids[0] as ObjectId;
+        const warn = vi.fn();
+        const wrapped: Context = {
+          ...ctx,
+          logger: { warn },
+          fs: {
+            ...ctx.fs,
+            readSlice: async (path: string, offset: number, length: number) => {
+              if (path.endsWith('.pack')) throw fileNotFound(path);
+              return ctx.fs.readSlice(path, offset, length);
+            },
+          },
+        };
+        const sut = readObject;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(wrapped, id);
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({ code: 'OBJECT_NOT_FOUND', id });
+        expect(warn).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
+
+  describe('Given a pack whose header probe rejects with an errno-mapped UNSUPPORTED_OPERATION fault', () => {
+    describe('When lookup is called', () => {
+      it('Then the fault propagates instead of being treated as skippable', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const content = new TextEncoder().encode('emfile-content');
+        const ids = await writeSyntheticPack(ctx, 'emfile-pack', [
+          { kind: 'base', type: 'blob', content },
+        ]);
+        const id = ids[0] as ObjectId;
+        const warn = vi.fn();
+        const wrapped: Context = {
+          ...ctx,
+          logger: { warn },
+          fs: {
+            ...ctx.fs,
+            readSlice: async (path: string, offset: number, length: number) => {
+              if (path.endsWith('.pack')) throw unsupportedOperation('filesystem', 'EMFILE');
+              return ctx.fs.readSlice(path, offset, length);
+            },
+          },
+        };
+        const sut = createPackRegistry(wrapped);
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut.lookup(id);
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'UNSUPPORTED_OPERATION',
+          operation: 'filesystem',
+          reason: 'EMFILE',
+        });
+        expect(warn).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('Given a bad pack and a good pack indexing the same oid, bad pack scanned first', () => {
+    describe('When lookup resolves the good hit, its bytes are read, and dispose() is awaited', () => {
+      it('Then only the served pack ever opened a handle, and none is left outstanding', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const goodContent = new TextEncoder().encode('ledger-good-content');
+        const badContent = new TextEncoder().encode('ledger-bad-content-wrong-bytes');
+        const goodIds = await writeSyntheticPack(ctx, 'ledger-good', [
+          { kind: 'base', type: 'blob', content: goodContent },
+        ]);
+        const oidA = goodIds[0] as ObjectId;
+        await writeSyntheticPack(ctx, 'ledger-bad', [
+          { kind: 'base', type: 'blob', content: badContent, idOverride: oidA },
+        ]);
+        const badPackPath = `${ctx.layout.gitDir}/objects/pack/pack-ledger-bad.pack`;
+        await restampPackHeader(ctx, badPackPath, { version: 99 });
+        const orderedNames = ['pack-ledger-bad.idx', 'pack-ledger-good.idx'];
+        const ledger = withHandleLedger({
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            readdir: async (dir: string) => {
+              const entries = await ctx.fs.readdir(dir);
+              const byName = new Map(entries.map((entry) => [entry.name, entry]));
+              return orderedNames.map((name) => byName.get(name)!);
+            },
+          },
+        });
+        const sut = createPackRegistry(ledger.ctx);
+
+        // Act
+        const hit = await sut.lookup(oidA);
+        await hit?.pack.readSlice(0, 4);
+        await sut.dispose();
+
+        // Assert
+        expect(hit).toBeDefined();
+        expect(ledger.opens()).toBe(1);
         expect(ledger.outstanding()).toBe(0);
       });
     });

@@ -2,15 +2,20 @@
  * Lazy scan + cache of .idx files under .git/objects/pack/.
  * Returns a PackRegistry facade used by object-resolver and readObject.
  */
-import { TsgitError } from '../../domain/error.js';
+import { TsgitError, type TsgitErrorData } from '../../domain/error.js';
 import type { ObjectId } from '../../domain/objects/index.js';
-import { invalidPackIndex } from '../../domain/storage/error.js';
+import { invalidPackHeader, invalidPackIndex } from '../../domain/storage/error.js';
 import {
   entryOffsets,
   lookupPackIndex,
   type PackIndex,
   parsePackIndex,
 } from '../../domain/storage/index.js';
+import {
+  PACK_HEADER_SIZE,
+  type PackHeader,
+  parsePackHeader,
+} from '../../domain/storage/pack-entry.js';
 import type { Context } from '../../ports/context.js';
 import { createPromiseMemo } from './internal/promise-memo.js';
 import { commonGitDir, packsDir } from './path-layout.js';
@@ -29,6 +34,31 @@ function isUnsupportedOperation(err: unknown): boolean {
   );
 }
 
+function isSkippableIoFault(err: unknown): boolean {
+  return (
+    err instanceof TsgitError &&
+    (err.data.code === 'FILE_NOT_FOUND' || err.data.code === 'PERMISSION_DENIED')
+  );
+}
+
+// The pack file itself is unusable: bad signature, short file, version outside
+// 2|3, or a header/index object-count disagreement. Scoped to the lookup layer
+// ONLY — INVALID_PACK_INDEX is deliberately absent, because nextOffsetForEntry
+// and buildOffsetTable throw it for a MID-READ corruption, and folding those in
+// would turn a detected corruption into a silent miss after the gate passed.
+function isSkippablePackFault(err: unknown): boolean {
+  return (
+    (err instanceof TsgitError && err.data.code === 'INVALID_PACK_HEADER') ||
+    isSkippableIoFault(err)
+  );
+}
+
+// Flat and string-valued on purpose: the Logger port sanitises TOP-LEVEL string
+// values only, and a pack name comes from a readdir entry an attacker with repo
+// write access controls. Nesting `err.data` would route it round the sanitiser.
+const faultContext = (data: TsgitErrorData): Readonly<Record<string, string>> =>
+  'reason' in data ? { code: data.code, reason: data.reason } : { code: data.code };
+
 export interface PackOffsetTable {
   readonly sortedOffsets: ReadonlyArray<number>;
   readonly packFileSize: number;
@@ -40,13 +70,29 @@ export interface RegisteredPack {
   readonly index: PackIndex;
   readonly packPath: string;
   readonly idxPath: string;
-  /** Lazily-built, cached sorted entry offsets + trailer bound for this pack. */
+  /**
+   * Memoised 12-byte header read + validation — git's `open_packed_git_1` gate.
+   * Rejects with `INVALID_PACK_HEADER` for a bad signature, a short file, a
+   * version outside 2|3, or a header/index `objectCount` disagreement. One read
+   * per pack per successful validation; a rejection clears the memo, so a
+   * refused pack is re-probed on the next lookup that hits its index.
+   */
+  readonly header: () => Promise<PackHeader>;
+  /**
+   * Lazily-built, cached sorted entry offsets + trailer bound for this pack.
+   * Callers must hold a `PackLookupHit` from `lookup` — the header gate's
+   * completeness rests on every pack-byte read passing through `lookup` first,
+   * and nothing here structurally forces that to stay true.
+   */
   readonly offsetTable: () => Promise<PackOffsetTable>;
   /**
    * Read `length` bytes at `offset` via a lazily-opened, memoised persistent
    * `FileHandle` — one `open` per pack for its whole delta-chain walk, not one
    * per step. Falls back to a per-call `ctx.fs.readSlice` on adapters that
    * cannot open a handle (browser OPFS throws `UNSUPPORTED_OPERATION`).
+   * Callers must hold a `PackLookupHit` from `lookup` — the header gate's
+   * completeness rests on every pack-byte read passing through `lookup` first,
+   * and nothing here structurally forces that to stay true.
    */
   readonly readSlice: (offset: number, length: number) => Promise<Uint8Array>;
   /** Release the persistent handle, if one was ever opened. Idempotent. */
@@ -98,6 +144,16 @@ async function loadPack(ctx: Context, dir: string, entryName: string): Promise<R
   const index = parsePackIndex(idxBytes);
   const name = entryName.slice(0, -'.idx'.length);
   const packPath = `${dir}/${name}.pack`;
+
+  const headerMemo = createPromiseMemo(async (): Promise<PackHeader> => {
+    const header = parsePackHeader(await ctx.fs.readSlice(packPath, 0, PACK_HEADER_SIZE));
+    if (header.objectCount !== index.objectCount) {
+      throw invalidPackHeader(
+        `object count disagrees with index: pack ${header.objectCount}, index ${index.objectCount}`,
+      );
+    }
+    return header;
+  });
 
   const buildOffsetTable = async (): Promise<PackOffsetTable> => {
     const stat = await ctx.fs.stat(packPath);
@@ -173,7 +229,7 @@ async function loadPack(ctx: Context, dir: string, entryName: string): Promise<R
     await handle.close();
   };
 
-  return { name, index, packPath, idxPath, offsetTable, readSlice, close };
+  return { name, index, packPath, idxPath, header: headerMemo.get, offsetTable, readSlice, close };
 }
 
 function bisectLeft(arr: ReadonlyArray<number>, value: number): number {
@@ -275,9 +331,18 @@ export function createPackRegistry(ctx: Context): PackRegistry {
       const packs = await allPacks();
       for (const pack of packs) {
         const offset = lookupPackIndex(pack.index, id);
-        if (offset !== undefined) {
-          return { pack, offset };
+        if (offset === undefined) continue; // an unclaimed pack is never opened
+        try {
+          await pack.header(); // git's open_packed_git_1 / is_pack_valid gate
+        } catch (err) {
+          if (!isSkippablePackFault(err)) throw err;
+          ctx.logger?.warn?.('packRegistry: skipping unusable pack', {
+            pack: pack.name,
+            ...faultContext((err as TsgitError).data),
+          });
+          continue;
         }
+        return { pack, offset };
       }
       return undefined;
     },
