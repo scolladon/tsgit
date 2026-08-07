@@ -30,20 +30,6 @@ import { SHA1_CONFIG } from '../../src/domain/objects/hash-config.js';
 import { parsePackEntryHeader } from '../../src/domain/storage/index.js';
 import type { Context } from '../../src/ports/context.js';
 
-// Every context a row builds is disposed after the row — the packed-read rows
-// open persistent FileHandles (pack.readSlice via the retention walk), and an
-// undisposed registry surfaces as the GC-close warning the handle-lifecycle
-// work treats as its leak oracle.
-const liveContexts: Context[] = [];
-function trackedNodeContext(workDir: string): Context {
-  const ctx = createNodeContext({ workDir });
-  liveContexts.push(ctx);
-  return ctx;
-}
-afterEach(async () => {
-  await Promise.all(liveContexts.splice(0).map((ctx) => disposePackRegistry(ctx)));
-});
-
 import { GIT_AVAILABLE, git, runGit, runGitEnv, tryRunGitWithExit } from './interop-helpers.js';
 import {
   corruptIdxSameLength,
@@ -59,6 +45,20 @@ import {
   writePack,
   writePackOnly,
 } from './pack-fixture-helpers.js';
+
+// Every context a row builds is disposed after the row — the packed-read rows
+// open persistent FileHandles (pack.readSlice via the retention walk), and an
+// undisposed registry surfaces as the GC-close warning the handle-lifecycle
+// work treats as its leak oracle.
+const liveContexts: Context[] = [];
+function trackedNodeContext(workDir: string): Context {
+  const ctx = createNodeContext({ workDir });
+  liveContexts.push(ctx);
+  return ctx;
+}
+afterEach(async () => {
+  await Promise.all(liveContexts.splice(0).map((ctx) => disposePackRegistry(ctx)));
+});
 
 const SETUP_TIMEOUT = 60_000;
 const PACK_DIR = '.git/objects/pack';

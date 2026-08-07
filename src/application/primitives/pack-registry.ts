@@ -441,10 +441,14 @@ export function createPackRegistry(ctx: Context): PackRegistry {
   const allPacks = (): Promise<ReadonlyArray<RegisteredPack>> =>
     currentGeneration().then((generation) => generation.packs);
 
-  const indexFaultEntries = async (): Promise<UnusablePack[]> => {
-    const generation = await currentGeneration();
-    return generation.indexFaults.map((fault) => unusableEntry(fault.name, 'index', fault.data));
-  };
+  // Pure over its generation, so computeHealth can derive both halves of one
+  // report from the SAME generation snapshot — awaiting the memo twice would
+  // let a refresh() interleave and mix two generations into one verdict.
+  const indexFaultsOf = (generation: PackGeneration): UnusablePack[] =>
+    generation.indexFaults.map((fault) => unusableEntry(fault.name, 'index', fault.data));
+
+  const indexFaultEntries = async (): Promise<UnusablePack[]> =>
+    indexFaultsOf(await currentGeneration());
 
   // The one site that classifies a pack-open refusal — lookup() and health()
   // both call it, so the refusal reason cannot drift between them. Returns
@@ -467,7 +471,7 @@ export function createPackRegistry(ctx: Context): PackRegistry {
 
   const computeHealth = async (): Promise<PackHealth> => {
     const generation = await currentGeneration();
-    const unusable: UnusablePack[] = await indexFaultEntries();
+    const unusable: UnusablePack[] = indexFaultsOf(generation);
     const accessible: RegisteredPack[] = [];
     for (const pack of generation.packs) {
       const fault = await probeHeader(pack);

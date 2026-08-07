@@ -247,19 +247,17 @@ export interface ConnectivityClassification {
  * context, avoiding a read of an object known absent), broken-link,
  * unreachable/dangling (typed via `TypeResolution`), root and tagged.
  */
-export function assembleConnectivityFindings(
-  classification: ConnectivityClassification,
+function missingAndBrokenLinkFindings(
+  missingIds: ReadonlySet<ObjectId>,
+  brokenEdges: ReadonlyArray<GraphEdge>,
   resolution: TypeResolution,
 ): ReadonlyArray<FsckFinding> {
-  const { missingIds, brokenEdges, unreachable, dangling, rootCommits, tagRefs } = classification;
-
   const missingTypeFromEdge = new Map<ObjectId, FsckObjectType | 'unknown'>();
   for (const edge of brokenEdges) {
     if (!missingTypeFromEdge.has(edge.toId)) {
       missingTypeFromEdge.set(edge.toId, edge.toType);
     }
   }
-
   const findings: FsckFinding[] = [];
   for (const id of missingIds) {
     const objectType = missingTypeFromEdge.get(id) ?? resolveObjectType(id, resolution);
@@ -268,11 +266,37 @@ export function assembleConnectivityFindings(
   for (const edge of brokenEdges) {
     findings.push({ type: 'broken-link', ...edge });
   }
-  findings.push(...collectTypeFindings(unreachable, 'unreachable', resolution));
-  findings.push(...collectTypeFindings(dangling, 'dangling', resolution));
+  return findings;
+}
+
+function rootAndTagFindings(
+  rootCommits: ReadonlyArray<ObjectId>,
+  tagRefs: ReadonlyArray<TagRef>,
+): ReadonlyArray<FsckFinding> {
+  const findings: FsckFinding[] = [];
   for (const id of rootCommits) findings.push({ type: 'root', id });
   for (const { tagId, tagName, targetId, targetType } of tagRefs) {
     findings.push({ type: 'tagged', id: targetId, objectType: targetType, tagName, tag: tagId });
   }
+  return findings;
+}
+
+/** Loop-appends, never `push(...spread)` — the unreachable/dangling sets are
+ *  sized by the repository's object count, and an argument spread overflows
+ *  the call stack in the low six figures. */
+function appendAll(target: FsckFinding[], source: ReadonlyArray<FsckFinding>): void {
+  for (const finding of source) target.push(finding);
+}
+
+export function assembleConnectivityFindings(
+  classification: ConnectivityClassification,
+  resolution: TypeResolution,
+): ReadonlyArray<FsckFinding> {
+  const { missingIds, brokenEdges, unreachable, dangling, rootCommits, tagRefs } = classification;
+  const findings: FsckFinding[] = [];
+  appendAll(findings, missingAndBrokenLinkFindings(missingIds, brokenEdges, resolution));
+  appendAll(findings, collectTypeFindings(unreachable, 'unreachable', resolution));
+  appendAll(findings, collectTypeFindings(dangling, 'dangling', resolution));
+  appendAll(findings, rootAndTagFindings(rootCommits, tagRefs));
   return findings;
 }

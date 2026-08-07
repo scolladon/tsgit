@@ -1265,6 +1265,60 @@ describe('PackRegistry.health — per-pack accessibility', () => {
     });
   });
 
+  describe('Given a healthy pack and a memoised health verdict', () => {
+    describe('When health() is called twice without a refresh', () => {
+      it('Then the pack header is probed exactly once', async () => {
+        // Arrange
+        const base = await buildSeededContext();
+        const content = new TextEncoder().encode('health-memo-content');
+        await writeSyntheticPack(base, 'health-memo', [{ kind: 'base', type: 'blob', content }]);
+        const ledger = withHandleLedger(base);
+        const sut = createPackRegistry(ledger.ctx);
+
+        // Act
+        await sut.health();
+        await sut.health();
+
+        // Assert
+        const headerProbes = ledger
+          .slices()
+          .filter((call) => call.path.endsWith('.pack') && call.offset === 0);
+        expect(headerProbes).toHaveLength(1);
+      });
+    });
+  });
+
+  describe('Given a pack refused at the header gate, then repaired without a refresh', () => {
+    describe('When health() is called again', () => {
+      it('Then the memoised verdict still reports it unusable until refresh()', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const content = new TextEncoder().encode('health-stability-content');
+        await writeSyntheticPack(ctx, 'health-stability', [
+          { kind: 'base', type: 'blob', content },
+        ]);
+        const packPath = `${ctx.layout.gitDir}/objects/pack/pack-health-stability.pack`;
+        const goodPackBytes = await ctx.fs.read(packPath);
+        await restampPackHeader(ctx, packPath, { version: 99 });
+        const sut = createPackRegistry(ctx);
+
+        // Act
+        const before = await sut.health();
+        await ctx.fs.write(packPath, goodPackBytes);
+        const repairedNoRefresh = await sut.health();
+        sut.refresh();
+        const repairedRefreshed = await sut.health();
+
+        // Assert — one consistent verdict per generation, by design: the
+        // report may not flap mid-run; refresh() is the only reset.
+        expect(before.unusable).toHaveLength(1);
+        expect(repairedNoRefresh.unusable).toHaveLength(1);
+        expect(repairedRefreshed.unusable).toEqual([]);
+        expect(repairedRefreshed.accessible).toHaveLength(1);
+      });
+    });
+  });
+
   describe('Given a pack whose .idx was corrupt, then repaired, then refreshed', () => {
     describe('When health() is called before and after the repair', () => {
       it('Then the pack moves from unusable to accessible with nothing remembered as bad', async () => {

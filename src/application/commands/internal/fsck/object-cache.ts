@@ -75,11 +75,13 @@ function isDecodeFault(err: unknown): boolean {
 }
 
 /**
- * Store damage degrades; the environment does not. A fault that is not a
- * `TsgitError` (a programming error) or that `mapErrno` folded into
- * `UNSUPPORTED_OPERATION` (`EMFILE`, `EIO`, …) must surface — degrading it
- * would report a false integrity verdict under load. One policy for every
- * lookup and walk in this file.
+ * The degrade/propagate policy for every lookup and walk in this file. Only
+ * `UNSUPPORTED_OPERATION` (what `mapErrno` folds `EMFILE`, `EIO` and every
+ * unnamed errno into) and a non-`TsgitError` (a programming error) propagate
+ * — degrading those would report a false integrity verdict under load. Every
+ * other `TsgitError` — `PERMISSION_DENIED` included — degrades, because
+ * degradation can only coarsen a type label to 'unknown'; it never withholds
+ * a finding and never flips a verdict.
  */
 function isStoreFault(err: unknown): boolean {
   return err instanceof TsgitError && err.data.code !== 'UNSUPPORTED_OPERATION';
@@ -221,9 +223,9 @@ async function recoverStoredType(
     const hit = await lookupIfClaimed(registry, id);
     if (hit === undefined) {
       // The reject verdict is gated on the ORIGINAL read failure, not the
-      // probe's — the settled two-code test; the rethrown cause is the
-      // store's own error. A file whose damage class changed under the probe
-      // stays a tolerated 'unknown'.
+      // probe's — the settled two-code test; the cause keeps the store's own
+      // code. A file whose damage class changed under the probe stays a
+      // tolerated 'unknown'.
       if (isRecoveryCandidate(readErr)) return { kind: 'unrecoverable', cause: readErr };
       return { kind: 'untyped' };
     }
@@ -293,28 +295,36 @@ export async function buildObjectCache(
   return acc;
 }
 
-/**
- * Reject with the store's own error, rethrown, at the first unreachable id
- * whose stored type could not be recovered — git's `die()`: exit 128, empty
- * stdout, every finding withheld. Iterates `unreachable` (git's
- * `check_unreachable_object` domain), never `dangling` (its in-edge-free
- * subset, which would silently pass a referenced-but-unreachable object).
- */
-const MAX_REASON_LENGTH = 200;
+const MAX_REASON_CODE_POINTS = 200;
 
 /**
  * A reject reason can embed attacker-chosen bytes (an object header's type
- * and size fields are raw store bytes), and the display sanitiser
- * deliberately preserves tab and newline — so strip every control character
- * and cap the length before the reason reaches the logger or the thrown
- * error's message.
+ * and size fields are raw store bytes), and it reaches the thrown error's
+ * message with no other sanitiser on the way. Allow-list, mirroring the
+ * display sanitiser's convention but stricter: printable ASCII survives,
+ * everything else — tab, newline, C1 controls, bidi overrides — is
+ * hex-escaped; the cap counts code points so a split surrogate cannot leak.
  */
 function sanitizeReason(reason: string): string {
-  return [...reason.slice(0, MAX_REASON_LENGTH)]
-    .filter((ch) => ch.charCodeAt(0) >= 0x20 && ch.charCodeAt(0) !== 0x7f)
+  return [...reason]
+    .slice(0, MAX_REASON_CODE_POINTS)
+    .map((ch) => {
+      const code = ch.codePointAt(0) ?? 0;
+      return code >= 0x20 && code <= 0x7e
+        ? ch
+        : `\\x${code.toString(16).toUpperCase().padStart(2, '0')}`;
+    })
     .join('');
 }
 
+/**
+ * Reject with the store's own error CODE — rebuilt with a sanitised reason,
+ * same class — at the first unreachable id whose stored type could not be
+ * recovered: git's `die()`, exit 128, empty stdout, every finding withheld.
+ * Iterates `unreachable` (git's `check_unreachable_object` domain), never
+ * `dangling` (its in-edge-free subset, which would silently pass a
+ * referenced-but-unreachable object).
+ */
 export function assertTypesRecoverable(
   ctx: Context,
   unreachable: ReadonlyArray<ObjectId>,
