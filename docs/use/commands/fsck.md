@@ -17,9 +17,9 @@ type FsckSeverity   = 'error' | 'warning' | 'info';
 
 type FsckFinding =
   | { readonly type: 'dangling';
-      readonly id: ObjectId; readonly objectType: FsckObjectType }
+      readonly id: ObjectId; readonly objectType: FsckObjectType | 'unknown' }
   | { readonly type: 'unreachable';
-      readonly id: ObjectId; readonly objectType: FsckObjectType }
+      readonly id: ObjectId; readonly objectType: FsckObjectType | 'unknown' }
   | { readonly type: 'missing';
       readonly id: ObjectId; readonly objectType: FsckObjectType | 'unknown' }
   | { readonly type: 'broken-link';
@@ -36,7 +36,13 @@ type FsckFinding =
   | { readonly type: 'root'; readonly id: ObjectId }
   | { readonly type: 'tagged';
       readonly id: ObjectId; readonly objectType: FsckObjectType;
-      readonly tagName: string; readonly tag: ObjectId };
+      readonly tagName: string; readonly tag: ObjectId }
+  | { readonly type: 'pack-inaccessible';
+      readonly pack: string; readonly reason: string }
+  | { readonly type: 'pack-index-unusable';
+      readonly pack: string; readonly reason: string }
+  | { readonly type: 'pack-rev-index-unusable';
+      readonly pack: string; readonly reason: string };
 
 interface FsckOptions {
   readonly connectivityOnly?: boolean;
@@ -88,8 +94,8 @@ findings.filter(f => f.type === 'tagged')
 
 | `type` | Fields (beyond `type`) | When emitted |
 |---|---|---|
-| `dangling` | `id`, `objectType` | Object present but reachable from no root and has no in-edge from another present object (tip of an unreachable subgraph). Exit 0. |
-| `unreachable` | `id`, `objectType` | Object present but not reachable from any root (superset of `dangling`). Exit 0. |
+| `dangling` | `id`, `objectType` (`FsckObjectType \| 'unknown'`) | Object present but reachable from no root and has no in-edge from another present object (tip of an unreachable subgraph). `objectType` is `'unknown'` only under `connectivityOnly: true`, and only when no stored header could be obtained for the object at all — an unopenable or empty loose file, or an id only an unusable pack supplies. Exit 0. |
+| `unreachable` | `id`, `objectType` (`FsckObjectType \| 'unknown'`) | Object present but not reachable from any root (superset of `dangling`). Same `'unknown'` rule as `dangling`. Exit 0. |
 | `missing` | `id`, `objectType` (`FsckObjectType \| 'unknown'`) | Referenced object absent from store. Exit bit 2. |
 | `broken-link` | `fromId`, `fromType`, `toId`, `toType` (`FsckObjectType \| 'unknown'`) | Edge from a present object to an absent one. Exit bit 2. |
 | `bad-object` | `id`, `objectType` (`FsckObjectType \| 'unknown'`), `msgId`, `severity` | Object-content validation failure from the named msg-id catalogue, or corrupt/undecodable object. Exit bit 1 (ERROR-class or `--strict`-upgraded). `objectType` is `'unknown'` when the object is undecodable and its type cannot be determined. |
@@ -97,6 +103,15 @@ findings.filter(f => f.type === 'tagged')
 | `bad-ref` | `ref`, `msgId`, `severity`, `target?` | Refs-verify pass finding: malformed ref content (`badRefContent` — exit bit 8) or ref pointing at an absent/zero OID (`badRefOid` / *invalid sha1 pointer* — exit bit 2). `target` is present when the ref had a syntactically-valid OID target. |
 | `root` | `id` | Root commit (no parents). Emitted when the caller filters for `type === 'root'`. Exit 0. |
 | `tagged` | `id`, `objectType`, `tagName`, `tag` | Tag target: `id` is the tagged object, `tag` is the tag object OID. Emitted when the caller filters for `type === 'tagged'`. Exit 0. |
+| `pack-inaccessible` | `pack`, `reason` | A pack failed the header gate — bad version, bad signature, truncated file, a header/index object-count disagreement, or a `.pack` that could not be opened. Full mode only (suppressed by `full: false` or `connectivityOnly: true`). Exit bit 4. |
+| `pack-index-unusable` | `pack`, `reason` | A pack's `.idx` could not be read or parsed. Full mode only; always accompanied by a `pack-rev-index-unusable` finding for the same pack. Exit bit 4. |
+| `pack-rev-index-unusable` | `pack`, `reason` | A pack's index is unusable, so no reverse index can be derived from it either. Emitted in **every** mode, including `connectivityOnly` and `full: false` — unlike the other two pack findings, this one is not mode-gated. Exit bit 64. |
+
+`pack` is the pack's base name (`pack-<sha>`), already vetted at scan time against path
+separators, `..`, and control characters — but it is **not shell-safe** (spaces, quotes, `$`,
+backticks survive that filter); quote it before interpolating into a shell command or composing
+a path from it. `reason` is a short description of the fault; the wording is tsgit's own, not
+reconstructed from git's stderr text.
 
 ## Behaviour
 
@@ -105,16 +120,24 @@ findings.filter(f => f.type === 'tagged')
   verdict does not cover ancestors beyond the `.git/shallow` cut — they are
   out of scope by construction, and a boundary commit surfaces as a `root`
   finding like any other parentless commit.
-- **Non-repository is the only refusal.** `repo.fsck` calls `assertRepository`
-  (not `assertOperationalRepository`): a broken `[core]` config or an
-  unborn/dangling HEAD symref is tolerated, because fsck must run on exactly
-  the corrupt repo you point it at. Throws `notARepository` outside a repo.
-- **In-repo faults are findings, never throws.** Every read call inside the
-  scan is wrapped; a thrown `TsgitError` is classified to a finding by its
-  `.data.code`. fsck survives the worst repo state.
-- **Exit code carries severity, not exception.** A repo with missing or corrupt
-  objects returns a non-zero `exitCode` in a successfully-resolved `FsckResult`
-  — it does **not** reject. The `exitCode` is a composite bitmask:
+- **Non-repository is the only *structural* refusal.** `repo.fsck` calls
+  `assertRepository` (not `assertOperationalRepository`): a broken `[core]`
+  config or an unborn/dangling HEAD symref is tolerated, because fsck must run
+  on exactly the corrupt repo you point it at. Throws `notARepository` outside
+  a repo. One *content-driven* refusal exists alongside it — see
+  [Throws](#throws) below.
+- **In-repo faults are findings, never throws — with one documented
+  exception.** Every read call inside the scan is wrapped; a thrown
+  `TsgitError` is classified to a finding by its `.data.code`, and fsck
+  survives the worst repo state. The exception is `connectivityOnly: true`
+  against an unreachable object whose stored header cannot be recovered at
+  all: there git itself aborts (`die()`, exit 128), and tsgit rejects instead
+  of resolving (see [Throws](#throws)).
+- **Exit code carries severity, not exception — outside that one case.** A
+  repo with missing or corrupt objects returns a non-zero `exitCode` in a
+  successfully-resolved `FsckResult` — it does **not** reject, except for the
+  `connectivityOnly` reject described above. The `exitCode` is a composite
+  bitmask:
 
   | Value | Meaning |
   |---|---|
@@ -122,8 +145,13 @@ findings.filter(f => f.type === 'tagged')
   | `1` | Content ERROR, `--strict`-upgraded WARN, corrupt object, or hash-mismatch (bit 1). |
   | `2` | Missing object, broken link, or ref→absent OID (bit 2). |
   | `3` | Bits 1 and 2 combined (e.g. corrupt object whose absence also breaks a link). |
+  | `4` | A pack failed the header gate or `.idx` parse (bit 4, `pack-inaccessible` / `pack-index-unusable`). Full mode only — suppressed by `full: false` or `connectivityOnly: true`. |
+  | `6` | Bits 2 and 4 combined (e.g. a missing object alongside an unrelated pack accessibility fault). |
   | `8` | Refs-verify content failure only (bit 8). |
   | `10` | Bits 2 and 8 combined (e.g. malformed ref content + ref→absent OID). |
+  | `14` | Bits 2, 4 and 8 combined. |
+  | `64` | A pack's reverse index is unusable, no other error (bit 64, `pack-rev-index-unusable`). Set in **every** mode, including `connectivityOnly` and `full: false` — the one bit this table's other rows are gated against. |
+  | `68` | Bits 4 and 64 combined — an unusable `.idx` in full mode sets both, matching git's `index not opened` **and** `unable to load rev-index` for the same pack. |
 
   Combinations follow bitwise OR. Caller passes `result.exitCode` to
   `process.exit` to reproduce git's exit behaviour.
@@ -178,7 +206,7 @@ if (result.exitCode === 0) {
 // Reconstruct git's output lines from findings
 for (const f of result.findings) {
   if (f.type === 'dangling')
-    console.log(`dangling ${f.objectType} ${f.id}`);          // stdout
+    console.log(`dangling ${f.objectType} ${f.id}`);          // stdout — objectType may be 'unknown' (connectivityOnly)
   if (f.type === 'missing')
     console.log(`missing ${f.objectType} ${f.id}`);           // stdout
   if (f.type === 'bad-object')
@@ -206,6 +234,20 @@ process.exit(result.exitCode);
 ## Throws
 
 - `NOT_A_REPOSITORY` — `cwd` (or `gitDir`) does not point inside a git repository.
+- `DECOMPRESS_FAILED` — `connectivityOnly: true` only, and only for an object
+  that is not reachable from any root: the object is loose, its zlib stream
+  cannot be inflated, and no other pack holds a readable copy of the same id.
+  Reproduces git's `die()` on the same fault (real git exits 128 with no
+  output); the promise rejects instead of resolving, discarding every finding
+  already computed for the run. The other two modes (the default and
+  `full: false`) report the same object as a `bad-object` finding with exit
+  bit 1 instead of throwing.
+- `INVALID_OBJECT_HEADER` — same gating as `DECOMPRESS_FAILED`, for a loose
+  object whose zlib stream inflates but whose `<type> <size>\0` header cannot
+  be parsed (longer than 32 bytes, an unrecognised type name, or a
+  non-numeric size). Not triggered by a header that parses but disagrees with
+  the body's actual size — that object still resolves normally, as a
+  `dangling` / `unreachable` finding carrying its real type.
 
 ## See also
 
