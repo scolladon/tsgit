@@ -78,11 +78,10 @@ export const packDegradedIdxScenario: Scenario<PackDegradedIdxResult> = {
 
     // Arm 3 — a valid pack pair whose .pack vanishes after the scan. The
     // blob's loose copy is removed so the pack is its only source.
-    const vanishedId = await writeScenarioPackPair(repo, {
+    const { id: vanishedId, packBase: vanishBase } = await writeScenarioPackPair(repo, {
       name: 'pack-degraded-vanish',
       content: VANISHED_BLOB_CONTENT,
     });
-    const vanishBase = `${packDir}/pack-degraded-vanish`;
 
     // A fresh generation registers the vanish pack (arms 1+2 stay excluded)
     // WITHOUT probing its header — all() touches only the parsed idx.

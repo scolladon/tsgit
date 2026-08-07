@@ -36,7 +36,9 @@ export const packV3ReadScenario: Scenario<PackV3ReadResult> = {
     await repo.add(inputs.files.map((file) => file.path));
     await repo.commit({ message: inputs.message, author: inputs.author });
 
-    const id = await writeScenarioPackPair(repo, {
+    // Version 3 is the fixture's only anomaly — the pack is otherwise
+    // exactly what the domain writers emit.
+    const { id, packBase } = await writeScenarioPackPair(repo, {
       name: 'pack-parity-v3',
       content: PACKED_BLOB_CONTENT,
       version: 3,
@@ -44,7 +46,6 @@ export const packV3ReadScenario: Scenario<PackV3ReadResult> = {
 
     // Act — probe the raw header through the port under test, then read
     // the blob back through the primitive that reaches the same registry.
-    const packBase = `${repo.ctx.layout.gitDir}/objects/pack/pack-parity-v3`;
     const head = await repo.ctx.fs.readSlice(`${packBase}.pack`, 0, PACK_HEADER_SIZE);
     const probedVersion = new DataView(head.buffer, head.byteOffset, head.byteLength).getUint32(4);
     const blob = await repo.primitives.readBlob(id);

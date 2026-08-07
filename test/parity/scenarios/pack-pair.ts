@@ -1,8 +1,8 @@
 /**
  * Shared pack-pair builder for scenarios that need a hand-assembled,
- * single-blob pack + matching idx sitting directly in objects/pack — used by
- * pack-v3-read.scenario.ts (a version-stamped pack) and
- * pack-degraded-idx.scenario.ts (a pack that later vanishes on disk).
+ * single-blob pack + matching idx sitting directly in objects/pack —
+ * optionally stamped with a non-default header version, always the sole
+ * source of its blob (the loose copy is removed).
  */
 import { hexToBytes } from '../../../src/domain/objects/encoding.ts';
 import type { ObjectId } from '../../../src/domain/objects/index.ts';
@@ -12,6 +12,7 @@ import {
   serializePackIndex,
 } from '../../../src/domain/storage/index.ts';
 import { computeLooseObjectPath } from '../../../src/domain/storage/loose-path.ts';
+import { GENERATED_PACK_VERSION } from '../../../src/domain/storage/pack-entry.ts';
 import type { Repository } from '../../../src/repository.ts';
 
 interface WriteScenarioPackPairOptions {
@@ -29,13 +30,13 @@ function concatBytes(a: Uint8Array, b: Uint8Array): Uint8Array {
 
 /** Hand-assembles a one-blob pack + matching idx pair from the domain writers,
  *  writes both under objects/pack/<name>.{pack,idx}, removes the blob's loose
- *  copy so the pack is its only source, and returns the blob's id.
- *  `version` (default 2) is stamped into the pack header BEFORE the trailer is
- *  computed, so the trailer covers it. */
+ *  copy so the pack is its only source, and returns the blob's id plus the
+ *  written pack base path. A non-default `version` is stamped into the pack
+ *  header BEFORE the trailer is computed, so the trailer covers it. */
 export async function writeScenarioPackPair(
   repo: Repository,
   opts: WriteScenarioPackPairOptions,
-): Promise<ObjectId> {
+): Promise<{ readonly id: ObjectId; readonly packBase: string }> {
   const content = new TextEncoder().encode(opts.content);
   // `id: '' as ObjectId` signals writeObject to compute the SHA itself —
   // documented contract, mirrored by fsck.scenario.ts / write-pipeline.scenario.ts.
@@ -56,9 +57,10 @@ export async function writeScenarioPackPair(
   if (entry === undefined) throw new Error(`${opts.name}: missing pack entry`);
 
   // Stamp the version BEFORE computing the trailer, so the trailer covers
-  // the version byte too, whenever it diverges from the default v2.
-  const version = opts.version ?? 2;
-  if (version !== 2) {
+  // the version byte too. Restamping only on divergence keeps the default
+  // path's bytes exactly what serializePackfile emitted.
+  const version = opts.version ?? GENERATED_PACK_VERSION;
+  if (version !== GENERATED_PACK_VERSION) {
     new DataView(data.buffer, data.byteOffset, data.byteLength).setUint32(4, version);
   }
   const trailer = await repo.ctx.hash.hash(data);
@@ -74,9 +76,9 @@ export async function writeScenarioPackPair(
   await repo.ctx.fs.write(`${packBase}.idx`, idxBytes);
 
   // The loose copy must go — resolveObject consults the loose store before
-  // the pack registry, so with it present the pack is never consulted; this
-  // deletion is the scenario's whole point.
+  // the pack registry, so with it present the pack would never be consulted;
+  // removing it makes the pack the object's only source.
   await repo.ctx.fs.rm(`${repo.ctx.layout.gitDir}/objects/${computeLooseObjectPath(id)}`);
 
-  return id;
+  return { id, packBase };
 }
