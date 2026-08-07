@@ -302,12 +302,13 @@ Verifiable at ship time.
     `resolveOidPrefix`, `fsck --full` — does not list its objects, matching git's `packs: 0` /
     `in-pack: 0` (H6, H7). A **pack-open-layer** fault leaves the pack listed by `all()` with its
     index intact but unable to serve, matching git's `packs: 1` / `in-pack: 5` (H2–H4).
-    **One row is not covered by that rule: H5** (`.idx` present, `.pack` deleted). git excludes it
-    at scan (`packs: 0`, `garbage: 1`) because it registers a pack only when a `.pack` file exists
-    by name; ADR-575 catches it at the header probe instead, so `all()` still lists it. Reads are
-    identical either way; enumeration is not. **DC-8** is where that gets decided — this
-    requirement is written to whichever option DC-8 lands on and is deliberately not asserted for
-    H5 until then.
+    **H5** (`.idx` present, `.pack` missing at scan) is covered at the **scan layer** per
+    ADR-579: `scanPacks` registers a pack only when a sibling `<name>.pack` appears in the
+    directory listing it already holds — git's own `prepare_packed_git` rule at zero extra
+    I/O — and the exclusion warns once per generation per ADR-580. `all()` therefore never
+    lists an orphaned `.idx`, matching git's `packs: 0` / `garbage: 1`. The lookup-layer
+    `FILE_NOT_FOUND` arm (ADR-575) remains for the `.pack` deleted *after* the scan — the
+    concurrent-repack race.
 14. **The local gate cross-checks `objectCount`** (ADR-577). The header's count must equal the
     paired `PackIndex.objectCount`; a disagreement is a skippable pack fault under requirement
     12, reproducing H3. The comparison happens in the registry, never inside `parsePackHeader` —
@@ -375,9 +376,10 @@ same two. Both must exist; neither subsumes the other:
 | **scan** | `scanPacks`, around `loadPack` | `isSkippableIdxFault` — `INVALID_PACK_INDEX`, `FILE_NOT_FOUND`, `PERMISSION_DENIED` | the pack never becomes a `RegisteredPack`; excluded from the generation | H6, H7: `packs: 0`, `in-pack: 0` |
 | **lookup** | `createPackRegistry().lookup`, around `pack.header()` | `isSkippablePackFault` — `INVALID_PACK_HEADER`, `FILE_NOT_FOUND`, `PERMISSION_DENIED` | the pack stays listed by `all()` with its index intact, but never serves | H2–H4: `packs: 1`, `in-pack: 5` |
 
-H5 (`.idx` present, `.pack` deleted) is the one row whose *layer* differs from git's: git needs a
-`.pack` to exist before it registers the pack at all (`packs: 0`, `garbage: 1`), while ADR-575
-sends it to the lookup probe. Object resolution is identical; enumeration is not — **DC-8**.
+H5 (`.idx` present, `.pack` missing at scan) sits at the **scan layer** like git: ADR-579's
+sibling-`.pack` check excludes an orphaned `.idx` from the generation (`packs: 0`,
+`garbage: 1`), warning once per generation (ADR-580). ADR-575's lookup-layer `FILE_NOT_FOUND`
+arm now covers only the between-generations race (`.pack` deleted after the scan).
 
 #### §D2.1 — the lookup layer (the version gate)
 
@@ -566,9 +568,9 @@ Six interactions to state rather than discover:
   idx-fault pack is gone from `all()`, exactly git's `packs: 0` / `in-pack: 0` (H6, H7); a
   version-, count- or open-refused pack is still listed with its index, exactly git's `packs: 1` /
   `in-pack: 5` (H2–H4) — git counts a v99 pack's objects off the readable `.idx` too. That is a
-  narrower residue than ADR-572 had to assume when it deferred the gap: the remaining
-  *enumeration* divergence is **only H5**, the orphaned `.idx`, which git drops at scan and
-  ADR-575 catches at the probe (DC-8); everything else left over is *integrity reporting* —
+  narrower residue than ADR-572 had to assume when it deferred the gap: with ADR-579's
+  scan-time orphan exclusion the enumeration axis is faithful on every Pin H row, and
+  everything left over is *integrity reporting* —
   tsgit's `fsck` has no equivalent of git's `packfile … cannot be accessed` + exit bit 4 (Pin B).
 - **Log volume, lookup layer.** Because there is no negative cache (C5), a walk over a repo
   containing a refused pack emits one warn per object lookup that hits that pack's index. git
@@ -694,10 +696,10 @@ change.
 ### §D9 — blind spots, named
 
 1. **`registry.all()` consumers bypass the lookup gate** (§D3). Deliberate under ADR-572, and
-   after the fold the enumeration axis is faithful on H2, H3, H4, H6 and H7 (git's `packs:` /
-   `in-pack:` agree with tsgit's `all()`). Two residues: **H5**, where git drops an orphaned
-   `.idx` at scan and tsgit does not — the subject of DC-8 — and tsgit's `fsck` lacking git's
-   `packfile … cannot be accessed` + exit bit 4, an integrity-reporting gap deferred by ADR-572.
+   after the fold the enumeration axis is faithful on every Pin H row — H5 included, since
+   ADR-579 excludes an orphaned `.idx` at scan exactly as git does. One residue: tsgit's `fsck`
+   lacking git's `packfile … cannot be accessed` + exit bit 4, an integrity-reporting gap
+   deferred by ADR-572.
 2. **Browser / memory adapters.** `ctx.fs.readSlice` is a `FileSystem` port method every adapter
    implements — it is already the registry's fallback reader (`pack-registry.ts:132`, `:145`) —
    so the gate needs no adapter work. Worth one parity scenario, not a design branch.
@@ -781,14 +783,17 @@ that fails to **read or** parse", and git skips an unreadable `.idx` exactly as 
 one (H6 vs H7), while the house rule in `isUnsupportedOperation` keeps `EMFILE`-class faults out
 of the list.
 
-### Decision candidates — surfaced by the DC-4(c) fold
+### Ratified after the fold — DC-8 and DC-9
 
-One, and only because the fold created a scan-layer exclusion mechanism that did not exist when
-ADRs 572–575 were written. Not decided here.
+The fold surfaced two further choices, both since ratified:
 
-| # | Choice | Alternatives (≤3) | Recommendation | Why |
-|---|---|---|---|---|
-| **DC-8** | **Does `scanPacks` also require a matching `.pack` to exist before registering a pack?** git registers a pack only when the `.idx` loads **and** a `.pack` file exists by name — H5 is `packs: 0`, `garbage: 1` — whereas ADR-575 routes a missing `.pack` to the lookup probe, so `registry.all()` still lists it and `enumerateObjects` / `resolveOidPrefix` / `fsck --full` still surface its object ids. Object *resolution* is identical either way (H5 reads as *missing* under both); only enumeration differs | **(a) No** — leave H5 to the lookup probe, exactly as ADR-575 words it. Zero added work; the enumeration divergence stays inside ADR-572's deferred gap. **(b) Existence check** — one `ctx.fs.exists(packPath)` in `loadPack`; a missing `.pack` excludes the pack from the generation. Costs one extra stat per pack per generation, on every healthy repo. **(c) Sibling-entry check** — `scanPacks` already holds the full `readdir` listing, so it can require a `<name>.pack` entry in that same listing: git's own scan-time test, at **zero** extra I/O | **(c)** | (c) reproduces `prepare_packed_git`'s rule with the data already in hand, closes the last enumeration divergence in this family, and cannot regress a healthy repo — the listing is one array scan. It also composes with the ratified arm rather than replacing it: the lookup-layer `FILE_NOT_FOUND` skip must stay regardless, for the `.pack` deleted *after* the scan (the concurrent-repack race). (b) buys the same behaviour for one syscall per pack per generation — defensible, strictly dearer, and it introduces its own TOCTOU that (c) does not (an `exists` result can be stale by the time `lookup` runs; a listing snapshot is honestly a snapshot). (a) is defensible on the narrowest reading of ADR-575 and on scope discipline: the divergence is enumeration-only, it predates this change, and closing it can ride with the deferred `fsck` work instead |
+- **DC-8 → ADR-579** (user-ratified, option (c)): `scanPacks` registers a pack only when a
+  sibling `<name>.pack` entry appears in the `readdir` listing it already holds — git's own
+  scan-time rule at zero extra I/O. The lookup-layer `FILE_NOT_FOUND` skip stays for the
+  `.pack` deleted after the scan.
+- **DC-9 → ADR-580** (adopted-as-recommended): the orphan exclusion emits one structured
+  `ctx.logger?.warn?.` per generation — the anomaly git surfaces via `count-objects`'s
+  `warning: no corresponding .pack` stays diagnosable without a faithfulness cost.
 
 ## Test strategy
 
@@ -836,7 +841,8 @@ everywhere rather than loose — otherwise the test passes without the gate exis
 | short pack | pack truncated to 8 bytes | same skip path; warn reason contains `truncated` |
 | H3 count mismatch | v2 pack whose header count is `index.objectCount + 1`, trailer re-stamped | same skip path; warn reason names **both** counts. Its **own** `it`, per the isolated-guard rule — a test that also breaks the version would not prove the count check exists (ADR-577's consequence) |
 | H4 `.pack` unopenable | valid `.idx`; `ctx.fs.readSlice` on the `.pack` rejects with `PERMISSION_DENIED` | skip; `OBJECT_NOT_FOUND`; one warn |
-| H5 `.idx` with no `.pack` | valid `.idx` written, `.pack` absent (`FILE_NOT_FOUND` from the probe) | skip; `OBJECT_NOT_FOUND`; one warn. Kills the "ENOENT is not skippable" mutant on `isSkippableIoFault`. Whether `all()` also drops the pack here is DC-8 — the row asserts resolution only until that lands |
+| H5 orphan at scan | valid `.idx` written, `.pack` never present | excluded from the generation (ADR-579); `all()` omits it; one warn per generation (ADR-580) |
+| H5 race at lookup | `.idx` scanned with its `.pack` present; the `.pack` vanishes before the probe (`FILE_NOT_FOUND`) | skip; `OBJECT_NOT_FOUND`; one warn. Kills the "ENOENT is not skippable" mutant on `isSkippableIoFault` |
 | unrecognised lookup fault | probe rejects with `UNSUPPORTED_OPERATION { operation: 'filesystem' }` | **propagates** — `lookup` rejects with that exact `.data`. The negative half of the allow-list; without it, widening `isSkippablePackFault` to `catch {}` survives |
 | handle ledger | any of the above | opened-minus-closed handles after `dispose()` is 0 (requirement 9) |
 
@@ -917,7 +923,7 @@ prove the version is the **only** thing wrong.
 | I-9 | **corrupt `.idx`, object nowhere else** (H6) | `cat-file --batch-check` → `missing`, exit 0; `count-objects -v` → `packs: 0`, `in-pack: 0` | `readObject` → `OBJECT_NOT_FOUND`; `registry.all()` is empty — the pack-set assertion is the tsgit-side mirror of `packs: 0` |
 | I-10 | **corrupt `.idx` + loose object** (H6) | `cat-file -p <loose>` → payload, **exit 0** | `readObject` returns the identical bytes. The row that proves one bad idx no longer fails the store |
 | I-11 | **corrupt `.idx` + good sibling pack** (H6) | `cat-file -p <oid in sibling>` → payload, exit 0 | `readObject` returns the identical bytes; `all()` lists exactly one pack |
-| I-12 | **`.idx` with no `.pack`** (H5) | `cat-file --batch-check` → `missing`, exit 0; `count-objects -v` → `packs: 0`, `garbage: 1`, `warning: no corresponding .pack` | `readObject` → `OBJECT_NOT_FOUND`; loose + sibling reads unaffected. The `all()` half of the git column is asserted **only if DC-8 lands on (b)/(c)**; under (a) the row asserts resolution and explicitly records the enumeration divergence |
+| I-12 | **`.idx` with no `.pack`** (H5) | `cat-file --batch-check` → `missing`, exit 0; `count-objects -v` → `packs: 0`, `garbage: 1`, `warning: no corresponding .pack` | `readObject` → `OBJECT_NOT_FOUND`; `all()` is empty (ADR-579's scan-time exclusion — the tsgit mirror of `packs: 0`); loose + sibling reads unaffected |
 | I-13 | **pack/idx `objectCount` disagreement** (H3) | `cat-file --batch-check` → `missing`, exit 0, stderr `claims to have N objects while index indicates M objects`; `count-objects -v` → `packs: 1`, `in-pack: M` | `readObject` → `OBJECT_NOT_FOUND`; `all()` **still lists** the pack — the layer assertion (requirement 13) |
 | I-14 | **enumeration parity across the two layers** | `count-objects -v` on the v99 repo (`packs: 1`, `in-pack: 5`) vs the corrupt-idx repo (`packs: 0`, `in-pack: 0`) | `all()` / `enumerateObjects` reproduce both counts. The single row that would fail if the two skip layers were collapsed into one |
 
