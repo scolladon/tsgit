@@ -1,18 +1,20 @@
 import { describe, expect, it, vi } from 'vitest';
+import { enumerateObjects } from '../../../../src/application/primitives/enumerate-objects.js';
 import {
   createPackRegistry,
   nextOffsetForEntry,
   type PackOffsetTable,
 } from '../../../../src/application/primitives/pack-registry.js';
-import { readObject } from '../../../../src/application/primitives/read-object.js';
+import { getPackRegistry, readObject } from '../../../../src/application/primitives/read-object.js';
 import { REASON_PACK_IDX_EXCEEDS_MAX } from '../../../../src/application/primitives/validators.js';
+import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import {
   fileNotFound,
   permissionDenied,
   type TsgitError,
   unsupportedOperation,
 } from '../../../../src/domain/error.js';
-import type { Blob, ObjectId } from '../../../../src/domain/objects/index.js';
+import type { Blob, GitObject, ObjectId } from '../../../../src/domain/objects/index.js';
 import { PACK_HEADER_SIZE } from '../../../../src/domain/storage/pack-entry.js';
 import type { Context } from '../../../../src/ports/context.js';
 import type { DirEntry, FileHandle, FileStat } from '../../../../src/ports/file-system.js';
@@ -42,6 +44,32 @@ function makeStat(): FileStat {
     isSymbolicLink: false,
   };
 }
+
+// Long enough to pass parsePackIndex's truncation guard (header + fanout
+// table) but with a magic that can never match, forcing the parser arm
+// itself to reject it — the shape a naive length-only guard would miss.
+const GARBAGE_IDX_LENGTH = 1032;
+
+function garbageIdxBytes(): Uint8Array {
+  return Uint8Array.from({ length: GARBAGE_IDX_LENGTH }, (_, i) => i % 256);
+}
+
+/**
+ * Write a garbage `.idx` plus a sibling `.pack` (contents irrelevant —
+ * scanPacks never reads a pack file's bytes) so the orphan filter is not
+ * what these fixtures measure.
+ */
+async function writeGarbageIdx(ctx: Context, name: string): Promise<void> {
+  const dir = `${ctx.layout.gitDir}/objects/pack`;
+  await ctx.fs.write(`${dir}/pack-${name}.idx`, garbageIdxBytes());
+  await ctx.fs.write(`${dir}/pack-${name}.pack`, new Uint8Array([0]));
+}
+
+const blob = (content: string): GitObject => ({
+  type: 'blob',
+  id: '' as ObjectId,
+  content: new TextEncoder().encode(content),
+});
 
 describe('pack-registry', () => {
   describe('Given a missing pack directory', () => {
@@ -96,6 +124,7 @@ describe('pack-registry', () => {
             readdir: async (): Promise<ReadonlyArray<DirEntry>> => [
               dirEntry(badName),
               dirEntry('pack-good.idx'),
+              dirEntry('pack-good.pack'),
             ],
             stat: async (path: string): Promise<FileStat> => {
               statsSeen.push(path);
@@ -124,20 +153,23 @@ describe('pack-registry', () => {
 
   describe('Given an .idx file whose stat reports > MAX_PACK_IDX_BYTES', () => {
     describe('When all() is called', () => {
-      it('Then throws INVALID_PACK_INDEX without issuing a read', async () => {
+      it('Then the pack is skipped without issuing a read', async () => {
         // Arrange
         // Kills the mutant where the stat size guard is removed — read() would be
         // called and a multi-GiB array would be allocated.
         const ctx = await buildSeededContext();
         const reads: string[] = [];
         const oversized = 64 * 1024 * 1024 + 1;
+        const warn = vi.fn();
         const wrapped = {
           ...ctx,
+          logger: { warn },
           fs: {
             ...ctx.fs,
             exists: async () => true,
             readdir: async () => [
               { name: 'pack-bomb.idx', isFile: true, isDirectory: false, isSymbolicLink: false },
+              { name: 'pack-bomb.pack', isFile: true, isDirectory: false, isSymbolicLink: false },
             ],
             stat: async (p: string) => {
               const base = await ctx.fs.stat(p).catch(() => undefined);
@@ -152,21 +184,18 @@ describe('pack-registry', () => {
         const sut = createPackRegistry(wrapped);
 
         // Act
-        let caught: unknown;
-        try {
-          await sut.all();
-        } catch (error) {
-          caught = error;
-        }
+        const packs = await sut.all();
 
         // Assert
-        expect(caught).toBeDefined();
-        const data = (caught as { data?: { code?: string; reason?: string } }).data;
-        expect(data?.code).toBe('INVALID_PACK_INDEX');
+        expect(packs).toEqual([]);
+        expect(warn).toHaveBeenCalledTimes(1);
+        const [, context] = warn.mock.calls[0] ?? [];
         // Assert the SPECIFIC reason: `parsePackIndex` on real bytes would also
         // throw INVALID_PACK_INDEX (bad magic), so the code alone does not pin the
         // pre-read size guard. The reason does.
-        expect(data?.reason).toBe(REASON_PACK_IDX_EXCEEDS_MAX);
+        expect((context as { reason?: string } | undefined)?.reason).toBe(
+          REASON_PACK_IDX_EXCEEDS_MAX,
+        );
         expect(reads).toEqual([]);
       });
     });
@@ -223,18 +252,21 @@ describe('pack-registry', () => {
 
   describe('Given an .idx file whose stat lies (small) but read returns oversized bytes (TOCTOU)', () => {
     describe('When all() is called', () => {
-      it('Then throws INVALID_PACK_INDEX after read', async () => {
+      it('Then the pack is skipped and the warn carries the post-read reason', async () => {
         // Arrange
         // Kills the mutant where the post-read length check is removed.
         const ctx = await buildSeededContext();
         const oversized = new Uint8Array(64 * 1024 * 1024 + 1);
+        const warn = vi.fn();
         const wrapped = {
           ...ctx,
+          logger: { warn },
           fs: {
             ...ctx.fs,
             exists: async () => true,
             readdir: async () => [
               { name: 'pack-toctou.idx', isFile: true, isDirectory: false, isSymbolicLink: false },
+              { name: 'pack-toctou.pack', isFile: true, isDirectory: false, isSymbolicLink: false },
             ],
             stat: async (p: string) => {
               const base = await ctx.fs.stat(p).catch(() => undefined);
@@ -246,21 +278,328 @@ describe('pack-registry', () => {
         const sut = createPackRegistry(wrapped);
 
         // Act
+        const packs = await sut.all();
+
+        // Assert
+        expect(packs).toEqual([]);
+        expect(warn).toHaveBeenCalledTimes(1);
+        const [, context] = warn.mock.calls[0] ?? [];
+        // Kills the L46 `ConditionalExpression -> false` and `BlockStatement -> {}`
+        // mutants: without the post-read length check, the oversized zero-filled
+        // buffer reaches `parsePackIndex`, which throws INVALID_PACK_INDEX with a
+        // DIFFERENT reason (bad magic). Pinning the exact reason kills both.
+        expect((context as { reason?: string } | undefined)?.reason).toBe(
+          REASON_PACK_IDX_EXCEEDS_MAX,
+        );
+      });
+    });
+  });
+});
+
+describe('PackRegistry.scan — per-pack idx degradation and orphan exclusion', () => {
+  describe('Given a corrupt .idx with a good sibling pack, alongside a separate valid pack', () => {
+    describe('When readObject reads the valid pack oid and all() is called', () => {
+      it('Then the object round-trips, all() lists only the good pack, and exactly one warn names the skipped idx', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeGarbageIdx(ctx, 'corrupt');
+        const content = new TextEncoder().encode('h6-good-content');
+        const ids = await writeSyntheticPack(ctx, 'h6-good', [
+          { kind: 'base', type: 'blob', content },
+        ]);
+        const id = ids[0] as ObjectId;
+        const warn = vi.fn();
+        const wrapped: Context = { ...ctx, logger: { warn } };
+        const sut = getPackRegistry(wrapped);
+
+        // Act
+        const object = await readObject(wrapped, id);
+        const packs = await sut.all();
+
+        // Assert
+        expect(object.type).toBe('blob');
+        expect((object as Blob).content).toEqual(content);
+        expect(packs).toHaveLength(1);
+        expect(packs[0]!.name).toBe('pack-h6-good');
+        expect(warn).toHaveBeenCalledTimes(1);
+        const [message, context] = warn.mock.calls[0] ?? [];
+        expect(message).toBe('packRegistry: skipping unreadable pack index');
+        expect(context).toMatchObject({ idx: 'pack-corrupt.idx', code: 'INVALID_PACK_INDEX' });
+      });
+    });
+  });
+
+  describe('Given a corrupt .idx with a good sibling pack, and one object seeded loose', () => {
+    describe('When enumerateObjects runs', () => {
+      it('Then it resolves and contains the loose oid', async () => {
+        // Arrange — a probe that consults registry.all() (not a loose-first read,
+        // which never touches the scan and would prove nothing about the fix).
+        const ctx = await buildSeededContext();
+        await writeGarbageIdx(ctx, 'corrupt-loose');
+        const looseId = await writeObject(ctx, blob('h6-loose-content'));
+
+        // Act
+        const result = await enumerateObjects(ctx);
+
+        // Assert
+        expect(result).toContain(looseId);
+      });
+    });
+  });
+
+  describe('Given a corrupt .idx and nothing else in the store', () => {
+    describe('When readObject is called for an arbitrary id and all() is called', () => {
+      it('Then readObject rejects with OBJECT_NOT_FOUND and all() resolves empty', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeGarbageIdx(ctx, 'only-corrupt');
+        const id = 'b'.repeat(40) as ObjectId;
+        const sut = getPackRegistry(ctx);
+
+        // Act
+        let caught: unknown;
+        try {
+          await readObject(ctx, id);
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+        const packs = await sut.all();
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({ code: 'OBJECT_NOT_FOUND', id });
+        expect(packs).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given an .idx whose read rejects with PERMISSION_DENIED, with its sibling .pack present', () => {
+    describe('When all() is called', () => {
+      it('Then the pack is skipped and exactly one warn carries PERMISSION_DENIED', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const content = new TextEncoder().encode('h7-content');
+        await writeSyntheticPack(ctx, 'h7-locked', [{ kind: 'base', type: 'blob', content }]);
+        const warn = vi.fn();
+        const wrapped: Context = {
+          ...ctx,
+          logger: { warn },
+          fs: {
+            ...ctx.fs,
+            read: async (path: string) => {
+              if (path.endsWith('.idx')) throw permissionDenied(path);
+              return ctx.fs.read(path);
+            },
+          },
+        };
+        const sut = createPackRegistry(wrapped);
+
+        // Act
+        const packs = await sut.all();
+
+        // Assert
+        expect(packs).toEqual([]);
+        expect(warn).toHaveBeenCalledTimes(1);
+        const [, context] = warn.mock.calls[0] ?? [];
+        expect((context as { code?: string } | undefined)?.code).toBe('PERMISSION_DENIED');
+      });
+    });
+  });
+
+  describe('Given an .idx that vanishes between readdir and stat (concurrent repack), its sibling .pack still listed', () => {
+    describe('When all() is called', () => {
+      it('Then the pack is skipped and exactly one warn carries FILE_NOT_FOUND', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const content = new TextEncoder().encode('h5-race-content');
+        await writeSyntheticPack(ctx, 'h5-race', [{ kind: 'base', type: 'blob', content }]);
+        const warn = vi.fn();
+        const wrapped: Context = {
+          ...ctx,
+          logger: { warn },
+          fs: {
+            ...ctx.fs,
+            stat: async (path: string) => {
+              if (path.endsWith('.idx')) throw fileNotFound(path);
+              return ctx.fs.stat(path);
+            },
+          },
+        };
+        const sut = createPackRegistry(wrapped);
+
+        // Act
+        const packs = await sut.all();
+
+        // Assert
+        expect(packs).toEqual([]);
+        expect(warn).toHaveBeenCalledTimes(1);
+        const [, context] = warn.mock.calls[0] ?? [];
+        expect((context as { code?: string } | undefined)?.code).toBe('FILE_NOT_FOUND');
+      });
+    });
+  });
+
+  describe('Given every .idx in the store is faulty', () => {
+    describe('When all() is called', () => {
+      it('Then it resolves to an empty array without throwing and warns twice', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeGarbageIdx(ctx, 'faulty-one');
+        await writeGarbageIdx(ctx, 'faulty-two');
+        const warn = vi.fn();
+        const sut = createPackRegistry({ ...ctx, logger: { warn } });
+
+        // Act
+        const packs = await sut.all();
+
+        // Assert
+        expect(packs).toEqual([]);
+        expect(warn).toHaveBeenCalledTimes(2);
+      });
+    });
+  });
+
+  describe('Given an .idx read that rejects with an errno-mapped UNSUPPORTED_OPERATION fault', () => {
+    describe('When all() is called', () => {
+      it('Then the fault propagates instead of being treated as skippable, and no warn fires', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const content = new TextEncoder().encode('emfile-scan-content');
+        await writeSyntheticPack(ctx, 'emfile-scan', [{ kind: 'base', type: 'blob', content }]);
+        const fault = unsupportedOperation('filesystem', 'EMFILE');
+        const warn = vi.fn();
+        const wrapped: Context = {
+          ...ctx,
+          logger: { warn },
+          fs: {
+            ...ctx.fs,
+            read: async (path: string) => {
+              if (path.endsWith('.idx')) throw fault;
+              return ctx.fs.read(path);
+            },
+          },
+        };
+        const sut = createPackRegistry(wrapped);
+
+        // Act
         let caught: unknown;
         try {
           await sut.all();
+          expect.unreachable();
         } catch (error) {
           caught = error;
         }
 
         // Assert
-        const data = (caught as { data?: { code?: string; reason?: string } }).data;
-        expect(data?.code).toBe('INVALID_PACK_INDEX');
-        // Kills the L46 `ConditionalExpression -> false` and `BlockStatement -> {}`
-        // mutants: without the post-read length check, the oversized zero-filled
-        // buffer reaches `parsePackIndex`, which throws INVALID_PACK_INDEX with a
-        // DIFFERENT reason (bad magic). Pinning the exact reason kills both.
-        expect(data?.reason).toBe(REASON_PACK_IDX_EXCEEDS_MAX);
+        expect((caught as TsgitError).data).toEqual(fault.data);
+        expect(warn).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('Given a corrupt .idx with a good sibling pack', () => {
+    describe('When lookup is called three times for three different ids', () => {
+      it('Then exactly one warn fires — the scan memo holds across lookups', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeGarbageIdx(ctx, 'lookup-cardinality');
+        const warn = vi.fn();
+        const sut = createPackRegistry({ ...ctx, logger: { warn } });
+        const idA = 'a'.repeat(40) as ObjectId;
+        const idB = 'b'.repeat(40) as ObjectId;
+        const idC = 'c'.repeat(40) as ObjectId;
+
+        // Act
+        await sut.lookup(idA);
+        await sut.lookup(idB);
+        await sut.lookup(idC);
+
+        // Assert
+        expect(warn).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
+
+  describe('Given two packs, one whose .pack file is removed after write (an orphaned .idx)', () => {
+    describe('When all() is called, then readObject is called for both the orphan and the survivor oid', () => {
+      it('Then the orphan is excluded from the generation, its object is not found, the survivor still reads, and exactly one warn names the orphan', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const orphanContent = new TextEncoder().encode('h5-orphan-content');
+        const orphanIds = await writeSyntheticPack(ctx, 'h5-orphan', [
+          { kind: 'base', type: 'blob', content: orphanContent },
+        ]);
+        const orphanOid = orphanIds[0] as ObjectId;
+        const survivorContent = new TextEncoder().encode('h5-survivor-content');
+        const survivorIds = await writeSyntheticPack(ctx, 'h5-survivor', [
+          { kind: 'base', type: 'blob', content: survivorContent },
+        ]);
+        const survivorOid = survivorIds[0] as ObjectId;
+        const orphanPackPath = `${ctx.layout.gitDir}/objects/pack/pack-h5-orphan.pack`;
+        await ctx.fs.rm(orphanPackPath);
+        const warn = vi.fn();
+        const wrapped: Context = { ...ctx, logger: { warn } };
+        const sut = getPackRegistry(wrapped);
+
+        // Act
+        const packs = await sut.all();
+        let caughtOrphan: unknown;
+        try {
+          await readObject(wrapped, orphanOid);
+          expect.unreachable();
+        } catch (error) {
+          caughtOrphan = error;
+        }
+        const survivorObject = await readObject(wrapped, survivorOid);
+
+        // Assert — (i) the orphan is out of the generation
+        expect(packs).toHaveLength(1);
+        expect(packs[0]!.name).toBe('pack-h5-survivor');
+        // Assert — (ii) the orphan's object is unreachable
+        expect((caughtOrphan as TsgitError).data).toEqual({
+          code: 'OBJECT_NOT_FOUND',
+          id: orphanOid,
+        });
+        // Assert — (iii) the survivor still reads
+        expect(survivorObject.type).toBe('blob');
+        expect((survivorObject as Blob).content).toEqual(survivorContent);
+        // Assert — (iv) exactly one warn names the orphan
+        expect(warn).toHaveBeenCalledTimes(1);
+        const [message, context] = warn.mock.calls[0] ?? [];
+        expect(message).toBe('packRegistry: skipping pack index with no pack file');
+        expect(context).toEqual({ idx: 'pack-h5-orphan.idx' });
+      });
+    });
+  });
+
+  describe('Given a readdir listing where the .pack sibling is a directory entry, not a file', () => {
+    describe('When all() is called', () => {
+      it('Then the pack is excluded — a directory sibling does not count as the pack file', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const content = new TextEncoder().encode('dir-sibling-content');
+        await writeSyntheticPack(ctx, 'dir-sibling', [{ kind: 'base', type: 'blob', content }]);
+        const wrapped: Context = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            readdir: async (dir: string) => {
+              const entries = await ctx.fs.readdir(dir);
+              return entries.map((entry) =>
+                entry.name === 'pack-dir-sibling.pack'
+                  ? { ...entry, isFile: false, isDirectory: true }
+                  : entry,
+              );
+            },
+          },
+        };
+        const sut = createPackRegistry(wrapped);
+
+        // Act
+        const packs = await sut.all();
+
+        // Assert
+        expect(packs).toEqual([]);
       });
     });
   });
@@ -1602,7 +1941,12 @@ describe('PackRegistry.lookup — header gate', () => {
               const byName = new Map(entries.map((entry) => [entry.name, entry]));
               const ordered = orderedNames.map((name) => byName.get(name)!);
               observedOrder.push(...ordered.map((entry) => entry.name));
-              return ordered;
+              // The reordering above deliberately narrows the listing to the two
+              // .idx entries; the sibling .pack files must still be present in
+              // what scanPacks sees, or the scan-layer orphan filter excludes
+              // both packs before the lookup-layer behaviour under test ever runs.
+              const packSiblings = entries.filter((entry) => entry.name.endsWith('.pack'));
+              return [...ordered, ...packSiblings];
             },
           },
         };
@@ -1945,7 +2289,12 @@ describe('PackRegistry.lookup — header gate', () => {
             readdir: async (dir: string) => {
               const entries = await ctx.fs.readdir(dir);
               const byName = new Map(entries.map((entry) => [entry.name, entry]));
-              return orderedNames.map((name) => byName.get(name)!);
+              const ordered = orderedNames.map((name) => byName.get(name)!);
+              // Same sibling-preservation note as above: the narrowed listing must
+              // still carry the .pack files or the scan-layer orphan filter drops
+              // both packs before the lookup-layer skip logic under test runs.
+              const packSiblings = entries.filter((entry) => entry.name.endsWith('.pack'));
+              return [...ordered, ...packSiblings];
             },
           },
         });

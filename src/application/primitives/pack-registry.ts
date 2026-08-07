@@ -53,6 +53,17 @@ function isSkippablePackFault(err: unknown): boolean {
   );
 }
 
+// Scan layer: the .idx cannot be turned into a PackIndex (a corrupt or
+// unreadable index). Deliberately NOT unioned with isSkippablePackFault —
+// INVALID_PACK_INDEX is skippable only here, where the parse happens; at the
+// lookup layer it also means a mid-read corruption, which must never be
+// laundered into "this pack has no objects".
+function isSkippableIdxFault(err: unknown): boolean {
+  return (
+    (err instanceof TsgitError && err.data.code === 'INVALID_PACK_INDEX') || isSkippableIoFault(err)
+  );
+}
+
 // Flat and string-valued on purpose: the Logger port sanitises TOP-LEVEL string
 // values only, and a pack name comes from a readdir entry an attacker with repo
 // write access controls. Nesting `err.data` would route it round the sanitiser.
@@ -123,6 +134,10 @@ function isCandidate(entry: { isFile: boolean; name: string }): boolean {
   return entry.isFile && entry.name.endsWith('.idx') && isSafePackName(entry.name);
 }
 
+// Single source for the `.idx` → base-name rule: both the scan layer's
+// sibling-.pack check and loadPack's own packPath derivation depend on it.
+const packBaseName = (idxEntryName: string): string => idxEntryName.slice(0, -'.idx'.length);
+
 async function readBoundedIdx(ctx: Context, idxPath: string): Promise<Uint8Array> {
   // Pre-check stat; reject .idx files large enough to exhaust heap before
   // any allocation. Mirrors the readIndex pattern.
@@ -142,7 +157,7 @@ async function loadPack(ctx: Context, dir: string, entryName: string): Promise<R
   const idxPath = `${dir}/${entryName}`;
   const idxBytes = await readBoundedIdx(ctx, idxPath);
   const index = parsePackIndex(idxBytes);
-  const name = entryName.slice(0, -'.idx'.length);
+  const name = packBaseName(entryName);
   const packPath = `${dir}/${name}.pack`;
 
   const headerMemo = createPromiseMemo(async (): Promise<PackHeader> => {
@@ -261,15 +276,51 @@ export function nextOffsetForEntry(table: PackOffsetTable, offset: number): numb
 
 const NO_PACKS: ReadonlyArray<RegisteredPack> = Object.freeze([]);
 
+/**
+ * Resolve one `.idx` candidate to a `RegisteredPack`, or `undefined` when it
+ * must be excluded from the generation: an orphan (no sibling `.pack` in the
+ * scan's own listing) or a skippable idx-layer fault (unreadable/unparseable
+ * `.idx`). An unrecognised fault still propagates to the caller.
+ */
+async function loadCandidatePack(
+  ctx: Context,
+  dir: string,
+  entry: { readonly name: string },
+  packFileNames: ReadonlySet<string>,
+): Promise<RegisteredPack | undefined> {
+  const name = packBaseName(entry.name);
+  if (!packFileNames.has(`${name}.pack`)) {
+    ctx.logger?.warn?.('packRegistry: skipping pack index with no pack file', {
+      idx: entry.name,
+    });
+    return undefined;
+  }
+  try {
+    return await loadPack(ctx, dir, entry.name);
+  } catch (err) {
+    if (!isSkippableIdxFault(err)) throw err;
+    ctx.logger?.warn?.('packRegistry: skipping unreadable pack index', {
+      idx: entry.name,
+      ...faultContext((err as TsgitError).data),
+    });
+    return undefined;
+  }
+}
+
 export function createPackRegistry(ctx: Context): PackRegistry {
   const scanPacks = async (): Promise<ReadonlyArray<RegisteredPack>> => {
     const dir = packsDir(commonGitDir(ctx));
     if (!(await ctx.fs.exists(dir))) return NO_PACKS;
     const entries = await ctx.fs.readdir(dir);
+    // git registers a pack only when its .pack exists by name — an orphaned
+    // .idx is garbage, never a pack. The listing already in hand is the same
+    // data, so the check costs no I/O.
+    const packFileNames = new Set(entries.filter((entry) => entry.isFile).map((e) => e.name));
     const packs: RegisteredPack[] = [];
     for (const entry of entries) {
       if (!isCandidate(entry)) continue;
-      packs.push(await loadPack(ctx, dir, entry.name));
+      const pack = await loadCandidatePack(ctx, dir, entry, packFileNames);
+      if (pack !== undefined) packs.push(pack);
     }
     return packs;
   };
