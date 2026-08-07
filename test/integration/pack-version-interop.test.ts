@@ -417,8 +417,9 @@ describe.skipIf(!GIT_AVAILABLE)(
         // Assert
         expect(object.type).toBe('blob');
         expect(Buffer.compare(gitPayload, Buffer.from(blobContent(object)))).toBe(0);
-        // Scan order is raw readdir order — without this pin the row would
-        // pass whenever the good pack happens to be consulted first.
+        // Scan order follows the sorted listing above, so the bad pack is
+        // always consulted first — this pin proves the skip arm fired rather
+        // than the good pack simply winning the race.
         expect(warn).toHaveBeenCalledTimes(1);
         expect(warn).toHaveBeenCalledWith(
           'packRegistry: skipping unusable pack',

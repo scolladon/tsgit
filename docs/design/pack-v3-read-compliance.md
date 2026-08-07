@@ -458,7 +458,7 @@ const isSkippableIoFault = (err: unknown): boolean =>
   err instanceof TsgitError &&
   (err.data.code === 'FILE_NOT_FOUND' || err.data.code === 'PERMISSION_DENIED');
 
-/** Lookup layer: the pack file itself is unusable (H2, H3, H4, H5). */
+/** Lookup layer: the pack file itself is unusable (H2, H3, H4, H5 race). */
 const isSkippablePackFault = (err: unknown): boolean =>
   (err instanceof TsgitError && err.data.code === 'INVALID_PACK_HEADER') ||
   isSkippableIoFault(err);
@@ -700,9 +700,11 @@ change.
    after the fold the enumeration axis is faithful on every Pin H row — H5 included, since
    ADR-579 excludes an orphaned `.idx` at scan exactly as git does. Two residues: tsgit's
    `fsck` lacking git's `packfile … cannot be accessed` + exit bit 4, an integrity-reporting
-   gap deferred by ADR-572; and a **symlinked `.pack`**, which git registers (its sibling test
-   is by name, with no file-type filter) but tsgit's regular-files-only listing drops at scan —
-   a deliberate extension of the existing no-follow policy, noted in the sibling-check comment.
+   gap deferred by ADR-572; and a **symlinked `.pack`**, which git registers — its sibling test is `stat` +
+   `S_ISREG` on the *resolved* target, so a symlink to a regular `.pack` passes while a
+   dangling or non-regular target still yields `packs: 0` — but tsgit's lstat-based
+   regular-files-only listing drops at scan; a deliberate extension of the existing
+   no-follow policy, noted in the sibling-check comment.
 2. **Browser / memory adapters.** `ctx.fs.readSlice` is a `FileSystem` port method every adapter
    implements — it is already `RegisteredPack.readSlice`'s fallback reader on the retired path
    and on adapters that cannot open persistent handles — so the gate needs no adapter work.

@@ -101,7 +101,7 @@ describe('pack-registry', () => {
     });
   });
 
-  describe('Given a readdir entry whose unsafe name contains %s', () => {
+  describe('Given a readdir entry with an unsafe name', () => {
     describe('When all() is called', () => {
       it.each([
         ['a slash (no dot-dot, no backslash)', 'pac/k.idx'],
