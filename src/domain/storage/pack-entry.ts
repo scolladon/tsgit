@@ -53,7 +53,11 @@ export interface PackHeader {
 }
 
 const PACK_MAGIC = 0x5041434b;
-const PACK_HEADER_SIZE = 12;
+/** git's `pack_version_ok` — v3 is reserved and format-identical to v2. */
+const SUPPORTED_PACK_VERSIONS: ReadonlySet<number> = new Set([2, 3]);
+/** git's `PACK_VERSION` — the only version tsgit ever emits. */
+export const GENERATED_PACK_VERSION = 2;
+export const PACK_HEADER_SIZE = 12;
 
 export function parsePackHeader(bytes: Uint8Array): PackHeader {
   if (bytes.length < PACK_HEADER_SIZE) {
@@ -67,8 +71,8 @@ export function parsePackHeader(bytes: Uint8Array): PackHeader {
     );
   }
   const version = view.getUint32(4);
-  if (version !== 2) {
-    throw invalidPackHeader(`unsupported version: expected 2, got ${version}`);
+  if (!SUPPORTED_PACK_VERSIONS.has(version)) {
+    throw invalidPackHeader(`unsupported version: expected 2 or 3, got ${version}`);
   }
   const objectCount = view.getUint32(8);
   return { version, objectCount };

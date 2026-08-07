@@ -43,6 +43,25 @@ describe('pack-entry', () => {
       });
     });
 
+    describe("Given bytes with magic 'PACK' version 3 count 7", () => {
+      describe('When parsing', () => {
+        it('Then version=3 objectCount=7', () => {
+          // Arrange
+          const bytes = new Uint8Array(12);
+          const view = new DataView(bytes.buffer);
+          view.setUint32(0, 0x5041434b);
+          view.setUint32(4, 3);
+          view.setUint32(8, 7);
+
+          // Act
+          const result = parsePackHeader(bytes);
+
+          // Assert
+          expect(result).toEqual({ version: 3, objectCount: 7 });
+        });
+      });
+    });
+
     describe('Given malformed pack header bytes', () => {
       describe('When parsing', () => {
         it.each([
@@ -50,11 +69,6 @@ describe('pack-entry', () => {
             bytes: makeHeaderBytes(0xdeadbeef, 2, 1),
             reasonContains: 'magic',
             label: 'wrong magic',
-          },
-          {
-            bytes: makeHeaderBytes(0x5041434b, 3, 1),
-            reasonContains: 'version',
-            label: 'an unsupported version (3)',
           },
           {
             bytes: new Uint8Array(8),
@@ -76,6 +90,35 @@ describe('pack-entry', () => {
               }),
             );
           }
+        });
+      });
+    });
+
+    describe('Given pack header bytes stamped with an unsupported version', () => {
+      describe('When parsing', () => {
+        it.each([0, 1, 4, 99, 0xffffffff])('Then version %i is refused', (version) => {
+          // Arrange
+          const bytes = makeHeaderBytes(0x5041434b, version, 1);
+
+          // Act & Assert
+          try {
+            parsePackHeader(bytes);
+            expect.fail('Should have thrown');
+          } catch (e) {
+            const err = e as TsgitError;
+            expect(err.data.code).toBe('INVALID_PACK_HEADER');
+          }
+        });
+
+        it.each([2, 3])('Then version %i round-trips', (version) => {
+          // Arrange
+          const bytes = makeHeaderBytes(0x5041434b, version, 1);
+
+          // Act
+          const result = parsePackHeader(bytes);
+
+          // Assert
+          expect(result).toEqual({ version, objectCount: 1 });
         });
       });
     });
@@ -104,6 +147,29 @@ describe('pack-entry', () => {
           expect((caught as TsgitError).data).toEqual({
             code: 'INVALID_PACK_HEADER',
             reason: 'invalid magic: expected 0x5041434b, got 0x0000004b',
+          });
+        });
+      });
+    });
+
+    describe('Given pack header bytes stamped with version 99', () => {
+      describe('When parsing', () => {
+        it('Then the reason names the accepted set and the observed version', () => {
+          // Arrange
+          const bytes = makeHeaderBytes(0x5041434b, 99, 1);
+
+          // Act
+          let caught: unknown;
+          try {
+            parsePackHeader(bytes);
+          } catch (e) {
+            caught = e;
+          }
+
+          // Assert — exact reason pins the widened accepted-set wording.
+          expect((caught as TsgitError).data).toEqual({
+            code: 'INVALID_PACK_HEADER',
+            reason: 'unsupported version: expected 2 or 3, got 99',
           });
         });
       });

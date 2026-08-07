@@ -1,7 +1,16 @@
+import fc from 'fast-check';
+
 import { compareBytes, hexToBytes } from '../../../../src/domain/objects/encoding.js';
 import type { ObjectId } from '../../../../src/domain/objects/object-id.js';
 
 export { arbObjectId } from '../objects/arbitraries.js';
+
+/** A pack-header version git accepts on read (`pack_version_ok`). */
+export const arbSupportedPackVersion = (): fc.Arbitrary<number> => fc.constantFrom(2, 3);
+
+/** Any uint32 outside the accepted set — the complement no finite table enumerates. */
+export const arbUnsupportedPackVersion = (): fc.Arbitrary<number> =>
+  fc.integer({ min: 0, max: 0xffffffff }).filter((v) => v !== 2 && v !== 3);
 
 export interface TestIndexEntry {
   readonly id: ObjectId;

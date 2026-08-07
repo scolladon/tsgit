@@ -16,6 +16,7 @@ import { invalidPackIndex } from './error.js';
 import {
   type BasePackEntryType,
   encodePackEntryHeader,
+  GENERATED_PACK_VERSION,
   serializePackHeader,
 } from './pack-entry.js';
 
@@ -42,7 +43,7 @@ export interface PackIndexWriterEntry {
 }
 
 export function serializePackfile(entries: ReadonlyArray<PackWriterEntry>): PackfileResult {
-  const header = serializePackHeader(2, entries.length);
+  const header = serializePackHeader(GENERATED_PACK_VERSION, entries.length);
 
   const chunks: Uint8Array[] = [header];
   const metas: PackEntryMeta[] = [];
