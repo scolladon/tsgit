@@ -5,6 +5,7 @@
  *   npm run bench:fixture -- medium
  *   npm run bench:fixture -- large
  *   npm run bench:fixture -- delta-chain
+ *   npm run bench:fixture -- many-pack
  *
  * First run generates the repo under ~/.cache/tsgit-bench; later runs are
  * cache hits. Run this before `npm run test:bench` / `npm run profile` so the
@@ -13,6 +14,7 @@
 import {
   DELTA_CHAIN_FIXTURE,
   LARGE_FIXTURE,
+  MANY_PACK_FIXTURE,
   MEDIUM_FIXTURE,
   ensureScaledFixture,
 } from '../test/bench/support/fixture-generator.ts';
@@ -26,9 +28,11 @@ const main = async (): Promise<void> => {
         ? MEDIUM_FIXTURE
         : label === 'delta-chain'
           ? DELTA_CHAIN_FIXTURE
-          : undefined;
+          : label === 'many-pack'
+            ? MANY_PACK_FIXTURE
+            : undefined;
   if (spec === undefined) {
-    process.stderr.write('usage: gen-bench-fixture <medium|large|delta-chain>\n');
+    process.stderr.write('usage: gen-bench-fixture <medium|large|delta-chain|many-pack>\n');
     process.exit(1);
   }
 
