@@ -427,7 +427,7 @@ const NO_INDEX_FAULTS: ReadonlyArray<{ readonly name: string; readonly data: Tsg
 
 /**
  * The scan layer's classification of one generation's candidates: which
- * ones have a loaded, parsed `.idx` (`packs`), and which were skippably
+ * ones have a loaded, parsed `.idx` (`packs`), and which were skipped as
  * unreadable/unparseable (`indexFaults`). Built once per generation by
  * `resolveIndexes`, behind `PackGeneration.indexed`.
  */
