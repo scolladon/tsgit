@@ -263,13 +263,13 @@ function parsePackNames(
     cursor = end + 1;
   }
 
-  const paddingLength = range.end - cursor;
-  if (paddingLength > 3) {
-    throw invalidMultiPackIndex(
-      'pack-names',
-      `PNAM chunk has ${paddingLength} trailing padding bytes, expected at most 3`,
-    );
-  }
+  // Bytes left over after the declared `numPacks` names — whether natural
+  // 4-byte alignment padding or, when `numPacks` understates the chunk's
+  // real content, the untouched remainder — are never checked: git reads
+  // exactly `numPacks` names and stops, with no cross-check against PNAM's
+  // own chunk-table span. A stricter gate here would refuse files git
+  // accepts (confirmed against git 2.55.0), which the prime directive
+  // forbids.
 
   if (version === 1) {
     for (let i = 1; i < names.length; i += 1) {

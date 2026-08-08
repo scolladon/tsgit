@@ -755,17 +755,16 @@ describe('midx', () => {
 
     describe('Given a PNAM chunk containing more names than the header declares', () => {
       describe('When parsing', () => {
-        it('Then refuses with pack-names', () => {
+        it("Then reads only the declared count and leaves the remainder untouched — git enforces no cross-check between numPacks and PNAM's own span", () => {
           // Arrange
           const spec = baseSpec({ entries: [] });
           const bytes = setNumPacks(buildMidx(spec), 2);
 
-          // Act & Assert
-          expectRefusal(
-            () => parseMultiPackIndex(bytes, spec.digestLength),
-            'pack-names',
-            'padding',
-          );
+          // Act
+          const result = parseMultiPackIndex(bytes, spec.digestLength);
+
+          // Assert
+          expect(result.packNames).toEqual(spec.packNames.slice(0, 2));
         });
       });
     });
@@ -779,25 +778,6 @@ describe('midx', () => {
 
           // Act & Assert
           expectRefusal(() => parseMultiPackIndex(bytes, spec.digestLength), 'pack-names', 'empty');
-        });
-      });
-    });
-
-    describe('Given a PNAM chunk with more than 3 trailing padding bytes', () => {
-      describe('When parsing', () => {
-        it('Then refuses with pack-names', () => {
-          // Arrange — a short second "name" so the leftover after declaring
-          // only 1 pack is exactly 4 bytes: past the padding threshold but
-          // not a whole realistic extra pack name.
-          const spec = baseSpec({ packNames: ['aaa', 'xyz'], entries: [] });
-          const bytes = setNumPacks(buildMidx(spec), 1);
-
-          // Act & Assert
-          expectRefusal(
-            () => parseMultiPackIndex(bytes, spec.digestLength),
-            'pack-names',
-            'padding',
-          );
         });
       });
     });
