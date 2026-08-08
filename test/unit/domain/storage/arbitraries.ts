@@ -1,7 +1,8 @@
 import fc from 'fast-check';
 
-import { compareBytes, hexToBytes } from '../../../../src/domain/objects/encoding.js';
+import { compareBytes, encode, hexToBytes } from '../../../../src/domain/objects/encoding.js';
 import type { ObjectId } from '../../../../src/domain/objects/object-id.js';
+import { arbObjectId } from '../objects/arbitraries.js';
 
 export { arbObjectId } from '../objects/arbitraries.js';
 
@@ -177,4 +178,170 @@ function encodeInsertInstruction(out: number[], data: Uint8Array): void {
   for (const byte of data) {
     out.push(byte);
   }
+}
+
+// --- Multi-pack index --------------------------------------------------
+
+const MIDX_HEADER_SIZE = 12;
+const MIDX_CHUNK_TABLE_ROW_SIZE = 12;
+const MIDX_FANOUT_SIZE = 1024;
+
+export interface MidxEntrySpec {
+  readonly id: ObjectId;
+  readonly packIndex: number;
+  readonly offset: number;
+}
+
+export interface MidxSpec {
+  readonly version: 1 | 2;
+  readonly hashVersion: 1 | 2;
+  readonly digestLength: number;
+  readonly numBaseFiles: number;
+  readonly packNames: ReadonlyArray<string>;
+  readonly entries: ReadonlyArray<MidxEntrySpec>;
+}
+
+/**
+ * Writer for the on-disk multi-pack-index layout — the model for
+ * `parseMultiPackIndex`'s round-trip oracle. Entries are re-sorted by oid
+ * before writing (a midx's OIDL is always sorted), so callers may pass them
+ * in any order. The trailer is left as `digestLength` zero bytes: the parser
+ * never reads it, so this writer never hashes it.
+ */
+export function buildMidx(spec: MidxSpec): Uint8Array {
+  const { version, hashVersion, digestLength, numBaseFiles, packNames, entries } = spec;
+  const sorted = [...entries].sort((a, b) => compareBytes(hexToBytes(a.id), hexToBytes(b.id)));
+  const objectCount = sorted.length;
+  const largeOffsets = sorted.map((entry) => entry.offset).filter((offset) => offset > 0x7fffffff);
+  const hasLoff = largeOffsets.length > 0;
+  const numChunks = hasLoff ? 5 : 4;
+
+  const nameBytes = packNames.map((name) => encode(`${name}\0`));
+  const pnamRawLength = nameBytes.reduce((sum, bytes) => sum + bytes.length, 0);
+  const pnamLength = pnamRawLength + ((4 - (pnamRawLength % 4)) % 4);
+
+  const chunkTableSize = (numChunks + 1) * MIDX_CHUNK_TABLE_ROW_SIZE;
+  const pnamStart = MIDX_HEADER_SIZE + chunkTableSize;
+  const oidfStart = pnamStart + pnamLength;
+  const oidlStart = oidfStart + MIDX_FANOUT_SIZE;
+  const ooffStart = oidlStart + objectCount * digestLength;
+  const loffStart = ooffStart + objectCount * 8;
+  const trailerStart = hasLoff ? loffStart + largeOffsets.length * 8 : loffStart;
+
+  const bytes = new Uint8Array(trailerStart + digestLength);
+  const view = new DataView(bytes.buffer);
+
+  bytes.set(encode('MIDX'), 0);
+  view.setUint8(4, version);
+  view.setUint8(5, hashVersion);
+  view.setUint8(6, numChunks);
+  view.setUint8(7, numBaseFiles);
+  view.setUint32(8, packNames.length);
+
+  const chunkRows: Array<readonly [string, number]> = [
+    ['PNAM', pnamStart],
+    ['OIDF', oidfStart],
+    ['OIDL', oidlStart],
+    ['OOFF', ooffStart],
+  ];
+  if (hasLoff) chunkRows.push(['LOFF', loffStart]);
+  chunkRows.push(['', trailerStart]);
+
+  chunkRows.forEach(([id, offset], i) => {
+    const rowStart = MIDX_HEADER_SIZE + i * MIDX_CHUNK_TABLE_ROW_SIZE;
+    if (id !== '') bytes.set(encode(id), rowStart);
+    view.setUint32(rowStart + 4, Math.floor(offset / 0x100000000));
+    view.setUint32(rowStart + 8, offset >>> 0);
+  });
+
+  let nameCursor = pnamStart;
+  for (const name of nameBytes) {
+    bytes.set(name, nameCursor);
+    nameCursor += name.length;
+  }
+
+  const fanout = new Uint32Array(256);
+  for (const entry of sorted) {
+    const firstByte = hexToBytes(entry.id)[0]!;
+    for (let i = firstByte; i < 256; i += 1) fanout[i]! += 1;
+  }
+  for (let i = 0; i < 256; i += 1) view.setUint32(oidfStart + i * 4, fanout[i]!);
+
+  for (let i = 0; i < objectCount; i += 1) {
+    bytes.set(hexToBytes(sorted[i]!.id), oidlStart + i * digestLength);
+  }
+
+  let largeIndex = 0;
+  for (let i = 0; i < objectCount; i += 1) {
+    const entry = sorted[i]!;
+    view.setUint32(ooffStart + i * 8, entry.packIndex);
+    if (entry.offset > 0x7fffffff) {
+      view.setUint32(ooffStart + i * 8 + 4, 0x80000000 | largeIndex);
+      view.setUint32(loffStart + largeIndex * 8, Math.floor(entry.offset / 0x100000000));
+      view.setUint32(loffStart + largeIndex * 8 + 4, entry.offset >>> 0);
+      largeIndex += 1;
+    } else {
+      view.setUint32(ooffStart + i * 8 + 4, entry.offset);
+    }
+  }
+
+  return bytes;
+}
+
+/**
+ * An arbitrary, internally-consistent midx spec: pack names are generated
+ * already lexicographically ordered (zero-padded sequential hex), so the
+ * fixture is valid whether or not the reader enforces name ordering, without
+ * the generator having to special-case that rule.
+ */
+export function arbMidxSpec(): fc.Arbitrary<MidxSpec> {
+  return fc.constantFrom<1 | 2>(1, 2).chain((version) =>
+    fc.constantFrom<1 | 2>(1, 2).chain((hashVersion) => {
+      const digestLength = hashVersion === 1 ? 20 : 32;
+      const hexLength = hashVersion === 1 ? 40 : 64;
+      return fc.integer({ min: 0, max: 8 }).chain((packCount) => {
+        const packNames = Array.from(
+          { length: packCount },
+          (_, i) => `pack-${i.toString(16).padStart(hexLength, '0')}.idx`,
+        );
+        const maxObjects = packCount === 0 ? 0 : 64;
+        return fc
+          .record({
+            numBaseFiles: fc.integer({ min: 0, max: 255 }),
+            ids: fc.uniqueArray(arbObjectId(hexLength), {
+              minLength: 0,
+              maxLength: maxObjects,
+            }),
+          })
+          .chain((r) =>
+            fc
+              .array(
+                fc.tuple(fc.integer({ min: 0, max: Math.max(packCount - 1, 0) }), arbMidxOffset()),
+                { minLength: r.ids.length, maxLength: r.ids.length },
+              )
+              .map(
+                (placements): MidxSpec => ({
+                  version,
+                  hashVersion,
+                  digestLength,
+                  numBaseFiles: r.numBaseFiles,
+                  packNames,
+                  entries: r.ids.map((id, i) => ({
+                    id,
+                    packIndex: placements[i]![0],
+                    offset: placements[i]![1],
+                  })),
+                }),
+              ),
+          );
+      });
+    }),
+  );
+}
+
+function arbMidxOffset(): fc.Arbitrary<number> {
+  return fc.oneof(
+    fc.integer({ min: 0, max: 0x7fffffff }),
+    fc.integer({ min: 0x80000000, max: Number.MAX_SAFE_INTEGER }),
+  );
 }

@@ -3,6 +3,7 @@ import type { TsgitErrorData } from '../../../../src/domain/error.js';
 import {
   deltaChainTooDeep,
   invalidDelta,
+  invalidMultiPackIndex,
   invalidPackEntry,
   invalidPackHeader,
   invalidPackIndex,
@@ -71,6 +72,22 @@ describe('storage error', () => {
 
           // Assert
           expect(result.data).toEqual({ code: 'DELTA_CHAIN_TOO_DEEP', depth: 51 });
+        });
+      });
+    });
+
+    describe("Given invalidMultiPackIndex('fanout', 'non-monotonic')", () => {
+      describe('When checking error.data', () => {
+        it("Then code, check and reason are set to 'INVALID_MULTI_PACK_INDEX', 'fanout' and 'non-monotonic'", () => {
+          // Arrange & Act
+          const result = invalidMultiPackIndex('fanout', 'non-monotonic');
+
+          // Assert
+          expect(result.data).toEqual({
+            code: 'INVALID_MULTI_PACK_INDEX',
+            check: 'fanout',
+            reason: 'non-monotonic',
+          });
         });
       });
     });
