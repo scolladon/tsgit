@@ -7,6 +7,7 @@ import type { ObjectId } from '../../domain/objects/index.js';
 import { invalidPackHeader, invalidPackIndex } from '../../domain/storage/error.js';
 import {
   entryOffsets,
+  lookupMultiPackIndex,
   lookupPackIndex,
   type PackIndex,
   parsePackIndex,
@@ -17,7 +18,7 @@ import {
   parsePackHeader,
 } from '../../domain/storage/pack-entry.js';
 import type { Context } from '../../ports/context.js';
-import { loadMidxSet, type MidxLoadResult } from './internal/midx-source.js';
+import { loadMidxSet, type MidxLoadResult, type MidxSet } from './internal/midx-source.js';
 import { createPromiseMemo, type PromiseMemo } from './internal/promise-memo.js';
 import { commonGitDir, packsDir } from './path-layout.js';
 import { exceedsMaxPackIdxBytes, REASON_PACK_IDX_EXCEEDS_MAX } from './validators.js';
@@ -390,6 +391,57 @@ const EMPTY_MIDX_LOAD: MidxLoadResult = Object.freeze({
   flatFilePresent: false,
 });
 
+/**
+ * One generation's midx bound to the `RegisteredPack` objects the SAME scan
+ * produced. `packsByLayer[layerIndex][packIndex]` is `undefined` exactly
+ * when that layer's `PNAM` entry names nothing this scan registered —
+ * either it failed `isSafePackName`, or it matched no candidate (an
+ * orphaned/excluded `.idx`, or a name no file on disk carries at all).
+ * `claimedNames` holds only the names that DID bind, `.idx`-suffixed as
+ * `PNAM` stores them — the subtraction set the `.idx` loop skips.
+ */
+interface LoadedMidx {
+  readonly set: MidxSet;
+  readonly packsByLayer: ReadonlyArray<ReadonlyArray<RegisteredPack | undefined>>;
+  readonly claimedNames: ReadonlySet<string>;
+}
+
+/**
+ * Binds every layer's `PNAM` entries to the `RegisteredPack` the same scan
+ * produced, by exact string equality against the already-audited `.idx`
+ * base names — never by constructing a path from a `PNAM` value (a hostile
+ * repository controls that value). A name is resolved only when it passes
+ * `isSafePackName` AND matches a pack this scan actually registered; either
+ * failure binds `undefined` and withholds the name from `claimedNames`, so
+ * the real pack of that name, if any, is scanned normally through the
+ * ordinary `.idx` loop. A safe-but-unmatched name warns once, mirroring the
+ * orphan-`.idx` warn discipline; an unsafe name never reaches the logger
+ * raw — `isSafePackName` exists precisely to keep a hostile filename out of
+ * it.
+ */
+function bindMidx(ctx: Context, packs: ReadonlyArray<RegisteredPack>, set: MidxSet): LoadedMidx {
+  const packsByIdxName = new Map(packs.map((pack) => [`${pack.name}.idx`, pack]));
+  const claimedNames = new Set<string>();
+  const packsByLayer = set.layers.map((layer) =>
+    layer.packNames.map((name) => {
+      if (!isSafePackName(name)) return undefined;
+      const pack = packsByIdxName.get(name);
+      if (pack === undefined) {
+        ctx.logger?.warn?.(
+          'packRegistry: multi-pack-index names a pack this scan did not register',
+          {
+            pack: name,
+          },
+        );
+        return undefined;
+      }
+      claimedNames.add(name);
+      return pack;
+    }),
+  );
+  return { set, packsByLayer, claimedNames };
+}
+
 interface PackGeneration {
   /** Every candidate with a sibling `.pack` — orphans excluded, `.idx` not
    *  yet read. The safe superset for `refresh()`/`dispose()` to close: a
@@ -397,10 +449,14 @@ interface PackGeneration {
   readonly packs: ReadonlyArray<RegisteredPack>;
   /** The multi-pack-index this generation's scan discovered, produced by the
    *  SAME `scanPacks` call as `packs` — so no consumer can ever pair one
-   *  generation's midx with another's packs. Has no reader in this part
-   *  beyond `assertLoadable` propagating its rejection: a lookup answer never
-   *  changes based on its presence yet. */
+   *  generation's midx with another's packs. Has no reader beyond
+   *  `assertLoadable` propagating its rejection: `midx` below is the bound,
+   *  lookup-facing view. */
   readonly midxLoad: MidxLoadResult;
+  /** `midxLoad.set` bound to this generation's own `packs`, or `undefined`
+   *  exactly when `midxLoad.set` is. The one field `lookup` reads to decide
+   *  whether the midx is authoritative for this generation. */
+  readonly midx: LoadedMidx | undefined;
   /** Forces every candidate's `.idx` load, once, on first use. */
   readonly indexed: PromiseMemo<IndexedPacks>;
 }
@@ -409,6 +465,7 @@ function emptyGeneration(): PackGeneration {
   return {
     packs: NO_PACKS,
     midxLoad: EMPTY_MIDX_LOAD,
+    midx: undefined,
     indexed: createPromiseMemo(() => Promise.resolve(EMPTY_INDEXED)),
   };
 }
@@ -474,6 +531,24 @@ const unusableEntry = (
   data: TsgitErrorData,
 ): UnusablePack => ({ name, layer, data });
 
+/**
+ * Walk the midx's layers newest-first and resolve the first hit. A layer's
+ * `lookupMultiPackIndex` can throw a deferred `pack-int-id` or
+ * `large-offset` Tier-A fault — never caught here, so it propagates to
+ * `lookup`'s caller unchanged. A hit whose pack never bound (an
+ * unresolvable `PNAM` entry) and no hit in any layer both return
+ * `undefined`: either way the caller falls through to the `.idx` loop.
+ */
+function findMidxHit(midx: LoadedMidx, id: ObjectId): PackLookupHit | undefined {
+  for (let layerIndex = midx.set.layers.length - 1; layerIndex >= 0; layerIndex -= 1) {
+    const entry = lookupMultiPackIndex(midx.set.layers[layerIndex]!, id);
+    if (entry === undefined) continue;
+    const pack = midx.packsByLayer[layerIndex]?.[entry.packIndex];
+    return pack === undefined ? undefined : { pack, offset: entry.offset };
+  }
+  return undefined;
+}
+
 export function createPackRegistry(ctx: Context): PackRegistry {
   const scanPacks = async (): Promise<PackGeneration> => {
     const dir = packsDir(commonGitDir(ctx));
@@ -503,7 +578,8 @@ export function createPackRegistry(ctx: Context): PackRegistry {
       const pack = loadCandidatePack(ctx, dir, entry, fileNames);
       if (pack !== undefined) packs.push(pack);
     }
-    return { packs, midxLoad, indexed: createPromiseMemo(() => resolveIndexes(ctx, packs)) };
+    const midx = midxLoad.set === undefined ? undefined : bindMidx(ctx, packs, midxLoad.set);
+    return { packs, midxLoad, midx, indexed: createPromiseMemo(() => resolveIndexes(ctx, packs)) };
   };
   const scan = createPromiseMemo(scanPacks);
 
@@ -575,6 +651,27 @@ export function createPackRegistry(ctx: Context): PackRegistry {
     }
   };
 
+  // Step 3 of lookup: the ordinary .idx scan, skipping any pack the midx
+  // already claims. A pack the midx does not name is served exactly as it
+  // was before this generation ever had a midx.
+  const lookupViaIdxScan = async (
+    generation: PackGeneration,
+    id: ObjectId,
+  ): Promise<PackLookupHit | undefined> => {
+    const { packs } = await generation.indexed.get();
+    const claimedNames = generation.midx?.claimedNames;
+    for (const pack of packs) {
+      if (claimedNames?.has(`${pack.name}.idx`)) continue;
+      const index = await pack.index();
+      const offset = lookupPackIndex(index, id);
+      if (offset === undefined) continue; // an unclaimed pack is never opened
+      const fault = await probeHeader(pack);
+      if (fault !== undefined) continue;
+      return { pack, offset };
+    }
+    return undefined;
+  };
+
   const computeHealth = async (): Promise<PackHealth> => {
     const generation = await currentGeneration();
     const { packs, indexFaults } = await generation.indexed.get();
@@ -619,16 +716,12 @@ export function createPackRegistry(ctx: Context): PackRegistry {
     },
     async lookup(id: ObjectId): Promise<PackLookupHit | undefined> {
       const generation = await currentGeneration();
-      const { packs } = await generation.indexed.get();
-      for (const pack of packs) {
-        const index = await pack.index();
-        const offset = lookupPackIndex(index, id);
-        if (offset === undefined) continue; // an unclaimed pack is never opened
-        const fault = await probeHeader(pack);
-        if (fault !== undefined) continue;
-        return { pack, offset };
-      }
-      return undefined;
+      const midx = generation.midx;
+      if (midx === undefined) return lookupViaIdxScan(generation, id);
+      const hit = findMidxHit(midx, id);
+      if (hit === undefined) return lookupViaIdxScan(generation, id);
+      const fault = await probeHeader(hit.pack);
+      return fault === undefined ? hit : undefined;
     },
     health(): Promise<PackHealth> {
       return healthMemo.get();
