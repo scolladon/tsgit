@@ -17,7 +17,7 @@ import {
   parsePackHeader,
 } from '../../domain/storage/pack-entry.js';
 import type { Context } from '../../ports/context.js';
-import { createPromiseMemo } from './internal/promise-memo.js';
+import { createPromiseMemo, type PromiseMemo } from './internal/promise-memo.js';
 import { commonGitDir, packsDir } from './path-layout.js';
 import { exceedsMaxPackIdxBytes, REASON_PACK_IDX_EXCEEDS_MAX } from './validators.js';
 
@@ -82,7 +82,14 @@ export interface PackOffsetTable {
 
 export interface RegisteredPack {
   readonly name: string;
-  readonly index: PackIndex;
+  /**
+   * Memoised `.idx` read + parse — one bounded read per pack, on first use,
+   * never at scan time. A rejection is **not** memoised (the next caller
+   * retries); the ONE site that classifies a rejection as skippable (a
+   * corrupt or unreadable `.idx`) rather than propagating it is the
+   * generation's `resolveIndexes`, never a call site of `index()` itself.
+   */
+  readonly index: () => Promise<PackIndex>;
   readonly packPath: string;
   readonly idxPath: string;
   /**
@@ -204,14 +211,20 @@ async function readBoundedIdx(ctx: Context, idxPath: string): Promise<Uint8Array
   return bytes;
 }
 
-async function loadPack(ctx: Context, dir: string, entryName: string): Promise<RegisteredPack> {
+function loadPack(ctx: Context, dir: string, entryName: string): RegisteredPack {
   const idxPath = `${dir}/${entryName}`;
-  const idxBytes = await readBoundedIdx(ctx, idxPath);
-  const index = parsePackIndex(idxBytes);
   const name = packBaseName(entryName);
   const packPath = `${dir}/${name}.pack`;
 
+  // Not read here — scanPacks builds the candidate list with no `.idx` I/O.
+  // The first caller to force this memo (directly, or via the generation's
+  // resolveIndexes classification) pays the one bounded read.
+  const indexMemo = createPromiseMemo(
+    async (): Promise<PackIndex> => parsePackIndex(await readBoundedIdx(ctx, idxPath)),
+  );
+
   const headerMemo = createPromiseMemo(async (): Promise<PackHeader> => {
+    const index = await indexMemo.get();
     const header = parsePackHeader(await ctx.fs.readSlice(packPath, 0, PACK_HEADER_SIZE));
     if (header.objectCount !== index.objectCount) {
       throw invalidPackHeader(
@@ -222,6 +235,7 @@ async function loadPack(ctx: Context, dir: string, entryName: string): Promise<R
   });
 
   const buildOffsetTable = async (): Promise<PackOffsetTable> => {
+    const index = await indexMemo.get();
     const stat = await ctx.fs.stat(packPath);
     const packFileSize = stat.size;
     const raw = entryOffsets(index);
@@ -295,7 +309,16 @@ async function loadPack(ctx: Context, dir: string, entryName: string): Promise<R
     await handle.close();
   };
 
-  return { name, index, packPath, idxPath, header: headerMemo.get, offsetTable, readSlice, close };
+  return {
+    name,
+    index: indexMemo.get,
+    packPath,
+    idxPath,
+    header: headerMemo.get,
+    offsetTable,
+    readSlice,
+    close,
+  };
 }
 
 function bisectLeft(arr: ReadonlyArray<number>, value: number): number {
@@ -326,53 +349,91 @@ export function nextOffsetForEntry(table: PackOffsetTable, offset: number): numb
 }
 
 const NO_PACKS: ReadonlyArray<RegisteredPack> = Object.freeze([]);
+const NO_INDEX_FAULTS: ReadonlyArray<{ readonly name: string; readonly data: TsgitErrorData }> =
+  Object.freeze([]);
 
-interface PackGeneration {
+/**
+ * The scan layer's classification of one generation's candidates: which
+ * ones have a loaded, parsed `.idx` (`packs`), and which were skippably
+ * unreadable/unparseable (`indexFaults`). Built once per generation by
+ * `resolveIndexes`, behind `PackGeneration.indexed`.
+ */
+interface IndexedPacks {
   readonly packs: ReadonlyArray<RegisteredPack>;
   readonly indexFaults: ReadonlyArray<{ readonly name: string; readonly data: TsgitErrorData }>;
 }
 
-const EMPTY_GENERATION: PackGeneration = Object.freeze({
+const EMPTY_INDEXED: IndexedPacks = Object.freeze({
   packs: NO_PACKS,
-  indexFaults: Object.freeze([]),
+  indexFaults: NO_INDEX_FAULTS,
 });
 
-type PackCandidateOutcome =
-  | { readonly kind: 'registered'; readonly pack: RegisteredPack }
-  | { readonly kind: 'orphaned' }
-  | { readonly kind: 'index-fault'; readonly name: string; readonly data: TsgitErrorData };
+interface PackGeneration {
+  /** Every candidate with a sibling `.pack` — orphans excluded, `.idx` not
+   *  yet read. The safe superset for `refresh()`/`dispose()` to close: a
+   *  pack whose index never loaded simply has nothing to close. */
+  readonly packs: ReadonlyArray<RegisteredPack>;
+  /** Forces every candidate's `.idx` load, once, on first use. */
+  readonly indexed: PromiseMemo<IndexedPacks>;
+}
+
+function emptyGeneration(): PackGeneration {
+  return { packs: NO_PACKS, indexed: createPromiseMemo(() => Promise.resolve(EMPTY_INDEXED)) };
+}
 
 /**
- * Resolve one `.idx` candidate. `'orphaned'` (no sibling `.pack` in the
- * scan's own listing) and `'index-fault'` (a skippable idx-layer fault —
- * unreadable/unparseable `.idx`) both keep the warn the scan layer always
- * emitted for them; only `'index-fault'` is retained in the generation's
- * index-fault list — an orphan contributes nothing. An unrecognised fault
- * still propagates to the caller.
+ * Resolve one `.idx` candidate to a `RegisteredPack`, or `undefined` when its
+ * sibling `.pack` is missing from this scan's own listing (an orphaned `.idx`
+ * is garbage, never a pack). The orphan warn fires here, at scan time,
+ * because it needs no I/O to detect. The pack's `.idx` itself is not read
+ * here — that happens lazily, the first time something forces `pack.index()`
+ * (see `resolveIndexes`).
  */
-async function loadCandidatePack(
+function loadCandidatePack(
   ctx: Context,
   dir: string,
   entry: { readonly name: string },
   fileNames: ReadonlySet<string>,
-): Promise<PackCandidateOutcome> {
+): RegisteredPack | undefined {
   const name = packBaseName(entry.name);
   if (!fileNames.has(`${name}.pack`)) {
     ctx.logger?.warn?.('packRegistry: skipping pack index with no pack file', {
       idx: entry.name,
     });
-    return { kind: 'orphaned' };
+    return undefined;
   }
-  try {
-    return { kind: 'registered', pack: await loadPack(ctx, dir, entry.name) };
-  } catch (err) {
-    if (!isSkippableIdxFault(err)) throw err;
-    ctx.logger?.warn?.('packRegistry: skipping unreadable pack index', {
-      idx: entry.name,
-      ...faultContext(err.data),
-    });
-    return { kind: 'index-fault', name, data: err.data };
+  return loadPack(ctx, dir, entry.name);
+}
+
+/**
+ * The single site that classifies an index-layer fault — run once per
+ * generation, behind `PackGeneration.indexed`, sequentially in candidate
+ * order, never per lookup — so a generation warns for each unreadable index
+ * exactly once no matter how many consumers later force the memo. Forces
+ * every candidate's `.idx` load, not just the ones a lookup needed, so
+ * `all()`, `indexFaults()` and `health()` see a complete classification even
+ * when no lookup ever ran.
+ */
+async function resolveIndexes(
+  ctx: Context,
+  packs: ReadonlyArray<RegisteredPack>,
+): Promise<IndexedPacks> {
+  const loaded: RegisteredPack[] = [];
+  const faults: Array<{ readonly name: string; readonly data: TsgitErrorData }> = [];
+  for (const pack of packs) {
+    try {
+      await pack.index();
+      loaded.push(pack);
+    } catch (err) {
+      if (!isSkippableIdxFault(err)) throw err;
+      ctx.logger?.warn?.('packRegistry: skipping unreadable pack index', {
+        idx: `${pack.name}.idx`,
+        ...faultContext(err.data),
+      });
+      faults.push({ name: pack.name, data: err.data });
+    }
   }
+  return { packs: loaded, indexFaults: faults };
 }
 
 const unusableEntry = (
@@ -384,7 +445,7 @@ const unusableEntry = (
 export function createPackRegistry(ctx: Context): PackRegistry {
   const scanPacks = async (): Promise<PackGeneration> => {
     const dir = packsDir(commonGitDir(ctx));
-    if (!(await ctx.fs.exists(dir))) return EMPTY_GENERATION;
+    if (!(await ctx.fs.exists(dir))) return emptyGeneration();
     const entries = await ctx.fs.readdir(dir);
     // git registers a pack only when its .pack exists by name — an orphaned
     // .idx is garbage, never a pack. The listing already in hand is the same
@@ -393,16 +454,12 @@ export function createPackRegistry(ctx: Context): PackRegistry {
     // no-follow policy the data reads enforce, so its .idx drops here too.
     const fileNames = new Set(entries.filter((entry) => entry.isFile).map((entry) => entry.name));
     const packs: RegisteredPack[] = [];
-    const indexFaults: Array<{ readonly name: string; readonly data: TsgitErrorData }> = [];
     for (const entry of entries) {
       if (!isCandidate(entry)) continue;
-      const outcome = await loadCandidatePack(ctx, dir, entry, fileNames);
-      if (outcome.kind === 'registered') packs.push(outcome.pack);
-      else if (outcome.kind === 'index-fault') {
-        indexFaults.push({ name: outcome.name, data: outcome.data });
-      }
+      const pack = loadCandidatePack(ctx, dir, entry, fileNames);
+      if (pack !== undefined) packs.push(pack);
     }
-    return { packs, indexFaults };
+    return { packs, indexed: createPromiseMemo(() => resolveIndexes(ctx, packs)) };
   };
   const scan = createPromiseMemo(scanPacks);
 
@@ -436,19 +493,24 @@ export function createPackRegistry(ctx: Context): PackRegistry {
   // empty instead of scanning.
   const currentGeneration = (): Promise<PackGeneration> => {
     if (!disposed) return scan.get();
-    return scan.peek() ?? Promise.resolve(EMPTY_GENERATION);
+    return scan.peek() ?? Promise.resolve(emptyGeneration());
   };
-  const allPacks = (): Promise<ReadonlyArray<RegisteredPack>> =>
-    currentGeneration().then((generation) => generation.packs);
+  const allPacks = async (): Promise<ReadonlyArray<RegisteredPack>> => {
+    const generation = await currentGeneration();
+    return (await generation.indexed.get()).packs;
+  };
 
-  // Pure over its generation, so computeHealth can derive both halves of one
-  // report from the SAME generation snapshot — awaiting the memo twice would
-  // let a refresh() interleave and mix two generations into one verdict.
-  const indexFaultsOf = (generation: PackGeneration): UnusablePack[] =>
-    generation.indexFaults.map((fault) => unusableEntry(fault.name, 'index', fault.data));
+  // Pure over its fault list, so computeHealth can derive both halves of one
+  // report from the SAME indexed snapshot — awaiting the memo twice would let
+  // a refresh() interleave and mix two generations into one verdict.
+  const indexFaultsOf = (
+    faults: ReadonlyArray<{ readonly name: string; readonly data: TsgitErrorData }>,
+  ): UnusablePack[] => faults.map((fault) => unusableEntry(fault.name, 'index', fault.data));
 
-  const indexFaultEntries = async (): Promise<UnusablePack[]> =>
-    indexFaultsOf(await currentGeneration());
+  const indexFaultEntries = async (): Promise<UnusablePack[]> => {
+    const generation = await currentGeneration();
+    return indexFaultsOf((await generation.indexed.get()).indexFaults);
+  };
 
   // The one site that classifies a pack-open refusal — lookup() and health()
   // both call it, so the refusal reason cannot drift between them. Returns
@@ -471,9 +533,10 @@ export function createPackRegistry(ctx: Context): PackRegistry {
 
   const computeHealth = async (): Promise<PackHealth> => {
     const generation = await currentGeneration();
-    const unusable: UnusablePack[] = indexFaultsOf(generation);
+    const { packs, indexFaults } = await generation.indexed.get();
+    const unusable: UnusablePack[] = indexFaultsOf(indexFaults);
     const accessible: RegisteredPack[] = [];
-    for (const pack of generation.packs) {
+    for (const pack of packs) {
       const fault = await probeHeader(pack);
       if (fault === undefined) accessible.push(pack);
       else unusable.push(unusableEntry(pack.name, 'pack', fault.data));
@@ -502,15 +565,17 @@ export function createPackRegistry(ctx: Context): PackRegistry {
           // A rejected scan produced no packs and therefore no handles. The error is
           // not discarded: it is delivered to the all()/lookup() caller that triggered
           // the scan — this arm only declines to close a set that does not exist.
-          // Stryker disable next-line ArrowFunction: equivalent — this .then result is consumed only by trackClose, which discards it via Promise.allSettled; returning undefined instead of NO_PACKS changes nothing observable (unlike dispose()'s `.catch(() => EMPTY_GENERATION)` below, whose result feeds packs.map and whose mutant was killed)
+          // Stryker disable next-line ArrowFunction: equivalent — this .then result is consumed only by trackClose, which discards it via Promise.allSettled; returning undefined instead of NO_PACKS changes nothing observable (unlike dispose()'s empty-generation fallback below, whose result feeds packs.map and whose mutant was killed)
           () => NO_PACKS,
         ),
       );
     },
     async lookup(id: ObjectId): Promise<PackLookupHit | undefined> {
-      const { packs } = await currentGeneration();
+      const generation = await currentGeneration();
+      const { packs } = await generation.indexed.get();
       for (const pack of packs) {
-        const offset = lookupPackIndex(pack.index, id);
+        const index = await pack.index();
+        const offset = lookupPackIndex(index, id);
         if (offset === undefined) continue; // an unclaimed pack is never opened
         const fault = await probeHeader(pack);
         if (fault !== undefined) continue;
@@ -535,7 +600,7 @@ export function createPackRegistry(ctx: Context): PackRegistry {
       // A pending scan's own rejection already has an owner — the all()/
       // lookup() caller that triggered it. Absorb it here without closing
       // anything: a rejected scan produced no packs and therefore no handles.
-      const generation = await pending.catch(() => EMPTY_GENERATION);
+      const generation = await pending.catch(() => emptyGeneration());
       // Settle every close so one failing handle cannot strand the others.
       const results = await Promise.allSettled(generation.packs.map((pack) => pack.close()));
       await drainPendingCloses();

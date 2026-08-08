@@ -18,7 +18,7 @@ import type { Blob, GitObject, ObjectId } from '../../../../src/domain/objects/i
 import { PACK_HEADER_SIZE } from '../../../../src/domain/storage/pack-entry.js';
 import type { Context } from '../../../../src/ports/context.js';
 import type { DirEntry, FileHandle, FileStat } from '../../../../src/ports/file-system.js';
-import { buildSeededContext } from './fixtures.js';
+import { buildSeededContext, instrumentedContext } from './fixtures.js';
 import { withHandleLedger } from './handle-ledger.js';
 import { restampPackHeader, writeSyntheticPack } from './pack-fixture.js';
 
@@ -656,6 +656,387 @@ describe('PackRegistry.scan — per-pack idx degradation and orphan exclusion', 
 
         // Assert
         expect(packs).toEqual([]);
+      });
+    });
+  });
+});
+
+describe('PackRegistry — lazy pack-index loading', () => {
+  describe('Given two healthy packs', () => {
+    describe('When createPackRegistry is called and nothing else', () => {
+      it('Then no readdir and no .idx read has happened yet', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'lazy-cold-a', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('a') },
+        ]);
+        await writeSyntheticPack(ctx, 'lazy-cold-b', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('b') },
+        ]);
+        const { ctx: instrumented, calls } = instrumentedContext(ctx);
+
+        // Act
+        createPackRegistry(instrumented);
+
+        // Assert
+        expect(calls()).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given two healthy packs', () => {
+    describe('When lookup forces the first scan', () => {
+      it('Then the readdir precedes every .idx read — the .idx load left scanPacks', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const idsA = await writeSyntheticPack(ctx, 'lazy-order-a', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('a') },
+        ]);
+        await writeSyntheticPack(ctx, 'lazy-order-b', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('b') },
+        ]);
+        const { ctx: instrumented, calls } = instrumentedContext(ctx);
+        const sut = createPackRegistry(instrumented);
+
+        // Act
+        await sut.lookup(idsA[0] as ObjectId);
+
+        // Assert
+        const readdirIndex = calls().findIndex((call) => call.method === 'readdir');
+        const firstIdxReadIndex = calls().findIndex(
+          (call) => call.method === 'read' && call.path.endsWith('.idx'),
+        );
+        expect(readdirIndex).toBeGreaterThanOrEqual(0);
+        expect(firstIdxReadIndex).toBeGreaterThan(readdirIndex);
+      });
+    });
+  });
+
+  describe('Given two healthy packs and no multi-pack-index', () => {
+    describe('When lookup is called for an id claimed by the first pack', () => {
+      it('Then both .idx files are read — the fallback loop has nothing to short it', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const idsA = await writeSyntheticPack(ctx, 'lazy-fallback-a', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('a') },
+        ]);
+        await writeSyntheticPack(ctx, 'lazy-fallback-b', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('b') },
+        ]);
+        const { ctx: instrumented, calls } = instrumentedContext(ctx);
+        const sut = createPackRegistry(instrumented);
+
+        // Act
+        await sut.lookup(idsA[0] as ObjectId);
+
+        // Assert
+        const idxReads = calls().filter(
+          (call) => call.method === 'read' && call.path.endsWith('.idx'),
+        );
+        expect(idxReads).toHaveLength(2);
+      });
+    });
+  });
+
+  describe('Given a healthy pack with two objects', () => {
+    describe('When lookup is called twice for two different oids in the same pack', () => {
+      it('Then exactly one .idx read serves both lookups', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const ids = await writeSyntheticPack(ctx, 'lazy-memoised', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('one') },
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('two') },
+        ]);
+        const { ctx: instrumented, calls } = instrumentedContext(ctx);
+        const sut = createPackRegistry(instrumented);
+
+        // Act
+        await sut.lookup(ids[0] as ObjectId);
+        await sut.lookup(ids[1] as ObjectId);
+
+        // Assert
+        const idxReads = calls().filter(
+          (call) => call.method === 'read' && call.path.endsWith('.idx'),
+        );
+        expect(idxReads).toHaveLength(1);
+      });
+    });
+  });
+
+  describe('Given one healthy pack and one same-length garbage .idx', () => {
+    describe('When all() is called', () => {
+      it('Then all() lists only the healthy pack, identical to today', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'lazy-membership-healthy', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('good') },
+        ]);
+        await writeGarbageIdx(ctx, 'lazy-membership-garbage');
+        const sut = createPackRegistry(ctx);
+
+        // Act
+        const packs = await sut.all();
+
+        // Assert
+        expect(packs.map((pack) => pack.name)).toEqual(['pack-lazy-membership-healthy']);
+      });
+    });
+
+    describe('When indexFaults() is called without any prior lookup or all()', () => {
+      it('Then it reports the garbage index alone, at the index layer', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'lazy-complete-healthy', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('good') },
+        ]);
+        await writeGarbageIdx(ctx, 'lazy-complete-garbage');
+        const sut = createPackRegistry(ctx);
+
+        // Act
+        const faults = await sut.indexFaults();
+
+        // Assert
+        expect(faults).toHaveLength(1);
+        expect(faults[0]!.layer).toBe('index');
+        expect(faults[0]!.data.code).toBe('INVALID_PACK_INDEX');
+      });
+    });
+
+    describe('When all(), then indexFaults(), then health() are each called in turn', () => {
+      it('Then the unreadable-index warn fires exactly once', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'lazy-warn-once-healthy', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('good') },
+        ]);
+        await writeGarbageIdx(ctx, 'lazy-warn-once-garbage');
+        const warn = vi.fn();
+        const sut = createPackRegistry({ ...ctx, logger: { warn } });
+
+        // Act
+        await sut.all();
+        await sut.indexFaults();
+        await sut.health();
+
+        // Assert
+        expect(warn).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
+
+  describe('Given an .idx file whose stat reports > MAX_PACK_IDX_BYTES', () => {
+    describe('When indexFaults() is called', () => {
+      it('Then it reports the size-guard reason without ever issuing a read', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const reads: string[] = [];
+        const oversized = 64 * 1024 * 1024 + 1;
+        const wrapped: Context = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            exists: async () => true,
+            readdir: async () => [
+              {
+                name: 'pack-lazy-bomb.idx',
+                isFile: true,
+                isDirectory: false,
+                isSymbolicLink: false,
+              },
+              {
+                name: 'pack-lazy-bomb.pack',
+                isFile: true,
+                isDirectory: false,
+                isSymbolicLink: false,
+              },
+            ],
+            stat: async (p: string) => {
+              const base = await ctx.fs.stat(p).catch(() => undefined);
+              return { ...(base ?? makeStat()), size: oversized };
+            },
+            read: async (path: string) => {
+              reads.push(path);
+              throw new Error('should not be reached');
+            },
+          },
+        };
+        const sut = createPackRegistry(wrapped);
+
+        // Act
+        const faults = await sut.indexFaults();
+
+        // Assert
+        expect(faults).toHaveLength(1);
+        expect((faults[0]!.data as { reason?: string }).reason).toBe(REASON_PACK_IDX_EXCEEDS_MAX);
+        expect(reads).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given an .idx whose first read rejects with PERMISSION_DENIED and then recovers', () => {
+    describe('When all() is called, refresh() runs, and all() is called again', () => {
+      it('Then the pack returns to accessible and a second .idx read is issued', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'lazy-not-memoised', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('recover') },
+        ]);
+        const idxPath = `${ctx.layout.gitDir}/objects/pack/pack-lazy-not-memoised.idx`;
+        let failNextIdxRead = true;
+        const { ctx: instrumented, calls } = instrumentedContext({
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            read: async (path: string) => {
+              if (path === idxPath && failNextIdxRead) {
+                failNextIdxRead = false;
+                throw permissionDenied(path);
+              }
+              return ctx.fs.read(path);
+            },
+          },
+        });
+        const sut = createPackRegistry(instrumented);
+
+        // Act
+        const before = await sut.all();
+        sut.refresh();
+        const after = await sut.all();
+
+        // Assert
+        expect(before).toEqual([]);
+        expect(after.map((pack) => pack.name)).toEqual(['pack-lazy-not-memoised']);
+        const idxReads = calls().filter((call) => call.method === 'read' && call.path === idxPath);
+        expect(idxReads).toHaveLength(2);
+      });
+    });
+  });
+
+  describe('Given an .idx read that rejects with an errno-mapped UNSUPPORTED_OPERATION fault', () => {
+    describe('When all() is called', () => {
+      it('Then all() rejects instead of treating the fault as skippable', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'lazy-unrecognised-fault', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('u') },
+        ]);
+        const fault = unsupportedOperation('filesystem', 'EMFILE');
+        const wrapped: Context = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            read: async (path: string) => {
+              if (path.endsWith('.idx')) throw fault;
+              return ctx.fs.read(path);
+            },
+          },
+        };
+        const sut = createPackRegistry(wrapped);
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut.all();
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual(fault.data);
+      });
+    });
+  });
+
+  describe('Given a pack whose header objectCount disagrees with its lazily loaded index', () => {
+    describe('When health() is called', () => {
+      it('Then health() reports the pack layer with a reason naming both counts', async () => {
+        // Arrange — proves header() still awaits index() under the lazy load.
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'lazy-header-cross-check', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('h') },
+        ]);
+        const packPath = `${ctx.layout.gitDir}/objects/pack/pack-lazy-header-cross-check.pack`;
+        await restampPackHeader(ctx, packPath, { objectCount: 2 });
+        const sut = createPackRegistry(ctx);
+
+        // Act
+        const result = await sut.health();
+
+        // Assert
+        const entry = result.unusable[0]!;
+        expect(entry.layer).toBe('pack');
+        expect((entry.data as { reason?: string }).reason).toBe(
+          'object count disagrees with index: pack 2, index 1',
+        );
+      });
+    });
+  });
+
+  describe('Given a healthy pack', () => {
+    describe('When readObject reads its one packed object end to end', () => {
+      it('Then the bytes round-trip unchanged through the lazily loaded index', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const content = new TextEncoder().encode('lazy-round-trip-content');
+        const ids = await writeSyntheticPack(ctx, 'lazy-round-trip', [
+          { kind: 'base', type: 'blob', content },
+        ]);
+        const id = ids[0] as ObjectId;
+
+        // Act
+        const result = await readObject(ctx, id);
+
+        // Assert
+        expect(result.type).toBe('blob');
+        expect((result as Blob).content).toEqual(content);
+      });
+    });
+  });
+
+  describe('Given a healthy pack that was looked up before dispose()', () => {
+    describe('When dispose() runs and all() is called afterward', () => {
+      it('Then all() returns the retired set without a new readdir', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const ids = await writeSyntheticPack(ctx, 'lazy-dispose-then-all', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('d') },
+        ]);
+        const id = ids[0] as ObjectId;
+        const ledger = withHandleLedger(ctx);
+        const sut = createPackRegistry(ledger.ctx);
+        await sut.lookup(id);
+        const readdirCallsBeforeDispose = ledger.readdirCalls();
+
+        // Act
+        await sut.dispose();
+        const packs = await sut.all();
+
+        // Assert
+        expect(packs.map((pack) => pack.name)).toEqual(['pack-lazy-dispose-then-all']);
+        expect(ledger.readdirCalls()).toBe(readdirCallsBeforeDispose);
+      });
+    });
+  });
+
+  describe('Given a registry that never scanned', () => {
+    describe('When dispose() runs and all() is called afterward', () => {
+      it('Then all() resolves empty without ever scanning the pack directory', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'lazy-dispose-cold', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('c') },
+        ]);
+        const ledger = withHandleLedger(ctx);
+        const sut = createPackRegistry(ledger.ctx);
+
+        // Act
+        await sut.dispose();
+        const packs = await sut.all();
+
+        // Assert
+        expect(packs).toEqual([]);
+        expect(ledger.readdirCalls()).toBe(0);
       });
     });
   });
@@ -2274,8 +2655,12 @@ describe('PackRegistry — single-flight scan', () => {
     });
 
     describe('When dispose() is started, call 0 settles, and the disposal is awaited', () => {
-      it('Then the scan settles before dispose resolves, and a later read by the scan caller opens no handle', async () => {
-        // Arrange
+      it('Then dispose resolves once the racing scan itself has settled, and a later read by the scan caller opens no handle', async () => {
+        // Arrange — dispose() only ever needs the scan's raw candidate list to
+        // close handles, never the lazily loaded .idx classification all() also
+        // waits on, so a racing dispose() settles as soon as the scan itself has
+        // produced that list — strictly before all()'s own promise, which pays
+        // the extra .idx read before it can filter the accessible set.
         const ctx = await buildSeededContext();
         await writeSyntheticPack(ctx, 'gated-dispose', [
           { kind: 'base', type: 'blob', content: new TextEncoder().encode('d') },
@@ -2299,7 +2684,7 @@ describe('PackRegistry — single-flight scan', () => {
         await packs[0]!.readSlice(0, 4);
 
         // Assert
-        expect(order).toEqual(['scan-settled', 'dispose-resolved']);
+        expect(order).toEqual(['dispose-resolved', 'scan-settled']);
         expect(ledger.opens()).toBe(0);
         expect(ledger.outstanding()).toBe(0);
       });

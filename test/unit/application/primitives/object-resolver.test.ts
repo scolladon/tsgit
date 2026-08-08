@@ -93,7 +93,7 @@ async function stubRegistry(
     const packPath = match.packPath;
     const pack: RegisteredPack = {
       name: 'stub',
-      index: fillerIndex,
+      index: async () => fillerIndex,
       packPath,
       idxPath: `${packPath}.idx`,
       header: async () => ({ version: 2, objectCount: fillerIndex.objectCount }),
@@ -1215,7 +1215,7 @@ describe('object-resolver', () => {
           const fillerIndex = parsePackIndex(filler.idxBytes);
           const pack: RegisteredPack = {
             name: 'stub-corrupt-slice',
-            index: fillerIndex,
+            index: async () => fillerIndex,
             packPath,
             idxPath: `${packPath}.idx`,
             header: async () => ({ version: 2, objectCount: fillerIndex.objectCount }),
@@ -1279,7 +1279,7 @@ describe('object-resolver', () => {
           const fillerIndex = parsePackIndex(filler.idxBytes);
           const pack: RegisteredPack = {
             name: 'stub-zero-slice',
-            index: fillerIndex,
+            index: async () => fillerIndex,
             packPath,
             idxPath: `${packPath}.idx`,
             header: async () => ({ version: 2, objectCount: fillerIndex.objectCount }),
@@ -1339,7 +1339,7 @@ describe('object-resolver', () => {
           const fillerIndex = parsePackIndex(filler.idxBytes);
           const pack: RegisteredPack = {
             name: 'stub-corrupt-exceeds',
-            index: fillerIndex,
+            index: async () => fillerIndex,
             packPath,
             idxPath: `${packPath}.idx`,
             header: async () => ({ version: 2, objectCount: fillerIndex.objectCount }),
