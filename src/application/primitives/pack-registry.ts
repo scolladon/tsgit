@@ -17,6 +17,7 @@ import {
   parsePackHeader,
 } from '../../domain/storage/pack-entry.js';
 import type { Context } from '../../ports/context.js';
+import { loadMidxSet, type MidxLoadResult } from './internal/midx-source.js';
 import { createPromiseMemo, type PromiseMemo } from './internal/promise-memo.js';
 import { commonGitDir, packsDir } from './path-layout.js';
 import { exceedsMaxPackIdxBytes, REASON_PACK_IDX_EXCEEDS_MAX } from './validators.js';
@@ -46,7 +47,11 @@ function isSkippableIoFault(err: unknown): boolean {
 // ONLY — INVALID_PACK_INDEX is deliberately absent, because nextOffsetForEntry
 // and buildOffsetTable throw it for a MID-READ corruption, and folding those in
 // would turn a detected corruption into a silent miss after the gate passed.
-function isSkippablePackFault(err: unknown): err is TsgitError {
+// Exported so a test can audit that it never admits INVALID_MULTI_PACK_INDEX —
+// a midx fault escaping this allow-list by construction is Part 3's whole
+// argument for why a Tier-A multi-pack-index fault is never laundered into
+// "skip one pack".
+export function isSkippablePackFault(err: unknown): err is TsgitError {
   return (
     (err instanceof TsgitError && err.data.code === 'INVALID_PACK_HEADER') ||
     isSkippableIoFault(err)
@@ -57,8 +62,9 @@ function isSkippablePackFault(err: unknown): err is TsgitError {
 // unreadable index). Deliberately NOT unioned with isSkippablePackFault —
 // INVALID_PACK_INDEX is skippable only here, where the parse happens; at the
 // lookup layer it also means a mid-read corruption, which must never be
-// laundered into "this pack has no objects".
-function isSkippableIdxFault(err: unknown): err is TsgitError {
+// laundered into "this pack has no objects". Exported for the same audit
+// reason as isSkippablePackFault above.
+export function isSkippableIdxFault(err: unknown): err is TsgitError {
   return (
     (err instanceof TsgitError && err.data.code === 'INVALID_PACK_INDEX') || isSkippableIoFault(err)
   );
@@ -146,6 +152,16 @@ export interface PackHealth {
 export interface PackRegistry {
   all(): Promise<ReadonlyArray<RegisteredPack>>;
   lookup(id: ObjectId): Promise<PackLookupHit | undefined>;
+  /**
+   * Await the current generation for its rejection only, discarding the
+   * result. A structurally self-inconsistent multi-pack-index must deny
+   * EVERY read — loose objects included — before any loose-vs-pack branch is
+   * even reached, and this is the single gate that makes that true. Returns
+   * `void` on purpose: it must never become a second way to reach the packs.
+   * Never forces `generation.indexed` — that would pay every pack's `.idx`
+   * load eagerly and defeat the point of loading indexes lazily.
+   */
+  assertLoadable(): Promise<void>;
   /** Drop the cached `.idx` scan so the next `all`/`lookup` re-scans the
    *  pack directory — used after a lazy-fetch writes a new pack. */
   refresh(): void;
@@ -368,17 +384,33 @@ const EMPTY_INDEXED: IndexedPacks = Object.freeze({
   indexFaults: NO_INDEX_FAULTS,
 });
 
+const EMPTY_MIDX_LOAD: MidxLoadResult = Object.freeze({
+  set: undefined,
+  faults: Object.freeze([]),
+  flatFilePresent: false,
+});
+
 interface PackGeneration {
   /** Every candidate with a sibling `.pack` — orphans excluded, `.idx` not
    *  yet read. The safe superset for `refresh()`/`dispose()` to close: a
    *  pack whose index never loaded simply has nothing to close. */
   readonly packs: ReadonlyArray<RegisteredPack>;
+  /** The multi-pack-index this generation's scan discovered, produced by the
+   *  SAME `scanPacks` call as `packs` — so no consumer can ever pair one
+   *  generation's midx with another's packs. Has no reader in this part
+   *  beyond `assertLoadable` propagating its rejection: a lookup answer never
+   *  changes based on its presence yet. */
+  readonly midxLoad: MidxLoadResult;
   /** Forces every candidate's `.idx` load, once, on first use. */
   readonly indexed: PromiseMemo<IndexedPacks>;
 }
 
 function emptyGeneration(): PackGeneration {
-  return { packs: NO_PACKS, indexed: createPromiseMemo(() => Promise.resolve(EMPTY_INDEXED)) };
+  return {
+    packs: NO_PACKS,
+    midxLoad: EMPTY_MIDX_LOAD,
+    indexed: createPromiseMemo(() => Promise.resolve(EMPTY_INDEXED)),
+  };
 }
 
 /**
@@ -446,6 +478,18 @@ export function createPackRegistry(ctx: Context): PackRegistry {
   const scanPacks = async (): Promise<PackGeneration> => {
     const dir = packsDir(commonGitDir(ctx));
     if (!(await ctx.fs.exists(dir))) return emptyGeneration();
+    // A SEPARATE step from the .idx candidate loop below — never folded into
+    // it, so a structurally self-inconsistent midx fault is never caught by
+    // isSkippableIdxFault and laundered into "skip one pack". A rejection
+    // here aborts the whole scan, and the scan memo never caches a
+    // rejection, so the very next lookup re-attempts it from scratch.
+    const midxLoad = await loadMidxSet(ctx, dir);
+    for (const fault of midxLoad.faults) {
+      ctx.logger?.warn?.('packRegistry: discarding unusable multi-pack-index', {
+        artefact: fault.artefact,
+        ...faultContext(fault.data),
+      });
+    }
     const entries = await ctx.fs.readdir(dir);
     // git registers a pack only when its .pack exists by name — an orphaned
     // .idx is garbage, never a pack. The listing already in hand is the same
@@ -459,7 +503,7 @@ export function createPackRegistry(ctx: Context): PackRegistry {
       const pack = loadCandidatePack(ctx, dir, entry, fileNames);
       if (pack !== undefined) packs.push(pack);
     }
-    return { packs, indexed: createPromiseMemo(() => resolveIndexes(ctx, packs)) };
+    return { packs, midxLoad, indexed: createPromiseMemo(() => resolveIndexes(ctx, packs)) };
   };
   const scan = createPromiseMemo(scanPacks);
 
@@ -552,6 +596,9 @@ export function createPackRegistry(ctx: Context): PackRegistry {
 
   return {
     all: allPacks,
+    async assertLoadable(): Promise<void> {
+      await currentGeneration();
+    },
     refresh(): void {
       if (disposed) return;
       healthMemo.clear();

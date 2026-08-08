@@ -67,4 +67,20 @@ export const commitGraphChainPath = (gitDir: string): string =>
 export const commitGraphLayerPath = (gitDir: string, hash: string): string =>
   `${gitDir}/objects/info/commit-graphs/graph-${hash}.graph`;
 
+/**
+ * The flat multi-pack-index. Absent when the repo has no midx or uses the
+ * chain form. Takes the PACKS directory, not gitDir — unlike its
+ * commit-graph siblings above — because `loadMidxSet` fixes its own root at
+ * the packs directory `scanPacks` already resolved.
+ */
+export const multiPackIndexPath = (packsDir: string): string => `${packsDir}/multi-pack-index`;
+
+/** Chain manifest: one lowercase-hex layer digest per line, base → tip. */
+export const multiPackIndexChainPath = (packsDir: string): string =>
+  `${packsDir}/multi-pack-index.d/multi-pack-index-chain`;
+
+/** One chain layer's midx file, named by that layer's own trailer digest. */
+export const multiPackIndexLayerPath = (packsDir: string, digest: string): string =>
+  `${packsDir}/multi-pack-index.d/multi-pack-index-${digest}.midx`;
+
 export const lockSuffix = '.lock';

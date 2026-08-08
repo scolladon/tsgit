@@ -112,6 +112,7 @@ async function stubRegistry(
   };
   return {
     all: async () => [],
+    assertLoadable: async () => {},
     refresh: () => undefined,
     lookup,
     dispose: noopDispose,
@@ -736,7 +737,7 @@ describe('object-resolver', () => {
   describe('loose-oid probe (A2/B7b — per-fanout-dir cache)', () => {
     describe('Given several seeded loose blobs', () => {
       describe('When resolveObject reads each of them, then reads every one again', () => {
-        it('Then each touched fanout dir is readdir-ed at most once and exists is never called', async () => {
+        it('Then each touched fanout dir is readdir-ed at most once and exists is called only for the pack-registry presence probe', async () => {
           // Arrange
           const blobs: Blob[] = Array.from({ length: 5 }, (_, i) => ({
             type: 'blob',
@@ -764,10 +765,13 @@ describe('object-resolver', () => {
           }
 
           // Assert — one readdir per DISTINCT touched prefix, never per object
-          // or per read; the old per-object exists/realpath probe is gone.
+          // or per read; the old per-object exists/realpath probe is gone. The
+          // single exists() call left is resolveObjectBytes's own assertLoadable
+          // gate probing the pack directory once (memoised for every later
+          // read, loose or not) — not a per-object or per-read cost.
           const touchedPrefixes = new Set(ids.map((id) => id.slice(0, 2)));
           expect(readdirSpy.mock.calls.length).toBe(touchedPrefixes.size);
-          expect(existsSpy.mock.calls.length).toBe(0);
+          expect(existsSpy.mock.calls.length).toBe(1);
         });
       });
     });
@@ -1169,6 +1173,7 @@ describe('object-resolver', () => {
           };
           const registry: PackRegistry = {
             all: async () => [pack],
+            assertLoadable: async () => {},
             refresh: () => undefined,
             lookup: async (lookupId) =>
               lookupId === id ? { pack, offset: entryOffset } : undefined,
@@ -1228,6 +1233,7 @@ describe('object-resolver', () => {
           };
           const registry: PackRegistry = {
             all: async () => [],
+            assertLoadable: async () => {},
             refresh: () => undefined,
             lookup: async (id) => (id === targetId ? { pack, offset: entryOffset } : undefined),
             dispose: noopDispose,
@@ -1292,6 +1298,7 @@ describe('object-resolver', () => {
           };
           const registry: PackRegistry = {
             all: async () => [],
+            assertLoadable: async () => {},
             refresh: () => undefined,
             lookup: async (id) => (id === targetId ? { pack, offset: entryOffset } : undefined),
             dispose: noopDispose,
@@ -1352,6 +1359,7 @@ describe('object-resolver', () => {
           };
           const registry: PackRegistry = {
             all: async () => [],
+            assertLoadable: async () => {},
             refresh: () => undefined,
             lookup: async (id) => (id === targetId ? { pack, offset: entryOffset } : undefined),
             dispose: noopDispose,
