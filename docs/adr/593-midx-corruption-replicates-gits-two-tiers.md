@@ -40,6 +40,11 @@ neither does tsgit.
 propagates as a thrown `TsgitError` that fails the read (loose objects included);
 Tier B records a fault, warns once per generation, and falls back per Pin J. A
 Tier-A chain layer dies even though a missing layer merely drops the chain (Pin I3).
-The unpinnable rows (`base-files`, `large-offset` — shapes git never writes) are
-classified with their structural family (Tier A) as the design proposed. T-6's total
-denial vector is accepted deliberately as git's own property.
+The two rows first classified by analogy were both pinned during the design
+revision's fsck matrix, and the analogy held for only one of them: an out-of-range
+`LOFF` reference is confirmed Tier A, while a non-zero `numBaseFiles` byte is
+**ignored outright** by git at every value probed — the midx still loads, is used,
+and stays authoritative. Per this ADR's own ratio (replicate what git does, tier by
+tier), `base-files` is therefore accepted-and-ignored rather than refused, and it is
+not a `MidxCheck` member. T-6's total denial vector is accepted deliberately as
+git's own property.
