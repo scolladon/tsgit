@@ -118,6 +118,14 @@ async function stubRegistry(
     dispose: noopDispose,
     health: async () => ({ accessible: [], unusable: [] }),
     indexFaults: async () => [],
+    midxHealth: async () => ({
+      artefact: undefined,
+      faults: [],
+      flatFilePresent: false,
+      unresolvedPacks: [],
+      unresolvedEntries: [],
+      checksumOk: undefined,
+    }),
   };
 }
 
@@ -1180,6 +1188,14 @@ describe('object-resolver', () => {
             dispose: noopDispose,
             health: async () => ({ accessible: [pack], unusable: [] }),
             indexFaults: async () => [],
+            midxHealth: async () => ({
+              artefact: undefined,
+              faults: [],
+              flatFilePresent: false,
+              unresolvedPacks: [],
+              unresolvedEntries: [],
+              checksumOk: undefined,
+            }),
           };
           const sut = resolveObject;
 
@@ -1239,6 +1255,14 @@ describe('object-resolver', () => {
             dispose: noopDispose,
             health: async () => ({ accessible: [pack], unusable: [] }),
             indexFaults: async () => [],
+            midxHealth: async () => ({
+              artefact: undefined,
+              faults: [],
+              flatFilePresent: false,
+              unresolvedPacks: [],
+              unresolvedEntries: [],
+              checksumOk: undefined,
+            }),
           };
           const sut = resolveObject;
 
@@ -1304,6 +1328,14 @@ describe('object-resolver', () => {
             dispose: noopDispose,
             health: async () => ({ accessible: [pack], unusable: [] }),
             indexFaults: async () => [],
+            midxHealth: async () => ({
+              artefact: undefined,
+              faults: [],
+              flatFilePresent: false,
+              unresolvedPacks: [],
+              unresolvedEntries: [],
+              checksumOk: undefined,
+            }),
           };
           const sut = resolveObject;
 
@@ -1365,6 +1397,14 @@ describe('object-resolver', () => {
             dispose: noopDispose,
             health: async () => ({ accessible: [pack], unusable: [] }),
             indexFaults: async () => [],
+            midxHealth: async () => ({
+              artefact: undefined,
+              faults: [],
+              flatFilePresent: false,
+              unresolvedPacks: [],
+              unresolvedEntries: [],
+              checksumOk: undefined,
+            }),
           };
           const sut = resolveObject;
 

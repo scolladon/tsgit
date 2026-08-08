@@ -80,6 +80,32 @@ export type FsckFinding =
       /** Pack base name (`pack-<sha>`) — see `pack-inaccessible`'s doc-comment. */
       readonly pack: string;
       readonly reason: string;
+    }
+  | {
+      readonly type: 'midx-unusable';
+      /** The artefact this verdict is about: `multi-pack-index`, or a chain
+       *  layer's own file name. */
+      readonly artefact: string;
+      readonly reason: string;
+    }
+  | {
+      readonly type: 'midx-checksum-mismatch';
+      /** The artefact this verdict is about — always the flat file or the
+       *  chain head; a base layer's trailer is never verified. */
+      readonly artefact: string;
+    }
+  | {
+      readonly type: 'midx-pack-unresolved';
+      readonly artefact: string;
+      /** Chain-global pack position: `Σ layers[0..k-1].numPacks + packIndex`. */
+      readonly position: number;
+      /** Pack base name (`pack-<sha>`) — see `pack-inaccessible`'s doc-comment. */
+      readonly pack: string;
+    }
+  | {
+      readonly type: 'midx-entry-unresolved';
+      readonly artefact: string;
+      readonly id: ObjectId;
     };
 
 /**
@@ -120,7 +146,7 @@ export interface FsckResult {
    * Composite exit bitmask, bits compose by OR: 0=clean, 1=content error
    * (corrupt/hash-mismatch/strict-upgraded warn), 2=missing/broken-link,
    * 4=pack inaccessible or index not opened, 8=refs-verify content failure,
-   * 64=pack reverse-index unusable.
+   * 32=multi-pack-index verification failure, 64=pack reverse-index unusable.
    */
   readonly exitCode: number;
 }

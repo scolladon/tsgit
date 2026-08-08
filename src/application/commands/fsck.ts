@@ -6,6 +6,7 @@ import {
   runContentValidationPass,
 } from './internal/fsck/content-validation.js';
 import { EXIT_MISSING } from './internal/fsck/exit-codes.js';
+import { runMidxHealthPass } from './internal/fsck/midx-health.js';
 import { assertTypesRecoverable, buildObjectCache } from './internal/fsck/object-cache.js';
 import { packAccessibilityReported, runPackHealthPass } from './internal/fsck/pack-health.js';
 import {
@@ -70,6 +71,12 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
   // Pack-health pass — reports packs the registry could not open or index.
   const packResult = await runPackHealthPass(ctx, opts);
 
+  // Multi-pack-index health pass — reports the midx's own accessibility and
+  // integrity. Runs after enumerateObjects has already succeeded above,
+  // which is what lets a load-time midx fault reject the whole run before
+  // this pass is ever reached.
+  const midxResult = await runMidxHealthPass(ctx, opts);
+
   const roots = await collectRoots(ctx, opts, universe);
   const inEdgePresent = buildInEdgeMap(universe, objectCache);
 
@@ -86,6 +93,7 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
     ...contentResult.findings,
     ...refsResult.findings,
     ...packResult.findings,
+    ...midxResult.findings,
     ...assembleConnectivityFindings(
       { missingIds, brokenEdges, unreachable, dangling, rootCommits, tagRefs },
       { objectCache, recovered, unreadable },
@@ -94,7 +102,11 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
 
   const connectivityBit = missingIds.size > 0 || brokenEdges.length > 0 ? EXIT_MISSING : 0;
   const exitCode =
-    contentResult.exitBit | connectivityBit | refsResult.exitBit | packResult.exitBit;
+    contentResult.exitBit |
+    connectivityBit |
+    refsResult.exitBit |
+    packResult.exitBit |
+    midxResult.exitBit;
 
   return { findings, exitCode };
 }

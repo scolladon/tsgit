@@ -2,13 +2,17 @@
  * Lazy scan + cache of .idx files under .git/objects/pack/.
  * Returns a PackRegistry facade used by object-resolver and readObject.
  */
+import { sanitize } from '../../domain/commands/error.js';
 import { TsgitError, type TsgitErrorData } from '../../domain/error.js';
+import { bytesEqual } from '../../domain/objects/encoding.js';
 import type { ObjectId } from '../../domain/objects/index.js';
 import { invalidPackHeader, invalidPackIndex } from '../../domain/storage/error.js';
 import {
+  allMidxObjectIds,
   entryOffsets,
   lookupMultiPackIndex,
   lookupPackIndex,
+  type MidxEntry,
   type PackIndex,
   parsePackIndex,
 } from '../../domain/storage/index.js';
@@ -18,7 +22,12 @@ import {
   parsePackHeader,
 } from '../../domain/storage/pack-entry.js';
 import type { Context } from '../../ports/context.js';
-import { loadMidxSet, type MidxLoadResult, type MidxSet } from './internal/midx-source.js';
+import {
+  loadMidxSet,
+  type MidxFault,
+  type MidxLoadResult,
+  type MidxSet,
+} from './internal/midx-source.js';
 import { createPromiseMemo, type PromiseMemo } from './internal/promise-memo.js';
 import { commonGitDir, packsDir } from './path-layout.js';
 import { exceedsMaxPackIdxBytes, REASON_PACK_IDX_EXCEEDS_MAX } from './validators.js';
@@ -150,6 +159,42 @@ export interface PackHealth {
   readonly unusable: ReadonlyArray<UnusablePack>;
 }
 
+/**
+ * The multi-pack-index's accessibility + integrity verdict for the current
+ * generation — the state `fsck`'s midx pass needs and nothing else needs.
+ * A sibling of `PackHealth` (§D3: a midx fault is not a pack fault), never a
+ * widening of it.
+ */
+export interface MidxHealth {
+  /**
+   * The artefact actually IN USE — the flat file, or the chain head.
+   * `undefined` covers both "there is none" and "every candidate was
+   * Tier-B-unusable"; `flatFilePresent` tells those two apart.
+   */
+  readonly artefact: string | undefined;
+  /**
+   * Tier-B faults the read path discarded, plus — when the entry-resolution
+   * walk below hits a Tier-A fault decoding one specific entry — the single
+   * fault that ended the walk (`fsck` treats that case unconditionally,
+   * never through the "no usable artefact" verdict the other faults here
+   * feed).
+   */
+  readonly faults: ReadonlyArray<MidxFault>;
+  /** Whether a flat `multi-pack-index` file exists — a stat, not a
+   *  successful read (the verdict gate). */
+  readonly flatFilePresent: boolean;
+  /** Chain-global pack positions whose `PNAM` entry resolves to no pack this
+   *  generation registered. */
+  readonly unresolvedPacks: ReadonlyArray<{ readonly position: number; readonly pack: string }>;
+  /** Oids the midx assigns to a pack that cannot serve them — either the
+   *  `PNAM` binding failed (see `unresolvedPacks`) or the bound pack's own
+   *  `.idx`/header gate rejects. */
+  readonly unresolvedEntries: ReadonlyArray<ObjectId>;
+  /** The in-use artefact's trailer digest, verified once. `undefined` when
+   *  there is no artefact to hash. */
+  readonly checksumOk: boolean | undefined;
+}
+
 export interface PackRegistry {
   all(): Promise<ReadonlyArray<RegisteredPack>>;
   lookup(id: ObjectId): Promise<PackLookupHit | undefined>;
@@ -189,6 +234,17 @@ export interface PackRegistry {
    * consumers (fsck's ungated rev-index term) that must not pay the probe.
    */
   indexFaults(): Promise<ReadonlyArray<UnusablePack>>;
+  /**
+   * The multi-pack-index's own accessibility + integrity verdict — the ONE
+   * state `fsck`'s midx pass consumes. A second, independent reader of the
+   * same bytes `lookup` reads (§D11.10): it re-derives pack binding and
+   * entry resolution rather than reusing `lookup`'s memoised view, so a
+   * fault that only a full walk surfaces (an entry whose `pack-int-id` or
+   * `large-offset` decodes out of range) is caught here even when no read
+   * ever touched it. The verdict is memoised per generation, exactly as
+   * `health()` is, and reset by `refresh()` with the scan.
+   */
+  midxHealth(): Promise<MidxHealth>;
 }
 
 // Control characters are rejected at this boundary so a hostile filename can
@@ -549,6 +605,145 @@ function findMidxHit(midx: LoadedMidx, id: ObjectId): PackLookupHit | undefined 
   return undefined;
 }
 
+// `PNAM` carries `pack-<hex>.idx`; findings elsewhere in this file carry the
+// pack BASE name, so the suffix is stripped here to match. A name failing
+// `isSafePackName` is rendered through the same control-character sanitiser
+// the logger boundary uses rather than reaching a finding (or a path) raw —
+// an attacker-controlled midx fully controls this string.
+const midxPackNameForFinding = (name: string): string =>
+  isSafePackName(name) ? packBaseName(name) : sanitize(name);
+
+/**
+ * Chain-global position + safe pack name for every `PNAM` entry this scan's
+ * binding left unresolved (O22/O23/O24, P14/P15) — a pure walk over the
+ * already-bound `packsByLayer`, no I/O, so it can never contribute a
+ * contained fault.
+ */
+function unresolvedMidxPacks(
+  midx: LoadedMidx,
+): ReadonlyArray<{ readonly position: number; readonly pack: string }> {
+  const unresolved: Array<{ readonly position: number; readonly pack: string }> = [];
+  let base = 0;
+  for (const [layerIndex, layer] of midx.set.layers.entries()) {
+    const bound = midx.packsByLayer[layerIndex]!;
+    layer.packNames.forEach((name, packIndex) => {
+      if (bound[packIndex] === undefined) {
+        unresolved.push({ position: base + packIndex, pack: midxPackNameForFinding(name) });
+      }
+    });
+    base += layer.packNames.length;
+  }
+  return unresolved;
+}
+
+/** Whether a bound pack can actually serve the entry the midx routes to it —
+ *  the same two allow-lists `lookup`'s own header gate and the scan layer's
+ *  index gate use, so a corrupt `.idx` or a header-refused pack both count
+ *  as "cannot serve" without laundering an unrecognised fault into a skip. */
+async function probeMidxEntryServiceable(pack: RegisteredPack): Promise<boolean> {
+  try {
+    await pack.index();
+    await pack.header();
+    return true;
+  } catch (err) {
+    if (isSkippableIdxFault(err) || isSkippablePackFault(err)) return false;
+    throw err;
+  }
+}
+
+interface MidxEntryWalkResult {
+  readonly unresolvedEntries: ReadonlyArray<ObjectId>;
+  /** The fault that ended the walk early, when `lookupMultiPackIndex` hit a
+   *  deferred Tier-A check (`pack-int-id`, `large-offset`) decoding one
+   *  specific entry — git's own child process dies there too, so the walk
+   *  stops at the SAME point git's would, and every entry already
+   *  classified stays classified. */
+  readonly containedFault: MidxFault | undefined;
+}
+
+/**
+ * Resolve every oid the midx lists, per layer, oldest first: the same
+ * per-entry walk git's `verify` child runs. A pack that never bound makes
+ * its oids unresolved without touching the pack; a bound pack's oids are
+ * unresolved when it cannot serve them (`probeMidxEntryServiceable`). A
+ * Tier-A fault surfacing HERE — not at load, since every layer already
+ * parsed — is contained: the walk ends and the fault it hit is returned
+ * alongside whatever was classified before it.
+ */
+async function walkMidxEntries(midx: LoadedMidx): Promise<MidxEntryWalkResult> {
+  const unresolvedEntries: ObjectId[] = [];
+  const headArtefact = midx.set.artefacts[midx.set.artefacts.length - 1]!;
+  for (const [layerIndex, layer] of midx.set.layers.entries()) {
+    const bound = midx.packsByLayer[layerIndex]!;
+    for (const id of allMidxObjectIds(layer)) {
+      let entry: MidxEntry;
+      try {
+        // The oid came from this layer's own OIDL, so its own fanout-narrowed
+        // search always finds it — lookupMultiPackIndex returning undefined
+        // here would mean the layer disagrees with itself.
+        entry = lookupMultiPackIndex(layer, id)!;
+      } catch (err) {
+        if (!(err instanceof TsgitError) || err.data.code !== 'INVALID_MULTI_PACK_INDEX') throw err;
+        return { unresolvedEntries, containedFault: { artefact: headArtefact, data: err.data } };
+      }
+      const pack = bound[entry.packIndex];
+      if (pack === undefined || !(await probeMidxEntryServiceable(pack))) {
+        unresolvedEntries.push(id);
+      }
+    }
+  }
+  return { unresolvedEntries, containedFault: undefined };
+}
+
+/** Once, over exactly the artefact in use (the flat file, or the chain
+ *  head) — never a base layer. `MultiPackIndex._bytes` is the whole file,
+ *  so no second read is needed. The digest algorithm is never selected
+ *  here: `hashVersion`'s width is checked against the repository's own
+ *  `ctx.hashConfig.digestLength` at parse time (a disagreement is a Tier-B
+ *  `hash-version` discard before the artefact could ever reach this point),
+ *  so the surviving artefact's width always agrees with
+ *  `ctx.hash.digestLength` by construction. */
+async function verifyMidxTrailer(ctx: Context, midx: LoadedMidx): Promise<boolean> {
+  const head = midx.set.layers[midx.set.layers.length - 1]!;
+  const bodyEnd = head._bytes.length - head.digestLength;
+  const digest = await ctx.hash.hash(head._bytes.subarray(0, bodyEnd));
+  return bytesEqual(digest, head._bytes.subarray(bodyEnd));
+}
+
+/**
+ * Compute this generation's `MidxHealth` once. Never rejects for a midx
+ * fault: a contained Tier-A walk fault is folded into the returned `faults`
+ * (tagged with the in-use artefact so the fsck pass can recognise it
+ * unconditionally, never through the "no usable artefact" verdict), so the
+ * memo's usual clear-on-rejection never fires for one — the resolved value
+ * already IS the fault set.
+ */
+async function computeMidxHealth(ctx: Context, generation: PackGeneration): Promise<MidxHealth> {
+  const { midxLoad, midx } = generation;
+  if (midx === undefined) {
+    return {
+      artefact: undefined,
+      faults: midxLoad.faults,
+      flatFilePresent: midxLoad.flatFilePresent,
+      unresolvedPacks: [],
+      unresolvedEntries: [],
+      checksumOk: undefined,
+    };
+  }
+  const artefact = midx.set.artefacts[midx.set.artefacts.length - 1]!;
+  const checksumOk = await verifyMidxTrailer(ctx, midx);
+  const unresolvedPacks = unresolvedMidxPacks(midx);
+  const { unresolvedEntries, containedFault } = await walkMidxEntries(midx);
+  return {
+    artefact,
+    faults: containedFault === undefined ? midxLoad.faults : [...midxLoad.faults, containedFault],
+    flatFilePresent: midxLoad.flatFilePresent,
+    unresolvedPacks,
+    unresolvedEntries,
+    checksumOk,
+  };
+}
+
 export function createPackRegistry(ctx: Context): PackRegistry {
   const scanPacks = async (): Promise<PackGeneration> => {
     const dir = packsDir(commonGitDir(ctx));
@@ -690,15 +885,24 @@ export function createPackRegistry(ctx: Context): PackRegistry {
   // scan; a rejected compute self-clears (promise-memo), so an environmental
   // fault is never cached.
   const healthMemo = createPromiseMemo(computeHealth);
+  // Same memoisation shape as healthMemo, reset alongside it by refresh().
+  // computeMidxHealth never rejects for a midx fault (a contained one is
+  // folded into the resolved value's faults), so the promise-memo's usual
+  // clear-on-rejection has nothing environmental left to guard against here.
+  const midxHealthMemo = createPromiseMemo(
+    async (): Promise<MidxHealth> => computeMidxHealth(ctx, await currentGeneration()),
+  );
 
   return {
     all: allPacks,
     async assertLoadable(): Promise<void> {
       await currentGeneration();
     },
+    midxHealth: midxHealthMemo.get,
     refresh(): void {
       if (disposed) return;
       healthMemo.clear();
+      midxHealthMemo.clear();
       // The outgoing packs may hold open persistent handles; close them before
       // dropping the references or every refresh leaks one fd per touched pack.
       const outgoing = scan.clear();
