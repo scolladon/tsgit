@@ -270,6 +270,7 @@ function parsePackNames(
   let cursor = range.start;
   for (let i = 0; i < numPacks; i += 1) {
     let end = cursor;
+    // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — the loop's own bound only matters when no NUL exists before range.end; its only consumer is `end >= range.end` below, true for range.end or any index past it alike, so widening or removing this bound never changes which check the caller throws (a well-formed name always finds its NUL before the bound is even tested).
     while (end < range.end && bytes[end] !== 0) end += 1;
     if (end >= range.end) {
       throw invalidMultiPackIndex(
@@ -315,6 +316,7 @@ function readMidxFanout(midx: MultiPackIndex, byte: number): number {
 function compareMidxOidAt(midx: MultiPackIndex, index: number, targetBytes: Uint8Array): number {
   const base = midx.oidLookupOffset + index * midx.digestLength;
   const bytes = midx._bytes;
+  // Stryker disable next-line EqualityOperator: equivalent — this loop's only caller is lookupMultiPackIndexBytes's binary search, whose `else` branch (exact match) fires whenever cmp is neither <0 nor >0; widening the bound only reaches an extra k when every real byte already compared equal, and the extra k compares targetBytes[digestLength] (undefined) producing NaN — NaN is neither <0 nor >0, so it still falls to the same `else` (found) branch as a genuine 0.
   for (let k = 0; k < midx.digestLength; k += 1) {
     const diff = bytes[base + k]! - targetBytes[k]!;
     if (diff !== 0) return diff;

@@ -387,6 +387,25 @@ describe('midx', () => {
       });
     });
 
+    describe('Given a file exactly the header size', () => {
+      describe('When parsing', () => {
+        it('Then it does not refuse with size — the header-length gate is exclusive', () => {
+          // Arrange — a real header (valid signature/version/hashVersion/
+          // numChunks) truncated right at MIDX_HEADER_SIZE: too short for
+          // any chunk table row, but not for the header itself.
+          const spec = baseSpec();
+          const bytes = buildMidx(spec).slice(0, 12);
+
+          // Act & Assert
+          expectRefusal(
+            () => parseMultiPackIndex(bytes, spec.digestLength),
+            'chunk-table',
+            'chunk table',
+          );
+        });
+      });
+    });
+
     describe('Given a midx with a corrupted signature', () => {
       describe('When parsing', () => {
         it('Then refuses with signature', () => {
@@ -400,6 +419,24 @@ describe('midx', () => {
             () => parseMultiPackIndex(bytes, spec.digestLength),
             'signature',
             'signature',
+          );
+        });
+      });
+    });
+
+    describe('Given a mismatched signature whose value is shorter than 8 hex digits', () => {
+      describe('When parsing', () => {
+        it('Then the reported value is zero-padded to 8 hex digits', () => {
+          // Arrange
+          const spec = baseSpec();
+          const bytes = buildMidx(spec).slice();
+          bytes.set([0, 0, 0, 1], 0);
+
+          // Act & Assert
+          expectRefusal(
+            () => parseMultiPackIndex(bytes, spec.digestLength),
+            'signature',
+            'got 0x00000001',
           );
         });
       });
@@ -564,6 +601,50 @@ describe('midx', () => {
           const bytes = buildMidx(spec);
           // Rounded to 4 so the alignment gate cannot fire before the bound gate.
           const corrupted = setChunkRowOffset(bytes, 4, Math.ceil((bytes.length + 10) / 4) * 4);
+
+          // Act & Assert
+          expectRefusal(
+            () => parseMultiPackIndex(corrupted, spec.digestLength),
+            'chunk-table',
+            'end of file',
+          );
+        });
+      });
+    });
+
+    describe('Given a chunk table whose end lands exactly on the trailer boundary', () => {
+      describe('When parsing', () => {
+        it('Then it does not refuse with chunk-table — the past-boundary gate is exclusive', () => {
+          // Arrange — header (12) + one terminating sentinel row (12) + a
+          // digestLength trailer: tableEnd (24) equals trailerStart (24)
+          // exactly, with no room for a real chunk body. numChunks=0 still
+          // fails downstream (no PNAM chunk), proving the boundary gate
+          // itself let it through rather than refusing right here.
+          const digestLength = 20;
+          const bytes = new Uint8Array(12 + 12 + digestLength);
+          const view = new DataView(bytes.buffer);
+          bytes.set(new TextEncoder().encode('MIDX'), 0);
+          view.setUint8(4, 1); // version
+          view.setUint8(5, 1); // hashVersion
+          view.setUint8(6, 0); // numChunks
+          view.setUint32(12 + 4, 0); // sentinel row: offset high word
+          view.setUint32(12 + 8, 24); // sentinel row: offset low word (== trailerStart)
+
+          // Act & Assert
+          expectRefusal(() => parseMultiPackIndex(bytes, digestLength), 'required-chunk', 'PNAM');
+        });
+      });
+    });
+
+    describe('Given a chunk table offset whose high word is non-zero', () => {
+      describe('When parsing', () => {
+        it('Then the 64-bit offset is reconstructed as high times 2^32 plus low, not divided by it', () => {
+          // Arrange — a small low word alone would sit well inside the
+          // file; only multiplying the high word out pushes this past the
+          // trailer boundary.
+          const spec = baseSpec();
+          const bytes = buildMidx(spec);
+          const corrupted = setChunkRowOffset(bytes, 4, 0x100000000 + 24);
 
           // Act & Assert
           expectRefusal(
@@ -949,6 +1030,51 @@ describe('midx', () => {
           // Assert
           expect(result.version).toBe(2);
           expect(result.packNames).toEqual(spec.packNames);
+        });
+      });
+    });
+
+    describe('Given a version-1 midx whose PNAM chunk repeats the same name consecutively', () => {
+      describe('When parsing as version 1', () => {
+        it('Then refuses with pack-names — names must be strictly increasing, not merely non-decreasing', () => {
+          // Arrange
+          const spec = baseSpec({
+            version: 1,
+            packNames: [
+              'pack-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.idx',
+              'pack-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.idx',
+            ],
+            entries: [],
+          });
+          const bytes = buildMidx(spec);
+
+          // Act & Assert
+          expectRefusal(() => parseMultiPackIndex(bytes, spec.digestLength), 'pack-names', 'order');
+        });
+      });
+    });
+
+    describe('Given a version-1 midx with three pack names, the second and third out of order', () => {
+      describe('When parsing as version 1', () => {
+        it('Then the reason names the exact pair of entries, not an adjacent pair past it', () => {
+          // Arrange
+          const spec = baseSpec({
+            version: 1,
+            packNames: [
+              'pack-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.idx',
+              'pack-cccccccccccccccccccccccccccccccccccccccc.idx',
+              'pack-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.idx',
+            ],
+            entries: [],
+          });
+          const bytes = buildMidx(spec);
+
+          // Act & Assert
+          expectRefusal(
+            () => parseMultiPackIndex(bytes, spec.digestLength),
+            'pack-names',
+            'entries 1 and 2',
+          );
         });
       });
     });
