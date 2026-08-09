@@ -18,6 +18,12 @@ export type MidxCheck =
   | 'pack-int-id'
   | 'large-offset';
 
+/**
+ * The parse gate that refused a pack reverse index — a closed discriminant,
+ * same shape and reason as `MidxCheck`.
+ */
+export type RevIndexCheck = 'size' | 'signature' | 'version' | 'hash-id';
+
 export type StorageError =
   | { readonly code: 'INVALID_PACK_HEADER'; readonly reason: string }
   | { readonly code: 'INVALID_PACK_INDEX'; readonly reason: string }
@@ -32,6 +38,11 @@ export type StorageError =
       readonly code: 'INVALID_MULTI_PACK_INDEX';
       readonly reason: string;
       readonly check: MidxCheck;
+    }
+  | {
+      readonly code: 'INVALID_PACK_REV_INDEX';
+      readonly reason: string;
+      readonly check: RevIndexCheck;
     };
 
 export const invalidPackHeader = (reason: string): TsgitError =>
@@ -51,3 +62,6 @@ export const deltaChainTooDeep = (depth: number): TsgitError =>
 
 export const invalidMultiPackIndex = (check: MidxCheck, reason: string): TsgitError =>
   new TsgitError({ code: 'INVALID_MULTI_PACK_INDEX', check, reason });
+
+export const invalidPackRevIndex = (check: RevIndexCheck, reason: string): TsgitError =>
+  new TsgitError({ code: 'INVALID_PACK_REV_INDEX', check, reason });

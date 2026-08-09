@@ -13,6 +13,9 @@ const CHUNK_ID_OIDF = 'OIDF';
 const CHUNK_ID_OIDL = 'OIDL';
 const CHUNK_ID_OOFF = 'OOFF';
 const CHUNK_ID_LOFF = 'LOFF';
+// Pin F's four bytes — the same shape and semantics as a pack `.rev` body,
+// with midx positions substituted for index positions.
+const CHUNK_ID_REVERSE_INDEX = 'RIDX';
 
 /** `hashVersion` byte → the digest width it implies (git's oid-version map). */
 const HASH_VERSION_WIDTH: ReadonlyMap<number, number> = new Map([
@@ -35,6 +38,8 @@ export interface MultiPackIndex {
   /** `undefined` when the file carries no LOFF chunk. */
   readonly largeOffsetsOffset: number | undefined;
   readonly largeOffsetCount: number;
+  /** `undefined` when the file carries no reverse-index (`RIDX`) chunk. */
+  readonly reverseIndexOffset: number | undefined;
   readonly _bytes: Uint8Array;
   readonly _view: DataView;
 }
@@ -122,6 +127,12 @@ export function parseMultiPackIndex(bytes: Uint8Array, digestLength: number): Mu
   const largeOffsetsOffset = loffRange?.start;
   const largeOffsetCount = loffRange === undefined ? 0 : requireLoffSize(loffRange);
 
+  const revRange = chunkRanges.get(CHUNK_ID_REVERSE_INDEX);
+  const reverseIndexOffset = revRange?.start;
+  if (revRange !== undefined) {
+    requireChunkSize(revRange, objectCount * 4, CHUNK_ID_REVERSE_INDEX);
+  }
+
   return {
     version,
     hashVersion,
@@ -134,6 +145,7 @@ export function parseMultiPackIndex(bytes: Uint8Array, digestLength: number): Mu
     objectOffsetsOffset: ooff.start,
     largeOffsetsOffset,
     largeOffsetCount,
+    reverseIndexOffset,
     _bytes: bytes,
     _view: view,
   };
@@ -424,4 +436,26 @@ export function midxOidAt(midx: MultiPackIndex, index: number): ObjectId {
  */
 export function midxEntryAt(midx: MultiPackIndex, index: number): MidxEntry {
   return readMidxEntry(midx, index);
+}
+
+/**
+ * The midx position of the object at pseudo-pack position `position` —
+ * `revIndexPositionAt`'s shape at the midx's own reverse-index chunk. Both
+ * the chunk's presence and `position` are bounds-checked, reusing existing
+ * `MidxCheck` members rather than widening the closed union:
+ * `required-chunk` for a midx with no `RIDX` chunk (this call's own
+ * precondition, distinct from the unconditionally-required PNAM/OIDF/OIDL/
+ * OOFF chunks), `chunk-length` for a position past the chunk's extent.
+ */
+export function midxReverseIndexAt(midx: MultiPackIndex, position: number): number {
+  if (midx.reverseIndexOffset === undefined) {
+    throw invalidMultiPackIndex('required-chunk', 'midx has no reverse-index (RIDX) chunk');
+  }
+  if (position >= midx.objectCount) {
+    throw invalidMultiPackIndex(
+      'chunk-length',
+      `position ${position} out of range for reverse-index chunk with ${midx.objectCount} entries`,
+    );
+  }
+  return midx._view.getUint32(midx.reverseIndexOffset + position * 4);
 }

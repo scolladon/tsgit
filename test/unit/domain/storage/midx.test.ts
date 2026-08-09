@@ -7,6 +7,7 @@ import {
   lookupMultiPackIndex,
   midxEntryAt,
   midxOidAt,
+  midxReverseIndexAt,
   parseMultiPackIndex,
 } from '../../../../src/domain/storage/midx.js';
 import { buildMidx, type MidxSpec } from './arbitraries.js';
@@ -1418,6 +1419,112 @@ describe('midx', () => {
 
           // Act & Assert — entry 1 routes to pack index 1, out of range for 1 name
           expectRefusal(() => midxEntryAt(midx, 1), 'pack-int-id', 'out of range');
+        });
+      });
+    });
+  });
+
+  describe('reverse-index chunk (RIDX)', () => {
+    describe('Given a midx with a reverse-index chunk', () => {
+      describe('When parsing', () => {
+        it('Then reverseIndexOffset is defined and midxReverseIndexAt reads position 0 and N − 1', () => {
+          // Arrange
+          const spec = baseSpec();
+          const revBody = [2, 0, 1];
+          const bytes = buildMidx({ ...spec, revBody });
+
+          // Act
+          const midx = parseMultiPackIndex(bytes, spec.digestLength);
+
+          // Assert
+          expect(midx.reverseIndexOffset).not.toBeUndefined();
+          expect(midxReverseIndexAt(midx, 0)).toBe(revBody[0]);
+          expect(midxReverseIndexAt(midx, midx.objectCount - 1)).toBe(revBody[revBody.length - 1]);
+        });
+      });
+    });
+
+    describe('Given a midx without a reverse-index chunk', () => {
+      describe('When parsing', () => {
+        it('Then reverseIndexOffset is undefined', () => {
+          // Arrange
+          const spec = baseSpec();
+          const bytes = buildMidx(spec);
+
+          // Act
+          const midx = parseMultiPackIndex(bytes, spec.digestLength);
+
+          // Assert
+          expect(midx.reverseIndexOffset).toBeUndefined();
+        });
+      });
+
+      describe('When calling midxReverseIndexAt', () => {
+        it('Then refuses with required-chunk', () => {
+          // Arrange
+          const spec = baseSpec();
+          const midx = parseMultiPackIndex(buildMidx(spec), spec.digestLength);
+
+          // Act & Assert
+          expectRefusal(() => midxReverseIndexAt(midx, 0), 'required-chunk', 'reverse-index');
+        });
+      });
+    });
+
+    describe('Given a RIDX chunk shorter than objectCount * 4', () => {
+      describe('When parsing', () => {
+        it('Then refuses with chunk-length', () => {
+          // Arrange — the chunk's own declared span (via a `revBody` one
+          // word short of `objectCount`) is what's wrong here; the chunk
+          // table around it stays self-consistent, built by `buildMidx`
+          // from the (mismatched) body length itself.
+          const spec = baseSpec();
+          const bytes = buildMidx({ ...spec, revBody: [0, 1] });
+
+          // Act & Assert
+          expectRefusal(
+            () => parseMultiPackIndex(bytes, spec.digestLength),
+            'chunk-length',
+            'RIDX',
+          );
+        });
+      });
+    });
+
+    describe('Given a RIDX chunk longer than objectCount * 4', () => {
+      describe('When parsing', () => {
+        it('Then refuses with chunk-length', () => {
+          // Arrange — same technique as the shorter-chunk row, one word
+          // over instead of under.
+          const spec = baseSpec();
+          const bytes = buildMidx({ ...spec, revBody: [0, 1, 2, 3] });
+
+          // Act & Assert
+          expectRefusal(
+            () => parseMultiPackIndex(bytes, spec.digestLength),
+            'chunk-length',
+            'RIDX',
+          );
+        });
+      });
+    });
+
+    describe('Given a midx with a reverse-index chunk', () => {
+      describe('When calling midxReverseIndexAt with position === objectCount', () => {
+        it('Then refuses with chunk-length', () => {
+          // Arrange
+          const spec = baseSpec();
+          const midx = parseMultiPackIndex(
+            buildMidx({ ...spec, revBody: [0, 1, 2] }),
+            spec.digestLength,
+          );
+
+          // Act & Assert
+          expectRefusal(
+            () => midxReverseIndexAt(midx, midx.objectCount),
+            'chunk-length',
+            'out of range',
+          );
         });
       });
     });

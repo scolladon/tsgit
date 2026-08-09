@@ -5,19 +5,20 @@ import type { TsgitError } from '../../../../src/domain/error.js';
 import {
   lookupMultiPackIndex,
   midxOidAt,
+  midxReverseIndexAt,
   parseMultiPackIndex,
 } from '../../../../src/domain/storage/midx.js';
-import { arbMidxSpec, arbObjectId, buildMidx } from './arbitraries.js';
+import { arbMidxSpec, arbMidxSpecWithRev, arbObjectId, buildMidx } from './arbitraries.js';
 
 describe('midx properties', () => {
-  describe('Given an arbitrary midx spec', () => {
+  describe('Given an arbitrary midx spec carrying a reverse-index chunk', () => {
     describe('When building then parsing', () => {
-      it('Then it recovers the spec packs, oids and offsets', () => {
+      it('Then it recovers the spec packs, oids, offsets and reverse-index body', () => {
         // Arrange + Act + Assert
         const sut = parseMultiPackIndex;
 
         fc.assert(
-          fc.property(arbMidxSpec(), (spec) => {
+          fc.property(arbMidxSpecWithRev(), (spec) => {
             const result = sut(buildMidx(spec), spec.digestLength);
 
             expect(result.version).toBe(spec.version);
@@ -38,6 +39,11 @@ describe('midx properties', () => {
             expect(
               Array.from({ length: result.objectCount }, (_, i) => midxOidAt(result, i)).sort(),
             ).toEqual(expectedIds);
+
+            expect(result.reverseIndexOffset).not.toBeUndefined();
+            for (let p = 0; p < result.objectCount; p += 1) {
+              expect(midxReverseIndexAt(result, p)).toBe(spec.revBody![p]);
+            }
           }),
           { numRuns: 200 },
         );

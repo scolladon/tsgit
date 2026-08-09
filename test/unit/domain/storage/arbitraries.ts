@@ -199,6 +199,8 @@ export interface MidxSpec {
   readonly numBaseFiles: number;
   readonly packNames: ReadonlyArray<string>;
   readonly entries: ReadonlyArray<MidxEntrySpec>;
+  /** When present, the midx carries a reverse-index (`RIDX`) chunk with this body. */
+  readonly revBody?: ReadonlyArray<number>;
 }
 
 /**
@@ -209,12 +211,13 @@ export interface MidxSpec {
  * never reads it, so this writer never hashes it.
  */
 export function buildMidx(spec: MidxSpec): Uint8Array {
-  const { version, hashVersion, digestLength, numBaseFiles, packNames, entries } = spec;
+  const { version, hashVersion, digestLength, numBaseFiles, packNames, entries, revBody } = spec;
   const sorted = [...entries].sort((a, b) => compareBytes(hexToBytes(a.id), hexToBytes(b.id)));
   const objectCount = sorted.length;
   const largeOffsets = sorted.map((entry) => entry.offset).filter((offset) => offset > 0x7fffffff);
   const hasLoff = largeOffsets.length > 0;
-  const numChunks = hasLoff ? 5 : 4;
+  const hasRev = revBody !== undefined;
+  const numChunks = 4 + (hasRev ? 1 : 0) + (hasLoff ? 1 : 0);
 
   const nameBytes = packNames.map((name) => encode(`${name}\0`));
   const pnamRawLength = nameBytes.reduce((sum, bytes) => sum + bytes.length, 0);
@@ -225,7 +228,8 @@ export function buildMidx(spec: MidxSpec): Uint8Array {
   const oidfStart = pnamStart + pnamLength;
   const oidlStart = oidfStart + MIDX_FANOUT_SIZE;
   const ooffStart = oidlStart + objectCount * digestLength;
-  const loffStart = ooffStart + objectCount * 8;
+  const revStart = ooffStart + objectCount * 8;
+  const loffStart = hasRev ? revStart + revBody!.length * 4 : revStart;
   const trailerStart = hasLoff ? loffStart + largeOffsets.length * 8 : loffStart;
 
   const bytes = new Uint8Array(trailerStart + digestLength);
@@ -244,6 +248,7 @@ export function buildMidx(spec: MidxSpec): Uint8Array {
     ['OIDL', oidlStart],
     ['OOFF', ooffStart],
   ];
+  if (hasRev) chunkRows.push(['RIDX', revStart]);
   if (hasLoff) chunkRows.push(['LOFF', loffStart]);
   chunkRows.push(['', trailerStart]);
 
@@ -283,6 +288,12 @@ export function buildMidx(spec: MidxSpec): Uint8Array {
     } else {
       view.setUint32(ooffStart + i * 8 + 4, entry.offset);
     }
+  }
+
+  if (hasRev) {
+    revBody!.forEach((value, i) => {
+      view.setUint32(revStart + i * 4, value);
+    });
   }
 
   return bytes;
@@ -339,9 +350,90 @@ export function arbMidxSpec(): fc.Arbitrary<MidxSpec> {
   );
 }
 
+/**
+ * `arbMidxSpec` plus a reverse-index (`RIDX`) chunk body matching the
+ * generated entry count — the round-trip oracle needs a generator that also
+ * exercises the optional chunk.
+ */
+export function arbMidxSpecWithRev(): fc.Arbitrary<MidxSpec> {
+  return arbMidxSpec().chain((spec) =>
+    fc
+      .array(fc.integer({ min: 0, max: 0xffffffff }), {
+        minLength: spec.entries.length,
+        maxLength: spec.entries.length,
+      })
+      .map((revBody): MidxSpec => ({ ...spec, revBody })),
+  );
+}
+
 function arbMidxOffset(): fc.Arbitrary<number> {
   return fc.oneof(
     fc.integer({ min: 0, max: 0x7fffffff }),
     fc.integer({ min: 0x80000000, max: Number.MAX_SAFE_INTEGER }),
+  );
+}
+
+// --- Pack reverse index --------------------------------------------------
+
+const REV_HEADER_SIZE = 12;
+
+export interface RevIndexSpec {
+  readonly hashId: 1 | 2;
+  readonly digestLength: number;
+  readonly body: ReadonlyArray<number>;
+  readonly packChecksum: Uint8Array;
+}
+
+/**
+ * Writer for the on-disk pack reverse-index layout — the model for
+ * `parsePackRevIndex`'s round-trip oracle. The trailer (`digestLength` bytes:
+ * a digest over everything before it) is left as zero bytes: the parser
+ * never reads it, so this writer never hashes it.
+ */
+export function buildRevIndex(spec: RevIndexSpec): Uint8Array {
+  const { hashId, digestLength, body, packChecksum } = spec;
+  const bodySize = body.length * 4;
+  const bytes = new Uint8Array(REV_HEADER_SIZE + bodySize + 2 * digestLength);
+  const view = new DataView(bytes.buffer);
+
+  bytes.set(encode('RIDX'), 0);
+  view.setUint32(4, 1);
+  view.setUint32(8, hashId);
+  body.forEach((value, i) => {
+    view.setUint32(REV_HEADER_SIZE + i * 4, value);
+  });
+  bytes.set(packChecksum, REV_HEADER_SIZE + bodySize);
+
+  return bytes;
+}
+
+/**
+ * An arbitrary rev-index spec. `hashId` and `digestLength` are drawn
+ * independently — Pin H R16 pins that git accepts the disagreement — and
+ * body words are unconstrained integers so the generator also covers
+ * non-permutations and out-of-range values without special-casing them.
+ */
+export function arbRevIndexSpec(): fc.Arbitrary<RevIndexSpec> {
+  return fc.constantFrom<1 | 2>(1, 2).chain((hashId) =>
+    fc.constantFrom<20 | 32>(20, 32).chain((digestLength) =>
+      fc.integer({ min: 0, max: 500 }).chain((objectCount) =>
+        fc
+          .record({
+            body: fc.array(fc.integer({ min: 0, max: 0xffffffff }), {
+              minLength: objectCount,
+              maxLength: objectCount,
+            }),
+            packChecksum: fc.uint8Array({ minLength: digestLength, maxLength: digestLength }),
+          })
+          .map(
+            ({ body, packChecksum }): RevIndexSpec => ({
+              hashId,
+              digestLength,
+              body,
+              packChecksum,
+            }),
+          ),
+      ),
+    ),
   );
 }

@@ -6,13 +6,14 @@ export type { CopyInstruction, DeltaInstruction, DeltaParsed, InsertInstruction 
 export { applyDelta, parseDelta, readDeltaTargetSize } from './delta.js';
 
 // Errors
-export type { MidxCheck, StorageError } from './error.js';
+export type { MidxCheck, RevIndexCheck, StorageError } from './error.js';
 export {
   invalidDelta,
   invalidMultiPackIndex,
   invalidPackEntry,
   invalidPackHeader,
   invalidPackIndex,
+  invalidPackRevIndex,
 } from './error.js';
 
 // Loose path
@@ -24,7 +25,13 @@ export { createLruCache } from './lru-cache.js';
 
 // Multi-pack index
 export type { MidxEntry, MultiPackIndex } from './midx.js';
-export { lookupMultiPackIndex, midxEntryAt, midxOidAt, parseMultiPackIndex } from './midx.js';
+export {
+  lookupMultiPackIndex,
+  midxEntryAt,
+  midxOidAt,
+  midxReverseIndexAt,
+  parseMultiPackIndex,
+} from './midx.js';
 
 // Pack entry
 export type {
@@ -58,3 +65,13 @@ export type {
   PackWriterEntry,
 } from './pack-writer.js';
 export { serializePackfile, serializePackIndex } from './pack-writer.js';
+
+// Pack reverse index
+export type { PackRevIndex } from './rev-index.js';
+export {
+  parsePackRevIndex,
+  REASON_REV_INDEX_CORRUPT,
+  REASON_REV_INDEX_TOO_SMALL,
+  REV_HEADER_SIZE,
+  revIndexPositionAt,
+} from './rev-index.js';
