@@ -17,7 +17,7 @@ and `.idx`. What needed deciding is how far past that core the command reaches �
    write `.pack` + `.idx`, return structured results / no auxiliary-artefact writing.
 2. **Core plus `.rev`/`.bitmap` writing** — closes the cross-tool asymmetry / needs an EWAH
    *encoder* on top of the decoder and a new annotated write surface.
-3. **Core plus delta compression** — smaller packs / a large independent workstream; the
+3. **Core plus delta compression** — smaller packs / a large independent effort; the
    pack writer currently emits non-delta entries.
 
 ## Decision

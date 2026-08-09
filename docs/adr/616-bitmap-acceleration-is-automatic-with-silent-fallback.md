@@ -10,7 +10,7 @@ git uses a bitmap whenever one covers the requested tips and silently walks othe
 exposes `--no-use-bitmap-index` as an escape hatch. tsgit must decide whether the
 acceleration is on by default, opt-in, or on with an escape hatch. The design names the
 real risk of the automatic choice: the fast path is under-exercised unless tests
-deliberately build bitmapped fixtures.
+deliberately build fixtures that carry a bitmap.
 
 ## Options considered
 
@@ -29,9 +29,9 @@ cosmetic-adjacent surface is added (ADR-249's spirit: the caller asks for a resu
 a strategy).
 
 **The under-exercise risk is answered by test obligation, not by an option.** Every closure
-test runs twice — once against a bitmapped fixture and once against the same repository with
-the bitmap removed — and asserts the two object sets are **identical**. A test surface that
-selects the path internally is acceptable; a public one is not.
+test runs twice — once against a fixture that carries a bitmap and once against the same
+repository with the bitmap removed — and asserts the two object sets are **identical**. A
+test surface that selects the path internally is acceptable; a public one is not.
 
 Fallback is silent in the sense that no result changes and no error is raised. A *fault* in
 a present bitmap still reaches the logger with the artefact name — silence about the
