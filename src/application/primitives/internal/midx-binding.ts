@@ -178,6 +178,7 @@ function unresolvedMidxPacks(
       // An unbound entry whose .pack survives on disk resolved as a pack in
       // git's eyes (only its .idx is gone): its objects are unresolved, but
       // no pack-level finding is emitted for it.
+      // Stryker disable next-line ConditionalExpression: equivalent — bound[packIndex] !== undefined only when loadCandidatePack registered that name's pack, which requires fileNames.has(`${pack.name}.pack`) already — the exact predicate packOnDisk[packIndex] re-derives, so whenever the first operand would differ, packOnDisk is already true and !packOnDisk short-circuits the whole condition to the same false.
       if (bound[packIndex] === undefined && !packOnDisk[packIndex]) {
         unresolved.push({ position: base + packIndex, pack: midxPackNameForFinding(name) });
       }
@@ -235,6 +236,7 @@ async function walkLayerEntries(
       // is hex-materialised only for the entries that turn out unresolved.
       entry = midxEntryAt(layer, i);
     } catch (err) {
+      // Stryker disable next-line ConditionalExpression: equivalent — midxEntryAt only ever throws a TsgitError via invalidMultiPackIndex, which always sets code:'INVALID_MULTI_PACK_INDEX'; the OR's second operand is thus always false whenever the first is (err is that TsgitError), so forcing it to false changes nothing.
       if (!(err instanceof TsgitError) || err.data.code !== 'INVALID_MULTI_PACK_INDEX') throw err;
       return err.data;
     }

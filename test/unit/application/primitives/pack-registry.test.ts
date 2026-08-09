@@ -3973,6 +3973,164 @@ describe('PackRegistry — multi-pack-index degradation', () => {
   });
 });
 
+describe('PackRegistry.midxHealth() — unresolved-pack reporting', () => {
+  describe('Given an unresolved PNAM entry without an .idx suffix, containing a space (0x20)', () => {
+    describe('When midxHealth is called', () => {
+      it('Then the space is kept literal - the lower printable bound is inclusive', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeMidxBytes(ctx, buildMidx(healthyMidxSpec({ packNames: ['pack-x y'] })));
+        const sut = createPackRegistry(ctx);
+
+        // Act
+        const health = await sut.midxHealth();
+
+        // Assert
+        expect(health.unresolvedPacks).toHaveLength(1);
+        expect(health.unresolvedPacks[0]?.pack).toBe('pack-x y');
+      });
+    });
+  });
+
+  describe('Given an unresolved PNAM entry without an .idx suffix, containing a tilde (0x7e)', () => {
+    describe('When midxHealth is called', () => {
+      it('Then the tilde is kept literal - the upper printable bound is inclusive', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeMidxBytes(ctx, buildMidx(healthyMidxSpec({ packNames: ['pack-x~y'] })));
+        const sut = createPackRegistry(ctx);
+
+        // Act
+        const health = await sut.midxHealth();
+
+        // Assert
+        expect(health.unresolvedPacks).toHaveLength(1);
+        expect(health.unresolvedPacks[0]?.pack).toBe('pack-x~y');
+      });
+    });
+  });
+
+  describe('Given an unresolved PNAM entry without an .idx suffix, containing a DEL byte (0x7f)', () => {
+    describe('When midxHealth is called', () => {
+      it('Then the byte is hex-escaped - one past the upper printable bound', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeMidxBytes(ctx, buildMidx(healthyMidxSpec({ packNames: ['pack-xy'] })));
+        const sut = createPackRegistry(ctx);
+
+        // Act
+        const health = await sut.midxHealth();
+
+        // Assert
+        expect(health.unresolvedPacks).toHaveLength(1);
+        expect(health.unresolvedPacks[0]?.pack).toBe('pack-x\\u007fy');
+      });
+    });
+  });
+
+  describe('Given an unresolved PNAM entry without an .idx suffix, containing a backslash (0x5c)', () => {
+    describe('When midxHealth is called', () => {
+      it('Then the byte is hex-escaped - never left ambiguous with a real escape sequence', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeMidxBytes(ctx, buildMidx(healthyMidxSpec({ packNames: ['pack-x\\y'] })));
+        const sut = createPackRegistry(ctx);
+
+        // Act
+        const health = await sut.midxHealth();
+
+        // Assert
+        expect(health.unresolvedPacks).toHaveLength(1);
+        expect(health.unresolvedPacks[0]?.pack).toBe('pack-x\\u005cy');
+      });
+    });
+  });
+
+  describe('Given an unresolved PNAM name exactly at the finding name budget (256 chars)', () => {
+    describe('When midxHealth is called', () => {
+      it('Then no truncation marker is appended - the cap is exclusive', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const name = 'a'.repeat(256);
+        await writeMidxBytes(ctx, buildMidx(healthyMidxSpec({ packNames: [name] })));
+        const sut = createPackRegistry(ctx);
+
+        // Act
+        const health = await sut.midxHealth();
+
+        // Assert
+        expect(health.unresolvedPacks).toHaveLength(1);
+        expect(health.unresolvedPacks[0]?.pack).toBe(name);
+        expect(health.unresolvedPacks[0]?.pack.length).toBe(256);
+      });
+    });
+  });
+
+  describe('Given two unresolved PNAM entries in one layer', () => {
+    describe('When midxHealth is called', () => {
+      it('Then each position is base plus its own packIndex, not base minus it', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeMidxBytes(
+          ctx,
+          buildMidx(healthyMidxSpec({ packNames: ['pack-first.idx', 'pack-second.idx'] })),
+        );
+        const sut = createPackRegistry(ctx);
+
+        // Act
+        const health = await sut.midxHealth();
+
+        // Assert
+        const positions = health.unresolvedPacks.map((entry) => entry.position).sort();
+        expect(positions).toEqual([0, 1]);
+      });
+    });
+  });
+
+  describe('Given a bound pack whose header probe rejects with a non-skippable fault', () => {
+    describe('When midxHealth is called', () => {
+      it('Then the fault propagates instead of marking the entry unresolved', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeSingleBlobPack(ctx, 'boom', 'boom-content');
+        await writeMidxBytes(
+          ctx,
+          buildMidx(
+            healthyMidxSpec({
+              packNames: ['pack-boom.idx'],
+              entries: [{ id, packIndex: 0, offset: PACK_HEADER_SIZE }],
+            }),
+          ),
+        );
+        const packPath = `${ctx.layout.gitDir}/objects/pack/pack-boom.pack`;
+        const wrapped: Context = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            readSlice: async (path: string, offset: number, length: number) =>
+              path === packPath
+                ? Promise.reject(new Error('boom'))
+                : ctx.fs.readSlice(path, offset, length),
+          },
+        };
+        const sut = createPackRegistry(wrapped);
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut.midxHealth();
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as Error).message).toBe('boom');
+      });
+    });
+  });
+});
+
 function packsDirOf(ctx: Context): string {
   return `${ctx.layout.gitDir}/objects/pack`;
 }
@@ -4163,6 +4321,48 @@ describe('PackRegistry.lookup — multi-pack-index authority', () => {
           (call) => call[0] === 'packRegistry: skipping unreadable pack index',
         );
         expect(skipWarns).toHaveLength(1);
+        expect(skipWarns[0]?.[1]).toMatchObject({
+          idx: 'pack-B.idx',
+          code: 'INVALID_PACK_INDEX',
+        });
+      });
+    });
+  });
+
+  describe('Given a midx claiming pack-A while an UNCLAIMED pack-B has a broken pack header', () => {
+    describe('When lookup is called for an oid only pack-B holds', () => {
+      it('Then the miss is reported — the unclaimed fallback never returns a header-broken hit', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const idsA = await writeSyntheticPack(ctx, 'A', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('claimed') },
+        ]);
+        const idsB = await writeSyntheticPack(ctx, 'B', [
+          {
+            kind: 'base',
+            type: 'blob',
+            content: new TextEncoder().encode('unclaimed-broken-header'),
+          },
+        ]);
+        await restampPackHeader(ctx, `${ctx.layout.gitDir}/objects/pack/pack-B.pack`, {
+          version: 99,
+        });
+        await writeMidxBytes(
+          ctx,
+          buildMidx(
+            healthyMidxSpec({
+              packNames: ['pack-A.idx'],
+              entries: [{ id: idsA[0] as ObjectId, packIndex: 0, offset: PACK_HEADER_SIZE }],
+            }),
+          ),
+        );
+        const sut = createPackRegistry(ctx);
+
+        // Act
+        const hit = await sut.lookup(idsB[0] as ObjectId);
+
+        // Assert
+        expect(hit).toBeUndefined();
       });
     });
   });
