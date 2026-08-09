@@ -25,7 +25,10 @@ const stageFiles = async (rootDir: string, inputs: ScenarioInputs): Promise<void
   }
 };
 
-describe.each(SCENARIOS)('Given the $name scenario', (scenario) => {
+const BUN_RUNTIME = 'bun';
+const supported = SCENARIOS.filter((s) => !s.unsupportedRuntimes?.includes(BUN_RUNTIME));
+
+describe.each(supported)('Given the $name scenario', (scenario) => {
   let tmpDir = '';
 
   beforeEach(async () => {
