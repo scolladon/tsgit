@@ -120,3 +120,27 @@ scaledScenario(
   'When a cold open reads one loose blob with no packs, Then measure tsgit',
   (fixture) => coldOpenBench(fixture, fixture.firstBlobId as ObjectId),
 );
+
+/** The streamed loose path pays the same assertLoadable gate as readBlob —
+ *  its own cold-open row keeps that surface pinned separately. */
+const streamColdOpenBench = async (
+  fixture: ScaledFixture,
+  blobId: ObjectId,
+): Promise<BenchComparison> => ({
+  sut: async (): Promise<void> => {
+    const repo = await openRepository({ cwd: fixture.cwd });
+    try {
+      for await (const chunk of await repo.primitives.streamBlob(blobId)) {
+        void chunk;
+      }
+    } finally {
+      await repo.dispose();
+    }
+  },
+});
+
+scaledScenario(
+  looseOnlyCtx,
+  'When a cold open streams one loose blob with no packs, Then measure tsgit',
+  (fixture) => streamColdOpenBench(fixture, fixture.firstBlobId as ObjectId),
+);

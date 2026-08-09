@@ -7,11 +7,12 @@
  * (`verify` non-zero iff `fsck` gains bit 32, whenever the parent survives),
  * plus tsgit's structured `FsckResult` from the identical on-disk state.
  *
- * Chain layers are git-written `0444`; every layer mutation goes through
+ * Chain layers are git-written `0444`; layer mutations go through
  * `mutateMidxOrThrow`, which chmods the target writable first and throws on
- * a failed write rather than returning silently — the earlier trap this
- * suite's fixtures were built to avoid (a silently-unwritten mutation
- * measures a healthy repo and reports it as whatever tier the row expected).
+ * a failed write rather than returning silently — EXCEPT trailer flips
+ * (O10/P12/P13), which must be written directly: the mutator re-stamps the
+ * trailer digest, so routing a trailer flip through it round-trips the file
+ * back to its healthy bytes and the row measures a healthy repo.
  *
  * Every row builds its tsgit `Context` AFTER the last `git` subprocess has
  * written, and gets its own fresh repo — never a shared, progressively-
@@ -668,6 +669,12 @@ describe.skipIf(!GIT_AVAILABLE)('fsck multi-pack-index reporting, against real g
 
         // Assert — git's exact integer varies with repack's delta topology
         // (the missing-object bit comes and goes); the midx bit is stable.
+        // git ALSO emits pack-layer errors here ("index unavailable",
+        // rev-index) that tsgit structurally cannot: pack discovery requires
+        // the sibling .idx, so an .idx-less pack never reaches the pack
+        // pass — the same accepted divergence family as the pack-health
+        // suite's own .idx-less rows.
+        expect(verifyResult.stderr).toContain('index unavailable');
         expect(gitResult.exitCode & 32).toBe(32);
         expect(verifyResult.exitCode).not.toBe(0);
         expect(result.exitCode & 32).toBe(32);

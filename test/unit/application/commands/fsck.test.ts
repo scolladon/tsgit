@@ -33,7 +33,7 @@ import type { FilePath } from '../../../../src/domain/objects/object-id.js';
 import { invalidPackIndex } from '../../../../src/domain/storage/index.js';
 import type { Context } from '../../../../src/ports/context.js';
 import { buildMidx, type MidxSpec } from '../../domain/storage/arbitraries.js';
-import { buildSeededContext } from '../primitives/fixtures.js';
+import { buildSeededContext, instrumentedContext } from '../primitives/fixtures.js';
 import { withHandleLedger } from '../primitives/handle-ledger.js';
 import {
   buildSyntheticPack,
@@ -4949,6 +4949,93 @@ describe('Given a PNAM entry whose .idx is unregistered but whose sibling .pack 
       expect(packUnresolved).toHaveLength(0);
       expect(entryUnresolved).toHaveLength(2);
       expect(result.exitCode & 32).toBe(32);
+    });
+  });
+});
+
+describe('Given a PNAM entry carrying a control byte in its name', () => {
+  describe('When fsck reports it unresolved', () => {
+    it('Then the finding carries the hex-escaped name, never the raw byte', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const hostileName = 'pack-\u0001evil.idx';
+      await writeFlatMidx(ctx, midxBaseSpec({ packNames: [hostileName] }));
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      const packUnresolved = result.findings.filter((f) => f.type === 'midx-pack-unresolved');
+      expect(packUnresolved).toHaveLength(1);
+      expect((packUnresolved[0] as { pack: string }).pack).toBe('pack-\\u0001evil.idx');
+    });
+  });
+});
+
+describe('Given a packed object corrupted on disk but warm in the delta cache', () => {
+  describe('When fsck runs', () => {
+    it('Then the audit reads the store, not the cache, and reports the corruption', async () => {
+      // Arrange — warm the session cache with the healthy bytes, then gut
+      // the packed copy: an audit trusting the cache would report a clean
+      // repository.
+      const ctx = await initBareCtx();
+      const [blobId] = await writeSyntheticPack(ctx, 'warmed', onePackEntry('warm-content'));
+      const healthy = new TextEncoder().encode('blob 12\u0000warm-content');
+      ctx.deltaCache.set(blobId as string, healthy, healthy.length);
+      const packPath = packFilePath(ctx, 'warmed');
+      const packBytes = (await ctx.fs.read(packPath)).slice();
+      packBytes.fill(0xff, 12, Math.min(packBytes.length - 20, 64));
+      await ctx.fs.write(packPath, packBytes);
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert — a dangling finding alone would also carry the id, so the
+      // oracle demands the corruption family specifically: a cache-trusting
+      // audit reports this store clean.
+      const corrupted = result.findings.some(
+        (f) =>
+          (f.type === 'bad-object' || f.type === 'hash-mismatch') &&
+          (f as { id: string }).id === blobId,
+      );
+      expect(corrupted).toBe(true);
+    });
+  });
+});
+
+describe('Given two midx entries routed to one pack whose header is broken', () => {
+  describe('When the midx pass walks the entries', () => {
+    it('Then the pack is probed once, not once per entry', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const ids = await writeSyntheticPack(ctx, 'shared', [
+        { kind: 'base', type: 'blob', content: new TextEncoder().encode('one') },
+        { kind: 'base', type: 'blob', content: new TextEncoder().encode('two') },
+      ]);
+      await restampPackHeader(ctx, packFilePath(ctx, 'shared'), { version: 99 });
+      await writeFlatMidx(
+        ctx,
+        midxBaseSpec({
+          packNames: ['pack-shared.idx'],
+          entries: ids.map((id, i) => ({ id: id as ObjectId, packIndex: 0, offset: 12 + i })),
+        }),
+      );
+      const { ctx: instrumented, calls } = instrumentedContext(ctx);
+
+      // Act
+      const result = await fsck(instrumented);
+
+      // Assert — both entries unresolved, yet the broken header was read
+      // exactly twice: once by the pack-health pass and once by the midx
+      // walk. The walk's per-pack memo is what holds the count there at one —
+      // a rejection clears the underlying header memo, so a per-entry probe
+      // would make this three.
+      const entryUnresolved = result.findings.filter((f) => f.type === 'midx-entry-unresolved');
+      expect(entryUnresolved).toHaveLength(2);
+      const headerReads = calls().filter(
+        (call) => call.method === 'readSlice' && call.path.endsWith('pack-shared.pack'),
+      );
+      expect(headerReads).toHaveLength(2);
     });
   });
 });

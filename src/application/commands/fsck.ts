@@ -52,8 +52,11 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
   // satisfy a lookup git answers through the multi-pack-index, hiding the
   // exact per-entry corruption class this command exists to surface. The
   // audit view shares the ordinary registry — a second registry would double
-  // the scan and duplicate every persistent pack handle.
-  const auditCtx: Context = { ...ctx, deltaCache: NO_DELTA_CACHE };
+  // the scan and duplicate every persistent pack handle. Every OTHER
+  // per-Context read cache (loose fanout, commit graph, config) is left to
+  // rebuild: bounded rework, no handles, no correctness stake. Frozen like
+  // every Context the factories hand out.
+  const auditCtx: Context = Object.freeze({ ...ctx, deltaCache: NO_DELTA_CACHE });
   adoptPackRegistry(ctx, auditCtx);
 
   const allIds = await enumerateObjects(ctx, {

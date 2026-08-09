@@ -184,23 +184,38 @@ async function loadFlatBody(
 }
 
 /**
- * `.split('\n')` on a chain file's trailing newline always yields a final
- * empty element, which never matches the hex pattern and therefore
- * terminates the run at exactly the real end — no separate trim/filter step
- * is needed to keep a well-formed chain's last real line in the run.
- *
- * Collection stops one past the layer cap: the caller can still detect the
- * over-cap condition while a hostile many-line manifest never materialises
- * more than `MAX_MIDX_CHAIN_LAYERS + 1` entries.
+ * Cursor walk, never a `split`: the cap must fire before anything scales
+ * with the manifest's size, and a split would materialise every line of a
+ * hostile many-line file first. A trailing newline yields a final empty
+ * slice, which never matches the hex pattern and terminates the run at
+ * exactly the real end. Collection stops one past the layer cap so the
+ * caller can still detect the over-cap condition.
  */
 function leadingHexRun(chainText: string, digestLength: number): ReadonlyArray<string> {
   const hexLine = new RegExp(`^[0-9a-f]{${digestLength * 2}}$`);
   const digests: string[] = [];
-  for (const line of chainText.split('\n')) {
-    if (!hexLine.test(line) || digests.length > MAX_MIDX_CHAIN_LAYERS) break;
+  let cursor = 0;
+  while (cursor <= chainText.length && digests.length <= MAX_MIDX_CHAIN_LAYERS) {
+    const newline = chainText.indexOf('\n', cursor);
+    const line = newline === -1 ? chainText.slice(cursor) : chainText.slice(cursor, newline);
+    if (!hexLine.test(line)) break;
     digests.push(line);
+    if (newline === -1) break;
+    cursor = newline + 1;
   }
   return digests;
+}
+
+/**
+ * The manifest's own shape bound: one hex digest plus newline per layer up
+ * to the layer cap, with two spare lines of slack. Sized in the tens of
+ * kilobytes — never the midx body's own gigabyte-scale artefact bound, whose
+ * reuse here would admit a manifest large enough to exceed V8's string
+ * limit (a process abort, not an error a catch can contain) before any
+ * cap could fire.
+ */
+function maxChainManifestBytes(digestLength: number): number {
+  return (MAX_MIDX_CHAIN_LAYERS + 2) * (digestLength * 2 + 1);
 }
 
 type ChainManifest =
@@ -212,10 +227,15 @@ type ChainManifest =
  * Absent, empty, irregular (a directory or FIFO at the manifest path) or
  * unreadable all mean "no chain" — silently, with no fault recorded, the
  * design's pinned posture for a broken manifest. The read is stat-bounded
- * first so a hostile multi-hundred-MB manifest is refused before it is
- * decoded, and a FIFO is never opened (an open would block every read).
+ * first so a hostile manifest is refused before it is decoded, and a FIFO
+ * is never opened (an open would block every read).
  */
-async function readChainManifest(ctx: Context, chainPath: string): Promise<ChainManifest> {
+async function readChainManifest(
+  ctx: Context,
+  chainPath: string,
+  digestLength: number,
+): Promise<ChainManifest> {
+  const maxBytes = maxChainManifestBytes(digestLength);
   let stat: FileStat;
   try {
     stat = await ctx.fs.stat(chainPath);
@@ -224,10 +244,10 @@ async function readChainManifest(ctx: Context, chainPath: string): Promise<Chain
     throw error;
   }
   if (!stat.isFile) return { kind: 'none' };
-  if (exceedsMaxMidxBytes(stat.size)) return { kind: 'oversized' };
+  if (stat.size > maxBytes) return { kind: 'oversized' };
   try {
     const text = await ctx.fs.readUtf8(chainPath);
-    return exceedsMaxMidxBytes(text.length) ? { kind: 'oversized' } : { kind: 'text', text };
+    return text.length > maxBytes ? { kind: 'oversized' } : { kind: 'text', text };
   } catch (error) {
     if (isTierBMidxFault(error)) return { kind: 'none' };
     throw error;
@@ -257,7 +277,7 @@ async function loadChain(
   packsDir: string,
   digestLength: number,
 ): Promise<ChainOutcome> {
-  const manifest = await readChainManifest(ctx, multiPackIndexChainPath(packsDir));
+  const manifest = await readChainManifest(ctx, multiPackIndexChainPath(packsDir), digestLength);
   if (manifest.kind === 'none') return NO_CHAIN;
   if (manifest.kind === 'oversized') return chainFault(REASON_MIDX_EXCEEDS_MAX);
 
@@ -275,12 +295,19 @@ async function loadChain(
   }
 
   const layers: MultiPackIndex[] = [];
+  // One artefact budget for the WHOLE chain, not per layer: distinct hostile
+  // layers must not sum past what a single flat midx may occupy in memory.
+  let totalLayerBytes = 0;
   for (const digest of digests) {
     const layerPath = multiPackIndexLayerPath(packsDir, digest);
     try {
       const stat = await ctx.fs.stat(layerPath);
       if (!stat.isFile) {
         throw invalidMultiPackIndex('size', REASON_MIDX_IRREGULAR_FILE);
+      }
+      totalLayerBytes += stat.size;
+      if (exceedsMaxMidxBytes(totalLayerBytes)) {
+        throw invalidMultiPackIndex('size', REASON_MIDX_EXCEEDS_MAX);
       }
       const midx = await readAndParseMidx(ctx, layerPath, stat.size, digestLength);
       layers.push(midx);

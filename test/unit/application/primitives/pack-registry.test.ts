@@ -3746,12 +3746,16 @@ describe('PackRegistry — multi-pack-index degradation', () => {
    *  fault, not merely "it threw" — a re-tiered check or a foreign error class
    *  passing a bare toThrow() is the silent failure these rows exist to catch. */
   async function expectMidxSignatureRejection(promise: Promise<unknown>): Promise<void> {
+    // Captured outside the try so a non-rejecting promise fails with the
+    // intended message, matching expectRefusal/expectRejectsWithCheck.
     let caught: unknown;
     try {
       await promise;
-      expect.unreachable();
     } catch (error) {
       caught = error;
+    }
+    if (caught === undefined) {
+      expect.fail('expected the promise to reject');
     }
     const data = (caught as TsgitError).data;
     expect(data.code).toBe('INVALID_MULTI_PACK_INDEX');
@@ -4120,6 +4124,45 @@ describe('PackRegistry.lookup — multi-pack-index authority', () => {
 
         // Assert
         expect(hit?.pack.name).toBe('pack-B');
+      });
+    });
+  });
+
+  describe('Given a midx claiming pack-A while an UNCLAIMED pack-B has a corrupt .idx', () => {
+    describe('When lookup misses the midx twice in a row', () => {
+      it('Then both lookups miss, pack-B is skipped per-pack, and the warn fires once per generation', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const idsA = await writeSyntheticPack(ctx, 'A', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('claimed') },
+        ]);
+        const idsB = await writeSyntheticPack(ctx, 'B', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('unclaimed-corrupt') },
+        ]);
+        await ctx.fs.write(`${ctx.layout.gitDir}/objects/pack/pack-B.idx`, new Uint8Array(8));
+        await writeMidxBytes(
+          ctx,
+          buildMidx(
+            healthyMidxSpec({
+              packNames: ['pack-A.idx'],
+              entries: [{ id: idsA[0] as ObjectId, packIndex: 0, offset: PACK_HEADER_SIZE }],
+            }),
+          ),
+        );
+        const warn = vi.fn();
+        const sut = createPackRegistry({ ...ctx, logger: { warn } });
+
+        // Act
+        const first = await sut.lookup(idsB[0] as ObjectId);
+        const second = await sut.lookup(idsB[0] as ObjectId);
+
+        // Assert
+        expect(first).toBeUndefined();
+        expect(second).toBeUndefined();
+        const skipWarns = warn.mock.calls.filter(
+          (call) => call[0] === 'packRegistry: skipping unreadable pack index',
+        );
+        expect(skipWarns).toHaveLength(1);
       });
     });
   });

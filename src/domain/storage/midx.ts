@@ -179,7 +179,11 @@ function readChunkTableRows(
         `terminating chunk id appears at row ${i} before the final row`,
       );
     }
-    if (offset % 4 !== 0) {
+    // git's read_table_of_contents alignment-checks only the numChunks real
+    // rows; the terminating sentinel's offset is range-checked but never
+    // alignment-checked, so a file whose last chunk length is not a multiple
+    // of 4 still loads.
+    if (offset % 4 !== 0 && i < rowCount - 1) {
       throw invalidMultiPackIndex(
         'chunk-table',
         `chunk table offset at row ${i} is not 4-byte aligned`,

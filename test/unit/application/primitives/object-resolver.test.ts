@@ -18,7 +18,7 @@ import {
   serializePackHeader,
 } from '../../../../src/domain/storage/index.js';
 import type { Context } from '../../../../src/ports/context.js';
-import { buildSeededContext } from './fixtures.js';
+import { buildSeededContext, instrumentedContext } from './fixtures.js';
 import { buildSyntheticPack, type EntrySpec, writeSyntheticPack } from './pack-fixture.js';
 
 const ENC = new TextEncoder();
@@ -268,12 +268,13 @@ describe('object-resolver', () => {
         const badMidx = new Uint8Array(16);
         badMidx.set([0x00, 0x49, 0x44, 0x58, 1, 1, 1, 0], 0);
         await ctx.fs.write(`${ctx.layout.gitDir}/objects/pack/multi-pack-index`, badMidx);
-        const registry = createPackRegistry(ctx);
+        const { ctx: instrumented, calls } = instrumentedContext(ctx);
+        const registry = createPackRegistry(instrumented);
 
         // Act
         let caught: unknown;
         try {
-          await resolveObject(ctx, registry, 'a'.repeat(40) as ObjectId, true);
+          await resolveObject(instrumented, registry, 'a'.repeat(40) as ObjectId, true);
         } catch (error) {
           caught = error;
         }
@@ -281,6 +282,8 @@ describe('object-resolver', () => {
         // Assert
         expect(caught).toBeInstanceOf(TsgitError);
         expect((caught as TsgitError).data.code).toBe('OPERATION_ABORTED');
+        const packDirCalls = calls().filter((call) => call.path.includes('objects/pack'));
+        expect(packDirCalls).toEqual([]);
       });
     });
   });
