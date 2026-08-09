@@ -4,6 +4,7 @@ import {
   deltaChainTooDeep,
   invalidDelta,
   invalidMultiPackIndex,
+  invalidPackBitmap,
   invalidPackEntry,
   invalidPackHeader,
   invalidPackIndex,
@@ -104,6 +105,22 @@ describe('storage error', () => {
             code: 'INVALID_PACK_REV_INDEX',
             check: 'size',
             reason: 'reverse index is too small',
+          });
+        });
+      });
+    });
+
+    describe("Given invalidPackBitmap('stream', 'declares more words than the buffer holds')", () => {
+      describe('When checking error.data', () => {
+        it("Then code, check and reason are set to 'INVALID_PACK_BITMAP', 'stream' and 'declares more words than the buffer holds'", () => {
+          // Arrange & Act
+          const result = invalidPackBitmap('stream', 'declares more words than the buffer holds');
+
+          // Assert
+          expect(result.data).toEqual({
+            code: 'INVALID_PACK_BITMAP',
+            check: 'stream',
+            reason: 'declares more words than the buffer holds',
           });
         });
       });
