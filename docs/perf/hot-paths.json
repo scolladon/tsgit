@@ -1,5 +1,14 @@
 {
   "generatedFrom": "Phase-26 revealed optimisation effort (log/status/pack-read/blame/describe/name-rev) cross-checked against the nightly bench.yml median-ms ranking; see docs/adr/501-hot-path-picking-methodology.md. diff-recursive added alongside the recursive tree-diff cursor merge-join optimisation.",
   "majorVersion": "3",
-  "hotOperations": ["log", "status", "pack-read", "blame", "describe", "name-rev", "diff-recursive"]
+  "hotOperations": [
+    "log",
+    "status",
+    "pack-read",
+    "blame",
+    "describe",
+    "name-rev",
+    "diff-recursive",
+    "pack-offset-table"
+  ]
 }
