@@ -14,7 +14,7 @@ import { initAddCommitStatusScenario } from './init-add-commit-status.scenario.t
 import { mergeAbortScenario } from './merge-abort.scenario.ts';
 import { mergeContinueScenario } from './merge-continue.scenario.ts';
 import { mergeFfScenario } from './merge-ff.scenario.ts';
-import { midxReadScenario } from './midx-read.scenario.ts';
+import { midxReadDegradedScenario, midxReadScenario } from './midx-read.scenario.ts';
 import { mvScenario } from './mv.scenario.ts';
 import { nameRevScenario } from './name-rev.scenario.ts';
 import { notesScenario } from './notes.scenario.ts';
@@ -79,4 +79,5 @@ export const SCENARIOS: ReadonlyArray<Scenario<unknown>> = [
   packDegradedIdxScenario,
   fsckDegradedStoreScenario,
   midxReadScenario,
+  midxReadDegradedScenario,
 ];

@@ -11,7 +11,7 @@
  * here rests on the filesystem and the parser's own structural checks, not on
  * hashing the whole file on every open.
  */
-import { TsgitError, type TsgitErrorData } from '../../../domain/error.js';
+import type { TsgitError, TsgitErrorData } from '../../../domain/error.js';
 import {
   invalidMultiPackIndex,
   type MidxCheck,
@@ -91,15 +91,29 @@ function tierOf(check: MidxCheck): MidxTier {
  * the caller. Never invert this into a Tier-A allow-list: that would
  * silently swallow a future `MidxCheck` member the tier map forgot.
  */
+/**
+ * Structural, never `instanceof`: the probes below classify errors thrown by
+ * `ctx.fs`, and in mixed-module-graph test harnesses (a source-graph
+ * registry over a dist-bundle Context) the adapter's `TsgitError` class is
+ * a different identity than this module's. The `data.code` shape is the
+ * stable contract; class identity is not.
+ */
+function errorDataCode(error: unknown): string | undefined {
+  if (typeof error !== 'object' || error === null) return undefined;
+  const data = (error as { readonly data?: { readonly code?: unknown } }).data;
+  return typeof data?.code === 'string' ? data.code : undefined;
+}
+
 export function isTierBMidxFault(err: unknown): err is TsgitError {
-  if (!(err instanceof TsgitError)) return false;
-  const { data } = err;
-  if (data.code === 'FILE_NOT_FOUND' || data.code === 'PERMISSION_DENIED') return true;
-  return data.code === 'INVALID_MULTI_PACK_INDEX' && tierOf(data.check) === 'B';
+  const code = errorDataCode(err);
+  if (code === 'FILE_NOT_FOUND' || code === 'PERMISSION_DENIED') return true;
+  if (code !== 'INVALID_MULTI_PACK_INDEX') return false;
+  const check = (err as { readonly data: { readonly check: MidxCheck } }).data.check;
+  return tierOf(check) === 'B';
 }
 
 function isFileNotFound(error: unknown): boolean {
-  return error instanceof TsgitError && error.data.code === 'FILE_NOT_FOUND';
+  return errorDataCode(error) === 'FILE_NOT_FOUND';
 }
 
 function layerArtefactName(digest: string): string {

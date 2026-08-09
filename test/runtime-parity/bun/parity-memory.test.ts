@@ -25,7 +25,10 @@ const stageFiles = (inputs: ScenarioInputs): Readonly<Record<string, Uint8Array>
   return files;
 };
 
-describe.each(SCENARIOS)('Given the $name scenario', (scenario) => {
+const BUN_RUNTIME = 'bun';
+const supported = SCENARIOS.filter((s) => !s.unsupportedRuntimes?.includes(BUN_RUNTIME));
+
+describe.each(supported)('Given the $name scenario', (scenario) => {
   describe('When the Bun driver runs it against the Memory adapter', () => {
     it('Then the result matches the scenario expected golden', async () => {
       // Arrange

@@ -26,6 +26,9 @@ import type { Scenario } from './types.ts';
 interface MidxReadResult {
   readonly healthyContentA: string;
   readonly healthyContentB: string;
+}
+
+interface MidxReadDegradedResult {
   readonly staleReadSucceeded: boolean;
   readonly staleRejectCode: string;
   readonly tierBReadSucceeded: boolean;
@@ -144,12 +147,86 @@ function buildFlatMidx(
   return bytes;
 }
 
+/** The shared arrange leg: seed a commit, write the two single-blob packs
+ *  and the flat midx over them. Returns the two blob ids. */
+async function arrangeMidxRepo(
+  repo: Parameters<Scenario<MidxReadResult>['run']>[0],
+  inputs: Parameters<Scenario<MidxReadResult>['run']>[1],
+): Promise<{ idA: ObjectId; idB: ObjectId; midxPath: string; midxBytes: Uint8Array }> {
+  await repo.init();
+  await repo.add(inputs.files.map((file) => file.path));
+  await repo.commit({ message: inputs.message, author: inputs.author });
+
+  const packDir = `${repo.ctx.layout.gitDir}/objects/pack`;
+  const { id: idA } = await writeScenarioPackPair(repo, {
+    name: PACK_NAME_A,
+    content: CONTENT_A,
+  });
+  const { id: idB } = await writeScenarioPackPair(repo, {
+    name: PACK_NAME_B,
+    content: CONTENT_B,
+  });
+
+  const digestLength = repo.ctx.hash.digestLength;
+  const packNames = [`${PACK_NAME_A}.idx`, `${PACK_NAME_B}.idx`];
+  const entries: ReadonlyArray<MidxPackEntry> = [
+    { id: idA, packIndex: 0, offset: PACK_HEADER_SIZE },
+    { id: idB, packIndex: 1, offset: PACK_HEADER_SIZE },
+  ];
+  const midxBytes = buildFlatMidx(packNames, entries, digestLength);
+  const trailerStart = midxBytes.length - digestLength;
+  const trailer = await repo.ctx.hash.hash(midxBytes.subarray(0, trailerStart));
+  midxBytes.set(trailer, trailerStart);
+  const midxPath = `${packDir}/multi-pack-index`;
+  await repo.ctx.fs.write(midxPath, midxBytes);
+  // Best-effort on the source module graph (the local node/memory drivers);
+  // on the dist-bundle drivers this touches a parallel registry and the
+  // bundle's own registry simply takes its FIRST scan at the read below —
+  // either way the healthy read sees the midx.
+  getPackRegistry(repo.ctx).refresh();
+  return { idA, idB, midxPath, midxBytes };
+}
+
 export const midxReadScenario: Scenario<MidxReadResult> = {
   name: 'midx-read',
   inputs: { files: [FILES.helloA], author: AUTHOR, message: MESSAGES.seed },
   expected: {
     healthyContentA: CONTENT_A,
     healthyContentB: CONTENT_B,
+  },
+  run: async (repo, inputs) => {
+    // Arrange
+    const { idA, idB } = await arrangeMidxRepo(repo, inputs);
+
+    // Act — healthy flat midx, both blobs read via their assigned pack
+    const blobA = await repo.primitives.readBlob(idA);
+    const blobB = await repo.primitives.readBlob(idB);
+
+    // Assert — project to deterministic fields only, no oid
+    return {
+      healthyContentA: new TextDecoder().decode(blobA.content),
+      healthyContentB: new TextDecoder().decode(blobB.content),
+    };
+  },
+};
+
+/**
+ * The degraded legs need the pack registry INVALIDATED between states
+ * (healthy → stale → Tier-B), and registry invalidation has no public
+ * surface — the `getPackRegistry(...).refresh()` calls below reach the
+ * SOURCE module graph only. The dist-bundle runtime drivers (workers,
+ * deno, bun) load the library from `dist/esm`, whose own registry those
+ * calls cannot touch, so the stale legs would measure a memoised healthy
+ * generation there — a harness artefact, not a parity divergence (the
+ * `bundle` scenario's workers exclusion is the precedent). Cross-adapter
+ * parity for these legs is still proven by the node and memory drivers,
+ * which run the source graph.
+ */
+export const midxReadDegradedScenario: Scenario<MidxReadDegradedResult> = {
+  name: 'midx-read-degraded',
+  inputs: { files: [FILES.helloA], author: AUTHOR, message: MESSAGES.seed },
+  unsupportedRuntimes: ['workers', 'deno', 'bun', 'browser'],
+  expected: {
     staleReadSucceeded: false,
     staleRejectCode: 'OBJECT_NOT_FOUND',
     tierBReadSucceeded: true,
@@ -164,47 +241,17 @@ export const midxReadScenario: Scenario<MidxReadResult> = {
     ],
   },
   run: async (repo, inputs) => {
-    // Arrange — seed a healthy root commit, then two hand-built single-blob
-    // packs the flat midx below will assign one each.
-    await repo.init();
-    await repo.add(inputs.files.map((file) => file.path));
-    await repo.commit({ message: inputs.message, author: inputs.author });
-
+    // Arrange
+    const { idA, idB, midxPath, midxBytes } = await arrangeMidxRepo(repo, inputs);
     const packDir = `${repo.ctx.layout.gitDir}/objects/pack`;
-    const { id: idA } = await writeScenarioPackPair(repo, {
-      name: PACK_NAME_A,
-      content: CONTENT_A,
-    });
-    const { id: idB } = await writeScenarioPackPair(repo, {
-      name: PACK_NAME_B,
-      content: CONTENT_B,
-    });
+    await repo.primitives.readBlob(idA);
+    await repo.primitives.readBlob(idB);
 
-    const digestLength = repo.ctx.hash.digestLength;
-    const packNames = [`${PACK_NAME_A}.idx`, `${PACK_NAME_B}.idx`];
-    const entries: ReadonlyArray<MidxPackEntry> = [
-      { id: idA, packIndex: 0, offset: PACK_HEADER_SIZE },
-      { id: idB, packIndex: 1, offset: PACK_HEADER_SIZE },
-    ];
-    const midxBytes = buildFlatMidx(packNames, entries, digestLength);
-    const trailerStart = midxBytes.length - digestLength;
-    const trailer = await repo.ctx.hash.hash(midxBytes.subarray(0, trailerStart));
-    midxBytes.set(trailer, trailerStart);
-    const midxPath = `${packDir}/multi-pack-index`;
-    await repo.ctx.fs.write(midxPath, midxBytes);
-
-    // Act — leg 1: healthy flat midx, both blobs read via their assigned pack
-    getPackRegistry(repo.ctx).refresh();
-    const blobA = await repo.primitives.readBlob(idA);
-    const blobB = await repo.primitives.readBlob(idB);
-    const healthyContentA = new TextDecoder().decode(blobA.content);
-    const healthyContentB = new TextDecoder().decode(blobB.content);
-
-    // Act — leg 2: pack B's artefacts removed while the midx still names it
+    // Act — leg 1: pack B's artefacts removed while the midx still names it
     // — the midx's assignment is authority, so the read misses rather than
-    // falling back to any other pack. Drops leg 1's own resolved-bytes cache
-    // entry for idB first: a per-Context cache hit would otherwise serve the
-    // content leg 1 already read, masking the very miss this leg proves.
+    // falling back to any other pack. Drops the resolved-bytes cache entry
+    // for idB first: a per-Context cache hit would otherwise serve the
+    // content already read above, masking the very miss this leg proves.
     await repo.ctx.fs.rm(`${packDir}/${PACK_NAME_B}.pack`);
     await repo.ctx.fs.rm(`${packDir}/${PACK_NAME_B}.idx`);
     repo.ctx.deltaCache.delete(idB);
@@ -218,7 +265,7 @@ export const midxReadScenario: Scenario<MidxReadResult> = {
       staleRejectCode = (error as { data?: { code?: string } }).data?.code ?? 'unexpected-shape';
     }
 
-    // Act — leg 4: fsck() over the same stale shape, before it is repaired
+    // Act — leg 2: fsck() over the same stale shape, before it is repaired
     const staleFsckResult = await repo.fsck();
 
     // Act — leg 3: the flat midx truncated to a Tier-B fault — discarded, the
@@ -236,8 +283,6 @@ export const midxReadScenario: Scenario<MidxReadResult> = {
 
     // Assert — project to deterministic fields only, no oid
     return {
-      healthyContentA,
-      healthyContentB,
       staleReadSucceeded,
       staleRejectCode,
       tierBReadSucceeded,

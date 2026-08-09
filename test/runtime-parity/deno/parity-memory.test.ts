@@ -31,7 +31,10 @@ const stageFiles = (inputs: ScenarioInputs): Readonly<Record<string, Uint8Array>
   return files;
 };
 
-for (const scenario of SCENARIOS) {
+const DENO_RUNTIME = 'deno';
+const supported = SCENARIOS.filter((s) => !s.unsupportedRuntimes?.includes(DENO_RUNTIME));
+
+for (const scenario of supported) {
   Deno.test(`Given the ${scenario.name} scenario, When the Deno driver runs it against the Memory adapter`, async (t) => {
     await t.step('Then the result matches the scenario expected golden', async () => {
       // Arrange

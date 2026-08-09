@@ -1165,6 +1165,26 @@ describe('midx-source', () => {
       });
     });
 
+    describe('Given a foreign error object carrying a FILE_NOT_FOUND data code from another module graph', () => {
+      describe('When isTierBMidxFault is called', () => {
+        it('Then it classifies by the data shape, not class identity', () => {
+          // Arrange — mixed-module-graph harnesses (a source-graph registry
+          // over a dist-bundle Context) throw errors whose class identity
+          // differs; the data.code contract is what must decide the tier.
+          const sut = isTierBMidxFault;
+          const foreign = Object.assign(new Error('file not found'), {
+            data: { code: 'FILE_NOT_FOUND', path: '/g/objects/pack/multi-pack-index' },
+          });
+
+          // Act
+          const result = sut(foreign);
+
+          // Assert
+          expect(result).toBe(true);
+        });
+      });
+    });
+
     describe('Given a non-TsgitError value', () => {
       describe('When isTierBMidxFault is called', () => {
         it('Then returns false', () => {

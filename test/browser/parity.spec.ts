@@ -61,7 +61,12 @@ test.describe('parity', () => {
     expect(sut).toEqual(SCENARIOS.map((scenario) => scenario.name).sort());
   });
 
-  for (const scenario of SCENARIOS) {
+  // Scenarios that need registry invalidation between legs are excluded:
+  // the page runs the scenario bundle against dist chunks (two module
+  // graphs), so a source-side refresh cannot reach the library's registry.
+  const BROWSER_RUNTIME = 'browser';
+  const supported = SCENARIOS.filter((s) => !s.unsupportedRuntimes?.includes(BROWSER_RUNTIME));
+  for (const scenario of supported) {
     test.describe(`Given the ${scenario.name} scenario`, () => {
       test('Then the OPFS-backed result matches the scenario expected golden', async ({
         readyPage,
