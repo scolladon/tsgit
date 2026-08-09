@@ -1,10 +1,11 @@
+// Pack bitmap
+export type { BitmapEntryHeader, PackBitmap } from './bitmap.js';
+export { bitmapEntryHeaders, parsePackBitmap } from './bitmap.js';
 // CRC-32
 export { crc32 } from './crc32.js';
-
 // Delta
 export type { CopyInstruction, DeltaInstruction, DeltaParsed, InsertInstruction } from './delta.js';
 export { applyDelta, parseDelta, readDeltaTargetSize } from './delta.js';
-
 // Errors
 export type { BitmapCheck, MidxCheck, RevIndexCheck, StorageError } from './error.js';
 export {

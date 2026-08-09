@@ -562,3 +562,141 @@ export function arbBitSet(): fc.Arbitrary<ReadonlyArray<number>> {
   });
   return fc.oneof(sparse, dense);
 }
+
+// --- Pack bitmap: container -----------------------------------------------
+
+const BITMAP_HEADER_SIZE = 12;
+const BITMAP_ENTRY_FIXED_SIZE = 6;
+/** Mandatory full-DAG bit — every generated spec carries it; clearing it is
+ *  a dedicated refusal row in the unit suite, not a shape the round-trip
+ *  generator needs to reach. */
+const BITMAP_FULL_DAG_FLAG = 0x1;
+
+export interface BitmapStreamSpec {
+  readonly bits: ReadonlyArray<number>;
+  readonly bitSize: number;
+}
+
+export interface BitmapEntrySpec extends BitmapStreamSpec {
+  readonly position: number;
+  readonly xorOffset: number;
+  readonly flags: number;
+}
+
+export interface BitmapSpec {
+  readonly optionFlags: number;
+  readonly digestLength: number;
+  readonly checksum: Uint8Array;
+  readonly typeStreams: readonly [
+    BitmapStreamSpec,
+    BitmapStreamSpec,
+    BitmapStreamSpec,
+    BitmapStreamSpec,
+  ];
+  readonly entries: ReadonlyArray<BitmapEntrySpec>;
+  /** Bytes appended after the last entry — stands in for the hash cache,
+   *  lookup table, pseudo-merge table and the file's own trailing digest,
+   *  none of which the parser reads. */
+  readonly trailingBytes: number;
+}
+
+/**
+ * Writer for the on-disk pack (or midx) bitmap container layout — the model
+ * for `parsePackBitmap`/`bitmapEntryHeaders`'s round-trip oracle. Reuses
+ * `encodeEwah` for every stream, so a fixture that exercises EWAH's clean
+ * and literal words also exercises the container's own offset arithmetic.
+ */
+export function buildBitmap(spec: BitmapSpec): Uint8Array {
+  const { optionFlags, digestLength, checksum, typeStreams, entries, trailingBytes } = spec;
+
+  const streamBytes = typeStreams.map((stream) => encodeEwah(stream.bits, stream.bitSize));
+  const entryBytes = entries.map((entry) => {
+    const fixed = new Uint8Array(BITMAP_ENTRY_FIXED_SIZE);
+    const fixedView = new DataView(fixed.buffer);
+    fixedView.setUint32(0, entry.position);
+    fixedView.setUint8(4, entry.xorOffset);
+    fixedView.setUint8(5, entry.flags);
+    return { fixed, stream: encodeEwah(entry.bits, entry.bitSize) };
+  });
+
+  const totalSize =
+    BITMAP_HEADER_SIZE +
+    digestLength +
+    streamBytes.reduce((sum, streamPart) => sum + streamPart.length, 0) +
+    entryBytes.reduce((sum, entry) => sum + entry.fixed.length + entry.stream.length, 0) +
+    trailingBytes;
+
+  const bytes = new Uint8Array(totalSize);
+  const view = new DataView(bytes.buffer);
+
+  bytes.set(encode('BITM'), 0);
+  view.setUint16(4, 1);
+  view.setUint16(6, optionFlags);
+  view.setUint32(8, entries.length);
+  bytes.set(checksum, BITMAP_HEADER_SIZE);
+
+  let cursor = BITMAP_HEADER_SIZE + digestLength;
+  for (const streamPart of streamBytes) {
+    bytes.set(streamPart, cursor);
+    cursor += streamPart.length;
+  }
+  for (const entry of entryBytes) {
+    bytes.set(entry.fixed, cursor);
+    cursor += entry.fixed.length;
+    bytes.set(entry.stream, cursor);
+    cursor += entry.stream.length;
+  }
+
+  return bytes;
+}
+
+function arbBitmapStreamSpec(): fc.Arbitrary<BitmapStreamSpec> {
+  return fc.record({
+    bitSize: fc.integer({ min: 0, max: EWAH_BIT_RANGE }),
+    bits: arbBitSet(),
+  });
+}
+
+/** Entry `i`'s `xorOffset` is drawn from `[0, i]` — the base must precede,
+ *  so a generated chain is acyclic by construction and the parser never has
+ *  to reject the generator's own output. */
+function arbBitmapEntrySpecs(): fc.Arbitrary<ReadonlyArray<BitmapEntrySpec>> {
+  return fc.integer({ min: 0, max: 8 }).chain((count) =>
+    fc.tuple(
+      ...Array.from({ length: count }, (_, i) =>
+        fc.record({
+          position: fc.integer({ min: 0, max: 0xffffffff }),
+          xorOffset: fc.integer({ min: 0, max: i }),
+          flags: fc.integer({ min: 0, max: 255 }),
+          bitSize: fc.integer({ min: 0, max: EWAH_BIT_RANGE }),
+          bits: arbBitSet(),
+        }),
+      ),
+    ),
+  );
+}
+
+/**
+ * An arbitrary, internally-consistent bitmap spec: `optionFlags` always
+ * carries the mandatory full-DAG bit, and `digestLength` is drawn first
+ * since both `checksum`'s length and the round-trip's expected offsets
+ * depend on it.
+ */
+export function arbBitmapSpec(): fc.Arbitrary<BitmapSpec> {
+  return fc.constantFrom<20 | 32>(20, 32).chain((digestLength) =>
+    fc
+      .record({
+        optionFlags: fc.integer({ min: 0, max: 0xfffe }).map((v) => v | BITMAP_FULL_DAG_FLAG),
+        checksum: fc.uint8Array({ minLength: digestLength, maxLength: digestLength }),
+        typeStreams: fc.tuple(
+          arbBitmapStreamSpec(),
+          arbBitmapStreamSpec(),
+          arbBitmapStreamSpec(),
+          arbBitmapStreamSpec(),
+        ),
+        entries: arbBitmapEntrySpecs(),
+        trailingBytes: fc.integer({ min: 0, max: 16 }),
+      })
+      .map((r): BitmapSpec => ({ ...r, digestLength })),
+  );
+}
