@@ -40,6 +40,17 @@ where the cross-check earns its cost.
 
 A security review will flag a trusted read of an attacker-influenceable file; this ADR and
 ADR-606 are the standing answer. Parse-time bounds (ADR-611) remain in full force — trusting
-content is not trusting length. Because ADR-616 makes the fast path silent, the
-equality assertion in the interop suite is the only thing standing between a decoder bug and
-a wrong pack, and it must never be trimmed.
+content is not trusting length.
+
+**Refinement (ADR-622).** "Trust, exactly like git" was taken on incomplete evidence and is
+narrowed: git trusts a bitmap's **reachability semantics** but **range-validates its
+integers**. Measured, on a file whose checksum is valid so `fsck` exits 0, an out-of-range
+entry position makes git print `error: corrupt ewah bitmap: … out of range`, decline the whole
+artefact and fall back to the walk. tsgit does the same (ADR-622). What remains trusted is a
+bitmap whose positions are all in range but semantically wrong — that is the real, narrow
+residual, and it is git's too.
+
+This also retires the sentence that made the pairing with ADR-616 uncomfortable: the interop
+equality assertion is **no longer the only thing** between a decoder fault and a wrong pack —
+range validation catches it before any oid is resolved. The assertion remains mandatory as a
+second line, and must never be trimmed.
