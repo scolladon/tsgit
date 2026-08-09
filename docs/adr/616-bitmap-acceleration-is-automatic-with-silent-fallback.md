@@ -40,6 +40,23 @@ artefact).
 
 ## Consequences
 
-Consumers cannot force a walk. Should a decoder bug ever ship, there is no runtime switch to
-disable the fast path — which is precisely why ADR-615's equality oracle and this ADR's
-double-run obligation are load-bearing rather than nice-to-have.
+Should a decoder bug ever ship, ADR-615's equality oracle and this ADR's double-run
+obligation are the guard — load-bearing rather than nice-to-have.
+
+**Amendment (ADR-618, ADR-619).** Two premises of the decision above were falsified by
+measurement after it was taken, and the amended rules supersede them:
+
+1. *"No result changes"* is **false when haves are present.** git's own walk and bitmap
+   closures disagree there — the walk over-reports a superset. "Automatic" is therefore
+   narrowed to **automatic where git is automatic**, decided per command (ADR-618):
+   `pack-objects` uses a bitmap by default, `rev-list` walks unless the caller opts in. Each
+   command grows a caller-facing tier control mirroring git's own; because it changes the
+   returned set rather than its rendering, ADR-249 does not bar it.
+2. The **unconditional identical-sets** obligation is replaced by a conditional, stronger
+   one: with no haves the two tiers must agree **exactly**; with haves the walk must be a
+   **superset** of the bitmap result and every object in the difference must be reachable
+   from a have. The comparison is on **object id and type only**, never on path — a bitmap
+   cannot supply paths at all (ADR-619).
+
+The double-run test obligation itself stands unchanged and is strengthened by the superset
+invariant.
