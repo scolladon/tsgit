@@ -53,11 +53,12 @@ export async function resolveObjectBytes(
   verifyHash: boolean,
   maxBytes?: number,
 ): Promise<Uint8Array> {
+  // An already-aborted read honours the abort before paying any scan I/O.
+  checkAborted(ctx);
   // Git dies during object-store setup, ahead of every read — a structurally
   // self-inconsistent multi-pack-index must deny loose reads too, so this
   // gate sits before the empty-tree short-circuit and the deltaCache probe.
   await registry.assertLoadable();
-  checkAborted(ctx);
   if (id === emptyTreeOid(ctx.hashConfig)) {
     return EMPTY_TREE_BYTES;
   }

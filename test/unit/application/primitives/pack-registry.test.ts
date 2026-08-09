@@ -4056,9 +4056,9 @@ describe('PackRegistry.lookup — multi-pack-index authority', () => {
     });
   });
 
-  describe('Given the same blob duplicated across two packs, with the midx assigning it to the one whose header is broken', () => {
+  describe('Given a duplicate in an UNCLAIMED pack, with the midx assigning the oid to a claimed pack whose header is broken', () => {
     describe('When lookup is called for that oid', () => {
-      it('Then it is missing — the healthy duplicate in the other pack is never consulted', async () => {
+      it('Then the unclaimed duplicate serves it — git still walks packs the midx does not name', async () => {
         // Arrange
         const ctx = await buildSeededContext();
         const content = new TextEncoder().encode('duplicate-blob');
@@ -4077,6 +4077,38 @@ describe('PackRegistry.lookup — multi-pack-index authority', () => {
             }),
           ),
         );
+        const sut = createPackRegistry(ctx);
+
+        // Act
+        const hit = await sut.lookup(dupId);
+
+        // Assert
+        expect(hit?.pack.name).toBe('pack-B');
+      });
+    });
+  });
+
+  describe('Given a duplicate in a CLAIMED sibling pack, with the midx assigning the oid to the claimed pack whose header is broken', () => {
+    describe('When lookup is called for that oid', () => {
+      it('Then it is missing — a claimed sibling is never consulted as a second chance', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const content = new TextEncoder().encode('duplicate-blob');
+        const idsA = await writeSyntheticPack(ctx, 'A', [{ kind: 'base', type: 'blob', content }]);
+        await writeSyntheticPack(ctx, 'B', [{ kind: 'base', type: 'blob', content }]);
+        const dupId = idsA[0] as ObjectId;
+        await restampPackHeader(ctx, `${ctx.layout.gitDir}/objects/pack/pack-A.pack`, {
+          version: 99,
+        });
+        await writeMidxBytes(
+          ctx,
+          buildMidx(
+            healthyMidxSpec({
+              packNames: ['pack-A.idx', 'pack-B.idx'],
+              entries: [{ id: dupId, packIndex: 0, offset: PACK_HEADER_SIZE }],
+            }),
+          ),
+        );
         const { ctx: instrumented, calls } = instrumentedContext(ctx);
         const sut = createPackRegistry(instrumented);
 
@@ -4085,8 +4117,10 @@ describe('PackRegistry.lookup — multi-pack-index authority', () => {
 
         // Assert
         expect(hit).toBeUndefined();
-        const packBCalls = calls().filter((call) => call.path.includes('pack-B'));
-        expect(packBCalls).toEqual([]);
+        const packBReads = calls().filter(
+          (call) => call.method === 'read' && call.path.includes('pack-B'),
+        );
+        expect(packBReads).toEqual([]);
       });
     });
   });

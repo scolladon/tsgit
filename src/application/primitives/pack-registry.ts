@@ -2,7 +2,6 @@
  * Lazy scan + cache of .idx files under .git/objects/pack/.
  * Returns a PackRegistry facade used by object-resolver and readObject.
  */
-import { sanitize } from '../../domain/commands/error.js';
 import { TsgitError, type TsgitErrorData } from '../../domain/error.js';
 import { bytesEqual } from '../../domain/objects/encoding.js';
 import type { ObjectId } from '../../domain/objects/index.js';
@@ -431,13 +430,24 @@ const NO_INDEX_FAULTS: ReadonlyArray<{ readonly name: string; readonly data: Tsg
  * unreadable/unparseable (`indexFaults`). Built once per generation by
  * `resolveIndexes`, behind `PackGeneration.indexed`.
  */
+interface IndexedPack {
+  readonly pack: RegisteredPack;
+  /** The settled parse — held here so lookup's fallback loop stays synchronous. */
+  readonly index: PackIndex;
+}
+
 interface IndexedPacks {
-  readonly packs: ReadonlyArray<RegisteredPack>;
+  readonly packs: ReadonlyArray<IndexedPack>;
+  /** The same packs projected once — `all()` returns one stable reference per generation. */
+  readonly packList: ReadonlyArray<RegisteredPack>;
   readonly indexFaults: ReadonlyArray<{ readonly name: string; readonly data: TsgitErrorData }>;
 }
 
+const NO_INDEXED_PACKS: ReadonlyArray<IndexedPack> = Object.freeze([]);
+
 const EMPTY_INDEXED: IndexedPacks = Object.freeze({
-  packs: NO_PACKS,
+  packs: NO_INDEXED_PACKS,
+  packList: NO_PACKS,
   indexFaults: NO_INDEX_FAULTS,
 });
 
@@ -460,6 +470,13 @@ interface LoadedMidx {
   readonly set: MidxSet;
   readonly packsByLayer: ReadonlyArray<ReadonlyArray<RegisteredPack | undefined>>;
   readonly claimedNames: ReadonlySet<string>;
+  /**
+   * Whether each `PNAM` entry's sibling `.pack` file exists in the scan's own
+   * listing. An unbound entry whose `.pack` IS on disk (its `.idx` alone is
+   * missing) resolved to a real pack in git's eyes — its objects go
+   * unresolved but the pack itself is not reported missing.
+   */
+  readonly packFileOnDiskByLayer: ReadonlyArray<ReadonlyArray<boolean>>;
 }
 
 /**
@@ -475,7 +492,12 @@ interface LoadedMidx {
  * raw — `isSafePackName` exists precisely to keep a hostile filename out of
  * it.
  */
-function bindMidx(ctx: Context, packs: ReadonlyArray<RegisteredPack>, set: MidxSet): LoadedMidx {
+function bindMidx(
+  ctx: Context,
+  packs: ReadonlyArray<RegisteredPack>,
+  set: MidxSet,
+  fileNames: ReadonlySet<string>,
+): LoadedMidx {
   const packsByIdxName = new Map(packs.map((pack) => [`${pack.name}.idx`, pack]));
   const claimedNames = new Set<string>();
   const packsByLayer = set.layers.map((layer) =>
@@ -495,7 +517,12 @@ function bindMidx(ctx: Context, packs: ReadonlyArray<RegisteredPack>, set: MidxS
       return pack;
     }),
   );
-  return { set, packsByLayer, claimedNames };
+  const packFileOnDiskByLayer = set.layers.map((layer) =>
+    layer.packNames.map(
+      (name) => isSafePackName(name) && fileNames.has(`${packBaseName(name)}.pack`),
+    ),
+  );
+  return { set, packsByLayer, claimedNames, packFileOnDiskByLayer };
 }
 
 interface PackGeneration {
@@ -563,12 +590,11 @@ async function resolveIndexes(
   ctx: Context,
   packs: ReadonlyArray<RegisteredPack>,
 ): Promise<IndexedPacks> {
-  const loaded: RegisteredPack[] = [];
+  const loaded: IndexedPack[] = [];
   const faults: Array<{ readonly name: string; readonly data: TsgitErrorData }> = [];
   for (const pack of packs) {
     try {
-      await pack.index();
-      loaded.push(pack);
+      loaded.push({ pack, index: await pack.index() });
     } catch (err) {
       if (!isSkippableIdxFault(err)) throw err;
       ctx.logger?.warn?.('packRegistry: skipping unreadable pack index', {
@@ -578,7 +604,7 @@ async function resolveIndexes(
       faults.push({ name: pack.name, data: err.data });
     }
   }
-  return { packs: loaded, indexFaults: faults };
+  return { packs: loaded, packList: loaded.map((entry) => entry.pack), indexFaults: faults };
 }
 
 const unusableEntry = (
@@ -599,19 +625,33 @@ function findMidxHit(midx: LoadedMidx, id: ObjectId): PackLookupHit | undefined 
   for (let layerIndex = midx.set.layers.length - 1; layerIndex >= 0; layerIndex -= 1) {
     const entry = lookupMultiPackIndex(midx.set.layers[layerIndex]!, id);
     if (entry === undefined) continue;
-    const pack = midx.packsByLayer[layerIndex]?.[entry.packIndex];
+    // packsByLayer is built by mapping set.layers, so the layer index always
+    // exists; only the pack binding itself can be undefined.
+    const pack = midx.packsByLayer[layerIndex]![entry.packIndex];
     return pack === undefined ? undefined : { pack, offset: entry.offset };
   }
   return undefined;
 }
 
+// The display sanitiser deliberately preserves tab and newline, which are
+// exactly the bytes a finding field must not carry raw — hex-escape every
+// control byte instead.
+const escapeControlBytes = (name: string): string =>
+  [...name]
+    .map((ch) => {
+      const code = ch.charCodeAt(0);
+      const isControl = code < 0x20 || code === 0x7f;
+      return isControl ? `\\x${code.toString(16).padStart(2, '0')}` : ch;
+    })
+    .join('');
+
 // `PNAM` carries `pack-<hex>.idx`; findings elsewhere in this file carry the
 // pack BASE name, so the suffix is stripped here to match. A name failing
-// `isSafePackName` is rendered through the same control-character sanitiser
-// the logger boundary uses rather than reaching a finding (or a path) raw —
-// an attacker-controlled midx fully controls this string.
+// `isSafePackName` has every control byte hex-escaped rather than reaching a
+// finding (or a path) raw — an attacker-controlled midx fully controls this
+// string.
 const midxPackNameForFinding = (name: string): string =>
-  isSafePackName(name) ? packBaseName(name) : sanitize(name);
+  isSafePackName(name) ? packBaseName(name) : escapeControlBytes(name);
 
 /**
  * Chain-global position + safe pack name for every `PNAM` entry this scan's
@@ -626,8 +666,12 @@ function unresolvedMidxPacks(
   let base = 0;
   for (const [layerIndex, layer] of midx.set.layers.entries()) {
     const bound = midx.packsByLayer[layerIndex]!;
+    const packOnDisk = midx.packFileOnDiskByLayer[layerIndex]!;
     layer.packNames.forEach((name, packIndex) => {
-      if (bound[packIndex] === undefined) {
+      // An unbound entry whose .pack survives on disk resolved as a pack in
+      // git's eyes (only its .idx is gone): its objects are unresolved, but
+      // no pack-level finding is emitted for it.
+      if (bound[packIndex] === undefined && !packOnDisk[packIndex]) {
         unresolved.push({ position: base + packIndex, pack: midxPackNameForFinding(name) });
       }
     });
@@ -673,6 +717,17 @@ interface MidxEntryWalkResult {
 async function walkMidxEntries(midx: LoadedMidx): Promise<MidxEntryWalkResult> {
   const unresolvedEntries: ObjectId[] = [];
   const headArtefact = midx.set.artefacts[midx.set.artefacts.length - 1]!;
+  // One serviceability probe per distinct pack, not per entry: the verdict
+  // cannot change mid-walk, and the header memo clears on rejection, so a
+  // per-entry probe would re-issue the header read for every routed oid.
+  const serviceable = new Map<RegisteredPack, boolean>();
+  const packServes = async (pack: RegisteredPack): Promise<boolean> => {
+    const cached = serviceable.get(pack);
+    if (cached !== undefined) return cached;
+    const verdict = await probeMidxEntryServiceable(pack);
+    serviceable.set(pack, verdict);
+    return verdict;
+  };
   for (const [layerIndex, layer] of midx.set.layers.entries()) {
     const bound = midx.packsByLayer[layerIndex]!;
     for (const id of allMidxObjectIds(layer)) {
@@ -687,7 +742,7 @@ async function walkMidxEntries(midx: LoadedMidx): Promise<MidxEntryWalkResult> {
         return { unresolvedEntries, containedFault: { artefact: headArtefact, data: err.data } };
       }
       const pack = bound[entry.packIndex];
-      if (pack === undefined || !(await probeMidxEntryServiceable(pack))) {
+      if (pack === undefined || !(await packServes(pack))) {
         unresolvedEntries.push(id);
       }
     }
@@ -773,7 +828,8 @@ export function createPackRegistry(ctx: Context): PackRegistry {
       const pack = loadCandidatePack(ctx, dir, entry, fileNames);
       if (pack !== undefined) packs.push(pack);
     }
-    const midx = midxLoad.set === undefined ? undefined : bindMidx(ctx, packs, midxLoad.set);
+    const midx =
+      midxLoad.set === undefined ? undefined : bindMidx(ctx, packs, midxLoad.set, fileNames);
     return { packs, midxLoad, midx, indexed: createPromiseMemo(() => resolveIndexes(ctx, packs)) };
   };
   const scan = createPromiseMemo(scanPacks);
@@ -812,7 +868,7 @@ export function createPackRegistry(ctx: Context): PackRegistry {
   };
   const allPacks = async (): Promise<ReadonlyArray<RegisteredPack>> => {
     const generation = await currentGeneration();
-    return (await generation.indexed.get()).packs;
+    return (await generation.indexed.get()).packList;
   };
 
   // Pure over its fault list, so computeHealth can derive both halves of one
@@ -846,25 +902,78 @@ export function createPackRegistry(ctx: Context): PackRegistry {
     }
   };
 
-  // Step 3 of lookup: the ordinary .idx scan, skipping any pack the midx
-  // already claims. A pack the midx does not name is served exactly as it
-  // was before this generation ever had a midx.
-  const lookupViaIdxScan = async (
+  // Step 3 of lookup: the ordinary .idx scan over packs the midx does not
+  // claim. With no midx, the generation's classified snapshot is forced once
+  // and walked synchronously (every parse already settled). With a midx,
+  // ONLY unclaimed packs are touched — git never opens a midx-covered `.idx`
+  // in find_pack_entry, and forcing the snapshot here would re-pay the P
+  // eager reads the lazy scan exists to avoid. Each unclaimed `.idx` loads
+  // lazily; a classified-corrupt one is skipped per pack, mirroring the
+  // snapshot's own classification.
+  const hitIfServiceable = async (
+    pack: RegisteredPack,
+    index: PackIndex,
+    id: ObjectId,
+  ): Promise<PackLookupHit | undefined> => {
+    const offset = lookupPackIndex(index, id);
+    if (offset === undefined) return undefined;
+    const fault = await probeHeader(pack);
+    return fault === undefined ? { pack, offset } : undefined;
+  };
+
+  // No midx: force the generation's classified snapshot once, then walk it
+  // synchronously — every parse already settled.
+  const lookupViaIndexedSnapshot = async (
     generation: PackGeneration,
     id: ObjectId,
   ): Promise<PackLookupHit | undefined> => {
     const { packs } = await generation.indexed.get();
-    const claimedNames = generation.midx?.claimedNames;
-    for (const pack of packs) {
-      if (claimedNames?.has(`${pack.name}.idx`)) continue;
-      const index = await pack.index();
-      const offset = lookupPackIndex(index, id);
-      if (offset === undefined) continue; // an unclaimed pack is never opened
-      const fault = await probeHeader(pack);
-      if (fault !== undefined) continue;
-      return { pack, offset };
+    for (const { pack, index } of packs) {
+      const hit = await hitIfServiceable(pack, index, id);
+      if (hit !== undefined) return hit;
     }
     return undefined;
+  };
+
+  // The one lazy per-pack classification site outside the snapshot: an
+  // unclaimed pack's corrupt `.idx` is skipped exactly as `resolveIndexes`
+  // would skip it, with the same warn shape.
+  const unclaimedIndexOrSkip = async (pack: RegisteredPack): Promise<PackIndex | undefined> => {
+    try {
+      return await pack.index();
+    } catch (err) {
+      if (!isSkippableIdxFault(err)) throw err;
+      ctx.logger?.warn?.('packRegistry: skipping unreadable pack index', {
+        idx: `${pack.name}.idx`,
+        ...faultContext(err.data),
+      });
+      return undefined;
+    }
+  };
+
+  const lookupViaUnclaimedPacks = async (
+    generation: PackGeneration,
+    midx: LoadedMidx,
+    id: ObjectId,
+  ): Promise<PackLookupHit | undefined> => {
+    for (const pack of generation.packs) {
+      if (midx.claimedNames.has(`${pack.name}.idx`)) continue;
+      const index = await unclaimedIndexOrSkip(pack);
+      if (index === undefined) continue;
+      const hit = await hitIfServiceable(pack, index, id);
+      if (hit !== undefined) return hit;
+    }
+    return undefined;
+  };
+
+  const lookupViaIdxScan = (
+    generation: PackGeneration,
+    id: ObjectId,
+  ): Promise<PackLookupHit | undefined> => {
+    const midx = generation.midx;
+    return midx === undefined
+      ? lookupViaIndexedSnapshot(generation, id)
+      : lookupViaUnclaimedPacks(generation, midx, id);
   };
 
   const computeHealth = async (): Promise<PackHealth> => {
@@ -872,7 +981,7 @@ export function createPackRegistry(ctx: Context): PackRegistry {
     const { packs, indexFaults } = await generation.indexed.get();
     const unusable: UnusablePack[] = indexFaultsOf(indexFaults);
     const accessible: RegisteredPack[] = [];
-    for (const pack of packs) {
+    for (const { pack } of packs) {
       const fault = await probeHeader(pack);
       if (fault === undefined) accessible.push(pack);
       else unusable.push(unusableEntry(pack.name, 'pack', fault.data));
@@ -925,7 +1034,11 @@ export function createPackRegistry(ctx: Context): PackRegistry {
       const hit = findMidxHit(midx, id);
       if (hit === undefined) return lookupViaIdxScan(generation, id);
       const fault = await probeHeader(hit.pack);
-      return fault === undefined ? hit : undefined;
+      // A midx hit on an unusable pack is a miss for every claimed pack, but
+      // git still walks the packs the midx does NOT name (find_pack_entry's
+      // !p->multi_pack_index loop) — the claimed-skipping scan is exactly
+      // that loop, so a duplicate in an unclaimed pack is still served.
+      return fault === undefined ? hit : lookupViaIdxScan(generation, id);
     },
     health(): Promise<PackHealth> {
       return healthMemo.get();

@@ -258,6 +258,33 @@ describe('object-resolver', () => {
     });
   });
 
+  describe('Given an aborted signal and a flat multi-pack-index with a flipped signature', () => {
+    describe('When resolveObject is called', () => {
+      it('Then the abort wins — OPERATION_ABORTED, never the midx fault, and no scan I/O', async () => {
+        // Arrange
+        const controller = new AbortController();
+        controller.abort();
+        const ctx = await buildSeededContext({ signal: controller.signal });
+        const badMidx = new Uint8Array(16);
+        badMidx.set([0x00, 0x49, 0x44, 0x58, 1, 1, 1, 0], 0);
+        await ctx.fs.write(`${ctx.layout.gitDir}/objects/pack/multi-pack-index`, badMidx);
+        const registry = createPackRegistry(ctx);
+
+        // Act
+        let caught: unknown;
+        try {
+          await resolveObject(ctx, registry, 'a'.repeat(40) as ObjectId, true);
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe('OPERATION_ABORTED');
+      });
+    });
+  });
+
   describe('Given an aborted signal', () => {
     describe('When resolveObject is called', () => {
       it('Then throws OPERATION_ABORTED before any fs call', async () => {

@@ -160,6 +160,7 @@ function readChunkTableRows(
   }
 
   const rows: ChunkTableRow[] = [];
+  const seenIds = new Set<number>();
   let previousOffset = tableEnd;
   for (let i = 0; i < rowCount; i += 1) {
     const rowStart = MIDX_HEADER_SIZE + i * MIDX_CHUNK_TABLE_ROW_SIZE;
@@ -168,6 +169,22 @@ function readChunkTableRows(
     const low = view.getUint32(rowStart + 8);
     const offset = high * 0x100000000 + low;
 
+    if (seenIds.has(idWord)) {
+      throw invalidMultiPackIndex('chunk-table', `duplicate chunk id at row ${i}`);
+    }
+    seenIds.add(idWord);
+    if (idWord === 0 && i < rowCount - 1) {
+      throw invalidMultiPackIndex(
+        'chunk-table',
+        `terminating chunk id appears at row ${i} before the final row`,
+      );
+    }
+    if (offset % 4 !== 0) {
+      throw invalidMultiPackIndex(
+        'chunk-table',
+        `chunk table offset at row ${i} is not 4-byte aligned`,
+      );
+    }
     if (offset < previousOffset) {
       throw invalidMultiPackIndex('chunk-table', `chunk table offset at row ${i} moves backward`);
     }

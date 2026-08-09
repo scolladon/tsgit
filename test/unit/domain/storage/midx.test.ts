@@ -513,13 +513,71 @@ describe('midx', () => {
           // Arrange
           const spec = baseSpec();
           const bytes = buildMidx(spec);
-          const corrupted = setChunkRowOffset(bytes, 4, bytes.length + 10);
+          // Rounded to 4 so the alignment gate cannot fire before the bound gate.
+          const corrupted = setChunkRowOffset(bytes, 4, Math.ceil((bytes.length + 10) / 4) * 4);
 
           // Act & Assert
           expectRefusal(
             () => parseMultiPackIndex(corrupted, spec.digestLength),
             'chunk-table',
             'end of file',
+          );
+        });
+      });
+    });
+
+    describe('Given a chunk table with a duplicate chunk id', () => {
+      describe('When parsing', () => {
+        it('Then refuses with chunk-table naming the duplicate', () => {
+          // Arrange — rewrite row 1's id word to row 0's, keeping offsets intact
+          const spec = baseSpec();
+          const corrupted = buildMidx(spec).slice();
+          corrupted.copyWithin(12 + 12, 12, 12 + 4);
+
+          // Act & Assert
+          expectRefusal(
+            () => parseMultiPackIndex(corrupted, spec.digestLength),
+            'chunk-table',
+            'duplicate chunk id',
+          );
+        });
+      });
+    });
+
+    describe('Given a chunk table offset that is not 4-byte aligned', () => {
+      describe('When parsing', () => {
+        it('Then refuses with chunk-table naming the alignment', () => {
+          // Arrange — nudge row 1's offset by 2: still in bounds, still
+          // never-decreasing, but off the 4-byte grid
+          const spec = baseSpec();
+          const bytes = buildMidx(spec);
+          const view = new DataView(bytes.buffer, bytes.byteOffset);
+          const row1Offset = view.getUint32(12 + 12 + 8);
+          const corrupted = setChunkRowOffset(bytes, 1, row1Offset + 2);
+
+          // Act & Assert
+          expectRefusal(
+            () => parseMultiPackIndex(corrupted, spec.digestLength),
+            'chunk-table',
+            'not 4-byte aligned',
+          );
+        });
+      });
+    });
+
+    describe('Given a chunk table whose terminating zero id appears before the final row', () => {
+      describe('When parsing', () => {
+        it('Then refuses with chunk-table naming the early terminator', () => {
+          // Arrange — zero out row 0's id word; its offset stays valid
+          const spec = baseSpec();
+          const corrupted = buildMidx(spec).slice();
+          new DataView(corrupted.buffer, corrupted.byteOffset).setUint32(12, 0);
+
+          // Act & Assert
+          expectRefusal(
+            () => parseMultiPackIndex(corrupted, spec.digestLength),
+            'chunk-table',
+            'before the final row',
           );
         });
       });
@@ -722,7 +780,9 @@ describe('midx', () => {
             packNames: ['pack-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.idx'],
             entries: [{ id: oid('01'), packIndex: 0, offset: 0x100000000 }],
           });
-          const bytes = shrinkChunkAfter(buildMidx(spec), 'LOFF', -3);
+          // −4 keeps every chunk offset 4-aligned (so the chunk-table gate
+          // stays quiet) while leaving LOFF's length off the 8-byte stride.
+          const bytes = shrinkChunkAfter(buildMidx(spec), 'LOFF', -4);
 
           // Act & Assert
           expectRefusal(

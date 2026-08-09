@@ -4923,6 +4923,36 @@ describe('Given a PNAM entry that resolves to no pack this generation registered
   });
 });
 
+describe('Given a PNAM entry whose .idx is unregistered but whose sibling .pack survives on disk', () => {
+  describe('When fsck runs', () => {
+    it("Then only the per-entry family is emitted — the pack itself resolved in git's eyes", async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const name = midxPackName('f');
+      const packsDir = `${commonGitDir(ctx)}/objects/pack`;
+      await ctx.fs.write(`${packsDir}/${name.slice(0, -'.idx'.length)}.pack`, new Uint8Array([0]));
+      const ids = [midxOid('aa1'), midxOid('aa2')];
+      await writeFlatMidx(
+        ctx,
+        midxBaseSpec({
+          packNames: [name],
+          entries: ids.map((id) => ({ id, packIndex: 0, offset: 0 })),
+        }),
+      );
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      const packUnresolved = result.findings.filter((f) => f.type === 'midx-pack-unresolved');
+      const entryUnresolved = result.findings.filter((f) => f.type === 'midx-entry-unresolved');
+      expect(packUnresolved).toHaveLength(0);
+      expect(entryUnresolved).toHaveLength(2);
+      expect(result.exitCode & 32).toBe(32);
+    });
+  });
+});
+
 describe("Given a two-layer chain with one layer's PNAM unresolvable", () => {
   describe('When fsck runs', () => {
     it('Then a base-layer unresolvable PNAM reports chain-global position 0', async () => {

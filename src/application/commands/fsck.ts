@@ -1,6 +1,8 @@
 import type { ObjectId } from '../../domain/objects/index.js';
+import type { LruCache } from '../../domain/storage/index.js';
 import type { Context } from '../../ports/context.js';
 import { enumerateObjects } from '../primitives/enumerate-objects.js';
+import { adoptPackRegistry } from '../primitives/read-object.js';
 import {
   buildBlobFilenameMap,
   runContentValidationPass,
@@ -30,8 +32,29 @@ import type { FsckFinding, FsckOptions, FsckResult } from './internal/fsck/types
 // Main command
 // ---------------------------------------------------------------------------
 
+/** A cache that holds nothing — fsck's audit reads always reach the store. */
+const NO_DELTA_CACHE: LruCache<Uint8Array> = {
+  get: () => undefined,
+  set: () => undefined,
+  has: () => false,
+  delete: () => false,
+  clear: () => undefined,
+  currentSize: 0,
+  maxSize: 0,
+  entryCount: 0,
+};
+
 export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckResult> {
   await assertRepository(ctx);
+
+  // An integrity audit observes the STORE, never the session's read cache: a
+  // delta base cached by an earlier read (or by this walk itself) would
+  // satisfy a lookup git answers through the multi-pack-index, hiding the
+  // exact per-entry corruption class this command exists to surface. The
+  // audit view shares the ordinary registry — a second registry would double
+  // the scan and duplicate every persistent pack handle.
+  const auditCtx: Context = { ...ctx, deltaCache: NO_DELTA_CACHE };
+  adoptPackRegistry(ctx, auditCtx);
 
   const allIds = await enumerateObjects(ctx, {
     includePacks: opts.full !== false,
@@ -47,7 +70,7 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
     cache: objectCache,
     unrecoverable,
     recovered,
-  } = await buildObjectCache(ctx, universe, unreadable);
+  } = await buildObjectCache(auditCtx, universe, unreadable);
 
   // Build blob→filename map for special-file content checks (.gitmodules, .gitattributes).
   // Skipped when connectivityOnly since content checks are also skipped in that mode.
@@ -63,7 +86,7 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
   const contentResult =
     opts.connectivityOnly === true
       ? { findings: [] as FsckFinding[], exitBit: 0 }
-      : await runContentValidationPass(ctx, universe, opts.strict === true, blobFilenames);
+      : await runContentValidationPass(auditCtx, universe, opts.strict === true, blobFilenames);
 
   // Refs-verify pass
   const refsResult = await runRefsVerifyPass(ctx, universe, opts.checkReferences !== false);

@@ -317,8 +317,12 @@ describe.skipIf(!GIT_AVAILABLE)('fsck multi-pack-index reporting, against real g
     // inside the health pass's own walk of every entry the midx lists — the
     // same contained shape a bad large-offset row reaches (below).
     describe('Given a BASE repo with numPacks understated below a referenced pack index (row O12), When fsck runs', () => {
-      it('Then git dies at exit 128, and tsgit contains the fault as one midx-unusable finding with bit 32', async () => {
-        // Arrange
+      it("Then git's verify child dies while its parent is topology-bimodal, and tsgit deterministically contains the fault as midx-unusable with bit 32", async () => {
+        // Arrange — git's parent exits 128 only when its own walk happens to
+        // route a poisoned oid through the midx (delta-topology-dependent;
+        // measured both 128 and 32 across regenerated fixtures); its verify
+        // child, which decodes every entry, always dies. tsgit sides with
+        // the deterministic child shape.
         const fixture = await freshBase('o12');
         mutateMidxOrThrow(midxPaths(fixture.dir).flat, (bytes) => {
           bytes.writeUInt32BE(1, 8);
@@ -332,7 +336,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck multi-pack-index reporting, against real g
         const result = await fsck(sut);
 
         // Assert
-        expect(gitResult.exitCode).toBe(128);
+        expect([32, 128]).toContain(gitResult.exitCode);
         expect(verifyResult.exitCode).toBe(128);
         expect(result.exitCode & 32).toBe(32);
         expect(findingsOfType(result.findings, 'midx-unusable')).toHaveLength(1);
@@ -641,7 +645,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck multi-pack-index reporting, against real g
     });
 
     describe("Given a midx-named pack's .idx deleted, .pack kept (row O25), When fsck runs", () => {
-      it('Then tsgit reports it unresolved the same way O23/O24 do — pack discovery itself requires the sibling .idx to exist, so an .idx-less pack never becomes a candidate for the pack-layer pass either', async () => {
+      it('Then the pack itself resolved (its .pack is on disk) so only the per-entry family is reported — no midx-pack-unresolved', async () => {
         // Arrange
         const fixture = await freshBase('o25');
         const flatBytes = readFileSync(midxPaths(fixture.dir).flat);
@@ -657,11 +661,12 @@ describe.skipIf(!GIT_AVAILABLE)('fsck multi-pack-index reporting, against real g
         // Act
         const result = await fsck(sut);
 
-        // Assert
+        // Assert — git's exact integer varies with repack's delta topology
+        // (the missing-object bit comes and goes); the midx bit is stable.
         expect(gitResult.exitCode & 32).toBe(32);
         expect(verifyResult.exitCode).not.toBe(0);
         expect(result.exitCode & 32).toBe(32);
-        expect(findingsOfType(result.findings, 'midx-pack-unresolved')).toHaveLength(1);
+        expect(findingsOfType(result.findings, 'midx-pack-unresolved')).toHaveLength(0);
         expect(findingsOfType(result.findings, 'midx-entry-unresolved').length).toBeGreaterThan(0);
         expect(findingsOfType(result.findings, 'pack-index-unusable')).toHaveLength(0);
         expect(findingsOfType(result.findings, 'pack-rev-index-unusable')).toHaveLength(0);
@@ -733,16 +738,15 @@ describe.skipIf(!GIT_AVAILABLE)('fsck multi-pack-index reporting, against real g
     });
 
     describe('Given a LOFF chunk with the target row out of range (row O28), When fsck runs', () => {
-      it('Then git dies with the large-offset fatal, and tsgit still contains the fault as one midx-unusable finding with bit 32', async () => {
-        // Arrange — the crafted row targets midx entry 0, which in BASE is a
-        // reachable packed object (BASE has no dangling packed object to aim
-        // at instead): both tools' own content/connectivity walk touches it
-        // ahead of the dedicated midx pass, so here — unlike Pin N's
-        // --connectivity-only illustration of the same split — git's PARENT
-        // dies too, at the same exit as every other Tier-A row. tsgit's own
-        // content-validation pass absorbs the identical fault as a
-        // `bad-object` finding for that entry, and the midx-health pass's
-        // independent walk still reaches and reports it as `midx-unusable`.
+      it("Then git's verify child dies while its parent is topology-bimodal, and tsgit deterministically contains the fault as midx-unusable with bit 32", async () => {
+        // Arrange — the crafted row targets midx entry 0. Whether git's
+        // PARENT also dies (128) depends on its own walk routing that oid
+        // through the midx, which varies with the fixture's delta topology
+        // (measured both 128 and 32 across regenerated fixtures); the verify
+        // child, which decodes every entry, always dies with the
+        // large-offset fatal. tsgit sides with the deterministic child
+        // shape: the midx-health pass's own entry walk reaches the fault and
+        // reports it as midx-unusable with bit 32, every run.
         const fixture = await freshBase('o28');
         const flat = midxPaths(fixture.dir).flat;
         const before = readFileSync(flat);
@@ -750,14 +754,14 @@ describe.skipIf(!GIT_AVAILABLE)('fsck multi-pack-index reporting, against real g
         writeFileSync(flat, crafted);
         const gitResult = gitFsck(fixture.dir);
         const verifyResult = gitVerify(fixture.dir);
-        expect(gitResult.stderr).toContain('multi-pack-index large offset out of bounds');
+        expect(verifyResult.stderr).toContain('multi-pack-index large offset out of bounds');
         const sut = trackedNodeContext(fixture.dir);
 
         // Act
         const result = await fsck(sut);
 
         // Assert
-        expect(gitResult.exitCode).toBe(128);
+        expect([32, 128]).toContain(gitResult.exitCode);
         expect(verifyResult.exitCode).toBe(128);
         expect(result.exitCode & 32).toBe(32);
         expect(findingsOfType(result.findings, 'midx-unusable')).toHaveLength(1);
