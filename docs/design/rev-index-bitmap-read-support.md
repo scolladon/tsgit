@@ -867,6 +867,40 @@ that the pin is stale.
 **This pin is the whole of ADR-618 and ADR-619's empirical basis**, and it is the reason the design
 carries a tier control per command instead of one global policy.
 
+### Pin AK — positions are range-validated on the consumption path
+
+Fixture **F6**: 40 commits, 120 objects, one pack with a bitmap. The first per-commit **entry
+header** (offset 144 on this fixture — after the 32-byte header and the four type streams, whose
+lengths are `4 + 4 + 8·wordCount + 4` each) is rewritten from position `6` to `999999`, and the
+trailer is then **restamped**, so the file's own checksum is **valid**. This separates *position
+validation* from *checksum detection*; without the restamp every row below would read as Pin J's
+checksum failure and prove nothing.
+
+| # | probe | exit | observable |
+|---|---|---|---|
+| AK0 | `fsck` | **0** | nothing — Pin J rule 1 re-confirmed from a new direction |
+| AK1 | `rev-list --use-bitmap-index --objects HEAD` | **0** | `error: corrupt ewah bitmap: commit index 999999 out of range`, then the **walk's** answer |
+| AK2 | `rev-list --test-bitmap HEAD` | **128** | the same `error:`, then `fatal: failed to load bitmap indexes` |
+| AK3 | `pack-objects --revs` | **0** | the same `error:`, then the walk's answer |
+| AK4 | counts, AK1 versus a plain walk | — | **120 = 120** — the fallback answer is the correct one |
+
+**Rules, as pinned.**
+
+1. **git does not blindly trust a bitmap's integers.** It range-validates every position it decodes
+   and, on a violation, **declines the whole artefact** — not the offending entry — reports it, and
+   degrades to the walk. AK4 confirms the degraded answer is correct, not truncated.
+2. **The consumption path and the `fsck` path disagree about this file, correctly.** AK0 exits 0
+   while AK1 emits an error: the checksum is valid, so `fsck` has nothing to say (ADR-605's
+   separation), while the consumer cannot use a position it cannot resolve. A single row proving
+   both halves of that separation at once.
+3. **The decline is loud but not fatal** to the caller: an `error:` line on stderr, exit **0**, right
+   answer. Only the explicit self-test surface (`--test-bitmap`) turns it into a failure.
+4. This is the row that retires the "silently wrong pack" hazard: a fault of this class is caught
+   **before any oid is resolved**, in both tools.
+
+**This pin is ADR-622's basis**, and it narrows ADR-615: git trusts a bitmap's *reachability
+semantics*, never its *integers*.
+
 ## Requirements
 
 Verifiable at ship time. 1–12 are `fsck` and parsing; 13–23 are consumption and public surface;
