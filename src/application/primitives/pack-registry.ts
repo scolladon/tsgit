@@ -27,6 +27,7 @@ import {
 } from './internal/midx-binding.js';
 import { loadMidxSet, type MidxLoadResult } from './internal/midx-source.js';
 import { type ArtefactLoad, loadPackRevIndex } from './internal/pack-artefact-source.js';
+import { gatherByRevIndex } from './internal/pack-positions.js';
 import {
   faultContext,
   faultReason,
@@ -208,6 +209,42 @@ async function readBoundedIdx(ctx: Context, idxPath: string): Promise<Uint8Array
   return bytes;
 }
 
+function sortAscending(raw: ReadonlyArray<number>): number[] {
+  return [...raw].sort((a, b) => a - b);
+}
+
+/**
+ * `buildOffsetTable`'s fallback rule: gather from a usable `.rev` in O(n), or
+ * sort `raw` — the pre-existing O(n log n) path — for every other artefact
+ * state. The body is trusted exactly as canonical git trusts it: no digest
+ * check runs here, and a `refused` artefact is the one state that logs
+ * (`absent`/`unreadable` mirror git's own silence). A stored position at or
+ * beyond `raw.length` degrades this ONE pack to the sort rather than let
+ * `undefined` reach `nextOffsetForEntry`.
+ */
+function resolveSortedOffsets(
+  ctx: Context,
+  name: string,
+  raw: ReadonlyArray<number>,
+  load: ArtefactLoad<PackRevIndex>,
+): ReadonlyArray<number> {
+  if (load.kind === 'refused') {
+    ctx.logger?.warn?.('packRegistry: discarding unusable pack reverse index', {
+      rev: `${name}.rev`,
+      ...faultContext(load.data),
+    });
+    return sortAscending(raw);
+  }
+  if (load.kind !== 'usable') return sortAscending(raw);
+  const gathered = gatherByRevIndex(load.value, raw);
+  if (gathered !== undefined) return gathered;
+  ctx.logger?.warn?.(
+    'packRegistry: pack reverse index position out of range, falling back to sort',
+    { rev: `${name}.rev` },
+  );
+  return sortAscending(raw);
+}
+
 function loadPack(
   ctx: Context,
   dir: string,
@@ -258,7 +295,8 @@ function loadPack(
     const stat = await ctx.fs.stat(packPath);
     const packFileSize = stat.size;
     const raw = entryOffsets(index);
-    const sortedOffsets = [...raw].sort((a, b) => a - b);
+    const load = await revIndexMemo.get();
+    const sortedOffsets = resolveSortedOffsets(ctx, name, raw, load);
     // The pack file trailer is a single pack-checksum digest (SHA-1: 20 bytes,
     // SHA-256: 32 bytes). The last entry's data ends exactly at trailerStart.
     const trailerStart = packFileSize - ctx.hashConfig.digestLength;
