@@ -5,9 +5,9 @@
 > Lift: a `.rev` parser + generation check against git's, an EWAH bitmap parser, and interop pins
 > comparing enumeration/reachability against real git with and without the auxiliary files.
 >
-> Status: **revised against ADRs 603–617** (ratified) → self-reviewed ×3
+> Status: **revised against ADRs 603–619** (all ratified, no open escalations) → self-reviewed
 >
-> **This revision supersedes the draft's scope.** Fifteen decisions were ratified; several deviate
+> **This revision supersedes the draft's scope.** Seventeen decisions were ratified; several deviate
 > from the draft's recommendations and invalidate whole sections of it. What changed, in one place:
 >
 > | the draft said | the ratified decision |
@@ -18,6 +18,15 @@
 > | verify the `.rev` digest before use | **trust**, exactly as git does; verification stays in `fsck` ([ADR-606](../adr/606-the-rev-index-body-is-trusted-on-the-read-path.md), [ADR-615](../adr/615-bitmap-closures-are-trusted-exactly-as-git-does.md)) |
 > | midx bitmaps are `fsck`-verified only | midx bitmaps are **consumed**, via the midx reverse-index chunk ([ADR-617](../adr/617-midx-bitmaps-are-consumed-via-the-midx-reverse-index-chunk.md)) |
 > | no new commands | **two** new Tier-1 commands: `rev-list` ([ADR-613](../adr/613-rev-list-ships-the-reachability-core-only.md)) and `pack-objects` ([ADR-614](../adr/614-pack-objects-ships-closure-to-pack-only.md)) |
+>
+> **Two later decisions settle the forks the first revision could not.**
+> [ADR-618](../adr/618-closure-tier-selection-matches-git-per-command.md) makes the closure tier a
+> **per-command** property — `rev-list` walks unless the caller asks for the bitmap, `pack-objects`
+> uses a bitmap unless the caller refuses it — because that is what git itself does, measured in both
+> directions (Pin AJ). [ADR-619](../adr/619-the-object-path-is-optional-and-absent-on-the-bitmap-tier.md)
+> makes the object `path` **optional and absent on the bitmap tier**, again matching git. Both amend
+> ADR-613 and ADR-616 in place: ADR-616's global *"automatic everywhere"* and its **unconditional**
+> identical-sets obligation are **superseded** by a conditional, stronger invariant (requirement 16).
 >
 > **The draft's §D1 consumer census is falsified.** `enumeratePushObjects`
 > (`src/application/primitives/enumerate-push-objects.ts`) and `enumerateBundleObjects`
@@ -35,8 +44,9 @@
 >
 > **One new pin reframes the acceleration story and it is the most important sentence in this
 > document**: on the bitmap path git's `rev-list --objects` emits **bare object ids with no path
-> names at all** (Pin AA). A bitmap carries reachability and type; it carries no paths. Everything
-> §D7 says about `rev-list --objects` follows from that measurement.
+> names at all** (Pin AA, re-measured as Pin AJ7). A bitmap carries reachability and type; it carries
+> no paths. ADR-619 ratifies the consequence — an optional `path` — and everything §D7 says about
+> `rev-list --objects` follows from that measurement.
 
 ## Context
 
@@ -138,15 +148,17 @@ not replace the pack's index.
 
 ### Constraining prior decisions
 
-The fifteen ratified decisions are binding and are cited inline where they bite. The earlier ones
+The seventeen ratified decisions are binding and are cited inline where they bite. The earlier ones
 that still shape the work:
 
 - **[ADR-226](../adr/226-git-faithfulness-prime-directive.md) — git-faithfulness.** Binds the `fsck`
   exit integer, the refusal conditions, and the object sets the new commands return. Pin AB is where
-  it gets hard: git's own two paths disagree, so "match git" needs a chosen referent (E-1).
+  it gets hard: git's own two paths disagree, so "match git" needs a chosen referent — and ADR-618
+  chooses it **per command**, because that is how git itself resolves it (Pin AJ).
 - **[ADR-249](../adr/249-describe-structured-data-only.md) — structured data only.** Both new
   commands return fields, never lines. git's `error:` transcripts are reconstructed inside interop
-  tests.
+  tests. The per-command tier control ADR-618 adds is **not** cosmetic — it changes the returned
+  set, not its rendering — so ADR-249 does not bar it.
 - **[ADR-572](../adr/572-local-pack-gate-sits-in-lookup.md)** — `all()` does not apply the header
   gate; §D11's universe argument depends on that.
 - **[ADR-575](../adr/575-full-per-pack-registry-degradation.md)** — per-artefact degradation via
@@ -206,7 +218,7 @@ first, or the mutation silently no-ops and the whole row reads as a false `0`.
 
 **Pins A–M** were measured for the draft and independently re-verified this run; they are reproduced
 verbatim and their fixture is 2 commits / 6 blobs / 3 trees → 12 objects in one pack.
-**Pins AA–AI** are new: they cover **consumption**, which Pins A–M do not touch at all. Their
+**Pins AA–AJ** are new: they cover **consumption**, which Pins A–M do not touch at all. Their
 fixtures are named where used:
 
 - **F1** — 30 commits, `git repack -adq --write-bitmap-index`; 124 objects, **30** bitmap entries.
@@ -218,6 +230,9 @@ fixtures are named where used:
 - **F3** — F2 plus 5 more commits repacked incrementally into a second pack, then
   `git multi-pack-index write --bitmap`; 2 packs, 1 pack bitmap, 1621 midx objects, 1 midx bitmap.
 - **F4** — 76 commits including one real merge, `git repack -adq --write-bitmap-index`.
+- **F5** — the ratification run's own fixture for Pin AJ: a history that **repeats blob content
+  across the have boundary**, `git repack -adq --write-bitmap-index`; **367** objects reachable from
+  `HEAD`. Same repetition property as F2, at a size small enough to enumerate by hand.
 
 **RESTAMPED** rows recompute the artefact's trailing digest over `[0, len − digestLength)` after the
 mutation, which separates *load-time structural checks* from *checksum detection*. A control row
@@ -619,8 +634,9 @@ has no `--no-use-bitmap-index`; the walk is its default).
 3. AA6 matters twice: the bitmap serves a want that has no entry of its own (Pin AD explains how),
    and it still emits no names.
 
-This is the pin that decides how much of `rev-list --objects` the acceleration can actually serve —
-see E-1/E-2 in §Escalations.
+This is the pin that decides how much of `rev-list --objects` the acceleration can actually serve.
+ADR-619 takes the consequence: the entry's `path` is **optional**, populated by the walk tier and
+absent on the bitmap tier — git's own behaviour on both paths (§D7).
 
 ### Pin AB — bitmap and walk **disagree** once `not`/haves are present
 
@@ -680,10 +696,11 @@ bitmap's flag word to 0 and restamp, then `exit 134` proves git loaded it (Pin J
 2. `--first-parent` and `--no-walk` are worse: git loads the bitmap, uses it, and **silently returns
    the wrong answer for the option** — the full reachability closure, as though the option were
    absent. On F2 (linear, no merges) `--first-parent` looks correct; only the merge fixture exposes it.
-3. Because tsgit exposes **no** bitmap flag (ADR-616), tsgit has exactly one answer per query, and
-   the answer it must match is git's **default** — which for all three of these options is the walk.
-   §D7 therefore declines the bitmap for `--max-count`, `--first-parent` and `--no-walk`. That is a
-   consequence of ADR-616 composed with ADR-226, not a free choice.
+3. Every row above is the **opted-in** behaviour (`--use-bitmap-index`); git's `rev-list` default is
+   the walk column throughout (Pin AJ1). Under ADR-618 `rev-list` walks by default too, so tsgit's
+   default answer for all three options is already git's default answer, with no special case. The
+   one special case that survives is `--max-count`, where **git itself** declines the bitmap even
+   when asked (row 6) — §D7 reproduces that decline rather than inventing one.
 
 ### Pin AD — entry grammar: selection, XOR chains, and a full reconstruction proof
 
@@ -816,6 +833,40 @@ across all 1606 positions. That is exactly ADR-604's claim
 `sortedOffsets[p] = entryOffsets(index)[revIndexPositionAt(rev, p)]`, and it is the whole of the
 accelerator's correctness. (Verified on F1 and on Pin B's 12-object fixture too.)
 
+### Pin AJ — the default tier is a **per-command** property
+
+Fixture **F5**, measured by the run that ratified ADR-618. The fixture's **repeated blob content
+across the have boundary** is load-bearing: without it every row below collapses to a single column,
+because the two tiers then agree — the same trap Pin AB9 measures and blind spot 10 restates. A
+reader reproducing this pin on a fresh linear fixture will see no disagreement and conclude, wrongly,
+that the pin is stale.
+
+| # | command | tier git chooses | objects |
+|---|---|---|---|
+| AJ1 | `rev-list --objects HEAD --not HEAD~50` | **walk** | **156** |
+| AJ2 | `rev-list --use-bitmap-index --objects HEAD --not HEAD~50` | **bitmap** | **150** |
+| AJ3 | `pack-objects --revs` (same wants and haves) | **bitmap** | **150** |
+| AJ4 | `pack-objects --revs --no-use-bitmap-index` | **walk** | **156** |
+| AJ5 | either command, **no haves** | either | **367 = 367** |
+| AJ6 | the six objects only the walk emits | — | all **blobs**, all reachable from the have |
+| AJ7 | name-carrying `--objects` lines, walk versus bitmap | — | **127** versus **0** |
+
+**Rules, as pinned.**
+
+1. **git resolves the walk/bitmap disagreement per command, not globally.** `rev-list` walks by
+   default; `pack-objects` uses a bitmap by default. Both defaults are confirmed **in both
+   directions**: each command carries a flag that flips it and produces the other command's number,
+   so neither default is an artefact of how the command was invoked.
+2. AJ5 separates "the two tiers disagree" from "the fixture is odd": with no haves they agree
+   exactly. The disagreement is a property of **have composition**, never of the bitmap alone.
+3. AJ6 pins the *direction* and the *content* of the disagreement: the walk's answer is a strict
+   **superset**, and every extra object is reachable from a have. That is what makes `pack-objects`'
+   smaller pack safe — the receiver already has everything the bitmap omitted.
+4. AJ7 reproduces Pin AA on this fixture: the bitmap tier carries no paths, for either command.
+
+**This pin is the whole of ADR-618 and ADR-619's empirical basis**, and it is the reason the design
+carries a tier control per command instead of one global policy.
+
 ## Requirements
 
 Verifiable at ship time. 1–12 are `fsck` and parsing; 13–23 are consumption and public surface;
@@ -866,27 +917,45 @@ Verifiable at ship time. 1–12 are `fsck` and parsing; 13–23 are consumption 
 15. **The `.rev` accelerator is measured, not asserted**: absolute wall-clock, main versus branch,
     from the CI nightly artefact, over a many-object shape **and** a many-small-packs shape. A
     measured regression is fixed in this PR.
-16. **The closure engine returns the same object set with and without a bitmap** on every fixture
-    (ADR-616's double-run obligation) — a **set** equality, since order is deterministic per tier and
-    not equal across tiers (§D6). The test surface selects the tier internally; **no public option
-    does** (ADR-616).
-17. **The bitmap is declined for `--max-count`, `--first-parent` and `--no-walk`** (Pin AC), so
-    tsgit's single answer for those options is git's default answer.
+16. **The two tiers stand in the pinned relation, which is conditional on haves** (ADR-618, amending
+    ADR-616's unconditional obligation). ADR-616's double run stands — every closure test runs on a
+    fixture carrying a bitmap and on the same repository with the bitmap removed — and asserts:
+    - with **no `not`**: the two tiers agree **exactly**;
+    - with **`not` non-empty**: the walk result is a **superset** of the bitmap result, **and** every
+      object in the difference is reachable from a `not` tip;
+    - in both cases the comparison is on **object id and type only, never on path** (ADR-619), and it
+      is a **set** comparison, since order is deterministic per tier and not equal across tiers (§D6).
+17. **Tier defaults reproduce git per command** (ADR-618, Pin AJ): `rev-list` walks unless the caller
+    asks for the bitmap; `pack-objects` uses a usable bitmap unless the caller refuses it. Both
+    commands carry the control, sharing one option name and differing only in default — exactly git's
+    `--use-bitmap-index` / `--no-use-bitmap-index` split. With the default tier, tsgit's answer for
+    `--max-count`, `--first-parent` and `--no-walk` is git's default answer, which is the walk's; when
+    the caller does ask for the bitmap, `--max-count` still walks because **git itself** declines the
+    bitmap for it (Pin AC row 6).
 18. **A bitmap never truncates an answer** (Pin AH): objects in other packs and loose objects are
     included, exactly as git includes them.
-19. **Preference order is midx bitmap ≻ pack bitmap ≻ walk** (Pin AG), and a fault at any tier falls
-    through to the next without changing the result.
+19. **Artefact preference inside the bitmap tier is midx bitmap ≻ pack bitmap** (Pin AG), and a fault
+    at either falls through to the other **without changing the result**. A fall-through all the way
+    to the walk is result-preserving only when `not` is empty; with haves it yields the walk's
+    superset, which is precisely what git does when it cannot load a bitmap (Pin AJ4).
 20. **`rev-list` and `pack-objects` return structured fields only** (ADR-249) — oids, types, counts,
-    booleans; never a rendered line, never a `--pretty`/`--format`/`--abbrev`/`--date` option.
+    booleans; never a rendered line, never a `--pretty`/`--format`/`--abbrev`/`--date` option. The
+    tier control is the one option that survives that rule, because it changes the returned **set**
+    rather than its rendering (ADR-618). The object **`path` is optional**, populated by the walk
+    tier and absent on the bitmap tier (ADR-619) — the result type is deliberately not total in that
+    field, and its doc-comment says which tier fills it.
 21. **`pack-objects` writes a `.pack` and an `.idx` and nothing else** (ADR-614): no `.rev`, no
     `.bitmap`, no delta entries, no new `@writes` annotation, no write-surface allowlist entry.
 22. **Both new commands pay the full Tier-1 surface tax**: barrel, facade + facade surface-lock test,
     `docs/use/commands/<kebab>.md` + index row, a parity scenario invocation, the README count, and a
-    regenerated `reports/api.json`.
+    regenerated `reports/api.json`. Each page states its **tier default** (ADR-618), and `rev-list`'s
+    states plainly that the bitmap tier cannot populate `path` and why (ADR-619) — a documentation
+    obligation the ADR imposes, not a nicety.
 23. **Every other public-surface change is deliberate**: the two new `FsckFinding` variants, the
-    bitmap finding variant, both new error codes with their `check` unions, `EXIT_BITMAP`, and any
-    new domain export appear in `reports/api.json` on purpose, and `FsckResult.exitCode`'s
-    doc-comment gains bit 128.
+    bitmap finding variant, both new error codes with their `check` unions, `EXIT_BITMAP`, the
+    `useBitmapIndex` option on both command option types with its **opposite defaults**, the optional
+    `path` on the `rev-list` entry, and any new domain export appear in `reports/api.json` on purpose,
+    and `FsckResult.exitCode`'s doc-comment gains bit 128.
 
 Standing, across all of the above:
 
@@ -910,7 +979,7 @@ Four arms, all in this entry, none deferred:
 | arm | artefact | ADR | section |
 |---|---|---|---|
 | the reverse-index accelerator | `.rev` | 604 | §D10 |
-| bitmap-backed reachability behind two new commands | `.bitmap`, midx `.bitmap` | 603, 613, 614, 615, 616, 617 | §D6–§D9 |
+| bitmap-backed reachability behind two new commands | `.bitmap`, midx `.bitmap` | 603, 613, 614, 615, 616, 617, 618, 619 | §D6–§D9 |
 | the `fsck` reverse-index pass (exit bit 64) | `.rev` | 607, 608 | §D11 |
 | the `fsck` bitmap pass (exit bit 128) | both bitmaps | 605, 612 | §D12 |
 
@@ -918,12 +987,19 @@ The load-bearing structural rule that keeps these four from contaminating each o
 
 > **The parser exists for consumption. The `fsck` bitmap pass does not parse.** (ADR-605)
 
-Everything downstream follows. Because `fsck` never parses a bitmap, no structural strictness in the
-parser can produce a finding git would not produce — so the parser is free to be *stricter* than git
-wherever strictness buys safety, since its only refusal behaviour is to **decline and fall back**,
-and a decline changes no result (ADR-616). That asymmetry is why T-3's mitigation can be aggressive
-without costing a single point of faithfulness. It is stated here, once, because three later sections
-lean on it.
+Everything downstream follows. Because `fsck` never parses a bitmap, **no structural strictness in
+the parser can produce a finding git would not produce** — that half of the asymmetry is
+unconditional, and it is why T-3's mitigation can be aggressive without costing a point of `fsck`
+faithfulness. The parser's only refusal behaviour is to **decline and fall back**.
+
+ADR-618 puts a price on the other half, and it is small but no longer zero: a decline that reaches
+the walk tier changes a **have-bearing** answer from the exact difference to git's superset (§D13).
+So "decline freely, nothing observes it" — ADR-616's original licence — now reads *"decline where git
+declines"*. Pin J is the map and it is nearly total: every structural corruption §D3 refuses (bad
+magic, bad version, a missing full-DAG flag, an overrunning stream) is a row where git also refuses
+or aborts, so the two decline together. The one row where git shrugs and tsgit must too is B22's
+oversized `bitSize`, which §D3 explicitly does **not** treat as a refusal. It is stated here, once,
+because three later sections lean on it.
 
 ### §D2 — the `.rev` domain parser: `src/domain/storage/rev-index.ts`
 
@@ -1167,32 +1243,48 @@ the `TsgitError` for the caller to log or map to a finding. Consumers **never** 
 `src/application/primitives/internal/closure-engine.ts`. One engine, two commands (ADR-613, ADR-614).
 
 ```ts
+export type ClosureTier = 'bitmap' | 'walk';
+
 export interface ClosureRequest {
   readonly wants: ReadonlyArray<ObjectId>;
   readonly not: ReadonlyArray<ObjectId>;
   /** Include trees and blobs, not just commits and tags. */
   readonly objects: boolean;
+  /** The tier the **command** asks for. The engine holds no default (ADR-618). */
+  readonly tier: ClosureTier;
 }
 export interface ClosureObject {
   readonly id: ObjectId;
   readonly type: 'commit' | 'tree' | 'blob' | 'tag';
+  /** Walk tier only — a bitmap encodes reachability and type, never names
+   *  (ADR-619, Pins AA/AJ7). */
+  readonly path?: FilePath;
 }
 export interface ClosureResult {
   readonly objects: ReadonlyArray<ClosureObject>;
-  /** Whether a bitmap produced this result. Internal — never surfaced (ADR-616). */
-  readonly viaBitmap: boolean;
+  /** The tier that actually answered: a `'bitmap'` request still answers `'walk'` after a
+   *  silent fallback. Internal — neither command surfaces it. */
+  readonly tier: ClosureTier;
 }
 ```
 
-**Tier selection**, in Pin AG's measured order, each tier falling through silently on any fault:
+**The engine answers both tiers; it decides no policy.** `tier` is an input, and the *command*
+supplies it — `rev-list` from its caller-facing control (default `'walk'`), `pack-objects` from its
+own (default `'bitmap'`). That split is the whole of ADR-618 in the code: two commands with opposite
+defaults over one engine, because git has two commands with opposite defaults over one closure. An
+engine that chose for itself could reproduce at most one of them.
+
+**Within `tier: 'bitmap'`**, artefact preference follows Pin AG's measured order, each falling
+through silently on any fault:
 
 1. a usable midx bitmap for the in-use midx generation, if the midx carries a reverse-index chunk;
 2. a usable pack bitmap;
-3. the walk.
+3. the walk — the terminal fallback, which is result-preserving when `not` is empty and yields the
+   walk's superset otherwise, exactly as git degrades (Pin AJ4).
 
-Selection is **not** conditional on the wants having entries — Pin AA6 and Pin AD1/AD2 show git uses
-a bitmap for wants it has never heard of. ADR-616's phrase "covers the requested tips" is therefore
-read as *"can be extended to the tips by a bounded partial walk"*, which is what git does.
+Artefact selection is **not** conditional on the wants having entries — Pin AA6 and Pin AD1/AD2 show
+git uses a bitmap for wants it has never heard of. ADR-616's phrase "covers the requested tips" is
+therefore read as *"can be extended to the tips by a bounded partial walk"*, which is what git does.
 
 **The bitmap algorithm**, pinned precisely enough to implement:
 
@@ -1213,15 +1305,14 @@ fill(tips) -> bit set B over [0, objectCount + extendedCount):
 closure(request):
   W = fill(request.wants)
   N = fill(request.not)
-  result bits = W AND NOT N            // Pin AB: this is the exact set difference
+  result bits = W AND NOT N            // Pin AB/AJ: the exact set difference
   for each set bit p: oid = §D4 mapping; type = §D3 type streams (Pin AE) or the object header
+                      path is NOT produced — the artefact has none (ADR-619)
 ```
 
-**The last line of `closure` is contingent on E-1.** `W AND NOT N` is option (a) — the exact set
-difference, which is the only thing a bitmap can compute. Under option (b) the engine declines the
-bitmap whenever `not` is non-empty and the walk tier answers with git's over-reporting semantics
-instead. Everything else in this section is common to both: the fork is one tier-selection predicate
-plus one walk-tier semantic, and it is not decided here.
+`W AND NOT N` is the **only** difference a bitmap can compute, and Pin AJ2/AJ3 confirm it is the one
+git's bitmap tier reports (150). It is therefore not a choice this design makes; it is the tier's
+semantics.
 
 **Edges, each with its rule:**
 
@@ -1252,20 +1343,29 @@ artefact are appended after `objectCount` in the engine's own bit space, with a 
 `extendedOids: ObjectId[]` and their types taken from the object header. The bit space is grown in
 whole words; the cap is the existing `MAX_PUSH_OBJECTS`-class bound, reused rather than reinvented.
 
-**The walk tier** is the same engine with the bitmap arms removed: `fill` degenerates to "walk
-everything from the tips" and the composition of `wants` against `not` happens in the same place, so
-ADR-616's double-run equality is largely a *property of one function* rather than a coincidence
-between two implementations. That is the reason the engine exists at all rather than each command
-growing its own. Under E-1 option (b) the two tiers stop sharing the composition step for
-have-bearing queries — the walk tier keeps git's over-reporting semantics and the bitmap tier is
-simply not selected — so the double-run assertion becomes trivially true there rather than
-informative. That is E-1's cost, recorded here so it is weighed with the rest.
+**The walk tier is git's walk — not the bitmap's answer recomputed by walking.** It marks the `not`
+tips uninteresting along with their trees, recursing through those trees to mark their contents, then
+walks the interesting commits and emits every object it reaches that carries no mark. It therefore
+emits the **superset**: an object reachable from an *ancestor* of a `not` tip but absent from that
+tip's own trees is never marked, so it is emitted again (Pin AB rule 1; Pin AJ1/AJ6 count it at
+156 versus 150, all six extras blobs). The recursion through the marked trees is not optional and
+the numbers say so: marking only the root tree *object* would re-emit that tip's entire tree, which
+is far more than six objects. Under ADR-618 that over-report is the answer `rev-list`
+returns by default, so **computing the exact difference here would be the divergence**, not the fix.
+The walk tier also produces the `path` (§D7), which is the other thing the bitmap tier cannot.
+
+The two tiers therefore share `fill`'s traversal machinery, the emit-dedupe and the type/oid mapping,
+and deliberately **do not** share the difference step. That is still why one engine exists rather
+than two commands growing their own: the shared half is the expensive, bug-prone half, and the
+unshared half is four lines whose correctness is pinned from both sides by requirement 16's
+superset invariant. The walk tier's fidelity is not argued, it is asserted — every have-bearing
+interop row compares it against real `git rev-list --objects` with no tier flag.
 
 **Order is deterministic per tier and is *not* equal across tiers.** The bitmap tier emits in
 ascending bit position (Pin AA5 shows git's own two paths differ likewise); the walk tier emits in
-walk order. Nothing sorts, because sorting a repository-sized array to satisfy a comparison the ADR
-does not ask for is a real cost for no gain: ADR-616's obligation is on the object **set**, and
-ADR-249 puts ordering-for-display on the caller.
+walk order. Nothing sorts, because sorting a repository-sized array to satisfy a comparison no ADR
+asks for is a real cost for no gain: the surviving obligation is on the object **set**, compared on
+id and type (requirement 16), and ADR-249 puts ordering-for-display on the caller.
 
 ### §D7 — `rev-list` (ADR-613)
 
@@ -1282,11 +1382,17 @@ export interface RevListOptions {
   readonly firstParent?: boolean;
   readonly all?: boolean;
   readonly noWalk?: boolean;
+  /** Ask for the bitmap tier. **Defaults to `false`** — git's `rev-list` walks unless asked
+   *  (ADR-618, Pin AJ1/AJ2). The bitmap tier returns the exact set difference and **no
+   *  `path`**; a caller that needs paths must leave this off (ADR-619). It also changes what
+   *  `firstParent` and `noWalk` mean, exactly as git's flag does (Pin AC rows 7/8). */
+  readonly useBitmapIndex?: boolean;
 }
 export interface RevListEntry {
   readonly id: ObjectId;
   readonly type: 'commit' | 'tree' | 'blob' | 'tag';
-  /** Contingent on E-2 — optional under (a), required-and-bitmap-disabling under (b). */
+  /** Present on the walk tier under `objects`; **absent on the bitmap tier**, which carries
+   *  no names at any price (ADR-619, Pins AA/AJ7). */
   readonly path?: FilePath;
 }
 export interface RevListResult {
@@ -1297,7 +1403,9 @@ export interface RevListResult {
 ```
 
 No `--pretty`, `--format`, `--date`, `--abbrev`, `--header`, `-z`, `--object-names`: every one of
-those is presentation and ADR-249 bars it independently of ADR-613.
+those is presentation and ADR-249 bars it independently of ADR-613. `useBitmapIndex` is the one new
+option and it is **not** in that family — it selects which of git's two disagreeing answers the
+caller gets (Pin AJ), so it changes the data, not its rendering.
 
 `count` is the entry count, and Pin AA3/AA4 pin that it moves with `objects`: **1605** with, **400**
 without, on the same fixture and the same tip. `count: true` does not change *what* is computed, only
@@ -1308,16 +1416,21 @@ no separate count-only fast path, because the bitmap already computes the whole 
 `wants` by union, exactly as git's `rev-list --all <rev>` does. A `--max-count` of `0` yields an
 empty result rather than an unbounded one.
 
-**Bitmap eligibility is a function of the options, and Pin AC is the table.** The engine is asked for
-a bitmap-accelerated closure only when **all** of these hold:
+**The tier is the caller's, and the default is the walk** (ADR-618). `rev-list` passes
+`tier: useBitmapIndex ? 'bitmap' : 'walk'` to the engine and nothing else decides. Two consequences,
+each measured rather than reasoned:
 
-- `maxCount` is absent — git itself declines (AC row 6);
-- `firstParent` is false — git uses the bitmap and returns the wrong answer (AC row 7);
-- `noWalk` is false — same (AC row 8).
-
-Otherwise the walk tier is used. tsgit exposes no flag, so tsgit's single answer for those three
-options is git's default answer, which is the walk's. This is requirement 17 and it is forced by
-ADR-616 composed with ADR-226, not chosen.
+- **By default, every option is already git-faithful with no special case.** git's `rev-list` walks
+  too (Pin AJ1), so the walk tier's answer *is* git's answer for `--max-count`, `--first-parent` and
+  `--no-walk` alike — the three rows Pin AC shows the bitmap getting wrong. The eligibility predicate
+  the previous revision needed is gone: it was compensating for a missing tier control.
+- **With `useBitmapIndex` set, tsgit composes as git composes.** `maxCount` still walks, because
+  **git itself** abandons the bitmap for it (AC row 6) — declining there is reproduction, not policy.
+  `firstParent` and `noWalk` keep git's measured behaviour: git loads the bitmap, answers from it and
+  returns the full reachability closure as though the option were absent (AC rows 7/8, 227 versus 183
+  and 227 versus 7). No ADR diverges from that, so ADR-226 settles it — and the option's doc-comment
+  says so plainly, because it is the one place where asking for the bitmap changes what the *other*
+  options mean.
 
 Ordering: the returned array is **deterministic per tier** and is not git's, and it is not equal
 across tiers (§D6). Pin AA5 shows git's own two paths order differently, so there is no single "git
@@ -1334,6 +1447,10 @@ export interface PackObjectsOptions {
   readonly not?: ReadonlyArray<string>;
   /** Directory to write into; defaults to the repository's pack directory. */
   readonly outputDirectory?: string;
+  /** Use the bitmap tier. **Defaults to `true`** — git's `pack-objects --revs` uses a usable
+   *  bitmap unless told not to (ADR-618, Pin AJ3/AJ4). Setting it `false` mirrors git's
+   *  `--no-use-bitmap-index` and yields the walk's larger, equally valid pack. */
+  readonly useBitmapIndex?: boolean;
 }
 export interface PackObjectsResult {
   readonly packId: ObjectId;          // the pack's own checksum
@@ -1347,9 +1464,16 @@ It composes what already exists: the closure engine (§D6) → `buildPack` (`bui
 `serializePackfile` / `serializePackIndex` (`pack-writer.ts`). No progress line, no summary line
 (ADR-249).
 
-Bitmap eligibility is unconditional here — `pack-objects` has none of the three options that defeat
-it, and Pin AB7/AB8 measure the composition: with no haves the two paths agree exactly; with haves
-the bitmap pack is *smaller* and both packs are valid. That difference is E-1's, not a new one.
+**The default tier here is the bitmap**, the opposite of `rev-list`'s and for the same reason: it is
+git's (Pin AJ3). `pack-objects` carries none of the three options that defeat the bitmap, so nothing
+narrows the default; the caller's only control is refusing it outright. Pin AB7/AB8 and Pin AJ3/AJ4
+measure the composition: with no haves the two tiers agree exactly; with haves the bitmap pack holds
+**150** objects against the walk's **156** and both packs are valid.
+
+**Sending the smaller pack is safe, and the pin is why.** Every object the bitmap omits is reachable
+from a `not` tip (Pin AJ6), so a peer that supplied those haves already has them. This is the one
+place in the design where a *smaller* answer is the correct one, and it is git's own default
+behaviour, not a tsgit optimisation.
 
 Edges:
 
@@ -1358,11 +1482,13 @@ Edges:
 - **`packId` is stable for a fixed tier and is *not* stable across tiers.** Object order inside the
   pack is the closure's order, and §D6 pins that order differs between the bitmap tier and the walk
   tier — so the same closure written twice by different tiers yields packs with the same contents and
-  **different names**. The double-run obligation for `pack-objects` is therefore asserted on the
-  object set read back out of the written `.idx`, never on `packId`. Naming this here because
+  **different names**. Assertions therefore read the object set back out of the written `.idx`, never
+  `packId`: **equal** across tiers with no haves, and requirement 16's superset relation with haves,
+  since the two tiers then legitimately pack different object counts. Naming this here because
   "content-addressed" invites the opposite assumption.
 - Because ADR-614 excludes delta compression, nothing inside the pack depends on order beyond the
-  identity above.
+  identity above — and nothing in the pack writer wants a name, so ADR-619's optional `path` costs
+  `pack-objects` nothing at all. The command never reads the field.
 
 `.rev` and `.bitmap` writing and delta compression are excluded **permanently**, with ADR-614's
 reasons, in §Out of scope. Because nothing is written beyond `.pack` and `.idx`, no `@writes`
@@ -1373,14 +1499,16 @@ annotation and no write-surface allowlist entry is added and that gate stays gre
 **Recommendation: leave `enumeratePushObjects` and `enumerateBundleObjects` alone.** Three pinned
 reasons, in descending force:
 
-1. **`enumeratePushObjects` would change what tsgit pushes.** It walks commits `until: haves` and
-   then emits every object in every interesting commit's tree, never subtracting the haves' object
-   closure — a strict **superset** of the exact difference, and a superset of even git's own
-   over-reporting walk (Pin AB). Substituting a bitmap closure makes the pushed pack **smaller**.
-   That is a behaviour change by construction; it cannot be *proven* behaviour-preserving because
-   the observable — the bytes on the wire — provably differs. The only honest proof available would
-   be "a receiver accepts both", which is a weaker claim than behaviour preservation and is not what
-   a refactor pass is licensed to land.
+1. **`enumeratePushObjects` would change what tsgit pushes, on *either* tier.** It walks commits
+   `until: haves` and then emits every object in every interesting commit's tree, never subtracting
+   the haves' object closure — a strict **superset** of the exact difference, and a superset of even
+   git's own over-reporting walk (Pin AB, Pin AJ1). ADR-618 does not soften this, it sharpens it:
+   the engine now offers two tiers and **both** are subsets of what push emits, so there is no tier
+   to substitute that leaves the pushed pack unchanged. It shrinks either way. That is a behaviour
+   change by construction; it cannot be *proven* behaviour-preserving because the observable — the
+   bytes on the wire — provably differs. The only honest proof available would be "a receiver accepts
+   both", which is a weaker claim than behaviour preservation and is not what a refactor pass is
+   licensed to land.
 2. **`enumerateBundleObjects` needs something a bitmap does not encode.** It returns
    `{ objects, boundary }`, where `boundary` is the set of uninteresting commits that are direct
    parents of interesting ones. A bitmap encodes reachability, not parent edges (Pin AD/AE: bits and
@@ -1562,6 +1690,13 @@ tools.
 | midx present without a reverse-index chunk | unchanged | midx tier unusable; pack tier takes over (Pin AG rule 5) |
 | either artefact orphaned | unchanged — never named | never named |
 
+**A fall-through *between the two bitmap artefacts* preserves the answer; a fall-through to the walk
+changes it when haves are present — and that is faithful.** Both bitmap artefacts compute
+`W AND NOT N`, so which one answers is unobservable. Reaching the walk yields git's superset instead
+(Pin AJ4 measures git doing exactly this under `--no-use-bitmap-index`), which is why requirement 16
+states a *relation* between the tiers rather than equality. ADR-616's "no result changes" survives
+only in the no-haves case; ADR-618 amended it for the other.
+
 Every degradation arm is a **positive allow-list** over `TsgitError.data.code` — the new `.rev` code,
 the new bitmap code, `FILE_NOT_FOUND`, `PERMISSION_DENIED` — with everything else rethrown. Never
 `if (isFatal) throw`, which silently swallows a future member (ADR-575, ADR-610). Codes are compared
@@ -1589,8 +1724,10 @@ restated: silence about the *strategy* (which tier answered) is total and delibe
 | `fsck`, artefact corrupt **+ `.pack` refused at the header gate** | bit 4 (existing) | bit 4 **and** the artefact bit | Y2 (142), Y5 (78) |
 | `fsck`, artefact corrupt **+ `.pack` absent** (orphaned `.idx`) | exit 0 | **no artefact bit** | Y4, Y6 (10) |
 | `fsck`, `.bitmap` shorter than one digest | exit 0 | `bitmap-checksum-mismatch` + bit **128** | B11, B25 |
-| **closure**, bitmap structurally broken (restamped) | n/a | **silent fallback, identical answer** | B14–B22 |
+| **closure**, bitmap structurally broken (restamped) | n/a | **silent fallback to the walk** — identical answer with no haves, git's superset with haves | B14–B22, AJ4 |
 | **closure**, bitmap without the full-DAG flag | n/a | **silent fallback** (git aborts — not replicable) | B19 |
+| **closure**, caller asks `rev-list` for the bitmap tier | n/a | exact difference, **no `path`** | AJ2, AJ7 |
+| **closure**, caller refuses `pack-objects`' bitmap tier | n/a | the walk's superset, packed and valid | AJ4 |
 | **closure**, `.rev` absent, bitmap healthy | n/a | **bitmap still used** | Pin AF1 |
 
 **Seven rows end `exit 0, no finding`** (R16, R10b, B14–B19, X10, Y4/Y6) and they remain the design's
@@ -1657,7 +1794,7 @@ transport delivers any of them (W-2) — which bounds but does not remove the ex
 | T-4 | **Out-of-bounds `DataView` reads** | Both parsers prove every offset before reading it (§D2 steps 1/5, §D3 steps 1/6/7). A `RangeError` escaping either is a defect (requirement 11), and the totality properties are the guard |
 | T-5 | **Integer overflow in offset arithmetic** | `.rev` values and bitmap bits are u32 positions, not offsets — they index `entryOffsets`/`allObjectIds`, whose own 64-bit handling (`readOffset`, `pack-index.ts:93-108`) is untouched. Bit-space arithmetic uses word indices bounded by the object count. **No new offset arithmetic is introduced** |
 | T-6 | **A non-permutation `.rev` body redirects slice bounds** | Live under ADR-604. A hostile body makes `nextOffsetForEntry` return wrong bounds, so a read either fails to inflate or inflates a truncated stream. **Accepted, not mitigated** (ADR-606): it is git's own exposure (R14 reads fine under git), and an attacker who can rewrite a `.rev` can rewrite the `.pack` and `.idx` it describes. A security review that flags this closes it against ADR-606 |
-| T-7 | **A hostile bitmap produces a wrong object set — and therefore a wrong pack** | Live under ADR-613/614. A crafted bitmap can omit objects from `pack-objects`' output (producing an incomplete pack) or add unrelated ones (leaking objects the caller did not ask for, bounded to objects already in the repository). **Accepted, not mitigated** (ADR-615), symmetric with T-6 and on the same ratio: the attacker who can rewrite the bitmap can rewrite the pack. **Residual, stated:** ADR-616 makes the fast path silent, so nothing warns; the *only* thing standing between a decoder bug and a wrong pack is the interop equality oracle (ADR-615) and the double-run obligation (ADR-616). Those tests are load-bearing security controls, not hygiene, and trimming them is a security regression |
+| T-7 | **A hostile bitmap produces a wrong object set — and therefore a wrong pack** | Live under ADR-613/614. A crafted bitmap can omit objects from `pack-objects`' output (producing an incomplete pack) or add unrelated ones (leaking objects the caller did not ask for, bounded to objects already in the repository). **Accepted, not mitigated** (ADR-615), symmetric with T-6 and on the same ratio: the attacker who can rewrite the bitmap can rewrite the pack. **Residual, stated:** the fast path is silent and, under ADR-618, it is `pack-objects`' **default**, so nothing warns and nothing opts in; the *only* thing standing between a decoder bug and a wrong pack is ADR-615's walk oracle and requirement 16's double run — now a superset-plus-reachability check rather than a plain equality, which is *harder* to satisfy accidentally. Those tests are load-bearing security controls, not hygiene, and trimming them is a security regression |
 | T-8 | **A stale artefact paired with the wrong pack** | Undetectable by design: git stores the pack/midx checksum in `.rev` and `.bitmap` and **checks neither** (R10b, B16). A pack's filename is its content hash, so a stale artefact requires a deliberate rename, which requires the same write access as replacing the pack. Accepted, matching git |
 | T-9 | **Symlinked artefacts** | Presence comes from the `readdir` listing with `entry.isFile` (§D5), which excludes symlinks exactly as the `.idx` filter does, so a symlinked artefact pointing outside the repository is never opened. A *stronger* posture than open-by-path, at no cost |
 | T-10 | **Log injection** | No format carries text. The only string in any finding is a pack base name already vetted by `isSafePackName` or a hex digest. `faultContext`'s "never nest a name inside `err.data`" rule still applies |
@@ -1698,9 +1835,10 @@ transport delivers any of them (W-2) — which bounds but does not remove the ex
    consumer must work for any selection. A test fixture that happens to select every commit would
    hide the entire partial-coverage path — which is why F2 (400 commits) is the mandatory closure
    fixture and F1 is not sufficient.
-10. **Pin AB's divergence is fixture-dependent** (AB9 shows none). Any closure fixture used for
-    have-bearing queries **must** repeat blob content across the have boundary, or the most
-    important disagreement in this design goes unmeasured.
+10. **The tier divergence is fixture-dependent** (AB9 shows none; F5 was built to show it). Any
+    closure fixture used for have-bearing queries **must** repeat blob content across the have
+    boundary, or the disagreement ADR-618 exists to resolve goes unmeasured — and requirement 16's
+    superset invariant degenerates into an equality that passes for the wrong reason.
 11. **The `{'B','T','M','P'}` chunk is parsed by nobody.** §D4 resolves bits without it. If verbatim
     pack reuse ever arrives it becomes load-bearing, and Pin AG11 is the head start.
 
@@ -1752,7 +1890,11 @@ property below and for realistic negatives).
   bitmap header resolves through `midxOidAt` **without** the reverse-index hop (Pin AG12) — the two
   assertions that catch the likeliest bug in the entry;
 - extended positions: a want reachable only through a loose object yields it with the right type;
-- tier selection: midx bitmap ≻ pack bitmap ≻ walk, with each tier refused in turn (Pin AG1–AG6).
+- artefact preference inside the bitmap tier: midx bitmap ≻ pack bitmap ≻ walk, with each refused in
+  turn (Pin AG1–AG6);
+- **the engine holds no tier default**: the same request answered with `tier: 'walk'` and
+  `tier: 'bitmap'` returns the walk's and the bitmap's answers respectively, and neither command's
+  default leaks into the engine — the assertion that keeps ADR-618's policy in the commands.
 
 ### Property tests
 
@@ -1812,26 +1954,42 @@ assert finding **cardinality** and message *shape*, never the fixture-dependent 
 
 The consumption faithfulness surface, and under ADR-615 a **security control**. Fixtures F2 (400
 commits, **repeated blob content across the have boundary** — blind spot 10), F3 (two packs + midx +
-midx bitmap) and F4 (a real merge), each built once in a `beforeAll(fn, 60_000)`.
+midx bitmap), F4 (a real merge) and F5 (Pin AJ's fixture), each built once in a
+`beforeAll(fn, 60_000)`.
+
+**The cross-tier invariant, stated once and asserted everywhere** (requirement 16, ADR-618 amending
+ADR-616). Every closure row runs on both tiers and asserts, on **object id and type only — never on
+`path`** (ADR-619):
+
+1. `not` **empty** ⇒ the two tiers return **exactly** the same set;
+2. `not` **non-empty** ⇒ `bitmapSet ⊂ walkSet`, **and** every object in `walkSet \ bitmapSet` is
+   reachable from a `not` tip — asserted by an independent full `rev-list --objects <not-tip>`
+   closure, not by inspection;
+3. neither direction is asserted on order, on `packId`, or on `path`.
+
+Part 2 is the one that would silently pass on a fixture without repeated content, so it runs on F2
+and F5 and is **asserted to be non-trivial**: the difference set is asserted **non-empty** on those
+fixtures, which is what turns a vacuous superset check into a real one.
 
 | obligation | rows |
 |---|---|
-| **ADR-616 double run** — every closure test runs twice, once on a fixture carrying a bitmap and once on the same repository with the bitmap removed, asserting **identical** object sets (sets, not orders — §D6) | every row below, ×2 |
-| **ADR-615 walk oracle** — the bitmap-accelerated closure equals a full walk closure on every fixture | every row below |
-| set equality against real git, no haves | AA1/AA2, AA6, AH1, AH2 |
+| **ADR-616 double run** — every closure test runs twice, once on a fixture carrying a bitmap and once on the same repository with the bitmap removed, under the invariant above | every row below, ×2 |
+| **ADR-615 walk oracle** — the bitmap-accelerated closure compared against a full walk closure **on oid and type**, under the invariant above | every row below |
+| set equality against real git, no haves | AA1/AA2, AA6, AH1, AH2, AJ5 |
 | **type** correctness for every returned object | AE, against `cat-file --batch-check` |
-| have-bearing queries | AB1–AB5, AB9 — see E-1 for which git column is the referent |
-| option gating | AC: `--max-count`, `--first-parent`, `--no-walk` each asserted **equal to git's default** and asserted **not** to use the bitmap |
-| tier preference | AG1–AG6 |
-| midx mapping | AG12/AG13 — the midx bitmap's answer equals the walk's on F3 |
+| have-bearing queries, **per-command referent** | AB1–AB5, AB9, AJ1–AJ4: `rev-list` with no tier option compared against plain `git rev-list`, `rev-list` with the tier option against `git rev-list --use-bitmap-index`, `pack-objects` against `git pack-objects --revs`, `pack-objects` with the tier refused against `--no-use-bitmap-index` |
+| **`path` presence is tier-determined** | AJ7: the walk tier populates it under `objects`, the bitmap tier returns entries with none, and the count of path-carrying entries is asserted on both (127 versus 0 on F5) |
+| option composition | AC: `--max-count`, `--first-parent`, `--no-walk` asserted **equal to git's default** with no tier option; with the tier option, `--max-count` asserted still equal (git declines the bitmap itself) and the other two asserted equal to `git rev-list --use-bitmap-index` |
+| artefact preference | AG1–AG6 |
+| midx mapping | AG12/AG13 — the midx bitmap's answer equals the pack bitmap's on F3 |
 | `.rev`-free consumption | AF1, AF3 |
-| degradation | every Pin J RESTAMPED corruption asserting the **answer is unchanged**, plus B19 (flags without full-DAG) asserting tsgit answers where git aborts |
-| `pack-objects` | AB7/AB8: the written pack's object set, and `git index-pack --verify` accepting the pack tsgit wrote |
+| degradation | every Pin J RESTAMPED corruption asserting the answer falls back to **the walk's**, plus B19 (flags without full-DAG) asserting tsgit answers where git aborts |
+| `pack-objects` | AB7/AB8, AJ3/AJ4: the written pack's object set on both tiers, and `git index-pack --verify` accepting the pack tsgit wrote |
 
-The first two rows are **obligations, not conveniences** — ADR-616's double run and ADR-615's walk
-oracle — and under ADR-615 they are the only thing between a decoder bug and a wrong pack. They are
-named as such **in the test titles**, so a future trimming pass has to delete a sentence that says
-why they exist.
+The first two rows are **obligations, not conveniences** — ADR-616's double run as amended and
+ADR-615's walk oracle — and under ADR-615 they are the only thing between a decoder bug and a wrong
+pack. They are named as such **in the test titles**, so a future trimming pass has to delete a
+sentence that says why they exist.
 
 ### Parity
 
@@ -1912,52 +2070,10 @@ follow-up entry.
   none and the interop tests reconstruct them.
 - **git's `BUG:`-and-abort on a bitmap without the full-DAG option** (B19). Reason: a library has no
   process to abort; tsgit declines the artefact and falls back, which is the only available
-  behaviour and is result-preserving.
-- **A public flag to force or forbid the bitmap** (ADR-616). Reason: the caller asks for a result,
-  not a strategy; the under-exercise risk is answered by the double-run test obligation instead.
-
-## Escalations for the user
-
-Two genuinely new load-bearing forks that the fifteen ADRs do not cover. Both have the **same root
-cause**, discovered only by this run's consumption pins: **ADR-616 requires tsgit's bitmap and walk
-paths to produce identical results, but git's own two paths do not.** I have not decided either.
-
-### E-1 — which of git's two disagreeing answers is tsgit's answer when haves are present?
-
-**The measurement (Pin AB).** For `rev-list --objects HEAD --not HEAD~50` on a fixture with repeated
-blob content, git returns **200** objects on its bitmap path and **204** on its walk path. The four
-extra objects are blobs reachable from the have; the bitmap's answer is the exact set difference and
-the walk's is an over-report. `pack-objects` shows the identical split (AB7). tsgit exposes no flag
-(ADR-616), so tsgit has exactly one answer.
-
-**Why the ADRs do not settle it.** ADR-226 says match git — but there are two gits here. ADR-616 says
-the two paths must agree — which forbids the "use whichever the path gives" answer outright.
-
-| option | what tsgit returns | cost |
-|---|---|---|
-| **(a) exact everywhere** — the walk tier computes the exact difference (the `enumerateBundleObjects` shape, which already exists) | 200 | matches git's bitmap answer, diverges from git's **default** answer by omitting objects the receiver already has. ADR-616 satisfied. Slightly more expensive walk tier (it must enumerate the haves' objects) |
-| **(b) git-walk-faithful, bitmap declined whenever `not` is non-empty** | 204 | matches git's default exactly; ADR-616 satisfied trivially. **Loses the acceleration on precisely the query shape push, fetch and `pack-objects` care about** |
-| **(c) whichever tier answers** | 200 or 204 | **violates ADR-616** — listed only to record that it was considered and is not available |
-
-My reading, offered as input and not as a decision: (a) is the only option that keeps the
-acceleration meaningful, and its divergence is *omitting objects the peer provably already has*,
-which is the safer direction of the two. (b) is the strictly more faithful reading of ADR-226 and
-makes the whole bitmap arm inert for `pack-objects`.
-
-### E-2 — does `rev-list --objects` carry a path, given that the bitmap cannot supply one?
-
-**The measurement (Pin AA).** On git's bitmap path, `rev-list --objects` emits **1605 lines, 0 of
-which carry a name**; on the walk path, 805 of the same 1605 carry one. A bitmap encodes reachability
-and type (Pin AE) and **no paths at any price**. ADR-613 says the command returns "object ids with
-type and, for `--objects`, path".
-
-| option | shape | cost |
-|---|---|---|
-| **(a) `path` is optional and absent on the bitmap path** | `RevListEntry.path?: FilePath` | faithful to git on both paths; makes ADR-616's "identical object sets" an **oid-and-type** equality, not a whole-record equality, which the ADR does not say |
-| **(b) `path` is always present ⇒ the bitmap never serves `--objects`** | `RevListEntry.path: FilePath` for `--objects` | ADR-616 satisfied on whole records; the acceleration survives only for `--count` and for `pack-objects` (which needs no paths, since delta selection is excluded permanently) |
-| **(c) bitmap for the set, then a tree walk for the names** | always present | correct and always slower than (b)'s walk — it pays the walk *and* the bitmap |
-
-Note the interaction: under (b) the acceleration still fully serves `pack-objects` (ADR-614 excludes
-delta compression, and nothing else in the pack writer wants a name), so (b) is not as costly as it
-first reads. Under (a) the test obligation in ADR-616 needs one sentence of interpretation, which is
-the cheapest thing in this table to fix.
+  behaviour. The answer then becomes the walk tier's — identical with no haves, git's superset with
+  haves (Pin AJ4) — which is what git itself returns whenever it cannot load a bitmap.
+- **Any tier control finer than the per-command one** — forcing a specific artefact (midx bitmap
+  versus pack bitmap), or surfacing which tier answered. Reason: ADR-618 ships exactly what git
+  ships, one boolean per command, because that boolean selects between two *answers*; artefact
+  choice selects between two computations of the **same** answer (§D13), so exposing it would be
+  strategy, which ADR-249's spirit and ADR-616's surviving half both refuse.
