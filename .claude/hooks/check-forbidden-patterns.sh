@@ -46,7 +46,12 @@ PATTERNS=(
   'v8 ignore'
   'istanbul ignore'
   'ADR-[0-9]+'
-  '§[0-9]'
+  # Section refs: `§9` and `§D11` alike — the design doc's own headings are
+  # lettered, so an unanchored digit class let the commonest form through.
+  '§[A-Za-z]?[0-9]'
+  # Design-doc pin refs (`Pin H R16`, `Pin AJ3`): same provenance leak as `§`,
+  # different spelling.
+  'Pin [A-Z]+ ?[A-Z]?[0-9]'
   'Phase [0-9]'
   'BACKLOG'
 )

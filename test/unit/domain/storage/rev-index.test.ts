@@ -107,7 +107,7 @@ describe('rev-index', () => {
         });
       });
 
-      describe('When parsing the Pin B 12-object fixture (body prefix 1, 9, 11)', () => {
+      describe('When parsing a 12-object SHA-1 fixture (body prefix 1, 9, 11)', () => {
         it('Then the decoded body equals the spec', () => {
           // Arrange
           const spec = baseSpec();
@@ -148,7 +148,7 @@ describe('rev-index', () => {
       });
 
       describe('When parsing hashId 2 in a digestLength-20 (SHA-1) file', () => {
-        it('Then it accepts — git accepts the hashId/digestLength disagreement (Pin H R16)', () => {
+        it('Then it accepts — canonical git accepts the hashId/digestLength disagreement', () => {
           // Arrange
           const spec = baseSpec({ hashId: 2, digestLength: 20, body: [0] });
           const sut = parsePackRevIndex;
@@ -358,7 +358,7 @@ describe('rev-index', () => {
   });
 
   describe('revIndexPositionAt', () => {
-    describe('Given the Pin B 12-object fixture', () => {
+    describe('Given a 12-object SHA-1 fixture', () => {
       describe('When reading p = 0', () => {
         it('Then returns the first body word', () => {
           // Arrange

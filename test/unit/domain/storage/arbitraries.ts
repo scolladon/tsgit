@@ -409,9 +409,9 @@ export function buildRevIndex(spec: RevIndexSpec): Uint8Array {
 
 /**
  * An arbitrary rev-index spec. `hashId` and `digestLength` are drawn
- * independently — Pin H R16 pins that git accepts the disagreement — and
- * body words are unconstrained integers so the generator also covers
- * non-permutations and out-of-range values without special-casing them.
+ * independently — canonical git accepts the disagreement — and body words
+ * are unconstrained integers so the generator also covers non-permutations
+ * and out-of-range values without special-casing them.
  */
 export function arbRevIndexSpec(): fc.Arbitrary<RevIndexSpec> {
   return fc.constantFrom<1 | 2>(1, 2).chain((hashId) =>
