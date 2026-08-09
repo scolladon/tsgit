@@ -59,10 +59,14 @@ async function writeRawSingleEntryPack(
 function stubPackHandle(
   ctx: Context,
   packPath: string,
-): Pick<RegisteredPack, 'readSlice' | 'close'> {
+): Pick<RegisteredPack, 'readSlice' | 'close' | 'hasRevIndex' | 'revIndex'> {
   return {
     readSlice: (offset, length) => ctx.fs.readSlice(packPath, offset, length),
     close: async () => undefined,
+    // The object resolver never reads a pack's reverse index — these two
+    // fields exist only to satisfy the type.
+    hasRevIndex: false,
+    revIndex: async () => ({ kind: 'absent' }),
   };
 }
 

@@ -133,6 +133,8 @@ const PACK_FINDING_TYPES: ReadonlySet<FsckFinding['type']> = new Set([
   'pack-inaccessible',
   'pack-index-unusable',
   'pack-rev-index-unusable',
+  'pack-rev-index-invalid',
+  'pack-rev-index-position-mismatch',
 ]);
 
 /** Findings unrelated to pack accessibility — the differential rows compare these across a pair of repos. */

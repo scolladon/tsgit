@@ -9,6 +9,7 @@ import {
   entryOffsets,
   lookupPackIndex,
   type PackIndex,
+  type PackRevIndex,
   parsePackIndex,
 } from '../../domain/storage/index.js';
 import {
@@ -25,6 +26,7 @@ import {
   type MidxHealth,
 } from './internal/midx-binding.js';
 import { loadMidxSet, type MidxLoadResult } from './internal/midx-source.js';
+import { type ArtefactLoad, loadPackRevIndex } from './internal/pack-artefact-source.js';
 import {
   faultContext,
   faultReason,
@@ -98,6 +100,19 @@ export interface RegisteredPack {
   readonly readSlice: (offset: number, length: number) => Promise<Uint8Array>;
   /** Release the persistent handle, if one was ever opened. Idempotent. */
   readonly close: () => Promise<void>;
+  /** Whether this pack's `.rev` sibling was present in the scan's own file
+   *  listing — a symlinked `.rev` is not present, the same no-follow rule
+   *  every other artefact's discovery already enforces. */
+  readonly hasRevIndex: boolean;
+  /**
+   * Memoised, bounded read + parse of this pack's reverse index — one read
+   * per pack, on first use, never at scan time. An unusable `.idx` is never
+   * reachable here in practice: the fsck rev-index pass only calls this for
+   * packs in `registry.all()`, which already excludes any pack whose `.idx`
+   * never parsed, mirroring canonical git's own "no index, no reverse
+   * index" rule.
+   */
+  readonly revIndex: () => Promise<ArtefactLoad<PackRevIndex>>;
 }
 
 export interface PackLookupHit {
@@ -193,10 +208,17 @@ async function readBoundedIdx(ctx: Context, idxPath: string): Promise<Uint8Array
   return bytes;
 }
 
-function loadPack(ctx: Context, dir: string, entryName: string): RegisteredPack {
+function loadPack(
+  ctx: Context,
+  dir: string,
+  entryName: string,
+  fileNames: ReadonlySet<string>,
+): RegisteredPack {
   const idxPath = `${dir}/${entryName}`;
   const name = packBaseName(entryName);
   const packPath = `${dir}/${name}.pack`;
+  const revPath = `${dir}/${name}.rev`;
+  const hasRevIndex = fileNames.has(`${name}.rev`);
 
   // Not read here — scanPacks builds the candidate list with no `.idx` I/O.
   // The first caller to force this memo (directly, or via the generation's
@@ -204,6 +226,21 @@ function loadPack(ctx: Context, dir: string, entryName: string): RegisteredPack 
   const indexMemo = createPromiseMemo(
     async (): Promise<PackIndex> => parsePackIndex(await readBoundedIdx(ctx, idxPath)),
   );
+
+  // Depends on indexMemo for objectCount — safe even for an unindexable pack:
+  // the fsck rev-index pass never calls this on a pack outside `all()`, and
+  // any other caller forcing it on such a pack simply inherits indexMemo's
+  // own rejection, same as every other index-derived accessor here.
+  const revIndexMemo = createPromiseMemo(async (): Promise<ArtefactLoad<PackRevIndex>> => {
+    const index = await indexMemo.get();
+    return loadPackRevIndex(
+      ctx,
+      revPath,
+      hasRevIndex,
+      ctx.hashConfig.digestLength,
+      index.objectCount,
+    );
+  });
 
   const headerMemo = createPromiseMemo(async (): Promise<PackHeader> => {
     const index = await indexMemo.get();
@@ -300,6 +337,8 @@ function loadPack(ctx: Context, dir: string, entryName: string): RegisteredPack 
     offsetTable,
     readSlice,
     close,
+    hasRevIndex,
+    revIndex: revIndexMemo.get,
   };
 }
 
@@ -390,7 +429,13 @@ export interface PackGeneration {
    * without this dedup each retry would emit another identical warn.
    */
   readonly warnedIdx: Set<string>;
+  /** Every regular-file name this scan's `readdir` saw — the same set each
+   *  pack's own artefact discovery (`.rev`, and later the bitmap arms) is
+   *  built from, so no artefact probe ever costs a second `readdir`. */
+  readonly fileNames: ReadonlySet<string>;
 }
+
+const NO_FILE_NAMES: ReadonlySet<string> = Object.freeze(new Set<string>());
 
 function emptyGeneration(): PackGeneration {
   return {
@@ -399,6 +444,7 @@ function emptyGeneration(): PackGeneration {
     midx: undefined,
     indexed: createPromiseMemo(() => Promise.resolve(EMPTY_INDEXED)),
     warnedIdx: new Set(),
+    fileNames: NO_FILE_NAMES,
   };
 }
 
@@ -423,7 +469,7 @@ function loadCandidatePack(
     });
     return undefined;
   }
-  return loadPack(ctx, dir, entry.name);
+  return loadPack(ctx, dir, entry.name, fileNames);
 }
 
 /**
@@ -502,6 +548,7 @@ export function createPackRegistry(ctx: Context): PackRegistry {
       midx,
       indexed: createPromiseMemo(() => resolveIndexes(ctx, packs)),
       warnedIdx: new Set(),
+      fileNames,
     };
   };
   const scan = createPromiseMemo(scanPacks);

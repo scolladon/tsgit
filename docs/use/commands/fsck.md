@@ -43,6 +43,11 @@ type FsckFinding =
       readonly pack: string; readonly reason: string }
   | { readonly type: 'pack-rev-index-unusable';
       readonly pack: string; readonly reason: string }
+  | { readonly type: 'pack-rev-index-invalid';
+      readonly pack: string; readonly reason: string }
+  | { readonly type: 'pack-rev-index-position-mismatch';
+      readonly pack: string; readonly position: number;
+      readonly expected: number; readonly stored: number }
   | { readonly type: 'midx-unusable';
       readonly artefact: string; readonly reason: string }
   | { readonly type: 'midx-checksum-mismatch';
@@ -114,6 +119,8 @@ findings.filter(f => f.type === 'tagged')
 | `pack-inaccessible` | `pack`, `reason` | A pack failed the header gate — bad version, bad signature, truncated file, a header/index object-count disagreement, or a `.pack` that could not be opened. Full mode only (suppressed by `full: false` or `connectivityOnly: true`). Exit bit 4. |
 | `pack-index-unusable` | `pack`, `reason` | A pack's `.idx` could not be read or parsed. Full mode only; always accompanied by a `pack-rev-index-unusable` finding for the same pack. Exit bit 4. |
 | `pack-rev-index-unusable` | `pack`, `reason` | A pack's index is unusable, so no reverse index can be derived from it either. Emitted in **every** mode, including `connectivityOnly` and `full: false` — unlike the other two pack findings, this one is not mode-gated. Exit bit 64. |
+| `pack-rev-index-invalid` | `pack`, `reason` | A pack's `.rev` file exists and is readable, but is itself wrong — a malformed header (bad signature/version/hash-id), a size that disagrees with the pack's own object count, or a trailer checksum (verified with the repository's own hash algorithm, never the file's declared `hashId`) that disagrees with its content. Never emitted for a pack `pack-rev-index-unusable` already covers — an unusable `.idx` masks its `.rev` entirely. Emitted in every mode. Exit bit 64. |
+| `pack-rev-index-position-mismatch` | `pack`, `position`, `expected`, `stored` | A `.rev` file parses and its checksum is valid, but body entry `position` disagrees with the index position the pack's own `.idx` implies (`expected`) — `stored` is the value the file actually has there. One finding per wrong position. Emitted in every mode. Exit bit 64. |
 | `midx-unusable` | `artefact`, `reason` | The multi-pack-index (or a chain layer) actually in use was discarded — too small, unreadable, a chunk offset outside the file, a hash-version mismatch, with no usable fallback layer — or the entry-resolution walk hit a structural fault reached only inside this pass. `artefact` names the file; `reason` is tsgit's own wording, not reconstructed from git's stderr. A dropped chain that still leaves a usable layer, or a discarded flat file rescued by a loadable chain, produces no finding. Reported in every mode. Exit bit 32. |
 | `midx-checksum-mismatch` | `artefact` | The in-use artefact's trailer digest disagrees with its declared content — checked once per `fsck` run, on the flat file or the chain head only (never a base layer), and never on the ordinary read path. Reported in every mode. Exit bit 32. |
 | `midx-pack-unresolved` | `artefact`, `position`, `pack` | A `PNAM` entry — `position` is its chain-global index — names a pack that could not be resolved this scan, and whose `.pack` file is also gone. Reported in every mode. Exit bit 32. |
@@ -164,7 +171,7 @@ reconstructed from git's stderr text.
   | `14` | Bits 2, 4 and 8 combined. |
   | `32` | The in-use multi-pack-index or chain layer was discarded, its trailer checksum disagreed, or it routes to a pack or entry it cannot resolve (bit 32, the four `midx-*` findings). Set in **every** mode, including `connectivityOnly` and `full: false` — ungated like bit 64, unlike bit 4. |
   | `42` | Bits 2, 8 and 32 combined (e.g. a midx-named pack fully deleted: missing objects, invalid ref pointers, and the midx's own pack-resolution failure, with no unrelated pack-accessibility fault). |
-  | `64` | A pack's reverse index is unusable, no other error (bit 64, `pack-rev-index-unusable`). Set in **every** mode, including `connectivityOnly` and `full: false` — the one bit this table's other rows are gated against. |
+  | `64` | A pack's reverse index is unusable, no other error — either its pack index could not be loaded at all (`pack-rev-index-unusable`), or a `.rev` file exists, is readable, and is itself wrong (`pack-rev-index-invalid` / `pack-rev-index-position-mismatch`); the two causes never double-report for the same pack. Set in **every** mode, including `connectivityOnly` and `full: false` — the one bit this table's other rows are gated against. |
   | `68` | Bits 4 and 64 combined — an unusable `.idx` in full mode sets both, matching git's `index not opened` **and** `unable to load rev-index` for the same pack. |
   | `110` | Bits 2, 4, 8, 32 and 64 combined — a midx-named pack's `.idx` gone sets the pack pass's bits (4 and 64) alongside the midx pass's (32), plus the ordinary connectivity fallout (2 and 8). |
 

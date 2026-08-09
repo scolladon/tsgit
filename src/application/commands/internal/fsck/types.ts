@@ -82,6 +82,23 @@ export type FsckFinding =
       readonly reason: string;
     }
   | {
+      readonly type: 'pack-rev-index-invalid';
+      /** Pack base name (`pack-<sha>`) — see `pack-inaccessible`'s doc-comment. */
+      readonly pack: string;
+      readonly reason: string;
+    }
+  | {
+      readonly type: 'pack-rev-index-position-mismatch';
+      /** Pack base name (`pack-<sha>`) — see `pack-inaccessible`'s doc-comment. */
+      readonly pack: string;
+      /** Pack position — rank by ascending offset, `[0, objectCount)`. */
+      readonly position: number;
+      /** The index position `packPositionMap` derives from the pack's own `.idx`. */
+      readonly expected: number;
+      /** The index position the `.rev` file actually stores at `position`. */
+      readonly stored: number;
+    }
+  | {
       readonly type: 'midx-unusable';
       /** The artefact this verdict is about: `multi-pack-index`, or a chain
        *  layer's own file name. */

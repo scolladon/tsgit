@@ -21,6 +21,7 @@ import {
   serializePackHeader,
 } from '../../../../src/domain/storage/pack-entry.js';
 import { serializePackIndex } from '../../../../src/domain/storage/pack-writer.js';
+import { REV_HEADER_SIZE } from '../../../../src/domain/storage/rev-index.js';
 import type { Context } from '../../../../src/ports/context.js';
 
 export interface BaseEntrySpec {
@@ -204,6 +205,67 @@ export async function restampPackHeader(
   const checksumHex = await ctx.hash.hashHex(bytes.subarray(0, bytes.length - digestLength));
   bytes.set(hexToBytes(checksumHex), bytes.length - digestLength);
   await ctx.fs.write(packPath, bytes);
+}
+
+const REV_MAGIC = 0x52494458; // 'RIDX'
+
+export interface RevIndexOverride {
+  readonly magic?: number;
+  readonly version?: number;
+  readonly hashId?: number;
+  /** Embedded pack-checksum copy — never verified by the reader, so any
+   *  value round-trips; the trailer below is always recomputed to match
+   *  whatever body/header/packChecksum bytes actually precede it. */
+  readonly packChecksum?: Uint8Array;
+  /** Truncate the fully-built file to this many bytes — corrupts the
+   *  trailer along with everything past the cut, deliberately: the trailer
+   *  is recomputed BEFORE truncation, so a cut always leaves it wrong too. */
+  readonly truncateTo?: number;
+  readonly appendBytes?: number;
+  /** Flip one trailer byte after the real digest is computed — the ONLY
+   *  way to plant a structurally well-formed `.rev` whose checksum disagrees
+   *  with its own content. */
+  readonly flipChecksum?: boolean;
+}
+
+/**
+ * Write a synthetic pack reverse index (`pack-<name>.rev`) to `ctx`'s memory
+ * fs. `body` is the index-position-per-pack-position array the file stores
+ * — the caller supplies it correct (a healthy fixture) or deliberately wrong
+ * at chosen positions (a corruption fixture); this writer never derives or
+ * validates it. The trailer is always a real digest over the preceding
+ * bytes, computed with `ctx.hash` — so a fixture is only ever wrong in the
+ * one dimension its `opts` name.
+ */
+export async function writeSyntheticRevIndex(
+  ctx: Context,
+  packName: string,
+  body: ReadonlyArray<number>,
+  opts: RevIndexOverride = {},
+): Promise<void> {
+  const digestLength = ctx.hashConfig.digestLength;
+  const bodySize = body.length * 4;
+  const bytes = new Uint8Array(REV_HEADER_SIZE + bodySize + digestLength);
+  const view = new DataView(bytes.buffer);
+  view.setUint32(0, opts.magic ?? REV_MAGIC);
+  view.setUint32(4, opts.version ?? 1);
+  view.setUint32(8, opts.hashId ?? (digestLength === 32 ? 2 : 1));
+  body.forEach((value, i) => {
+    view.setUint32(REV_HEADER_SIZE + i * 4, value);
+  });
+  const packChecksum = opts.packChecksum ?? new Uint8Array(digestLength).fill(0xaa);
+  bytes.set(packChecksum, REV_HEADER_SIZE + bodySize);
+
+  const checksumHex = await ctx.hash.hashHex(bytes);
+  const trailer = hexToBytes(checksumHex);
+  if (opts.flipChecksum === true) trailer[0] = trailer[0]! ^ 0xff;
+
+  let out = concat(bytes, trailer);
+  if (opts.truncateTo !== undefined) out = out.slice(0, opts.truncateTo);
+  if (opts.appendBytes !== undefined) out = concat(out, new Uint8Array(opts.appendBytes));
+
+  const path = `${ctx.layout.gitDir}/objects/pack/pack-${packName}.rev`;
+  await ctx.fs.write(path, out);
 }
 
 /* ──────────────── helpers ──────────────── */

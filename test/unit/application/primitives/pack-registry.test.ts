@@ -22,9 +22,10 @@ import {
   type GitObject,
   type ObjectId,
 } from '../../../../src/domain/objects/index.js';
-import type { MidxCheck } from '../../../../src/domain/storage/error.js';
+import type { MidxCheck, RevIndexCheck } from '../../../../src/domain/storage/error.js';
 import {
   invalidMultiPackIndex,
+  invalidPackRevIndex,
   lookupPackIndex,
   parsePackIndex,
 } from '../../../../src/domain/storage/index.js';
@@ -34,7 +35,7 @@ import type { DirEntry, FileHandle, FileStat } from '../../../../src/ports/file-
 import { buildMidx, type MidxSpec } from '../../domain/storage/arbitraries.js';
 import { buildSeededContext, instrumentedContext } from './fixtures.js';
 import { withHandleLedger } from './handle-ledger.js';
-import { restampPackHeader, writeSyntheticPack } from './pack-fixture.js';
+import { restampPackHeader, writeSyntheticPack, writeSyntheticRevIndex } from './pack-fixture.js';
 
 const dirEntry = (name: string): DirEntry => ({
   name,
@@ -4874,6 +4875,152 @@ describe('PackRegistry.lookup — multi-pack-index authority', () => {
         );
         expect(headerReads).toHaveLength(1);
       });
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PACK REVERSE INDEX — hasRevIndex discovery, revIndex() memoisation
+// ---------------------------------------------------------------------------
+
+async function writeOneObjectPack(ctx: Context, name: string): Promise<void> {
+  await writeSyntheticPack(ctx, name, [
+    { kind: 'base', type: 'blob', content: new TextEncoder().encode(name) },
+  ]);
+}
+
+describe('RegisteredPack.hasRevIndex', () => {
+  describe('Given a pack whose .rev sibling is present in the scan listing', () => {
+    describe('When all() is called', () => {
+      it('Then hasRevIndex is true for that pack', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeOneObjectPack(ctx, 'rev-present');
+        await writeSyntheticRevIndex(ctx, 'rev-present', [0]);
+        const sut = createPackRegistry(ctx);
+
+        // Act
+        const [pack] = await sut.all();
+
+        // Assert
+        expect(pack?.hasRevIndex).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a pack with no .rev sibling in the scan listing', () => {
+    describe('When all() is called', () => {
+      it('Then hasRevIndex is false for that pack', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeOneObjectPack(ctx, 'rev-absent');
+        const sut = createPackRegistry(ctx);
+
+        // Act
+        const [pack] = await sut.all();
+
+        // Assert
+        expect(pack?.hasRevIndex).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a pack whose .rev sibling is only a symlink in the scan listing', () => {
+    describe('When all() is called', () => {
+      it('Then hasRevIndex is false — a symlinked .rev is not present', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeOneObjectPack(ctx, 'rev-symlink');
+        const wrapped = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            readdir: async (path: string): Promise<ReadonlyArray<DirEntry>> => [
+              ...(await ctx.fs.readdir(path)),
+              {
+                name: 'pack-rev-symlink.rev',
+                isFile: false,
+                isDirectory: false,
+                isSymbolicLink: true,
+              },
+            ],
+          },
+        };
+        const sut = createPackRegistry(wrapped);
+
+        // Act
+        const [pack] = await sut.all();
+
+        // Assert
+        expect(pack?.hasRevIndex).toBe(false);
+      });
+    });
+  });
+});
+
+describe('RegisteredPack.revIndex', () => {
+  describe('Given a pack with a present, valid .rev', () => {
+    describe('When revIndex() is called twice concurrently', () => {
+      it('Then exactly one .rev read serves both calls', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeOneObjectPack(ctx, 'rev-single-flight');
+        await writeSyntheticRevIndex(ctx, 'rev-single-flight', [0]);
+        const { ctx: instrumented, calls } = instrumentedContext(ctx);
+        const sut = createPackRegistry(instrumented);
+        const [pack] = await sut.all();
+
+        // Act
+        await Promise.all([pack!.revIndex(), pack!.revIndex()]);
+
+        // Assert
+        const revReads = calls().filter(
+          (call) => call.method === 'read' && call.path.endsWith('.rev'),
+        );
+        expect(revReads).toHaveLength(1);
+      });
+    });
+  });
+
+  describe('Given a pack whose .rev is rewritten between two scans', () => {
+    describe('When revIndex() is called before and after refresh()', () => {
+      it('Then the second call observes the newly-written bytes, not a stale memo', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeOneObjectPack(ctx, 'rev-refresh');
+        await writeSyntheticRevIndex(ctx, 'rev-refresh', [0]);
+        const sut = createPackRegistry(ctx);
+        const [before] = await sut.all();
+        const firstLoad = await before!.revIndex();
+
+        // Act
+        await writeSyntheticRevIndex(ctx, 'rev-refresh', [0], { magic: 0 });
+        sut.refresh();
+        const [after] = await sut.all();
+        const secondLoad = await after!.revIndex();
+
+        // Assert
+        expect(firstLoad.kind).toBe('usable');
+        expect(secondLoad.kind).toBe('refused');
+      });
+    });
+  });
+});
+
+describe('PackRegistry — pack reverse-index degradation', () => {
+  describe('Given an INVALID_PACK_REV_INDEX error for each RevIndexCheck member', () => {
+    describe("When checked against the registry's per-.idx and per-pack allow-lists", () => {
+      it.each<RevIndexCheck>(['size', 'signature', 'version', 'hash-id'])(
+        'Then neither isSkippableIdxFault nor isSkippablePackFault admits check=%s',
+        (check) => {
+          // Arrange
+          const err = invalidPackRevIndex(check, 'test reason');
+
+          // Act + Assert
+          expect(isSkippableIdxFault(err)).toBe(false);
+          expect(isSkippablePackFault(err)).toBe(false);
+        },
+      );
     });
   });
 });

@@ -40,6 +40,7 @@ import {
   type EntrySpec,
   restampPackHeader,
   writeSyntheticPack,
+  writeSyntheticRevIndex,
 } from '../primitives/pack-fixture.js';
 import { findingIds } from './fsck-finding-ids.js';
 
@@ -2838,6 +2839,46 @@ describe('Given a pack with a corrupt .idx', () => {
       expect(result.exitCode & 64).toBe(64);
       expect(result.exitCode & 4).toBe(0);
       expect(result.findings.some((f) => f.type === 'pack-index-unusable')).toBe(false);
+    });
+  });
+});
+
+describe('Given a pack with a broken .rev', () => {
+  describe('When fsck runs', () => {
+    it('Then fsck() folds a pack-rev-index-invalid finding into its result, bit 64 set', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      await writeSyntheticPack(ctx, 'broken-rev', onePackEntry('broken-rev-content'));
+      await writeSyntheticRevIndex(ctx, 'broken-rev', [0], { magic: 0 });
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      const invalid = result.findings.filter((f) => f.type === 'pack-rev-index-invalid');
+      expect(invalid).toHaveLength(1);
+      expect((invalid[0] as { pack: string }).pack).toBe('pack-broken-rev');
+      expect(result.exitCode & 64).toBe(64);
+    });
+  });
+});
+
+describe('Given a pack with a broken .rev alongside an unrelated missing tree', () => {
+  describe('When fsck runs', () => {
+    it('Then bits 2 and 64 both compose into the exit code by OR', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const commitId = await writeObject(ctx, makeCommit('a'.repeat(40) as ObjectId, []));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+      await writeSyntheticPack(ctx, 'unrelated-broken-rev', onePackEntry('unrelated-content'));
+      await writeSyntheticRevIndex(ctx, 'unrelated-broken-rev', [0], { magic: 0 });
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      expect(result.exitCode & 2).toBe(2);
+      expect(result.exitCode & 64).toBe(64);
     });
   });
 });

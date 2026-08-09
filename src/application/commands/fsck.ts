@@ -18,6 +18,7 @@ import {
   classifyObjects,
 } from './internal/fsck/reachability.js';
 import { runRefsVerifyPass } from './internal/fsck/refs-verify.js';
+import { runRevIndexHealthPass } from './internal/fsck/rev-index-health.js';
 import { collectRoots } from './internal/fsck/roots.js';
 import type { UnreadableMode } from './internal/fsck/types.js';
 import { assertRepository } from './internal/repo-state.js';
@@ -99,6 +100,11 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
   // Pack-health pass — reports packs the registry could not open or index.
   const packResult = await runPackHealthPass(ctx, opts);
 
+  // Reverse-index health pass — reports a pack's own `.rev` when it exists,
+  // is readable and is wrong. Ungated, like the rest of bit 64: runs after
+  // the pack-health pass, whose universe (`registry.all()`) it shares.
+  const revIndexResult = await runRevIndexHealthPass(ctx, opts);
+
   // Multi-pack-index health pass — reports the midx's own accessibility and
   // integrity. Runs after enumerateObjects has already succeeded above,
   // which is what lets a load-time midx fault reject the whole run before
@@ -121,6 +127,7 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
     ...contentResult.findings,
     ...refsResult.findings,
     ...packResult.findings,
+    ...revIndexResult.findings,
     ...midxResult.findings,
     ...assembleConnectivityFindings(
       { missingIds, brokenEdges, unreachable, dangling, rootCommits, tagRefs },
@@ -134,6 +141,7 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
     connectivityBit |
     refsResult.exitBit |
     packResult.exitBit |
+    revIndexResult.exitBit |
     midxResult.exitBit;
 
   return { findings, exitCode };
