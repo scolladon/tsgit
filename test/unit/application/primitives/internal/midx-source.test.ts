@@ -507,6 +507,38 @@ describe('midx-source', () => {
       });
     });
 
+    describe('Given a flat midx whose read returns more bytes than its stat reported', () => {
+      describe('When loadMidxSet is called', () => {
+        it('Then the post-read bound discards the file', async () => {
+          // Arrange — a TOCTOU grower: stat says small, the read hands
+          // back more bytes than the cap allows. The fake object's real
+          // .length is never allocated — the bound check throws before
+          // parseMultiPackIndex would ever touch its content.
+          const ctx = await buildSeededContext();
+          const dir = packsDir(commonGitDir(ctx));
+          const flatPath = multiPackIndexPath(dir);
+          await writeMidx(ctx, dir, 'multi-pack-index', buildMidx(baseSpec()));
+          const grown: Context = {
+            ...ctx,
+            fs: {
+              ...ctx.fs,
+              read: async (path) =>
+                path === flatPath
+                  ? ({ length: MAX_MIDX_BYTES + 1 } as unknown as Uint8Array)
+                  : ctx.fs.read(path),
+            },
+          };
+
+          // Act
+          const result = await loadMidxSet(grown, dir);
+
+          // Assert
+          expect(result.faults).toHaveLength(1);
+          expect(result.faults[0]?.data).toMatchObject({ reason: REASON_MIDX_EXCEEDS_MAX });
+        });
+      });
+    });
+
     describe('Given a chain layer whose stat reports a size over the byte cap', () => {
       describe('When loadMidxSet is called', () => {
         it('Then the whole chain is discarded and the layer is never read', async () => {
@@ -871,6 +903,121 @@ describe('midx-source', () => {
           // Assert
           expect(result.set?.kind).toBe('chain');
           expect(result.set?.layers).toHaveLength(1);
+        });
+      });
+    });
+
+    describe('Given a chain manifest with two digests and no trailing newline', () => {
+      describe('When loadMidxSet is called', () => {
+        it('Then both layers load — the unterminated final line is sliced from its own cursor, not the whole manifest', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const dir = packsDir(commonGitDir(ctx));
+          const digestA = layerDigest(1, 20);
+          const digestB = layerDigest(2, 20);
+          await writeLayerFile(ctx, dir, digestA, baseSpec());
+          await writeLayerFile(ctx, dir, digestB, baseSpec());
+          await ctx.fs.writeUtf8(multiPackIndexChainPath(dir), `${digestA}\n${digestB}`);
+
+          // Act
+          const result = await loadMidxSet(ctx, dir);
+
+          // Assert
+          expect(result.set?.kind).toBe('chain');
+          expect(result.set?.layers).toHaveLength(2);
+        });
+      });
+    });
+
+    describe('Given a chain manifest whose stat size lands exactly on the byte cap', () => {
+      describe('When loadMidxSet is called', () => {
+        it('Then the manifest is read normally — the cap is exclusive', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const dir = packsDir(commonGitDir(ctx));
+          await writeChain(ctx, dir, [baseSpec()]);
+          const chainPath = multiPackIndexChainPath(dir);
+          const maxBytes = (MAX_MIDX_CHAIN_LAYERS + 2) * (20 * 2 + 1);
+          const lying: Context = {
+            ...ctx,
+            fs: {
+              ...ctx.fs,
+              stat: async (path) => {
+                const real = await ctx.fs.stat(path);
+                return path === chainPath ? { ...real, size: maxBytes } : real;
+              },
+            },
+          };
+
+          // Act
+          const result = await loadMidxSet(lying, dir);
+
+          // Assert
+          expect(result.set?.kind).toBe('chain');
+          expect(result.faults).toEqual([]);
+        });
+      });
+    });
+
+    describe('Given a chain manifest whose read returns text landing exactly on the byte cap', () => {
+      describe('When loadMidxSet is called', () => {
+        it('Then the text is parsed normally — the cap is exclusive', async () => {
+          // Arrange — the fabricated text is not valid hex, so it parses to
+          // zero digests (no chain); what this proves is that the oversized
+          // branch — and its distinct fault — is not taken at this boundary.
+          const ctx = await buildSeededContext();
+          const dir = packsDir(commonGitDir(ctx));
+          const chainPath = multiPackIndexChainPath(dir);
+          await ctx.fs.writeUtf8(chainPath, `${layerDigest(1, 20)}\n`);
+          const maxBytes = (MAX_MIDX_CHAIN_LAYERS + 2) * (20 * 2 + 1);
+          const grown: Context = {
+            ...ctx,
+            fs: {
+              ...ctx.fs,
+              readUtf8: async (path) =>
+                path === chainPath ? '0'.repeat(maxBytes) : ctx.fs.readUtf8(path),
+            },
+          };
+
+          // Act
+          const result = await loadMidxSet(grown, dir);
+
+          // Assert
+          expect(result.set).toBeUndefined();
+          expect(result.faults).toEqual([]);
+        });
+      });
+    });
+
+    describe('Given the chain manifest read rejects with a non-Tier-B fault', () => {
+      describe('When loadMidxSet is called', () => {
+        it('Then the fault propagates instead of being treated as no chain', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const dir = packsDir(commonGitDir(ctx));
+          const chainPath = multiPackIndexChainPath(dir);
+          await ctx.fs.writeUtf8(chainPath, `${layerDigest(1, 20)}\n`);
+          const fault = operationAborted();
+          const wrapped: Context = {
+            ...ctx,
+            fs: {
+              ...ctx.fs,
+              readUtf8: async (path) =>
+                path === chainPath ? Promise.reject(fault) : ctx.fs.readUtf8(path),
+            },
+          };
+
+          // Act
+          let caught: unknown;
+          try {
+            await loadMidxSet(wrapped, dir);
+            expect.unreachable();
+          } catch (error) {
+            caught = error;
+          }
+
+          // Assert
+          expect((caught as TsgitError).data).toEqual(fault.data);
         });
       });
     });

@@ -195,6 +195,7 @@ function leadingHexRun(chainText: string, digestLength: number): ReadonlyArray<s
   const hexLine = new RegExp(`^[0-9a-f]{${digestLength * 2}}$`);
   const digests: string[] = [];
   let cursor = 0;
+  // Stryker disable next-line LogicalOperator,ConditionalExpression,EqualityOperator: equivalent — cursor only ever advances to a newline index found via indexOf within [0,chainText.length), so cursor<=chainText.length always holds here; once cursor reaches the true end the next slice is '' and hexLine.test('') breaks the loop before any push, and any cap overshoot yields the identical exceedsMaxMidxChainLayers() verdict regardless of magnitude — so weakening either operand (< vs <=, && vs ||, or forcing either side true) never changes the returned digests.
   while (cursor <= chainText.length && digests.length <= MAX_MIDX_CHAIN_LAYERS) {
     const newline = chainText.indexOf('\n', cursor);
     const line = newline === -1 ? chainText.slice(cursor) : chainText.slice(cursor, newline);
