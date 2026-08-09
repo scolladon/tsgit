@@ -18,7 +18,7 @@ import {
   serializePackHeader,
 } from '../../../../src/domain/storage/index.js';
 import type { Context } from '../../../../src/ports/context.js';
-import { buildSeededContext } from './fixtures.js';
+import { buildSeededContext, instrumentedContext } from './fixtures.js';
 import { buildSyntheticPack, type EntrySpec, writeSyntheticPack } from './pack-fixture.js';
 
 const ENC = new TextEncoder();
@@ -93,7 +93,7 @@ async function stubRegistry(
     const packPath = match.packPath;
     const pack: RegisteredPack = {
       name: 'stub',
-      index: fillerIndex,
+      index: async () => fillerIndex,
       packPath,
       idxPath: `${packPath}.idx`,
       header: async () => ({ version: 2, objectCount: fillerIndex.objectCount }),
@@ -112,11 +112,20 @@ async function stubRegistry(
   };
   return {
     all: async () => [],
+    assertLoadable: async () => {},
     refresh: () => undefined,
     lookup,
     dispose: noopDispose,
     health: async () => ({ accessible: [], unusable: [] }),
     indexFaults: async () => [],
+    midxHealth: async () => ({
+      artefact: undefined,
+      faults: [],
+      flatFilePresent: false,
+      unresolvedPacks: [],
+      unresolvedEntries: [],
+      checksumOk: undefined,
+    }),
   };
 }
 
@@ -245,6 +254,36 @@ describe('object-resolver', () => {
           expect(error).toBeInstanceOf(TsgitError);
           expect((error as TsgitError).data.code).toBe('OBJECT_NOT_FOUND');
         }
+      });
+    });
+  });
+
+  describe('Given an aborted signal and a flat multi-pack-index with a flipped signature', () => {
+    describe('When resolveObject is called', () => {
+      it('Then the abort wins — OPERATION_ABORTED, never the midx fault, and no scan I/O', async () => {
+        // Arrange
+        const controller = new AbortController();
+        controller.abort();
+        const ctx = await buildSeededContext({ signal: controller.signal });
+        const badMidx = new Uint8Array(16);
+        badMidx.set([0x00, 0x49, 0x44, 0x58, 1, 1, 1, 0], 0);
+        await ctx.fs.write(`${ctx.layout.gitDir}/objects/pack/multi-pack-index`, badMidx);
+        const { ctx: instrumented, calls } = instrumentedContext(ctx);
+        const registry = createPackRegistry(instrumented);
+
+        // Act
+        let caught: unknown;
+        try {
+          await resolveObject(instrumented, registry, 'a'.repeat(40) as ObjectId, true);
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe('OPERATION_ABORTED');
+        const packDirCalls = calls().filter((call) => call.path.includes('objects/pack'));
+        expect(packDirCalls).toEqual([]);
       });
     });
   });
@@ -736,7 +775,7 @@ describe('object-resolver', () => {
   describe('loose-oid probe (A2/B7b — per-fanout-dir cache)', () => {
     describe('Given several seeded loose blobs', () => {
       describe('When resolveObject reads each of them, then reads every one again', () => {
-        it('Then each touched fanout dir is readdir-ed at most once and exists is never called', async () => {
+        it('Then each touched fanout dir is readdir-ed at most once and exists is called only for the pack-registry presence probe', async () => {
           // Arrange
           const blobs: Blob[] = Array.from({ length: 5 }, (_, i) => ({
             type: 'blob',
@@ -764,10 +803,13 @@ describe('object-resolver', () => {
           }
 
           // Assert — one readdir per DISTINCT touched prefix, never per object
-          // or per read; the old per-object exists/realpath probe is gone.
+          // or per read; the old per-object exists/realpath probe is gone. The
+          // single exists() call left is resolveObjectBytes's own assertLoadable
+          // gate probing the pack directory once (memoised for every later
+          // read, loose or not) — not a per-object or per-read cost.
           const touchedPrefixes = new Set(ids.map((id) => id.slice(0, 2)));
           expect(readdirSpy.mock.calls.length).toBe(touchedPrefixes.size);
-          expect(existsSpy.mock.calls.length).toBe(0);
+          expect(existsSpy.mock.calls.length).toBe(1);
         });
       });
     });
@@ -1169,12 +1211,21 @@ describe('object-resolver', () => {
           };
           const registry: PackRegistry = {
             all: async () => [pack],
+            assertLoadable: async () => {},
             refresh: () => undefined,
             lookup: async (lookupId) =>
               lookupId === id ? { pack, offset: entryOffset } : undefined,
             dispose: noopDispose,
             health: async () => ({ accessible: [pack], unusable: [] }),
             indexFaults: async () => [],
+            midxHealth: async () => ({
+              artefact: undefined,
+              faults: [],
+              flatFilePresent: false,
+              unresolvedPacks: [],
+              unresolvedEntries: [],
+              checksumOk: undefined,
+            }),
           };
           const sut = resolveObject;
 
@@ -1215,7 +1266,7 @@ describe('object-resolver', () => {
           const fillerIndex = parsePackIndex(filler.idxBytes);
           const pack: RegisteredPack = {
             name: 'stub-corrupt-slice',
-            index: fillerIndex,
+            index: async () => fillerIndex,
             packPath,
             idxPath: `${packPath}.idx`,
             header: async () => ({ version: 2, objectCount: fillerIndex.objectCount }),
@@ -1228,11 +1279,20 @@ describe('object-resolver', () => {
           };
           const registry: PackRegistry = {
             all: async () => [],
+            assertLoadable: async () => {},
             refresh: () => undefined,
             lookup: async (id) => (id === targetId ? { pack, offset: entryOffset } : undefined),
             dispose: noopDispose,
             health: async () => ({ accessible: [pack], unusable: [] }),
             indexFaults: async () => [],
+            midxHealth: async () => ({
+              artefact: undefined,
+              faults: [],
+              flatFilePresent: false,
+              unresolvedPacks: [],
+              unresolvedEntries: [],
+              checksumOk: undefined,
+            }),
           };
           const sut = resolveObject;
 
@@ -1279,7 +1339,7 @@ describe('object-resolver', () => {
           const fillerIndex = parsePackIndex(filler.idxBytes);
           const pack: RegisteredPack = {
             name: 'stub-zero-slice',
-            index: fillerIndex,
+            index: async () => fillerIndex,
             packPath,
             idxPath: `${packPath}.idx`,
             header: async () => ({ version: 2, objectCount: fillerIndex.objectCount }),
@@ -1292,11 +1352,20 @@ describe('object-resolver', () => {
           };
           const registry: PackRegistry = {
             all: async () => [],
+            assertLoadable: async () => {},
             refresh: () => undefined,
             lookup: async (id) => (id === targetId ? { pack, offset: entryOffset } : undefined),
             dispose: noopDispose,
             health: async () => ({ accessible: [pack], unusable: [] }),
             indexFaults: async () => [],
+            midxHealth: async () => ({
+              artefact: undefined,
+              faults: [],
+              flatFilePresent: false,
+              unresolvedPacks: [],
+              unresolvedEntries: [],
+              checksumOk: undefined,
+            }),
           };
           const sut = resolveObject;
 
@@ -1339,7 +1408,7 @@ describe('object-resolver', () => {
           const fillerIndex = parsePackIndex(filler.idxBytes);
           const pack: RegisteredPack = {
             name: 'stub-corrupt-exceeds',
-            index: fillerIndex,
+            index: async () => fillerIndex,
             packPath,
             idxPath: `${packPath}.idx`,
             header: async () => ({ version: 2, objectCount: fillerIndex.objectCount }),
@@ -1352,11 +1421,20 @@ describe('object-resolver', () => {
           };
           const registry: PackRegistry = {
             all: async () => [],
+            assertLoadable: async () => {},
             refresh: () => undefined,
             lookup: async (id) => (id === targetId ? { pack, offset: entryOffset } : undefined),
             dispose: noopDispose,
             health: async () => ({ accessible: [pack], unusable: [] }),
             indexFaults: async () => [],
+            midxHealth: async () => ({
+              artefact: undefined,
+              faults: [],
+              flatFilePresent: false,
+              unresolvedPacks: [],
+              unresolvedEntries: [],
+              checksumOk: undefined,
+            }),
           };
           const sut = resolveObject;
 

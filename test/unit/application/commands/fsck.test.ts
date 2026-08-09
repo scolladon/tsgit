@@ -1,8 +1,18 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { type FsckFinding, fsck } from '../../../../src/application/commands/fsck.js';
-import { looseObjectPath, objectsDir } from '../../../../src/application/primitives/path-layout.js';
-import { disposePackRegistry } from '../../../../src/application/primitives/read-object.js';
+import {
+  commonGitDir,
+  looseObjectPath,
+  multiPackIndexChainPath,
+  multiPackIndexPath,
+  objectsDir,
+  packsDir,
+} from '../../../../src/application/primitives/path-layout.js';
+import {
+  disposePackRegistry,
+  refreshPackRegistry,
+} from '../../../../src/application/primitives/read-object.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import {
   decompressFailed,
@@ -13,6 +23,7 @@ import {
 } from '../../../../src/domain/error.js';
 import {
   FILE_MODE,
+  hexToBytes,
   invalidObjectHeader,
   type ObjectId,
   serializeTreeContent,
@@ -21,7 +32,8 @@ import {
 import type { FilePath } from '../../../../src/domain/objects/object-id.js';
 import { invalidPackIndex } from '../../../../src/domain/storage/index.js';
 import type { Context } from '../../../../src/ports/context.js';
-import { buildSeededContext } from '../primitives/fixtures.js';
+import { buildMidx, type MidxSpec } from '../../domain/storage/arbitraries.js';
+import { buildSeededContext, instrumentedContext } from '../primitives/fixtures.js';
 import { withHandleLedger } from '../primitives/handle-ledger.js';
 import {
   buildSyntheticPack,
@@ -4332,6 +4344,1160 @@ describe('Given a corrupt-idx pack beside a pack whose header probe would reject
       expect(revIndex).toHaveLength(1);
       expect((revIndex[0] as { pack: string }).pack).toBe('pack-d13-ungated-corrupt');
       expect(result.exitCode & 64).toBe(64);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// MULTI-PACK-INDEX HEALTH PASS — fsck reports the midx (ADR-601)
+// ---------------------------------------------------------------------------
+
+const midxDir = (ctx: Context): string => packsDir(commonGitDir(ctx));
+
+function midxBaseSpec(overrides: Partial<MidxSpec> = {}): MidxSpec {
+  return {
+    version: 2,
+    hashVersion: 1,
+    digestLength: 20,
+    numBaseFiles: 0,
+    packNames: [],
+    entries: [],
+    ...overrides,
+  };
+}
+
+/** A deterministic, valid-hex synthetic oid — for entries that exist only in
+ *  a crafted midx's own OIDL, never in the object store. */
+function midxOid(prefix: string): ObjectId {
+  return (prefix + '0'.repeat(40 - prefix.length)) as ObjectId;
+}
+
+const midxPackName = (ch: string): string => `pack-${ch.repeat(40)}.idx`;
+
+async function stampMidxTrailer(ctx: Context, bytes: Uint8Array): Promise<Uint8Array> {
+  const digestLength = ctx.hashConfig.digestLength;
+  const bodyEnd = bytes.length - digestLength;
+  const checksumHex = await ctx.hash.hashHex(bytes.subarray(0, bodyEnd));
+  const stamped = bytes.slice();
+  stamped.set(hexToBytes(checksumHex), bodyEnd);
+  return stamped;
+}
+
+async function writeFlatMidx(ctx: Context, spec: MidxSpec): Promise<void> {
+  const bytes = await stampMidxTrailer(ctx, buildMidx(spec));
+  await ctx.fs.write(multiPackIndexPath(midxDir(ctx)), bytes);
+}
+
+function midxLayerDigest(n: number, digestLength: number): string {
+  return n.toString(16).padStart(digestLength * 2, '0');
+}
+
+const midxLayerPath = (ctx: Context, digest: string): string =>
+  `${midxDir(ctx)}/multi-pack-index.d/multi-pack-index-${digest}.midx`;
+
+/** Writes each spec as a chain layer (base first) plus the manifest listing
+ *  their digests in order. Only the HEAD layer's trailer is stamped — fsck
+ *  never verifies a base layer's (P12), so leaving it at buildMidx's zero
+ *  default is deliberate, not an oversight. */
+async function writeMidxChain(ctx: Context, specs: ReadonlyArray<MidxSpec>): Promise<void> {
+  const dir = midxDir(ctx);
+  const digests = specs.map((spec, i) => midxLayerDigest(i + 1, spec.digestLength));
+  for (const [i, spec] of specs.entries()) {
+    const raw = buildMidx(spec);
+    const bytes = i === specs.length - 1 ? await stampMidxTrailer(ctx, raw) : raw;
+    await ctx.fs.write(midxLayerPath(ctx, digests[i]!), bytes);
+  }
+  await ctx.fs.writeUtf8(multiPackIndexChainPath(dir), `${digests.join('\n')}\n`);
+}
+
+/** Writes a real, healthy single-blob pack and returns its `.idx` base name
+ *  (as a `PNAM` entry would carry it) plus the blob's id. */
+async function writeMidxPack(
+  ctx: Context,
+  name: string,
+  content: string,
+): Promise<{ readonly packNameIdx: string; readonly id: ObjectId }> {
+  const ids = await writeSyntheticPack(ctx, name, onePackEntry(content));
+  return { packNameIdx: `pack-${name}.idx`, id: ids[0] as ObjectId };
+}
+
+function midxFindingIds(findings: ReadonlyArray<FsckFinding>): ReadonlyArray<ObjectId> {
+  return findings.flatMap((f) => findingIds(f));
+}
+
+function findMidxChunkOffset(bytes: Uint8Array, chunkId: string): number {
+  const numChunks = bytes[6]!;
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const decoder = new TextDecoder();
+  for (let i = 0; i < numChunks; i += 1) {
+    const rowStart = 12 + i * 12;
+    if (decoder.decode(bytes.subarray(rowStart, rowStart + 4)) === chunkId) {
+      return view.getUint32(rowStart + 4) * 0x100000000 + view.getUint32(rowStart + 8);
+    }
+  }
+  throw new Error(`chunk ${chunkId} not present in fixture`);
+}
+
+function setMidxNumChunks(bytes: Uint8Array, numChunks: number): Uint8Array {
+  const copy = bytes.slice();
+  copy[6] = numChunks;
+  return copy;
+}
+
+function renameMidxChunkRow(bytes: Uint8Array, chunkId: string, newId: string): Uint8Array {
+  const copy = bytes.slice();
+  const numChunks = copy[6]!;
+  const decoder = new TextDecoder();
+  for (let i = 0; i < numChunks; i += 1) {
+    const rowStart = 12 + i * 12;
+    if (decoder.decode(copy.subarray(rowStart, rowStart + 4)) === chunkId) {
+      copy.set(new TextEncoder().encode(newId), rowStart);
+      return copy;
+    }
+  }
+  throw new Error(`chunk ${chunkId} not present in fixture`);
+}
+
+// Shrinks `chunkId`'s chunk by adjusting the offset of the row immediately
+// after it in the table — that row is the chunk's end boundary, so this
+// changes only its computed size without disturbing any earlier chunk.
+function shrinkMidxChunkAfter(bytes: Uint8Array, chunkId: string, delta: number): Uint8Array {
+  const copy = bytes.slice();
+  const view = new DataView(copy.buffer);
+  const numChunks = copy[6]!;
+  const decoder = new TextDecoder();
+  let rowIndex = -1;
+  for (let i = 0; i < numChunks; i += 1) {
+    const rowStart = 12 + i * 12;
+    if (decoder.decode(copy.subarray(rowStart, rowStart + 4)) === chunkId) {
+      rowIndex = i;
+      break;
+    }
+  }
+  if (rowIndex === -1) throw new Error(`chunk ${chunkId} not present in fixture`);
+  const nextRowStart = 12 + (rowIndex + 1) * 12;
+  const low = view.getUint32(nextRowStart + 8);
+  view.setUint32(nextRowStart + 8, low + delta);
+  return copy;
+}
+
+function pokeMidxFanoutEntry(bytes: Uint8Array, index: number, value: number): Uint8Array {
+  const copy = bytes.slice();
+  const view = new DataView(copy.buffer);
+  const oidfStart = findMidxChunkOffset(copy, 'OIDF');
+  view.setUint32(oidfStart + index * 4, value);
+  return copy;
+}
+
+function setMidxOoffWord(bytes: Uint8Array, entryIndex: number, rawWord: number): Uint8Array {
+  const copy = bytes.slice();
+  const view = new DataView(copy.buffer);
+  const ooffStart = findMidxChunkOffset(copy, 'OOFF');
+  view.setUint32(ooffStart + entryIndex * 8 + 4, rawWord);
+  return copy;
+}
+
+const isMidxFinding = (f: FsckFinding): boolean => f.type.startsWith('midx-');
+
+// ---------------------------------------------------------------------------
+// DROPPED CHAIN — no finding, no bit (P2–P8, P20)
+// ---------------------------------------------------------------------------
+
+describe('Given a dropped incremental chain and no flat file', () => {
+  describe('When fsck runs', () => {
+    it('Then a missing chain layer produces no finding and bit 32 is absent', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const dir = midxDir(ctx);
+      await ctx.fs.writeUtf8(multiPackIndexChainPath(dir), `${midxLayerDigest(1, 20)}\n`);
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      expect(result.findings.some(isMidxFinding)).toBe(false);
+      expect(result.exitCode & 32).toBe(0);
+    });
+
+    it('Then an unreadable chain layer produces no finding and bit 32 is absent', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      await writeMidxChain(ctx, [midxBaseSpec()]);
+      const layerPath = midxLayerPath(ctx, midxLayerDigest(1, 20));
+      const wrapped: Context = {
+        ...ctx,
+        fs: {
+          ...ctx.fs,
+          read: async (path: string) => {
+            if (path === layerPath) throw permissionDenied(path);
+            return ctx.fs.read(path);
+          },
+        },
+      };
+
+      // Act
+      const result = await fsck(wrapped);
+
+      // Assert
+      expect(result.findings.some(isMidxFinding)).toBe(false);
+      expect(result.exitCode & 32).toBe(0);
+    });
+
+    it('Then a malformed chain digest line produces no finding and bit 32 is absent', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      await ctx.fs.writeUtf8(multiPackIndexChainPath(midxDir(ctx)), 'not-a-valid-digest-line\n');
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      expect(result.findings.some(isMidxFinding)).toBe(false);
+      expect(result.exitCode & 32).toBe(0);
+    });
+
+    it('Then a Tier-B-corrupt chain layer produces no finding and bit 32 is absent', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const dir = midxDir(ctx);
+      const digest = midxLayerDigest(1, 20);
+      await ctx.fs.write(midxLayerPath(ctx, digest), new Uint8Array(8));
+      await ctx.fs.writeUtf8(multiPackIndexChainPath(dir), `${digest}\n`);
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      expect(result.findings.some(isMidxFinding)).toBe(false);
+      expect(result.exitCode & 32).toBe(0);
+    });
+
+    it('Then a chain over the layer cap produces no finding and bit 32 is absent', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const digests = Array.from({ length: 1001 }, (_, i) =>
+        (i + 1).toString(16).padStart(40, '0'),
+      );
+      await ctx.fs.writeUtf8(multiPackIndexChainPath(midxDir(ctx)), `${digests.join('\n')}\n`);
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      expect(result.findings.some(isMidxFinding)).toBe(false);
+      expect(result.exitCode & 32).toBe(0);
+    });
+  });
+});
+
+describe('Given a Tier-B flat midx rescued by a loadable chain', () => {
+  describe('When fsck runs', () => {
+    it('Then no finding is emitted and bit 32 is absent', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      await ctx.fs.write(multiPackIndexPath(midxDir(ctx)), new Uint8Array(8));
+      await writeMidxChain(ctx, [midxBaseSpec()]);
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      expect(result.findings.some(isMidxFinding)).toBe(false);
+      expect(result.exitCode & 32).toBe(0);
+    });
+  });
+});
+
+describe('Given a broken chain suppressed by a loadable flat midx', () => {
+  describe('When fsck runs', () => {
+    it('Then no finding is emitted and bit 32 is absent', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      await writeFlatMidx(ctx, midxBaseSpec());
+      const dir = midxDir(ctx);
+      const digest = midxLayerDigest(1, 20);
+      await ctx.fs.write(midxLayerPath(ctx, digest), new Uint8Array(8));
+      await ctx.fs.writeUtf8(multiPackIndexChainPath(dir), `${digest}\n`);
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      expect(result.findings.some(isMidxFinding)).toBe(false);
+      expect(result.exitCode & 32).toBe(0);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// HEALTHY / ACCEPTED SHAPES — no finding, exit 0 (O1, O2, O6, O20, O27, P1, P21–P23)
+// ---------------------------------------------------------------------------
+
+describe('Given a healthy flat multi-pack-index', () => {
+  describe('When fsck runs', () => {
+    it('Then no midx finding is emitted and bit 32 is absent', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const { packNameIdx, id } = await writeMidxPack(ctx, 'midx-healthy', 'midx-healthy-content');
+      await writeFlatMidx(
+        ctx,
+        midxBaseSpec({ packNames: [packNameIdx], entries: [{ id, packIndex: 0, offset: 0 }] }),
+      );
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      expect(result.findings.some(isMidxFinding)).toBe(false);
+      expect(result.exitCode & 32).toBe(0);
+    });
+  });
+});
+
+describe('Given no multi-pack-index at all', () => {
+  describe('When fsck runs', () => {
+    it('Then no midx finding is emitted and bit 32 is absent', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      expect(result.findings.some(isMidxFinding)).toBe(false);
+      expect(result.exitCode & 32).toBe(0);
+    });
+  });
+});
+
+describe('Given a midx shape git accepts and ignores', () => {
+  describe('When fsck runs', () => {
+    it('Then version 2 produces no midx finding', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      await writeFlatMidx(ctx, midxBaseSpec({ version: 2 }));
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      expect(result.findings.some(isMidxFinding)).toBe(false);
+      expect(result.exitCode & 32).toBe(0);
+    });
+
+    it('Then a non-zero numBaseFiles produces no midx finding', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      await writeFlatMidx(ctx, midxBaseSpec({ numBaseFiles: 5 }));
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      expect(result.findings.some(isMidxFinding)).toBe(false);
+      expect(result.exitCode & 32).toBe(0);
+    });
+
+    it('Then an in-range LOFF row produces no midx finding', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const { packNameIdx, id } = await writeMidxPack(ctx, 'midx-loff', 'midx-loff-content');
+      await writeFlatMidx(
+        ctx,
+        midxBaseSpec({
+          packNames: [packNameIdx],
+          entries: [{ id, packIndex: 0, offset: 0x1_0000_0001 }],
+        }),
+      );
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      expect(result.findings.some(isMidxFinding)).toBe(false);
+      expect(result.exitCode & 32).toBe(0);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TIER-B FLAT, NO RESCUE — the verdict (O7–O9, O16–O18)
+// ---------------------------------------------------------------------------
+
+describe('Given a Tier-B-corrupt flat midx with no rescuing chain', () => {
+  describe('When fsck runs', () => {
+    it('Then a truncated (too-small) flat midx produces one midx-unusable finding naming the check, and bit 32 is set', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      await ctx.fs.write(multiPackIndexPath(midxDir(ctx)), new Uint8Array(8));
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      const findings = result.findings.filter((f) => f.type === 'midx-unusable');
+      expect(findings).toHaveLength(1);
+      expect((findings[0] as { artefact: string }).artefact).toBe('multi-pack-index');
+      expect((findings[0] as { reason: string }).reason).toContain('too short for header');
+      expect(result.exitCode & 32).toBe(32);
+    });
+
+    it('Then a chunk table extending past end of file produces one midx-unusable finding, and bit 32 is set', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const bytes = setMidxNumChunks(buildMidx(midxBaseSpec()), 200);
+      await ctx.fs.write(multiPackIndexPath(midxDir(ctx)), bytes);
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      const findings = result.findings.filter((f) => f.type === 'midx-unusable');
+      expect(findings).toHaveLength(1);
+      expect((findings[0] as { reason: string }).reason).toContain('chunk table');
+      expect(result.exitCode & 32).toBe(32);
+    });
+
+    it('Then a chunk with the wrong declared length produces one midx-unusable finding, and bit 32 is set', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const bytes = shrinkMidxChunkAfter(buildMidx(midxBaseSpec()), 'OIDF', -4);
+      await ctx.fs.write(multiPackIndexPath(midxDir(ctx)), bytes);
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      const findings = result.findings.filter((f) => f.type === 'midx-unusable');
+      expect(findings).toHaveLength(1);
+      expect((findings[0] as { reason: string }).reason).toContain('OIDF');
+      expect(result.exitCode & 32).toBe(32);
+    });
+
+    it('Then a hashVersion disagreeing with the repository hash produces one midx-unusable finding, and bit 32 is set', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const bytes = buildMidx(midxBaseSpec({ hashVersion: 2, digestLength: 32 }));
+      await ctx.fs.write(multiPackIndexPath(midxDir(ctx)), bytes);
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      const findings = result.findings.filter((f) => f.type === 'midx-unusable');
+      expect(findings).toHaveLength(1);
+      expect((findings[0] as { reason: string }).reason).toContain('hash version');
+      expect(result.exitCode & 32).toBe(32);
+    });
+  });
+});
+
+describe('Given a permission-denied flat midx file', () => {
+  describe('When fsck runs', () => {
+    it('Then one midx-unusable finding is emitted — flatFilePresent still holds via the stat gate — and bit 32 is set', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const flatPath = multiPackIndexPath(midxDir(ctx));
+      await ctx.fs.write(flatPath, await stampMidxTrailer(ctx, buildMidx(midxBaseSpec())));
+      const wrapped: Context = {
+        ...ctx,
+        fs: {
+          ...ctx.fs,
+          read: async (path: string) => {
+            if (path === flatPath) throw permissionDenied(path);
+            return ctx.fs.read(path);
+          },
+        },
+      };
+
+      // Act
+      const result = await fsck(wrapped);
+
+      // Assert
+      const findings = result.findings.filter((f) => f.type === 'midx-unusable');
+      expect(findings).toHaveLength(1);
+      expect(result.exitCode & 32).toBe(32);
+    });
+  });
+});
+
+describe('Given a contained pack-int-id fault mid-walk with no PNAM entries at all', () => {
+  describe('When fsck runs', () => {
+    it('Then one midx-unusable finding names the check and the correct artefact, and bit 32 is the entire exitCode', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      await writeFlatMidx(
+        ctx,
+        midxBaseSpec({ entries: [{ id: midxOid('aa1'), packIndex: 0, offset: 0 }] }),
+      );
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      const findings = result.findings.filter((f) => f.type === 'midx-unusable');
+      expect(findings).toHaveLength(1);
+      expect((findings[0] as { artefact: string }).artefact).toBe('multi-pack-index');
+      expect((findings[0] as { reason: string }).reason).toContain('pack index');
+      expect(result.exitCode).toBe(32);
+    });
+  });
+});
+
+describe('Given a PNAM entry unresolved with no midx entries referencing it', () => {
+  describe('When fsck runs', () => {
+    it('Then one midx-pack-unresolved finding is emitted and bit 32 is the entire exitCode', async () => {
+      // Arrange — a pack listed in PNAM but never routed to by any oid: the
+      // pack-level finding fires from the PNAM walk alone, with the
+      // per-entry loop never running to also set the bit.
+      const ctx = await initBareCtx();
+      await writeFlatMidx(ctx, midxBaseSpec({ packNames: [midxPackName('f')] }));
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      const packUnresolved = result.findings.filter((f) => f.type === 'midx-pack-unresolved');
+      expect(packUnresolved).toHaveLength(1);
+      expect(result.exitCode).toBe(32);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TRAILER VERIFICATION — head only (O10, P12, P13)
+// ---------------------------------------------------------------------------
+
+describe('Given a multi-pack-index whose trailer digest disagrees with its bytes', () => {
+  describe('When fsck runs', () => {
+    it('Then a flipped flat trailer produces one midx-checksum-mismatch finding and bit 32 is set', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const good = await stampMidxTrailer(ctx, buildMidx(midxBaseSpec()));
+      const flipped = good.slice();
+      flipped[flipped.length - 1] = (flipped[flipped.length - 1]! ^ 0xff) & 0xff;
+      await ctx.fs.write(multiPackIndexPath(midxDir(ctx)), flipped);
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      const findings = result.findings.filter((f) => f.type === 'midx-checksum-mismatch');
+      expect(findings).toHaveLength(1);
+      expect((findings[0] as { artefact: string }).artefact).toBe('multi-pack-index');
+      expect(result.exitCode & 32).toBe(32);
+    });
+
+    it('Then a flipped chain-head trailer produces one midx-checksum-mismatch finding', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      await writeMidxChain(ctx, [midxBaseSpec()]);
+      const headPath = midxLayerPath(ctx, midxLayerDigest(1, 20));
+      const bytes = await ctx.fs.read(headPath);
+      const flipped = bytes.slice();
+      flipped[flipped.length - 1] = (flipped[flipped.length - 1]! ^ 0xff) & 0xff;
+      await ctx.fs.write(headPath, flipped);
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      const findings = result.findings.filter((f) => f.type === 'midx-checksum-mismatch');
+      expect(findings).toHaveLength(1);
+      expect(result.exitCode & 32).toBe(32);
+    });
+
+    it('Then a flipped chain-base-layer trailer produces no finding — only the head is verified', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      await writeMidxChain(ctx, [midxBaseSpec(), midxBaseSpec()]);
+      const basePath = midxLayerPath(ctx, midxLayerDigest(1, 20));
+      const bytes = await ctx.fs.read(basePath);
+      const flipped = bytes.slice();
+      flipped[flipped.length - 1] = (flipped[flipped.length - 1]! ^ 0xff) & 0xff;
+      await ctx.fs.write(basePath, flipped);
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      expect(result.findings.some(isMidxFinding)).toBe(false);
+      expect(result.exitCode & 32).toBe(0);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PNAM / ENTRY RESOLUTION (O22–O25, P14–P16)
+// ---------------------------------------------------------------------------
+
+describe('Given a PNAM entry that resolves to no pack this generation registered', () => {
+  describe('When fsck runs', () => {
+    it('Then one midx-pack-unresolved and one midx-entry-unresolved per affected oid are emitted, and bit 32 is the entire exitCode', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const ids = [midxOid('aa1'), midxOid('aa2'), midxOid('aa3')];
+      await writeFlatMidx(
+        ctx,
+        midxBaseSpec({
+          packNames: [midxPackName('f')],
+          entries: ids.map((id) => ({ id, packIndex: 0, offset: 0 })),
+        }),
+      );
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      const packUnresolved = result.findings.filter((f) => f.type === 'midx-pack-unresolved');
+      const entryUnresolved = result.findings.filter((f) => f.type === 'midx-entry-unresolved');
+      expect(packUnresolved).toHaveLength(1);
+      expect((packUnresolved[0] as { position: number; pack: string }).position).toBe(0);
+      expect((packUnresolved[0] as { position: number; pack: string }).pack).toBe(
+        `pack-${'f'.repeat(40)}`,
+      );
+      expect(entryUnresolved).toHaveLength(3);
+      const unresolvedIds = new Set(midxFindingIds(entryUnresolved));
+      for (const id of ids) expect(unresolvedIds.has(id)).toBe(true);
+      // bit 32 appears once regardless of how many findings the pass produced,
+      // and this scenario has no other pass contributing a bit.
+      expect(result.exitCode).toBe(32);
+    });
+  });
+});
+
+describe('Given a PNAM entry whose .idx is unregistered but whose sibling .pack survives on disk', () => {
+  describe('When fsck runs', () => {
+    it("Then only the per-entry family is emitted — the pack itself resolved in git's eyes", async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const name = midxPackName('f');
+      const packsDir = `${commonGitDir(ctx)}/objects/pack`;
+      await ctx.fs.write(`${packsDir}/${name.slice(0, -'.idx'.length)}.pack`, new Uint8Array([0]));
+      const ids = [midxOid('aa1'), midxOid('aa2')];
+      await writeFlatMidx(
+        ctx,
+        midxBaseSpec({
+          packNames: [name],
+          entries: ids.map((id) => ({ id, packIndex: 0, offset: 0 })),
+        }),
+      );
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      const packUnresolved = result.findings.filter((f) => f.type === 'midx-pack-unresolved');
+      const entryUnresolved = result.findings.filter((f) => f.type === 'midx-entry-unresolved');
+      expect(packUnresolved).toHaveLength(0);
+      expect(entryUnresolved).toHaveLength(2);
+      expect(result.exitCode & 32).toBe(32);
+    });
+  });
+});
+
+describe('Given a PNAM entry carrying a control byte in its name', () => {
+  describe('When fsck reports it unresolved', () => {
+    it('Then the finding carries the hex-escaped name, never the raw byte', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const hostileName = 'pack-\u0001evil.idx';
+      await writeFlatMidx(ctx, midxBaseSpec({ packNames: [hostileName] }));
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      const packUnresolved = result.findings.filter((f) => f.type === 'midx-pack-unresolved');
+      expect(packUnresolved).toHaveLength(1);
+      expect((packUnresolved[0] as { pack: string }).pack).toBe('pack-\\u0001evil.idx');
+    });
+  });
+});
+
+describe('Given a PNAM entry longer than the finding name budget', () => {
+  describe('When fsck reports it unresolved', () => {
+    it('Then the name is truncated with an ellipsis marker after escaping', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const longName = `pack-\u0002${'a'.repeat(400)}.idx`;
+      await writeFlatMidx(ctx, midxBaseSpec({ packNames: [longName] }));
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      const packUnresolved = result.findings.filter((f) => f.type === 'midx-pack-unresolved');
+      expect(packUnresolved).toHaveLength(1);
+      const reported = (packUnresolved[0] as { pack: string }).pack;
+      expect(reported.startsWith('pack-\\u0002')).toBe(true);
+      expect(reported.endsWith('\u2026')).toBe(true);
+      expect(reported.length).toBeLessThan(longName.length);
+    });
+  });
+});
+
+describe('Given a SAFE PNAM entry without the .idx suffix whose truncated base matches a real .pack', () => {
+  describe('When fsck runs', () => {
+    it('Then the finding is still emitted and carries the name verbatim — the on-disk .pack cannot be borrowed', async () => {
+      // Arrange — under unconditional truncation, 'pack-A0000' would derive
+      // base 'pack-A', find pack-A.pack on disk, and silence this finding.
+      const ctx = await initBareCtx();
+      await writeSyntheticPack(ctx, 'A', onePackEntry('collision-target'));
+      await writeFlatMidx(ctx, midxBaseSpec({ packNames: ['pack-A0000'] }));
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      const packUnresolved = result.findings.filter((f) => f.type === 'midx-pack-unresolved');
+      expect(packUnresolved).toHaveLength(1);
+      expect((packUnresolved[0] as { pack: string }).pack).toBe('pack-A0000');
+    });
+  });
+});
+
+describe('Given a packed object corrupted on disk but warm in the delta cache', () => {
+  describe('When fsck runs', () => {
+    it('Then the audit reads the store, not the cache, and reports the corruption', async () => {
+      // Arrange — warm the session cache with the healthy bytes, then gut
+      // the packed copy: an audit trusting the cache would report a clean
+      // repository.
+      const ctx = await initBareCtx();
+      const [blobId] = await writeSyntheticPack(ctx, 'warmed', onePackEntry('warm-content'));
+      const healthy = new TextEncoder().encode('blob 12\u0000warm-content');
+      ctx.deltaCache.set(blobId as string, healthy, healthy.length);
+      const packPath = packFilePath(ctx, 'warmed');
+      const packBytes = (await ctx.fs.read(packPath)).slice();
+      packBytes.fill(0xff, 12, Math.min(packBytes.length - 20, 64));
+      await ctx.fs.write(packPath, packBytes);
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert — a dangling finding alone would also carry the id, so the
+      // oracle demands the corruption family specifically: a cache-trusting
+      // audit reports this store clean.
+      const corrupted = result.findings.some(
+        (f) =>
+          (f.type === 'bad-object' || f.type === 'hash-mismatch') &&
+          (f as { id: string }).id === blobId,
+      );
+      expect(corrupted).toBe(true);
+    });
+  });
+});
+
+describe('Given two midx entries routed to one pack whose header is broken', () => {
+  describe('When the midx pass walks the entries', () => {
+    it('Then the pack is probed once, not once per entry', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const ids = await writeSyntheticPack(ctx, 'shared', [
+        { kind: 'base', type: 'blob', content: new TextEncoder().encode('one') },
+        { kind: 'base', type: 'blob', content: new TextEncoder().encode('two') },
+      ]);
+      await restampPackHeader(ctx, packFilePath(ctx, 'shared'), { version: 99 });
+      await writeFlatMidx(
+        ctx,
+        midxBaseSpec({
+          packNames: ['pack-shared.idx'],
+          entries: ids.map((id, i) => ({ id: id as ObjectId, packIndex: 0, offset: 12 + i })),
+        }),
+      );
+      const { ctx: instrumented, calls } = instrumentedContext(ctx);
+
+      // Act
+      const result = await fsck(instrumented);
+
+      // Assert — both entries unresolved, yet the broken header was read
+      // exactly twice: once by the pack-health pass and once by the midx
+      // walk. The walk's per-pack memo is what holds the count there at one —
+      // a rejection clears the underlying header memo, so a per-entry probe
+      // would make this three.
+      const entryUnresolved = result.findings.filter((f) => f.type === 'midx-entry-unresolved');
+      expect(entryUnresolved).toHaveLength(2);
+      const headerReads = calls().filter(
+        (call) => call.method === 'readSlice' && call.path.endsWith('pack-shared.pack'),
+      );
+      expect(headerReads).toHaveLength(2);
+    });
+  });
+});
+
+describe("Given a two-layer chain with one layer's PNAM unresolvable", () => {
+  describe('When fsck runs', () => {
+    it('Then a base-layer unresolvable PNAM reports chain-global position 0', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const base = midxBaseSpec({
+        packNames: [midxPackName('e')],
+        entries: [{ id: midxOid('bb1'), packIndex: 0, offset: 0 }],
+      });
+      const newest = midxBaseSpec();
+      await writeMidxChain(ctx, [base, newest]);
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      const packUnresolved = result.findings.filter((f) => f.type === 'midx-pack-unresolved');
+      expect(packUnresolved).toHaveLength(1);
+      expect((packUnresolved[0] as { position: number }).position).toBe(0);
+      expect(result.exitCode & 32).toBe(32);
+    });
+
+    it('Then a newest-layer unresolvable PNAM reports chain-global position 1', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const { packNameIdx, id } = await writeMidxPack(
+        ctx,
+        'midx-chain-base-real',
+        'midx-chain-base-real-content',
+      );
+      const base = midxBaseSpec({
+        packNames: [packNameIdx],
+        entries: [{ id, packIndex: 0, offset: 0 }],
+      });
+      const newest = midxBaseSpec({
+        packNames: [midxPackName('d')],
+        entries: [{ id: midxOid('cc1'), packIndex: 0, offset: 0 }],
+      });
+      await writeMidxChain(ctx, [base, newest]);
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      const packUnresolved = result.findings.filter((f) => f.type === 'midx-pack-unresolved');
+      expect(packUnresolved).toHaveLength(1);
+      expect((packUnresolved[0] as { position: number }).position).toBe(1);
+      expect(result.exitCode & 32).toBe(32);
+    });
+  });
+});
+
+describe('Given a midx-named pack fully deleted while a reachable commit points at its tree', () => {
+  describe('When fsck runs', () => {
+    it('Then the pack-resolution findings and the ordinary connectivity findings both appear, with bit 32 alongside bit 2', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const emptyTreeBody = serializeTreeContent(makeTree([]), ctx.hashConfig);
+      const [treeId] = await writeSyntheticPack(ctx, 'midx-deleted', [
+        { kind: 'base', type: 'tree', content: emptyTreeBody },
+      ]);
+      const commitId = await writeObject(ctx, makeCommit(treeId as ObjectId, []));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+      await writeFlatMidx(
+        ctx,
+        midxBaseSpec({
+          packNames: ['pack-midx-deleted.idx'],
+          entries: [{ id: treeId as ObjectId, packIndex: 0, offset: 0 }],
+        }),
+      );
+      await ctx.fs.rm(packFilePath(ctx, 'midx-deleted'));
+      await ctx.fs.rm(idxFilePath(ctx, 'midx-deleted'));
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      const packUnresolved = result.findings.filter((f) => f.type === 'midx-pack-unresolved');
+      const entryUnresolved = result.findings.filter((f) => f.type === 'midx-entry-unresolved');
+      const missing = result.findings.filter(
+        (f) => f.type === 'missing' && (f as { id: ObjectId }).id === treeId,
+      );
+      expect(packUnresolved).toHaveLength(1);
+      expect(entryUnresolved).toHaveLength(1);
+      expect(missing).toHaveLength(1);
+      expect(result.exitCode & 32).toBe(32);
+      expect(result.exitCode & 2).toBe(2);
+    });
+  });
+});
+
+describe('Given a midx-named pack whose .idx is corrupt but whose .pack remains — the pack is bound but cannot serve', () => {
+  describe('When fsck runs', () => {
+    it("Then midx-entry-unresolved fires without midx-pack-unresolved, alongside the pack pass's own findings, and bits 32, 4 and 64 are all set", async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const [blobId] = await writeSyntheticPack(ctx, 'midx-o25', onePackEntry('midx-o25-content'));
+      await writeFlatMidx(
+        ctx,
+        midxBaseSpec({
+          packNames: ['pack-midx-o25.idx'],
+          entries: [{ id: blobId as ObjectId, packIndex: 0, offset: 0 }],
+        }),
+      );
+      const idxPath = idxFilePath(ctx, 'midx-o25');
+      const idxLength = (await ctx.fs.read(idxPath)).length;
+      await ctx.fs.write(idxPath, new Uint8Array(idxLength).fill(7));
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      const packUnresolved = result.findings.filter((f) => f.type === 'midx-pack-unresolved');
+      const entryUnresolved = result.findings.filter((f) => f.type === 'midx-entry-unresolved');
+      expect(packUnresolved).toHaveLength(0);
+      expect(entryUnresolved).toHaveLength(1);
+      expect((entryUnresolved[0] as { id: ObjectId }).id).toBe(blobId);
+      expect(result.findings.filter((f) => f.type === 'pack-index-unusable')).toHaveLength(1);
+      expect(result.findings.filter((f) => f.type === 'pack-rev-index-unusable')).toHaveLength(1);
+      expect(result.exitCode & 32).toBe(32);
+      expect(result.exitCode & 4).toBe(4);
+      expect(result.exitCode & 64).toBe(64);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// THE CONTAINED THROW — a decode-time Tier-A fault becomes a finding (O28)
+// ---------------------------------------------------------------------------
+
+describe('Given a LOFF row index out of range for the largeOffsetCount', () => {
+  describe('When fsck runs', () => {
+    it('Then one midx-unusable finding is emitted, bit 32 is set, and fsck resolves rather than rejecting', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const { packNameIdx, id } = await writeMidxPack(
+        ctx,
+        'midx-loff-oob',
+        'midx-loff-oob-content',
+      );
+      const built = buildMidx(
+        midxBaseSpec({
+          packNames: [packNameIdx],
+          entries: [{ id, packIndex: 0, offset: 0x1_0000_0001 }],
+        }),
+      );
+      const mutated = setMidxOoffWord(built, 0, 0x80000000 | 5);
+      const bytes = await stampMidxTrailer(ctx, mutated);
+      await ctx.fs.write(multiPackIndexPath(midxDir(ctx)), bytes);
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      const findings = result.findings.filter((f) => f.type === 'midx-unusable');
+      expect(findings).toHaveLength(1);
+      expect((findings[0] as { reason: string }).reason).toContain('large offset');
+      expect(result.exitCode & 32).toBe(32);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// THE REJECT ARM — a load-time Tier-A fault denies the whole run (O3–O5, O11–O15, P9–P11, P18)
+// ---------------------------------------------------------------------------
+
+describe('Given a Tier-A-corrupt flat midx', () => {
+  describe('When fsck runs', () => {
+    async function expectFsckRejectsWithCheck(ctx: Context, check: string): Promise<void> {
+      let caught: unknown;
+      try {
+        await fsck(ctx);
+        expect.unreachable();
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).toBeInstanceOf(TsgitError);
+      const data = (caught as TsgitError).data;
+      expect(data.code).toBe('INVALID_MULTI_PACK_INDEX');
+      if (data.code !== 'INVALID_MULTI_PACK_INDEX') {
+        expect.fail('expected INVALID_MULTI_PACK_INDEX');
+      }
+      expect(data.check).toBe(check);
+    }
+
+    it('Then a bad signature makes fsck reject with check "signature"', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const bytes = buildMidx(midxBaseSpec());
+      const flipped = bytes.slice();
+      flipped[0] = 0;
+      await ctx.fs.write(multiPackIndexPath(midxDir(ctx)), flipped);
+
+      // Act & Assert
+      await expectFsckRejectsWithCheck(ctx, 'signature');
+    });
+
+    it('Then an unsupported version makes fsck reject with check "version"', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const bytes = buildMidx(midxBaseSpec());
+      const view = new DataView(bytes.buffer);
+      view.setUint8(4, 3);
+      await ctx.fs.write(multiPackIndexPath(midxDir(ctx)), bytes);
+
+      // Act & Assert
+      await expectFsckRejectsWithCheck(ctx, 'version');
+    });
+
+    it('Then a missing required chunk makes fsck reject with check "required-chunk"', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const bytes = renameMidxChunkRow(buildMidx(midxBaseSpec()), 'PNAM', 'XXXX');
+      await ctx.fs.write(multiPackIndexPath(midxDir(ctx)), bytes);
+
+      // Act & Assert
+      await expectFsckRejectsWithCheck(ctx, 'required-chunk');
+    });
+
+    it('Then a non-monotonic OIDF fanout makes fsck reject with check "fanout"', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const { packNameIdx, id } = await writeMidxPack(ctx, 'midx-fanout', 'midx-fanout-content');
+      const bytes = pokeMidxFanoutEntry(
+        buildMidx(
+          midxBaseSpec({ packNames: [packNameIdx], entries: [{ id, packIndex: 0, offset: 0 }] }),
+        ),
+        0,
+        5,
+      );
+      await ctx.fs.write(multiPackIndexPath(midxDir(ctx)), bytes);
+
+      // Act & Assert
+      await expectFsckRejectsWithCheck(ctx, 'fanout');
+    });
+
+    it('Then out-of-order v1 pack names make fsck reject with check "pack-names"', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const bytes = buildMidx(
+        midxBaseSpec({
+          version: 1,
+          packNames: [midxPackName('b'), midxPackName('a')],
+        }),
+      );
+      await ctx.fs.write(multiPackIndexPath(midxDir(ctx)), bytes);
+
+      // Act & Assert
+      await expectFsckRejectsWithCheck(ctx, 'pack-names');
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// MODE IS UNGATED (Pin N)
+// ---------------------------------------------------------------------------
+
+describe('Given a finding-producing midx shape and no rescuing chain', () => {
+  describe('When fsck runs under every mode', () => {
+    it.each<{ label: string; arrange: (ctx: Context) => Promise<void> }>([
+      {
+        label: 'a Tier-B-corrupt flat midx (midx-unusable)',
+        arrange: async (ctx) => {
+          await ctx.fs.write(multiPackIndexPath(midxDir(ctx)), new Uint8Array(8));
+        },
+      },
+      {
+        label: 'a flat midx with a flipped trailer (midx-checksum-mismatch)',
+        arrange: async (ctx) => {
+          const bytes = buildMidx(midxBaseSpec()).slice();
+          bytes[bytes.length - 1] = (bytes[bytes.length - 1] ?? 0) ^ 0xff;
+          await ctx.fs.write(multiPackIndexPath(midxDir(ctx)), bytes);
+        },
+      },
+      {
+        label: 'a flat midx naming an unregistered pack (midx-pack-unresolved)',
+        arrange: async (ctx) => {
+          await ctx.fs.write(
+            multiPackIndexPath(midxDir(ctx)),
+            buildMidx(midxBaseSpec({ packNames: [midxPackName('f')] })),
+          );
+        },
+      },
+    ])(
+      'Then the midx finding set is identical across default, connectivityOnly, full:false and strict for $label',
+      async ({ arrange }) => {
+        // Arrange
+        const ctx = await initBareCtx();
+        await arrange(ctx);
+
+        // Act
+        const results = await Promise.all([
+          fsck(ctx),
+          fsck(ctx, { connectivityOnly: true }),
+          fsck(ctx, { full: false }),
+          fsck(ctx, { strict: true }),
+        ]);
+
+        // Assert — the full finding arrays, not just counts: a mode that
+        // dropped or reshaped one finding while keeping the count would slip
+        // past a length check.
+        const reference = results[0]!.findings.filter(isMidxFinding);
+        expect(reference.length).toBeGreaterThan(0);
+        expect(results[0]!.exitCode & 32).toBe(32);
+        for (const result of results.slice(1)) {
+          expect(result.findings.filter(isMidxFinding)).toEqual(reference);
+          expect(result.exitCode & 32).toBe(32);
+        }
+      },
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// BIT COMPOSITION, DIFFERENTIAL (O23 vs O26)
+// ---------------------------------------------------------------------------
+
+describe('Given the same repository with and without its multi-pack-index', () => {
+  describe('When fsck runs both ways', () => {
+    it('Then bit 32 is the only difference between the two exitCodes', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const emptyTreeBody = serializeTreeContent(makeTree([]), ctx.hashConfig);
+      const [treeId] = await writeSyntheticPack(ctx, 'midx-diff', [
+        { kind: 'base', type: 'tree', content: emptyTreeBody },
+      ]);
+      const commitId = await writeObject(ctx, makeCommit(treeId as ObjectId, []));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+      await writeFlatMidx(
+        ctx,
+        midxBaseSpec({
+          packNames: ['pack-midx-diff.idx'],
+          entries: [{ id: treeId as ObjectId, packIndex: 0, offset: 0 }],
+        }),
+      );
+      await ctx.fs.rm(packFilePath(ctx, 'midx-diff'));
+      await ctx.fs.rm(idxFilePath(ctx, 'midx-diff'));
+
+      // Act
+      const withMidx = await fsck(ctx);
+      await ctx.fs.rm(multiPackIndexPath(midxDir(ctx)));
+      refreshPackRegistry(ctx);
+      const withoutMidx = await fsck(ctx);
+
+      // Assert
+      expect(withMidx.exitCode & 32).toBe(32);
+      expect(withoutMidx.exitCode & 32).toBe(0);
+      expect(withMidx.exitCode ^ withoutMidx.exitCode).toBe(32);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// findingIds — the shared id collector (S-12)
+// ---------------------------------------------------------------------------
+
+describe('Given a midx-entry-unresolved finding', () => {
+  describe('When findingIds is called', () => {
+    it("Then it returns the finding's oid", () => {
+      // Arrange
+      const id = midxOid('dd1');
+      const finding: FsckFinding = {
+        type: 'midx-entry-unresolved',
+        artefact: 'multi-pack-index',
+        id,
+      };
+      const sut = findingIds;
+
+      // Act
+      const result = sut(finding);
+
+      // Assert
+      expect(result).toEqual([id]);
     });
   });
 });

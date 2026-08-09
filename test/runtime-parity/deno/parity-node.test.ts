@@ -30,7 +30,10 @@ const stageFiles = async (rootDir: string, inputs: ScenarioInputs): Promise<void
   }
 };
 
-for (const scenario of SCENARIOS) {
+const DENO_RUNTIME = 'deno';
+const supported = SCENARIOS.filter((s) => !s.unsupportedRuntimes?.includes(DENO_RUNTIME));
+
+for (const scenario of supported) {
   Deno.test(`Given the ${scenario.name} scenario, When the Deno driver runs it against the Node adapter`, async (t) => {
     const tmpDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-parity-deno-node-'));
     try {

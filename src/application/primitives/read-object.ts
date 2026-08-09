@@ -30,6 +30,16 @@ export function getPackRegistry(ctx: Context): PackRegistry {
 }
 
 /**
+ * Alias `from`'s pack registry onto a derived Context, so a caller that
+ * shadows one Context field (fsck's cache-bypassing audit view) still shares
+ * the SAME single-flight registry — a second registry would double the scan,
+ * split the generation memos and duplicate every persistent pack handle.
+ */
+export function adoptPackRegistry(from: Context, to: Context): void {
+  registryCache.set(to, getPackRegistry(from));
+}
+
+/**
  * Drop the per-Context pack-registry's cached `.idx` scan so the next read
  * re-scans `objects/pack/`. MUST be called after a pack is written into a live
  * Context (e.g. `fetchPack`), otherwise objects delivered by that pack are

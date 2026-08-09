@@ -10,6 +10,9 @@ import {
   logsDir,
   looseObjectPath,
   looseRefPath,
+  multiPackIndexChainPath,
+  multiPackIndexLayerPath,
+  multiPackIndexPath,
   objectsDir,
   packedRefsPath,
   packsDir,
@@ -245,6 +248,40 @@ describe('path-layout', () => {
 
         // Assert
         expect(result).toBe('/g/objects/info/commit-graphs/graph-deadbeef.graph');
+      });
+    });
+  });
+
+  describe('Given a packs directory', () => {
+    describe('When multiPackIndexPath', () => {
+      it('Then returns /packsDir/multi-pack-index', () => {
+        // Arrange & Act
+        const result = multiPackIndexPath('/g/objects/pack');
+
+        // Assert
+        expect(result).toBe('/g/objects/pack/multi-pack-index');
+      });
+    });
+
+    describe('When multiPackIndexChainPath', () => {
+      it('Then returns /packsDir/multi-pack-index.d/multi-pack-index-chain', () => {
+        // Arrange & Act
+        const result = multiPackIndexChainPath('/g/objects/pack');
+
+        // Assert
+        expect(result).toBe('/g/objects/pack/multi-pack-index.d/multi-pack-index-chain');
+      });
+    });
+  });
+
+  describe('Given a packs directory and a layer digest', () => {
+    describe('When multiPackIndexLayerPath', () => {
+      it('Then returns /packsDir/multi-pack-index.d/multi-pack-index-<digest>.midx', () => {
+        // Arrange & Act
+        const result = multiPackIndexLayerPath('/g/objects/pack', 'deadbeef');
+
+        // Assert
+        expect(result).toBe('/g/objects/pack/multi-pack-index.d/multi-pack-index-deadbeef.midx');
       });
     });
   });

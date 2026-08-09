@@ -951,4 +951,40 @@ describe('streamBlob', () => {
       }
     });
   });
+
+  describe('Given a loose blob beside a flat multi-pack-index with a flipped signature', () => {
+    describe('When streamBlob reads the loose blob', () => {
+      it('Then it rejects with the structural midx fault instead of serving the loose bytes', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const blob: Blob = {
+          type: 'blob',
+          content: ENC.encode('denied loose read'),
+          id: '' as ObjectId,
+        };
+        const id = await writeObject(ctx, blob);
+        const packsDir = `${ctx.layout.gitDir}/objects/pack`;
+        const badMidx = new Uint8Array(16);
+        badMidx.set([0x00, 0x49, 0x44, 0x58, 1, 1, 1, 0], 0);
+        await ctx.fs.write(`${packsDir}/multi-pack-index`, badMidx);
+
+        // Act
+        let caught: unknown;
+        try {
+          const sut = await streamBlob(ctx, id);
+          await collect(sut);
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('INVALID_MULTI_PACK_INDEX');
+        if (data.code === 'INVALID_MULTI_PACK_INDEX') {
+          expect(data.check).toBe('signature');
+        }
+      });
+    });
+  });
 });

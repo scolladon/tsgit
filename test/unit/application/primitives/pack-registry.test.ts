@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { enumerateObjects } from '../../../../src/application/primitives/enumerate-objects.js';
 import {
   createPackRegistry,
+  isSkippableIdxFault,
+  isSkippablePackFault,
   nextOffsetForEntry,
   type PackOffsetTable,
 } from '../../../../src/application/primitives/pack-registry.js';
@@ -11,14 +13,26 @@ import { writeObject } from '../../../../src/application/primitives/write-object
 import {
   fileNotFound,
   permissionDenied,
-  type TsgitError,
+  TsgitError,
   unsupportedOperation,
 } from '../../../../src/domain/error.js';
-import type { Blob, GitObject, ObjectId } from '../../../../src/domain/objects/index.js';
+import {
+  type Blob,
+  EMPTY_TREE_OID,
+  type GitObject,
+  type ObjectId,
+} from '../../../../src/domain/objects/index.js';
+import type { MidxCheck } from '../../../../src/domain/storage/error.js';
+import {
+  invalidMultiPackIndex,
+  lookupPackIndex,
+  parsePackIndex,
+} from '../../../../src/domain/storage/index.js';
 import { PACK_HEADER_SIZE } from '../../../../src/domain/storage/pack-entry.js';
 import type { Context } from '../../../../src/ports/context.js';
 import type { DirEntry, FileHandle, FileStat } from '../../../../src/ports/file-system.js';
-import { buildSeededContext } from './fixtures.js';
+import { buildMidx, type MidxSpec } from '../../domain/storage/arbitraries.js';
+import { buildSeededContext, instrumentedContext } from './fixtures.js';
 import { withHandleLedger } from './handle-ledger.js';
 import { restampPackHeader, writeSyntheticPack } from './pack-fixture.js';
 
@@ -133,10 +147,12 @@ describe('pack-registry', () => {
               dirEntry('pack-good.pack'),
             ],
             stat: async (path: string): Promise<FileStat> => {
+              if (!path.endsWith('.idx')) return ctx.fs.stat(path);
               statsSeen.push(path);
               return makeStat();
             },
-            read: async (): Promise<Uint8Array> => {
+            read: async (path: string): Promise<Uint8Array> => {
+              if (!path.endsWith('.idx')) return ctx.fs.read(path);
               throw new Error('parse fail — intentional');
             },
           },
@@ -179,10 +195,12 @@ describe('pack-registry', () => {
               dirEntry('pack sp.pack'),
             ],
             stat: async (path: string): Promise<FileStat> => {
+              if (!path.endsWith('.idx')) return ctx.fs.stat(path);
               statsSeen.push(path);
               return makeStat();
             },
-            read: async (): Promise<Uint8Array> => {
+            read: async (path: string): Promise<Uint8Array> => {
+              if (!path.endsWith('.idx')) return ctx.fs.read(path);
               throw new Error('parse fail — intentional');
             },
           },
@@ -220,12 +238,14 @@ describe('pack-registry', () => {
           logger: { warn },
           fs: {
             ...ctx.fs,
-            exists: async () => true,
+            exists: async (path: string) =>
+              path.endsWith('/objects/pack') ? true : ctx.fs.exists(path),
             readdir: async () => [
               { name: 'pack-bomb.idx', isFile: true, isDirectory: false, isSymbolicLink: false },
               { name: 'pack-bomb.pack', isFile: true, isDirectory: false, isSymbolicLink: false },
             ],
             stat: async (p: string) => {
+              if (!p.endsWith('.idx')) return ctx.fs.stat(p);
               const base = await ctx.fs.stat(p).catch(() => undefined);
               return { ...(base ?? makeStat()), size: oversized };
             },
@@ -317,12 +337,14 @@ describe('pack-registry', () => {
           logger: { warn },
           fs: {
             ...ctx.fs,
-            exists: async () => true,
+            exists: async (path: string) =>
+              path.endsWith('/objects/pack') ? true : ctx.fs.exists(path),
             readdir: async () => [
               { name: 'pack-toctou.idx', isFile: true, isDirectory: false, isSymbolicLink: false },
               { name: 'pack-toctou.pack', isFile: true, isDirectory: false, isSymbolicLink: false },
             ],
             stat: async (p: string) => {
+              if (!p.endsWith('.idx')) return ctx.fs.stat(p);
               const base = await ctx.fs.stat(p).catch(() => undefined);
               return { ...(base ?? makeStat()), size: 1 };
             },
@@ -661,6 +683,388 @@ describe('PackRegistry.scan — per-pack idx degradation and orphan exclusion', 
   });
 });
 
+describe('PackRegistry — lazy pack-index loading', () => {
+  describe('Given two healthy packs', () => {
+    describe('When createPackRegistry is called and nothing else', () => {
+      it('Then no readdir and no .idx read has happened yet', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'lazy-cold-a', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('a') },
+        ]);
+        await writeSyntheticPack(ctx, 'lazy-cold-b', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('b') },
+        ]);
+        const { ctx: instrumented, calls } = instrumentedContext(ctx);
+
+        // Act
+        createPackRegistry(instrumented);
+
+        // Assert
+        expect(calls()).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given two healthy packs', () => {
+    describe('When lookup forces the first scan', () => {
+      it('Then the readdir precedes every .idx read — the .idx load left scanPacks', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const idsA = await writeSyntheticPack(ctx, 'lazy-order-a', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('a') },
+        ]);
+        await writeSyntheticPack(ctx, 'lazy-order-b', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('b') },
+        ]);
+        const { ctx: instrumented, calls } = instrumentedContext(ctx);
+        const sut = createPackRegistry(instrumented);
+
+        // Act
+        await sut.lookup(idsA[0] as ObjectId);
+
+        // Assert
+        const readdirIndex = calls().findIndex((call) => call.method === 'readdir');
+        const firstIdxReadIndex = calls().findIndex(
+          (call) => call.method === 'read' && call.path.endsWith('.idx'),
+        );
+        expect(readdirIndex).toBeGreaterThanOrEqual(0);
+        expect(firstIdxReadIndex).toBeGreaterThan(readdirIndex);
+      });
+    });
+  });
+
+  describe('Given two healthy packs and no multi-pack-index', () => {
+    describe('When lookup is called for an id claimed by the first pack', () => {
+      it('Then both .idx files are read — the fallback loop has nothing to short it', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const idsA = await writeSyntheticPack(ctx, 'lazy-fallback-a', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('a') },
+        ]);
+        await writeSyntheticPack(ctx, 'lazy-fallback-b', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('b') },
+        ]);
+        const { ctx: instrumented, calls } = instrumentedContext(ctx);
+        const sut = createPackRegistry(instrumented);
+
+        // Act
+        await sut.lookup(idsA[0] as ObjectId);
+
+        // Assert
+        const idxReads = calls().filter(
+          (call) => call.method === 'read' && call.path.endsWith('.idx'),
+        );
+        expect(idxReads).toHaveLength(2);
+      });
+    });
+  });
+
+  describe('Given a healthy pack with two objects', () => {
+    describe('When lookup is called twice for two different oids in the same pack', () => {
+      it('Then exactly one .idx read serves both lookups', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const ids = await writeSyntheticPack(ctx, 'lazy-memoised', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('one') },
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('two') },
+        ]);
+        const { ctx: instrumented, calls } = instrumentedContext(ctx);
+        const sut = createPackRegistry(instrumented);
+
+        // Act
+        await sut.lookup(ids[0] as ObjectId);
+        await sut.lookup(ids[1] as ObjectId);
+
+        // Assert
+        const idxReads = calls().filter(
+          (call) => call.method === 'read' && call.path.endsWith('.idx'),
+        );
+        expect(idxReads).toHaveLength(1);
+      });
+    });
+  });
+
+  describe('Given one healthy pack and one same-length garbage .idx', () => {
+    describe('When all() is called', () => {
+      it('Then all() lists only the healthy pack, identical to today', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'lazy-membership-healthy', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('good') },
+        ]);
+        await writeGarbageIdx(ctx, 'lazy-membership-garbage');
+        const sut = createPackRegistry(ctx);
+
+        // Act
+        const packs = await sut.all();
+
+        // Assert
+        expect(packs.map((pack) => pack.name)).toEqual(['pack-lazy-membership-healthy']);
+      });
+    });
+
+    describe('When indexFaults() is called without any prior lookup or all()', () => {
+      it('Then it reports the garbage index alone, at the index layer', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'lazy-complete-healthy', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('good') },
+        ]);
+        await writeGarbageIdx(ctx, 'lazy-complete-garbage');
+        const sut = createPackRegistry(ctx);
+
+        // Act
+        const faults = await sut.indexFaults();
+
+        // Assert
+        expect(faults).toHaveLength(1);
+        expect(faults[0]!.layer).toBe('index');
+        expect(faults[0]!.data.code).toBe('INVALID_PACK_INDEX');
+      });
+    });
+
+    describe('When all(), then indexFaults(), then health() are each called in turn', () => {
+      it('Then the unreadable-index warn fires exactly once', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'lazy-warn-once-healthy', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('good') },
+        ]);
+        await writeGarbageIdx(ctx, 'lazy-warn-once-garbage');
+        const warn = vi.fn();
+        const sut = createPackRegistry({ ...ctx, logger: { warn } });
+
+        // Act
+        await sut.all();
+        await sut.indexFaults();
+        await sut.health();
+
+        // Assert
+        expect(warn).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
+
+  describe('Given an .idx file whose stat reports > MAX_PACK_IDX_BYTES', () => {
+    describe('When indexFaults() is called', () => {
+      it('Then it reports the size-guard reason without ever issuing a read', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const reads: string[] = [];
+        const oversized = 64 * 1024 * 1024 + 1;
+        const wrapped: Context = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            exists: async () => true,
+            readdir: async () => [
+              {
+                name: 'pack-lazy-bomb.idx',
+                isFile: true,
+                isDirectory: false,
+                isSymbolicLink: false,
+              },
+              {
+                name: 'pack-lazy-bomb.pack',
+                isFile: true,
+                isDirectory: false,
+                isSymbolicLink: false,
+              },
+            ],
+            stat: async (p: string) => {
+              if (!p.endsWith('.idx')) return ctx.fs.stat(p);
+              const base = await ctx.fs.stat(p).catch(() => undefined);
+              return { ...(base ?? makeStat()), size: oversized };
+            },
+            read: async (path: string) => {
+              reads.push(path);
+              throw new Error('should not be reached');
+            },
+          },
+        };
+        const sut = createPackRegistry(wrapped);
+
+        // Act
+        const faults = await sut.indexFaults();
+
+        // Assert
+        expect(faults).toHaveLength(1);
+        expect((faults[0]!.data as { reason?: string }).reason).toBe(REASON_PACK_IDX_EXCEEDS_MAX);
+        expect(reads).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given an .idx whose first read rejects with PERMISSION_DENIED and then recovers', () => {
+    describe('When all() is called, refresh() runs, and all() is called again', () => {
+      it('Then the pack returns to accessible and a second .idx read is issued', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'lazy-not-memoised', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('recover') },
+        ]);
+        const idxPath = `${ctx.layout.gitDir}/objects/pack/pack-lazy-not-memoised.idx`;
+        let failNextIdxRead = true;
+        const { ctx: instrumented, calls } = instrumentedContext({
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            read: async (path: string) => {
+              if (path === idxPath && failNextIdxRead) {
+                failNextIdxRead = false;
+                throw permissionDenied(path);
+              }
+              return ctx.fs.read(path);
+            },
+          },
+        });
+        const sut = createPackRegistry(instrumented);
+
+        // Act
+        const before = await sut.all();
+        sut.refresh();
+        const after = await sut.all();
+
+        // Assert
+        expect(before).toEqual([]);
+        expect(after.map((pack) => pack.name)).toEqual(['pack-lazy-not-memoised']);
+        const idxReads = calls().filter((call) => call.method === 'read' && call.path === idxPath);
+        expect(idxReads).toHaveLength(2);
+      });
+    });
+  });
+
+  describe('Given an .idx read that rejects with an errno-mapped UNSUPPORTED_OPERATION fault', () => {
+    describe('When all() is called', () => {
+      it('Then all() rejects instead of treating the fault as skippable', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'lazy-unrecognised-fault', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('u') },
+        ]);
+        const fault = unsupportedOperation('filesystem', 'EMFILE');
+        const wrapped: Context = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            read: async (path: string) => {
+              if (path.endsWith('.idx')) throw fault;
+              return ctx.fs.read(path);
+            },
+          },
+        };
+        const sut = createPackRegistry(wrapped);
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut.all();
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual(fault.data);
+      });
+    });
+  });
+
+  describe('Given a pack whose header objectCount disagrees with its lazily loaded index', () => {
+    describe('When health() is called', () => {
+      it('Then health() reports the pack layer with a reason naming both counts', async () => {
+        // Arrange — proves header() still awaits index() under the lazy load.
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'lazy-header-cross-check', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('h') },
+        ]);
+        const packPath = `${ctx.layout.gitDir}/objects/pack/pack-lazy-header-cross-check.pack`;
+        await restampPackHeader(ctx, packPath, { objectCount: 2 });
+        const sut = createPackRegistry(ctx);
+
+        // Act
+        const result = await sut.health();
+
+        // Assert
+        const entry = result.unusable[0]!;
+        expect(entry.layer).toBe('pack');
+        expect((entry.data as { reason?: string }).reason).toBe(
+          'object count disagrees with index: pack 2, index 1',
+        );
+      });
+    });
+  });
+
+  describe('Given a healthy pack', () => {
+    describe('When readObject reads its one packed object end to end', () => {
+      it('Then the bytes round-trip unchanged through the lazily loaded index', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const content = new TextEncoder().encode('lazy-round-trip-content');
+        const ids = await writeSyntheticPack(ctx, 'lazy-round-trip', [
+          { kind: 'base', type: 'blob', content },
+        ]);
+        const id = ids[0] as ObjectId;
+
+        // Act
+        const result = await readObject(ctx, id);
+
+        // Assert
+        expect(result.type).toBe('blob');
+        expect((result as Blob).content).toEqual(content);
+      });
+    });
+  });
+
+  describe('Given a healthy pack that was looked up before dispose()', () => {
+    describe('When dispose() runs and all() is called afterward', () => {
+      it('Then all() returns the retired set without a new readdir', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const ids = await writeSyntheticPack(ctx, 'lazy-dispose-then-all', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('d') },
+        ]);
+        const id = ids[0] as ObjectId;
+        const ledger = withHandleLedger(ctx);
+        const sut = createPackRegistry(ledger.ctx);
+        await sut.lookup(id);
+        const readdirCallsBeforeDispose = ledger.readdirCalls();
+
+        // Act
+        await sut.dispose();
+        const packs = await sut.all();
+
+        // Assert
+        expect(packs.map((pack) => pack.name)).toEqual(['pack-lazy-dispose-then-all']);
+        expect(ledger.readdirCalls()).toBe(readdirCallsBeforeDispose);
+      });
+    });
+  });
+
+  describe('Given a registry that never scanned', () => {
+    describe('When dispose() runs and all() is called afterward', () => {
+      it('Then all() resolves empty without ever scanning the pack directory', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'lazy-dispose-cold', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('c') },
+        ]);
+        const ledger = withHandleLedger(ctx);
+        const sut = createPackRegistry(ledger.ctx);
+
+        // Act
+        await sut.dispose();
+        const packs = await sut.all();
+
+        // Assert
+        expect(packs).toEqual([]);
+        expect(ledger.readdirCalls()).toBe(0);
+      });
+    });
+  });
+});
+
 describe('PackRegistry.health — per-pack accessibility', () => {
   describe('Given one healthy pack', () => {
     describe('When health() is called', () => {
@@ -965,6 +1369,7 @@ describe('PackRegistry.health — per-pack accessibility', () => {
               },
             ],
             stat: async (p: string) => {
+              if (!p.endsWith('.idx')) return ctx.fs.stat(p);
               const base = await ctx.fs.stat(p).catch(() => undefined);
               return { ...(base ?? makeStat()), size: oversized };
             },
@@ -2274,8 +2679,12 @@ describe('PackRegistry — single-flight scan', () => {
     });
 
     describe('When dispose() is started, call 0 settles, and the disposal is awaited', () => {
-      it('Then the scan settles before dispose resolves, and a later read by the scan caller opens no handle', async () => {
-        // Arrange
+      it('Then dispose resolves once the racing scan itself has settled, and a later read by the scan caller opens no handle', async () => {
+        // Arrange — dispose() only ever needs the scan's raw candidate list to
+        // close handles, never the lazily loaded .idx classification all() also
+        // waits on, so a racing dispose() settles as soon as the scan itself has
+        // produced that list — strictly before all()'s own promise, which pays
+        // the extra .idx read before it can filter the accessible set.
         const ctx = await buildSeededContext();
         await writeSyntheticPack(ctx, 'gated-dispose', [
           { kind: 'base', type: 'blob', content: new TextEncoder().encode('d') },
@@ -2299,7 +2708,7 @@ describe('PackRegistry — single-flight scan', () => {
         await packs[0]!.readSlice(0, 4);
 
         // Assert
-        expect(order).toEqual(['scan-settled', 'dispose-resolved']);
+        expect(order).toEqual(['dispose-resolved', 'scan-settled']);
         expect(ledger.opens()).toBe(0);
         expect(ledger.outstanding()).toBe(0);
       });
@@ -3090,6 +3499,1380 @@ describe('PackRegistry.lookup — header gate', () => {
         expect(hit).toBeDefined();
         expect(ledger.opens()).toBe(1);
         expect(ledger.outstanding()).toBe(0);
+      });
+    });
+  });
+});
+
+function midxPath(ctx: Context): string {
+  return `${ctx.layout.gitDir}/objects/pack/multi-pack-index`;
+}
+
+async function writeMidxBytes(ctx: Context, bytes: Uint8Array): Promise<void> {
+  await ctx.fs.write(midxPath(ctx), bytes);
+}
+
+function healthyMidxSpec(overrides: Partial<MidxSpec> = {}): MidxSpec {
+  return {
+    version: 1,
+    hashVersion: 1,
+    digestLength: 20,
+    numBaseFiles: 0,
+    packNames: [],
+    entries: [],
+    ...overrides,
+  };
+}
+
+/** Flip the first signature byte ('M' → 0x00) — a structurally self-inconsistent midx. */
+function flipMidxSignature(bytes: Uint8Array): Uint8Array {
+  const copy = bytes.slice();
+  copy[0] = 0;
+  return copy;
+}
+
+function truncateMidxTo8(bytes: Uint8Array): Uint8Array {
+  return bytes.slice(0, 8);
+}
+
+function findMidxChunkRowIndex(bytes: Uint8Array, id: string): number {
+  const numChunks = bytes[6]!;
+  const decoder = new TextDecoder();
+  for (let i = 0; i < numChunks + 1; i += 1) {
+    const rowStart = 12 + i * 12;
+    if (decoder.decode(bytes.subarray(rowStart, rowStart + 4)) === id) return i;
+  }
+  throw new Error(`chunk ${id} not present in fixture`);
+}
+
+/** Shrinks chunk `id`'s declared size by adjusting the offset of the row
+ *  immediately after it in the chunk table. */
+function shrinkMidxChunkAfter(bytes: Uint8Array, id: string, delta: number): Uint8Array {
+  const copy = bytes.slice();
+  const view = new DataView(copy.buffer);
+  const nextRowStart = 12 + (findMidxChunkRowIndex(copy, id) + 1) * 12;
+  const low = view.getUint32(nextRowStart + 8);
+  view.setUint32(nextRowStart + 8, low + delta);
+  return copy;
+}
+
+describe('PackRegistry — multi-pack-index degradation', () => {
+  describe('Given an INVALID_MULTI_PACK_INDEX error for each MidxCheck member', () => {
+    describe("When checked against the registry's per-.idx and per-pack allow-lists", () => {
+      it.each<MidxCheck>([
+        'size',
+        'signature',
+        'version',
+        'hash-version',
+        'chunk-table',
+        'required-chunk',
+        'fanout',
+        'chunk-length',
+        'pack-names',
+        'pack-int-id',
+        'large-offset',
+      ])('Then neither isSkippableIdxFault nor isSkippablePackFault admits check=%s', (check) => {
+        // Arrange
+        const err = invalidMultiPackIndex(check, 'test reason');
+
+        // Act + Assert
+        expect(isSkippableIdxFault(err)).toBe(false);
+        expect(isSkippablePackFault(err)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a structurally self-inconsistent flat multi-pack-index beside a perfectly healthy pack', () => {
+    describe('When lookup is called', () => {
+      it('Then lookup rejects with INVALID_MULTI_PACK_INDEX and the matching check', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'midx-escapes', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('escapes') },
+        ]);
+        await writeMidxBytes(ctx, flipMidxSignature(buildMidx(healthyMidxSpec())));
+        const sut = createPackRegistry(ctx);
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut.lookup('a'.repeat(40) as ObjectId);
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('INVALID_MULTI_PACK_INDEX');
+        if (data.code !== 'INVALID_MULTI_PACK_INDEX') {
+          expect.fail(`expected INVALID_MULTI_PACK_INDEX, got ${data.code}`);
+        }
+        expect(data.check).toBe('signature');
+      });
+    });
+  });
+
+  describe('Given a repo with a healthy pack and a merely-unusable multi-pack-index', () => {
+    describe('When lookup is called', () => {
+      it.each<{
+        label: string;
+        reasonFragment: string;
+        corrupt: (bytes: Uint8Array) => Uint8Array;
+      }>([
+        { label: 'size', reasonFragment: 'too short', corrupt: (bytes) => bytes.slice(0, 8) },
+        {
+          label: 'chunk-table',
+          reasonFragment: 'chunk table',
+          corrupt: (bytes) => bytes.slice(0, 20),
+        },
+        {
+          label: 'hash-version',
+          reasonFragment: 'hash version 2',
+          corrupt: (bytes) => {
+            const copy = bytes.slice();
+            copy[5] = 2;
+            return copy;
+          },
+        },
+        {
+          label: 'chunk-length',
+          reasonFragment: 'OIDF',
+          corrupt: (bytes) => shrinkMidxChunkAfter(bytes, 'OIDF', -4),
+        },
+      ])(
+        'Then lookup resolves via the .idx scan with exactly one warn ($label)',
+        async ({ corrupt, reasonFragment }) => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const ids = await writeSyntheticPack(ctx, 'midx-tier-b', [
+            { kind: 'base', type: 'blob', content: new TextEncoder().encode('tier-b') },
+          ]);
+          await writeMidxBytes(ctx, corrupt(buildMidx(healthyMidxSpec())));
+          const warn = vi.fn();
+          const sut = createPackRegistry({ ...ctx, logger: { warn } });
+
+          // Act
+          const hit = await sut.lookup(ids[0] as ObjectId);
+
+          // Assert — the reason fragment pins WHICH gate fired, so two rows
+          // collapsing onto one guard cannot pass unnoticed.
+          expect(hit).toBeDefined();
+          expect(warn).toHaveBeenCalledTimes(1);
+          expect(warn).toHaveBeenCalledWith(
+            'packRegistry: discarding unusable multi-pack-index',
+            expect.objectContaining({ reason: expect.stringContaining(reasonFragment) }),
+          );
+        },
+      );
+    });
+  });
+
+  describe('Given ctx.fs.read rejects for the midx path', () => {
+    describe('When lookup is called', () => {
+      it.each([
+        ['FILE_NOT_FOUND', (path: string) => new TsgitError({ code: 'FILE_NOT_FOUND', path })],
+        [
+          'PERMISSION_DENIED',
+          (path: string) => new TsgitError({ code: 'PERMISSION_DENIED', path }),
+        ],
+      ])('Then lookup resolves via the .idx scan with one warn (%s)', async (_label, makeError) => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const ids = await writeSyntheticPack(ctx, 'midx-io-fault', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('io') },
+        ]);
+        await writeMidxBytes(ctx, buildMidx(healthyMidxSpec()));
+        const flatPath = midxPath(ctx);
+        const warn = vi.fn();
+        const wrapped: Context = {
+          ...ctx,
+          logger: { warn },
+          fs: {
+            ...ctx.fs,
+            read: async (path: string) =>
+              path === flatPath ? Promise.reject(makeError(path)) : ctx.fs.read(path),
+          },
+        };
+        const sut = createPackRegistry(wrapped);
+
+        // Act
+        const hit = await sut.lookup(ids[0] as ObjectId);
+
+        // Assert
+        expect(hit).toBeDefined();
+        expect(warn).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
+
+  describe('Given ctx.fs.read rejects with an errno-mapped UNSUPPORTED_OPERATION fault for the midx path', () => {
+    describe('When lookup is called', () => {
+      it('Then lookup rejects and .data matches exactly', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'midx-unrecognised', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('u') },
+        ]);
+        await writeMidxBytes(ctx, buildMidx(healthyMidxSpec()));
+        const flatPath = midxPath(ctx);
+        const fault = unsupportedOperation('filesystem', 'EMFILE');
+        const wrapped: Context = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            read: async (path: string) =>
+              path === flatPath ? Promise.reject(fault) : ctx.fs.read(path),
+          },
+        };
+        const sut = createPackRegistry(wrapped);
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut.lookup('a'.repeat(40) as ObjectId);
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual(fault.data);
+      });
+    });
+  });
+
+  /** The Tier-A rows all use the flipped-signature fixture: assert the exact
+   *  fault, not merely "it threw" — a re-tiered check or a foreign error class
+   *  passing a bare toThrow() is the silent failure these rows exist to catch. */
+  async function expectMidxSignatureRejection(promise: Promise<unknown>): Promise<void> {
+    // Captured outside the try so a non-rejecting promise fails with the
+    // intended message, matching expectRefusal/expectRejectsWithCheck.
+    let caught: unknown;
+    try {
+      await promise;
+    } catch (error) {
+      caught = error;
+    }
+    if (caught === undefined) {
+      expect.fail('expected the promise to reject');
+    }
+    const data = (caught as TsgitError).data;
+    expect(data.code).toBe('INVALID_MULTI_PACK_INDEX');
+    if (data.code === 'INVALID_MULTI_PACK_INDEX') {
+      expect(data.check).toBe('signature');
+    }
+  }
+
+  describe('Given a repo with a loose object and a structurally self-inconsistent multi-pack-index', () => {
+    describe('When readObject is called for the loose object', () => {
+      it('Then it rejects — a broken multi-pack-index denies loose reads too', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeObject(ctx, blob('loose-denied'));
+        await writeMidxBytes(ctx, flipMidxSignature(buildMidx(healthyMidxSpec())));
+
+        // Act + Assert
+        await expectMidxSignatureRejection(readObject(ctx, id));
+      });
+    });
+  });
+
+  describe('Given the same repo with a merely-unusable multi-pack-index instead', () => {
+    describe('When readObject is called for the loose object', () => {
+      it('Then the loose object still reads', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeObject(ctx, blob('loose-control'));
+        await writeMidxBytes(ctx, truncateMidxTo8(buildMidx(healthyMidxSpec())));
+
+        // Act
+        const result = await readObject(ctx, id);
+
+        // Assert
+        expect(result.type).toBe('blob');
+      });
+    });
+  });
+
+  describe('Given a structurally self-inconsistent multi-pack-index', () => {
+    describe('When readObject is called for the empty-tree oid', () => {
+      it('Then it rejects — the gate precedes the empty-tree short-circuit', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeMidxBytes(ctx, flipMidxSignature(buildMidx(healthyMidxSpec())));
+
+        // Act + Assert
+        await expectMidxSignatureRejection(readObject(ctx, EMPTY_TREE_OID));
+      });
+    });
+
+    describe('When readObject is called for an oid already warmed in ctx.deltaCache', () => {
+      it('Then it rejects — the gate precedes the deltaCache probe', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = 'c'.repeat(40) as ObjectId;
+        const cached = new TextEncoder().encode('blob 5\0hello');
+        ctx.deltaCache.set(id, cached, cached.length);
+        await writeMidxBytes(ctx, flipMidxSignature(buildMidx(healthyMidxSpec())));
+
+        // Act + Assert
+        await expectMidxSignatureRejection(readObject(ctx, id, { verifyHash: false }));
+      });
+    });
+  });
+
+  describe('Given a structurally self-inconsistent flat multi-pack-index', () => {
+    describe('When lookup is called three times', () => {
+      it('Then all three reject and the midx is re-read on every attempt', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeMidxBytes(ctx, flipMidxSignature(buildMidx(healthyMidxSpec())));
+        const { ctx: instrumented, calls } = instrumentedContext(ctx);
+        const sut = createPackRegistry(instrumented);
+
+        // Act
+        for (let i = 0; i < 3; i += 1) {
+          await expectMidxSignatureRejection(sut.lookup('a'.repeat(40) as ObjectId));
+        }
+
+        // Assert
+        const midxReads = calls().filter(
+          (call) => call.method === 'read' && call.path.endsWith('multi-pack-index'),
+        );
+        expect(midxReads).toHaveLength(3);
+      });
+    });
+  });
+
+  describe('Given a structurally self-inconsistent flat multi-pack-index, repaired without calling refresh()', () => {
+    describe('When lookup is called again', () => {
+      it('Then the repaired midx is picked up and lookup succeeds', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const ids = await writeSyntheticPack(ctx, 'midx-recovery', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('recover') },
+        ]);
+        await writeMidxBytes(ctx, flipMidxSignature(buildMidx(healthyMidxSpec())));
+        const sut = createPackRegistry(ctx);
+        await expectMidxSignatureRejection(sut.lookup(ids[0] as ObjectId));
+
+        // Act — repair in place, no refresh()
+        await writeMidxBytes(ctx, buildMidx(healthyMidxSpec()));
+        const hit = await sut.lookup(ids[0] as ObjectId);
+
+        // Assert
+        expect(hit).toBeDefined();
+      });
+    });
+  });
+
+  describe('Given a healthy pack with no midx, then a broken midx is added and refresh() is called', () => {
+    describe('When lookup is called before and after refresh()', () => {
+      it('Then the pre-refresh lookup succeeds and the post-refresh lookup rejects', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const ids = await writeSyntheticPack(ctx, 'midx-one-generation', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('gen') },
+        ]);
+        const sut = createPackRegistry(ctx);
+        const before = await sut.lookup(ids[0] as ObjectId);
+        await writeMidxBytes(ctx, flipMidxSignature(buildMidx(healthyMidxSpec())));
+
+        // Act
+        sut.refresh();
+
+        // Assert
+        expect(before).toBeDefined();
+        await expectMidxSignatureRejection(sut.lookup(ids[0] as ObjectId));
+      });
+    });
+  });
+
+  describe('Given two healthy packs and a healthy multi-pack-index', () => {
+    describe('When a loose object is read', () => {
+      it('Then assertLoadable does not force any .idx load: the ledger shows the readdir, one midx read, and zero .idx reads', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'midx-assert-a', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('a') },
+        ]);
+        await writeSyntheticPack(ctx, 'midx-assert-b', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('b') },
+        ]);
+        await writeMidxBytes(ctx, buildMidx(healthyMidxSpec()));
+        const looseId = await writeObject(ctx, blob('loose-only'));
+        const { ctx: instrumented, calls } = instrumentedContext(ctx);
+
+        // Act
+        const result = await readObject(instrumented, looseId);
+
+        // Assert
+        expect(result.type).toBe('blob');
+        const idxReads = calls().filter(
+          (call) => call.method === 'read' && call.path.endsWith('.idx'),
+        );
+        expect(idxReads).toEqual([]);
+        const midxReads = calls().filter(
+          (call) => call.method === 'read' && call.path.endsWith('multi-pack-index'),
+        );
+        expect(midxReads).toHaveLength(1);
+        const readdirCalls = calls().filter((call) => call.method === 'readdir');
+        expect(readdirCalls.length).toBeGreaterThanOrEqual(1);
+      });
+    });
+  });
+
+  describe('Given a healthy multi-pack-index and a pack whose bytes were read before dispose()', () => {
+    describe('When dispose is called', () => {
+      it('Then opens() equals closes() — the midx itself contributes no FileHandle', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'midx-handle-lifecycle', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('handle') },
+        ]);
+        await writeMidxBytes(ctx, buildMidx(healthyMidxSpec()));
+        const ledger = withHandleLedger(ctx);
+        const sut = createPackRegistry(ledger.ctx);
+        const pack = (await sut.all())[0]!;
+        await pack.readSlice(0, 4);
+
+        // Act
+        await sut.dispose();
+
+        // Assert
+        expect(ledger.outstanding()).toBe(0);
+      });
+    });
+  });
+
+  describe('Given a repo with a healthy pack and no multi-pack-index', () => {
+    describe("When lookup is called for that pack's only object", () => {
+      it('Then at most two extra exists/stat presence probes are made and the lookup succeeds unchanged', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const ids = await writeSyntheticPack(ctx, 'midx-no-regression', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('regress') },
+        ]);
+        const { ctx: instrumented, calls } = instrumentedContext(ctx);
+        const sut = createPackRegistry(instrumented);
+
+        // Act
+        const hit = await sut.lookup(ids[0] as ObjectId);
+
+        // Assert
+        expect(hit).toBeDefined();
+        const presenceProbes = calls().filter(
+          (call) =>
+            (call.method === 'exists' || call.method === 'stat') &&
+            call.path.includes('multi-pack-index'),
+        );
+        expect(presenceProbes.length).toBeLessThanOrEqual(2);
+      });
+    });
+  });
+});
+
+describe('PackRegistry.midxHealth() — unresolved-pack reporting', () => {
+  describe('Given an unresolved PNAM entry without an .idx suffix, containing a space (0x20)', () => {
+    describe('When midxHealth is called', () => {
+      it('Then the space is kept literal - the lower printable bound is inclusive', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeMidxBytes(ctx, buildMidx(healthyMidxSpec({ packNames: ['pack-x y'] })));
+        const sut = createPackRegistry(ctx);
+
+        // Act
+        const health = await sut.midxHealth();
+
+        // Assert
+        expect(health.unresolvedPacks).toHaveLength(1);
+        expect(health.unresolvedPacks[0]?.pack).toBe('pack-x y');
+      });
+    });
+  });
+
+  describe('Given an unresolved PNAM entry without an .idx suffix, containing a tilde (0x7e)', () => {
+    describe('When midxHealth is called', () => {
+      it('Then the tilde is kept literal - the upper printable bound is inclusive', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeMidxBytes(ctx, buildMidx(healthyMidxSpec({ packNames: ['pack-x~y'] })));
+        const sut = createPackRegistry(ctx);
+
+        // Act
+        const health = await sut.midxHealth();
+
+        // Assert
+        expect(health.unresolvedPacks).toHaveLength(1);
+        expect(health.unresolvedPacks[0]?.pack).toBe('pack-x~y');
+      });
+    });
+  });
+
+  describe('Given an unresolved PNAM entry without an .idx suffix, containing a DEL byte (0x7f)', () => {
+    describe('When midxHealth is called', () => {
+      it('Then the byte is hex-escaped - one past the upper printable bound', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeMidxBytes(ctx, buildMidx(healthyMidxSpec({ packNames: ['pack-xy'] })));
+        const sut = createPackRegistry(ctx);
+
+        // Act
+        const health = await sut.midxHealth();
+
+        // Assert
+        expect(health.unresolvedPacks).toHaveLength(1);
+        expect(health.unresolvedPacks[0]?.pack).toBe('pack-x\\u007fy');
+      });
+    });
+  });
+
+  describe('Given an unresolved PNAM entry without an .idx suffix, containing a backslash (0x5c)', () => {
+    describe('When midxHealth is called', () => {
+      it('Then the byte is hex-escaped - never left ambiguous with a real escape sequence', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeMidxBytes(ctx, buildMidx(healthyMidxSpec({ packNames: ['pack-x\\y'] })));
+        const sut = createPackRegistry(ctx);
+
+        // Act
+        const health = await sut.midxHealth();
+
+        // Assert
+        expect(health.unresolvedPacks).toHaveLength(1);
+        expect(health.unresolvedPacks[0]?.pack).toBe('pack-x\\u005cy');
+      });
+    });
+  });
+
+  describe('Given an unresolved PNAM name exactly at the finding name budget (256 chars)', () => {
+    describe('When midxHealth is called', () => {
+      it('Then no truncation marker is appended - the cap is exclusive', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const name = 'a'.repeat(256);
+        await writeMidxBytes(ctx, buildMidx(healthyMidxSpec({ packNames: [name] })));
+        const sut = createPackRegistry(ctx);
+
+        // Act
+        const health = await sut.midxHealth();
+
+        // Assert
+        expect(health.unresolvedPacks).toHaveLength(1);
+        expect(health.unresolvedPacks[0]?.pack).toBe(name);
+        expect(health.unresolvedPacks[0]?.pack.length).toBe(256);
+      });
+    });
+  });
+
+  describe('Given two unresolved PNAM entries in one layer', () => {
+    describe('When midxHealth is called', () => {
+      it('Then each position is base plus its own packIndex, not base minus it', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeMidxBytes(
+          ctx,
+          buildMidx(healthyMidxSpec({ packNames: ['pack-first.idx', 'pack-second.idx'] })),
+        );
+        const sut = createPackRegistry(ctx);
+
+        // Act
+        const health = await sut.midxHealth();
+
+        // Assert
+        const positions = health.unresolvedPacks.map((entry) => entry.position).sort();
+        expect(positions).toEqual([0, 1]);
+      });
+    });
+  });
+
+  describe('Given a bound pack whose header probe rejects with a non-skippable fault', () => {
+    describe('When midxHealth is called', () => {
+      it('Then the fault propagates instead of marking the entry unresolved', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeSingleBlobPack(ctx, 'boom', 'boom-content');
+        await writeMidxBytes(
+          ctx,
+          buildMidx(
+            healthyMidxSpec({
+              packNames: ['pack-boom.idx'],
+              entries: [{ id, packIndex: 0, offset: PACK_HEADER_SIZE }],
+            }),
+          ),
+        );
+        const packPath = `${ctx.layout.gitDir}/objects/pack/pack-boom.pack`;
+        const wrapped: Context = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            readSlice: async (path: string, offset: number, length: number) =>
+              path === packPath
+                ? Promise.reject(new Error('boom'))
+                : ctx.fs.readSlice(path, offset, length),
+          },
+        };
+        const sut = createPackRegistry(wrapped);
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut.midxHealth();
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as Error).message).toBe('boom');
+      });
+    });
+  });
+});
+
+function packsDirOf(ctx: Context): string {
+  return `${ctx.layout.gitDir}/objects/pack`;
+}
+
+/** Writes a single-blob pack under `pack-<name>`; the one entry always sits
+ *  at `PACK_HEADER_SIZE` — the only offset a one-entry pack can have. */
+async function writeSingleBlobPack(ctx: Context, name: string, content: string): Promise<ObjectId> {
+  const ids = await writeSyntheticPack(ctx, name, [
+    { kind: 'base', type: 'blob', content: new TextEncoder().encode(content) },
+  ]);
+  return ids[0] as ObjectId;
+}
+
+/** Hand-writes an incremental multi-pack-index chain (base → tip, matching
+ *  the on-disk chain-manifest order) from fully-specified layer specs — the
+ *  trailer is never verified on read, so the digest naming each layer file
+ *  needs no relationship to that layer's real bytes. */
+async function writeMidxChain(
+  ctx: Context,
+  layers: ReadonlyArray<{ readonly digest: string; readonly spec: MidxSpec }>,
+): Promise<void> {
+  const dir = packsDirOf(ctx);
+  const chainText = `${layers.map((layer) => layer.digest).join('\n')}\n`;
+  await ctx.fs.writeUtf8(`${dir}/multi-pack-index.d/multi-pack-index-chain`, chainText);
+  for (const layer of layers) {
+    await ctx.fs.write(
+      `${dir}/multi-pack-index.d/multi-pack-index-${layer.digest}.midx`,
+      buildMidx(layer.spec),
+    );
+  }
+}
+
+/** Rewrites a one-large-offset-entry midx's sole OOFF row to reference LOFF
+ *  row 1, one past the single row the LOFF chunk actually carries. */
+function forceLargeOffsetRowOutOfRange(bytes: Uint8Array): Uint8Array {
+  const copy = bytes.slice();
+  const view = new DataView(copy.buffer);
+  const rowIndex = findMidxChunkRowIndex(copy, 'OOFF');
+  const rowStart = 12 + rowIndex * 12;
+  const ooffStart = view.getUint32(rowStart + 4) * 0x100000000 + view.getUint32(rowStart + 8);
+  view.setUint32(ooffStart + 4, 0x80000000 | 1);
+  return copy;
+}
+
+describe('PackRegistry.lookup — multi-pack-index authority', () => {
+  describe('Given three healthy packs and a healthy multi-pack-index naming all three', () => {
+    describe('When lookup is called for each packed oid', () => {
+      it('Then every hit matches the same {pack, offset} the .idx loop alone would return', async () => {
+        // Arrange
+        const noMidx = await buildSeededContext();
+        const idA = await writeSingleBlobPack(noMidx, 'A', 'same-answer-a');
+        const idB = await writeSingleBlobPack(noMidx, 'B', 'same-answer-b');
+        const idC = await writeSingleBlobPack(noMidx, 'C', 'same-answer-c');
+        const control = createPackRegistry(noMidx);
+
+        const withMidx = await buildSeededContext();
+        await writeSingleBlobPack(withMidx, 'A', 'same-answer-a');
+        await writeSingleBlobPack(withMidx, 'B', 'same-answer-b');
+        await writeSingleBlobPack(withMidx, 'C', 'same-answer-c');
+        await writeMidxBytes(
+          withMidx,
+          buildMidx(
+            healthyMidxSpec({
+              packNames: ['pack-A.idx', 'pack-B.idx', 'pack-C.idx'],
+              entries: [
+                { id: idA, packIndex: 0, offset: PACK_HEADER_SIZE },
+                { id: idB, packIndex: 1, offset: PACK_HEADER_SIZE },
+                { id: idC, packIndex: 2, offset: PACK_HEADER_SIZE },
+              ],
+            }),
+          ),
+        );
+        const sut = createPackRegistry(withMidx);
+
+        // Act + Assert
+        for (const id of [idA, idB, idC]) {
+          const expected = await control.lookup(id);
+          const hit = await sut.lookup(id);
+          expect(hit?.offset).toBe(expected?.offset);
+          expect(hit?.pack.name).toBe(expected?.pack.name);
+        }
+      });
+    });
+  });
+
+  describe('Given three healthy packs and a healthy multi-pack-index, one lookup for the middle pack', () => {
+    describe('When lookup is called once', () => {
+      it('Then exactly one .idx read is recorded — the hit pack, not all three', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const idA = await writeSingleBlobPack(ctx, 'A', 'read-count-a');
+        const idB = await writeSingleBlobPack(ctx, 'B', 'read-count-b');
+        const idC = await writeSingleBlobPack(ctx, 'C', 'read-count-c');
+        await writeMidxBytes(
+          ctx,
+          buildMidx(
+            healthyMidxSpec({
+              packNames: ['pack-A.idx', 'pack-B.idx', 'pack-C.idx'],
+              entries: [
+                { id: idA, packIndex: 0, offset: PACK_HEADER_SIZE },
+                { id: idB, packIndex: 1, offset: PACK_HEADER_SIZE },
+                { id: idC, packIndex: 2, offset: PACK_HEADER_SIZE },
+              ],
+            }),
+          ),
+        );
+        const { ctx: instrumented, calls } = instrumentedContext(ctx);
+        const sut = createPackRegistry(instrumented);
+
+        // Act
+        const hit = await sut.lookup(idB);
+
+        // Assert
+        expect(hit?.pack.name).toBe('pack-B');
+        const idxReads = calls().filter(
+          (call) => call.method === 'read' && call.path.endsWith('.idx'),
+        );
+        expect(idxReads).toHaveLength(1);
+        expect(idxReads[0]?.path).toBe(`${ctx.layout.gitDir}/objects/pack/pack-B.idx`);
+      });
+    });
+  });
+
+  describe('Given a duplicate in an UNCLAIMED pack, with the midx assigning the oid to a claimed pack whose header is broken', () => {
+    describe('When lookup is called for that oid', () => {
+      it('Then the unclaimed duplicate serves it — git still walks packs the midx does not name', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const content = new TextEncoder().encode('duplicate-blob');
+        const idsA = await writeSyntheticPack(ctx, 'A', [{ kind: 'base', type: 'blob', content }]);
+        await writeSyntheticPack(ctx, 'B', [{ kind: 'base', type: 'blob', content }]);
+        const dupId = idsA[0] as ObjectId;
+        await restampPackHeader(ctx, `${ctx.layout.gitDir}/objects/pack/pack-A.pack`, {
+          version: 99,
+        });
+        await writeMidxBytes(
+          ctx,
+          buildMidx(
+            healthyMidxSpec({
+              packNames: ['pack-A.idx'],
+              entries: [{ id: dupId, packIndex: 0, offset: PACK_HEADER_SIZE }],
+            }),
+          ),
+        );
+        const sut = createPackRegistry(ctx);
+
+        // Act
+        const hit = await sut.lookup(dupId);
+
+        // Assert
+        expect(hit?.pack.name).toBe('pack-B');
+      });
+    });
+  });
+
+  describe('Given a midx claiming pack-A while an UNCLAIMED pack-B has a corrupt .idx', () => {
+    describe('When lookup misses the midx twice in a row', () => {
+      it('Then both lookups miss, pack-B is skipped per-pack, and the warn fires once per generation', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const idsA = await writeSyntheticPack(ctx, 'A', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('claimed') },
+        ]);
+        const idsB = await writeSyntheticPack(ctx, 'B', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('unclaimed-corrupt') },
+        ]);
+        await ctx.fs.write(`${ctx.layout.gitDir}/objects/pack/pack-B.idx`, new Uint8Array(8));
+        await writeMidxBytes(
+          ctx,
+          buildMidx(
+            healthyMidxSpec({
+              packNames: ['pack-A.idx'],
+              entries: [{ id: idsA[0] as ObjectId, packIndex: 0, offset: PACK_HEADER_SIZE }],
+            }),
+          ),
+        );
+        const warn = vi.fn();
+        const sut = createPackRegistry({ ...ctx, logger: { warn } });
+
+        // Act
+        const first = await sut.lookup(idsB[0] as ObjectId);
+        const second = await sut.lookup(idsB[0] as ObjectId);
+
+        // Assert
+        expect(first).toBeUndefined();
+        expect(second).toBeUndefined();
+        const skipWarns = warn.mock.calls.filter(
+          (call) => call[0] === 'packRegistry: skipping unreadable pack index',
+        );
+        expect(skipWarns).toHaveLength(1);
+        expect(skipWarns[0]?.[1]).toMatchObject({
+          idx: 'pack-B.idx',
+          code: 'INVALID_PACK_INDEX',
+        });
+      });
+    });
+  });
+
+  describe('Given a midx claiming pack-A while an UNCLAIMED pack-B has a broken pack header', () => {
+    describe('When lookup is called for an oid only pack-B holds', () => {
+      it('Then the miss is reported — the unclaimed fallback never returns a header-broken hit', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const idsA = await writeSyntheticPack(ctx, 'A', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('claimed') },
+        ]);
+        const idsB = await writeSyntheticPack(ctx, 'B', [
+          {
+            kind: 'base',
+            type: 'blob',
+            content: new TextEncoder().encode('unclaimed-broken-header'),
+          },
+        ]);
+        await restampPackHeader(ctx, `${ctx.layout.gitDir}/objects/pack/pack-B.pack`, {
+          version: 99,
+        });
+        await writeMidxBytes(
+          ctx,
+          buildMidx(
+            healthyMidxSpec({
+              packNames: ['pack-A.idx'],
+              entries: [{ id: idsA[0] as ObjectId, packIndex: 0, offset: PACK_HEADER_SIZE }],
+            }),
+          ),
+        );
+        const sut = createPackRegistry(ctx);
+
+        // Act
+        const hit = await sut.lookup(idsB[0] as ObjectId);
+
+        // Assert
+        expect(hit).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a duplicate in a CLAIMED sibling pack, with the midx assigning the oid to the claimed pack whose header is broken', () => {
+    describe('When lookup is called for that oid', () => {
+      it('Then it is missing — a claimed sibling is never consulted as a second chance', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const content = new TextEncoder().encode('duplicate-blob');
+        const idsA = await writeSyntheticPack(ctx, 'A', [{ kind: 'base', type: 'blob', content }]);
+        await writeSyntheticPack(ctx, 'B', [{ kind: 'base', type: 'blob', content }]);
+        const dupId = idsA[0] as ObjectId;
+        await restampPackHeader(ctx, `${ctx.layout.gitDir}/objects/pack/pack-A.pack`, {
+          version: 99,
+        });
+        await writeMidxBytes(
+          ctx,
+          buildMidx(
+            healthyMidxSpec({
+              packNames: ['pack-A.idx', 'pack-B.idx'],
+              entries: [{ id: dupId, packIndex: 0, offset: PACK_HEADER_SIZE }],
+            }),
+          ),
+        );
+        const { ctx: instrumented, calls } = instrumentedContext(ctx);
+        const sut = createPackRegistry(instrumented);
+
+        // Act
+        const hit = await sut.lookup(dupId);
+
+        // Assert
+        expect(hit).toBeUndefined();
+        const packBReads = calls().filter(
+          (call) => call.method === 'read' && call.path.includes('pack-B'),
+        );
+        expect(packBReads).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given the same repository shape with no multi-pack-index present', () => {
+    describe('When lookup is called for the duplicated oid', () => {
+      it('Then it resolves via the healthy pack — the .idx loop skips the still-broken one', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const content = new TextEncoder().encode('duplicate-blob-control');
+        const idsA = await writeSyntheticPack(ctx, 'A', [{ kind: 'base', type: 'blob', content }]);
+        await writeSyntheticPack(ctx, 'B', [{ kind: 'base', type: 'blob', content }]);
+        const dupId = idsA[0] as ObjectId;
+        await restampPackHeader(ctx, `${ctx.layout.gitDir}/objects/pack/pack-A.pack`, {
+          version: 99,
+        });
+        const sut = createPackRegistry(ctx);
+
+        // Act
+        const hit = await sut.lookup(dupId);
+
+        // Assert
+        expect(hit?.pack.name).toBe('pack-B');
+      });
+    });
+  });
+
+  describe('Given a multi-pack-index naming packs A and B, and pack C written after', () => {
+    describe('When lookup is called for an oid only pack C holds', () => {
+      it('Then it resolves normally — the .idx loop is not filtered for a pack the midx never claimed', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const idA = await writeSingleBlobPack(ctx, 'A', 'unclaimed-a');
+        const idB = await writeSingleBlobPack(ctx, 'B', 'unclaimed-b');
+        await writeMidxBytes(
+          ctx,
+          buildMidx(
+            healthyMidxSpec({
+              packNames: ['pack-A.idx', 'pack-B.idx'],
+              entries: [
+                { id: idA, packIndex: 0, offset: PACK_HEADER_SIZE },
+                { id: idB, packIndex: 1, offset: PACK_HEADER_SIZE },
+              ],
+            }),
+          ),
+        );
+        const idC = await writeSingleBlobPack(ctx, 'C', 'unclaimed-c');
+        const sut = createPackRegistry(ctx);
+
+        // Act
+        const hit = await sut.lookup(idC);
+
+        // Assert
+        expect(hit?.pack.name).toBe('pack-C');
+        expect(hit?.offset).toBe(PACK_HEADER_SIZE);
+      });
+    });
+  });
+
+  describe('Given a multi-pack-index PNAM entry renamed to a name no file on disk carries', () => {
+    describe('When lookup is called for the oid that entry claims', () => {
+      it('Then it falls through and resolves via the ordinary .idx scan, with one warn', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const idA = await writeSingleBlobPack(ctx, 'A', 'unresolvable-pnam');
+        await writeMidxBytes(
+          ctx,
+          buildMidx(
+            healthyMidxSpec({
+              packNames: ['pack-Z.idx'],
+              entries: [{ id: idA, packIndex: 0, offset: PACK_HEADER_SIZE }],
+            }),
+          ),
+        );
+        const warn = vi.fn();
+        const sut = createPackRegistry({ ...ctx, logger: { warn } });
+
+        // Act
+        const hit = await sut.lookup(idA);
+
+        // Assert
+        expect(hit?.pack.name).toBe('pack-A');
+        expect(warn).toHaveBeenCalledTimes(1);
+        const [message, context] = warn.mock.calls[0] ?? [];
+        expect(message).toBe(
+          'packRegistry: multi-pack-index names a pack this scan did not register',
+        );
+        expect(context).toEqual({ pack: 'pack-Z.idx' });
+      });
+    });
+  });
+
+  describe('Given a multi-pack-index PNAM entry that fails isSafePackName', () => {
+    describe('When lookup is called for the oid that entry claims', () => {
+      it.each([
+        ['a name containing "/"', 'pack-A/evil.idx'],
+        ['a name containing ".."', '../pack-A.idx'],
+      ])('Then it binds to undefined and constructs no path from %s', async (_label, badName) => {
+        // Arrange — the guard's ONLY distinct observable is the logger: the
+        // exact-key binding map already misses a hostile name, so the fs
+        // ledger alone cannot tell the guard from the map. The guard is what
+        // keeps the raw hostile bytes out of the unregistered-name warn.
+        const warn = vi.fn();
+        const ctx = await buildSeededContext();
+        const idA = await writeSingleBlobPack(ctx, 'A', 'unsafe-pnam');
+        await writeMidxBytes(
+          ctx,
+          buildMidx(
+            healthyMidxSpec({
+              packNames: [badName],
+              entries: [{ id: idA, packIndex: 0, offset: PACK_HEADER_SIZE }],
+            }),
+          ),
+        );
+        const { ctx: instrumented, calls } = instrumentedContext(ctx);
+        const logging: Context = { ...instrumented, logger: { warn } };
+        const sut = createPackRegistry(logging);
+
+        // Act
+        const hit = await sut.lookup(idA);
+
+        // Assert
+        expect(hit?.pack.name).toBe('pack-A');
+        const suspectCalls = calls().filter((call) => call.path.includes(badName));
+        expect(suspectCalls).toEqual([]);
+        const warnedWithHostileName = warn.mock.calls.some((call) =>
+          JSON.stringify(call).includes(badName),
+        );
+        expect(warnedWithHostileName).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a multi-pack-index that claims a pack but omits an oid that pack holds', () => {
+    describe('When lookup is called for that oid', () => {
+      it('Then it is missing — the .idx loop skips the claimed pack, and the midx has no entry for it', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const idA = await writeSingleBlobPack(ctx, 'A', 'claimed-but-omitted');
+        await writeMidxBytes(
+          ctx,
+          buildMidx(healthyMidxSpec({ packNames: ['pack-A.idx'], entries: [] })),
+        );
+        const sut = createPackRegistry(ctx);
+
+        // Act
+        const hit = await sut.lookup(idA);
+
+        // Assert
+        expect(hit).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a multi-pack-index PNAM entry naming an orphaned .idx (its .pack removed)', () => {
+    describe('When lookup is called for the orphan-only oid', () => {
+      it('Then it is missing — the scan excluded that pack before the midx could claim it', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const orphanId = await writeSingleBlobPack(ctx, 'orphan', 'excluded-pack');
+        await ctx.fs.rm(`${ctx.layout.gitDir}/objects/pack/pack-orphan.pack`);
+        await writeMidxBytes(
+          ctx,
+          buildMidx(
+            healthyMidxSpec({
+              packNames: ['pack-orphan.idx'],
+              entries: [{ id: orphanId, packIndex: 0, offset: PACK_HEADER_SIZE }],
+            }),
+          ),
+        );
+        const sut = createPackRegistry(ctx);
+
+        // Act
+        const hit = await sut.lookup(orphanId);
+
+        // Assert
+        expect(hit).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a two-layer chain where each layer names a different pack', () => {
+    describe('When lookup is called for an oid the newer layer claims', () => {
+      it("Then it resolves through that layer's own packNames, not a global list", async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const idA = await writeSingleBlobPack(ctx, 'A', 'chain-layer-a');
+        const idB = await writeSingleBlobPack(ctx, 'B', 'chain-layer-b');
+        await writeMidxChain(ctx, [
+          {
+            digest: '1'.repeat(40),
+            spec: healthyMidxSpec({
+              packNames: ['pack-A.idx'],
+              entries: [{ id: idA, packIndex: 0, offset: PACK_HEADER_SIZE }],
+            }),
+          },
+          {
+            digest: '2'.repeat(40),
+            spec: healthyMidxSpec({
+              packNames: ['pack-B.idx'],
+              entries: [{ id: idB, packIndex: 0, offset: PACK_HEADER_SIZE }],
+            }),
+          },
+        ]);
+        const sut = createPackRegistry(ctx);
+
+        // Act
+        const hit = await sut.lookup(idB);
+
+        // Assert
+        expect(hit?.pack.name).toBe('pack-B');
+      });
+    });
+  });
+
+  describe('Given a two-layer chain where both layers list the same oid at different offsets', () => {
+    describe('When lookup is called for that oid', () => {
+      it("Then the newest layer's entry wins", async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeSingleBlobPack(ctx, 'A', 'newest-first');
+        const sharedId = 'd'.repeat(40) as ObjectId;
+        await writeMidxChain(ctx, [
+          {
+            digest: '1'.repeat(40),
+            spec: healthyMidxSpec({
+              packNames: ['pack-A.idx'],
+              entries: [{ id: sharedId, packIndex: 0, offset: 1000 }],
+            }),
+          },
+          {
+            digest: '2'.repeat(40),
+            spec: healthyMidxSpec({
+              packNames: ['pack-A.idx'],
+              entries: [{ id: sharedId, packIndex: 0, offset: 2000 }],
+            }),
+          },
+        ]);
+        const sut = createPackRegistry(ctx);
+
+        // Act
+        const hit = await sut.lookup(sharedId);
+
+        // Assert
+        expect(hit?.offset).toBe(2000);
+      });
+    });
+  });
+
+  describe('Given a multi-pack-index entry whose pack-int-id is out of range for its own PNAM', () => {
+    describe('When lookup is called for that oid', () => {
+      it("Then it rejects with check 'pack-int-id' — a deferred Tier-A fault, not a miss", async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const idA = await writeSingleBlobPack(ctx, 'A', 'pack-int-id-oob');
+        await writeMidxBytes(
+          ctx,
+          buildMidx(
+            healthyMidxSpec({
+              packNames: ['pack-A.idx'],
+              entries: [{ id: idA, packIndex: 5, offset: PACK_HEADER_SIZE }],
+            }),
+          ),
+        );
+        const sut = createPackRegistry(ctx);
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut.lookup(idA);
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('INVALID_MULTI_PACK_INDEX');
+        if (data.code !== 'INVALID_MULTI_PACK_INDEX') {
+          expect.fail(`expected INVALID_MULTI_PACK_INDEX, got ${data.code}`);
+        }
+        expect(data.check).toBe('pack-int-id');
+      });
+    });
+  });
+
+  describe('Given a multi-pack-index whose LOFF row index is out of range for its own count', () => {
+    describe('When lookup is called for that oid', () => {
+      it("Then it rejects with check 'large-offset' — a deferred Tier-A fault, not a miss", async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const idA = await writeSingleBlobPack(ctx, 'A', 'large-offset-oob');
+        const healthyBytes = buildMidx(
+          healthyMidxSpec({
+            packNames: ['pack-A.idx'],
+            entries: [{ id: idA, packIndex: 0, offset: 0x80000001 }],
+          }),
+        );
+        await writeMidxBytes(ctx, forceLargeOffsetRowOutOfRange(healthyBytes));
+        const sut = createPackRegistry(ctx);
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut.lookup(idA);
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('INVALID_MULTI_PACK_INDEX');
+        if (data.code !== 'INVALID_MULTI_PACK_INDEX') {
+          expect.fail(`expected INVALID_MULTI_PACK_INDEX, got ${data.code}`);
+        }
+        expect(data.check).toBe('large-offset');
+      });
+    });
+  });
+
+  describe('Given a multi-pack-index claiming every registered pack', () => {
+    describe('When all is called', () => {
+      it('Then it still lists every pack — all() is not filtered by claimedNames', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const idA = await writeSingleBlobPack(ctx, 'A', 'all-unfiltered-a');
+        const idB = await writeSingleBlobPack(ctx, 'B', 'all-unfiltered-b');
+        await writeMidxBytes(
+          ctx,
+          buildMidx(
+            healthyMidxSpec({
+              packNames: ['pack-A.idx', 'pack-B.idx'],
+              entries: [
+                { id: idA, packIndex: 0, offset: PACK_HEADER_SIZE },
+                { id: idB, packIndex: 1, offset: PACK_HEADER_SIZE },
+              ],
+            }),
+          ),
+        );
+        const sut = createPackRegistry(ctx);
+
+        // Act
+        const packs = await sut.all();
+
+        // Assert
+        expect(packs.map((pack) => pack.name).sort()).toEqual(['pack-A', 'pack-B']);
+      });
+    });
+  });
+
+  describe('Given identical packs, one repo with a multi-pack-index claiming everything and one without', () => {
+    describe('When enumerateObjects is called on both', () => {
+      it('Then the id sets are identical — the midx does not narrow the enumeration universe', async () => {
+        // Arrange
+        const withMidx = await buildSeededContext();
+        const idA = await writeSingleBlobPack(withMidx, 'A', 'enumerate-a');
+        const idB = await writeSingleBlobPack(withMidx, 'B', 'enumerate-b');
+        await writeMidxBytes(
+          withMidx,
+          buildMidx(
+            healthyMidxSpec({
+              packNames: ['pack-A.idx', 'pack-B.idx'],
+              entries: [
+                { id: idA, packIndex: 0, offset: PACK_HEADER_SIZE },
+                { id: idB, packIndex: 1, offset: PACK_HEADER_SIZE },
+              ],
+            }),
+          ),
+        );
+
+        const withoutMidx = await buildSeededContext();
+        await writeSingleBlobPack(withoutMidx, 'A', 'enumerate-a');
+        await writeSingleBlobPack(withoutMidx, 'B', 'enumerate-b');
+
+        // Act
+        const idsWithMidx = await enumerateObjects(withMidx);
+        const idsWithoutMidx = await enumerateObjects(withoutMidx);
+
+        // Assert
+        expect(idsWithMidx).toEqual(idsWithoutMidx);
+      });
+    });
+  });
+
+  describe('Given a healthy pack and a broken pack, with and without a multi-pack-index claiming both', () => {
+    describe('When health is called on both', () => {
+      it('Then the reports are identical and the midx contributes no entry of its own', async () => {
+        // Arrange
+        const withMidx = await buildSeededContext();
+        const idA = await writeSingleBlobPack(withMidx, 'A', 'health-a');
+        const idB = await writeSingleBlobPack(withMidx, 'B', 'health-b');
+        await restampPackHeader(withMidx, `${withMidx.layout.gitDir}/objects/pack/pack-B.pack`, {
+          version: 99,
+        });
+        await writeMidxBytes(
+          withMidx,
+          buildMidx(
+            healthyMidxSpec({
+              packNames: ['pack-A.idx', 'pack-B.idx'],
+              entries: [
+                { id: idA, packIndex: 0, offset: PACK_HEADER_SIZE },
+                { id: idB, packIndex: 1, offset: PACK_HEADER_SIZE },
+              ],
+            }),
+          ),
+        );
+
+        const withoutMidx = await buildSeededContext();
+        await writeSingleBlobPack(withoutMidx, 'A', 'health-a');
+        await writeSingleBlobPack(withoutMidx, 'B', 'health-b');
+        await restampPackHeader(
+          withoutMidx,
+          `${withoutMidx.layout.gitDir}/objects/pack/pack-B.pack`,
+          { version: 99 },
+        );
+
+        // Act
+        const healthWithMidx = await createPackRegistry(withMidx).health();
+        const healthWithoutMidx = await createPackRegistry(withoutMidx).health();
+
+        // Assert
+        expect(healthWithMidx.accessible.map((pack) => pack.name)).toEqual(
+          healthWithoutMidx.accessible.map((pack) => pack.name),
+        );
+        expect(healthWithMidx.unusable).toEqual(healthWithoutMidx.unusable);
+        expect(healthWithMidx.unusable).toHaveLength(1);
+        expect(healthWithMidx.unusable[0]?.name).toBe('pack-B');
+      });
+    });
+  });
+
+  describe('Given a healthy multi-pack-index naming a pack with two objects', () => {
+    describe('When lookup is called twice, once per object in that pack', () => {
+      it('Then the pack header is read only once — the header memo is shared across midx-routed lookups', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const ids = await writeSyntheticPack(ctx, 'shared', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('header-memo-1') },
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('header-memo-2') },
+        ]);
+        const idxBytes = await ctx.fs.read(`${ctx.layout.gitDir}/objects/pack/pack-shared.idx`);
+        const index = parsePackIndex(idxBytes);
+        const id0 = ids[0] as ObjectId;
+        const id1 = ids[1] as ObjectId;
+        const offset0 = lookupPackIndex(index, id0)!;
+        const offset1 = lookupPackIndex(index, id1)!;
+        await writeMidxBytes(
+          ctx,
+          buildMidx(
+            healthyMidxSpec({
+              packNames: ['pack-shared.idx'],
+              entries: [
+                { id: id0, packIndex: 0, offset: offset0 },
+                { id: id1, packIndex: 0, offset: offset1 },
+              ],
+            }),
+          ),
+        );
+        const { ctx: instrumented, calls } = instrumentedContext(ctx);
+        const sut = createPackRegistry(instrumented);
+
+        // Act
+        await sut.lookup(id0);
+        await sut.lookup(id1);
+
+        // Assert
+        const headerReads = calls().filter(
+          (call) =>
+            call.method === 'readSlice' &&
+            call.path === `${ctx.layout.gitDir}/objects/pack/pack-shared.pack`,
+        );
+        expect(headerReads).toHaveLength(1);
       });
     });
   });

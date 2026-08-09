@@ -32,7 +32,7 @@ export async function enumerateObjects(
   if (includePacks) {
     const registry = getPackRegistry(ctx);
     const packs = accessiblePacksOnly ? (await registry.health()).accessible : await registry.all();
-    collectPackedObjectIds(packs, ids);
+    await collectPackedObjectIds(packs, ids);
   }
 
   return [...ids].sort();
@@ -52,9 +52,12 @@ async function collectLooseObjectIds(ctx: Context, ids: Set<ObjectId>): Promise<
   }
 }
 
-function collectPackedObjectIds(packs: ReadonlyArray<RegisteredPack>, ids: Set<ObjectId>): void {
+async function collectPackedObjectIds(
+  packs: ReadonlyArray<RegisteredPack>,
+  ids: Set<ObjectId>,
+): Promise<void> {
   for (const pack of packs) {
-    for (const id of allObjectIds(pack.index)) {
+    for (const id of allObjectIds(await pack.index())) {
       ids.add(id);
     }
   }

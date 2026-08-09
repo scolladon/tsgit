@@ -83,6 +83,14 @@ function isDecodeFault(err: unknown): boolean {
  * degradation can only coarsen a type label to 'unknown'; it never withholds
  * a finding and never flips a verdict.
  */
+// A deferred Tier-A multi-pack-index fault (`pack-int-id`/`large-offset`,
+// raised only when one specific entry is decoded) deliberately degrades here
+// like any other store fault: git's own parent is BIMODAL on that shape —
+// measured both dying at 128 and reporting at 32 on regenerated fixtures,
+// depending on whether its walk happens to route the poisoned oid through
+// the midx — while its verify child always contains it. tsgit sides with
+// the deterministic child shape: the midx-health pass reports the fault as
+// `midx-unusable` with exit bit 32 on every run.
 function isStoreFault(err: unknown): boolean {
   return err instanceof TsgitError && err.data.code !== 'UNSUPPORTED_OPERATION';
 }

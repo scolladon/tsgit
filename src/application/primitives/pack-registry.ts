@@ -17,9 +17,28 @@ import {
   parsePackHeader,
 } from '../../domain/storage/pack-entry.js';
 import type { Context } from '../../ports/context.js';
-import { createPromiseMemo } from './internal/promise-memo.js';
+import {
+  bindMidx,
+  computeMidxHealth,
+  findMidxHit,
+  type LoadedMidx,
+  type MidxHealth,
+} from './internal/midx-binding.js';
+import { loadMidxSet, type MidxLoadResult } from './internal/midx-source.js';
+import {
+  faultContext,
+  faultReason,
+  isSafePackName,
+  isSkippableIdxFault,
+  isSkippablePackFault,
+  packBaseName,
+} from './internal/pack-shared.js';
+import { createPromiseMemo, type PromiseMemo } from './internal/promise-memo.js';
 import { commonGitDir, packsDir } from './path-layout.js';
 import { exceedsMaxPackIdxBytes, REASON_PACK_IDX_EXCEEDS_MAX } from './validators.js';
+
+export type { MidxHealth };
+export { faultReason, isSkippableIdxFault, isSkippablePackFault };
 
 // Discriminates "this adapter cannot open persistent handles" (the browser
 // adapter's openWithNoFollow refusal) from errno-mapped faults that share the
@@ -34,46 +53,6 @@ function isUnsupportedOperation(err: unknown): boolean {
   );
 }
 
-function isSkippableIoFault(err: unknown): boolean {
-  return (
-    err instanceof TsgitError &&
-    (err.data.code === 'FILE_NOT_FOUND' || err.data.code === 'PERMISSION_DENIED')
-  );
-}
-
-// The pack file itself is unusable: bad signature, short file, version outside
-// 2|3, or a header/index object-count disagreement. Scoped to the lookup layer
-// ONLY — INVALID_PACK_INDEX is deliberately absent, because nextOffsetForEntry
-// and buildOffsetTable throw it for a MID-READ corruption, and folding those in
-// would turn a detected corruption into a silent miss after the gate passed.
-function isSkippablePackFault(err: unknown): err is TsgitError {
-  return (
-    (err instanceof TsgitError && err.data.code === 'INVALID_PACK_HEADER') ||
-    isSkippableIoFault(err)
-  );
-}
-
-// Scan layer: the .idx cannot be turned into a PackIndex (a corrupt or
-// unreadable index). Deliberately NOT unioned with isSkippablePackFault —
-// INVALID_PACK_INDEX is skippable only here, where the parse happens; at the
-// lookup layer it also means a mid-read corruption, which must never be
-// laundered into "this pack has no objects".
-function isSkippableIdxFault(err: unknown): err is TsgitError {
-  return (
-    (err instanceof TsgitError && err.data.code === 'INVALID_PACK_INDEX') || isSkippableIoFault(err)
-  );
-}
-
-// Flat and string-valued on purpose: the Logger port sanitises TOP-LEVEL string
-// values only, and a pack name comes from a readdir entry an attacker with repo
-// write access controls. Nesting `err.data` would route it round the sanitiser.
-const faultContext = (data: TsgitErrorData): Readonly<Record<string, string>> =>
-  'reason' in data ? { code: data.code, reason: data.reason } : { code: data.code };
-
-/** The one narrowing of a fault's display reason — shared with the fsck pack pass. */
-export const faultReason = (data: TsgitErrorData): string =>
-  'reason' in data ? data.reason : data.code;
-
 export interface PackOffsetTable {
   readonly sortedOffsets: ReadonlyArray<number>;
   readonly packFileSize: number;
@@ -82,7 +61,14 @@ export interface PackOffsetTable {
 
 export interface RegisteredPack {
   readonly name: string;
-  readonly index: PackIndex;
+  /**
+   * Memoised `.idx` read + parse — one bounded read per pack, on first use,
+   * never at scan time. A rejection is **not** memoised (the next caller
+   * retries); the ONE site that classifies a rejection as skippable (a
+   * corrupt or unreadable `.idx`) rather than propagating it is the
+   * generation's `resolveIndexes`, never a call site of `index()` itself.
+   */
+  readonly index: () => Promise<PackIndex>;
   readonly packPath: string;
   readonly idxPath: string;
   /**
@@ -139,6 +125,16 @@ export interface PackHealth {
 export interface PackRegistry {
   all(): Promise<ReadonlyArray<RegisteredPack>>;
   lookup(id: ObjectId): Promise<PackLookupHit | undefined>;
+  /**
+   * Await the current generation for its rejection only, discarding the
+   * result. A structurally self-inconsistent multi-pack-index must deny
+   * EVERY read — loose objects included — before any loose-vs-pack branch is
+   * even reached, and this is the single gate that makes that true. Returns
+   * `void` on purpose: it must never become a second way to reach the packs.
+   * Never forces `generation.indexed` — that would pay every pack's `.idx`
+   * load eagerly and defeat the point of loading indexes lazily.
+   */
+  assertLoadable(): Promise<void>;
   /** Drop the cached `.idx` scan so the next `all`/`lookup` re-scans the
    *  pack directory — used after a lazy-fetch writes a new pack. */
   refresh(): void;
@@ -165,29 +161,22 @@ export interface PackRegistry {
    * consumers (fsck's ungated rev-index term) that must not pay the probe.
    */
   indexFaults(): Promise<ReadonlyArray<UnusablePack>>;
-}
-
-// Control characters are rejected at this boundary so a hostile filename can
-// never carry a newline into a line-oriented logger sink downstream — the
-// display sanitiser deliberately preserves tab and newline.
-const isControlChar = (ch: string): boolean => ch.charCodeAt(0) < 0x20;
-
-function isSafePackName(name: string): boolean {
-  return (
-    !name.includes('/') &&
-    !name.includes('\\') &&
-    !name.includes('..') &&
-    ![...name].some(isControlChar)
-  );
+  /**
+   * The multi-pack-index's own accessibility + integrity verdict — the ONE
+   * state `fsck`'s midx pass consumes. A second, independent reader of the
+   * same bytes `lookup` reads: it re-derives pack binding and
+   * entry resolution rather than reusing `lookup`'s memoised view, so a
+   * fault that only a full walk surfaces (an entry whose `pack-int-id` or
+   * `large-offset` decodes out of range) is caught here even when no read
+   * ever touched it. The verdict is memoised per generation, exactly as
+   * `health()` is, and reset by `refresh()` with the scan.
+   */
+  midxHealth(): Promise<MidxHealth>;
 }
 
 function isCandidate(entry: { isFile: boolean; name: string }): boolean {
   return entry.isFile && entry.name.endsWith('.idx') && isSafePackName(entry.name);
 }
-
-// Single source for the `.idx` → base-name rule: both the scan layer's
-// sibling-.pack check and loadPack's own packPath derivation depend on it.
-const packBaseName = (idxEntryName: string): string => idxEntryName.slice(0, -'.idx'.length);
 
 async function readBoundedIdx(ctx: Context, idxPath: string): Promise<Uint8Array> {
   // Pre-check stat; reject .idx files large enough to exhaust heap before
@@ -204,14 +193,20 @@ async function readBoundedIdx(ctx: Context, idxPath: string): Promise<Uint8Array
   return bytes;
 }
 
-async function loadPack(ctx: Context, dir: string, entryName: string): Promise<RegisteredPack> {
+function loadPack(ctx: Context, dir: string, entryName: string): RegisteredPack {
   const idxPath = `${dir}/${entryName}`;
-  const idxBytes = await readBoundedIdx(ctx, idxPath);
-  const index = parsePackIndex(idxBytes);
   const name = packBaseName(entryName);
   const packPath = `${dir}/${name}.pack`;
 
+  // Not read here — scanPacks builds the candidate list with no `.idx` I/O.
+  // The first caller to force this memo (directly, or via the generation's
+  // resolveIndexes classification) pays the one bounded read.
+  const indexMemo = createPromiseMemo(
+    async (): Promise<PackIndex> => parsePackIndex(await readBoundedIdx(ctx, idxPath)),
+  );
+
   const headerMemo = createPromiseMemo(async (): Promise<PackHeader> => {
+    const index = await indexMemo.get();
     const header = parsePackHeader(await ctx.fs.readSlice(packPath, 0, PACK_HEADER_SIZE));
     if (header.objectCount !== index.objectCount) {
       throw invalidPackHeader(
@@ -222,6 +217,7 @@ async function loadPack(ctx: Context, dir: string, entryName: string): Promise<R
   });
 
   const buildOffsetTable = async (): Promise<PackOffsetTable> => {
+    const index = await indexMemo.get();
     const stat = await ctx.fs.stat(packPath);
     const packFileSize = stat.size;
     const raw = entryOffsets(index);
@@ -295,7 +291,16 @@ async function loadPack(ctx: Context, dir: string, entryName: string): Promise<R
     await handle.close();
   };
 
-  return { name, index, packPath, idxPath, header: headerMemo.get, offsetTable, readSlice, close };
+  return {
+    name,
+    index: indexMemo.get,
+    packPath,
+    idxPath,
+    header: headerMemo.get,
+    offsetTable,
+    readSlice,
+    close,
+  };
 }
 
 function bisectLeft(arr: ReadonlyArray<number>, value: number): number {
@@ -326,53 +331,129 @@ export function nextOffsetForEntry(table: PackOffsetTable, offset: number): numb
 }
 
 const NO_PACKS: ReadonlyArray<RegisteredPack> = Object.freeze([]);
+const NO_INDEX_FAULTS: ReadonlyArray<{ readonly name: string; readonly data: TsgitErrorData }> =
+  Object.freeze([]);
 
-interface PackGeneration {
-  readonly packs: ReadonlyArray<RegisteredPack>;
+/**
+ * The scan layer's classification of one generation's candidates: which
+ * ones have a loaded, parsed `.idx` (`packs`), and which were skipped as
+ * unreadable/unparseable (`indexFaults`). Built once per generation by
+ * `resolveIndexes`, behind `PackGeneration.indexed`.
+ */
+interface IndexedPack {
+  readonly pack: RegisteredPack;
+  /** The settled parse — held here so lookup's fallback loop stays synchronous. */
+  readonly index: PackIndex;
+}
+
+interface IndexedPacks {
+  readonly packs: ReadonlyArray<IndexedPack>;
+  /** The same packs projected once — `all()` returns one stable reference per generation. */
+  readonly packList: ReadonlyArray<RegisteredPack>;
   readonly indexFaults: ReadonlyArray<{ readonly name: string; readonly data: TsgitErrorData }>;
 }
 
-const EMPTY_GENERATION: PackGeneration = Object.freeze({
-  packs: NO_PACKS,
-  indexFaults: Object.freeze([]),
+const NO_INDEXED_PACKS: ReadonlyArray<IndexedPack> = Object.freeze([]);
+
+const EMPTY_INDEXED: IndexedPacks = Object.freeze({
+  packs: NO_INDEXED_PACKS,
+  packList: NO_PACKS,
+  indexFaults: NO_INDEX_FAULTS,
 });
 
-type PackCandidateOutcome =
-  | { readonly kind: 'registered'; readonly pack: RegisteredPack }
-  | { readonly kind: 'orphaned' }
-  | { readonly kind: 'index-fault'; readonly name: string; readonly data: TsgitErrorData };
+const EMPTY_MIDX_LOAD: MidxLoadResult = Object.freeze({
+  set: undefined,
+  faults: Object.freeze([]),
+  flatFilePresent: false,
+});
+
+export interface PackGeneration {
+  /** Every candidate with a sibling `.pack` — orphans excluded, `.idx` not
+   *  yet read. The safe superset for `refresh()`/`dispose()` to close: a
+   *  pack whose index never loaded simply has nothing to close. */
+  readonly packs: ReadonlyArray<RegisteredPack>;
+  /** The multi-pack-index this generation's scan discovered, produced by the
+   *  SAME `scanPacks` call as `packs` — so no consumer can ever pair one
+   *  generation's midx with another's packs. Has no reader beyond
+   *  `assertLoadable` propagating its rejection: `midx` below is the bound,
+   *  lookup-facing view. */
+  readonly midxLoad: MidxLoadResult;
+  /** `midxLoad.set` bound to this generation's own `packs`, or `undefined`
+   *  exactly when `midxLoad.set` is. The one field `lookup` reads to decide
+   *  whether the midx is authoritative for this generation. */
+  readonly midx: LoadedMidx | undefined;
+  /** Forces every candidate's `.idx` load, once, on first use. */
+  readonly indexed: PromiseMemo<IndexedPacks>;
+  /**
+   * `.idx` names already warned about this generation — the lazy unclaimed
+   * scan retries a failed parse on every lookup (no negative cache), and
+   * without this dedup each retry would emit another identical warn.
+   */
+  readonly warnedIdx: Set<string>;
+}
+
+function emptyGeneration(): PackGeneration {
+  return {
+    packs: NO_PACKS,
+    midxLoad: EMPTY_MIDX_LOAD,
+    midx: undefined,
+    indexed: createPromiseMemo(() => Promise.resolve(EMPTY_INDEXED)),
+    warnedIdx: new Set(),
+  };
+}
 
 /**
- * Resolve one `.idx` candidate. `'orphaned'` (no sibling `.pack` in the
- * scan's own listing) and `'index-fault'` (a skippable idx-layer fault —
- * unreadable/unparseable `.idx`) both keep the warn the scan layer always
- * emitted for them; only `'index-fault'` is retained in the generation's
- * index-fault list — an orphan contributes nothing. An unrecognised fault
- * still propagates to the caller.
+ * Resolve one `.idx` candidate to a `RegisteredPack`, or `undefined` when its
+ * sibling `.pack` is missing from this scan's own listing (an orphaned `.idx`
+ * is garbage, never a pack). The orphan warn fires here, at scan time,
+ * because it needs no I/O to detect. The pack's `.idx` itself is not read
+ * here — that happens lazily, the first time something forces `pack.index()`
+ * (see `resolveIndexes`).
  */
-async function loadCandidatePack(
+function loadCandidatePack(
   ctx: Context,
   dir: string,
   entry: { readonly name: string },
   fileNames: ReadonlySet<string>,
-): Promise<PackCandidateOutcome> {
+): RegisteredPack | undefined {
   const name = packBaseName(entry.name);
   if (!fileNames.has(`${name}.pack`)) {
     ctx.logger?.warn?.('packRegistry: skipping pack index with no pack file', {
       idx: entry.name,
     });
-    return { kind: 'orphaned' };
+    return undefined;
   }
-  try {
-    return { kind: 'registered', pack: await loadPack(ctx, dir, entry.name) };
-  } catch (err) {
-    if (!isSkippableIdxFault(err)) throw err;
-    ctx.logger?.warn?.('packRegistry: skipping unreadable pack index', {
-      idx: entry.name,
-      ...faultContext(err.data),
-    });
-    return { kind: 'index-fault', name, data: err.data };
+  return loadPack(ctx, dir, entry.name);
+}
+
+/**
+ * The single site that classifies an index-layer fault — run once per
+ * generation, behind `PackGeneration.indexed`, sequentially in candidate
+ * order, never per lookup — so a generation warns for each unreadable index
+ * exactly once no matter how many consumers later force the memo. Forces
+ * every candidate's `.idx` load, not just the ones a lookup needed, so
+ * `all()`, `indexFaults()` and `health()` see a complete classification even
+ * when no lookup ever ran.
+ */
+async function resolveIndexes(
+  ctx: Context,
+  packs: ReadonlyArray<RegisteredPack>,
+): Promise<IndexedPacks> {
+  const loaded: IndexedPack[] = [];
+  const faults: Array<{ readonly name: string; readonly data: TsgitErrorData }> = [];
+  for (const pack of packs) {
+    try {
+      loaded.push({ pack, index: await pack.index() });
+    } catch (err) {
+      if (!isSkippableIdxFault(err)) throw err;
+      ctx.logger?.warn?.('packRegistry: skipping unreadable pack index', {
+        idx: `${pack.name}.idx`,
+        ...faultContext(err.data),
+      });
+      faults.push({ name: pack.name, data: err.data });
+    }
   }
+  return { packs: loaded, packList: loaded.map((entry) => entry.pack), indexFaults: faults };
 }
 
 const unusableEntry = (
@@ -384,8 +465,23 @@ const unusableEntry = (
 export function createPackRegistry(ctx: Context): PackRegistry {
   const scanPacks = async (): Promise<PackGeneration> => {
     const dir = packsDir(commonGitDir(ctx));
-    if (!(await ctx.fs.exists(dir))) return EMPTY_GENERATION;
-    const entries = await ctx.fs.readdir(dir);
+    if (!(await ctx.fs.exists(dir))) return emptyGeneration();
+    // A SEPARATE step from the .idx candidate loop below — never folded into
+    // it, so a structurally self-inconsistent midx fault is never caught by
+    // isSkippableIdxFault and laundered into "skip one pack". A rejection
+    // here aborts the whole scan, and the scan memo never caches a
+    // rejection, so the very next lookup re-attempts it from scratch.
+    // Parallel with the listing: the two rejection paths stay distinct (the
+    // catch scope, not the ordering, is what keeps a Tier-A midx fault out of
+    // isSkippableIdxFault), and every Context's first pack access saves one
+    // sequential round-trip on high-latency adapters.
+    const [midxLoad, entries] = await Promise.all([loadMidxSet(ctx, dir), ctx.fs.readdir(dir)]);
+    for (const fault of midxLoad.faults) {
+      ctx.logger?.warn?.('packRegistry: discarding unusable multi-pack-index', {
+        artefact: fault.artefact,
+        ...faultContext(fault.data),
+      });
+    }
     // git registers a pack only when its .pack exists by name — an orphaned
     // .idx is garbage, never a pack. The listing already in hand is the same
     // data, so the check costs no I/O.
@@ -393,16 +489,20 @@ export function createPackRegistry(ctx: Context): PackRegistry {
     // no-follow policy the data reads enforce, so its .idx drops here too.
     const fileNames = new Set(entries.filter((entry) => entry.isFile).map((entry) => entry.name));
     const packs: RegisteredPack[] = [];
-    const indexFaults: Array<{ readonly name: string; readonly data: TsgitErrorData }> = [];
     for (const entry of entries) {
       if (!isCandidate(entry)) continue;
-      const outcome = await loadCandidatePack(ctx, dir, entry, fileNames);
-      if (outcome.kind === 'registered') packs.push(outcome.pack);
-      else if (outcome.kind === 'index-fault') {
-        indexFaults.push({ name: outcome.name, data: outcome.data });
-      }
+      const pack = loadCandidatePack(ctx, dir, entry, fileNames);
+      if (pack !== undefined) packs.push(pack);
     }
-    return { packs, indexFaults };
+    const midx =
+      midxLoad.set === undefined ? undefined : bindMidx(ctx, packs, midxLoad.set, fileNames);
+    return {
+      packs,
+      midxLoad,
+      midx,
+      indexed: createPromiseMemo(() => resolveIndexes(ctx, packs)),
+      warnedIdx: new Set(),
+    };
   };
   const scan = createPromiseMemo(scanPacks);
 
@@ -436,19 +536,24 @@ export function createPackRegistry(ctx: Context): PackRegistry {
   // empty instead of scanning.
   const currentGeneration = (): Promise<PackGeneration> => {
     if (!disposed) return scan.get();
-    return scan.peek() ?? Promise.resolve(EMPTY_GENERATION);
+    return scan.peek() ?? Promise.resolve(emptyGeneration());
   };
-  const allPacks = (): Promise<ReadonlyArray<RegisteredPack>> =>
-    currentGeneration().then((generation) => generation.packs);
+  const allPacks = async (): Promise<ReadonlyArray<RegisteredPack>> => {
+    const generation = await currentGeneration();
+    return (await generation.indexed.get()).packList;
+  };
 
-  // Pure over its generation, so computeHealth can derive both halves of one
-  // report from the SAME generation snapshot — awaiting the memo twice would
-  // let a refresh() interleave and mix two generations into one verdict.
-  const indexFaultsOf = (generation: PackGeneration): UnusablePack[] =>
-    generation.indexFaults.map((fault) => unusableEntry(fault.name, 'index', fault.data));
+  // Pure over its fault list, so computeHealth can derive both halves of one
+  // report from the SAME indexed snapshot — awaiting the memo twice would let
+  // a refresh() interleave and mix two generations into one verdict.
+  const indexFaultsOf = (
+    faults: ReadonlyArray<{ readonly name: string; readonly data: TsgitErrorData }>,
+  ): UnusablePack[] => faults.map((fault) => unusableEntry(fault.name, 'index', fault.data));
 
-  const indexFaultEntries = async (): Promise<UnusablePack[]> =>
-    indexFaultsOf(await currentGeneration());
+  const indexFaultEntries = async (): Promise<UnusablePack[]> => {
+    const generation = await currentGeneration();
+    return indexFaultsOf((await generation.indexed.get()).indexFaults);
+  };
 
   // The one site that classifies a pack-open refusal — lookup() and health()
   // both call it, so the refusal reason cannot drift between them. Returns
@@ -469,11 +574,89 @@ export function createPackRegistry(ctx: Context): PackRegistry {
     }
   };
 
+  // Step 3 of lookup: the ordinary .idx scan over packs the midx does not
+  // claim. With no midx, the generation's classified snapshot is forced once
+  // and walked synchronously (every parse already settled). With a midx,
+  // ONLY unclaimed packs are touched — git never opens a midx-covered `.idx`
+  // in find_pack_entry, and forcing the snapshot here would re-pay the P
+  // eager reads the lazy scan exists to avoid. Each unclaimed `.idx` loads
+  // lazily; a classified-corrupt one is skipped per pack, mirroring the
+  // snapshot's own classification.
+  // No midx: force the generation's classified snapshot once, then walk it
+  // synchronously — every parse already settled, and the header probe is
+  // awaited only on the index match, so a full-scan miss costs zero awaits.
+  const lookupViaIndexedSnapshot = async (
+    generation: PackGeneration,
+    id: ObjectId,
+  ): Promise<PackLookupHit | undefined> => {
+    const { packs } = await generation.indexed.get();
+    for (const { pack, index } of packs) {
+      const offset = lookupPackIndex(index, id);
+      if (offset === undefined) continue;
+      const fault = await probeHeader(pack);
+      if (fault !== undefined) continue;
+      return { pack, offset };
+    }
+    return undefined;
+  };
+
+  // The one lazy per-pack classification site outside the snapshot: an
+  // unclaimed pack's corrupt `.idx` is skipped exactly as `resolveIndexes`
+  // would skip it, with the same warn shape.
+  const unclaimedIndexOrSkip = async (
+    pack: RegisteredPack,
+    warnedIdx: Set<string>,
+  ): Promise<PackIndex | undefined> => {
+    try {
+      return await pack.index();
+    } catch (err) {
+      if (!isSkippableIdxFault(err)) throw err;
+      const idxName = `${pack.name}.idx`;
+      if (!warnedIdx.has(idxName)) {
+        warnedIdx.add(idxName);
+        ctx.logger?.warn?.('packRegistry: skipping unreadable pack index', {
+          idx: idxName,
+          ...faultContext(err.data),
+        });
+      }
+      return undefined;
+    }
+  };
+
+  const lookupViaUnclaimedPacks = async (
+    generation: PackGeneration,
+    midx: LoadedMidx,
+    id: ObjectId,
+  ): Promise<PackLookupHit | undefined> => {
+    for (const pack of generation.packs) {
+      if (midx.claimedNames.has(`${pack.name}.idx`)) continue;
+      const index = await unclaimedIndexOrSkip(pack, generation.warnedIdx);
+      if (index === undefined) continue;
+      const offset = lookupPackIndex(index, id);
+      if (offset === undefined) continue;
+      const fault = await probeHeader(pack);
+      if (fault !== undefined) continue;
+      return { pack, offset };
+    }
+    return undefined;
+  };
+
+  const lookupViaIdxScan = (
+    generation: PackGeneration,
+    id: ObjectId,
+  ): Promise<PackLookupHit | undefined> => {
+    const midx = generation.midx;
+    return midx === undefined
+      ? lookupViaIndexedSnapshot(generation, id)
+      : lookupViaUnclaimedPacks(generation, midx, id);
+  };
+
   const computeHealth = async (): Promise<PackHealth> => {
     const generation = await currentGeneration();
-    const unusable: UnusablePack[] = indexFaultsOf(generation);
+    const { packs, indexFaults } = await generation.indexed.get();
+    const unusable: UnusablePack[] = indexFaultsOf(indexFaults);
     const accessible: RegisteredPack[] = [];
-    for (const pack of generation.packs) {
+    for (const { pack } of packs) {
       const fault = await probeHeader(pack);
       if (fault === undefined) accessible.push(pack);
       else unusable.push(unusableEntry(pack.name, 'pack', fault.data));
@@ -486,12 +669,24 @@ export function createPackRegistry(ctx: Context): PackRegistry {
   // scan; a rejected compute self-clears (promise-memo), so an environmental
   // fault is never cached.
   const healthMemo = createPromiseMemo(computeHealth);
+  // Same memoisation shape as healthMemo, reset alongside it by refresh().
+  // computeMidxHealth never rejects for a midx fault (a contained one is
+  // folded into the resolved value's faults), so the promise-memo's usual
+  // clear-on-rejection has nothing environmental left to guard against here.
+  const midxHealthMemo = createPromiseMemo(
+    async (): Promise<MidxHealth> => computeMidxHealth(ctx, await currentGeneration()),
+  );
 
   return {
     all: allPacks,
+    async assertLoadable(): Promise<void> {
+      await currentGeneration();
+    },
+    midxHealth: midxHealthMemo.get,
     refresh(): void {
       if (disposed) return;
       healthMemo.clear();
+      midxHealthMemo.clear();
       // The outgoing packs may hold open persistent handles; close them before
       // dropping the references or every refresh leaks one fd per touched pack.
       const outgoing = scan.clear();
@@ -502,21 +697,23 @@ export function createPackRegistry(ctx: Context): PackRegistry {
           // A rejected scan produced no packs and therefore no handles. The error is
           // not discarded: it is delivered to the all()/lookup() caller that triggered
           // the scan — this arm only declines to close a set that does not exist.
-          // Stryker disable next-line ArrowFunction: equivalent — this .then result is consumed only by trackClose, which discards it via Promise.allSettled; returning undefined instead of NO_PACKS changes nothing observable (unlike dispose()'s `.catch(() => EMPTY_GENERATION)` below, whose result feeds packs.map and whose mutant was killed)
+          // Stryker disable next-line ArrowFunction: equivalent — this .then result is consumed only by trackClose, which discards it via Promise.allSettled; returning undefined instead of NO_PACKS changes nothing observable (unlike dispose()'s empty-generation fallback below, whose result feeds packs.map and whose mutant was killed)
           () => NO_PACKS,
         ),
       );
     },
     async lookup(id: ObjectId): Promise<PackLookupHit | undefined> {
-      const { packs } = await currentGeneration();
-      for (const pack of packs) {
-        const offset = lookupPackIndex(pack.index, id);
-        if (offset === undefined) continue; // an unclaimed pack is never opened
-        const fault = await probeHeader(pack);
-        if (fault !== undefined) continue;
-        return { pack, offset };
-      }
-      return undefined;
+      const generation = await currentGeneration();
+      const midx = generation.midx;
+      if (midx === undefined) return lookupViaIdxScan(generation, id);
+      const hit = findMidxHit(midx, id);
+      if (hit === undefined) return lookupViaIdxScan(generation, id);
+      const fault = await probeHeader(hit.pack);
+      // A midx hit on an unusable pack is a miss for every claimed pack, but
+      // git still walks the packs the midx does NOT name (find_pack_entry's
+      // !p->multi_pack_index loop) — the claimed-skipping scan is exactly
+      // that loop, so a duplicate in an unclaimed pack is still served.
+      return fault === undefined ? hit : lookupViaIdxScan(generation, id);
     },
     health(): Promise<PackHealth> {
       return healthMemo.get();
@@ -535,7 +732,7 @@ export function createPackRegistry(ctx: Context): PackRegistry {
       // A pending scan's own rejection already has an owner — the all()/
       // lookup() caller that triggered it. Absorb it here without closing
       // anything: a rejected scan produced no packs and therefore no handles.
-      const generation = await pending.catch(() => EMPTY_GENERATION);
+      const generation = await pending.catch(() => emptyGeneration());
       // Settle every close so one failing handle cannot strand the others.
       const results = await Promise.allSettled(generation.packs.map((pack) => pack.close()));
       await drainPendingCloses();

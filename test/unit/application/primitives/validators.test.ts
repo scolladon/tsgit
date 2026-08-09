@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   exceedsMaxCommitMessageBytes,
   exceedsMaxIndexBytes,
+  exceedsMaxMidxBytes,
+  exceedsMaxMidxChainLayers,
   exceedsMaxPackIdxBytes,
   exceedsMaxPeelDepth,
   exceedsMaxSymbolicDepth,
@@ -17,6 +19,8 @@ import {
   isHead,
   isInvalidExtraHeaderKey,
   looksLikeObjectId,
+  MAX_MIDX_BYTES,
+  MAX_MIDX_CHAIN_LAYERS,
   MAX_PACK_IDX_BYTES,
   messageContainsNul,
   REASON_EXTRA_HEADER_KEY_INVALID,
@@ -24,6 +28,8 @@ import {
   REASON_INDEX_EXCEEDS_MAX,
   REASON_MESSAGE_CONTAINS_NUL,
   REASON_MESSAGE_EXCEEDS_MAX,
+  REASON_MIDX_CHAIN_TOO_LONG,
+  REASON_MIDX_EXCEEDS_MAX,
   REASON_PACK_IDX_EXCEEDS_MAX,
   REASON_TARGET_ESCAPES_GIT_DIR,
   REASON_WALK_EMPTY_FROM,
@@ -454,6 +460,42 @@ describe('exceedsMaxPackIdxBytes boundary triple', () => {
   });
 });
 
+describe('exceedsMaxMidxBytes boundary triple', () => {
+  describe('Given a size around MAX_MIDX_BYTES', () => {
+    describe('When invoked', () => {
+      it.each([
+        { size: MAX_MIDX_BYTES - 1, expected: false, label: 'returns false (just-under)' },
+        { size: MAX_MIDX_BYTES, expected: false, label: 'returns false (at cap)' },
+        { size: MAX_MIDX_BYTES + 1, expected: true, label: 'returns true (just-over)' },
+      ])('Then $label', ({ size, expected }) => {
+        // Arrange & Act
+        const result = exceedsMaxMidxBytes(size);
+
+        // Assert
+        expect(result).toBe(expected);
+      });
+    });
+  });
+});
+
+describe('exceedsMaxMidxChainLayers boundary triple', () => {
+  describe('Given a layer count around MAX_MIDX_CHAIN_LAYERS', () => {
+    describe('When invoked', () => {
+      it.each([
+        { count: MAX_MIDX_CHAIN_LAYERS - 1, expected: false, label: 'returns false (just-under)' },
+        { count: MAX_MIDX_CHAIN_LAYERS, expected: false, label: 'returns false (at cap)' },
+        { count: MAX_MIDX_CHAIN_LAYERS + 1, expected: true, label: 'returns true (just-over)' },
+      ])('Then $label', ({ count, expected }) => {
+        // Arrange & Act
+        const result = exceedsMaxMidxChainLayers(count);
+
+        // Assert
+        expect(result).toBe(expected);
+      });
+    });
+  });
+});
+
 describe('error-reason constants are stable identifiers', () => {
   describe('Given a REASON_* constant', () => {
     describe('When read', () => {
@@ -498,6 +540,16 @@ describe('error-reason constants are stable identifiers', () => {
           actual: REASON_EXTRA_HEADER_KEY_INVALID,
           expected: 'extraHeader key contains forbidden characters',
           label: 'REASON_EXTRA_HEADER_KEY_INVALID',
+        },
+        {
+          actual: REASON_MIDX_EXCEEDS_MAX,
+          expected: 'multi-pack-index file exceeds 1 GiB',
+          label: 'REASON_MIDX_EXCEEDS_MAX',
+        },
+        {
+          actual: REASON_MIDX_CHAIN_TOO_LONG,
+          expected: 'multi-pack-index chain exceeds 1000 layers',
+          label: 'REASON_MIDX_CHAIN_TOO_LONG',
         },
       ])('Then $label matches expected string', ({ actual, expected }) => {
         // Arrange + Assert

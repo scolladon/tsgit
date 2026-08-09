@@ -40,7 +40,8 @@ const scanPacks = async (ctx: Context, prefix: string): Promise<ReadonlyArray<Ob
   const packs = await getPackRegistry(ctx).all();
   const found: ObjectId[] = [];
   for (const pack of packs) {
-    for (const id of findByPrefix(pack.index, prefix)) found.push(id);
+    const index = await pack.index();
+    for (const id of findByPrefix(index, prefix)) found.push(id);
   }
   return found;
 };

@@ -6,8 +6,14 @@ export type { CopyInstruction, DeltaInstruction, DeltaParsed, InsertInstruction 
 export { applyDelta, parseDelta, readDeltaTargetSize } from './delta.js';
 
 // Errors
-export type { StorageError } from './error.js';
-export { invalidDelta, invalidPackEntry, invalidPackHeader, invalidPackIndex } from './error.js';
+export type { MidxCheck, StorageError } from './error.js';
+export {
+  invalidDelta,
+  invalidMultiPackIndex,
+  invalidPackEntry,
+  invalidPackHeader,
+  invalidPackIndex,
+} from './error.js';
 
 // Loose path
 export { computeLooseObjectPath } from './loose-path.js';
@@ -15,6 +21,10 @@ export { computeLooseObjectPath } from './loose-path.js';
 // LRU cache
 export type { LruCache } from './lru-cache.js';
 export { createLruCache } from './lru-cache.js';
+
+// Multi-pack index
+export type { MidxEntry, MultiPackIndex } from './midx.js';
+export { lookupMultiPackIndex, midxEntryAt, midxOidAt, parseMultiPackIndex } from './midx.js';
 
 // Pack entry
 export type {

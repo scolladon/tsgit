@@ -22,7 +22,7 @@ const execFileAsync = promisify(execFile);
  * `bench.yml` keys its `actions/cache` on a hash of this file, so a version
  * bump there propagates the same way.
  */
-const FIXTURE_GENERATOR_VERSION = 2;
+const FIXTURE_GENERATOR_VERSION = 3;
 
 const BLOBS_PER_COMMIT = 4;
 const SHARD_SIZE = 512;
@@ -38,10 +38,14 @@ export interface FixtureSpec {
     | 'delta-chain'
     | 'deep-ancestry-small'
     | 'deep-ancestry-medium'
-    | 'deep-ancestry-large';
-  readonly strategy: 'multi' | 'evolving' | 'deep-ancestry';
+    | 'deep-ancestry-large'
+    | 'many-pack'
+    | 'many-pack-no-midx'
+    | 'single-pack'
+    | 'loose-only';
+  readonly strategy: 'multi' | 'evolving' | 'deep-ancestry' | 'many-pack';
   readonly commits: number;
-  /** Led by strategy; for 'evolving'/'deep-ancestry' this is NOT a file count. */
+  /** Led by strategy; for 'evolving'/'deep-ancestry'/'many-pack' this is NOT a file count. */
   readonly blobs: number;
   readonly blobBytes: number;
   /** `git repack --depth`, evolving strategy only. */
@@ -50,6 +54,10 @@ export interface FixtureSpec {
   readonly deltaWindow?: number;
   /** Run `git commit-graph write --reachable` once the repo is built. */
   readonly commitGraph?: boolean;
+  /** Number of packs to build, `many-pack` strategy only (0 = loose-only). */
+  readonly packs?: number;
+  /** Run `git multi-pack-index write` once the packs are built, `many-pack` strategy only. */
+  readonly midx?: boolean;
 }
 
 export const SMALL_FIXTURE: FixtureSpec = {
@@ -81,6 +89,51 @@ export const LARGE_FIXTURE: FixtureSpec = {
   commits: 50_000,
   blobs: 200_000,
   blobBytes: 2_560,
+};
+
+// P chosen large enough that a per-pack `.idx` scan is the dominant lookup
+// term (§D7) while staying cheap to build+cache: each pack costs one
+// fast-import + one repack subprocess pair.
+const MANY_PACK_COUNT = 48;
+const MANY_PACK_BLOB_BYTES = 512;
+
+export const MANY_PACK_FIXTURE: FixtureSpec = {
+  label: 'many-pack',
+  strategy: 'many-pack',
+  commits: MANY_PACK_COUNT,
+  blobs: MANY_PACK_COUNT,
+  blobBytes: MANY_PACK_BLOB_BYTES,
+  packs: MANY_PACK_COUNT,
+  midx: true,
+};
+
+/** `MANY_PACK_FIXTURE`'s own shape without a multi-pack-index — isolates the midx's contribution to the same many-pack lookup (§D7's with/without pair). */
+export const MANY_PACK_FIXTURE_NO_MIDX: FixtureSpec = {
+  ...MANY_PACK_FIXTURE,
+  label: 'many-pack-no-midx',
+  midx: false,
+};
+
+/** P = 1, no midx — the regression-guard floor: the midx machinery must not slow the trivial single-pack case. */
+export const SINGLE_PACK_FIXTURE: FixtureSpec = {
+  label: 'single-pack',
+  strategy: 'many-pack',
+  commits: 1,
+  blobs: 1,
+  blobBytes: MANY_PACK_BLOB_BYTES,
+  packs: 1,
+  midx: false,
+};
+
+/** No packs at all — prices the §D4.5 `assertLoadable` gate in isolation, ahead of every `tryLoose` read. */
+export const LOOSE_ONLY_FIXTURE: FixtureSpec = {
+  label: 'loose-only',
+  strategy: 'many-pack',
+  commits: 1,
+  blobs: 1,
+  blobBytes: MANY_PACK_BLOB_BYTES,
+  packs: 0,
+  midx: false,
 };
 
 const DELTA_CHAIN_COMMITS = 300;
@@ -137,6 +190,8 @@ export interface ScaledFixture {
   readonly cwd: string;
   readonly headCommitId: string;
   readonly firstBlobId: string;
+  /** The blob committed into the LAST pack built — `many-pack` strategy only. */
+  readonly lastBlobId?: string;
   readonly spec: FixtureSpec;
 }
 
@@ -144,6 +199,7 @@ interface FixtureMeta {
   readonly version: number;
   readonly headCommitId: string;
   readonly firstBlobId: string;
+  readonly lastBlobId?: string;
   readonly spec: FixtureSpec;
 }
 
@@ -199,6 +255,15 @@ interface CommitEntry {
   readonly timestamp: number;
   /** Pre-built `M <mode> :<mark> <path>\n` lines, one per changed path. */
   readonly changes: string;
+  /**
+   * Explicit parent commit-ish — required whenever this commit is written by
+   * a fast-import invocation SEPARATE from the one that wrote the branch's
+   * current tip (the `many-pack` strategy's one-import-per-pack shape):
+   * every fast-import process starts with empty internal branch state, so
+   * without `from` it treats an existing ref's next commit as parentless and
+   * refuses the resulting non-fast-forward update.
+   */
+  readonly from?: string;
 }
 
 /** Streams one `commit` record on `refs/heads/main` — shared by every fast-import strategy. */
@@ -207,6 +272,7 @@ const writeCommitEntry = async (stdin: Writable, entry: CommitEntry): Promise<vo
   header += `author ${AUTHOR} ${entry.timestamp} +0000\n`;
   header += `committer ${AUTHOR} ${entry.timestamp} +0000\n`;
   header += `data ${Buffer.byteLength(entry.message)}\n${entry.message}`;
+  if (entry.from !== undefined) header += `from ${entry.from}\n`;
   header += entry.changes;
   await writeChunk(stdin, header);
 };
@@ -433,10 +499,75 @@ const generatePacked = async (
   await runGit(repoDir, ['repack', '-ad', '--quiet']);
 };
 
+/** Streams one commit that adds a single blob at `blobPath(blobIndex)` — the many-pack strategy's per-pack unit, one such commit per pack built. `fromCommit` chains it onto the branch's current tip across separate fast-import invocations. */
+const streamManyPackCommit = async (
+  stdin: Writable,
+  blobIndex: number,
+  spec: FixtureSpec,
+  fromCommit: string | undefined,
+): Promise<void> => {
+  await writeBlobEntry(stdin, blobIndex + 1, blobContent(blobIndex, spec.blobBytes));
+  await writeCommitEntry(stdin, {
+    message: `pack ${blobIndex}\n`,
+    timestamp: BASE_TIMESTAMP + blobIndex,
+    changes: `M 100644 :${blobIndex + 1} ${blobPath(blobIndex)}\n`,
+    ...(fromCommit !== undefined ? { from: fromCommit } : {}),
+  });
+};
+
+/** `.keep`-guards every existing pack so the next `repack -dq` leaves them untouched and produces exactly one new pack for whatever is freshly loose. */
+const keepExistingPacks = async (repoDir: string): Promise<void> => {
+  const packDir = path.join(repoDir, '.git', 'objects', 'pack');
+  const entries = await readdir(packDir).catch(() => [] as string[]);
+  await Promise.all(
+    entries
+      .filter((entry) => entry.endsWith('.pack'))
+      .map((entry) => writeFile(path.join(packDir, `${entry.slice(0, -'.pack'.length)}.keep`), '')),
+  );
+};
+
+/**
+ * Builds `spec.packs` separate packs, one committed blob apiece: the first
+ * via `repack -adq`, every subsequent one via the `.keep`-guard +
+ * `repack -dq` recipe (mirrors `midx-fixture-helpers.ts`'s
+ * `repackIntoNewPack`), so pack 0 holds `blobPath(0)` (the "first pack" hit
+ * target) and the last pack holds `blobPath(spec.packs - 1)` (the "last
+ * pack" hit target) — the fixed positions the lookup bench needs.
+ * `spec.packs === 0` leaves the sole blob loose, for the assertLoadable-gate
+ * fixture. Writes a flat multi-pack-index afterward when `spec.midx` is true.
+ */
+const generateManyPack = async (repoDir: string, spec: FixtureSpec): Promise<void> => {
+  const packCount = spec.packs;
+  if (packCount === undefined || packCount < 0) {
+    throw new Error('many-pack strategy requires spec.packs to be at least 0');
+  }
+  if (packCount === 0) {
+    await runFastImport(repoDir, spec, (stdin) => streamManyPackCommit(stdin, 0, spec, undefined));
+    await runGit(repoDir, ['checkout', '-f', 'main']);
+    return;
+  }
+  let fromCommit: string | undefined;
+  for (let i = 0; i < packCount; i += 1) {
+    await runFastImport(repoDir, spec, (stdin) => streamManyPackCommit(stdin, i, spec, fromCommit));
+    if (i === 0) {
+      await runGit(repoDir, ['repack', '-adq']);
+    } else {
+      await keepExistingPacks(repoDir);
+      await runGit(repoDir, ['repack', '-dq']);
+    }
+    fromCommit = await runGit(repoDir, ['rev-parse', 'refs/heads/main']);
+  }
+  await runGit(repoDir, ['checkout', '-f', 'main']);
+  if (spec.midx === true) {
+    await runGit(repoDir, ['multi-pack-index', 'write']);
+  }
+};
+
 const runGenerateStrategy = async (repoDir: string, spec: FixtureSpec): Promise<void> => {
   if (spec.strategy === 'evolving') return generateEvolving(repoDir, spec);
   if (spec.strategy === 'deep-ancestry')
     return generatePacked(repoDir, spec, streamDeepAncestryFastImport);
+  if (spec.strategy === 'many-pack') return generateManyPack(repoDir, spec);
   return generatePacked(repoDir, spec, streamFastImport);
 };
 
@@ -446,6 +577,14 @@ const firstBlobIdFor = async (repoDir: string, spec: FixtureSpec): Promise<strin
   if (spec.strategy === 'deep-ancestry')
     return runGit(repoDir, ['rev-parse', `HEAD:${STABLE_PATH}`]);
   return runGit(repoDir, ['rev-parse', `HEAD:${blobPath(0)}`]);
+};
+
+/** The blob committed into the last pack `generateManyPack` built — undefined for every other strategy and for the loose-only (`packs === 0`) shape. */
+const lastBlobIdFor = async (repoDir: string, spec: FixtureSpec): Promise<string | undefined> => {
+  if (spec.strategy !== 'many-pack' || spec.packs === undefined || spec.packs < 1) {
+    return undefined;
+  }
+  return runGit(repoDir, ['rev-parse', `HEAD:${blobPath(spec.packs - 1)}`]);
 };
 
 const generateInto = async (repoDir: string, spec: FixtureSpec): Promise<FixtureMeta> => {
@@ -458,7 +597,14 @@ const generateInto = async (repoDir: string, spec: FixtureSpec): Promise<Fixture
 
   const headCommitId = await runGit(repoDir, ['rev-parse', 'HEAD']);
   const firstBlobId = await firstBlobIdFor(repoDir, spec);
-  return { version: FIXTURE_GENERATOR_VERSION, headCommitId, firstBlobId, spec };
+  const lastBlobId = await lastBlobIdFor(repoDir, spec);
+  return {
+    version: FIXTURE_GENERATOR_VERSION,
+    headCommitId,
+    firstBlobId,
+    spec,
+    ...(lastBlobId !== undefined ? { lastBlobId } : {}),
+  };
 };
 
 const readCachedMeta = async (cacheDir: string): Promise<FixtureMeta | undefined> => {
@@ -488,6 +634,7 @@ export const ensureScaledFixture = async (spec: FixtureSpec): Promise<ScaledFixt
       headCommitId: cached.headCommitId,
       firstBlobId: cached.firstBlobId,
       spec,
+      ...(cached.lastBlobId !== undefined ? { lastBlobId: cached.lastBlobId } : {}),
     };
   }
 
@@ -505,5 +652,11 @@ export const ensureScaledFixture = async (spec: FixtureSpec): Promise<ScaledFixt
     if (won === undefined) throw err;
     meta = won;
   }
-  return { cwd: cacheDir, headCommitId: meta.headCommitId, firstBlobId: meta.firstBlobId, spec };
+  return {
+    cwd: cacheDir,
+    headCommitId: meta.headCommitId,
+    firstBlobId: meta.firstBlobId,
+    spec,
+    ...(meta.lastBlobId !== undefined ? { lastBlobId: meta.lastBlobId } : {}),
+  };
 };

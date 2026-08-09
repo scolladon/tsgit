@@ -80,6 +80,10 @@ export async function openBlobSource(
   const gate: BufferGate = { maxBufferedBytes, verifyHash: options?.verifyHash ?? true };
 
   checkAborted(ctx);
+  // Same store-setup gate as resolveObjectBytes: a structurally
+  // self-inconsistent multi-pack-index denies streamed loose reads too —
+  // otherwise the two read paths would disagree about a corrupt store.
+  await getPackRegistry(ctx).assertLoadable();
 
   if (gate.maxBufferedBytes > 0) {
     const cached = ctx.deltaCache.get(id);
