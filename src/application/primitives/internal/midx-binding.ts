@@ -162,7 +162,7 @@ const midxPackNameForFinding = (name: string): string =>
 
 /**
  * Chain-global position + safe pack name for every `PNAM` entry this scan's
- * binding left unresolved (O22/O23/O24, P14/P15) — a pure walk over the
+ * binding left unresolved — a pure walk over the
  * already-bound `packsByLayer`, no I/O, so it can never contribute a
  * contained fault.
  */
@@ -340,7 +340,7 @@ export async function computeMidxHealth(
 /**
  * The multi-pack-index's accessibility + integrity verdict for the current
  * generation — the state `fsck`'s midx pass needs and nothing else needs.
- * A sibling of `PackHealth` (§D3: a midx fault is not a pack fault), never a
+ * A sibling of `PackHealth` — a midx fault is not a pack fault — never a
  * widening of it.
  */
 export interface MidxHealth {

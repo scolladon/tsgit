@@ -1,7 +1,7 @@
 /**
  * Fault-classification predicates and pack-name safety helpers shared by the
- * pack registry's scan/lookup layer and the multi-pack-index binding it
- * feeds.
+ * pack registry, the multi-pack-index binding, and — through the registry's
+ * re-exports — the fsck pack and midx passes.
  */
 import { TsgitError, type TsgitErrorData } from '../../../domain/error.js';
 
@@ -18,7 +18,7 @@ function isSkippableIoFault(err: unknown): boolean {
 // and buildOffsetTable throw it for a MID-READ corruption, and folding those in
 // would turn a detected corruption into a silent miss after the gate passed.
 // Exported so a test can audit that it never admits INVALID_MULTI_PACK_INDEX —
-// a midx fault escaping this allow-list by construction is Part 3's whole
+// a midx fault escaping this allow-list by construction is the whole
 // argument for why a Tier-A multi-pack-index fault is never laundered into
 // "skip one pack".
 export function isSkippablePackFault(err: unknown): err is TsgitError {

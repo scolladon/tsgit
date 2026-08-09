@@ -164,7 +164,7 @@ export interface PackRegistry {
   /**
    * The multi-pack-index's own accessibility + integrity verdict — the ONE
    * state `fsck`'s midx pass consumes. A second, independent reader of the
-   * same bytes `lookup` reads (§D11.10): it re-derives pack binding and
+   * same bytes `lookup` reads: it re-derives pack binding and
    * entry resolution rather than reusing `lookup`'s memoised view, so a
    * fault that only a full walk surfaces (an entry whose `pack-int-id` or
    * `large-offset` decodes out of range) is caught here even when no read
