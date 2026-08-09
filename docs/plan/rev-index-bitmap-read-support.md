@@ -1,29 +1,32 @@
 # Plan — reverse-index (`.rev`) + pack bitmap read support
 
-> Source: design doc `docs/design/rev-index-bitmap-read-support.md` · ADRs 603 … 621
-> (plus the amended 586, 613, 616)
+> Source: design doc `docs/design/rev-index-bitmap-read-support.md` · ADRs 603 … 622
+> (plus the amended 586, 613, 615, 616)
 > The plan is the implementation script AND the knowledge handoff. Part agents start
 > with zero context: whatever a part block omits is paid later as agent rediscovery.
 > `plan-lint.sh` enforces the part schema — the plan phase cannot close without it.
 
 ## Sizing
 
-**Fifteen parts.** Ten carry a `src/` delta with their own unit and property tests folded
-in; five are test-infra-only (two cross-tool interop suites for `fsck`, two for the
-closure, one bench) and are standalone by the template's own exception — they have no
+**Sixteen parts.** Eleven carry a `src/` delta with their own unit and property tests folded
+in; five are test-infra-only (one cross-tool interop part for `fsck`, two for the closure,
+and **two benches**) and are standalone by the template's own exception — they have no
 implementation part to fold into and each covers behaviour spanning several code parts.
 
 Parts are **sequential in one working tree**; each builds on the last. Files declared by
 more than one part — `src/domain/storage/error.ts` and `src/domain/storage/index.ts`
-(Parts 1–3), `src/application/primitives/pack-registry.ts` (Parts 4, 5, 6, 11, 12),
-`src/application/primitives/internal/pack-artefact-source.ts` (Parts 4, 6, 11, 12),
-`src/application/commands/internal/fsck/types.ts` (Parts 4, 6),
-`src/application/primitives/internal/closure-engine.ts` (Parts 8, 9, 11, 12),
-`src/application/commands/rev-list.ts` (Parts 8, 9, 11),
+(Parts 1–3), `src/application/primitives/pack-registry.ts` (Parts 4, 5, 7, 12, 13),
+`src/application/primitives/internal/pack-artefact-source.ts` (Parts 4, 7, 12, 13),
+`src/application/commands/internal/fsck/types.ts` (Parts 4, 7),
+`src/application/primitives/internal/closure-engine.ts` (Parts 9, 10, 12, 13),
+`src/application/commands/rev-list.ts` (Parts 9, 10, 12),
 `test/unit/domain/storage/arbitraries.ts` (Parts 1–3),
-`test/unit/application/primitives/pack-registry.test.ts` (Parts 4, 5, 6, 11, 12),
-`test/unit/application/commands/fsck.test.ts` (Parts 4, 6),
-`test/integration/rev-bitmap-closure-interop.test.ts` (Parts 10, 14) — so `plan-lint`'s
+`test/unit/application/primitives/pack-registry.test.ts` (Parts 4, 5, 7, 12, 13),
+`test/unit/application/commands/fsck.test.ts` (Parts 4, 7),
+`test/integration/rev-bitmap-closure-interop.test.ts` (Parts 11, 15),
+and the bench surfaces `test/bench/fixtures.ts`, `tooling/gen-bench-fixture.ts`,
+`tooling/bench-summarize.ts`, `tooling/bench-check.ts` and `vitest.bench.config.ts`
+(Parts 6, 16) — so `plan-lint`'s
 cognitive-locality warning is expected and is not a defect. The reason each pair stays
 separate is written out below.
 
@@ -50,45 +53,53 @@ separate is written out below.
   and Part 5's is a **read-path result** (`sortedOffsets`, unchanged by construction).
   ADR-604 and ADR-607 were ratified separately; a regression in one must not be
   indistinguishable from the other at bisect.
-- **Part 6 (the bitmap `fsck` pass) deliberately follows Parts 2–3 but must not import
+- **Part 6 measures Part 5, immediately.** The accelerator's whole justification is a
+  performance claim, and ten further parts are built on the assumption that the claim holds.
+  A bench that runs last discovers a regression after everything downstream has been written
+  against it, when the honest fixes are still edits to Part 5's two-arm conditional. Moving
+  the measurement to the part after its subject keeps that feedback loop one part long. It
+  measures **only** the `.rev` accelerator; the closure and `pack-objects` benches stay in
+  Part 16, where their subject exists — a bench part must run after the code it prices, and
+  those two subjects are not built until Parts 12–14.
+- **Part 7 (the bitmap `fsck` pass) deliberately follows Parts 2–3 but must not import
   them.** ADR-605's separation is the load-bearing structural rule of the whole entry, so
-  Part 6 lands the mechanical guard: a new `depcruise` forbidden rule that makes the
+  Part 7 lands the mechanical guard: a new `depcruise` forbidden rule that makes the
   import a red `check:architecture`, not a code-review opinion (S-14).
-- **Part 7 pins both `fsck` arms against real git before any consumption code exists**, so
+- **Part 8 pins both `fsck` arms against real git before any consumption code exists**, so
   a later parser cannot quietly change an `fsck` verdict.
-- **Parts 8 and 9 split `rev-list` at the reachability core / walk-shaping seam.** Part 8
+- **Parts 9 and 10 split `rev-list` at the reachability core / walk-shaping seam.** Part 9
   is the closure engine plus the command's surface tax (barrel, facade, snapshot, page,
   scenario, README count, api.json) — a large mechanical block whose correctness claim is
-  "the walk closure is right". Part 9 adds `all` / `maxCount` / `firstParent` / `noWalk`,
+  "the walk closure is right". Part 10 adds `all` / `maxCount` / `firstParent` / `noWalk`,
   whose correctness claim is "each option shapes the walk as git shapes it". Merging them
   would fuse a surface-tax diff with an option matrix.
-- **Part 10 pins the walk tier against real git before the bitmap tier is built on it.**
+- **Part 11 pins the walk tier against real git before the bitmap tier is built on it.**
   This is the single most valuable ordering choice in the plan: ADR-615 makes the walk the
   **oracle** for the bitmap tier, and an unpinned oracle is not an oracle. It is also why
-  Parts 8–9 assert the have-bearing *relation* rather than exact counts (S-12).
-- **Parts 11 and 12 split at ADR-617.** Part 11 is the pack-bitmap tier (position mapping
+  Parts 9–10 assert the have-bearing *relation* rather than exact counts (S-12).
+- **Parts 12 and 13 split at ADR-617.** Part 12 is the pack-bitmap tier (position mapping
   through the `.rev` or the computed pack-position map, XOR-chain reconstruction, extended
-  positions, the `useBitmapIndex` control). Part 12 is the midx-bitmap tier (the
+  positions, the `useBitmapIndex` control). Part 13 is the midx-bitmap tier (the
   reverse-index chunk consumed, pseudo-pack positions, Pin AG's preference order). ADR-617
-  is its own ratified decision with its own fallback matrix; folding it into Part 11 would
+  is its own ratified decision with its own fallback matrix; folding it into Part 12 would
   make "the bitmap tier is wrong" and "the wrong bitmap was chosen" one failure.
-- **Part 13 (`pack-objects`) is last of the code parts** because it is the only one that
+- **Part 14 (`pack-objects`) is last of the code parts** because it is the only one that
   writes, and it consumes the finished engine at its own default tier (ADR-618).
-- **Parts 10 and 14 are two parts over one interop file** for the reason above: Part 10's
-  rows must be green *before* Part 11 exists, because Part 11's rows compare against them.
+- **Parts 11 and 15 are two parts over one interop file** for the reason above: Part 11's
+  rows must be green *before* Part 12 exists, because Part 12's rows compare against them.
 
 **No test assertion written by an earlier part is flipped by a later one.** That constraint
 drove the ordering and is enforced through the **shapes**, not through timing:
 
-- `RevListEntry.path` is declared **optional from Part 8** (ADR-619's shape) even though
-  the walk tier always fills it, so Part 11 changes no field's type.
-- `rev-list`'s default tier is the **walk** (ADR-618, Pin AJ1), so every Part 8/9 row that
-  calls `revList` with no tier option keeps its exact expected value after Part 11.
-- Part 8/9's have-bearing rows assert requirement 16's **relation** (superset, every extra
-  reachable from a `not` tip), never a literal count; the literal counts arrive in Part 10
-  against real git and in Part 14 against both tiers.
-- Part 4's `.rev` `fsck` rows use fixtures with **no bitmap**; Part 6's bitmap rows use
-  fixtures with a healthy `.rev`. The composition rows (`192 = 64|128`) live in Part 7.
+- `RevListEntry.path` is declared **optional from Part 9** (ADR-619's shape) even though
+  the walk tier always fills it, so Part 12 changes no field's type.
+- `rev-list`'s default tier is the **walk** (ADR-618, Pin AJ1), so every Part 9/10 row that
+  calls `revList` with no tier option keeps its exact expected value after Part 12.
+- Part 9/10's have-bearing rows assert requirement 16's **relation** (superset, every extra
+  reachable from a `not` tip), never a literal count; the literal counts arrive in Part 11
+  against real git and in Part 15 against both tiers.
+- Part 4's `.rev` `fsck` rows use fixtures with **no bitmap**; Part 7's bitmap rows use
+  fixtures with a healthy `.rev`. The composition rows (`192 = 64|128`) live in Part 8.
 
 ## Shared conventions (bind every part)
 
@@ -176,9 +187,13 @@ drove the ordering and is enforced through the **shapes**, not through timing:
 
 ## Decision candidates
 
-**None.** All nineteen candidates are ratified as ADRs 603 … 621, and ADRs 586, 613 and
-616 carry amendments that supersede part of their original text. The design's §D1 … §D19
-fix every mechanism this plan schedules. The shapes below are *derived* from the design
+**None.** All twenty candidates are ratified as ADRs 603 … 622, and ADRs 586, 613, 615 and
+616 carry amendments that supersede part of their original text — **ADR-622 is the newest
+and it narrows ADR-615's "trust"**: a bitmap's reachability semantics are trusted, its
+integers are range-validated, and a violation declines the whole artefact (Pin AK). That
+obligation is threaded through Parts 3, 12, 13 and 15 below and is a **faithfulness
+requirement, not optional hardening**. The design's §D1 … §D19 fix every mechanism this plan
+schedules. The shapes below are *derived* from the design
 and its ADRs, not chosen by this plan — each is listed with the line that determines it,
 so a reviewer can check the derivation rather than re-litigate it.
 
@@ -196,14 +211,14 @@ so a reviewer can check the derivation rather than re-litigate it.
 | S-8 | `ArtefactLoad<T>` | a four-arm discriminated union — `{ kind: 'usable'; value: T; bytes: Uint8Array }` · `{ kind: 'absent' }` · `{ kind: 'unreadable' }` · `{ kind: 'refused'; data: TsgitErrorData }`, all members `readonly` (spelled out in Part 4's context block). The loader **never rejects** and **never logs**. | §D5's four-way classification. Never-rejecting sidesteps the "a rejection is never memoised" rule entirely. Never-logging is required: the `fsck` pass maps `refused` to a finding and the accelerator maps it to a `ctx.logger?.warn?.` — a log inside the loader would double-report (requirement 25). |
 | S-9 | `.rev` pre-read bound | the source module `stat`s and refuses **without reading** when `stat.size !== 12 + 4·objectCount + 2·digestLength`, raising `invalidPackRevIndex('size', …)` with `REASON_REV_INDEX_TOO_SMALL` below `12 + 2·digestLength` and `REASON_REV_INDEX_CORRUPT` at or above it; then reads and re-checks `bytes.length` (TOCTOU), then parses. | ADR-611: "that single test is simultaneously the allocation bound and git's own size check". The double stat/read check mirrors `readBoundedIdx` (`pack-registry.ts:181-194`). The parser's own steps 1 and 5 stay in place and are covered by unit rows — they are the domain's contract, not dead code. |
 | S-10 | bitmap bound | in `validators.ts` beside `MAX_MIDX_BYTES`: `BITMAP_HEADROOM_BYTES_PER_OBJECT = 64`, `BITMAP_FLOOR_BYTES = 64 * 1024`, `maxBitmapBytes(objectCount)`, `exceedsMaxBitmapBytes(size, objectCount)`, `REASON_BITMAP_EXCEEDS_MAX`. The doc-comment carries the arithmetic **and** the measurement: 16268 B / 1606 objects ≈ 10.1 B per object (pack bitmap), 16176 / 1621 ≈ 10.0 (midx bitmap); 64 is ~6× measured density and bounds a 2 M-object repository at ~128 MiB. | ADR-611 + §D3's "The bound" paragraph, and `validators.ts:135-157`'s existing shape (a `REASON_*` `as const` plus an `exceedsMaxXxx` predicate, each tested with a just-under / at / just-over triple). |
-| S-11 | `packPositionMap` | pure helper `packPositionMap(index: PackIndex): ReadonlyArray<number>` in a new `src/application/primitives/internal/pack-positions.ts` — the index positions `[0, N)` ordered by `entryOffsets(index)[i]`. Consumed by the `fsck` body cross-check (Part 4) and by the bitmap tier's `.rev`-free fallback (Part 11). | §D11: "`expected` is the index positions ordered by offset, i.e. exactly the pack-position map §D4 already needs. This is the one derivation shared between the accelerator layer and the `fsck` layer, and sharing it is what keeps the two from drifting." Note it is **not** `buildOffsetTable`'s fallback, which sorts *offsets* (ADR-604 keeps that sort verbatim). |
-| S-12 | have-bearing assertions before Part 10 | Parts 8–9 assert only requirement 16's **relation** for have-bearing queries (result is a superset of the exact difference; every extra object is reachable from a `not` tip). Literal counts appear first in Part 10, against real git. | §D6's walk-tier paragraph is prose about `mark_edges_uninteresting`-shaped behaviour; Pin AJ1/AJ6 (156 vs 150, six extras all blobs) and Pin AB1 (204 vs 200) are the measurements. Pinning a literal count from prose would encode a guess. **If Part 10 finds the walk tier's count disagrees with real git, the fix is which uninteresting commits' trees are marked — escalate with the three candidates: (a) the `not` tips only, (b) the boundary commits, (c) the full have closure — never silently switch.** |
-| S-13 | `ClosureRequest.tier` arrives in Part 11 | Part 8's `ClosureRequest` has **no** `tier` field and the engine walks; Part 11 adds `tier: ClosureTier` as a required input with no engine-side default (ADR-618) and `rev-list` supplies `useBitmapIndex ? 'bitmap' : 'walk'`. | A `ClosureTier` union with one implemented member would be dead code by the project's own guardrail. ADR-618 makes the walk `rev-list`'s default, so every Part 8/9 expectation survives Part 11 untouched. |
-| S-14 | the parse-free guard | a new `forbidden` rule in `.dependency-cruiser.cjs`, landed in **Part 6**: `from: { path: '^src/application/commands/internal/fsck/bitmap-health\\.ts$' }`, `to: { path: '^src/domain/storage/(bitmap\|ewah)\\.ts$' }`, `severity: 'error'`, comment stating that git's entire bitmap obligation is the trailing checksum so a structural parse here would make tsgit stricter than git. | ADR-605 + §D12 ("the RESTAMPED interop rows are the mechanical guard") — an interop suite catches the *symptom*; this catches the *edge*. The rule is inert until Part 3's files exist, which is fine: `depcruise` matches by path. |
-| S-15 | `RegisteredPack` additions | `readonly hasRevIndex: boolean`, `readonly hasBitmap: boolean` (Part 4 / Part 6), `readonly revIndex: () => Promise<ArtefactLoad<PackRevIndex>>` (Part 4), `readonly bitmapBytes: () => Promise<ArtefactLoad<Uint8Array>>` (Part 6), `readonly packPositions: () => Promise<ReadonlyArray<number>>` (Part 11) — each a `createPromiseMemo(...).get`. `PackGeneration` retains `fileNames` and gains `midxBitmap: PromiseMemo<MidxBitmapLoad \| undefined>` (Part 6). | §D5 (presence off the scan's existing listing, at no extra syscall — `scanPacks` already builds `fileNames` at `pack-registry.ts:490` and currently discards it) and §D15 (per-pack memos beside `indexMemo`/`headerMemo`/`offsetTable`; the midx bitmap memoised per **generation** because its identity depends on the midx layer in use). **`grep -c '"PackRegistry"' reports/api.json` is `0`** — the registry is not in `src/application/primitives/index.ts`, so none of these shape changes touches api.json. |
+| S-11 | `packPositionMap` | pure helper `packPositionMap(index: PackIndex): ReadonlyArray<number>` in a new `src/application/primitives/internal/pack-positions.ts` — the index positions `[0, N)` ordered by `entryOffsets(index)[i]`. Consumed by the `fsck` body cross-check (Part 4) and by the bitmap tier's `.rev`-free fallback (Part 12). | §D11: "`expected` is the index positions ordered by offset, i.e. exactly the pack-position map §D4 already needs. This is the one derivation shared between the accelerator layer and the `fsck` layer, and sharing it is what keeps the two from drifting." Note it is **not** `buildOffsetTable`'s fallback, which sorts *offsets* (ADR-604 keeps that sort verbatim). |
+| S-12 | have-bearing assertions before Part 11 | Parts 9–10 assert only requirement 16's **relation** for have-bearing queries (result is a superset of the exact difference; every extra object is reachable from a `not` tip). Literal counts appear first in Part 11, against real git. | §D6's walk-tier paragraph is prose about `mark_edges_uninteresting`-shaped behaviour; Pin AJ1/AJ6 (156 vs 150, six extras all blobs) and Pin AB1 (204 vs 200) are the measurements. Pinning a literal count from prose would encode a guess. **If Part 11 finds the walk tier's count disagrees with real git, the fix is which uninteresting commits' trees are marked — escalate with the three candidates: (a) the `not` tips only, (b) the boundary commits, (c) the full have closure — never silently switch.** |
+| S-13 | `ClosureRequest.tier` arrives in Part 12 | Part 9's `ClosureRequest` has **no** `tier` field and the engine walks; Part 12 adds `tier: ClosureTier` as a required input with no engine-side default (ADR-618) and `rev-list` supplies `useBitmapIndex ? 'bitmap' : 'walk'`. | A `ClosureTier` union with one implemented member would be dead code by the project's own guardrail. ADR-618 makes the walk `rev-list`'s default, so every Part 9/10 expectation survives Part 12 untouched. |
+| S-14 | the parse-free guard | a new `forbidden` rule in `.dependency-cruiser.cjs`, landed in **Part 7**: `from: { path: '^src/application/commands/internal/fsck/bitmap-health\\.ts$' }`, `to: { path: '^src/domain/storage/(bitmap\|ewah)\\.ts$' }`, `severity: 'error'`, comment stating that git's entire bitmap obligation is the trailing checksum so a structural parse here would make tsgit stricter than git. | ADR-605 + §D12 ("the RESTAMPED interop rows are the mechanical guard") — an interop suite catches the *symptom*; this catches the *edge*. The rule is inert until Part 3's files exist, which is fine: `depcruise` matches by path. |
+| S-15 | `RegisteredPack` additions | `readonly hasRevIndex: boolean`, `readonly hasBitmap: boolean` (Part 4 / Part 7), `readonly revIndex: () => Promise<ArtefactLoad<PackRevIndex>>` (Part 4), `readonly bitmapBytes: () => Promise<ArtefactLoad<Uint8Array>>` (Part 7), `readonly packPositions: () => Promise<ReadonlyArray<number>>` (Part 12) — each a `createPromiseMemo(...).get`. `PackGeneration` retains `fileNames` and gains `midxBitmap: PromiseMemo<MidxBitmapLoad \| undefined>` (Part 7). | §D5 (presence off the scan's existing listing, at no extra syscall — `scanPacks` already builds `fileNames` at `pack-registry.ts:490` and currently discards it) and §D15 (per-pack memos beside `indexMemo`/`headerMemo`/`offsetTable`; the midx bitmap memoised per **generation** because its identity depends on the midx layer in use). **`grep -c '"PackRegistry"' reports/api.json` is `0`** — the registry is not in `src/application/primitives/index.ts`, so none of these shape changes touches api.json. |
 | S-16 | `pack-objects`' `.idx` writing | extract `buildIdx` (`fetch-pack.ts:477-499`) and `writePackArtifacts` (`fetch-pack.ts:507-528`) into a new `src/application/primitives/internal/write-pack-artifacts.ts`; `fetch-pack.ts` and `pack-objects.ts` both call it. `buildPack`'s `BuildPackResult` gains `readonly entries: ReadonlyArray<PackEntryMeta>` (already returned by `serializePackfile`, `pack-writer.ts:44-62`, and currently discarded). | Reimplementing the `.idx` **double trailer** (`serializePackIndex` writes the pack checksum, then the caller appends the digest over the body — `fetch-pack.ts:489-497`) would be a jscpd clone of ~20 lines *and* a second source of truth for a quirk that already surprised one reader. The `BuildPackResult` widening is additive; `push.ts` and `bundle-create.ts` are unaffected. |
 | S-17 | `pack-objects` writes no new artefact kind | no `@writes` annotation, no `tooling/audit-write-surfaces.allowlist.json` entry. The existing annotation lives on `src/domain/storage/pack-writer.ts:8` (`surface: packfile`) and the extraction of S-16 must not move or duplicate it. | ADR-614. `check:write-surfaces` runs non-blocking, so an orphan-coverage entry from a new interop suite is reported and the gate still exits 0 — confirm the exit code in the part gate rather than deleting the `interopSurface` key. |
-| S-18 | Tier-1 counts | `README.md:47` `43 Tier-1 commands` → **44** in Part 8 → **45** in Part 13. `docs/use/commands/README.md:3` `43 entries` → **44** → **45**. `test/unit/repository/repository.test.ts:238-286` grows from 47 keys to 48 then 49. | `README.md` has exactly one occurrence of the count (`grep -n "Tier-1" README.md`). Both files are `docs:json` inputs or gate inputs, so each bump forces its own api.json regeneration. |
+| S-18 | Tier-1 counts | `README.md:47` `43 Tier-1 commands` → **44** in Part 9 → **45** in Part 14. `docs/use/commands/README.md:3` `43 entries` → **44** → **45**. `test/unit/repository/repository.test.ts:238-286` grows from 47 keys to 48 then 49. | `README.md` has exactly one occurrence of the count (`grep -n "Tier-1" README.md`). Both files are `docs:json` inputs or gate inputs, so each bump forces its own api.json regeneration. |
 | S-19 | parity-scenario receiver | the scenario body must call `repo.revList(…)` / `repo.packObjects(…)` with the receiver identifier **literally named `repo`** — `tooling/audit-browser-surface.ts:36-40` matches `/\brepo\.([a-zA-Z][\w]*)\s*\(/g`. Register each scenario in `test/parity/scenarios/index.ts` (named import + an entry appended to `SCENARIOS`). `check:parity-fixtures` forbids nondeterminism, so golden oids must come from `test/parity/fixtures.ts`'s fixed `AUTHOR` (`timestamp: 1_700_000_000`). | `tooling/audit-browser-surface.ts`; `tooling/audit-parity-fixtures.ts`; `test/parity/scenarios/show.scenario.ts` as the smallest exemplar. Also note `tooling/check-doc-coverage.ts:175` reads its allowlist from `scripts/` while the file lives in `tooling/` — **the doc-coverage allowlist is inert**, so a missing page cannot be allowlisted around. |
 | S-20 | `unsupportedRuntimes` | if a new scenario needs a runtime gate, the declaration is `unsupportedRuntimes: ['workers', …]` on the `Scenario` object (`test/parity/scenarios/types.ts:9-16`), and it is honoured by **five dist-bundle drivers plus the browser spec**, each filtering `SCENARIOS` against its own runtime constant: `test/runtime-parity/workers/parity-memory.test.ts:30`, `test/runtime-parity/deno/parity-node.test.ts:33`, `test/runtime-parity/deno/parity-memory.test.ts:34`, `test/runtime-parity/bun/parity-node.test.ts:28`, `test/runtime-parity/bun/parity-memory.test.ts:28`, `test/browser/parity.spec.ts:67`. `test/parity/scenarios/midx-read.scenario.ts:228` is the live four-runtime example. | None of `test:parity:{deno,bun,workers}` is in the `validate` chain, so a missed driver is a CI-only red. `test/browser/parity.spec.ts:48-62` additionally asserts the browser bundle's scenario registry matches `SCENARIOS` exactly. |
 
@@ -432,7 +447,7 @@ npx vitest run test/unit/domain/storage/rev-index.test.ts test/unit/domain/stora
 
 Plus, in this part: `npm run test:coverage` (100 % on the new domain file),
 `npm run check:spelling` (the new cspell word), `npm run check:dead-code` (the
-barrel-exported functions have no `src/` consumer until Parts 4, 11 and 12; they are
+barrel-exported functions have no `src/` consumer until Parts 4, 12 and 13; they are
 reachable from the `src/domain/index.ts` entry point and must not be reported), and
 `npm run docs:json` with `reports/api.json` staged in the same commit.
 
@@ -673,6 +688,18 @@ pseudo-merge table are trailing and none is consumed.
 container performs **no** cross-check of `bitSize` against any object count — it has none
 to check against, and the consumer's destination bound is what makes the value harmless.
 
+**Positions leave this parser unvalidated, deliberately — and that is ADR-622's design, not
+a gap in it.** An entry header's `position` and every bit a stream sets are integers this
+module cannot judge: ADR-622 validates them against the **object count of the pack (or the
+midx pseudo-pack) the artefact indexes**, and that count is `.idx` / midx data the domain
+container never sees. So `bitmapEntryHeaders` returns `position` exactly as stored, and the
+**consumer** range-validates before resolving anything — Part 12 for a pack bitmap, Part 13
+for a midx one. Do **not** add a range check here and do **not** clamp: a container that
+refused would refuse files git parses, and a container that clamped would hide the fault the
+consumer is obliged to report. One accept row (below) pins an entry header naming position
+`999999` as **parsing**, with a title saying the range check belongs to the consumer, so a
+later hardening pass has to delete a sentence to move it.
+
 **cspell:** `bitmap` is an ordinary dictionary word; no new token is needed for this part.
 
 **Surface gates:** the `// Pack bitmap` block in `src/domain/storage/index.ts` gains
@@ -701,6 +728,7 @@ rows for `0x0000`, `0x0004` (a non-full-DAG flag set alone) and `0x0001` kill th
    | stream refusals — **own `it` each** | the commits stream's `wordCount` overruns the buffer; the tags stream's descriptor starts past the end | `check: 'stream'` |
    | entry refusals — **own `it` each** | an entry's 6 fixed bytes leave the buffer; an entry's stream overruns; `xorOffset > i`; a non-zero `xorOffset` on entry 0 | `check: 'entry'` |
    | entry accept | `xorOffset === i` (the first entry is the base); an `entryCount` of 0; a 3-entry file with offsets `{0, 1, 1}` | `bitmapEntryHeaders` returns the spec's positions, offsets, flags and stream bounds |
+   | position is not judged here — **own `it`** | an entry header naming position `999999` in a 12-object shape | **parses**, and `position` comes back as `999999`; the title says the range check is the consumer's (Parts 12 and 13), not the container's |
    | ignored tail | the same entries with 6424 trailing bytes appended | parses identically; `entriesOffset` unchanged |
 
 2. **RED** — `test/unit/domain/storage/bitmap.properties.test.ts`:
@@ -741,7 +769,7 @@ turns a broken `.rev` into git's exit bit 64 with git's own finding cardinality.
 
 **New file 1:** `src/application/primitives/internal/pack-artefact-source.ts` (S-8, S-9).
 It owns discovery, the bounded read and fault classification for **all three** artefacts;
-this part lands the `.rev` arm only, Part 6 adds the bitmap arms.
+this part lands the `.rev` arm only, Part 7 adds the bitmap arms.
 
 **New file 2:** `src/application/primitives/internal/pack-positions.ts` (S-11) —
 `packPositionMap(index: PackIndex): ReadonlyArray<number>`, the index positions `[0, N)`
@@ -771,7 +799,7 @@ ordered by `entryOffsets(index)[i]`.
   variant breaks nothing at compile time, which is exactly why the unit rows below must be
   written. Three places narrow the union by hand and **fail open** on a new variant; each
   must be inspected and, where it should include the new variants, updated in this part
-  (Part 6 repeats the exercise for its own variant):
+  (Part 7 repeats the exercise for its own variant):
   `test/unit/application/commands/fsck-finding-ids.ts:10-18` (`findingIds`, narrowing on
   `'id' in finding` and friends — the two new variants carry no `ObjectId`, so it needs no
   change, but say so rather than assume it);
@@ -1071,7 +1099,92 @@ Plus `npm run check:architecture`.
 
 `perf(pack): build the pack offset table from the reverse index`
 
-## Part 6 — the `fsck` bitmap pass and exit bit 128
+## Part 6 — the accelerator bench
+
+### Context
+
+**Goal.** ADR-604's measured claim and requirement 15, for **one subject and one only: the
+`.rev` accelerator in `buildOffsetTable`** that Part 5 just landed. Test-infra only: **no
+`src/` delta.** The bitmap closure and `pack-objects` are **not** measured here — their
+subject does not exist until Parts 12–14, and Part 16 prices them there.
+
+**Why the measurement runs here.** Part 5's justification is a performance claim, and ten
+further parts are built on the assumption that it holds. A bench that runs at the end
+discovers a regression only after everything downstream has been written against it, and the
+honest fixes are edits to Part 5's two-arm conditional. Measuring in the very next part keeps
+the loop one part long.
+
+**The measurement rules, which are ADR-604's and not this part's, and which are carried here
+verbatim:** absolute wall-clock, **main versus branch**, sourced from the **CI nightly
+artefact** — **never a local run**, and **never a self-share delta** (a self-share number is
+Amdahl-fragile and has misled this repository before). A local run is a smoke test that the
+cases execute; its numbers are not evidence and must not be quoted anywhere.
+
+**The consequence, which the ADR fixes and this part may not renegotiate: a measured
+regression is a defect to fix in this PR.** It is **not** a reason to drop the accelerator
+and it is **not** a follow-up. The honest fixes, both edits to Part 5, are a size threshold
+below which the `.rev` is not read, or reading the artefact only when the offset table is
+actually forced. Escalate as `{ part: 5, reason, ≤3 options }` rather than choosing silently
+— and never by weakening the bench.
+
+**New/extended files:** `test/bench/pack-offset-table.bench.ts` (new) plus the existing
+suite's shared `test/bench/fixtures.ts` (2.4 KB) and `support/`. The neighbours to model are
+`pack-read.bench.ts` (4.0 KB) and `midx-lookup.bench.ts` (5.1 KB).
+`vitest.bench.config.ts` includes `test/bench/**/*.bench.ts` with a 120 s timeout and writes
+`reports/benchmarks/raw.json`.
+
+**Two scenarios, both `buildOffsetTable`, and the second is the one that matters:**
+
+1. `buildOffsetTable` over a **many-object** repository — the shape the O(n) gather wins on,
+   and the only one anybody expects to be green;
+2. `buildOffsetTable` over a **many-small-packs** repository — the shape where one extra
+   `open` + `read` per pack can outweigh sorting a few hundred numbers. **This is the
+   scenario that can turn the accelerator into a regression, so it is not optional and must
+   not be trimmed for runtime.**
+
+Each case runs **with the `.rev` present and with it deleted**, so the pair is comparable
+within one run as well as across branches. That in-run pair is a shape check only — the
+branch-versus-main comparison from the nightly artefact is the verdict.
+
+**Fixtures** go through `test/bench/fixtures.ts` and `tooling/gen-bench-fixture.ts`; keep them
+deterministic and reuse the existing generation helpers rather than adding a new fixture
+pipeline. Benches must **not** spawn `git` — build the `.rev` with the same in-test writer the
+unit suites use (`writeSyntheticRevIndex`, landed in Part 4), or generate it once into the
+bench fixture directory.
+
+**Reporting.** `npm run bench:summary` / `tooling/bench-summarize.ts` and
+`tooling/bench-check.ts` already exist; add both cases to whatever manifest they read so the
+nightly artefact carries them. Do **not** wire a new blocking threshold — the
+benchmark-comparison job is non-blocking by design because it measures runner noise.
+
+### TDD steps
+
+1. **RED** — add the two bench cases; they "fail" only by not existing. Run
+   `npm run test:bench` locally **once** to confirm they execute and produce numbers.
+2. **GREEN** — the cases run and are picked up by `bench:summary`.
+3. **REFACTOR** — confirm the fixtures are deterministic; confirm no bench spawns `git`;
+   confirm the many-small-packs case really does build many small packs (assert the pack
+   count **inside the fixture builder**, not in prose); confirm the `.rev`-present and
+   `.rev`-absent variants of each case are registered under distinct names so the nightly
+   artefact can tell them apart.
+
+**Reporting obligation for the PR body, not for this file:** once CI's nightly bench has run
+on both `main` and the branch, quote the two absolute wall-clock numbers per scenario. If
+scenario 2 regresses, fix it in this PR under the escalation above.
+
+### Gate
+
+```
+npx vitest bench --run --config vitest.bench.config.ts test/bench/pack-offset-table.bench.ts && npm run check:types && ./node_modules/.bin/biome check test/bench/pack-offset-table.bench.ts test/bench/fixtures.ts
+```
+
+Plus `npm run check:test-pyramid` (the bench tier's budget).
+
+### Commit
+
+`test(bench): measure the reverse-index accelerator`
+
+## Part 7 — the `fsck` bitmap pass and exit bit 128
 
 ### Context
 
@@ -1220,7 +1333,7 @@ temporary import of step 4), `npm run check:duplicates`, and `npm run docs:json`
 
 `fix(fsck): report a corrupt pack or multi-pack-index bitmap like git`
 
-## Part 7 — cross-tool `fsck` interop for both artefacts
+## Part 8 — cross-tool `fsck` interop for both artefacts
 
 ### Context
 
@@ -1320,7 +1433,7 @@ is the row most likely to look like a test bug when it fails — its title must 
 2. **RED** — the `.rev` rows, family by family (load, digest, body, accepted-by-git,
    universe, modes, multi-pack). Each row its own `it`.
 3. **RED** — the `.bitmap` rows, then the midx-bitmap rows, then the composition rows.
-4. **GREEN** — no `src/` change is expected. **If a row is red, the defect is in Parts 4–6
+4. **GREEN** — no `src/` change is expected. **If a row is red, the defect is in Parts 4, 5 or 7
    and the fix lands here as a `src/` edit with its unit row added in the same commit** —
    escalate as `{ part, reason, ≤3 options }` if the fix would change a shape this plan
    fixed.
@@ -1342,7 +1455,7 @@ recorded).
 
 `test(fsck): pin reverse-index and bitmap verdicts against real git`
 
-## Part 8 — the closure engine's walk tier and `rev-list`'s reachability core
+## Part 9 — the closure engine's walk tier and `rev-list`'s reachability core
 
 ### Context
 
@@ -1375,7 +1488,7 @@ export async function computeClosure(ctx: Context, request: ClosureRequest): Pro
 ```
 
 `path` is **optional from this part** (S-13) even though the walk always fills it under
-`objects` — the field's type must not change in Part 11.
+`objects` — the field's type must not change in Part 12.
 
 **The walk tier is git's walk, not the exact set difference.** It marks the `not` tips
 uninteresting along with their trees, **recursing through those trees to mark their
@@ -1387,7 +1500,7 @@ and the measurements say so — marking only the root tree *object* would re-emi
 entire tree, which is far more than the six extra objects git actually reports.
 
 **Computing the exact difference here would be the divergence, not the fix.** S-12 governs
-what this part may assert about it, and names the escalation if Part 10 disagrees with real
+what this part may assert about it, and names the escalation if Part 11 disagrees with real
 git.
 
 **Building blocks that already exist — reuse, do not re-derive:**
@@ -1559,7 +1672,7 @@ Plus `npm run check:doc-coverage`, `npm run check:browser-surface`,
 
 `feat(commands): add rev-list over a shared closure engine`
 
-## Part 9 — `rev-list`'s walk-shaping options
+## Part 10 — `rev-list`'s walk-shaping options
 
 ### Context
 
@@ -1589,7 +1702,7 @@ walk honours), `docs/use/commands/rev-list.md`, `test/unit/application/commands/
 
 **Documentation.** `docs/use/commands/rev-list.md`'s `## Options` table gains four rows with
 their defaults; `## Behaviour` gains a sentence per option. The page's tier paragraph
-arrives in Part 11.
+arrives in Part 12.
 
 **Surface gates:** the four new option fields are public — `npm run docs:json` +
 `reports/api.json` committed here. No count moves, no page is added.
@@ -1631,16 +1744,16 @@ Plus `npm run docs:json` with `reports/api.json` staged in the same commit.
 
 `feat(rev-list): add the walk-shaping options`
 
-## Part 10 — cross-tool interop: the walk closure against real git
+## Part 11 — cross-tool interop: the walk closure against real git
 
 ### Context
 
-**Goal.** Pin the walk tier — which ADR-615 makes the **oracle** for everything Parts 11–13
+**Goal.** Pin the walk tier — which ADR-615 makes the **oracle** for everything Parts 12–14
 build — against real `git rev-list`. Test-infra only: **no `src/` delta.**
 
 This part exists *here*, before the bitmap tier, for one reason: an unpinned oracle is not
 an oracle. It is also where S-12's deferred question is answered — if the walk tier's counts
-disagree with git's, the defect is in Part 8's marking rule and the escalation names its
+disagree with git's, the defect is in Part 9's marking rule and the escalation names its
 three candidates.
 
 **New file 1:** `test/integration/rev-bitmap-closure-fixtures.ts` — the closure fixtures,
@@ -1671,7 +1784,7 @@ A linear fixture shows **no** disagreement — that is measured, not hypothetica
  *   interopSurface: closure
 ```
 
-**Helpers to write here (Part 14 extends them, so shape them for two callers):**
+**Helpers to write here (Part 15 extends them, so shape them for two callers):**
 
 - `gitObjectSet(dir, ...args)` → parse `git rev-list --objects …` stdout into
   `{ ids: Set<string>, named: number }` — `named` is the count of lines carrying a name,
@@ -1712,8 +1825,8 @@ fixed so the fixture is reproducible.
 2. **RED** — the no-haves rows, then the have-bearing rows, then the option-composition
    rows, then the loose-object row.
 3. **GREEN** — no `src/` change is expected. **If a have-bearing count disagrees, the
-   defect is Part 8's marking rule.** Escalate as
-   `{ part: 8, reason, options: [tips-only, boundary-commits, full-have-closure] }` and fix
+   defect is Part 9's marking rule.** Escalate as
+   `{ part: 9, reason, options: [tips-only, boundary-commits, full-have-closure] }` and fix
    in `closure-engine.ts` with the corresponding unit rows updated in the same commit —
    never adjust the interop expectation to match the implementation.
 4. **REFACTOR** — confirm every row disposes its `Context`; confirm no row asserts order;
@@ -1732,13 +1845,14 @@ Plus `npm run check:test-pyramid` and `npm run check:write-surfaces` (exit **0**
 
 `test(rev-list): pin the walk closure against real git`
 
-## Part 11 — the pack-bitmap closure tier and `rev-list`'s tier control
+## Part 12 — the pack-bitmap closure tier and `rev-list`'s tier control
 
 ### Context
 
 **Goal.** §D3's consumption paragraphs + §D4's pack-bitmap mapping + §D6's bitmap algorithm
-+ ADR-615/616/618/619/620/621 + requirements 16, 17, 18, 20: the engine gains a `tier`
-input it holds no default for, a pack bitmap answers `W AND NOT N`, and `rev-list` grows
++ ADR-615 (as narrowed by **ADR-622**)/616/618/619/620/621 + Pin AK + requirements 16, 17,
+18, 20: the engine gains a `tier` input it holds no default for, a pack bitmap answers
+`W AND NOT N` **with every position it decodes range-validated first**, and `rev-list` grows
 the one option that selects between git's two disagreeing answers.
 
 **New file:** `src/application/primitives/internal/bitmap-binding.ts` — the application-layer
@@ -1762,7 +1876,45 @@ forbids reaching a runtime value out of the registry it is bound into.
 `src/domain/storage/pack-index.js` directly, exactly as
 `src/application/primitives/enumerate-objects.ts:2` already does.
 
-**`RegisteredPack.bitmapBytes()` already exists** — Part 6 landed it (and its bound) for
+**Range validation, before any oid is resolved (ADR-622, Pin AK). This is a faithfulness
+requirement, not optional hardening, and it is measured.** On a fixture whose bitmap
+**checksum is valid** but whose first per-commit entry header names position `999999`, git
+prints `error: corrupt ewah bitmap: commit index 999999 out of range`, **declines the whole
+artefact** and answers from the walk: `fsck` **0**, `rev-list --use-bitmap-index` **0** with
+the walk's answer, `--test-bitmap` **128**, `pack-objects` **0** with the walk's answer. The
+binding therefore:
+
+1. **range-validates every position it decodes from the artefact** against the object count
+   of the pack it indexes — per-commit **entry headers** (`bitmapEntryHeaders`) *and* every
+   **set bit** a reconstructed stream yields, both required `< objectCount`. Both spaces,
+   not just the headers: a bit is as much a decoded position as a header is, and checking
+   only the headers leaves the far wider space unchecked. Positions at or above
+   `objectCount` in the engine's own bit space are the **extended** positions (Pin AH) — the
+   engine appends those itself, they are never decoded from the artefact, and they are
+   bounded by the allocation rather than by this check;
+2. **declines the whole artefact** on the first violation, never just the offending entry —
+   git loses the bitmap entirely, and a per-entry skip would answer from a half-artefact git
+   never uses;
+3. **reports the fault through `ctx.logger?.warn?.` with the artefact name.** This is the
+   **opposite** of the absent / unreadable rows, where git is silent and tsgit matches that
+   silence: here git prints an `error:` line, so tsgit is **not** silent either;
+4. **falls back to the walk**, whose answer is returned with **no failure surfaced to the
+   caller** — a correct result and no error, exactly as git exits 0;
+5. runs **before any oid is resolved**. That ordering is the whole point of the rule — it is
+   what makes "silently wrong pack" unreachable — so a test must pin the **ordering**, not
+   merely the outcome: instrument the oid-resolution path (`allObjectIds` / `packPositions()`
+   reads through an instrumented `Context`) and assert it was **never entered** for a
+   declining artefact. A row that only asserts "the walk answered" passes even when
+   validation runs after resolution, so it does not discharge this obligation.
+
+**The `fsck` bitmap pass is unchanged by all of this** (ADR-605, Part 7): it still hashes and
+never parses, so this same fixture yields `fsck` exit **0** while the consumption path
+declines. **One test asserts both halves on the same fixture** — `runBitmapHealthPass` finds
+nothing and the binding declines, in one `it` over one set of bytes. It is the sharpest
+available proof that ADR-605's separation holds, and Part 15 carries its cross-tool twin
+(Pin AK rows AK0–AK4).
+
+**`RegisteredPack.bitmapBytes()` already exists** — Part 7 landed it (and its bound) for
 the `fsck` pass, which only hashes. This part is the first caller to **parse** those bytes,
 and that asymmetry is deliberate: the two paths share the loader and share nothing else.
 
@@ -1828,19 +1980,24 @@ in the engine's own bit space, with a side table `extendedOids: ObjectId[]`, and
 comes from the object header. The bit space grows in whole words; the cap is
 `MAX_PUSH_OBJECTS`, reused. **A bitmap never truncates an answer.**
 
-**Degradation** (§D13, ADR-616 as amended, ADR-621): every fault falls through **silently**
-to the next tier — absent, unreadable, refused (bad magic, bad version, a missing full-DAG
-flag, an overrunning stream). A **fault** in a present bitmap still reaches
-`ctx.logger?.warn?.` with the artefact name; silence about the **strategy** is total.
+**Degradation** (§D13, ADR-616 as amended, ADR-621, ADR-622): every fault falls through
+**silently** to the next tier — absent, unreadable, refused (bad magic, bad version, a
+missing full-DAG flag, an overrunning stream) — **and an out-of-range position joins that
+list, declining the artefact rather than the entry**. A **fault** in a present bitmap still
+reaches `ctx.logger?.warn?.` with the artefact name; silence about the **strategy** is total.
 Falling all the way through to the walk is result-preserving when `not` is empty and yields
 the walk's superset otherwise — which is exactly what git returns when it cannot load a
 bitmap. **Do not add strictness the parser does not already have** (ADR-621): declines are
 no longer free, and an oversized declared bit size in particular must be tolerated, not
-refused.
+refused. Range validation is **not** added strictness — git declines there too (Pin AK), so
+it is "declining where git declines", and it is the ADR-611 bounds gate rather than the
+ADR-615 trust one.
 
 **No pre-use digest verification** exists on this path and none may be added (ADR-615).
-Threat row T-7 is **accepted, not mitigated**; the interop suite's tier invariant is the
-security control, and trimming it is a security regression.
+Threat row T-7 is **accepted, not mitigated**; under ADR-615's refinement the controls are
+now two and ordered — ADR-622's range validation catches a decoder or artefact fault
+**before any oid is resolved**, and the interop suite's tier invariant is the second line.
+Trimming either is a security regression.
 
 **Engine change** (S-13): `ClosureRequest` gains `readonly tier: ClosureTier` where
 `export type ClosureTier = 'bitmap' | 'walk'` — a **required** input with no engine-side
@@ -1885,7 +2042,10 @@ obligation, not a nicety.
 
 **Mutation traps** (`application`, break 95): the `W AND NOT N` word loop, the
 `xorOffset === 0` chain terminator, the extended-position append, and the tier ternary in
-the command. Each needs a row whose *answer* changes, not merely its path.
+the command. Each needs a row whose *answer* changes, not merely its path. The range check
+is a **boundary** (`position < objectCount`), so `objectCount − 1` (accepted) and
+`objectCount` (declines) are two rows, not one — and because the two spaces are validated
+separately, an entry-header row does not kill the set-bit mutant or the reverse.
 
 ### TDD steps
 
@@ -1900,6 +2060,12 @@ the command. Each needs a row whose *answer* changes, not merely its path.
    | types | every set bit's type against the owning stream | correct for every position |
    | extended positions | a want reachable only through a **loose** object | the object is emitted with the right type |
    | degradation — **own `it` each** | bitmap absent; unreadable; bad magic; version 2; flag word without full-DAG; an overrunning stream | the binding declines; a warn is emitted for the **refused** cases and **not** for absent/unreadable |
+   | range validation — **own `it` each** | an entry header at `objectCount − 1`; an entry header at `objectCount`; an entry header at `999999`; a **set bit** at `objectCount − 1`; a **set bit** at `objectCount` | accepted / declines / declines / accepted / declines — the two accepted rows are what prove the boundary is not off by one, and the set-bit pair is not killed by the entry-header pair |
+   | the decline is whole-artefact — **own `it`** | a two-entry bitmap whose **second** entry is out of range, the first healthy and covering the want | the binding declines **entirely**; the healthy entry is **not** used, and the answer is the walk's |
+   | the fault is reported — **own `it`** | the out-of-range fixture | `ctx.logger.warn` called **once** with the artefact name (git prints an `error:` line here, so silence would be the divergence) |
+   | the caller sees no failure — **own `it`** | the same fixture, through the engine | the walk's correct answer is returned and **nothing throws** |
+   | **ordering: validation precedes resolution** — **own `it`** | the same fixture under an instrumented `Context` | the oid-resolution path (`allObjectIds` / `packPositions()`) was **never entered**; asserting only "the walk answered" does **not** discharge this row, and the title says so |
+   | `fsck` and consumption disagree, correctly — **own `it`** | **one** fixture: a bitmap with an out-of-range entry header whose trailer is **restamped** | `runBitmapHealthPass` returns **no finding and `exitBit` 0**, and the binding **declines** — both asserted in the same `it`, which is the sharpest proof ADR-605's separation holds. The pass is imported **by the test only** (`depcruise` runs over `src/` alone, so S-14's rule is untouched — but the import must never migrate into `bitmap-binding.ts`) |
 
 2. **RED** — `test/unit/application/primitives/internal/closure-engine.test.ts`:
    **the engine holds no tier default** — the same request answered with `tier: 'walk'` and
@@ -1924,7 +2090,10 @@ the command. Each needs a row whose *answer* changes, not merely its path.
 
 6. **REFACTOR** — confirm `bitmap-binding.ts` is under 400 lines (split the reconstruction
    cache out if not); confirm the LRU is per call; confirm the type-only registry import;
-   confirm no digest verification crept in; run `npm run check:architecture`,
+   confirm no digest verification crept in; **re-read the decline path and confirm every
+   range check precedes every oid resolution in program order, not merely in test outcome,
+   and that a violation declines the artefact rather than skipping an entry**; run
+   `npm run check:architecture`,
    `npm run check:browser-surface`, `npm run check:parity-fixtures`, `npm run test:parity`;
    `npm run docs:json` and stage `reports/api.json`.
 
@@ -1942,7 +2111,7 @@ Plus `npm run check:architecture`, `npm run check:browser-surface`,
 
 `feat(rev-list): serve the closure from a pack bitmap on request`
 
-## Part 12 — midx-bitmap preference and pseudo-pack position mapping
+## Part 13 — midx-bitmap preference and pseudo-pack position mapping
 
 ### Context
 
@@ -1952,7 +2121,7 @@ readable, and prefer it over a pack bitmap exactly as git does.
 
 **Files to change:** `src/application/primitives/internal/bitmap-binding.ts` (a second
 binding flavour), `src/application/primitives/pack-registry.ts` (the generation-level midx
-bitmap memo already added in Part 6 is reused — this part *parses* what Part 6 only
+bitmap memo already added in Part 7 is reused — this part *parses* what Part 7 only
 hashed), `src/application/primitives/internal/closure-engine.ts` (the preference order).
 
 **The mapping — this is the single most likely implementation bug in the entry:**
@@ -1966,7 +2135,22 @@ hashed), `src/application/primitives/internal/closure-engine.ts` (the preference
   under the midx reading and **0 of 108** under the other. That 108/0 split is the
   assertion that catches the bug, and it must be written as such.
 
-**Preference order** (Pin AG), each falling through **silently** on any fault:
+**Range validation applies to the pseudo-pack, with the same force (ADR-622, Pin AK).** Both
+position spaces this part decodes are validated **against `MultiPackIndex.objectCount`, the
+pseudo-pack's own count**, before `midxOidAt` / `midxReverseIndexAt` is called on either:
+the **entry headers**, which are midx positions, and every **set bit**, which is a
+pseudo-pack position. Same rule, same consequences as Part 12 — the **whole artefact** is
+declined on the first violation, never the offending entry; the fault reaches
+`ctx.logger?.warn?.` with the **midx bitmap's** artefact name (git prints an `error:` line
+here, so tsgit is not silent); the answer comes from the next artefact in the preference
+order below with **no failure surfaced to the caller**; and the check runs **before any oid
+is resolved**, pinned by an ordering row and not merely by an outcome row. A midx bitmap
+declined this way therefore lets the **pack** bitmap answer — a decline by artefact, which
+is what the preference order already does, so no new machinery is owed, only the check that
+triggers it.
+
+**Preference order** (Pin AG), each falling through **silently** on any fault — including an
+out-of-range position, which declines that artefact and nothing more:
 
 1. a usable **midx** bitmap for the in-use midx generation, **if the midx carries a
    reverse-index chunk**;
@@ -1983,7 +2167,7 @@ midx bitmap found beside a chunk-less midx was never written by a tool that woul
 produced one.
 
 **Discovery is by the midx's *stored* trailer bytes** — the same
-`multi-pack-index-<hex>.bitmap` composition Part 6 landed. A renamed bitmap is simply not
+`multi-pack-index-<hex>.bitmap` composition Part 7 landed. A renamed bitmap is simply not
 found; a midx whose stored trailer is wrong names a file that is not there and therefore
 **hides its own bitmap**. That coupling is transitive and fragile: a midx bitmap's
 *discoverability* now gates a read-path accelerator, not just an `fsck` bit. The interop row
@@ -2014,7 +2198,10 @@ to move; run the shared-convention check (`npm run docs:json` then
 
 **Mutation traps**: the preference ternary (three arms) needs a row per arm where the
 *artefact actually read* is observable — assert it through an instrumented context's read
-paths, not through the answer, because the answer is deliberately identical.
+paths, not through the answer, because the answer is deliberately identical. The midx range
+check is its **own** boundary against `MultiPackIndex.objectCount` — Part 12's rows over a
+pack's count do not kill it, so it needs its own `objectCount − 1` / `objectCount` pair in
+both position spaces.
 
 ### TDD steps
 
@@ -2027,11 +2214,16 @@ paths, not through the answer, because the answer is deliberately identical.
    | no chunk | a midx bitmap beside a midx with **no** reverse-index chunk | the midx tier declines; the pack tier answers |
    | discovery — **own `it` each** | midx bitmap renamed to a different hash; the midx's stored trailer wrong | not found; the pack tier answers |
    | types | the midx bitmap's four streams over the midx's object count | the set bits sum to the midx object count, and each stream predicts its objects' types |
+   | range validation against the pseudo-pack — **own `it` each** | an entry header (a **midx** position) at `objectCount − 1`, then at `objectCount`; a **set bit** (a pseudo-pack position) at `objectCount − 1`, then at `objectCount`; an entry header at `999999`, trailer restamped | accepted / declines, in both spaces; the declines are **whole-artefact** and the **pack** bitmap answers with the same object set |
+   | the fault is reported and the caller sees nothing — **own `it` each** | the restamped out-of-range midx bitmap | `ctx.logger.warn` called once with the **midx bitmap's** name; the returned set is correct and nothing throws |
+   | **ordering: validation precedes resolution** — **own `it`** | the same fixture under an instrumented `Context` | `midxOidAt` / `midxReverseIndexAt` were never reached for the declining artefact — the ordering is the assertion, not the answer |
 
 2. **RED** — `test/unit/application/primitives/internal/closure-engine.test.ts`: the
    preference order with each artefact refused in turn — midx bitmap ≻ pack bitmap ≻ walk —
    **one `it` per arm**, each asserting *which* artefact was read (instrumented context)
-   **and** that the object set is unchanged between the two bitmap arms.
+   **and** that the object set is unchanged between the two bitmap arms. Add a fourth arm:
+   the midx bitmap declined for an **out-of-range position** (not a parse fault) falls
+   through to the pack bitmap with the same object set — the arm ADR-622 adds.
 
 3. **GREEN** — the midx binding flavour, the generation memo's parse step, the preference
    order.
@@ -2053,7 +2245,7 @@ Plus `npm run check:architecture` and `npm run check:duplicates`.
 
 `feat(pack): prefer the multi-pack-index bitmap for closures`
 
-## Part 13 — `pack-objects`
+## Part 14 — `pack-objects`
 
 ### Context
 
@@ -2141,7 +2333,7 @@ duplicated by the extraction.
 not in the midx's universe, which the registry already handles; `refresh()` is what makes
 the new pack visible.
 
-**The full Tier-1 surface tax, again** — every item of Part 8's list, with:
+**The full Tier-1 surface tax, again** — every item of Part 9's list, with:
 
 1. barrel entry between `./notes.js` (`:216`) and `./pull.js` (`:217`);
 2. facade interface line between `notes` (`:225`) and `pull` (`:226`), binding between
@@ -2204,18 +2396,24 @@ Plus `npm run check:doc-coverage`, `npm run check:browser-surface`,
 
 `feat(commands): add pack-objects`
 
-## Part 14 — cross-tool interop: the bitmap tier, its preference and its degradation
+## Part 15 — cross-tool interop: the bitmap tier, its preference and its degradation
 
 ### Context
 
-**Goal.** The design's closure interop table in full, requirements 16–19, and — under
-ADR-615 — a **security control**, not hygiene. Test-infra only: **no `src/` delta.** It
+**Goal.** The design's closure interop table in full, requirements 16–19, **Pin AK's
+range-validation family (ADR-622)**, and — under ADR-615 as narrowed by ADR-622 — a
+**security control**, not hygiene: range validation is the first line, this suite the second,
+and neither may be trimmed. Test-infra only: **no `src/` delta.** It
 extends `test/integration/rev-bitmap-closure-interop.test.ts` and
-`test/integration/rev-bitmap-closure-fixtures.ts` from Part 10.
+`test/integration/rev-bitmap-closure-fixtures.ts` from Part 11.
 
 **New fixture:** **F3** — F2 plus 5 more commits repacked incrementally into a second pack,
 then `git multi-pack-index write --bitmap`; 2 packs, 1 pack bitmap, 1621 midx objects,
 1 midx bitmap.
+
+**New fixture:** **F6** (Pin AK) — 40 commits, **120** objects, one pack with a bitmap, whose
+first per-commit **entry header** is rewritten to position `999999` and whose trailer is then
+**RESTAMPED**.
 
 **The cross-tier invariant, stated once and asserted everywhere.** Every closure row runs
 on **both tiers** and asserts, on **object id and type only — never on `path`**:
@@ -2252,6 +2450,35 @@ future trimming pass has to delete a sentence that says why they exist.
 | completeness beyond the artefact | F3 with the midx removed, a pack bitmap covering 1606 of 1621 objects across two packs (**1620 = the walk's 1620**); F2 plus a **loose** commit on top (**1608 = the walk's 1608**) |
 | degradation | **every** restamped structural corruption of the bitmap — magic, version, entry count, truncation, an oversized declared stream word count — asserting the answer falls back to **the walk's**; plus the flag word cleared of full-DAG, asserting tsgit **answers** where git aborts |
 | `pack-objects` | the written pack's object set on both tiers (read back from the `.idx`), and `git index-pack --verify` **accepting the pack tsgit wrote** |
+| **range validation (Pin AK, ADR-622)** | AK0–AK4 on **F6**, below — the family that proves an out-of-range position declines the artefact rather than producing a wrong answer |
+
+**Pin AK's rows, on F6.** They are not a variation on the degradation family above: every
+row there corrupts a **structure** and the checksum still catches nothing; here the checksum
+is **valid** and the fault is a **value**. That is what makes AK0 and AK1 disagree, correctly.
+
+| # | probe | expectation |
+|---|---|---|
+| AK0 | `git fsck` **and** `tsgit.fsck()` over the same bytes | both exit **0**, and tsgit reports **no** bitmap finding — the checksum is valid, so the `fsck` pass has nothing to say |
+| AK1 | `git rev-list --use-bitmap-index --objects HEAD` vs `revList({ useBitmapIndex: true })` | git exits **0**, printing `error: corrupt ewah bitmap: commit index 999999 out of range` and then the **walk's** answer; tsgit returns the **walk's set**, warns **once** with the artefact name, and surfaces **no** failure to the caller. F6 carries **no** `not`, so the two tiers agree on the set — the **warn** and git's stderr line are the discriminators here, never the count |
+| AK2 | `git rev-list --test-bitmap HEAD` | **128** with `fatal: failed to load bitmap indexes`. tsgit exposes no `--test-bitmap` surface, so this row is **git-only** and exists to document why AK1's exit is 0 rather than non-zero |
+| AK3 | `git pack-objects --revs` vs `packObjects({ wants: ['HEAD'] })` at its **default (bitmap) tier** | both write the **walk's** object set, read back from the `.idx` — never compared on `packId` |
+| AK4 | AK1's count against a plain walk | **120 = 120** — the fallback answer is the correct one, not a truncated one |
+
+**AK0 and AK1 asserted on the same fixture are the point of the family**: they are the
+cross-tool twin of Part 12's single-`it` proof that ADR-605's separation holds — `fsck`
+hashes and does not parse, the consumer parses and declines, and one file makes both true at
+once.
+
+**The fixture recipe, which is the family's whole difficulty.** The entry-header offset is
+**computed, never hard-coded**: skip the **32-byte header** (`12 + digestLength`, with
+`digestLength = 20`), then the **four type streams**, each `4 + 4 + 8·wordCount + 4` bytes
+where `wordCount` is that stream's own `u32BE` at its second word. That lands on the first
+per-commit entry header (offset **144** on Pin AK's own fixture — a value to *check* against,
+not to hard-code). Rewrite its `u32BE` position to `999999`, then **RESTAMP the trailer**.
+**Without the restamp the row proves nothing**: the checksum fault masks the position fault
+and the whole family degenerates into Pin J's checksum matrix. Reuse `restampBitmap` from
+`test/integration/rev-bitmap-fixture-helpers.ts` (Part 8) and its control row — restamping
+alone must leave `git fsck` at exit 0.
 
 **A detector you will need:** setting a bitmap's flag word to 0 and restamping makes git
 abort (exit 134) if and only if it loaded that bitmap. That is the only clean way to prove
@@ -2260,7 +2487,9 @@ abort (exit 134) if and only if it loaded that bitmap. That is the only clean wa
 **Traps:** F3's incremental repack must leave the second pack genuinely uncovered by the
 first bitmap; `git index-pack --verify` needs the `.pack` and `.idx` side by side under the
 name it expects; every row builds a fresh `Context` after the last `git` subprocess; pack
-files are `0444`.
+files are `0444`; and F6's rewrite is a **two-step** mutation — poke the position, *then*
+restamp — through `mutateOrThrow`, because a silently no-op write on a `0444` file makes AK1
+read as a false pass.
 
 ### TDD steps
 
@@ -2272,13 +2501,18 @@ files are `0444`.
 4. **RED** — the option-composition rows on F4; the `path`-presence rows on F5.
 5. **RED** — the preference rows, the `.rev`-free rows, the completeness rows.
 6. **RED** — the degradation rows and the full-DAG row.
-7. **RED** — the `pack-objects` rows, including `git index-pack --verify`.
-8. **GREEN** — no `src/` change is expected. A red row here is a defect in Parts 11–13;
+7. **RED** — the F6 builder (computed offset, poke, restamp) and Pin AK's rows AK0–AK4, with
+   AK0 and AK1 written as **one `it` per probe over the same fixture bytes** so the `fsck`
+   0 / consumption-declines pair is visible in the file.
+8. **RED** — the `pack-objects` rows, including `git index-pack --verify`.
+9. **GREEN** — no `src/` change is expected. A red row here is a defect in Parts 12–14;
    fix it there, add the unit row that would have caught it, and land both in this commit.
    Escalate as `{ part, reason, ≤3 options }` if the fix would change a shape this plan
    fixed.
-9. **REFACTOR** — confirm every row disposes its `Context`; confirm no row asserts order,
-   `packId` or `path` where the invariant forbids it; confirm the suite's runtime.
+10. **REFACTOR** — confirm every row disposes its `Context`; confirm no row asserts order,
+    `packId` or `path` where the invariant forbids it; confirm the AK family's control (the
+    restamp alone leaves `git fsck` at 0) is present, or every AK row is uninterpretable;
+    confirm the suite's runtime.
 
 ### Gate
 
@@ -2292,42 +2526,45 @@ Plus `npm run check:test-pyramid` and `npm run check:write-surfaces` (exit **0**
 
 `test(closure): pin the bitmap tier and its degradation against real git`
 
-## Part 15 — the bench
+## Part 16 — the closure and `fsck` benches
 
 ### Context
 
-**Goal.** ADR-604's measured claim and requirement 15, plus threat row T-13's added hashing.
-Test-infra only: **no `src/` delta.**
+**Goal.** Requirement 15 for the **two subjects that did not exist when Part 6 ran**: the
+**bitmap closure** (Parts 12–14) and threat row T-13's **added `fsck` hashing** (Parts 4 and
+7). Test-infra only: **no `src/` delta.** The `.rev` accelerator is **not** measured here —
+Part 6 measured it immediately after Part 5 landed it, which is where a regression is still
+cheap.
 
-**The claim is measured, not asserted, and the measurement rules are strict:** absolute
-wall-clock, **main versus branch**, sourced from the **CI nightly artefact** — never a local
-run, and never a self-share delta (a self-share number is Amdahl-fragile and has misled this
-repository before). **A measured regression is a defect to fix in this PR, not a reason to
-drop the accelerator.**
+**The measurement rules are the same ones Part 6 carries, and they bind here identically:**
+absolute wall-clock, **main versus branch**, sourced from the **CI nightly artefact** — never
+a local run, and never a self-share delta (a self-share number is Amdahl-fragile and has
+misled this repository before). **A measured regression is a defect to fix in this PR**, not
+a reason to drop the bitmap tier and not a follow-up.
 
-**New/extended files:** `test/bench/` (existing suite: `pack-read.bench.ts` 4.0 KB,
+**New/extended files:** `test/bench/closure.bench.ts` and `test/bench/fsck-artefacts.bench.ts`
+(new), plus `test/bench/` (existing suite: `pack-read.bench.ts` 4.0 KB,
 `midx-lookup.bench.ts` 5.1 KB, `delta-chain-read.bench.ts` 2.1 KB, shared `fixtures.ts`
 2.4 KB and `support/`). `vitest.bench.config.ts` includes `test/bench/**/*.bench.ts` with a
 120 s timeout and writes `reports/benchmarks/raw.json`.
 
-**Four scenarios** (the design's list):
+**Two scenarios** (the design's list, minus the two Part 6 already owns):
 
-1. `buildOffsetTable` over a **many-object** repository — the shape the O(n) gather wins on;
-2. `buildOffsetTable` over a **many-small-packs** repository — the shape where one extra
-   `open` + `read` per pack can outweigh sorting a few hundred numbers. **This is the
-   scenario that can turn the accelerator into a regression, so it is not optional.** Each
-   case runs with the `.rev` present and with it deleted, so the pair is comparable within
-   one run as well as across branches;
-3. closure **with** a bitmap versus closure **by walk**, at the 400-commit fixture's scale
-   and larger — the price of the acceleration the two commands exist to deliver;
-4. `fsck` over a repository carrying both a `.rev` and a `.bitmap`, to see the added
+1. closure **with** a bitmap versus closure **by walk**, at the 400-commit fixture's scale
+   and larger — the price of the acceleration the two commands exist to deliver. Run it
+   through **both** commands' defaults (`revList` walks, `packObjects` uses the bitmap), so
+   the number reflects what a caller actually pays;
+2. `fsck` over a repository carrying both a `.rev` and a `.bitmap`, to see the added
    hashing. git pays the same cost, so this is parity, not overhead — but `fsck`'s cost
    profile changes measurably and the bench should show it.
 
-**Fixtures** go through `test/bench/fixtures.ts` and `tooling/gen-bench-fixture.ts`; keep
-them deterministic and reuse the existing generation helpers rather than adding a new
+**Fixtures** go through `test/bench/fixtures.ts` and `tooling/gen-bench-fixture.ts` — the same
+file Part 6 extended, so read what is already there before adding. Keep them
+deterministic and reuse the existing generation helpers rather than adding a new
 fixture pipeline. Benches must not spawn `git` — build the artefacts with the same in-test
-writers the unit suites use, or generate them once into the bench fixture directory.
+writers the unit suites use (`buildBitmap` / `encodeEwah` from
+`test/unit/domain/storage/arbitraries.ts`), or generate them once into the bench fixture
+directory.
 
 **Reporting.** `npm run bench:summary` / `tooling/bench-summarize.ts` and
 `tooling/bench-check.ts` already exist; add the new cases to whatever manifest they read so
@@ -2336,24 +2573,24 @@ benchmark-comparison job is non-blocking by design because it measures runner no
 
 ### TDD steps
 
-1. **RED** — add the four bench cases; they "fail" only by not existing. Run
+1. **RED** — add the two bench cases; they "fail" only by not existing. Run
    `npm run test:bench` locally **once**, to confirm they execute and produce numbers — the
    numbers themselves are not evidence and must not be quoted anywhere.
 2. **GREEN** — the cases run and are picked up by `bench:summary`.
-3. **REFACTOR** — confirm the fixtures are deterministic, that no bench spawns `git`, and
-   that the many-small-packs case really does build many small packs (assert the pack count
-   inside the fixture builder, not in prose).
+3. **REFACTOR** — confirm the fixtures are deterministic, that no bench spawns `git`, that
+   the closure case really is answered by the bitmap on the bitmap arm (a silent fall-through
+   to the walk would make the two arms measure the same code), and that Part 6's two cases
+   are still registered and unchanged.
 
 **Reporting obligation for the PR body, not for this file:** once CI's nightly bench has
-run on both `main` and the branch, quote the two absolute wall-clock numbers per scenario.
-If scenario 2 regresses, fix it in this PR — the honest options are a size threshold below
-which the `.rev` is not read, or reading the artefact only when the offset table is actually
-forced. Escalate with `{ part: 5, reason, ≤3 options }` rather than choosing silently.
+run on both `main` and the branch, quote the two absolute wall-clock numbers per scenario,
+alongside Part 6's. If the closure case regresses, fix it in this PR and escalate as
+`{ part, reason, ≤3 options }` rather than choosing silently.
 
 ### Gate
 
 ```
-npx vitest bench --run --config vitest.bench.config.ts test/bench/pack-offset-table.bench.ts test/bench/closure.bench.ts && npm run check:types && ./node_modules/.bin/biome check test/bench/pack-offset-table.bench.ts test/bench/closure.bench.ts test/bench/fixtures.ts
+npx vitest bench --run --config vitest.bench.config.ts test/bench/closure.bench.ts test/bench/fsck-artefacts.bench.ts && npm run check:types && ./node_modules/.bin/biome check test/bench/closure.bench.ts test/bench/fsck-artefacts.bench.ts test/bench/fixtures.ts
 ```
 
 Plus `npm run check:test-pyramid` (the bench tier's budget) and one full
@@ -2361,4 +2598,4 @@ Plus `npm run check:test-pyramid` (the bench tier's budget) and one full
 
 ### Commit
 
-`test(bench): measure the reverse-index accelerator and the bitmap closure`
+`test(bench): measure the bitmap closure and the artefact hashing cost`
