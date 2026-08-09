@@ -279,7 +279,9 @@ async function loadChain(
 ): Promise<ChainOutcome> {
   const manifest = await readChainManifest(ctx, multiPackIndexChainPath(packsDir), digestLength);
   if (manifest.kind === 'none') return NO_CHAIN;
-  if (manifest.kind === 'oversized') return chainFault(REASON_MIDX_EXCEEDS_MAX);
+  // The manifest's bound derives from the layer cap, so overrunning it IS
+  // the too-many-layers condition — not the artefact-size one.
+  if (manifest.kind === 'oversized') return chainFault(REASON_MIDX_CHAIN_TOO_LONG);
 
   const digests = leadingHexRun(manifest.text, digestLength);
   if (digests.length === 0) return NO_CHAIN;

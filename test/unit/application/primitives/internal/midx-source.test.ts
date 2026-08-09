@@ -750,7 +750,7 @@ describe('midx-source', () => {
           expect(result.set).toBeUndefined();
           expect(result.faults).toHaveLength(1);
           expect(result.faults[0]?.artefact).toBe('multi-pack-index-chain');
-          expect(result.faults[0]?.data).toMatchObject({ reason: REASON_MIDX_EXCEEDS_MAX });
+          expect(result.faults[0]?.data).toMatchObject({ reason: REASON_MIDX_CHAIN_TOO_LONG });
           const reads = calls().filter(
             (call) => call.method === 'readUtf8' && call.path === chainPath,
           );
@@ -813,6 +813,93 @@ describe('midx-source', () => {
             (call) => call.method === 'read' && call.path.includes('.midx'),
           );
           expect(layerReads).toEqual([]);
+        });
+      });
+    });
+
+    describe('Given two chain layers whose stat sizes each fit but sum past the artefact budget', () => {
+      describe('When loadMidxSet is called', () => {
+        it('Then the whole chain is discarded and the second layer is never read', async () => {
+          // Arrange — each lying size passes the per-layer bound; only the
+          // running total crosses it, so this row dies without the aggregate
+          // check.
+          const ctx = await buildSeededContext();
+          const dir = packsDir(commonGitDir(ctx));
+          const digests = await writeChain(ctx, dir, [baseSpec(), baseSpec()]);
+          const layerPaths = digests.map((digest) => multiPackIndexLayerPath(dir, digest));
+          const overHalf = Math.floor(MAX_MIDX_BYTES / 2) + 1;
+          const lying: Context = {
+            ...ctx,
+            fs: {
+              ...ctx.fs,
+              stat: async (path) => {
+                const real = await ctx.fs.stat(path);
+                return layerPaths.includes(path) ? { ...real, size: overHalf } : real;
+              },
+            },
+          };
+          const { ctx: instrumented, calls } = instrumentedContext(lying);
+
+          // Act
+          const result = await loadMidxSet(instrumented, dir);
+
+          // Assert
+          expect(result.set).toBeUndefined();
+          expect(result.faults).toHaveLength(1);
+          expect(result.faults[0]?.data).toMatchObject({ reason: REASON_MIDX_EXCEEDS_MAX });
+          const secondReads = calls().filter(
+            (call) => call.method === 'read' && call.path === layerPaths[1],
+          );
+          expect(secondReads).toEqual([]);
+        });
+      });
+    });
+
+    describe('Given a chain manifest with no trailing newline', () => {
+      describe('When loadMidxSet is called', () => {
+        it('Then the final unterminated line still loads its layer', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const dir = packsDir(commonGitDir(ctx));
+          const digest = layerDigest(1, 20);
+          await writeLayerFile(ctx, dir, digest, baseSpec());
+          await ctx.fs.writeUtf8(multiPackIndexChainPath(dir), digest);
+
+          // Act
+          const result = await loadMidxSet(ctx, dir);
+
+          // Assert
+          expect(result.set?.kind).toBe('chain');
+          expect(result.set?.layers).toHaveLength(1);
+        });
+      });
+    });
+
+    describe('Given a chain manifest whose read returns more text than its stat reported', () => {
+      describe('When loadMidxSet is called', () => {
+        it('Then the post-read bound discards the chain', async () => {
+          // Arrange — a TOCTOU grower: stat says tiny, the read hands back a
+          // string past the manifest bound.
+          const ctx = await buildSeededContext();
+          const dir = packsDir(commonGitDir(ctx));
+          const chainPath = multiPackIndexChainPath(dir);
+          await ctx.fs.writeUtf8(chainPath, `${layerDigest(1, 20)}\n`);
+          const grown: Context = {
+            ...ctx,
+            fs: {
+              ...ctx.fs,
+              readUtf8: async (path) =>
+                path === chainPath ? '0'.repeat(64 * 1024) : ctx.fs.readUtf8(path),
+            },
+          };
+
+          // Act
+          const result = await loadMidxSet(grown, dir);
+
+          // Assert
+          expect(result.set).toBeUndefined();
+          expect(result.faults).toHaveLength(1);
+          expect(result.faults[0]?.data).toMatchObject({ reason: REASON_MIDX_CHAIN_TOO_LONG });
         });
       });
     });

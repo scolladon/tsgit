@@ -126,6 +126,47 @@ function setLoffHighWord(bytes: Uint8Array, row: number, highWord: number): Uint
   return copy;
 }
 
+function appendUnknownChunk(bytes: Uint8Array, id: string, body: Uint8Array): Uint8Array {
+  const digestLength = 20;
+  const numChunks = bytes[6]!;
+  const oldTableEnd = 12 + (numChunks + 1) * 12;
+  const trailerStart = bytes.length - digestLength;
+  const out = new Uint8Array(bytes.length + 12 + body.length);
+  const view = new DataView(out.buffer);
+  // header with one more chunk
+  out.set(bytes.subarray(0, 12), 0);
+  out[6] = numChunks + 1;
+  // existing rows, every offset shifted by the extra table row
+  const oldView = new DataView(bytes.buffer, bytes.byteOffset);
+  for (let i = 0; i < numChunks; i += 1) {
+    const src = 12 + i * 12;
+    const dst = 12 + i * 12;
+    out.set(bytes.subarray(src, src + 4), dst);
+    const offset = oldView.getUint32(src + 4) * 0x100000000 + oldView.getUint32(src + 8);
+    view.setUint32(dst + 4, Math.floor((offset + 12) / 0x100000000));
+    view.setUint32(dst + 8, (offset + 12) >>> 0);
+  }
+  // the new chunk's row, where the old sentinel offset pointed
+  const oldSentinel = 12 + numChunks * 12;
+  const oldSentinelOffset =
+    oldView.getUint32(oldSentinel + 4) * 0x100000000 + oldView.getUint32(oldSentinel + 8);
+  const newChunkStart = oldSentinelOffset + 12;
+  const newRow = 12 + numChunks * 12;
+  out.set(new TextEncoder().encode(id), newRow);
+  view.setUint32(newRow + 4, Math.floor(newChunkStart / 0x100000000));
+  view.setUint32(newRow + 8, newChunkStart >>> 0);
+  // new sentinel
+  const sentinelRow = 12 + (numChunks + 1) * 12;
+  view.setUint32(sentinelRow, 0);
+  view.setUint32(sentinelRow + 4, Math.floor((newChunkStart + body.length) / 0x100000000));
+  view.setUint32(sentinelRow + 8, (newChunkStart + body.length) >>> 0);
+  // bodies: everything between the old table end and the trailer, then the new body, then trailer
+  out.set(bytes.subarray(oldTableEnd, trailerStart), 12 + (numChunks + 2) * 12);
+  out.set(body, newChunkStart);
+  out.set(bytes.subarray(trailerStart), newChunkStart + body.length);
+  return out;
+}
+
 function expectRefusal(act: () => void, check: MidxCheck, reasonContains: string): void {
   // Captured OUTSIDE the try: an expect.fail thrown inside it would be
   // swallowed by this function's own catch and resurface as a confusing
@@ -569,6 +610,25 @@ describe('midx', () => {
             'chunk-table',
             'not 4-byte aligned',
           );
+        });
+      });
+    });
+
+    describe('Given an unknown trailing chunk whose length leaves the sentinel offset unaligned', () => {
+      describe('When parsing', () => {
+        it('Then it parses — git alignment-checks only the real chunk rows, never the sentinel', () => {
+          // Arrange — synthetic-only shape: every chunk git itself writes is
+          // NUL-padded to the 4-byte grid, so an unaligned sentinel can only
+          // come from a foreign writer; refusing it would be a tsgit-invented
+          // gate.
+          const spec = baseSpec();
+          const crafted = appendUnknownChunk(buildMidx(spec), 'ZZZZ', new Uint8Array(2));
+
+          // Act
+          const result = parseMultiPackIndex(crafted, spec.digestLength);
+
+          // Assert
+          expect(result.packNames).toEqual(spec.packNames);
         });
       });
     });

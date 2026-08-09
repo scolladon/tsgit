@@ -524,7 +524,9 @@ function bindMidx(
         ctx.logger?.warn?.(
           'packRegistry: multi-pack-index names a pack this scan did not register',
           {
-            pack: name,
+            // Escaped like the finding sink: isSafePackName admits C1/bidi
+            // code points that must not reach a log field raw.
+            pack: escapeControlBytes(name),
           },
         );
         bound.push(undefined);
@@ -666,8 +668,10 @@ const escapeControlBytes = (name: string): string => {
   let escaped = '';
   for (let i = 0; i < bounded.length; i += 1) {
     const code = bounded.charCodeAt(i);
-    const isPrintableAscii = code >= 0x20 && code <= 0x7e;
-    escaped += isPrintableAscii ? bounded[i] : `\\u${code.toString(16).padStart(4, '0')}`;
+    // 0x5c (backslash) is escaped too, or a literal '\\u0001' in a hostile
+    // name would be indistinguishable from an escaped real control byte.
+    const isPlain = code >= 0x20 && code <= 0x7e && code !== 0x5c;
+    escaped += isPlain ? bounded[i] : `\\u${code.toString(16).padStart(4, '0')}`;
   }
   return name.length > MAX_FINDING_NAME_LENGTH ? `${escaped}\u2026` : escaped;
 };
@@ -733,15 +737,6 @@ interface MidxEntryWalkResult {
 }
 
 /**
- * Resolve every oid the midx lists, per layer, oldest first: the same
- * per-entry walk git's `verify` child runs. A pack that never bound makes
- * its oids unresolved without touching the pack; a bound pack's oids are
- * unresolved when it cannot serve them (`probeMidxEntryServiceable`). A
- * Tier-A fault surfacing HERE — not at load, since every layer already
- * parsed — is contained: the walk ends and the fault it hit is returned
- * alongside whatever was classified before it.
- */
-/**
  * One layer's entry walk. Returns the fault data that ended it early (a
  * deferred Tier-A decode), or `undefined` when the layer walked to the end.
  * The serviceability map is probed synchronously first: an await on a
@@ -791,6 +786,15 @@ async function probeAndCacheServiceable(
   return verdict;
 }
 
+/**
+ * Resolve every oid the midx lists, per layer, oldest first: the same
+ * per-entry walk git's `verify` child runs. A pack that never bound makes
+ * its oids unresolved without touching the pack; a bound pack's oids are
+ * unresolved when it cannot serve them (`probeMidxEntryServiceable`). A
+ * Tier-A fault surfacing HERE — not at load, since every layer already
+ * parsed — is contained: the walk ends and the fault it hit is returned
+ * alongside whatever was classified before it.
+ */
 async function walkMidxEntries(midx: LoadedMidx): Promise<MidxEntryWalkResult> {
   const unresolvedEntries: ObjectId[] = [];
   const headArtefact = midx.set.artefacts[midx.set.artefacts.length - 1]!;

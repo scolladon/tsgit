@@ -4972,6 +4972,48 @@ describe('Given a PNAM entry carrying a control byte in its name', () => {
   });
 });
 
+describe('Given a PNAM entry longer than the finding name budget', () => {
+  describe('When fsck reports it unresolved', () => {
+    it('Then the name is truncated with an ellipsis marker after escaping', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const longName = `pack-\u0002${'a'.repeat(400)}.idx`;
+      await writeFlatMidx(ctx, midxBaseSpec({ packNames: [longName] }));
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      const packUnresolved = result.findings.filter((f) => f.type === 'midx-pack-unresolved');
+      expect(packUnresolved).toHaveLength(1);
+      const reported = (packUnresolved[0] as { pack: string }).pack;
+      expect(reported.startsWith('pack-\\u0002')).toBe(true);
+      expect(reported.endsWith('\u2026')).toBe(true);
+      expect(reported.length).toBeLessThan(longName.length);
+    });
+  });
+});
+
+describe('Given a SAFE PNAM entry without the .idx suffix whose truncated base matches a real .pack', () => {
+  describe('When fsck runs', () => {
+    it('Then the finding is still emitted and carries the name verbatim — the on-disk .pack cannot be borrowed', async () => {
+      // Arrange — under unconditional truncation, 'pack-A0000' would derive
+      // base 'pack-A', find pack-A.pack on disk, and silence this finding.
+      const ctx = await initBareCtx();
+      await writeSyntheticPack(ctx, 'A', onePackEntry('collision-target'));
+      await writeFlatMidx(ctx, midxBaseSpec({ packNames: ['pack-A0000'] }));
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      const packUnresolved = result.findings.filter((f) => f.type === 'midx-pack-unresolved');
+      expect(packUnresolved).toHaveLength(1);
+      expect((packUnresolved[0] as { pack: string }).pack).toBe('pack-A0000');
+    });
+  });
+});
+
 describe('Given a packed object corrupted on disk but warm in the delta cache', () => {
   describe('When fsck runs', () => {
     it('Then the audit reads the store, not the cache, and reports the corruption', async () => {
