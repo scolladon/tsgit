@@ -4821,6 +4821,49 @@ describe('Given a permission-denied flat midx file', () => {
   });
 });
 
+describe('Given a contained pack-int-id fault mid-walk with no PNAM entries at all', () => {
+  describe('When fsck runs', () => {
+    it('Then one midx-unusable finding names the check and the correct artefact, and bit 32 is the entire exitCode', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      await writeFlatMidx(
+        ctx,
+        midxBaseSpec({ entries: [{ id: midxOid('aa1'), packIndex: 0, offset: 0 }] }),
+      );
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      const findings = result.findings.filter((f) => f.type === 'midx-unusable');
+      expect(findings).toHaveLength(1);
+      expect((findings[0] as { artefact: string }).artefact).toBe('multi-pack-index');
+      expect((findings[0] as { reason: string }).reason).toContain('pack index');
+      expect(result.exitCode).toBe(32);
+    });
+  });
+});
+
+describe('Given a PNAM entry unresolved with no midx entries referencing it', () => {
+  describe('When fsck runs', () => {
+    it('Then one midx-pack-unresolved finding is emitted and bit 32 is the entire exitCode', async () => {
+      // Arrange — a pack listed in PNAM but never routed to by any oid: the
+      // pack-level finding fires from the PNAM walk alone, with the
+      // per-entry loop never running to also set the bit.
+      const ctx = await initBareCtx();
+      await writeFlatMidx(ctx, midxBaseSpec({ packNames: [midxPackName('f')] }));
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      const packUnresolved = result.findings.filter((f) => f.type === 'midx-pack-unresolved');
+      expect(packUnresolved).toHaveLength(1);
+      expect(result.exitCode).toBe(32);
+    });
+  });
+});
+
 // ---------------------------------------------------------------------------
 // TRAILER VERIFICATION — head only (O10, P12, P13)
 // ---------------------------------------------------------------------------
