@@ -5,29 +5,38 @@
 > Lift: a `.rev` parser + generation check against git's, an EWAH bitmap parser, and interop pins
 > comparing enumeration/reachability against real git with and without the auxiliary files.
 >
-> Status: draft → self-reviewed ×3
+> Status: **revised against ADRs 603–617** (ratified) → self-reviewed ×3
 >
-> **Two of the brief's premises do not survive the pins, and the second one reframes the whole
-> entry.**
+> **This revision supersedes the draft's scope.** Fifteen decisions were ratified; several deviate
+> from the draft's recommendations and invalidate whole sections of it. What changed, in one place:
 >
-> 1. *"Ignored harmlessly"* is true for **reads** and false for **`fsck`**. git 2.55.0 writes
->    `.rev` **by default** (Pin A), and a corrupt `.rev` sets `git fsck` exit **bit 64** — a bit
->    tsgit already models, from the wrong cause. [ADR-586](../adr/586-exit-bit-64-is-modeled-with-an-ungated-finding.md)
->    closed with *"28.3's real `.rev` reader lands with nothing to correct."* Pin H falsifies that
->    sentence: today tsgit exits **0** where git exits **64**, on the commonest corruption shape of
->    a file every modern git writes unasked. There is a second, wholly unreported bit —
->    **128 (`ERROR_BITMAP`)** — for `.bitmap` (Pin J). This entry's payload is therefore not
->    speculative acceleration; it is closing two live faithfulness gaps in a surface that shipped
->    three weeks ago.
-> 2. *"Value materialises only when tsgit enumerates or serves objects at scale."* Half right. There
->    is **no** consumer for bitmaps — tsgit has no `rev-list`, no `pack-objects`, no negotiation
->    (§D1) — and git's own `fsck` needs **no EWAH parser** to do its whole job (Pin J). But `.rev`
->    has a concrete consumer today: `buildOffsetTable` (`pack-registry.ts:219`) sorts every pack's
->    offsets to build in memory exactly what the `.rev` already holds on disk (§D7).
+> | the draft said | the ratified decision |
+> |---|---|
+> | verify-and-report only; the read path is untouched | **full read support** — both `fsck` arms, the live accelerator, an EWAH parser, two new commands ([ADR-603](../adr/603-full-read-support-for-both-pack-auxiliary-artefacts.md)) |
+> | `.rev` ships dark | `.rev` is a **live accelerator** in `buildOffsetTable`, with a **measured** perf claim ([ADR-604](../adr/604-rev-index-is-a-live-accelerator-for-the-pack-offset-table.md)) |
+> | no EWAH parser (no consumer) | an EWAH parser **ships**, for consumption only — `fsck` still hashes and never parses ([ADR-605](../adr/605-an-ewah-bitmap-parser-ships-with-real-consumers.md)) |
+> | verify the `.rev` digest before use | **trust**, exactly as git does; verification stays in `fsck` ([ADR-606](../adr/606-the-rev-index-body-is-trusted-on-the-read-path.md), [ADR-615](../adr/615-bitmap-closures-are-trusted-exactly-as-git-does.md)) |
+> | midx bitmaps are `fsck`-verified only | midx bitmaps are **consumed**, via the midx reverse-index chunk ([ADR-617](../adr/617-midx-bitmaps-are-consumed-via-the-midx-reverse-index-chunk.md)) |
+> | no new commands | **two** new Tier-1 commands: `rev-list` ([ADR-613](../adr/613-rev-list-ships-the-reachability-core-only.md)) and `pack-objects` ([ADR-614](../adr/614-pack-objects-ships-closure-to-pack-only.md)) |
 >
-> **What the brief calls a "generation check" does not exist.** A `.rev` carries no generation
-> number and no version beyond `1`. Its only staleness signal is the embedded copy of the pack
-> checksum — and **`git fsck` does not check it** (Pin H row R10b). §D4 takes the consequence.
+> **The draft's §D1 consumer census is falsified.** `enumeratePushObjects`
+> (`src/application/primitives/enumerate-push-objects.ts`) and `enumerateBundleObjects`
+> (`src/application/primitives/enumerate-bundle-objects.ts`) *are* reachability closures — exactly
+> what a pack bitmap encodes. §D9 states the real consumer set and what this entry does about it.
+>
+> **Two of the brief's premises still do not survive the pins, and they still matter.**
+>
+> 1. *"Ignored harmlessly"* is true for **reads** and false for **`fsck`**: git 2.55.0 writes `.rev`
+>    **by default** (Pin A) and a corrupt `.rev` sets `git fsck` exit **bit 64**, which tsgit today
+>    sets only from the wrong cause. Bit **128** (`.bitmap`) is wholly unreported (Pin J).
+> 2. **What the brief calls a "generation check" does not exist.** A `.rev` carries no generation
+>    number and no version beyond `1`. Its only staleness signal is the embedded copy of the pack
+>    checksum — and **`git fsck` does not check it** (Pin H row R10b). §D2 takes the consequence.
+>
+> **One new pin reframes the acceleration story and it is the most important sentence in this
+> document**: on the bitmap path git's `rev-list --objects` emits **bare object ids with no path
+> names at all** (Pin AA). A bitmap carries reachability and type; it carries no paths. Everything
+> §D7 says about `rev-list --objects` follows from that measurement.
 
 ## Context
 
@@ -45,9 +54,8 @@ if (entry.layer === 'index') {
 ```
 
 — i.e. a `.idx` the scan could not parse or open. Nothing in `src/` reads a `.rev` or a `.bitmap`
-file: `isCandidate` (`pack-registry.ts:194`) admits only names ending `.idx`, so both artefacts are
-invisible to discovery, and `grep -rn "\.rev\|bitmap" src/` finds only the constant, its
-doc-comment and the finding type.
+file: `isCandidate` (`pack-registry.ts:177`) admits only names ending `.idx`, so both artefacts are
+invisible to discovery, and there is no EWAH code anywhere in the repository.
 
 That is exactly correct for the **read** path — Pin H's `cat-file` / `batch-all` columns are `0` in
 every measured row, with and without either artefact — and it is **incomplete** for `fsck`:
@@ -59,9 +67,27 @@ every measured row, with and without either artefact — and it is **incomplete*
 | corrupt `.bitmap` | **128** | **0** | **bit 128 does not exist as a constant** |
 | both | **192** | **0** | both |
 
+### The real consumer set — the census, corrected
+
+The draft concluded "no bitmap consumer exists or is foreseeable". That was wrong about the code in
+front of it. Corrected, with the shape of each closure measured off the source:
+
+| capability a bitmap accelerates | tsgit surface | closure semantics today | can a bitmap serve it? |
+|---|---|---|---|
+| push object selection | `enumeratePushObjects` (`enumerate-push-objects.ts:77`) | walks commits `from: wants, until: haves`, then walks **every interesting commit's whole tree** and emits everything not yet emitted. The haves' object closure is **never subtracted** ⇒ a strict **superset** of the exact difference | yes, but the emitted set shrinks — see §D9 |
+| bundle object selection | `enumerateBundleObjects` (`enumerate-bundle-objects.ts:172`) | two-phase: `collectUninteresting` builds the haves' full object closure, then `walkInteresting` filters against it ⇒ the **exact** difference. Also returns `boundary`, the prerequisite commits | partly — the bitmap gives the object set, **not** the boundary (§D9) |
+| `pack-objects` object selection | **absent** — `buildPack` (`build-pack.ts`) takes an oid list a caller already computed | — | **this entry adds the command** (ADR-614) |
+| `rev-list` | **absent** | — | **this entry adds the command** (ADR-613) |
+| fetch/push negotiation | `fetch-pack.ts` / `push.ts` | negotiates by ref advertisement | no — negotiation is a wire protocol, not a closure |
+| full-universe enumeration | `enumerateObjects` | served from `allObjectIds(index)` | no — a bitmap is strictly less information |
+| **offset → pack position** | **`buildOffsetTable` (`pack-registry.ts:219`)** | sorts `entryOffsets(index)` | **`.rev`'s consumer, not the bitmap's** (§D10) |
+
+So the honest shape of the entry is now the inverse of the draft's: the parsers are the payload and
+the `fsck` verdicts are one of four arms.
+
 ### The cost `.rev` exists to remove, in tsgit's own terms
 
-`buildOffsetTable` (`pack-registry.ts:219-232`) is the one place tsgit needs pack-order:
+`buildOffsetTable` (`pack-registry.ts:219-232`) is the one place tsgit needs pack order:
 
 ```ts
 const raw = entryOffsets(index);                       // O(n) reads out of the .idx
@@ -69,15 +95,13 @@ const sortedOffsets = [...raw].sort((a, b) => a - b);  // O(n log n), once per p
 ```
 
 `sortedOffsets` is consumed by `nextOffsetForEntry` (`pack-registry.ts:320`) — a binary search for
-"where does the entry at this offset end" — on **every packed object read**. The `.rev` is that
-sort, precomputed by git: `sortedOffsets[p] = raw[rev[p]]`, an O(n) gather instead of an O(n log n)
-sort. The win is real and bounded, and it is **not free**: it costs one extra file read (4 bytes per
-object, against the `.idx`'s 24+) and it is only correct if the `.rev` is trusted or verified (§D7,
-DC-4). It is a decision candidate (DC-2), not a foregone conclusion.
+"where does the entry at this offset end" — on **every packed object read**. The `.rev` is that sort,
+precomputed by git: `sortedOffsets[p] = raw[rev[p]]`, an O(n) gather instead of an O(n log n) sort.
+Pin AI measures the identity that makes the swap legal.
 
 Note what the `.rev` does **not** buy: `entryOffsets(index)` is still required, so the `.idx` load is
-not avoided. This is the same hard floor ADR-597 hit for the midx — the auxiliary file indexes the
-pack, it does not replace the pack's index.
+not avoided. Same hard floor ADR-597 hit for the midx — the auxiliary file indexes the pack, it does
+not replace the pack's index.
 
 ### Premises of the brief, checked against git and against the code
 
@@ -85,61 +109,80 @@ pack, it does not replace the pack's index.
 |---|---|---|
 | B-1 | *"both currently ignored harmlessly (neither is required for object reads)"* | **half true.** Harmless for reads (Pin H/J `cat-file` columns); **not** harmless for `fsck`, where tsgit is silent on two of git's eight exit bits. |
 | B-2 | *"`.rev` maps pack position ↔ index position"* | correct, and the on-disk direction is **one-way**: `rev[packPosition] = indexPosition` (Pin B). The inverse needs an O(n) invert. |
-| B-3 | *"accelerating offset→oid resolution (`verify-pack`-style enumeration, midx bitmaps)"* | tsgit has **neither** surface: no `verify-pack` command (`ls src/application/commands/`), no bitmap consumer. The real tsgit analogue is `buildOffsetTable` (§D7). |
-| B-4 | *"pack bitmaps accelerate reachability closure (object counting for `pack-objects`, fetch/push negotiation)"* | correct — and tsgit has **none** of those three surfaces. §D1. |
-| B-5 | *"midx bitmaps layer on the midx"* | correct, and stronger than stated: the midx's reverse index is a **chunk inside the midx** (`{'R','I','D','X'}`), **not** a sibling `multi-pack-index-<hex>.rev` file (Pin F). 28.2's parser already skips past it, so nothing there needs changing. |
-| B-6 | *"`.rev` parser + **generation check** against git's"* | **there is no generation.** `.rev` version is `1` and only `1` (Pin H R2/R3); the only staleness field is the embedded pack checksum, which git's `fsck` **does not verify** (R10b). "Generation check" has no referent; §D4 replaces it with the three checks git actually runs. |
-| B-7 | *"bitmap (EWAH-compressed) parser"* | **not required for faithfulness.** git's `fsck` bitmap obligation is the file's trailing checksum and **nothing else** — every restamped structural corruption exits 0 (Pin J rows B14–B19). An EWAH parser is optional payload with no consumer (DC-3). |
-| B-8 | *"interop pins comparing enumeration/reachability results against real git with and without the auxiliary files"* | those results are **identical** in every healthy row and in every corrupt row (Pin H/J). The observable difference is entirely in `fsck`'s exit integer, so that is what the interop pins must compare. |
-| B-9 | implicit: the artefacts are rare / opt-in | **false.** `pack.writeReverseIndex` defaults **on**: a bare `git repack -adq` writes `.rev` (Pin A). Essentially every repository touched by git ≥2.35 has them. |
-| B-10 | implicit: the pack subsystem is hash-generic | **false, pre-existing.** `IDX_SHA_LENGTH = 20` is hard-coded in `pack-index.ts:10` / `pack-writer.ts:63`. Both new formats *are* hash-generic (Pin G) and their parsers must be written that way; the surrounding limit is neither widened nor narrowed here (§D10). |
+| B-3 | *"accelerating offset→oid resolution (`verify-pack`-style enumeration, midx bitmaps)"* | tsgit still has no `verify-pack`; the real tsgit analogue is `buildOffsetTable` (§D10). Midx bitmaps **are** now in scope (ADR-617, §D4). |
+| B-4 | *"pack bitmaps accelerate reachability closure (object counting for `pack-objects`, fetch/push negotiation)"* | correct, and the draft's "tsgit has none of those surfaces" is **falsified**: two closures exist (§Context census) and two commands are added here. Negotiation stays out (§Out of scope). |
+| B-5 | *"midx bitmaps layer on the midx"* | correct, and stronger than stated: the midx's reverse index is a **chunk inside the midx** (`{'R','I','D','X'}`), not a sibling file (Pin F). ADR-617 makes reading that chunk mandatory (Pin AG). |
+| B-6 | *"`.rev` parser + **generation check** against git's"* | **there is no generation.** `.rev` version is `1` and only `1` (Pin H R2/R3); the only staleness field is the embedded pack checksum, which git's `fsck` **does not verify** (R10b). §D11 replaces "generation check" with the three checks git actually runs. |
+| B-7 | *"bitmap (EWAH-compressed) parser"* | **not required for faithfulness** (Pin J rows B14–B19: every restamped structural corruption exits 0) — but required for **capability**, which is what ADR-605 bought. The two roles are kept provably apart (§D12). |
+| B-8 | *"interop pins comparing enumeration/reachability results against real git with and without the auxiliary files"* | correct, and now the load-bearing suite. Pins AA–AH measure the axes where a difference is actually observable; Pin AB shows two of git's own paths **disagree**. |
+| B-9 | implicit: the artefacts are rare / opt-in | **false.** `pack.writeReverseIndex` defaults **on**: a bare `git repack -adq` writes `.rev` (Pin A). |
+| B-10 | implicit: the pack subsystem is hash-generic | **false, pre-existing.** `IDX_SHA_LENGTH = 20` is a module-private constant in `pack-index.ts:10` and again in `pack-writer.ts:65`. Both new formats *are* hash-generic (Pin G) and their parsers must be written that way; the surrounding limit is neither widened nor narrowed here (§D16). |
 
 ### Subsystems this touches
 
 | subsystem | file | involvement |
 |---|---|---|
-| domain storage | `src/domain/storage/` (new `rev-index.ts`, `error.ts`, `index.ts`) | the `.rev` parser + a new error code + barrel exports (DC-7, DC-8) |
-| pack registry | `src/application/primitives/pack-registry.ts` | a new per-pack accessor for the `.rev` verdict, and — under DC-2(a) — `buildOffsetTable` |
-| pack scan | `pack-registry.ts` `scanPacks` / `isCandidate` (:194) | the sibling-artefact listing the discovery step consumes at zero extra I/O (ADR-579's shape) |
-| midx binding | `src/application/primitives/internal/midx-binding.ts:298` | `verifyMidxTrailer` is the verbatim precedent for hashing an artefact at fsck time; the midx-bitmap filename derives from the same `head._bytes` trailer slice (Pin K) |
-| fsck | `commands/fsck.ts`, `internal/fsck/pack-health.ts`, new `internal/fsck/bitmap-health.ts`, `internal/fsck/types.ts`, `internal/fsck/exit-codes.ts` | the whole payload: one new bit-64 cause (DC-5), one new bit-128 pass |
-| limits | `primitives/validators.ts` | new artefact bounds (DC-9), beside `MAX_MIDX_BYTES` |
-| read path | `object-resolver.ts`, `internal/blob-source.ts` | **unchanged** under every scope option — `.rev`/`.bitmap` faults never fail a read in git (Pin H/J) |
+| domain storage | `src/domain/storage/rev-index.ts` (new) | the `.rev` parser (§D2) |
+| domain storage | `src/domain/storage/bitmap.ts` (new) | the header + EWAH reader (§D3) |
+| domain storage | `src/domain/storage/midx.ts` | one more chunk id and its readers — the reverse-index chunk (§D4) |
+| domain storage | `src/domain/storage/error.ts`, `index.ts` | two new error codes with closed `check` unions (ADR-610) + barrel exports |
+| artefact source | `src/application/primitives/internal/pack-artefact-source.ts` (new) | discovery, bounded read, fault classification — one loader for four consumers (ADR-609, §D5) |
+| pack registry | `src/application/primitives/pack-registry.ts` | `buildOffsetTable` gathers via the `.rev` (ADR-604); a sibling memo exposes the pack-position map to the bitmap layer (§D10) |
+| pack scan | `pack-registry.ts` `scanPacks` / `isCandidate` (:177) | the sibling-artefact listing the discovery step consumes at zero extra I/O (ADR-579's shape) |
+| midx binding | `src/application/primitives/internal/midx-binding.ts:298` | `verifyMidxTrailer` is the precedent for hashing an artefact at `fsck` time; the midx-bitmap filename derives from the same `head._bytes` trailer slice (Pin K, ADR-617) |
+| closure engine | `src/application/primitives/internal/closure-engine.ts` (new) | the shared bitmap-or-walk closure (§D6) |
+| commands | `src/application/commands/rev-list.ts`, `pack-objects.ts` (new) | ADR-613, ADR-614 |
+| fsck | `commands/fsck.ts`, `internal/fsck/pack-health.ts`, new `internal/fsck/bitmap-health.ts`, `internal/fsck/types.ts`, `internal/fsck/exit-codes.ts` | one new bit-64 cause (ADR-607/608), one new bit-128 pass (§D12) |
+| limits | `primitives/validators.ts` | the bitmap bound + the closure caps (ADR-611, §D3) |
+| read path | `object-resolver.ts`, `internal/blob-source.ts` | **unchanged** — no `.rev`/`.bitmap` fault ever fails a read in git (Pin H/J) or in tsgit (§D13) |
 
 ### Constraining prior decisions
 
-- **[ADR-226](../adr/226-git-faithfulness-prime-directive.md) — git-faithfulness.** Binds the
-  **exit integer** here, which is the entire observable. Both gaps in the table above are
-  divergences in a refusal/exit condition, which is the directive's core subject.
-- **[ADR-249](../adr/249-describe-structured-data-only.md) — structured data only.** git's
-  `error: reverse-index file … has unknown signature` and `error: bitmap file … has invalid
-  checksum` are presentation. tsgit ships `{ type, pack, reason }` and the interop test reconstructs
-  the transcript.
-- **[ADR-586](../adr/586-exit-bit-64-is-modeled-with-an-ungated-finding.md) — bit 64 is modelled,
-  ungated.** The direct parent. Its ungated posture (`connectivityOnly` / `full: false` / `strict`
-  all report) is **re-confirmed** by Pin I for the `.rev` cause and holds for bit 128 too (Pin L Y1).
-  Its closing sentence is the one thing this design must correct (DC-5).
-- **[ADR-583](../adr/583-two-pack-finding-variants-by-layer.md) / [584](../adr/584-the-finding-carries-the-pack-base-name.md)** —
-  one finding variant **per layer**, carrying the pack **base name** with its doc-comment's safety
-  contract. Pin H's two distinct `.rev` message families are the test of whether that rule wants a
-  second variant here (DC-5).
+The fifteen ratified decisions are binding and are cited inline where they bite. The earlier ones
+that still shape the work:
+
+- **[ADR-226](../adr/226-git-faithfulness-prime-directive.md) — git-faithfulness.** Binds the `fsck`
+  exit integer, the refusal conditions, and the object sets the new commands return. Pin AB is where
+  it gets hard: git's own two paths disagree, so "match git" needs a chosen referent (E-1).
+- **[ADR-249](../adr/249-describe-structured-data-only.md) — structured data only.** Both new
+  commands return fields, never lines. git's `error:` transcripts are reconstructed inside interop
+  tests.
+- **[ADR-572](../adr/572-local-pack-gate-sits-in-lookup.md)** — `all()` does not apply the header
+  gate; §D11's universe argument depends on that.
+- **[ADR-575](../adr/575-full-per-pack-registry-degradation.md)** — per-artefact degradation via
+  **positive allow-lists** over `TsgitError.data.code`, never `catch {}`.
+- **[ADR-577](../adr/577-local-gate-cross-checks-object-count.md)** — a context-free parser takes
+  bytes plus a width and performs no cross-check; the caller holds the cross-check inputs.
+- **[ADR-578](../adr/578-pack-version-fixtures-crafted-in-test.md)** — binary fixtures are crafted
+  in-test by a builder, not committed as blobs.
+- **[ADR-579](../adr/579-orphaned-idx-excluded-at-scan-time.md)** — an orphaned `.idx` is excluded at
+  scan time; this is what makes Pin L Y4/Y6 come out right for free.
+- **[ADR-581](../adr/581-per-pack-health-is-a-registry-accessor.md)** — a *shared* verdict earns a
+  memoised registry accessor. ADR-609 declined it here and named the condition to revisit.
+- **[ADR-583](../adr/583-two-pack-finding-variants-by-layer.md)** /
+  **[ADR-584](../adr/584-the-finding-carries-the-pack-base-name.md)** — one finding variant per
+  layer, carrying the pack base name. ADR-607 applies the rule; ADR-608 sets the cardinality.
+- **[ADR-585](../adr/585-fsck-narrows-its-universe-via-an-enumerate-objects-knob.md)** /
+  **[ADR-586](../adr/586-exit-bit-64-is-modeled-with-an-ungated-finding.md)** — bit 64 is ungated by
+  mode. Pin I re-confirms it for the cause ADR-586 could not test.
 - **[ADR-589](../adr/589-the-pack-pass-lives-in-internal-fsck.md)** — a pass lives in
-  `commands/internal/fsck/` and `fsck.ts` gains three lines. The bitmap pass follows verbatim.
-- **[ADR-575](../adr/575-full-per-pack-registry-degradation.md)** — per-pack degradation via
-  **allow-lists** over `TsgitError.data.code`, never `catch {}`. `.rev`/`.bitmap` faults are the
-  purest case yet: git degrades them per-artefact **and** never lets them fail a read.
-- **[ADR-593](../adr/593-midx-corruption-replicates-gits-two-tiers.md)** — the midx's Tier A/Tier B
-  split. **Neither new artefact has a Tier A**: Pin H and Pin J have no row where a read fails.
-  Stated explicitly because a reader arriving from 28.2 will look for one.
+  `commands/internal/fsck/`; `fsck.ts` gains three lines.
+- **[ADR-592](../adr/592-midx-is-authoritative-for-named-packs.md)** — the midx is authoritative for
+  the packs it names; ADR-612 inherits its `core.multiPackIndex` posture.
+- **[ADR-593](../adr/593-midx-corruption-replicates-gits-two-tiers.md)** — the midx's Tier A / Tier B
+  split. **Neither new artefact has a Tier A**: Pin H, Pin J and Pins AA–AH contain no row where a
+  read fails or an answer is lost. Stated explicitly because a reader arriving from 28.2 looks for one.
+- **[ADR-597](../adr/597-usable-midx-defers-idx-loading.md)** — `all()` is lazy; §D11 pays the
+  `.idx` parse it forces and says so.
+- **[ADR-598](../adr/598-midx-discovery-lives-in-midx-source.md)** — the precedent ADR-609 follows.
 - **[ADR-599](../adr/599-invalid-multi-pack-index-carries-check-discriminant.md)** — a refusal
-  carries a **closed `check` discriminant**, so tier/finding mapping is exhaustive by the
-  type-checker. DC-8 asks whether `.rev` earns the same.
+  carries a closed `check` discriminant. ADR-610 applies it to `.rev`; §D3 applies the same ratio to
+  the bitmap.
 - **[ADR-600](../adr/600-dedicated-midx-size-and-chain-bounds.md)** — a new declared-count bound gets
-  its **own** named constant with arithmetic in its doc-comment, not a reused generic cap. DC-9.
+  a bound sized by its own arithmetic. ADR-611 refines it into an exact size for `.rev`.
+- **[ADR-601](../adr/601-fsck-reports-midx-findings.md)** — integers inside a finding are data.
 - **[ADR-602](../adr/602-midx-trailer-unverified-on-read-verified-in-fsck.md)** — trailer unverified
-  on read, verified in fsck. Pin H R9b and Pin J B9 show git has the **identical** split for both
-  new artefacts, so this precedent is inherited rather than re-litigated (DC-4 states it as the
-  recommendation, not as a settled fact).
+  on read, verified in `fsck`. ADR-606 and ADR-615 extend the same split one layer out.
 - **`pack-registry-single-flight.md` (PR #263)** — every lazy initialiser crossing an `await` is a
   `createPromiseMemo`; a rejection is never memoised; `dispose()` is terminal.
 
@@ -148,24 +191,39 @@ pack, it does not replace the pack's index.
 - Zero-copy `DataView` parsing with `_bytes` / `_view` retained, exactly as `PackIndex`
   (`pack-index.ts:13-21`) and `MultiPackIndex` do.
 - Domain code takes bytes + a `digestLength`; all I/O, path construction and policy live in the
-  application layer (ADR-577's rule: no cross-check inside a context-free parser).
-- Files ≤ ~400 lines, functions < 20 lines, early returns, named constants.
+  application layer (ADR-577).
+- Files ≤ ~400 lines, functions < 20 lines, early returns, named constants, no `any`, branded types.
 - `ctx.hash.hash(bytes)` (`ports/hash-service.ts`) for artefact digests, algorithm from
   `ctx.hashConfig`, never a hard-coded name.
+- Errors classify structurally on `data.code`; never `instanceof` across module graphs.
 
 ## Pinned matrices — git 2.55.0, this host (darwin 25.5.0)
 
-Every cell below was **executed**, not recalled. Method: one `mktemp -d` throwaway per row, isolated
-`HOME`, `GIT_CONFIG_NOSYSTEM=1`, every `GIT_*` unset, `commit.gpgsign=false`,
-`init.defaultBranch=main`, `gc.auto=0`. The fixture (`build_repo`) is 2 commits / 6 blobs / 3 trees
-→ 12 objects in one pack, built with `git repack -adq --write-bitmap-index`.
+Every cell below was **executed**, not recalled. Method: one `mktemp -d`-class throwaway per row,
+isolated `HOME`, `GIT_CONFIG_NOSYSTEM=1`, every `GIT_*` unset, `commit.gpgsign=false`,
+`init.defaultBranch=main`, `gc.auto=0`. Pack files land mode `0444`; every mutation `chmod u+w`s
+first, or the mutation silently no-ops and the whole row reads as a false `0`.
+
+**Pins A–M** were measured for the draft and independently re-verified this run; they are reproduced
+verbatim and their fixture is 2 commits / 6 blobs / 3 trees → 12 objects in one pack.
+**Pins AA–AI** are new: they cover **consumption**, which Pins A–M do not touch at all. Their
+fixtures are named where used:
+
+- **F1** — 30 commits, `git repack -adq --write-bitmap-index`; 124 objects, **30** bitmap entries.
+- **F2** — 400 commits (built by `git fast-import` for speed), one branch, one annotated tag,
+  `git repack -adq --write-bitmap-index`; **1606** objects, **108** bitmap entries. Each commit
+  writes a unique file **and** rewrites a shared file with one of five recurring contents, so blob
+  content **repeats across any have boundary** — which is what makes Pin AB's divergence visible at
+  all (blind spot 10).
+- **F3** — F2 plus 5 more commits repacked incrementally into a second pack, then
+  `git multi-pack-index write --bitmap`; 2 packs, 1 pack bitmap, 1621 midx objects, 1 midx bitmap.
+- **F4** — 76 commits including one real merge, `git repack -adq --write-bitmap-index`.
 
 **RESTAMPED** rows recompute the artefact's trailing digest over `[0, len − digestLength)` after the
 mutation, which separates *load-time structural checks* from *checksum detection*. A control row
 proves the restamp algorithm is git's own: restamp-with-no-other-change leaves both `fsck` and
 `verify-pack` at exit 0. **Without that separation every row below reads as "checksum failure" and
-the entire matrix is uninterpretable** — the same methodological trap Pin P of the midx design paid
-for once.
+the entire matrix is uninterpretable.**
 
 `.rev` chain files, layer permissions and midx chains are not re-pinned here; 28.2's Pins A–P stand.
 
@@ -303,8 +361,8 @@ OOFF              0x5fc (144)    {'R','I','D','X'} 0x68c (72)
   (paraphrased to keep the four-byte chunk id out of running prose): the multi-pack-index's reverse
   index lives in an **optional chunk inside the midx itself**, not in a sibling file.
 
-28.2's parser already ignores both chunks (the chunk table is self-describing), so this pin
-**closes** blind spot §D11.6 of the midx design rather than opening work.
+28.2's parser walks past both chunks (the chunk table is self-describing). ADR-617 turns that from a
+documented blind spot into work: Pin AG reads the reverse-index chunk and uses it.
 
 ### Pin G — hash width
 
@@ -384,7 +442,7 @@ interop assertion that pins the literal integer pair against a rebuilt fixture w
    `.rev` for a pack whose index it could not load, so the two causes never double-report.
 10. `verify-pack` is stricter than `fsck` — it fails on R10b and R16 too, with a single
     indistinguishable `fatal: sha1 file '<p>.rev' validation error`. **tsgit has no `verify-pack`
-    surface** (`ls src/application/commands/`), so this column is context, not obligation.
+    surface**, so this column is context, not obligation.
 
 ### Pin I — `.rev` at `fsck`: mode gating and cardinality
 
@@ -440,25 +498,25 @@ ADR-586 could not test. It is ungated by the presence of a bitmap (M7), by the p
 | B22 | first EWAH `bitSize = 0xffffffff`, RESTAMPED | 0 | **0** | 0 | 0 | — |
 | B13 | `.rev` **deleted**, `.bitmap` kept | 0 | **0** | 0 | 0 | — |
 
-**Rules, as pinned — and this is the scope-defining pin of the whole design.**
+**Rules, as pinned.**
 
 1. **`git fsck`'s entire bitmap obligation is `hash(file[0 .. len−digestLength)) == file[len−digestLength ..]`.**
    Every restamped structural corruption — wrong magic, wrong version, absurd entry count, a
    truncated file, an EWAH word count of 2³¹ — exits **0**. The six RESTAMPED rows are the proof and
-   they are the reason **no EWAH parser is needed for faithfulness** (DC-3).
+   they are why ADR-605 keeps the `fsck` pass **parse-free** while shipping a parser for consumption.
 2. **One message for every cause**, so the cause is not observable through `fsck` at all. Per
    ADR-249 tsgit reproduces the condition and the integer; there is nothing else to reproduce.
 3. **Absent / unreadable / orphaned is clean and silent** (B1, B12, B23) — the same shape as `.rev`.
 4. **Bit 128 is ungated**: by mode — default, `--connectivity-only` and `--strict` all give **128**,
    `--no-full` gives **130** against a control of **2** (Pin L row Y1) — and by
    `core.multiPackIndex` for a *pack* bitmap (Pin K X8). A healthy `.bitmap` needs no `.rev` at all
-   (B13).
+   (B13, and Pin AF measures the consumption side of the same fact).
 5. **No bitmap fault fails a read.** `cat-file` is 0 in every row; `rev-list --use-bitmap-index`
    silently degrades to a full walk and still exits 0 with the right answer.
-6. **B19 is git aborting, not refusing** (`BUG:`, exit 134 — an abort, not a refusal). Not a behaviour to replicate.
+6. **B19 is git aborting, not refusing** (`BUG:`, exit 134 — an abort, not a refusal). Not a behaviour to replicate — and, usefully, the only clean *detector* of whether git loaded a given bitmap at all (Pins AF, AG use it as one).
 7. B21 shows git's own bound: an oversized EWAH word count is caught as `eof in data
    (17179868944 bytes short)` against the mapped file length — the file size is the bound, and
-   tsgit's own bound must be at least as tight (DC-9, T-3).
+   tsgit's own bound must be at least as tight (ADR-611, T-3).
 
 ### Pin K — the midx bitmap
 
@@ -481,12 +539,13 @@ ADR-586 could not test. It is ungated by the presence of a bitmap (M7), by the p
 1. The midx bitmap is checked by the **same** checksum-only rule (X2 restamped → 0), scoring the
    **same** bit 128 (X1), and it is **ungated by mode**.
 2. **The midx bitmap check *is* gated by `core.multiPackIndex`; the pack bitmap check is not**
-   (X1 vs X8). That is the **midx design's** Pin N3 shape, applied one layer out.
+   (X1 vs X8). That is the **midx design's** Pin N3 shape, applied one layer out. ADR-612 declines
+   the gate; Pin AG measures what that costs on the read path.
 3. **Discovery is by the midx's *stored* trailer bytes.** X7 (rename) and X10 (flip the midx's own
    trailer, corrupt the bitmap, get **32 and not 128**) both prove it: git composes
    `multi-pack-index-<hex(stored trailer)>.bitmap` and simply does not find anything else. A
    midx whose trailer is wrong therefore *hides* its bitmap from `fsck` entirely — bit 32 fires,
-   bit 128 does not. §D5 must reproduce that, and it is the least obvious row in the design.
+   bit 128 does not. §D12 must reproduce that, and it is the least obvious row in the design.
 4. `git multi-pack-index verify` never looks at bitmaps (0 in X1–X8); the bitmap verdict lives only
    in `fsck`'s own pass, unlike the midx verdict, which Pin N of 28.2 showed is a child process.
 
@@ -517,7 +576,7 @@ ADR-586 could not test. It is ungated by the presence of a bitmap (M7), by the p
    even though the `.rev`/`.bitmap`/`.idx` are all still on disk. git's pack set requires the
    `.pack`, so an orphaned `.idx`'s sibling artefacts are never named. **This is the same universe
    ADR-579 already gives tsgit** — an orphaned `.idx` is excluded at scan time — so the two agree
-   for free, and §D4/§D5's universe choice is what keeps them agreeing.
+   for free, and §D11/§D12's universe choice is what keeps them agreeing.
 4. Together with Pin H C1 ≡ C2, the universe is now fully pinned from both ends: the artefact checks
    run over packs whose **`.idx` loads and whose `.pack` exists**, and are independent of whether
    the `.pack` *opens*.
@@ -525,89 +584,346 @@ ADR-586 could not test. It is ungated by the presence of a bitmap (M7), by the p
 ### Pin M — tsgit today (structural, read off the code)
 
 Not run as a matrix because the answer is structural and total: `isCandidate`
-(`pack-registry.ts:194`) admits only `*.idx`, and no file in `src/` opens a `.rev` or a `.bitmap`.
+(`pack-registry.ts:177`) admits only `*.idx`, and no file in `src/` opens a `.rev` or a `.bitmap`.
 tsgit's column is therefore **`0` for every Pin H, I, J and K row except the `.idx`-caused ones** —
 i.e. identical to git's `.rev`-deleted / `.bitmap`-deleted column. The read-path rows are faithful
 by accident and stay faithful; the `fsck` rows are the divergence.
 
+---
+
+The next nine pins are **new**. They measure consumption, which Pins A–M do not touch: every row
+above holds the query fixed and varies the artefact; every row below holds the artefact healthy and
+varies the query.
+
+### Pin AA — on the bitmap path git emits **no path names**
+
+Fixture **F2**. `--use-bitmap-index` selects the bitmap path; plain `rev-list` is the walk (rev-list
+has no `--no-use-bitmap-index`; the walk is its default).
+
+| # | query | lines | lines carrying a name | oid set |
+|---|---|---|---|---|
+| AA1 | `rev-list --objects HEAD` (walk) | 1605 | **805** | reference |
+| AA2 | `rev-list --objects --use-bitmap-index HEAD` | 1605 | **0** | **identical to AA1** |
+| AA3 | `rev-list --count --objects HEAD` / with `--use-bitmap-index` | — | — | both **1605** |
+| AA4 | `rev-list --count HEAD` / with `--use-bitmap-index` | — | — | both **400** |
+| AA5 | ordered oid sequence, AA1 vs AA2 | — | — | **differs** (the bitmap emits in bitmap order) |
+| AA6 | `--objects` on a want with **no bitmap entry** (F2, 425 objects) | 425 | **0** | identical to the walk's 425 |
+
+**Rules.**
+
+1. **A bitmap carries reachability and type. It carries no paths.** git's bitmap path prints the oid
+   and stops. The `--objects` name field is a **walk-only product**, produced by the tree traversal
+   that the bitmap exists to avoid.
+2. The **set** is identical; the **order** is not. Order is presentation-adjacent and tsgit returns
+   structured data, so the order rule tsgit needs is only "deterministic", not "git's".
+3. AA6 matters twice: the bitmap serves a want that has no entry of its own (Pin AD explains how),
+   and it still emits no names.
+
+This is the pin that decides how much of `rev-list --objects` the acceleration can actually serve —
+see E-1/E-2 in §Escalations.
+
+### Pin AB — bitmap and walk **disagree** once `not`/haves are present
+
+Fixture **F2**. "exact" = `closure(want) \ closure(have)`, computed independently by two full
+`rev-list --objects` runs and a set subtraction.
+
+| # | query | bitmap | walk | exact | verdict |
+|---|---|---|---|---|---|
+| AB1 | `--objects HEAD --not HEAD~50` | **200** | **204** | **200** | bitmap **==** exact; the walk over-reports |
+| AB2 | `--objects HEAD --not <a commit with an entry>` | 1308 | 1312 | — | same shape, same delta |
+| AB3 | `--objects HEAD --not <a commit with no entry>` | 1180 | 1184 | — | same shape, same delta |
+| AB4 | `--objects --all` (no haves) | 1606 | 1606 | — | identical |
+| AB5 | `--objects HEAD --not --all` (empty result) | 0 | 0 | — | identical |
+| AB6 | the four objects only the walk emits | — | — | — | all **blobs**, all **reachable from the have** |
+| AB7 | `pack-objects --revs` **with** haves | **200** | **204** | — | the same divergence, one layer up |
+| AB8 | `pack-objects --revs` **without** haves | 1605 | 1605 | — | identical |
+| AB9 | F4 (`HEAD --not topic`) | 122 | 122 | — | identical — the divergence is **fixture-dependent** |
+| AB10 | `pack-objects --revs --stdout` with a want fully covered by its have | — | — | 0 | exit **0**, a **32-byte** pack: `PACK`, version 2, **0 objects** — an empty closure is not an error |
+
+**Rules.**
+
+1. **The bitmap computes the exact set difference. git's own walk does not.** The walk marks the
+   haves' commits and root trees uninteresting but does not enumerate the haves' whole blob set, so
+   a blob reachable from both sides is emitted again. The bitmap, being a plain bit-and-not over two
+   reachability sets, cannot make that mistake.
+2. The divergence appears only when an object is reachable from **both** sides, so a fixture without
+   repeated content shows none (AB9). **An interop suite that only uses AB9-shaped fixtures will
+   miss this entirely** — the fixture must deliberately repeat blob content across the have boundary.
+3. For `pack-objects` the difference is **pack size**, not correctness: both packs are valid.
+   For `rev-list --objects` the difference **is the answer**.
+4. tsgit's own two closures sit on opposite sides of this line: `enumeratePushObjects` over-reports
+   even more than git's walk (it never subtracts the haves' objects at all), while
+   `enumerateBundleObjects` computes the exact difference. §D9 takes the consequence.
+
+### Pin AC — which `rev-list` options the bitmap answers
+
+Fixtures **F2** (linear) and **F4** (one real merge). Two independent oracles: *loaded* — set the
+bitmap's flag word to 0 and restamp, then `exit 134` proves git loaded it (Pin J rule 6);
+*answered* — on `--objects`, zero name-carrying lines proves the bitmap produced the answer (Pin AA).
+
+| option (F4 unless noted) | loaded | answered | bitmap answer == walk answer |
+|---|---|---|---|
+| `--objects <want>` | yes | **yes** | yes (227 = 227) |
+| `--count` | yes | **yes** | yes |
+| `--count --objects` | yes | **yes** | yes |
+| `--all` | yes | **yes** | yes |
+| `--not` / haves | yes | **yes** | **no** — Pin AB |
+| `--max-count=<n>` | **no** — git abandons the bitmap | no | n/a (16 = 16, both walked) |
+| `--first-parent` | yes | **yes** | **no** — **227 vs 183** objects, **76 vs 61** commits |
+| `--no-walk` | yes | **yes** | **no** — **227 vs 7** objects, **76 vs 2** commits |
+| `--reverse` | yes | yes | yes (order only) |
+| `--objects-edge` | yes | — | — |
+
+**Rules.**
+
+1. `--max-count` is the only option in ADR-613's set for which **git itself** declines the bitmap.
+2. `--first-parent` and `--no-walk` are worse: git loads the bitmap, uses it, and **silently returns
+   the wrong answer for the option** — the full reachability closure, as though the option were
+   absent. On F2 (linear, no merges) `--first-parent` looks correct; only the merge fixture exposes it.
+3. Because tsgit exposes **no** bitmap flag (ADR-616), tsgit has exactly one answer per query, and
+   the answer it must match is git's **default** — which for all three of these options is the walk.
+   §D7 therefore declines the bitmap for `--max-count`, `--first-parent` and `--no-walk`. That is a
+   consequence of ADR-616 composed with ADR-226, not a free choice.
+
+### Pin AD — entry grammar: selection, XOR chains, and a full reconstruction proof
+
+| # | measurement | value |
+|---|---|---|
+| AD1 | F1 (30 commits) → entry count | **30** — every commit selected, every `xorOffset` = 0 |
+| AD2 | F2 (400 commits) → entry count | **108** — partial coverage |
+| AD3 | F2 `xorOffset` histogram | `{0: 4, 1: 104}` |
+| AD4 | F2 entry `flags` histogram | `{0: 108}` |
+| AD5 | stored bit counts along a chain | 297, 701, 957, then 128, 64, 32, 16, 8, 4, 4, 4 … — deltas, not closures |
+| AD6 | reconstruction rule | `resolved[i] = stored[i]` if `xorOffset == 0`, else `stored[i] XOR resolved[i − xorOffset]` |
+| AD7 | **verification** | all **108** reconstructed sets equal `git rev-list --objects <commit>` **exactly** (108 / 108) |
+| AD8 | Pin C's header rule at scale | entry headers are **index** positions; bits are **pack** positions — re-confirmed on 1606 objects |
+
+**Rules.**
+
+1. **Coverage is partial by design.** git selects every commit only in small repositories; at 400
+   commits it keeps 108. A design that assumes "the want has an entry" is wrong on any real repo.
+2. **`xorOffset` counts entries backwards, never forwards**, so chains are acyclic by construction
+   and `i − xorOffset < 0` is a refusal, not a cycle check.
+3. Chains are **long and shallow-stepped**: 104 consecutive entries at offset 1 means resolving the
+   last entry touches ~104 predecessors. Reconstruction must be **iterative**, and its cost model is
+   "walk back to the nearest offset-0 or cached entry, then fold forward" (§D3).
+4. AD7 is the empirical licence for the whole consumption story: the grammar in Pin D plus the rule
+   in AD6 reproduces git's answers exactly, with no residue.
+
+### Pin AE — the four type streams are a total partition, and they are the type oracle
+
+Fixture **F2** (1606 objects):
+
+| stream | `bitSize` | set bits |
+|---|---|---|
+| commits | 401 | 400 |
+| trees | 1606 | 800 |
+| blobs | 906 | 405 |
+| tags | 12 | 1 |
+| **sum of set bits** | — | **1606 = objectCount** |
+
+Checked against `cat-file --batch-check=%(objecttype)` for **all 1606** pack positions: the stream
+owning a position predicts its type correctly **1606 / 1606**. Same result for F3's midx bitmap
+(sum of set bits = 1621 = the midx's object count).
+
+**Rule.** The type of every object in the artefact is available from the bitmap alone, with no object
+read. Type is free; **path is not available at any price** (Pin AA).
+
+### Pin AF — the `.rev` is an accelerator for consumption, never a precondition
+
+Fixture **F2**.
+
+| # | shape | `rev-list --objects --use-bitmap-index` | set | `fsck` |
+|---|---|---|---|---|
+| AF1 | `.rev` deleted, `.bitmap` healthy | exit 0, **0 name-carrying lines** ⇒ bitmap answered | identical to the with-`.rev` set | **0** |
+| AF2 | `.rev` deleted **+** bitmap flag word 0, restamped | **134** ⇒ the bitmap was still loaded | — | 0 |
+| AF3 | the second pack's `.rev` deleted while a bitmap covers the first (F3) | exit 0, bitmap answered | identical | 0 |
+
+**Rule.** git builds the reverse index in memory when the file is absent, so a `.bitmap` without a
+`.rev` is fully usable. Pin J B13 said the same thing from the `fsck` side; this says it from the
+consumption side, which is the side that matters for §D10's fallback.
+
+### Pin AG — midx bitmap preference, and the reverse-index chunk
+
+Fixture **F3** (2 packs; pack bitmap on the larger pack; midx + midx bitmap).
+
+| # | shape | detector | verdict |
+|---|---|---|---|
+| AG1 | both bitmaps healthy; **midx** bitmap flag word 0, restamped | exit **134** | the **midx** bitmap is loaded |
+| AG2 | both bitmaps healthy; **pack** bitmap flag word 0, restamped | exit **0** | the pack bitmap is **never loaded** |
+| AG3 | midx bitmap **deleted**; pack bitmap flag word 0 | exit **134** | falls back to the pack bitmap |
+| AG4 | midx **file** deleted (bitmap orphaned); pack bitmap flag word 0 | exit **134** | falls back to the pack bitmap |
+| AG5 | `core.multiPackIndex=false`; midx bitmap flag word 0 | exit **0** | the midx tier is off, midx bitmap not loaded |
+| AG6 | `core.multiPackIndex=false`; pack bitmap flag word 0 | exit **134** | falls back to the pack bitmap |
+
+Structure, measured off F3's midx:
+
+| # | measurement | value |
+|---|---|---|
+| AG7 | `multi-pack-index write` **without** `--bitmap` | chunks `PNAM, OIDF, OIDL, OOFF` — **no reverse-index chunk** |
+| AG8 | `multi-pack-index write --bitmap` | adds **`{'R','I','D','X'}`** and **`{'B','T','M','P'}`** |
+| AG9 | reverse-index chunk length | `6484 = 4 × 1621` = `objectCount × u32BE` |
+| AG10 | reverse-index chunk semantics | `chunk[p]` = the **midx position** of the object at **pseudo-pack position `p`**; the sequence is strictly increasing in `(packIndex, offset)` |
+| AG11 | `{'B','T','M','P'}` content | `{0, 15}` then `{15, 1606}` — per pack, `{ first pseudo-pack position, count }`; totals 1621 |
+| AG12 | midx bitmap entry headers | **midx positions**, not pseudo-pack positions: **108 / 108** entries matched under the midx reading, **0 / 108** under the other |
+| AG13 | end-to-end reconstruction | bits → reverse-index chunk → midx position → oid: all **108** closures equal real `rev-list --objects` runs |
+| AG14 | midx bitmap embedded checksum | equals the midx's **stored** trailer, which is also its filename in hex |
+
+**Rules.**
+
+1. **Preference order is midx bitmap ≻ pack bitmap**, and it is exclusive: with a usable midx bitmap
+   present git does not even open the pack bitmap (AG2). ADR-617's assertion is measured.
+2. **Fallback is by artefact, not by tier**: remove the midx bitmap (AG3) or break the midx's
+   discoverability (AG4) and the pack bitmap is used.
+3. `core.multiPackIndex=false` removes the midx tier and the pack bitmap takes over (AG5/AG6).
+   ADR-612 declines that key, so tsgit consumes a midx bitmap where such a repository's git would
+   consume the pack bitmap. Both produce the same object set, so the divergence is in *which file is
+   read*, never in an answer — that is the whole residual, and it is smaller than it looks.
+4. **A bit resolves to an oid with the reverse-index chunk alone**; `{'B','T','M','P'}` is not needed
+   for that and is not consumed here (§Out of scope).
+5. AG7 is a free structural invariant: no reverse-index chunk ⇒ no midx bitmap was ever written, so
+   a midx bitmap found beside a chunk-less midx is not consumable and the pack tier takes over.
+
+### Pin AH — completeness beyond the artefact, and the extension layout
+
+| # | shape | result |
+|---|---|---|
+| AH1 | F3 with the midx removed: a pack bitmap covering 1606 of the 1621 objects in two packs | bitmap answered; **1620 = the walk's 1620**; 0 name-carrying lines |
+| AH2 | F2 plus a **loose** commit on top (3 loose objects) | bitmap answered; **1608 = the walk's 1608**; bitmap still loaded (flag-0 detector = 134) |
+| AH3 | AH1 with the other pack's `.rev` also deleted | unchanged |
+
+**Rule.** git extends a bitmap with an in-memory index for objects that have no position in it —
+objects in other packs, and loose objects. **A bitmap never truncates the answer**; it only
+accelerates the part of the answer it covers.
+
+Extension layout, F2 (1606 objects, 108 entries), measured by parsing to the end of the entries:
+
+| configuration | flag word | type streams end | **entries end** | trailing extension bytes |
+|---|---|---|---|---|
+| default | `0x0005` | 240 | **9824** | 6424 = `4 × objectCount` (hash cache) |
+| `pack.writeBitmapHashCache=false` | `0x0001` | 240 | **9824** | 0 |
+| `+ pack.writeBitmapLookupTable=true` | `0x0015` | 240 | **9824** | 8152 = 6424 + `16 × entryCount` |
+
+**Rule.** **Every flag-selected extension is trailing.** The per-commit entries sit at the same
+offset under every flag word, so a consumer that reads header → four type streams → entries never
+has to interpret the flag word at all. Pin E's row B6 (`flags = 0xffff` → *"too short to fit
+pseudo-merge table"*) is git validating trailing data tsgit never reaches.
+
+### Pin AI — the accelerator identity
+
+Fixture **F2**, 1606 objects: `entryOffsets(index)[revBody[p]]` is **strictly increasing in `p`**
+across all 1606 positions. That is exactly ADR-604's claim
+`sortedOffsets[p] = entryOffsets(index)[revIndexPositionAt(rev, p)]`, and it is the whole of the
+accelerator's correctness. (Verified on F1 and on Pin B's 12-object fixture too.)
+
 ## Requirements
 
-Verifiable at ship time.
+Verifiable at ship time. 1–12 are `fsck` and parsing; 13–23 are consumption and public surface;
+24–28 stand across everything.
 
 1. **The exit integer matches git on every Pin H/I/J/K/L row.** Bit 64 fires for a `.rev` that
    exists, is readable and fails any of git's three check families; bit 128 fires for a `.bitmap`
-   (pack or midx) whose own digest disagrees. Both compose by plain OR and are **ungated by mode** —
-   default, `--connectivity-only`, `--no-full` and `--strict` (Pin I, Pin L Y1).
+   (pack or midx) whose own digest disagrees. Both compose by plain OR and are **ungated by mode**.
 2. **Absent, unreadable and orphaned artefacts are non-events** — no finding, no bit, no rejection
-   (R11–R13, B1, B12, B23, X5–X7). An unreadable artefact is silent even in the logger, because
-   git is (R12).
+   (R11–R13, B1, B12, B23, X5–X7). An unreadable artefact is silent even in the logger, because git
+   is (R12).
 3. **`.rev` version accept-set is exactly `{1}`**; `hashId` accept-set is `{1, 2}` and is **not**
-   cross-checked against the repository (R16). Neither is stricter nor laxer than git.
+   cross-checked against the repository (R16). Neither stricter nor laxer than git.
 4. **The `.rev` size rule is exact** — `12 + 4·N + 2·digestLength` — with the short case and the
-   wrong-length case distinguished at the `12 + 2·digestLength` boundary (R7d vs R7c, R6/R8 vs R17),
-   because they are separate refusal conditions with separate git messages.
-5. **The `.rev` body cross-check is exhaustive**: every position whose stored value differs from
-   the value derived from the `.idx` yields its own finding (N1), and the bit is set once.
+   wrong-length case distinguished at the `12 + 2·digestLength` boundary (R7d vs R7c, R6/R8 vs R17).
+5. **The `.rev` body cross-check is exhaustive**: every position whose stored value differs from the
+   value derived from the `.idx` yields **its own** finding carrying `{ pack, position, expected,
+   stored }` (N1, ADR-608), and the bit is set once. The array is built by loop-drain, never by
+   `push(...spread)`.
 6. **A `.rev` for a pack whose `.idx` is unusable produces no additional finding** (C1 ≡ C2).
-7. **No `.rev` or `.bitmap` fault ever fails a read**, changes a lookup result, or changes
-   `enumerateObjects`' output. Byte-identical results with and without both artefacts, in health
-   and in every corruption row — this is the property the interop twin pins.
-8. **The bitmap obligation is the digest and nothing else** (Pin J rules 1–2). tsgit reads no
-   bitmap header, no EWAH stream and no flag word unless DC-3 rules otherwise; the six RESTAMPED
-   rows are interop rows precisely so a future EWAH parser cannot silently make tsgit stricter.
+7. **Three `.rev` finding variants after this change** (ADR-607 composed with ADR-608): the existing
+   one keeps its `.idx`-caused meaning; one new one reports a fault in the `.rev` **file**; one new
+   one carries a **per-position** body mismatch (requirement 5), whose integers cannot ride in a
+   `reason` string. `EXIT_PACK_REV_INDEX`'s doc-comment no longer says tsgit has no reverse-index
+   reader.
+8. **The `fsck` bitmap pass never parses.** It hashes `[0, len − digestLength)` and compares
+   (ADR-605). Every Pin J RESTAMPED row is an interop row asserting **no** finding, so a future
+   refactor cannot fuse the parse path into the verdict path.
 9. **A midx bitmap is found via the midx's *stored* trailer bytes**, so a midx with a wrong trailer
-   hides its bitmap (X10 → 32, not 32\|128), and the check is skipped where git skips it.
-10. **Hash-generic in the parser**: `digestLength` is a parameter; no branch on 20 vs 32 (Pin G).
-    The pack subsystem's pre-existing SHA-1-only limit (B-10) is neither widened nor narrowed.
-11. **Path safety is total.** Both artefact names are derived from a pack base name the scan already
+   hides its bitmap (X10 → 32, never 32\|128), and a renamed bitmap is simply not found (X7).
+10. **Bounded reads.** The `.rev` is refused unless its size is **exactly**
+    `12 + 4·N + 2·digestLength`; the bitmap gets a dedicated named constant whose arithmetic is in
+    its doc-comment (ADR-611). No allocation is ever sized by a declared count that has not been
+    validated against the remaining buffer.
+11. **No `DataView` read at an unproven offset** in either parser. A `RangeError` escaping either is
+    a defect, not an error path — the totality property test is the guard.
+12. **A `.rev` refusal carries a dedicated error code with a closed `check` discriminant**
+    (ADR-610), and so does a bitmap refusal (§D3, on ADR-610's ratio). **Neither**
+    `isSkippableIdxFault` **nor** `isSkippablePackFault` returns `true` for **either** code at
+    **any** `check` value — asserted, not inspected.
+13. **`buildOffsetTable` consumes a usable `.rev`** (ADR-604). With a **healthy** `.rev` the
+    resulting `sortedOffsets` is **identical** to the sort's, on every fixture (Pin AI). With an
+    absent, unreadable or **refused** `.rev` the sort runs, so no result depends on the artefact's
+    presence. A `.rev` that parses but whose body is wrong is **trusted** and produces what that
+    body implies — that is requirement 14, not a violation of this one.
+14. **The `.rev` body and bitmap closures are used as found** (ADR-606, ADR-615). No pre-use digest
+    verification exists on either path. Parse-time bounds still apply in full.
+15. **The `.rev` accelerator is measured, not asserted**: absolute wall-clock, main versus branch,
+    from the CI nightly artefact, over a many-object shape **and** a many-small-packs shape. A
+    measured regression is fixed in this PR.
+16. **The closure engine returns the same object set with and without a bitmap** on every fixture
+    (ADR-616's double-run obligation) — a **set** equality, since order is deterministic per tier and
+    not equal across tiers (§D6). The test surface selects the tier internally; **no public option
+    does** (ADR-616).
+17. **The bitmap is declined for `--max-count`, `--first-parent` and `--no-walk`** (Pin AC), so
+    tsgit's single answer for those options is git's default answer.
+18. **A bitmap never truncates an answer** (Pin AH): objects in other packs and loose objects are
+    included, exactly as git includes them.
+19. **Preference order is midx bitmap ≻ pack bitmap ≻ walk** (Pin AG), and a fault at any tier falls
+    through to the next without changing the result.
+20. **`rev-list` and `pack-objects` return structured fields only** (ADR-249) — oids, types, counts,
+    booleans; never a rendered line, never a `--pretty`/`--format`/`--abbrev`/`--date` option.
+21. **`pack-objects` writes a `.pack` and an `.idx` and nothing else** (ADR-614): no `.rev`, no
+    `.bitmap`, no delta entries, no new `@writes` annotation, no write-surface allowlist entry.
+22. **Both new commands pay the full Tier-1 surface tax**: barrel, facade + facade surface-lock test,
+    `docs/use/commands/<kebab>.md` + index row, a parity scenario invocation, the README count, and a
+    regenerated `reports/api.json`.
+23. **Every other public-surface change is deliberate**: the two new `FsckFinding` variants, the
+    bitmap finding variant, both new error codes with their `check` unions, `EXIT_BITMAP`, and any
+    new domain export appear in `reports/api.json` on purpose, and `FsckResult.exitCode`'s
+    doc-comment gains bit 128.
+
+Standing, across all of the above:
+
+24. **No `.rev` or `.bitmap` fault ever fails a read** or changes a lookup result (Pin H/J).
+25. **No swallowed reason.** Where a fault is not propagated it reaches `ctx.logger?.warn?.` with the
+    artefact name — **except** where git is silent (R12/B12/X6), which tsgit matches. Silence about
+    the *strategy* is not silence about a *fault* (ADR-616).
+26. **Path safety is total.** Every artefact name is composed from a pack base name the scan already
     vetted with `isSafePackName`, or from a midx trailer rendered as hex — never from bytes inside
-    either artefact. Neither format contains a name (§D12 T-1).
-12. **Bounded reads.** Each artefact is `stat`-then-read-then-rechecked against its own named bound
-    before any allocation sized by a declared count (ADR-600's shape, DC-9).
-13. **No `DataView` read at an unproven offset.** A `RangeError` escaping the parser is a defect,
-    not an error path (T-4).
-14. **No swallowed reason.** Where a fault is not propagated it reaches `ctx.logger?.warn?.` with
-    the artefact name — **except** where git is silent (R12/B12/X6), which tsgit matches.
-15. **Structured data only** (ADR-249): findings carry `{ type, pack | artefact, reason }`; git's
-    `error:` lines are reconstructed inside the interop test.
-16. **The #263 handle lifecycle is untouched.** Both artefacts are read whole via `ctx.fs.read` and
-    hold no `FileHandle`; opened-minus-closed stays 0.
-17. **Write-path symmetry**: tsgit gains no `.rev`/`.bitmap` write surface, and §D11's checklist is
-    green with no new `@writes` annotation.
-18. **Every public API change is deliberate** — new `FsckFinding` variants and any new domain export
-    appear in `reports/api.json` on purpose, and `FsckResult.exitCode`'s doc-comment gains bit 128.
-19. **The pass universe is `registry.all()`** (§D4): a pack refused at the header gate **still** has
-    both artefacts checked (Pin L Y2/Y5); a pack whose `.idx` is unparseable, or whose `.pack` is
-    missing, has **neither** (Pin H C1 ≡ C2, Pin L Y4/Y6). Neither pass ever opens a `.pack`.
+    any artefact.
+27. **The #263 handle lifecycle is untouched.** All three artefacts are read whole via `ctx.fs.read`
+    and hold no `FileHandle`; opened-minus-closed stays 0.
+28. **Hash-generic in every parser**: `digestLength` is a parameter; no branch on 20 vs 32 (Pin G).
 
 ## Design
 
-### §D1 — the scope boundary, stated before anything else
+### §D1 — what "read support" means after the ratification
 
-The brief asks for honesty about whether the payload is a live acceleration path or a
-verify-and-report surface. **It is overwhelmingly the latter**, and the evidence is a consumer
-census, not a judgement:
+Four arms, all in this entry, none deferred:
 
-| capability the artefacts accelerate | tsgit surface | verdict |
-|---|---|---|
-| `verify-pack`-style enumeration | none — no such command | no consumer |
-| reachability closure / object counting | `fsck`'s reachability pass | **must not** use a bitmap: fsck's job is to verify the graph, not to trust a cached answer about it |
-| `pack-objects` object selection | `buildPack` (`build-pack.ts`) sources every object through `readObject` | no bitmap entry point; a bitmap gives reachability, not bytes |
-| fetch/push negotiation | `fetch-pack.ts` / `push` | tsgit negotiates by ref advertisement, not by bitmap |
-| full-universe enumeration | `enumerateObjects` | served directly from `allObjectIds(index)` — a bitmap is strictly less information |
-| **offset → pack position** | **`buildOffsetTable` (`pack-registry.ts:219`)** | **the one real consumer**, and it is `.rev`'s, not the bitmap's (§D7) |
+| arm | artefact | ADR | section |
+|---|---|---|---|
+| the reverse-index accelerator | `.rev` | 604 | §D10 |
+| bitmap-backed reachability behind two new commands | `.bitmap`, midx `.bitmap` | 603, 613, 614, 615, 616, 617 | §D6–§D9 |
+| the `fsck` reverse-index pass (exit bit 64) | `.rev` | 607, 608 | §D11 |
+| the `fsck` bitmap pass (exit bit 128) | both bitmaps | 605, 612 | §D12 |
 
-So, plainly:
+The load-bearing structural rule that keeps these four from contaminating each other:
 
-- **`.bitmap`: no consumer exists or is foreseeable in tsgit's current command set.** Its entire
-  faithful payload is *"hash the file, compare the trailer, emit bit 128"* — Pin J rule 1. Building
-  an EWAH parser would be code with one caller (its own test). DC-3 puts "ship the verdict only"
-  against "ship the parser dark" against "defer the whole artefact".
-- **`.rev`: one genuine consumer** (`buildOffsetTable`) plus the `fsck` obligation. DC-2 separates
-  the two, because the `fsck` arm is required for faithfulness and the acceleration arm is not.
+> **The parser exists for consumption. The `fsck` bitmap pass does not parse.** (ADR-605)
 
-This is the honest shape of the entry, and it inverts the brief's cost model: the *parsers* are the
-optional part and the *verdicts* are the obligation.
+Everything downstream follows. Because `fsck` never parses a bitmap, no structural strictness in the
+parser can produce a finding git would not produce — so the parser is free to be *stricter* than git
+wherever strictness buys safety, since its only refusal behaviour is to **decline and fall back**,
+and a decline changes no result (ADR-616). That asymmetry is why T-3's mitigation can be aggressive
+without costing a single point of faithfulness. It is stated here, once, because three later sections
+lean on it.
 
 ### §D2 — the `.rev` domain parser: `src/domain/storage/rev-index.ts`
 
@@ -637,51 +953,489 @@ export function parsePackRevIndex(
 export function revIndexPositionAt(rev: PackRevIndex, p: number): number;
 ```
 
-Parse order, each step gated on the previous (this ordering is what makes requirement 13 true):
+Parse order, each step gated on the previous (this ordering is what makes requirement 11 true):
 
 1. `bytes.length >= REV_HEADER_SIZE (12) + 2 * digestLength` → else `check: 'size'`, reason
    `too small` (rows R6/R7/R8/**R7d**).
 2. magic `{'R','I','D','X'}` → `check: 'signature'` (R1).
-3. version `=== 1` → `check: 'version'` (R2/R3). **Not** `{1,2}` — this is the one place a reader
-   arriving from the midx will over-generalise.
-4. `hashId ∈ {1, 2}` → `check: 'hash-id'` (R5). **No comparison against `digestLength`** — R16
-   pins that git accepts the disagreement. Recorded as a field, never a gate.
+3. version `=== 1` → `check: 'version'` (R2/R3). **Not** `{1,2}` — the one place a reader arriving
+   from the midx will over-generalise.
+4. `hashId ∈ {1, 2}` → `check: 'hash-id'` (R5). **No comparison against `digestLength`** — R16 pins
+   that git accepts the disagreement. Recorded as a field, never a gate.
 5. `bytes.length === 12 + 4 * objectCount + 2 * digestLength` → `check: 'size'`, reason `corrupt`
-   (rows **R7c**/R7b/R17). Distinct reason from step 1's, because git's two messages are distinct,
-   and R7d↔R7c pins the boundary between them one byte apart.
+   (rows **R7c**/R7b/R17). Distinct reason from step 1's, because git's two messages are distinct and
+   R7d↔R7c pins the boundary one byte apart.
 
-`revIndexPositionAt` reads `view.getUint32(12 + 4 * p)` after `p < objectCount`; the **value** is
-not range-checked here (a value ≥ `objectCount` is a *verification* verdict, §D4, not a parse
-refusal — R14 is reported by `fsck`, not by the loader).
+`revIndexPositionAt` reads `view.getUint32(12 + 4 * p)` after `p < objectCount`; the **value** is not
+range-checked here — a value ≥ `objectCount` is a *verification* verdict (§D11), not a parse refusal
+(R14 is reported by `fsck`, not by the loader). This is the single most important line in the file
+for ADR-606: the read path **trusts** that value, and §D10 says what that costs.
 
 **`objectCount` is a parameter, not a derived value.** It could be derived as
 `(len − 12 − 2·digestLength) / 4`, but then step 5 becomes tautological and R17 could never be
-detected. Passing it in is ADR-577's rule (cross-checks belong to the caller, which holds the
-`.idx`) and it is what makes the format self-checking at all.
+detected. Passing it in is ADR-577's rule and it is what makes the format self-checking at all.
 
-**No EWAH / bitmap parser ships** under the recommended scope (§D1, DC-3). If DC-3 rules otherwise,
-Pin D and Pin E are the complete specification and the parser belongs in a sibling
-`src/domain/storage/bitmap.ts` with the same shape.
+Step 5 doubles as the allocation bound (ADR-611): the exact-size test is simultaneously git's own
+size check and the proof that every subsequent `getUint32` is in range. `N` is transitively bounded
+because it comes from an `.idx` already capped at `MAX_PACK_IDX_BYTES`.
 
-### §D3 — discovery: a sibling-artefact listing, at zero extra I/O
+### §D3 — the bitmap domain parser: `src/domain/storage/bitmap.ts`
 
-Both artefacts are named entirely from things the registry already holds, so **neither format ever
-contributes a path component** (requirement 11):
+Pins D, E, AD, AE and AH are the complete specification. Shape:
+
+```ts
+export interface PackBitmap {
+  readonly version: 1;
+  readonly optionFlags: number;
+  readonly entryCount: number;
+  readonly digestLength: number;
+  /** The embedded pack (or midx) checksum. Retained, NOT compared (Pin J B16). */
+  readonly checksum: Uint8Array;
+  /** Byte offsets of the four type streams, in order: commits, trees, blobs, tags. */
+  readonly typeStreamOffsets: readonly [number, number, number, number];
+  /** Byte offset of the first per-commit entry. */
+  readonly entriesOffset: number;
+  readonly _bytes: Uint8Array;
+  readonly _view: DataView;
+}
+
+export interface BitmapEntryHeader {
+  /** Index position (pack bitmap) or midx position (midx bitmap) of the commit. */
+  readonly position: number;
+  readonly xorOffset: number;
+  readonly flags: number;
+  /** Byte offset of this entry's EWAH stream. */
+  readonly streamOffset: number;
+}
+
+export function parsePackBitmap(bytes: Uint8Array, digestLength: number): PackBitmap;
+export function bitmapEntryHeaders(bitmap: PackBitmap): ReadonlyArray<BitmapEntryHeader>;
+
+/** Folds one EWAH stream into `into` with the given operation. Never allocates. */
+export function foldEwahStream(
+  bitmap: PackBitmap,
+  streamOffset: number,
+  into: Uint32Array,
+  op: 'or' | 'xor',
+): void;
+```
+
+Parse order:
+
+1. `bytes.length >= 12 + digestLength` → else `check: 'size'`.
+2. magic `{'B','I','T','M'}` → `check: 'signature'`.
+3. u16BE version `=== 1` → `check: 'version'`.
+4. u16BE option flags: **`0x1` (full-DAG) must be set** → else `check: 'options'`. git *aborts* here
+   (Pin E, B19); a library cannot abort, so tsgit **declines** the artefact and falls back
+   (ADR-605, ADR-616). No other bit is interpreted — Pin AH proves every flag-selected extension is
+   trailing, so the flag word is never length-determining for anything tsgit reads.
+5. u32BE entry count; `digestLength` bytes of embedded checksum, retained and never compared.
+6. Four EWAH streams in order (commits, trees, blobs, tags), each **skipped by arithmetic**:
+   `next = at + 8 + 8·wordCount + 4`, with `next <= bytes.length` proved **before** the word count
+   is used for anything (git's own `eof in data` check, Pin J B21). The empty stream is
+   `bitSize=0, wordCount=1` — 20 bytes, not 12 (Pin D); a parser that special-cases "empty means
+   zero words" mis-parses git's output.
+7. `entryCount` entry headers, each `{ u32 position, u8 xorOffset, u8 flags }` followed by a stream
+   skipped the same way. Refuse if `xorOffset > i` (Pin AD rule 2 — the base must precede) or if any
+   arithmetic would leave the buffer.
+
+**Everything after the last entry is ignored.** The hash cache, the lookup table and the pseudo-merge
+table are trailing (Pin AH) and none of them is consumed (§Out of scope).
+
+**EWAH decoding is lazy, never materialised** (ADR-611, T-3). `foldEwahStream` walks run-length
+words and folds directly into a caller-owned `Uint32Array` sized from the artefact's **object count**,
+not from the stream's declared `bitSize`:
+
+- a clean run of value 1 fills whole words with `0xffffffff`, **clamped at the destination's end**;
+- a clean run of value 0 advances the cursor and writes nothing;
+- literals are folded word by word, also clamped;
+- a run-length word declaring 2³² clean words costs a bounded number of writes because the
+  destination is bounded — the bomb (T-3) is defused by the **destination**, not by validating the
+  declared length, which is exactly why the mitigation cannot be forgotten.
+
+Refusals carry a dedicated error code with a closed `check` union
+(`'size' | 'signature' | 'version' | 'options' | 'stream' | 'entry'`) — ADR-610's ratio, applied one
+artefact over, and for the same reason: reusing `INVALID_PACK_INDEX` would be laundered by
+`isSkippableIdxFault` into "skip this pack" and could remove a healthy pack from the generation.
+The same "neither skip predicate admits it at any `check` value" assertion applies.
+
+**The bound** (ADR-611, requirement 10). `MAX_PACK_BITMAP_BYTES` joins `validators.ts` beside
+`MAX_MIDX_BYTES`, sized from the artefact's object count rather than as a flat number, with the
+arithmetic **and its measurement** in the doc-comment:
+
+```
+maxBitmapBytes(objectCount) = BITMAP_HEADROOM_BYTES_PER_OBJECT * objectCount + BITMAP_FLOOR_BYTES
+```
+
+Measured density, so the headroom is a factor and not a guess: **16268 bytes / 1606 objects ≈ 10.1
+bytes per object** for F2's pack bitmap and **16176 / 1621 ≈ 10.0** for F3's midx bitmap. A headroom
+constant of 64 bytes per object is ~6× the measured density and still bounds a 2 M-object repository
+at ~128 MiB — generous, finite, and derived rather than invented. The file is `stat`ed against this
+bound before it is read; `objectCount` is itself bounded transitively through the `.idx` cap.
+
+**A too-large `bitSize` is harmless, not a refusal.** The engine sizes its bit space from the
+artefact's object count and clamps every fold at that boundary (T-3), so a stream claiming
+`bitSize = 0xffffffff` (Pin J B22, which git also shrugs at) costs bounded work and contributes bits
+only where they can mean something. The parser therefore does **not** cross-check `bitSize` against
+the object count: it has no object count to check against (ADR-577), and the engine does not need
+the check.
+
+**File budget.** Header + entry headers + EWAH folding is comfortably under 400 lines; if it is not,
+the EWAH reader splits into `src/domain/storage/ewah.ts` and the bitmap file keeps the container.
+
+### §D4 — position mapping
+
+Three mappings, one per artefact family. All of them are *application-layer* concerns (they need the
+`.idx` or the midx, which a context-free parser must not reach for — ADR-577).
+
+**Pack bitmap.** `bit p` is a **pack position**. Resolution:
+
+```
+oid = allObjectIds(index)[ revIndexPositionAt(rev, p) ]        // .rev usable
+oid = allObjectIds(index)[ packPositionMap(index)[p] ]         // .rev absent/refused
+```
+
+`packPositionMap` is the index positions `[0, N)` ordered by `entryOffsets(index)[i]` — the same
+information the `.rev` body holds (Pin B), computed in O(n log n) when the file is not there. Pin AF
+is the licence: git does exactly this, and a bitmap without a `.rev` is fully usable.
+
+Entry headers go the other way: an entry's `position` is an **index position**, so finding "the entry
+for commit `c`" is `lookupPackIndex(index, c)` then a scan (or a prebuilt map) over entry headers.
+
+**Midx bitmap.** `bit p` is a **pseudo-pack position**. Resolution needs the midx's reverse-index
+chunk (ADR-617, Pin AG):
+
+```
+oid = midxOidAt(midx, midxReverseIndexAt(midx, p))
+```
+
+Entry headers are **midx positions** (Pin AG12), so `midxOidAt(midx, header.position)` names the
+commit directly — no reverse-index hop. Getting this backwards is the single most likely
+implementation bug in the entry, and AG12 is the assertion that catches it (108 / 108 one way, 0 /
+108 the other).
+
+`src/domain/storage/midx.ts` gains, following the existing optional-chunk pattern that `LOFF` uses:
+
+```ts
+// Same shape as CHUNK_ID_PNAM / CHUNK_ID_OIDF / CHUNK_ID_OIDL / CHUNK_ID_OOFF.
+// The literal is Pin F's four bytes. The project dictionary carries those four
+// chunk ids and NOT this one, so the same change adds the token to cspell.
+const CHUNK_ID_REVERSE_INDEX = /* Pin F's {'R','I','D','X'} */;
+// on MultiPackIndex:
+readonly reverseIndexOffset: number | undefined;
+export function midxReverseIndexAt(midx: MultiPackIndex, position: number): number;
+```
+
+Validation: the chunk, when present, must be exactly `objectCount × 4` bytes (Pin AG9); anything else
+is a `check: 'chunk-length'` refusal in the existing union. **Absence is not a fault** — Pin AG7
+shows a midx written without `--bitmap` has no such chunk, which is the common case. A midx bitmap
+found beside a midx with no reverse-index chunk is simply not consumable, and the pack tier takes
+over (Pin AG rule 5).
+
+**Objects with no position.** Pin AH: a closure can contain objects that are in another pack or
+loose. Those get positions appended after the artefact's object count in the engine's own bit space
+(§D6), and their type comes from the object header, not from a type stream.
+
+### §D5 — artefact discovery and fault classification (ADR-609)
+
+`src/application/primitives/internal/pack-artefact-source.ts` owns discovery, the bounded read and
+fault classification for all three artefacts, and is consumed by **four** callers: `buildOffsetTable`,
+the closure engine, the `fsck` reverse-index pass and the `fsck` bitmap pass.
+
+Names never come from inside a format (requirement 25):
 
 | artefact | name | source |
 |---|---|---|
-| pack `.rev` | `<packBaseName>.rev` | `packBaseName(idxEntryName)` (`pack-shared.ts:69`), already `isSafePackName`-vetted |
+| pack `.rev` | `<packBaseName>.rev` | `packBaseName(idxEntryName)` (`pack-shared.ts`), already `isSafePackName`-vetted |
 | pack `.bitmap` | `<packBaseName>.bitmap` | same |
-| midx `.bitmap` | `multi-pack-index-<hex>.bitmap` | `bytesToHex` of the **stored** trailer slice of the in-use midx layer — the same `head._bytes.subarray(bodyEnd)` `verifyMidxTrailer` (`midx-binding.ts:298-303`) already takes (Pin K rule 3) |
+| midx `.bitmap` | `multi-pack-index-<hex>.bitmap` | `bytesToHex` of the **stored** trailer slice of the in-use midx layer — the same `head._bytes.subarray(bodyEnd)` `verifyMidxTrailer` (`midx-binding.ts:298-303`) already takes (Pin K rule 3, ADR-617) |
 
-`scanPacks` already does one `readdir` of `objects/pack/` and keeps the entry list to apply ADR-579's
-sibling-`.pack` rule. **Presence** of `<base>.rev` / `<base>.bitmap` is read off that same listing —
-no extra syscall, and `entry.isFile` excludes symlinks and directories exactly as the `.idx` filter
-does (T-8). The artefacts are then *read* only when a consumer asks (the fsck pass, or §D7).
+`scanPacks` already performs one `readdir` of `objects/pack/` and keeps the entry list to apply
+ADR-579's sibling-`.pack` rule. **Presence** is read off that same listing filtered on
+`entry.isFile` — no extra syscall, and symlinks and directories are excluded exactly as the `.idx`
+filter excludes them (T-8). Artefacts are *read* only when a consumer asks.
 
-Where the code lives is DC-7; the recommendation and its shape are argued there.
+Per-pack loads are single-flighted with `createPromiseMemo` (ADR-609, PR #263): a rejection is never
+memoised, `refresh()` clears, `dispose()` is terminal.
 
-### §D4 — the `fsck` `.rev` pass
+Fault classification is one function shared by every consumer: `{ kind: 'absent' | 'unreadable' |
+'refused' | 'usable', … }`, where `unreadable` is silent (git is — R12/B12/X6) and `refused` carries
+the `TsgitError` for the caller to log or map to a finding. Consumers **never** re-classify.
+
+### §D6 — the shared closure engine
+
+`src/application/primitives/internal/closure-engine.ts`. One engine, two commands (ADR-613, ADR-614).
+
+```ts
+export interface ClosureRequest {
+  readonly wants: ReadonlyArray<ObjectId>;
+  readonly not: ReadonlyArray<ObjectId>;
+  /** Include trees and blobs, not just commits and tags. */
+  readonly objects: boolean;
+}
+export interface ClosureObject {
+  readonly id: ObjectId;
+  readonly type: 'commit' | 'tree' | 'blob' | 'tag';
+}
+export interface ClosureResult {
+  readonly objects: ReadonlyArray<ClosureObject>;
+  /** Whether a bitmap produced this result. Internal — never surfaced (ADR-616). */
+  readonly viaBitmap: boolean;
+}
+```
+
+**Tier selection**, in Pin AG's measured order, each tier falling through silently on any fault:
+
+1. a usable midx bitmap for the in-use midx generation, if the midx carries a reverse-index chunk;
+2. a usable pack bitmap;
+3. the walk.
+
+Selection is **not** conditional on the wants having entries — Pin AA6 and Pin AD1/AD2 show git uses
+a bitmap for wants it has never heard of. ADR-616's phrase "covers the requested tips" is therefore
+read as *"can be extended to the tips by a bounded partial walk"*, which is what git does.
+
+**The bitmap algorithm**, pinned precisely enough to implement:
+
+```
+fill(tips) -> bit set B over [0, objectCount + extendedCount):
+  pending = []
+  for t in tips:
+    e = entryFor(t)                     // §D4's header lookup
+    if e: B |= reconstruct(e)
+    else: pending.push(t)
+  if pending is non-empty:
+    walk commits from pending:
+      on a commit that HAS an entry:  B |= reconstruct(entry); do NOT traverse its parents
+      otherwise:                      set the commit's bit; if `objects`, walk its tree and
+                                      set a bit for every non-gitlink entry
+  return B
+
+closure(request):
+  W = fill(request.wants)
+  N = fill(request.not)
+  result bits = W AND NOT N            // Pin AB: this is the exact set difference
+  for each set bit p: oid = §D4 mapping; type = §D3 type streams (Pin AE) or the object header
+```
+
+**The last line of `closure` is contingent on E-1.** `W AND NOT N` is option (a) — the exact set
+difference, which is the only thing a bitmap can compute. Under option (b) the engine declines the
+bitmap whenever `not` is non-empty and the walk tier answers with git's over-reporting semantics
+instead. Everything else in this section is common to both: the fork is one tier-selection predicate
+plus one walk-tier semantic, and it is not decided here.
+
+**Edges, each with its rule:**
+
+- **Wants are peeled before anything else.** A want may be an annotated tag; `resolveTagChain`
+  (`internal/object-emit.ts`) peels it, the tag oids join the result, and the peeled commit is what
+  `fill` looks up. This is the existing enumerators' behaviour, reused rather than re-derived, and
+  Pin AE's tags stream is the artefact's side of the same fact.
+- **A want that resolves to a tree or a blob** has no bitmap entry and no parents. It contributes
+  itself, plus its own subtree under `objects`, and nothing else.
+- **Empty `wants`** yields an empty result — not an error, and not "everything".
+- **`wants` fully covered by `not`** yields an empty result (Pin AB5 measures git doing this).
+- **A revision that does not resolve** refuses, on either side. Revision resolution is a caller
+  error and is **never** a degradation arm — degradation is about artefacts, never about revisions.
+- **An unborn `HEAD` / empty repository**: `all` supplies no tips, so the result is empty.
+
+`reconstruct(entry)` resolves the XOR chain (Pin AD6) **iteratively**: walk `xorOffset` links
+backwards until an entry with `xorOffset === 0` or a cached reconstruction is reached, then fold
+forward with `foldEwahStream(..., 'xor')` into a single reused `Uint32Array`. Chains of ~100 links
+are normal (Pin AD3), so recursion is not an option.
+
+Caching: a bounded LRU of reconstructed sets, sized by a named constant, because a reconstructed set
+is `ceil(bitCount / 32)` words and caching all entries of a large repository's bitmap is
+`entryCount × objectCount / 8` bytes — the one place in this design where an innocent-looking memo
+is a memory bomb. The bound is a constant with its arithmetic in the doc-comment, ADR-600's shape.
+
+**Extended positions** (Pin AH): objects the partial walk reaches that have no position in the
+artefact are appended after `objectCount` in the engine's own bit space, with a side table
+`extendedOids: ObjectId[]` and their types taken from the object header. The bit space is grown in
+whole words; the cap is the existing `MAX_PUSH_OBJECTS`-class bound, reused rather than reinvented.
+
+**The walk tier** is the same engine with the bitmap arms removed: `fill` degenerates to "walk
+everything from the tips" and the composition of `wants` against `not` happens in the same place, so
+ADR-616's double-run equality is largely a *property of one function* rather than a coincidence
+between two implementations. That is the reason the engine exists at all rather than each command
+growing its own. Under E-1 option (b) the two tiers stop sharing the composition step for
+have-bearing queries — the walk tier keeps git's over-reporting semantics and the bitmap tier is
+simply not selected — so the double-run assertion becomes trivially true there rather than
+informative. That is E-1's cost, recorded here so it is weighed with the rest.
+
+**Order is deterministic per tier and is *not* equal across tiers.** The bitmap tier emits in
+ascending bit position (Pin AA5 shows git's own two paths differ likewise); the walk tier emits in
+walk order. Nothing sorts, because sorting a repository-sized array to satisfy a comparison the ADR
+does not ask for is a real cost for no gain: ADR-616's obligation is on the object **set**, and
+ADR-249 puts ordering-for-display on the caller.
+
+### §D7 — `rev-list` (ADR-613)
+
+`src/application/commands/rev-list.ts`. Reachability core only: `wants`, `not`, `--objects`,
+`--count`, `--max-count`, `--first-parent`, `--all`, `--no-walk`. Structured output (ADR-249):
+
+```ts
+export interface RevListOptions {
+  readonly wants?: ReadonlyArray<string>;   // revisions; `all` supplies them when set
+  readonly not?: ReadonlyArray<string>;
+  readonly objects?: boolean;
+  readonly count?: boolean;
+  readonly maxCount?: number;
+  readonly firstParent?: boolean;
+  readonly all?: boolean;
+  readonly noWalk?: boolean;
+}
+export interface RevListEntry {
+  readonly id: ObjectId;
+  readonly type: 'commit' | 'tree' | 'blob' | 'tag';
+  /** Contingent on E-2 — optional under (a), required-and-bitmap-disabling under (b). */
+  readonly path?: FilePath;
+}
+export interface RevListResult {
+  readonly entries: ReadonlyArray<RevListEntry>;
+  /** `entries.length`. With `objects` it counts objects; without it, commits and tags. */
+  readonly count: number;
+}
+```
+
+No `--pretty`, `--format`, `--date`, `--abbrev`, `--header`, `-z`, `--object-names`: every one of
+those is presentation and ADR-249 bars it independently of ADR-613.
+
+`count` is the entry count, and Pin AA3/AA4 pin that it moves with `objects`: **1605** with, **400**
+without, on the same fixture and the same tip. `count: true` does not change *what* is computed, only
+what the caller reads, so `entries` is populated either way and the caller may ignore it — there is
+no separate count-only fast path, because the bitmap already computes the whole set to count it.
+
+`all` supplies tips from every ref (branches, tags, remotes, `HEAD`) and composes with explicit
+`wants` by union, exactly as git's `rev-list --all <rev>` does. A `--max-count` of `0` yields an
+empty result rather than an unbounded one.
+
+**Bitmap eligibility is a function of the options, and Pin AC is the table.** The engine is asked for
+a bitmap-accelerated closure only when **all** of these hold:
+
+- `maxCount` is absent — git itself declines (AC row 6);
+- `firstParent` is false — git uses the bitmap and returns the wrong answer (AC row 7);
+- `noWalk` is false — same (AC row 8).
+
+Otherwise the walk tier is used. tsgit exposes no flag, so tsgit's single answer for those three
+options is git's default answer, which is the walk's. This is requirement 17 and it is forced by
+ADR-616 composed with ADR-226, not chosen.
+
+Ordering: the returned array is **deterministic per tier** and is not git's, and it is not equal
+across tiers (§D6). Pin AA5 shows git's own two paths order differently, so there is no single "git
+order" to be faithful to, and ADR-249 puts ordering-for-display on the caller. Documented as
+unspecified so a caller does not build on it, and asserted as a **set** in every equality test.
+
+### §D8 — `pack-objects` (ADR-614)
+
+`src/application/commands/pack-objects.ts`. Closure → pack, nothing else:
+
+```ts
+export interface PackObjectsOptions {
+  readonly wants: ReadonlyArray<string>;
+  readonly not?: ReadonlyArray<string>;
+  /** Directory to write into; defaults to the repository's pack directory. */
+  readonly outputDirectory?: string;
+}
+export interface PackObjectsResult {
+  readonly packId: ObjectId;          // the pack's own checksum
+  readonly objectCount: number;
+  readonly packBytes: number;
+  readonly indexBytes: number;
+}
+```
+
+It composes what already exists: the closure engine (§D6) → `buildPack` (`build-pack.ts`) →
+`serializePackfile` / `serializePackIndex` (`pack-writer.ts`). No progress line, no summary line
+(ADR-249).
+
+Bitmap eligibility is unconditional here — `pack-objects` has none of the three options that defeat
+it, and Pin AB7/AB8 measure the composition: with no haves the two paths agree exactly; with haves
+the bitmap pack is *smaller* and both packs are valid. That difference is E-1's, not a new one.
+
+Edges:
+
+- An **empty closure** writes a valid 0-object pack and its index rather than refusing, matching git
+  (Pin AB10). A caller that wants "nothing to send" reads `objectCount === 0`.
+- **`packId` is stable for a fixed tier and is *not* stable across tiers.** Object order inside the
+  pack is the closure's order, and §D6 pins that order differs between the bitmap tier and the walk
+  tier — so the same closure written twice by different tiers yields packs with the same contents and
+  **different names**. The double-run obligation for `pack-objects` is therefore asserted on the
+  object set read back out of the written `.idx`, never on `packId`. Naming this here because
+  "content-addressed" invites the opposite assumption.
+- Because ADR-614 excludes delta compression, nothing inside the pack depends on order beyond the
+  identity above.
+
+`.rev` and `.bitmap` writing and delta compression are excluded **permanently**, with ADR-614's
+reasons, in §Out of scope. Because nothing is written beyond `.pack` and `.idx`, no `@writes`
+annotation and no write-surface allowlist entry is added and that gate stays green untouched.
+
+### §D9 — the two existing closures: **not** refactored, and why
+
+**Recommendation: leave `enumeratePushObjects` and `enumerateBundleObjects` alone.** Three pinned
+reasons, in descending force:
+
+1. **`enumeratePushObjects` would change what tsgit pushes.** It walks commits `until: haves` and
+   then emits every object in every interesting commit's tree, never subtracting the haves' object
+   closure — a strict **superset** of the exact difference, and a superset of even git's own
+   over-reporting walk (Pin AB). Substituting a bitmap closure makes the pushed pack **smaller**.
+   That is a behaviour change by construction; it cannot be *proven* behaviour-preserving because
+   the observable — the bytes on the wire — provably differs. The only honest proof available would
+   be "a receiver accepts both", which is a weaker claim than behaviour preservation and is not what
+   a refactor pass is licensed to land.
+2. **`enumerateBundleObjects` needs something a bitmap does not encode.** It returns
+   `{ objects, boundary }`, where `boundary` is the set of uninteresting commits that are direct
+   parents of interesting ones. A bitmap encodes reachability, not parent edges (Pin AD/AE: bits and
+   types, nothing else), so the commit walk survives the substitution and only the cheap half of the
+   function would be accelerated.
+3. **ADR-603's decision text enumerates five deliverables** — two `fsck` arms, the accelerator, the
+   parser, and two commands — and this refactor is not among them. Leaving them alone is the ADR's
+   own scope, not a narrowing of it.
+
+**The cost, stated plainly:** tsgit ends this entry with *two* closure semantics in the codebase —
+the engine's exact difference and `enumeratePushObjects`' superset — plus `enumerateBundleObjects`'
+third, which is exact but carries a boundary. That is duplication, and a reviewer should see it named
+rather than discover it. What the refactor pass **may** unify without touching semantics: the tree
+recursion, the gitlink filter, the emit-dedupe (`internal/object-emit.ts`) and the depth bound, all
+of which are already shared or trivially shareable. What it must **not** unify: the difference
+semantics. The engine ships exactly one difference mode, because a second, unused mode is dead code
+by the project's own guardrail.
+
+### §D10 — the `.rev` accelerator in `buildOffsetTable` (ADR-604)
+
+```ts
+const raw = entryOffsets(index);                 // unchanged — the .idx is still required
+const sortedOffsets = new Array<number>(n);
+for (let p = 0; p < n; p += 1) sortedOffsets[p] = raw[revIndexPositionAt(rev, p)]!;
+```
+
+Pin AI is the correctness statement: `entryOffsets[revBody[p]]` is strictly increasing over all 1606
+positions of F2. Absent, unreadable or refused `.rev` falls back to the existing sort — **the
+fallback is the correct answer, so no result ever depends on the artefact's presence** (ADR-604).
+
+| | today | with `.rev` |
+|---|---|---|
+| CPU | `Array.prototype.sort` — O(n log n) on numbers | O(n) gather |
+| I/O | 0 extra | 1 extra file read, `4n + 12 + 2·dl` bytes (≈ 1/6 of the `.idx`) |
+| memoisation | once per pack per `Context` | unchanged |
+
+**The claim is measured, not asserted** (requirement 15): absolute wall-clock, main versus branch,
+from the CI nightly artefact, over (a) a many-object repository and (b) a many-small-packs
+repository, which is the shape where the extra `open`+`read` per pack can outweigh sorting a few
+hundred numbers. A measured regression is a defect fixed in this PR.
+
+**Two memos, one loader.** `buildOffsetTable` keeps ADR-604's exact fallback (the plain sort). The
+bitmap layer needs a different derived value — the pack-position map (§D4) — and gets its own memo,
+which uses the `.rev` body when usable and computes the offset-ordered index positions otherwise.
+Both memos call the same `pack-artefact-source` loader, so the file is read at most once per pack per
+generation and classified once.
+
+**A trusted `.rev` is a correctness surface, and ADR-606 accepts it.** `sortedOffsets` feeds
+`nextOffsetForEntry`, which decides where a packed entry's compressed data ends; a wrong body
+produces wrong slice bounds and a read that either fails to inflate or inflates a truncated stream.
+That is git's own exposure (R14 reads fine under git) and ADR-606 adopts it deliberately. T-6 records
+it as **accepted, not mitigated**; a security review that flags it should be closed against ADR-606
+rather than re-argued.
+
+### §D11 — the `fsck` reverse-index pass
 
 **The universe first, because it is pinned from both ends and it is the easiest thing to get wrong.**
 The pass runs over **`registry.all()`** — packs the scan admitted (`.idx` present *and* parseable,
@@ -693,24 +1447,23 @@ sibling `.pack` present per ADR-579) — and **not** over `health().accessible`:
 | `.pack` absent, `.idx` present | no `.rev`/`.bitmap` check (Pin L Y4/Y6) | ADR-579 excludes the orphaned `.idx` at scan time |
 | `.pack` present but unopenable | **`.rev`/`.bitmap` checked** (Pin L Y2/Y5) | in `all()`; refused only by the header gate, which `all()` does not apply (ADR-572) |
 
-So `all()` is exactly right, ungated, in every mode — and it must **not** be narrowed by
-`packAccessibilityReported`, or Y2/Y5 would lose their bits in `connectivityOnly`. Note the cost
-this inherits rather than introduces: `all()` under ADR-597 is lazy, and the `.rev` size rule needs
-`objectCount`, so the pass forces every `.idx` parse in every mode. That is precisely the trade
-ADR-586's post-review note already accepted for bit 64 (*"read and parse every `.idx` but never open
-a `.pack`"*), and **neither new pass ever opens a `.pack`**, so the note's guarantee is preserved
-verbatim.
+So `all()` is exactly right, ungated, in every mode, and it must **not** be narrowed by
+`packAccessibilityReported` or Y2/Y5 lose their bits under `connectivityOnly`. The cost it inherits
+rather than introduces: `all()` is lazy (ADR-597) and the `.rev` size rule needs `objectCount`, so
+the pass forces every `.idx` parse in every mode — precisely the trade ADR-586's post-review note
+accepted (*"read and parse every `.idx` but never open a `.pack`"*), and **neither new pass ever
+opens a `.pack`**, so that guarantee is preserved verbatim.
 
-git's three check families (Pin H rule 3) then map onto three steps per pack:
+git's three check families (Pin H rule 3) map onto three steps per pack:
 
 ```
 for each pack p in registry.all() with a <base>.rev present and readable:
-  index = await p.index()                       // ADR-597 made this a lazy accessor
+  index = await p.index()
   1. load    parsePackRevIndex(bytes, digestLength, index.objectCount)
              → refusal ⇒ finding{reason = the check's reason}, bit 64, next pack
   2. digest  hash(bytes[0 .. len−dl)) == bytes[len−dl ..]
              → false ⇒ finding{reason = 'invalid checksum'}, bit 64
-  3. body    expected = indexPositionsInPackOrder(index)
+  3. body    expected = index positions ordered by entryOffsets(index)
              for each position q in [0, N): stored[q] != expected[q]
              ⇒ one finding per mismatch, bit 64
 ```
@@ -719,22 +1472,32 @@ Four things this shape settles, each against a pinned row:
 
 - **Steps 2 and 3 both run** even when 2 fails (N2 emits `invalid checksum` *then* the position
   lines). Step 1 failing **skips** 2 and 3 — git cannot verify a file it could not load.
-- **`expected` is the index positions ordered by offset.** Concretely: sort the index positions
-  `[0, N)` by `entryOffsets(index)[i]`; the resulting array **is** the healthy `.rev` body (Pin B's
-  correlation is exactly this). tsgit already computes the sorted *offsets*
-  (`buildOffsetTable`) and discards which index position each came from; this pass needs the
-  positions, so it is a **new derivation**, not a reuse — naming it here so the implementer does not
-  try to thread it through `PackOffsetTable`, whose shape ADR-572's consumers depend on.
+- **`expected` is the index positions ordered by offset**, i.e. exactly the pack-position map §D4
+  already needs. This is the one derivation shared between the accelerator layer and the `fsck`
+  layer, and sharing it is what keeps the two from drifting.
 - **An out-of-range stored value is a step-3 mismatch, not a parse refusal** — R14 produces
-  `invalid rev-index position at 0: <expected> != 999`, i.e. git compares it like any other value. Refusing
-  it at parse time would move the finding into the wrong family and change the message.
-- **`packChecksum` is never compared** (R10b). It is parsed and retained so a future
-  `verify-pack`-class surface has it, and its non-use is asserted by an interop row rather than left
-  to inspection.
+  `invalid rev-index position at 0: <expected> != 999`, i.e. git compares it like any other value.
+- **`packChecksum` is never compared** (R10b); its non-use is asserted by an interop row rather than
+  left to inspection.
 
-Whether this widens `pack-rev-index-unusable` or adds a variant is DC-5.
+**Findings** (ADR-607 + ADR-608 composed). Three variants exist after this change:
 
-### §D5 — the `fsck` bitmap pass: `internal/fsck/bitmap-health.ts`
+| variant | cause | shape |
+|---|---|---|
+| `pack-rev-index-unusable` (existing) | the `.idx` made the reverse index unavailable | `{ pack, reason }` |
+| `pack-rev-index-invalid` (new, ADR-607) | a fault in the `.rev` **file**: steps 1 and 2 | `{ pack, reason }` |
+| `pack-rev-index-position-mismatch` (new, ADR-608) | step 3, one per mismatched position | `{ pack, position, expected, stored }` |
+
+ADR-607 adds the second; ADR-608's per-position integers are **data**, not presentation, so they
+cannot ride in a `reason` string and therefore need the third — which is exactly the argument the
+draft's DC-5 used to reject its option (c). All three set bit 64; the bit is set once regardless of
+finding count (Pin H rule 8). The findings array is built by loop-drain, never `push(...spread)`
+(ADR-608: a spread over a repo-sized array overflows the call stack near 125k elements).
+
+`EXIT_PACK_REV_INDEX`'s doc-comment is rewritten in the same change: the promise the code did not
+keep is now kept, and the comment must stop saying otherwise (ADR-607).
+
+### §D12 — the `fsck` bitmap pass: `internal/fsck/bitmap-health.ts`
 
 ADR-589's shape, and the smallest pass in the codebase:
 
@@ -747,94 +1510,75 @@ export async function runBitmapHealthPass(
 
 `opts` is taken for symmetry and **ignored** — Pin J/K's mode rows are flat, the ADR-586 posture.
 
-Its whole body, in order — over the **same `registry.all()` universe** §D4 argues for, for the same
-reason and with the same Pin L Y2/Y4 evidence:
+Its whole body, in order, over the **same `registry.all()` universe** §D11 argues for:
 
 1. For each pack in `registry.all()` with `<base>.bitmap` present **and readable**: hash
    `[0, len − digestLength)`, compare to the trailing `digestLength` bytes. Mismatch ⇒
    `{ type: 'bitmap-checksum-mismatch', artefact: '<base>.bitmap' }` and `exitBit |= 128`.
    **`len < digestLength` is a mismatch, not an arithmetic edge** — a zero-length file and a
-   10-byte file both score 128 under git (B11, B25), so the length guard must come *first* and
-   produce the finding, never a negative `subarray` bound. This is the one place the "hash and
-   compare" one-liner is wrong.
+   10-byte file both score 128 under git (B11, B25), so the length guard comes *first* and produces
+   the finding, never a negative `subarray` bound. This is the one place the "hash and compare"
+   one-liner is wrong.
 2. If a usable midx exists, compose `multi-pack-index-<hex(storedTrailer)>.bitmap` and do the same.
-   **Not present ⇒ nothing** — which is how X7 and X10 come out right without a special case: a
+   **Not present ⇒ nothing** — which is how X7 and X10 come out right with no special case: a
    renamed file, or a midx whose stored trailer is wrong, simply names a file that is not there.
-   **The trailer bytes come from `LoadedMidx`, not from `MidxHealth`** — `midxHealth()` exposes the
-   artefact *name* and a `checksumOk` boolean, not the layer's `_bytes`, so this step needs the
-   generation's `midx` (or a new accessor). That asymmetry is one of DC-7's inputs.
+   The trailer bytes come from `LoadedMidx`, not from `MidxHealth` (which exposes a name and a
+   boolean, not the layer's `_bytes`).
 3. Unreadable ⇒ nothing, silently (B12, X6).
 
-**No header parse, no version gate, no flag gate, no EWAH.** Pin J rows B14–B19 are the licence,
-and they become interop rows so that a later EWAH parser cannot make tsgit stricter than git without
-turning a test red.
+**No header parse, no version gate, no flag gate, no EWAH — even though the parser now exists three
+files away.** Pin J rows B14–B19 are the licence and ADR-605 is the rule. This is the separation the
+whole design leans on (§D1), so the RESTAMPED rows are **interop** rows, not unit rows: only the
+interop harness can prove that tsgit and git agree that a structurally broken but correctly-stamped
+bitmap is a non-event.
 
-**Ordering matters for exactly one thing and it is not correctness**: the pass must run where a
-usable midx's identity is already settled (`registry.midxHealth()` or the generation), which
-`fsck.ts`'s existing sequence guarantees — `runMidxHealthPass` is already at line 106.
+The finding carries `artefact` (the file name) and **no `reason`** — the exact shape of
+`midx-checksum-mismatch` (`internal/fsck/types.ts:92`), for the same two situations: a midx bitmap
+has no pack to name, and there is precisely one way to fail a checksum (Pin J rule 2).
 
-The `core.multiPackIndex` gate on step 2 (Pin K rule 2) has no tsgit analogue: `readConfig` has no
-such key and ADR-592 declined to add one. Step 2 is therefore **unconditional**, matching git's
-default configuration and diverging only from an explicitly-disabled one — the same call §D12.2 of
-the midx design made, restated rather than assumed.
+**Ordering matters for exactly one thing and it is not correctness**: step 2 must run where the
+in-use midx layer's identity is already settled, which `fsck.ts`'s existing sequence guarantees —
+`runMidxHealthPass` already precedes the point where the new pass is inserted.
 
-### §D6 — degradation posture on the read path
+`EXIT_BITMAP = 128` joins `exit-codes.ts`; `FsckResult.exitCode`'s doc-comment gains the bit.
 
-**There is no Tier A here, and there is no Tier B either — there is nothing.** Pin H and Pin J have
-no row where a read fails, no row where a lookup result changes, and no row where enumeration
-changes. Both artefacts are, on the read path, *purely* advisory.
+Step 2 is **unconditional** — ADR-612 declines the `core.multiPackIndex` gate, as a named deliberate
+divergence. Pin AG5/AG6 now put a number on what that widens: with the key set to `false`, git reads
+the *pack* bitmap where tsgit reads the *midx* one. Both yield the same object set (Pin AG13 versus
+Pin AD7), so the divergence is in which file is opened, never in an answer.
 
-Concretely, under the recommended scope:
+### §D13 — degradation posture
 
-| condition | read path |
-|---|---|
-| `.rev` absent / unreadable / corrupt in any way | unchanged — `buildOffsetTable` sorts, as today |
-| `.bitmap` absent / unreadable / corrupt in any way | unchanged — never opened |
-| either artefact orphaned | unchanged — never named |
+**No Tier A, and no Tier B either.** Pins H, J, AA–AH contain no row where a read fails, no row where
+a lookup result changes, and no row where an answer is lost. Every artefact is advisory in both
+tools.
 
-Under DC-2(a) (`.rev` as a live accelerator), exactly one arm appears and it is the classic
-per-artefact degradation ADR-575 fixed: `loadRevIndex` returns `undefined` on **any** fault, the
-sort runs, one `warn` is recorded, and the fault is discriminated by a **positive** allow-list over
-`TsgitError.data.code` (`INVALID_PACK_REV_INDEX`, `FILE_NOT_FOUND`, `PERMISSION_DENIED`) with
-everything else rethrown — never `if (isFatal) throw`, which would swallow a future member. That
-inversion is ADR-599's §D4.2 argument, reused verbatim.
-
-### §D7 — the acceleration arm, priced (DC-2)
-
-`buildOffsetTable` becomes, when a usable `.rev` is present:
-
-```ts
-const raw = entryOffsets(index);                 // unchanged — the .idx is still required
-const sortedOffsets = new Array<number>(n);
-for (let p = 0; p < n; p += 1) sortedOffsets[p] = raw[revIndexPositionAt(rev, p)]!;
-```
-
-| | today | with `.rev` |
+| condition | read path | closure path |
 |---|---|---|
-| CPU | `Array.prototype.sort` — O(n log n) on numbers | O(n) gather |
-| I/O | 0 extra | 1 extra file read, `4n + 12 + 2·dl` bytes (≈ 1/6 of the `.idx`) |
-| memoisation | once per pack per `Context` | unchanged |
+| `.rev` absent / unreadable / refused | `buildOffsetTable` sorts (ADR-604) | the pack-position map is computed (Pin AF) |
+| `.rev` body wrong but well-formed | **trusted** — wrong slice bounds are possible (ADR-606, T-6) | same body, same exposure |
+| pack `.bitmap` absent / unreadable / refused | unchanged — never opened | fall through to the next tier |
+| midx `.bitmap` absent / unreadable / refused / undiscoverable | unchanged | fall through to the pack bitmap, then the walk |
+| midx present without a reverse-index chunk | unchanged | midx tier unusable; pack tier takes over (Pin AG rule 5) |
+| either artefact orphaned | unchanged — never named | never named |
 
-**The claim must be measured, not asserted** — a many-pack, many-object bench row (§Test strategy),
-sourced from the CI nightly artefact, never a local run. The honest prior is that this is a **small**
-win on a path that already runs once per pack per `Context`, and that it could be a **loss** on a
-repository with many small packs, where the extra `open`/`read` per pack outweighs sorting a few
-hundred numbers. That risk is the substance of DC-2, and the bench is its resolution.
+Every degradation arm is a **positive allow-list** over `TsgitError.data.code` — the new `.rev` code,
+the new bitmap code, `FILE_NOT_FOUND`, `PERMISSION_DENIED` — with everything else rethrown. Never
+`if (isFatal) throw`, which silently swallows a future member (ADR-575, ADR-610). Codes are compared
+structurally on `data.code`, never with `instanceof`, because these errors cross module graphs.
 
-**A trusted `.rev` is a correctness surface.** `sortedOffsets` feeds `nextOffsetForEntry`, which
-decides where a packed entry's compressed data ends. A `.rev` with a wrong body silently produces
-wrong slice bounds — inflate then fails, or worse, succeeds on a truncated stream. Git accepts that
-exposure (it trusts the `.rev` on read; R14 reads fine and only `--test-bitmap` notices). DC-4 asks
-whether tsgit does too, and what verification, if any, it buys back.
+Faults are logged with the artefact name **except** where git is silent (R12/B12/X6). ADR-616's rule
+restated: silence about the *strategy* (which tier answered) is total and deliberate; silence about a
+*fault* is only where git is silent.
 
-### §D8 — error semantics
+### §D14 — error semantics
 
 | condition | today | after | git |
 |---|---|---|---|
 | any read, any `.rev`/`.bitmap` state | succeeds | **unchanged** | Pin H/J `cat-file` |
-| `fsck`, `.rev` fails a load check | exit 0, no finding | `pack-rev-index-unusable`-class finding + bit **64** | R1–R8, R7b–R7d, R17 |
-| `fsck`, `.rev` digest wrong | exit 0 | finding + bit **64** | R9b |
-| `fsck`, `.rev` body wrong | exit 0 | **one finding per mismatched position** + bit **64** | R14, R15, N1 |
+| `fsck`, `.rev` fails a load check | exit 0, no finding | `pack-rev-index-invalid` + bit **64** | R1–R8, R7b–R7d, R17 |
+| `fsck`, `.rev` digest wrong | exit 0 | `pack-rev-index-invalid` + bit **64** | R9b |
+| `fsck`, `.rev` body wrong | exit 0 | **one `pack-rev-index-position-mismatch` per position** + bit **64** | R14, R15, N1 |
 | `fsck`, `.rev` hashId 2 in a SHA-1 repo | exit 0 | **exit 0, no finding** | R16 |
 | `fsck`, `.rev` embedded pack checksum wrong | exit 0 | **exit 0, no finding** | R10b |
 | `fsck`, `.idx` unusable (`.rev` state irrelevant) | bit 64 (existing) | **unchanged** — no second finding | C1 ≡ C2 |
@@ -843,221 +1587,377 @@ whether tsgit does too, and what verification, if any, it buys back.
 | `fsck`, midx trailer wrong **and** midx bitmap corrupt | exit 0 | bit **32** only, **never 128** | X10 |
 | either artefact absent / unreadable / orphaned | exit 0 | **exit 0, no finding, no warn** | R11–R13, B1, B12, B23, X5–X7 |
 | `fsck`, artefact corrupt **+ `.pack` refused at the header gate** | bit 4 (existing) | bit 4 **and** the artefact bit | Y2 (142), Y5 (78) |
-| `fsck`, artefact corrupt **+ `.pack` absent** (orphaned `.idx`) | exit 0 | **no artefact bit** — the pack is not in `all()` | Y4, Y6 (10) |
+| `fsck`, artefact corrupt **+ `.pack` absent** (orphaned `.idx`) | exit 0 | **no artefact bit** | Y4, Y6 (10) |
 | `fsck`, `.bitmap` shorter than one digest | exit 0 | `bitmap-checksum-mismatch` + bit **128** | B11, B25 |
+| **closure**, bitmap structurally broken (restamped) | n/a | **silent fallback, identical answer** | B14–B22 |
+| **closure**, bitmap without the full-DAG flag | n/a | **silent fallback** (git aborts — not replicable) | B19 |
+| **closure**, `.rev` absent, bitmap healthy | n/a | **bitmap still used** | Pin AF1 |
 
-**Six rows in this table end `exit 0, no finding`** (R16, R10b, B14–B19, X10, Y4/Y6) and they are
-the design's hardest-won content: each is a place where an obvious-looking check would make tsgit
-*stricter* than git, and stricter is still a divergence. They outnumber the rows that add a bit.
+**Seven rows end `exit 0, no finding`** (R16, R10b, B14–B19, X10, Y4/Y6) and they remain the design's
+hardest-won content: each is a place where an obvious-looking check would make tsgit *stricter* than
+git, and stricter is still a divergence. They still outnumber the rows that add a bit.
 
-### §D9 — cache and invalidation
+### §D15 — cache and invalidation
 
-- Artefact presence is settled inside `scanPacks`, so it rides the existing scan
+- Artefact **presence** is settled inside `scanPacks`, so it rides the existing scan
   `createPromiseMemo`: single-flight, rejection never memoised, cleared by `refresh()`, `dispose()`
-  terminal (PR #263 §9, unchanged).
-- Under DC-2(a), the per-pack `.rev` load is a **new** `createPromiseMemo` beside `indexMemo` /
-  `headerMemo` / `offsetTable` — the pattern `registered-pack` already uses four times.
-- The fsck passes' verdicts are memoised **per generation** if they gain a registry accessor
-  (DC-5/DC-7), following ADR-581. If they read files directly in the pass, they are not memoised at
-  all, which is fine because `fsck` runs each pass once.
-- **No `FileHandle`.** Both artefacts are read whole via `ctx.fs.read` (requirement 16).
+  terminal.
+- Per-pack `.rev` load, pack-position map and `.bitmap` load are each a `createPromiseMemo` beside
+  `indexMemo` / `headerMemo` / `offsetTable` — the pattern `registered-pack` already uses four times.
+- The **midx bitmap** is memoised per **generation**, not per pack, because its identity depends on
+  the midx layer in use (Pin K rule 3). A `refresh()` that changes the midx changes the artefact
+  name, so the memo must hang off the generation and not outlive it.
+- Reconstructed entry bit sets live in the bounded LRU of §D6, which is per closure **call**, not per
+  `Context`: a closure is a one-shot computation and a cross-call cache would pin repo-sized memory
+  for the life of a `Context`.
+- The `fsck` passes are not memoised; `fsck` runs each pass once.
+- **No `FileHandle`.** All three artefacts are read whole via `ctx.fs.read` (requirement 26).
 - **Interop tests that let real `git` write or mutate these artefacts must build a fresh `Context`
   afterwards** — a `Context` constructed before the subprocess holds a memoised generation that
   predates it. Hard rule, not a note.
 
-### §D10 — hash-width genericity (explicit checklist)
+### §D16 — hash-width genericity (explicit checklist)
 
 | # | site | rule |
 |---|---|---|
 | H-1 | `parsePackRevIndex` | takes `digestLength`; never reads `ctx.hashConfig`; never hard-codes 20 or 32 |
-| H-2 | `.rev` `hashId` field | recorded, **never** mapped to a width and **never** compared to anything (R16). The one field a midx-trained reader will wrongly gate on |
+| H-2 | `.rev` `hashId` field | recorded, **never** mapped to a width and **never** compared to anything (R16) |
 | H-3 | `REV_HEADER_SIZE = 12` | hash-independent (Pin B) |
-| H-4 | `.rev` size rule | `12 + 4·N + 2·digestLength` — **two** digests, not one; and the too-small/corrupt split is at `12 + 2·digestLength` (R7c/R7d) |
-| H-5 | both trailer verifications | `ctx.hash.hash(bytes.subarray(0, len − digestLength))` with the algorithm from **`ctx.hashConfig`** — the repository's, exactly as `verifyMidxTrailer` (`midx-binding.ts:301`). **This is the opposite of the midx rule** (§D9 H-5 of `midx-read-support.md` selects the algorithm from the midx's own `hashVersion` byte). Pinned, not assumed: R16 restamps a `hashId = 2` `.rev` with **SHA-1** and git accepts it, so git is using the repo's algorithm and ignoring the field. Copying the midx's rule here would refuse a file git reads |
+| H-4 | `.rev` size rule | `12 + 4·N + 2·digestLength` — **two** digests, not one; the too-small/corrupt split is at `12 + 2·digestLength` |
+| H-5 | both trailer verifications | `ctx.hash.hash(bytes.subarray(0, len − digestLength))` with the algorithm from **`ctx.hashConfig`** — the repository's, exactly as `verifyMidxTrailer`. **The opposite of the midx rule**, which selects from the artefact's own `hashVersion` byte. Pinned, not assumed: R16 restamps a `hashId = 2` `.rev` with SHA-1 and git accepts it |
 | H-6 | midx bitmap filename | `2 × digestLength` hex, not `40` |
-| H-7 | `.bitmap` header offsets | checksum at byte 12, body at `12 + digestLength` — the **only** width-dependent offset in the format, and unused under the recommended scope |
-| H-8 | the surrounding subsystem | `IDX_SHA_LENGTH = 20` stays a pre-existing SHA-1-only limit (B-10); neither widened nor relied on. SHA-256 rows are parser/pass units, per Pin G |
+| H-7 | `.bitmap` header offsets | checksum at byte 12, first type stream at `12 + digestLength` — the **only** width-dependent offset in the format, and now live |
+| H-8 | `.bitmap` entry headers and EWAH words | width-independent: u32 positions, u8 offsets, u64 words |
+| H-9 | midx reverse-index chunk | width-independent (u32 per object); the midx's `digestLength` is already carried on `MultiPackIndex` |
+| H-10 | the surrounding subsystem | `IDX_SHA_LENGTH = 20` stays a pre-existing SHA-1-only limit (B-10); neither widened nor relied on. SHA-256 rows are parser and pass units, per Pin G |
 
-### §D11 — write-path symmetry (explicit checklist)
-
-Read-only. The checklist exists because "read-only" is where write-side hazards hide.
+### §D17 — write-path symmetry (explicit checklist)
 
 | # | write surface | interaction | verdict |
 |---|---|---|---|
-| W-1 | `serializePackfile` / `serializePackIndex` (`pack-writer.ts`) | writes `.pack` + `.idx`, **no `.rev`**, **no `.bitmap`** | **a live cross-tool hazard, and it is pre-existing**: git writes `.rev` by default (Pin A), so a tsgit-written pack lands beside git-written packs that all have one. Harmless today (R11: a missing `.rev` is a non-event) and it stays harmless — but it means a tsgit repository is *distinguishable* from a git one, and any future tsgit `repack` must decide whether to write `.rev`. Named, not fixed. |
+| W-1 | `serializePackfile` / `serializePackIndex` (`pack-writer.ts`) | writes `.pack` + `.idx`, **no `.rev`**, **no `.bitmap`** | **a live cross-tool asymmetry, pre-existing and now permanent** (ADR-614): git writes `.rev` by default (Pin A), so a tsgit-written pack lands beside git-written packs that all have one. Harmless in both tools (R11, B1) and it stays harmless — but a tsgit repository is *distinguishable* from a git one. Recorded, excluded permanently with ADR-614's reason |
 | W-2 | `materializePack` (`fetch-pack.ts`) | writes a fetched pack | no `.rev`/`.bitmap` arrives with it (they are local artefacts, never transported); nothing stale can be created |
-| W-3 | **overwriting a pack in place** | would orphan a stale `.rev`/`.bitmap` | structurally impossible — pack file names are content-addressed, so a rewritten pack has a new name and its own (absent) artefacts |
-| W-4 | any future `gc` / `repack` / `prune` | **deletes packs** | a deleted pack's `.rev`/`.bitmap` must be deleted with it, or the directory accumulates orphans. Orphans are *harmless* (R13/B23: git ignores both), so this is hygiene, not correctness — a strictly weaker constraint than the midx's (§D8 W-4 there), and it is worth recording that the two differ. Parking-lot constraint, restated in §Out of scope. |
-| W-5 | `tooling/audit-write-surfaces.ts` | scans for annotated write surfaces | no new write surface ⇒ no new `@writes` annotation, no allowlist entry; the gate stays green untouched |
+| W-3 | **`pack-objects`** (new) | writes `.pack` + `.idx` into the pack directory | same as W-1 by construction. It must **not** invalidate a sibling midx: a new pack the midx does not name is simply not in the midx's universe, which ADR-592 already handles. The registry `refresh()` contract is what makes the new pack visible |
+| W-4 | **overwriting a pack in place** | would orphan a stale `.rev`/`.bitmap` | structurally impossible — pack names are content-addressed, so a rewritten pack has a new name and its own (absent) artefacts |
+| W-5 | any future `gc` / `repack` / `prune` | **deletes packs** | a deleted pack's `.rev`/`.bitmap` must be deleted with it or the directory accumulates orphans. Orphans are *harmless* (R13/B23), so this is hygiene, not correctness — strictly weaker than the midx's equivalent constraint, which is a correctness one (ADR-614) |
+| W-6 | `tooling/audit-write-surfaces.ts` | scans for annotated write surfaces | `pack-objects` writes through the **existing** annotated pack-writing surface; no new artefact kind is written, so no new `@writes` annotation and no allowlist entry (ADR-614) |
 
-### §D12 — threat model
+### §D18 — threat model
 
-The subject is two binary formats an attacker with **repository write access** fully controls. They
-are **not** network artefacts — no transport delivers either (W-2) — which bounds but does not remove
-the exposure: a hostile `.git` arrives via a cloned tarball, a shared checkout, a CI cache restore,
-or a vendored fixture.
+The subject is three binary formats an attacker with **repository write access** fully controls, two
+of which now steer **which objects a pack contains**. They are **not** network artefacts — no
+transport delivers any of them (W-2) — which bounds but does not remove the exposure: a hostile
+`.git` arrives via a cloned tarball, a shared checkout, a CI cache restore, or a vendored fixture.
 
 | # | concern | assessment |
 |---|---|---|
-| T-1 | **Neither format contains a name or a path** | The single biggest structural advantage over the midx, and it is worth stating as a *finding*, not an omission: `PNAM` made traversal the midx's top risk (its T-1); `.rev` and `.bitmap` carry only integers and digests. Every filename involved is composed from an already-vetted pack base name or from hex-rendered digest bytes (§D3), so the traversal class is **absent by construction**, not mitigated. |
-| T-2 | **Unbounded allocation from a declared count** | `.rev` has **no declared count** — its length implies one, and step 5 pins it against the `.idx`'s. So the only allocation is bounded by the file, and the file by its own bound (DC-9). `.bitmap` **does** declare counts (`entryCount`, per-stream `wordCount`) and B21's `0x7fffffff` is the live shape — but under the recommended scope tsgit never reads them. If DC-3 ships a parser, every stream length must be validated against the remaining buffer **before** allocation, git's own `eof in data` check; that requirement moves from theoretical to binding the moment DC-3 flips. |
-| T-3 | **Decompression-bomb-shaped EWAH runs** | An RLW can declare a clean run of 2³² words = 2³⁸ bits. Materialising that as a JS array is 32 GiB. **Mitigation under the recommended scope: none needed — nothing decodes EWAH.** Under DC-3(b)/(c) the mitigation is mandatory and specific: decode **lazily** (iterate runs, never materialise), and bound the total decoded bit count by the pack's `objectCount`, which is knowable and small. This is the highest-severity item in the whole design and it exists **only** in the scope options that ship an EWAH parser — which is itself an argument for DC-3(a). |
-| T-4 | **Out-of-bounds `DataView` reads** | `.rev` parse steps 1 and 5 prove the exact file length before any body read, and `revIndexPositionAt` bounds `p` against `objectCount`. A `RangeError` escaping the parser is a defect (requirement 13). |
-| T-5 | **Integer overflow in offset arithmetic** | `.rev` values are u32 index positions, not offsets — they index `entryOffsets`, whose own 64-bit handling (`readOffset`, `pack-index.ts:93-108`) is untouched. `.bitmap` positions are likewise u32 bit indices. **No offset arithmetic is introduced by either format**, which is why this row is short: the hazard lives one layer down and is not reached differently. |
-| T-6 | **A non-permutation `.rev` body** (duplicates / gaps / out-of-range) | The *correctness* hazard, and its severity is entirely a function of DC-2/DC-4. Under DC-2(b) (dark) it is inert — nothing consumes the body except the fsck pass, which is *comparing* it, not trusting it. Under DC-2(a) + DC-4(a) (trust, like git) a hostile body redirects `sortedOffsets`, so `nextOffsetForEntry` returns wrong slice bounds and a read either fails to inflate or inflates a truncated stream. That is **git's own exposure** (R14 reads fine under git), so adopting it is not a new class — but tsgit would be adopting it *by choice*, on a path where the alternative (sorting) is already correct and already shipped. Weighed explicitly in DC-4. |
-| T-7 | **A stale `.rev`/`.bitmap` paired with the wrong pack** | Undetectable by design: git stores the pack checksum in both files and **checks neither** (R10b, B16). Since a pack's filename is its content hash, a stale artefact can only arise from a deliberate rename, which requires the same write access as replacing the pack. Accepted, matching git; the residual is that tsgit cannot warn about it either without diverging. |
-| T-8 | **Symlinked artefacts** | Presence comes from the `readdir` listing with `entry.isFile` (§D3), which excludes symlinks exactly as the `.idx` filter does, so a symlinked `.rev` pointing outside the repository is never opened. This is a *stronger* posture than the midx's flat-file open-by-path (its T-8) and it costs nothing because the listing is in hand. |
-| T-9 | **Log injection** | Neither format carries text. The only string in any finding is a pack base name already vetted by `isSafePackName` (control characters rejected) or a hex digest. `faultContext`'s "never nest a name inside `err.data`" rule still applies. |
-| T-10 | **A degraded universe feeding a destructive computation** | Structurally absent: tsgit has no `gc`/`prune`, and neither artefact can *remove* an object from any universe — unlike the midx, which subtracts (ADR-592). Both are additive-or-ignored, in every pinned row. Becomes a hard constraint on any future pruning surface that would consult a bitmap for reachability: **it must not**, for the same reason `fsck` must not (§D1). |
-| T-11 | **Work amplification at `fsck` time** | The `.rev` body cross-check is O(n) per pack and the digest checks are O(file) — one full hash of every `.rev` and every `.bitmap` in the repository, per `fsck` run. On a large repository with bitmaps that is tens of MiB of hashing. git pays exactly the same (`verify_bitmap_files` hashes every bitmap), so this is parity, not overhead; it is named because `fsck`'s cost profile changes measurably and the bench should see it. |
+| T-1 | **No format contains a name or a path** | Still the biggest structural advantage over the midx, and it survives the scope expansion untouched: `.rev`, `.bitmap` and the reverse-index chunk carry only integers and digests. Every filename is composed from an already-vetted pack base name or from hex-rendered digest bytes (§D5), so the traversal class is **absent by construction**, not mitigated |
+| T-2 | **Unbounded allocation from a declared count** | `.rev` has no declared count; its exact-size rule (§D2 step 5) is simultaneously the bound. `.bitmap` declares `entryCount` and a per-stream `wordCount`, and B21's `0x7fffffff` is the live shape. **Mitigation, binding (ADR-611):** every declared length is validated against the **remaining buffer** before it is used for anything — git's own `eof in data` check — and no array is ever allocated from a declared count |
+| T-3 | **Decompression-bomb EWAH runs** — *live, and the highest-severity item in this design* | A run-length word can declare 2³² clean words = 2³⁸ bits ≈ 32 GiB if materialised. **Mitigation, concrete and implementable:** (a) EWAH streams are **never materialised**; `foldEwahStream` folds directly into a caller-owned `Uint32Array` whose length is `ceil(bitCount / 32)` with `bitCount` derived from the artefact's **object count**, never from the stream's declared `bitSize`; (b) fills are **clamped at the destination's end**, so a 2³²-word run costs a bounded number of writes and then stops; (c) the stream's declared `wordCount` is bounds-checked against the remaining buffer before any word is read; (d) the totality property test (§Test) asserts no input in the declared safe subset produces a `RangeError` or an allocation failure. The destination bound is what defuses the bomb, which is deliberate: it cannot be forgotten, because without it the fold has nowhere to write |
+| T-4 | **Out-of-bounds `DataView` reads** | Both parsers prove every offset before reading it (§D2 steps 1/5, §D3 steps 1/6/7). A `RangeError` escaping either is a defect (requirement 11), and the totality properties are the guard |
+| T-5 | **Integer overflow in offset arithmetic** | `.rev` values and bitmap bits are u32 positions, not offsets — they index `entryOffsets`/`allObjectIds`, whose own 64-bit handling (`readOffset`, `pack-index.ts:93-108`) is untouched. Bit-space arithmetic uses word indices bounded by the object count. **No new offset arithmetic is introduced** |
+| T-6 | **A non-permutation `.rev` body redirects slice bounds** | Live under ADR-604. A hostile body makes `nextOffsetForEntry` return wrong bounds, so a read either fails to inflate or inflates a truncated stream. **Accepted, not mitigated** (ADR-606): it is git's own exposure (R14 reads fine under git), and an attacker who can rewrite a `.rev` can rewrite the `.pack` and `.idx` it describes. A security review that flags this closes it against ADR-606 |
+| T-7 | **A hostile bitmap produces a wrong object set — and therefore a wrong pack** | Live under ADR-613/614. A crafted bitmap can omit objects from `pack-objects`' output (producing an incomplete pack) or add unrelated ones (leaking objects the caller did not ask for, bounded to objects already in the repository). **Accepted, not mitigated** (ADR-615), symmetric with T-6 and on the same ratio: the attacker who can rewrite the bitmap can rewrite the pack. **Residual, stated:** ADR-616 makes the fast path silent, so nothing warns; the *only* thing standing between a decoder bug and a wrong pack is the interop equality oracle (ADR-615) and the double-run obligation (ADR-616). Those tests are load-bearing security controls, not hygiene, and trimming them is a security regression |
+| T-8 | **A stale artefact paired with the wrong pack** | Undetectable by design: git stores the pack/midx checksum in `.rev` and `.bitmap` and **checks neither** (R10b, B16). A pack's filename is its content hash, so a stale artefact requires a deliberate rename, which requires the same write access as replacing the pack. Accepted, matching git |
+| T-9 | **Symlinked artefacts** | Presence comes from the `readdir` listing with `entry.isFile` (§D5), which excludes symlinks exactly as the `.idx` filter does, so a symlinked artefact pointing outside the repository is never opened. A *stronger* posture than open-by-path, at no cost |
+| T-10 | **Log injection** | No format carries text. The only string in any finding is a pack base name already vetted by `isSafePackName` or a hex digest. `faultContext`'s "never nest a name inside `err.data`" rule still applies |
+| T-11 | **A degraded universe feeding a destructive computation** | tsgit still has no `gc`/`prune`, and `pack-objects` only *writes*. A bitmap can shrink a computed closure (T-7), which matters for what a pack contains but cannot delete anything. **Hard constraint on any future pruning surface: it must not consult a bitmap for reachability**, for the same reason `fsck` must not — a cached answer is not a verified one |
+| T-12 | **`fsck` must not consult a bitmap** | Structural, and it is now enforceable rather than hypothetical because a parser exists in the same package. `fsck`'s reachability pass verifies the graph; a bitmap is a cached claim about it. ADR-605 keeps the bitmap pass parse-free, and the RESTAMPED interop rows are the mechanical guard: fusing the paths turns them red |
+| T-13 | **Work amplification at `fsck` time** | The `.rev` body cross-check is O(n) per pack and the digest checks are O(file) — one full hash of every `.rev` and every `.bitmap` per `fsck` run. git pays exactly the same (`verify_bitmap_files` hashes every bitmap), so this is parity, not overhead; named because `fsck`'s cost profile changes measurably and the bench should see it |
+| T-14 | **Memory amplification at closure time** | Reconstructed bit sets are `ceil(bitCount/32)` words each; caching all entries of a large repository's bitmap is `entryCount × objectCount / 8` bytes. **Mitigation:** the bounded per-call LRU of §D6 with its size as a named constant, plus the per-call (not per-`Context`) lifetime of §D15 |
 
-### §D13 — blind spots, named
+### §D19 — blind spots, named
 
-1. **`verify-pack` is stricter than `fsck` and tsgit models neither.** Rows R10b and R16 exit 0
-   under `fsck` and 1 under `verify-pack`. tsgit has no `verify-pack` surface, so it inherits
-   `fsck`'s laxity by default. If a `verify-pack`-class command ever lands it must re-pin this,
-   because the two commands genuinely disagree about what a valid `.rev` is.
-2. **The `.rev`'s embedded pack checksum is dead data in both tools.** §D2 retains it precisely so
-   that a future consumer does not have to re-parse; today its non-use is a deliberate divergence
-   from what the field *appears* to be for.
+1. **`verify-pack` is stricter than `fsck` and tsgit models neither.** R10b and R16 exit 0 under
+   `fsck` and 1 under `verify-pack`. tsgit inherits `fsck`'s laxity. A future `verify-pack`-class
+   command must re-pin this, because the two commands genuinely disagree about what a valid `.rev`
+   is.
+2. **The `.rev`'s and the bitmap's embedded checksums are dead data in both tools.** Retained by both
+   parsers so a future consumer need not re-parse; their non-use is a deliberate match to git.
 3. **`0x2` in the bitmap flag word was never observed.** Pin E is a matrix over configurations git
-   2.55.0 offers, not over the format's value space. Under DC-3(a) this does not matter (no flag is
-   read); under DC-3(b)/(c) it is an unpinned bit and the parser must not assume its meaning.
-4. **git aborts (`BUG:`, exit 134) on a bitmap without the mandatory full-DAG option** (B19). That is not
-   behaviour to replicate and tsgit cannot replicate it faithfully — a library has no process to
-   abort. Under the recommended scope the row is unreachable. Under DC-3(b)/(c) tsgit must choose,
-   and no choice is faithful; naming it here rather than discovering it in review.
-5. **Pin K rule 3's midx-trailer coupling is transitive and fragile.** If ADR-602's trailer
-   verification ever moves onto the read path, or if the midx's in-use artefact selection changes,
-   the midx bitmap's *discoverability* changes with it — a bitmap can be hidden by a fault in a
-   different file. The interop row for X10 exists to catch that, and it is the row most likely to
-   look like a test bug when it eventually fails.
-6. **`fsck --no-full` adds a constant on an all-packed fixture** (Pin I M0 = 2), which makes raw
-   exit comparisons in that mode read oddly. The interop assertions must compare **bit-wise**
-   against a per-mode control, not against literals — the trap that would otherwise make M1's `66`
-   look like a new bit.
-7. **Bit ordering versus future bits.** git's `fsck` bitmask is `1, 2, 4, 8, 16, 32, 64, 128`.
-   tsgit models `1, 2, 4, 8, 32, 64` today and **seven of the eight** after this change; **16
-   (commit-graph) stays never modelled**, as does anything above 128. Worth stating so nobody reads
-   "all bits modelled" into a denser `exit-codes.ts`.
-8. **`pack.writeReverseIndex` could flip back.** The default is a git policy, not a format
-   guarantee. Nothing here depends on the default — every row with the artefact absent is clean —
-   but the *urgency* argument in §Context does.
-
-## Decision candidates
-
-Ten load-bearing choices. **None is decided here.** The recommendation column is the designer's
-argument, not an outcome; ADR numbering continues from **603**.
-
-| # | Choice | Alternatives (≤3) | Recommendation | Why |
-|---|---|---|---|---|
-| DC-1 | **Scope boundary** — what "read support" means for this entry | **(a) Verify-and-report only**: both artefacts are parsed/hashed solely to produce `fsck` findings and exit bits; the read path is untouched. **(b) (a) + `.rev` acceleration** of `buildOffsetTable`. **(c) Full read support**: (b) plus an EWAH parser and a bitmap-backed reachability path | **(a)** | The consumer census (§D1) is decisive: the only faithfulness debt is two `fsck` exit bits, and (a) pays it completely. (b) adds a correctness surface (T-6) and an unproven perf claim to a change whose value is otherwise certain — it is separable and should be separated. (c) builds an EWAH parser whose only caller would be its own test, and drags T-3 (decompression-bomb runs) into a design that currently has no such hazard. If (b) or (c) is wanted, take it as its own decision — which is exactly what DC-2 and DC-3 are |
-| DC-2 | **`.rev` as a live accelerator, or dark** | **(a) Live**: `buildOffsetTable` consumes a usable `.rev` (§D7). **(b) Dark**: the parser ships, used only by the `fsck` pass. **(c) Live, behind an opt-in `Context` flag** | **(b)** | The win is O(n log n) → O(n) on a per-pack, per-`Context`, memoised path, bought with an extra file `open`+`read` per pack — plausibly a **net loss** on many-small-packs repositories, which is the shape that also has the most packs to pay it on. It is not "free speed"; §D7 prices it honestly and only a CI bench can settle it. (b) keeps every byte of the fsck payload and defers the risk at zero cost to the deliverable, and the parser it ships is the same parser (a) would need — so choosing (b) now costs nothing later. (c) is the worst of both: it keeps T-6's exposure while guaranteeing the fast path is under-exercised in tests and in the field |
-| DC-3 | **Does an EWAH / bitmap parser ship at all?** — subsumes *"what is the bitmap version / flag accept-set"*, which has an answer only under (b)/(c) | **(a) No** — the bitmap pass hashes the file and nothing more (Pin J rule 1). **(b) Ship a header+EWAH parser dark**, exercised only by unit tests. **(c) Ship it and use it** for some reachability surface | **(a)** | Pin J rows B14–B19 are unambiguous: git's `fsck` exits **0** on a bitmap with a flipped magic, a bad version, an absurd entry count and a truncated body, provided the digest is restamped. A parser therefore buys **zero** faithfulness and can only make tsgit stricter than git — the failure mode ADR-593's `numBaseFiles` reversal was written about. It also imports T-3, the one genuinely dangerous allocation shape in this family. (b) is dead code by the project's own guardrail. (c) has no consumer (§D1) and would put a *trusted cached reachability answer* inside `fsck`, whose entire job is to distrust it |
-| DC-4 | **Verify-or-trust the `.rev` body on the read path** — *only live if DC-2 = (a)* | **(a) Trust** (git's posture, R14). **(b) Verify the digest once per pack** before first use, then trust. **(c) Verify the body** against the sorted `.idx` before use | **(b)** | (a) is faithful but hands an attacker T-6 on a path where the safe alternative already ships. (c) is self-defeating: computing the expected body *is* the sort the `.rev` exists to avoid, so it costs more than it saves — a full O(n log n) plus a full comparison. (b) is the ADR-602 shape one layer out (verify the artefact's integrity, then trust its content), costs one hash of a file that is ~1/6 the `.idx`'s size, catches every accidental corruption, and diverges from git only in *refusing to use* a file git would use — never in an answer, because the fallback is the correct sort. That last clause is what makes (b) defensible under ADR-226 and it should be the ADR's ratio |
-| DC-5 | **How bit 64's new cause is reported** | **(a) Widen the existing `pack-rev-index-unusable` variant** — same shape `{ pack, reason }`, new causes. **(b) Add a second variant** (e.g. `pack-rev-index-invalid`) distinguishing "the `.idx` made the rev-index unavailable" from "the `.rev` file itself is wrong". **(c) Widen, plus an optional `position` field** for the per-position body mismatches | **(b)** | ADR-583's rule is *one variant per layer, because layers compose differently on the exit axis* — and these two genuinely are different layers: C1 ≡ C2 proves an `.idx` fault **suppresses** the `.rev` check entirely, so a consumer that sees both variants knows something a single widened variant cannot express. git's own messages split the same way (`unable to load rev-index for pack` from an `.idx` fault versus `reverse-index file … has <cause>` from the file). (a) makes the two indistinguishable and quietly re-uses a doc-comment that promises a different cause. (c) is right about the data — N1's per-position findings need somewhere to put the position — but an optional field on a variant that mostly lacks it is the primitive-obsession shape ADR-584 avoided; if per-position findings ship, they want their own variant, which makes (c) a worse-spelled (b) |
-| DC-6 | **Are per-position body mismatches individual findings?** | **(a) One finding per mismatched position**, carrying `{ pack, position, expected, stored }`. **(b) One finding per pack**, carrying a count. **(c) One finding per pack**, carrying no detail | **(a)** | N1 pins git emitting one line per mismatch with both integers, and per ADR-249 those integers are **data**, not presentation — the same call ADR-584 made for the pack name and ADR-601 made for `midx-entry-unresolved`'s oid. (b) and (c) throw away the only diagnostic content the check produces, on a check whose whole purpose is diagnosis. The cost of (a) is a finding array that can be O(objectCount) on a maximally-corrupt `.rev`; that is bounded by the pack and matches git's own output volume, but it is the one consequence the ADR should acknowledge |
-| DC-7 | **Where the code lives** | **(a) Domain parser + everything else inline in the two fsck passes**, reading files through `ctx.fs` directly. **(b) Domain parser + a new `primitives/internal/rev-index-source.ts`** owning discovery, bounded read and fault classification, consumed by the passes (and by `buildOffsetTable` under DC-2(a)). **(c) Domain parser + new registry accessors** `revHealth()` / `bitmapHealth()`, memoised per generation | **(b)** | ADR-598's precedent for exactly this shape, one artefact family later, and it is the only option that stays correct across DC-2: under (b) the accelerator and the fsck pass share one loader, one bound and one fault classifier. (a) duplicates discovery and bounds into two passes and has no home for the accelerator. (c) is ADR-581's shape and would be right if the verdict were *shared* between consumers — but unlike `health()` / `midxHealth()`, nothing outside `fsck` wants these verdicts, so a registry accessor adds public surface and a memo for a single caller. Worth stating the counter-argument: (c) becomes correct the moment a second consumer appears |
-| DC-8 | **Error discriminant shape for a `.rev` refusal** | **(a) New `INVALID_PACK_REV_INDEX { reason, check }`** with `check` a closed union (`'size' \| 'signature' \| 'version' \| 'hash-id'`), ADR-599's shape. **(b) New code with `reason` only.** **(c) Reuse `INVALID_PACK_INDEX { reason }`** | **(a)** | (c) is an active hazard, identically to ADR-599's argument: `isSkippableIdxFault` (`pack-shared.ts:37`) allow-lists `INVALID_PACK_INDEX` at the scan layer, so a `.rev` refusal would be laundered into "skip this pack" and could remove a healthy pack from the generation. (b) works today because the fsck pass only needs `reason` for display — but it makes the size/`corrupt` versus size/`too small` distinction (requirement 4) live in a string, and R17 vs R6 are *different git messages*, i.e. data. (a) costs one field and makes the mapping exhaustive at the type level. Its price, stated: `check` is public surface in `api.json` and its members become a compatibility commitment. **A weaker (b) is genuinely defensible here** in a way it was not for the midx, because no tier decision hangs off this union — the ADR should weigh that rather than inherit ADR-599 by reflex |
-| DC-9 | **Bounds strategy for the two artefacts** | **(a) Dedicated `MAX_PACK_REV_BYTES` / `MAX_BITMAP_BYTES`** in `validators.ts` beside `MAX_MIDX_BYTES`, with the arithmetic in the doc-comment. **(b) Derive the `.rev` bound from the pack's `objectCount`** (the exact expected size is known — requirement 4) and give the bitmap a dedicated constant. **(c) Reuse `MAX_PACK_IDX_BYTES` (64 MiB) for both** | **(b)** | ADR-600's ratio is *"a new declared-count bound gets a bound sized by its own arithmetic, not a borrowed cap"* — and `.rev` can do better than a cap: its size is **exactly** `12 + 4·N + 2·digestLength`, with `N` already in hand from the `.idx`. A `stat`, then refusing anything whose size is not exactly that value, is both the bound **and** requirement 4's check, with no constant to justify and no repository class refused — and it is *transitively* bounded, because `objectCount` comes from an `.idx` already capped at `MAX_PACK_IDX_BYTES` (64 MiB ⇒ ~2.3 M objects ⇒ a `.rev` under ~9 MiB), so the ceiling exists without being invented. The bitmap has no such exact relation and does need a dedicated constant — sized from `objectCount` as a soft upper bound (a full bitmap over N objects is ~N/8 bytes plus per-commit bitmaps and the hash cache's 4N) rather than a flat number. (a) is correct but invents a constant where arithmetic exists; (c) repeats the mistake ADR-600 was written to correct |
-| DC-10 | **Does the midx-bitmap check inherit git's `core.multiPackIndex` gate?** | **(a) No gate** — the pass always runs (matches git's default config). **(b) Add `core.multiPackIndex` to `readConfig`** and gate on it, matching git exactly. **(c) Skip the midx-bitmap arm entirely**, reporting only pack bitmaps | **(a)** | ADR-592 already declined to add `core.multiPackIndex` as a config surface, and §D12.2 of the midx design already made this exact call for the midx pass; making the same call twice from the same premise is consistency, not laziness. (b) is *more* faithful in the strict sense but adds a config key, a precedence question and a surface tsgit has no other use for — and the divergence it closes exists only in a configuration where the user has explicitly disabled the feature. (c) drops a real bit-128 cause (X1) to avoid a gate, which is the wrong trade. This is nonetheless a **named, deliberate divergence** and the ADR should record it as one rather than let it pass as an implementation detail |
-
-**Coverage of the choices the brief named**, so none reads as dropped: *scope boundary* → DC-1;
-*live-acceleration vs dark* → DC-2; *bitmap version/flag support matrix* → DC-3 (it exists only if a
-parser ships); *verify-vs-trust posture* → DC-4; *fsck integration* → DC-5, DC-6, DC-10; *where
-discovery lives* → DC-7; *error discriminants* → DC-8; *bounds strategy* → DC-9.
-
-**One choice is deliberately *not* a candidate, because precedent settles it**: the bitmap finding's
-identifier field. It carries `artefact` (the file name), not `pack`, and carries **no `reason`** —
-the exact shape of `midx-checksum-mismatch` (`internal/fsck/types.ts:91`), for the exact same two
-situations: a midx bitmap has no pack to name, and there is precisely one way to fail a checksum
-(Pin J rule 2). Recorded here rather than left as a silent implementation choice.
+   2.55.0 offers, not over the format's value space. §D3 reads only `0x1` and ignores the rest, which
+   makes this blind spot harmless — but a future consumer of the extensions inherits it live.
+4. **git aborts on a bitmap without the full-DAG flag** (B19, exit 134). Not replicable by a library.
+   tsgit declines and falls back (ADR-605/616). The row is reachable now that a parser exists, so it
+   is an interop row asserting tsgit answers correctly where git dies.
+5. **Pin K rule 3's midx-trailer coupling is transitive and fragile**, and ADR-617 widens it: a midx
+   bitmap's *discoverability* now gates a read-path accelerator, not just an `fsck` bit. If ADR-602's
+   trailer verification ever moves onto the read path, or the in-use midx layer selection changes,
+   the accelerator's availability changes with it. X10's interop row is the guard and it is the row
+   most likely to look like a test bug when it fails.
+6. **`fsck --no-full` adds a constant on an all-packed fixture** (Pin I M0 = 2). Interop assertions
+   must compare **bit-wise** against a per-mode control, not against literals.
+7. **Bit ordering versus future bits.** git's mask is `1, 2, 4, 8, 16, 32, 64, 128`; tsgit models
+   seven of eight after this change. **16 (commit-graph) stays never modelled.**
+8. **`pack.writeReverseIndex` and `pack.writeBitmapHashCache` are git policy, not format guarantees.**
+   Nothing here depends on either default — every artefact-absent row is clean — but the urgency
+   argument in §Context does.
+9. **The bitmap's commit selection is git's policy and is not pinned as a rule.** Pin AD measures
+   *that* selection is partial (108 of 400) and that a 30-commit repository gets full coverage; the
+   selection *algorithm* is deliberately not modelled, because tsgit never writes a bitmap and a
+   consumer must work for any selection. A test fixture that happens to select every commit would
+   hide the entire partial-coverage path — which is why F2 (400 commits) is the mandatory closure
+   fixture and F1 is not sufficient.
+10. **Pin AB's divergence is fixture-dependent** (AB9 shows none). Any closure fixture used for
+    have-bearing queries **must** repeat blob content across the have boundary, or the most
+    important disagreement in this design goes unmeasured.
+11. **The `{'B','T','M','P'}` chunk is parsed by nobody.** §D4 resolves bits without it. If verbatim
+    pack reuse ever arrives it becomes load-bearing, and Pin AG11 is the head start.
 
 ## Test strategy
 
 ### Unit — `test/unit/domain/storage/rev-index.test.ts` (new)
 
-Fixtures **crafted in-test** (ADR-578's precedent), from a `buildRevIndex({ objectCount, digestLength, hashId, body })` helper emitting Pin B's layout; every negative row is that builder plus one named mutation.
+Fixtures **crafted in-test** (ADR-578), from a `buildRevIndex({ objectCount, digestLength, hashId, body })`
+helper emitting Pin B's layout; every negative row is that builder plus one named mutation.
 
-- **Accept**: 0 objects; 1 object; 12 objects; `hashId: 2` with `digestLength: 32` (the H-1 genericity row); **`hashId: 2` with `digestLength: 20`** — the R16 row, an *accept*, written as an accept deliberately with the reason in the title so a later "hardening" pass cannot silently turn it into a refusal.
-- **Refusals**, each asserting `.data.check` **and** the reason string (never `toThrow(Class)`): zero-length; 11 bytes; `12 + 2·dl − 1` bytes (`too small`); `12 + 2·dl` exactly with `objectCount > 0` (`corrupt` — the R7c/R7d boundary, two rows one byte apart); one byte long; one byte short; bad magic; version 0; version 2; `hashId` 0; `hashId` 3.
-- **Guard isolation**: the size guard has two arms with two different reasons (`too small` vs `corrupt`); each gets a row that triggers **only** it.
-- `revIndexPositionAt` at `0`, `N−1`, and `N` (bounds refusal).
+- **Accept**: 0 objects; 1 object; 12 objects; `hashId: 2` with `digestLength: 32`; **`hashId: 2`
+  with `digestLength: 20`** — the R16 row, written as an *accept* deliberately, with the reason in
+  the title, so a later "hardening" pass cannot silently turn it into a refusal.
+- **Refusals**, each asserting `.data.check` **and** the reason string (never `toThrow(Class)`):
+  zero-length; 11 bytes; `12 + 2·dl − 1` (`too small`); `12 + 2·dl` exactly with `objectCount > 0`
+  (`corrupt` — the R7c/R7d boundary, two rows one byte apart); one byte long; one byte short; bad
+  magic; version 0; version 2; `hashId` 0; `hashId` 3.
+- **Guard isolation**: the size guard's two arms each get a row that triggers only it.
+- `revIndexPositionAt` at `0`, `N−1`, `N` (bounds refusal), and an **out-of-range stored value**
+  asserting it is *returned*, not refused (§D2's ADR-606 line).
 
-### Property — `test/unit/domain/storage/rev-index.properties.test.ts` (new)
+### Unit — `test/unit/domain/storage/bitmap.test.ts` (new)
 
-Lens 1 (round-trip pair) and lens 3 (total function over a grammar) both fit:
+A `buildBitmap({ digestLength, flags, entries, typeStreams })` builder emitting Pin D's layout, with
+an `encodeEwah(bits)` helper that produces run-length and literal words (needed for the round-trip
+property below and for realistic negatives).
 
-- Round-trip: `parsePackRevIndex(buildRevIndex(spec))` reproduces every header field of `spec`, and `revIndexPositionAt` reproduces every body word, for arbitrary `objectCount ∈ [0, 500]`, `digestLength ∈ {20, 32}`, and **arbitrary body words including non-permutations and out-of-range values** — the parser must not care (§D2's `revIndexPositionAt` note). `numRuns: 200`.
-- Totality: for any byte string in the declared safe subset, `parsePackRevIndex` either returns a `PackRevIndex` or throws a `TsgitError` with a `check` from the closed union — never a `RangeError` (requirement 13). `numRuns: 100`.
+- **Accept**: the Pin D 12-object shape; the empty tags stream as `bitSize=0, wordCount=1`
+  (a row whose title says *20 bytes, not 12*); flags `0x0001`, `0x0005`, `0x0015`, `0x0025` — all
+  four accepted identically, with a row asserting `entriesOffset` is **the same** under each
+  (Pin AH's rule, as a unit assertion).
+- **Refusals** with `.data.check`: short header; bad magic; version 0; version 2; **flags without
+  `0x1`**; a stream `wordCount` that overruns the buffer; an entry whose stream overruns; an
+  `xorOffset` greater than the entry's own index; a **non-zero** `xorOffset` on entry 0.
+- **The bomb row, as a unit test**: an entry stream whose run-length word declares 2³² clean words,
+  asserting the fold **returns**, fills the destination to its end and writes nothing past it — the
+  T-3 mitigation with an explicit test rather than an implicit one.
+- **Fold**: `foldEwahStream` with `'or'` and `'xor'` into a pre-sized array; a clean run longer than
+  the destination asserting it is **clamped, not thrown** and costs bounded work; a literal-only
+  stream; a run-of-zeros stream.
 
-Generators live in a shared `arbitraries.ts` in the same directory.
+### Unit — XOR-chain reconstruction and mapping
+
+`test/unit/application/primitives/internal/closure-engine.test.ts`:
+
+- reconstruction of a hand-built chain `A(xor 0) ← B(xor 1) ← C(xor 1)` equals the intended sets
+  (Pin AD6), including a chain of length > 64 to prove the walk is iterative;
+- entry-header interpretation: a **pack** bitmap header resolves through the `.idx`, a **midx**
+  bitmap header resolves through `midxOidAt` **without** the reverse-index hop (Pin AG12) — the two
+  assertions that catch the likeliest bug in the entry;
+- extended positions: a want reachable only through a loose object yields it with the right type;
+- tier selection: midx bitmap ≻ pack bitmap ≻ walk, with each tier refused in turn (Pin AG1–AG6).
+
+### Property tests
+
+Per the four lenses, `*.properties.test.ts` siblings with a shared `arbitraries.ts`:
+
+- **`rev-index.properties.test.ts`** — lens 1 (round-trip): `parsePackRevIndex(buildRevIndex(spec))`
+  reproduces every header field and `revIndexPositionAt` reproduces every body word, for arbitrary
+  `objectCount ∈ [0, 500]`, `digestLength ∈ {20, 32}`, and **arbitrary body words including
+  non-permutations and out-of-range values** — the parser must not care. `numRuns: 200`.
+  Lens 3 (totality): any byte string in the declared safe subset either parses or throws a
+  `TsgitError` with a `check` from the closed union — never a `RangeError`. `numRuns: 100`.
+- **`bitmap.properties.test.ts`** — lens 1: `foldEwahStream(encodeEwah(bits)) ≡ bits` for arbitrary
+  sparse and dense bit sets over `[0, 5000)`, `numRuns: 200`. Lens 3 (**the strongest fit in this
+  entry**): for any byte string in the declared safe subset, `parsePackBitmap` returns a `PackBitmap`
+  or throws a closed-`check` `TsgitError` — never a `RangeError`, never an unbounded run. The
+  bounded-work half is assertable rather than aspirational: the destination array is
+  **caller-owned**, so the property asserts its `length` is unchanged by every fold and that no bit
+  is set at or beyond it, whatever the stream declares. `numRuns: 100`.
+- **XOR chains** — lens 2 (compositional): folding a chain is associative in the sense that
+  `reconstruct(i)` is independent of which cached ancestor the walk starts from; and lens 4
+  (idempotence): reconstructing the same entry twice returns equal sets. `numRuns: 100`.
 
 ### Unit — the passes
 
-- `test/unit/application/commands/internal/fsck/bitmap-health.test.ts` (new): a table over Pin J/K — digest mismatch on a pack bitmap, on a midx bitmap, absent, unreadable, orphaned, **and every RESTAMPED structural corruption asserting no finding**. The RESTAMPED rows are the regression guard for DC-3(a).
-- `test/unit/application/commands/fsck.test.ts` (extend): bit composition (64, 128, 192), and the **mode matrix** — each new bit asserted under default / `connectivityOnly` / `full: false` / `strict`, bit-wise against a per-mode control (blind spot 6).
-- `test/unit/application/primitives/pack-registry.test.ts` (extend): under DC-2(a) only — `buildOffsetTable` produces **identical** `sortedOffsets` with and without a `.rev`, and falls back on each fault class.
-- **Allow-list audit row** (ADR-599's precedent): `isSkippableIdxFault` and `isSkippablePackFault` return `false` for an `INVALID_PACK_REV_INDEX` error at **every** `check` value. Asserted, not inspected.
+- `test/unit/application/commands/internal/fsck/bitmap-health.test.ts` (new): a table over Pin J/K —
+  digest mismatch on a pack bitmap, on a midx bitmap, absent, unreadable, orphaned, **and every
+  RESTAMPED structural corruption asserting no finding**.
+- `test/unit/application/commands/internal/fsck/pack-health.test.ts` (extend): the three `.rev`
+  families, the three variants, per-position cardinality, and C1 ≡ C2.
+- `test/unit/application/commands/fsck.test.ts` (extend): bit composition (64, 128, 192) and the
+  **mode matrix** — each new bit asserted under default / `connectivityOnly` / `full: false` /
+  `strict`, bit-wise against a per-mode control (blind spot 6).
+- `test/unit/application/primitives/pack-registry.test.ts` (extend): `buildOffsetTable` produces
+  **identical** `sortedOffsets` with and without a `.rev`, and falls back on each fault class.
+- **Allow-list audit rows** (ADR-599/610's precedent): `isSkippableIdxFault` and
+  `isSkippablePackFault` return `false` for the new `.rev` code **and** the new bitmap code at
+  **every** `check` value. Asserted, not inspected.
 
 ### Integration / interop — `test/integration/rev-bitmap-fsck-interop.test.ts` (new)
 
-The faithfulness surface. One shared `beforeAll(fn, 60_000)` building the fixture repo with real
-`git` (scrubbed `GIT_*`, isolated `HOME`, `GIT_CONFIG_NOSYSTEM=1`, signing off), then one row per
-mutation, each in its own copy. **A fresh `Context` after every `git` subprocess** (§D9).
+One shared `beforeAll(fn, 60_000)` building the fixture repo with real `git` (scrubbed `GIT_*`,
+isolated `HOME`, `GIT_CONFIG_NOSYSTEM=1`, signing off), then one row per mutation, each in its own
+copy. **A fresh `Context` after every `git` subprocess** (§D15).
 
-Per row: run real `git fsck`, run `tsgit.fsck()`, assert **`exitCode` equality** and assert the
-tsgit findings reconstruct git's stderr lines (ADR-249 — reconstruction lives in the test).
+Per row: run real `git fsck`, run `tsgit.fsck()`, assert **`exitCode` equality** and assert the tsgit
+findings reconstruct git's stderr lines (ADR-249 — reconstruction lives in the test).
 
-Rows, from the pins: R0, R1, R2, R5, R6, R8, R9b, **R10b**, R11, R12, R13, R14, R15, N1,
-**R16**, R17, C1, **C2**, and multi-pack composition. Then B0, B1, B2, B9, B12, B23, **B14**,
-**B16**, **B18**, B24. Then X0, X1, **X2**, X4, X5, **X7**, X8, **X10**. Then the composition rows
-Y1, Y2, Y3, **Y4**, Y5, **Y6**.
+Rows: R0, R1, R2, R5, R6, R8, R9b, **R10b**, R11, R12, R13, R14, R15, N1, **R16**, R17, C1, **C2**,
+and multi-pack composition. Then B0, B1, B2, B9, B12, B23, **B14**, **B16**, **B18**, B24. Then X0,
+X1, **X2**, X4, X5, **X7**, X8, **X10**. Then Y1, Y2, Y3, **Y4**, Y5, **Y6**.
 
 The **bolded** rows assert an exit code with **no** artefact bit where a naive implementation would
-score one — they are the majority of the design's risk and they must not be trimmed. `R14`/`R15`/`N1`
-assert the **cardinality** of the findings and the message *shape*, never the fixture-dependent
-integer pair (Pin H's note).
+score one — they are the majority of the design's `fsck` risk and must not be trimmed. R14/R15/N1
+assert finding **cardinality** and message *shape*, never the fixture-dependent integer pair.
 
-### Integration / interop — `test/integration/rev-bitmap-read-invariance-interop.test.ts` (new)
+### Integration / interop — `test/integration/rev-bitmap-closure-interop.test.ts` (new)
 
-Requirement 7, as a property over the corruption matrix: for every row above, `catFile` on every
-object and `enumerateObjects` return **byte-identical** results to the same repository with both
-artefacts deleted, in both tools. This is the twin the brief asks for, restated onto the axis where
-a difference is actually observable.
+The consumption faithfulness surface, and under ADR-615 a **security control**. Fixtures F2 (400
+commits, **repeated blob content across the have boundary** — blind spot 10), F3 (two packs + midx +
+midx bitmap) and F4 (a real merge), each built once in a `beforeAll(fn, 60_000)`.
+
+| obligation | rows |
+|---|---|
+| **ADR-616 double run** — every closure test runs twice, once on a fixture carrying a bitmap and once on the same repository with the bitmap removed, asserting **identical** object sets (sets, not orders — §D6) | every row below, ×2 |
+| **ADR-615 walk oracle** — the bitmap-accelerated closure equals a full walk closure on every fixture | every row below |
+| set equality against real git, no haves | AA1/AA2, AA6, AH1, AH2 |
+| **type** correctness for every returned object | AE, against `cat-file --batch-check` |
+| have-bearing queries | AB1–AB5, AB9 — see E-1 for which git column is the referent |
+| option gating | AC: `--max-count`, `--first-parent`, `--no-walk` each asserted **equal to git's default** and asserted **not** to use the bitmap |
+| tier preference | AG1–AG6 |
+| midx mapping | AG12/AG13 — the midx bitmap's answer equals the walk's on F3 |
+| `.rev`-free consumption | AF1, AF3 |
+| degradation | every Pin J RESTAMPED corruption asserting the **answer is unchanged**, plus B19 (flags without full-DAG) asserting tsgit answers where git aborts |
+| `pack-objects` | AB7/AB8: the written pack's object set, and `git index-pack --verify` accepting the pack tsgit wrote |
+
+The first two rows are **obligations, not conveniences** — ADR-616's double run and ADR-615's walk
+oracle — and under ADR-615 they are the only thing between a decoder bug and a wrong pack. They are
+named as such **in the test titles**, so a future trimming pass has to delete a sentence that says
+why they exist.
+
+### Parity
+
+Both new commands are invoked from a `test/parity/scenarios/*.scenario.ts` `run()` (or allowlisted
+with a reason). A closure scenario that builds a small pack + bitmap in memory proves node / memory /
+browser agreement. Any new runtime gate lands in **all five** dist-bundle drivers.
 
 ### Bench
 
-Only if DC-2 = (a): a `buildOffsetTable` row over a many-pack repository, and a many-small-packs
-row, from the **CI nightly artefact** — never a local run, and reported as absolute wall-clock main
-versus branch, never a self-share delta.
+From the **CI nightly artefact**, absolute wall-clock, main versus branch — never a local run, never
+a self-share delta:
+
+1. `buildOffsetTable` over a many-object repository (ADR-604);
+2. `buildOffsetTable` over a many-small-packs repository (ADR-604 — the shape where the extra
+   `open`+`read` per pack can lose);
+3. closure with a bitmap versus closure by walk, on F2-scale and larger, to price the acceleration
+   the two commands exist to deliver;
+4. `fsck` on a repository with `.rev` + `.bitmap` present, to see T-13's added hashing.
 
 ### Gates
 
-`npm run validate`; 100% coverage on new domain/adapter code; Stryker scoped to the new files with
-0 surviving mutants (equivalents proven against *this* structure, never carried forward);
-`reports/api.json` regenerated for the new `FsckFinding` variants and any new domain export.
+`npm run validate`; 100% coverage on new domain/adapter code; Stryker scoped to the new files with 0
+surviving mutants (equivalents proven against *this* structure, never carried forward); the Tier-1
+surface tax for **both** commands — barrel, facade + the sorted `Object.keys(sut)` surface-lock in
+`test/unit/repository/repository.test.ts`, `docs/use/commands/rev-list.md` and
+`docs/use/commands/pack-objects.md` + index rows, parity scenario invocations, the README Tier-1
+count, and a regenerated `reports/api.json` (a prepush gate, so it is pre-paid in the slice that adds
+the export).
 
 ## Out of scope
 
-- **Writing `.rev` or `.bitmap`.** No `--write-bitmap-index` analogue, no `pack.writeReverseIndex`
-  behaviour. §D11 W-1 records the resulting cross-tool asymmetry (tsgit-written packs have no
-  `.rev` where git's do) and W-4 leaves the parking-lot constraint: a future `gc`/`repack` should
-  delete an outgoing pack's `.rev`/`.bitmap` — hygiene, not correctness, since orphans are ignored
-  by both tools (R13, B23).
-- **Any bitmap-backed reachability, counting or negotiation path** — DC-3's (c) option; no consumer
-  exists (§D1), and `fsck` must not be one.
-- **A `verify-pack` command surface.** git's is stricter than its own `fsck` (R10b, R16); tsgit
-  models the `fsck` verdicts only. §D13.1 names the residual.
-- **`git multi-pack-index verify`'s bitmap arm** — there isn't one (Pin K rule 4); the bitmap
-  verdict lives only in `fsck`.
-- **`core.multiPackIndex`** as a config surface — DC-10's (b) option, declined for the second time
-  from the same premise as ADR-592.
-- **The midx `{'R','I','D','X'}` and `{'B','T','M','P'}` chunks as *used* structures.** Pin F documents them and confirms
-  28.2's parser correctly ignores them; consuming them requires a midx-bitmap reader, which is
-  DC-3(c).
-- **SHA-256 pack support.** Both parsers are hash-generic (§D10) but `IDX_SHA_LENGTH = 20` keeps the
-  surrounding subsystem SHA-1-only (B-10). SHA-256 rows are parser and pass units.
-- **Stderr transcript parity.** Per ADR-249, git's `error:` lines are presentation; tsgit emits none.
-- **git's `BUG:`-and-abort behaviour on a bitmap without the mandatory full-DAG option** (B19) — not
-  replicable by a library, and unreachable under the recommended scope. §D13.4.
+Everything below is excluded **permanently, with its reason**. Nothing here is deferred to a
+follow-up entry.
+
+- **Writing `.rev` or `.bitmap`** (ADR-614). Reason: it needs an EWAH *encoder* and an annotated
+  write surface, and the consequence of not having it is a non-event in both tools (R11, B1). The
+  cross-tool asymmetry is recorded at W-1 rather than fixed, and this stays a read-side entry by
+  construction.
+- **Delta compression in `pack-objects`** (ADR-614). Reason: it is a pack-*writer* concern, not a
+  bitmap one; the pack writer currently emits base entries only, and changing that belongs to
+  whatever entry takes the writer on.
+- **`rev-list` options beyond the reachability core** (ADR-613) — date/author/grep filters,
+  `--boundary`, `--merges`/`--no-merges`, parent/child annotation, `--left-right`, `--bisect*`,
+  ordering (`--topo-order`, `--date-order`), simplification, path limiting, `--disk-usage`,
+  `--unpacked`, `--stdin`. Reason, per option class: the filters **defeat bitmap acceleration**
+  (git abandons the bitmap for them, Pin AC's `--max-count` row is the measured instance), the
+  ordering and simplification options need machinery tsgit does not have, and every
+  formatting option is barred by ADR-249 independently.
+- **Refactoring `enumeratePushObjects` / `enumerateBundleObjects` onto the closure engine** (§D9).
+  Reason: for push it is a **behaviour change, not a refactor** — the pushed pack provably shrinks
+  (Pin AB) — and for bundle a bitmap cannot supply the `boundary` set at all, so the substitution
+  would accelerate only the half that is already cheap.
+- **Bitmap-backed reachability inside `fsck`** (T-12). Reason: `fsck`'s job is to verify the graph,
+  not to trust a cached claim about it. Structural, permanent, and mechanically guarded by ADR-605's
+  parse-free bitmap pass.
+- **Fetch/push negotiation via bitmaps.** Reason: negotiation is a wire protocol; tsgit negotiates by
+  ref advertisement and a bitmap answers a different question.
+- **The bitmap's trailing extensions — hash cache, lookup table, pseudo-merges** (Pin AH). Reason,
+  one each: the hash cache exists to steer **delta selection**, which is excluded permanently above;
+  the lookup table is a lazy-load index over entries this design already parses in full; pseudo-merges
+  are an alternative encoding of the same reachability whose absence never changes an answer. All
+  three are **trailing** (Pin AH), so ignoring them costs nothing and risks nothing.
+- **The midx `{'B','T','M','P'}` chunk.** Reason: it exists for verbatim pack reuse in
+  `pack-objects`, which is a copy optimisation in the excluded delta family; a bit resolves to an oid
+  with the reverse-index chunk alone (Pin AG rule 4).
+- **`core.multiPackIndex` as a config surface** (ADR-612). Reason: declined for the second time from
+  ADR-592's premise — it would add a config key, a precedence question and a surface with no other
+  use, to close a divergence that exists only where a user has explicitly disabled the feature. The
+  residual is measured at Pin AG5/AG6 and is "which file is opened", never an answer.
+- **A `verify-pack` command surface.** Reason: git's `verify-pack` is stricter than git's own `fsck`
+  (R10b, R16), so modelling it means modelling a second, disagreeing verdict for the same file.
+  tsgit models the `fsck` verdicts; §D19.1 names the residual.
+- **`git multi-pack-index verify`'s bitmap arm.** Reason: there isn't one (Pin K rule 4).
+- **SHA-256 pack support.** Reason: pre-existing. Every new parser is hash-generic (§D16), but
+  `IDX_SHA_LENGTH = 20` keeps the surrounding subsystem SHA-1-only (B-10). SHA-256 rows are parser
+  and pass units.
+- **Stderr transcript parity.** Reason: ADR-249 — git's `error:` lines are presentation; tsgit emits
+  none and the interop tests reconstruct them.
+- **git's `BUG:`-and-abort on a bitmap without the full-DAG option** (B19). Reason: a library has no
+  process to abort; tsgit declines the artefact and falls back, which is the only available
+  behaviour and is result-preserving.
+- **A public flag to force or forbid the bitmap** (ADR-616). Reason: the caller asks for a result,
+  not a strategy; the under-exercise risk is answered by the double-run test obligation instead.
+
+## Escalations for the user
+
+Two genuinely new load-bearing forks that the fifteen ADRs do not cover. Both have the **same root
+cause**, discovered only by this run's consumption pins: **ADR-616 requires tsgit's bitmap and walk
+paths to produce identical results, but git's own two paths do not.** I have not decided either.
+
+### E-1 — which of git's two disagreeing answers is tsgit's answer when haves are present?
+
+**The measurement (Pin AB).** For `rev-list --objects HEAD --not HEAD~50` on a fixture with repeated
+blob content, git returns **200** objects on its bitmap path and **204** on its walk path. The four
+extra objects are blobs reachable from the have; the bitmap's answer is the exact set difference and
+the walk's is an over-report. `pack-objects` shows the identical split (AB7). tsgit exposes no flag
+(ADR-616), so tsgit has exactly one answer.
+
+**Why the ADRs do not settle it.** ADR-226 says match git — but there are two gits here. ADR-616 says
+the two paths must agree — which forbids the "use whichever the path gives" answer outright.
+
+| option | what tsgit returns | cost |
+|---|---|---|
+| **(a) exact everywhere** — the walk tier computes the exact difference (the `enumerateBundleObjects` shape, which already exists) | 200 | matches git's bitmap answer, diverges from git's **default** answer by omitting objects the receiver already has. ADR-616 satisfied. Slightly more expensive walk tier (it must enumerate the haves' objects) |
+| **(b) git-walk-faithful, bitmap declined whenever `not` is non-empty** | 204 | matches git's default exactly; ADR-616 satisfied trivially. **Loses the acceleration on precisely the query shape push, fetch and `pack-objects` care about** |
+| **(c) whichever tier answers** | 200 or 204 | **violates ADR-616** — listed only to record that it was considered and is not available |
+
+My reading, offered as input and not as a decision: (a) is the only option that keeps the
+acceleration meaningful, and its divergence is *omitting objects the peer provably already has*,
+which is the safer direction of the two. (b) is the strictly more faithful reading of ADR-226 and
+makes the whole bitmap arm inert for `pack-objects`.
+
+### E-2 — does `rev-list --objects` carry a path, given that the bitmap cannot supply one?
+
+**The measurement (Pin AA).** On git's bitmap path, `rev-list --objects` emits **1605 lines, 0 of
+which carry a name**; on the walk path, 805 of the same 1605 carry one. A bitmap encodes reachability
+and type (Pin AE) and **no paths at any price**. ADR-613 says the command returns "object ids with
+type and, for `--objects`, path".
+
+| option | shape | cost |
+|---|---|---|
+| **(a) `path` is optional and absent on the bitmap path** | `RevListEntry.path?: FilePath` | faithful to git on both paths; makes ADR-616's "identical object sets" an **oid-and-type** equality, not a whole-record equality, which the ADR does not say |
+| **(b) `path` is always present ⇒ the bitmap never serves `--objects`** | `RevListEntry.path: FilePath` for `--objects` | ADR-616 satisfied on whole records; the acceleration survives only for `--count` and for `pack-objects` (which needs no paths, since delta selection is excluded permanently) |
+| **(c) bitmap for the set, then a tree walk for the names** | always present | correct and always slower than (b)'s walk — it pays the walk *and* the bitmap |
+
+Note the interaction: under (b) the acceleration still fully serves `pack-objects` (ADR-614 excludes
+delta compression, and nothing else in the pack writer wants a name), so (b) is not as costly as it
+first reads. Under (a) the test obligation in ADR-616 needs one sentence of interpretation, which is
+the cheapest thing in this table to fix.
