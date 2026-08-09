@@ -108,7 +108,7 @@ function expectRefusal(act: () => void, check: BitmapCheck, reasonContains: stri
 
 describe('bitmap', () => {
   describe('parsePackBitmap', () => {
-    describe('Given a well-formed bitmap (the Pin D 12-object shape)', () => {
+    describe('Given a well-formed bitmap over a 12-object pack', () => {
       describe('When parsing', () => {
         it('Then version, optionFlags, entryCount, digestLength, checksum, all four typeStreams and entriesOffset equal the spec', () => {
           // Arrange

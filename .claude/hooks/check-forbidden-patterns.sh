@@ -1,6 +1,15 @@
 #!/bin/bash
-# PreToolUse hook (Write|Edit): block newly-introduced forbidden patterns in
-# src/ and test/ TypeScript files (CLAUDE.md non-negotiables):
+# PreToolUse hook: block newly-introduced forbidden patterns in
+# src/ and test/ TypeScript files (CLAUDE.md non-negotiables).
+#
+# Covers Write/Edit AND the Serena MCP edit tools. That second half is not
+# optional: CLAUDE.md makes Serena's symbol tools the DEFAULT editing path, so
+# a matcher of Write|Edit alone leaves the primary path unguarded — which is
+# exactly how a provenance ref reached a committed test title once already.
+# Serena spells its inputs differently (relative_path, body, edits[]), hence
+# the widened field extraction below.
+#
+# The non-negotiables enforced:
 #   - suppression directives: @ts-ignore, @ts-expect-error, eslint-disable,
 #     biome-ignore, v8 ignore, istanbul ignore, and `Stryker disable` lines
 #     that carry no `equivalent` rationale
@@ -14,16 +23,27 @@
 set -euo pipefail
 
 INPUT=$(cat)
-FILE_PATH=$(jq -r '.tool_input.file_path // empty' <<<"$INPUT")
+# `file_path` is Write/Edit; `relative_path` is Serena's spelling.
+FILE_PATH=$(jq -r '.tool_input.file_path // .tool_input.relative_path // empty' <<<"$INPUT")
 
 if [[ -z "$FILE_PATH" || "$FILE_PATH" != *.ts ]]; then
   exit 0
 fi
-if [[ "$FILE_PATH" != */src/* && "$FILE_PATH" != */test/* ]]; then
+# Match both absolute paths (`/repo/src/x.ts`) and Serena's repo-relative ones
+# (`src/x.ts`), or every Serena edit would fall straight through this guard.
+if [[ "$FILE_PATH" != */src/* && "$FILE_PATH" != */test/* && "$FILE_PATH" != src/* && "$FILE_PATH" != test/* ]]; then
   exit 0
 fi
 
-NEW=$(jq -r '.tool_input.content // .tool_input.new_string // empty' <<<"$INPUT")
+# Write → content; Edit → new_string; Serena symbol edits → body;
+# Serena multi-edit → the concatenated replacements of edits[].
+NEW=$(jq -r '
+  .tool_input.content
+  // .tool_input.new_string
+  // .tool_input.body
+  // ((.tool_input.edits // []) | map(.new_string // .replacement // .body // "") | join("\n"))
+  // empty
+' <<<"$INPUT")
 if [[ -z "$NEW" ]]; then
   exit 0
 fi
