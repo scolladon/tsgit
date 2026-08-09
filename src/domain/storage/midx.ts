@@ -364,7 +364,17 @@ function readMidxEntry(midx: MultiPackIndex, index: number): MidxEntry {
  * shape at the midx's own stride (`digestLength`, not a fixed 20).
  */
 export function lookupMultiPackIndex(midx: MultiPackIndex, id: ObjectId): MidxEntry | undefined {
-  const targetBytes = hexToBytes(id);
+  return lookupMultiPackIndexBytes(midx, hexToBytes(id));
+}
+
+/**
+ * The bytes-taking core of `lookupMultiPackIndex` — a caller probing several
+ * chain layers for one oid decodes the hex once and reuses the bytes.
+ */
+export function lookupMultiPackIndexBytes(
+  midx: MultiPackIndex,
+  targetBytes: Uint8Array,
+): MidxEntry | undefined {
   const firstByte = targetBytes[0]!;
   // Stryker disable next-line ConditionalExpression: equivalent — `lo` only narrows the search
   // window; the loop over [0, hi) still converges on the same index (the target, if present,
@@ -391,12 +401,21 @@ export function lookupMultiPackIndex(midx: MultiPackIndex, id: ObjectId): MidxEn
   return undefined;
 }
 
-export function allMidxObjectIds(midx: MultiPackIndex): ReadonlyArray<ObjectId> {
-  const results: ObjectId[] = [];
-  for (let i = 0; i < midx.objectCount; i += 1) {
-    const offset = midx.oidLookupOffset + i * midx.digestLength;
-    const sha = midx._bytes.subarray(offset, offset + midx.digestLength);
-    results.push(bytesToHex(sha) as ObjectId);
-  }
-  return results;
+/**
+ * The oid at OIDL position `index`, hex-encoded. Index-addressed on purpose:
+ * an entry walk that already knows the position never re-derives it through
+ * the binary search.
+ */
+export function midxOidAt(midx: MultiPackIndex, index: number): ObjectId {
+  const offset = midx.oidLookupOffset + index * midx.digestLength;
+  return bytesToHex(midx._bytes.subarray(offset, offset + midx.digestLength)) as ObjectId;
+}
+
+/**
+ * The decoded entry at OOFF position `index` — the same deferred
+ * `pack-int-id` / `large-offset` refusals `lookupMultiPackIndex` raises,
+ * without paying its search when the position is already known.
+ */
+export function midxEntryAt(midx: MultiPackIndex, index: number): MidxEntry {
+  return readMidxEntry(midx, index);
 }

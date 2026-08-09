@@ -47,6 +47,26 @@ const requireLastBlobId = (fixture: ScaledFixture): ObjectId => {
   return fixture.lastBlobId as ObjectId;
 };
 
+/**
+ * Opens, reads once and disposes on EVERY measured call — the cold-open
+ * shape that prices the scan itself: with a usable midx the first read costs
+ * one midx read instead of P whole-file `.idx` reads, which is the dominant
+ * term the warm rows amortise away.
+ */
+const coldOpenBench = async (
+  fixture: ScaledFixture,
+  blobId: ObjectId,
+): Promise<BenchComparison> => ({
+  sut: async (): Promise<void> => {
+    const repo = await openRepository({ cwd: fixture.cwd });
+    try {
+      await repo.primitives.readBlob(blobId);
+    } finally {
+      await repo.dispose();
+    }
+  },
+});
+
 const singlePackCtx = await resolveScaledContext(SINGLE_PACK_FIXTURE);
 scaledScenario(
   singlePackCtx,
@@ -83,4 +103,20 @@ scaledScenario(
   manyPackNoMidxCtx,
   'When readBlob() hits the last pack with no midx, Then measure tsgit',
   (fixture) => readBlobBench(fixture, requireLastBlobId(fixture)),
+);
+
+scaledScenario(
+  manyPackWithMidxCtx,
+  'When a cold open reads one blob with a midx present, Then measure tsgit',
+  (fixture) => coldOpenBench(fixture, fixture.firstBlobId as ObjectId),
+);
+scaledScenario(
+  manyPackNoMidxCtx,
+  'When a cold open reads one blob with no midx, Then measure tsgit',
+  (fixture) => coldOpenBench(fixture, fixture.firstBlobId as ObjectId),
+);
+scaledScenario(
+  looseOnlyCtx,
+  'When a cold open reads one loose blob with no packs, Then measure tsgit',
+  (fixture) => coldOpenBench(fixture, fixture.firstBlobId as ObjectId),
 );

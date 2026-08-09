@@ -3,18 +3,19 @@
  * Returns a PackRegistry facade used by object-resolver and readObject.
  */
 import { TsgitError, type TsgitErrorData } from '../../domain/error.js';
-import { bytesEqual } from '../../domain/objects/encoding.js';
+import { bytesEqual, hexToBytes } from '../../domain/objects/encoding.js';
 import type { ObjectId } from '../../domain/objects/index.js';
 import { invalidPackHeader, invalidPackIndex } from '../../domain/storage/error.js';
 import {
-  allMidxObjectIds,
   entryOffsets,
-  lookupMultiPackIndex,
   lookupPackIndex,
   type MidxEntry,
+  midxEntryAt,
+  midxOidAt,
   type PackIndex,
   parsePackIndex,
 } from '../../domain/storage/index.js';
+import { lookupMultiPackIndexBytes } from '../../domain/storage/midx.js';
 import {
   PACK_HEADER_SIZE,
   type PackHeader,
@@ -622,8 +623,9 @@ const unusableEntry = (
  * `undefined`: either way the caller falls through to the `.idx` loop.
  */
 function findMidxHit(midx: LoadedMidx, id: ObjectId): PackLookupHit | undefined {
+  const targetBytes = hexToBytes(id);
   for (let layerIndex = midx.set.layers.length - 1; layerIndex >= 0; layerIndex -= 1) {
-    const entry = lookupMultiPackIndex(midx.set.layers[layerIndex]!, id);
+    const entry = lookupMultiPackIndexBytes(midx.set.layers[layerIndex]!, targetBytes);
     if (entry === undefined) continue;
     // packsByLayer is built by mapping set.layers, so the layer index always
     // exists; only the pack binding itself can be undefined.
@@ -730,20 +732,20 @@ async function walkMidxEntries(midx: LoadedMidx): Promise<MidxEntryWalkResult> {
   };
   for (const [layerIndex, layer] of midx.set.layers.entries()) {
     const bound = midx.packsByLayer[layerIndex]!;
-    for (const id of allMidxObjectIds(layer)) {
+    for (let i = 0; i < layer.objectCount; i += 1) {
       let entry: MidxEntry;
       try {
-        // The oid came from this layer's own OIDL, so its own fanout-narrowed
-        // search always finds it — lookupMultiPackIndex returning undefined
-        // here would mean the layer disagrees with itself.
-        entry = lookupMultiPackIndex(layer, id)!;
+        // Index-addressed: the walk already knows every position, so it
+        // never re-derives one through the fanout binary search, and an oid
+        // is hex-materialised only for the entries that turn out unresolved.
+        entry = midxEntryAt(layer, i);
       } catch (err) {
         if (!(err instanceof TsgitError) || err.data.code !== 'INVALID_MULTI_PACK_INDEX') throw err;
         return { unresolvedEntries, containedFault: { artefact: headArtefact, data: err.data } };
       }
       const pack = bound[entry.packIndex];
       if (pack === undefined || !(await packServes(pack))) {
-        unresolvedEntries.push(id);
+        unresolvedEntries.push(midxOidAt(layer, i));
       }
     }
   }
@@ -808,14 +810,17 @@ export function createPackRegistry(ctx: Context): PackRegistry {
     // isSkippableIdxFault and laundered into "skip one pack". A rejection
     // here aborts the whole scan, and the scan memo never caches a
     // rejection, so the very next lookup re-attempts it from scratch.
-    const midxLoad = await loadMidxSet(ctx, dir);
+    // Parallel with the listing: the two rejection paths stay distinct (the
+    // catch scope, not the ordering, is what keeps a Tier-A midx fault out of
+    // isSkippableIdxFault), and every Context's first pack access saves one
+    // sequential round-trip on high-latency adapters.
+    const [midxLoad, entries] = await Promise.all([loadMidxSet(ctx, dir), ctx.fs.readdir(dir)]);
     for (const fault of midxLoad.faults) {
       ctx.logger?.warn?.('packRegistry: discarding unusable multi-pack-index', {
         artefact: fault.artefact,
         ...faultContext(fault.data),
       });
     }
-    const entries = await ctx.fs.readdir(dir);
     // git registers a pack only when its .pack exists by name — an orphaned
     // .idx is garbage, never a pack. The listing already in hand is the same
     // data, so the check costs no I/O.

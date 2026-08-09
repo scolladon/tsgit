@@ -3,8 +3,8 @@ import { describe, expect, it } from 'vitest';
 
 import type { TsgitError } from '../../../../src/domain/error.js';
 import {
-  allMidxObjectIds,
   lookupMultiPackIndex,
+  midxOidAt,
   parseMultiPackIndex,
 } from '../../../../src/domain/storage/midx.js';
 import { arbMidxSpec, arbObjectId, buildMidx } from './arbitraries.js';
@@ -35,7 +35,9 @@ describe('midx properties', () => {
             }
 
             const expectedIds = [...spec.entries.map((entry) => entry.id)].sort();
-            expect([...allMidxObjectIds(result)].sort()).toEqual(expectedIds);
+            expect(
+              Array.from({ length: result.objectCount }, (_, i) => midxOidAt(result, i)).sort(),
+            ).toEqual(expectedIds);
           }),
           { numRuns: 200 },
         );

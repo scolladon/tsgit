@@ -4,8 +4,9 @@ import type { TsgitError } from '../../../../src/domain/error.js';
 import type { ObjectId } from '../../../../src/domain/objects/object-id.js';
 import type { MidxCheck } from '../../../../src/domain/storage/error.js';
 import {
-  allMidxObjectIds,
   lookupMultiPackIndex,
+  midxEntryAt,
+  midxOidAt,
   parseMultiPackIndex,
 } from '../../../../src/domain/storage/midx.js';
 import { buildMidx, type MidxSpec } from './arbitraries.js';
@@ -1137,16 +1138,16 @@ describe('midx', () => {
     });
   });
 
-  describe('allMidxObjectIds', () => {
+  describe('midxOidAt', () => {
     describe('Given a midx with 0 objects', () => {
-      describe('When listing all object ids', () => {
-        it('Then returns an empty array', () => {
+      describe('When walking positions up to objectCount', () => {
+        it('Then no position exists to read', () => {
           // Arrange
           const spec = baseSpec({ packNames: [], entries: [] });
           const midx = parseMultiPackIndex(buildMidx(spec), spec.digestLength);
 
           // Act
-          const result = allMidxObjectIds(midx);
+          const result = Array.from({ length: midx.objectCount }, (_, i) => midxOidAt(midx, i));
 
           // Assert
           expect(result).toEqual([]);
@@ -1155,17 +1156,52 @@ describe('midx', () => {
     });
 
     describe('Given a midx with 3 objects', () => {
-      describe('When listing all object ids', () => {
-        it('Then returns them in sorted order', () => {
+      describe('When reading each position', () => {
+        it('Then yields the oids in sorted OIDL order', () => {
           // Arrange
           const spec = baseSpec();
           const midx = parseMultiPackIndex(buildMidx(spec), spec.digestLength);
 
           // Act
-          const result = allMidxObjectIds(midx);
+          const result = Array.from({ length: midx.objectCount }, (_, i) => midxOidAt(midx, i));
 
           // Assert
           expect(result).toEqual([oid('01'), oid('05'), oid('09')]);
+        });
+      });
+    });
+  });
+
+  describe('midxEntryAt', () => {
+    describe('Given a midx with 3 objects across 3 packs', () => {
+      describe('When reading each position directly', () => {
+        it('Then each entry equals the one the binary search finds for the same oid', () => {
+          // Arrange
+          const spec = baseSpec();
+          const midx = parseMultiPackIndex(buildMidx(spec), spec.digestLength);
+
+          // Act
+          const direct = Array.from({ length: midx.objectCount }, (_, i) => midxEntryAt(midx, i));
+
+          // Assert
+          expect(direct).toEqual([
+            lookupMultiPackIndex(midx, oid('01')),
+            lookupMultiPackIndex(midx, oid('05')),
+            lookupMultiPackIndex(midx, oid('09')),
+          ]);
+        });
+      });
+    });
+
+    describe('Given an OOFF entry whose pack index is out of range', () => {
+      describe('When reading that position directly', () => {
+        it('Then refuses with pack-int-id, same as the searched read', () => {
+          // Arrange
+          const spec = baseSpec();
+          const midx = parseMultiPackIndex(setNumPacks(buildMidx(spec), 1), spec.digestLength);
+
+          // Act & Assert — entry 1 routes to pack index 1, out of range for 1 name
+          expectRefusal(() => midxEntryAt(midx, 1), 'pack-int-id', 'out of range');
         });
       });
     });

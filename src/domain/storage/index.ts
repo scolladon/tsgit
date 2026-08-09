@@ -24,7 +24,7 @@ export { createLruCache } from './lru-cache.js';
 
 // Multi-pack index
 export type { MidxEntry, MultiPackIndex } from './midx.js';
-export { allMidxObjectIds, lookupMultiPackIndex, parseMultiPackIndex } from './midx.js';
+export { lookupMultiPackIndex, midxEntryAt, midxOidAt, parseMultiPackIndex } from './midx.js';
 
 // Pack entry
 export type {
