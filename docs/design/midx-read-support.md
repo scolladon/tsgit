@@ -739,8 +739,10 @@ Parse order, each step gated on the previous (this ordering is what makes requir
 5. required chunks present: `PNAM`, `OIDF`, `OIDL`, `OOFF` (G11, G12).
 6. `OIDF` is `1024` bytes and monotonic; `objectCount = F[255]` (G13).
 7. `OIDL.length === objectCount * digestLength`; `OOFF.length === objectCount * 8`.
-8. `PNAM` splits into exactly `numPacks` NUL-terminated names, all non-empty, the remainder ≤ 3
-   NUL padding bytes (G9); for version 1 only, strictly increasing (D7/D8).
+8. `PNAM` splits into exactly `numPacks` NUL-terminated names, all non-empty; git never checks the
+   remainder past the last name (corrected post-implementation — the draft's ≤3-NUL-padding-byte
+   refusal was wrong, see **Post-implementation corrections (a)**); for version 1 only, strictly
+   increasing (D7/D8).
 9. `LOFF`, if present, has a length that is a multiple of 8; `largeOffsetCount = len / 8`.
 
 `lookupMultiPackIndex` is `lookupPackIndex`'s structure with a wider stride and a two-word payload:
@@ -1275,6 +1277,15 @@ CI cache restore, or a malicious dependency's vendored fixture.
     affects only one of the two paths is reported by only one of them — deliberately, because that
     is precisely git's parent/child split (Pin N). It does mean "reads work" and "fsck is clean"
     are genuinely independent claims, and the interop rows assert them separately.
+11. **The session delta cache can mask a deferred Tier-A midx fault.** A read served from
+    `ctx.deltaCache` never touches the registry, so a cache hit answers correctly even when the
+    underlying midx has a Tier-A fault only a fresh decode would trip (the `pack-int-id` /
+    `large-offset` family, reached only inside a specific entry's resolution — §D12.1's "contained"
+    arm): a delta base cached before the store went bad satisfies a later lookup git — decoding
+    fresh every time — would `die()` on. `fsck` audits through a cache-bypassing `Context` view for
+    exactly this reason; the ordinary read path keeps the cache, so the residual divergence from git
+    is bounded to objects already cached in an already-corrupted store. See **Post-implementation
+    corrections (d)**.
 
 ### §D12 — the `fsck` midx pass (ADR-601, ADR-602)
 
@@ -1574,8 +1585,9 @@ Rows, one `describe('Given …') > describe('When …') > it('Then …')` group 
 - **Chunk-content refusals**: `OIDF` non-monotonic (at index 0 and at index 255 — two rows, since a
   loop-boundary mutant survives a single-index test), `OIDL` length ≠ `objectCount · digestLength`,
   `OOFF` length ≠ `objectCount · 8`, `PNAM` yielding ≠ `numPacks` names, `PNAM` with an empty name,
-  `PNAM` with > 3 padding bytes, v1 `PNAM` out of order **accepted under v2** (the D7/D8 pair, as
-  two rows sharing one fixture).
+  v1 `PNAM` out of order **accepted under v2** (the D7/D8 pair, as two rows sharing one fixture).
+  `PNAM` with trailing bytes past the last name is an **accept** row, not a refusal — corrected
+  post-implementation, see **Post-implementation corrections (a)**.
 - **Lookup**: first / last / middle oid; an oid below `OIDL[0]` and above `OIDL[n-1]`; an oid in a
   fanout bucket that is empty; `packIndex` out of range refuses.
 - **Large offsets** (Pin F, both directions): `LOFF` present + bit 31 set → the 64-bit value;
@@ -1622,7 +1634,8 @@ chain over the layer cap · a chain line with `../` or a NUL (T-2, must never re
 - ADR-592 rows: midx hit on a pack whose header gate fails → `undefined`, and the sibling pack
   holding the same oid is **not** consulted; a pack absent from `claimedNames` **is** consulted.
 - Generation coherence: `refresh()` drops midx and packs together; a `lookup` racing a `refresh`
-  never sees one generation's midx against another's packs.
+  never sees one generation's midx against another's packs (shipped as a structural guarantee, not
+  an executable race test — see **Post-implementation corrections (e)**).
 - `dispose()` handle-count deltas unchanged (requirement 13).
 
 ### Unit — the ADR-593 Tier-A rows (new, and the ones most likely to be got wrong)
@@ -1780,3 +1793,92 @@ effect on the documented `FsckResult.exitCode` bitmask, not just the domain pars
   §D11.1 records the resulting divergence.
 - **Stderr transcript parity.** Per ADR-249, git's midx `error:` / `warning:` / `fatal:` lines are
   presentation. tsgit emits none and is not expected to.
+
+## Post-implementation corrections — 2026-08-09
+
+Measured-reality corrections the implementation and review phases surfaced after this design was
+accepted. The pinned matrices above (Pins A–P) are left exactly as originally recorded — a pin is a
+transcript of one probe run, and a wrong reading belongs in that transcript's history, not erased
+from it. Corrections land here instead.
+
+**a. §D1 parse step 8 — the `PNAM` padding-byte refusal was wrong.** The draft's step 8 and the Test
+strategy's chunk-content-refusals row both claimed a `PNAM` chunk with more than 3 NUL padding bytes
+past its declared `numPacks` names refuses. Verified twice empirically against git 2.55.0:
+`read_chunk_pack_names` reads exactly `numPacks` NUL-terminated names and stops — it never
+inspects, counts, or cross-checks the chunk's remaining bytes, whether that remainder is ordinary
+4-byte alignment padding or, when `numPacks` understates the chunk's real content, unread real data.
+Shipped behaviour accepts any trailing bytes; `parsePackNames`
+(`src/domain/storage/midx.ts`) carries the correction inline, with the reasoning recorded next to
+the code. §D1 step 8 and the Test-strategy chunk-content-refusals bullet are corrected in place to
+point here rather than repeat the wrong rule.
+
+**b. Pin O rows O12 / O28 — git's *parent* fsck exit is topology-bimodal.** Both rows were pinned
+against one fixture generation as a clean split — 128 (O12) on the parent, 32 (O28) contained by the
+child. Re-running the same mutations across regenerated fixtures shows the *parent's* own exit is
+not fixed: it depends on whether git's own connectivity walk happens to dereference the poisoned oid
+**through the midx** before `multi-pack-index verify` gets to it — a function of `repack`'s delta
+topology on that fixture, not of the mutation itself. Both **128 and 32** were measured on the
+parent for the same mutation across different regenerations. What does **not** vary: the
+`multi-pack-index verify` **child** always dies at 128 for these rows, and tsgit's own behaviour is
+deterministic regardless of topology — it always takes the contained shape, a `midx-unusable`
+finding plus bit 32 (§D12.1's "reached only inside the pass" arm), because tsgit's own connectivity
+walk never routes through the midx decode the way git's optionally does. The pin's *intent* — git
+has a die-at-load path and a contained-in-the-pass path for the same `MidxCheck` member — still
+holds; only the claim that a given fixture always lands on one side of it does not.
+
+**c. Pin O row O25 — git's exact fsck integer is fixture-variant; the bit-32 pin is the stable
+one.** Re-running O25 (a midx-named pack's `.idx` deleted, `.pack` kept) across regenerated fixtures
+measured **110** (as pinned) and **102** on different runs — the missing-object contribution comes
+and goes with the fixture. The unstable component is git's own connectivity-walk cardinality on this
+fixture shape, not the midx pass: bit 32 and the `midx-pack-unresolved` / `midx-entry-unresolved`
+finding families are stable across every regeneration. The stable pin is therefore the bit and the
+finding families, not the literal integer. Separately, and unrelated to the integer drift: this row
+is where git's fsck also emits pack-layer stderr lines tsgit structurally cannot reproduce
+(`error: packfile … index unavailable`, `unable to load rev-index`) — pack discovery in tsgit
+requires the sibling `.idx` to exist at scan time, so there is no "pack found, index missing" state
+to narrate a message for. This is an accepted divergence, of the same family the pack-health suite
+already accepts for its own `.idx`-less rows (ADR-587's capability boundary), not a new one this
+change introduces.
+
+**d. §D4.2/§D11 — the session delta cache can mask a deferred Tier-A midx fault.** A read served
+from `ctx.deltaCache` never touches the registry at all, so a cache hit answers correctly even when
+the underlying midx has a Tier-A fault that only a fresh decode would trip (the `pack-int-id` /
+`large-offset` family, reached only inside a specific entry's resolution — §D12.1's "contained" arm).
+Concretely: a delta base cached by an earlier, pre-corruption read satisfies a later lookup that git
+— decoding fresh every time — would `die()` on. This is why `fsck` (`fsck.ts`) audits through a
+**cache-bypassing `Context` view**: `{ ...ctx, deltaCache: NO_DELTA_CACHE }`, sharing the *same*
+pack registry via `adoptPackRegistry` (so the scan is not duplicated and no handle is doubled) but
+forcing every object through a live decode. The ordinary read path is unaffected and keeps the cache
+— this is deliberately not "fixed" there — so the residual divergence from git is bounded to objects
+already cached before the store went bad, in a store that is already corrupted. Recorded as blind
+spot 11 in §D11.
+
+**e. §D3/§D5 — generation coherence is a structural invariant, not a concurrency test.** The Test
+strategy's `pack-registry.test.ts` row promised "a `lookup` racing a `refresh` never sees one
+generation's midx against another's packs" as a race scenario. What shipped instead is the
+structural guarantee §D3 already specifies: `PackGeneration.midx` and `PackGeneration.packs` are two
+fields of the *same* object, produced inside the *same* `scanPacks()` call and read together off the
+*same* `currentGeneration()` await — so there is no interleaving in which a caller can observe one
+without the other belonging to the same scan. This is asserted **by construction** (the type and the
+single call site), not by an executable interleaving test, because there is no scheduling point
+between reading `.midx` and reading `.packs` off one already-resolved `PackGeneration` for a test to
+race against. No behaviour changed; the test-strategy row overstated what needed proving.
+
+**f. Chunk-table gates — three additional git parse gates shipped, all Tier B (`chunk-table`).**
+Beyond the gates §D1 lists (offsets strictly increasing, final entry id zero), the parser pins and
+enforces three more, matching `read_table_of_contents` exactly:
+
+- a **duplicate chunk id** across two rows refuses;
+- each **real** row's offset must be 4-byte aligned — but git never alignment-checks the
+  **terminating sentinel** row, only the `numChunks` real rows before it, and the parser matches
+  that asymmetry rather than aligning every row uniformly;
+- a **terminating id-0 row appearing before the final row** (an early sentinel) refuses, rather than
+  being accepted as a short chunk table.
+
+All three are classified `check: 'chunk-table'`, Tier B (warn, discard, fall back to the `.idx`
+scan) — the same tier §D4.1 already assigns the chunk-table family, so this is additional coverage
+within an existing tier, not a new tier or a new `MidxCheck` member.
+
+**g. `numBaseFiles`.** Already correctly specified by §D4.4 — accepted and ignored, dropped from
+`MidxCheck` entirely. No correction; named here only so this section's silence on `numBaseFiles` is
+not read as an oversight.

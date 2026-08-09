@@ -42,7 +42,15 @@ type FsckFinding =
   | { readonly type: 'pack-index-unusable';
       readonly pack: string; readonly reason: string }
   | { readonly type: 'pack-rev-index-unusable';
-      readonly pack: string; readonly reason: string };
+      readonly pack: string; readonly reason: string }
+  | { readonly type: 'midx-unusable';
+      readonly artefact: string; readonly reason: string }
+  | { readonly type: 'midx-checksum-mismatch';
+      readonly artefact: string }
+  | { readonly type: 'midx-pack-unresolved';
+      readonly artefact: string; readonly position: number; readonly pack: string }
+  | { readonly type: 'midx-entry-unresolved';
+      readonly artefact: string; readonly id: ObjectId };
 
 interface FsckOptions {
   readonly connectivityOnly?: boolean;
@@ -106,6 +114,10 @@ findings.filter(f => f.type === 'tagged')
 | `pack-inaccessible` | `pack`, `reason` | A pack failed the header gate — bad version, bad signature, truncated file, a header/index object-count disagreement, or a `.pack` that could not be opened. Full mode only (suppressed by `full: false` or `connectivityOnly: true`). Exit bit 4. |
 | `pack-index-unusable` | `pack`, `reason` | A pack's `.idx` could not be read or parsed. Full mode only; always accompanied by a `pack-rev-index-unusable` finding for the same pack. Exit bit 4. |
 | `pack-rev-index-unusable` | `pack`, `reason` | A pack's index is unusable, so no reverse index can be derived from it either. Emitted in **every** mode, including `connectivityOnly` and `full: false` — unlike the other two pack findings, this one is not mode-gated. Exit bit 64. |
+| `midx-unusable` | `artefact`, `reason` | The multi-pack-index (or a chain layer) actually in use was discarded — too small, unreadable, a chunk offset outside the file, a hash-version mismatch, with no usable fallback layer — or the entry-resolution walk hit a structural fault reached only inside this pass. `artefact` names the file; `reason` is tsgit's own wording, not reconstructed from git's stderr. A dropped chain that still leaves a usable layer, or a discarded flat file rescued by a loadable chain, produces no finding. Reported in every mode. Exit bit 32. |
+| `midx-checksum-mismatch` | `artefact` | The in-use artefact's trailer digest disagrees with its declared content — checked once per `fsck` run, on the flat file or the chain head only (never a base layer), and never on the ordinary read path. Reported in every mode. Exit bit 32. |
+| `midx-pack-unresolved` | `artefact`, `position`, `pack` | A `PNAM` entry — `position` is its chain-global index — names a pack that could not be resolved this scan, and whose `.pack` file is also gone. Reported in every mode. Exit bit 32. |
+| `midx-entry-unresolved` | `artefact`, `id` | An object the midx routes to a pack that cannot serve it — fires even when the pack itself resolved (its `.pack` is on disk but its `.idx` is not), independently of `midx-pack-unresolved`. Reported in every mode. Exit bit 32. |
 
 `pack` is the pack's base name (`pack-<sha>`), already vetted at scan time against path
 separators, `..`, and control characters — but it is **not shell-safe** (spaces, quotes, `$`,
@@ -150,8 +162,11 @@ reconstructed from git's stderr text.
   | `8` | Refs-verify content failure only (bit 8). |
   | `10` | Bits 2 and 8 combined (e.g. malformed ref content + ref→absent OID). |
   | `14` | Bits 2, 4 and 8 combined. |
+  | `32` | The in-use multi-pack-index or chain layer was discarded, its trailer checksum disagreed, or it routes to a pack or entry it cannot resolve (bit 32, the four `midx-*` findings). Set in **every** mode, including `connectivityOnly` and `full: false` — ungated like bit 64, unlike bit 4. |
+  | `42` | Bits 2, 8 and 32 combined (e.g. a midx-named pack fully deleted: missing objects, invalid ref pointers, and the midx's own pack-resolution failure, with no unrelated pack-accessibility fault). |
   | `64` | A pack's reverse index is unusable, no other error (bit 64, `pack-rev-index-unusable`). Set in **every** mode, including `connectivityOnly` and `full: false` — the one bit this table's other rows are gated against. |
   | `68` | Bits 4 and 64 combined — an unusable `.idx` in full mode sets both, matching git's `index not opened` **and** `unable to load rev-index` for the same pack. |
+  | `110` | Bits 2, 4, 8, 32 and 64 combined — a midx-named pack's `.idx` gone sets the pack pass's bits (4 and 64) alongside the midx pass's (32), plus the ordinary connectivity fallout (2 and 8). |
 
   Combinations follow bitwise OR. Caller passes `result.exitCode` to
   `process.exit` to reproduce git's exit behaviour.
