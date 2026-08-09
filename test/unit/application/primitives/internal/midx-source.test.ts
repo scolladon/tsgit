@@ -538,7 +538,8 @@ describe('midx-source', () => {
       describe('When loadMidxSet is called', () => {
         it.each([
           ['a path-traversal line', '../../../../etc/passwd'],
-          ['a line containing NUL', `aa bb${'0'.repeat(35)}`],
+          ['a line containing NUL', `aa\u0000bb${'0'.repeat(35)}`],
+          ['a line containing a non-hex space', `aa bb${'0'.repeat(35)}`],
         ])(
           'Then the run terminates at %s and it is never used to build a path',
           async (_label, hostileLine) => {
@@ -581,6 +582,267 @@ describe('midx-source', () => {
           // Assert
           expect(result.set?.kind).toBe('flat');
           expect(hashHex).not.toHaveBeenCalled();
+        });
+      });
+    });
+
+    describe('Given a flat midx whose stat throws PERMISSION_DENIED', () => {
+      describe('When loadMidxSet is called', () => {
+        it('Then a fault is recorded on multi-pack-index and the chain still resolves', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const dir = packsDir(commonGitDir(ctx));
+          const flatPath = multiPackIndexPath(dir);
+          await writeChain(ctx, dir, [baseSpec()]);
+          const denying: Context = {
+            ...ctx,
+            fs: {
+              ...ctx.fs,
+              stat: async (path) => {
+                if (path === flatPath) throw permissionDenied(path);
+                return ctx.fs.stat(path);
+              },
+            },
+          };
+
+          // Act
+          const result = await loadMidxSet(denying, dir);
+
+          // Assert
+          expect(result.set?.kind).toBe('chain');
+          expect(result.faults).toHaveLength(1);
+          expect(result.faults[0]?.artefact).toBe('multi-pack-index');
+          expect(result.faults[0]?.data.code).toBe('PERMISSION_DENIED');
+          expect(result.flatFilePresent).toBe(true);
+        });
+      });
+    });
+
+    describe('Given a non-regular file at the flat midx path', () => {
+      describe('When loadMidxSet is called', () => {
+        it('Then a fault is recorded and the file is never opened', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const dir = packsDir(commonGitDir(ctx));
+          const flatPath = multiPackIndexPath(dir);
+          await writeMidx(ctx, dir, 'multi-pack-index', buildMidx(baseSpec()));
+          const irregular: Context = {
+            ...ctx,
+            fs: {
+              ...ctx.fs,
+              stat: async (path) => {
+                const real = await ctx.fs.stat(path);
+                return path === flatPath ? { ...real, isFile: false } : real;
+              },
+            },
+          };
+          const { ctx: instrumented, calls } = instrumentedContext(irregular);
+
+          // Act
+          const result = await loadMidxSet(instrumented, dir);
+
+          // Assert
+          expect(result.set).toBeUndefined();
+          expect(result.faults).toHaveLength(1);
+          expect(result.faults[0]?.data).toMatchObject({
+            code: 'INVALID_MULTI_PACK_INDEX',
+            reason: 'multi-pack-index artefact is not a regular file',
+          });
+          const reads = calls().filter((call) => call.method === 'read' && call.path === flatPath);
+          expect(reads).toEqual([]);
+        });
+      });
+    });
+
+    describe('Given a chain manifest whose stat throws PERMISSION_DENIED', () => {
+      describe('When loadMidxSet is called', () => {
+        it('Then set is undefined with no fault, silently', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const dir = packsDir(commonGitDir(ctx));
+          const chainPath = multiPackIndexChainPath(dir);
+          await ctx.fs.writeUtf8(chainPath, `${layerDigest(1, 20)}\n`);
+          const denying: Context = {
+            ...ctx,
+            fs: {
+              ...ctx.fs,
+              stat: async (path) => {
+                if (path === chainPath) throw permissionDenied(path);
+                return ctx.fs.stat(path);
+              },
+            },
+          };
+
+          // Act
+          const result = await loadMidxSet(denying, dir);
+
+          // Assert
+          expect(result.set).toBeUndefined();
+          expect(result.faults).toEqual([]);
+        });
+      });
+    });
+
+    describe('Given a non-regular file at the chain manifest path', () => {
+      describe('When loadMidxSet is called', () => {
+        it('Then set is undefined with no fault, and the manifest is never opened', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const dir = packsDir(commonGitDir(ctx));
+          const chainPath = multiPackIndexChainPath(dir);
+          await ctx.fs.writeUtf8(chainPath, `${layerDigest(1, 20)}\n`);
+          const irregular: Context = {
+            ...ctx,
+            fs: {
+              ...ctx.fs,
+              stat: async (path) => {
+                const real = await ctx.fs.stat(path);
+                return path === chainPath ? { ...real, isFile: false } : real;
+              },
+            },
+          };
+          const { ctx: instrumented, calls } = instrumentedContext(irregular);
+
+          // Act
+          const result = await loadMidxSet(instrumented, dir);
+
+          // Assert
+          expect(result.set).toBeUndefined();
+          expect(result.faults).toEqual([]);
+          const reads = calls().filter(
+            (call) => call.method === 'readUtf8' && call.path === chainPath,
+          );
+          expect(reads).toEqual([]);
+        });
+      });
+    });
+
+    describe('Given a chain manifest whose stat reports a size over the byte cap', () => {
+      describe('When loadMidxSet is called', () => {
+        it('Then the chain is discarded with one fault and the manifest is never read', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const dir = packsDir(commonGitDir(ctx));
+          const chainPath = multiPackIndexChainPath(dir);
+          await ctx.fs.writeUtf8(chainPath, `${layerDigest(1, 20)}\n`);
+          const lying: Context = {
+            ...ctx,
+            fs: {
+              ...ctx.fs,
+              stat: async (path) => {
+                const real = await ctx.fs.stat(path);
+                return path === chainPath ? { ...real, size: MAX_MIDX_BYTES + 1 } : real;
+              },
+            },
+          };
+          const { ctx: instrumented, calls } = instrumentedContext(lying);
+
+          // Act
+          const result = await loadMidxSet(instrumented, dir);
+
+          // Assert
+          expect(result.set).toBeUndefined();
+          expect(result.faults).toHaveLength(1);
+          expect(result.faults[0]?.artefact).toBe('multi-pack-index-chain');
+          expect(result.faults[0]?.data).toMatchObject({ reason: REASON_MIDX_EXCEEDS_MAX });
+          const reads = calls().filter(
+            (call) => call.method === 'readUtf8' && call.path === chainPath,
+          );
+          expect(reads).toEqual([]);
+        });
+      });
+    });
+
+    describe('Given a chain manifest whose read throws PERMISSION_DENIED', () => {
+      describe('When loadMidxSet is called', () => {
+        it('Then set is undefined with no fault, silently', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const dir = packsDir(commonGitDir(ctx));
+          const chainPath = multiPackIndexChainPath(dir);
+          await ctx.fs.writeUtf8(chainPath, `${layerDigest(1, 20)}\n`);
+          const denying: Context = {
+            ...ctx,
+            fs: {
+              ...ctx.fs,
+              readUtf8: async (path) => {
+                if (path === chainPath) throw permissionDenied(path);
+                return ctx.fs.readUtf8(path);
+              },
+            },
+          };
+
+          // Act
+          const result = await loadMidxSet(denying, dir);
+
+          // Assert
+          expect(result.set).toBeUndefined();
+          expect(result.faults).toEqual([]);
+        });
+      });
+    });
+
+    describe('Given a chain manifest that lists the same layer digest twice', () => {
+      describe('When loadMidxSet is called', () => {
+        it('Then the whole chain is discarded with one fault and no layer is ever read', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const dir = packsDir(commonGitDir(ctx));
+          const digest = layerDigest(1, 20);
+          await writeLayerFile(ctx, dir, digest, baseSpec());
+          await ctx.fs.writeUtf8(multiPackIndexChainPath(dir), `${digest}\n${digest}\n`);
+          const { ctx: instrumented, calls } = instrumentedContext(ctx);
+
+          // Act
+          const result = await loadMidxSet(instrumented, dir);
+
+          // Assert
+          expect(result.set).toBeUndefined();
+          expect(result.faults).toHaveLength(1);
+          expect(result.faults[0]?.artefact).toBe('multi-pack-index-chain');
+          expect(result.faults[0]?.data).toMatchObject({
+            reason: 'multi-pack-index chain lists a layer digest twice',
+          });
+          const layerReads = calls().filter(
+            (call) => call.method === 'read' && call.path.includes('.midx'),
+          );
+          expect(layerReads).toEqual([]);
+        });
+      });
+    });
+
+    describe('Given a non-regular file at a chain layer path', () => {
+      describe('When loadMidxSet is called', () => {
+        it('Then the whole chain is discarded with a fault on that layer and it is never opened', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const dir = packsDir(commonGitDir(ctx));
+          const digests = await writeChain(ctx, dir, [baseSpec()]);
+          const layerPath = multiPackIndexLayerPath(dir, digests[0]!);
+          const irregular: Context = {
+            ...ctx,
+            fs: {
+              ...ctx.fs,
+              stat: async (path) => {
+                const real = await ctx.fs.stat(path);
+                return path === layerPath ? { ...real, isFile: false } : real;
+              },
+            },
+          };
+          const { ctx: instrumented, calls } = instrumentedContext(irregular);
+
+          // Act
+          const result = await loadMidxSet(instrumented, dir);
+
+          // Assert
+          expect(result.set).toBeUndefined();
+          expect(result.faults).toHaveLength(1);
+          expect(result.faults[0]?.artefact).toBe(`multi-pack-index-${digests[0]}.midx`);
+          expect(result.faults[0]?.data).toMatchObject({
+            reason: 'multi-pack-index artefact is not a regular file',
+          });
+          const reads = calls().filter((call) => call.method === 'read' && call.path === layerPath);
+          expect(reads).toEqual([]);
         });
       });
     });

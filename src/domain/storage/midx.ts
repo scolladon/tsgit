@@ -274,9 +274,11 @@ function parsePackNames(
   if (version === 1) {
     for (let i = 1; i < names.length; i += 1) {
       if (!(names[i - 1]! < names[i]!)) {
+        // The names themselves are attacker-controlled bytes and must not
+        // reach the error message raw; the indices identify the pair safely.
         throw invalidMultiPackIndex(
           'pack-names',
-          `pack names out of order: '${names[i - 1]}' before '${names[i]}'`,
+          `pack names out of order at entries ${i - 1} and ${i}`,
         );
       }
     }

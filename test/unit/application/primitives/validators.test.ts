@@ -543,7 +543,7 @@ describe('error-reason constants are stable identifiers', () => {
         },
         {
           actual: REASON_MIDX_EXCEEDS_MAX,
-          expected: 'multi-pack-index file exceeds 64 MiB',
+          expected: 'multi-pack-index file exceeds 1 GiB',
           label: 'REASON_MIDX_EXCEEDS_MAX',
         },
         {

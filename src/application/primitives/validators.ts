@@ -134,12 +134,15 @@ export function exceedsMaxPackIdxBytes(size: number): boolean {
 
 /* ──────────────── multi-pack-index ──────────────── */
 
-export const REASON_MIDX_EXCEEDS_MAX = 'multi-pack-index file exceeds 64 MiB' as const;
+export const REASON_MIDX_EXCEEDS_MAX = 'multi-pack-index file exceeds 1 GiB' as const;
 export const REASON_MIDX_CHAIN_TOO_LONG = 'multi-pack-index chain exceeds 1000 layers' as const;
 
-/** Max multi-pack-index file size the registry will load — same order of
- *  magnitude as a pack's own .idx bound (MAX_PACK_IDX_BYTES). */
-export const MAX_MIDX_BYTES = 64 * 1024 * 1024;
+/** Max multi-pack-index file size the registry will load. A midx over N
+ *  objects costs roughly `1024 + N * (digestLength + 8)` bytes plus pack
+ *  names, so 1 GiB admits ~38 M SHA-1 objects (~26 M SHA-256) — comfortably
+ *  past the busiest repositories a midx serves, where reusing the per-pack
+ *  .idx bound (64 MiB ≈ 2.3 M objects) would refuse exactly that repo class. */
+export const MAX_MIDX_BYTES = 1024 * 1024 * 1024;
 
 /** Max incremental-chain layers the registry will load before discarding the
  *  whole chain — a tsgit policy bound; git itself imposes none. */

@@ -873,6 +873,7 @@ describe('PackRegistry — lazy pack-index loading', () => {
               },
             ],
             stat: async (p: string) => {
+              if (!p.endsWith('.idx')) return ctx.fs.stat(p);
               const base = await ctx.fs.stat(p).catch(() => undefined);
               return { ...(base ?? makeStat()), size: oversized };
             },
@@ -1368,6 +1369,7 @@ describe('PackRegistry.health — per-pack accessibility', () => {
               },
             ],
             stat: async (p: string) => {
+              if (!p.endsWith('.idx')) return ctx.fs.stat(p);
               const base = await ctx.fs.stat(p).catch(() => undefined);
               return { ...(base ?? makeStat()), size: oversized };
             },

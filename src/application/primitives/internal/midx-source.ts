@@ -28,12 +28,15 @@ import {
 import {
   exceedsMaxMidxBytes,
   exceedsMaxMidxChainLayers,
+  MAX_MIDX_CHAIN_LAYERS,
   REASON_MIDX_CHAIN_TOO_LONG,
   REASON_MIDX_EXCEEDS_MAX,
 } from '../validators.js';
 
 const FLAT_ARTEFACT = 'multi-pack-index';
 const CHAIN_ARTEFACT = 'multi-pack-index-chain';
+const REASON_MIDX_IRREGULAR_FILE = 'multi-pack-index artefact is not a regular file';
+const REASON_MIDX_CHAIN_DUPLICATE = 'multi-pack-index chain lists a layer digest twice';
 
 /** An ordered, fully-loaded midx set: one layer for a flat file, N for a
  *  chain (base first). `artefacts` names the on-disk file each layer came
@@ -103,13 +106,38 @@ function layerArtefactName(digest: string): string {
   return `multi-pack-index-${digest}.midx`;
 }
 
-async function statOrAbsent(ctx: Context, path: string): Promise<FileStat | undefined> {
+type FlatPresence =
+  | { readonly kind: 'absent' }
+  | { readonly kind: 'present'; readonly stat: FileStat }
+  | { readonly kind: 'fault'; readonly fault: MidxFault };
+
+/**
+ * Presence probe for the flat file. An io fault the tier map classifies as
+ * Tier B (a permission-denied stat from an out-of-root symlink or a symlink
+ * loop) is a recorded discard, never a propagated denial — git proceeds
+ * without the midx in every such shape. A non-regular entry (FIFO, socket,
+ * directory) is likewise discarded rather than opened: reading a FIFO would
+ * block every object read in the repository indefinitely.
+ */
+async function probeFlat(ctx: Context, path: string): Promise<FlatPresence> {
+  let stat: FileStat;
   try {
-    return await ctx.fs.stat(path);
+    stat = await ctx.fs.stat(path);
   } catch (error) {
-    if (isFileNotFound(error)) return undefined;
-    throw error;
+    if (isFileNotFound(error)) return { kind: 'absent' };
+    if (!isTierBMidxFault(error)) throw error;
+    return { kind: 'fault', fault: { artefact: FLAT_ARTEFACT, data: error.data } };
   }
+  if (!stat.isFile) {
+    return {
+      kind: 'fault',
+      fault: {
+        artefact: FLAT_ARTEFACT,
+        data: invalidMultiPackIndex('size', REASON_MIDX_IRREGULAR_FILE).data,
+      },
+    };
+  }
+  return { kind: 'present', stat };
 }
 
 /** Bound-checked read + parse of one midx artefact. Throws the parser's own
@@ -160,27 +188,48 @@ async function loadFlatBody(
  * empty element, which never matches the hex pattern and therefore
  * terminates the run at exactly the real end — no separate trim/filter step
  * is needed to keep a well-formed chain's last real line in the run.
+ *
+ * Collection stops one past the layer cap: the caller can still detect the
+ * over-cap condition while a hostile many-line manifest never materialises
+ * more than `MAX_MIDX_CHAIN_LAYERS + 1` entries.
  */
 function leadingHexRun(chainText: string, digestLength: number): ReadonlyArray<string> {
   const hexLine = new RegExp(`^[0-9a-f]{${digestLength * 2}}$`);
   const digests: string[] = [];
   for (const line of chainText.split('\n')) {
-    if (!hexLine.test(line)) break;
+    if (!hexLine.test(line) || digests.length > MAX_MIDX_CHAIN_LAYERS) break;
     digests.push(line);
   }
   return digests;
 }
 
-/** Absent, empty or unreadable (a TOCTOU race after the presence check) all
- *  mean "no chain" — silently, with no fault recorded. Mirrors the
- *  commit-graph chain reader's own exists-gated, FILE_NOT_FOUND-tolerant
- *  shape; any other read failure still propagates. */
-async function readChainText(ctx: Context, chainPath: string): Promise<string | undefined> {
-  if (!(await ctx.fs.exists(chainPath))) return undefined;
+type ChainManifest =
+  | { readonly kind: 'text'; readonly text: string }
+  | { readonly kind: 'none' }
+  | { readonly kind: 'oversized' };
+
+/**
+ * Absent, empty, irregular (a directory or FIFO at the manifest path) or
+ * unreadable all mean "no chain" — silently, with no fault recorded, the
+ * design's pinned posture for a broken manifest. The read is stat-bounded
+ * first so a hostile multi-hundred-MB manifest is refused before it is
+ * decoded, and a FIFO is never opened (an open would block every read).
+ */
+async function readChainManifest(ctx: Context, chainPath: string): Promise<ChainManifest> {
+  let stat: FileStat;
   try {
-    return await ctx.fs.readUtf8(chainPath);
+    stat = await ctx.fs.stat(chainPath);
   } catch (error) {
-    if (isFileNotFound(error)) return undefined;
+    if (isFileNotFound(error) || isTierBMidxFault(error)) return { kind: 'none' };
+    throw error;
+  }
+  if (!stat.isFile) return { kind: 'none' };
+  if (exceedsMaxMidxBytes(stat.size)) return { kind: 'oversized' };
+  try {
+    const text = await ctx.fs.readUtf8(chainPath);
+    return exceedsMaxMidxBytes(text.length) ? { kind: 'oversized' } : { kind: 'text', text };
+  } catch (error) {
+    if (isTierBMidxFault(error)) return { kind: 'none' };
     throw error;
   }
 }
@@ -192,27 +241,37 @@ interface ChainOutcome {
 
 const NO_CHAIN: ChainOutcome = { set: undefined, faults: [] };
 
+function chainFault(reason: string): ChainOutcome {
+  return {
+    set: undefined,
+    faults: [{ artefact: CHAIN_ARTEFACT, data: invalidMultiPackIndex('size', reason).data }],
+  };
+}
+
+function hasDuplicateDigest(digests: ReadonlyArray<string>): boolean {
+  return new Set(digests).size !== digests.length;
+}
+
 async function loadChain(
   ctx: Context,
   packsDir: string,
   digestLength: number,
 ): Promise<ChainOutcome> {
-  const chainText = await readChainText(ctx, multiPackIndexChainPath(packsDir));
-  if (chainText === undefined) return NO_CHAIN;
+  const manifest = await readChainManifest(ctx, multiPackIndexChainPath(packsDir));
+  if (manifest.kind === 'none') return NO_CHAIN;
+  if (manifest.kind === 'oversized') return chainFault(REASON_MIDX_EXCEEDS_MAX);
 
-  const digests = leadingHexRun(chainText, digestLength);
+  const digests = leadingHexRun(manifest.text, digestLength);
   if (digests.length === 0) return NO_CHAIN;
 
   if (exceedsMaxMidxChainLayers(digests.length)) {
-    return {
-      set: undefined,
-      faults: [
-        {
-          artefact: CHAIN_ARTEFACT,
-          data: invalidMultiPackIndex('size', REASON_MIDX_CHAIN_TOO_LONG).data,
-        },
-      ],
-    };
+    return chainFault(REASON_MIDX_CHAIN_TOO_LONG);
+  }
+  // A repeated digest would load (and retain) the same layer twice — the one
+  // shape that lets a small manifest amplify its on-disk bytes in memory. A
+  // git-written chain never repeats a digest, so refusing costs nothing.
+  if (hasDuplicateDigest(digests)) {
+    return chainFault(REASON_MIDX_CHAIN_DUPLICATE);
   }
 
   const layers: MultiPackIndex[] = [];
@@ -220,6 +279,9 @@ async function loadChain(
     const layerPath = multiPackIndexLayerPath(packsDir, digest);
     try {
       const stat = await ctx.fs.stat(layerPath);
+      if (!stat.isFile) {
+        throw invalidMultiPackIndex('size', REASON_MIDX_IRREGULAR_FILE);
+      }
       const midx = await readAndParseMidx(ctx, layerPath, stat.size, digestLength);
       layers.push(midx);
     } catch (error) {
@@ -240,14 +302,23 @@ async function loadChain(
 export async function loadMidxSet(ctx: Context, packsDir: string): Promise<MidxLoadResult> {
   const digestLength = ctx.hashConfig.digestLength;
   const flatPath = multiPackIndexPath(packsDir);
-  const flatStat = await statOrAbsent(ctx, flatPath);
+  const presence = await probeFlat(ctx, flatPath);
 
-  if (flatStat === undefined) {
+  if (presence.kind === 'absent') {
     const chain = await loadChain(ctx, packsDir, digestLength);
     return { set: chain.set, faults: chain.faults, flatFilePresent: false };
   }
 
-  const flatOutcome = await loadFlatBody(ctx, flatPath, flatStat.size, digestLength);
+  if (presence.kind === 'fault') {
+    const chain = await loadChain(ctx, packsDir, digestLength);
+    return {
+      set: chain.set,
+      faults: [presence.fault, ...chain.faults],
+      flatFilePresent: true,
+    };
+  }
+
+  const flatOutcome = await loadFlatBody(ctx, flatPath, presence.stat.size, digestLength);
   if (flatOutcome.kind === 'loaded') {
     return {
       set: { layers: [flatOutcome.midx], kind: 'flat', artefacts: [FLAT_ARTEFACT] },
