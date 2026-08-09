@@ -3615,21 +3615,34 @@ describe('PackRegistry — multi-pack-index degradation', () => {
 
   describe('Given a repo with a healthy pack and a merely-unusable multi-pack-index', () => {
     describe('When lookup is called', () => {
-      it.each<{ label: string; corrupt: (bytes: Uint8Array) => Uint8Array }>([
-        { label: 'size', corrupt: (bytes) => bytes.slice(0, 8) },
-        { label: 'chunk-table', corrupt: (bytes) => bytes.slice(0, 20) },
+      it.each<{
+        label: string;
+        reasonFragment: string;
+        corrupt: (bytes: Uint8Array) => Uint8Array;
+      }>([
+        { label: 'size', reasonFragment: 'too short', corrupt: (bytes) => bytes.slice(0, 8) },
+        {
+          label: 'chunk-table',
+          reasonFragment: 'chunk table',
+          corrupt: (bytes) => bytes.slice(0, 20),
+        },
         {
           label: 'hash-version',
+          reasonFragment: 'hash version 2',
           corrupt: (bytes) => {
             const copy = bytes.slice();
             copy[5] = 2;
             return copy;
           },
         },
-        { label: 'chunk-length', corrupt: (bytes) => shrinkMidxChunkAfter(bytes, 'OIDF', -4) },
+        {
+          label: 'chunk-length',
+          reasonFragment: 'OIDF',
+          corrupt: (bytes) => shrinkMidxChunkAfter(bytes, 'OIDF', -4),
+        },
       ])(
         'Then lookup resolves via the .idx scan with exactly one warn ($label)',
-        async ({ corrupt }) => {
+        async ({ corrupt, reasonFragment }) => {
           // Arrange
           const ctx = await buildSeededContext();
           const ids = await writeSyntheticPack(ctx, 'midx-tier-b', [
@@ -3642,9 +3655,14 @@ describe('PackRegistry — multi-pack-index degradation', () => {
           // Act
           const hit = await sut.lookup(ids[0] as ObjectId);
 
-          // Assert
+          // Assert — the reason fragment pins WHICH gate fired, so two rows
+          // collapsing onto one guard cannot pass unnoticed.
           expect(hit).toBeDefined();
           expect(warn).toHaveBeenCalledTimes(1);
+          expect(warn).toHaveBeenCalledWith(
+            'packRegistry: discarding unusable multi-pack-index',
+            expect.objectContaining({ reason: expect.stringContaining(reasonFragment) }),
+          );
         },
       );
     });
@@ -3724,6 +3742,24 @@ describe('PackRegistry — multi-pack-index degradation', () => {
     });
   });
 
+  /** The Tier-A rows all use the flipped-signature fixture: assert the exact
+   *  fault, not merely "it threw" — a re-tiered check or a foreign error class
+   *  passing a bare toThrow() is the silent failure these rows exist to catch. */
+  async function expectMidxSignatureRejection(promise: Promise<unknown>): Promise<void> {
+    let caught: unknown;
+    try {
+      await promise;
+      expect.unreachable();
+    } catch (error) {
+      caught = error;
+    }
+    const data = (caught as TsgitError).data;
+    expect(data.code).toBe('INVALID_MULTI_PACK_INDEX');
+    if (data.code === 'INVALID_MULTI_PACK_INDEX') {
+      expect(data.check).toBe('signature');
+    }
+  }
+
   describe('Given a repo with a loose object and a structurally self-inconsistent multi-pack-index', () => {
     describe('When readObject is called for the loose object', () => {
       it('Then it rejects — a broken multi-pack-index denies loose reads too', async () => {
@@ -3733,7 +3769,7 @@ describe('PackRegistry — multi-pack-index degradation', () => {
         await writeMidxBytes(ctx, flipMidxSignature(buildMidx(healthyMidxSpec())));
 
         // Act + Assert
-        await expect(readObject(ctx, id)).rejects.toThrow();
+        await expectMidxSignatureRejection(readObject(ctx, id));
       });
     });
   });
@@ -3763,7 +3799,7 @@ describe('PackRegistry — multi-pack-index degradation', () => {
         await writeMidxBytes(ctx, flipMidxSignature(buildMidx(healthyMidxSpec())));
 
         // Act + Assert
-        await expect(readObject(ctx, EMPTY_TREE_OID)).rejects.toThrow();
+        await expectMidxSignatureRejection(readObject(ctx, EMPTY_TREE_OID));
       });
     });
 
@@ -3777,7 +3813,7 @@ describe('PackRegistry — multi-pack-index degradation', () => {
         await writeMidxBytes(ctx, flipMidxSignature(buildMidx(healthyMidxSpec())));
 
         // Act + Assert
-        await expect(readObject(ctx, id, { verifyHash: false })).rejects.toThrow();
+        await expectMidxSignatureRejection(readObject(ctx, id, { verifyHash: false }));
       });
     });
   });
@@ -3793,7 +3829,7 @@ describe('PackRegistry — multi-pack-index degradation', () => {
 
         // Act
         for (let i = 0; i < 3; i += 1) {
-          await expect(sut.lookup('a'.repeat(40) as ObjectId)).rejects.toThrow();
+          await expectMidxSignatureRejection(sut.lookup('a'.repeat(40) as ObjectId));
         }
 
         // Assert
@@ -3815,7 +3851,7 @@ describe('PackRegistry — multi-pack-index degradation', () => {
         ]);
         await writeMidxBytes(ctx, flipMidxSignature(buildMidx(healthyMidxSpec())));
         const sut = createPackRegistry(ctx);
-        await expect(sut.lookup(ids[0] as ObjectId)).rejects.toThrow();
+        await expectMidxSignatureRejection(sut.lookup(ids[0] as ObjectId));
 
         // Act — repair in place, no refresh()
         await writeMidxBytes(ctx, buildMidx(healthyMidxSpec()));
@@ -3844,7 +3880,7 @@ describe('PackRegistry — multi-pack-index degradation', () => {
 
         // Assert
         expect(before).toBeDefined();
-        await expect(sut.lookup(ids[0] as ObjectId)).rejects.toThrow();
+        await expectMidxSignatureRejection(sut.lookup(ids[0] as ObjectId));
       });
     });
   });
@@ -4219,7 +4255,11 @@ describe('PackRegistry.lookup — multi-pack-index authority', () => {
         ['a name containing "/"', 'pack-A/evil.idx'],
         ['a name containing ".."', '../pack-A.idx'],
       ])('Then it binds to undefined and constructs no path from %s', async (_label, badName) => {
-        // Arrange
+        // Arrange — the guard's ONLY distinct observable is the logger: the
+        // exact-key binding map already misses a hostile name, so the fs
+        // ledger alone cannot tell the guard from the map. The guard is what
+        // keeps the raw hostile bytes out of the unregistered-name warn.
+        const warn = vi.fn();
         const ctx = await buildSeededContext();
         const idA = await writeSingleBlobPack(ctx, 'A', 'unsafe-pnam');
         await writeMidxBytes(
@@ -4232,7 +4272,8 @@ describe('PackRegistry.lookup — multi-pack-index authority', () => {
           ),
         );
         const { ctx: instrumented, calls } = instrumentedContext(ctx);
-        const sut = createPackRegistry(instrumented);
+        const logging: Context = { ...instrumented, logger: { warn } };
+        const sut = createPackRegistry(logging);
 
         // Act
         const hit = await sut.lookup(idA);
@@ -4241,6 +4282,10 @@ describe('PackRegistry.lookup — multi-pack-index authority', () => {
         expect(hit?.pack.name).toBe('pack-A');
         const suspectCalls = calls().filter((call) => call.path.includes(badName));
         expect(suspectCalls).toEqual([]);
+        const warnedWithHostileName = warn.mock.calls.some((call) =>
+          JSON.stringify(call).includes(badName),
+        );
+        expect(warnedWithHostileName).toBe(false);
       });
     });
   });

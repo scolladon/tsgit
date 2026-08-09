@@ -5210,28 +5210,59 @@ describe('Given a Tier-A-corrupt flat midx', () => {
 // MODE IS UNGATED (Pin N)
 // ---------------------------------------------------------------------------
 
-describe('Given a Tier-B-corrupt flat midx and no rescuing chain', () => {
+describe('Given a finding-producing midx shape and no rescuing chain', () => {
   describe('When fsck runs under every mode', () => {
-    it('Then the midx finding set and bit 32 are identical across default, connectivityOnly, full:false and strict', async () => {
-      // Arrange
-      const ctx = await initBareCtx();
-      await ctx.fs.write(multiPackIndexPath(midxDir(ctx)), new Uint8Array(8));
+    it.each<{ label: string; arrange: (ctx: Context) => Promise<void> }>([
+      {
+        label: 'a Tier-B-corrupt flat midx (midx-unusable)',
+        arrange: async (ctx) => {
+          await ctx.fs.write(multiPackIndexPath(midxDir(ctx)), new Uint8Array(8));
+        },
+      },
+      {
+        label: 'a flat midx with a flipped trailer (midx-checksum-mismatch)',
+        arrange: async (ctx) => {
+          const bytes = buildMidx(midxBaseSpec()).slice();
+          bytes[bytes.length - 1] = (bytes[bytes.length - 1] ?? 0) ^ 0xff;
+          await ctx.fs.write(multiPackIndexPath(midxDir(ctx)), bytes);
+        },
+      },
+      {
+        label: 'a flat midx naming an unregistered pack (midx-pack-unresolved)',
+        arrange: async (ctx) => {
+          await ctx.fs.write(
+            multiPackIndexPath(midxDir(ctx)),
+            buildMidx(midxBaseSpec({ packNames: [midxPackName('f')] })),
+          );
+        },
+      },
+    ])(
+      'Then the midx finding set is identical across default, connectivityOnly, full:false and strict for $label',
+      async ({ arrange }) => {
+        // Arrange
+        const ctx = await initBareCtx();
+        await arrange(ctx);
 
-      // Act
-      const results = await Promise.all([
-        fsck(ctx),
-        fsck(ctx, { connectivityOnly: true }),
-        fsck(ctx, { full: false }),
-        fsck(ctx, { strict: true }),
-      ]);
+        // Act
+        const results = await Promise.all([
+          fsck(ctx),
+          fsck(ctx, { connectivityOnly: true }),
+          fsck(ctx, { full: false }),
+          fsck(ctx, { strict: true }),
+        ]);
 
-      // Assert
-      for (const result of results) {
-        const midxFindings = result.findings.filter(isMidxFinding);
-        expect(midxFindings).toHaveLength(1);
-        expect(result.exitCode & 32).toBe(32);
-      }
-    });
+        // Assert — the full finding arrays, not just counts: a mode that
+        // dropped or reshaped one finding while keeping the count would slip
+        // past a length check.
+        const reference = results[0]!.findings.filter(isMidxFinding);
+        expect(reference.length).toBeGreaterThan(0);
+        expect(results[0]!.exitCode & 32).toBe(32);
+        for (const result of results.slice(1)) {
+          expect(result.findings.filter(isMidxFinding)).toEqual(reference);
+          expect(result.exitCode & 32).toBe(32);
+        }
+      },
+    );
   });
 });
 

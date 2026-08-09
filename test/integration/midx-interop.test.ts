@@ -268,6 +268,9 @@ describe.skipIf(!GIT_AVAILABLE)(
           const dir = await newRoot('d5');
           const fixture = await buildBaseFixture(dir, 'repo');
           git(fixture.dir, '-c', 'midx.version=2', 'multi-pack-index', 'write');
+          // A no-op rewrite would leave the v1 file and turn this row into a
+          // duplicate of the v1 control — pin the version byte.
+          expect(readFileSync(midxPaths(fixture.dir).flat).readUInt8(4)).toBe(2);
           const sut = trackedNodeContext(fixture.dir);
 
           // Act
@@ -625,6 +628,8 @@ describe.skipIf(!GIT_AVAILABLE)(
           const dir = await newRoot('g4');
           const fixture = await buildBaseFixture(dir, 'repo');
           git(fixture.dir, '-c', 'midx.version=2', 'multi-pack-index', 'write');
+          // Same rewrite pin as row D5: the row only tests v2 if v2 landed.
+          expect(readFileSync(midxPaths(fixture.dir).flat).readUInt8(4)).toBe(2);
           const sut = trackedNodeContext(fixture.dir);
 
           // Act + Assert

@@ -127,17 +127,24 @@ function setLoffHighWord(bytes: Uint8Array, row: number, highWord: number): Uint
 }
 
 function expectRefusal(act: () => void, check: MidxCheck, reasonContains: string): void {
+  // Captured OUTSIDE the try: an expect.fail thrown inside it would be
+  // swallowed by this function's own catch and resurface as a confusing
+  // downstream TypeError instead of the intended message.
+  let caught: unknown;
   try {
     act();
-    expect.fail('Should have thrown');
   } catch (e) {
-    const data = (e as TsgitError).data;
-    if (data.code !== 'INVALID_MULTI_PACK_INDEX') {
-      expect.fail(`expected INVALID_MULTI_PACK_INDEX, got ${data.code}`);
-    }
-    expect(data.check).toBe(check);
-    expect(data.reason).toContain(reasonContains);
+    caught = e;
   }
+  if (caught === undefined) {
+    expect.fail('Should have thrown');
+  }
+  const data = (caught as TsgitError).data;
+  if (data.code !== 'INVALID_MULTI_PACK_INDEX') {
+    expect.fail(`expected INVALID_MULTI_PACK_INDEX, got ${data.code}`);
+  }
+  expect(data.check).toBe(check);
+  expect(data.reason).toContain(reasonContains);
 }
 
 function assertExhaustiveMidxCheck(check: MidxCheck): void {
@@ -1016,6 +1023,29 @@ describe('midx', () => {
 
           // Assert
           expect(result).toEqual({ packIndex: 2, offset: 30 });
+        });
+      });
+
+      describe('When looking up an absent oid inside the same populated bucket', () => {
+        it('Then the search narrows to exhaustion and returns undefined', () => {
+          // Arrange — aa04 shares first byte 0xaa with all three entries, so
+          // the window starts non-empty and the loop itself must converge on
+          // the miss — unlike the below/above/empty-bucket rows, whose
+          // fanout windows are empty before the first probe.
+          const spec = baseSpec({
+            entries: [
+              { id: oid('aa01'), packIndex: 0, offset: 10 },
+              { id: oid('aa02'), packIndex: 1, offset: 20 },
+              { id: oid('aa03'), packIndex: 2, offset: 30 },
+            ],
+          });
+          const midx = parseMultiPackIndex(buildMidx(spec), spec.digestLength);
+
+          // Act
+          const result = lookupMultiPackIndex(midx, oid('aa04'));
+
+          // Assert
+          expect(result).toBeUndefined();
         });
       });
     });

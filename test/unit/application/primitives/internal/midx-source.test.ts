@@ -94,17 +94,23 @@ async function writeChain(
 }
 
 async function expectRejectsWithCheck(promise: Promise<unknown>, check: MidxCheck): Promise<void> {
+  // Captured outside the try so a non-rejecting promise fails with the
+  // intended message instead of this catch swallowing expect.unreachable.
+  let caught: unknown;
   try {
     await promise;
-    expect.unreachable();
   } catch (error) {
-    const data = (error as TsgitError).data;
-    expect(data.code).toBe('INVALID_MULTI_PACK_INDEX');
-    if (data.code !== 'INVALID_MULTI_PACK_INDEX') {
-      expect.fail(`expected INVALID_MULTI_PACK_INDEX, got ${data.code}`);
-    }
-    expect(data.check).toBe(check);
+    caught = error;
   }
+  if (caught === undefined) {
+    expect.fail('expected the promise to reject');
+  }
+  const data = (caught as TsgitError).data;
+  expect(data.code).toBe('INVALID_MULTI_PACK_INDEX');
+  if (data.code !== 'INVALID_MULTI_PACK_INDEX') {
+    expect.fail(`expected INVALID_MULTI_PACK_INDEX, got ${data.code}`);
+  }
+  expect(data.check).toBe(check);
 }
 
 describe('midx-source', () => {

@@ -100,9 +100,11 @@ async function expectFsckRejects(ctx: Context, check: string): Promise<void> {
   let caught: unknown;
   try {
     await fsck(ctx);
-    expect.unreachable('expected fsck to reject');
   } catch (error) {
     caught = error;
+  }
+  if (caught === undefined) {
+    expect.fail('expected fsck to reject');
   }
   expect(caught).toBeInstanceOf(TsgitError);
   const data = (caught as TsgitError).data;
@@ -176,6 +178,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck multi-pack-index reporting, against real g
           0,
         );
         expectVerifyInvariant(result.exitCode, verifyResult.exitCode);
+        expectVerifyInvariant(gitResult.exitCode, verifyResult.exitCode);
       });
     });
 
@@ -219,6 +222,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck multi-pack-index reporting, against real g
         expect(verifyResult.exitCode).toBe(0);
         expect(result.exitCode & 32).toBe(0);
         expectVerifyInvariant(result.exitCode, verifyResult.exitCode);
+        expectVerifyInvariant(gitResult.exitCode, verifyResult.exitCode);
       });
     });
 
@@ -394,6 +398,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck multi-pack-index reporting, against real g
           expect(result.exitCode & 32).toBe(32);
           expect(findingsOfType(result.findings, 'midx-unusable')).toHaveLength(1);
           expectVerifyInvariant(result.exitCode, verifyResult.exitCode);
+          expectVerifyInvariant(gitResult.exitCode, verifyResult.exitCode);
         });
       },
     );
@@ -1009,14 +1014,21 @@ describe.skipIf(!GIT_AVAILABLE)('fsck multi-pack-index reporting, against real g
 
     describe('Given the base layer trailer flipped (row P12, silent), When fsck runs', () => {
       it('Then only the chain head is verified — base-layer corruption produces no finding', async () => {
-        // Arrange
+        // Arrange — written DIRECTLY, never through the re-stamping mutator:
+        // a re-stamped trailer would round-trip to the healthy bytes and this
+        // row would measure a healthy chain. The byte comparison proves the
+        // corruption actually landed on disk.
         const fixture = await freshChain('p12');
-        mutateMidxOrThrow(chainLayerPath(fixture.dir, fixture.layerDigests[0]), (bytes) => {
-          bytes[bytes.length - 1] = (bytes[bytes.length - 1] ?? 0) ^ 0xff;
-          return bytes;
-        });
+        const basePath = chainLayerPath(fixture.dir, fixture.layerDigests[0]);
+        const original = readFileSync(basePath);
+        const bytes = Buffer.from(original);
+        bytes[bytes.length - 1] = (bytes[bytes.length - 1] ?? 0) ^ 0xff;
+        chmodSync(basePath, 0o644);
+        writeFileSync(basePath, bytes);
+        expect(Buffer.compare(readFileSync(basePath), original)).not.toBe(0);
         const gitResult = gitFsck(fixture.dir);
         const verifyResult = gitVerify(fixture.dir);
+        expect(verifyResult.stderr).not.toContain('incorrect checksum');
         const sut = trackedNodeContext(fixture.dir);
 
         // Act

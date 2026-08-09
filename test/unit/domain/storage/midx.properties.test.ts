@@ -78,37 +78,59 @@ describe('midx properties', () => {
         // Arrange + Act + Assert
         const sut = parseMultiPackIndex;
 
-        fc.assert(
-          fc.property(
-            fc.uint8Array({ minLength: 0, maxLength: 4096 }),
-            fc.constantFrom(20, 32),
-            (bytes, digestLength) => {
-              let result: ReturnType<typeof sut> | undefined;
-              try {
-                result = sut(bytes, digestLength);
-              } catch (e) {
-                expect((e as TsgitError).data.code).toBe('INVALID_MULTI_PACK_INDEX');
-                return;
-              }
+        // Raw bytes alone almost never survive the signature gate, so half
+        // the runs start from a VALID built midx and corrupt a window of it —
+        // the only generation that drives the parser into its deep gates
+        // (chunk table, fanout, PNAM, LOFF) with in-bounds-looking values.
+        const rawBytes = fc
+          .uint8Array({ minLength: 0, maxLength: 4096, size: 'max' })
+          .chain((bytes) =>
+            fc.constantFrom(20 as const, 32 as const).map((digestLength) => ({
+              bytes,
+              digestLength,
+            })),
+          );
+        const corruptedBuilt = arbMidxSpec().chain((spec) => {
+          const built = buildMidx(spec);
+          return fc
+            .tuple(
+              fc.nat({ max: Math.max(0, built.length - 1) }),
+              fc.uint8Array({ minLength: 1, maxLength: 16 }),
+            )
+            .map(([start, patch]) => {
+              const corrupted = built.slice();
+              corrupted.set(patch.subarray(0, corrupted.length - start), start);
+              return { bytes: corrupted, digestLength: spec.digestLength };
+            });
+        });
 
-              expect(result.oidFanoutOffset).toBeGreaterThanOrEqual(0);
-              expect(result.oidFanoutOffset + 1024).toBeLessThanOrEqual(bytes.length);
-              expect(result.oidLookupOffset).toBeGreaterThanOrEqual(0);
-              expect(
-                result.oidLookupOffset + result.objectCount * digestLength,
-              ).toBeLessThanOrEqual(bytes.length);
-              expect(result.objectOffsetsOffset).toBeGreaterThanOrEqual(0);
-              expect(result.objectOffsetsOffset + result.objectCount * 8).toBeLessThanOrEqual(
+        fc.assert(
+          fc.property(fc.oneof(rawBytes, corruptedBuilt), ({ bytes, digestLength }) => {
+            let result: ReturnType<typeof sut> | undefined;
+            try {
+              result = sut(bytes, digestLength);
+            } catch (e) {
+              expect((e as TsgitError).data.code).toBe('INVALID_MULTI_PACK_INDEX');
+              return;
+            }
+
+            expect(result.oidFanoutOffset).toBeGreaterThanOrEqual(0);
+            expect(result.oidFanoutOffset + 1024).toBeLessThanOrEqual(bytes.length);
+            expect(result.oidLookupOffset).toBeGreaterThanOrEqual(0);
+            expect(result.oidLookupOffset + result.objectCount * digestLength).toBeLessThanOrEqual(
+              bytes.length,
+            );
+            expect(result.objectOffsetsOffset).toBeGreaterThanOrEqual(0);
+            expect(result.objectOffsetsOffset + result.objectCount * 8).toBeLessThanOrEqual(
+              bytes.length,
+            );
+            if (result.largeOffsetsOffset !== undefined) {
+              expect(result.largeOffsetsOffset).toBeGreaterThanOrEqual(0);
+              expect(result.largeOffsetsOffset + result.largeOffsetCount * 8).toBeLessThanOrEqual(
                 bytes.length,
               );
-              if (result.largeOffsetsOffset !== undefined) {
-                expect(result.largeOffsetsOffset).toBeGreaterThanOrEqual(0);
-                expect(result.largeOffsetsOffset + result.largeOffsetCount * 8).toBeLessThanOrEqual(
-                  bytes.length,
-                );
-              }
-            },
-          ),
+            }
+          }),
           { numRuns: 200 },
         );
       });
