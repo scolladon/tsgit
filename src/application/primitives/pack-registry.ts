@@ -17,6 +17,7 @@ import {
   type PackHeader,
   parsePackHeader,
 } from '../../domain/storage/pack-entry.js';
+import { allObjectIds } from '../../domain/storage/pack-index.js';
 import type { Context } from '../../ports/context.js';
 import {
   bindMidx,
@@ -223,6 +224,22 @@ export interface PackRegistry {
    * to.
    */
   midxBitmap(): Promise<MidxBitmapLoad | undefined>;
+  /**
+   * Every oid a `.idx` this generation could PARSE lists, where that index's
+   * own `.pack` is either present-but-unreadable (`health()`'s `unusable`,
+   * `layer: 'pack'`) or absent outright (an orphaned `.idx` — no
+   * `.pack` sibling, so `loadCandidatePack` never turns it into a
+   * `RegisteredPack` and it never reaches `health()` at all). The ONE state
+   * `fsck`'s refs-verify pass needs to tell a target that is git-faithfully
+   * an invalid pointer (known, unreadable) from one that is plainly missing
+   * (never known anywhere): membership is PER-OID, not a repo-wide flag — a
+   * `.pack` fault that nothing references must not taint an unrelated miss,
+   * measured against git 2.55.0. Costs one bounded read per ORPHANED `.idx`
+   * only (a `.pack`-backed pack's index is already parsed — free); an
+   * `.idx` this generation could not even parse (`layer: 'index'`) has no
+   * derivable oid list and contributes nothing here.
+   */
+  knownUnreadableOids(): Promise<ReadonlySet<ObjectId>>;
 }
 
 function isCandidate(entry: { isFile: boolean; name: string }): boolean {
@@ -593,6 +610,84 @@ async function resolveIndexes(
   return { packs: loaded, packList: loaded.map((entry) => entry.pack), indexFaults: faults };
 }
 
+/**
+ * Every `.idx` candidate in `generation`'s own file listing with no `.pack`
+ * sibling — the same orphan test `loadCandidatePack` already applies per-
+ * candidate at scan time, re-run here as a pure filter over `fileNames`. No
+ * I/O: `fileNames` is the scan's own `readdir` result.
+ */
+function orphanedIndexNamesIn(generation: PackGeneration): ReadonlyArray<string> {
+  const names: string[] = [];
+  for (const fileName of generation.fileNames) {
+    if (!fileName.endsWith('.idx') || !isSafePackName(fileName)) continue;
+    if (!generation.fileNames.has(`${packBaseName(fileName)}.pack`)) names.push(fileName);
+  }
+  return names;
+}
+
+/**
+ * Best-effort parse of an orphaned `.idx` — same bounded read `indexMemo`
+ * uses, but never memoised (an orphan never becomes a `RegisteredPack`, so
+ * it has nowhere to live between calls) and never rejects: a fault here
+ * only means this ONE orphan contributes no oids to `knownUnreadableOids`,
+ * exactly as `resolveIndexes` degrades an unparseable `.idx` to "contributes
+ * nothing" rather than aborting the scan.
+ */
+async function tryParseOrphanIndex(
+  ctx: Context,
+  dir: string,
+  idxName: string,
+): Promise<PackIndex | undefined> {
+  try {
+    return parsePackIndex(await readBoundedIdx(ctx, `${dir}/${idxName}`));
+  } catch (err) {
+    if (!isSkippableIdxFault(err)) throw err;
+    return undefined;
+  }
+}
+
+/**
+ * Every oid a 'pack'-layer-unusable pack's ALREADY-parsed index lists — the
+ * `.pack` half of `knownUnreadableOids`. `generation.indexed.get()`'s own
+ * parse is reused verbatim (no re-read): a pack only reaches `unusable` with
+ * `layer: 'pack'` after its `.idx` already parsed successfully.
+ */
+async function packLayerUnreadableOids(
+  generation: PackGeneration,
+  unusable: ReadonlyArray<UnusablePack>,
+): Promise<ReadonlyArray<ObjectId>> {
+  const packLayerNames = new Set(
+    unusable.filter((entry) => entry.layer === 'pack').map((entry) => entry.name),
+  );
+  if (packLayerNames.size === 0) return [];
+  const { packs } = await generation.indexed.get();
+  const oids: ObjectId[] = [];
+  for (const { pack, index } of packs) {
+    if (packLayerNames.has(pack.name)) oids.push(...allObjectIds(index));
+  }
+  return oids;
+}
+
+/**
+ * Every oid an orphaned `.idx` (no `.pack` sibling) lists, across every
+ * orphan `generation`'s own listing shows — the orphan half of
+ * `knownUnreadableOids`. A fault parsing any ONE orphan degrades to
+ * "contributes nothing" (`tryParseOrphanIndex`) rather than aborting the
+ * others.
+ */
+async function orphanedIndexOids(
+  ctx: Context,
+  generation: PackGeneration,
+  dir: string,
+): Promise<ReadonlyArray<ObjectId>> {
+  const oids: ObjectId[] = [];
+  for (const idxName of orphanedIndexNamesIn(generation)) {
+    const index = await tryParseOrphanIndex(ctx, dir, idxName);
+    if (index !== undefined) oids.push(...allObjectIds(index));
+  }
+  return oids;
+}
+
 const unusableEntry = (
   name: string,
   layer: UnusablePack['layer'],
@@ -841,6 +936,15 @@ export function createPackRegistry(ctx: Context): PackRegistry {
     async midxBitmap(): Promise<MidxBitmapLoad | undefined> {
       const generation = await currentGeneration();
       return generation.midxBitmap.get();
+    },
+    async knownUnreadableOids(): Promise<ReadonlySet<ObjectId>> {
+      const generation = await currentGeneration();
+      const { unusable } = await healthMemo.get();
+      const [packLayer, orphaned] = await Promise.all([
+        packLayerUnreadableOids(generation, unusable),
+        orphanedIndexOids(ctx, generation, packsDir(commonGitDir(ctx))),
+      ]);
+      return new Set([...packLayer, ...orphaned]);
     },
     refresh(): void {
       if (disposed) return;

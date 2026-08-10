@@ -136,6 +136,7 @@ async function stubRegistry(
       checksumOk: undefined,
     }),
     midxBitmap: async () => undefined,
+    knownUnreadableOids: async () => new Set(),
   };
 }
 
@@ -1237,6 +1238,7 @@ describe('object-resolver', () => {
               checksumOk: undefined,
             }),
             midxBitmap: async () => undefined,
+            knownUnreadableOids: async () => new Set(),
           };
           const sut = resolveObject;
 
@@ -1305,6 +1307,7 @@ describe('object-resolver', () => {
               checksumOk: undefined,
             }),
             midxBitmap: async () => undefined,
+            knownUnreadableOids: async () => new Set(),
           };
           const sut = resolveObject;
 
@@ -1379,6 +1382,7 @@ describe('object-resolver', () => {
               checksumOk: undefined,
             }),
             midxBitmap: async () => undefined,
+            knownUnreadableOids: async () => new Set(),
           };
           const sut = resolveObject;
 
@@ -1449,6 +1453,7 @@ describe('object-resolver', () => {
               checksumOk: undefined,
             }),
             midxBitmap: async () => undefined,
+            knownUnreadableOids: async () => new Set(),
           };
           const sut = resolveObject;
 

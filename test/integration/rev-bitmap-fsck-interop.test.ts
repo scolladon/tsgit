@@ -466,15 +466,6 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
     // ALONGSIDE the plain "missing" bit (2) — a distinct code path from the
     // "ref points to an oid that plainly doesn't exist anywhere" case
     // (`fsck-interop.test.ts`'s already-pinned matrix #9a, bit 2 only).
-    // tsgit's `runRefsVerifyPass` has no notion of "in the enumerated
-    // universe but its pack is inaccessible" — it only ever sees
-    // `universe.has(oid) === false` and always takes the bit-2-only path, so
-    // it never contributes bit 8 here. This is a PRE-EXISTING gap in
-    // refs-verify.ts's pack-accessibility handling, unrelated to the
-    // rev-index/bitmap health passes Parts 4/5/7 built (their own bits — 4
-    // and 64 below — compose exactly as git's do); both sides are asserted
-    // against their own CONFIRMED, live-measured value rather than pinning
-    // one to the other.
     describe('Given a BASE repo with C1 .idx corrupted (truncated to 8 bytes), .rev intact, When fsck runs', () => {
       it("Then git's non-monotonic-index fault masks the .rev, and tsgit reports pack-index-unusable + pack-rev-index-unusable with no rev-index-invalid finding", async () => {
         // Arrange
@@ -486,11 +477,9 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
         // Act
         const result = await fsck(sut);
 
-        // Assert — git carries the refs-verify bit (8) this fixture's real
-        // refs trigger; tsgit's own pack/rev-index bits (4|64) are intact,
-        // pinned separately from the documented refs-verify gap above.
+        // Assert
         expect(gitResult.exitCode).toBe(78);
-        expect(result.exitCode).toBe(70);
+        expect(result.exitCode).toBe(gitResult.exitCode);
         expect(findingsOfType(result.findings, 'pack-index-unusable')).toHaveLength(1);
         expect(findingsOfType(result.findings, 'pack-rev-index-unusable')).toHaveLength(1);
         expect(findingsOfType(result.findings, 'pack-rev-index-invalid')).toHaveLength(0);
@@ -510,10 +499,9 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
         // Act
         const result = await fsck(sut);
 
-        // Assert — see C1's comment: the refs-verify bit-8 gap is documented
-        // there, not re-litigated here.
+        // Assert
         expect(gitResult.exitCode).toBe(78);
-        expect(result.exitCode).toBe(70);
+        expect(result.exitCode).toBe(gitResult.exitCode);
         expect(findingsOfType(result.findings, 'pack-index-unusable')).toHaveLength(1);
         expect(findingsOfType(result.findings, 'pack-rev-index-unusable')).toHaveLength(1);
         expect(findingsOfType(result.findings, 'pack-rev-index-invalid')).toHaveLength(0);
@@ -1129,23 +1117,12 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
 
     interface CompositionRow {
       readonly label: string;
+      /** git's own pinned exit per mode — tsgit asserts EQUALITY against this,
+       *  never a separately-tracked value of its own (see the row's own
+       *  `arrange`: a target whose housing pack the scan cannot fully
+       *  account for scores bit 8 alongside bit 2, mode-independently, the
+       *  same as bit 4/64/128 already did). */
       readonly gitExit: Readonly<Record<string, number>>;
-      /**
-       * tsgit's own confirmed exit per mode. Equal to `gitExit` for rows
-       * that never touch pack accessibility (Y1). For every row that DOES
-       * (Y2/Y3/Y5/Y4/Y6), `gitExit ^ tsgitExit` isolates the SAME documented
-       * refs-verify gap C1/C2 already carry a full explanation for: git's
-       * ref-checker folds "target unresolvable because its pack is
-       * inaccessible" into bit 8 (`invalid sha1 pointer`), which tsgit's
-       * `runRefsVerifyPass` cannot currently distinguish from a plain
-       * "missing" (bit 2 only) — and, additionally, ONLY under
-       * `connectivityOnly` (Y2/Y3/Y5's `chmod 000` shape), tsgit's
-       * `unreadable: 'classify'` mode reclassifies the same objects as
-       * zero-cost `dangling unknown`, dropping bit 2 as well (never bit 4
-       * or 64/128, which this part IS responsible for and which compose
-       * identically to git's in every row below).
-       */
-      readonly tsgitExit: Readonly<Record<string, number>>;
       readonly arrange: (dir: string) => void;
     }
 
@@ -1153,19 +1130,16 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
       {
         label: 'Y1 .bitmap trailer flipped',
         gitExit: { default: 128, connectivityOnly: 128, 'no-full': 130, strict: 128 },
-        tsgitExit: { default: 128, connectivityOnly: 128, 'no-full': 130, strict: 128 },
         arrange: (dir) => mutateOrThrow(packArtefactPaths(dir).bitmap, flipLastByte),
       },
       {
         label: 'Y3 .pack chmod 000 (header-gate refusal), artefacts intact (node tier only)',
         gitExit: { default: 14, connectivityOnly: 10, 'no-full': 10, strict: 14 },
-        tsgitExit: { default: 6, connectivityOnly: 0, 'no-full': 2, strict: 6 },
         arrange: (dir) => chmodSync(packArtefactPaths(dir).pack, 0o000),
       },
       {
         label: 'Y2 .bitmap trailer flipped + .pack chmod 000 (node tier only)',
         gitExit: { default: 142, connectivityOnly: 138, 'no-full': 138, strict: 142 },
-        tsgitExit: { default: 134, connectivityOnly: 128, 'no-full': 130, strict: 134 },
         arrange: (dir) => {
           mutateOrThrow(packArtefactPaths(dir).bitmap, flipLastByte);
           chmodSync(packArtefactPaths(dir).pack, 0o000);
@@ -1174,7 +1148,6 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
       {
         label: 'Y5 .rev bad signature + .pack chmod 000 (node tier only)',
         gitExit: { default: 78, connectivityOnly: 74, 'no-full': 74, strict: 78 },
-        tsgitExit: { default: 70, connectivityOnly: 64, 'no-full': 66, strict: 70 },
         arrange: (dir) => {
           mutateOrThrow(packArtefactPaths(dir).rev, flipSignatureByte);
           chmodSync(packArtefactPaths(dir).pack, 0o000);
@@ -1183,7 +1156,6 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
       {
         label: 'Y4 .bitmap trailer flipped + .pack deleted (.idx kept)',
         gitExit: { default: 10, connectivityOnly: 10, 'no-full': 10, strict: 10 },
-        tsgitExit: { default: 2, connectivityOnly: 2, 'no-full': 2, strict: 2 },
         arrange: (dir) => {
           mutateOrThrow(packArtefactPaths(dir).bitmap, flipLastByte);
           rmSync(packArtefactPaths(dir).pack);
@@ -1192,7 +1164,6 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
       {
         label: 'Y6 .rev bad signature + .pack deleted (.idx kept)',
         gitExit: { default: 10, connectivityOnly: 10, 'no-full': 10, strict: 10 },
-        tsgitExit: { default: 2, connectivityOnly: 2, 'no-full': 2, strict: 2 },
         arrange: (dir) => {
           mutateOrThrow(packArtefactPaths(dir).rev, flipSignatureByte);
           rmSync(packArtefactPaths(dir).pack);
@@ -1202,9 +1173,9 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
 
     describe.each(COMPOSITION_ROWS)(
       'Given the bitmap fixture with $label, When fsck runs across modes',
-      ({ label, gitExit, tsgitExit, arrange }) => {
+      ({ label, gitExit, arrange }) => {
         it.each(MODES)(
-          'Then mode "$label" gives the pinned exit for git, and tsgit\'s own confirmed exit (documented above where it differs)',
+          'Then mode "$label" gives the same raw exit for both tools',
           async ({ label: modeLabel, flags, opts }) => {
             // Arrange
             const slug = `${label.split(' ')[0]?.toLowerCase()}-${modeLabel}`;
@@ -1218,7 +1189,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
 
             // Assert
             expect(gitResult.exitCode).toBe(gitExit[modeLabel]);
-            expect(result.exitCode).toBe(tsgitExit[modeLabel]);
+            expect(result.exitCode).toBe(gitResult.exitCode);
           },
         );
       },

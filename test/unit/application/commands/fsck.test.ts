@@ -2995,6 +2995,218 @@ describe('Given an orphaned .idx with a bitmap beside it (no sibling .pack file)
 });
 
 // ---------------------------------------------------------------------------
+// REFS-VERIFY PASS — a known-but-unreadable ref target is an invalid
+// pointer, distinct from a plainly absent one
+// ---------------------------------------------------------------------------
+
+describe('Given a loose ref pointing to an OID that never existed, beside an unrelated healthy pack', () => {
+  describe('When fsck runs', () => {
+    it('Then exit is 2 alone — bit 8 is absent', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      await writeSyntheticPack(ctx, 'healthy-neighbour', onePackEntry('healthy-neighbour'));
+      const absentOid = 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee' as ObjectId;
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/broken`, `${absentOid}\n`);
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      expect(result.exitCode).toBe(2);
+    });
+  });
+});
+
+describe('Given a loose ref pointing to an OID whose loose object was deleted', () => {
+  describe('When fsck runs', () => {
+    it('Then exit is 2 alone — bit 8 is absent', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const treeId = await writeObject(ctx, makeTree([]));
+      const commitId = await writeObject(ctx, makeCommit(treeId, []));
+      await ctx.fs.rm(looseObjectPath(ctx.layout.gitDir, commitId));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      expect(result.exitCode).toBe(2);
+    });
+  });
+});
+
+describe('Given a loose ref pointing to an OID listed only in a pack index whose .pack file is absent', () => {
+  describe('When fsck runs', () => {
+    it('Then exit is 10 (2|8) and bit 4 stays absent', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const [blobId] = await writeSyntheticPack(ctx, 'idx-only', onePackEntry('idx-only-content'));
+      await ctx.fs.rm(packFilePath(ctx, 'idx-only'));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${blobId}\n`);
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      expect(result.exitCode).toBe(10);
+      expect(result.exitCode & 4).toBe(0);
+    });
+  });
+});
+
+describe('Given a packed-ref entry pointing to an OID listed only in a pack index whose .pack file is absent', () => {
+  describe('When fsck runs', () => {
+    it('Then exit is 10 (2|8)', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const [blobId] = await writeSyntheticPack(
+        ctx,
+        'idx-only-packed-ref',
+        onePackEntry('idx-only-packed-ref-content'),
+      );
+      await ctx.fs.rm(packFilePath(ctx, 'idx-only-packed-ref'));
+      await ctx.fs.writeUtf8(
+        `${ctx.layout.gitDir}/packed-refs`,
+        `# pack-refs with: peeled fully-peeled sorted \n${blobId} refs/heads/packed\n`,
+      );
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      expect(result.exitCode).toBe(10);
+    });
+  });
+});
+
+describe('Given a loose ref pointing to an OID listed in a pack whose header the registry refuses to open', () => {
+  describe('When fsck runs', () => {
+    it('Then exit is 14 (2|4|8)', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const [blobId] = await writeSyntheticPack(
+        ctx,
+        'header-refused',
+        onePackEntry('header-refused-content'),
+      );
+      await restampPackHeader(ctx, packFilePath(ctx, 'header-refused'), { version: 99 });
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${blobId}\n`);
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      expect(result.exitCode).toBe(14);
+    });
+  });
+});
+
+describe('Given a packed-ref entry pointing to an OID listed in a pack whose header the registry refuses to open', () => {
+  describe('When fsck runs', () => {
+    it('Then exit is 14 (2|4|8)', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const [blobId] = await writeSyntheticPack(
+        ctx,
+        'header-refused-packed-ref',
+        onePackEntry('header-refused-packed-ref-content'),
+      );
+      await restampPackHeader(ctx, packFilePath(ctx, 'header-refused-packed-ref'), {
+        version: 99,
+      });
+      await ctx.fs.writeUtf8(
+        `${ctx.layout.gitDir}/packed-refs`,
+        `# pack-refs with: peeled fully-peeled sorted \n${blobId} refs/heads/packed\n`,
+      );
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      expect(result.exitCode).toBe(14);
+    });
+  });
+});
+
+describe('Given an orphaned .idx that nothing references, beside a healthy referenced ref', () => {
+  describe('When fsck runs', () => {
+    it('Then exit is 0', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      await writeSyntheticPack(ctx, 'orphan-refs-verify', onePackEntry('orphan-refs-verify'));
+      await ctx.fs.rm(packFilePath(ctx, 'orphan-refs-verify'));
+      const treeId = await writeObject(ctx, makeTree([]));
+      const commitId = await writeObject(ctx, makeCommit(treeId, []));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      expect(result.exitCode).toBe(0);
+    });
+  });
+});
+
+describe('Given a healthy repo with no packs at all', () => {
+  describe('When fsck runs', () => {
+    it('Then exit is 0', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const treeId = await writeObject(ctx, makeTree([]));
+      const commitId = await writeObject(ctx, makeCommit(treeId, []));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      expect(result.exitCode).toBe(0);
+    });
+  });
+});
+
+describe('Given a loose ref pointing to an OID that never existed, beside an UNRELATED header-refused pack nothing references', () => {
+  describe('When fsck runs', () => {
+    it('Then exit is 6 (2|4, the unrelated pack itself still reports) — bit 8 does not leak onto this miss', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      await writeSyntheticPack(ctx, 'unrelated-refused', onePackEntry('unrelated-refused'));
+      await restampPackHeader(ctx, packFilePath(ctx, 'unrelated-refused'), { version: 99 });
+      const absentOid = 'ffffffffffffffffffffffffffffffffffffffff' as ObjectId;
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/broken`, `${absentOid}\n`);
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert — bit 4 (pack-inaccessible, unconditional) present, bit 8 absent
+      expect(result.exitCode).toBe(6);
+      expect(result.exitCode & 8).toBe(0);
+    });
+  });
+});
+
+describe('Given a loose ref pointing to an OID that never existed, beside an UNRELATED orphaned .idx nothing references', () => {
+  describe('When fsck runs', () => {
+    it('Then exit is 2 alone — the unrelated orphan does not leak bit 8 onto this miss', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      await writeSyntheticPack(ctx, 'unrelated-orphan', onePackEntry('unrelated-orphan'));
+      await ctx.fs.rm(packFilePath(ctx, 'unrelated-orphan'));
+      const absentOid = 'aabbccddeeaabbccddeeaabbccddeeaabbccddee' as ObjectId;
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/broken`, `${absentOid}\n`);
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      expect(result.exitCode).toBe(2);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // CONNECTIVITY-ONLY — CLASSIFY UNREADABLE OBJECTS (§D12)
 // ---------------------------------------------------------------------------
 

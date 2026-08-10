@@ -95,8 +95,17 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
       ? { findings: [] as FsckFinding[], exitBit: 0 }
       : await runContentValidationPass(auditCtx, universe, opts.strict === true, blobFilenames);
 
-  // Refs-verify pass
-  const refsResult = await runRefsVerifyPass(ctx, universe, opts.checkReferences !== false);
+  // Refs-verify pass — `confirmPackAccessibility` is true exactly when the
+  // universe above was built WITHOUT accessiblePacksOnly narrowing but WITH
+  // packs included (connectivityOnly): the only case `universe.has(oid)` can
+  // hold for an oid whose housing pack later fails its own header gate.
+  const confirmPackAccessibility = opts.full !== false && !packAccessibilityReported(opts);
+  const refsResult = await runRefsVerifyPass(
+    ctx,
+    universe,
+    opts.checkReferences !== false,
+    confirmPackAccessibility,
+  );
 
   // Pack-health pass — reports packs the registry could not open or index.
   const packResult = await runPackHealthPass(ctx, opts);
