@@ -32,13 +32,19 @@ import {
 import type { FilePath } from '../../../../src/domain/objects/object-id.js';
 import { invalidPackIndex } from '../../../../src/domain/storage/index.js';
 import type { Context } from '../../../../src/ports/context.js';
-import { buildMidx, type MidxSpec } from '../../domain/storage/arbitraries.js';
+import {
+  type BitmapSpec,
+  buildBitmap,
+  buildMidx,
+  type MidxSpec,
+} from '../../domain/storage/arbitraries.js';
 import { buildSeededContext, instrumentedContext } from '../primitives/fixtures.js';
 import { withHandleLedger } from '../primitives/handle-ledger.js';
 import {
   buildSyntheticPack,
   type EntrySpec,
   restampPackHeader,
+  writeSyntheticBitmap,
   writeSyntheticPack,
   writeSyntheticRevIndex,
 } from '../primitives/pack-fixture.js';
@@ -2558,6 +2564,23 @@ const packFilePath = (ctx: Context, name: string): string =>
   `${ctx.layout.gitDir}/objects/pack/pack-${name}.pack`;
 const idxFilePath = (ctx: Context, name: string): string =>
   `${ctx.layout.gitDir}/objects/pack/pack-${name}.idx`;
+const bitmapFilePath = (ctx: Context, name: string): string =>
+  `${ctx.layout.gitDir}/objects/pack/pack-${name}.bitmap`;
+
+/** A minimal, structurally healthy bitmap body — zero entries, four empty
+ *  EWAH type streams, the mandatory full-DAG flag. This composition suite
+ *  only needs a real trailer to flip; the body's own shape is irrelevant. */
+function healthyBitmapSpec(digestLength: number): BitmapSpec {
+  const emptyStream = { bitSize: 0, bits: [] } as const;
+  return {
+    optionFlags: 1,
+    digestLength,
+    checksum: new Uint8Array(digestLength).fill(0xbb),
+    typeStreams: [emptyStream, emptyStream, emptyStream, emptyStream],
+    entries: [],
+    trailingBytes: 0,
+  };
+}
 
 const onePackEntry = (content: string) => [
   { kind: 'base' as const, type: 'blob' as const, content: enc.encode(content) },
@@ -2879,6 +2902,94 @@ describe('Given a pack with a broken .rev alongside an unrelated missing tree', 
       // Assert
       expect(result.exitCode & 2).toBe(2);
       expect(result.exitCode & 64).toBe(64);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// BITMAP HEALTH PASS — composition with pre-existing exit bits (bit 128)
+// ---------------------------------------------------------------------------
+
+describe('Given a pack with both a broken .rev and a broken bitmap', () => {
+  describe('When fsck runs', () => {
+    it('Then bits 64 and 128 both compose into exit 192', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      await writeSyntheticPack(ctx, 'both-broken', onePackEntry('both-broken-content'));
+      await writeSyntheticRevIndex(ctx, 'both-broken', [0], { magic: 0 });
+      const body = buildBitmap(healthyBitmapSpec(ctx.hashConfig.digestLength));
+      await writeSyntheticBitmap(ctx, bitmapFilePath(ctx, 'both-broken'), body, {
+        flipTrailer: true,
+      });
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      expect(result.exitCode).toBe(192);
+    });
+  });
+});
+
+describe('Given a malformed ref (bits 2 and 8) beside a header-refused pack with a broken bitmap', () => {
+  describe('When fsck runs by default', () => {
+    it('Then bits 2, 4, 8 and 128 all compose into exit 142', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/garbage`, 'not-a-valid-sha\n');
+      await writeSyntheticPack(ctx, 'compose-142', onePackEntry('compose-142-content'));
+      await restampPackHeader(ctx, packFilePath(ctx, 'compose-142'), { version: 99 });
+      const body = buildBitmap(healthyBitmapSpec(ctx.hashConfig.digestLength));
+      await writeSyntheticBitmap(ctx, bitmapFilePath(ctx, 'compose-142'), body, {
+        flipTrailer: true,
+      });
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      expect(result.exitCode).toBe(142);
+    });
+  });
+
+  describe('When fsck runs with connectivityOnly: true', () => {
+    it('Then bit 4 drops out and exit is 138', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/garbage`, 'not-a-valid-sha\n');
+      await writeSyntheticPack(ctx, 'compose-138', onePackEntry('compose-138-content'));
+      await restampPackHeader(ctx, packFilePath(ctx, 'compose-138'), { version: 99 });
+      const body = buildBitmap(healthyBitmapSpec(ctx.hashConfig.digestLength));
+      await writeSyntheticBitmap(ctx, bitmapFilePath(ctx, 'compose-138'), body, {
+        flipTrailer: true,
+      });
+
+      // Act
+      const result = await fsck(ctx, { connectivityOnly: true });
+
+      // Assert
+      expect(result.exitCode).toBe(138);
+    });
+  });
+});
+
+describe('Given an orphaned .idx with a bitmap beside it (no sibling .pack file)', () => {
+  describe('When fsck runs', () => {
+    it('Then no bitmap-checksum-mismatch is emitted and bit 128 is absent — the pack is never registered', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      await ctx.fs.write(idxFilePath(ctx, 'orphan-with-bitmap'), new Uint8Array(8));
+      const body = buildBitmap(healthyBitmapSpec(ctx.hashConfig.digestLength));
+      await writeSyntheticBitmap(ctx, bitmapFilePath(ctx, 'orphan-with-bitmap'), body, {
+        flipTrailer: true,
+      });
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      expect(result.findings.some((f) => f.type === 'bitmap-checksum-mismatch')).toBe(false);
+      expect(result.exitCode & 128).toBe(0);
     });
   });
 });

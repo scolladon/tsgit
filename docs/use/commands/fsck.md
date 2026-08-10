@@ -55,7 +55,9 @@ type FsckFinding =
   | { readonly type: 'midx-pack-unresolved';
       readonly artefact: string; readonly position: number; readonly pack: string }
   | { readonly type: 'midx-entry-unresolved';
-      readonly artefact: string; readonly id: ObjectId };
+      readonly artefact: string; readonly id: ObjectId }
+  | { readonly type: 'bitmap-checksum-mismatch';
+      readonly artefact: string };
 
 interface FsckOptions {
   readonly connectivityOnly?: boolean;
@@ -125,6 +127,7 @@ findings.filter(f => f.type === 'tagged')
 | `midx-checksum-mismatch` | `artefact` | The in-use artefact's trailer digest disagrees with its declared content — checked once per `fsck` run, on the flat file or the chain head only (never a base layer), and never on the ordinary read path. Reported in every mode. Exit bit 32. |
 | `midx-pack-unresolved` | `artefact`, `position`, `pack` | A `PNAM` entry — `position` is its chain-global index — names a pack that could not be resolved this scan, and whose `.pack` file is also gone. Reported in every mode. Exit bit 32. |
 | `midx-entry-unresolved` | `artefact`, `id` | An object the midx routes to a pack that cannot serve it — fires even when the pack itself resolved (its `.pack` is on disk but its `.idx` is not), independently of `midx-pack-unresolved`. Reported in every mode. Exit bit 32. |
+| `bitmap-checksum-mismatch` | `artefact` | A pack's `.bitmap`, or the in-use multi-pack-index's bitmap, is present and readable but its trailing digest disagrees with the bytes that precede it — the checksum is this artefact's entire obligation, so this is the only bitmap fault tsgit reports. `artefact` is `<base>.bitmap` for a pack, or `multi-pack-index-<hex>.bitmap` (composed from the in-use midx's own stored trailer bytes) for the midx. Absent, unreadable, or a structurally corrupt bitmap whose checksum still matches all produce no finding. Reported in every mode, and the midx arm is unconditional (not gated by `core.multiPackIndex`). Exit bit 128. |
 
 `pack` is the pack's base name (`pack-<sha>`), already vetted at scan time against path
 separators, `..`, and control characters — but it is **not shell-safe** (spaces, quotes, `$`,
@@ -174,6 +177,8 @@ reconstructed from git's stderr text.
   | `64` | A pack's reverse index is unusable, no other error — either its pack index could not be loaded at all (`pack-rev-index-unusable`), or a `.rev` file exists, is readable, and is itself wrong (`pack-rev-index-invalid` / `pack-rev-index-position-mismatch`); the two causes never double-report for the same pack. Set in **every** mode, including `connectivityOnly` and `full: false` — the one bit this table's other rows are gated against. |
   | `68` | Bits 4 and 64 combined — an unusable `.idx` in full mode sets both, matching git's `index not opened` **and** `unable to load rev-index` for the same pack. |
   | `110` | Bits 2, 4, 8, 32 and 64 combined — a midx-named pack's `.idx` gone sets the pack pass's bits (4 and 64) alongside the midx pass's (32), plus the ordinary connectivity fallout (2 and 8). |
+  | `128` | A pack's or the in-use multi-pack-index's bitmap trailer checksum disagrees with its bytes (bit 128, `bitmap-checksum-mismatch`) — the only bitmap fault this pass reports; a structurally corrupt bitmap whose checksum still matches never sets it. Set in **every** mode, and the midx arm is unconditional — ungated like bit 64, unlike bit 4. |
+  | `192` | Bits 64 and 128 combined (e.g. a pack with both a broken `.rev` and a broken `.bitmap`). |
 
   Combinations follow bitwise OR. Caller passes `result.exitCode` to
   `process.exit` to reproduce git's exit behaviour.

@@ -268,6 +268,48 @@ export async function writeSyntheticRevIndex(
   await ctx.fs.write(path, out);
 }
 
+export interface SyntheticBitmapOverride {
+  /**
+   * Body to compute the trailing digest over, when it differs from `body`
+   * itself — the only way to plant a bitmap whose trailer is STALE: correct
+   * for a body the caller has since corrupted, wrong for the bytes actually
+   * on disk. Defaults to `body` — a RESTAMPED trailer, correct for whatever
+   * bytes are actually written, however structurally corrupt.
+   */
+  readonly digestOver?: Uint8Array;
+  /** Flip one trailer byte after the digest (real or stale) is computed —
+   *  the only way to plant a bitmap whose trailer disagrees with EVERY
+   *  body, corrupted or not. */
+  readonly flipTrailer?: boolean;
+  /** Truncate the fully-assembled bytes (`body` + trailer) to this length —
+   *  corrupts the trailer along with everything past the cut, deliberately. */
+  readonly truncateTo?: number;
+}
+
+/**
+ * Writes a synthetic pack or multi-pack-index bitmap (`<name>.bitmap`) to
+ * `ctx`'s memory fs: `body` — arbitrary bytes this writer never inspects or
+ * validates, the caller's own structural shape or corruption of it — plus a
+ * trailing digest. `writeSyntheticBitmap` is the only thing this fixture
+ * gets to be wrong about: the digest, real (default) or stale
+ * (`digestOver`), flipped (`flipTrailer`) or truncated away (`truncateTo`).
+ */
+export async function writeSyntheticBitmap(
+  ctx: Context,
+  path: string,
+  body: Uint8Array,
+  opts: SyntheticBitmapOverride = {},
+): Promise<void> {
+  const checksumHex = await ctx.hash.hashHex(opts.digestOver ?? body);
+  const trailer = hexToBytes(checksumHex);
+  if (opts.flipTrailer === true) trailer[0] = trailer[0]! ^ 0xff;
+
+  let out = concat(body, trailer);
+  if (opts.truncateTo !== undefined) out = out.slice(0, opts.truncateTo);
+
+  await ctx.fs.write(path, out);
+}
+
 /* ──────────────── helpers ──────────────── */
 
 function typeNameToPackType(name: BaseEntrySpec['type']): PackEntryType {

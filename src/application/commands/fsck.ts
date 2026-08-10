@@ -3,6 +3,7 @@ import type { LruCache } from '../../domain/storage/index.js';
 import type { Context } from '../../ports/context.js';
 import { enumerateObjects } from '../primitives/enumerate-objects.js';
 import { adoptPackRegistry } from '../primitives/read-object.js';
+import { runBitmapHealthPass } from './internal/fsck/bitmap-health.js';
 import {
   buildBlobFilenameMap,
   runContentValidationPass,
@@ -111,6 +112,12 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
   // this pass is ever reached.
   const midxResult = await runMidxHealthPass(ctx, opts);
 
+  // Bitmap health pass — reports a pack's or the in-use multi-pack-index's
+  // bitmap by trailing checksum only. Runs after the midx pass, whose
+  // result settles the in-use midx layer's identity this pass's second
+  // step needs.
+  const bitmapResult = await runBitmapHealthPass(ctx, opts);
+
   const roots = await collectRoots(ctx, opts, universe);
   const inEdgePresent = buildInEdgeMap(universe, objectCache);
 
@@ -129,6 +136,7 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
     ...packResult.findings,
     ...revIndexResult.findings,
     ...midxResult.findings,
+    ...bitmapResult.findings,
     ...assembleConnectivityFindings(
       { missingIds, brokenEdges, unreachable, dangling, rootCommits, tagRefs },
       { objectCache, recovered, unreadable },
@@ -142,7 +150,8 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
     refsResult.exitBit |
     packResult.exitBit |
     revIndexResult.exitBit |
-    midxResult.exitBit;
+    midxResult.exitBit |
+    bitmapResult.exitBit;
 
   return { findings, exitCode };
 }

@@ -23,10 +23,15 @@ import {
   type GitObject,
   type ObjectId,
 } from '../../../../src/domain/objects/index.js';
-import type { MidxCheck, RevIndexCheck } from '../../../../src/domain/storage/error.js';
+import type {
+  BitmapCheck,
+  MidxCheck,
+  RevIndexCheck,
+} from '../../../../src/domain/storage/error.js';
 import {
   entryOffsets,
   invalidMultiPackIndex,
+  invalidPackBitmap,
   invalidPackRevIndex,
   lookupPackIndex,
   parsePackIndex,
@@ -5017,6 +5022,28 @@ describe('PackRegistry — pack reverse-index degradation', () => {
         (check) => {
           // Arrange
           const err = invalidPackRevIndex(check, 'test reason');
+
+          // Act + Assert
+          expect(isSkippableIdxFault(err)).toBe(false);
+          expect(isSkippablePackFault(err)).toBe(false);
+        },
+      );
+    });
+  });
+});
+
+describe('PackRegistry — bitmap degradation', () => {
+  describe('Given an INVALID_PACK_BITMAP error for each BitmapCheck member', () => {
+    describe("When checked against the registry's per-.idx and per-pack allow-lists", () => {
+      it.each<BitmapCheck>(['size', 'signature', 'version', 'options', 'stream', 'entry'])(
+        'Then neither isSkippableIdxFault nor isSkippablePackFault admits check=%s',
+        (check) => {
+          // Arrange — the bitmap health pass never parses, so no code path
+          // ever constructs one of these beyond the loader's own size gate,
+          // but every member must still be closed out of both allow-lists:
+          // reusing either would launder a bitmap fault into "skip this
+          // pack" and could drop a healthy pack from the generation.
+          const err = invalidPackBitmap(check, 'test reason');
 
           // Act + Assert
           expect(isSkippableIdxFault(err)).toBe(false);

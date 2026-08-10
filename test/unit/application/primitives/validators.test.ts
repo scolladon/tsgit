@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
+  BITMAP_FLOOR_BYTES,
+  BITMAP_HEADROOM_BYTES_PER_OBJECT,
+  exceedsMaxBitmapBytes,
   exceedsMaxCommitMessageBytes,
   exceedsMaxIndexBytes,
   exceedsMaxMidxBytes,
@@ -22,7 +25,9 @@ import {
   MAX_MIDX_BYTES,
   MAX_MIDX_CHAIN_LAYERS,
   MAX_PACK_IDX_BYTES,
+  maxBitmapBytes,
   messageContainsNul,
+  REASON_BITMAP_EXCEEDS_MAX,
   REASON_EXTRA_HEADER_KEY_INVALID,
   REASON_INDEX_CHECKSUM_MISMATCH,
   REASON_INDEX_EXCEEDS_MAX,
@@ -496,6 +501,77 @@ describe('exceedsMaxMidxChainLayers boundary triple', () => {
   });
 });
 
+describe('maxBitmapBytes', () => {
+  describe('Given an objectCount whose scaled headroom is under the floor', () => {
+    describe('When invoked', () => {
+      it('Then the floor wins', () => {
+        // Arrange
+        const objectCount = 1;
+
+        // Act
+        const result = maxBitmapBytes(objectCount);
+
+        // Assert
+        expect(result).toBe(BITMAP_FLOOR_BYTES);
+      });
+    });
+  });
+
+  describe('Given an objectCount whose scaled headroom exceeds the floor', () => {
+    describe('When invoked', () => {
+      it('Then the scaled headroom wins', () => {
+        // Arrange
+        const objectCount = 1_000_000;
+
+        // Act
+        const result = maxBitmapBytes(objectCount);
+
+        // Assert
+        expect(result).toBe(objectCount * BITMAP_HEADROOM_BYTES_PER_OBJECT);
+      });
+    });
+  });
+});
+
+describe('exceedsMaxBitmapBytes boundary triple, floor-dominated objectCount', () => {
+  describe('Given a size around BITMAP_FLOOR_BYTES with a tiny objectCount', () => {
+    describe('When invoked', () => {
+      it.each([
+        { size: BITMAP_FLOOR_BYTES - 1, expected: false, label: 'returns false (just-under)' },
+        { size: BITMAP_FLOOR_BYTES, expected: false, label: 'returns false (at cap)' },
+        { size: BITMAP_FLOOR_BYTES + 1, expected: true, label: 'returns true (just-over)' },
+      ])('Then $label', ({ size, expected }) => {
+        // Arrange & Act
+        const result = exceedsMaxBitmapBytes(size, 1);
+
+        // Assert
+        expect(result).toBe(expected);
+      });
+    });
+  });
+});
+
+describe('exceedsMaxBitmapBytes boundary triple, headroom-scaled objectCount', () => {
+  describe('Given a size around the objectCount-scaled ceiling', () => {
+    describe('When invoked', () => {
+      const objectCount = 1_000_000;
+      const cap = objectCount * BITMAP_HEADROOM_BYTES_PER_OBJECT;
+
+      it.each([
+        { size: cap - 1, expected: false, label: 'returns false (just-under)' },
+        { size: cap, expected: false, label: 'returns false (at cap)' },
+        { size: cap + 1, expected: true, label: 'returns true (just-over)' },
+      ])('Then $label', ({ size, expected }) => {
+        // Arrange & Act
+        const result = exceedsMaxBitmapBytes(size, objectCount);
+
+        // Assert
+        expect(result).toBe(expected);
+      });
+    });
+  });
+});
+
 describe('error-reason constants are stable identifiers', () => {
   describe('Given a REASON_* constant', () => {
     describe('When read', () => {
@@ -550,6 +626,11 @@ describe('error-reason constants are stable identifiers', () => {
           actual: REASON_MIDX_CHAIN_TOO_LONG,
           expected: 'multi-pack-index chain exceeds 1000 layers',
           label: 'REASON_MIDX_CHAIN_TOO_LONG',
+        },
+        {
+          actual: REASON_BITMAP_EXCEEDS_MAX,
+          expected: 'bitmap file exceeds its object-count-scaled bound',
+          label: 'REASON_BITMAP_EXCEEDS_MAX',
         },
       ])('Then $label matches expected string', ({ actual, expected }) => {
         // Arrange + Assert

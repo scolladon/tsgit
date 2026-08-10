@@ -156,6 +156,33 @@ export function exceedsMaxMidxChainLayers(count: number): boolean {
   return count > MAX_MIDX_CHAIN_LAYERS;
 }
 
+/* ──────────────── pack / multi-pack-index bitmap ──────────────── */
+
+export const REASON_BITMAP_EXCEEDS_MAX =
+  'bitmap file exceeds its object-count-scaled bound' as const;
+
+/** Bytes of headroom per object in `maxBitmapBytes`'s ceiling — about 6× the
+ *  measured density of a healthy bitmap (a pack bitmap: 16268 B / 1606
+ *  objects ≈ 10.1 B/object; a midx bitmap: 16176 B / 1621 objects ≈ 10.0
+ *  B/object), so a 2 M-object repository is bounded at ~128 MiB. */
+export const BITMAP_HEADROOM_BYTES_PER_OBJECT = 64;
+
+/** Floor for `maxBitmapBytes`'s ceiling, so a pack or midx with few objects
+ *  still admits a legitimately small bitmap file. */
+export const BITMAP_FLOOR_BYTES = 64 * 1024;
+
+/** Max bitmap file size the registry will load for an artefact covering
+ *  `objectCount` objects — unlike `.rev`'s exact formula, a bitmap's size
+ *  varies with EWAH compression, so this is a hostile-size ceiling, not an
+ *  exact check. */
+export function maxBitmapBytes(objectCount: number): number {
+  return Math.max(BITMAP_FLOOR_BYTES, objectCount * BITMAP_HEADROOM_BYTES_PER_OBJECT);
+}
+
+export function exceedsMaxBitmapBytes(size: number, objectCount: number): boolean {
+  return size > maxBitmapBytes(objectCount);
+}
+
 /* ──────────────── resolveRef ──────────────── */
 
 export const REASON_TARGET_ESCAPES_GIT_DIR = 'target escapes gitDir' as const;

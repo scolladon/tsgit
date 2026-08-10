@@ -26,7 +26,12 @@ import {
   type MidxHealth,
 } from './internal/midx-binding.js';
 import { loadMidxSet, type MidxLoadResult } from './internal/midx-source.js';
-import { type ArtefactLoad, loadPackRevIndex } from './internal/pack-artefact-source.js';
+import {
+  type ArtefactLoad,
+  loadBitmapBytes,
+  loadPackRevIndex,
+  midxBitmapName,
+} from './internal/pack-artefact-source.js';
 import { gatherByRevIndex } from './internal/pack-positions.js';
 import {
   faultContext,
@@ -114,7 +119,28 @@ export interface RegisteredPack {
    * index" rule.
    */
   readonly revIndex: () => Promise<ArtefactLoad<PackRevIndex>>;
+  /** Whether this pack's `.bitmap` sibling was present in the scan's own
+   *  file listing — a symlinked `.bitmap` is not present, the same
+   *  no-follow rule every other artefact's discovery enforces. */
+  readonly hasBitmap: boolean;
+  /**
+   * Memoised, bounded read of this pack's bitmap — one read per pack, on
+   * first use, never at scan time. Never parsed: the `fsck` bitmap pass's
+   * entire obligation is a trailing-checksum comparison over these raw
+   * bytes. An unusable `.idx` is never reachable here in practice, the same
+   * rule `revIndex` documents: the fsck bitmap pass only calls this for
+   * packs in `registry.all()`.
+   */
+  readonly bitmapBytes: () => Promise<ArtefactLoad<Uint8Array>>;
 }
+
+/**
+ * The in-use multi-pack-index's bitmap, verified by the `fsck` bitmap pass
+ * exactly as a pack bitmap is — a trailing-checksum comparison only. Never
+ * parsed; `artefact` is the composed file name (`multi-pack-index-<hex>
+ * .bitmap`), carried alongside the load so the pass need not recompute it.
+ */
+export type MidxBitmapLoad = { readonly artefact: string } & ArtefactLoad<Uint8Array>;
 
 export interface PackLookupHit {
   readonly pack: RegisteredPack;
@@ -188,6 +214,15 @@ export interface PackRegistry {
    * `health()` is, and reset by `refresh()` with the scan.
    */
   midxHealth(): Promise<MidxHealth>;
+  /**
+   * The in-use multi-pack-index's bitmap, or `undefined` when there is no
+   * usable midx for the current generation — the state `fsck`'s bitmap pass
+   * needs and nothing else needs. Memoised per **generation**, not per
+   * pack: the artefact's name depends on the midx layer in use, so a
+   * `refresh()` that changes the midx changes the artefact this resolves
+   * to.
+   */
+  midxBitmap(): Promise<MidxBitmapLoad | undefined>;
 }
 
 function isCandidate(entry: { isFile: boolean; name: string }): boolean {
@@ -256,6 +291,8 @@ function loadPack(
   const packPath = `${dir}/${name}.pack`;
   const revPath = `${dir}/${name}.rev`;
   const hasRevIndex = fileNames.has(`${name}.rev`);
+  const bitmapPath = `${dir}/${name}.bitmap`;
+  const hasBitmap = fileNames.has(`${name}.bitmap`);
 
   // Not read here — scanPacks builds the candidate list with no `.idx` I/O.
   // The first caller to force this memo (directly, or via the generation's
@@ -277,6 +314,14 @@ function loadPack(
       ctx.hashConfig.digestLength,
       index.objectCount,
     );
+  });
+
+  // Depends on indexMemo for objectCount — same trust rule as revIndexMemo:
+  // the fsck bitmap pass only calls this for packs in `registry.all()`,
+  // which already excludes any pack whose `.idx` never loaded.
+  const bitmapMemo = createPromiseMemo(async (): Promise<ArtefactLoad<Uint8Array>> => {
+    const index = await indexMemo.get();
+    return loadBitmapBytes(ctx, bitmapPath, hasBitmap, index.objectCount);
   });
 
   const headerMemo = createPromiseMemo(async (): Promise<PackHeader> => {
@@ -377,6 +422,8 @@ function loadPack(
     close,
     hasRevIndex,
     revIndex: revIndexMemo.get,
+    hasBitmap,
+    bitmapBytes: bitmapMemo.get,
   };
 }
 
@@ -468,9 +515,14 @@ export interface PackGeneration {
    */
   readonly warnedIdx: Set<string>;
   /** Every regular-file name this scan's `readdir` saw — the same set each
-   *  pack's own artefact discovery (`.rev`, and later the bitmap arms) is
-   *  built from, so no artefact probe ever costs a second `readdir`. */
+   *  pack's own artefact discovery (`.rev`, and the bitmap arms) is built
+   *  from, so no artefact probe ever costs a second `readdir`. */
   readonly fileNames: ReadonlySet<string>;
+  /** The in-use midx's bitmap, or `undefined` when there is no usable midx
+   *  for this generation. Memoised per **generation**, not per pack — the
+   *  artefact's identity depends on the midx layer in use, so it cannot
+   *  live on a `RegisteredPack` the way `.rev`/`.bitmap` do. */
+  readonly midxBitmap: PromiseMemo<MidxBitmapLoad | undefined>;
 }
 
 const NO_FILE_NAMES: ReadonlySet<string> = Object.freeze(new Set<string>());
@@ -483,6 +535,7 @@ function emptyGeneration(): PackGeneration {
     indexed: createPromiseMemo(() => Promise.resolve(EMPTY_INDEXED)),
     warnedIdx: new Set(),
     fileNames: NO_FILE_NAMES,
+    midxBitmap: createPromiseMemo(() => Promise.resolve(undefined)),
   };
 }
 
@@ -580,6 +633,22 @@ export function createPackRegistry(ctx: Context): PackRegistry {
     }
     const midx =
       midxLoad.set === undefined ? undefined : bindMidx(ctx, packs, midxLoad.set, fileNames);
+    // Named from the in-use layer's STORED trailer bytes (Pin K rule 3),
+    // never a recomputed digest: a rename, or a midx whose own trailer
+    // disagrees with its bytes, both simply compose a name this scan's own
+    // `fileNames` does not carry — "not present" needs no special case.
+    const midxBitmapMemo = createPromiseMemo(async (): Promise<MidxBitmapLoad | undefined> => {
+      if (midx === undefined) return undefined;
+      const head = midx.set.layers[midx.set.layers.length - 1]!;
+      const artefact = midxBitmapName(head);
+      const load = await loadBitmapBytes(
+        ctx,
+        `${dir}/${artefact}`,
+        fileNames.has(artefact),
+        head.objectCount,
+      );
+      return { artefact, ...load };
+    });
     return {
       packs,
       midxLoad,
@@ -587,6 +656,7 @@ export function createPackRegistry(ctx: Context): PackRegistry {
       indexed: createPromiseMemo(() => resolveIndexes(ctx, packs)),
       warnedIdx: new Set(),
       fileNames,
+      midxBitmap: midxBitmapMemo,
     };
   };
   const scan = createPromiseMemo(scanPacks);
@@ -768,6 +838,10 @@ export function createPackRegistry(ctx: Context): PackRegistry {
       await currentGeneration();
     },
     midxHealth: midxHealthMemo.get,
+    async midxBitmap(): Promise<MidxBitmapLoad | undefined> {
+      const generation = await currentGeneration();
+      return generation.midxBitmap.get();
+    },
     refresh(): void {
       if (disposed) return;
       healthMemo.clear();

@@ -59,14 +59,19 @@ async function writeRawSingleEntryPack(
 function stubPackHandle(
   ctx: Context,
   packPath: string,
-): Pick<RegisteredPack, 'readSlice' | 'close' | 'hasRevIndex' | 'revIndex'> {
+): Pick<
+  RegisteredPack,
+  'readSlice' | 'close' | 'hasRevIndex' | 'revIndex' | 'hasBitmap' | 'bitmapBytes'
+> {
   return {
     readSlice: (offset, length) => ctx.fs.readSlice(packPath, offset, length),
     close: async () => undefined,
-    // The object resolver never reads a pack's reverse index — these two
-    // fields exist only to satisfy the type.
+    // The object resolver never reads a pack's reverse index or bitmap —
+    // these fields exist only to satisfy the type.
     hasRevIndex: false,
     revIndex: async () => ({ kind: 'absent' }),
+    hasBitmap: false,
+    bitmapBytes: async () => ({ kind: 'absent' }),
   };
 }
 
@@ -130,6 +135,7 @@ async function stubRegistry(
       unresolvedEntries: [],
       checksumOk: undefined,
     }),
+    midxBitmap: async () => undefined,
   };
 }
 
@@ -1230,6 +1236,7 @@ describe('object-resolver', () => {
               unresolvedEntries: [],
               checksumOk: undefined,
             }),
+            midxBitmap: async () => undefined,
           };
           const sut = resolveObject;
 
@@ -1297,6 +1304,7 @@ describe('object-resolver', () => {
               unresolvedEntries: [],
               checksumOk: undefined,
             }),
+            midxBitmap: async () => undefined,
           };
           const sut = resolveObject;
 
@@ -1370,6 +1378,7 @@ describe('object-resolver', () => {
               unresolvedEntries: [],
               checksumOk: undefined,
             }),
+            midxBitmap: async () => undefined,
           };
           const sut = resolveObject;
 
@@ -1439,6 +1448,7 @@ describe('object-resolver', () => {
               unresolvedEntries: [],
               checksumOk: undefined,
             }),
+            midxBitmap: async () => undefined,
           };
           const sut = resolveObject;
 

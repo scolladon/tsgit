@@ -123,6 +123,12 @@ export type FsckFinding =
       readonly type: 'midx-entry-unresolved';
       readonly artefact: string;
       readonly id: ObjectId;
+    }
+  | {
+      readonly type: 'bitmap-checksum-mismatch';
+      /** The artefact this verdict is about: a pack's `<base>.bitmap`, or
+       *  the in-use multi-pack-index's `multi-pack-index-<hex>.bitmap`. */
+      readonly artefact: string;
     };
 
 /**
@@ -163,7 +169,8 @@ export interface FsckResult {
    * Composite exit bitmask, bits compose by OR: 0=clean, 1=content error
    * (corrupt/hash-mismatch/strict-upgraded warn), 2=missing/broken-link,
    * 4=pack inaccessible or index not opened, 8=refs-verify content failure,
-   * 32=multi-pack-index verification failure, 64=pack reverse-index unusable.
+   * 32=multi-pack-index verification failure, 64=pack reverse-index unusable,
+   * 128=a pack's or the in-use multi-pack-index's bitmap checksum mismatch.
    */
   readonly exitCode: number;
 }
