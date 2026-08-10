@@ -27,6 +27,7 @@ import { rebaseScenario } from './rebase.scenario.ts';
 import { refsPipelineScenario } from './refs-pipeline.scenario.ts';
 import { remoteCrudScenario } from './remote-crud.scenario.ts';
 import { resetRmReflogScenario } from './reset-rm-reflog.scenario.ts';
+import { revListScenario } from './rev-list.scenario.ts';
 import { revertScenario } from './revert.scenario.ts';
 import { shallowWalkScenario } from './shallow-walk.scenario.ts';
 import { shortlogScenario } from './shortlog.scenario.ts';
@@ -61,6 +62,7 @@ export const SCENARIOS: ReadonlyArray<Scenario<unknown>> = [
   configScenario,
   stashScenario,
   cherryPickScenario,
+  revListScenario,
   revertScenario,
   rebaseScenario,
   showScenario,

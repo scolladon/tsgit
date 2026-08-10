@@ -235,6 +235,7 @@ export interface Repository {
   readonly reset: BindCtx<typeof commands.reset>;
   /** Nested `repo.revert.{run,continue,skip,abort}` namespace. */
   readonly revert: commands.RevertNamespace;
+  readonly revList: BindCtx<typeof commands.revList>;
   readonly revParse: BindCtx<typeof commands.revParse>;
   readonly rm: BindCtx<typeof commands.rm>;
   readonly shortlog: BindCtx<typeof commands.shortlog>;
@@ -613,6 +614,10 @@ export const openRepository = async (
       return commands.reset(ctx, resetOpts);
     }) as Repository['reset'],
     revert: commands.bindRevertNamespace(ctx, guard),
+    revList: ((opts) => {
+      guard();
+      return commands.revList(ctx, opts);
+    }) as Repository['revList'],
     revParse: ((expression) => {
       guard();
       return commands.revParse(ctx, expression);

@@ -1,6 +1,6 @@
 # Commands — Tier-1 reference
 
-Every method bound on a `Repository` handle. 43 entries, alphabetical.
+Every method bound on a `Repository` handle. 44 entries, alphabetical.
 
 | Command | Summary |
 |---|---|
@@ -36,6 +36,7 @@ Every method bound on a `Repository` handle. 43 entries, alphabetical.
 | [`remote`](remote.md) | CRUD porcelain for `[remote "<name>"]` config + tracking refs. |
 | [`reset`](reset.md) | Move HEAD with `soft` / `mixed` / `hard` semantics. |
 | [`revParse`](rev-parse.md) | Resolve revision expressions to `ObjectId`. |
+| [`revList`](rev-list.md) | Enumerate objects reachable from `wants` and not reachable from `not`; returns structured entries (no rendered line). |
 | [`revert`](revert.md) | Record new commits that undo earlier commits (inverse of cherry-pick). |
 | [`rm`](rm.md) | Remove files from the index (and optionally the working tree). |
 | [`shortlog`](shortlog.md) | Summarise reachable commits grouped by author/committer identity; returns structured per-author groups (no rendered line). |

@@ -270,6 +270,7 @@ describe('openRepository — Repository binding integrity', () => {
             'reflog',
             'remote',
             'reset',
+            'revList',
             'revParse',
             'revert',
             'rm',

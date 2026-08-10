@@ -266,6 +266,12 @@ export {
   remoteShow,
 } from './remote.js';
 export { type ResetMode, type ResetOptions, type ResetResult, reset } from './reset.js';
+export {
+  type RevListEntry,
+  type RevListOptions,
+  type RevListResult,
+  revList,
+} from './rev-list.js';
 export { revParse } from './rev-parse.js';
 export {
   type RevertAbortResult,
