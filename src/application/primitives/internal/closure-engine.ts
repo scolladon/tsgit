@@ -18,7 +18,12 @@
  */
 import { operationAborted } from '../../../domain/error.js';
 import { treeDepthExceeded } from '../../../domain/objects/error.js';
-import { type FilePath, isDirectory, type ObjectId } from '../../../domain/objects/index.js';
+import {
+  type Commit,
+  type FilePath,
+  isDirectory,
+  type ObjectId,
+} from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
 import { readObject } from '../read-object.js';
 import { MAX_PUSH_OBJECTS } from '../types.js';
@@ -36,6 +41,20 @@ export interface ClosureRequest {
   readonly not: ReadonlyArray<ObjectId>;
   /** Include trees and blobs, not just commits and tags. */
   readonly objects: boolean;
+  /**
+   * At most this many commits emitted (under `objects`, those commits and
+   * everything they reach). Governs the commit walk only — tag/tree/blob
+   * wants resolved outside it are unaffected. `0` walks no commits at all.
+   * Omitted means unbounded.
+   */
+  readonly maxCount?: number;
+  /** Follow only the first parent of each commit. Omitted means every parent. */
+  readonly firstParent?: boolean;
+  /**
+   * Emit the resolved commit seeds themselves and stop — no parent
+   * traversal. Under `objects`, each seed's own tree still counts.
+   */
+  readonly noWalk?: boolean;
 }
 
 export interface ClosureObject {
@@ -137,15 +156,21 @@ async function emitTree(
 /**
  * Resolve every want: peel tags (recording each tag oid), then either seed
  * the commit walk or — for a tree/blob want, which has no parents — emit
- * itself and its own subtree directly.
+ * itself and its own subtree directly. Commit seeds carry their full body so
+ * the `noWalk` path can emit them (and, under `objects`, their own tree)
+ * without a second read.
  */
-async function resolveWants(ctx: Context, wants: ReadonlyArray<ObjectId>, emit: Emit) {
-  const commitSeeds: ObjectId[] = [];
+async function resolveWants(
+  ctx: Context,
+  wants: ReadonlyArray<ObjectId>,
+  emit: Emit,
+): Promise<Commit[]> {
+  const commitSeeds: Commit[] = [];
   for (const wantId of wants) {
     const peeled = await resolveTagChain(ctx, wantId, (tagId) => emit(tagId, 'tag'));
     const obj = await readObject(ctx, peeled);
     if (obj.type === 'commit') {
-      commitSeeds.push(peeled);
+      commitSeeds.push(obj);
       continue;
     }
     if (obj.type === 'tree') {
@@ -155,6 +180,81 @@ async function resolveWants(ctx: Context, wants: ReadonlyArray<ObjectId>, emit: 
     emit(peeled, 'blob');
   }
   return commitSeeds;
+}
+
+interface NotMarks {
+  readonly commits: ReadonlySet<ObjectId>;
+  readonly objects: ReadonlySet<ObjectId>;
+}
+
+/** Mark every `not` tip uninteresting, own-tree only — see the module doc. */
+async function markNotSide(ctx: Context, not: ReadonlyArray<ObjectId>): Promise<NotMarks> {
+  const commits = new Set<ObjectId>();
+  const objects = new Set<ObjectId>();
+  const seenTrees = new Set<ObjectId>();
+  for (const notId of not) {
+    await markUninteresting(ctx, notId, commits, objects, seenTrees);
+  }
+  return { commits, objects };
+}
+
+/**
+ * `noWalk`'s own building block: emit each commit seed itself, skipping one
+ * marked uninteresting, with no parent enqueue at all. `maxCount` still
+ * bounds how many seeds are emitted; `objects` still emits each seed's own
+ * tree.
+ */
+async function emitSeedsWithoutWalking(
+  ctx: Context,
+  commitSeeds: ReadonlyArray<Commit>,
+  marks: NotMarks,
+  request: ClosureRequest,
+  emit: Emit,
+): Promise<void> {
+  let emitted = 0;
+  for (const seed of commitSeeds) {
+    if (marks.commits.has(seed.id)) continue;
+    if (request.maxCount !== undefined && emitted >= request.maxCount) return;
+    emit(seed.id, 'commit');
+    emitted += 1;
+    if (request.objects) await emitTree(ctx, seed.data.tree, marks.objects, emit);
+  }
+}
+
+/** Walk the commit seeds' ancestry, bounded by `maxCount` and ordered by `firstParent`. */
+async function walkAndEmitCommits(
+  ctx: Context,
+  commitSeeds: ReadonlyArray<Commit>,
+  marks: NotMarks,
+  request: ClosureRequest,
+  emit: Emit,
+): Promise<void> {
+  let emitted = 0;
+  for await (const commit of walkCommits(ctx, {
+    from: commitSeeds.map((seed) => seed.id),
+    until: [...marks.commits],
+    ignoreMissing: true,
+    order: request.firstParent === true ? 'first-parent' : 'topo',
+  })) {
+    emit(commit.id, 'commit');
+    if (request.objects) await emitTree(ctx, commit.data.tree, marks.objects, emit);
+    emitted += 1;
+    if (request.maxCount !== undefined && emitted >= request.maxCount) return;
+  }
+}
+
+/** Dispatch the commit-seed side of the closure: no seeds, `maxCount: 0`, `noWalk`, or the full walk. */
+async function emitCommitSeeds(
+  ctx: Context,
+  commitSeeds: ReadonlyArray<Commit>,
+  marks: NotMarks,
+  request: ClosureRequest,
+  emit: Emit,
+): Promise<void> {
+  if (commitSeeds.length === 0 || request.maxCount === 0) return;
+  if (request.noWalk === true)
+    return emitSeedsWithoutWalking(ctx, commitSeeds, marks, request, emit);
+  return walkAndEmitCommits(ctx, commitSeeds, marks, request, emit);
 }
 
 export async function computeClosure(
@@ -170,26 +270,9 @@ export async function computeClosure(
     results.push(path === undefined ? { id, type } : { id, type, path });
   };
 
-  const markedCommits = new Set<ObjectId>();
-  const markedObjects = new Set<ObjectId>();
-  const seenMarkedTrees = new Set<ObjectId>();
-  for (const notId of request.not) {
-    await markUninteresting(ctx, notId, markedCommits, markedObjects, seenMarkedTrees);
-  }
-
+  const marks = await markNotSide(ctx, request.not);
   const commitSeeds = await resolveWants(ctx, request.wants, emit);
-  if (commitSeeds.length > 0) {
-    for await (const commit of walkCommits(ctx, {
-      from: commitSeeds,
-      until: [...markedCommits],
-      ignoreMissing: true,
-    })) {
-      emit(commit.id, 'commit');
-      if (request.objects) {
-        await emitTree(ctx, commit.data.tree, markedObjects, emit);
-      }
-    }
-  }
+  await emitCommitSeeds(ctx, commitSeeds, marks, request, emit);
 
   return { objects: results };
 }

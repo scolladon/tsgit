@@ -12,6 +12,10 @@ interface RevListOptions {
   readonly not?: ReadonlyArray<string>;
   readonly objects?: boolean;
   readonly count?: boolean;
+  readonly all?: boolean;
+  readonly maxCount?: number;
+  readonly firstParent?: boolean;
+  readonly noWalk?: boolean;
 }
 
 interface RevListEntry {
@@ -34,6 +38,10 @@ interface RevListResult {
 | `not` | `ReadonlyArray<string>` | `(none)` | Revisions whose reachability is excluded. |
 | `objects` | `boolean` | `false` | Include trees and blobs, not just commits and tags. |
 | `count` | `boolean` | `false` | Documents intent only — `entries` is always populated and `count` is always `entries.length` on the same call; there is no separate count-only fast path. |
+| `all` | `boolean` | `false` | Union the tip of every ref (branches, tags, remotes, `HEAD`) into `wants`, deduplicated. |
+| `maxCount` | `number` | `(unbounded)` | At most this many commits emitted; bounds the commit walk only, not the object stream. |
+| `firstParent` | `boolean` | `false` | Follow only the first parent of each commit. |
+| `noWalk` | `boolean` | `false` | Emit the resolved tips themselves and stop — no parent traversal. |
 
 ## Behaviour
 
@@ -42,6 +50,10 @@ interface RevListResult {
 - **Empty `wants`** returns an empty result, never an error and never "everything". `wants` fully covered by `not` also returns empty.
 - **An unresolvable revision refuses**, on either side — never a silent degradation.
 - **Ordering is deterministic but unspecified.** It is not git's own order (git's own bitmap and walk paths do not even agree with each other), so a caller that needs a stable display order sorts the result itself; every equality check here compares the result as a set.
+- **`all`** resolves every ref's tip the same way an explicit want is resolved, then unions it with `wants` (deduplicated). A ref that does not peel to an object — a symbolic `HEAD` on an unborn branch is the live case — is skipped rather than refusing the whole call.
+- **`maxCount`** bounds the commit walk, not the object stream: with `objects`, it is still N commits and everything *they* reach, not N objects overall. `maxCount: 0` yields an empty result rather than an unbounded one.
+- **`firstParent`** follows only the first parent at each step, so a merge commit's second-parent branch is never walked.
+- **`noWalk`** emits the resolved tips themselves and stops there — no parent is ever enqueued. Under `objects`, each tip's own tree still counts.
 
 ## Examples
 
