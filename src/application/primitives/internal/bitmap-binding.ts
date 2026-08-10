@@ -3,9 +3,11 @@
  * validated `LoadedBitmapArtefact`, indifferent to which of the two
  * flavours produced it: a pack's own `.bitmap` (`pack-bitmap-binding.ts`)
  * or a multi-pack-index's `.bitmap` (`midx-bitmap-binding.ts`). Both
- * flavours share every function in this module — reconstruction
- * (`bitmap-reconstruct.ts`) and range validation (`bitmap-range-validation.ts`)
- * are separate modules both loaders call directly — and differ in exactly
+ * flavours share every function in this module — including the load/parse/
+ * range-validate pipeline (`usableBitmapBytes` + `validateBitmapContainer`,
+ * themselves built on `bitmap-reconstruct.ts` and
+ * `bitmap-range-validation.ts`) both loaders call, in that order, with their
+ * own I/O interleaved exactly where it always was — and differ in exactly
  * the two mapping functions `LoadedBitmapArtefact` declares:
  * `resolveOwnPosition` (an oid to the position an entry header's own
  * `position` field would carry for it) and `oidAtBitPosition` (a
@@ -35,6 +37,7 @@ import { readObject } from '../read-object.js';
 import { MAX_PUSH_OBJECTS } from '../types.js';
 import { isGitlink } from '../validators.js';
 import { walkTree } from '../walk-tree.js';
+import { laneCountFor, validateBitmapRanges } from './bitmap-range-validation.js';
 import {
   createReconstructionContext,
   orInto,
@@ -42,6 +45,7 @@ import {
   reconstructEntry,
 } from './bitmap-reconstruct.js';
 import { resolveTagChain } from './object-emit.js';
+import type { ArtefactLoad } from './pack-artefact-source.js';
 import { faultContext } from './pack-shared.js';
 
 export interface BitmapClosureRequest {
@@ -151,6 +155,77 @@ export function parseBitmapContainer(
     });
     return undefined;
   }
+}
+
+/**
+ * Resolves a load outcome to usable bytes, or `undefined` for the caller to
+ * decline and fall back to the next artefact in the preference order —
+ * silently for absent/unreadable, with one `ctx.logger?.warn?.` for a
+ * refused load. Identical for both flavours past the load outcome itself;
+ * only the message's flavour word differs. Takes no I/O of its own, so a
+ * caller that has not yet fetched what it needs to validate against (a
+ * pack's `.idx`, say) is free to keep that fetch AFTER this call, exactly as
+ * before this function existed.
+ */
+export function usableBitmapBytes(
+  ctx: Context,
+  flavour: 'pack' | 'midx',
+  artefactName: string,
+  load: ArtefactLoad<Uint8Array>,
+): Uint8Array | undefined {
+  if (load.kind === 'absent' || load.kind === 'unreadable') return undefined;
+  if (load.kind === 'refused') {
+    ctx.logger?.warn?.(`bitmapBinding: discarding unusable ${flavour} bitmap`, {
+      bitmap: artefactName,
+      ...faultContext(load.data),
+    });
+    return undefined;
+  }
+  return load.bytes;
+}
+
+export interface ValidatedBitmapContainer {
+  readonly bitmap: PackBitmap;
+  readonly headers: ReadonlyArray<BitmapEntryHeader>;
+  readonly objectCount: number;
+  readonly laneCount: number;
+  readonly typeBits: readonly [Uint32Array, Uint32Array, Uint32Array, Uint32Array];
+}
+
+/**
+ * Parses `bytes` and range-validates the result against `objectCount` —
+ * identical work for both flavours (see this module's own doc), taken once
+ * a caller has `bytes` (from `usableBitmapBytes`) and its own artefact's
+ * object count in hand. Returns `undefined` for the caller to decline —
+ * a structural parse refusal warns inside `parseBitmapContainer` itself; an
+ * out-of-range position warns here, with one `ctx.logger?.warn?.` either way.
+ */
+export function validateBitmapContainer(
+  ctx: Context,
+  flavour: 'pack' | 'midx',
+  artefactName: string,
+  bytes: Uint8Array,
+  objectCount: number,
+): ValidatedBitmapContainer | undefined {
+  const parsed = parseBitmapContainer(ctx, bytes, artefactName, flavour);
+  if (parsed === undefined) return undefined;
+  const { bitmap, headers } = parsed;
+
+  const validated = validateBitmapRanges(bitmap, headers, objectCount);
+  if (validated === undefined) {
+    ctx.logger?.warn?.(`bitmapBinding: ${flavour} bitmap position out of range, declining`, {
+      bitmap: artefactName,
+    });
+    return undefined;
+  }
+
+  return {
+    bitmap,
+    headers,
+    objectCount,
+    laneCount: laneCountFor(objectCount),
+    typeBits: validated.typeBits,
+  };
 }
 
 function setBit(bits: Uint32Array, position: number): void {

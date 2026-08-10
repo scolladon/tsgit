@@ -19,10 +19,9 @@ import {
   buildEntryByOwnPosition,
   invertPositions,
   type LoadedPackBitmap,
-  parseBitmapContainer,
+  usableBitmapBytes,
+  validateBitmapContainer,
 } from './bitmap-binding.js';
-import { laneCountFor, validateBitmapRanges } from './bitmap-range-validation.js';
-import { faultContext } from './pack-shared.js';
 
 /**
  * Loads, parses and range-validates a pack's bitmap, or returns `undefined`
@@ -43,29 +42,14 @@ export async function loadPackBitmapArtefact(
 ): Promise<LoadedPackBitmap | undefined> {
   if (!pack.hasBitmap) return undefined;
   const load = await pack.bitmapBytes();
-  if (load.kind === 'absent' || load.kind === 'unreadable') return undefined;
   const artefactName = `${pack.name}.bitmap`;
-  if (load.kind === 'refused') {
-    ctx.logger?.warn?.('bitmapBinding: discarding unusable pack bitmap', {
-      bitmap: artefactName,
-      ...faultContext(load.data),
-    });
-    return undefined;
-  }
+  const bytes = usableBitmapBytes(ctx, 'pack', artefactName, load);
+  if (bytes === undefined) return undefined;
 
   const index = await pack.index();
-  const parsed = parseBitmapContainer(ctx, load.bytes, artefactName, 'pack');
-  if (parsed === undefined) return undefined;
-  const { bitmap, headers } = parsed;
-
-  const objectCount = index.objectCount;
-  const validated = validateBitmapRanges(bitmap, headers, objectCount);
-  if (validated === undefined) {
-    ctx.logger?.warn?.('bitmapBinding: pack bitmap position out of range, declining', {
-      bitmap: artefactName,
-    });
-    return undefined;
-  }
+  const container = validateBitmapContainer(ctx, 'pack', artefactName, bytes, index.objectCount);
+  if (container === undefined) return undefined;
+  const { bitmap, headers, objectCount, laneCount, typeBits } = container;
 
   const packPositions = await pack.packPositions();
   const offsetToIndexPosition = new Map(
@@ -78,8 +62,8 @@ export async function loadPackBitmapArtefact(
     bitmap,
     headers,
     objectCount,
-    laneCount: laneCountFor(objectCount),
-    typeBits: validated.typeBits,
+    laneCount,
+    typeBits,
     resolveOwnPosition: (oid) => {
       const offset = lookupPackIndex(index, oid);
       if (offset === undefined) return undefined;

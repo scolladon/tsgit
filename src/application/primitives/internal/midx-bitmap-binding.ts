@@ -31,10 +31,9 @@ import {
   buildEntryByOwnPosition,
   invertPositions,
   type LoadedBitmapArtefact,
-  parseBitmapContainer,
+  usableBitmapBytes,
+  validateBitmapContainer,
 } from './bitmap-binding.js';
-import { laneCountFor, validateBitmapRanges } from './bitmap-range-validation.js';
-import { faultContext } from './pack-shared.js';
 
 export type LoadedMidxBitmap = LoadedBitmapArtefact;
 
@@ -66,28 +65,13 @@ export async function loadMidxBitmapArtefact(
   // Checked before the bitmap bytes' own load outcome — this is a property
   // of the MIDX, not of the bitmap file.
   if (load.midx.reverseIndexOffset === undefined) return undefined;
-  if (load.kind === 'absent' || load.kind === 'unreadable') return undefined;
-  if (load.kind === 'refused') {
-    ctx.logger?.warn?.('bitmapBinding: discarding unusable midx bitmap', {
-      bitmap: load.artefact,
-      ...faultContext(load.data),
-    });
-    return undefined;
-  }
+  const bytes = usableBitmapBytes(ctx, 'midx', load.artefact, load);
+  if (bytes === undefined) return undefined;
 
   const { midx } = load;
-  const parsed = parseBitmapContainer(ctx, load.bytes, load.artefact, 'midx');
-  if (parsed === undefined) return undefined;
-  const { bitmap, headers } = parsed;
-
-  const objectCount = midx.objectCount;
-  const validated = validateBitmapRanges(bitmap, headers, objectCount);
-  if (validated === undefined) {
-    ctx.logger?.warn?.('bitmapBinding: midx bitmap position out of range, declining', {
-      bitmap: load.artefact,
-    });
-    return undefined;
-  }
+  const container = validateBitmapContainer(ctx, 'midx', load.artefact, bytes, midx.objectCount);
+  if (container === undefined) return undefined;
+  const { bitmap, headers, objectCount, laneCount, typeBits } = container;
 
   // Both built AFTER validation, per the doc comment above: every midx
   // position `midxOidAt` reads here is one of `[0, objectCount)` by
@@ -103,8 +87,8 @@ export async function loadMidxBitmapArtefact(
     bitmap,
     headers,
     objectCount,
-    laneCount: laneCountFor(objectCount),
-    typeBits: validated.typeBits,
+    laneCount,
+    typeBits,
     resolveOwnPosition: (oid) => oidToMidxPosition.get(oid),
     entryByOwnPosition: buildEntryByOwnPosition(headers),
     ownPositionToBitPosition: invertPositions(pseudoPackPositionOfMidxPosition),
