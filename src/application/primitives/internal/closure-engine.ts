@@ -3,14 +3,17 @@
  * `wants` and excludes what the walk marks uninteresting from `not` — the
  * walk tier only, in this part (a bitmap tier arrives later).
  *
- * The walk marks each `not` tip uninteresting — recursing through that tip's
- * OWN tree to mark its contents — then walks the interesting commits and
- * emits every object it reaches carrying no mark. This is git's own walk,
- * not the exact set difference: an object reachable from an *ancestor* of a
- * `not` tip but absent from that tip's own trees is never marked, so it is
- * emitted again. Marking only the tip (never its ancestors) is deliberate —
- * it is what reproduces that measured over-report rather than computing the
- * exact difference, which would be a divergence from git here.
+ * The walk marks a `not` tip's *entire* commit ancestry uninteresting —
+ * git's own merge-base exclusion, propagated through every parent edge, so a
+ * commit reachable from BOTH a `want` and a `not` (a shared ancestor) is
+ * still excluded. Trees are marked more narrowly: only the explicit `not`
+ * tip's own tree, plus the own tree of every commit the *interesting* walk's
+ * parent pointers discover to already be uninteresting (a "boundary"
+ * commit — the merge-base is the common case, but a diamond can surface
+ * more than one). An ancestor's tree that the interesting walk never touches
+ * is never marked, so an object reachable only through it is emitted again
+ * — that is what reproduces git's measured over-report rather than the
+ * exact set difference, which would be a divergence from git here.
  *
  * Order is deterministic for a given call, but is not git's own order and is
  * not equal across calls with different shapes — callers that need a stable
@@ -106,24 +109,64 @@ async function markTree(
 }
 
 /**
+ * Marks `id` and its FULL commit ancestry uninteresting — git's own
+ * merge-base exclusion: a commit reachable from a `not` tip is excluded from
+ * the walk even when it is ALSO reachable from a `want`, however many parent
+ * edges separate it from the tip. `until` short-circuits on a commit a prior
+ * `not` id's own walk already covered, so overlapping ancestries are walked
+ * once. Distinct from tree marking (`markTree`, below), which stays scoped
+ * to specific commits' own trees — that asymmetry is what reproduces git's
+ * own over-report.
+ *
+ * Records each walked commit's own tree in `commitTrees` too: `walkCommits`
+ * has already read the body, so `markBoundaryTrees` can look up a marked
+ * ancestor's tree later without a second read — and, since it only ever
+ * reads that map at a key `commits` also gained here, the lookup is proven
+ * to hit.
+ */
+async function markCommitAncestry(
+  ctx: Context,
+  id: ObjectId,
+  markedCommits: Set<ObjectId>,
+  commitTrees: Map<ObjectId, ObjectId>,
+): Promise<void> {
+  for await (const commit of walkCommits(ctx, {
+    from: [id],
+    until: [...markedCommits],
+    ignoreMissing: true,
+  })) {
+    markedCommits.add(commit.id);
+    commitTrees.set(commit.id, commit.data.tree);
+  }
+}
+
+/**
  * Mark one `not` tip uninteresting: peel a tag chain, then mark a commit's
- * OWN tree (never its ancestors — that is what makes the walk's over-report
- * possible) or mark a tree/blob tip directly.
+ * full ancestry (commits) and own tree (objects), or mark a tree/blob tip
+ * directly.
  */
 async function markUninteresting(
   ctx: Context,
   id: ObjectId,
   markedCommits: Set<ObjectId>,
+  commitTrees: Map<ObjectId, ObjectId>,
   markedObjects: Set<ObjectId>,
   seenTrees: Set<ObjectId>,
 ): Promise<void> {
   const obj = await readObject(ctx, id);
   if (obj.type === 'tag') {
-    await markUninteresting(ctx, obj.data.object, markedCommits, markedObjects, seenTrees);
+    await markUninteresting(
+      ctx,
+      obj.data.object,
+      markedCommits,
+      commitTrees,
+      markedObjects,
+      seenTrees,
+    );
     return;
   }
   if (obj.type === 'commit') {
-    markedCommits.add(id);
+    await markCommitAncestry(ctx, id, markedCommits, commitTrees);
     await markTree(ctx, obj.data.tree, markedObjects, seenTrees);
     return;
   }
@@ -184,18 +227,59 @@ async function resolveWants(
 
 interface NotMarks {
   readonly commits: ReadonlySet<ObjectId>;
-  readonly objects: ReadonlySet<ObjectId>;
+  /** Every marked commit's own tree id, populated alongside `commits` by
+   *  `markCommitAncestry` — `markBoundaryTrees` looks a marked parent up
+   *  here instead of re-reading it. */
+  readonly commitTrees: ReadonlyMap<ObjectId, ObjectId>;
+  /** Mutable: the interesting walk extends this with boundary commits' own
+   *  trees as it discovers them — see `markBoundaryTrees`. */
+  readonly objects: Set<ObjectId>;
+  /** Threaded through to `markBoundaryTrees` so a tree already marked here
+   *  (the tip's own) is never re-walked. */
+  readonly seenTrees: Set<ObjectId>;
 }
 
-/** Mark every `not` tip uninteresting, own-tree only — see the module doc. */
+/** Mark every `not` tip's full ancestry (commits) and own tree (objects) —
+ *  see the module doc. */
 async function markNotSide(ctx: Context, not: ReadonlyArray<ObjectId>): Promise<NotMarks> {
   const commits = new Set<ObjectId>();
+  const commitTrees = new Map<ObjectId, ObjectId>();
   const objects = new Set<ObjectId>();
   const seenTrees = new Set<ObjectId>();
   for (const notId of not) {
-    await markUninteresting(ctx, notId, commits, objects, seenTrees);
+    await markUninteresting(ctx, notId, commits, commitTrees, objects, seenTrees);
   }
-  return { commits, objects };
+  return { commits, commitTrees, objects, seenTrees };
+}
+
+/**
+ * For every parent of a walked (interesting) commit that falls in the
+ * not-side's full ancestor closure, mark THAT parent's own tree
+ * uninteresting too — git's own boundary-commit behaviour: any uninteresting
+ * commit the interesting walk's own parent pointers touch gets its tree
+ * marked, not only the tips the caller passed (the merge-base is the common
+ * case, but a diamond can surface more than one). Idempotent per parent id,
+ * and must complete before ANY of `walked`'s trees are emitted — a boundary
+ * discovered only by a later commit in the list must still gate an earlier
+ * one's tree walk.
+ */
+async function markBoundaryTrees(
+  ctx: Context,
+  walked: ReadonlyArray<Commit>,
+  marks: NotMarks,
+): Promise<void> {
+  const seenBoundary = new Set<ObjectId>();
+  for (const commit of walked) {
+    for (const parentId of commit.data.parents) {
+      if (!marks.commits.has(parentId) || seenBoundary.has(parentId)) continue;
+      seenBoundary.add(parentId);
+      // `parentId` passed the `marks.commits` check above, and
+      // `markCommitAncestry` always sets `commitTrees` alongside `commits`
+      // for the same id — this lookup is guaranteed to hit.
+      const parentTree = marks.commitTrees.get(parentId) as ObjectId;
+      await markTree(ctx, parentTree, marks.objects, marks.seenTrees);
+    }
+  }
 }
 
 /**
@@ -221,7 +305,12 @@ async function emitSeedsWithoutWalking(
   }
 }
 
-/** Walk the commit seeds' ancestry, bounded by `maxCount` and ordered by `firstParent`. */
+/**
+ * Walk the commit seeds' ancestry, bounded by `maxCount` and ordered by
+ * `firstParent`, buffered first: boundary-tree discovery (`markBoundaryTrees`)
+ * needs the FULL walked set before any tree is emitted, since a boundary a
+ * later commit surfaces must still gate an earlier commit's own tree walk.
+ */
 async function walkAndEmitCommits(
   ctx: Context,
   commitSeeds: ReadonlyArray<Commit>,
@@ -229,17 +318,22 @@ async function walkAndEmitCommits(
   request: ClosureRequest,
   emit: Emit,
 ): Promise<void> {
-  let emitted = 0;
+  const walked: Commit[] = [];
   for await (const commit of walkCommits(ctx, {
     from: commitSeeds.map((seed) => seed.id),
     until: [...marks.commits],
     ignoreMissing: true,
     order: request.firstParent === true ? 'first-parent' : 'topo',
   })) {
+    walked.push(commit);
+    if (request.maxCount !== undefined && walked.length >= request.maxCount) break;
+  }
+
+  if (request.objects) await markBoundaryTrees(ctx, walked, marks);
+
+  for (const commit of walked) {
     emit(commit.id, 'commit');
     if (request.objects) await emitTree(ctx, commit.data.tree, marks.objects, emit);
-    emitted += 1;
-    if (request.maxCount !== undefined && emitted >= request.maxCount) return;
   }
 }
 

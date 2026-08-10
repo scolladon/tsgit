@@ -111,17 +111,19 @@ const buildLinearChain = async (ctx: Context): Promise<LinearChain> => {
 interface HavesFixture {
   readonly ctx: Context;
   readonly root: ObjectId;
-  readonly branchA: ObjectId;
-  readonly branchB: ObjectId;
+  readonly have: ObjectId;
+  readonly want: ObjectId;
 }
 
 /**
- * `root` carries `shared.txt`. `branchA` (the have tip) replaces it with an
- * unrelated file, so marking `branchA`'s own tree never marks the shared
- * blob. `branchB` (the want) keeps `shared.txt` unmodified — reachable from
- * `root`, which is itself reachable from `branchA` only through ancestry the
- * engine deliberately does not mark. That gap is what the walk's superset
- * behaviour measures.
+ * A 3-generation chain: `root` writes `shared.txt`, `have` (the not tip)
+ * changes it away — so marking `have`'s own tree never marks the original
+ * blob — then `want` changes it BACK to the exact content `root` used,
+ * reusing `root`'s own tree wholesale. That blob (and tree) is reachable
+ * from `have` only through `root`, one hop beyond the boundary the walk
+ * marks: git's own boundary-commit discovery marks `have`'s own tree when
+ * the interesting walk's parent pointers reach it, but never walks past it
+ * to `root`'s. That gap is what the walk's superset behaviour measures.
  */
 const buildHavesFixture = async (): Promise<HavesFixture> => {
   const ctx = await buildSeededContext();
@@ -131,20 +133,17 @@ const buildHavesFixture = async (): Promise<HavesFixture> => {
   ]);
   const root = await writeCommit(ctx, rootTree, [], 'root');
 
-  const aOnlyBlob = await writeBlob(ctx, 'a-only');
-  const treeA = await writeTree(ctx, [
-    { name: 'a-only.txt', mode: '100644' as FileMode, id: aOnlyBlob },
+  const changedBlob = await writeBlob(ctx, 'changed');
+  const haveTree = await writeTree(ctx, [
+    { name: 'shared.txt', mode: '100644' as FileMode, id: changedBlob },
   ]);
-  const branchA = await writeCommit(ctx, treeA, [root], 'branch-a');
+  const have = await writeCommit(ctx, haveTree, [root], 'have');
 
-  const bOnlyBlob = await writeBlob(ctx, 'b-only');
-  const treeB = await writeTree(ctx, [
-    { name: 'shared.txt', mode: '100644' as FileMode, id: sharedBlob },
-    { name: 'b-only.txt', mode: '100644' as FileMode, id: bOnlyBlob },
-  ]);
-  const branchB = await writeCommit(ctx, treeB, [root], 'branch-b');
+  // Reuses `rootTree` (and therefore `sharedBlob`) wholesale — same content,
+  // one generation after `have` changed it away.
+  const want = await writeCommit(ctx, rootTree, [have], 'want');
 
-  return { ctx, root, branchA, branchB };
+  return { ctx, root, have, want };
 };
 
 describe('computeClosure', () => {
@@ -564,13 +563,13 @@ describe('computeClosure', () => {
     describe('When computeClosure walks the interesting side excluding the have tip', () => {
       it('Then the result is a superset of the exact difference and every extra object is reachable from the not tip', async () => {
         // Arrange
-        const { ctx, branchA, branchB } = await buildHavesFixture();
+        const { ctx, have, want } = await buildHavesFixture();
         const sut = computeClosure;
 
         // Act
-        const actual = await sut(ctx, { wants: [branchB], not: [branchA], objects: true });
-        const exact = await enumerateBundleObjects(ctx, { wants: [branchB], haves: [branchA] });
-        const reachableFromNotTip = await sut(ctx, { wants: [branchA], not: [], objects: true });
+        const actual = await sut(ctx, { wants: [want], not: [have], objects: true });
+        const exact = await enumerateBundleObjects(ctx, { wants: [want], haves: [have] });
+        const reachableFromNotTip = await sut(ctx, { wants: [have], not: [], objects: true });
 
         // Assert — the walk's answer is a superset of the exact difference.
         const actualIds = new Set(actual.objects.map((o) => o.id));
@@ -593,18 +592,109 @@ describe('computeClosure', () => {
     describe('When computeClosure and the exact difference are compared', () => {
       it('Then the difference set is non-empty', async () => {
         // Arrange — proves the superset check above is not vacuous.
-        const { ctx, branchA, branchB } = await buildHavesFixture();
+        const { ctx, have, want } = await buildHavesFixture();
         const sut = computeClosure;
 
         // Act
-        const actual = await sut(ctx, { wants: [branchB], not: [branchA], objects: true });
-        const exact = await enumerateBundleObjects(ctx, { wants: [branchB], haves: [branchA] });
+        const actual = await sut(ctx, { wants: [want], not: [have], objects: true });
+        const exact = await enumerateBundleObjects(ctx, { wants: [want], haves: [have] });
 
         // Assert
         const actualIds = new Set(actual.objects.map((o) => o.id));
         const exactIds = new Set(exact.objects);
         const extra = [...actualIds].filter((id) => !exactIds.has(id));
         expect(extra.length).toBeGreaterThan(0);
+      });
+    });
+  });
+
+  describe('Given a not tip and a want that share a common ancestor', () => {
+    describe('When computeClosure walks the want excluding the not tip', () => {
+      it("Then the shared ancestor commit, its own tree, and the blob it alone carries are all excluded — git's own merge-base exclusion", async () => {
+        // Arrange — `root` is a common ancestor of both `have` and `want`;
+        // `have`'s own tree drops `shared.txt` entirely, so tip-only tree
+        // marking cannot explain `shared.txt`'s exclusion here — only
+        // boundary-commit discovery (root is `want`'s own parent, and root
+        // is in `have`'s full ancestor closure) does.
+        const ctx = await buildSeededContext();
+        const sharedBlob = await writeBlob(ctx, 'shared');
+        const rootTree = await writeTree(ctx, [
+          { name: 'shared.txt', mode: '100644' as FileMode, id: sharedBlob },
+        ]);
+        const root = await writeCommit(ctx, rootTree, [], 'root');
+
+        const haveOnlyBlob = await writeBlob(ctx, 'have-only');
+        const haveTree = await writeTree(ctx, [
+          { name: 'have-only.txt', mode: '100644' as FileMode, id: haveOnlyBlob },
+        ]);
+        const have = await writeCommit(ctx, haveTree, [root], 'have');
+
+        const wantOnlyBlob = await writeBlob(ctx, 'want-only');
+        const wantTree = await writeTree(ctx, [
+          { name: 'shared.txt', mode: '100644' as FileMode, id: sharedBlob },
+          { name: 'want-only.txt', mode: '100644' as FileMode, id: wantOnlyBlob },
+        ]);
+        const want = await writeCommit(ctx, wantTree, [root], 'want');
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, { wants: [want], not: [have], objects: true });
+
+        // Assert
+        const ids = new Set(result.objects.map((o) => o.id));
+        expect(ids.has(root)).toBe(false);
+        expect(ids.has(rootTree)).toBe(false);
+        expect(ids.has(sharedBlob)).toBe(false);
+        expect(ids.has(want)).toBe(true);
+        expect(ids.has(wantTree)).toBe(true);
+        expect(ids.has(wantOnlyBlob)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given two commits on the want side sharing the same boundary parent', () => {
+    describe('When computeClosure walks both excluding a not tip beyond that parent', () => {
+      it('Then the boundary parent is discovered once and both descendants still exclude its content', async () => {
+        // Arrange — a diamond: `left` and `right` are both direct children
+        // of `boundary`, which is itself excluded via `have`'s full ancestor
+        // closure. Exercises `markBoundaryTrees`'s own-already-seen
+        // short-circuit (`right`'s parent is discovered a second time).
+        const ctx = await buildSeededContext();
+        const boundaryOnlyBlob = await writeBlob(ctx, 'boundary-only');
+        const boundaryTree = await writeTree(ctx, [
+          { name: 'boundary-only.txt', mode: '100644' as FileMode, id: boundaryOnlyBlob },
+        ]);
+        const boundary = await writeCommit(ctx, boundaryTree, [], 'boundary');
+
+        const haveOnlyBlob = await writeBlob(ctx, 'have-only');
+        const haveTree = await writeTree(ctx, [
+          { name: 'have-only.txt', mode: '100644' as FileMode, id: haveOnlyBlob },
+        ]);
+        const have = await writeCommit(ctx, haveTree, [boundary], 'have');
+
+        const leftBlob = await writeBlob(ctx, 'left');
+        const leftTree = await writeTree(ctx, [
+          { name: 'left.txt', mode: '100644' as FileMode, id: leftBlob },
+        ]);
+        const left = await writeCommit(ctx, leftTree, [boundary], 'left');
+
+        const rightBlob = await writeBlob(ctx, 'right');
+        const rightTree = await writeTree(ctx, [
+          { name: 'right.txt', mode: '100644' as FileMode, id: rightBlob },
+        ]);
+        const right = await writeCommit(ctx, rightTree, [boundary], 'right');
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, { wants: [left, right], not: [have], objects: true });
+
+        // Assert
+        const ids = new Set(result.objects.map((o) => o.id));
+        expect(ids.has(boundary)).toBe(false);
+        expect(ids.has(boundaryTree)).toBe(false);
+        expect(ids.has(boundaryOnlyBlob)).toBe(false);
+        expect(ids.has(left)).toBe(true);
+        expect(ids.has(right)).toBe(true);
       });
     });
   });
