@@ -61,15 +61,16 @@ function stubPackHandle(
   packPath: string,
 ): Pick<
   RegisteredPack,
-  'readSlice' | 'close' | 'hasRevIndex' | 'revIndex' | 'hasBitmap' | 'bitmapBytes'
+  'readSlice' | 'close' | 'hasRevIndex' | 'revIndex' | 'packPositions' | 'hasBitmap' | 'bitmapBytes'
 > {
   return {
     readSlice: (offset, length) => ctx.fs.readSlice(packPath, offset, length),
     close: async () => undefined,
-    // The object resolver never reads a pack's reverse index or bitmap —
-    // these fields exist only to satisfy the type.
+    // The object resolver never reads a pack's reverse index, position
+    // mapping or bitmap — these fields exist only to satisfy the type.
     hasRevIndex: false,
     revIndex: async () => ({ kind: 'absent' }),
+    packPositions: async () => [],
     hasBitmap: false,
     bitmapBytes: async () => ({ kind: 'absent' }),
   };

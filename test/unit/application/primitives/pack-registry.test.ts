@@ -5475,3 +5475,169 @@ describe('RegisteredPack.offsetTable — the .rev accelerator, single-flight', (
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// PACK POSITIONS — packPositions(), the bitmap closure tier's mapping memo
+// ---------------------------------------------------------------------------
+
+describe('RegisteredPack.packPositions', () => {
+  describe('Given a pack with a healthy .rev, and the same pack with the .rev absent', () => {
+    describe('When packPositions() is called on each', () => {
+      it('Then both agree with packPositionMap(index) element-wise', async () => {
+        // Arrange
+        const entries = revAccelEntries(6, 'positions-identity');
+        const withRev = await buildSeededContext();
+        await writeSyntheticPack(withRev, 'positions-identity', entries);
+        await writeSyntheticRevIndex(
+          withRev,
+          'positions-identity',
+          await revAccelCorrectBody(withRev, 'positions-identity'),
+        );
+        const withoutRev = await buildSeededContext();
+        await writeSyntheticPack(withoutRev, 'positions-identity', entries);
+        const idxBytes = await withoutRev.fs.read(
+          revAccelIdxPath(withoutRev, 'positions-identity'),
+        );
+        const expected = packPositionMap(parsePackIndex(idxBytes));
+
+        // Act
+        const [withRevPack] = await createPackRegistry(withRev).all();
+        const [withoutRevPack] = await createPackRegistry(withoutRev).all();
+        const withRevPositions = await withRevPack!.packPositions();
+        const withoutRevPositions = await withoutRevPack!.packPositions();
+
+        // Assert
+        expect(withRevPositions).toEqual(expected);
+        expect(withoutRevPositions).toEqual(expected);
+      });
+    });
+  });
+
+  describe('Given a pack whose .rev is refused for a bad magic', () => {
+    describe('When packPositions() is called', () => {
+      it('Then it falls back to packPositionMap(index)', async () => {
+        // Arrange
+        const entries = revAccelEntries(5, 'positions-refused');
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'positions-refused', entries);
+        await writeSyntheticRevIndex(
+          ctx,
+          'positions-refused',
+          await revAccelCorrectBody(ctx, 'positions-refused'),
+          { magic: 0 },
+        );
+        const idxBytes = await ctx.fs.read(revAccelIdxPath(ctx, 'positions-refused'));
+        const expected = packPositionMap(parsePackIndex(idxBytes));
+
+        // Act
+        const [pack] = await getPackRegistry(ctx).all();
+        const result = await pack!.packPositions();
+
+        // Assert
+        expect(result).toEqual(expected);
+      });
+    });
+  });
+
+  describe('Given a .rev body[0] out of range for a 10-object pack, restamped', () => {
+    describe('When packPositions() is called', () => {
+      it('Then it falls back to packPositionMap(index) rather than propagate the out-of-range value', async () => {
+        // Arrange
+        const entries = revAccelEntries(10, 'positions-oob');
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'positions-oob', entries);
+        const correct = await revAccelCorrectBody(ctx, 'positions-oob');
+        const outOfRange = [999, ...correct.slice(1)];
+        await writeSyntheticRevIndex(ctx, 'positions-oob', outOfRange);
+        const idxBytes = await ctx.fs.read(revAccelIdxPath(ctx, 'positions-oob'));
+        const expected = packPositionMap(parsePackIndex(idxBytes));
+
+        // Act
+        const [pack] = await getPackRegistry(ctx).all();
+        const result = await pack!.packPositions();
+
+        // Assert
+        expect(result).toEqual(expected);
+      });
+    });
+  });
+
+  describe('Given a pack whose present .rev is unreadable', () => {
+    describe('When packPositions() is called', () => {
+      it('Then it falls back to packPositionMap(index)', async () => {
+        // Arrange
+        const entries = revAccelEntries(4, 'positions-unreadable');
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'positions-unreadable', entries);
+        await writeSyntheticRevIndex(
+          ctx,
+          'positions-unreadable',
+          await revAccelCorrectBody(ctx, 'positions-unreadable'),
+        );
+        const idxBytes = await ctx.fs.read(revAccelIdxPath(ctx, 'positions-unreadable'));
+        const expected = packPositionMap(parsePackIndex(idxBytes));
+        const wrapped = withUnreadableRev(ctx);
+
+        // Act
+        const [pack] = await getPackRegistry(wrapped).all();
+        const result = await pack!.packPositions();
+
+        // Assert
+        expect(result).toEqual(expected);
+      });
+    });
+  });
+
+  describe('Given a pack with a healthy .rev', () => {
+    describe('When packPositions() and offsetTable() are both called', () => {
+      it('Then the .rev is read exactly once for the whole pack', async () => {
+        // Arrange
+        const entries = revAccelEntries(4, 'positions-single-read');
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'positions-single-read', entries);
+        await writeSyntheticRevIndex(
+          ctx,
+          'positions-single-read',
+          await revAccelCorrectBody(ctx, 'positions-single-read'),
+        );
+        const { ctx: instrumented, calls } = instrumentedContext(ctx);
+
+        // Act
+        const [pack] = await getPackRegistry(instrumented).all();
+        await Promise.all([pack!.packPositions(), pack!.offsetTable()]);
+
+        // Assert
+        const revReads = calls().filter(
+          (call) => call.method === 'read' && call.path.endsWith('.rev'),
+        );
+        expect(revReads).toHaveLength(1);
+      });
+    });
+  });
+
+  describe('Given a pack whose .rev is refused', () => {
+    describe('When packPositions() is called', () => {
+      it('Then ctx.logger.warn is never called — the fallback is silent here, unlike offsetTable', async () => {
+        // Arrange
+        const entries = revAccelEntries(3, 'positions-log-refused');
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'positions-log-refused', entries);
+        await writeSyntheticRevIndex(
+          ctx,
+          'positions-log-refused',
+          await revAccelCorrectBody(ctx, 'positions-log-refused'),
+          { magic: 0 },
+        );
+        const warn = vi.fn();
+        const wrapped = { ...ctx, logger: { warn } };
+
+        // Act
+        const [pack] = await getPackRegistry(wrapped).all();
+        await pack!.packPositions();
+
+        // Assert
+        expect(warn).not.toHaveBeenCalled();
+      });
+    });
+  });
+});

@@ -10,8 +10,27 @@ import { revList } from '../../../../src/application/commands/rev-list.js';
 import { tagCreate } from '../../../../src/application/commands/tag.js';
 import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
 import { TsgitError } from '../../../../src/domain/index.js';
-import type { AuthorIdentity, ObjectId } from '../../../../src/domain/objects/index.js';
+import type {
+  AuthorIdentity,
+  Blob,
+  Commit,
+  FileMode,
+  GitObject,
+  ObjectId,
+  Tree,
+} from '../../../../src/domain/objects/index.js';
+import { serializeObject } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
+import {
+  type BitmapEntrySpec,
+  type BitmapStreamSpec,
+  buildBitmap,
+} from '../../domain/storage/arbitraries.js';
+import {
+  type EntrySpec,
+  writeSyntheticBitmap,
+  writeSyntheticPack,
+} from '../primitives/pack-fixture.js';
 
 const AUTHOR: AuthorIdentity = {
   name: 'Ada',
@@ -560,6 +579,227 @@ describe('revList', () => {
         // Assert
         const ids = new Set(result.entries.map((e) => e.id));
         expect(ids).toEqual(new Set([older, newer]));
+      });
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// useBitmapIndex — the bitmap tier's own control
+// ---------------------------------------------------------------------------
+
+function stripHeader(bytes: Uint8Array): Uint8Array {
+  const nul = bytes.indexOf(0);
+  return bytes.subarray(nul + 1);
+}
+
+async function idOf(ctx: Context, object: GitObject): Promise<string> {
+  return ctx.hash.hashHex(serializeObject(object, ctx.hashConfig));
+}
+
+function rawContentOf(ctx: Context, object: GitObject): Uint8Array {
+  return stripHeader(serializeObject(object, ctx.hashConfig));
+}
+
+function indexPositionOf(ids: ReadonlyArray<string>, id: string): number {
+  return [...ids].sort().indexOf(id);
+}
+
+interface DiamondRepo {
+  readonly ctx: Context;
+  readonly mergeCommitId: ObjectId;
+}
+
+/**
+ * A diamond history — root, two divergent branches, and a merge — packed
+ * and covered by a single hand-crafted bitmap entry for the merge commit
+ * alone, whose reconstructed set is the WHOLE 12-object closure. `wants`
+ * always names the merge commit, so `firstParent`/`noWalk` narrowing (a
+ * real walk would drop the other branch, or every ancestor) is what these
+ * tests can observe.
+ */
+async function buildDiamondBitmapRepo(): Promise<DiamondRepo> {
+  const ctx = createMemoryContext();
+  await init(ctx);
+  const enc = new TextEncoder();
+  const entries: EntrySpec[] = [];
+  const ids: string[] = [];
+
+  const writeGen = async (prefix: string, parents: ReadonlyArray<string>): Promise<string> => {
+    const blob: Blob = { type: 'blob', id: '' as ObjectId, content: enc.encode(prefix) };
+    const blobId = await idOf(ctx, blob);
+    entries.push({ kind: 'base', type: 'blob', content: rawContentOf(ctx, blob) });
+    ids.push(blobId);
+
+    const tree: Tree = {
+      type: 'tree',
+      id: '' as ObjectId,
+      entries: [{ name: `${prefix}.txt`, mode: '100644' as FileMode, id: blobId as ObjectId }],
+    };
+    const treeId = await idOf(ctx, tree);
+    entries.push({ kind: 'base', type: 'tree', content: rawContentOf(ctx, tree) });
+    ids.push(treeId);
+
+    const commitObj: Commit = {
+      type: 'commit',
+      id: '' as ObjectId,
+      data: {
+        tree: treeId as ObjectId,
+        parents: parents as ReadonlyArray<ObjectId>,
+        author: AUTHOR,
+        committer: AUTHOR,
+        message: prefix,
+        extraHeaders: [],
+      },
+    };
+    const commitId = await idOf(ctx, commitObj);
+    entries.push({ kind: 'base', type: 'commit', content: rawContentOf(ctx, commitObj) });
+    ids.push(commitId);
+    return commitId;
+  };
+
+  const rootId = await writeGen('root', []);
+  const branchAId = await writeGen('branch-a', [rootId]);
+  const branchBId = await writeGen('branch-b', [rootId]);
+  const mergeId = await writeGen('merge', [branchAId, branchBId]);
+
+  const packName = 'diamond';
+  await writeSyntheticPack(ctx, packName, entries);
+  const objectCount = ids.length;
+  const idxOf = (id: string) => indexPositionOf(ids, id);
+
+  const commitPositions = [2, 5, 8, 11];
+  const treePositions = [1, 4, 7, 10];
+  const blobPositions = [0, 3, 6, 9];
+  const typeStream = (bits: ReadonlyArray<number>): BitmapStreamSpec => ({
+    bitSize: objectCount,
+    bits,
+  });
+  const entrySpec: BitmapEntrySpec = {
+    position: idxOf(mergeId),
+    xorOffset: 0,
+    flags: 0,
+    bitSize: objectCount,
+    bits: Array.from({ length: objectCount }, (_unused, i) => i),
+  };
+  const body = buildBitmap({
+    optionFlags: 1,
+    digestLength: ctx.hashConfig.digestLength,
+    checksum: new Uint8Array(ctx.hashConfig.digestLength).fill(0xbb),
+    typeStreams: [
+      typeStream(commitPositions),
+      typeStream(treePositions),
+      typeStream(blobPositions),
+      typeStream([]),
+    ],
+    entries: [entrySpec],
+    trailingBytes: 0,
+  });
+  await writeSyntheticBitmap(
+    ctx,
+    `${ctx.layout.gitDir}/objects/pack/pack-${packName}.bitmap`,
+    body,
+  );
+
+  return { ctx, mergeCommitId: mergeId as ObjectId };
+}
+
+describe('revList — useBitmapIndex', () => {
+  describe('Given a bitmap-covered merge commit', () => {
+    describe('When revList is called with objects: true and no useBitmapIndex', () => {
+      it('Then it reproduces git — useBitmapIndex defaults to false and the walk answers, entries carrying paths', async () => {
+        // Arrange
+        const { ctx, mergeCommitId } = await buildDiamondBitmapRepo();
+        const sut = revList;
+
+        // Act
+        const result = await sut(ctx, { wants: [mergeCommitId], objects: true });
+
+        // Assert
+        expect(result.entries.some((e) => e.path !== undefined)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given the same bitmap-covered merge commit', () => {
+    describe('When revList is called with objects: true and useBitmapIndex: true', () => {
+      it('Then it reproduces git — the bitmap tier answers and no entry carries a path', async () => {
+        // Arrange
+        const { ctx, mergeCommitId } = await buildDiamondBitmapRepo();
+        const sut = revList;
+
+        // Act
+        const result = await sut(ctx, {
+          wants: [mergeCommitId],
+          objects: true,
+          useBitmapIndex: true,
+        });
+
+        // Assert
+        expect(result.entries.length).toBeGreaterThan(0);
+        expect(result.entries.every((e) => e.path === undefined)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given the same bitmap-covered merge commit', () => {
+    describe('When revList is called with maxCount and useBitmapIndex: true', () => {
+      it('Then it reproduces git — maxCount forces the walk, and entries carry paths', async () => {
+        // Arrange
+        const { ctx, mergeCommitId } = await buildDiamondBitmapRepo();
+        const sut = revList;
+
+        // Act
+        const result = await sut(ctx, {
+          wants: [mergeCommitId],
+          objects: true,
+          useBitmapIndex: true,
+          maxCount: 1,
+        });
+
+        // Assert
+        expect(result.entries.some((e) => e.path !== undefined)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given the same bitmap-covered merge commit', () => {
+    describe('When revList is called with firstParent and useBitmapIndex: true', () => {
+      it('Then it reproduces git — firstParent is ignored on the bitmap tier and the full closure returns', async () => {
+        // Arrange
+        const { ctx, mergeCommitId } = await buildDiamondBitmapRepo();
+        const sut = revList;
+
+        // Act
+        const result = await sut(ctx, {
+          wants: [mergeCommitId],
+          useBitmapIndex: true,
+          firstParent: true,
+        });
+
+        // Assert — a real first-parent walk would exclude the second branch;
+        // the bitmap tier returns every commit regardless.
+        expect(result.entries.filter((e) => e.type === 'commit')).toHaveLength(4);
+      });
+    });
+  });
+
+  describe('Given the same bitmap-covered merge commit', () => {
+    describe('When revList is called with noWalk and useBitmapIndex: true', () => {
+      it('Then it reproduces git — noWalk is ignored on the bitmap tier and the full closure returns', async () => {
+        // Arrange
+        const { ctx, mergeCommitId } = await buildDiamondBitmapRepo();
+        const sut = revList;
+
+        // Act
+        const result = await sut(ctx, {
+          wants: [mergeCommitId],
+          useBitmapIndex: true,
+          noWalk: true,
+        });
+
+        // Assert — a real noWalk call would return only the merge commit itself.
+        expect(result.entries.filter((e) => e.type === 'commit')).toHaveLength(4);
       });
     });
   });

@@ -16,6 +16,7 @@ interface RevListOptions {
   readonly maxCount?: number;
   readonly firstParent?: boolean;
   readonly noWalk?: boolean;
+  readonly useBitmapIndex?: boolean;
 }
 
 interface RevListEntry {
@@ -40,8 +41,9 @@ interface RevListResult {
 | `count` | `boolean` | `false` | Documents intent only — `entries` is always populated and `count` is always `entries.length` on the same call; there is no separate count-only fast path. |
 | `all` | `boolean` | `false` | Union the tip of every ref (branches, tags, remotes, `HEAD`) into `wants`, deduplicated. |
 | `maxCount` | `number` | `(unbounded)` | At most this many commits emitted; bounds the commit walk only, not the object stream. |
-| `firstParent` | `boolean` | `false` | Follow only the first parent of each commit. |
-| `noWalk` | `boolean` | `false` | Emit the resolved tips themselves and stop — no parent traversal. |
+| `firstParent` | `boolean` | `false` | Follow only the first parent of each commit. Ignored on the bitmap tier. |
+| `noWalk` | `boolean` | `false` | Emit the resolved tips themselves and stop — no parent traversal. Ignored on the bitmap tier. |
+| `useBitmapIndex` | `boolean` | `false` | Ask for the bitmap tier. See "Tiers" below. |
 
 ## Behaviour
 
@@ -54,6 +56,19 @@ interface RevListResult {
 - **`maxCount`** bounds the commit walk, not the object stream: with `objects`, it is still N commits and everything *they* reach, not N objects overall. `maxCount: 0` yields an empty result rather than an unbounded one.
 - **`firstParent`** follows only the first parent at each step, so a merge commit's second-parent branch is never walked.
 - **`noWalk`** emits the resolved tips themselves and stops there — no parent is ever enqueued. Under `objects`, each tip's own tree still counts.
+
+## Tiers
+
+`revList` answers from one of two tiers over the same reachability question, `W AND NOT N`:
+
+- **The walk** (default, `useBitmapIndex` unset or `false`) — the behaviour described above. This is what git's own `rev-list` does unless asked otherwise.
+- **The bitmap tier** (`useBitmapIndex: true`) — answers from a pack (or multi-pack-index) bitmap when one is usable, computing the exact set difference rather than the walk's superset. If no usable bitmap exists — none is present, it is unreadable, structurally refused, or any position it decodes is out of range for the pack it indexes — the call falls back to the walk silently: no error, no signal that the fallback happened, exactly as git degrades.
+
+The bitmap tier changes what three other options mean:
+
+- **No `path`.** A bitmap encodes reachability and each object's type, never a name — `entries[].path` is always `undefined` on the bitmap tier, even under `objects`. A caller that needs paths must leave `useBitmapIndex` off.
+- **`firstParent` and `noWalk` are ignored.** The bitmap tier does not traverse parent-by-parent — it resolves the full closure in one step — so both options have no effect and the full reachability closure is returned, exactly as git does when it loads a bitmap for these options.
+- **`maxCount` still walks.** Passing `maxCount` alongside `useBitmapIndex` forces the walk tier regardless — git itself abandons the bitmap for a bounded count, so this is reproduction, not policy.
 
 ## Examples
 

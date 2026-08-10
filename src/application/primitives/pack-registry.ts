@@ -32,7 +32,7 @@ import {
   loadPackRevIndex,
   midxBitmapName,
 } from './internal/pack-artefact-source.js';
-import { gatherByRevIndex } from './internal/pack-positions.js';
+import { gatherByRevIndex, packPositionMap } from './internal/pack-positions.js';
 import {
   faultContext,
   faultReason,
@@ -119,6 +119,19 @@ export interface RegisteredPack {
    * index" rule.
    */
   readonly revIndex: () => Promise<ArtefactLoad<PackRevIndex>>;
+  /**
+   * Pack position → index position, for every position `[0, objectCount)` —
+   * the `.rev` body gathered in O(n) when usable, `packPositionMap(index)`
+   * (O(n log n)) otherwise: absent, unreadable, refused, or a body whose
+   * gather hits an out-of-range value. A second memo, distinct from
+   * `buildOffsetTable`'s own fallback (which keeps its plain-sort path
+   * verbatim); both depend on the same `revIndex()` loader, so the `.rev` is
+   * read at most once per pack per generation and classified once. Read by
+   * the bitmap closure tier to turn a decoded pack position into an oid —
+   * never by anything that must run before an artefact's range validation
+   * has passed.
+   */
+  readonly packPositions: () => Promise<ReadonlyArray<number>>;
   /** Whether this pack's `.bitmap` sibling was present in the scan's own
    *  file listing — a symlinked `.bitmap` is not present, the same
    *  no-follow rule every other artefact's discovery enforces. */
@@ -324,6 +337,25 @@ function loadPack(
     return loadBitmapBytes(ctx, bitmapPath, hasBitmap, index.objectCount);
   });
 
+  // Pack position -> index position, gathered from the same `.rev` load
+  // `revIndexMemo` already memoises. `identity[i] = i`, so
+  // `gatherByRevIndex(rev, identity)[p] = revIndexPositionAt(rev, p)` when
+  // every stored value lands in bounds; an out-of-range value falls back to
+  // `packPositionMap`, exactly as `resolveSortedOffsets` falls back for the
+  // offset table. Never warns here: `buildOffsetTable`'s own fallback
+  // already warns once for the SAME `.rev` fault when it runs, and this memo
+  // has no independent finding to report.
+  const packPositionsMemo = createPromiseMemo(async (): Promise<ReadonlyArray<number>> => {
+    const index = await indexMemo.get();
+    const load = await revIndexMemo.get();
+    if (load.kind === 'usable') {
+      const identity = Array.from({ length: index.objectCount }, (_unused, i) => i);
+      const gathered = gatherByRevIndex(load.value, identity);
+      if (gathered !== undefined) return gathered;
+    }
+    return packPositionMap(index);
+  });
+
   const headerMemo = createPromiseMemo(async (): Promise<PackHeader> => {
     const index = await indexMemo.get();
     const header = parsePackHeader(await ctx.fs.readSlice(packPath, 0, PACK_HEADER_SIZE));
@@ -422,6 +454,7 @@ function loadPack(
     close,
     hasRevIndex,
     revIndex: revIndexMemo.get,
+    packPositions: packPositionsMemo.get,
     hasBitmap,
     bitmapBytes: bitmapMemo.get,
   };

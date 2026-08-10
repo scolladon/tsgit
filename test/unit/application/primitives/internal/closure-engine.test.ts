@@ -156,7 +156,7 @@ describe('computeClosure', () => {
         const sut = computeClosure;
 
         // Act
-        const result = await sut(ctx, { wants: [chain.c3], not: [], objects: false });
+        const result = await sut(ctx, { tier: 'walk', wants: [chain.c3], not: [], objects: false });
 
         // Assert
         const ids = new Set(result.objects.map((o) => o.id));
@@ -175,7 +175,7 @@ describe('computeClosure', () => {
         const sut = computeClosure;
 
         // Act
-        const result = await sut(ctx, { wants: [chain.c3], not: [], objects: true });
+        const result = await sut(ctx, { tier: 'walk', wants: [chain.c3], not: [], objects: true });
 
         // Assert
         const byId = new Map(result.objects.map((o) => [o.id, o]));
@@ -215,7 +215,7 @@ describe('computeClosure', () => {
         const sut = computeClosure;
 
         // Act
-        const result = await sut(ctx, { wants: [tagId], not: [], objects: false });
+        const result = await sut(ctx, { tier: 'walk', wants: [tagId], not: [], objects: false });
 
         // Assert
         const ids = new Set(result.objects.map((o) => o.id));
@@ -240,7 +240,12 @@ describe('computeClosure', () => {
         const sut = computeClosure;
 
         // Act
-        const result = await sut(ctx, { wants: [outerTagId], not: [], objects: false });
+        const result = await sut(ctx, {
+          tier: 'walk',
+          wants: [outerTagId],
+          not: [],
+          objects: false,
+        });
 
         // Assert
         const ids = new Set(result.objects.map((o) => o.id));
@@ -267,7 +272,12 @@ describe('computeClosure', () => {
         const sut = computeClosure;
 
         // Act
-        const result = await sut(ctx, { wants: [rootTreeId], not: [], objects: false });
+        const result = await sut(ctx, {
+          tier: 'walk',
+          wants: [rootTreeId],
+          not: [],
+          objects: false,
+        });
 
         // Assert
         const ids = new Set(result.objects.map((o) => o.id));
@@ -287,7 +297,7 @@ describe('computeClosure', () => {
         const sut = computeClosure;
 
         // Act
-        const result = await sut(ctx, { wants: [blobId], not: [], objects: false });
+        const result = await sut(ctx, { tier: 'walk', wants: [blobId], not: [], objects: false });
 
         // Assert
         expect(result.objects).toEqual([{ id: blobId, type: 'blob', path: undefined }]);
@@ -310,7 +320,7 @@ describe('computeClosure', () => {
         const sut = computeClosure;
 
         // Act
-        const result = await sut(ctx, { wants: [commitId], not: [], objects: true });
+        const result = await sut(ctx, { tier: 'walk', wants: [commitId], not: [], objects: true });
 
         // Assert
         const ids = new Set(result.objects.map((o) => o.id));
@@ -340,6 +350,7 @@ describe('computeClosure', () => {
 
         // Act
         const result = await sut(ctx, {
+          tier: 'walk',
           wants: [commitId],
           not: [outerTreeId],
           objects: true,
@@ -368,6 +379,7 @@ describe('computeClosure', () => {
 
         // Act
         const result = await sut(ctx, {
+          tier: 'walk',
           wants: [commitId],
           not: [markedBlobId],
           objects: true,
@@ -401,6 +413,7 @@ describe('computeClosure', () => {
 
         // Act
         const result = await sut(ctx, {
+          tier: 'walk',
           wants: [commitId],
           not: [outerTreeId],
           objects: true,
@@ -435,6 +448,7 @@ describe('computeClosure', () => {
 
         // Act
         const result = await sut(ctx, {
+          tier: 'walk',
           wants: [commitId],
           not: [notTreeId],
           objects: true,
@@ -469,7 +483,7 @@ describe('computeClosure', () => {
         // Act
         let caught: unknown;
         try {
-          await sut(ctx, { wants: [commitId], not: [current], objects: false });
+          await sut(ctx, { tier: 'walk', wants: [commitId], not: [current], objects: false });
         } catch (err) {
           caught = err;
         }
@@ -497,7 +511,12 @@ describe('computeClosure', () => {
         const sut = computeClosure;
 
         // Act
-        const result = await sut(ctx, { wants: [commitId], not: [tagId], objects: true });
+        const result = await sut(ctx, {
+          tier: 'walk',
+          wants: [commitId],
+          not: [tagId],
+          objects: true,
+        });
 
         // Assert
         expect(result.objects).toEqual([]);
@@ -514,7 +533,7 @@ describe('computeClosure', () => {
         const sut = computeClosure;
 
         // Act
-        const result = await sut(ctx, { wants: [], not: [], objects: true });
+        const result = await sut(ctx, { tier: 'walk', wants: [], not: [], objects: true });
 
         // Assert
         expect(result.objects).toEqual([]);
@@ -535,7 +554,12 @@ describe('computeClosure', () => {
         const sut = computeClosure;
 
         // Act
-        const result = await sut(ctx, { wants: [commitId], not: [commitId], objects: true });
+        const result = await sut(ctx, {
+          tier: 'walk',
+          wants: [commitId],
+          not: [commitId],
+          objects: true,
+        });
 
         // Assert
         expect(result.objects).toEqual([]);
@@ -551,7 +575,7 @@ describe('computeClosure', () => {
         const sut = computeClosure;
 
         // Act
-        const result = await sut(ctx, { wants: [], not: [], objects: false });
+        const result = await sut(ctx, { tier: 'walk', wants: [], not: [], objects: false });
 
         // Assert
         expect(result.objects).toEqual([]);
@@ -567,9 +591,14 @@ describe('computeClosure', () => {
         const sut = computeClosure;
 
         // Act
-        const actual = await sut(ctx, { wants: [want], not: [have], objects: true });
+        const actual = await sut(ctx, { tier: 'walk', wants: [want], not: [have], objects: true });
         const exact = await enumerateBundleObjects(ctx, { wants: [want], haves: [have] });
-        const reachableFromNotTip = await sut(ctx, { wants: [have], not: [], objects: true });
+        const reachableFromNotTip = await sut(ctx, {
+          tier: 'walk',
+          wants: [have],
+          not: [],
+          objects: true,
+        });
 
         // Assert — the walk's answer is a superset of the exact difference.
         const actualIds = new Set(actual.objects.map((o) => o.id));
@@ -596,7 +625,7 @@ describe('computeClosure', () => {
         const sut = computeClosure;
 
         // Act
-        const actual = await sut(ctx, { wants: [want], not: [have], objects: true });
+        const actual = await sut(ctx, { tier: 'walk', wants: [want], not: [have], objects: true });
         const exact = await enumerateBundleObjects(ctx, { wants: [want], haves: [have] });
 
         // Assert
@@ -638,7 +667,7 @@ describe('computeClosure', () => {
         const sut = computeClosure;
 
         // Act
-        const result = await sut(ctx, { wants: [want], not: [have], objects: true });
+        const result = await sut(ctx, { tier: 'walk', wants: [want], not: [have], objects: true });
 
         // Assert
         const ids = new Set(result.objects.map((o) => o.id));
@@ -686,7 +715,12 @@ describe('computeClosure', () => {
         const sut = computeClosure;
 
         // Act
-        const result = await sut(ctx, { wants: [left, right], not: [have], objects: true });
+        const result = await sut(ctx, {
+          tier: 'walk',
+          wants: [left, right],
+          not: [have],
+          objects: true,
+        });
 
         // Assert
         const ids = new Set(result.objects.map((o) => o.id));
@@ -710,7 +744,7 @@ describe('computeClosure', () => {
         // Act
         let caught: unknown;
         try {
-          await sut(ctx, { wants: [missing], not: [], objects: false });
+          await sut(ctx, { tier: 'walk', wants: [missing], not: [], objects: false });
         } catch (err) {
           caught = err;
         }
@@ -740,7 +774,7 @@ describe('computeClosure', () => {
         // Act
         let caught: unknown;
         try {
-          await sut(ctx, { wants: [commitId], not: [missing], objects: false });
+          await sut(ctx, { tier: 'walk', wants: [commitId], not: [missing], objects: false });
         } catch (err) {
           caught = err;
         }
@@ -768,7 +802,7 @@ describe('computeClosure', () => {
         const sut = computeClosure;
 
         // Act
-        const result = await sut(ctx, { wants: [childId], not: [], objects: true });
+        const result = await sut(ctx, { tier: 'walk', wants: [childId], not: [], objects: true });
 
         // Assert
         expect(result.objects.filter((o) => o.id === treeId)).toHaveLength(1);
@@ -837,7 +871,7 @@ describe('computeClosure', () => {
           // Act
           let caught: unknown;
           try {
-            await sut(ctx, { wants: [commitId], not: [], objects: true });
+            await sut(ctx, { tier: 'walk', wants: [commitId], not: [], objects: true });
           } catch (err) {
             caught = err;
           }

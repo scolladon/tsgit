@@ -1,7 +1,10 @@
 /**
  * Shared reachability closure engine. Computes the objects reachable from
- * `wants` and excludes what the walk marks uninteresting from `not` — the
- * walk tier only, in this part (a bitmap tier arrives later).
+ * `wants` and excludes what `not` covers, through either of two tiers the
+ * REQUEST selects — `tier` is required and the engine holds no default,
+ * because the two commands that call it disagree on what "unset" should
+ * mean. `'bitmap'` tries a pack bitmap (a midx bitmap arrives later) and
+ * falls back to the walk on any fault, silently; `'walk'` always walks.
  *
  * The walk marks a `not` tip's *entire* commit ancestry uninteresting —
  * git's own merge-base exclusion, propagated through every parent edge, so a
@@ -28,34 +31,44 @@ import {
   type ObjectId,
 } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
-import { readObject } from '../read-object.js';
+import { getPackRegistry, readObject } from '../read-object.js';
 import { MAX_PUSH_OBJECTS } from '../types.js';
 import { isGitlink } from '../validators.js';
 import { walkCommits } from '../walk-commits.js';
 import { walkTree } from '../walk-tree.js';
+import { loadPackBitmapArtefact, resolveBitmapClosure } from './bitmap-binding.js';
 import { type EmitState, resolveTagChain, tryEmit } from './object-emit.js';
 
 /** Same bound as walk-tree.ts's default maxDepth and enumerate-bundle-objects.ts's
  *  marking pass — prevents stack overflow on a pathologically deep tree. */
 const MAX_TREE_DEPTH = 1024;
 
+/** `'bitmap'` asks for the bitmap tier (with a silent walk fallback on any
+ *  fault); `'walk'` always walks. No default — see the module doc. */
+export type ClosureTier = 'bitmap' | 'walk';
+
 export interface ClosureRequest {
   readonly wants: ReadonlyArray<ObjectId>;
   readonly not: ReadonlyArray<ObjectId>;
   /** Include trees and blobs, not just commits and tags. */
   readonly objects: boolean;
+  /** The tier the CALLER asks for — required, no engine-side default. */
+  readonly tier: ClosureTier;
   /**
    * At most this many commits emitted (under `objects`, those commits and
    * everything they reach). Governs the commit walk only — tag/tree/blob
    * wants resolved outside it are unaffected. `0` walks no commits at all.
-   * Omitted means unbounded.
+   * Omitted means unbounded. Forces the walk tier regardless of `tier`
+   * (git itself abandons the bitmap for it).
    */
   readonly maxCount?: number;
-  /** Follow only the first parent of each commit. Omitted means every parent. */
+  /** Follow only the first parent of each commit. Omitted means every
+   *  parent. Ignored on the bitmap tier, which does not traverse. */
   readonly firstParent?: boolean;
   /**
    * Emit the resolved commit seeds themselves and stop — no parent
    * traversal. Under `objects`, each seed's own tree still counts.
+   * Ignored on the bitmap tier, which does not traverse.
    */
   readonly noWalk?: boolean;
 }
@@ -65,13 +78,18 @@ export interface ClosureObject {
   readonly type: 'commit' | 'tree' | 'blob' | 'tag';
   /**
    * Populated by the walk. A reachability artefact encodes types and bits,
-   * never names, so a future non-walking producer cannot fill this.
+   * never names, so the bitmap tier never fills this.
    */
   readonly path?: FilePath;
 }
 
 export interface ClosureResult {
   readonly objects: ReadonlyArray<ClosureObject>;
+  /** The tier that actually answered — a `'bitmap'` request still answers
+   *  `'walk'` after a silent fallback. Internal: neither command surfaces
+   *  this, since artefact choice selects between two computations of the
+   *  same answer. */
+  readonly tier: ClosureTier;
 }
 
 type Emit = (id: ObjectId, type: ClosureObject['type'], path?: FilePath) => void;
@@ -351,12 +369,7 @@ async function emitCommitSeeds(
   return walkAndEmitCommits(ctx, commitSeeds, marks, request, emit);
 }
 
-export async function computeClosure(
-  ctx: Context,
-  request: ClosureRequest,
-): Promise<ClosureResult> {
-  if (request.wants.length === 0) return { objects: [] };
-
+async function walkClosure(ctx: Context, request: ClosureRequest): Promise<ClosureObject[]> {
   const state: EmitState = { emitted: new Set<ObjectId>(), cap: MAX_PUSH_OBJECTS };
   const results: ClosureObject[] = [];
   const emit: Emit = (id, type, path) => {
@@ -368,5 +381,44 @@ export async function computeClosure(
   const commitSeeds = await resolveWants(ctx, request.wants, emit);
   await emitCommitSeeds(ctx, commitSeeds, marks, request, emit);
 
-  return { objects: results };
+  return results;
+}
+
+/**
+ * Tries every registered pack's bitmap in turn (a midx bitmap preference
+ * arrives later) and answers from the first one that loads and
+ * range-validates. `undefined` when none does, the caller's signal to
+ * fall back to the walk with nothing surfaced.
+ */
+async function tryBitmapClosure(
+  ctx: Context,
+  request: ClosureRequest,
+): Promise<ClosureObject[] | undefined> {
+  const packs = await getPackRegistry(ctx).all();
+  for (const pack of packs) {
+    const artefact = await loadPackBitmapArtefact(ctx, pack);
+    if (artefact === undefined) continue;
+    return [
+      ...(await resolveBitmapClosure(ctx, artefact, {
+        wants: request.wants,
+        not: request.not,
+        objects: request.objects,
+      })),
+    ];
+  }
+  return undefined;
+}
+
+export async function computeClosure(
+  ctx: Context,
+  request: ClosureRequest,
+): Promise<ClosureResult> {
+  if (request.wants.length === 0) return { objects: [], tier: request.tier };
+
+  if (request.tier === 'bitmap') {
+    const bitmapObjects = await tryBitmapClosure(ctx, request);
+    if (bitmapObjects !== undefined) return { objects: bitmapObjects, tier: 'bitmap' };
+  }
+
+  return { objects: await walkClosure(ctx, request), tier: 'walk' };
 }

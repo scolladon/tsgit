@@ -1,5 +1,6 @@
 import { archiveScenario } from './archive.scenario.ts';
 import { bisectMidpointScenario } from './bisect-midpoint.scenario.ts';
+import { bitmapClosureScenario } from './bitmap-closure.scenario.ts';
 import { blameScenario } from './blame.scenario.ts';
 import { branchLifecycleScenario } from './branch-lifecycle.scenario.ts';
 import { bundleScenario } from './bundle.scenario.ts';
@@ -43,6 +44,7 @@ import { writePipelineScenario } from './write-pipeline.scenario.ts';
 export const SCENARIOS: ReadonlyArray<Scenario<unknown>> = [
   archiveScenario,
   bisectMidpointScenario,
+  bitmapClosureScenario,
   bundleScenario,
   initAddCommitStatusScenario,
   branchLifecycleScenario,
