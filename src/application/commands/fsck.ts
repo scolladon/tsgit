@@ -8,7 +8,7 @@ import {
   buildBlobFilenameMap,
   runContentValidationPass,
 } from './internal/fsck/content-validation.js';
-import { EXIT_MISSING } from './internal/fsck/exit-codes.js';
+import { EXIT_MISSING, EXIT_REFS_CONTENT } from './internal/fsck/exit-codes.js';
 import { runMidxHealthPass } from './internal/fsck/midx-health.js';
 import { assertTypesRecoverable, buildObjectCache } from './internal/fsck/object-cache.js';
 import { packAccessibilityReported, runPackHealthPass } from './internal/fsck/pack-health.js';
@@ -127,7 +127,21 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
   // step needs.
   const bitmapResult = await runBitmapHealthPass(ctx, opts);
 
-  const roots = await collectRoots(ctx, opts, universe);
+  // Roots + the missing-entry-point condition — a whole-repository check,
+  // not a per-oid one: git sets bit 8 here exactly when no ref and no index
+  // (stage-0) entry resolves to a readable object, but an ABSENT index never
+  // contributes (a bare or never-staged repository is healthy) — regardless
+  // of which individual targets miss. Measured against git 2.55.0: a reflog
+  // whose entries all fail to resolve does NOT set the bit (nor does
+  // removing the reflog entirely change anything) — the bit tracks the
+  // index's cache-tree, present only once a working tree has been
+  // populated. `collectRoots` already walks every ref and index entry for
+  // reachability roots, so `missingEntryPoint` rides that same walk (a
+  // bounded existence probe per target, deliberately independent of
+  // `universe`'s own mode-narrowing — see `existsInStore`'s doc comment)
+  // rather than re-scanning the store.
+  const { roots, missingEntryPoint } = await collectRoots(ctx, opts, universe);
+  const missingEntryPointBit = missingEntryPoint ? EXIT_REFS_CONTENT : 0;
   const inEdgePresent = buildInEdgeMap(universe, objectCache);
 
   const { reached, missingIds, brokenEdges, rootCommits, tagRefs } = buildReachableSet(
@@ -160,7 +174,8 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
     packResult.exitBit |
     revIndexResult.exitBit |
     midxResult.exitBit |
-    bitmapResult.exitBit;
+    bitmapResult.exitBit |
+    missingEntryPointBit;
 
   return { findings, exitCode };
 }

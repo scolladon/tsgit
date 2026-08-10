@@ -21,6 +21,7 @@ import {
   TsgitError,
   unsupportedOperation,
 } from '../../../../src/domain/error.js';
+import { STAGE0_FLAGS } from '../../../../src/domain/git-index/index-entry.js';
 import {
   FILE_MODE,
   hexToBytes,
@@ -38,7 +39,11 @@ import {
   buildMidx,
   type MidxSpec,
 } from '../../domain/storage/arbitraries.js';
-import { buildSeededContext, instrumentedContext } from '../primitives/fixtures.js';
+import {
+  buildSeededContext,
+  instrumentedContext,
+  serializeIndexFixtureAsync,
+} from '../primitives/fixtures.js';
 import { withHandleLedger } from '../primitives/handle-ledger.js';
 import {
   buildSyntheticPack,
@@ -2995,16 +3000,61 @@ describe('Given an orphaned .idx with a bitmap beside it (no sibling .pack file)
 });
 
 // ---------------------------------------------------------------------------
-// REFS-VERIFY PASS — a known-but-unreadable ref target is an invalid
-// pointer, distinct from a plainly absent one
+// MISSING-ENTRY-POINT CONDITION (exit bit 8) — a whole-repository check: bit
+// 8 fires exactly when no ref resolves to a readable object AND the index
+// carries at least one entry, none of which resolve either — never for an
+// individual ref target that merely misses, and never for a repository with
+// no index at all (a bare or never-staged repository is healthy). Six
+// discriminating repository shapes, measured against real git 2.55.0.
+//
+// Measured directly against git 2.55.0 (not merely inferred): a repository's
+// reflog has NO bearing on this bit — a bare repo with every reflog entry
+// unresolvable, and the same fixture with its reflog removed outright, both
+// leave the bit unset. What the bit actually tracks is the index's own
+// cache-tree, which exists only once a working tree has been populated;
+// `readIndex`'s stage-0 entries are the closest primitive tsgit has to that
+// structure, so the fixtures below plant an index entry where the matrix
+// calls for "something resolvable" or "nothing resolvable" beyond the ref.
 // ---------------------------------------------------------------------------
 
-describe('Given a loose ref pointing to an OID that never existed, beside an unrelated healthy pack', () => {
+/** Writes a single-entry index whose one stage-0 entry names `id` at `path`
+ *  — the minimal index shape the missing-entry-point rule needs to move
+ *  past its vacuous "no index at all" default. */
+async function writeIndexWithEntry(ctx: Context, id: ObjectId, path: string): Promise<void> {
+  const index = {
+    version: 2 as const,
+    entries: [
+      {
+        ctimeSeconds: 0,
+        ctimeNanoseconds: 0,
+        mtimeSeconds: 0,
+        mtimeNanoseconds: 0,
+        dev: 0,
+        ino: 0,
+        mode: FILE_MODE.REGULAR,
+        uid: 0,
+        gid: 0,
+        fileSize: 0,
+        id,
+        flags: STAGE0_FLAGS,
+        path: path as FilePath,
+      },
+    ],
+    extensions: [],
+    trailerSha: new Uint8Array(0),
+  };
+  const indexBytes = await serializeIndexFixtureAsync(index, ctx);
+  await ctx.fs.write(`${ctx.layout.gitDir}/index`, indexBytes);
+}
+
+describe('Given a ref to an oid that never existed, alongside a healthy main that resolves', () => {
   describe('When fsck runs', () => {
-    it('Then exit is 2 alone — bit 8 is absent', async () => {
+    it('Then exit is 2 alone — an existing entry point suppresses the missing-entry-point bit', async () => {
       // Arrange
       const ctx = await initBareCtx();
-      await writeSyntheticPack(ctx, 'healthy-neighbour', onePackEntry('healthy-neighbour'));
+      const treeId = await writeObject(ctx, makeTree([]));
+      const commitId = await writeObject(ctx, makeCommit(treeId, []));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
       const absentOid = 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee' as ObjectId;
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/broken`, `${absentOid}\n`);
 
@@ -3017,59 +3067,89 @@ describe('Given a loose ref pointing to an OID that never existed, beside an unr
   });
 });
 
-describe('Given a loose ref pointing to an OID whose loose object was deleted', () => {
+describe('Given the whole pack directory removed, main and the index both pointing into it', () => {
   describe('When fsck runs', () => {
-    it('Then exit is 2 alone — bit 8 is absent', async () => {
+    it('Then exit is 10 (2|8) — nothing resolves anywhere', async () => {
       // Arrange
       const ctx = await initBareCtx();
-      const treeId = await writeObject(ctx, makeTree([]));
+      const [blobId] = await writeSyntheticPack(ctx, 'sole', onePackEntry('sole-content'));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${blobId}\n`);
+      await writeIndexWithEntry(ctx, blobId as ObjectId, 'a.txt');
+      await ctx.fs.rm(packFilePath(ctx, 'sole'));
+      await ctx.fs.rm(idxFilePath(ctx, 'sole'));
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      expect(result.exitCode).toBe(10);
+    });
+  });
+});
+
+describe("Given the sole pack's header version restamped to 99, main and the index both pointing into it", () => {
+  describe('When fsck runs', () => {
+    it('Then exit is 14 (2|4|8) — the pack is unusable and nothing else resolves', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const [blobId] = await writeSyntheticPack(ctx, 'sole', onePackEntry('sole-content'));
+      await restampPackHeader(ctx, packFilePath(ctx, 'sole'), { version: 99 });
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${blobId}\n`);
+      await writeIndexWithEntry(ctx, blobId as ObjectId, 'a.txt');
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      expect(result.exitCode).toBe(14);
+    });
+  });
+});
+
+describe('Given only the HEAD commit object deleted, its tree still readable and indexed', () => {
+  describe('When fsck runs', () => {
+    it('Then exit is 2 alone — a live index entry is still a live entry point', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const blobId = await writeObject(ctx, makeBlob('still readable'));
+      const treeId = await writeObject(
+        ctx,
+        makeTree([{ mode: FILE_MODE.REGULAR, name: 'a.txt', id: blobId }]),
+      );
+      const parentCommitId = await writeObject(ctx, makeCommit(treeId, []));
+      const headCommitId = await writeObject(
+        ctx,
+        makeCommit(treeId, [parentCommitId], 'head commit'),
+      );
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${headCommitId}\n`);
+      await writeIndexWithEntry(ctx, blobId, 'a.txt');
+      await ctx.fs.rm(looseObjectPath(ctx.layout.gitDir, headCommitId));
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      expect(result.exitCode).toBe(2);
+    });
+  });
+});
+
+describe('Given every loose object deleted, main and the index both pointing at gone objects', () => {
+  describe('When fsck runs', () => {
+    it('Then exit is 10 (2|8) — nothing resolves anywhere', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const blobId = await writeObject(ctx, makeBlob('gone'));
+      const treeId = await writeObject(
+        ctx,
+        makeTree([{ mode: FILE_MODE.REGULAR, name: 'a.txt', id: blobId }]),
+      );
       const commitId = await writeObject(ctx, makeCommit(treeId, []));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+      await writeIndexWithEntry(ctx, blobId, 'a.txt');
       await ctx.fs.rm(looseObjectPath(ctx.layout.gitDir, commitId));
-      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
-
-      // Act
-      const result = await fsck(ctx);
-
-      // Assert
-      expect(result.exitCode).toBe(2);
-    });
-  });
-});
-
-describe('Given a loose ref pointing to an OID listed only in a pack index whose .pack file is absent', () => {
-  describe('When fsck runs', () => {
-    it('Then exit is 10 (2|8) and bit 4 stays absent', async () => {
-      // Arrange
-      const ctx = await initBareCtx();
-      const [blobId] = await writeSyntheticPack(ctx, 'idx-only', onePackEntry('idx-only-content'));
-      await ctx.fs.rm(packFilePath(ctx, 'idx-only'));
-      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${blobId}\n`);
-
-      // Act
-      const result = await fsck(ctx);
-
-      // Assert
-      expect(result.exitCode).toBe(10);
-      expect(result.exitCode & 4).toBe(0);
-    });
-  });
-});
-
-describe('Given a packed-ref entry pointing to an OID listed only in a pack index whose .pack file is absent', () => {
-  describe('When fsck runs', () => {
-    it('Then exit is 10 (2|8)', async () => {
-      // Arrange
-      const ctx = await initBareCtx();
-      const [blobId] = await writeSyntheticPack(
-        ctx,
-        'idx-only-packed-ref',
-        onePackEntry('idx-only-packed-ref-content'),
-      );
-      await ctx.fs.rm(packFilePath(ctx, 'idx-only-packed-ref'));
-      await ctx.fs.writeUtf8(
-        `${ctx.layout.gitDir}/packed-refs`,
-        `# pack-refs with: peeled fully-peeled sorted \n${blobId} refs/heads/packed\n`,
-      );
+      await ctx.fs.rm(looseObjectPath(ctx.layout.gitDir, treeId));
+      await ctx.fs.rm(looseObjectPath(ctx.layout.gitDir, blobId));
 
       // Act
       const result = await fsck(ctx);
@@ -3080,122 +3160,18 @@ describe('Given a packed-ref entry pointing to an OID listed only in a pack inde
   });
 });
 
-describe('Given a loose ref pointing to an OID listed in a pack whose header the registry refuses to open', () => {
+describe('Given the pack removed but an unrelated loose-backed ref still resolves', () => {
   describe('When fsck runs', () => {
-    it('Then exit is 14 (2|4|8)', async () => {
+    it('Then exit is 2 alone — a healthy loose ref remains a live entry point', async () => {
       // Arrange
       const ctx = await initBareCtx();
-      const [blobId] = await writeSyntheticPack(
-        ctx,
-        'header-refused',
-        onePackEntry('header-refused-content'),
-      );
-      await restampPackHeader(ctx, packFilePath(ctx, 'header-refused'), { version: 99 });
-      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${blobId}\n`);
-
-      // Act
-      const result = await fsck(ctx);
-
-      // Assert
-      expect(result.exitCode).toBe(14);
-    });
-  });
-});
-
-describe('Given a packed-ref entry pointing to an OID listed in a pack whose header the registry refuses to open', () => {
-  describe('When fsck runs', () => {
-    it('Then exit is 14 (2|4|8)', async () => {
-      // Arrange
-      const ctx = await initBareCtx();
-      const [blobId] = await writeSyntheticPack(
-        ctx,
-        'header-refused-packed-ref',
-        onePackEntry('header-refused-packed-ref-content'),
-      );
-      await restampPackHeader(ctx, packFilePath(ctx, 'header-refused-packed-ref'), {
-        version: 99,
-      });
-      await ctx.fs.writeUtf8(
-        `${ctx.layout.gitDir}/packed-refs`,
-        `# pack-refs with: peeled fully-peeled sorted \n${blobId} refs/heads/packed\n`,
-      );
-
-      // Act
-      const result = await fsck(ctx);
-
-      // Assert
-      expect(result.exitCode).toBe(14);
-    });
-  });
-});
-
-describe('Given an orphaned .idx that nothing references, beside a healthy referenced ref', () => {
-  describe('When fsck runs', () => {
-    it('Then exit is 0', async () => {
-      // Arrange
-      const ctx = await initBareCtx();
-      await writeSyntheticPack(ctx, 'orphan-refs-verify', onePackEntry('orphan-refs-verify'));
-      await ctx.fs.rm(packFilePath(ctx, 'orphan-refs-verify'));
+      const [blobId] = await writeSyntheticPack(ctx, 'sole', onePackEntry('sole-content'));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/packed-ref`, `${blobId}\n`);
       const treeId = await writeObject(ctx, makeTree([]));
       const commitId = await writeObject(ctx, makeCommit(treeId, []));
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
-
-      // Act
-      const result = await fsck(ctx);
-
-      // Assert
-      expect(result.exitCode).toBe(0);
-    });
-  });
-});
-
-describe('Given a healthy repo with no packs at all', () => {
-  describe('When fsck runs', () => {
-    it('Then exit is 0', async () => {
-      // Arrange
-      const ctx = await initBareCtx();
-      const treeId = await writeObject(ctx, makeTree([]));
-      const commitId = await writeObject(ctx, makeCommit(treeId, []));
-      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
-
-      // Act
-      const result = await fsck(ctx);
-
-      // Assert
-      expect(result.exitCode).toBe(0);
-    });
-  });
-});
-
-describe('Given a loose ref pointing to an OID that never existed, beside an UNRELATED header-refused pack nothing references', () => {
-  describe('When fsck runs', () => {
-    it('Then exit is 6 (2|4, the unrelated pack itself still reports) — bit 8 does not leak onto this miss', async () => {
-      // Arrange
-      const ctx = await initBareCtx();
-      await writeSyntheticPack(ctx, 'unrelated-refused', onePackEntry('unrelated-refused'));
-      await restampPackHeader(ctx, packFilePath(ctx, 'unrelated-refused'), { version: 99 });
-      const absentOid = 'ffffffffffffffffffffffffffffffffffffffff' as ObjectId;
-      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/broken`, `${absentOid}\n`);
-
-      // Act
-      const result = await fsck(ctx);
-
-      // Assert — bit 4 (pack-inaccessible, unconditional) present, bit 8 absent
-      expect(result.exitCode).toBe(6);
-      expect(result.exitCode & 8).toBe(0);
-    });
-  });
-});
-
-describe('Given a loose ref pointing to an OID that never existed, beside an UNRELATED orphaned .idx nothing references', () => {
-  describe('When fsck runs', () => {
-    it('Then exit is 2 alone — the unrelated orphan does not leak bit 8 onto this miss', async () => {
-      // Arrange
-      const ctx = await initBareCtx();
-      await writeSyntheticPack(ctx, 'unrelated-orphan', onePackEntry('unrelated-orphan'));
-      await ctx.fs.rm(packFilePath(ctx, 'unrelated-orphan'));
-      const absentOid = 'aabbccddeeaabbccddeeaabbccddeeaabbccddee' as ObjectId;
-      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/broken`, `${absentOid}\n`);
+      await ctx.fs.rm(packFilePath(ctx, 'sole'));
+      await ctx.fs.rm(idxFilePath(ctx, 'sole'));
 
       // Act
       const result = await fsck(ctx);
@@ -3203,6 +3179,24 @@ describe('Given a loose ref pointing to an OID that never existed, beside an UNR
       // Assert
       expect(result.exitCode).toBe(2);
     });
+  });
+});
+
+describe('Given the whole pack directory removed and an indexed entry pointing into it, When fsck runs with indexRoot: false', () => {
+  it('Then exit is 2 alone — the index is excluded from entry-point consideration entirely, unlike the same shape under default options', async () => {
+    // Arrange
+    const ctx = await initBareCtx();
+    const [blobId] = await writeSyntheticPack(ctx, 'sole', onePackEntry('sole-content'));
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${blobId}\n`);
+    await writeIndexWithEntry(ctx, blobId as ObjectId, 'a.txt');
+    await ctx.fs.rm(packFilePath(ctx, 'sole'));
+    await ctx.fs.rm(idxFilePath(ctx, 'sole'));
+
+    // Act
+    const result = await fsck(ctx, { indexRoot: false });
+
+    // Assert
+    expect(result.exitCode).toBe(2);
   });
 });
 

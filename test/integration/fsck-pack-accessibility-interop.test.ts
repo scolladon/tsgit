@@ -653,7 +653,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
   });
 
   describe("Given a v99 pack holding every one of the repo's own reachable objects with and without the fault, When fsck runs on each independently (row K-19)", () => {
-    it('Then bit 4 is the only term the bad pack adds, and missing findings are present on both tools', async () => {
+    it('Then both tools exit 10 baseline and 14 with the bad pack — tsgit matches git absolutely, not just by the bit-4 delta', async () => {
       // Arrange — baseline: the sole pack removed entirely, so every reachable
       // object is simply absent; with-pack: the same pack, corrupted in place
       const baselineDir = await buildFullyPackedRepo('k19-baseline');
@@ -673,8 +673,12 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
       expect(gitBaseline.exitCode).toBe(10);
       expect(gitWithPack.exitCode).toBe(14);
 
-      // Assert — tsgit: differential, and missing findings are present on both
-      expect(resultWithPack.exitCode).toBe(resultBaseline.exitCode | 4);
+      // Assert — tsgit matches git's own absolute exit on both sides (no
+      // object resolves anywhere in either repo, so the missing-entry-point
+      // bit fires on both; bit 4 is the only additional term the bad pack
+      // itself adds), and missing findings are present on both
+      expect(resultBaseline.exitCode).toBe(gitBaseline.exitCode);
+      expect(resultWithPack.exitCode).toBe(gitWithPack.exitCode);
       const baselineMissing = findingsOfType(resultBaseline.findings, 'missing');
       const withPackMissing = findingsOfType(resultWithPack.findings, 'missing');
       expect(baselineMissing.length).toBeGreaterThan(0);

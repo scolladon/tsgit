@@ -2,7 +2,10 @@
 // Exit-code bits (bits 1/2/8 pinned against real git 2.54.0; bits 4/32/64/128 against 2.55.0)
 // bit 1   = generic fsck error: content-ERROR, strict-upgraded WARN, corrupt, hash-mismatch
 // bit 2   = missing / broken-link / ref→absent-sha
-// bit 8   = refs-verify content failure (3c)
+// bit 8   = refs-verify content failure (3c), OR'd with the missing-entry-point
+//           condition (no ref and no index entry resolves to a readable
+//           object anywhere in the repository — a whole-repository check,
+//           not a per-ref one)
 // bit 4   = pack inaccessible / index not opened (git's ERROR_PACK)
 // bit 32  = multi-pack-index verification failure (git's ERROR_MULTI_PACK_INDEX)
 // bit 64  = reverse index unusable, one of two independent causes (git's ERROR_PACK_REV_INDEX)
