@@ -830,7 +830,7 @@
     "husky": "9.1.7",
     "isomorphic-git": "1.41.0",
     "jscpd": "5.0.14",
-    "knip": "6.27.0",
+    "knip": "6.32.0",
     "lint-staged": "17.3.0",
     "minimatch": "10.2.6",
     "rollup": "4.62.4",
