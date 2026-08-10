@@ -3001,26 +3001,52 @@ describe('Given an orphaned .idx with a bitmap beside it (no sibling .pack file)
 
 // ---------------------------------------------------------------------------
 // MISSING-ENTRY-POINT CONDITION (exit bit 8) — a whole-repository check: bit
-// 8 fires exactly when no ref resolves to a readable object AND the index
-// carries at least one entry, none of which resolve either — never for an
+// 8 fires exactly when the index carries a cache-tree (`TREE` extension) and
+// at least one of its entries' tree oids fails to resolve — never for an
 // individual ref target that merely misses, and never for a repository with
-// no index at all (a bare or never-staged repository is healthy). Six
-// discriminating repository shapes, measured against real git 2.55.0.
+// no index, or an index with no cache-tree extension, at all (a bare or
+// never-staged repository is healthy). Discriminating repository shapes,
+// measured against real git 2.55.0.
 //
-// Measured directly against git 2.55.0 (not merely inferred): a repository's
-// reflog has NO bearing on this bit — a bare repo with every reflog entry
-// unresolvable, and the same fixture with its reflog removed outright, both
-// leave the bit unset. What the bit actually tracks is the index's own
-// cache-tree, which exists only once a working tree has been populated;
-// `readIndex`'s stage-0 entries are the closest primitive tsgit has to that
-// structure, so the fixtures below plant an index entry where the matrix
-// calls for "something resolvable" or "nothing resolvable" beyond the ref.
+// Measured directly against git 2.55.0 (not merely inferred): this bit is
+// entirely independent of ref and reflog resolution — a bare repo with
+// every reflog entry unresolvable, and the same fixture with its reflog
+// removed outright, both leave the bit unset; a broken ref beside a healthy
+// cache-tree never sets it either. What the bit actually tracks is purely
+// the index's own cache-tree, so the fixtures below plant one (via a raw
+// `TREE` extension) exactly where the matrix calls for "something
+// resolvable" or "nothing resolvable" beyond the ref.
 // ---------------------------------------------------------------------------
 
-/** Writes a single-entry index whose one stage-0 entry names `id` at `path`
- *  — the minimal index shape the missing-entry-point rule needs to move
- *  past its vacuous "no index at all" default. */
-async function writeIndexWithEntry(ctx: Context, id: ObjectId, path: string): Promise<void> {
+/** Builds a root-only `TREE` (cache-tree) extension whose sole entry names
+ *  `id` — the minimal cache-tree shape the missing-entry-point rule needs
+ *  to move past its vacuous "no cache-tree" default. `entryCount` is a
+ *  positive placeholder (git's own count of covered index entries); its
+ *  exact value is irrelevant to the check, only that it is `>= 0` so an
+ *  oid follows. */
+function buildCacheTreeExtension(id: ObjectId): {
+  readonly signature: string;
+  readonly data: Uint8Array;
+} {
+  const header = new TextEncoder().encode('1 0\n');
+  const idBytes = hexToBytes(id);
+  const data = new Uint8Array(1 + header.length + idBytes.length);
+  data.set(header, 1);
+  data.set(idBytes, 1 + header.length);
+  return { signature: 'TREE', data };
+}
+
+/** Writes a single-entry index whose one stage-0 entry names `entryId` at
+ *  `path`, plus — when `cacheTreeId` is given — a root cache-tree extension
+ *  whose sole entry names it. Passing `cacheTreeId: undefined` writes an
+ *  index with entries but no cache-tree extension at all, the shape git
+ *  runs no missing-entry-point check against. */
+async function writeIndexWithEntry(
+  ctx: Context,
+  entryId: ObjectId,
+  path: string,
+  cacheTreeId: ObjectId | undefined,
+): Promise<void> {
   const index = {
     version: 2 as const,
     entries: [
@@ -3035,12 +3061,12 @@ async function writeIndexWithEntry(ctx: Context, id: ObjectId, path: string): Pr
         uid: 0,
         gid: 0,
         fileSize: 0,
-        id,
+        id: entryId,
         flags: STAGE0_FLAGS,
         path: path as FilePath,
       },
     ],
-    extensions: [],
+    extensions: cacheTreeId === undefined ? [] : [buildCacheTreeExtension(cacheTreeId)],
     trailerSha: new Uint8Array(0),
   };
   const indexBytes = await serializeIndexFixtureAsync(index, ctx);
@@ -3074,7 +3100,7 @@ describe('Given the whole pack directory removed, main and the index both pointi
       const ctx = await initBareCtx();
       const [blobId] = await writeSyntheticPack(ctx, 'sole', onePackEntry('sole-content'));
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${blobId}\n`);
-      await writeIndexWithEntry(ctx, blobId as ObjectId, 'a.txt');
+      await writeIndexWithEntry(ctx, blobId as ObjectId, 'a.txt', blobId as ObjectId);
       await ctx.fs.rm(packFilePath(ctx, 'sole'));
       await ctx.fs.rm(idxFilePath(ctx, 'sole'));
 
@@ -3095,7 +3121,7 @@ describe("Given the sole pack's header version restamped to 99, main and the ind
       const [blobId] = await writeSyntheticPack(ctx, 'sole', onePackEntry('sole-content'));
       await restampPackHeader(ctx, packFilePath(ctx, 'sole'), { version: 99 });
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${blobId}\n`);
-      await writeIndexWithEntry(ctx, blobId as ObjectId, 'a.txt');
+      await writeIndexWithEntry(ctx, blobId as ObjectId, 'a.txt', blobId as ObjectId);
 
       // Act
       const result = await fsck(ctx);
@@ -3122,7 +3148,7 @@ describe('Given only the HEAD commit object deleted, its tree still readable and
         makeCommit(treeId, [parentCommitId], 'head commit'),
       );
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${headCommitId}\n`);
-      await writeIndexWithEntry(ctx, blobId, 'a.txt');
+      await writeIndexWithEntry(ctx, blobId, 'a.txt', treeId);
       await ctx.fs.rm(looseObjectPath(ctx.layout.gitDir, headCommitId));
 
       // Act
@@ -3146,7 +3172,7 @@ describe('Given every loose object deleted, main and the index both pointing at 
       );
       const commitId = await writeObject(ctx, makeCommit(treeId, []));
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
-      await writeIndexWithEntry(ctx, blobId, 'a.txt');
+      await writeIndexWithEntry(ctx, blobId, 'a.txt', treeId);
       await ctx.fs.rm(looseObjectPath(ctx.layout.gitDir, commitId));
       await ctx.fs.rm(looseObjectPath(ctx.layout.gitDir, treeId));
       await ctx.fs.rm(looseObjectPath(ctx.layout.gitDir, blobId));
@@ -3156,6 +3182,64 @@ describe('Given every loose object deleted, main and the index both pointing at 
 
       // Assert
       expect(result.exitCode).toBe(10);
+    });
+  });
+});
+
+describe('Given every loose object deleted, an index entry pointing at a gone object, but no cache-tree extension', () => {
+  describe('When fsck runs', () => {
+    it('Then exit is 2 alone — git runs no missing-entry-point check without a cache-tree', async () => {
+      // Arrange — identical shape to the fixture above, except the index
+      // carries no `TREE` extension at all: an unconditional stage-0 check
+      // would still fire here, but git's own cache-tree check never runs
+      // without the extension.
+      const ctx = await initBareCtx();
+      const blobId = await writeObject(ctx, makeBlob('gone'));
+      const treeId = await writeObject(
+        ctx,
+        makeTree([{ mode: FILE_MODE.REGULAR, name: 'a.txt', id: blobId }]),
+      );
+      const commitId = await writeObject(ctx, makeCommit(treeId, []));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+      await writeIndexWithEntry(ctx, blobId, 'a.txt', undefined);
+      await ctx.fs.rm(looseObjectPath(ctx.layout.gitDir, commitId));
+      await ctx.fs.rm(looseObjectPath(ctx.layout.gitDir, treeId));
+      await ctx.fs.rm(looseObjectPath(ctx.layout.gitDir, blobId));
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      expect(result.exitCode).toBe(2);
+    });
+  });
+});
+
+describe('Given a readable tree indexed by the cache-tree, but its blob deleted', () => {
+  describe('When fsck runs', () => {
+    it('Then exit is 2 alone — the cache-tree check only resolves tree oids, never blobs', async () => {
+      // Arrange — the other proxy divergence: an unreadable blob beside a
+      // readable tree, everything else (commit, ref, tree) intact. A
+      // stage-0 (blob-keyed) check would fire here; git's cache-tree check
+      // resolves the tree oid only, which is still intact, so it stays
+      // quiet — the missing blob is still caught, but only as a
+      // connectivity fault, never as a cache-tree fault.
+      const ctx = await initBareCtx();
+      const blobId = await writeObject(ctx, makeBlob('blob only'));
+      const treeId = await writeObject(
+        ctx,
+        makeTree([{ mode: FILE_MODE.REGULAR, name: 'a.txt', id: blobId }]),
+      );
+      const commitId = await writeObject(ctx, makeCommit(treeId, []));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+      await writeIndexWithEntry(ctx, blobId, 'a.txt', treeId);
+      await ctx.fs.rm(looseObjectPath(ctx.layout.gitDir, blobId));
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      expect(result.exitCode).toBe(2);
     });
   });
 });
@@ -3188,7 +3272,7 @@ describe('Given the whole pack directory removed and an indexed entry pointing i
     const ctx = await initBareCtx();
     const [blobId] = await writeSyntheticPack(ctx, 'sole', onePackEntry('sole-content'));
     await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${blobId}\n`);
-    await writeIndexWithEntry(ctx, blobId as ObjectId, 'a.txt');
+    await writeIndexWithEntry(ctx, blobId as ObjectId, 'a.txt', blobId as ObjectId);
     await ctx.fs.rm(packFilePath(ctx, 'sole'));
     await ctx.fs.rm(idxFilePath(ctx, 'sole'));
 

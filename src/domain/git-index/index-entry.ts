@@ -38,6 +38,25 @@ export interface IndexExtension {
   readonly data: Uint8Array;
 }
 
+/**
+ * One entry of the index's `TREE` (cache-tree) extension — git's
+ * pre-computed record of the tree object a span of the index would produce,
+ * kept to short-circuit `write-tree` and `status`. Entries nest
+ * depth-first: the root entry's `path` is the empty string (it represents
+ * the whole index), and `children` holds exactly `subtreeCount` further
+ * entries, one per immediate subdirectory, in on-disk order.
+ *
+ * An INVALIDATED entry (`entryCount < 0`) carries no `id` — git wrote no
+ * oid for it, and none should be synthesised.
+ */
+export interface CacheTreeEntry {
+  readonly path: string;
+  readonly entryCount: number;
+  readonly subtreeCount: number;
+  readonly id?: ObjectId;
+  readonly children: ReadonlyArray<CacheTreeEntry>;
+}
+
 export interface GitIndex {
   readonly version: 2 | 3;
   readonly entries: ReadonlyArray<IndexEntry>;

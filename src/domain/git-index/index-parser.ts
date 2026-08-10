@@ -1,14 +1,23 @@
-import { bytesToHex, decode } from '../objects/encoding.js';
+import { bytesToHex, decode, indexOf } from '../objects/encoding.js';
 import type { FileMode, FilePath, ObjectId } from '../objects/index.js';
 import { FilePath as FilePathFactory, normalizeFileMode } from '../objects/index.js';
 import { invalidIndexEntry, invalidIndexHeader } from './error.js';
-import type { GitIndex, IndexEntry, IndexEntryFlags, IndexExtension } from './index-entry.js';
+import type {
+  CacheTreeEntry,
+  GitIndex,
+  IndexEntry,
+  IndexEntryFlags,
+  IndexExtension,
+} from './index-entry.js';
 import { validateIndexPath } from './path-validator.js';
 
 const DIRC_SIGNATURE = 0x44495243;
 const INDEX_HEADER_SIZE = 12;
 const INDEX_CHECKSUM_SIZE = 20;
 const ENTRY_HEADER_SIZE = 62;
+const CACHE_TREE_OID_LENGTH = 20;
+const CACHE_TREE_SPACE = 0x20;
+const CACHE_TREE_LF = 0x0a;
 
 export function parseIndex(bytes: Uint8Array): GitIndex {
   if (bytes.length < INDEX_HEADER_SIZE) {
@@ -175,4 +184,116 @@ function parseExtensions(
   }
 
   return extensions;
+}
+
+/**
+ * Parse the index's `TREE` (cache-tree) extension payload into its rooted,
+ * depth-first entry tree. Per-entry grammar: a NUL-terminated path
+ * component, then ASCII `<entry_count> SP <subtree_count> LF`, then — only
+ * when `entry_count >= 0` — the raw oid. `subtree_count` further entries
+ * follow immediately, each parsed the same way, which is what produces the
+ * depth-first nesting.
+ */
+export function parseCacheTree(data: Uint8Array): CacheTreeEntry {
+  const { entry, offset } = parseCacheTreeEntry(data, 0);
+  if (offset !== data.length) {
+    throw invalidIndexEntry(offset, 'cache-tree data has trailing bytes');
+  }
+  return entry;
+}
+
+function parseCacheTreeEntry(
+  data: Uint8Array,
+  start: number,
+): { readonly entry: CacheTreeEntry; readonly offset: number } {
+  const pathEnd = findNul(data, start);
+  if (pathEnd === -1) {
+    throw invalidIndexEntry(start, 'cache-tree entry missing NUL-terminated path');
+  }
+  const path = decode(data.subarray(start, pathEnd));
+
+  const spaceIndex = indexOf(data, CACHE_TREE_SPACE, pathEnd + 1);
+  if (spaceIndex === -1) {
+    throw invalidIndexEntry(start, 'cache-tree entry missing entry-count separator');
+  }
+  const entryCount = parseCacheTreeEntryCount(
+    decode(data.subarray(pathEnd + 1, spaceIndex)),
+    start,
+  );
+
+  const lfIndex = indexOf(data, CACHE_TREE_LF, spaceIndex + 1);
+  if (lfIndex === -1) {
+    throw invalidIndexEntry(start, 'cache-tree entry missing subtree-count terminator');
+  }
+  const subtreeCount = parseCacheTreeSubtreeCount(
+    decode(data.subarray(spaceIndex + 1, lfIndex)),
+    start,
+  );
+
+  const { id, offset: afterOid } = readCacheTreeOid(data, lfIndex + 1, entryCount, start);
+  return readCacheTreeChildren(data, afterOid, subtreeCount, {
+    path,
+    entryCount,
+    subtreeCount,
+    id,
+  });
+}
+
+function readCacheTreeOid(
+  data: Uint8Array,
+  offset: number,
+  entryCount: number,
+  entryStart: number,
+): { readonly id: ObjectId | undefined; readonly offset: number } {
+  if (entryCount < 0) return { id: undefined, offset };
+  if (offset + CACHE_TREE_OID_LENGTH > data.length) {
+    throw invalidIndexEntry(entryStart, 'cache-tree entry truncated oid');
+  }
+  const id = bytesToHex(data.subarray(offset, offset + CACHE_TREE_OID_LENGTH)) as ObjectId;
+  return { id, offset: offset + CACHE_TREE_OID_LENGTH };
+}
+
+function readCacheTreeChildren(
+  data: Uint8Array,
+  start: number,
+  subtreeCount: number,
+  base: {
+    readonly path: string;
+    readonly entryCount: number;
+    readonly subtreeCount: number;
+    readonly id: ObjectId | undefined;
+  },
+): { readonly entry: CacheTreeEntry; readonly offset: number } {
+  const children: CacheTreeEntry[] = [];
+  let cursor = start;
+  for (let i = 0; i < subtreeCount; i++) {
+    const child = parseCacheTreeEntry(data, cursor);
+    children.push(child.entry);
+    cursor = child.offset;
+  }
+  const entry: CacheTreeEntry =
+    base.id === undefined
+      ? { path: base.path, entryCount: base.entryCount, subtreeCount: base.subtreeCount, children }
+      : {
+          path: base.path,
+          entryCount: base.entryCount,
+          subtreeCount: base.subtreeCount,
+          id: base.id,
+          children,
+        };
+  return { entry, offset: cursor };
+}
+
+function parseCacheTreeEntryCount(text: string, offset: number): number {
+  if (!/^-?\d+$/.test(text)) {
+    throw invalidIndexEntry(offset, 'cache-tree entry has a malformed entry count');
+  }
+  return Number.parseInt(text, 10);
+}
+
+function parseCacheTreeSubtreeCount(text: string, offset: number): number {
+  if (!/^\d+$/.test(text)) {
+    throw invalidIndexEntry(offset, 'cache-tree entry has a malformed subtree count');
+  }
+  return Number.parseInt(text, 10);
 }

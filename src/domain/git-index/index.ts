@@ -4,6 +4,7 @@ export { invalidIndexEntry, invalidIndexHeader } from './error.js';
 
 // Index entry types + comparison
 export type {
+  CacheTreeEntry,
   GitIndex,
   IndexEntry,
   IndexEntryFlags,
@@ -13,7 +14,7 @@ export type {
 export { isStatClean, STAGE0_FLAGS, skipWorktreeEntry } from './index-entry.js';
 
 // Parser
-export { parseIndex } from './index-parser.js';
+export { parseCacheTree, parseIndex } from './index-parser.js';
 
 // Writer
 export { compareEntryPath, serializeIndex } from './index-writer.js';

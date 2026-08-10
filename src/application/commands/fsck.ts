@@ -128,17 +128,17 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
   const bitmapResult = await runBitmapHealthPass(ctx, opts);
 
   // Roots + the missing-entry-point condition — a whole-repository check,
-  // not a per-oid one: git sets bit 8 here exactly when no ref and no index
-  // (stage-0) entry resolves to a readable object, but an ABSENT index never
-  // contributes (a bare or never-staged repository is healthy) — regardless
-  // of which individual targets miss. Measured against git 2.55.0: a reflog
-  // whose entries all fail to resolve does NOT set the bit (nor does
-  // removing the reflog entirely change anything) — the bit tracks the
-  // index's cache-tree, present only once a working tree has been
-  // populated. `collectRoots` already walks every ref and index entry for
-  // reachability roots, so `missingEntryPoint` rides that same walk (a
-  // bounded existence probe per target, deliberately independent of
-  // `universe`'s own mode-narrowing — see `existsInStore`'s doc comment)
+  // not a per-oid one: git sets bit 8 here exactly when the index carries a
+  // cache-tree (`TREE` extension) and at least one of its entries' tree
+  // oids fails to resolve. An ABSENT index, or one with no cache-tree
+  // extension, never contributes (a bare or never-staged repository is
+  // healthy) — regardless of ref, reflog, or stage-0 entry resolution.
+  // Measured against git 2.55.0: this bit is entirely independent of ref
+  // health — a broken ref beside a healthy cache-tree never sets it, and a
+  // healthy ref beside a broken cache-tree still does. `collectRoots`
+  // reads the index once for both reachability roots and this check (a
+  // bounded existence probe per cache-tree entry, deliberately independent
+  // of `universe`'s own mode-narrowing — see `existsInStore`'s doc comment)
   // rather than re-scanning the store.
   const { roots, missingEntryPoint } = await collectRoots(ctx, opts, universe);
   const missingEntryPointBit = missingEntryPoint ? EXIT_REFS_CONTENT : 0;
