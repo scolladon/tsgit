@@ -1,6 +1,6 @@
 # Commands — Tier-1 reference
 
-Every method bound on a `Repository` handle. 44 entries, alphabetical.
+Every method bound on a `Repository` handle. 45 entries, alphabetical.
 
 | Command | Summary |
 |---|---|
@@ -27,6 +27,7 @@ Every method bound on a `Repository` handle. 44 entries, alphabetical.
 | [`mv`](mv.md) | Rename/move tracked paths in the index and working tree. |
 | [`nameRev`](name-rev.md) | Name a commit by the nearest ref that contains it (`~`/`^` path); `describe --contains` delegates here. Structured data (no rendered line). |
 | [`notes`](notes.md) | Attach, read, list, or remove notes on git objects. Nested-namespace surface (`repo.notes.add/read/list/remove`). |
+| [`packObjects`](pack-objects.md) | Write the objects reachable from `wants` and not reachable from `not` as a `.pack` + `.idx` pair; bitmap tier by default. |
 | [`pull`](pull.md) | Fetch a remote branch and merge it into the current branch. |
 | [`push`](push.md) | Push refs and objects to a remote. |
 | [`rangeDiff`](range-diff.md) | Compare two commit ranges (two versions of a patch series); returns the structured correspondence list (`= ! < >`) with a per-changed-pair diff-of-diffs (no rendered line). |

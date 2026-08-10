@@ -261,6 +261,7 @@ describe('openRepository — Repository binding integrity', () => {
             'mv',
             'nameRev',
             'notes',
+            'packObjects',
             'primitives',
             'pull',
             'push',

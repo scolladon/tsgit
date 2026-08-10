@@ -214,6 +214,11 @@ export {
   notesRead,
   notesRemove,
 } from './notes.js';
+export {
+  type PackObjectsOptions,
+  type PackObjectsResult,
+  packObjects,
+} from './pack-objects.js';
 export { type PullOptions, type PullResult, pull } from './pull.js';
 export { type PushOptions, type PushResult, push } from './push.js';
 export {

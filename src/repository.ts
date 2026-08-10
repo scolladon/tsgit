@@ -223,6 +223,7 @@ export interface Repository {
   readonly nameRev: BindCtx<typeof commands.nameRev>;
   /** Nested `repo.notes.{add,read,list,remove}` namespace. */
   readonly notes: commands.NotesNamespace;
+  readonly packObjects: BindCtx<typeof commands.packObjects>;
   readonly pull: BindCtx<typeof commands.pull>;
   readonly push: BindCtx<typeof commands.push>;
   readonly readFileAt: BindCtx<typeof commands.readFileAt>;
@@ -587,6 +588,10 @@ export const openRepository = async (
       return commands.nameRev(ctx, rev, nameRevOpts);
     }) as Repository['nameRev'],
     notes: commands.bindNotesNamespace(ctx, guard),
+    packObjects: ((packObjectsOpts) => {
+      guard();
+      return commands.packObjects(ctx, packObjectsOpts);
+    }) as Repository['packObjects'],
     pull: ((pullOpts) => {
       guard();
       return commands.pull(ctx, pullOpts);

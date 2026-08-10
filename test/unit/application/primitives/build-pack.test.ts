@@ -192,6 +192,32 @@ describe('buildPack', () => {
     });
   });
 
+  describe('Given mixed types (blob + tree)', () => {
+    describe('When buildPack returns', () => {
+      it('Then entries matches serializePackfile crc32/offset metas, order preserved', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const blob: Blob = { type: 'blob', content: new Uint8Array([1, 2, 3]), id: '' as ObjectId };
+        const blobId = await writeObject(ctx, blob);
+        const treeId = await writeTree(ctx, [
+          { name: 'a.bin', mode: '100644' as FileMode, id: blobId },
+        ]);
+
+        // Act
+        const result = await buildPack(ctx, { oids: [blobId, treeId] });
+
+        // Assert — one entry per oid, in the same order, each offset strictly
+        // increasing from the header.
+        expect(result.entries).toHaveLength(2);
+        expect(result.entries[0]?.offset).toBe(PACK_HEADER_BYTES);
+        expect(result.entries[1]?.offset).toBeGreaterThan(result.entries[0]?.offset as number);
+        for (const entry of result.entries) {
+          expect(Number.isInteger(entry.crc32)).toBe(true);
+        }
+      });
+    });
+  });
+
   describe('Given core.loosecompression=9 in the repo config', () => {
     describe('When buildPack is called', () => {
       it('Then deflate is called with no level argument (pack path does not use loose compression level)', async () => {

@@ -11,7 +11,7 @@
  * negotiation, ref-update propagation.
  */
 import { TsgitError } from '../../domain/error.js';
-import { bytesToHex, hexToBytes } from '../../domain/objects/encoding.js';
+import { bytesToHex } from '../../domain/objects/encoding.js';
 import type { ObjectId } from '../../domain/objects/object-id.js';
 import {
   applyDelta,
@@ -20,12 +20,11 @@ import {
   invalidPackHeader,
   PACK_ENTRY_TYPE,
   type PackEntryHeader,
-  type PackIndexWriterEntry,
   parsePackEntryHeader,
   parsePackHeader,
-  serializePackIndex,
 } from '../../domain/storage/index.js';
 import type { Context } from '../../ports/context.js';
+import { buildIdx, writePackArtifacts } from './internal/write-pack-artifacts.js';
 import { commonGitDir, packsDir } from './path-layout.js';
 import { refreshPackRegistry } from './read-object.js';
 
@@ -170,6 +169,7 @@ const materializePack = async (
   const idxBytes = await buildIdx(ctx, entries, packSha);
   const written = await writePackArtifacts(
     ctx,
+    packsDir(commonGitDir(ctx)),
     download.packBytes,
     idxBytes,
     packSha,
@@ -472,57 +472,4 @@ const computeLooseObjectId = async (
   loose.set(headerBytes, 0);
   loose.set(content, headerBytes.length);
   return ctx.hash.hashHex(loose);
-};
-
-const buildIdx = async (
-  ctx: Context,
-  entries: ReadonlyArray<WalkedEntry>,
-  packSha: string,
-): Promise<Uint8Array> => {
-  const writerEntries: PackIndexWriterEntry[] = entries.map((e) => ({
-    id: e.id,
-    crc32: e.crc32,
-    offset: e.offset,
-  }));
-  const packShaBytes = hexToBytes(packSha);
-  const body = serializePackIndex(writerEntries, packShaBytes);
-  // serializePackIndex writes the pack trailer SHA as the file's first checksum
-  // (20 bytes at the tail of `body`); parsePackIndex expects a second checksum
-  // immediately after — the SHA over the body itself. Real git produces both;
-  // we follow suit so subsequent `parsePackIndex` reads round-trip cleanly.
-  const idxTrailerHex = await ctx.hash.hashHex(body);
-  const idxTrailerBytes = hexToBytes(idxTrailerHex);
-  const out = new Uint8Array(body.length + idxTrailerBytes.length);
-  out.set(body, 0);
-  out.set(idxTrailerBytes, body.length);
-  return out;
-};
-
-interface WrittenPackArtifacts {
-  readonly packPath: string;
-  readonly idxPath: string;
-  readonly objectCount: number;
-  readonly packSha: string;
-}
-
-const writePackArtifacts = async (
-  ctx: Context,
-  packBytes: Uint8Array,
-  idxBytes: Uint8Array,
-  packSha: string,
-  objectCount: number,
-  promisor: boolean,
-): Promise<WrittenPackArtifacts> => {
-  const packDir = packsDir(commonGitDir(ctx));
-  await ctx.fs.mkdir(packDir);
-  const packPath = `${packDir}/pack-${packSha}.pack`;
-  const idxPath = `${packDir}/pack-${packSha}.idx`;
-  await ctx.fs.writeExclusive(packPath, packBytes);
-  await ctx.fs.writeExclusive(idxPath, idxBytes);
-  // A promisor pack vouches for the objects it references but omits; the
-  // empty `.promisor` sentinel marks it so missing objects read as promised.
-  if (promisor) {
-    await ctx.fs.writeExclusive(`${packDir}/pack-${packSha}.promisor`, new Uint8Array(0));
-  }
-  return { packPath, idxPath, objectCount, packSha };
 };
