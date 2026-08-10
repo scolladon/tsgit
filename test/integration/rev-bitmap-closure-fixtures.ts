@@ -26,11 +26,18 @@
  * produces) is reproducible from one run to the next.
  */
 import { spawnSync } from 'node:child_process';
-import { closeSync, openSync } from 'node:fs';
+import { closeSync, openSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { git, runGitEnv } from './interop-helpers.js';
+import {
+  DIGEST_LENGTH,
+  mutateOrThrow,
+  type PackArtefactPaths,
+  packArtefactPaths,
+  restampBitmap,
+} from './rev-bitmap-fixture-helpers.js';
 
 const AUTHOR = 'Ada <ada@example.com>';
 const BASE_TIMESTAMP = 1_700_000_000;
@@ -247,4 +254,191 @@ export async function buildF4ClosureFixture(
 
   git(dir, 'repack', '-adq', '--write-bitmap-index');
   return { dir };
+}
+
+// ---------------------------------------------------------------------------
+// F3 — F2 plus 5 more commits repacked incrementally into a second pack,
+// then `git multi-pack-index write --bitmap`: 2 packs, 1 pack bitmap (the
+// FIRST pack's, written before the extra commits existed), 1 midx bitmap
+// (covering both packs) — the artefact-preference and completeness
+// fixture.
+// ---------------------------------------------------------------------------
+
+const F3_EXTRA_COMMITS = 5;
+
+function packDirOf(dir: string): string {
+  return path.join(dir, '.git', 'objects', 'pack');
+}
+
+function packNamesOf(dir: string): string[] {
+  return readdirSync(packDirOf(dir))
+    .filter((name) => name.endsWith('.pack'))
+    .map((name) => name.slice(0, -'.pack'.length));
+}
+
+/** Derives a flat multi-pack-index's own bitmap filename from its trailer —
+ *  git names it `multi-pack-index-<hex of the midx's own checksum>.bitmap`,
+ *  the same rule `rev-bitmap-fixture-helpers.ts`'s `buildMidxBitmapFixture`
+ *  uses internally, duplicated here (not imported) since it is private
+ *  there — each fixture-helpers file owns its own copy of this shape, same
+ *  as `packDirOf`/`packNamesOf` above. */
+function midxBitmapNameFromBytes(bytes: Uint8Array): string {
+  const trailer = bytes.subarray(bytes.length - DIGEST_LENGTH);
+  return `multi-pack-index-${Buffer.from(trailer).toString('hex')}.bitmap`;
+}
+
+export interface F3ClosureFixture extends ClosureFixture {
+  /** The FIRST pack's own name — carries the pack bitmap written BEFORE the
+   *  5 extra commits existed, so it indexes only F2's 1606 objects. */
+  readonly bitmapPackName: string;
+  /** The SECOND pack's own name — the 5 extra commits' 15 objects, `.keep`-
+   *  guarded out of the first repack and never given a bitmap of its own. */
+  readonly plainPackName: string;
+  readonly flatMidxPath: string;
+  readonly midxBitmapPath: string;
+}
+
+/**
+ * F3 — F2 (400 commits, repacked with `--write-bitmap-index`) plus 5 more
+ * plain commits, each rewriting ONE never-reused root file (commit + a new
+ * root tree + one new blob — 3 new objects apiece, 15 total), `.keep`-guarded
+ * into a SECOND pack via an incremental `git repack -dq`, then
+ * `git multi-pack-index write --bitmap`. The `.keep` guard on the FIRST
+ * pack is what keeps it — and its own bitmap — untouched by the incremental
+ * repack: without it, `-dq` would fold both packs back into one and the
+ * completeness rows this fixture exists for would prove nothing (the second
+ * pack would never end up "genuinely uncovered by the first bitmap").
+ */
+export async function buildF3ClosureFixture(
+  baseDir: string,
+  slug: string,
+): Promise<F3ClosureFixture> {
+  const dir = await freshRepo(baseDir, slug);
+  await runFastImport(dir, buildF2Stream());
+  git(dir, 'checkout', '-f', 'main');
+  git(dir, 'repack', '-adq', '--write-bitmap-index');
+  const [bitmapPackName] = packNamesOf(dir);
+  if (bitmapPackName === undefined) {
+    throw new Error('buildF3ClosureFixture: no pack after the first repack');
+  }
+  const packDir = packDirOf(dir);
+  for (const name of packNamesOf(dir)) {
+    writeFileSync(path.join(packDir, `${name}.keep`), '');
+  }
+
+  for (let i = 0; i < F3_EXTRA_COMMITS; i += 1) {
+    await writeFile(path.join(dir, `f3-extra-${i}.txt`), `f3-extra-${i}\n`);
+    git(dir, 'add', `f3-extra-${i}.txt`);
+    git(dir, 'commit', '-q', '-m', `f3 extra ${i}`);
+  }
+  git(dir, 'repack', '-dq');
+  git(dir, 'multi-pack-index', 'write', '--bitmap');
+
+  const plainPackName = packNamesOf(dir).find((name) => name !== bitmapPackName);
+  if (plainPackName === undefined) {
+    throw new Error('buildF3ClosureFixture: could not identify the second pack');
+  }
+  const flatMidxPath = path.join(packDir, 'multi-pack-index');
+  const midxBitmapPath = path.join(packDir, midxBitmapNameFromBytes(readFileSync(flatMidxPath)));
+  return { dir, bitmapPackName, plainPackName, flatMidxPath, midxBitmapPath };
+}
+
+/**
+ * Clears a bitmap's option-flags word (offset 6, 2 bytes) and restamps.
+ * Canonical git REQUIRES `BITMAP_OPT_FULL_DAG` — the same requirement
+ * tsgit's own `parsePackBitmap` enforces by refusing the artefact — and
+ * ABORTS with a `BUG:` assertion (exit 134) the instant it LOADS a bitmap
+ * missing that flag. Two bitmaps can be present at once (a pack's own and a
+ * midx's own); git aborts if and only if the ONE THIS FUNCTION MUTATED is
+ * the one it opened — the only clean way, from outside the process, to
+ * prove WHICH artefact git chose. The artefact-preference rows depend on it.
+ */
+export function clearFullDagFlagAndRestamp(bytes: Buffer): Buffer {
+  bytes.writeUInt16BE(0, 6);
+  return restampBitmap(bytes);
+}
+
+// ---------------------------------------------------------------------------
+// F6 — the range-validation family's own fixture: 40 commits / 120 objects,
+// one pack with a bitmap whose first per-commit entry header is rewritten
+// to an out-of-range position and whose trailer is then restamped: the
+// checksum is VALID (unlike every other degradation fixture, whose
+// restamped mutation is structural) and the fault is a VALUE — the
+// range-validation family's own difficulty.
+// ---------------------------------------------------------------------------
+
+const F6_COMMITS = 40;
+const F6_OUT_OF_RANGE_POSITION = 999_999;
+
+/**
+ * One EWAH stream descriptor's own byte length: `bitSize`(4) + `wordCount`(4)
+ * + `wordCount` 64-bit words (8 bytes apiece) + the trailing `rlwPosition`
+ * word(4). Mirrors `domain/storage/ewah.ts`'s own layout, recomputed here
+ * from raw bytes so the entry-header offset below is COMPUTED, never
+ * hard-coded against this fixture's own byte count.
+ */
+function ewahStreamByteLength(bytes: Buffer, at: number): number {
+  const wordCount = bytes.readUInt32BE(at + 4);
+  return 4 + 4 + 8 * wordCount + 4;
+}
+
+/**
+ * Walks past the 12-byte header, the embedded `DIGEST_LENGTH`-byte checksum,
+ * and the four type streams (commits, trees, blobs, tags, in that order) to
+ * the first per-commit entry header's own byte offset — `domain/storage/
+ * bitmap.ts`'s `entriesOffset`, reconstructed here from the bytes themselves
+ * rather than a fixture-specific constant, since the streams' own declared
+ * word counts (and so this offset) depend on exactly which objects this
+ * fixture's 40 commits touch.
+ */
+function firstEntryHeaderOffset(bytes: Buffer): number {
+  let at = 12 + DIGEST_LENGTH;
+  for (let stream = 0; stream < 4; stream += 1) {
+    at += ewahStreamByteLength(bytes, at);
+  }
+  return at;
+}
+
+export interface F6ClosureFixture extends ClosureFixture {
+  readonly bitmap: PackArtefactPaths;
+  /** The COMPUTED byte offset the mutation below rewrote — surfaced so a row
+   *  can assert it is positive rather than trusting the mutation blindly. */
+  readonly entryHeaderOffset: number;
+}
+
+/**
+ * F6 — 40 commits, one file rewritten each time (commit + a new root tree +
+ * one new blob, 3 new objects per commit — 120 total), one pack with
+ * `--write-bitmap-index`. The first per-commit entry header's `position`
+ * field is rewritten to `999999` (a position 120 objects can never reach),
+ * THEN the trailer is restamped — a two-step mutation through
+ * `mutateOrThrow`, because a silently no-op write on a `0444` file would
+ * make every row in the family read as a false pass. Restamping alone, with
+ * no position rewrite, is the earlier `.rev`/`.bitmap` interop suite's own
+ * control (`bitmap-restamp-control` in `rev-bitmap-fsck-interop.test.ts`) —
+ * without it present, this family proves nothing (the module doc above
+ * states why).
+ */
+export async function buildF6ClosureFixture(
+  baseDir: string,
+  slug: string,
+): Promise<F6ClosureFixture> {
+  const dir = await freshRepo(baseDir, slug);
+  for (let i = 0; i < F6_COMMITS; i += 1) {
+    await writeFile(path.join(dir, 'f6.txt'), `f6-${i}\n`);
+    git(dir, 'add', 'f6.txt');
+    git(dir, 'commit', '-q', '-m', `f6 commit ${i}`);
+  }
+  git(dir, 'repack', '-adq', '--write-bitmap-index');
+
+  const bitmap = packArtefactPaths(dir);
+  let entryHeaderOffset = -1;
+  mutateOrThrow(bitmap.bitmap, (bytes) => {
+    entryHeaderOffset = firstEntryHeaderOffset(bytes);
+    bytes.writeUInt32BE(F6_OUT_OF_RANGE_POSITION, entryHeaderOffset);
+    return bytes;
+  });
+  mutateOrThrow(bitmap.bitmap, (bytes) => restampBitmap(bytes));
+
+  return { dir, bitmap, entryHeaderOffset };
 }
