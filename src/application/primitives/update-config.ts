@@ -46,7 +46,6 @@ import {
 } from './update-config-sections.js';
 
 export { renderSectionHeader } from './internal/config-write-shared.js';
-export type { NewSectionName } from './update-config-sections.js';
 export {
   parseNewSectionName,
   rawSectionName,

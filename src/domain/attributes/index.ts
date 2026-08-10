@@ -3,10 +3,7 @@ export {
   DEFAULT_CONFLICT_MARKER_SIZE,
   resolveMarkerSize,
 } from './conflict-marker-size.js';
-export {
-  type DriverPlaceholders,
-  substituteDriverPlaceholders,
-} from './driver-command.js';
+export { substituteDriverPlaceholders } from './driver-command.js';
 export {
   BUILTIN_MACROS,
   buildMacroRegistry,
@@ -15,7 +12,6 @@ export {
 } from './macros.js';
 export {
   type AttributeRule,
-  type MacroDef,
   type ParsedAttributes,
   parseGitattributes,
 } from './parse-gitattributes.js';

@@ -11,7 +11,6 @@
  *   4. returns a typed result envelope (per-action shape, no discriminator).
  */
 import type { ConfigKey, ConfigScope } from '../../domain/commands/config-key.js';
-import { parseConfigKey } from '../../domain/commands/config-key.js';
 import { configMultipleValues } from '../../domain/commands/error.js';
 import type { Context } from '../../ports/context.js';
 import {
@@ -270,8 +269,3 @@ export const configRemoveSection = async (
   await removeConfigSection({ ctx, sectionName: input.name, scope: targetScope });
   return { name: input.name, scope: targetScope };
 };
-
-// silence the unused-import warning for parseConfigKey — re-exported transitively
-// via the primitives, but kept here so future per-command pre-flight validation
-// can extend without re-importing.
-export { parseConfigKey };

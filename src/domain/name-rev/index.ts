@@ -4,16 +4,6 @@
  */
 export { commitIsBeforeCutoff, nameRevCutoff } from './cutoff.js';
 export { isBetterName } from './is-better-name.js';
-export {
-  buildRefFilter,
-  matchRefGlob,
-  type RefFilter,
-  type RefFilterOptions,
-} from './ref-pattern.js';
-export {
-  firstParentName,
-  foldSteps,
-  MERGE_TRAVERSAL_WEIGHT,
-  mergeParentName,
-} from './step.js';
+export { buildRefFilter, type RefFilterOptions } from './ref-pattern.js';
+export { firstParentName, foldSteps, mergeParentName } from './step.js';
 export type { NameRevStep, RevName } from './types.js';
