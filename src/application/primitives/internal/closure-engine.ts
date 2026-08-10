@@ -3,8 +3,11 @@
  * `wants` and excludes what `not` covers, through either of two tiers the
  * REQUEST selects — `tier` is required and the engine holds no default,
  * because the two commands that call it disagree on what "unset" should
- * mean. `'bitmap'` tries a pack bitmap (a midx bitmap arrives later) and
- * falls back to the walk on any fault, silently; `'walk'` always walks.
+ * mean. `'bitmap'` prefers a usable midx bitmap for the in-use generation,
+ * then a usable pack bitmap, then falls back to the walk on any fault,
+ * silently — artefact preference, not tier preference: the two bitmap
+ * artefacts compute the identical answer, so which one served it is never
+ * observable from the result alone. `'walk'` always walks.
  *
  * The walk marks a `not` tip's *entire* commit ancestry uninteresting —
  * git's own merge-base exclusion, propagated through every parent edge, so a
@@ -36,8 +39,10 @@ import { MAX_PUSH_OBJECTS } from '../types.js';
 import { isGitlink } from '../validators.js';
 import { walkCommits } from '../walk-commits.js';
 import { walkTree } from '../walk-tree.js';
-import { loadPackBitmapArtefact, resolveBitmapClosure } from './bitmap-binding.js';
+import { type BitmapClosureRequest, resolveBitmapClosure } from './bitmap-binding.js';
+import { loadMidxBitmapArtefact } from './midx-bitmap-binding.js';
 import { type EmitState, resolveTagChain, tryEmit } from './object-emit.js';
+import { loadPackBitmapArtefact } from './pack-bitmap-binding.js';
 
 /** Same bound as walk-tree.ts's default maxDepth and enumerate-bundle-objects.ts's
  *  marking pass — prevents stack overflow on a pathologically deep tree. */
@@ -384,27 +389,35 @@ async function walkClosure(ctx: Context, request: ClosureRequest): Promise<Closu
   return results;
 }
 
+function projectedRequest(request: ClosureRequest): BitmapClosureRequest {
+  return { wants: request.wants, not: request.not, objects: request.objects };
+}
+
 /**
- * Tries every registered pack's bitmap in turn (a midx bitmap preference
- * arrives later) and answers from the first one that loads and
- * range-validates. `undefined` when none does, the caller's signal to
- * fall back to the walk with nothing surfaced.
+ * Artefact preference, exclusive and by artefact, not by tier: a usable midx
+ * bitmap for the in-use midx generation answers alone — the pack-bitmap loop
+ * below is never even reached — one arm below the walk fallback for a midx
+ * bitmap declined on a fault (parse refusal or an out-of-range position),
+ * which lands on the SAME pack-bitmap loop a missing/absent midx bitmap
+ * would. Every registered pack's bitmap is then tried in turn, answering
+ * from the first that loads and range-validates. `undefined` when nothing
+ * does, the caller's signal to fall back to the walk with nothing surfaced.
  */
 async function tryBitmapClosure(
   ctx: Context,
   request: ClosureRequest,
 ): Promise<ClosureObject[] | undefined> {
-  const packs = await getPackRegistry(ctx).all();
+  const registry = getPackRegistry(ctx);
+  const midxArtefact = await loadMidxBitmapArtefact(ctx, await registry.midxBitmap());
+  if (midxArtefact !== undefined) {
+    return [...(await resolveBitmapClosure(ctx, midxArtefact, projectedRequest(request)))];
+  }
+
+  const packs = await registry.all();
   for (const pack of packs) {
     const artefact = await loadPackBitmapArtefact(ctx, pack);
     if (artefact === undefined) continue;
-    return [
-      ...(await resolveBitmapClosure(ctx, artefact, {
-        wants: request.wants,
-        not: request.not,
-        objects: request.objects,
-      })),
-    ];
+    return [...(await resolveBitmapClosure(ctx, artefact, projectedRequest(request)))];
   }
   return undefined;
 }

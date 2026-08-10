@@ -16,10 +16,14 @@ import { createMemoryContext } from '../../../../../src/adapters/memory/memory-a
 import { runBitmapHealthPass } from '../../../../../src/application/commands/internal/fsck/bitmap-health.js';
 import {
   type LoadedPackBitmap,
-  loadPackBitmapArtefact,
   resolveBitmapClosure,
 } from '../../../../../src/application/primitives/internal/bitmap-binding.js';
 import { computeClosure } from '../../../../../src/application/primitives/internal/closure-engine.js';
+import {
+  type LoadedMidxBitmap,
+  loadMidxBitmapArtefact,
+} from '../../../../../src/application/primitives/internal/midx-bitmap-binding.js';
+import { loadPackBitmapArtefact } from '../../../../../src/application/primitives/internal/pack-bitmap-binding.js';
 import { packPositionMap } from '../../../../../src/application/primitives/internal/pack-positions.js';
 import { getPackRegistry } from '../../../../../src/application/primitives/read-object.js';
 import { permissionDenied } from '../../../../../src/domain/error.js';
@@ -33,7 +37,13 @@ import type {
   Tree,
 } from '../../../../../src/domain/objects/index.js';
 import { serializeObject } from '../../../../../src/domain/objects/index.js';
-import { parsePackIndex } from '../../../../../src/domain/storage/index.js';
+import {
+  lookupPackIndex,
+  midxOidAt,
+  midxReverseIndexAt,
+  parseMultiPackIndex,
+  parsePackIndex,
+} from '../../../../../src/domain/storage/index.js';
 import { allObjectIds } from '../../../../../src/domain/storage/pack-index.js';
 import type { Context } from '../../../../../src/ports/context.js';
 import {
@@ -41,6 +51,8 @@ import {
   type BitmapSpec,
   type BitmapStreamSpec,
   buildBitmap,
+  buildMidx,
+  type MidxSpec,
 } from '../../../domain/storage/arbitraries.js';
 import {
   type EntrySpec,
@@ -369,12 +381,14 @@ describe('Given an entry whose reconstruction is requested via both wants and no
 
       try {
         const [
-          { loadPackBitmapArtefact: scopedLoad, resolveBitmapClosure: scopedResolve },
+          { resolveBitmapClosure: scopedResolve },
+          { loadPackBitmapArtefact: scopedLoad },
           { createMemoryContext: scopedCreateContext },
           { writeSyntheticPack: scopedWritePack, writeSyntheticBitmap: scopedWriteBitmap },
           { getPackRegistry: scopedRegistry },
         ] = await Promise.all([
           import('../../../../../src/application/primitives/internal/bitmap-binding.js'),
+          import('../../../../../src/application/primitives/internal/pack-bitmap-binding.js'),
           import('../../../../../src/adapters/memory/memory-adapter.js'),
           import('../pack-fixture.js'),
           import('../../../../../src/application/primitives/read-object.js'),
@@ -1087,6 +1101,857 @@ describe('Given a bitmap with an out-of-range entry header whose trailer is rest
       expect(fsckResult.findings).toHaveLength(0);
       expect(fsckResult.exitBit).toBe(0);
       expect(artefact).toBeUndefined();
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Midx bitmap flavour — bits are PSEUDO-PACK positions, resolved through the
+// midx's reverse-index chunk; entry headers are MIDX positions, resolved
+// directly. Fixtures reuse the pack-flavour helpers above wherever the shape
+// coincides (a bare `position` value is "the sorted rank among the ids the
+// artefact carries", true of both an `.idx` and a midx's OIDL over the SAME
+// oid set) and add only what the midx artefact itself needs: a flat
+// multi-pack-index (`buildMidx`) and its own `.bitmap`.
+// ---------------------------------------------------------------------------
+
+const midxFlatPath = (ctx: Context): string => `${packDir(ctx)}/multi-pack-index`;
+const midxBitmapPath = (ctx: Context, hex: string): string =>
+  `${packDir(ctx)}/multi-pack-index-${hex}.bitmap`;
+
+async function writeMidxBytes(ctx: Context, bytes: Uint8Array): Promise<void> {
+  await ctx.fs.write(midxFlatPath(ctx), bytes);
+}
+
+/** `buildMidx` leaves the trailer as `digestLength` zero bytes (it is never
+ *  read by the parser) — the midx-bitmap name this suite composes matches
+ *  that STORED trailer exactly, with no separate stamping step needed for
+ *  the healthy case. */
+const zeroTrailerHex = (digestLength: number): string => '00'.repeat(digestLength);
+
+function flipByte(bytes: Uint8Array, offset: number): Uint8Array {
+  const copy = bytes.slice();
+  copy[offset] = copy[offset]! ^ 0xff;
+  return copy;
+}
+
+function baseMidxSpec(digestLength: number): Omit<MidxSpec, 'entries' | 'packNames' | 'revBody'> {
+  return {
+    version: 1,
+    hashVersion: digestLength === 32 ? 2 : 1,
+    digestLength,
+    numBaseFiles: 0,
+  };
+}
+
+/**
+ * `packNames`/`entries` for a midx that claims the SAME pack
+ * `writeSyntheticPack` just wrote, with each entry's `packIndex`/`offset`
+ * read back from that pack's own REAL `.idx` — never invented. The
+ * midx-bitmap tier itself never opens a pack (§D4's whole point), but
+ * `readObject` resolves every oid the closure algorithm walks through
+ * `PackRegistry.lookup`, and a midx PRESENT in the generation is
+ * authoritative for lookups of any oid its OIDL carries: an entry whose
+ * `packIndex`/`offset` do not name a real pack position throws, not
+ * merely miscounts, so this fixture never invents one.
+ */
+async function realMidxBinding(
+  ctx: Context,
+  name: string,
+  ids: ReadonlyArray<string>,
+): Promise<Pick<MidxSpec, 'entries' | 'packNames'>> {
+  const idxBytes = await ctx.fs.read(packIdxPath(ctx, name));
+  const index = parsePackIndex(idxBytes);
+  return {
+    packNames: [`pack-${name}.idx`],
+    entries: ids.map((id) => ({
+      id: id as ObjectId,
+      packIndex: 0,
+      offset: lookupPackIndex(index, id as ObjectId) as number,
+    })),
+  };
+}
+
+async function loadMidxArtefact(ctx: Context): Promise<LoadedMidxBitmap | undefined> {
+  return loadMidxBitmapArtefact(ctx, await getPackRegistry(ctx).midxBitmap());
+}
+
+interface MidxBitmapFixture {
+  readonly ctx: Context;
+  readonly blobIds: ReadonlyArray<string>;
+  readonly treeIds: ReadonlyArray<string>;
+  readonly commitIds: ReadonlyArray<string>;
+  readonly ids: ReadonlyArray<string>;
+  readonly objectCount: number;
+  readonly hex: string;
+}
+
+interface MidxBitmapFixtureOptions {
+  readonly name?: string;
+  /** Omit the midx's reverse-index chunk entirely. Default `true` (present). */
+  readonly withRidx?: boolean;
+}
+
+/**
+ * A full N-generation linear chain, packed and CLAIMED by a midx whose OIDL
+ * carries every chain oid plus a reverse-index chunk, and a midx bitmap
+ * XOR-chained across every commit. Pseudo-pack position is this fixture's
+ * OWN choice — insertion order, the same layout `chainPositions` already
+ * describes for the pack flavour — consistently applied to the
+ * reverse-index chunk body and to every bit the bitmap declares; entry
+ * headers carry each commit's MIDX position (its SHA-sorted rank among
+ * `ids`, identical in shape to an index position since the midx's OIDL is
+ * the SAME oid set sorted the SAME way).
+ */
+async function buildMidxBitmapFixture(
+  length: number,
+  opts: MidxBitmapFixtureOptions = {},
+): Promise<MidxBitmapFixture> {
+  const ctx = createMemoryContext();
+  const name = opts.name ?? 'midx-linear';
+  const chain = await buildChain(ctx, length, name);
+  const ids = await writeSyntheticPack(ctx, name, chain.entries);
+  const objectCount = ids.length;
+  const digestLength = ctx.hashConfig.digestLength;
+  const midxPositionOf = (id: string) => indexPositionOf(ids, id);
+
+  const revBody = ids.map((id) => midxPositionOf(id));
+  const binding = await realMidxBinding(ctx, name, ids);
+  const midxSpec: MidxSpec = {
+    ...baseMidxSpec(digestLength),
+    ...binding,
+    ...(opts.withRidx === false ? {} : { revBody }),
+  };
+  await writeMidxBytes(ctx, buildMidx(midxSpec));
+
+  const { blobs, trees, commits } = chainPositions(length);
+  const typeStreams = typeStreamsFor(objectCount, { blobs, trees, commits });
+  const entries = chainBitmapEntries(chain.commitIds, objectCount, midxPositionOf);
+  const body = buildBitmap(healthySpec(ctx, typeStreams, entries));
+  const hex = zeroTrailerHex(digestLength);
+  await writeSyntheticBitmap(ctx, midxBitmapPath(ctx, hex), body);
+
+  return {
+    ctx,
+    blobIds: chain.blobIds,
+    treeIds: chain.treeIds,
+    commitIds: chain.commitIds,
+    ids,
+    objectCount,
+    hex,
+  };
+}
+
+interface MidxAndPackBitmapFixture extends MidxBitmapFixture {
+  readonly packName: string;
+}
+
+interface MidxAndPackBitmapFixtureOptions extends MidxBitmapFixtureOptions {
+  /** Skip writing the midx bitmap file at all. Default `true` (present). */
+  readonly withMidxBitmap?: boolean;
+}
+
+/**
+ * `buildMidxBitmapFixture` plus a healthy PACK bitmap covering the SAME
+ * chain, built from the SAME type streams and entries (index position and
+ * midx position coincide for this fixture's single oid set, and pseudo-pack
+ * position and pack position both use insertion order) — the artefact this
+ * suite's fall-through tests prove answers once the midx bitmap is declined
+ * or not found, with the identical object set either artefact would report.
+ */
+async function buildMidxAndPackBitmapFixture(
+  length: number,
+  opts: MidxAndPackBitmapFixtureOptions = {},
+): Promise<MidxAndPackBitmapFixture> {
+  const ctx = createMemoryContext();
+  const name = opts.name ?? 'midx-and-pack';
+  const chain = await buildChain(ctx, length, name);
+  const ids = await writeSyntheticPack(ctx, name, chain.entries);
+  const objectCount = ids.length;
+  const digestLength = ctx.hashConfig.digestLength;
+  const positionOf = (id: string) => indexPositionOf(ids, id);
+
+  const { blobs, trees, commits } = chainPositions(length);
+  const typeStreams = typeStreamsFor(objectCount, { blobs, trees, commits });
+  const entries = chainBitmapEntries(chain.commitIds, objectCount, positionOf);
+
+  await writeSyntheticBitmap(
+    ctx,
+    packBitmapPath(ctx, name),
+    buildBitmap(healthySpec(ctx, typeStreams, entries)),
+  );
+
+  const revBody = ids.map((id) => positionOf(id));
+  const binding = await realMidxBinding(ctx, name, ids);
+  const midxSpec: MidxSpec = {
+    ...baseMidxSpec(digestLength),
+    ...binding,
+    ...(opts.withRidx === false ? {} : { revBody }),
+  };
+  await writeMidxBytes(ctx, buildMidx(midxSpec));
+
+  const hex = zeroTrailerHex(digestLength);
+  if (opts.withMidxBitmap !== false) {
+    await writeSyntheticBitmap(
+      ctx,
+      midxBitmapPath(ctx, hex),
+      buildBitmap(healthySpec(ctx, typeStreams, entries)),
+    );
+  }
+
+  return {
+    ctx,
+    blobIds: chain.blobIds,
+    treeIds: chain.treeIds,
+    commitIds: chain.commitIds,
+    ids,
+    objectCount,
+    hex,
+    packName: name,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Midx mapping — a bit resolves through the reverse-index chunk
+// ---------------------------------------------------------------------------
+
+describe('Given a crafted midx carrying a reverse-index chunk and a midx bitmap', () => {
+  describe('When the closure is resolved from the tip commit', () => {
+    it('Then every bit resolves to the right oid through the reverse-index chunk', async () => {
+      // Arrange
+      const fixture = await buildMidxBitmapFixture(3, { name: 'midx-mapping' });
+      const artefact = await loadMidxArtefact(fixture.ctx);
+
+      // Act
+      const result = await resolveBitmapClosure(fixture.ctx, artefact!, {
+        wants: [fixture.commitIds[2] as ObjectId],
+        not: [],
+        objects: true,
+      });
+
+      // Assert
+      const ids = new Set(result.map((o) => o.id));
+      expect(ids).toEqual(
+        new Set(asOids([...fixture.blobIds, ...fixture.treeIds, ...fixture.commitIds])),
+      );
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The 108/0 measurement: entry headers read as MIDX positions versus as
+// PSEUDO-PACK positions — the single most likely implementation bug in the
+// entry. Pseudo-pack position here is deliberately the REVERSAL of midx
+// position (`revBody[p] = objectCount - 1 - p`), a fixed-point-free
+// permutation whenever `objectCount` is even (used below): reading a
+// header's own MIDX position AS a pseudo-pack position can therefore never
+// coincidentally land back on itself, so "the wrong reading matches none" is
+// guaranteed by construction, not by chance over real SHA values.
+// ---------------------------------------------------------------------------
+
+interface Ag12Fixture {
+  readonly midx: ReturnType<typeof parseMultiPackIndex>;
+  readonly headers: ReadonlyArray<{ readonly position: number }>;
+  readonly commitIds: ReadonlyArray<string>;
+}
+
+async function buildAg12Fixture(): Promise<Ag12Fixture> {
+  const length = 4; // 12 objects — even, so the reversal below has no fixed point
+  const ctx = createMemoryContext();
+  const name = 'ag12';
+  const chain = await buildChain(ctx, length, name);
+  const ids = await writeSyntheticPack(ctx, name, chain.entries);
+  const objectCount = ids.length;
+  const digestLength = ctx.hashConfig.digestLength;
+  const midxPositionOf = (id: string) => indexPositionOf(ids, id);
+  const pseudoPackPositionOf = (id: string) => objectCount - 1 - midxPositionOf(id);
+
+  const revBody = new Array<number>(objectCount);
+  for (const id of ids) revBody[pseudoPackPositionOf(id)] = midxPositionOf(id);
+
+  const typeStreams = typeStreamsFor(objectCount, {
+    blobs: chain.blobIds.map(pseudoPackPositionOf),
+    trees: chain.treeIds.map(pseudoPackPositionOf),
+    commits: chain.commitIds.map(pseudoPackPositionOf),
+  });
+  const entries: BitmapEntrySpec[] = chain.commitIds.map((commitId) => ({
+    position: midxPositionOf(commitId),
+    xorOffset: 0,
+    flags: 0,
+    bitSize: 0,
+    bits: [],
+  }));
+  const body = buildBitmap(healthySpec(ctx, typeStreams, entries));
+
+  const binding = await realMidxBinding(ctx, name, ids);
+  await writeMidxBytes(
+    ctx,
+    buildMidx({
+      ...baseMidxSpec(digestLength),
+      ...binding,
+      revBody,
+    }),
+  );
+  const hex = zeroTrailerHex(digestLength);
+  await writeSyntheticBitmap(ctx, midxBitmapPath(ctx, hex), body);
+
+  const midxBytes = await ctx.fs.read(midxFlatPath(ctx));
+  const midx = parseMultiPackIndex(midxBytes, digestLength);
+  const artefact = await loadMidxArtefact(ctx);
+  if (artefact === undefined) throw new Error('expected the midx bitmap to load');
+
+  return { midx, headers: artefact.headers, commitIds: chain.commitIds };
+}
+
+describe('Given a midx bitmap with several commit entries', () => {
+  describe('When each header position is read as a MIDX position, directly', () => {
+    it('Then every entry names its own commit', async () => {
+      // Arrange
+      const fixture = await buildAg12Fixture();
+
+      // Act
+      const matches = fixture.headers.map(
+        (header, i) => midxOidAt(fixture.midx, header.position) === fixture.commitIds[i],
+      );
+
+      // Assert
+      expect(matches).toHaveLength(fixture.commitIds.length);
+      expect(matches.every(Boolean)).toBe(true);
+    });
+  });
+
+  describe('When each header position is instead read as a PSEUDO-PACK position, through the reverse-index chunk', () => {
+    it('Then no entry names its own commit', async () => {
+      // Arrange
+      const fixture = await buildAg12Fixture();
+
+      // Act
+      const matches = fixture.headers.map(
+        (header, i) =>
+          midxOidAt(fixture.midx, midxReverseIndexAt(fixture.midx, header.position)) ===
+          fixture.commitIds[i],
+      );
+
+      // Assert
+      expect(matches.some(Boolean)).toBe(false);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// No reverse-index chunk — free structural information: the midx tier is
+// unusable, and the pack tier takes over.
+// ---------------------------------------------------------------------------
+
+describe('Given a midx bitmap beside a midx with no reverse-index chunk', () => {
+  describe('When the artefact is loaded directly', () => {
+    it('Then the midx tier declines', async () => {
+      // Arrange
+      const fixture = await buildMidxAndPackBitmapFixture(2, {
+        name: 'no-ridx',
+        withRidx: false,
+      });
+
+      // Act
+      const artefact = await loadMidxArtefact(fixture.ctx);
+
+      // Assert
+      expect(artefact).toBeUndefined();
+    });
+  });
+
+  describe('When a bitmap-tier closure is requested through the engine', () => {
+    it('Then the pack tier answers with the correct object set', async () => {
+      // Arrange
+      const fixture = await buildMidxAndPackBitmapFixture(2, {
+        name: 'no-ridx-engine',
+        withRidx: false,
+      });
+
+      // Act
+      const result = await computeClosure(fixture.ctx, {
+        tier: 'bitmap',
+        wants: [fixture.commitIds[1] as ObjectId],
+        not: [],
+        objects: true,
+      });
+
+      // Assert
+      expect(result.tier).toBe('bitmap');
+      const ids = new Set(result.objects.map((o) => o.id));
+      expect(ids).toEqual(
+        new Set(asOids([...fixture.blobIds, ...fixture.treeIds, ...fixture.commitIds])),
+      );
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Discovery — own it each: a renamed bitmap is simply not found; a midx
+// whose own stored trailer is wrong hides its own bitmap.
+// ---------------------------------------------------------------------------
+
+describe('Given the midx bitmap renamed to a hash the midx does not itself store', () => {
+  describe('When a bitmap-tier closure is requested through the engine', () => {
+    it('Then the midx bitmap is not found and the pack tier answers', async () => {
+      // Arrange
+      const fixture = await buildMidxAndPackBitmapFixture(2, {
+        name: 'renamed',
+        withMidxBitmap: false,
+      });
+      const wrongHex = zeroTrailerHex(fixture.ctx.hashConfig.digestLength).replace(/^00/, 'ff');
+      const { blobs, trees, commits } = chainPositions(2);
+      const typeStreams = typeStreamsFor(fixture.objectCount, { blobs, trees, commits });
+      const entries = chainBitmapEntries(fixture.commitIds, fixture.objectCount, (id) =>
+        indexPositionOf(fixture.ids, id),
+      );
+      await writeSyntheticBitmap(
+        fixture.ctx,
+        midxBitmapPath(fixture.ctx, wrongHex),
+        buildBitmap(healthySpec(fixture.ctx, typeStreams, entries)),
+      );
+
+      // Act
+      const result = await computeClosure(fixture.ctx, {
+        tier: 'bitmap',
+        wants: [fixture.commitIds[1] as ObjectId],
+        not: [],
+        objects: true,
+      });
+
+      // Assert
+      expect(result.tier).toBe('bitmap');
+      const ids = new Set(result.objects.map((o) => o.id));
+      expect(ids).toEqual(
+        new Set(asOids([...fixture.blobIds, ...fixture.treeIds, ...fixture.commitIds])),
+      );
+    });
+  });
+});
+
+describe('Given a midx whose own stored trailer is wrong, with a healthy bitmap beside its ORIGINAL name', () => {
+  describe('When a bitmap-tier closure is requested through the engine', () => {
+    it('Then the wrong trailer hides the bitmap and the pack tier answers', async () => {
+      // Arrange
+      const fixture = await buildMidxAndPackBitmapFixture(2, { name: 'wrong-trailer' });
+      const midxBytes = await fixture.ctx.fs.read(midxFlatPath(fixture.ctx));
+      const digestLength = fixture.ctx.hashConfig.digestLength;
+      // One byte inside the STORED trailer flipped, never restamped — the
+      // composed bitmap name this scan derives no longer matches the file
+      // already written at `fixture.hex`.
+      await fixture.ctx.fs.write(
+        midxFlatPath(fixture.ctx),
+        flipByte(midxBytes, midxBytes.length - digestLength),
+      );
+
+      // Act
+      const result = await computeClosure(fixture.ctx, {
+        tier: 'bitmap',
+        wants: [fixture.commitIds[1] as ObjectId],
+        not: [],
+        objects: true,
+      });
+
+      // Assert
+      expect(result.tier).toBe('bitmap');
+      const ids = new Set(result.objects.map((o) => o.id));
+      expect(ids).toEqual(
+        new Set(asOids([...fixture.blobIds, ...fixture.treeIds, ...fixture.commitIds])),
+      );
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Types — the four streams against the midx's object count
+// ---------------------------------------------------------------------------
+
+function countSetBits(bits: Uint32Array): number {
+  let count = 0;
+  for (const word of bits) {
+    let w = word >>> 0;
+    while (w !== 0) {
+      count += w & 1;
+      w >>>= 1;
+    }
+  }
+  return count;
+}
+
+describe('Given a midx bitmap whose closure includes every type stream', () => {
+  describe('When the artefact is loaded', () => {
+    it('Then the set bits across all four streams sum to the midx object count', async () => {
+      // Arrange
+      const fixture = await buildMidxBitmapFixture(3, { name: 'midx-types-count' });
+
+      // Act
+      const artefact = await loadMidxArtefact(fixture.ctx);
+
+      // Assert
+      const total = artefact!.typeBits.reduce((sum, bits) => sum + countSetBits(bits), 0);
+      expect(total).toBe(fixture.objectCount);
+    });
+  });
+
+  describe('When the full closure is resolved', () => {
+    it('Then every position is typed correctly against the stream that owns it', async () => {
+      // Arrange
+      const fixture = await buildMidxBitmapFixture(3, { name: 'midx-types-predict' });
+      const artefact = await loadMidxArtefact(fixture.ctx);
+
+      // Act
+      const result = await resolveBitmapClosure(fixture.ctx, artefact!, {
+        wants: [fixture.commitIds[2] as ObjectId],
+        not: [],
+        objects: true,
+      });
+
+      // Assert
+      const typeById = new Map(result.map((o) => [o.id, o.type]));
+      for (const id of fixture.blobIds) expect(typeById.get(id as ObjectId)).toBe('blob');
+      for (const id of fixture.treeIds) expect(typeById.get(id as ObjectId)).toBe('tree');
+      for (const id of fixture.commitIds) expect(typeById.get(id as ObjectId)).toBe('commit');
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Range validation against the pseudo-pack — own it each, in both position
+// spaces, checked against MultiPackIndex.objectCount (the pseudo-pack's own
+// count) — Part 12's pack-count rows do not exercise this boundary.
+// ---------------------------------------------------------------------------
+
+async function buildMinimalMidxBitmapFixture(
+  name: string,
+): Promise<{ readonly ctx: Context; readonly objectCount: number; readonly hex: string }> {
+  const ctx = createMemoryContext();
+  const entries: EntrySpec[] = [
+    { kind: 'base', type: 'blob', content: enc.encode('midx-one') },
+    { kind: 'base', type: 'blob', content: enc.encode('midx-two') },
+  ];
+  const ids = await writeSyntheticPack(ctx, name, entries);
+  const digestLength = ctx.hashConfig.digestLength;
+  const binding = await realMidxBinding(ctx, name, ids);
+  await writeMidxBytes(
+    ctx,
+    buildMidx({
+      ...baseMidxSpec(digestLength),
+      ...binding,
+      revBody: [0, 1],
+    }),
+  );
+  return { ctx, objectCount: 2, hex: zeroTrailerHex(digestLength) };
+}
+
+async function loadMidxWithEntries(
+  ctx: Context,
+  hex: string,
+  objectCount: number,
+  entries: ReadonlyArray<BitmapEntrySpec>,
+  typeStreams?: readonly [BitmapStreamSpec, BitmapStreamSpec, BitmapStreamSpec, BitmapStreamSpec],
+): Promise<LoadedMidxBitmap | undefined> {
+  const streams = typeStreams ?? typeStreamsFor(objectCount, {});
+  const body = buildBitmap(healthySpec(ctx, streams, entries));
+  await writeSyntheticBitmap(ctx, midxBitmapPath(ctx, hex), body);
+  return loadMidxArtefact(ctx);
+}
+
+describe('Given a 2-object midx whose entry header names objectCount - 1', () => {
+  describe('When the artefact is loaded', () => {
+    it('Then the artefact is accepted', async () => {
+      // Arrange
+      const { ctx, hex, objectCount } = await buildMinimalMidxBitmapFixture(
+        'midx-boundary-header-accept',
+      );
+      const entries: BitmapEntrySpec[] = [
+        { position: 1, xorOffset: 0, flags: 0, bitSize: 0, bits: [] },
+      ];
+
+      // Act
+      const artefact = await loadMidxWithEntries(ctx, hex, objectCount, entries);
+
+      // Assert
+      expect(artefact).toBeDefined();
+    });
+  });
+});
+
+describe('Given a 2-object midx whose entry header names objectCount', () => {
+  describe('When the artefact is loaded', () => {
+    it('Then the artefact declines', async () => {
+      // Arrange
+      const { ctx, hex, objectCount } = await buildMinimalMidxBitmapFixture(
+        'midx-boundary-header-decline',
+      );
+      const entries: BitmapEntrySpec[] = [
+        { position: 2, xorOffset: 0, flags: 0, bitSize: 0, bits: [] },
+      ];
+
+      // Act
+      const artefact = await loadMidxWithEntries(ctx, hex, objectCount, entries);
+
+      // Assert
+      expect(artefact).toBeUndefined();
+    });
+  });
+});
+
+describe('Given a 2-object midx whose entry header names 999999', () => {
+  describe('When the artefact is loaded', () => {
+    it('Then the artefact declines', async () => {
+      // Arrange
+      const { ctx, hex, objectCount } =
+        await buildMinimalMidxBitmapFixture('midx-far-header-decline');
+      const entries: BitmapEntrySpec[] = [
+        { position: 999999, xorOffset: 0, flags: 0, bitSize: 0, bits: [] },
+      ];
+
+      // Act
+      const artefact = await loadMidxWithEntries(ctx, hex, objectCount, entries);
+
+      // Assert
+      expect(artefact).toBeUndefined();
+    });
+  });
+});
+
+describe('Given a 2-object midx whose commits type stream sets a bit at objectCount - 1', () => {
+  describe('When the artefact is loaded', () => {
+    it('Then the artefact is accepted', async () => {
+      // Arrange
+      const { ctx, hex, objectCount } = await buildMinimalMidxBitmapFixture(
+        'midx-boundary-bit-accept',
+      );
+      const typeStreams = typeStreamsFor(objectCount, { commits: [1] });
+
+      // Act
+      const artefact = await loadMidxWithEntries(ctx, hex, objectCount, [], typeStreams);
+
+      // Assert
+      expect(artefact).toBeDefined();
+    });
+  });
+});
+
+describe('Given a 2-object midx whose commits type stream sets a bit at objectCount', () => {
+  describe('When the artefact is loaded', () => {
+    it('Then the artefact declines', async () => {
+      // Arrange
+      const { ctx, hex, objectCount } = await buildMinimalMidxBitmapFixture(
+        'midx-boundary-bit-decline',
+      );
+      const typeStreams = typeStreamsFor(objectCount, { commits: [2] });
+
+      // Act
+      const artefact = await loadMidxWithEntries(ctx, hex, objectCount, [], typeStreams);
+
+      // Assert
+      expect(artefact).toBeUndefined();
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The decline is whole-artefact, the fault is reported, the caller sees
+// nothing, and the ordering that makes it safe
+// ---------------------------------------------------------------------------
+
+interface MidxOutOfRangeFixture {
+  readonly ctx: Context;
+  readonly commitId: ObjectId;
+  readonly treeId: ObjectId;
+  readonly blobId: ObjectId;
+  readonly artefactName: string;
+}
+
+/** A midx whose bitmap has two entries: one healthy, covering `commitId`'s
+ *  own reachability; one naming an out-of-range position. A healthy PACK
+ *  bitmap covers the SAME chain, so a decline here has somewhere to fall
+ *  through to. The whole midx artefact must decline regardless of the
+ *  healthy entry.
+ *
+ *  `createContext` is overridable so a caller running under
+ *  `vi.resetModules()`/`vi.doMock()` (the ordering test below) can build its
+ *  `ctx` through the SAME freshly-reloaded module graph the mocked code
+ *  runs in — a `ctx` built via a stale module instance throws `TsgitError`s
+ *  a fresh reload's `instanceof` checks (inside `loose-oid-cache.ts`, on the
+ *  fallback loose-object probe every commit read tries first) do not
+ *  recognise. */
+async function buildMidxWholeArtefactDeclineFixture(
+  name = 'midx-whole-decline',
+  createContext: typeof createMemoryContext = createMemoryContext,
+): Promise<MidxOutOfRangeFixture> {
+  const ctx = createContext();
+  const chain = await buildChain(ctx, 1, name);
+  const ids = await writeSyntheticPack(ctx, name, chain.entries);
+  const objectCount = ids.length;
+  const digestLength = ctx.hashConfig.digestLength;
+  const positionOf = (id: string) => indexPositionOf(ids, id);
+
+  const { blobs, trees, commits } = chainPositions(1);
+  const typeStreams = typeStreamsFor(objectCount, { blobs, trees, commits });
+  const packEntries = chainBitmapEntries(chain.commitIds, objectCount, positionOf);
+  await writeSyntheticBitmap(
+    ctx,
+    packBitmapPath(ctx, name),
+    buildBitmap(healthySpec(ctx, typeStreams, packEntries)),
+  );
+
+  const revBody = ids.map((id) => positionOf(id));
+  const binding = await realMidxBinding(ctx, name, ids);
+  await writeMidxBytes(
+    ctx,
+    buildMidx({
+      ...baseMidxSpec(digestLength),
+      ...binding,
+      revBody,
+    }),
+  );
+
+  const healthyEntry: BitmapEntrySpec = {
+    position: positionOf(chain.commitIds[0] as string),
+    xorOffset: 0,
+    flags: 0,
+    bitSize: objectCount,
+    bits: [0, 1, 2],
+  };
+  const outOfRangeEntry: BitmapEntrySpec = {
+    position: 999999,
+    xorOffset: 0,
+    flags: 0,
+    bitSize: 0,
+    bits: [],
+  };
+  const hex = zeroTrailerHex(digestLength);
+  await writeSyntheticBitmap(
+    ctx,
+    midxBitmapPath(ctx, hex),
+    buildBitmap(healthySpec(ctx, typeStreams, [healthyEntry, outOfRangeEntry])),
+  );
+
+  return {
+    ctx,
+    commitId: chain.commitIds[0] as ObjectId,
+    treeId: chain.treeIds[0] as ObjectId,
+    blobId: chain.blobIds[0] as ObjectId,
+    artefactName: `multi-pack-index-${hex}.bitmap`,
+  };
+}
+
+describe('Given a two-entry midx bitmap whose second entry is out of range, the first healthy and covering the want', () => {
+  describe('When the artefact is loaded', () => {
+    it('Then the binding declines entirely — the healthy entry is never used', async () => {
+      // Arrange
+      const fixture = await buildMidxWholeArtefactDeclineFixture();
+
+      // Act
+      const artefact = await loadMidxArtefact(fixture.ctx);
+
+      // Assert
+      expect(artefact).toBeUndefined();
+    });
+  });
+});
+
+describe('Given the out-of-range midx whole-artefact fixture', () => {
+  describe('When the artefact is loaded', () => {
+    it('Then ctx.logger.warn is called once, naming the MIDX bitmap', async () => {
+      // Arrange
+      const fixture = await buildMidxWholeArtefactDeclineFixture('midx-reported');
+      const warn = vi.fn();
+      const wrapped = { ...fixture.ctx, logger: { warn } };
+
+      // Act
+      await loadMidxBitmapArtefact(wrapped, await getPackRegistry(wrapped).midxBitmap());
+
+      // Assert
+      expect(warn).toHaveBeenCalledTimes(1);
+      const [, context] = warn.mock.calls[0] ?? [];
+      expect((context as { bitmap?: string } | undefined)?.bitmap).toBe(fixture.artefactName);
+    });
+  });
+});
+
+describe('Given the out-of-range midx whole-artefact fixture, through the engine', () => {
+  describe('When a bitmap-tier closure is requested', () => {
+    it('Then the pack tier answers correctly and nothing throws', async () => {
+      // Arrange
+      const fixture = await buildMidxWholeArtefactDeclineFixture('midx-caller-sees-nothing');
+
+      // Act
+      const result = await computeClosure(fixture.ctx, {
+        tier: 'bitmap',
+        wants: [fixture.commitId],
+        not: [],
+        objects: true,
+      });
+
+      // Assert — the decline is silent and the PACK artefact answers, with
+      // its own full object set (unlike a walk fallback, which this fixture
+      // never reaches).
+      expect(result.tier).toBe('bitmap');
+      const ids = new Set(result.objects.map((o) => o.id));
+      expect(ids).toEqual(new Set([fixture.commitId, fixture.treeId, fixture.blobId]));
+    });
+  });
+});
+
+describe('Given the out-of-range midx whole-artefact fixture, under an instrumented Context', () => {
+  describe('When a bitmap-tier closure is requested through the engine', () => {
+    it('Then midxOidAt and midxReverseIndexAt are never reached for the declining artefact — the ordering is the assertion, not the answer', async () => {
+      // Arrange
+      vi.resetModules();
+      const midxOidAtSpy = vi.fn();
+      const midxReverseIndexAtSpy = vi.fn();
+      vi.doMock('../../../../../src/domain/storage/index.js', async (importOriginal) => {
+        const actual =
+          await importOriginal<typeof import('../../../../../src/domain/storage/index.js')>();
+        return {
+          ...actual,
+          midxOidAt: (
+            ...args: Parameters<typeof actual.midxOidAt>
+          ): ReturnType<typeof actual.midxOidAt> => {
+            midxOidAtSpy();
+            return actual.midxOidAt(...args);
+          },
+          midxReverseIndexAt: (
+            ...args: Parameters<typeof actual.midxReverseIndexAt>
+          ): ReturnType<typeof actual.midxReverseIndexAt> => {
+            midxReverseIndexAtSpy();
+            return actual.midxReverseIndexAt(...args);
+          },
+        };
+      });
+
+      try {
+        const [
+          { computeClosure: scopedComputeClosure },
+          { createMemoryContext: scopedCreateContext },
+        ] = await Promise.all([
+          import('../../../../../src/application/primitives/internal/closure-engine.js'),
+          import('../../../../../src/adapters/memory/memory-adapter.js'),
+        ]);
+        const fixture = await buildMidxWholeArtefactDeclineFixture(
+          'midx-ordering',
+          scopedCreateContext,
+        );
+
+        // Act
+        const result = await scopedComputeClosure(fixture.ctx, {
+          tier: 'bitmap',
+          wants: [fixture.commitId],
+          not: [],
+          objects: true,
+        });
+
+        // Assert
+        expect(result.tier).toBe('bitmap');
+        expect(midxOidAtSpy).not.toHaveBeenCalled();
+        expect(midxReverseIndexAtSpy).not.toHaveBeenCalled();
+      } finally {
+        vi.doUnmock('../../../../../src/domain/storage/index.js');
+        vi.resetModules();
+      }
     });
   });
 });

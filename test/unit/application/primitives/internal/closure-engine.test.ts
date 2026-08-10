@@ -17,6 +17,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { enumerateBundleObjects } from '../../../../../src/application/primitives/enumerate-bundle-objects.js';
 import { computeClosure } from '../../../../../src/application/primitives/internal/closure-engine.js';
+import { getPackRegistry } from '../../../../../src/application/primitives/read-object.js';
 import { writeObject } from '../../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../../src/application/primitives/write-tree.js';
 import { TsgitError } from '../../../../../src/domain/index.js';
@@ -28,8 +29,16 @@ import type {
   ObjectId,
   Tag,
 } from '../../../../../src/domain/objects/index.js';
+import { lookupPackIndex, parsePackIndex } from '../../../../../src/domain/storage/index.js';
 import type { Context } from '../../../../../src/ports/context.js';
+import {
+  type BitmapSpec,
+  buildBitmap,
+  buildMidx,
+  type MidxSpec,
+} from '../../../domain/storage/arbitraries.js';
 import { buildSeededContext } from '../fixtures.js';
+import { writeSyntheticBitmap, writeSyntheticPack } from '../pack-fixture.js';
 
 const AUTHOR: AuthorIdentity = {
   name: 'A',
@@ -890,6 +899,204 @@ describe('computeClosure', () => {
           vi.doUnmock('../../../../../src/application/primitives/types.js');
           vi.resetModules();
         }
+      });
+    });
+  });
+});
+
+/**
+ * Artefact preference inside the bitmap tier: midx bitmap ≻ pack bitmap ≻
+ * walk, each artefact refused in turn. `buildDualBitmapFixture` gives a
+ * single packed blob covered by a healthy pack bitmap AND a healthy midx
+ * bitmap over an identical (deliberately byte-identical) type-stream body,
+ * so every arm below that answers from a bitmap reports the SAME object —
+ * the artefact that served it is observable only through the spy on
+ * `RegisteredPack.bitmapBytes`, never through the answer itself.
+ */
+describe('computeClosure — bitmap-tier artefact preference', () => {
+  const packDirOf = (ctx: Context): string => `${ctx.layout.gitDir}/objects/pack`;
+  const midxBitmapPathOf = (ctx: Context, hex: string): string =>
+    `${packDirOf(ctx)}/multi-pack-index-${hex}.bitmap`;
+
+  interface DualBitmapFixture {
+    readonly ctx: Context;
+    readonly blobId: ObjectId;
+    readonly hex: string;
+  }
+
+  // `bitSize` matches the fixture's own single-object count (1); a bit at
+  // position 1 is therefore out of range for the range-validation arm below
+  // while still fitting the first 32-bit EWAH word, same as the pack-flavour
+  // boundary rows' own `bitSize: objectCount` convention.
+  function blobOnlyBitmapSpec(digestLength: number, blobBits: ReadonlyArray<number>): BitmapSpec {
+    return {
+      optionFlags: 1,
+      digestLength,
+      checksum: new Uint8Array(digestLength).fill(0xbb),
+      typeStreams: [
+        { bitSize: 1, bits: [] },
+        { bitSize: 1, bits: [] },
+        { bitSize: 1, bits: blobBits },
+        { bitSize: 1, bits: [] },
+      ],
+      entries: [],
+      trailingBytes: 0,
+    };
+  }
+
+  /** A single packed blob, a healthy pack bitmap and a healthy midx bitmap
+   *  both covering it — the shared starting point every preference arm
+   *  mutates from. */
+  async function buildDualBitmapFixture(name: string): Promise<DualBitmapFixture> {
+    const ctx = await buildSeededContext();
+    const content = new TextEncoder().encode(`${name}-content`);
+    const ids = await writeSyntheticPack(ctx, name, [{ kind: 'base', type: 'blob', content }]);
+    const blobId = ids[0] as ObjectId;
+    const digestLength = ctx.hashConfig.digestLength;
+
+    const healthyBody = buildBitmap(blobOnlyBitmapSpec(digestLength, [0]));
+    await writeSyntheticBitmap(ctx, `${packDirOf(ctx)}/pack-${name}.bitmap`, healthyBody);
+
+    // The midx CLAIMS this same pack, with the blob's REAL offset: any oid
+    // the midx's OIDL carries is authoritative for `PackRegistry.lookup`
+    // once a midx is present, so `readObject` (the closure algorithm's own
+    // object reads) would throw on an invented packIndex/offset.
+    const idxBytes = await ctx.fs.read(`${packDirOf(ctx)}/pack-${name}.idx`);
+    const index = parsePackIndex(idxBytes);
+    const offset = lookupPackIndex(index, blobId) as number;
+    const midxSpec: MidxSpec = {
+      version: 1,
+      hashVersion: digestLength === 32 ? 2 : 1,
+      digestLength,
+      numBaseFiles: 0,
+      packNames: [`pack-${name}.idx`],
+      entries: [{ id: blobId, packIndex: 0, offset }],
+      revBody: [0],
+    };
+    await ctx.fs.write(`${packDirOf(ctx)}/multi-pack-index`, buildMidx(midxSpec));
+    const hex = '00'.repeat(digestLength);
+    await writeSyntheticBitmap(ctx, midxBitmapPathOf(ctx, hex), healthyBody);
+
+    return { ctx, blobId, hex };
+  }
+
+  async function firstRegisteredPack(ctx: Context) {
+    const [pack] = await getPackRegistry(ctx).all();
+    if (pack === undefined) throw new Error('expected a registered pack');
+    return pack;
+  }
+
+  async function corruptMidxBitmapMagic(fixture: DualBitmapFixture): Promise<void> {
+    const path = midxBitmapPathOf(fixture.ctx, fixture.hex);
+    const bytes = (await fixture.ctx.fs.read(path)).slice();
+    new DataView(bytes.buffer).setUint32(0, 0xdeadbeef);
+    await fixture.ctx.fs.write(path, bytes);
+  }
+
+  describe('Given a usable midx bitmap and a usable pack bitmap covering the same object', () => {
+    describe('When a bitmap-tier closure is requested', () => {
+      it('Then the midx bitmap answers and the pack bitmap is never read', async () => {
+        // Arrange
+        const fixture = await buildDualBitmapFixture('pref-midx-wins');
+        const pack = await firstRegisteredPack(fixture.ctx);
+        const bitmapBytesSpy = vi.spyOn(pack, 'bitmapBytes');
+
+        // Act
+        const result = await computeClosure(fixture.ctx, {
+          tier: 'bitmap',
+          wants: [fixture.blobId],
+          not: [],
+          objects: true,
+        });
+
+        // Assert
+        expect(result.tier).toBe('bitmap');
+        expect(bitmapBytesSpy).not.toHaveBeenCalled();
+        expect(result.objects).toEqual([{ id: fixture.blobId, type: 'blob' }]);
+      });
+    });
+  });
+
+  describe('Given the midx bitmap refused (bad magic) and a usable pack bitmap covering the same object', () => {
+    describe('When a bitmap-tier closure is requested', () => {
+      it('Then the pack bitmap answers with the same object the midx bitmap would have', async () => {
+        // Arrange
+        const fixture = await buildDualBitmapFixture('pref-pack-wins');
+        await corruptMidxBitmapMagic(fixture);
+        const pack = await firstRegisteredPack(fixture.ctx);
+        const bitmapBytesSpy = vi.spyOn(pack, 'bitmapBytes');
+
+        // Act
+        const result = await computeClosure(fixture.ctx, {
+          tier: 'bitmap',
+          wants: [fixture.blobId],
+          not: [],
+          objects: true,
+        });
+
+        // Assert
+        expect(result.tier).toBe('bitmap');
+        expect(bitmapBytesSpy).toHaveBeenCalled();
+        expect(result.objects).toEqual([{ id: fixture.blobId, type: 'blob' }]);
+      });
+    });
+  });
+
+  describe('Given both the midx bitmap and the pack bitmap refused (bad magic)', () => {
+    describe('When a bitmap-tier closure is requested', () => {
+      it('Then the walk answers', async () => {
+        // Arrange
+        const fixture = await buildDualBitmapFixture('pref-walk');
+        await corruptMidxBitmapMagic(fixture);
+        const packBitmapPath = `${packDirOf(fixture.ctx)}/pack-pref-walk.bitmap`;
+        const packBytes = (await fixture.ctx.fs.read(packBitmapPath)).slice();
+        new DataView(packBytes.buffer).setUint32(0, 0xdeadbeef);
+        await fixture.ctx.fs.write(packBitmapPath, packBytes);
+
+        // Act
+        const result = await computeClosure(fixture.ctx, {
+          tier: 'bitmap',
+          wants: [fixture.blobId],
+          not: [],
+          objects: true,
+        });
+
+        // Assert
+        expect(result.tier).toBe('walk');
+        expect(result.objects).toEqual([{ id: fixture.blobId, type: 'blob' }]);
+      });
+    });
+  });
+
+  describe('Given the midx bitmap declined for an out-of-range position (not a parse fault), and a usable pack bitmap', () => {
+    describe('When a bitmap-tier closure is requested', () => {
+      it('Then the pack bitmap answers with the same object the midx bitmap would have', async () => {
+        // Arrange
+        const fixture = await buildDualBitmapFixture('pref-out-of-range');
+        const digestLength = fixture.ctx.hashConfig.digestLength;
+        // objectCount for this midx is 1 — bit 1 is out of range, a range
+        // violation rather than a structural parse fault.
+        const outOfRangeBody = buildBitmap(blobOnlyBitmapSpec(digestLength, [1]));
+        await writeSyntheticBitmap(
+          fixture.ctx,
+          midxBitmapPathOf(fixture.ctx, fixture.hex),
+          outOfRangeBody,
+        );
+        const pack = await firstRegisteredPack(fixture.ctx);
+        const bitmapBytesSpy = vi.spyOn(pack, 'bitmapBytes');
+
+        // Act
+        const result = await computeClosure(fixture.ctx, {
+          tier: 'bitmap',
+          wants: [fixture.blobId],
+          not: [],
+          objects: true,
+        });
+
+        // Assert
+        expect(result.tier).toBe('bitmap');
+        expect(bitmapBytesSpy).toHaveBeenCalled();
+        expect(result.objects).toEqual([{ id: fixture.blobId, type: 'blob' }]);
       });
     });
   });

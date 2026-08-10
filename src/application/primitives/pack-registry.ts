@@ -8,6 +8,7 @@ import { invalidPackHeader, invalidPackIndex } from '../../domain/storage/error.
 import {
   entryOffsets,
   lookupPackIndex,
+  type MultiPackIndex,
   type PackIndex,
   type PackRevIndex,
   parsePackIndex,
@@ -148,12 +149,20 @@ export interface RegisteredPack {
 }
 
 /**
- * The in-use multi-pack-index's bitmap, verified by the `fsck` bitmap pass
- * exactly as a pack bitmap is — a trailing-checksum comparison only. Never
- * parsed; `artefact` is the composed file name (`multi-pack-index-<hex>
- * .bitmap`), carried alongside the load so the pass need not recompute it.
+ * The in-use multi-pack-index's bitmap. `artefact` is the composed file name
+ * (`multi-pack-index-<hex>.bitmap`), carried alongside the load so a
+ * consumer need not recompute it; `midx` is the in-use midx LAYER itself
+ * (never parsed by this module — only carried through), the object a bitmap
+ * consumer needs for `objectCount`/`reverseIndexOffset` and for mapping a
+ * decoded position back to an oid. Present regardless of the bitmap load's
+ * own outcome: it costs nothing beyond what `scanPacks` already computed to
+ * bind the midx, and the `fsck` bitmap pass still verifies only the
+ * trailing checksum over the raw bytes, never reaching into `midx`.
  */
-export type MidxBitmapLoad = { readonly artefact: string } & ArtefactLoad<Uint8Array>;
+export type MidxBitmapLoad = {
+  readonly artefact: string;
+  readonly midx: MultiPackIndex;
+} & ArtefactLoad<Uint8Array>;
 
 export interface PackLookupHit {
   readonly pack: RegisteredPack;
@@ -680,7 +689,7 @@ export function createPackRegistry(ctx: Context): PackRegistry {
         fileNames.has(artefact),
         head.objectCount,
       );
-      return { artefact, ...load };
+      return { artefact, midx: head, ...load };
     });
     return {
       packs,

@@ -62,7 +62,7 @@ interface RevListResult {
 `revList` answers from one of two tiers over the same reachability question, `W AND NOT N`:
 
 - **The walk** (default, `useBitmapIndex` unset or `false`) — the behaviour described above. This is what git's own `rev-list` does unless asked otherwise.
-- **The bitmap tier** (`useBitmapIndex: true`) — answers from a pack (or multi-pack-index) bitmap when one is usable, computing the exact set difference rather than the walk's superset. If no usable bitmap exists — none is present, it is unreadable, structurally refused, or any position it decodes is out of range for the pack it indexes — the call falls back to the walk silently: no error, no signal that the fallback happened, exactly as git degrades.
+- **The bitmap tier** (`useBitmapIndex: true`) — answers from a pack (or multi-pack-index) bitmap when one is usable, computing the exact set difference rather than the walk's superset. A usable multi-pack-index bitmap is preferred over a pack bitmap, but that preference changes which file is read, never the answer — both compute the identical object set. If no usable bitmap exists — none is present, it is unreadable, structurally refused, or any position it decodes is out of range for the artefact it indexes — the call falls back to the walk silently: no error, no signal that the fallback happened, exactly as git degrades.
 
 The bitmap tier changes what three other options mean:
 
