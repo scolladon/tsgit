@@ -1148,7 +1148,7 @@ function baseMidxSpec(digestLength: number): Omit<MidxSpec, 'entries' | 'packNam
  * `packNames`/`entries` for a midx that claims the SAME pack
  * `writeSyntheticPack` just wrote, with each entry's `packIndex`/`offset`
  * read back from that pack's own REAL `.idx` — never invented. The
- * midx-bitmap tier itself never opens a pack (§D4's whole point), but
+ * midx-bitmap tier itself never opens a pack — that is its whole point — but
  * `readObject` resolves every oid the closure algorithm walks through
  * `PackRegistry.lookup`, and a midx PRESENT in the generation is
  * authoritative for lookups of any oid its OIDL carries: an entry whose
