@@ -473,7 +473,7 @@ describe('RegisteredPack position mapping — .rev usable, absent, refused', () 
     return new Set(result.map((o) => o.id));
   };
 
-  describe('Given a pack whose .rev is usable', () => {
+  describe('Given a pack whose .rev is usable, When the bitmap tier resolves the closure', () => {
     it('Then the closure resolves the same oid set as with no .rev at all', async () => {
       // Arrange
       const fixture = await buildLinearBitmapFixture(3, {
@@ -493,7 +493,7 @@ describe('RegisteredPack position mapping — .rev usable, absent, refused', () 
     });
   });
 
-  describe('Given a pack with no .rev sibling', () => {
+  describe('Given a pack with no .rev sibling, When the bitmap tier resolves the closure', () => {
     it('Then the closure resolves the same oid set as with a usable .rev', async () => {
       // Arrange
       const fixture = await buildLinearBitmapFixture(3, { name: 'rev-absent' });
@@ -508,7 +508,7 @@ describe('RegisteredPack position mapping — .rev usable, absent, refused', () 
     });
   });
 
-  describe('Given a pack whose .rev is refused (bad magic)', () => {
+  describe('Given a pack whose .rev is refused (bad magic), When the bitmap tier resolves the closure', () => {
     it('Then the closure resolves the same oid set as with a usable .rev', async () => {
       // Arrange
       const fixture = await buildLinearBitmapFixture(3, {
