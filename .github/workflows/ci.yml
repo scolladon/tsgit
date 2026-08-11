@@ -552,10 +552,27 @@ jobs:
         with:
           path: head
 
-      - uses: ./head/.github/actions/setup
+      # Deliberately NOT ./.github/actions/setup: that composite installs into
+      # the workspace ROOT, and this job is the one place with two trees and no
+      # package.json at the root. `cache-dependency-path` has to name both
+      # lockfiles for the same reason — setup-node looks for one at the root
+      # and finds nothing.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: |
+            base/package-lock.json
+            head/package-lock.json
 
       - name: Install base dependencies
         working-directory: base
+        env:
+          HUSKY: "0"
+        run: npm ci
+
+      - name: Install PR dependencies
+        working-directory: head
         env:
           HUSKY: "0"
         run: npm ci
