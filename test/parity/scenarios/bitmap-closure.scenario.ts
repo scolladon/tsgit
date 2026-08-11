@@ -46,6 +46,9 @@ function packedContentOf(
 interface BitmapClosureResult {
   readonly count: number;
   readonly named: number;
+  /** Sorted type multiset — the closure's SHAPE, not just its size: a tier
+   *  that returned four objects of the wrong kinds would otherwise pass. */
+  readonly types: ReadonlyArray<string>;
 }
 
 const PACK_NAME = 'pack-parity-bitmap-closure';
@@ -213,7 +216,7 @@ async function writeHealthyBitmap(repo: Repository, chain: PackedChain): Promise
 export const bitmapClosureScenario: Scenario<BitmapClosureResult> = {
   name: 'bitmap-closure',
   inputs: { files: [], author: AUTHOR, message: MESSAGES.seed },
-  expected: { count: 4, named: 0 },
+  expected: { count: 4, named: 0, types: ['blob', 'commit', 'commit', 'tree'] },
   run: async (repo) => {
     // Arrange
     await repo.init();
@@ -229,6 +232,7 @@ export const bitmapClosureScenario: Scenario<BitmapClosureResult> = {
 
     // Assert — project to deterministic fields only, no oid
     const named = result.entries.filter((entry) => entry.path !== undefined).length;
-    return { count: result.count, named };
+    const types = result.entries.map((entry) => entry.type).sort();
+    return { count: result.count, named, types };
   },
 };

@@ -35,6 +35,7 @@ import {
   invalidPackRevIndex,
   lookupPackIndex,
   parsePackIndex,
+  REASON_REV_INDEX_CORRUPT,
 } from '../../../../src/domain/storage/index.js';
 import { PACK_HEADER_SIZE } from '../../../../src/domain/storage/pack-entry.js';
 import type { Context } from '../../../../src/ports/context.js';
@@ -5258,6 +5259,59 @@ describe('RegisteredPack.offsetTable — the .rev accelerator, fallback', () => 
         expect(result.sortedOffsets).toEqual(expected);
         const object = await readObject(ctx, ids[0] as ObjectId);
         expect((object as Blob).content).toEqual(revAccelEnc.encode('fallback-wrong-size-0'));
+      });
+    });
+  });
+
+  describe('Given a pack whose .rev stat reports the expected size but whose read returns a longer, non-RIDX file (TOCTOU)', () => {
+    describe('When offsetTable() is called', () => {
+      it('Then the post-read size re-check refuses it for its SIZE, not its signature, and sortedOffsets equals the sort', async () => {
+        // Arrange — the pre-read gate cannot fire (the stat agrees with the
+        // formula exactly), so only the re-check against the bytes actually
+        // received can produce this refusal. The substituted bytes are also
+        // not a reverse index at all, which is what makes the two refusals
+        // tell apart: the loader's own gate reports the SIZE fault, while
+        // `parsePackRevIndex` — reached only if that gate is gone — reports
+        // the signature first.
+        const entries = revAccelEntries(4, 'fallback-toctou');
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'fallback-toctou', entries);
+        await writeSyntheticRevIndex(
+          ctx,
+          'fallback-toctou',
+          await revAccelCorrectBody(ctx, 'fallback-toctou'),
+        );
+        const expected = ascendingSortOf(await revAccelRawOffsets(ctx, 'fallback-toctou'));
+        const warn = vi.fn();
+        const wrapped: Context = {
+          ...ctx,
+          logger: { warn },
+          fs: {
+            ...ctx.fs,
+            read: async (path: string) => {
+              const bytes = await ctx.fs.read(path);
+              if (!path.endsWith('.rev')) return bytes;
+              const substituted = new Uint8Array(bytes.length + 4);
+              substituted.set(bytes, 0);
+              new DataView(substituted.buffer).setUint32(0, 0);
+              return substituted;
+            },
+          },
+        };
+
+        // Act
+        const [pack] = await getPackRegistry(wrapped).all();
+        const result = await pack!.offsetTable();
+
+        // Assert
+        expect(result.sortedOffsets).toEqual(expected);
+        expect(warn).toHaveBeenCalledTimes(1);
+        const [, context] = warn.mock.calls[0] ?? [];
+        // The reason, not the refusal: without the post-read re-check these
+        // bytes reach `parsePackRevIndex`, which refuses them for their
+        // signature — a DIFFERENT reason under the same code.
+        expect((context as { reason?: string } | undefined)?.reason).toBe(REASON_REV_INDEX_CORRUPT);
+        expect((context as { rev?: string } | undefined)?.rev).toBe('pack-fallback-toctou.rev');
       });
     });
   });

@@ -30,14 +30,21 @@
  *      recurring-content property (module doc, `rev-bitmap-closure-
  *      fixtures.ts`) the vacuous case would otherwise hide behind.
  *
- * **The double run.** The core set-correctness rows (F2 and F5's
- * set-equality and have-bearing rows) run TWICE: once against a fixture
+ * **The double run.** Every set-correctness row — F2's, F5's AND F3's
+ * set-equality and have-bearing rows — runs TWICE: once against a fixture
  * carrying a bitmap, once against the SAME repository with every `.bitmap`
  * file removed (forcing the silent walk fallback). Together with the walk
  * oracle every row here already runs against, this is the only thing
  * standing between a decoder bug that produces a plausible but WRONG
  * answer and a wrong pack — a bug confined to the decoder has nowhere to
  * hide if removing the artefact it decodes does not change the answer.
+ *
+ * F4's `firstParent`/`noWalk` rows are the ONE genuine exemption: there the
+ * two tiers disagree BY DESIGN — git's own bitmap tier ignores both flags
+ * and answers the full closure (76 commits / 228 objects) where the walk
+ * honours them (61/184 and 2/7) — so a bitmap-removed second run would
+ * assert a different set, and the walk-tier rows declared directly above
+ * them already pin that other answer.
  *
  * @proves
  *   surface:        revList
@@ -129,6 +136,18 @@ function tsgitObjectSet(result: RevListResult): ObjectSet {
  *  gives a readable diff on failure without asserting either side's order. */
 function assertSameSet(actual: ReadonlySet<string>, expected: ReadonlySet<string>): void {
   expect([...actual].sort()).toEqual([...expected].sort());
+}
+
+/**
+ * `id:type` pairs — the cross-tier invariant is on object id AND type
+ * (module doc), and an id-only comparison would let one tier return the
+ * right objects under the wrong types. Only ever compared between two
+ * TSGIT results: `git rev-list --objects` prints no type at all, so the
+ * cross-TOOL type oracle is `gitObjectTypes` (`cat-file`), which the
+ * per-fixture type rows use instead.
+ */
+function tsgitTypedPairs(result: RevListResult): ReadonlySet<string> {
+  return new Set(result.entries.map((entry) => `${entry.id}:${entry.type}`));
 }
 
 // Every Context this suite builds is disposed after its row — packed reads
@@ -451,6 +470,9 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list walk closures match canonical git', ()
           expect(tsgitObjectSet(withArtefact).named).toBe(0);
           assertSameSet(tsgitObjectSet(withoutArtefact).ids, gitSet.ids);
           expect(withoutArtefact.count).toBe(1605);
+          // The cross-tier invariant is on id AND type — the two tiers derive
+          // type from different places (type streams vs the object header).
+          assertSameSet(tsgitTypedPairs(withArtefact), tsgitTypedPairs(withoutArtefact));
         });
       },
     );
@@ -490,6 +512,7 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list walk closures match canonical git', ()
           expect(tsgitObjectSet(withArtefact).named).toBe(0);
           assertSameSet(tsgitObjectSet(withoutArtefact).ids, gitSet.ids);
           expect(withoutArtefact.count).toBe(425);
+          assertSameSet(tsgitTypedPairs(withArtefact), tsgitTypedPairs(withoutArtefact));
         });
       },
     );
@@ -557,6 +580,13 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list walk closures match canonical git', ()
             for (const id of walkOnly) {
               expect(notTipSet.ids.has(id)).toBe(true);
             }
+            // Subset on id AND type: every pair the bitmap tier reports is a
+            // pair the walk tier reports too, never the same id under a
+            // different type.
+            const walkPairs = tsgitTypedPairs(withoutArtefact);
+            for (const pair of tsgitTypedPairs(withArtefact)) {
+              expect(walkPairs.has(pair)).toBe(true);
+            }
           },
         );
       },
@@ -609,7 +639,7 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list walk closures match canonical git', ()
     });
 
     describe('When a COPY of F2 has its .rev deleted and revList runs bitmap-tier over HEAD', () => {
-      it('Then the artefact still answers, same set (1605) — packPositions never needed the .rev on disk', async () => {
+      it('Then the ARTEFACT still answers (named 0), same set (1605) — packPositions never needed the .rev on disk', async () => {
         // Arrange
         const noRevDir = await fixtureWithoutArtefactSuffix(
           f2.dir,
@@ -629,6 +659,9 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list walk closures match canonical git', ()
         // Assert
         assertSameSet(tsgitObjectSet(result).ids, gitSet.ids);
         expect(result.count).toBe(1605);
+        // The tier detector: a silent walk fallback answers this exact id set
+        // too, carrying 805 names — only a bitmap answer carries none.
+        expect(tsgitObjectSet(result).named).toBe(0);
       });
     });
 
@@ -680,7 +713,7 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list walk closures match canonical git', ()
     });
 
     describe('When a loose commit is added on top and revList runs over the new HEAD', () => {
-      it('Then the id set matches git exactly and grows by 3 loose objects (1608)', async () => {
+      it('Then the id set matches git exactly, grows by 3 loose objects (1608), and carries 806 names', async () => {
         // Arrange
         await addLooseCommitAboveF2(f2.dir);
         const gitSet = gitObjectSet(f2.dir, '--objects', 'HEAD');
@@ -695,11 +728,16 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list walk closures match canonical git', ()
         // Assert
         assertSameSet(tsgitObjectSet(result).ids, gitSet.ids);
         expect(result.count).toBe(1608);
+        // The WALK's own name count over this mutated fixture — the value the
+        // bitmap-tier row below contrasts its own zero against, so "no names"
+        // there means "the walk did not answer", not "nothing has a name".
+        expect(tsgitObjectSet(result).named).toBe(gitSet.named);
+        expect(tsgitObjectSet(result).named).toBe(806);
       });
     });
 
     describe('When revList runs bitmap-tier over the new HEAD after the loose commit was added on top', () => {
-      it('Then the artefact still answers the exact walk answer (1608) — the 3 loose objects resolve through the fallback walk', async () => {
+      it('Then the ARTEFACT still answers the exact walk answer (1608, named 0) — the 3 loose objects resolve through the fallback walk', async () => {
         // Arrange — reuses the SAME already-mutated f2.dir from the row
         // above (adding a second loose commit here would double-count it).
         const gitSet = gitObjectSet(f2.dir, '--objects', 'HEAD');
@@ -715,6 +753,10 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list walk closures match canonical git', ()
         // Assert
         assertSameSet(tsgitObjectSet(result).ids, gitSet.ids);
         expect(result.count).toBe(1608);
+        // The tier detector, against the row above's own measured walk count:
+        // the walk carries 806 names over this same fixture, the bitmap tier
+        // none — including for the 3 loose objects its fallback resolved.
+        expect(tsgitObjectSet(result).named).toBe(0);
       });
     });
   });
@@ -833,6 +875,8 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list walk closures match canonical git', ()
           expect(withArtefact.count).toBe(367);
           assertSameSet(tsgitObjectSet(withoutArtefact).ids, gitSet.ids);
           expect(withoutArtefact.count).toBe(367);
+          // The cross-tier invariant is on id AND type.
+          assertSameSet(tsgitTypedPairs(withArtefact), tsgitTypedPairs(withoutArtefact));
         });
       },
     );
@@ -915,6 +959,11 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list walk closures match canonical git', ()
             expect(walkOnly.length).toBeGreaterThan(0);
             for (const id of walkOnly) {
               expect(notTipSet.ids.has(id)).toBe(true);
+            }
+            // Subset on id AND type, never the same id under another type.
+            const walkPairs = tsgitTypedPairs(withoutArtefact);
+            for (const pair of tsgitTypedPairs(withArtefact)) {
+              expect(walkPairs.has(pair)).toBe(true);
             }
           },
         );
@@ -1258,13 +1307,17 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list walk closures match canonical git', ()
         );
       });
 
-      describe('When the midx bitmap answers vs when the pack bitmap alone answers (midx bitmap deleted)', () => {
-        it('Then both equal each other and equal real git rev-list --objects (1620)', async () => {
+      describe('When the midx bitmap answers vs when the pack bitmap alone answers (midx bitmap deleted), and again with every bitmap removed', () => {
+        it('Then all three equal each other and equal real git rev-list --objects (1620), the two artefact runs carrying no name', async () => {
           // Arrange
           const gitSet = gitObjectSet(f3.dir, '--objects', 'HEAD');
           const packOnlyDir = await copyFixture(f3.dir, await newRoot('f3-midx-mapping-pack-only'));
           await rm(
             path.join(packOnlyDir, '.git', 'objects', 'pack', path.basename(f3.midxBitmapPath)),
+          );
+          const noBitmapDir = await fixtureWithoutBitmap(
+            f3.dir,
+            await newRoot('f3-midx-mapping-no-bitmap'),
           );
           const sut = revList;
 
@@ -1279,20 +1332,62 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list walk closures match canonical git', ()
             objects: true,
             useBitmapIndex: true,
           });
+          const walkAnswer = await sut(trackedNodeContext(noBitmapDir), {
+            wants: ['HEAD'],
+            objects: true,
+            useBitmapIndex: true,
+          });
 
           // Assert
           assertSameSet(tsgitObjectSet(midxAnswer).ids, gitSet.ids);
           assertSameSet(tsgitObjectSet(packAnswer).ids, gitSet.ids);
           expect(midxAnswer.count).toBe(1620);
           expect(packAnswer.count).toBe(1620);
+          // The tier detector: both artefact runs carry no name at all, so
+          // neither answer is a silent walk fallback wearing a bitmap's set.
+          expect(tsgitObjectSet(midxAnswer).named).toBe(0);
+          expect(tsgitObjectSet(packAnswer).named).toBe(0);
+          // The double run (module doc): the SAME repository with every
+          // `.bitmap` removed answers the same set, on id AND type.
+          assertSameSet(tsgitObjectSet(walkAnswer).ids, gitSet.ids);
+          expect(walkAnswer.count).toBe(1620);
+          assertSameSet(tsgitTypedPairs(midxAnswer), tsgitTypedPairs(walkAnswer));
+          assertSameSet(tsgitTypedPairs(packAnswer), tsgitTypedPairs(walkAnswer));
         });
       });
 
-      describe("When the SECOND pack's own .rev is deleted (a copy) and revList runs bitmap-tier over HEAD", () => {
-        it('Then the artefact still answers, same set (1620)', async () => {
+      describe('When revList runs bitmap-tier over HEAD and every returned type is checked against git cat-file', () => {
+        it('Then every object type the MIDX tier reports matches git cat-file --batch-check exactly, over all 1620 objects', async () => {
+          // Arrange — the midx tier resolves an oid through the reverse-index
+          // chunk and types it from the midx bitmap's own type streams: a
+          // different mapping from the pack tier F2 already pins this way.
+          const sut = revList;
+
+          // Act
+          const result = await sut(trackedNodeContext(f3.dir), {
+            wants: ['HEAD'],
+            objects: true,
+            useBitmapIndex: true,
+          });
+          const gitTypes = gitObjectTypes(
+            f3.dir,
+            result.entries.map((entry) => entry.id),
+          );
+
+          // Assert
+          expect(result.count).toBe(1620);
+          for (const entry of result.entries) {
+            expect(gitTypes.get(entry.id)).toBe(entry.type);
+          }
+        });
+      });
+
+      describe("When the SECOND pack's own .rev is deleted (a copy) and revList runs bitmap-tier over HEAD, WITH the artefacts present and then WITH every bitmap removed", () => {
+        it('Then the ARTEFACT still answers (named 0), same set (1620), and the bitmap-free run agrees on id and type', async () => {
           // Arrange
           const dir = await copyFixture(f3.dir, await newRoot('f3-no-rev'));
           await rm(packArtefactPathsNamed(dir, f3.plainPackName).rev);
+          const noBitmapDir = await fixtureWithoutBitmap(dir, await newRoot('f3-no-rev-no-bitmap'));
           const gitSet = gitObjectSet(dir, '--objects', 'HEAD');
           const sut = revList;
 
@@ -1302,10 +1397,22 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list walk closures match canonical git', ()
             objects: true,
             useBitmapIndex: true,
           });
+          const withoutArtefact = await sut(trackedNodeContext(noBitmapDir), {
+            wants: ['HEAD'],
+            objects: true,
+            useBitmapIndex: true,
+          });
 
           // Assert
           assertSameSet(tsgitObjectSet(result).ids, gitSet.ids);
           expect(result.count).toBe(1620);
+          // The tier detector: the walk fallback answers this same id set
+          // carrying names, so only a zero here proves the artefact answered.
+          expect(tsgitObjectSet(result).named).toBe(0);
+          // The double run (module doc).
+          assertSameSet(tsgitObjectSet(withoutArtefact).ids, gitSet.ids);
+          expect(withoutArtefact.count).toBe(1620);
+          assertSameSet(tsgitTypedPairs(result), tsgitTypedPairs(withoutArtefact));
         });
       });
 
@@ -1319,6 +1426,10 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list walk closures match canonical git', ()
             const dir = await copyFixture(f3.dir, await newRoot('f3-completeness'));
             await rm(path.join(dir, '.git', 'objects', 'pack', 'multi-pack-index'));
             await rm(path.join(dir, '.git', 'objects', 'pack', path.basename(f3.midxBitmapPath)));
+            const noBitmapDir = await fixtureWithoutBitmap(
+              dir,
+              await newRoot('f3-completeness-no-bitmap'),
+            );
             const gitSet = gitObjectSet(dir, '--objects', 'HEAD');
             const sut = revList;
 
@@ -1328,10 +1439,23 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list walk closures match canonical git', ()
               objects: true,
               useBitmapIndex: true,
             });
+            const withoutArtefact = await sut(trackedNodeContext(noBitmapDir), {
+              wants: ['HEAD'],
+              objects: true,
+              useBitmapIndex: true,
+            });
 
             // Assert
             assertSameSet(tsgitObjectSet(result).ids, gitSet.ids);
             expect(result.count).toBe(1620);
+            // The tier detector: the pack bitmap plus the in-tier fallback
+            // walk answered — a whole-request fallback to the plain walk
+            // would carry names for the same id set.
+            expect(tsgitObjectSet(result).named).toBe(0);
+            // The double run (module doc).
+            assertSameSet(tsgitObjectSet(withoutArtefact).ids, gitSet.ids);
+            expect(withoutArtefact.count).toBe(1620);
+            assertSameSet(tsgitTypedPairs(result), tsgitTypedPairs(withoutArtefact));
           },
         );
       });
@@ -1504,6 +1628,10 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list walk closures match canonical git', ()
     const STRUCTURAL_ROWS: ReadonlyArray<{
       readonly label: string;
       readonly mutate: (bytes: Buffer) => Buffer;
+      /** Substring the ONE warn must carry, in its message or its reason —
+       *  distinct per row, so collapsing every parser gate into one shared
+       *  refusal cannot satisfy the whole matrix. */
+      readonly warnContains: string;
     }> = [
       {
         label: 'magic flipped',
@@ -1511,6 +1639,7 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list walk closures match canonical git', ()
           bytes[3] = (bytes[3] ?? 0) ^ 0xff;
           return bytes;
         },
+        warnContains: 'invalid signature',
       },
       {
         label: 'version unsupported',
@@ -1518,6 +1647,7 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list walk closures match canonical git', ()
           bytes.writeUInt16BE(2, 4);
           return bytes;
         },
+        warnContains: 'unsupported version: expected 1, got 2',
       },
       {
         label: 'entry count inflated past the file',
@@ -1525,10 +1655,12 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list walk closures match canonical git', ()
           bytes.writeUInt32BE(999_999, 8);
           return bytes;
         },
+        warnContains: 'declares more entries than the artefact has objects',
       },
       {
         label: 'truncated (kept above one digest length)',
         mutate: (bytes) => bytes.subarray(0, Math.floor(bytes.length / 2)),
+        warnContains: 'overruns the buffer',
       },
       {
         label: 'first stream declares an oversized word count',
@@ -1536,11 +1668,14 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list walk closures match canonical git', ()
           bytes.writeUInt32BE(0xffffff, 12 + 20 + 4);
           return bytes;
         },
+        // The exact word count this row itself wrote, so it can never be
+        // confused with the truncation row's own overrun.
+        warnContains: 'declares 16777215 word(s)',
       },
     ];
 
-    describe.each(STRUCTURAL_ROWS)('And the corruption is: $label', ({ mutate }) => {
-      it('Then both tools decline the WHOLE artefact and fall back to the walk (12 = 12), and tsgit warns exactly once', async () => {
+    describe.each(STRUCTURAL_ROWS)('And the corruption is: $label', ({ mutate, warnContains }) => {
+      it('Then both tools decline the WHOLE artefact and fall back to the walk (12 = 12), and tsgit warns exactly once, naming the artefact and its own reason', async () => {
         // Arrange
         const base = await buildBitmapFixture(await newRoot('degrade-structural'), 'repo');
         const packDir = path.join(base.dir, '.git', 'objects', 'pack');
@@ -1569,33 +1704,54 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list walk closures match canonical git', ()
         // Assert — git degrades silently (exit 0) to its own walk.
         expect(gitResult.exitCode).toBe(0);
         expect(gitResult.stdout.split('\n').filter(Boolean)).toHaveLength(12);
-        // Assert — tsgit degrades the same way, warning once.
+        // Assert — tsgit degrades the same way, warning once, for ITS OWN
+        // stated reason and naming the artefact it declined.
         expect(result.count).toBe(12);
         expect(warnCalls).toHaveLength(1);
+        const [message, context] = warnCalls[0] ?? [];
+        const reason = (context as { reason?: string } | undefined)?.reason ?? '';
+        expect(`${String(message)} ${reason}`).toContain(warnContains);
+        expect((context as { bitmap?: string } | undefined)?.bitmap).toBe(bitmapName);
       });
     });
+  });
 
-    it('Then clearing the FLAG WORD of full-DAG instead makes git ABORT on load while tsgit still answers correctly (12) — the detector this suite depends on for the F3 artefact-preference rows', async () => {
-      // Arrange
-      const base = await buildBitmapFixture(await newRoot('degrade-full-dag'), 'repo');
-      const packDir = path.join(base.dir, '.git', 'objects', 'pack');
-      const bitmapName = (await readdir(packDir)).find((name) => name.endsWith('.bitmap'));
-      if (bitmapName === undefined) throw new Error('expected a .bitmap file in BASE pack dir');
-      const bitmapPath = path.join(packDir, bitmapName);
-      mutateOrThrow(bitmapPath, clearFullDagFlagAndRestamp);
-      const sut = revList;
+  // ---------------------------------------------------------------------
+  // The flag word cleared of full-DAG is NOT a structural corruption: the
+  // container parses, and it is the header's own mandatory bit that is
+  // missing — the one row where tsgit answers where git aborts outright.
+  // ---------------------------------------------------------------------
 
-      // Act
-      const gitAborted = gitAborts(base.dir, 'rev-list', '--use-bitmap-index', '--objects', 'HEAD');
-      const result = await sut(trackedNodeContext(base.dir), {
-        wants: ['HEAD'],
-        objects: true,
-        useBitmapIndex: true,
+  describe('Given a fresh BASE bitmap fixture (12 objects) whose .bitmap flag word is cleared of full-DAG and RESTAMPED', () => {
+    describe('When both tools resolve the closure from HEAD', () => {
+      it('Then git ABORTS on load while tsgit still answers correctly (12) — the detector this suite depends on for the F3 artefact-preference rows', async () => {
+        // Arrange
+        const base = await buildBitmapFixture(await newRoot('degrade-full-dag'), 'repo');
+        const packDir = path.join(base.dir, '.git', 'objects', 'pack');
+        const bitmapName = (await readdir(packDir)).find((name) => name.endsWith('.bitmap'));
+        if (bitmapName === undefined) throw new Error('expected a .bitmap file in BASE pack dir');
+        const bitmapPath = path.join(packDir, bitmapName);
+        mutateOrThrow(bitmapPath, clearFullDagFlagAndRestamp);
+        const sut = revList;
+
+        // Act
+        const gitAborted = gitAborts(
+          base.dir,
+          'rev-list',
+          '--use-bitmap-index',
+          '--objects',
+          'HEAD',
+        );
+        const result = await sut(trackedNodeContext(base.dir), {
+          wants: ['HEAD'],
+          objects: true,
+          useBitmapIndex: true,
+        });
+
+        // Assert
+        expect(gitAborted).toBe(true);
+        expect(result.count).toBe(12);
       });
-
-      // Assert
-      expect(gitAborted).toBe(true);
-      expect(result.count).toBe(12);
     });
   });
 });

@@ -422,10 +422,13 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
       });
     });
 
-    describe('Given a BASE repo with R12 .rev made unreadable via chmod 000 (node tier only), When fsck runs', () => {
-      it('Then both tools exit 0, silently', async () => {
-        // Arrange
+    describe('Given a BASE repo with R12 a BAD-SIGNATURE .rev made unreadable via chmod 000 (node tier only), When fsck runs', () => {
+      it('Then both tools exit 0, silently — the unreadable classification masks a fault that would otherwise score bit 64', async () => {
+        // Arrange — corrupt FIRST, then make it unreadable: a healthy-but-
+        // unreadable artefact is byte-identical to the R0 control, so exit 0
+        // would prove nothing about the chmod having taken effect.
         const fixture = await freshBase('r12');
+        mutateOrThrowRev(fixture, flipSignatureByte);
         chmodSync(packArtefactPaths(fixture.dir).rev, 0o000);
         const gitResult = gitFsck(fixture.dir);
         const sut = trackedNodeContext(fixture.dir);
@@ -524,7 +527,13 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
         // Assert
         expect(gitResult.exitCode).toBe(64);
         expect(result.exitCode).toBe(64);
-        expect(findingsOfType(result.findings, 'pack-rev-index-invalid')).toHaveLength(2);
+        const invalid = findingsOfType(result.findings, 'pack-rev-index-invalid');
+        expect(invalid).toHaveLength(2);
+        // Both packs, each named once — a loop reporting ONE pack twice would
+        // otherwise satisfy the count alone.
+        expect(invalid.map((finding) => finding.pack).sort()).toEqual(
+          [...fixture.packNames].sort(),
+        );
       });
     });
   });
@@ -609,10 +618,14 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
         },
       },
       {
-        label: 'M5 .rev chmod 000 (node tier only)',
+        // Corrupt FIRST, then chmod: an unreadable HEALTHY `.rev` scores the
+        // control exit whether or not the chmod took effect, so the mutation
+        // has to be one that would otherwise flip bit 64.
+        label: 'M5 .rev bad signature then chmod 000 (node tier only)',
         bitDelta: 0,
         build: async (slug) => {
           const fixture = await freshBase(slug);
+          mutateOrThrowRev(fixture, flipSignatureByte);
           chmodSync(packArtefactPaths(fixture.dir).rev, 0o000);
           return fixture;
         },
@@ -783,15 +796,20 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
           expect(result.exitCode & 128).toBe(128);
           const findings = findingsOfType(result.findings, 'bitmap-checksum-mismatch');
           expect(findings).toHaveLength(1);
-          expect(findings[0]?.artefact).toMatch(/\.bitmap$/);
+          // The exact pack bitmap's own base name — `/\.bitmap$/` would admit
+          // a midx bitmap name just as happily.
+          expect(findings[0]?.artefact).toBe(path.basename(packArtefactPaths(fixture.dir).bitmap));
         });
       },
     );
 
-    describe('Given a bitmap fixture with B12 .bitmap made unreadable via chmod 000 (node tier only), When fsck runs', () => {
-      it('Then both tools exit 0, silently', async () => {
-        // Arrange
+    describe('Given a bitmap fixture with B12 a MAGIC-FLIPPED .bitmap made unreadable via chmod 000 (node tier only), When fsck runs', () => {
+      it('Then both tools exit 0, silently — the unreadable classification masks a fault that would otherwise score bit 128', async () => {
+        // Arrange — corrupt FIRST, then make it unreadable: a healthy-but-
+        // unreadable bitmap is byte-identical to the B0 control, so exit 0
+        // would prove nothing about the chmod having taken effect.
         const fixture = await freshBitmap('b12');
+        mutateOrThrowBitmap(fixture, flipSignatureByte);
         chmodSync(packArtefactPaths(fixture.dir).bitmap, 0o000);
         const gitResult = gitFsck(fixture.dir);
         const sut = trackedNodeContext(fixture.dir);
@@ -805,9 +823,11 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
       });
     });
 
-    describe('Given a bitmap fixture with B23 an extra .bitmap naming no pack (orphan), When fsck runs', () => {
+    describe('Given a bitmap fixture with B23 an extra CORRUPT .bitmap naming no pack (orphan), When fsck runs', () => {
       it('Then both tools exit 0 — a .bitmap with no corresponding .idx is never inspected', async () => {
-        // Arrange
+        // Arrange — the orphan copy's own trailer is flipped after the copy,
+        // so inspecting it would score bit 128; exit 0 proves it was skipped
+        // rather than merely found healthy.
         const fixture = await freshBitmap('b23');
         const artefacts = packArtefactPaths(fixture.dir);
         const orphanPath = path.join(
@@ -815,6 +835,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
           `pack-${'0'.repeat(40)}.bitmap`,
         );
         await copyFile(artefacts.bitmap, orphanPath);
+        mutateOrThrow(orphanPath, flipLastByte);
         const gitResult = gitFsck(fixture.dir);
         const sut = trackedNodeContext(fixture.dir);
 
@@ -960,8 +981,12 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
         // The midx bitmap check IS gated by core.multiPackIndex (unlike X8's pack bitmap)
         expect(gateResult.exitCode & 128).toBe(0);
         expect(result.exitCode & 128).toBe(128);
-        const midxFindings = findingsOfType(result.findings, 'bitmap-checksum-mismatch').filter(
-          (finding) => finding.artefact.startsWith('multi-pack-index'),
+        const allFindings = findingsOfType(result.findings, 'bitmap-checksum-mismatch');
+        // The unfiltered count too: filtering to the midx artefact alone
+        // leaves the number of PACK-bitmap findings unbounded.
+        expect(allFindings).toHaveLength(1);
+        const midxFindings = allFindings.filter((finding) =>
+          finding.artefact.startsWith('multi-pack-index'),
         );
         expect(midxFindings).toHaveLength(1);
       });
@@ -999,8 +1024,12 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
         // Assert
         expect(gitResult.exitCode & 128).toBe(128);
         expect(result.exitCode & 128).toBe(128);
-        const midxFindings = findingsOfType(result.findings, 'bitmap-checksum-mismatch').filter(
-          (finding) => finding.artefact.startsWith('multi-pack-index'),
+        const allFindings = findingsOfType(result.findings, 'bitmap-checksum-mismatch');
+        // The unfiltered count too: filtering to the midx artefact alone
+        // leaves the number of PACK-bitmap findings unbounded.
+        expect(allFindings).toHaveLength(1);
+        const midxFindings = allFindings.filter((finding) =>
+          finding.artefact.startsWith('multi-pack-index'),
         );
         expect(midxFindings).toHaveLength(1);
       });
@@ -1023,15 +1052,18 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
       });
     });
 
-    describe('Given a midx+bitmap fixture with X7 midx bitmap renamed to a different hash, When fsck runs', () => {
+    describe('Given a midx+bitmap fixture with X7 a CORRUPT midx bitmap renamed to a different hash, When fsck runs', () => {
       it('Then both tools show no bitmap bit — discovery is by the STORED trailer, and nothing composes this new name', async () => {
-        // Arrange
+        // Arrange — the renamed file's own trailer is flipped after the
+        // rename, so a tool composing this name instead would score bit 128;
+        // no bitmap bit proves the file was never opened.
         const fixture = await freshMidxBitmap('x7');
         const renamedPath = path.join(
           path.dirname(fixture.midxBitmapPath),
           `multi-pack-index-${'f'.repeat(40)}.bitmap`,
         );
         await rename(fixture.midxBitmapPath, renamedPath);
+        mutateOrThrow(renamedPath, flipLastByte);
         const gitResult = gitFsck(fixture.dir);
         const sut = trackedNodeContext(fixture.dir);
 

@@ -26,7 +26,12 @@ import {
 import { loadPackBitmapArtefact } from '../../../../../src/application/primitives/internal/pack-bitmap-binding.js';
 import { packPositionMap } from '../../../../../src/application/primitives/internal/pack-positions.js';
 import { getPackRegistry } from '../../../../../src/application/primitives/read-object.js';
-import { permissionDenied, type TsgitError } from '../../../../../src/domain/error.js';
+import { REASON_BITMAP_EXCEEDS_MAX } from '../../../../../src/application/primitives/validators.js';
+import {
+  permissionDenied,
+  type TsgitError,
+  unsupportedOperation,
+} from '../../../../../src/domain/error.js';
 import type {
   AuthorIdentity,
   Blob,
@@ -827,6 +832,142 @@ describe('Given a pack whose bitmap is unreadable (permission denied)', () => {
       // Assert
       expect(artefact).toBeUndefined();
       expect(warn).not.toHaveBeenCalled();
+    });
+  });
+});
+
+describe('Given a pack whose bitmap stat itself rejects with PERMISSION_DENIED', () => {
+  describe('When the artefact is loaded', () => {
+    it('Then the binding declines and no warn is emitted — a fault at the stat is as silent as one at the read', async () => {
+      // Arrange
+      const fixture = await buildLinearBitmapFixture(1, { name: 'stat-denied' });
+      const path = packBitmapPath(fixture.ctx, 'stat-denied');
+      const warn = vi.fn();
+      const wrapped: Context = {
+        ...fixture.ctx,
+        logger: { warn },
+        fs: {
+          ...fixture.ctx.fs,
+          stat: async (p: string) => {
+            if (p === path) throw permissionDenied(p);
+            return fixture.ctx.fs.stat(p);
+          },
+        },
+      };
+      const pack = await firstPack(wrapped);
+
+      // Act
+      const artefact = await loadPackBitmapArtefact(wrapped, pack);
+
+      // Assert
+      expect(artefact).toBeUndefined();
+      expect(warn).not.toHaveBeenCalled();
+    });
+  });
+});
+
+describe('Given a pack whose bitmap read rejects with UNSUPPORTED_OPERATION', () => {
+  describe('When the artefact is loaded', () => {
+    it('Then the binding declines and no warn is emitted — "cannot tell" is never "corrupt"', async () => {
+      // Arrange
+      const fixture = await buildLinearBitmapFixture(1, { name: 'unsupported' });
+      const path = packBitmapPath(fixture.ctx, 'unsupported');
+      const warn = vi.fn();
+      const wrapped: Context = {
+        ...fixture.ctx,
+        logger: { warn },
+        fs: {
+          ...fixture.ctx.fs,
+          read: async (p: string) => {
+            if (p === path) throw unsupportedOperation('read', 'no random access on this tier');
+            return fixture.ctx.fs.read(p);
+          },
+        },
+      };
+      const pack = await firstPack(wrapped);
+
+      // Act
+      const artefact = await loadPackBitmapArtefact(wrapped, pack);
+
+      // Assert
+      expect(artefact).toBeUndefined();
+      expect(warn).not.toHaveBeenCalled();
+    });
+  });
+});
+
+// A 3-object pack's ceiling is the floor, 64 KiB — `objectCount * 64` is far
+// under it — so one byte past the floor is one byte past the ceiling.
+const OVER_CEILING_BITMAP_BYTES = 64 * 1024 + 1;
+
+describe('Given a pack whose bitmap stat reports a size over the object-count-scaled ceiling', () => {
+  describe('When the artefact is loaded', () => {
+    it('Then the binding declines naming the size bound, and the bytes are never read', async () => {
+      // Arrange — kills the mutant that drops the PRE-read gate: without it
+      // the loader would allocate the hostile size before deciding anything.
+      const fixture = await buildLinearBitmapFixture(1, { name: 'ceiling-stat' });
+      const path = packBitmapPath(fixture.ctx, 'ceiling-stat');
+      const reads: string[] = [];
+      const warn = vi.fn();
+      const wrapped: Context = {
+        ...fixture.ctx,
+        logger: { warn },
+        fs: {
+          ...fixture.ctx.fs,
+          stat: async (p: string) => {
+            const real = await fixture.ctx.fs.stat(p);
+            return p === path ? { ...real, size: OVER_CEILING_BITMAP_BYTES } : real;
+          },
+          read: async (p: string) => {
+            if (p === path) reads.push(p);
+            return fixture.ctx.fs.read(p);
+          },
+        },
+      };
+      const pack = await firstPack(wrapped);
+
+      // Act
+      const artefact = await loadPackBitmapArtefact(wrapped, pack);
+
+      // Assert
+      expect(artefact).toBeUndefined();
+      expect(reads).toEqual([]);
+      expect(warn).toHaveBeenCalledTimes(1);
+      const [, context] = warn.mock.calls[0] ?? [];
+      expect((context as { reason?: string } | undefined)?.reason).toBe(REASON_BITMAP_EXCEEDS_MAX);
+    });
+  });
+});
+
+describe('Given a pack whose bitmap stat is honest (small) but whose read returns bytes over the ceiling', () => {
+  describe('When the artefact is loaded', () => {
+    it('Then the binding declines naming the size bound, not a parse fault', async () => {
+      // Arrange — kills the mutant that drops the POST-read re-check: those
+      // zero-filled bytes would otherwise reach the parser, which refuses
+      // with a DIFFERENT reason (a bad signature). The reason is the
+      // discriminator, never the decline itself.
+      const fixture = await buildLinearBitmapFixture(1, { name: 'ceiling-toctou' });
+      const path = packBitmapPath(fixture.ctx, 'ceiling-toctou');
+      const warn = vi.fn();
+      const wrapped: Context = {
+        ...fixture.ctx,
+        logger: { warn },
+        fs: {
+          ...fixture.ctx.fs,
+          read: async (p: string) =>
+            p === path ? new Uint8Array(OVER_CEILING_BITMAP_BYTES) : fixture.ctx.fs.read(p),
+        },
+      };
+      const pack = await firstPack(wrapped);
+
+      // Act
+      const artefact = await loadPackBitmapArtefact(wrapped, pack);
+
+      // Assert
+      expect(artefact).toBeUndefined();
+      expect(warn).toHaveBeenCalledTimes(1);
+      const [, context] = warn.mock.calls[0] ?? [];
+      expect((context as { reason?: string } | undefined)?.reason).toBe(REASON_BITMAP_EXCEEDS_MAX);
     });
   });
 });
@@ -1944,6 +2085,38 @@ describe('Given a 2-object midx whose entry header names 999999', () => {
     });
   });
 });
+
+describe.each([
+  { label: 'objectCount - 1', bit: 1, bitSize: 2, accepted: true },
+  { label: 'objectCount', bit: 2, bitSize: 3, accepted: false },
+  {
+    label: '999999, far past every lane a fold would allocate',
+    bit: 999999,
+    bitSize: 1000000,
+    accepted: false,
+  },
+])(
+  'Given a 2-object midx whose ENTRY stream sets a bit at $label',
+  ({ bit, bitSize, accepted }) => {
+    describe('When the artefact is loaded', () => {
+      it(`Then the artefact ${accepted ? 'is accepted' : 'declines'}`, async () => {
+        // Arrange
+        const { ctx, hex, objectCount } = await buildMinimalMidxBitmapFixture(
+          `midx-entry-bit-${bit}`,
+        );
+        const entries: BitmapEntrySpec[] = [
+          { position: 0, xorOffset: 0, flags: 0, bitSize, bits: [bit] },
+        ];
+
+        // Act
+        const artefact = await loadMidxWithEntries(ctx, hex, objectCount, entries);
+
+        // Assert
+        expect(artefact === undefined).toBe(!accepted);
+      });
+    });
+  },
+);
 
 describe('Given a 2-object midx whose commits type stream sets a bit at objectCount - 1', () => {
   describe('When the artefact is loaded', () => {

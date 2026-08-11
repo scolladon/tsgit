@@ -11,14 +11,14 @@ import {
 import { arbMidxSpec, arbMidxSpecWithRev, arbObjectId, buildMidx } from './arbitraries.js';
 
 describe('midx properties', () => {
-  describe('Given an arbitrary midx spec carrying a reverse-index chunk', () => {
+  describe('Given an arbitrary midx spec, with and without a reverse-index chunk', () => {
     describe('When building then parsing', () => {
-      it('Then it recovers the spec packs, oids, offsets and reverse-index body', () => {
+      it('Then it recovers the spec packs, oids, offsets and — only when the chunk is there — its reverse-index body', () => {
         // Arrange + Act + Assert
         const sut = parseMultiPackIndex;
 
         fc.assert(
-          fc.property(arbMidxSpecWithRev(), (spec) => {
+          fc.property(fc.oneof(arbMidxSpec(), arbMidxSpecWithRev()), (spec) => {
             const result = sut(buildMidx(spec), spec.digestLength);
 
             expect(result.version).toBe(spec.version);
@@ -40,9 +40,14 @@ describe('midx properties', () => {
               Array.from({ length: result.objectCount }, (_, i) => midxOidAt(result, i)).sort(),
             ).toEqual(expectedIds);
 
+            const revBody = spec.revBody;
+            if (revBody === undefined) {
+              expect(result.reverseIndexOffset).toBeUndefined();
+              return;
+            }
             expect(result.reverseIndexOffset).not.toBeUndefined();
             for (let p = 0; p < result.objectCount; p += 1) {
-              expect(midxReverseIndexAt(result, p)).toBe(spec.revBody![p]);
+              expect(midxReverseIndexAt(result, p)).toBe(revBody[p]);
             }
           }),
           { numRuns: 200 },

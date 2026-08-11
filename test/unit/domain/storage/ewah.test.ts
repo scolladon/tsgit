@@ -327,7 +327,7 @@ describe('ewah', () => {
 
     describe('Given a clean run of ones that exactly fills the destination', () => {
       describe('When folding', () => {
-        it('Then every lane is set and into.length is unchanged', () => {
+        it('Then every lane is set, and the run really is exactly as wide as the destination', () => {
           // Arrange: RLW(runValue=1, cleanCount=2, literalCount=0) needs
           // exactly 4 lanes.
           const bytes = buildEwahStream(128, [[0x0, 0x5]]);
@@ -340,14 +340,17 @@ describe('ewah', () => {
 
           // Assert
           expect(into).toEqual(new Uint32Array(4).fill(0xffffffff));
-          expect(into.length).toBe(4);
+          // The UNCLAMPED walk proves "exactly fills": a run wider than the
+          // destination would be clamped away and leave the fold assertion
+          // above green regardless.
+          expect(maxSetBitPosition(bytes, view, stream)).toBe(127);
         });
       });
     });
 
     describe('Given a clean run of ones one lane longer than the destination', () => {
       describe('When folding', () => {
-        it('Then the write is clamped, not thrown, and into.length is unchanged', () => {
+        it('Then the write is clamped, not thrown, and the run really does reach past the destination', () => {
           // Arrange: the same 4-lane run, into a 3-lane destination.
           const bytes = buildEwahStream(128, [[0x0, 0x5]]);
           const view = new DataView(bytes.buffer);
@@ -360,7 +363,9 @@ describe('ewah', () => {
           // Assert
           expect(act).not.toThrow();
           expect(into).toEqual(new Uint32Array(3).fill(0xffffffff));
-          expect(into.length).toBe(3);
+          // 127 is lane 3's last bit — one lane past this destination's end,
+          // which is what makes the clamp the reason the fold stopped.
+          expect(maxSetBitPosition(bytes, view, stream)).toBe(127);
         });
       });
     });
@@ -381,8 +386,36 @@ describe('ewah', () => {
 
           // Assert
           expect(into).toEqual(new Uint32Array(4).fill(0xffffffff));
-          expect(into.length).toBe(4);
+          // The run declared here really is 2^32−1 clean words wide — so the
+          // clamp, not a small count, is why the fold returned at all.
+          expect(maxSetBitPosition(bytes, view, stream)).toBe(0xffffffff * 64 - 1);
           expect(elapsedMs).toBeLessThan(1000);
+        });
+      });
+    });
+
+    describe('Given a run-length word declaring more literal words than the stream carries', () => {
+      describe('When folding', () => {
+        it('Then it stops at the last word the buffer backs, folding it and nothing past it', () => {
+          // Arrange: RLW(runValue=0, cleanCount=0, literalCount=2) followed by
+          // ONE literal word — the inner walk runs out of stream before it
+          // runs out of declared literals, and only its own word-limit
+          // terminator ends it (reading a second word would fall off the
+          // buffer).
+          const bytes = buildEwahStream(128, [
+            [0x4, 0x0],
+            [0x0, 0x1],
+          ]);
+          const view = new DataView(bytes.buffer);
+          const stream = readEwahStream(bytes, view, 0);
+          const into = new Uint32Array(4);
+
+          // Act
+          const act = (): void => foldEwahStream(bytes, view, stream, into, 'or');
+
+          // Assert
+          expect(act).not.toThrow();
+          expect(bitsOf(into)).toEqual([0]);
         });
       });
     });

@@ -19,7 +19,11 @@ import {
   buildMidx,
   type MidxSpec,
 } from '../../../../domain/storage/arbitraries.js';
-import { writeSyntheticBitmap, writeSyntheticPack } from '../../../primitives/pack-fixture.js';
+import {
+  buildSyntheticPack,
+  writeSyntheticBitmap,
+  writeSyntheticPack,
+} from '../../../primitives/pack-fixture.js';
 
 const sut = runBitmapHealthPass;
 
@@ -159,15 +163,17 @@ describe('Given a pack with no bitmap file on disk', () => {
   });
 });
 
-describe('Given a pack whose bitmap is unreadable (permission denied)', () => {
+describe('Given a pack whose bitmap has a flipped trailer AND is unreadable (permission denied)', () => {
   describe('When the bitmap health pass runs', () => {
-    it('Then no finding is emitted and exitBit is 0 — the fault is silent', async () => {
-      // Arrange
+    it('Then no finding is emitted and exitBit is 0 — the unreadable classification masks a real fault', async () => {
+      // Arrange — the planted bitmap is genuinely corrupt, so a pass that
+      // read it would score bit 128; silence is only explainable by the
+      // unreadable classification.
       const ctx = createMemoryContext();
       await writeSyntheticPack(ctx, 'unreadable', onePackEntry('unreadable-content'));
       const body = buildBitmap(healthyBitmapSpec(ctx.hashConfig.digestLength));
       const path = packBitmapPath(ctx, 'unreadable');
-      await writeSyntheticBitmap(ctx, path, body);
+      await writeSyntheticBitmap(ctx, path, body, { flipTrailer: true });
       const wrapped: Context = {
         ...ctx,
         fs: {
@@ -189,14 +195,17 @@ describe('Given a pack whose bitmap is unreadable (permission denied)', () => {
   });
 });
 
-describe('Given a bitmap beside a pack with no .pack file (never registered)', () => {
+describe('Given a corrupt bitmap beside a parseable .idx with no .pack file (never registered)', () => {
   describe('When the bitmap health pass runs', () => {
     it('Then no finding is emitted and exitBit is 0 — the orphan .idx is never a pack', async () => {
-      // Arrange
+      // Arrange — a genuinely parseable `.idx` (only its `.pack` sibling is
+      // missing) beside a genuinely corrupt bitmap: nothing but the orphan
+      // exclusion can explain the silence.
       const ctx = createMemoryContext();
-      await ctx.fs.write(packIdxPath(ctx, 'orphan'), new Uint8Array(8));
+      const built = await buildSyntheticPack(ctx, onePackEntry('orphan-content'));
+      await ctx.fs.write(packIdxPath(ctx, 'orphan'), built.idxBytes);
       const body = buildBitmap(healthyBitmapSpec(ctx.hashConfig.digestLength));
-      await writeSyntheticBitmap(ctx, packBitmapPath(ctx, 'orphan'), body);
+      await writeSyntheticBitmap(ctx, packBitmapPath(ctx, 'orphan'), body, { flipTrailer: true });
 
       // Act
       const result = await sut(ctx, {});
@@ -273,7 +282,9 @@ describe('Given a pack whose bitmap magic is flipped but the trailer is left sta
       const result = await sut(ctx, {});
 
       // Assert
-      expect(findingsOfType(result, 'bitmap-checksum-mismatch')).toHaveLength(1);
+      const mismatches = findingsOfType(result, 'bitmap-checksum-mismatch');
+      expect(mismatches).toHaveLength(1);
+      expect(mismatches[0]!.artefact).toBe('pack-stale-magic.bitmap');
       expect(result.exitBit).toBe(128);
     });
   });
@@ -295,7 +306,9 @@ describe('Given a pack whose bitmap version is 2 but the trailer is left stale',
       const result = await sut(ctx, {});
 
       // Assert
-      expect(findingsOfType(result, 'bitmap-checksum-mismatch')).toHaveLength(1);
+      const mismatches = findingsOfType(result, 'bitmap-checksum-mismatch');
+      expect(mismatches).toHaveLength(1);
+      expect(mismatches[0]!.artefact).toBe('pack-stale-version.bitmap');
       expect(result.exitBit).toBe(128);
     });
   });
@@ -317,7 +330,9 @@ describe('Given a pack whose bitmap entryCount is 99 but the trailer is left sta
       const result = await sut(ctx, {});
 
       // Assert
-      expect(findingsOfType(result, 'bitmap-checksum-mismatch')).toHaveLength(1);
+      const mismatches = findingsOfType(result, 'bitmap-checksum-mismatch');
+      expect(mismatches).toHaveLength(1);
+      expect(mismatches[0]!.artefact).toBe('pack-stale-entry-count.bitmap');
       expect(result.exitBit).toBe(128);
     });
   });
@@ -339,7 +354,9 @@ describe('Given a pack bitmap truncated to exactly digestLength bytes', () => {
       const result = await sut(ctx, {});
 
       // Assert
-      expect(findingsOfType(result, 'bitmap-checksum-mismatch')).toHaveLength(1);
+      const mismatches = findingsOfType(result, 'bitmap-checksum-mismatch');
+      expect(mismatches).toHaveLength(1);
+      expect(mismatches[0]!.artefact).toBe('pack-trunc-exact.bitmap');
       expect(result.exitBit).toBe(128);
     });
   });
@@ -361,7 +378,9 @@ describe('Given a pack bitmap truncated to digestLength − 10 bytes', () => {
       const result = await sut(ctx, {});
 
       // Assert
-      expect(findingsOfType(result, 'bitmap-checksum-mismatch')).toHaveLength(1);
+      const mismatches = findingsOfType(result, 'bitmap-checksum-mismatch');
+      expect(mismatches).toHaveLength(1);
+      expect(mismatches[0]!.artefact).toBe('pack-trunc-under.bitmap');
       expect(result.exitBit).toBe(128);
     });
   });
@@ -383,7 +402,9 @@ describe('Given a zero-length pack bitmap', () => {
       const result = await sut(ctx, {});
 
       // Assert
-      expect(findingsOfType(result, 'bitmap-checksum-mismatch')).toHaveLength(1);
+      const mismatches = findingsOfType(result, 'bitmap-checksum-mismatch');
+      expect(mismatches).toHaveLength(1);
+      expect(mismatches[0]!.artefact).toBe('pack-zero-length.bitmap');
       expect(result.exitBit).toBe(128);
     });
   });
@@ -405,7 +426,9 @@ describe('Given a pack bitmap whose embedded pack checksum is flipped but the tr
       const result = await sut(ctx, {});
 
       // Assert
-      expect(findingsOfType(result, 'bitmap-checksum-mismatch')).toHaveLength(1);
+      const mismatches = findingsOfType(result, 'bitmap-checksum-mismatch');
+      expect(mismatches).toHaveLength(1);
+      expect(mismatches[0]!.artefact).toBe('pack-stale-checksum.bitmap');
       expect(result.exitBit).toBe(128);
     });
   });
@@ -637,16 +660,17 @@ describe('Given the in-use midx has no bitmap file at all', () => {
   });
 });
 
-describe('Given the midx bitmap is renamed to a different hash than the midx actually stores', () => {
+describe('Given a CORRUPT midx bitmap renamed to a different hash than the midx actually stores', () => {
   describe('When the bitmap health pass runs', () => {
     it('Then no finding is emitted — the composed name matches no file on disk', async () => {
-      // Arrange
+      // Arrange — the renamed file's own trailer is flipped, so a pass that
+      // composed this name instead would score bit 128.
       const ctx = createMemoryContext();
       const digestLength = ctx.hashConfig.digestLength;
       await writeHealthyMidx(ctx);
       const wrongHex = '00'.repeat(digestLength);
       const body = buildBitmap(healthyBitmapSpec(digestLength));
-      await writeSyntheticBitmap(ctx, midxBitmapPath(ctx, wrongHex), body);
+      await writeSyntheticBitmap(ctx, midxBitmapPath(ctx, wrongHex), body, { flipTrailer: true });
 
       // Act
       const result = await sut(ctx, {});
@@ -752,7 +776,9 @@ describe('Given a pack whose bitmap trailer is flipped', () => {
         const result = await sut(ctx, opts);
 
         // Assert
-        expect(findingsOfType(result, 'bitmap-checksum-mismatch')).toHaveLength(1);
+        const mismatches = findingsOfType(result, 'bitmap-checksum-mismatch');
+        expect(mismatches).toHaveLength(1);
+        expect(mismatches[0]!.artefact).toBe('pack-modes-mismatch.bitmap');
         expect(result.exitBit).toBe(128);
       },
     );
@@ -803,7 +829,9 @@ describe('Given the in-use midx bitmap trailer is flipped', () => {
         const result = await sut(ctx, opts);
 
         // Assert
-        expect(findingsOfType(result, 'bitmap-checksum-mismatch')).toHaveLength(1);
+        const mismatches = findingsOfType(result, 'bitmap-checksum-mismatch');
+        expect(mismatches).toHaveLength(1);
+        expect(mismatches[0]!.artefact).toBe(`multi-pack-index-${hex}.bitmap`);
         expect(result.exitBit).toBe(128);
       },
     );

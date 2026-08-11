@@ -6,7 +6,8 @@ import type {
   FsckOptions,
 } from '../../../../../../src/application/commands/internal/fsck/types.js';
 import { packPositionMap } from '../../../../../../src/application/primitives/internal/pack-positions.js';
-import { parsePackIndex } from '../../../../../../src/domain/storage/index.js';
+import { permissionDenied } from '../../../../../../src/domain/error.js';
+import { entryOffsets, parsePackIndex } from '../../../../../../src/domain/storage/index.js';
 import type { Context } from '../../../../../../src/ports/context.js';
 import { writeSyntheticPack, writeSyntheticRevIndex } from '../../../primitives/pack-fixture.js';
 
@@ -35,6 +36,18 @@ async function correctBody(ctx: Context, name: string): Promise<Uint32Array> {
   return packPositionMap(parsePackIndex(idxBytes));
 }
 
+/** The same table, derived WITHOUT the production helper: each `.idx` entry
+ *  paired with its own offset, sorted by offset, projected back to index
+ *  position — the independent oracle proving `correctBody` is a real
+ *  reordering and not whatever the code under test happens to compute. */
+async function offsetSortedBody(ctx: Context, name: string): Promise<ReadonlyArray<number>> {
+  const idxBytes = await ctx.fs.read(idxFilePath(ctx, name));
+  return entryOffsets(parsePackIndex(idxBytes))
+    .map((offset, indexPosition) => ({ offset, indexPosition }))
+    .sort((left, right) => left.offset - right.offset)
+    .map((entry) => entry.indexPosition);
+}
+
 function findingsOfType<T extends FsckFinding['type']>(
   result: { readonly findings: ReadonlyArray<FsckFinding> },
   type: T,
@@ -43,6 +56,26 @@ function findingsOfType<T extends FsckFinding['type']>(
     (finding): finding is Extract<FsckFinding, { type: T }> => finding.type === type,
   );
 }
+
+describe('Given a 4-object pack whose ids sort differently from its pack offsets', () => {
+  describe('When the reference body every healthy fixture below is written from is derived', () => {
+    it('Then it is a genuine permutation, not the identity, and equals the offset-sorted .idx', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await writeSyntheticPack(ctx, 'reference', manyPackEntries(4, 'reference'));
+      const sut = correctBody;
+
+      // Act
+      const result = await sut(ctx, 'reference');
+
+      // Assert
+      const stored = [...result];
+      expect([...stored].sort((a, b) => a - b)).toEqual([0, 1, 2, 3]);
+      expect(stored).not.toEqual([0, 1, 2, 3]);
+      expect(stored).toEqual([...(await offsetSortedBody(ctx, 'reference'))]);
+    });
+  });
+});
 
 describe('Given a pack with a healthy .rev', () => {
   describe('When the rev-index health pass runs', () => {
@@ -71,6 +104,37 @@ describe('Given a pack with no .rev file on disk', () => {
 
       // Act
       const result = await sut(ctx, {});
+
+      // Assert
+      expect(result.findings).toHaveLength(0);
+      expect(result.exitBit).toBe(0);
+    });
+  });
+});
+
+describe('Given a pack whose bad-magic .rev is present but unreadable (permission denied)', () => {
+  describe('When the rev-index health pass runs', () => {
+    it('Then no finding is emitted and exitBit is 0 — the unreadable classification masks a real fault', async () => {
+      // Arrange — the planted `.rev` has a bad signature, so a pass that read
+      // it would score bit 64; silence is only explainable by the unreadable
+      // classification, the guard's other arm.
+      const ctx = createMemoryContext();
+      await writeSyntheticPack(ctx, 'unreadable-rev', onePackEntry('unreadable-rev-content'));
+      await writeSyntheticRevIndex(ctx, 'unreadable-rev', [0], { magic: 0 });
+      const revPath = `${ctx.layout.gitDir}/objects/pack/pack-unreadable-rev.rev`;
+      const wrapped: Context = {
+        ...ctx,
+        fs: {
+          ...ctx.fs,
+          read: async (path: string) => {
+            if (path === revPath) throw permissionDenied(path);
+            return ctx.fs.read(path);
+          },
+        },
+      };
+
+      // Act
+      const result = await sut(wrapped, {});
 
       // Assert
       expect(result.findings).toHaveLength(0);
@@ -453,8 +517,14 @@ describe('Given a pack whose .rev has both a flipped trailer and a wrong body po
       const result = await sut(ctx, {});
 
       // Assert
-      expect(findingsOfType(result, 'pack-rev-index-invalid')).toHaveLength(1);
-      expect(findingsOfType(result, 'pack-rev-index-position-mismatch')).toHaveLength(1);
+      const invalid = findingsOfType(result, 'pack-rev-index-invalid');
+      expect(invalid).toHaveLength(1);
+      expect(invalid[0]!.pack).toBe('pack-both-wrong');
+      expect(invalid[0]!.reason).toBe('invalid checksum');
+      const mismatches = findingsOfType(result, 'pack-rev-index-position-mismatch');
+      expect(mismatches).toHaveLength(1);
+      expect(mismatches[0]!.position).toBe(0);
+      expect(mismatches[0]!.stored).toBe(999);
       expect(result.exitBit).toBe(64);
     });
   });
@@ -508,7 +578,10 @@ describe('Given a pack whose .rev fails to load', () => {
         const result = await sut(ctx, opts);
 
         // Assert
-        expect(findingsOfType(result, 'pack-rev-index-invalid')).toHaveLength(1);
+        const invalid = findingsOfType(result, 'pack-rev-index-invalid');
+        expect(invalid).toHaveLength(1);
+        expect(invalid[0]!.pack).toBe('pack-modes-load');
+        expect(invalid[0]!.reason).toBe('invalid signature: expected 0x52494458, got 0x00000000');
         expect(result.exitBit).toBe(64);
       },
     );
@@ -557,6 +630,10 @@ describe('Given a pack whose .rev has a wrong body position', () => {
         // Assert
         const mismatches = findingsOfType(result, 'pack-rev-index-position-mismatch');
         expect(mismatches).toHaveLength(1);
+        expect(mismatches[0]!.pack).toBe('pack-modes-body');
+        expect(mismatches[0]!.position).toBe(0);
+        expect(mismatches[0]!.expected).toBe(expected[0]);
+        expect(mismatches[0]!.stored).toBe(999);
         expect(result.exitBit).toBe(64);
       },
     );

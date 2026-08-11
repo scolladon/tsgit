@@ -2,7 +2,11 @@ import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 
 import type { TsgitError } from '../../../../src/domain/error.js';
-import { foldEwahStream, readEwahStream } from '../../../../src/domain/storage/ewah.js';
+import {
+  foldEwahStream,
+  maxSetBitPosition,
+  readEwahStream,
+} from '../../../../src/domain/storage/ewah.js';
 import { arbBitSet, EWAH_BIT_RANGE, encodeEwah } from './arbitraries.js';
 
 function bitsOf(into: Uint32Array): ReadonlyArray<number> {
@@ -42,7 +46,7 @@ describe('ewah properties', () => {
 
   describe('Given an arbitrary byte string up to 4 KiB, at various offsets', () => {
     describe('When reading and folding it as an EWAH stream', () => {
-      it('Then it either returns and folds without a RangeError, or refuses with a closed check', () => {
+      it('Then it either folds no bit past the unclamped walk’s own highest, or refuses with a closed check', () => {
         // Arrange + Act + Assert
         const sut = readEwahStream;
 
@@ -77,20 +81,37 @@ describe('ewah properties', () => {
             fc.constantFrom<'or' | 'xor'>('or', 'xor'),
             ({ bytes, at }, destLength, op) => {
               const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+              const into = new Uint32Array(destLength);
 
+              // Captured OUTSIDE the assertions: an expectation thrown inside
+              // the try would otherwise be swallowed by this catch and
+              // resurface as a confusing refusal-shape failure.
+              let folded: { readonly highest: number; readonly walkHighest: number } | undefined;
+              let caught: unknown;
               try {
                 const stream = sut(bytes, view, at);
-                const into = new Uint32Array(destLength);
-
                 foldEwahStream(bytes, view, stream, into, op);
-
-                expect(into.length).toBe(destLength);
+                folded = {
+                  highest: Math.max(...bitsOf(into), -1),
+                  walkHighest: maxSetBitPosition(bytes, view, stream),
+                };
               } catch (e) {
-                const data = (e as TsgitError).data;
-                expect(data.code).toBe('INVALID_PACK_BITMAP');
-                if (data.code === 'INVALID_PACK_BITMAP') {
-                  expect(data.check).toBe('stream');
-                }
+                caught = e;
+              }
+
+              if (folded !== undefined) {
+                // The fold is CLAMPED at the destination, the walk is not, so
+                // every bit the fold lands must sit at or below the walk's own
+                // highest — two independent walks over the same words, one
+                // checking the other on content rather than on a length a
+                // Uint32Array can never change.
+                expect(folded.highest).toBeLessThanOrEqual(folded.walkHighest);
+                return;
+              }
+              const data = (caught as TsgitError).data;
+              expect(data.code).toBe('INVALID_PACK_BITMAP');
+              if (data.code === 'INVALID_PACK_BITMAP') {
+                expect(data.check).toBe('stream');
               }
             },
           ),

@@ -1,6 +1,7 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 
+import type { TsgitError } from '../../../../src/domain/error.js';
 import type { CacheTreeEntry } from '../../../../src/domain/git-index/index-entry.js';
 import { parseCacheTree } from '../../../../src/domain/git-index/index-parser.js';
 import { hexToBytes } from '../../../../src/domain/objects/encoding.js';
@@ -41,6 +42,51 @@ describe('cache-tree parser properties', () => {
             const bytes = encodeCacheTreeEntry(tree);
             const result = sut(bytes);
             expect(result).toEqual(tree);
+          }),
+          { numRuns: 200 },
+        );
+      });
+    });
+  });
+
+  describe('Given an arbitrary byte string up to 4 KiB', () => {
+    describe('When parsing it as a cache tree', () => {
+      it('Then it either returns a tree or refuses with INVALID_INDEX_ENTRY — never a RangeError', () => {
+        // Arrange + Act + Assert
+        const sut = parseCacheTree;
+
+        // Raw bytes alone rarely survive the path/NUL gate, so half the runs
+        // start from a VALID encoded tree and corrupt a window of it — the
+        // only generation that drives the parser into its deep gates
+        // (entry-count, subtree-count, oid, trailing bytes) with
+        // in-bounds-looking values.
+        const rawBytes = fc.uint8Array({ minLength: 0, maxLength: 4096, size: 'max' });
+        const corruptedBuilt = arbCacheTreeEntry().chain((tree) => {
+          const built = encodeCacheTreeEntry(tree);
+          return fc
+            .tuple(
+              fc.nat({ max: Math.max(0, built.length - 1) }),
+              fc.uint8Array({ minLength: 1, maxLength: 16 }),
+            )
+            .map(([start, patch]) => {
+              const corrupted = built.slice();
+              corrupted.set(patch.subarray(0, corrupted.length - start), start);
+              return corrupted;
+            });
+        });
+
+        fc.assert(
+          fc.property(fc.oneof(rawBytes, corruptedBuilt), (bytes) => {
+            let result: CacheTreeEntry | undefined;
+            try {
+              result = sut(bytes);
+            } catch (e) {
+              expect((e as TsgitError).data.code).toBe('INVALID_INDEX_ENTRY');
+              return;
+            }
+
+            expect(typeof result.path).toBe('string');
+            expect(result.children).toHaveLength(Math.max(result.subtreeCount, 0));
           }),
           { numRuns: 200 },
         );
