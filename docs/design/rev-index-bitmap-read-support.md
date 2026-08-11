@@ -943,8 +943,8 @@ Verifiable at ship time. 1–12 are `fsck` and parsing; 13–23 are consumption 
     **any** `check` value — asserted, not inspected.
 13. **`buildOffsetTable` consumes a usable `.rev`** (ADR-604). With a **healthy** `.rev` the
     resulting `sortedOffsets` is **identical** to the sort's, on every fixture (Pin AI). With an
-    absent, unreadable or **refused** `.rev` the sort runs, so no result depends on the artefact's
-    presence. A `.rev` that parses but whose body is wrong is **trusted** and produces what that
+    absent, unreadable or **refused** `.rev` — or a pack below the size threshold, which never opens
+    the artefact at all — the sort runs, so no result depends on the artefact's presence. A `.rev` that parses but whose body is wrong is **trusted** and produces what that
     body implies — that is requirement 14, not a violation of this one.
 14. **The `.rev` body and bitmap closures are used as found** (ADR-606, ADR-615). No pre-use digest
     verification exists on either path. Parse-time bounds still apply in full.
@@ -1565,24 +1565,33 @@ by the project's own guardrail.
 
 ```ts
 const raw = entryOffsets(index);                 // unchanged — the .idx is still required
-const sortedOffsets = new Array<number>(n);
+if (raw.length < REV_INDEX_MIN_OBJECTS) return sortAscending(raw);  // artefact never opened
+const sortedOffsets = new Float64Array(n);
 for (let p = 0; p < n; p += 1) sortedOffsets[p] = raw[revIndexPositionAt(rev, p)]!;
 ```
 
 Pin AI is the correctness statement: `entryOffsets[revBody[p]]` is strictly increasing over all 1606
-positions of F2. Absent, unreadable or refused `.rev` falls back to the existing sort — **the
-fallback is the correct answer, so no result ever depends on the artefact's presence** (ADR-604).
+positions of F2. Absent, unreadable or refused `.rev` falls back to the sort, as does any pack under
+the threshold — **the fallback is the correct answer, so no result ever depends on the artefact's
+presence** (ADR-604).
 
 | | today | with `.rev` |
 |---|---|---|
-| CPU | `Array.prototype.sort` — O(n log n) on numbers | O(n) gather |
-| I/O | 0 extra | 1 extra file read, `4n + 12 + 2·dl` bytes (≈ 1/6 of the `.idx`) |
+| CPU | `Float64Array.prototype.sort` — O(n log n), but no per-comparison JS callback | O(n) gather |
+| I/O | 0 extra | 1 bounded read, `4n + 12 + 2·dl` bytes (≈ 1/6 of the `.idx`) — packs over the threshold only |
 | memoisation | once per pack per `Context` | unchanged |
 
 **The claim is measured, not asserted** (requirement 15): absolute wall-clock, main versus branch,
-from the CI nightly artefact, over (a) a many-object repository and (b) a many-small-packs
-repository, which is the shape where the extra `open`+`read` per pack can outweigh sorting a few
-hundred numbers. A measured regression is a defect fixed in this PR.
+over (a) a many-object repository and (b) a many-small-packs repository, which is the shape where the
+extra `open`+`read` per pack can outweigh sorting a few hundred numbers. A measured regression is a
+defect fixed in this PR.
+
+**It regressed, and the fix is the threshold above.** The many-small-packs shape came in 80% slower
+with the artefact present. Removing the loader's pre-read `stat` halved the fixed per-pack cost, and
+dropping the sort's comparator callback made the fallback fast enough to beat the gather outright at
+3,000 objects — moving the crossover to ≈5,000, where `REV_INDEX_MIN_OBJECTS` now sits. Gated, a
+present `.rev` is free below the threshold (3,000 objects: 0.449 ms against 0.466 ms; 64 small packs:
+10.66 ms against 10.74 ms) and still wins 36–52% above it. ADR-604 carries the full table.
 
 **Two memos, one loader.** `buildOffsetTable` keeps ADR-604's exact fallback (the plain sort). The
 bitmap layer needs a different derived value — the pack-position map (§D4) — and gets its own memo,

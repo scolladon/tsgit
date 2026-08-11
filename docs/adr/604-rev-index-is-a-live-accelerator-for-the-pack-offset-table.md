@@ -25,15 +25,41 @@ repositories with many small packs.
 
 ## Decision
 
-Option 1. When a usable `.rev` is present, `buildOffsetTable` gathers
+Option 1, **bounded by pack size**. `buildOffsetTable` gathers
 `sortedOffsets[p] = entryOffsets(index)[revIndexPositionAt(rev, p)]` in O(n) instead of
-sorting. Absent, unreadable or refused `.rev` falls back to the existing sort — the
-fallback is the correct answer, so no result ever depends on the artefact's presence.
+sorting — but only for a pack carrying at least `REV_INDEX_MIN_OBJECTS` objects. Below the
+threshold the artefact is never opened at all. Absent, unreadable or refused `.rev` falls
+back to the sort, as does every gated-out pack — the fallback is the correct answer, so no
+result ever depends on the artefact's presence.
 
 The perf claim is **measured, not asserted**: an absolute wall-clock bench (main versus
-branch) sourced from the CI nightly artefact, covering both a many-object and a
-many-small-packs shape. A measured regression is a defect to fix in this PR, not a
-reason to defer the arm.
+branch), covering both a many-object and a many-small-packs shape. A measured regression is
+a defect to fix in this PR, not a reason to defer the arm.
+
+The regression this ADR anticipated was real, and the threshold is what that rule produced.
+Two fixes landed before it and both moved the crossover: the loader dropped its pre-read
+`stat` in favour of one bounded read (the per-pack cost is fixed, so halving it mattered
+most exactly where the accelerator was losing), and the fallback stopped sorting through a
+JS comparator callback — `TypedArray.prototype.sort` is numeric by definition, the same job
+canonical git does with a radix sort. The second was decisive: it made the sort arm fast
+enough to beat the gather outright on a 3,000-object pack, which had been the accelerator's
+win case. Measured per pack, `.rev` present versus deleted:
+
+|   objects | `.rev` | sort  | winner        |
+|----------:|-------:|------:|---------------|
+|     3,000 |  0.494 | 0.416 | sort  +18.8%  |
+|    10,000 |  0.648 | 0.820 | `.rev` +20.9% |
+|    20,000 |  0.933 | 1.472 | `.rev` +36.6% |
+|    40,000 |  1.412 | 2.913 | `.rev` +51.5% |
+
+With the gate in place a present `.rev` costs nothing below the threshold: the
+3,000-object pack measures 0.449 ms with the artefact against 0.466 ms without, and 64
+small packs measure 10.66 ms against 10.74 ms — indistinguishable, where ungated they were
+51.6% apart. `pack-offset-table.bench.ts` pins both shapes, artefact present and deleted.
+
+The crossover moves with a machine's I/O-to-CPU ratio, so the constant is tuned rather than
+derived. Being slightly wrong is cheap by construction: a value near the crossover is a
+value where the two arms cost the same. It is the far side that this decision is about.
 
 ## Consequences
 
