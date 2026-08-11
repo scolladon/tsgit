@@ -801,6 +801,25 @@ describe('Given a pack with no bitmap file on disk', () => {
       expect(artefact).toBeUndefined();
       expect(warn).not.toHaveBeenCalled();
     });
+
+    it('Then the bitmap bytes are never fetched — the scan listing already answered', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await writeSyntheticPack(
+        ctx,
+        'no-bitmap-io',
+        await buildChain(ctx, 1).then((c) => c.entries),
+      );
+      const pack = await firstPack(ctx);
+      const bitmapBytes = vi.fn(pack.bitmapBytes);
+
+      // Act
+      const artefact = await loadPackBitmapArtefact(ctx, { ...pack, bitmapBytes });
+
+      // Assert
+      expect(artefact).toBeUndefined();
+      expect(bitmapBytes).not.toHaveBeenCalled();
+    });
   });
 });
 
@@ -1235,7 +1254,8 @@ describe('Given a pack whose .rev stores index position 0 at every pack position
       // Assert
       expect(artefact).toBeUndefined();
       expect(warn).toHaveBeenCalledTimes(1);
-      const [, context] = warn.mock.calls[0] ?? [];
+      const [message, context] = warn.mock.calls[0] ?? [];
+      expect(message).toContain('pack position table is not a permutation');
       expect((context as { bitmap?: string } | undefined)?.bitmap).toBe(
         'pack-rev-not-a-permutation.bitmap',
       );
@@ -1708,6 +1728,85 @@ describe('Given a crafted midx carrying a reverse-index chunk and a midx bitmap'
   });
 });
 
+interface TrustedEntryMidxFixture {
+  readonly ctx: Context;
+  readonly commitId: ObjectId;
+  readonly expected: ReadonlySet<ObjectId>;
+}
+
+/**
+ * A 2-generation chain claimed by a midx whose bitmap carries ONE entry —
+ * generation 0's commit — with generation 1's blob added to that entry's own
+ * bits. Nothing reachable from the commit names that blob, so it appears in
+ * the answer only when the ENTRY answers: a fall back to walking the commit
+ * would silently produce a smaller, "more correct" set.
+ */
+async function buildTrustedEntryMidxFixture(): Promise<TrustedEntryMidxFixture> {
+  const ctx = createMemoryContext();
+  const name = 'midx-trusted-entry';
+  const chain = await buildChain(ctx, 2, name);
+  const ids = await writeSyntheticPack(ctx, name, chain.entries);
+  const objectCount = ids.length;
+  const digestLength = ctx.hashConfig.digestLength;
+  const midxPositionOf = (id: string) => indexPositionOf(ids, id);
+
+  const revBody = ids.map((id) => midxPositionOf(id));
+  const binding = await realMidxBinding(ctx, name, ids);
+  await writeMidxBytes(ctx, buildMidx({ ...baseMidxSpec(digestLength), ...binding, revBody }));
+
+  const { blobs, trees, commits } = chainPositions(2);
+  const typeStreams = typeStreamsFor(objectCount, { blobs, trees, commits });
+  const entries: BitmapEntrySpec[] = [
+    {
+      position: midxPositionOf(chain.commitIds[0] as string),
+      xorOffset: 0,
+      flags: 0,
+      bitSize: objectCount,
+      bits: [0, 1, 2, 3],
+    },
+  ];
+  const hex = zeroTrailerHex(digestLength);
+  await writeSyntheticBitmap(
+    ctx,
+    midxBitmapPath(ctx, hex),
+    buildBitmap(healthySpec(ctx, typeStreams, entries)),
+  );
+
+  return {
+    ctx,
+    commitId: chain.commitIds[0] as ObjectId,
+    expected: new Set(
+      asOids([
+        chain.blobIds[0] as string,
+        chain.treeIds[0] as string,
+        chain.commitIds[0] as string,
+        chain.blobIds[1] as string,
+      ]),
+    ),
+  };
+}
+
+describe('Given a midx bitmap whose commit entry names an object that commit’s own tree walk cannot reach', () => {
+  describe('When the closure is resolved from that commit', () => {
+    it('Then the entry’s own set answers — the commit is placed through the midx OIDL, never re-derived by walking', async () => {
+      // Arrange
+      const fixture = await buildTrustedEntryMidxFixture();
+      const artefact = await loadMidxArtefact(fixture.ctx);
+      const sut = resolveBitmapClosure;
+
+      // Act
+      const result = await sut(fixture.ctx, artefact!, {
+        wants: [fixture.commitId],
+        not: [],
+        objects: true,
+      });
+
+      // Assert
+      expect(new Set(result.map((o) => o.id))).toEqual(fixture.expected);
+    });
+  });
+});
+
 // ---------------------------------------------------------------------------
 // The 108/0 measurement: entry headers read as MIDX positions versus as
 // PSEUDO-PACK positions — the single most likely implementation bug in the
@@ -1815,18 +1914,24 @@ describe('Given a midx bitmap with several commit entries', () => {
 
 describe('Given a midx bitmap beside a midx with no reverse-index chunk', () => {
   describe('When the artefact is loaded directly', () => {
-    it('Then the midx tier declines', async () => {
+    it('Then the midx tier declines, silently — a midx written without a bitmap is not a fault', async () => {
       // Arrange
       const fixture = await buildMidxAndPackBitmapFixture(2, {
         name: 'no-ridx',
         withRidx: false,
       });
+      const warn = vi.fn();
+      const wrapped = { ...fixture.ctx, logger: { warn } };
 
       // Act
-      const artefact = await loadMidxArtefact(fixture.ctx);
+      const artefact = await loadMidxBitmapArtefact(
+        wrapped,
+        await getPackRegistry(wrapped).midxBitmap(),
+      );
 
       // Assert
       expect(artefact).toBeUndefined();
+      expect(warn).not.toHaveBeenCalled();
     });
   });
 
@@ -2160,14 +2265,26 @@ describe('Given a 2-object midx whose commits type stream sets a bit at objectCo
 // ---------------------------------------------------------------------------
 
 describe.each([
-  { label: 'objectCount itself', revBody: [0, 2], reason: 'out of range' },
-  { label: '0xffffffff', revBody: [0, 0xffffffff], reason: 'out of range' },
-  { label: 'midx position 0 twice', revBody: [0, 0], reason: 'not a permutation' },
+  {
+    label: 'objectCount itself',
+    revBody: [0, 2],
+    reason: 'midx reverse index position out of range',
+  },
+  {
+    label: '0xffffffff',
+    revBody: [0, 0xffffffff],
+    reason: 'midx reverse index position out of range',
+  },
+  {
+    label: 'midx position 0 twice',
+    revBody: [0, 0],
+    reason: 'midx reverse index is not a permutation',
+  },
 ])(
   'Given a 2-object midx whose reverse-index chunk stores $label, beside a structurally valid bitmap',
-  ({ revBody }) => {
+  ({ revBody, reason }) => {
     describe('When the artefact is loaded', () => {
-      it('Then the binding declines the whole artefact, naming the MIDX bitmap in one warn', async () => {
+      it('Then the binding declines the whole artefact, naming the fault and the MIDX bitmap in one warn', async () => {
         // Arrange
         const name = `midx-rev-${revBody.join('-')}`;
         const { ctx, hex, objectCount } = await buildMinimalMidxBitmapFixture(name, revBody);
@@ -2188,7 +2305,8 @@ describe.each([
         // Assert
         expect(artefact).toBeUndefined();
         expect(warn).toHaveBeenCalledTimes(1);
-        const [, context] = warn.mock.calls[0] ?? [];
+        const [message, context] = warn.mock.calls[0] ?? [];
+        expect(message).toContain(reason);
         expect((context as { bitmap?: string } | undefined)?.bitmap).toBe(
           `multi-pack-index-${hex}.bitmap`,
         );

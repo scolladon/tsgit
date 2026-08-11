@@ -57,6 +57,12 @@ function pokeMagic(bytes: Uint8Array): Uint8Array {
   return copy;
 }
 
+function pokeSignature(bytes: Uint8Array, signature: number): Uint8Array {
+  const copy = bytes.slice();
+  new DataView(copy.buffer).setUint32(0, signature);
+  return copy;
+}
+
 function pokeVersion(bytes: Uint8Array, version: number): Uint8Array {
   const copy = bytes.slice();
   new DataView(copy.buffer).setUint16(4, version);
@@ -221,6 +227,23 @@ describe('bitmap', () => {
       });
     });
 
+    describe('Given a file of exactly the minimum header size', () => {
+      describe('When parsing', () => {
+        it("Then the size gate passes it — the header itself fits — and the commits stream refuses with check: 'stream'", () => {
+          // Arrange
+          const spec = baseSpec();
+          const bytes = truncate(buildBitmap(spec), HEADER_SIZE + spec.digestLength);
+
+          // Act & Assert
+          expectRefusal(
+            () => parsePackBitmap(bytes, spec.digestLength),
+            'stream',
+            'truncated stream descriptor',
+          );
+        });
+      });
+    });
+
     describe('Given a bitmap with the magic bytes flipped', () => {
       describe('When parsing', () => {
         it('Then refuses with signature', () => {
@@ -230,6 +253,23 @@ describe('bitmap', () => {
 
           // Act & Assert
           expectRefusal(() => parsePackBitmap(bytes, spec.digestLength), 'signature', 'signature');
+        });
+      });
+    });
+
+    describe('Given a bitmap whose signature word is zero', () => {
+      describe('When parsing', () => {
+        it('Then refuses with signature, reporting the word zero-padded to the full 32 bits', () => {
+          // Arrange
+          const spec = baseSpec();
+          const bytes = pokeSignature(buildBitmap(spec), 0x00000000);
+
+          // Act & Assert
+          expectRefusal(
+            () => parsePackBitmap(bytes, spec.digestLength),
+            'signature',
+            'got 0x00000000',
+          );
         });
       });
     });
@@ -275,13 +315,17 @@ describe('bitmap', () => {
 
     describe('Given a bitmap with option flags 0x0004 (a set bit that is not full-DAG)', () => {
       describe('When parsing', () => {
-        it('Then refuses with options', () => {
+        it('Then refuses with options, reporting the flag word zero-padded to its full 16 bits', () => {
           // Arrange
           const spec = baseSpec();
           const bytes = pokeFlags(buildBitmap(spec), 0x0004);
 
           // Act & Assert
-          expectRefusal(() => parsePackBitmap(bytes, spec.digestLength), 'options', 'full-DAG');
+          expectRefusal(
+            () => parsePackBitmap(bytes, spec.digestLength),
+            'options',
+            'option flags 0x0004 lack the mandatory full-DAG bit',
+          );
         });
       });
     });
@@ -329,6 +373,23 @@ describe('bitmap', () => {
 
           // Act & Assert
           expectRefusal(() => bitmapEntryHeaders(bitmap), 'entry', 'extends past end of file');
+        });
+      });
+    });
+
+    describe('Given a file that ends exactly where an entry header’s fixed 6 bytes end', () => {
+      describe('When walking entry headers', () => {
+        it('Then the fixed bytes still fit and the refusal names the entry’s own stream, not its header', () => {
+          // Arrange
+          const spec = withEntries([
+            { position: 5, xorOffset: 0, flags: 0, bits: [0], bitSize: 4 },
+          ]);
+          const offsets = streamOffsets(spec);
+          const bytes = truncate(buildBitmap(spec), offsets.entriesOffset + ENTRY_FIXED_SIZE);
+          const bitmap = parsePackBitmap(bytes, spec.digestLength);
+
+          // Act & Assert
+          expectRefusal(() => bitmapEntryHeaders(bitmap), 'entry', 'invalid embedded stream');
         });
       });
     });
