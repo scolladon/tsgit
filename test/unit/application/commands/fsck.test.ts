@@ -3447,6 +3447,12 @@ describe('Given a cache-tree walk that meets an absent oid, then one no artefact
       // Arrange — the walk pops in reverse push order, so listing the live
       // subtree first and the absent one last makes the refused route land
       // between them: after the verdict is proved, before the last root.
+      // What this row pins is the drainage around that landing — a proved
+      // verdict is retained and the entries still queued behind the refused
+      // route are still rooted. It does not discriminate the refused entry's
+      // OWN answer: a plain `false` there would satisfy both assertions too,
+      // since the verdict is already true and the sibling still roots. The
+      // isolating row below carries that pin.
       const ctx = await initBareCtx();
       const blobId = await writeObject(ctx, makeBlob('cache-tree drain'));
       const treeId = await writeObject(
@@ -3481,6 +3487,58 @@ describe('Given a cache-tree walk that meets an absent oid, then one no artefact
   });
 });
 
+describe('Given a cache-tree whose absent entry and whose refused-route entry each carry a live subtree', () => {
+  describe('When fsck runs', () => {
+    it('Then only the absent entry drops its child — an unresolvable entry skips its own subtree, a cannot-say entry does not', async () => {
+      // Arrange — neither parent roots itself, for different reasons: one is
+      // proved gone, the other names a route no artefact can decode. Only the
+      // proved-gone one takes its subtree down with it, so only its child
+      // ends up orphaned.
+      const ctx = await initBareCtx();
+      const indexId = await writeObject(ctx, makeBlob('nested cache-tree index entry'));
+      const underAbsent = await writeObject(ctx, makeBlob('child of an absent entry'));
+      const underRefused = await writeObject(ctx, makeBlob('child of a refused route'));
+      const refusedRouteId = midxOid('bb2');
+      await writeFlatMidx(
+        ctx,
+        midxBaseSpec({ entries: [{ id: refusedRouteId, packIndex: 0, offset: 0 }] }),
+      );
+      const cacheTree: CacheTreeNode = {
+        path: '',
+        id: undefined,
+        children: [
+          {
+            path: 'absent',
+            id: 'ee'.repeat(20) as ObjectId,
+            children: [{ path: 'kid', id: underAbsent, children: [] }],
+          },
+          {
+            path: 'refused',
+            id: refusedRouteId,
+            children: [{ path: 'kid', id: underRefused, children: [] }],
+          },
+        ],
+      };
+      await writeIndexWithRawCacheTree(
+        ctx,
+        indexId,
+        new Uint8Array(encodeCacheTreeNode(cacheTree)),
+      );
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      const orphaned = result.findings.filter(
+        (f) => f.type === 'unreachable' || f.type === 'dangling',
+      );
+      expect(orphaned.map((f) => (f as { id: ObjectId }).id)).toEqual([underAbsent, underAbsent]);
+      expect(orphaned.map((f) => f.type).sort()).toEqual(['dangling', 'unreachable']);
+      expect(result.exitCode & 8).toBe(8);
+    });
+  });
+});
+
 describe('Given a cache-tree naming only an oid a multi-pack-index routes past its own PNAM', () => {
   describe('When fsck runs', () => {
     it('Then no missing entry point is claimed and the midx pass reports the route it cannot decode', async () => {
@@ -3503,6 +3561,73 @@ describe('Given a cache-tree naming only an oid a multi-pack-index routes past i
       expect(findings).toHaveLength(1);
       expect((findings[0] as { reason: string }).reason).toContain('pack index');
       expect(result.exitCode).toBe(32);
+    });
+  });
+});
+
+describe('Given a packed cache-tree oid the multi-pack-index routes past its own PNAM, in connectivity-only mode', () => {
+  describe('When fsck runs', () => {
+    it('Then the oid is still a reachability root — the universe already proved it there, so no unreachable or dangling is claimed', async () => {
+      // Arrange — connectivity-only admits the pack's objects into the
+      // universe, and the midx routes this very oid through a pack index it
+      // cannot decode, so the probe can say nothing about an object the
+      // universe scan already found.
+      const ctx = await initBareCtx();
+      const [packedId] = await writeSyntheticPack(
+        ctx,
+        'probe-claimed',
+        onePackEntry('probe-content'),
+      );
+      const looseId = await writeObject(ctx, makeBlob('probe-index-entry'));
+      await writeFlatMidx(
+        ctx,
+        midxBaseSpec({
+          packNames: ['pack-probe-claimed.idx'],
+          entries: [{ id: packedId as ObjectId, packIndex: 1, offset: 0 }],
+        }),
+      );
+      await writeIndexWithEntry(ctx, looseId, 'a.txt', packedId as ObjectId);
+
+      // Act
+      const result = await fsck(ctx, { connectivityOnly: true });
+
+      // Assert
+      expect(
+        result.findings.filter((f) => f.type === 'unreachable' || f.type === 'dangling'),
+      ).toEqual([]);
+      expect(result.findings.filter((f) => f.type === 'midx-unusable')).toHaveLength(1);
+      expect(result.exitCode).toBe(32);
+    });
+  });
+});
+
+describe('Given a cache-tree oid whose multi-pack-index offset word points past the large-offset table', () => {
+  describe('When fsck runs', () => {
+    it('Then that refusal is contained as well — no missing entry point is claimed and the midx pass reports the route', async () => {
+      // Arrange — the second of the two deferred decode checks, reached
+      // through the same per-entry lookup the cache-tree probe drives.
+      const ctx = await initBareCtx();
+      const { packNameIdx, id } = await writeMidxPack(ctx, 'ct-loff', 'ct-loff-content');
+      const looseId = await writeObject(ctx, makeBlob('ct-loff-index-entry'));
+      const built = buildMidx(
+        midxBaseSpec({
+          packNames: [packNameIdx],
+          entries: [{ id, packIndex: 0, offset: 0x1_0000_0001 }],
+        }),
+      );
+      const bytes = await stampMidxTrailer(ctx, setMidxOoffWord(built, 0, 0x80000000 | 5));
+      await ctx.fs.write(multiPackIndexPath(packsDir(commonGitDir(ctx))), bytes);
+      await writeIndexWithEntry(ctx, looseId, 'a.txt', id);
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      const findings = result.findings.filter((f) => f.type === 'midx-unusable');
+      expect(findings).toHaveLength(1);
+      expect((findings[0] as { reason: string }).reason).toContain('large offset');
+      expect(result.exitCode & 8).toBe(0);
+      expect(result.exitCode & 32).toBe(32);
     });
   });
 });

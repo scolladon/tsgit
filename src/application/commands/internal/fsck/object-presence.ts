@@ -30,6 +30,16 @@ import { getPackRegistry } from '../../../primitives/read-object.js';
  * answering "cannot say" rather than "absent". Containing anything else, or
  * containing it silently, re-creates the swallow this function exists to
  * prevent.
+ *
+ * That second condition is a fact rather than a hope only because of pass
+ * ORDER: `runMidxHealthPass` has already walked every midx entry and settled
+ * its verdict by the time `collectRoots` drives this probe, so a routing that
+ * refuses THIS oid is already recorded as a finding when the walk contains
+ * it. Reorder the two and the cache-tree walk would be containing a fault
+ * against a report not yet made. `refs-verify.ts` deliberately contains
+ * nothing for exactly that reason — it runs AHEAD of the midx pass — which is
+ * why the same fault class aborts the run through a ref target and is
+ * contained through a cache-tree entry.
  */
 export async function objectIsPresent(ctx: Context, id: ObjectId): Promise<boolean> {
   if (await probeLooseOid(ctx, id)) return true;

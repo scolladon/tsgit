@@ -44,15 +44,20 @@ function isToleratedIndexFault(err: unknown): boolean {
  * same `fsck` run surfaces it from the midx-health pass that owns it, under
  * its own exit bit.
  *
- * Deliberately no wider than that. A lookup-layer `INVALID_PACK_INDEX` is a
- * MID-READ corruption `pack-shared.ts` refuses to launder into a miss, and
- * no pass re-reports it, so it rejects the run here exactly as it does
- * through `refs-verify.ts`'s call to the same probe. A permission fault, an
- * abort, or anything unforeseen rejects it for the same reason: a check that
- * never ran must not be reported as a check that passed.
+ * Deliberately no wider than that, and narrowed on `check` rather than on
+ * `code` alone so containment reads off the predicate itself instead of off
+ * pass order: every OTHER `MidxCheck` is a load-time refusal that has already
+ * denied the whole run before this pass is reached, and would reject here too
+ * were a future one ever to arrive through a lookup. A lookup-layer
+ * `INVALID_PACK_INDEX` is a MID-READ corruption `pack-shared.ts` refuses to
+ * launder into a miss, and no pass re-reports it, so it rejects the run here
+ * exactly as it does through `refs-verify.ts`'s call to the same probe. A
+ * permission fault, an abort, or anything unforeseen rejects it for the same
+ * reason: a check that never ran must not be reported as a check that passed.
  */
 function isContainedLookupFault(err: unknown): boolean {
-  return err instanceof TsgitError && err.data.code === 'INVALID_MULTI_PACK_INDEX';
+  if (!(err instanceof TsgitError) || err.data.code !== 'INVALID_MULTI_PACK_INDEX') return false;
+  return err.data.check === 'pack-int-id' || err.data.check === 'large-offset';
 }
 
 /** `objectIsPresent`, with the refusal above answered `undefined` — "this
@@ -122,11 +127,14 @@ async function addReflogRoots(ctx: Context, roots: Set<ObjectId>): Promise<void>
  * returns from the failed entry while the enclosing loop continues.
  *
  * A probe that answers `undefined` — an artefact whose STRUCTURE refuses the
- * lookup, see `probePresence` — says nothing about THAT ONE entry: it
- * neither proves the oid unresolvable nor lets it root, and the walk carries
- * on. So it can only ever withhold an upgrade of the verdict from `false` to
- * `true`; it never discards a `true` an earlier entry already proved, and
- * never drops the entries still queued behind it as reachability roots.
+ * lookup, see `probePresence` — says nothing about THAT ONE entry: it does
+ * not prove the oid unresolvable, so the verdict stays where it stood and the
+ * walk carries on into that entry's own children. Nor does it withhold the
+ * root, which is `universe`'s to license and never the probe's. So a
+ * cannot-say answer can only ever withhold an upgrade of the verdict from
+ * `false` to `true`; it never discards a `true` an earlier entry already
+ * proved, and never drops the entries still queued behind it as reachability
+ * roots.
  *
  * Iterative over an explicit stack: the nesting is the index's to choose,
  * and a recursive walk of a deep one would exhaust the call stack.
@@ -147,12 +155,16 @@ async function walkCacheTree(
         unresolved = true;
         continue;
       }
-      // Same guard `addRefRoots` applies: an oid the run's own mode kept out
-      // of `universe` cannot be followed by the reachability walk, and
-      // seeding it would surface a spurious 'missing' finding. An oid the
-      // probe could not answer for seeds nothing either — nothing proved it
-      // is there.
-      if (present === true && universe.has(entry.id)) roots.add(entry.id);
+      // `universe` membership, not the probe, is what licenses the seed —
+      // the same guard `addRefRoots` applies. An oid the run's own mode kept
+      // out of `universe` cannot be followed by the reachability walk and
+      // would surface a spurious 'missing' finding; an oid inside it was
+      // already found by this run's own scan, which is proof enough to root
+      // it whatever the probe could or could not say about its route.
+      // Rooting an oid the probe refused invents nothing: `buildReachableSet`
+      // records no out-edge for an object whose cache entry is null, so no
+      // broken edge and no missing id can follow from it.
+      if (universe.has(entry.id)) roots.add(entry.id);
     }
     for (const child of entry.children) stack.push(child);
   }
