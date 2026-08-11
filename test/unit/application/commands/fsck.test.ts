@@ -3425,6 +3425,134 @@ describe('Given an index whose cache-tree extension payload does not parse', () 
   });
 });
 
+/** One cache-tree node: its own oid (`undefined` for an invalidated entry,
+ *  written as the `-1` entry count git uses) and its subtrees, in the order
+ *  `parseCacheTree` reads them back. */
+interface CacheTreeNode {
+  readonly path: string;
+  readonly id: ObjectId | undefined;
+  readonly children: ReadonlyArray<CacheTreeNode>;
+}
+
+function encodeCacheTreeNode(node: CacheTreeNode): ReadonlyArray<number> {
+  const count = node.id === undefined ? -1 : 1;
+  const header = enc.encode(`${node.path}\u0000${count} ${node.children.length}\n`);
+  const oid = node.id === undefined ? [] : [...hexToBytes(node.id)];
+  return [...header, ...oid, ...node.children.flatMap(encodeCacheTreeNode)];
+}
+
+describe('Given a cache-tree walk that meets an absent oid, then one no artefact can route, then a live one', () => {
+  describe('When fsck runs', () => {
+    it('Then the proved missing entry point still reports and the live sibling still roots its tree', async () => {
+      // Arrange — the walk pops in reverse push order, so listing the live
+      // subtree first and the absent one last makes the refused route land
+      // between them: after the verdict is proved, before the last root.
+      const ctx = await initBareCtx();
+      const blobId = await writeObject(ctx, makeBlob('cache-tree drain'));
+      const treeId = await writeObject(
+        ctx,
+        makeTree([{ mode: FILE_MODE.REGULAR, name: 'a.txt', id: blobId }]),
+      );
+      const refusedRouteId = midxOid('bb1');
+      await writeFlatMidx(
+        ctx,
+        midxBaseSpec({ entries: [{ id: refusedRouteId, packIndex: 0, offset: 0 }] }),
+      );
+      const cacheTree: CacheTreeNode = {
+        path: '',
+        id: undefined,
+        children: [
+          { path: 'live', id: treeId, children: [] },
+          { path: 'refused', id: refusedRouteId, children: [] },
+          { path: 'absent', id: 'ee'.repeat(20) as ObjectId, children: [] },
+        ],
+      };
+      await writeIndexWithRawCacheTree(ctx, blobId, new Uint8Array(encodeCacheTreeNode(cacheTree)));
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      expect(result.exitCode & 8).toBe(8);
+      expect(
+        result.findings.filter((f) => f.type === 'unreachable' || f.type === 'dangling'),
+      ).toEqual([]);
+    });
+  });
+});
+
+describe('Given a cache-tree naming only an oid a multi-pack-index routes past its own PNAM', () => {
+  describe('When fsck runs', () => {
+    it('Then no missing entry point is claimed and the midx pass reports the route it cannot decode', async () => {
+      // Arrange — the oid lives nowhere but the midx OIDL, so the presence
+      // probe reaches the deferred pack-int-id check and can say nothing.
+      const ctx = await initBareCtx();
+      const blobId = await writeObject(ctx, makeBlob('refused-route cache-tree'));
+      const refusedRouteId = midxOid('cc1');
+      await writeFlatMidx(
+        ctx,
+        midxBaseSpec({ entries: [{ id: refusedRouteId, packIndex: 0, offset: 0 }] }),
+      );
+      await writeIndexWithEntry(ctx, blobId, 'a.txt', refusedRouteId);
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      const findings = result.findings.filter((f) => f.type === 'midx-unusable');
+      expect(findings).toHaveLength(1);
+      expect((findings[0] as { reason: string }).reason).toContain('pack index');
+      expect(result.exitCode).toBe(32);
+    });
+  });
+});
+
+describe('Given a cache-tree oid a multi-pack-index routes to a pack whose index will not parse', () => {
+  describe('When fsck runs', () => {
+    it('Then the index corruption propagates rather than passing for a cache-tree nothing disproved', async () => {
+      // Arrange — every pass that owns this pack contains the fault (the
+      // scan classifies it, the midx walk calls the pack unserviceable), so
+      // the lookup the cache-tree probe drives is the only place it escapes.
+      const ctx = await initBareCtx();
+      const blobId = await writeObject(ctx, makeBlob('unparsable claimed index'));
+      const { packNameIdx } = await writeMidxPack(ctx, 'claimed-corrupt', 'claimed-content');
+      const routedId = midxOid('dd1');
+      await writeFlatMidx(
+        ctx,
+        midxBaseSpec({
+          packNames: [packNameIdx],
+          entries: [{ id: routedId, packIndex: 0, offset: 0 }],
+        }),
+      );
+      await writeIndexWithEntry(ctx, blobId, 'a.txt', routedId);
+      const idxPath = `${packsDir(commonGitDir(ctx))}/${packNameIdx}`;
+      const wrapped: Context = {
+        ...ctx,
+        fs: {
+          ...ctx.fs,
+          read: async (path: string) =>
+            path === idxPath ? new Uint8Array(4) : await ctx.fs.read(path),
+        },
+      };
+
+      // Act
+      let caught: unknown;
+      try {
+        await fsck(wrapped);
+      } catch (error) {
+        caught = error;
+      }
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      expect((caught as TsgitError).data).toEqual({
+        code: 'INVALID_PACK_INDEX',
+        reason: 'truncated: file too short for header and fanout',
+      });
+    });
+  });
+});
+
 // ---------------------------------------------------------------------------
 // CONNECTIVITY-ONLY — CLASSIFY UNREADABLE OBJECTS (§D12)
 // ---------------------------------------------------------------------------
