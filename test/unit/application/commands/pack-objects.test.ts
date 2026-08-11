@@ -314,6 +314,13 @@ describe('packObjects', () => {
         const { ctx } = await seedOneCommit();
         const registry = getPackRegistry(ctx);
         const before = await registry.all();
+        expect(before).toHaveLength(0);
+        // A pack lands in the repository's own pack directory behind that
+        // cached scan: surfacing it is the one and only thing a refresh does,
+        // so leaving it unseen is what proves none happened.
+        await writeSyntheticPack(ctx, 'behind-the-scan', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('behind the scan') },
+        ]);
         const customDir = `${ctx.layout.gitDir}/custom-packs`;
         const sut = packObjects;
 
@@ -325,7 +332,7 @@ describe('packObjects', () => {
         expect(await ctx.fs.exists(`${customDir}/pack-${result.packId}.idx`)).toBe(true);
         expect(await ctx.fs.exists(`${packDirOf(ctx)}/pack-${result.packId}.pack`)).toBe(false);
         const after = await registry.all();
-        expect(after).toEqual(before);
+        expect(after).toHaveLength(0);
       });
     });
   });

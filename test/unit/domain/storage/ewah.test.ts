@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { TsgitError } from '../../../../src/domain/error.js';
 import type { BitmapCheck } from '../../../../src/domain/storage/error.js';
 import {
+  type EwahStream,
   foldEwahStream,
   maxSetBitPosition,
   readEwahStream,
@@ -185,6 +186,21 @@ describe('ewah', () => {
 
           // Act & Assert
           expectRefusal(() => readEwahStream(bytes, view, 0), 'stream', 'truncated');
+        });
+      });
+    });
+
+    describe('Given a buffer holding the 8-byte header and not one byte more', () => {
+      describe('When reading the descriptor', () => {
+        it('Then the header itself is accepted and only the words it declares are refused', () => {
+          // Arrange: the exact boundary — the header fits, so the refusal has
+          // to come from the declared words overrunning, never from the
+          // header being called truncated.
+          const bytes = new Uint8Array(8);
+          const view = new DataView(bytes.buffer);
+
+          // Act & Assert
+          expectRefusal(() => readEwahStream(bytes, view, 0), 'stream', 'overruns');
         });
       });
     });
@@ -443,6 +459,59 @@ describe('ewah', () => {
       });
     });
 
+    describe('Given a stream folded with the or operation over a bit the destination already carries', () => {
+      describe('When folding', () => {
+        it('Then the overlapping bit stays set, which xor would have cleared', () => {
+          // Arrange: commits stream (bits 0, 1) folded into a destination that
+          // already carries bit 0 — the one destination state that tells the
+          // two operations apart.
+          const bytes = buildEwahStream(2, [
+            [0x2, 0x0],
+            [0x0, 0x3],
+          ]);
+          const view = new DataView(bytes.buffer);
+          const stream = readEwahStream(bytes, view, 0);
+          const into = new Uint32Array(1);
+          into[0] = 0b001;
+
+          // Act
+          foldEwahStream(bytes, view, stream, into, 'or');
+
+          // Assert
+          expect(into[0]).toBe(0b011);
+        });
+      });
+    });
+
+    describe('Given a descriptor declaring far more words than the buffer backs', () => {
+      describe('When folding', () => {
+        it('Then the walk stops at the last word the buffer really carries, without a read past its end', () => {
+          // Arrange: the shape `readEwahStream` refuses outright, so it can
+          // only reach the decoder hand-built — the buffer backs two words and
+          // the descriptor claims 0x7fffffff.
+          const bytes = buildEwahStream(128, [
+            [0x4, 0x0],
+            [0x0, 0x1],
+          ]);
+          const view = new DataView(bytes.buffer);
+          const stream: EwahStream = {
+            bitSize: 128,
+            wordCount: 0x7fffffff,
+            wordsOffset: 8,
+            endOffset: bytes.length,
+          };
+          const into = new Uint32Array(4);
+
+          // Act
+          const act = (): void => foldEwahStream(bytes, view, stream, into, 'or');
+
+          // Assert
+          expect(act).not.toThrow();
+          expect(bitsOf(into)).toEqual([0]);
+        });
+      });
+    });
+
     describe('Given the same stream folded with xor twice', () => {
       describe('When folding', () => {
         it('Then the destination returns to its original value', () => {
@@ -528,6 +597,18 @@ describe('ewah', () => {
               [0x0, 0x1],
             ],
             expected: 0,
+          },
+          {
+            // Two literal words each setting their OWN local bit 0: only a
+            // forward lane advance across the pair puts the answer at 64.
+            label: 'two literal words whose later one carries the higher bit',
+            bitSize: 128,
+            words: [
+              [0x4, 0x0],
+              [0x0, 0x1],
+              [0x0, 0x1],
+            ],
+            expected: 64,
           },
         ])('Then $label reports its own highest bit', ({ bitSize, words, expected }) => {
           // Arrange

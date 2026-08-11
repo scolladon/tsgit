@@ -52,6 +52,7 @@ async function markTree(
   if (seenTrees.has(treeId)) return;
   seenTrees.add(treeId);
   if (depth > MAX_TREE_DEPTH) throw treeDepthExceeded(depth);
+  // Stryker disable next-line ConditionalExpression: equivalent — the readObject below re-checks ctx.signal and throws the identical operationAborted; the only mark this guard saves is discarded by that same throw.
   if (ctx.signal?.aborted) throw operationAborted();
   marked.add(treeId);
   const treeObj = await readObject(ctx, treeId);
@@ -90,6 +91,7 @@ async function markCommitAncestry(
 ): Promise<void> {
   for await (const commit of walkCommits(ctx, {
     from: [id],
+    // Stryker disable next-line ArrayDeclaration: equivalent — every id already in markedCommits had its own full ancestry walked, so dropping the cut-off only re-walks commits whose marks are already set.
     until: [...markedCommits],
     ignoreMissing: true,
   })) {

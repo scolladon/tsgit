@@ -117,6 +117,25 @@ const buildLinearChain = async (ctx: Context): Promise<LinearChain> => {
   return { c1, c2, c3, t1, t2, t3, b1, b2, b3 };
 };
 
+/**
+ * How many times `act` reads `id`'s own loose object off `ctx`'s filesystem —
+ * the marking pass's I/O contract, which its result set alone cannot show.
+ */
+const countLooseReadsOf = async (
+  ctx: Context,
+  id: ObjectId,
+  act: () => Promise<unknown>,
+): Promise<number> => {
+  const suffix = `${id.slice(0, 2)}/${id.slice(2)}`;
+  const spy = vi.spyOn(ctx.fs, 'read');
+  try {
+    await act();
+    return spy.mock.calls.filter(([path]) => path.endsWith(suffix)).length;
+  } finally {
+    spy.mockRestore();
+  }
+};
+
 interface HavesFixture {
   readonly ctx: Context;
   readonly root: ObjectId;
@@ -435,6 +454,155 @@ describe('computeClosure', () => {
     });
   });
 
+  describe('Given the same shared-subtree not tree, with objects: false', () => {
+    describe('When computeClosure marks it uninteresting', () => {
+      it('Then the shared subtree is read once, not once per reference', async () => {
+        // Arrange — objects: false keeps the want side from walking any tree,
+        // so every read of `sharedTreeId` is one the marking pass made.
+        const ctx = await buildSeededContext();
+        const sharedBlobId = await writeBlob(ctx, 'shared-leaf');
+        const sharedTreeId = await writeTree(ctx, [
+          { name: 'leaf.txt', mode: '100644' as FileMode, id: sharedBlobId },
+        ]);
+        const outerTreeId = await writeTree(ctx, [
+          { name: 'a', mode: '40000' as FileMode, id: sharedTreeId },
+          { name: 'b', mode: '40000' as FileMode, id: sharedTreeId },
+        ]);
+        const commitId = await writeCommit(ctx, outerTreeId, [], 'shared subtree twice');
+        const sut = computeClosure;
+
+        // Act
+        const reads = await countLooseReadsOf(ctx, sharedTreeId, () =>
+          sut(ctx, { tier: 'walk', wants: [commitId], not: [outerTreeId], objects: false }),
+        );
+
+        // Assert
+        expect(reads).toBe(1);
+      });
+    });
+  });
+
+  describe('Given a not id that is a blob, with objects: false', () => {
+    describe('When computeClosure marks it uninteresting', () => {
+      it('Then the read that identified it is the only one it costs', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const markedBlobId = await writeBlob(ctx, 'excluded directly');
+        const treeId = await writeTree(ctx, [
+          { name: 'z.txt', mode: '100644' as FileMode, id: markedBlobId },
+        ]);
+        const commitId = await writeCommit(ctx, treeId, [], 'with one excluded blob');
+        const sut = computeClosure;
+
+        // Act
+        const reads = await countLooseReadsOf(ctx, markedBlobId, () =>
+          sut(ctx, { tier: 'walk', wants: [commitId], not: [markedBlobId], objects: false }),
+        );
+
+        // Assert
+        expect(reads).toBe(1);
+      });
+    });
+  });
+
+  describe('Given a not tree whose gitlink entry names an oid the want side holds as a blob', () => {
+    describe('When computeClosure marks the not tree uninteresting', () => {
+      it('Then the gitlink oid is left unmarked and that blob is still emitted', async () => {
+        // Arrange — a gitlink records a commit oid from ANOTHER repository, so
+        // marking it would exclude whatever this one happens to store under it.
+        const ctx = await buildSeededContext();
+        const sharedId = await writeBlob(ctx, 'not a submodule');
+        const notTreeId = await writeTree(ctx, [
+          { name: 'submodule', mode: '160000' as FileMode, id: sharedId },
+        ]);
+        const wantTreeId = await writeTree(ctx, [
+          { name: 'kept.txt', mode: '100644' as FileMode, id: sharedId },
+        ]);
+        const commitId = await writeCommit(ctx, wantTreeId, [], 'shares the gitlink oid');
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, {
+          tier: 'walk',
+          wants: [commitId],
+          not: [notTreeId],
+          objects: true,
+        });
+
+        // Assert
+        const ids = new Set(result.objects.map((o) => o.id));
+        expect(ids.has(sharedId)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a not tree whose regular-file entry names an object the repository lacks', () => {
+    describe('When computeClosure marks it uninteresting', () => {
+      it('Then the entry is marked without being read and the closure still answers', async () => {
+        // Arrange — a blobless partial clone: the tree is present, the blob it
+        // names never was.
+        const ctx = await buildSeededContext();
+        const absentId = 'd'.repeat(40) as ObjectId;
+        const notTreeId = await writeTree(ctx, [
+          { name: 'absent.txt', mode: '100644' as FileMode, id: absentId },
+        ]);
+        const keptBlobId = await writeBlob(ctx, 'kept');
+        const wantTreeId = await writeTree(ctx, [
+          { name: 'kept.txt', mode: '100644' as FileMode, id: keptBlobId },
+        ]);
+        const commitId = await writeCommit(ctx, wantTreeId, [], 'blobless not side');
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, {
+          tier: 'walk',
+          wants: [commitId],
+          not: [notTreeId],
+          objects: true,
+        });
+
+        // Assert
+        const ids = new Set(result.objects.map((o) => o.id));
+        expect(ids.has(keptBlobId)).toBe(true);
+        expect(ids.has(absentId)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a not tip whose parent commit the repository lacks', () => {
+    describe('When computeClosure marks its ancestry uninteresting', () => {
+      it('Then the marking stops at the missing edge instead of refusing', async () => {
+        // Arrange — a shallow clone's own shape: the tip is present, its
+        // parent was never fetched.
+        const ctx = await buildSeededContext();
+        const absentParent = 'e'.repeat(40) as ObjectId;
+        const notBlobId = await writeBlob(ctx, 'have');
+        const notTreeId = await writeTree(ctx, [
+          { name: 'h.txt', mode: '100644' as FileMode, id: notBlobId },
+        ]);
+        const notTipId = await writeCommit(ctx, notTreeId, [absentParent], 'grafted have');
+        const wantBlobId = await writeBlob(ctx, 'want');
+        const wantTreeId = await writeTree(ctx, [
+          { name: 'w.txt', mode: '100644' as FileMode, id: wantBlobId },
+        ]);
+        const wantId = await writeCommit(ctx, wantTreeId, [notTipId], 'want');
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, {
+          tier: 'walk',
+          wants: [wantId],
+          not: [notTipId],
+          objects: true,
+        });
+
+        // Assert
+        const ids = new Set(result.objects.map((o) => o.id));
+        expect(ids).toEqual(new Set([wantId, wantTreeId, wantBlobId]));
+      });
+    });
+  });
+
   describe('Given a not tree that contains a gitlink entry', () => {
     describe('When computeClosure marks it uninteresting', () => {
       it('Then the gitlink target is skipped rather than read as an object', async () => {
@@ -474,7 +642,7 @@ describe('computeClosure', () => {
 
   describe('Given a not id nested 1025 levels deep', () => {
     describe('When computeClosure marks it uninteresting', () => {
-      it('Then it throws TREE_DEPTH_EXCEEDED, not a stack overflow', async () => {
+      it('Then it throws TREE_DEPTH_EXCEEDED at the first level past the cap, not a stack overflow', async () => {
         // Arrange — mirrors enumerate-bundle-objects.ts's own deep-tree guard test.
         const ctx = await buildSeededContext();
         const PHANTOM_ID = 'a'.repeat(40) as ObjectId;
@@ -499,7 +667,13 @@ describe('computeClosure', () => {
 
         // Assert
         expect(caught).toBeInstanceOf(TsgitError);
-        expect((caught as TsgitError).data.code).toBe('TREE_DEPTH_EXCEEDED');
+        const data = (caught as TsgitError).data;
+        if (data.code !== 'TREE_DEPTH_EXCEEDED') {
+          expect.fail(`expected TREE_DEPTH_EXCEEDED, got ${data.code}`);
+        }
+        // All 1025 levels are marked; the phantom below them is level 1025,
+        // the first one past the cap — 1024 itself is still walked.
+        expect(data.depth).toBe(1025);
       });
     });
   });
@@ -572,6 +746,139 @@ describe('computeClosure', () => {
 
         // Assert
         expect(result.objects).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given an empty wants array and a not id the repository cannot resolve', () => {
+    describe('When computeClosure is called', () => {
+      it('Then it answers empty without resolving the not side at all', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await buildLinearChain(ctx);
+        const unresolvable = '9'.repeat(40) as ObjectId;
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, {
+          tier: 'walk',
+          wants: [],
+          not: [unresolvable],
+          objects: true,
+        });
+
+        // Assert — nothing to reach means nothing to exclude, so the not side
+        // is never read and its unresolvable id never refuses.
+        expect(result.objects).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a want commit whose parent the repository lacks', () => {
+    describe('When computeClosure walks its ancestry', () => {
+      it('Then the walk stops at the missing edge instead of refusing', async () => {
+        // Arrange — a shallow clone's tip, walked from the interesting side.
+        const ctx = await buildSeededContext();
+        const absentParent = 'b'.repeat(40) as ObjectId;
+        const blobId = await writeBlob(ctx, 'grafted');
+        const treeId = await writeTree(ctx, [
+          { name: 'f.txt', mode: '100644' as FileMode, id: blobId },
+        ]);
+        const commitId = await writeCommit(ctx, treeId, [absentParent], 'grafted tip');
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, {
+          tier: 'walk',
+          wants: [commitId],
+          not: [],
+          objects: false,
+        });
+
+        // Assert
+        expect(result.objects.map((o) => o.id)).toEqual([commitId]);
+      });
+    });
+  });
+
+  describe('Given a commits-only request whose boundary commit lacks its own tree', () => {
+    describe('When computeClosure walks the interesting side', () => {
+      it('Then it answers without reading any tree at all', async () => {
+        // Arrange — a tree-filtered partial clone: `root` is the boundary both
+        // sides share, and only a tree pass would ever ask for its tree.
+        const ctx = await buildSeededContext();
+        const absentTreeId = 'c'.repeat(40) as ObjectId;
+        const rootId = await writeCommit(ctx, absentTreeId, [], 'root');
+        const haveBlobId = await writeBlob(ctx, 'have');
+        const haveTreeId = await writeTree(ctx, [
+          { name: 'h.txt', mode: '100644' as FileMode, id: haveBlobId },
+        ]);
+        const haveId = await writeCommit(ctx, haveTreeId, [rootId], 'have');
+        const wantBlobId = await writeBlob(ctx, 'want');
+        const wantTreeId = await writeTree(ctx, [
+          { name: 'w.txt', mode: '100644' as FileMode, id: wantBlobId },
+        ]);
+        const wantId = await writeCommit(ctx, wantTreeId, [rootId], 'want');
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, {
+          tier: 'walk',
+          wants: [wantId],
+          not: [haveId],
+          objects: false,
+        });
+
+        // Assert
+        expect(result.objects.map((o) => o.id)).toEqual([wantId]);
+      });
+    });
+  });
+
+  describe('Given two commit seeds under noWalk, one of them covered by not', () => {
+    describe('When computeClosure emits the seeds', () => {
+      it('Then the covered seed is skipped and the other is emitted', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const chain = await buildLinearChain(ctx);
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, {
+          tier: 'walk',
+          wants: [chain.c3, chain.c2],
+          not: [chain.c2],
+          objects: false,
+          noWalk: true,
+        });
+
+        // Assert
+        expect(result.objects.map((o) => o.id)).toEqual([chain.c3]);
+      });
+    });
+  });
+
+  describe('Given three commit seeds under noWalk and maxCount: 2', () => {
+    describe('When computeClosure emits the seeds', () => {
+      it('Then exactly the first two are emitted', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const chain = await buildLinearChain(ctx);
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, {
+          tier: 'walk',
+          wants: [chain.c3, chain.c2, chain.c1],
+          not: [],
+          objects: false,
+          noWalk: true,
+          maxCount: 2,
+        });
+
+        // Assert — the bound governs the seeds themselves, with no walk to
+        // bound: one more seed than the cap, and the last one never lands.
+        expect(result.objects.map((o) => o.id)).toEqual([chain.c3, chain.c2]);
       });
     });
   });
