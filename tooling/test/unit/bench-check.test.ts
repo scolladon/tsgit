@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  bestOfRounds,
   compareToBaseline,
   DEFAULT_THRESHOLD_PCT,
   escapeCell,
@@ -12,6 +13,79 @@ import {
 import type { SnapshotEntry } from '../../bench-to-snapshot.js';
 
 const entry = (name: string, value: number): SnapshotEntry => ({ name, unit: 'ms', value });
+
+describe('bestOfRounds', () => {
+  describe('Given several rounds measuring the same scenario', () => {
+    describe('When bestOfRounds reduces them', () => {
+      it('Then the fastest observation wins, whichever round it came from', () => {
+        // Arrange — the fastest sits in the middle, so neither a first-wins
+        // nor a last-wins reduction could produce this answer.
+        const rounds = [[entry('a > tsgit', 9)], [entry('a > tsgit', 4)], [entry('a > tsgit', 7)]];
+        const sut = bestOfRounds;
+
+        // Act
+        const result = sut(rounds);
+
+        // Assert
+        expect(result).toEqual([entry('a > tsgit', 4)]);
+      });
+    });
+  });
+
+  describe('Given rounds covering different scenarios', () => {
+    describe('When bestOfRounds reduces them', () => {
+      it('Then every scenario survives, each at its own fastest', () => {
+        // Arrange
+        const rounds = [
+          [entry('a > tsgit', 5), entry('b > tsgit', 8)],
+          [entry('a > tsgit', 6), entry('b > tsgit', 3)],
+        ];
+        const sut = bestOfRounds;
+
+        // Act
+        const result = sut(rounds);
+
+        // Assert
+        expect([...result].sort((x, y) => x.name.localeCompare(y.name))).toEqual([
+          entry('a > tsgit', 5),
+          entry('b > tsgit', 3),
+        ]);
+      });
+    });
+  });
+
+  describe('Given a scenario present in only one round', () => {
+    describe('When bestOfRounds reduces them', () => {
+      it('Then it is reported from the round that has it rather than dropped', () => {
+        // Arrange — a bench that failed to record in one round must not erase
+        // the evidence collected by the others.
+        const rounds = [[entry('a > tsgit', 5)], [entry('a > tsgit', 6), entry('b > tsgit', 2)]];
+        const sut = bestOfRounds;
+
+        // Act
+        const result = sut(rounds);
+
+        // Assert
+        expect(result).toContainEqual(entry('b > tsgit', 2));
+      });
+    });
+  });
+
+  describe('Given no rounds at all', () => {
+    describe('When bestOfRounds reduces them', () => {
+      it('Then the result is empty rather than a thrown error', () => {
+        // Arrange
+        const sut = bestOfRounds;
+
+        // Act
+        const result = sut([]);
+
+        // Assert
+        expect(result).toEqual([]);
+      });
+    });
+  });
+});
 
 describe('compareToBaseline', () => {
   describe('Given a scenario that regresses above the threshold', () => {
