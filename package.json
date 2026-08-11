@@ -808,7 +808,7 @@
   },
   "devDependencies": {
     "@arethetypeswrong/cli": "0.18.5",
-    "@biomejs/biome": "2.5.7",
+    "@biomejs/biome": "2.5.8",
     "@cloudflare/vitest-pool-workers": "0.21.0",
     "@cloudflare/workers-types": "5.20260811.1",
     "@commitlint/cli": "21.2.1",
