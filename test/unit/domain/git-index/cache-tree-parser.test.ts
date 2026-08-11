@@ -41,6 +41,22 @@ function buildEntryBytes(
   return concatBytes([pathBytes, new Uint8Array([0]), header, oidBytes]);
 }
 
+/** Builds a chain of `levels` entries, each the sole subtree of the one
+ *  before it. Every entry is invalidated (`entryCount = -1`) so it carries no
+ *  oid — six bytes per nesting level, the cheapest nesting the grammar
+ *  allows and therefore the shape a depth bound has to survive. */
+function buildNestedChain(levels: number): Uint8Array {
+  const parts: Uint8Array[] = [];
+  for (let level = 0; level < levels; level += 1) {
+    parts.push(buildEntryBytes('', -1, level === levels - 1 ? 0 : 1));
+  }
+  return concatBytes(parts);
+}
+
+/** One more level than `MAX_CACHE_TREE_DEPTH` admits: the root sits at depth
+ *  0, so a chain of `MAX + 1` entries is exactly the deepest accepted one. */
+const DEEPEST_ACCEPTED_CHAIN = 1025;
+
 describe('parseCacheTree', () => {
   describe('Given a root-only cache-tree with one resolvable entry', () => {
     describe('When parsing', () => {
@@ -299,6 +315,45 @@ describe('parseCacheTree', () => {
             code: 'INVALID_INDEX_ENTRY',
             offset: bytes.length - 1,
             reason: 'cache-tree data has trailing bytes',
+          });
+        }
+      });
+    });
+  });
+
+  describe(`Given a chain of ${DEEPEST_ACCEPTED_CHAIN} nested entries`, () => {
+    describe('When parsing', () => {
+      it('Then it parses, since the deepest entry sits exactly at the depth bound', () => {
+        // Arrange
+        const sut = parseCacheTree;
+        const bytes = buildNestedChain(DEEPEST_ACCEPTED_CHAIN);
+
+        // Act
+        const result = sut(bytes);
+
+        // Assert
+        expect(result.subtreeCount).toBe(1);
+      });
+    });
+  });
+
+  describe(`Given a chain of ${DEEPEST_ACCEPTED_CHAIN + 1} nested entries`, () => {
+    describe('When parsing', () => {
+      it('Then it throws INVALID_INDEX_ENTRY rather than exhausting the call stack', () => {
+        // Arrange
+        const sut = parseCacheTree;
+        const bytes = buildNestedChain(DEEPEST_ACCEPTED_CHAIN + 1);
+
+        // Act & Assert
+        try {
+          sut(bytes);
+          expect.fail('should have thrown');
+        } catch (e) {
+          expect(e).toBeInstanceOf(TsgitError);
+          expect((e as TsgitError).data).toEqual({
+            code: 'INVALID_INDEX_ENTRY',
+            offset: DEEPEST_ACCEPTED_CHAIN * 6,
+            reason: 'cache-tree nesting exceeds the maximum depth',
           });
         }
       });

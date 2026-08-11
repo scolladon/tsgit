@@ -2,10 +2,9 @@ import type { ObjectId, RefName } from '../../../../domain/objects/index.js';
 import { ZERO_OID } from '../../../../domain/objects/index.js';
 import type { Context } from '../../../../ports/context.js';
 import { enumerateRefs } from '../../../primitives/enumerate-refs.js';
-import { probeLooseOid } from '../../../primitives/internal/loose-oid-cache.js';
-import { getPackRegistry } from '../../../primitives/read-object.js';
 import { getRefStore } from '../../../primitives/ref-store.js';
 import { EXIT_MISSING, EXIT_REFS_CONTENT } from './exit-codes.js';
+import { objectIsPresent } from './object-presence.js';
 import type { FsckFinding } from './types.js';
 
 type BadRefFinding = FsckFinding & { readonly type: 'bad-ref' };
@@ -17,10 +16,8 @@ const OID_RE = /^[0-9a-f]{40}$|^[0-9a-f]{64}$/;
  * Whether `oid` resolves to a readable object: present in `universe`, and,
  * when `universe` may optimistically admit an oid whose housing pack later
  * turns out inaccessible (`connectivityOnly`'s ungated pack half), confirmed
- * via a targeted loose-then-pack probe rather than trusted at face value.
- * Never attempts to read the object's own bytes — `probeLooseOid` is a
- * cached existence check and `registry.lookup` stops at the pack's header
- * gate, the same structural probe `health()` performs.
+ * through `objectIsPresent` — the one loose-then-pack probe, shared with the
+ * cache-tree check — rather than trusted at face value.
  */
 async function isKnownOid(
   ctx: Context,
@@ -30,8 +27,7 @@ async function isKnownOid(
 ): Promise<boolean> {
   if (!universe.has(oid)) return false;
   if (!confirmPackAccessibility) return true;
-  if (await probeLooseOid(ctx, oid)) return true;
-  return (await getPackRegistry(ctx).lookup(oid)) !== undefined;
+  return objectIsPresent(ctx, oid);
 }
 
 /**

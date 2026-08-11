@@ -1068,6 +1068,31 @@ describe('computeClosure — bitmap-tier artefact preference', () => {
     });
   });
 
+  describe('Given a usable midx bitmap and a usable pack bitmap, and a bitmap-tier request that also bounds the commit count', () => {
+    describe('When a closure is requested', () => {
+      it('Then the walk answers and no bitmap is read — a bounded count defeats the bitmap', async () => {
+        // Arrange
+        const fixture = await buildDualBitmapFixture('max-count-forces-walk');
+        const pack = await firstRegisteredPack(fixture.ctx);
+        const bitmapBytesSpy = vi.spyOn(pack, 'bitmapBytes');
+
+        // Act
+        const result = await computeClosure(fixture.ctx, {
+          tier: 'bitmap',
+          wants: [fixture.blobId],
+          not: [],
+          objects: true,
+          maxCount: 1,
+        });
+
+        // Assert
+        expect(result.tier).toBe('walk');
+        expect(bitmapBytesSpy).not.toHaveBeenCalled();
+        expect(result.objects).toEqual([{ id: fixture.blobId, type: 'blob' }]);
+      });
+    });
+  });
+
   describe('Given the midx bitmap declined for an out-of-range position (not a parse fault), and a usable pack bitmap', () => {
     describe('When a bitmap-tier closure is requested', () => {
       it('Then the pack bitmap answers with the same object the midx bitmap would have', async () => {

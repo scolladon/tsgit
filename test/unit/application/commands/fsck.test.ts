@@ -3284,6 +3284,147 @@ describe('Given the whole pack directory removed and an indexed entry pointing i
   });
 });
 
+/** Writes a single-entry index carrying a `TREE` extension whose payload is
+ *  `data` verbatim — the hook for a cache-tree the parser cannot read at
+ *  all, as opposed to one that parses and names a gone oid. */
+async function writeIndexWithRawCacheTree(
+  ctx: Context,
+  entryId: ObjectId,
+  data: Uint8Array,
+): Promise<void> {
+  const index = {
+    version: 2 as const,
+    entries: [
+      {
+        ctimeSeconds: 0,
+        ctimeNanoseconds: 0,
+        mtimeSeconds: 0,
+        mtimeNanoseconds: 0,
+        dev: 0,
+        ino: 0,
+        mode: FILE_MODE.REGULAR,
+        uid: 0,
+        gid: 0,
+        fileSize: 0,
+        id: entryId,
+        flags: STAGE0_FLAGS,
+        path: 'a.txt' as FilePath,
+      },
+    ],
+    extensions: [{ signature: 'TREE', data }],
+    trailerSha: new Uint8Array(0),
+  };
+  await ctx.fs.write(`${ctx.layout.gitDir}/index`, await serializeIndexFixtureAsync(index, ctx));
+}
+
+describe('Given a tree named only by the index cache-tree, reachable through no ref or commit', () => {
+  describe('When fsck runs', () => {
+    it('Then it reports neither unreachable nor dangling — a cache-tree oid is a reachability root', async () => {
+      // Arrange — the `git add f && git write-tree` shape: the tree exists
+      // and the cache-tree names it, nothing else points at it.
+      const ctx = await initBareCtx();
+      const blobId = await writeObject(ctx, makeBlob('cache-tree rooted'));
+      const treeId = await writeObject(
+        ctx,
+        makeTree([{ mode: FILE_MODE.REGULAR, name: 'a.txt', id: blobId }]),
+      );
+      await writeIndexWithEntry(ctx, blobId, 'a.txt', treeId);
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      expect(
+        result.findings.filter((f) => f.type === 'unreachable' || f.type === 'dangling'),
+      ).toEqual([]);
+      expect(result.exitCode).toBe(0);
+    });
+  });
+});
+
+describe('Given an index whose bytes cannot be read at all', () => {
+  describe('When fsck runs', () => {
+    it('Then the read fault propagates rather than passing for a healthy cache-tree', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const blobId = await writeObject(ctx, makeBlob('unreadable index'));
+      await writeIndexWithEntry(ctx, blobId, 'a.txt', undefined);
+      const indexFilePath = `${ctx.layout.gitDir}/index`;
+      const wrapped: Context = {
+        ...ctx,
+        fs: {
+          ...ctx.fs,
+          read: async (path: string) => {
+            if (path === indexFilePath) throw permissionDenied(path);
+            return ctx.fs.read(path);
+          },
+        },
+      };
+
+      // Act & Assert
+      try {
+        await fsck(wrapped);
+        expect.fail('should have thrown');
+      } catch (e) {
+        expect(e).toBeInstanceOf(TsgitError);
+        expect((e as TsgitError).data).toEqual({ code: 'PERMISSION_DENIED', path: indexFilePath });
+      }
+    });
+  });
+});
+
+describe('Given a cache-tree oid whose fanout directory refuses to be listed', () => {
+  describe('When fsck runs', () => {
+    it('Then the fault propagates rather than passing for a resolvable cache-tree oid', async () => {
+      // Arrange — the fanout reads as absent to the universe scan (which
+      // skips a missing prefix) and refuses only the cache-tree probe's own
+      // listing, so the fault can reach nothing but that probe.
+      const ctx = await initBareCtx();
+      const blobId = await writeObject(ctx, makeBlob('unreadable fanout'));
+      const cacheTreeId = 'aa'.repeat(20) as ObjectId;
+      const fanoutDir = objectsDir(commonGitDir(ctx), cacheTreeId.slice(0, 2));
+      await writeIndexWithEntry(ctx, blobId, 'a.txt', cacheTreeId);
+      const wrapped: Context = {
+        ...ctx,
+        fs: {
+          ...ctx.fs,
+          exists: async (path: string) => (path === fanoutDir ? false : ctx.fs.exists(path)),
+          readdir: async (path: string) => {
+            if (path === fanoutDir) throw permissionDenied(path);
+            return ctx.fs.readdir(path);
+          },
+        },
+      };
+
+      // Act & Assert
+      try {
+        await fsck(wrapped);
+        expect.fail('should have thrown');
+      } catch (e) {
+        expect(e).toBeInstanceOf(TsgitError);
+        expect((e as TsgitError).data).toEqual({ code: 'PERMISSION_DENIED', path: fanoutDir });
+      }
+    });
+  });
+});
+
+describe('Given an index whose cache-tree extension payload does not parse', () => {
+  describe('When fsck runs', () => {
+    it('Then the extension is ignored and the missing-entry-point bit stays clear, as in git', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const blobId = await writeObject(ctx, makeBlob('unparsable cache-tree'));
+      await writeIndexWithRawCacheTree(ctx, blobId, enc.encode('no-nul-terminated-path-here'));
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      expect(result.exitCode).toBe(0);
+    });
+  });
+});
+
 // ---------------------------------------------------------------------------
 // CONNECTIVITY-ONLY — CLASSIFY UNREADABLE OBJECTS (§D12)
 // ---------------------------------------------------------------------------

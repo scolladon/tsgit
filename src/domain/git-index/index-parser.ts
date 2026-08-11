@@ -13,11 +13,29 @@ import { validateIndexPath } from './path-validator.js';
 
 const DIRC_SIGNATURE = 0x44495243;
 const INDEX_HEADER_SIZE = 12;
-const INDEX_CHECKSUM_SIZE = 20;
+/**
+ * The width of EVERY oid this module reads — an entry's own sha, the file's
+ * trailing checksum, and a cache-tree entry's oid alike. The index parser is
+ * SHA-1-only, deliberately and as a whole: git sizes all three together from
+ * the repository's hash algorithm, so widening one without the others would
+ * mis-frame the file rather than read a SHA-256 index. That is why
+ * `parseCacheTree` takes no `digestLength` parameter the way the pack-side
+ * parsers do — the width is not a per-function choice here.
+ */
+const INDEX_OID_LENGTH = 20;
+const INDEX_CHECKSUM_SIZE = INDEX_OID_LENGTH;
 const ENTRY_HEADER_SIZE = 62;
-const CACHE_TREE_OID_LENGTH = 20;
+const CACHE_TREE_OID_LENGTH = INDEX_OID_LENGTH;
 const CACHE_TREE_SPACE = 0x20;
 const CACHE_TREE_LF = 0x0a;
+/**
+ * Same bound the tree walkers hold: a cache-tree nests through mutual
+ * recursion (`parseCacheTreeEntry` <-> `readCacheTreeChildren`), and its
+ * cheapest nesting unit is six bytes, so an index carrying a hostile `TREE`
+ * extension would otherwise drive the parser past the call stack from a few
+ * kilobytes of payload.
+ */
+const MAX_CACHE_TREE_DEPTH = 1024;
 
 export function parseIndex(bytes: Uint8Array): GitIndex {
   if (bytes.length < INDEX_HEADER_SIZE) {
@@ -61,7 +79,7 @@ export function parseIndex(bytes: Uint8Array): GitIndex {
     const gid = view.getUint32(offset + 32);
     const fileSize = view.getUint32(offset + 36);
 
-    const shaBytes = bytes.subarray(offset + 40, offset + 60);
+    const shaBytes = bytes.subarray(offset + 40, offset + 40 + INDEX_OID_LENGTH);
     const id = bytesToHex(shaBytes) as ObjectId;
 
     const flagsRaw = view.getUint16(offset + 60);
@@ -192,10 +210,13 @@ function parseExtensions(
  * component, then ASCII `<entry_count> SP <subtree_count> LF`, then — only
  * when `entry_count >= 0` — the raw oid. `subtree_count` further entries
  * follow immediately, each parsed the same way, which is what produces the
- * depth-first nesting.
+ * depth-first nesting — bounded at `MAX_CACHE_TREE_DEPTH`, since that nesting
+ * is the one thing an untrusted payload gets to drive without limit. The oid
+ * is read at `INDEX_OID_LENGTH`, the SHA-1 width the whole index parser is
+ * fixed to.
  */
 export function parseCacheTree(data: Uint8Array): CacheTreeEntry {
-  const { entry, offset } = parseCacheTreeEntry(data, 0);
+  const { entry, offset } = parseCacheTreeEntry(data, 0, 0);
   if (offset !== data.length) {
     throw invalidIndexEntry(offset, 'cache-tree data has trailing bytes');
   }
@@ -205,7 +226,11 @@ export function parseCacheTree(data: Uint8Array): CacheTreeEntry {
 function parseCacheTreeEntry(
   data: Uint8Array,
   start: number,
+  depth: number,
 ): { readonly entry: CacheTreeEntry; readonly offset: number } {
+  if (depth > MAX_CACHE_TREE_DEPTH) {
+    throw invalidIndexEntry(start, 'cache-tree nesting exceeds the maximum depth');
+  }
   const pathEnd = findNul(data, start);
   if (pathEnd === -1) {
     throw invalidIndexEntry(start, 'cache-tree entry missing NUL-terminated path');
@@ -231,7 +256,7 @@ function parseCacheTreeEntry(
   );
 
   const { id, offset: afterOid } = readCacheTreeOid(data, lfIndex + 1, entryCount, start);
-  return readCacheTreeChildren(data, afterOid, subtreeCount, {
+  return readCacheTreeChildren(data, afterOid, subtreeCount, depth, {
     path,
     entryCount,
     subtreeCount,
@@ -257,6 +282,7 @@ function readCacheTreeChildren(
   data: Uint8Array,
   start: number,
   subtreeCount: number,
+  depth: number,
   base: {
     readonly path: string;
     readonly entryCount: number;
@@ -267,7 +293,7 @@ function readCacheTreeChildren(
   const children: CacheTreeEntry[] = [];
   let cursor = start;
   for (let i = 0; i < subtreeCount; i++) {
-    const child = parseCacheTreeEntry(data, cursor);
+    const child = parseCacheTreeEntry(data, cursor, depth + 1);
     children.push(child.entry);
     cursor = child.offset;
   }

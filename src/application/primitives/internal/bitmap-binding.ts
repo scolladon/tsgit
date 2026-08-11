@@ -3,12 +3,10 @@
  * validated `LoadedBitmapArtefact`, indifferent to which of the two
  * flavours produced it: a pack's own `.bitmap` (`pack-bitmap-binding.ts`)
  * or a multi-pack-index's `.bitmap` (`midx-bitmap-binding.ts`). Both
- * flavours share every function in this module — including the load/parse/
- * range-validate pipeline (`usableBitmapBytes` + `validateBitmapContainer`,
- * themselves built on `bitmap-reconstruct.ts` and
- * `bitmap-range-validation.ts`) both loaders call, in that order, with their
- * own I/O interleaved exactly where it always was — and differ in exactly
- * the two mapping functions `LoadedBitmapArtefact` declares:
+ * flavours share every function in this module — and, before any of it, the
+ * load/parse/range-validate pipeline `bitmap-container.ts` holds, which both
+ * loaders call with their own I/O interleaved between its steps. They differ
+ * in exactly the two mapping functions `LoadedBitmapArtefact` declares:
  * `resolveOwnPosition` (an oid to the position an entry header's own
  * `position` field would carry for it) and `oidAtBitPosition` (a
  * reachability bit to an oid). For a pack bitmap both run through the
@@ -16,28 +14,19 @@
  * its reverse-index chunk, with no pack access at all.
  *
  * Position mapping and range validation run entirely inside a flavour's own
- * loader, and in that order: every position a bitmap decodes — entry
- * headers AND every set bit any of its streams declares — is checked against
- * the indexed artefact's own object count BEFORE `resolveOwnPosition` or
- * `oidAtBitPosition` is ever built or called. A violation declines the
- * WHOLE artefact, never just the offending entry, and is reported through
- * `ctx.logger?.warn?.`; the caller falls back to the next artefact in the
- * preference order, with nothing surfaced.
+ * loader, and in that order: every position a bitmap decodes is checked
+ * against the indexed artefact's own object count BEFORE `resolveOwnPosition`
+ * or `oidAtBitPosition` is ever built or called, so nothing in this module
+ * ever sees an out-of-range position.
  */
 import { TsgitError } from '../../../domain/error.js';
 import type { ObjectId } from '../../../domain/objects/index.js';
-import {
-  type BitmapEntryHeader,
-  bitmapEntryHeaders,
-  type PackBitmap,
-  parsePackBitmap,
-} from '../../../domain/storage/index.js';
+import type { BitmapEntryHeader, PackBitmap } from '../../../domain/storage/index.js';
 import type { Context } from '../../../ports/context.js';
 import { readObject } from '../read-object.js';
 import { MAX_PUSH_OBJECTS } from '../types.js';
 import { isGitlink } from '../validators.js';
 import { walkTree } from '../walk-tree.js';
-import { laneCountFor, validateBitmapRanges } from './bitmap-range-validation.js';
 import {
   createReconstructionContext,
   orInto,
@@ -45,8 +34,6 @@ import {
   reconstructEntry,
 } from './bitmap-reconstruct.js';
 import { resolveTagChain } from './object-emit.js';
-import type { ArtefactLoad } from './pack-artefact-source.js';
-import { faultContext } from './pack-shared.js';
 
 export interface BitmapClosureRequest {
   readonly wants: ReadonlyArray<ObjectId>;
@@ -105,185 +92,6 @@ export interface LoadedBitmapArtefact {
 /** Pack-flavour alias: same shape, kept distinct so a call site's own type
  *  still documents which artefact it expects. */
 export type LoadedPackBitmap = LoadedBitmapArtefact;
-
-/** own-position -> entry index — identical construction for every flavour,
- *  since `BitmapEntryHeader.position` already carries whichever position
- *  space the flavour's own artefact uses. */
-export function buildEntryByOwnPosition(
-  headers: ReadonlyArray<BitmapEntryHeader>,
-): ReadonlyMap<number, number> {
-  return new Map(headers.map((header, i) => [header.position, i] as const));
-}
-
-/**
- * Inverts a bit-position -> own-position table (`positions[bitPosition] =
- * ownPosition`) into its own-position -> bit-position form, PROVING the
- * input is a permutation of `[0, n)` first. Shared by both flavours: a pack
- * bitmap inverts `packPositions` (index position at each pack position); a
- * midx bitmap inverts the reverse-index chunk (midx position at each
- * pseudo-pack position) — same shape either way.
- *
- * `undefined` — the caller's whole-artefact decline — whenever a stored
- * value is out of range or names a slot already claimed. A table that names
- * one own position twice necessarily leaves another unnamed (n values into n
- * slots), and an unnamed own position has NO bit: a `.rev` body storing 0
- * everywhere would otherwise leave a holey inverse, silently mark bit 0 for
- * every tip, and answer a wrong pack. Rejecting a duplicate therefore
- * rejects a hole too, with no separate pass.
- */
-export function invertPositions(positions: Uint32Array): Uint32Array | undefined {
-  const inverse = new Uint32Array(positions.length);
-  const claimed = new Uint8Array(positions.length);
-  for (const [bitPosition, ownPosition] of positions.entries()) {
-    if (ownPosition >= positions.length || claimed[ownPosition] === 1) return undefined;
-    claimed[ownPosition] = 1;
-    inverse[ownPosition] = bitPosition;
-  }
-  return inverse;
-}
-
-export interface ParsedBitmapContainer {
-  readonly bitmap: PackBitmap;
-  readonly headers: ReadonlyArray<BitmapEntryHeader>;
-}
-
-/**
- * The one decline shape for a present-but-unusable artefact this module
- * recognises past the load: warn with the artefact's own name, return
- * `undefined` so the caller falls through to the next artefact in the
- * preference order with nothing surfaced.
- */
-export function declineBitmap(ctx: Context, reason: string, artefactName: string): undefined {
-  ctx.logger?.warn?.(`bitmapBinding: ${reason}`, { bitmap: artefactName });
-  return undefined;
-}
-
-/**
- * Parses `bytes` as a bitmap container and its per-commit entry headers —
- * identical work for both flavours, since the CONTAINER format is the same
- * whether it indexes a pack or a midx; only what a decoded `position` MEANS
- * differs, and that is entirely a loader's own concern past this point.
- * Returns `undefined` on a structural parse refusal, having already logged
- * it with `artefactName` — the caller's decline signal, matching every
- * other present-but-faulty artefact this module recognises.
- */
-export function parseBitmapContainer(
-  ctx: Context,
-  bytes: Uint8Array,
-  artefactName: string,
-  flavour: 'pack' | 'midx',
-  objectCount: number,
-): ParsedBitmapContainer | undefined {
-  try {
-    const bitmap = parsePackBitmap(bytes, ctx.hashConfig.digestLength);
-    // Canonical git never writes more per-commit entries than the artefact
-    // has objects — one entry names one commit, and every commit is an
-    // object — so refusing here refuses nothing git reads. Checked BEFORE
-    // the entry walk, so a hostile 32-bit `entryCount` never gets to
-    // allocate a header per declared entry.
-    if (bitmap.entryCount > objectCount) {
-      return declineBitmap(
-        ctx,
-        `${flavour} bitmap declares more entries than the artefact has objects, declining`,
-        artefactName,
-      );
-    }
-    return { bitmap, headers: bitmapEntryHeaders(bitmap) };
-  } catch (err) {
-    if (!(err instanceof TsgitError) || err.data.code !== 'INVALID_PACK_BITMAP') throw err;
-    ctx.logger?.warn?.(`bitmapBinding: discarding unusable ${flavour} bitmap`, {
-      bitmap: artefactName,
-      ...faultContext(err.data),
-    });
-    return undefined;
-  }
-}
-
-/**
- * Resolves a load outcome to usable bytes, or `undefined` for the caller to
- * decline and fall back to the next artefact in the preference order —
- * silently for absent/unreadable, with one `ctx.logger?.warn?.` for a
- * refused load. Identical for both flavours past the load outcome itself;
- * only the message's flavour word differs. Takes no I/O of its own, so a
- * caller that has not yet fetched what it needs to validate against (a
- * pack's `.idx`, say) is free to keep that fetch AFTER this call, exactly as
- * before this function existed.
- */
-export function usableBitmapBytes(
-  ctx: Context,
-  flavour: 'pack' | 'midx',
-  artefactName: string,
-  load: ArtefactLoad<Uint8Array>,
-): Uint8Array | undefined {
-  if (load.kind === 'absent' || load.kind === 'unreadable') return undefined;
-  if (load.kind === 'refused') {
-    ctx.logger?.warn?.(`bitmapBinding: discarding unusable ${flavour} bitmap`, {
-      bitmap: artefactName,
-      ...faultContext(load.data),
-    });
-    return undefined;
-  }
-  return load.bytes;
-}
-
-export interface ValidatedBitmapContainer {
-  readonly bitmap: PackBitmap;
-  readonly headers: ReadonlyArray<BitmapEntryHeader>;
-  readonly objectCount: number;
-  readonly laneCount: number;
-  readonly typeBits: readonly [Uint32Array, Uint32Array, Uint32Array, Uint32Array];
-}
-
-/**
- * Validated containers keyed by the exact bytes they were validated from.
- * Both flavours' byte loads are already memoised — per pack for a `.bitmap`,
- * per generation for a midx's — so the key is stable for as long as the
- * artefact is, and one closure at the bitmap tier pays the parse, the entry
- * walk and the range validation for every later one. A `refresh()` produces
- * new bytes, and the entry keyed on the old ones dies with them. Only
- * ACCEPTED containers are held: a decline must keep warning once per
- * attempt, exactly as it did before this memo existed.
- */
-const validatedContainers = new WeakMap<Uint8Array, ValidatedBitmapContainer>();
-
-/**
- * Parses `bytes` and range-validates the result against `objectCount` —
- * identical work for both flavours (see this module's own doc), taken once
- * a caller has `bytes` (from `usableBitmapBytes`) and its own artefact's
- * object count in hand. Returns `undefined` for the caller to decline — a
- * structural parse refusal and an over-long entry table both warn inside
- * `parseBitmapContainer` itself, an out-of-range position warns here, with
- * one `ctx.logger?.warn?.` whichever fires.
- */
-export function validateBitmapContainer(
-  ctx: Context,
-  flavour: 'pack' | 'midx',
-  artefactName: string,
-  bytes: Uint8Array,
-  objectCount: number,
-): ValidatedBitmapContainer | undefined {
-  const memoised = validatedContainers.get(bytes);
-  if (memoised !== undefined) return memoised;
-
-  const parsed = parseBitmapContainer(ctx, bytes, artefactName, flavour, objectCount);
-  if (parsed === undefined) return undefined;
-  const { bitmap, headers } = parsed;
-
-  const validated = validateBitmapRanges(bitmap, headers, objectCount);
-  if (validated === undefined) {
-    return declineBitmap(ctx, `${flavour} bitmap position out of range, declining`, artefactName);
-  }
-
-  const container: ValidatedBitmapContainer = {
-    bitmap,
-    headers,
-    objectCount,
-    laneCount: laneCountFor(objectCount),
-    typeBits: validated.typeBits,
-  };
-  validatedContainers.set(bytes, container);
-  return container;
-}
 
 const WORD_BITS = 32;
 const FULL_LANE = 0xffffffff;

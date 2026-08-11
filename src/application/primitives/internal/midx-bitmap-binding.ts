@@ -31,14 +31,14 @@ import type { Context } from '../../../ports/context.js';
 // structurally forbids this module from ever importing a runtime value out
 // of the registry it is bound into.
 import type { MidxBitmapLoad } from '../pack-registry.js';
+import type { LoadedBitmapArtefact } from './bitmap-binding.js';
 import {
   buildEntryByOwnPosition,
   declineBitmap,
   invertPositions,
-  type LoadedBitmapArtefact,
   usableBitmapBytes,
   validateBitmapContainer,
-} from './bitmap-binding.js';
+} from './bitmap-container.js';
 
 export type LoadedMidxBitmap = LoadedBitmapArtefact;
 

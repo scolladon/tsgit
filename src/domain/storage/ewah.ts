@@ -13,6 +13,15 @@ const FULL_LANE = 0xffffffff;
 const NO_SET_BIT = -1;
 
 export interface EwahStream {
+  /**
+   * The bit count the stream DECLARES, surfaced verbatim as part of the
+   * decoded descriptor — never a checked bound, and no decoder in this
+   * module reads it. Both walks below derive their real limit from the
+   * buffer (`availableWordCount`) instead, and a caller range-checking a
+   * stream against an object count asks `maxSetBitPosition`, because a
+   * hostile artefact is free to declare a `bitSize` that agrees with
+   * nothing its words actually set.
+   */
   readonly bitSize: number;
   readonly wordCount: number;
   /** Byte offset of the first 64-bit word. */
