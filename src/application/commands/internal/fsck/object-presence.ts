@@ -19,10 +19,17 @@ import { getPackRegistry } from '../../../primitives/read-object.js';
  * `--no-full` or `--connectivity-only` either — a chmod'd pack still fails
  * it under `--no-full`, and a healthy one still passes it.
  *
- * Deliberately WITHOUT a catch of its own, and no caller may add one: an
- * environmental fault raised here (an unreadable fanout directory, an
- * aborted signal) means the check never ran, and reporting a check that
- * never ran as a passed one is the one answer that must not be given.
+ * Deliberately WITHOUT a catch of its own: an environmental fault raised
+ * here (an unreadable fanout directory, an aborted signal) means the check
+ * never ran, and reporting a check that never ran as a passed one is the one
+ * answer that must not be given.
+ *
+ * A caller may contain a fault only where it names a broken ROUTE rather
+ * than a missing object, AND the same run already reports that fault under
+ * its own exit bit — the cache-tree walk contains exactly one such code,
+ * answering "cannot say" rather than "absent". Containing anything else, or
+ * containing it silently, re-creates the swallow this function exists to
+ * prevent.
  */
 export async function objectIsPresent(ctx: Context, id: ObjectId): Promise<boolean> {
   if (await probeLooseOid(ctx, id)) return true;
