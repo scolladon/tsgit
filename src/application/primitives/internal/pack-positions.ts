@@ -58,6 +58,7 @@ export function gatherByRevIndex(
   raw: ReadonlyArray<number>,
 ): ReadonlyArray<number> | undefined {
   const n = raw.length;
+  // Stryker disable next-line ArrayDeclaration: equivalent — every index in [0, n) is assigned before the sole return of `gathered`, so a preallocated array and one grown by those same assignments are element-wise and length-wise identical; the early return discards it unread
   const gathered = new Array<number>(n);
   for (let p = 0; p < n; p += 1) {
     const indexPosition = revIndexPositionAt(rev, p);

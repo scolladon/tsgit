@@ -5695,3 +5695,96 @@ describe('RegisteredPack.packPositions', () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// THE .rev FALLBACK'S OWN WARNS — the message and the artefact name both,
+// and the exact position at which a stored value stops naming this pack.
+// ---------------------------------------------------------------------------
+
+const REV_REFUSED_WARN = 'packRegistry: discarding unusable pack reverse index';
+const REV_OUT_OF_RANGE_WARN =
+  'packRegistry: pack reverse index position out of range, falling back to sort';
+
+describe('RegisteredPack.offsetTable — what the fallback warns say', () => {
+  describe('Given a pack whose .rev is refused', () => {
+    describe('When offsetTable() is called', () => {
+      it('Then the warn names the discard and the artefact in one message', async () => {
+        // Arrange
+        const entries = revAccelEntries(3, 'warn-refused');
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'warn-refused', entries);
+        await writeSyntheticRevIndex(
+          ctx,
+          'warn-refused',
+          await revAccelCorrectBody(ctx, 'warn-refused'),
+          { magic: 0 },
+        );
+        const warn = vi.fn();
+        const wrapped = { ...ctx, logger: { warn } };
+
+        // Act
+        const [pack] = await getPackRegistry(wrapped).all();
+        await pack!.offsetTable();
+
+        // Assert
+        expect(warn).toHaveBeenCalledTimes(1);
+        const [message, context] = warn.mock.calls[0] ?? [];
+        expect(message).toBe(REV_REFUSED_WARN);
+        expect((context as { rev?: string } | undefined)?.rev).toBe('pack-warn-refused.rev');
+      });
+    });
+  });
+
+  describe('Given a .rev whose first stored position is exactly the pack object count', () => {
+    describe('When offsetTable() is called', () => {
+      it('Then it falls back to the ascending sort and warns naming the out-of-range fallback and the artefact', async () => {
+        // Arrange — one past the last valid index position, the boundary the
+        // bound has to reject rather than gather `undefined` off the end.
+        const entries = revAccelEntries(6, 'warn-oob');
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'warn-oob', entries);
+        const correct = await revAccelCorrectBody(ctx, 'warn-oob');
+        await writeSyntheticRevIndex(ctx, 'warn-oob', [correct.length, ...correct.slice(1)]);
+        const expected = ascendingSortOf(await revAccelRawOffsets(ctx, 'warn-oob'));
+        const warn = vi.fn();
+        const wrapped = { ...ctx, logger: { warn } };
+
+        // Act
+        const [pack] = await getPackRegistry(wrapped).all();
+        const result = await pack!.offsetTable();
+
+        // Assert
+        expect(result.sortedOffsets).toEqual(expected);
+        expect(warn).toHaveBeenCalledTimes(1);
+        const [message, context] = warn.mock.calls[0] ?? [];
+        expect(message).toBe(REV_OUT_OF_RANGE_WARN);
+        expect((context as { rev?: string } | undefined)?.rev).toBe('pack-warn-oob.rev');
+      });
+    });
+  });
+
+  describe('Given a .rev whose first stored position is exactly the pack object count', () => {
+    describe('When packPositions() is called', () => {
+      it('Then it falls back to packPositionMap(index) rather than store the boundary value', async () => {
+        // Arrange
+        const entries = revAccelEntries(6, 'positions-boundary');
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'positions-boundary', entries);
+        const correct = await revAccelCorrectBody(ctx, 'positions-boundary');
+        await writeSyntheticRevIndex(ctx, 'positions-boundary', [
+          correct.length,
+          ...correct.slice(1),
+        ]);
+        const idxBytes = await ctx.fs.read(revAccelIdxPath(ctx, 'positions-boundary'));
+        const expected = packPositionMap(parsePackIndex(idxBytes));
+
+        // Act
+        const [pack] = await getPackRegistry(ctx).all();
+        const result = await pack!.packPositions();
+
+        // Assert
+        expect(result).toEqual(expected);
+      });
+    });
+  });
+});

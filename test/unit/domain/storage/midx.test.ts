@@ -1588,6 +1588,31 @@ describe('midx', () => {
         });
       });
     });
+
+    describe('Given a midx whose reverse-index chunk is followed by a large-offset chunk', () => {
+      describe('When the whole chunk is read as a table', () => {
+        it('Then it reads exactly the positions the midx carries and never the word past them', () => {
+          // Arrange — the first LOFF word sits immediately after the last RIDX
+          // word and holds a value no midx position could name.
+          const spec = baseSpec({
+            revBody: [2, 0, 1],
+            entries: [
+              { id: oid('01'), packIndex: 0, offset: 100 },
+              { id: oid('05'), packIndex: 1, offset: 200 },
+              { id: oid('09'), packIndex: 2, offset: 5 * 0x100000000 },
+            ],
+          });
+          const midx = parseMultiPackIndex(buildMidx(spec), spec.digestLength);
+          const sut = midxReverseIndexPositions;
+
+          // Act
+          const result = sut(midx);
+
+          // Assert
+          expect(result).toEqual(new Uint32Array([2, 0, 1]));
+        });
+      });
+    });
   });
 
   describe('lookupMidxPosition', () => {

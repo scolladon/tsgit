@@ -246,6 +246,7 @@ function parseCacheTreeEntry(
     start,
   );
 
+  // Stryker disable next-line ArithmeticOperator: equivalent — the entry count parsed just above matched /^-?\d+$/, so data[spaceIndex-1] is always an ASCII digit and data[spaceIndex] the separator space; neither byte is LF, so a scan started at spaceIndex-1 finds the same LF as one started at spaceIndex+1
   const lfIndex = indexOf(data, CACHE_TREE_LF, spaceIndex + 1);
   if (lfIndex === -1) {
     throw invalidIndexEntry(start, 'cache-tree entry missing subtree-count terminator');

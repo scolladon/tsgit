@@ -360,6 +360,26 @@ describe('parseCacheTree', () => {
     });
   });
 
+  describe('Given a subtree whose path ends with the same byte that separates the counts', () => {
+    describe('When parsing', () => {
+      it('Then the count scan starts past the NUL and the trailing space stays part of the path', () => {
+        // Arrange — a path may legitimately end in a space; only a scan that
+        // starts after the terminator can tell it from the count separator.
+        const sut = parseCacheTree;
+        const child = buildEntryBytes('dir ', 1, 0, SHA_A);
+        const bytes = concatBytes([buildEntryBytes('', 1, 1, SHA_B), child]);
+
+        // Act
+        const result = sut(bytes);
+
+        // Assert
+        expect(result.children).toEqual([
+          { path: 'dir ', entryCount: 1, subtreeCount: 0, id: SHA_A, children: [] },
+        ]);
+      });
+    });
+  });
+
   describe('Given an entry whose second (missing) subtree causes a truncated child read', () => {
     describe('When parsing', () => {
       it('Then it throws INVALID_INDEX_ENTRY at the missing child offset', () => {

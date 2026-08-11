@@ -6314,6 +6314,155 @@ describe('Given the same repository with and without its multi-pack-index', () =
 });
 
 // ---------------------------------------------------------------------------
+// REF-TARGET PACK-ACCESSIBILITY CONFIRMATION — the one mode in which the
+// universe optimistically admits an oid whose housing pack later fails its
+// own header gate, so the ref target is probed rather than trusted.
+// ---------------------------------------------------------------------------
+
+describe('Given a header-refused pack holding the only copy of a loose ref target', () => {
+  describe('When fsck runs in full connectivity-only mode', () => {
+    it('Then the ref target is confirmed through the pack probe and reported as badRefOid, exit bit 2 set', async () => {
+      // Arrange — connectivity-only leaves the universe un-narrowed, so the
+      // refused pack's ids are admitted and only the probe can tell them apart.
+      const ctx = await initBareCtx();
+      const [packedId] = await writeSyntheticPack(
+        ctx,
+        'confirm-refused',
+        onePackEntry('confirm-refused-content'),
+      );
+      await restampPackHeader(ctx, packFilePath(ctx, 'confirm-refused'), { version: 99 });
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${packedId as ObjectId}\n`);
+
+      // Act
+      const result = await fsck(ctx, { full: true, connectivityOnly: true });
+
+      // Assert
+      const badRefOid = result.findings.filter(
+        (f): f is FsckFinding & { readonly msgId: string } =>
+          f.type === 'bad-ref' && (f as { msgId: string }).msgId === 'badRefOid',
+      );
+      expect(badRefOid).toHaveLength(1);
+      expect(badRefOid[0]).toMatchObject({ ref: 'refs/heads/main', target: packedId });
+      expect(result.exitCode & 2).toBe(2);
+    });
+  });
+});
+
+describe('Given a ref target a healthy pack holds and a multi-pack-index routes past its own PNAM', () => {
+  describe('When fsck runs in full mode', () => {
+    it('Then the ref target is trusted at face value — no bad-ref finding, exit bit 2 absent, and the route is reported by the midx pass alone', async () => {
+      // Arrange — the universe was narrowed to accessible packs already, so a
+      // second probe would only re-raise the midx routing fault the midx pass
+      // owns, aborting a run git completes.
+      const ctx = await initBareCtx();
+      const [packedId] = await writeSyntheticPack(
+        ctx,
+        'trusted-route',
+        onePackEntry('trusted-route-content'),
+      );
+      await writeFlatMidx(
+        ctx,
+        midxBaseSpec({
+          packNames: ['pack-trusted-route.idx'],
+          entries: [{ id: packedId as ObjectId, packIndex: 1, offset: 0 }],
+        }),
+      );
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${packedId as ObjectId}\n`);
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      expect(result.findings.filter((f) => f.type === 'bad-ref')).toEqual([]);
+      expect(result.exitCode & 2).toBe(0);
+      expect(result.findings.filter((f) => f.type === 'midx-unusable')).toHaveLength(1);
+      expect(result.exitCode & 32).toBe(32);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// INDEX FAULTS THE CACHE-TREE CHECK TOLERATES — an index whose bytes do not
+// form an index withholds the missing-entry-point verdict rather than
+// claiming it, and never aborts the run.
+// ---------------------------------------------------------------------------
+
+describe('Given an index whose bytes do not form an index', () => {
+  describe('When fsck runs', () => {
+    it('Then the run completes and no missing entry point is claimed, exit bit 8 absent', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      await writeObject(ctx, makeBlob('index-fault anchor'));
+      await ctx.fs.write(`${ctx.layout.gitDir}/index`, enc.encode('not an index at all'));
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      expect(result.exitCode & 8).toBe(0);
+      expect(result.findings.filter((f) => f.type === 'bad-ref')).toEqual([]);
+    });
+  });
+});
+
+/** An index carrying one stage-0 entry and the given extensions, in order. */
+async function writeIndexWithExtensions(
+  ctx: Context,
+  entryId: ObjectId,
+  extensions: ReadonlyArray<{ readonly signature: string; readonly data: Uint8Array }>,
+): Promise<void> {
+  const index = {
+    version: 2 as const,
+    entries: [
+      {
+        ctimeSeconds: 0,
+        ctimeNanoseconds: 0,
+        mtimeSeconds: 0,
+        mtimeNanoseconds: 0,
+        dev: 0,
+        ino: 0,
+        mode: FILE_MODE.REGULAR,
+        uid: 0,
+        gid: 0,
+        fileSize: 0,
+        id: entryId,
+        flags: STAGE0_FLAGS,
+        path: 'a.txt' as FilePath,
+      },
+    ],
+    extensions: [...extensions],
+    trailerSha: new Uint8Array(0),
+  };
+  await ctx.fs.write(`${ctx.layout.gitDir}/index`, await serializeIndexFixtureAsync(index, ctx));
+}
+
+describe('Given an index whose first extension is not TREE and whose TREE names only resolvable oids', () => {
+  describe('When fsck runs', () => {
+    it('Then the cache-tree check reads the TREE extension alone and claims no missing entry point, exit bit 8 absent', async () => {
+      // Arrange — the leading extension carries cache-tree-shaped bytes naming
+      // an oid that resolves nowhere; only a check that selects on the
+      // signature can avoid reading it.
+      const ctx = await initBareCtx();
+      const blobId = await writeObject(ctx, makeBlob('extension-order anchor'));
+      const decoy = new Uint8Array(
+        encodeCacheTreeNode({ path: '', id: 'ee'.repeat(20) as ObjectId, children: [] }),
+      );
+      const healthy = new Uint8Array(encodeCacheTreeNode({ path: '', id: blobId, children: [] }));
+      await writeIndexWithExtensions(ctx, blobId, [
+        { signature: 'REUC', data: decoy },
+        { signature: 'TREE', data: healthy },
+      ]);
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      expect(result.exitCode & 8).toBe(0);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // findingIds — the shared id collector (S-12)
 // ---------------------------------------------------------------------------
 
