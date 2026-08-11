@@ -30,7 +30,7 @@ import { closeSync, openSync, readdirSync, readFileSync, writeFileSync } from 'n
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { git, runGitEnv } from './interop-helpers.js';
+import { disableAutoMaintenance, git, runGitEnv } from './interop-helpers.js';
 import {
   DIGEST_LENGTH,
   mutateOrThrow,
@@ -75,6 +75,7 @@ async function freshRepo(baseDir: string, slug: string): Promise<string> {
   git(dir, 'config', 'user.name', 'Ada');
   git(dir, 'config', 'user.email', 'ada@example.com');
   git(dir, 'config', 'commit.gpgsign', 'false');
+  disableAutoMaintenance(dir);
   return dir;
 }
 

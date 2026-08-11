@@ -19,7 +19,7 @@ import { createHash } from 'node:crypto';
 import { chmodSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
-import { git } from './interop-helpers.js';
+import { disableAutoMaintenance, git } from './interop-helpers.js';
 
 export const DIGEST_LENGTH = 20;
 
@@ -143,6 +143,7 @@ async function freshRepo(baseDir: string, slug: string): Promise<string> {
   git(dir, 'config', 'user.name', 'Ada');
   git(dir, 'config', 'user.email', 'ada@example.com');
   git(dir, 'config', 'commit.gpgsign', 'false');
+  disableAutoMaintenance(dir);
   return dir;
 }
 

@@ -31,7 +31,14 @@ import { SHA1_CONFIG } from '../../src/domain/objects/hash-config.js';
 import { parsePackEntryHeader } from '../../src/domain/storage/index.js';
 import type { Context } from '../../src/ports/context.js';
 
-import { GIT_AVAILABLE, git, runGit, runGitEnv, tryRunGitWithExit } from './interop-helpers.js';
+import {
+  disableAutoMaintenance,
+  GIT_AVAILABLE,
+  git,
+  runGit,
+  runGitEnv,
+  tryRunGitWithExit,
+} from './interop-helpers.js';
 import {
   corruptIdxSameLength,
   DIGEST_LENGTH,
@@ -157,6 +164,7 @@ async function freshRepo(slug: string): Promise<string> {
   git(dir, 'config', 'user.name', 'Ada');
   git(dir, 'config', 'user.email', 'ada@example.com');
   git(dir, 'config', 'commit.gpgsign', 'false');
+  disableAutoMaintenance(dir);
   return dir;
 }
 

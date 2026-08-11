@@ -166,6 +166,26 @@ export const gitAsync = (dir: string, ...args: ReadonlyArray<string>): Promise<s
   runGitAsync(['-C', dir, ...args]);
 
 /**
+ * Stops this repository ever repacking itself behind the test's back.
+ *
+ * `git commit` (and several other porcelain commands) can fork a DETACHED
+ * `gc --auto` / `maintenance run --auto`, which is free to rewrite
+ * `objects/pack/` while the test is still building its fixture. A fixture
+ * that asserts the shape of that directory — "exactly one `.idx`", a
+ * specific pack name, a bitmap sibling — is then racing a process it never
+ * started and cannot see, and the race only ever loses on a loaded runner.
+ *
+ * Set on the repo rather than the environment so it survives every helper
+ * that spawns git against this directory, including `runGit` calls that
+ * build their own env.
+ */
+export const disableAutoMaintenance = (dir: string): void => {
+  git(dir, 'config', 'gc.auto', '0');
+  git(dir, 'config', 'gc.autoDetach', 'false');
+  git(dir, 'config', 'maintenance.auto', 'false');
+};
+
+/**
  * `git ls-files --stage` — the host-independent (mode sha stage\tpath)
  * listing. Stat-cache fields differ per host, so this readback (not raw
  * index bytes) is how two writers' indexes are compared.
