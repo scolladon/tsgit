@@ -52,14 +52,17 @@ export function revIndexPositions(rev: PackRevIndex, objectCount: number): Uint3
  * otherwise read `undefined` off the end of the array. Returns `undefined`
  * on the first such violation — the caller's signal to fall back to sorting
  * `raw` itself for this pack.
+ *
+ * Fills the same `Float64Array` the sorting fallback produces, so neither
+ * arm of `resolveSortedOffsets` is distinguishable from the other by shape,
+ * and the gather costs one flat allocation rather than a boxed array.
  */
 export function gatherByRevIndex(
   rev: PackRevIndex,
   raw: ReadonlyArray<number>,
-): ReadonlyArray<number> | undefined {
+): Float64Array | undefined {
   const n = raw.length;
-  // Stryker disable next-line ArrayDeclaration: equivalent — every index in [0, n) is assigned before the sole return of `gathered`, so a preallocated array and one grown by those same assignments are element-wise and length-wise identical; the early return discards it unread
-  const gathered = new Array<number>(n);
+  const gathered = new Float64Array(n);
   for (let p = 0; p < n; p += 1) {
     const indexPosition = revIndexPositionAt(rev, p);
     if (indexPosition >= n) return undefined;

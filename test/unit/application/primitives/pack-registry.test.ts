@@ -1792,7 +1792,7 @@ describe('PackRegistry.health — per-pack accessibility', () => {
 describe('nextOffsetForEntry', () => {
   describe('Given a table with sortedOffsets=[100, 500, 900], packFileSize=1000, trailerStart=980', () => {
     const table: PackOffsetTable = {
-      sortedOffsets: [100, 500, 900],
+      sortedOffsets: Float64Array.of(100, 500, 900),
       packFileSize: 1000,
       trailerStart: 980,
     };
@@ -1836,7 +1836,7 @@ describe('nextOffsetForEntry', () => {
       it('Then returns trailerStart = 480', () => {
         // Arrange
         const table: PackOffsetTable = {
-          sortedOffsets: [400],
+          sortedOffsets: Float64Array.of(400),
           packFileSize: 500,
           trailerStart: 480,
         };
@@ -5083,8 +5083,12 @@ async function revAccelRawOffsets(ctx: Context, name: string): Promise<ReadonlyA
   return entryOffsets(parsePackIndex(idxBytes));
 }
 
-function ascendingSortOf(raw: ReadonlyArray<number>): ReadonlyArray<number> {
-  return [...raw].sort((a, b) => a - b);
+/** The expected offset table, in the same `Float64Array` shape both arms of
+ *  `resolveSortedOffsets` produce — sorted independently of the production
+ *  code, so the oracle stays a comparison rather than a copy of the sort
+ *  under test. */
+function ascendingSortOf(raw: ReadonlyArray<number>): Float64Array {
+  return Float64Array.from([...raw].sort((a, b) => a - b));
 }
 
 /** Throws PERMISSION_DENIED for a path ending in `.rev`, delegating everything else. */
@@ -5396,7 +5400,9 @@ describe('RegisteredPack.offsetTable — the .rev accelerator, trust', () => {
         const wrongOrder = [correct[1]!, correct[0]!, ...correct.slice(2)];
         await writeSyntheticRevIndex(ctx, 'trust-pack', wrongOrder);
         const raw = await revAccelRawOffsets(ctx, 'trust-pack');
-        const expectedFromBody = wrongOrder.map((indexPosition) => raw[indexPosition]!);
+        const expectedFromBody = Float64Array.from(
+          wrongOrder.map((indexPosition) => raw[indexPosition]!),
+        );
         const expectedFromSort = ascendingSortOf(raw);
 
         // Act
