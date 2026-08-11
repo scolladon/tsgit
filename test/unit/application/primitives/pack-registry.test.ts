@@ -4983,7 +4983,7 @@ describe('RegisteredPack.revIndex', () => {
 
         // Assert
         const revReads = calls().filter(
-          (call) => call.method === 'read' && call.path.endsWith('.rev'),
+          (call) => call.method === 'readSlice' && call.path.endsWith('.rev'),
         );
         expect(revReads).toHaveLength(1);
       });
@@ -5263,41 +5263,33 @@ describe('RegisteredPack.offsetTable — the .rev accelerator, fallback', () => 
     });
   });
 
-  describe('Given a pack whose .rev stat reports the expected size but whose read returns a longer, non-RIDX file (TOCTOU)', () => {
+  describe('Given a pack whose on-disk .rev is longer than the exact formula and no longer starts with RIDX', () => {
     describe('When offsetTable() is called', () => {
-      it('Then the post-read size re-check refuses it for its SIZE, not its signature, and sortedOffsets equals the sort', async () => {
-        // Arrange — the pre-read gate cannot fire (the stat agrees with the
-        // formula exactly), so only the re-check against the bytes actually
-        // received can produce this refusal. The substituted bytes are also
-        // not a reverse index at all, which is what makes the two refusals
-        // tell apart: the loader's own gate reports the SIZE fault, while
-        // `parsePackRevIndex` — reached only if that gate is gone — reports
-        // the signature first.
-        const entries = revAccelEntries(4, 'fallback-toctou');
+      it('Then the bounded read refuses it for its SIZE, not its signature, and sortedOffsets equals the sort', async () => {
+        // Arrange — the read asks for exactly one byte past the formula, so an
+        // oversized file comes back one byte longer than the formula allows
+        // and is refused on the length it came back with. The trailing bytes
+        // also stop it being a reverse index at all, which is what tells the
+        // two refusals apart: the loader's own gate reports the SIZE fault,
+        // while `parsePackRevIndex` — reached only if that gate is gone —
+        // reports the signature first.
+        const entries = revAccelEntries(4, 'fallback-oversized');
         const ctx = await buildSeededContext();
-        await writeSyntheticPack(ctx, 'fallback-toctou', entries);
+        await writeSyntheticPack(ctx, 'fallback-oversized', entries);
         await writeSyntheticRevIndex(
           ctx,
-          'fallback-toctou',
-          await revAccelCorrectBody(ctx, 'fallback-toctou'),
+          'fallback-oversized',
+          await revAccelCorrectBody(ctx, 'fallback-oversized'),
         );
-        const expected = ascendingSortOf(await revAccelRawOffsets(ctx, 'fallback-toctou'));
+        const revPath = `${ctx.layout.gitDir}/objects/pack/pack-fallback-oversized.rev`;
+        const exact = await ctx.fs.read(revPath);
+        const oversized = new Uint8Array(exact.length + 4);
+        oversized.set(exact, 0);
+        new DataView(oversized.buffer).setUint32(0, 0);
+        await ctx.fs.write(revPath, oversized);
+        const expected = ascendingSortOf(await revAccelRawOffsets(ctx, 'fallback-oversized'));
         const warn = vi.fn();
-        const wrapped: Context = {
-          ...ctx,
-          logger: { warn },
-          fs: {
-            ...ctx.fs,
-            read: async (path: string) => {
-              const bytes = await ctx.fs.read(path);
-              if (!path.endsWith('.rev')) return bytes;
-              const substituted = new Uint8Array(bytes.length + 4);
-              substituted.set(bytes, 0);
-              new DataView(substituted.buffer).setUint32(0, 0);
-              return substituted;
-            },
-          },
-        };
+        const wrapped: Context = { ...ctx, logger: { warn } };
 
         // Act
         const [pack] = await getPackRegistry(wrapped).all();
@@ -5307,11 +5299,11 @@ describe('RegisteredPack.offsetTable — the .rev accelerator, fallback', () => 
         expect(result.sortedOffsets).toEqual(expected);
         expect(warn).toHaveBeenCalledTimes(1);
         const [, context] = warn.mock.calls[0] ?? [];
-        // The reason, not the refusal: without the post-read re-check these
-        // bytes reach `parsePackRevIndex`, which refuses them for their
-        // signature — a DIFFERENT reason under the same code.
+        // The reason, not the refusal: without the length gate these bytes
+        // reach `parsePackRevIndex`, which refuses them for their signature —
+        // a DIFFERENT reason under the same code.
         expect((context as { reason?: string } | undefined)?.reason).toBe(REASON_REV_INDEX_CORRUPT);
-        expect((context as { rev?: string } | undefined)?.rev).toBe('pack-fallback-toctou.rev');
+        expect((context as { rev?: string } | undefined)?.rev).toBe('pack-fallback-oversized.rev');
       });
     });
   });
@@ -5471,7 +5463,7 @@ describe('RegisteredPack.offsetTable — the .rev accelerator, read count', () =
 
         // Assert
         const revReads = calls().filter(
-          (call) => call.method === 'read' && call.path.endsWith('.rev'),
+          (call) => call.method === 'readSlice' && call.path.endsWith('.rev'),
         );
         expect(revReads).toHaveLength(1);
       });
@@ -5493,7 +5485,7 @@ describe('RegisteredPack.offsetTable — the .rev accelerator, read count', () =
 
         // Assert
         const revReads = calls().filter(
-          (call) => call.method === 'read' && call.path.endsWith('.rev'),
+          (call) => call.method === 'readSlice' && call.path.endsWith('.rev'),
         );
         expect(revReads).toHaveLength(0);
       });
@@ -5522,7 +5514,7 @@ describe('RegisteredPack.offsetTable — the .rev accelerator, single-flight', (
 
         // Assert
         const revReads = calls().filter(
-          (call) => call.method === 'read' && call.path.endsWith('.rev'),
+          (call) => call.method === 'readSlice' && call.path.endsWith('.rev'),
         );
         expect(revReads).toHaveLength(1);
       });
@@ -5662,7 +5654,7 @@ describe('RegisteredPack.packPositions', () => {
 
         // Assert
         const revReads = calls().filter(
-          (call) => call.method === 'read' && call.path.endsWith('.rev'),
+          (call) => call.method === 'readSlice' && call.path.endsWith('.rev'),
         );
         expect(revReads).toHaveLength(1);
       });

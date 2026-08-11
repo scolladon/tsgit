@@ -126,9 +126,9 @@ describe('Given a pack whose bad-magic .rev is present but unreadable (permissio
         ...ctx,
         fs: {
           ...ctx.fs,
-          read: async (path: string) => {
+          readSlice: async (path: string, offset: number, length: number) => {
             if (path === revPath) throw permissionDenied(path);
-            return ctx.fs.read(path);
+            return ctx.fs.readSlice(path, offset, length);
           },
         },
       };

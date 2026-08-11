@@ -56,8 +56,9 @@ function classifyFault(err: unknown): ArtefactLoad<never> {
 }
 
 /** The same too-small/corrupt boundary `parsePackRevIndex` itself draws,
- *  applied to a size the parser never sees — a pre-read stat rejects a
- *  hostile size before its bytes are ever allocated. */
+ *  applied to a length the parser never sees — the bounded read caps the
+ *  allocation at the formula, so a hostile size is refused on the length it
+ *  came back with rather than on its own claim. */
 function revIndexSizeFault(size: number, digestLength: number): TsgitErrorData {
   return size < REV_HEADER_SIZE + 2 * digestLength
     ? invalidPackRevIndex('size', REASON_REV_INDEX_TOO_SMALL).data
@@ -69,12 +70,28 @@ function revIndexSizeFault(size: number, digestLength: number): TsgitErrorData {
  * decides whether it becomes a finding or a warning. A log here would
  * double-report.
  *
- * Body, in order: `present === false` ⇒ absent (no I/O); `stat` a
+ * Body, in order: `present === false` ⇒ absent (no I/O); ONE bounded read of
+ * `12 + 4·objectCount + 2·digestLength` plus a byte, whose
  * `FILE_NOT_FOUND`/`PERMISSION_DENIED`/`UNSUPPORTED_OPERATION` ⇒ classified
- * above; a size disagreeing with `12 + 4·objectCount + 2·digestLength` ⇒
- * refused before the read; `read`; the same size re-checked against the
- * bytes actually received (TOCTOU); `parsePackRevIndex` — any
- * `INVALID_PACK_REV_INDEX` ⇒ refused carrying its data.
+ * above; a received length disagreeing with that exact size ⇒ refused;
+ * `parsePackRevIndex` — any `INVALID_PACK_REV_INDEX` ⇒ refused carrying its
+ * data.
+ *
+ * One read, not a stat and then a read. This artefact's size is a pure
+ * function of `objectCount` and `digestLength`, so asking for exactly one
+ * byte more than it can legally be does every job the stat did: the request
+ * itself bounds the allocation before any byte is read, a short file comes
+ * back short, and an oversized one comes back exactly one byte long. It also
+ * closes the window the stat opened — the length that decides the verdict
+ * and the bytes that get parsed now come from the same read, so a file that
+ * changes size between the two can no longer be judged on a stale
+ * measurement.
+ *
+ * Load-bearing precondition: every `FileSystem` adapter clamps an over-long
+ * slice to the file's real length rather than rejecting it or zero-padding
+ * (node returns a `bytesRead`-length view, memory takes `Math.min`, browser
+ * leans on `Blob.slice`). An adapter that padded instead would make a short
+ * `.rev` indistinguishable from an exact-sized one.
  */
 export async function loadPackRevIndex(
   ctx: Context,
@@ -85,21 +102,11 @@ export async function loadPackRevIndex(
 ): Promise<ArtefactLoad<PackRevIndex>> {
   if (!present) return ABSENT;
 
-  let statSize: number;
-  try {
-    statSize = (await ctx.fs.stat(revPath)).size;
-  } catch (err) {
-    return classifyFault(err);
-  }
-
   const expectedSize = REV_HEADER_SIZE + 4 * objectCount + 2 * digestLength;
-  if (statSize !== expectedSize) {
-    return refused(revIndexSizeFault(statSize, digestLength));
-  }
 
   let bytes: Uint8Array;
   try {
-    bytes = await ctx.fs.read(revPath);
+    bytes = await ctx.fs.readSlice(revPath, 0, expectedSize + 1);
   } catch (err) {
     return classifyFault(err);
   }
