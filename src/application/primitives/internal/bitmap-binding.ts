@@ -334,6 +334,7 @@ function pushBounded(results: BitmapClosureObject[], object: BitmapClosureObject
 /** The bits of lane `lane` that name a real position — every bit for a whole
  *  lane, the low `objectCount % 32` for the last one. */
 function laneMask(lane: number, objectCount: number): number {
+  // Stryker disable next-line ArithmeticOperator: equivalent — both mutants leave lane 0 untouched and only widen `remaining` past WORD_BITS for later lanes, selecting FULL_LANE where the exact form selects a partial mask; range validation declines any artefact that sets a bit at or past objectCount, so every bit the partial mask drops is already zero and the emitted set is identical.
   const remaining = objectCount - lane * WORD_BITS;
   return remaining >= WORD_BITS ? FULL_LANE : ((1 << remaining) - 1) >>> 0;
 }
