@@ -6,11 +6,13 @@
  * full 4-object closure (blob, tree, both commits) resolved through an
  * XOR-chained entry pair, with no `path` on any entry.
  *
- * `buildBitmap` is the hand-built-bytes writer from the domain parser's
- * own round-trip test suite (`test/unit/domain/storage/arbitraries.ts`)
- * — importing it here is the sanctioned exception to this tree's
- * own-package rule, made explicit because there is no production writer
- * for this artefact to call instead.
+ * `buildBitmap` is the hand-built-bytes writer every bitmap suite shares
+ * (`test/fixtures/storage/bitmap-writers.ts`) — importing a fixture writer
+ * here is the sanctioned exception to this tree's own-package rule, made
+ * explicit because there is no production writer for this artefact to call
+ * instead. That module is deliberately free of `fast-check`: the Deno, Bun
+ * and `workerd` drivers resolve this scenario's whole graph strictly, so a
+ * dev dependency reached from here fails the run outright.
  *
  * Surfaces closed:
  *   commands: revList (the bitmap tier)
@@ -26,7 +28,7 @@ import {
 } from '../../../src/domain/storage/index.ts';
 import { computeLooseObjectPath } from '../../../src/domain/storage/loose-path.ts';
 import type { Repository } from '../../../src/repository.ts';
-import { type BitmapEntrySpec, buildBitmap } from '../../unit/domain/storage/arbitraries.ts';
+import { type BitmapEntrySpec, buildBitmap } from '../../fixtures/storage/bitmap-writers.ts';
 import { AUTHOR, MESSAGES } from '../fixtures.ts';
 import type { Scenario } from './types.ts';
 

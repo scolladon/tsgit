@@ -396,6 +396,7 @@
       "files": [
         "src/**/*.ts",
         "test/parity/**/*.ts",
+        "test/fixtures/**/*.ts",
         "vitest.config.ts"
       ],
       "output": []
@@ -409,7 +410,8 @@
         "dist/esm/**/*.js",
         "test/runtime-parity/deno/**",
         "test/parity/scenarios/**/*.ts",
-        "test/parity/fixtures.ts"
+        "test/parity/fixtures.ts",
+        "test/fixtures/**/*.ts"
       ],
       "output": []
     },
@@ -422,7 +424,8 @@
         "dist/esm/**/*.js",
         "test/runtime-parity/bun/**",
         "test/parity/scenarios/**/*.ts",
-        "test/parity/fixtures.ts"
+        "test/parity/fixtures.ts",
+        "test/fixtures/**/*.ts"
       ],
       "output": []
     },
@@ -435,7 +438,8 @@
         "dist/esm/**/*.js",
         "test/runtime-parity/workers/**",
         "test/parity/scenarios/**/*.ts",
-        "test/parity/fixtures.ts"
+        "test/parity/fixtures.ts",
+        "test/fixtures/**/*.ts"
       ],
       "output": []
     },
@@ -444,6 +448,7 @@
       "files": [
         "test/parity/scenarios/**/*.ts",
         "test/parity/fixtures.ts",
+        "test/fixtures/**/*.ts",
         "test/browser/parity-scenarios.bundle.ts",
         "tooling/build-parity-bundle.ts"
       ],

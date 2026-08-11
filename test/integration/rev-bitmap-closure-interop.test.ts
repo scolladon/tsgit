@@ -1625,6 +1625,20 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list walk closures match canonical git', ()
   // ---------------------------------------------------------------------
 
   describe('Given a fresh BASE bitmap fixture (12 objects) per row, When its .bitmap is structurally corrupted and RESTAMPED', () => {
+    /** What canonical git did with the corrupted artefact: declined it and
+     *  answered from its own walk (exit 0), or refused to run at all. */
+    type GitOutcome = 'degraded-to-walk' | 'failed-hard';
+
+    /** Every corruption but one is answered identically by every git build:
+     *  the artefact is declined and the walk answers. */
+    const DEGRADES_ALWAYS: ReadonlyArray<GitOutcome> = ['degraded-to-walk'];
+    /** Measured boundary, not a tsgit concern: git 2.54.0 exits 128 on a
+     *  truncated-and-restamped bitmap where git 2.55.0 degrades to the walk
+     *  (exit 0). Both are accepted; whichever git does, tsgit's own half of
+     *  the row stays pinned, and the walk answer is still asserted whenever
+     *  git actually degraded. */
+    const DEGRADES_OR_FAILS_HARD: ReadonlyArray<GitOutcome> = ['degraded-to-walk', 'failed-hard'];
+
     const STRUCTURAL_ROWS: ReadonlyArray<{
       readonly label: string;
       readonly mutate: (bytes: Buffer) => Buffer;
@@ -1632,6 +1646,8 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list walk closures match canonical git', ()
        *  distinct per row, so collapsing every parser gate into one shared
        *  refusal cannot satisfy the whole matrix. */
       readonly warnContains: string;
+      /** Outcomes canonical git is allowed to produce for this corruption. */
+      readonly gitOutcomes: ReadonlyArray<GitOutcome>;
     }> = [
       {
         label: 'magic flipped',
@@ -1640,6 +1656,7 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list walk closures match canonical git', ()
           return bytes;
         },
         warnContains: 'invalid signature',
+        gitOutcomes: DEGRADES_ALWAYS,
       },
       {
         label: 'version unsupported',
@@ -1648,6 +1665,7 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list walk closures match canonical git', ()
           return bytes;
         },
         warnContains: 'unsupported version: expected 1, got 2',
+        gitOutcomes: DEGRADES_ALWAYS,
       },
       {
         label: 'entry count inflated past the file',
@@ -1656,11 +1674,14 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list walk closures match canonical git', ()
           return bytes;
         },
         warnContains: 'declares more entries than the artefact has objects',
+        gitOutcomes: DEGRADES_ALWAYS,
       },
       {
         label: 'truncated (kept above one digest length)',
         mutate: (bytes) => bytes.subarray(0, Math.floor(bytes.length / 2)),
         warnContains: 'overruns the buffer',
+        // The one row where git builds disagree — see DEGRADES_OR_FAILS_HARD.
+        gitOutcomes: DEGRADES_OR_FAILS_HARD,
       },
       {
         label: 'first stream declares an oversized word count',
@@ -1671,49 +1692,58 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list walk closures match canonical git', ()
         // The exact word count this row itself wrote, so it can never be
         // confused with the truncation row's own overrun.
         warnContains: 'declares 16777215 word(s)',
+        gitOutcomes: DEGRADES_ALWAYS,
       },
     ];
 
-    describe.each(STRUCTURAL_ROWS)('And the corruption is: $label', ({ mutate, warnContains }) => {
-      it('Then both tools decline the WHOLE artefact and fall back to the walk (12 = 12), and tsgit warns exactly once, naming the artefact and its own reason', async () => {
-        // Arrange
-        const base = await buildBitmapFixture(await newRoot('degrade-structural'), 'repo');
-        const packDir = path.join(base.dir, '.git', 'objects', 'pack');
-        const bitmapName = (await readdir(packDir)).find((name) => name.endsWith('.bitmap'));
-        if (bitmapName === undefined) throw new Error('expected a .bitmap file in BASE pack dir');
-        const bitmapPath = path.join(packDir, bitmapName);
-        mutateOrThrow(bitmapPath, mutate);
-        mutateOrThrow(bitmapPath, restampBitmap);
-        const gitResult = tryRunGitWithExit([
-          '-C',
-          base.dir,
-          'rev-list',
-          '--use-bitmap-index',
-          '--objects',
-          'HEAD',
-        ]);
-        const warnCalls: unknown[][] = [];
-        const sut = revList;
+    describe.each(STRUCTURAL_ROWS)(
+      'And the corruption is: $label',
+      ({ mutate, warnContains, gitOutcomes }) => {
+        it('Then tsgit declines the WHOLE artefact, falls back to the walk (12) and warns exactly once naming the artefact and its own reason, while git declines it too — answering the same 12-object walk wherever this git build degrades rather than failing hard', async () => {
+          // Arrange
+          const base = await buildBitmapFixture(await newRoot('degrade-structural'), 'repo');
+          const packDir = path.join(base.dir, '.git', 'objects', 'pack');
+          const bitmapName = (await readdir(packDir)).find((name) => name.endsWith('.bitmap'));
+          if (bitmapName === undefined) throw new Error('expected a .bitmap file in BASE pack dir');
+          const bitmapPath = path.join(packDir, bitmapName);
+          mutateOrThrow(bitmapPath, mutate);
+          mutateOrThrow(bitmapPath, restampBitmap);
+          const gitResult = tryRunGitWithExit([
+            '-C',
+            base.dir,
+            'rev-list',
+            '--use-bitmap-index',
+            '--objects',
+            'HEAD',
+          ]);
+          const warnCalls: unknown[][] = [];
+          const sut = revList;
 
-        // Act
-        const result = await sut(
-          trackedNodeContextWithWarnSpy(base.dir, (...args) => warnCalls.push(args)),
-          { wants: ['HEAD'], objects: true, useBitmapIndex: true },
-        );
+          // Act
+          const result = await sut(
+            trackedNodeContextWithWarnSpy(base.dir, (...args) => warnCalls.push(args)),
+            { wants: ['HEAD'], objects: true, useBitmapIndex: true },
+          );
 
-        // Assert — git degrades silently (exit 0) to its own walk.
-        expect(gitResult.exitCode).toBe(0);
-        expect(gitResult.stdout.split('\n').filter(Boolean)).toHaveLength(12);
-        // Assert — tsgit degrades the same way, warning once, for ITS OWN
-        // stated reason and naming the artefact it declined.
-        expect(result.count).toBe(12);
-        expect(warnCalls).toHaveLength(1);
-        const [message, context] = warnCalls[0] ?? [];
-        const reason = (context as { reason?: string } | undefined)?.reason ?? '';
-        expect(`${String(message)} ${reason}`).toContain(warnContains);
-        expect((context as { bitmap?: string } | undefined)?.bitmap).toBe(bitmapName);
-      });
-    });
+          // Assert — git declined the artefact, in one of the ways this row
+          // allows; where it degraded (exit 0) it answered from its own walk.
+          const gitOutcome: GitOutcome =
+            gitResult.exitCode === 0 ? 'degraded-to-walk' : 'failed-hard';
+          expect(gitOutcomes).toContain(gitOutcome);
+          if (gitOutcome === 'degraded-to-walk') {
+            expect(gitResult.stdout.split('\n').filter(Boolean)).toHaveLength(12);
+          }
+          // Assert — tsgit always degrades, warning once, for ITS OWN stated
+          // reason and naming the artefact it declined.
+          expect(result.count).toBe(12);
+          expect(warnCalls).toHaveLength(1);
+          const [message, context] = warnCalls[0] ?? [];
+          const reason = (context as { reason?: string } | undefined)?.reason ?? '';
+          expect(`${String(message)} ${reason}`).toContain(warnContains);
+          expect((context as { bitmap?: string } | undefined)?.bitmap).toBe(bitmapName);
+        });
+      },
+    );
   });
 
   // ---------------------------------------------------------------------
