@@ -23,7 +23,7 @@ import { type BitmapSpec, buildBitmap } from '../../../domain/storage/arbitrarie
 const DIGEST_LENGTH = 20;
 const WORD_BITS = 32;
 /** Three lanes — 12 bytes per reconstructed set, more than a cache sized in
- *  bytes rather than mebibytes would ever accept. */
+ *  bytes rather than MiB would ever accept. */
 const LANE_COUNT = 3;
 const BIT_SIZE = LANE_COUNT * WORD_BITS;
 
