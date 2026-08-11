@@ -1,5 +1,19 @@
 # Changelog
 
+## [3.3.0](https://github.com/scolladon/tsgit/compare/v3.2.1...v3.3.0) (2026-08-11)
+
+
+### Features
+
+* read the multi-pack-index as git does ([#268](https://github.com/scolladon/tsgit/issues/268)) ([988f34b](https://github.com/scolladon/tsgit/commit/988f34b14fe398a06527ea71cf262b792749b0b2))
+* read the pack reverse index and bitmaps as git does ([#270](https://github.com/scolladon/tsgit/issues/270)) ([878c417](https://github.com/scolladon/tsgit/commit/878c4173867dc717a61402bc86f228ce1b0e4895))
+
+
+### Bug Fixes
+
+* accept pack version 3 and degrade unusable packs per-pack like git ([#265](https://github.com/scolladon/tsgit/issues/265)) ([e6e1d7e](https://github.com/scolladon/tsgit/commit/e6e1d7e577324359f4c25806bb2ba4daf0b4c0db))
+* report inaccessible packs and unreadable objects from fsck like git ([#267](https://github.com/scolladon/tsgit/issues/267)) ([7bf4469](https://github.com/scolladon/tsgit/commit/7bf44695d9028a84b4135f698d4b46d37e4886ec))
+
 ## [3.2.1](https://github.com/scolladon/tsgit/compare/v3.2.0...v3.2.1) (2026-08-01)
 
 
