@@ -26,11 +26,19 @@ import type { FsckFinding, FsckOptions } from '../../src/application/commands/fs
 import { fsck } from '../../src/application/commands/fsck.js';
 import { disposePackRegistry } from '../../src/application/primitives/read-object.js';
 import { TsgitError } from '../../src/domain/error.js';
+import { parseIndex, serializeIndex } from '../../src/domain/git-index/index.js';
 import { SHA1_CONFIG } from '../../src/domain/objects/hash-config.js';
 import { parsePackEntryHeader } from '../../src/domain/storage/index.js';
 import type { Context } from '../../src/ports/context.js';
 
-import { GIT_AVAILABLE, git, runGit, runGitEnv, tryRunGitWithExit } from './interop-helpers.js';
+import {
+  disableAutoMaintenance,
+  GIT_AVAILABLE,
+  git,
+  runGit,
+  runGitEnv,
+  tryRunGitWithExit,
+} from './interop-helpers.js';
 import {
   corruptIdxSameLength,
   DIGEST_LENGTH,
@@ -133,6 +141,8 @@ const PACK_FINDING_TYPES: ReadonlySet<FsckFinding['type']> = new Set([
   'pack-inaccessible',
   'pack-index-unusable',
   'pack-rev-index-unusable',
+  'pack-rev-index-invalid',
+  'pack-rev-index-position-mismatch',
 ]);
 
 /** Findings unrelated to pack accessibility — the differential rows compare these across a pair of repos. */
@@ -154,6 +164,7 @@ async function freshRepo(slug: string): Promise<string> {
   git(dir, 'config', 'user.name', 'Ada');
   git(dir, 'config', 'user.email', 'ada@example.com');
   git(dir, 'config', 'commit.gpgsign', 'false');
+  disableAutoMaintenance(dir);
   return dir;
 }
 
@@ -218,6 +229,32 @@ async function corruptSolePackToV99(dir: string): Promise<void> {
   const v99IdxBytes = restampIdxForPack(idxBytes, trailerOf(v99PackBytes));
   await writeFile(packPath, v99PackBytes);
   await writeFile(idxPath, v99IdxBytes);
+}
+
+/**
+ * Rewrites a repo's on-disk `.git/index` with its `TREE` (cache-tree)
+ * extension removed, keeping every entry and every other extension
+ * untouched. Round-trips through tsgit's own index parser/writer rather
+ * than a raw byte splice — the trailing checksum still has to be
+ * recomputed either way, and this reuses the parser this row exists to
+ * exercise instead of duplicating its grammar.
+ */
+async function stripCacheTreeExtension(dir: string): Promise<void> {
+  const indexFile = path.join(dir, '.git', 'index');
+  const raw = await readFile(indexFile);
+  const parsed = parseIndex(raw);
+  const withoutCacheTree = {
+    ...parsed,
+    extensions: parsed.extensions.filter((ext) => ext.signature !== 'TREE'),
+  };
+  const body = serializeIndex(withoutCacheTree);
+  const trailer = sha1(body);
+  await writeFile(indexFile, Buffer.concat([body, trailer]));
+}
+
+/** Deletes a single loose object by its full hex oid. */
+function removeLooseObject(dir: string, sha: string): Promise<void> {
+  return rm(path.join(dir, '.git', 'objects', sha.slice(0, 2), sha.slice(2)));
 }
 
 /** A repo with one real commit under a distinct file-content prefix (never repacked). */
@@ -651,7 +688,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
   });
 
   describe("Given a v99 pack holding every one of the repo's own reachable objects with and without the fault, When fsck runs on each independently (row K-19)", () => {
-    it('Then bit 4 is the only term the bad pack adds, and missing findings are present on both tools', async () => {
+    it('Then both tools exit 10 baseline and 14 with the bad pack — tsgit matches git absolutely, not just by the bit-4 delta', async () => {
       // Arrange — baseline: the sole pack removed entirely, so every reachable
       // object is simply absent; with-pack: the same pack, corrupted in place
       const baselineDir = await buildFullyPackedRepo('k19-baseline');
@@ -671,13 +708,74 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
       expect(gitBaseline.exitCode).toBe(10);
       expect(gitWithPack.exitCode).toBe(14);
 
-      // Assert — tsgit: differential, and missing findings are present on both
-      expect(resultWithPack.exitCode).toBe(resultBaseline.exitCode | 4);
+      // Assert — tsgit matches git's own absolute exit on both sides (no
+      // object resolves anywhere in either repo, so the missing-entry-point
+      // bit fires on both; bit 4 is the only additional term the bad pack
+      // itself adds), and missing findings are present on both
+      expect(resultBaseline.exitCode).toBe(gitBaseline.exitCode);
+      expect(resultWithPack.exitCode).toBe(gitWithPack.exitCode);
       const baselineMissing = findingsOfType(resultBaseline.findings, 'missing');
       const withPackMissing = findingsOfType(resultWithPack.findings, 'missing');
       expect(baselineMissing.length).toBeGreaterThan(0);
       expect(withPackMissing.length).toBe(baselineMissing.length);
       expect(findingsOfType(resultWithPack.findings, 'pack-inaccessible')).toHaveLength(1);
+    });
+  });
+
+  describe('Given an index with entries but no cache-tree extension, every object then deleted, When fsck runs (row K-38)', () => {
+    it('Then git omits the missing-entry-point bit entirely — there is no cache-tree to check — and tsgit matches exactly', async () => {
+      // Arrange — a real commit (so the index carries entries), then its
+      // cache-tree extension stripped from the on-disk index, then every
+      // object deleted. Real git 2.55.0 does not run its cache-tree check
+      // at all without the extension.
+      const dir = await freshRepo('k38');
+      await writeFile(path.join(dir, 'a.txt'), 'alpha\n');
+      commitSeed(dir);
+      const commitSha = git(dir, 'rev-parse', 'HEAD').trim();
+      const treeSha = git(dir, 'rev-parse', 'HEAD^{tree}').trim();
+      const blobSha = git(dir, 'rev-parse', 'HEAD:a.txt').trim();
+      await stripCacheTreeExtension(dir);
+      for (const sha of [commitSha, treeSha, blobSha]) {
+        await removeLooseObject(dir, sha);
+      }
+      const gitResult = gitFsck(dir);
+      const sut = trackedNodeContext(dir);
+
+      // Act
+      const result = await fsck(sut);
+
+      // Assert — git: pinned absolute value (2 alone — no cache-tree, no check)
+      expect(gitResult.exitCode).toBe(2);
+
+      // Assert — tsgit matches exactly
+      expect(result.exitCode).toBe(gitResult.exitCode);
+    });
+  });
+
+  describe('Given an unreadable commit and blob beside a readable tree indexed by the cache-tree, When fsck runs (row K-39)', () => {
+    it('Then git omits the missing-entry-point bit — the cache-tree only resolves the tree oid — and tsgit matches exactly', async () => {
+      // Arrange — the cache-tree's own entry resolves fine (the tree is
+      // untouched); the commit and blob are deleted so the connectivity
+      // pass alone accounts for the non-zero exit.
+      const dir = await freshRepo('k39');
+      await writeFile(path.join(dir, 'a.txt'), 'alpha\n');
+      commitSeed(dir);
+      const commitSha = git(dir, 'rev-parse', 'HEAD').trim();
+      const blobSha = git(dir, 'rev-parse', 'HEAD:a.txt').trim();
+      await removeLooseObject(dir, commitSha);
+      await removeLooseObject(dir, blobSha);
+      const gitResult = gitFsck(dir);
+      const sut = trackedNodeContext(dir);
+
+      // Act
+      const result = await fsck(sut);
+
+      // Assert — git: pinned absolute value (2 alone — missing commit; the
+      // cache-tree's own tree oid still resolves)
+      expect(gitResult.exitCode).toBe(2);
+
+      // Assert — tsgit matches exactly
+      expect(result.exitCode).toBe(gitResult.exitCode);
     });
   });
 

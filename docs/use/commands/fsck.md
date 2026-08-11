@@ -43,6 +43,11 @@ type FsckFinding =
       readonly pack: string; readonly reason: string }
   | { readonly type: 'pack-rev-index-unusable';
       readonly pack: string; readonly reason: string }
+  | { readonly type: 'pack-rev-index-invalid';
+      readonly pack: string; readonly reason: string }
+  | { readonly type: 'pack-rev-index-position-mismatch';
+      readonly pack: string; readonly position: number;
+      readonly expected: number; readonly stored: number }
   | { readonly type: 'midx-unusable';
       readonly artefact: string; readonly reason: string }
   | { readonly type: 'midx-checksum-mismatch';
@@ -50,7 +55,9 @@ type FsckFinding =
   | { readonly type: 'midx-pack-unresolved';
       readonly artefact: string; readonly position: number; readonly pack: string }
   | { readonly type: 'midx-entry-unresolved';
-      readonly artefact: string; readonly id: ObjectId };
+      readonly artefact: string; readonly id: ObjectId }
+  | { readonly type: 'bitmap-checksum-mismatch';
+      readonly artefact: string };
 
 interface FsckOptions {
   readonly connectivityOnly?: boolean;
@@ -73,7 +80,7 @@ interface FsckResult {
 |---|---|---|---|
 | `connectivityOnly` | `boolean` | `false` | Skip object-content validation (git's `--connectivity-only`); only verify that linked objects exist. |
 | `reflogRoots` | `boolean` | `true` | Treat reflog OIDs as reachability roots (git's default). Set `false` to exclude reflogs. |
-| `indexRoot` | `boolean` | `true` | Treat index blob OIDs as reachability roots (git's default). Set `false` to exclude the index. |
+| `indexRoot` | `boolean` | `true` | Treat index blob OIDs — and, when present, the index's cache-tree tree OIDs — as reachability roots (git's default). Set `false` to exclude the index from every role: roots and the cache-tree check below. |
 | `full` | `boolean` | `true` | Include pack objects (git's `--full`). Set `false` to scan loose objects only. |
 | `strict` | `boolean` | `false` | Upgrade WARN-class msg-ids to ERROR and contribute exit bit 1 (git's `--strict`). |
 | `checkReferences` | `boolean` | `true` | Run the `git refs verify` ref-content pass; malformed ref content produces `bad-ref` findings with exit bit 8. |
@@ -114,10 +121,13 @@ findings.filter(f => f.type === 'tagged')
 | `pack-inaccessible` | `pack`, `reason` | A pack failed the header gate — bad version, bad signature, truncated file, a header/index object-count disagreement, or a `.pack` that could not be opened. Full mode only (suppressed by `full: false` or `connectivityOnly: true`). Exit bit 4. |
 | `pack-index-unusable` | `pack`, `reason` | A pack's `.idx` could not be read or parsed. Full mode only; always accompanied by a `pack-rev-index-unusable` finding for the same pack. Exit bit 4. |
 | `pack-rev-index-unusable` | `pack`, `reason` | A pack's index is unusable, so no reverse index can be derived from it either. Emitted in **every** mode, including `connectivityOnly` and `full: false` — unlike the other two pack findings, this one is not mode-gated. Exit bit 64. |
+| `pack-rev-index-invalid` | `pack`, `reason` | A pack's `.rev` file exists and is readable, but is itself wrong — a malformed header (bad signature/version/hash-id), a size that disagrees with the pack's own object count, or a trailer checksum (verified with the repository's own hash algorithm, never the file's declared `hashId`) that disagrees with its content. Never emitted for a pack `pack-rev-index-unusable` already covers — an unusable `.idx` masks its `.rev` entirely. Emitted in every mode. Exit bit 64. |
+| `pack-rev-index-position-mismatch` | `pack`, `position`, `expected`, `stored` | A `.rev` file parses and its checksum is valid, but body entry `position` disagrees with the index position the pack's own `.idx` implies (`expected`) — `stored` is the value the file actually has there. One finding per wrong position. Emitted in every mode. Exit bit 64. |
 | `midx-unusable` | `artefact`, `reason` | The multi-pack-index (or a chain layer) actually in use was discarded — too small, unreadable, a chunk offset outside the file, a hash-version mismatch, with no usable fallback layer — or the entry-resolution walk hit a structural fault reached only inside this pass. `artefact` names the file; `reason` is tsgit's own wording, not reconstructed from git's stderr. A dropped chain that still leaves a usable layer, or a discarded flat file rescued by a loadable chain, produces no finding. Reported in every mode. Exit bit 32. |
 | `midx-checksum-mismatch` | `artefact` | The in-use artefact's trailer digest disagrees with its declared content — checked once per `fsck` run, on the flat file or the chain head only (never a base layer), and never on the ordinary read path. Reported in every mode. Exit bit 32. |
 | `midx-pack-unresolved` | `artefact`, `position`, `pack` | A `PNAM` entry — `position` is its chain-global index — names a pack that could not be resolved this scan, and whose `.pack` file is also gone. Reported in every mode. Exit bit 32. |
 | `midx-entry-unresolved` | `artefact`, `id` | An object the midx routes to a pack that cannot serve it — fires even when the pack itself resolved (its `.pack` is on disk but its `.idx` is not), independently of `midx-pack-unresolved`. Reported in every mode. Exit bit 32. |
+| `bitmap-checksum-mismatch` | `artefact` | A pack's `.bitmap`, or the in-use multi-pack-index's bitmap, is present and readable but its trailing digest disagrees with the bytes that precede it — the checksum is this artefact's entire obligation, so this is the only bitmap fault tsgit reports. `artefact` is `<base>.bitmap` for a pack, or `multi-pack-index-<hex>.bitmap` (composed from the in-use midx's own stored trailer bytes) for the midx. Absent, unreadable, or a structurally corrupt bitmap whose checksum still matches all produce no finding. Reported in every mode, and the midx arm is unconditional (not gated by `core.multiPackIndex`). Exit bit 128. |
 
 `pack` is the pack's base name (`pack-<sha>`), already vetted at scan time against path
 separators, `..`, and control characters — but it is **not shell-safe** (spaces, quotes, `$`,
@@ -159,14 +169,16 @@ reconstructed from git's stderr text.
   | `3` | Bits 1 and 2 combined (e.g. corrupt object whose absence also breaks a link). |
   | `4` | A pack failed the header gate or `.idx` parse (bit 4, `pack-inaccessible` / `pack-index-unusable`). Full mode only — suppressed by `full: false` or `connectivityOnly: true`. |
   | `6` | Bits 2 and 4 combined (e.g. a missing object alongside an unrelated pack accessibility fault). |
-  | `8` | Refs-verify content failure only (bit 8). |
-  | `10` | Bits 2 and 8 combined (e.g. malformed ref content + ref→absent OID). |
+  | `8` | Malformed ref content (`badRefContent`, a `bad-ref` finding) **or** an index cache-tree entry whose tree OID fails to resolve (no finding — see "The cache-tree check is a whole-repository condition" below). Independent causes; either alone, or both together, reads as bit 8. |
+  | `10` | Bits 2 and 8 combined (e.g. malformed ref content + ref→absent OID, or a broken cache-tree alongside an unrelated missing object). |
   | `14` | Bits 2, 4 and 8 combined. |
   | `32` | The in-use multi-pack-index or chain layer was discarded, its trailer checksum disagreed, or it routes to a pack or entry it cannot resolve (bit 32, the four `midx-*` findings). Set in **every** mode, including `connectivityOnly` and `full: false` — ungated like bit 64, unlike bit 4. |
   | `42` | Bits 2, 8 and 32 combined (e.g. a midx-named pack fully deleted: missing objects, invalid ref pointers, and the midx's own pack-resolution failure, with no unrelated pack-accessibility fault). |
-  | `64` | A pack's reverse index is unusable, no other error (bit 64, `pack-rev-index-unusable`). Set in **every** mode, including `connectivityOnly` and `full: false` — the one bit this table's other rows are gated against. |
+  | `64` | A pack's reverse index is unusable, no other error — either its pack index could not be loaded at all (`pack-rev-index-unusable`), or a `.rev` file exists, is readable, and is itself wrong (`pack-rev-index-invalid` / `pack-rev-index-position-mismatch`); the two causes never double-report for the same pack. Set in **every** mode, including `connectivityOnly` and `full: false` — the one bit this table's other rows are gated against. |
   | `68` | Bits 4 and 64 combined — an unusable `.idx` in full mode sets both, matching git's `index not opened` **and** `unable to load rev-index` for the same pack. |
   | `110` | Bits 2, 4, 8, 32 and 64 combined — a midx-named pack's `.idx` gone sets the pack pass's bits (4 and 64) alongside the midx pass's (32), plus the ordinary connectivity fallout (2 and 8). |
+  | `128` | A pack's or the in-use multi-pack-index's bitmap trailer checksum disagrees with its bytes (bit 128, `bitmap-checksum-mismatch`) — the only bitmap fault this pass reports; a structurally corrupt bitmap whose checksum still matches never sets it. Set in **every** mode, and the midx arm is unconditional — ungated like bit 64, unlike bit 4. |
+  | `192` | Bits 64 and 128 combined (e.g. a pack with both a broken `.rev` and a broken `.bitmap`). |
 
   Combinations follow bitwise OR. Caller passes `result.exitCode` to
   `process.exit` to reproduce git's exit behaviour.
@@ -176,8 +188,19 @@ reconstructed from git's stderr text.
   have no in-edge from another present object (the tips of unreachable
   subgraphs), matching git's distinction. Both exit 0.
 - **Roots.** By default: all refs, reflog OIDs (`reflogRoots: true`), and index
-  blob OIDs (`indexRoot: true`). Refs that point at absent OIDs are reported as
-  `bad-ref` and excluded from the root set to avoid spurious `missing` findings.
+  blob OIDs (`indexRoot: true`) — plus, when the index carries a cache-tree
+  (`TREE` extension), each entry's resolvable tree OID. Refs that point at
+  absent OIDs are reported as `bad-ref` and excluded from the root set to
+  avoid spurious `missing` findings.
+- **The cache-tree check is a whole-repository condition, not a finding.**
+  When `indexRoot` is not `false` and the index carries a cache-tree, every
+  entry's tree OID is resolved; if any fails, exit bit 8 is set — with **no
+  corresponding finding** in `findings`, unlike every other exit bit. This
+  cause is independent of `checkReferences`/`badRefContent` (the other bit-8
+  cause, below) and of ref/reflog health: a broken ref beside a healthy
+  cache-tree never sets it, and a healthy ref beside a broken cache-tree still
+  does. An absent index, or one with no cache-tree extension, contributes
+  nothing — a bare or never-staged repository is not a fault.
 - **`--strict` upgrade.** Only the WARN-class msg-ids are affected:
   `emptyName`, `fullPathname`, `hasDot`, `hasDotdot`, `hasDotgit`,
   `largePathname`, `nulInCommit`, `nullSha1`, `zeroPaddedFilemode`. ERROR-class

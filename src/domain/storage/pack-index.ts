@@ -118,10 +118,14 @@ export function entryOffsets(index: PackIndex): ReadonlyArray<number> {
   return offsets;
 }
 
-export function lookupPackIndex(index: PackIndex, id: ObjectId): number | undefined {
-  const targetBytes = hexToBytes(id);
+/**
+ * The fanout-narrowed binary search both `lookupPackIndex` and
+ * `lookupPackIndexPosition` run: the index position holding `targetBytes`,
+ * or `undefined` when this index does not carry the object at all.
+ */
+function searchIndexPosition(index: PackIndex, targetBytes: Uint8Array): number | undefined {
   const firstByte = targetBytes[0]!;
-  // Stryker disable next-line ConditionalExpression: equivalent — `lo` only narrows the binary search; the loop over [0, hi) still converges on the same index (the target, if present, lies in [lo, hi) ⊆ [0, hi)), so forcing `lo` to 0 cannot change the looked-up offset.
+  // Stryker disable next-line ConditionalExpression: equivalent — `lo` only narrows the binary search; the loop over [0, hi) still converges on the same index (the target, if present, lies in [lo, hi) ⊆ [0, hi)), so forcing `lo` to 0 cannot change the position found.
   const lo = firstByte === 0 ? 0 : readFanout(index, firstByte - 1);
   const hi = readFanout(index, firstByte);
 
@@ -136,11 +140,40 @@ export function lookupPackIndex(index: PackIndex, id: ObjectId): number | undefi
     } else if (cmp > 0) {
       high = mid;
     } else {
-      return readOffset(index, mid);
+      return mid;
     }
   }
 
   return undefined;
+}
+
+export function lookupPackIndex(index: PackIndex, id: ObjectId): number | undefined {
+  const position = searchIndexPosition(index, hexToBytes(id));
+  return position === undefined ? undefined : readOffset(index, position);
+}
+
+/**
+ * The INDEX POSITION of `id` — the same search `lookupPackIndex` runs,
+ * stopping one step earlier. A caller mapping an oid to the position an
+ * artefact addresses it by needs neither the offset nor an offset → position
+ * table materialised over the whole index to invert one back.
+ */
+export function lookupPackIndexPosition(index: PackIndex, id: ObjectId): number | undefined {
+  return searchIndexPosition(index, hexToBytes(id));
+}
+
+/**
+ * The oid at index position `position`, hex-encoded — `midxOidAt`'s shape at
+ * a pack `.idx`. Index-addressed on purpose: a caller that already knows the
+ * position neither re-derives it through the search nor pays
+ * `allObjectIds`' one-string-per-object materialisation to read a handful of
+ * them. `position` is trusted to name an object this index carries, exactly
+ * as `midxOidAt` trusts a midx position — the range rule belongs to whoever
+ * decoded the position.
+ */
+export function objectIdAt(index: PackIndex, position: number): ObjectId {
+  const offset = IDX_SHA_TABLE_OFFSET + position * IDX_SHA_LENGTH;
+  return bytesToHex(index._bytes.subarray(offset, offset + IDX_SHA_LENGTH)) as ObjectId;
 }
 
 const HEX_RE = /^[0-9a-f]+$/;
@@ -173,9 +206,7 @@ export function findByPrefix(index: PackIndex, prefix: string): ReadonlyArray<Ob
 
   const results: ObjectId[] = [];
   for (let i = lowerBound; i < upperBound; i++) {
-    const offset = IDX_SHA_TABLE_OFFSET + i * IDX_SHA_LENGTH;
-    const sha = index._bytes.subarray(offset, offset + IDX_SHA_LENGTH);
-    results.push(bytesToHex(sha) as ObjectId);
+    results.push(objectIdAt(index, i));
   }
 
   return results;
@@ -184,9 +215,7 @@ export function findByPrefix(index: PackIndex, prefix: string): ReadonlyArray<Ob
 export function allObjectIds(index: PackIndex): ReadonlyArray<ObjectId> {
   const results: ObjectId[] = [];
   for (let i = 0; i < index.objectCount; i++) {
-    const offset = IDX_SHA_TABLE_OFFSET + i * IDX_SHA_LENGTH;
-    const sha = index._bytes.subarray(offset, offset + IDX_SHA_LENGTH);
-    results.push(bytesToHex(sha) as ObjectId);
+    results.push(objectIdAt(index, i));
   }
   return results;
 }

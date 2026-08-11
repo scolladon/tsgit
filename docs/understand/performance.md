@@ -50,6 +50,7 @@ For context, two other libraries are sometimes weighed against tsgit — but nei
 | Hot path | Mechanism |
 |---|---|
 | Pack-index lookup | Fanout binary search — O(log n) within fanout buckets of bounded size. |
+| Pack offset table (successor lookup, every packed-object read) | A usable `.rev` gathers the pack's sorted entry-offset order in O(n) instead of sorting it (O(n log n)); absent, unreadable, or refused, it falls back to the sort — same answer, different cost. |
 | Delta resolution | LRU base cache (16 MiB default, byte-bounded, configurable via `OpenNodeRepositoryOptions.deltaCacheMaxBytes`). A deep-delta-chain scenario benchmarks this cache under cold (empty LRU, full chain replay) and warm (cache primed) regimes — see [ADR-471](../adr/471-deep-delta-chain-bench-fixture.md). |
 | Parsing | Zero-copy `DataView` over inflated buffers. No intermediate string allocations on the binary path. |
 | Inflate | `node:zlib` (Node) / `DecompressionStream` (Browser). Streaming where possible. |

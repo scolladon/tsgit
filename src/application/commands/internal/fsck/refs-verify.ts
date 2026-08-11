@@ -4,12 +4,31 @@ import type { Context } from '../../../../ports/context.js';
 import { enumerateRefs } from '../../../primitives/enumerate-refs.js';
 import { getRefStore } from '../../../primitives/ref-store.js';
 import { EXIT_MISSING, EXIT_REFS_CONTENT } from './exit-codes.js';
+import { objectIsPresent } from './object-presence.js';
 import type { FsckFinding } from './types.js';
 
 type BadRefFinding = FsckFinding & { readonly type: 'bad-ref' };
 
 /** Matches valid SHA-1 (40-hex) or SHA-256 (64-hex) OID. */
 const OID_RE = /^[0-9a-f]{40}$|^[0-9a-f]{64}$/;
+
+/**
+ * Whether `oid` resolves to a readable object: present in `universe`, and,
+ * when `universe` may optimistically admit an oid whose housing pack later
+ * turns out inaccessible (`connectivityOnly`'s ungated pack half), confirmed
+ * through `objectIsPresent` — the one loose-then-pack probe, shared with the
+ * cache-tree check — rather than trusted at face value.
+ */
+async function isKnownOid(
+  ctx: Context,
+  universe: ReadonlySet<ObjectId>,
+  oid: ObjectId,
+  confirmPackAccessibility: boolean,
+): Promise<boolean> {
+  if (!universe.has(oid)) return false;
+  if (!confirmPackAccessibility) return true;
+  return objectIsPresent(ctx, oid);
+}
 
 /**
  * Classify and report findings for a single loose ref's raw content.
@@ -19,12 +38,14 @@ const OID_RE = /^[0-9a-f]{40}$|^[0-9a-f]{64}$/;
  * Absent-OID check (badRefOid) always run, matching git's behaviour with
  * `--no-references` (pinned: matrix #9a, exit 2 both ways).
  */
-function checkLooseRef(
+async function checkLooseRef(
+  ctx: Context,
   ref: RefName,
   raw: string,
   universe: ReadonlySet<ObjectId>,
   checkContentFormat: boolean,
-): { readonly findings: ReadonlyArray<BadRefFinding>; readonly exitBit: number } {
+  confirmPackAccessibility: boolean,
+): Promise<{ readonly findings: ReadonlyArray<BadRefFinding>; readonly exitBit: number }> {
   const content = raw.replace(/[\r\n]+$/, '');
 
   if (content.startsWith('ref: ')) {
@@ -51,7 +72,9 @@ function checkLooseRef(
   }
 
   const oid = content as ObjectId;
-  if (universe.has(oid)) return { findings: [], exitBit: 0 };
+  if (await isKnownOid(ctx, universe, oid, confirmPackAccessibility)) {
+    return { findings: [], exitBit: 0 };
+  }
   // Valid OID format but absent from object store
   return {
     findings: [{ type: 'bad-ref', ref, msgId: 'badRefOid', severity: 'error', target: oid }],
@@ -66,13 +89,17 @@ function checkLooseRef(
  * - **Content format** (gated by `checkReferences`): loose-ref must be a hex OID or
  *   `ref: <target>`. Malformed → `badRefContent` (bit 8) + synthesised zero-OID → `badRefOid`
  *   (bit 2). Pinned: matrix #9b, composite exit 10 = 2|8.
- * - **OID presence** (always): ref OID (loose + packed) must be in object universe.
- *   Absent → `badRefOid` (bit 2). Pinned: matrix #9a, exit 2 same with/without `--no-references`.
+ * - **OID presence** (always): ref OID (loose + packed) must be in object universe, confirmed
+ *   via `isKnownOid` rather than trusted at face value — `confirmPackAccessibility` is true
+ *   exactly under `connectivityOnly`, the one mode where `universe` may admit an oid whose
+ *   housing pack later fails its own header gate. Absent → `badRefOid` (bit 2). Pinned:
+ *   matrix #9a, exit 2 same with/without `--no-references`.
  */
 export async function runRefsVerifyPass(
   ctx: Context,
   universe: ReadonlySet<ObjectId>,
   checkContentFormat: boolean,
+  confirmPackAccessibility: boolean,
 ): Promise<{ readonly findings: ReadonlyArray<BadRefFinding>; readonly exitBit: number }> {
   const findings: BadRefFinding[] = [];
   let exitBit = 0;
@@ -83,7 +110,14 @@ export async function runRefsVerifyPass(
   for (const ref of refNames) {
     const raw = await refStore.readLooseRaw(ref);
     if (raw !== undefined) {
-      const { findings: f, exitBit: b } = checkLooseRef(ref, raw, universe, checkContentFormat);
+      const { findings: f, exitBit: b } = await checkLooseRef(
+        ctx,
+        ref,
+        raw,
+        universe,
+        checkContentFormat,
+        confirmPackAccessibility,
+      );
       findings.push(...f);
       exitBit |= b;
       continue;
@@ -93,7 +127,7 @@ export async function runRefsVerifyPass(
     const packed = await refStore.getPackedRefs();
     for (const entry of packed.entries) {
       if (entry.name !== ref) continue;
-      if (!universe.has(entry.id)) {
+      if (!(await isKnownOid(ctx, universe, entry.id, confirmPackAccessibility))) {
         findings.push({
           type: 'bad-ref',
           ref,

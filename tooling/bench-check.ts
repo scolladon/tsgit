@@ -1,7 +1,10 @@
 #!/usr/bin/env node
 /**
- * Compares two same-runner benchmark snapshots (base vs head) on a
- * per-scenario median-ms basis, scoped to `tsgit`-named entries only
+ * Compares same-runner benchmark snapshots (base vs head) on a per-scenario
+ * median-ms basis. Each side may be measured over several alternated rounds
+ * and is reduced by `bestOfRounds` before the comparison, so the verdict
+ * reflects the code rather than whichever side happened to run on a busier
+ * slice of the runner. Scoped to `tsgit`-named entries only
  * (isomorphic-git rows are dropped). A row regresses when the head is
  * more than `policy.thresholdPct` percent slower than the base — the
  * comparison is asymmetric, so improvements never flag. The default
@@ -108,6 +111,34 @@ const readReport = async (
     hot,
   );
 
+/**
+ * Reduces the rounds measured for ONE side to a single entry per scenario,
+ * keeping the FASTEST observation of each.
+ *
+ * Minimum rather than mean or median because benchmark noise on a shared
+ * runner is one-directional: a descheduled process, a cold page, a noisy
+ * neighbour's I/O all ADD time and none subtract it. The fastest round is
+ * therefore the observation least contaminated by the runner, and reducing
+ * both sides the same way is what turns an alternated A/B into a comparison
+ * of the code rather than of the machine's mood.
+ *
+ * A scenario missing from some rounds is still reported from the rounds that
+ * do have it; one missing from every round stays absent, so
+ * `compareToBaseline` can still call it `new` or `missing`.
+ */
+export const bestOfRounds = (
+  rounds: readonly (readonly SnapshotEntry[])[],
+): readonly SnapshotEntry[] => {
+  const fastest = new Map<string, SnapshotEntry>();
+  for (const round of rounds) {
+    for (const entry of round) {
+      const seen = fastest.get(entry.name);
+      if (seen === undefined || entry.value < seen.value) fastest.set(entry.name, entry);
+    }
+  }
+  return [...fastest.values()];
+};
+
 export const resolveThresholdPct = (
   rawEnv: string | undefined = process.env.REGRESSION_THRESHOLD,
 ): number => {
@@ -153,7 +184,7 @@ const renderTable = (result: CompareResult, thresholdPct: number): string =>
   [
     '## Benchmark comparison (same runner)',
     '',
-    `> Threshold: ${thresholdPct}% (median-ms, same-runner, advisory)`,
+    `> Threshold: ${thresholdPct}% (median-ms, best of alternated rounds, same-runner, advisory)`,
     '',
     '| Scenario | Base (ms) | Current (ms) | Delta | Verdict |',
     '|---|---|---|---|---|',
@@ -168,11 +199,24 @@ const emit = async (comment: string): Promise<void> => {
   await writeFile(PR_COMMENT_PATH, comment, 'utf8');
 };
 
+/** Each side is one comma-separated list of round reports, so a single-round
+ *  invocation stays exactly the old one-path-per-side call. */
+const splitRounds = (arg: string): readonly string[] =>
+  arg
+    .split(',')
+    .map((part) => part.trim())
+    .filter((part) => part !== '');
+
 const main = async (): Promise<void> => {
-  const basePath = process.argv[2];
-  const headPath = process.argv[3];
-  if (basePath === undefined || headPath === undefined) {
-    throw new Error('usage: bench-check <base-raw.json> <head-raw.json>');
+  const baseArg = process.argv[2];
+  const headArg = process.argv[3];
+  if (baseArg === undefined || headArg === undefined) {
+    throw new Error('usage: bench-check <base-raw.json[,...]> <head-raw.json[,...]>');
+  }
+  const basePaths = splitRounds(baseArg);
+  const headPaths = splitRounds(headArg);
+  if (basePaths.length === 0 || headPaths.length === 0) {
+    throw new Error('usage: bench-check <base-raw.json[,...]> <head-raw.json[,...]>');
   }
 
   const REGISTRY = path.join(
@@ -183,7 +227,12 @@ const main = async (): Promise<void> => {
   );
   const hot = parseHotOperations(JSON.parse(await readFile(REGISTRY, 'utf8')));
 
-  const [base, current] = await Promise.all([readReport(basePath, hot), readReport(headPath, hot)]);
+  const [baseRounds, currentRounds] = await Promise.all([
+    Promise.all(basePaths.map((filePath) => readReport(filePath, hot))),
+    Promise.all(headPaths.map((filePath) => readReport(filePath, hot))),
+  ]);
+  const base = bestOfRounds(baseRounds);
+  const current = bestOfRounds(currentRounds);
   if (base.length === 0 && current.length === 0) {
     await emit('No benchmark data to compare.');
     process.exit(0);

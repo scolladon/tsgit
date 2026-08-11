@@ -21,6 +21,9 @@ import {
 const SCAN_GLOBS: ReadonlyArray<string> = [
   'test/parity/scenarios/**/*.ts',
   'test/parity/fixtures.ts',
+  // Shared builders a scenario imports are parity inputs too: nondeterminism
+  // there reaches a golden exactly as it would from a scenario file.
+  'test/fixtures/**/*.ts',
 ];
 
 const REPORT_PATH = 'reports/parity-fixtures.json';

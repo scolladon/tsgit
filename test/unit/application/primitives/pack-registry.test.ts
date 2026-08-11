@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { enumerateObjects } from '../../../../src/application/primitives/enumerate-objects.js';
+import { REV_INDEX_MIN_OBJECTS } from '../../../../src/application/primitives/internal/pack-offset-table.js';
+import { packPositionMap } from '../../../../src/application/primitives/internal/pack-positions.js';
 import {
   createPackRegistry,
   isSkippableIdxFault,
@@ -22,11 +24,19 @@ import {
   type GitObject,
   type ObjectId,
 } from '../../../../src/domain/objects/index.js';
-import type { MidxCheck } from '../../../../src/domain/storage/error.js';
+import type {
+  BitmapCheck,
+  MidxCheck,
+  RevIndexCheck,
+} from '../../../../src/domain/storage/error.js';
 import {
+  entryOffsets,
   invalidMultiPackIndex,
+  invalidPackBitmap,
+  invalidPackRevIndex,
   lookupPackIndex,
   parsePackIndex,
+  REASON_REV_INDEX_CORRUPT,
 } from '../../../../src/domain/storage/index.js';
 import { PACK_HEADER_SIZE } from '../../../../src/domain/storage/pack-entry.js';
 import type { Context } from '../../../../src/ports/context.js';
@@ -34,7 +44,7 @@ import type { DirEntry, FileHandle, FileStat } from '../../../../src/ports/file-
 import { buildMidx, type MidxSpec } from '../../domain/storage/arbitraries.js';
 import { buildSeededContext, instrumentedContext } from './fixtures.js';
 import { withHandleLedger } from './handle-ledger.js';
-import { restampPackHeader, writeSyntheticPack } from './pack-fixture.js';
+import { restampPackHeader, writeSyntheticPack, writeSyntheticRevIndex } from './pack-fixture.js';
 
 const dirEntry = (name: string): DirEntry => ({
   name,
@@ -1783,7 +1793,7 @@ describe('PackRegistry.health — per-pack accessibility', () => {
 describe('nextOffsetForEntry', () => {
   describe('Given a table with sortedOffsets=[100, 500, 900], packFileSize=1000, trailerStart=980', () => {
     const table: PackOffsetTable = {
-      sortedOffsets: [100, 500, 900],
+      sortedOffsets: Float64Array.of(100, 500, 900),
       packFileSize: 1000,
       trailerStart: 980,
     };
@@ -1827,7 +1837,7 @@ describe('nextOffsetForEntry', () => {
       it('Then returns trailerStart = 480', () => {
         // Arrange
         const table: PackOffsetTable = {
-          sortedOffsets: [400],
+          sortedOffsets: Float64Array.of(400),
           packFileSize: 500,
           trailerStart: 480,
         };
@@ -4873,6 +4883,923 @@ describe('PackRegistry.lookup — multi-pack-index authority', () => {
             call.path === `${ctx.layout.gitDir}/objects/pack/pack-shared.pack`,
         );
         expect(headerReads).toHaveLength(1);
+      });
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PACK REVERSE INDEX — hasRevIndex discovery, revIndex() memoisation
+// ---------------------------------------------------------------------------
+
+async function writeOneObjectPack(ctx: Context, name: string): Promise<void> {
+  await writeSyntheticPack(ctx, name, [
+    { kind: 'base', type: 'blob', content: new TextEncoder().encode(name) },
+  ]);
+}
+
+describe('RegisteredPack.hasRevIndex', () => {
+  describe('Given a pack whose .rev sibling is present in the scan listing', () => {
+    describe('When all() is called', () => {
+      it('Then hasRevIndex is true for that pack', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeOneObjectPack(ctx, 'rev-present');
+        await writeSyntheticRevIndex(ctx, 'rev-present', [0]);
+        const sut = createPackRegistry(ctx);
+
+        // Act
+        const [pack] = await sut.all();
+
+        // Assert
+        expect(pack?.hasRevIndex).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a pack with no .rev sibling in the scan listing', () => {
+    describe('When all() is called', () => {
+      it('Then hasRevIndex is false for that pack', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeOneObjectPack(ctx, 'rev-absent');
+        const sut = createPackRegistry(ctx);
+
+        // Act
+        const [pack] = await sut.all();
+
+        // Assert
+        expect(pack?.hasRevIndex).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a pack whose .rev sibling is only a symlink in the scan listing', () => {
+    describe('When all() is called', () => {
+      it('Then hasRevIndex is false — a symlinked .rev is not present', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeOneObjectPack(ctx, 'rev-symlink');
+        const wrapped = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            readdir: async (path: string): Promise<ReadonlyArray<DirEntry>> => [
+              ...(await ctx.fs.readdir(path)),
+              {
+                name: 'pack-rev-symlink.rev',
+                isFile: false,
+                isDirectory: false,
+                isSymbolicLink: true,
+              },
+            ],
+          },
+        };
+        const sut = createPackRegistry(wrapped);
+
+        // Act
+        const [pack] = await sut.all();
+
+        // Assert
+        expect(pack?.hasRevIndex).toBe(false);
+      });
+    });
+  });
+});
+
+describe('RegisteredPack.revIndex', () => {
+  describe('Given a pack with a present, valid .rev', () => {
+    describe('When revIndex() is called twice concurrently', () => {
+      it('Then exactly one .rev read serves both calls', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeOneObjectPack(ctx, 'rev-single-flight');
+        await writeSyntheticRevIndex(ctx, 'rev-single-flight', [0]);
+        const { ctx: instrumented, calls } = instrumentedContext(ctx);
+        const sut = createPackRegistry(instrumented);
+        const [pack] = await sut.all();
+
+        // Act
+        await Promise.all([pack!.revIndex(), pack!.revIndex()]);
+
+        // Assert
+        const revReads = calls().filter(
+          (call) => call.method === 'readSlice' && call.path.endsWith('.rev'),
+        );
+        expect(revReads).toHaveLength(1);
+      });
+    });
+  });
+
+  describe('Given a pack whose .rev is rewritten between two scans', () => {
+    describe('When revIndex() is called before and after refresh()', () => {
+      it('Then the second call observes the newly-written bytes, not a stale memo', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeOneObjectPack(ctx, 'rev-refresh');
+        await writeSyntheticRevIndex(ctx, 'rev-refresh', [0]);
+        const sut = createPackRegistry(ctx);
+        const [before] = await sut.all();
+        const firstLoad = await before!.revIndex();
+
+        // Act
+        await writeSyntheticRevIndex(ctx, 'rev-refresh', [0], { magic: 0 });
+        sut.refresh();
+        const [after] = await sut.all();
+        const secondLoad = await after!.revIndex();
+
+        // Assert
+        expect(firstLoad.kind).toBe('usable');
+        expect(secondLoad.kind).toBe('refused');
+      });
+    });
+  });
+});
+
+describe('PackRegistry — pack reverse-index degradation', () => {
+  describe('Given an INVALID_PACK_REV_INDEX error for each RevIndexCheck member', () => {
+    describe("When checked against the registry's per-.idx and per-pack allow-lists", () => {
+      it.each<RevIndexCheck>(['size', 'signature', 'version', 'hash-id'])(
+        'Then neither isSkippableIdxFault nor isSkippablePackFault admits check=%s',
+        (check) => {
+          // Arrange
+          const err = invalidPackRevIndex(check, 'test reason');
+
+          // Act + Assert
+          expect(isSkippableIdxFault(err)).toBe(false);
+          expect(isSkippablePackFault(err)).toBe(false);
+        },
+      );
+    });
+  });
+});
+
+describe('PackRegistry — bitmap degradation', () => {
+  describe('Given an INVALID_PACK_BITMAP error for each BitmapCheck member', () => {
+    describe("When checked against the registry's per-.idx and per-pack allow-lists", () => {
+      it.each<BitmapCheck>(['size', 'signature', 'version', 'options', 'stream', 'entry'])(
+        'Then neither isSkippableIdxFault nor isSkippablePackFault admits check=%s',
+        (check) => {
+          // Arrange — the bitmap health pass never parses, so no code path
+          // ever constructs one of these beyond the loader's own size gate,
+          // but every member must still be closed out of both allow-lists:
+          // reusing either would launder a bitmap fault into "skip this
+          // pack" and could drop a healthy pack from the generation.
+          const err = invalidPackBitmap(check, 'test reason');
+
+          // Act + Assert
+          expect(isSkippableIdxFault(err)).toBe(false);
+          expect(isSkippablePackFault(err)).toBe(false);
+        },
+      );
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PACK OFFSET TABLE — the .rev accelerator (buildOffsetTable)
+// ---------------------------------------------------------------------------
+
+const revAccelEnc = new TextEncoder();
+
+/**
+ * Object count for the describes below that need the `.rev` accelerator to
+ * actually run: `resolveSortedOffsets` sorts without opening the artefact at
+ * all beneath `REV_INDEX_MIN_OBJECTS`, so a handful of objects would make
+ * these assertions vacuous rather than failing. The arms themselves are
+ * covered far more cheaply in `internal/pack-offset-table.test.ts`, which
+ * needs no pack on disk; what these still prove is the REGISTRY wiring —
+ * that `offsetTable()` reaches the artefact, memoises one read, and applies
+ * the threshold to the pack's own object count.
+ */
+const ACCEL_OBJECTS = REV_INDEX_MIN_OBJECTS;
+
+const revAccelEntries = (n: number, prefix: string) =>
+  Array.from({ length: n }, (_unused, i) => ({
+    kind: 'base' as const,
+    type: 'blob' as const,
+    content: revAccelEnc.encode(`${prefix}-${i}`),
+  }));
+
+const revAccelIdxPath = (ctx: Context, name: string): string =>
+  `${ctx.layout.gitDir}/objects/pack/pack-${name}.idx`;
+
+/** The pack-position map the pack's own `.idx` implies — a correct `.rev` body. */
+async function revAccelCorrectBody(ctx: Context, name: string): Promise<Uint32Array> {
+  const idxBytes = await ctx.fs.read(revAccelIdxPath(ctx, name));
+  return packPositionMap(parsePackIndex(idxBytes));
+}
+
+/** `entryOffsets` for a written pack's `.idx` — the sort's own raw input. */
+async function revAccelRawOffsets(ctx: Context, name: string): Promise<ReadonlyArray<number>> {
+  const idxBytes = await ctx.fs.read(revAccelIdxPath(ctx, name));
+  return entryOffsets(parsePackIndex(idxBytes));
+}
+
+/** The expected offset table, in the same `Float64Array` shape both arms of
+ *  `resolveSortedOffsets` produce — sorted independently of the production
+ *  code, so the oracle stays a comparison rather than a copy of the sort
+ *  under test. */
+function ascendingSortOf(raw: ReadonlyArray<number>): Float64Array {
+  return Float64Array.from([...raw].sort((a, b) => a - b));
+}
+
+/** Throws PERMISSION_DENIED for a path ending in `.rev`, delegating everything else. */
+function withUnreadableRev(ctx: Context): Context {
+  return {
+    ...ctx,
+    fs: {
+      ...ctx.fs,
+      stat: async (path: string) => {
+        if (path.endsWith('.rev')) throw permissionDenied(path);
+        return ctx.fs.stat(path);
+      },
+    },
+  };
+}
+
+describe('RegisteredPack.offsetTable — the .rev accelerator, identity', () => {
+  describe('Given a synthetic pack with a healthy .rev, and the same pack with the .rev deleted', () => {
+    describe('When offsetTable() is called on each', () => {
+      it('Then sortedOffsets is element-wise identical across both', async () => {
+        // Arrange
+        const entries = revAccelEntries(5, 'identity');
+        const withRev = await buildSeededContext();
+        await writeSyntheticPack(withRev, 'identity-pack', entries);
+        await writeSyntheticRevIndex(
+          withRev,
+          'identity-pack',
+          await revAccelCorrectBody(withRev, 'identity-pack'),
+        );
+        const withoutRev = await buildSeededContext();
+        await writeSyntheticPack(withoutRev, 'identity-pack', entries);
+
+        // Act
+        const [withRevPack] = await createPackRegistry(withRev).all();
+        const [withoutRevPack] = await createPackRegistry(withoutRev).all();
+        const withRevTable = await withRevPack!.offsetTable();
+        const withoutRevTable = await withoutRevPack!.offsetTable();
+
+        // Assert
+        expect(withRevTable.sortedOffsets).toEqual(withoutRevTable.sortedOffsets);
+      });
+    });
+  });
+
+  describe('Given a 200-entry pack with a healthy .rev, offsets out of index order', () => {
+    describe('When offsetTable() is called', () => {
+      it('Then sortedOffsets matches the sort baseline and is strictly increasing', async () => {
+        // Arrange
+        const entries = revAccelEntries(200, 'scale');
+        const withRev = await buildSeededContext();
+        await writeSyntheticPack(withRev, 'scale-pack', entries);
+        await writeSyntheticRevIndex(
+          withRev,
+          'scale-pack',
+          await revAccelCorrectBody(withRev, 'scale-pack'),
+        );
+        const baseline = await buildSeededContext();
+        await writeSyntheticPack(baseline, 'scale-pack', entries);
+
+        // Act
+        const [pack] = await createPackRegistry(withRev).all();
+        const [baselinePack] = await createPackRegistry(baseline).all();
+        const table = await pack!.offsetTable();
+        const baselineTable = await baselinePack!.offsetTable();
+
+        // Assert
+        expect(table.sortedOffsets).toEqual(baselineTable.sortedOffsets);
+        for (let i = 1; i < table.sortedOffsets.length; i += 1) {
+          expect(table.sortedOffsets[i]!).toBeGreaterThan(table.sortedOffsets[i - 1]!);
+        }
+      });
+    });
+  });
+});
+
+describe('RegisteredPack.offsetTable — the .rev accelerator, fallback', () => {
+  describe('Given a pack with no .rev sibling', () => {
+    describe('When offsetTable() is called', () => {
+      it('Then sortedOffsets equals the sort, and the read still resolves objects', async () => {
+        // Arrange
+        const entries = revAccelEntries(4, 'fallback-absent');
+        const ctx = await buildSeededContext();
+        const ids = await writeSyntheticPack(ctx, 'fallback-absent', entries);
+        const expected = ascendingSortOf(await revAccelRawOffsets(ctx, 'fallback-absent'));
+
+        // Act
+        const [pack] = await getPackRegistry(ctx).all();
+        const result = await pack!.offsetTable();
+
+        // Assert
+        expect(result.sortedOffsets).toEqual(expected);
+        const object = await readObject(ctx, ids[0] as ObjectId);
+        expect((object as Blob).content).toEqual(revAccelEnc.encode('fallback-absent-0'));
+      });
+    });
+  });
+
+  describe('Given a pack whose present .rev is unreadable', () => {
+    describe('When offsetTable() is called', () => {
+      it('Then sortedOffsets equals the sort, and the read still resolves objects', async () => {
+        // Arrange
+        const entries = revAccelEntries(4, 'fallback-unreadable');
+        const ctx = await buildSeededContext();
+        const ids = await writeSyntheticPack(ctx, 'fallback-unreadable', entries);
+        await writeSyntheticRevIndex(
+          ctx,
+          'fallback-unreadable',
+          await revAccelCorrectBody(ctx, 'fallback-unreadable'),
+        );
+        const expected = ascendingSortOf(await revAccelRawOffsets(ctx, 'fallback-unreadable'));
+        const wrapped = withUnreadableRev(ctx);
+
+        // Act
+        const [pack] = await getPackRegistry(wrapped).all();
+        const result = await pack!.offsetTable();
+
+        // Assert
+        expect(result.sortedOffsets).toEqual(expected);
+        const object = await readObject(wrapped, ids[0] as ObjectId);
+        expect((object as Blob).content).toEqual(revAccelEnc.encode('fallback-unreadable-0'));
+      });
+    });
+  });
+
+  describe('Given a pack whose .rev is refused for a bad magic', () => {
+    describe('When offsetTable() is called', () => {
+      it('Then sortedOffsets equals the sort, and the read still resolves objects', async () => {
+        // Arrange
+        const entries = revAccelEntries(4, 'fallback-bad-magic');
+        const ctx = await buildSeededContext();
+        const ids = await writeSyntheticPack(ctx, 'fallback-bad-magic', entries);
+        await writeSyntheticRevIndex(
+          ctx,
+          'fallback-bad-magic',
+          await revAccelCorrectBody(ctx, 'fallback-bad-magic'),
+          { magic: 0 },
+        );
+        const expected = ascendingSortOf(await revAccelRawOffsets(ctx, 'fallback-bad-magic'));
+
+        // Act
+        const [pack] = await getPackRegistry(ctx).all();
+        const result = await pack!.offsetTable();
+
+        // Assert
+        expect(result.sortedOffsets).toEqual(expected);
+        const object = await readObject(ctx, ids[0] as ObjectId);
+        expect((object as Blob).content).toEqual(revAccelEnc.encode('fallback-bad-magic-0'));
+      });
+    });
+  });
+
+  describe('Given a pack whose .rev is refused for a wrong size', () => {
+    describe('When offsetTable() is called', () => {
+      it('Then sortedOffsets equals the sort, and the read still resolves objects', async () => {
+        // Arrange
+        const entries = revAccelEntries(4, 'fallback-wrong-size');
+        const ctx = await buildSeededContext();
+        const ids = await writeSyntheticPack(ctx, 'fallback-wrong-size', entries);
+        await writeSyntheticRevIndex(
+          ctx,
+          'fallback-wrong-size',
+          await revAccelCorrectBody(ctx, 'fallback-wrong-size'),
+          { appendBytes: 4 },
+        );
+        const expected = ascendingSortOf(await revAccelRawOffsets(ctx, 'fallback-wrong-size'));
+
+        // Act
+        const [pack] = await getPackRegistry(ctx).all();
+        const result = await pack!.offsetTable();
+
+        // Assert
+        expect(result.sortedOffsets).toEqual(expected);
+        const object = await readObject(ctx, ids[0] as ObjectId);
+        expect((object as Blob).content).toEqual(revAccelEnc.encode('fallback-wrong-size-0'));
+      });
+    });
+  });
+
+  describe('Given a pack whose on-disk .rev is longer than the exact formula and no longer starts with RIDX', () => {
+    describe('When offsetTable() is called', () => {
+      it('Then the bounded read refuses it for its SIZE, not its signature, and sortedOffsets equals the sort', async () => {
+        // Arrange — the read asks for exactly one byte past the formula, so an
+        // oversized file comes back one byte longer than the formula allows
+        // and is refused on the length it came back with. The trailing bytes
+        // also stop it being a reverse index at all, which is what tells the
+        // two refusals apart: the loader's own gate reports the SIZE fault,
+        // while `parsePackRevIndex` — reached only if that gate is gone —
+        // reports the signature first.
+        const entries = revAccelEntries(ACCEL_OBJECTS, 'fallback-oversized');
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'fallback-oversized', entries);
+        await writeSyntheticRevIndex(
+          ctx,
+          'fallback-oversized',
+          await revAccelCorrectBody(ctx, 'fallback-oversized'),
+        );
+        const revPath = `${ctx.layout.gitDir}/objects/pack/pack-fallback-oversized.rev`;
+        const exact = await ctx.fs.read(revPath);
+        const oversized = new Uint8Array(exact.length + 4);
+        oversized.set(exact, 0);
+        new DataView(oversized.buffer).setUint32(0, 0);
+        await ctx.fs.write(revPath, oversized);
+        const expected = ascendingSortOf(await revAccelRawOffsets(ctx, 'fallback-oversized'));
+        const warn = vi.fn();
+        const wrapped: Context = { ...ctx, logger: { warn } };
+
+        // Act
+        const [pack] = await getPackRegistry(wrapped).all();
+        const result = await pack!.offsetTable();
+
+        // Assert
+        expect(result.sortedOffsets).toEqual(expected);
+        expect(warn).toHaveBeenCalledTimes(1);
+        const [, context] = warn.mock.calls[0] ?? [];
+        // The reason, not the refusal: without the length gate these bytes
+        // reach `parsePackRevIndex`, which refuses them for their signature —
+        // a DIFFERENT reason under the same code.
+        expect((context as { reason?: string } | undefined)?.reason).toBe(REASON_REV_INDEX_CORRUPT);
+        expect((context as { rev?: string } | undefined)?.rev).toBe('pack-fallback-oversized.rev');
+      });
+    });
+  });
+});
+
+describe('RegisteredPack.offsetTable — the .rev accelerator, logging', () => {
+  describe('Given a pack whose .rev is refused', () => {
+    describe('When offsetTable() is called', () => {
+      it('Then ctx.logger.warn is called once with the artefact name', async () => {
+        // Arrange
+        const entries = revAccelEntries(ACCEL_OBJECTS, 'log-refused');
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'log-refused', entries);
+        await writeSyntheticRevIndex(
+          ctx,
+          'log-refused',
+          await revAccelCorrectBody(ctx, 'log-refused'),
+          { magic: 0 },
+        );
+        const warn = vi.fn();
+        const wrapped = { ...ctx, logger: { warn } };
+
+        // Act
+        const [pack] = await getPackRegistry(wrapped).all();
+        await pack!.offsetTable();
+
+        // Assert
+        expect(warn).toHaveBeenCalledTimes(1);
+        const [, context] = warn.mock.calls[0] ?? [];
+        expect((context as { rev?: string } | undefined)?.rev).toBe('pack-log-refused.rev');
+      });
+    });
+  });
+
+  describe('Given a pack whose present .rev is unreadable', () => {
+    describe('When offsetTable() is called', () => {
+      it('Then ctx.logger.warn is never called', async () => {
+        // Arrange
+        const entries = revAccelEntries(3, 'log-unreadable');
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'log-unreadable', entries);
+        await writeSyntheticRevIndex(
+          ctx,
+          'log-unreadable',
+          await revAccelCorrectBody(ctx, 'log-unreadable'),
+        );
+        const warn = vi.fn();
+        const wrapped = { ...withUnreadableRev(ctx), logger: { warn } };
+
+        // Act
+        const [pack] = await getPackRegistry(wrapped).all();
+        await pack!.offsetTable();
+
+        // Assert
+        expect(warn).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('Given a pack with no .rev sibling', () => {
+    describe('When offsetTable() is called', () => {
+      it('Then ctx.logger.warn is never called', async () => {
+        // Arrange
+        const entries = revAccelEntries(3, 'log-absent');
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'log-absent', entries);
+        const warn = vi.fn();
+        const wrapped = { ...ctx, logger: { warn } };
+
+        // Act
+        const [pack] = await getPackRegistry(wrapped).all();
+        await pack!.offsetTable();
+
+        // Assert
+        expect(warn).not.toHaveBeenCalled();
+      });
+    });
+  });
+});
+
+describe('RegisteredPack.offsetTable — the .rev accelerator, trust', () => {
+  describe('Given a .rev whose body is a valid permutation but in the wrong order, restamped', () => {
+    describe('When offsetTable() is called', () => {
+      it('Then sortedOffsets is what that body implies, not the sort, and no error is raised', async () => {
+        // Arrange
+        const entries = revAccelEntries(ACCEL_OBJECTS, 'trust');
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'trust-pack', entries);
+        const correct = await revAccelCorrectBody(ctx, 'trust-pack');
+        const wrongOrder = [correct[1]!, correct[0]!, ...correct.slice(2)];
+        await writeSyntheticRevIndex(ctx, 'trust-pack', wrongOrder);
+        const raw = await revAccelRawOffsets(ctx, 'trust-pack');
+        const expectedFromBody = Float64Array.from(
+          wrongOrder.map((indexPosition) => raw[indexPosition]!),
+        );
+        const expectedFromSort = ascendingSortOf(raw);
+
+        // Act
+        const [pack] = await createPackRegistry(ctx).all();
+        const result = await pack!.offsetTable();
+
+        // Assert
+        expect(result.sortedOffsets).toEqual(expectedFromBody);
+        expect(result.sortedOffsets).not.toEqual(expectedFromSort);
+      });
+    });
+  });
+});
+
+describe('RegisteredPack.offsetTable — the .rev accelerator, out-of-range body', () => {
+  describe('Given a pack whose .rev body[0] is one past its last index position, restamped', () => {
+    describe('When offsetTable() is called', () => {
+      it('Then falls back to the sort, warns once, and every object still reads', async () => {
+        // Arrange
+        const entries = revAccelEntries(ACCEL_OBJECTS, 'oob');
+        const ctx = await buildSeededContext();
+        const ids = await writeSyntheticPack(ctx, 'oob-pack', entries);
+        const correct = await revAccelCorrectBody(ctx, 'oob-pack');
+        const outOfRange = [correct.length, ...correct.slice(1)];
+        await writeSyntheticRevIndex(ctx, 'oob-pack', outOfRange);
+        const expected = ascendingSortOf(await revAccelRawOffsets(ctx, 'oob-pack'));
+        const warn = vi.fn();
+        const wrapped = { ...ctx, logger: { warn } };
+
+        // Act
+        const [pack] = await getPackRegistry(wrapped).all();
+        const result = await pack!.offsetTable();
+
+        // Assert
+        expect(result.sortedOffsets).toEqual(expected);
+        expect(warn).toHaveBeenCalledTimes(1);
+        // First, last and a middle object rather than all of them: the claim
+        // is that the sort fallback produced a usable table, and a bad
+        // `nextOffsetForEntry` bound shows up at the ends — reading every one
+        // of an above-threshold pack's objects would cost seconds to prove
+        // the same thing.
+        for (const i of [0, ids.length >> 1, ids.length - 1]) {
+          const object = await readObject(wrapped, ids[i] as ObjectId);
+          expect((object as Blob).content).toEqual(revAccelEnc.encode(`oob-${i}`));
+        }
+      });
+    });
+  });
+});
+
+describe('RegisteredPack.offsetTable — the .rev accelerator, read count', () => {
+  describe('Given a pack with a healthy .rev', () => {
+    describe('When offsetTable() is called', () => {
+      it('Then the .rev is read exactly once', async () => {
+        // Arrange
+        const entries = revAccelEntries(ACCEL_OBJECTS, 'count-present');
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'count-present', entries);
+        await writeSyntheticRevIndex(
+          ctx,
+          'count-present',
+          await revAccelCorrectBody(ctx, 'count-present'),
+        );
+        const { ctx: instrumented, calls } = instrumentedContext(ctx);
+
+        // Act
+        const [pack] = await getPackRegistry(instrumented).all();
+        await pack!.offsetTable();
+
+        // Assert
+        const revReads = calls().filter(
+          (call) => call.method === 'readSlice' && call.path.endsWith('.rev'),
+        );
+        expect(revReads).toHaveLength(1);
+      });
+    });
+  });
+
+  describe('Given a pack with no .rev sibling', () => {
+    describe('When offsetTable() is called', () => {
+      it('Then the .rev is never read', async () => {
+        // Arrange
+        const entries = revAccelEntries(3, 'count-absent');
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'count-absent', entries);
+        const { ctx: instrumented, calls } = instrumentedContext(ctx);
+
+        // Act
+        const [pack] = await getPackRegistry(instrumented).all();
+        await pack!.offsetTable();
+
+        // Assert
+        const revReads = calls().filter(
+          (call) => call.method === 'readSlice' && call.path.endsWith('.rev'),
+        );
+        expect(revReads).toHaveLength(0);
+      });
+    });
+  });
+});
+
+describe('RegisteredPack.offsetTable — the .rev accelerator, single-flight', () => {
+  describe('Given a pack with a healthy .rev', () => {
+    describe('When offsetTable() is called twice concurrently', () => {
+      it('Then exactly one .rev read serves both calls', async () => {
+        // Arrange
+        const entries = revAccelEntries(ACCEL_OBJECTS, 'single-flight-offset');
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'single-flight-offset', entries);
+        await writeSyntheticRevIndex(
+          ctx,
+          'single-flight-offset',
+          await revAccelCorrectBody(ctx, 'single-flight-offset'),
+        );
+        const { ctx: instrumented, calls } = instrumentedContext(ctx);
+        const [pack] = await getPackRegistry(instrumented).all();
+
+        // Act
+        await Promise.all([pack!.offsetTable(), pack!.offsetTable()]);
+
+        // Assert
+        const revReads = calls().filter(
+          (call) => call.method === 'readSlice' && call.path.endsWith('.rev'),
+        );
+        expect(revReads).toHaveLength(1);
+      });
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PACK POSITIONS — packPositions(), the bitmap closure tier's mapping memo
+// ---------------------------------------------------------------------------
+
+describe('RegisteredPack.packPositions', () => {
+  describe('Given a pack with a healthy .rev, and the same pack with the .rev absent', () => {
+    describe('When packPositions() is called on each', () => {
+      it('Then both agree with packPositionMap(index) element-wise', async () => {
+        // Arrange
+        const entries = revAccelEntries(6, 'positions-identity');
+        const withRev = await buildSeededContext();
+        await writeSyntheticPack(withRev, 'positions-identity', entries);
+        await writeSyntheticRevIndex(
+          withRev,
+          'positions-identity',
+          await revAccelCorrectBody(withRev, 'positions-identity'),
+        );
+        const withoutRev = await buildSeededContext();
+        await writeSyntheticPack(withoutRev, 'positions-identity', entries);
+        const idxBytes = await withoutRev.fs.read(
+          revAccelIdxPath(withoutRev, 'positions-identity'),
+        );
+        const expected = packPositionMap(parsePackIndex(idxBytes));
+
+        // Act
+        const [withRevPack] = await createPackRegistry(withRev).all();
+        const [withoutRevPack] = await createPackRegistry(withoutRev).all();
+        const withRevPositions = await withRevPack!.packPositions();
+        const withoutRevPositions = await withoutRevPack!.packPositions();
+
+        // Assert
+        expect(withRevPositions).toEqual(expected);
+        expect(withoutRevPositions).toEqual(expected);
+      });
+    });
+  });
+
+  describe('Given a pack whose .rev is refused for a bad magic', () => {
+    describe('When packPositions() is called', () => {
+      it('Then it falls back to packPositionMap(index)', async () => {
+        // Arrange
+        const entries = revAccelEntries(5, 'positions-refused');
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'positions-refused', entries);
+        await writeSyntheticRevIndex(
+          ctx,
+          'positions-refused',
+          await revAccelCorrectBody(ctx, 'positions-refused'),
+          { magic: 0 },
+        );
+        const idxBytes = await ctx.fs.read(revAccelIdxPath(ctx, 'positions-refused'));
+        const expected = packPositionMap(parsePackIndex(idxBytes));
+
+        // Act
+        const [pack] = await getPackRegistry(ctx).all();
+        const result = await pack!.packPositions();
+
+        // Assert
+        expect(result).toEqual(expected);
+      });
+    });
+  });
+
+  describe('Given a .rev body[0] out of range for a 10-object pack, restamped', () => {
+    describe('When packPositions() is called', () => {
+      it('Then it falls back to packPositionMap(index) rather than propagate the out-of-range value', async () => {
+        // Arrange
+        const entries = revAccelEntries(10, 'positions-oob');
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'positions-oob', entries);
+        const correct = await revAccelCorrectBody(ctx, 'positions-oob');
+        const outOfRange = [correct.length, ...correct.slice(1)];
+        await writeSyntheticRevIndex(ctx, 'positions-oob', outOfRange);
+        const idxBytes = await ctx.fs.read(revAccelIdxPath(ctx, 'positions-oob'));
+        const expected = packPositionMap(parsePackIndex(idxBytes));
+
+        // Act
+        const [pack] = await getPackRegistry(ctx).all();
+        const result = await pack!.packPositions();
+
+        // Assert
+        expect(result).toEqual(expected);
+      });
+    });
+  });
+
+  describe('Given a pack whose present .rev is unreadable', () => {
+    describe('When packPositions() is called', () => {
+      it('Then it falls back to packPositionMap(index)', async () => {
+        // Arrange
+        const entries = revAccelEntries(4, 'positions-unreadable');
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'positions-unreadable', entries);
+        await writeSyntheticRevIndex(
+          ctx,
+          'positions-unreadable',
+          await revAccelCorrectBody(ctx, 'positions-unreadable'),
+        );
+        const idxBytes = await ctx.fs.read(revAccelIdxPath(ctx, 'positions-unreadable'));
+        const expected = packPositionMap(parsePackIndex(idxBytes));
+        const wrapped = withUnreadableRev(ctx);
+
+        // Act
+        const [pack] = await getPackRegistry(wrapped).all();
+        const result = await pack!.packPositions();
+
+        // Assert
+        expect(result).toEqual(expected);
+      });
+    });
+  });
+
+  describe('Given a pack with a healthy .rev', () => {
+    describe('When packPositions() and offsetTable() are both called', () => {
+      it('Then the .rev is read exactly once for the whole pack', async () => {
+        // Arrange
+        const entries = revAccelEntries(4, 'positions-single-read');
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'positions-single-read', entries);
+        await writeSyntheticRevIndex(
+          ctx,
+          'positions-single-read',
+          await revAccelCorrectBody(ctx, 'positions-single-read'),
+        );
+        const { ctx: instrumented, calls } = instrumentedContext(ctx);
+
+        // Act
+        const [pack] = await getPackRegistry(instrumented).all();
+        await Promise.all([pack!.packPositions(), pack!.offsetTable()]);
+
+        // Assert
+        const revReads = calls().filter(
+          (call) => call.method === 'readSlice' && call.path.endsWith('.rev'),
+        );
+        expect(revReads).toHaveLength(1);
+      });
+    });
+  });
+
+  describe('Given a pack whose .rev is refused', () => {
+    describe('When packPositions() is called', () => {
+      it('Then ctx.logger.warn is never called — the fallback is silent here, unlike offsetTable', async () => {
+        // Arrange
+        const entries = revAccelEntries(3, 'positions-log-refused');
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'positions-log-refused', entries);
+        await writeSyntheticRevIndex(
+          ctx,
+          'positions-log-refused',
+          await revAccelCorrectBody(ctx, 'positions-log-refused'),
+          { magic: 0 },
+        );
+        const warn = vi.fn();
+        const wrapped = { ...ctx, logger: { warn } };
+
+        // Act
+        const [pack] = await getPackRegistry(wrapped).all();
+        await pack!.packPositions();
+
+        // Assert
+        expect(warn).not.toHaveBeenCalled();
+      });
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// THE .rev FALLBACK'S OWN WARNS — the message and the artefact name both,
+// and the exact position at which a stored value stops naming this pack.
+// ---------------------------------------------------------------------------
+
+const REV_REFUSED_WARN = 'packRegistry: discarding unusable pack reverse index';
+const REV_OUT_OF_RANGE_WARN =
+  'packRegistry: pack reverse index position out of range, falling back to sort';
+
+describe('RegisteredPack.offsetTable — what the fallback warns say', () => {
+  describe('Given a pack whose .rev is refused', () => {
+    describe('When offsetTable() is called', () => {
+      it('Then the warn names the discard and the artefact in one message', async () => {
+        // Arrange
+        const entries = revAccelEntries(ACCEL_OBJECTS, 'warn-refused');
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'warn-refused', entries);
+        await writeSyntheticRevIndex(
+          ctx,
+          'warn-refused',
+          await revAccelCorrectBody(ctx, 'warn-refused'),
+          { magic: 0 },
+        );
+        const warn = vi.fn();
+        const wrapped = { ...ctx, logger: { warn } };
+
+        // Act
+        const [pack] = await getPackRegistry(wrapped).all();
+        await pack!.offsetTable();
+
+        // Assert
+        expect(warn).toHaveBeenCalledTimes(1);
+        const [message, context] = warn.mock.calls[0] ?? [];
+        expect(message).toBe(REV_REFUSED_WARN);
+        expect((context as { rev?: string } | undefined)?.rev).toBe('pack-warn-refused.rev');
+      });
+    });
+  });
+
+  describe('Given a .rev whose first stored position is exactly the pack object count', () => {
+    describe('When offsetTable() is called', () => {
+      it('Then it falls back to the ascending sort and warns naming the out-of-range fallback and the artefact', async () => {
+        // Arrange — one past the last valid index position, the boundary the
+        // bound has to reject rather than gather `undefined` off the end.
+        const entries = revAccelEntries(ACCEL_OBJECTS, 'warn-oob');
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'warn-oob', entries);
+        const correct = await revAccelCorrectBody(ctx, 'warn-oob');
+        await writeSyntheticRevIndex(ctx, 'warn-oob', [correct.length, ...correct.slice(1)]);
+        const expected = ascendingSortOf(await revAccelRawOffsets(ctx, 'warn-oob'));
+        const warn = vi.fn();
+        const wrapped = { ...ctx, logger: { warn } };
+
+        // Act
+        const [pack] = await getPackRegistry(wrapped).all();
+        const result = await pack!.offsetTable();
+
+        // Assert
+        expect(result.sortedOffsets).toEqual(expected);
+        expect(warn).toHaveBeenCalledTimes(1);
+        const [message, context] = warn.mock.calls[0] ?? [];
+        expect(message).toBe(REV_OUT_OF_RANGE_WARN);
+        expect((context as { rev?: string } | undefined)?.rev).toBe('pack-warn-oob.rev');
+      });
+    });
+  });
+
+  describe('Given a .rev whose first stored position is exactly the pack object count', () => {
+    describe('When packPositions() is called', () => {
+      it('Then it falls back to packPositionMap(index) rather than store the boundary value', async () => {
+        // Arrange
+        const entries = revAccelEntries(6, 'positions-boundary');
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'positions-boundary', entries);
+        const correct = await revAccelCorrectBody(ctx, 'positions-boundary');
+        await writeSyntheticRevIndex(ctx, 'positions-boundary', [
+          correct.length,
+          ...correct.slice(1),
+        ]);
+        const idxBytes = await ctx.fs.read(revAccelIdxPath(ctx, 'positions-boundary'));
+        const expected = packPositionMap(parsePackIndex(idxBytes));
+
+        // Act
+        const [pack] = await getPackRegistry(ctx).all();
+        const result = await pack!.packPositions();
+
+        // Assert
+        expect(result).toEqual(expected);
       });
     });
   });

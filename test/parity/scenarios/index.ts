@@ -1,5 +1,6 @@
 import { archiveScenario } from './archive.scenario.ts';
 import { bisectMidpointScenario } from './bisect-midpoint.scenario.ts';
+import { bitmapClosureScenario } from './bitmap-closure.scenario.ts';
 import { blameScenario } from './blame.scenario.ts';
 import { branchLifecycleScenario } from './branch-lifecycle.scenario.ts';
 import { bundleScenario } from './bundle.scenario.ts';
@@ -19,6 +20,7 @@ import { mvScenario } from './mv.scenario.ts';
 import { nameRevScenario } from './name-rev.scenario.ts';
 import { notesScenario } from './notes.scenario.ts';
 import { packDegradedIdxScenario } from './pack-degraded-idx.scenario.ts';
+import { packObjectsScenario } from './pack-objects.scenario.ts';
 import { packV3ReadScenario } from './pack-v3-read.scenario.ts';
 import { phase202PrimitivesScenario } from './phase-20-2-primitives.scenario.ts';
 import { rangeDiffScenario } from './range-diff.scenario.ts';
@@ -27,6 +29,7 @@ import { rebaseScenario } from './rebase.scenario.ts';
 import { refsPipelineScenario } from './refs-pipeline.scenario.ts';
 import { remoteCrudScenario } from './remote-crud.scenario.ts';
 import { resetRmReflogScenario } from './reset-rm-reflog.scenario.ts';
+import { revListScenario } from './rev-list.scenario.ts';
 import { revertScenario } from './revert.scenario.ts';
 import { shallowWalkScenario } from './shallow-walk.scenario.ts';
 import { shortlogScenario } from './shortlog.scenario.ts';
@@ -42,6 +45,7 @@ import { writePipelineScenario } from './write-pipeline.scenario.ts';
 export const SCENARIOS: ReadonlyArray<Scenario<unknown>> = [
   archiveScenario,
   bisectMidpointScenario,
+  bitmapClosureScenario,
   bundleScenario,
   initAddCommitStatusScenario,
   branchLifecycleScenario,
@@ -61,6 +65,7 @@ export const SCENARIOS: ReadonlyArray<Scenario<unknown>> = [
   configScenario,
   stashScenario,
   cherryPickScenario,
+  revListScenario,
   revertScenario,
   rebaseScenario,
   showScenario,
@@ -80,4 +85,5 @@ export const SCENARIOS: ReadonlyArray<Scenario<unknown>> = [
   fsckDegradedStoreScenario,
   midxReadScenario,
   midxReadDegradedScenario,
+  packObjectsScenario,
 ];

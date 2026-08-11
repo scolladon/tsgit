@@ -214,6 +214,11 @@ export {
   notesRead,
   notesRemove,
 } from './notes.js';
+export {
+  type PackObjectsOptions,
+  type PackObjectsResult,
+  packObjects,
+} from './pack-objects.js';
 export { type PullOptions, type PullResult, pull } from './pull.js';
 export { type PushOptions, type PushResult, push } from './push.js';
 export {
@@ -266,6 +271,12 @@ export {
   remoteShow,
 } from './remote.js';
 export { type ResetMode, type ResetOptions, type ResetResult, reset } from './reset.js';
+export {
+  type RevListEntry,
+  type RevListOptions,
+  type RevListResult,
+  revList,
+} from './rev-list.js';
 export { revParse } from './rev-parse.js';
 export {
   type RevertAbortResult,

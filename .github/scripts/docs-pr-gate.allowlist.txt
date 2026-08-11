@@ -18,3 +18,24 @@
 # all documented in docs/use/snapshots.md + docs/understand/caching.md.
 src/application/primitives/snapshot/ docs/use/snapshots.md
 src/application/primitives/snapshot-operators/ docs/use/snapshots.md
+
+# Primitives that are NOT bound on `repo.primitives.*` and so have no
+# per-file page by design: their reference is the composite
+# `docs/use/primitives/internals.md`, which carries one entry each for
+# `buildPack`, `fetchPack`, `createPackRegistry` and the config-write
+# helpers. The gate looks for `<basename>.md` or the funnel README and
+# cannot see that page, so without these lines every touch of one of them
+# reports drift against a page that was never supposed to exist.
+#
+# This suppresses the per-file mismatch only when `internals.md` is itself
+# in the PR's changed set — so it still forces the question "does the
+# composite page need updating?" rather than silencing it outright.
+src/application/primitives/build-pack.ts docs/use/primitives/internals.md
+src/application/primitives/fetch-pack.ts docs/use/primitives/internals.md
+src/application/primitives/pack-registry.ts docs/use/primitives/internals.md
+src/application/primitives/update-config.ts docs/use/primitives/internals.md
+# `validators.ts` is the odd one out: guard predicates and refusal-reason
+# constants with no user-facing surface of their own. Each guard is
+# described where it actually bites (the command or registry entry that
+# enforces it), so `internals.md` remains the right place to look.
+src/application/primitives/validators.ts docs/use/primitives/internals.md

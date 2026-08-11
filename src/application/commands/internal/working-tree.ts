@@ -3,14 +3,9 @@ import { dirname, TsgitError } from '../../../domain/error.js';
 import { unsupportedOperation } from '../../../domain/index.js';
 import type { FileMode } from '../../../domain/objects/file-mode.js';
 import type { FilePath } from '../../../domain/objects/object-id.js';
-import {
-  isForbiddenGitComponent,
-  validateWorkingTreePath,
-} from '../../../domain/working-tree-path.js';
+import { validateWorkingTreePath } from '../../../domain/working-tree-path.js';
 import type { Context } from '../../../ports/context.js';
 import { joinPath } from '../../primitives/internal/join-working-tree-path.js';
-
-export { isForbiddenGitComponent };
 
 /**
  * Validate a working-tree path. Throws `PATHSPEC_OUTSIDE_REPO` for any policy

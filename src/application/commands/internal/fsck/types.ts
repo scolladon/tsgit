@@ -82,6 +82,23 @@ export type FsckFinding =
       readonly reason: string;
     }
   | {
+      readonly type: 'pack-rev-index-invalid';
+      /** Pack base name (`pack-<sha>`) — see `pack-inaccessible`'s doc-comment. */
+      readonly pack: string;
+      readonly reason: string;
+    }
+  | {
+      readonly type: 'pack-rev-index-position-mismatch';
+      /** Pack base name (`pack-<sha>`) — see `pack-inaccessible`'s doc-comment. */
+      readonly pack: string;
+      /** Pack position — rank by ascending offset, `[0, objectCount)`. */
+      readonly position: number;
+      /** The index position `packPositionMap` derives from the pack's own `.idx`. */
+      readonly expected: number;
+      /** The index position the `.rev` file actually stores at `position`. */
+      readonly stored: number;
+    }
+  | {
       readonly type: 'midx-unusable';
       /** The artefact this verdict is about: `multi-pack-index`, or a chain
        *  layer's own file name. */
@@ -106,6 +123,12 @@ export type FsckFinding =
       readonly type: 'midx-entry-unresolved';
       readonly artefact: string;
       readonly id: ObjectId;
+    }
+  | {
+      readonly type: 'bitmap-checksum-mismatch';
+      /** The artefact this verdict is about: a pack's `<base>.bitmap`, or
+       *  the in-use multi-pack-index's `multi-pack-index-<hex>.bitmap`. */
+      readonly artefact: string;
     };
 
 /**
@@ -146,7 +169,8 @@ export interface FsckResult {
    * Composite exit bitmask, bits compose by OR: 0=clean, 1=content error
    * (corrupt/hash-mismatch/strict-upgraded warn), 2=missing/broken-link,
    * 4=pack inaccessible or index not opened, 8=refs-verify content failure,
-   * 32=multi-pack-index verification failure, 64=pack reverse-index unusable.
+   * 32=multi-pack-index verification failure, 64=pack reverse-index unusable,
+   * 128=a pack's or the in-use multi-pack-index's bitmap checksum mismatch.
    */
   readonly exitCode: number;
 }

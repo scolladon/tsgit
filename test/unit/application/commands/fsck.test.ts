@@ -21,6 +21,7 @@ import {
   TsgitError,
   unsupportedOperation,
 } from '../../../../src/domain/error.js';
+import { STAGE0_FLAGS } from '../../../../src/domain/git-index/index-entry.js';
 import {
   FILE_MODE,
   hexToBytes,
@@ -32,14 +33,25 @@ import {
 import type { FilePath } from '../../../../src/domain/objects/object-id.js';
 import { invalidPackIndex } from '../../../../src/domain/storage/index.js';
 import type { Context } from '../../../../src/ports/context.js';
-import { buildMidx, type MidxSpec } from '../../domain/storage/arbitraries.js';
-import { buildSeededContext, instrumentedContext } from '../primitives/fixtures.js';
+import {
+  type BitmapSpec,
+  buildBitmap,
+  buildMidx,
+  type MidxSpec,
+} from '../../domain/storage/arbitraries.js';
+import {
+  buildSeededContext,
+  instrumentedContext,
+  serializeIndexFixtureAsync,
+} from '../primitives/fixtures.js';
 import { withHandleLedger } from '../primitives/handle-ledger.js';
 import {
   buildSyntheticPack,
   type EntrySpec,
   restampPackHeader,
+  writeSyntheticBitmap,
   writeSyntheticPack,
+  writeSyntheticRevIndex,
 } from '../primitives/pack-fixture.js';
 import { findingIds } from './fsck-finding-ids.js';
 
@@ -2557,6 +2569,23 @@ const packFilePath = (ctx: Context, name: string): string =>
   `${ctx.layout.gitDir}/objects/pack/pack-${name}.pack`;
 const idxFilePath = (ctx: Context, name: string): string =>
   `${ctx.layout.gitDir}/objects/pack/pack-${name}.idx`;
+const bitmapFilePath = (ctx: Context, name: string): string =>
+  `${ctx.layout.gitDir}/objects/pack/pack-${name}.bitmap`;
+
+/** A minimal, structurally healthy bitmap body — zero entries, four empty
+ *  EWAH type streams, the mandatory full-DAG flag. This composition suite
+ *  only needs a real trailer to flip; the body's own shape is irrelevant. */
+function healthyBitmapSpec(digestLength: number): BitmapSpec {
+  const emptyStream = { bitSize: 0, bits: [] } as const;
+  return {
+    optionFlags: 1,
+    digestLength,
+    checksum: new Uint8Array(digestLength).fill(0xbb),
+    typeStreams: [emptyStream, emptyStream, emptyStream, emptyStream],
+    entries: [],
+    trailingBytes: 0,
+  };
+}
 
 const onePackEntry = (content: string) => [
   { kind: 'base' as const, type: 'blob' as const, content: enc.encode(content) },
@@ -2838,6 +2867,813 @@ describe('Given a pack with a corrupt .idx', () => {
       expect(result.exitCode & 64).toBe(64);
       expect(result.exitCode & 4).toBe(0);
       expect(result.findings.some((f) => f.type === 'pack-index-unusable')).toBe(false);
+    });
+  });
+});
+
+describe('Given a pack with a broken .rev', () => {
+  describe('When fsck runs', () => {
+    it('Then fsck() folds a pack-rev-index-invalid finding into its result, bit 64 set', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      await writeSyntheticPack(ctx, 'broken-rev', onePackEntry('broken-rev-content'));
+      await writeSyntheticRevIndex(ctx, 'broken-rev', [0], { magic: 0 });
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      const invalid = result.findings.filter((f) => f.type === 'pack-rev-index-invalid');
+      expect(invalid).toHaveLength(1);
+      expect((invalid[0] as { pack: string }).pack).toBe('pack-broken-rev');
+      expect(result.exitCode & 64).toBe(64);
+    });
+  });
+});
+
+describe('Given a pack with a broken .rev alongside an unrelated missing tree', () => {
+  describe('When fsck runs', () => {
+    it('Then bits 2 and 64 both compose into the exit code by OR', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const commitId = await writeObject(ctx, makeCommit('a'.repeat(40) as ObjectId, []));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+      await writeSyntheticPack(ctx, 'unrelated-broken-rev', onePackEntry('unrelated-content'));
+      await writeSyntheticRevIndex(ctx, 'unrelated-broken-rev', [0], { magic: 0 });
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      expect(result.exitCode & 2).toBe(2);
+      expect(result.exitCode & 64).toBe(64);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// BITMAP HEALTH PASS — composition with pre-existing exit bits (bit 128)
+// ---------------------------------------------------------------------------
+
+describe('Given a pack with both a broken .rev and a broken bitmap', () => {
+  describe('When fsck runs', () => {
+    it('Then bits 64 and 128 both compose into exit 192', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      await writeSyntheticPack(ctx, 'both-broken', onePackEntry('both-broken-content'));
+      await writeSyntheticRevIndex(ctx, 'both-broken', [0], { magic: 0 });
+      const body = buildBitmap(healthyBitmapSpec(ctx.hashConfig.digestLength));
+      await writeSyntheticBitmap(ctx, bitmapFilePath(ctx, 'both-broken'), body, {
+        flipTrailer: true,
+      });
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      expect(result.exitCode).toBe(192);
+    });
+  });
+});
+
+describe('Given a malformed ref (bits 2 and 8) beside a header-refused pack with a broken bitmap', () => {
+  describe('When fsck runs by default', () => {
+    it('Then bits 2, 4, 8 and 128 all compose into exit 142', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/garbage`, 'not-a-valid-sha\n');
+      await writeSyntheticPack(ctx, 'compose-142', onePackEntry('compose-142-content'));
+      await restampPackHeader(ctx, packFilePath(ctx, 'compose-142'), { version: 99 });
+      const body = buildBitmap(healthyBitmapSpec(ctx.hashConfig.digestLength));
+      await writeSyntheticBitmap(ctx, bitmapFilePath(ctx, 'compose-142'), body, {
+        flipTrailer: true,
+      });
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      expect(result.exitCode).toBe(142);
+    });
+  });
+
+  describe('When fsck runs with connectivityOnly: true', () => {
+    it('Then bit 4 drops out and exit is 138', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/garbage`, 'not-a-valid-sha\n');
+      await writeSyntheticPack(ctx, 'compose-138', onePackEntry('compose-138-content'));
+      await restampPackHeader(ctx, packFilePath(ctx, 'compose-138'), { version: 99 });
+      const body = buildBitmap(healthyBitmapSpec(ctx.hashConfig.digestLength));
+      await writeSyntheticBitmap(ctx, bitmapFilePath(ctx, 'compose-138'), body, {
+        flipTrailer: true,
+      });
+
+      // Act
+      const result = await fsck(ctx, { connectivityOnly: true });
+
+      // Assert
+      expect(result.exitCode).toBe(138);
+    });
+  });
+});
+
+describe('Given an orphaned .idx with a bitmap beside it (no sibling .pack file)', () => {
+  describe('When fsck runs', () => {
+    it('Then no bitmap-checksum-mismatch is emitted and bit 128 is absent — the pack is never registered', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      await ctx.fs.write(idxFilePath(ctx, 'orphan-with-bitmap'), new Uint8Array(8));
+      const body = buildBitmap(healthyBitmapSpec(ctx.hashConfig.digestLength));
+      await writeSyntheticBitmap(ctx, bitmapFilePath(ctx, 'orphan-with-bitmap'), body, {
+        flipTrailer: true,
+      });
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      expect(result.findings.some((f) => f.type === 'bitmap-checksum-mismatch')).toBe(false);
+      expect(result.exitCode & 128).toBe(0);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// MISSING-ENTRY-POINT CONDITION (exit bit 8) — a whole-repository check: bit
+// 8 fires exactly when the index carries a cache-tree (`TREE` extension) and
+// at least one of its entries' tree oids fails to resolve — never for an
+// individual ref target that merely misses, and never for a repository with
+// no index, or an index with no cache-tree extension, at all (a bare or
+// never-staged repository is healthy). Discriminating repository shapes,
+// measured against real git 2.55.0.
+//
+// Measured directly against git 2.55.0 (not merely inferred): this bit is
+// entirely independent of ref and reflog resolution — a bare repo with
+// every reflog entry unresolvable, and the same fixture with its reflog
+// removed outright, both leave the bit unset; a broken ref beside a healthy
+// cache-tree never sets it either. What the bit actually tracks is purely
+// the index's own cache-tree, so the fixtures below plant one (via a raw
+// `TREE` extension) exactly where the matrix calls for "something
+// resolvable" or "nothing resolvable" beyond the ref.
+// ---------------------------------------------------------------------------
+
+/** Builds a root-only `TREE` (cache-tree) extension whose sole entry names
+ *  `id` — the minimal cache-tree shape the missing-entry-point rule needs
+ *  to move past its vacuous "no cache-tree" default. `entryCount` is a
+ *  positive placeholder (git's own count of covered index entries); its
+ *  exact value is irrelevant to the check, only that it is `>= 0` so an
+ *  oid follows. */
+function buildCacheTreeExtension(id: ObjectId): {
+  readonly signature: string;
+  readonly data: Uint8Array;
+} {
+  const header = new TextEncoder().encode('1 0\n');
+  const idBytes = hexToBytes(id);
+  const data = new Uint8Array(1 + header.length + idBytes.length);
+  data.set(header, 1);
+  data.set(idBytes, 1 + header.length);
+  return { signature: 'TREE', data };
+}
+
+/** Writes a single-entry index whose one stage-0 entry names `entryId` at
+ *  `path`, plus — when `cacheTreeId` is given — a root cache-tree extension
+ *  whose sole entry names it. Passing `cacheTreeId: undefined` writes an
+ *  index with entries but no cache-tree extension at all, the shape git
+ *  runs no missing-entry-point check against. */
+async function writeIndexWithEntry(
+  ctx: Context,
+  entryId: ObjectId,
+  path: string,
+  cacheTreeId: ObjectId | undefined,
+): Promise<void> {
+  const index = {
+    version: 2 as const,
+    entries: [
+      {
+        ctimeSeconds: 0,
+        ctimeNanoseconds: 0,
+        mtimeSeconds: 0,
+        mtimeNanoseconds: 0,
+        dev: 0,
+        ino: 0,
+        mode: FILE_MODE.REGULAR,
+        uid: 0,
+        gid: 0,
+        fileSize: 0,
+        id: entryId,
+        flags: STAGE0_FLAGS,
+        path: path as FilePath,
+      },
+    ],
+    extensions: cacheTreeId === undefined ? [] : [buildCacheTreeExtension(cacheTreeId)],
+    trailerSha: new Uint8Array(0),
+  };
+  const indexBytes = await serializeIndexFixtureAsync(index, ctx);
+  await ctx.fs.write(`${ctx.layout.gitDir}/index`, indexBytes);
+}
+
+describe('Given a ref to an oid that never existed, alongside a healthy main that resolves', () => {
+  describe('When fsck runs', () => {
+    it('Then exit is 2 alone — an existing entry point suppresses the missing-entry-point bit', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const treeId = await writeObject(ctx, makeTree([]));
+      const commitId = await writeObject(ctx, makeCommit(treeId, []));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+      const absentOid = 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee' as ObjectId;
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/broken`, `${absentOid}\n`);
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      expect(result.exitCode).toBe(2);
+    });
+  });
+});
+
+describe('Given the whole pack directory removed, main and the index both pointing into it', () => {
+  describe('When fsck runs', () => {
+    it('Then exit is 10 (2|8) — nothing resolves anywhere', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const [blobId] = await writeSyntheticPack(ctx, 'sole', onePackEntry('sole-content'));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${blobId}\n`);
+      await writeIndexWithEntry(ctx, blobId as ObjectId, 'a.txt', blobId as ObjectId);
+      await ctx.fs.rm(packFilePath(ctx, 'sole'));
+      await ctx.fs.rm(idxFilePath(ctx, 'sole'));
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      expect(result.exitCode).toBe(10);
+    });
+  });
+});
+
+describe("Given the sole pack's header version restamped to 99, main and the index both pointing into it", () => {
+  describe('When fsck runs', () => {
+    it('Then exit is 14 (2|4|8) — the pack is unusable and nothing else resolves', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const [blobId] = await writeSyntheticPack(ctx, 'sole', onePackEntry('sole-content'));
+      await restampPackHeader(ctx, packFilePath(ctx, 'sole'), { version: 99 });
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${blobId}\n`);
+      await writeIndexWithEntry(ctx, blobId as ObjectId, 'a.txt', blobId as ObjectId);
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      expect(result.exitCode).toBe(14);
+    });
+  });
+});
+
+describe('Given only the HEAD commit object deleted, its tree still readable and indexed', () => {
+  describe('When fsck runs', () => {
+    it('Then exit is 2 alone — a live index entry is still a live entry point', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const blobId = await writeObject(ctx, makeBlob('still readable'));
+      const treeId = await writeObject(
+        ctx,
+        makeTree([{ mode: FILE_MODE.REGULAR, name: 'a.txt', id: blobId }]),
+      );
+      const parentCommitId = await writeObject(ctx, makeCommit(treeId, []));
+      const headCommitId = await writeObject(
+        ctx,
+        makeCommit(treeId, [parentCommitId], 'head commit'),
+      );
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${headCommitId}\n`);
+      await writeIndexWithEntry(ctx, blobId, 'a.txt', treeId);
+      await ctx.fs.rm(looseObjectPath(ctx.layout.gitDir, headCommitId));
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      expect(result.exitCode).toBe(2);
+    });
+  });
+});
+
+describe('Given every loose object deleted, main and the index both pointing at gone objects', () => {
+  describe('When fsck runs', () => {
+    it('Then exit is 10 (2|8) — nothing resolves anywhere', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const blobId = await writeObject(ctx, makeBlob('gone'));
+      const treeId = await writeObject(
+        ctx,
+        makeTree([{ mode: FILE_MODE.REGULAR, name: 'a.txt', id: blobId }]),
+      );
+      const commitId = await writeObject(ctx, makeCommit(treeId, []));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+      await writeIndexWithEntry(ctx, blobId, 'a.txt', treeId);
+      await ctx.fs.rm(looseObjectPath(ctx.layout.gitDir, commitId));
+      await ctx.fs.rm(looseObjectPath(ctx.layout.gitDir, treeId));
+      await ctx.fs.rm(looseObjectPath(ctx.layout.gitDir, blobId));
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      expect(result.exitCode).toBe(10);
+    });
+  });
+});
+
+describe('Given every loose object deleted, an index entry pointing at a gone object, but no cache-tree extension', () => {
+  describe('When fsck runs', () => {
+    it('Then exit is 2 alone — git runs no missing-entry-point check without a cache-tree', async () => {
+      // Arrange — identical shape to the fixture above, except the index
+      // carries no `TREE` extension at all: an unconditional stage-0 check
+      // would still fire here, but git's own cache-tree check never runs
+      // without the extension.
+      const ctx = await initBareCtx();
+      const blobId = await writeObject(ctx, makeBlob('gone'));
+      const treeId = await writeObject(
+        ctx,
+        makeTree([{ mode: FILE_MODE.REGULAR, name: 'a.txt', id: blobId }]),
+      );
+      const commitId = await writeObject(ctx, makeCommit(treeId, []));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+      await writeIndexWithEntry(ctx, blobId, 'a.txt', undefined);
+      await ctx.fs.rm(looseObjectPath(ctx.layout.gitDir, commitId));
+      await ctx.fs.rm(looseObjectPath(ctx.layout.gitDir, treeId));
+      await ctx.fs.rm(looseObjectPath(ctx.layout.gitDir, blobId));
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      expect(result.exitCode).toBe(2);
+    });
+  });
+});
+
+describe('Given a readable tree indexed by the cache-tree, but its blob deleted', () => {
+  describe('When fsck runs', () => {
+    it('Then exit is 2 alone — the cache-tree check only resolves tree oids, never blobs', async () => {
+      // Arrange — the other proxy divergence: an unreadable blob beside a
+      // readable tree, everything else (commit, ref, tree) intact. A
+      // stage-0 (blob-keyed) check would fire here; git's cache-tree check
+      // resolves the tree oid only, which is still intact, so it stays
+      // quiet — the missing blob is still caught, but only as a
+      // connectivity fault, never as a cache-tree fault.
+      const ctx = await initBareCtx();
+      const blobId = await writeObject(ctx, makeBlob('blob only'));
+      const treeId = await writeObject(
+        ctx,
+        makeTree([{ mode: FILE_MODE.REGULAR, name: 'a.txt', id: blobId }]),
+      );
+      const commitId = await writeObject(ctx, makeCommit(treeId, []));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+      await writeIndexWithEntry(ctx, blobId, 'a.txt', treeId);
+      await ctx.fs.rm(looseObjectPath(ctx.layout.gitDir, blobId));
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      expect(result.exitCode).toBe(2);
+    });
+  });
+});
+
+describe('Given the pack removed but an unrelated loose-backed ref still resolves', () => {
+  describe('When fsck runs', () => {
+    it('Then exit is 2 alone — a healthy loose ref remains a live entry point', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const [blobId] = await writeSyntheticPack(ctx, 'sole', onePackEntry('sole-content'));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/packed-ref`, `${blobId}\n`);
+      const treeId = await writeObject(ctx, makeTree([]));
+      const commitId = await writeObject(ctx, makeCommit(treeId, []));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+      await ctx.fs.rm(packFilePath(ctx, 'sole'));
+      await ctx.fs.rm(idxFilePath(ctx, 'sole'));
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      expect(result.exitCode).toBe(2);
+    });
+  });
+});
+
+describe('Given the whole pack directory removed and an indexed entry pointing into it, When fsck runs with indexRoot: false', () => {
+  it('Then exit is 2 alone — the index is excluded from entry-point consideration entirely, unlike the same shape under default options', async () => {
+    // Arrange
+    const ctx = await initBareCtx();
+    const [blobId] = await writeSyntheticPack(ctx, 'sole', onePackEntry('sole-content'));
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${blobId}\n`);
+    await writeIndexWithEntry(ctx, blobId as ObjectId, 'a.txt', blobId as ObjectId);
+    await ctx.fs.rm(packFilePath(ctx, 'sole'));
+    await ctx.fs.rm(idxFilePath(ctx, 'sole'));
+
+    // Act
+    const result = await fsck(ctx, { indexRoot: false });
+
+    // Assert
+    expect(result.exitCode).toBe(2);
+  });
+});
+
+/** Writes a single-entry index carrying a `TREE` extension whose payload is
+ *  `data` verbatim — the hook for a cache-tree the parser cannot read at
+ *  all, as opposed to one that parses and names a gone oid. */
+async function writeIndexWithRawCacheTree(
+  ctx: Context,
+  entryId: ObjectId,
+  data: Uint8Array,
+): Promise<void> {
+  const index = {
+    version: 2 as const,
+    entries: [
+      {
+        ctimeSeconds: 0,
+        ctimeNanoseconds: 0,
+        mtimeSeconds: 0,
+        mtimeNanoseconds: 0,
+        dev: 0,
+        ino: 0,
+        mode: FILE_MODE.REGULAR,
+        uid: 0,
+        gid: 0,
+        fileSize: 0,
+        id: entryId,
+        flags: STAGE0_FLAGS,
+        path: 'a.txt' as FilePath,
+      },
+    ],
+    extensions: [{ signature: 'TREE', data }],
+    trailerSha: new Uint8Array(0),
+  };
+  await ctx.fs.write(`${ctx.layout.gitDir}/index`, await serializeIndexFixtureAsync(index, ctx));
+}
+
+describe('Given a tree named only by the index cache-tree, reachable through no ref or commit', () => {
+  describe('When fsck runs', () => {
+    it('Then it reports neither unreachable nor dangling — a cache-tree oid is a reachability root', async () => {
+      // Arrange — the `git add f && git write-tree` shape: the tree exists
+      // and the cache-tree names it, nothing else points at it.
+      const ctx = await initBareCtx();
+      const blobId = await writeObject(ctx, makeBlob('cache-tree rooted'));
+      const treeId = await writeObject(
+        ctx,
+        makeTree([{ mode: FILE_MODE.REGULAR, name: 'a.txt', id: blobId }]),
+      );
+      await writeIndexWithEntry(ctx, blobId, 'a.txt', treeId);
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      expect(
+        result.findings.filter((f) => f.type === 'unreachable' || f.type === 'dangling'),
+      ).toEqual([]);
+      expect(result.exitCode).toBe(0);
+    });
+  });
+});
+
+describe('Given an index whose bytes cannot be read at all', () => {
+  describe('When fsck runs', () => {
+    it('Then the read fault propagates rather than passing for a healthy cache-tree', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const blobId = await writeObject(ctx, makeBlob('unreadable index'));
+      await writeIndexWithEntry(ctx, blobId, 'a.txt', undefined);
+      const indexFilePath = `${ctx.layout.gitDir}/index`;
+      const wrapped: Context = {
+        ...ctx,
+        fs: {
+          ...ctx.fs,
+          read: async (path: string) => {
+            if (path === indexFilePath) throw permissionDenied(path);
+            return ctx.fs.read(path);
+          },
+        },
+      };
+
+      // Act & Assert
+      try {
+        await fsck(wrapped);
+        expect.fail('should have thrown');
+      } catch (e) {
+        expect(e).toBeInstanceOf(TsgitError);
+        expect((e as TsgitError).data).toEqual({ code: 'PERMISSION_DENIED', path: indexFilePath });
+      }
+    });
+  });
+});
+
+describe('Given a cache-tree oid whose fanout directory refuses to be listed', () => {
+  describe('When fsck runs', () => {
+    it('Then the fault propagates rather than passing for a resolvable cache-tree oid', async () => {
+      // Arrange — the fanout reads as absent to the universe scan (which
+      // skips a missing prefix) and refuses only the cache-tree probe's own
+      // listing, so the fault can reach nothing but that probe.
+      const ctx = await initBareCtx();
+      const blobId = await writeObject(ctx, makeBlob('unreadable fanout'));
+      const cacheTreeId = 'aa'.repeat(20) as ObjectId;
+      const fanoutDir = objectsDir(commonGitDir(ctx), cacheTreeId.slice(0, 2));
+      await writeIndexWithEntry(ctx, blobId, 'a.txt', cacheTreeId);
+      const wrapped: Context = {
+        ...ctx,
+        fs: {
+          ...ctx.fs,
+          exists: async (path: string) => (path === fanoutDir ? false : ctx.fs.exists(path)),
+          readdir: async (path: string) => {
+            if (path === fanoutDir) throw permissionDenied(path);
+            return ctx.fs.readdir(path);
+          },
+        },
+      };
+
+      // Act & Assert
+      try {
+        await fsck(wrapped);
+        expect.fail('should have thrown');
+      } catch (e) {
+        expect(e).toBeInstanceOf(TsgitError);
+        expect((e as TsgitError).data).toEqual({ code: 'PERMISSION_DENIED', path: fanoutDir });
+      }
+    });
+  });
+});
+
+describe('Given an index whose cache-tree extension payload does not parse', () => {
+  describe('When fsck runs', () => {
+    it('Then the extension is ignored and the missing-entry-point bit stays clear, as in git', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const blobId = await writeObject(ctx, makeBlob('unparsable cache-tree'));
+      await writeIndexWithRawCacheTree(ctx, blobId, enc.encode('no-nul-terminated-path-here'));
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      expect(result.exitCode).toBe(0);
+    });
+  });
+});
+
+/** One cache-tree node: its own oid (`undefined` for an invalidated entry,
+ *  written as the `-1` entry count git uses) and its subtrees, in the order
+ *  `parseCacheTree` reads them back. */
+interface CacheTreeNode {
+  readonly path: string;
+  readonly id: ObjectId | undefined;
+  readonly children: ReadonlyArray<CacheTreeNode>;
+}
+
+function encodeCacheTreeNode(node: CacheTreeNode): ReadonlyArray<number> {
+  const count = node.id === undefined ? -1 : 1;
+  const header = enc.encode(`${node.path}\u0000${count} ${node.children.length}\n`);
+  const oid = node.id === undefined ? [] : [...hexToBytes(node.id)];
+  return [...header, ...oid, ...node.children.flatMap(encodeCacheTreeNode)];
+}
+
+describe('Given a cache-tree walk that meets an absent oid, then one no artefact can route, then a live one', () => {
+  describe('When fsck runs', () => {
+    it('Then the proved missing entry point still reports and the live sibling still roots its tree', async () => {
+      // Arrange — the walk pops in reverse push order, so listing the live
+      // subtree first and the absent one last makes the refused route land
+      // between them: after the verdict is proved, before the last root.
+      // What this row pins is the drainage around that landing — a proved
+      // verdict is retained and the entries still queued behind the refused
+      // route are still rooted. It does not discriminate the refused entry's
+      // OWN answer: a plain `false` there would satisfy both assertions too,
+      // since the verdict is already true and the sibling still roots. The
+      // isolating row below carries that pin.
+      const ctx = await initBareCtx();
+      const blobId = await writeObject(ctx, makeBlob('cache-tree drain'));
+      const treeId = await writeObject(
+        ctx,
+        makeTree([{ mode: FILE_MODE.REGULAR, name: 'a.txt', id: blobId }]),
+      );
+      const refusedRouteId = midxOid('bb1');
+      await writeFlatMidx(
+        ctx,
+        midxBaseSpec({ entries: [{ id: refusedRouteId, packIndex: 0, offset: 0 }] }),
+      );
+      const cacheTree: CacheTreeNode = {
+        path: '',
+        id: undefined,
+        children: [
+          { path: 'live', id: treeId, children: [] },
+          { path: 'refused', id: refusedRouteId, children: [] },
+          { path: 'absent', id: 'ee'.repeat(20) as ObjectId, children: [] },
+        ],
+      };
+      await writeIndexWithRawCacheTree(ctx, blobId, new Uint8Array(encodeCacheTreeNode(cacheTree)));
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      expect(result.exitCode & 8).toBe(8);
+      expect(
+        result.findings.filter((f) => f.type === 'unreachable' || f.type === 'dangling'),
+      ).toEqual([]);
+    });
+  });
+});
+
+describe('Given a cache-tree whose absent entry and whose refused-route entry each carry a live subtree', () => {
+  describe('When fsck runs', () => {
+    it('Then only the absent entry drops its child — an unresolvable entry skips its own subtree, a cannot-say entry does not', async () => {
+      // Arrange — neither parent roots itself, for different reasons: one is
+      // proved gone, the other names a route no artefact can decode. Only the
+      // proved-gone one takes its subtree down with it, so only its child
+      // ends up orphaned.
+      const ctx = await initBareCtx();
+      const indexId = await writeObject(ctx, makeBlob('nested cache-tree index entry'));
+      const underAbsent = await writeObject(ctx, makeBlob('child of an absent entry'));
+      const underRefused = await writeObject(ctx, makeBlob('child of a refused route'));
+      const refusedRouteId = midxOid('bb2');
+      await writeFlatMidx(
+        ctx,
+        midxBaseSpec({ entries: [{ id: refusedRouteId, packIndex: 0, offset: 0 }] }),
+      );
+      const cacheTree: CacheTreeNode = {
+        path: '',
+        id: undefined,
+        children: [
+          {
+            path: 'absent',
+            id: 'ee'.repeat(20) as ObjectId,
+            children: [{ path: 'kid', id: underAbsent, children: [] }],
+          },
+          {
+            path: 'refused',
+            id: refusedRouteId,
+            children: [{ path: 'kid', id: underRefused, children: [] }],
+          },
+        ],
+      };
+      await writeIndexWithRawCacheTree(
+        ctx,
+        indexId,
+        new Uint8Array(encodeCacheTreeNode(cacheTree)),
+      );
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      const orphaned = result.findings.filter(
+        (f) => f.type === 'unreachable' || f.type === 'dangling',
+      );
+      expect(orphaned.map((f) => (f as { id: ObjectId }).id)).toEqual([underAbsent, underAbsent]);
+      expect(orphaned.map((f) => f.type).sort()).toEqual(['dangling', 'unreachable']);
+      expect(result.exitCode & 8).toBe(8);
+    });
+  });
+});
+
+describe('Given a cache-tree naming only an oid a multi-pack-index routes past its own PNAM', () => {
+  describe('When fsck runs', () => {
+    it('Then no missing entry point is claimed and the midx pass reports the route it cannot decode', async () => {
+      // Arrange — the oid lives nowhere but the midx OIDL, so the presence
+      // probe reaches the deferred pack-int-id check and can say nothing.
+      const ctx = await initBareCtx();
+      const blobId = await writeObject(ctx, makeBlob('refused-route cache-tree'));
+      const refusedRouteId = midxOid('cc1');
+      await writeFlatMidx(
+        ctx,
+        midxBaseSpec({ entries: [{ id: refusedRouteId, packIndex: 0, offset: 0 }] }),
+      );
+      await writeIndexWithEntry(ctx, blobId, 'a.txt', refusedRouteId);
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      const findings = result.findings.filter((f) => f.type === 'midx-unusable');
+      expect(findings).toHaveLength(1);
+      expect((findings[0] as { reason: string }).reason).toContain('pack index');
+      expect(result.exitCode).toBe(32);
+    });
+  });
+});
+
+describe('Given a packed cache-tree oid the multi-pack-index routes past its own PNAM, in connectivity-only mode', () => {
+  describe('When fsck runs', () => {
+    it('Then the oid is still a reachability root — the universe already proved it there, so no unreachable or dangling is claimed', async () => {
+      // Arrange — connectivity-only admits the pack's objects into the
+      // universe, and the midx routes this very oid through a pack index it
+      // cannot decode, so the probe can say nothing about an object the
+      // universe scan already found.
+      const ctx = await initBareCtx();
+      const [packedId] = await writeSyntheticPack(
+        ctx,
+        'probe-claimed',
+        onePackEntry('probe-content'),
+      );
+      const looseId = await writeObject(ctx, makeBlob('probe-index-entry'));
+      await writeFlatMidx(
+        ctx,
+        midxBaseSpec({
+          packNames: ['pack-probe-claimed.idx'],
+          entries: [{ id: packedId as ObjectId, packIndex: 1, offset: 0 }],
+        }),
+      );
+      await writeIndexWithEntry(ctx, looseId, 'a.txt', packedId as ObjectId);
+
+      // Act
+      const result = await fsck(ctx, { connectivityOnly: true });
+
+      // Assert
+      expect(
+        result.findings.filter((f) => f.type === 'unreachable' || f.type === 'dangling'),
+      ).toEqual([]);
+      expect(result.findings.filter((f) => f.type === 'midx-unusable')).toHaveLength(1);
+      expect(result.exitCode).toBe(32);
+    });
+  });
+});
+
+describe('Given a cache-tree oid whose multi-pack-index offset word points past the large-offset table', () => {
+  describe('When fsck runs', () => {
+    it('Then that refusal is contained as well — no missing entry point is claimed and the midx pass reports the route', async () => {
+      // Arrange — the second of the two deferred decode checks, reached
+      // through the same per-entry lookup the cache-tree probe drives.
+      const ctx = await initBareCtx();
+      const { packNameIdx, id } = await writeMidxPack(ctx, 'ct-loff', 'ct-loff-content');
+      const looseId = await writeObject(ctx, makeBlob('ct-loff-index-entry'));
+      const built = buildMidx(
+        midxBaseSpec({
+          packNames: [packNameIdx],
+          entries: [{ id, packIndex: 0, offset: 0x1_0000_0001 }],
+        }),
+      );
+      const bytes = await stampMidxTrailer(ctx, setMidxOoffWord(built, 0, 0x80000000 | 5));
+      await ctx.fs.write(multiPackIndexPath(packsDir(commonGitDir(ctx))), bytes);
+      await writeIndexWithEntry(ctx, looseId, 'a.txt', id);
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      const findings = result.findings.filter((f) => f.type === 'midx-unusable');
+      expect(findings).toHaveLength(1);
+      expect((findings[0] as { reason: string }).reason).toContain('large offset');
+      expect(result.exitCode & 8).toBe(0);
+      expect(result.exitCode & 32).toBe(32);
+    });
+  });
+});
+
+describe('Given a cache-tree oid a multi-pack-index routes to a pack whose index will not parse', () => {
+  describe('When fsck runs', () => {
+    it('Then the index corruption propagates rather than passing for a cache-tree nothing disproved', async () => {
+      // Arrange — every pass that owns this pack contains the fault (the
+      // scan classifies it, the midx walk calls the pack unserviceable), so
+      // the lookup the cache-tree probe drives is the only place it escapes.
+      const ctx = await initBareCtx();
+      const blobId = await writeObject(ctx, makeBlob('unparsable claimed index'));
+      const { packNameIdx } = await writeMidxPack(ctx, 'claimed-corrupt', 'claimed-content');
+      const routedId = midxOid('dd1');
+      await writeFlatMidx(
+        ctx,
+        midxBaseSpec({
+          packNames: [packNameIdx],
+          entries: [{ id: routedId, packIndex: 0, offset: 0 }],
+        }),
+      );
+      await writeIndexWithEntry(ctx, blobId, 'a.txt', routedId);
+      const idxPath = `${packsDir(commonGitDir(ctx))}/${packNameIdx}`;
+      const wrapped: Context = {
+        ...ctx,
+        fs: {
+          ...ctx.fs,
+          read: async (path: string) =>
+            path === idxPath ? new Uint8Array(4) : await ctx.fs.read(path),
+        },
+      };
+
+      // Act
+      let caught: unknown;
+      try {
+        await fsck(wrapped);
+      } catch (error) {
+        caught = error;
+      }
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      expect((caught as TsgitError).data).toEqual({
+        code: 'INVALID_PACK_INDEX',
+        reason: 'truncated: file too short for header and fanout',
+      });
     });
   });
 });
@@ -5473,6 +6309,155 @@ describe('Given the same repository with and without its multi-pack-index', () =
       expect(withMidx.exitCode & 32).toBe(32);
       expect(withoutMidx.exitCode & 32).toBe(0);
       expect(withMidx.exitCode ^ withoutMidx.exitCode).toBe(32);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// REF-TARGET PACK-ACCESSIBILITY CONFIRMATION — the one mode in which the
+// universe optimistically admits an oid whose housing pack later fails its
+// own header gate, so the ref target is probed rather than trusted.
+// ---------------------------------------------------------------------------
+
+describe('Given a header-refused pack holding the only copy of a loose ref target', () => {
+  describe('When fsck runs in full connectivity-only mode', () => {
+    it('Then the ref target is confirmed through the pack probe and reported as badRefOid, exit bit 2 set', async () => {
+      // Arrange — connectivity-only leaves the universe un-narrowed, so the
+      // refused pack's ids are admitted and only the probe can tell them apart.
+      const ctx = await initBareCtx();
+      const [packedId] = await writeSyntheticPack(
+        ctx,
+        'confirm-refused',
+        onePackEntry('confirm-refused-content'),
+      );
+      await restampPackHeader(ctx, packFilePath(ctx, 'confirm-refused'), { version: 99 });
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${packedId as ObjectId}\n`);
+
+      // Act
+      const result = await fsck(ctx, { full: true, connectivityOnly: true });
+
+      // Assert
+      const badRefOid = result.findings.filter(
+        (f): f is FsckFinding & { readonly msgId: string } =>
+          f.type === 'bad-ref' && (f as { msgId: string }).msgId === 'badRefOid',
+      );
+      expect(badRefOid).toHaveLength(1);
+      expect(badRefOid[0]).toMatchObject({ ref: 'refs/heads/main', target: packedId });
+      expect(result.exitCode & 2).toBe(2);
+    });
+  });
+});
+
+describe('Given a ref target a healthy pack holds and a multi-pack-index routes past its own PNAM', () => {
+  describe('When fsck runs in full mode', () => {
+    it('Then the ref target is trusted at face value — no bad-ref finding, exit bit 2 absent, and the route is reported by the midx pass alone', async () => {
+      // Arrange — the universe was narrowed to accessible packs already, so a
+      // second probe would only re-raise the midx routing fault the midx pass
+      // owns, aborting a run git completes.
+      const ctx = await initBareCtx();
+      const [packedId] = await writeSyntheticPack(
+        ctx,
+        'trusted-route',
+        onePackEntry('trusted-route-content'),
+      );
+      await writeFlatMidx(
+        ctx,
+        midxBaseSpec({
+          packNames: ['pack-trusted-route.idx'],
+          entries: [{ id: packedId as ObjectId, packIndex: 1, offset: 0 }],
+        }),
+      );
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${packedId as ObjectId}\n`);
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      expect(result.findings.filter((f) => f.type === 'bad-ref')).toEqual([]);
+      expect(result.exitCode & 2).toBe(0);
+      expect(result.findings.filter((f) => f.type === 'midx-unusable')).toHaveLength(1);
+      expect(result.exitCode & 32).toBe(32);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// INDEX FAULTS THE CACHE-TREE CHECK TOLERATES — an index whose bytes do not
+// form an index withholds the missing-entry-point verdict rather than
+// claiming it, and never aborts the run.
+// ---------------------------------------------------------------------------
+
+describe('Given an index whose bytes do not form an index', () => {
+  describe('When fsck runs', () => {
+    it('Then the run completes and no missing entry point is claimed, exit bit 8 absent', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      await writeObject(ctx, makeBlob('index-fault anchor'));
+      await ctx.fs.write(`${ctx.layout.gitDir}/index`, enc.encode('not an index at all'));
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      expect(result.exitCode & 8).toBe(0);
+      expect(result.findings.filter((f) => f.type === 'bad-ref')).toEqual([]);
+    });
+  });
+});
+
+/** An index carrying one stage-0 entry and the given extensions, in order. */
+async function writeIndexWithExtensions(
+  ctx: Context,
+  entryId: ObjectId,
+  extensions: ReadonlyArray<{ readonly signature: string; readonly data: Uint8Array }>,
+): Promise<void> {
+  const index = {
+    version: 2 as const,
+    entries: [
+      {
+        ctimeSeconds: 0,
+        ctimeNanoseconds: 0,
+        mtimeSeconds: 0,
+        mtimeNanoseconds: 0,
+        dev: 0,
+        ino: 0,
+        mode: FILE_MODE.REGULAR,
+        uid: 0,
+        gid: 0,
+        fileSize: 0,
+        id: entryId,
+        flags: STAGE0_FLAGS,
+        path: 'a.txt' as FilePath,
+      },
+    ],
+    extensions: [...extensions],
+    trailerSha: new Uint8Array(0),
+  };
+  await ctx.fs.write(`${ctx.layout.gitDir}/index`, await serializeIndexFixtureAsync(index, ctx));
+}
+
+describe('Given an index whose first extension is not TREE and whose TREE names only resolvable oids', () => {
+  describe('When fsck runs', () => {
+    it('Then the cache-tree check reads the TREE extension alone and claims no missing entry point, exit bit 8 absent', async () => {
+      // Arrange — the leading extension carries cache-tree-shaped bytes naming
+      // an oid that resolves nowhere; only a check that selects on the
+      // signature can avoid reading it.
+      const ctx = await initBareCtx();
+      const blobId = await writeObject(ctx, makeBlob('extension-order anchor'));
+      const decoy = new Uint8Array(
+        encodeCacheTreeNode({ path: '', id: 'ee'.repeat(20) as ObjectId, children: [] }),
+      );
+      const healthy = new Uint8Array(encodeCacheTreeNode({ path: '', id: blobId, children: [] }));
+      await writeIndexWithExtensions(ctx, blobId, [
+        { signature: 'REUC', data: decoy },
+        { signature: 'TREE', data: healthy },
+      ]);
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      expect(result.exitCode & 8).toBe(0);
     });
   });
 });

@@ -4,9 +4,11 @@ import {
   deltaChainTooDeep,
   invalidDelta,
   invalidMultiPackIndex,
+  invalidPackBitmap,
   invalidPackEntry,
   invalidPackHeader,
   invalidPackIndex,
+  invalidPackRevIndex,
 } from '../../../../src/domain/storage/error.js';
 import { assertExhaustiveSwitch } from '../exhaustiveness.js';
 
@@ -87,6 +89,38 @@ describe('storage error', () => {
             code: 'INVALID_MULTI_PACK_INDEX',
             check: 'fanout',
             reason: 'non-monotonic',
+          });
+        });
+      });
+    });
+
+    describe("Given invalidPackRevIndex('size', 'reverse index is too small')", () => {
+      describe('When checking error.data', () => {
+        it("Then code, check and reason are set to 'INVALID_PACK_REV_INDEX', 'size' and 'reverse index is too small'", () => {
+          // Arrange & Act
+          const result = invalidPackRevIndex('size', 'reverse index is too small');
+
+          // Assert
+          expect(result.data).toEqual({
+            code: 'INVALID_PACK_REV_INDEX',
+            check: 'size',
+            reason: 'reverse index is too small',
+          });
+        });
+      });
+    });
+
+    describe("Given invalidPackBitmap('stream', 'declares more words than the buffer holds')", () => {
+      describe('When checking error.data', () => {
+        it("Then code, check and reason are set to 'INVALID_PACK_BITMAP', 'stream' and 'declares more words than the buffer holds'", () => {
+          // Arrange & Act
+          const result = invalidPackBitmap('stream', 'declares more words than the buffer holds');
+
+          // Assert
+          expect(result.data).toEqual({
+            code: 'INVALID_PACK_BITMAP',
+            check: 'stream',
+            reason: 'declares more words than the buffer holds',
           });
         });
       });

@@ -21,6 +21,7 @@ import {
   serializePackHeader,
 } from '../../../../src/domain/storage/pack-entry.js';
 import { serializePackIndex } from '../../../../src/domain/storage/pack-writer.js';
+import { REV_HEADER_SIZE } from '../../../../src/domain/storage/rev-index.js';
 import type { Context } from '../../../../src/ports/context.js';
 
 export interface BaseEntrySpec {
@@ -204,6 +205,109 @@ export async function restampPackHeader(
   const checksumHex = await ctx.hash.hashHex(bytes.subarray(0, bytes.length - digestLength));
   bytes.set(hexToBytes(checksumHex), bytes.length - digestLength);
   await ctx.fs.write(packPath, bytes);
+}
+
+const REV_MAGIC = 0x52494458; // 'RIDX'
+
+export interface RevIndexOverride {
+  readonly magic?: number;
+  readonly version?: number;
+  readonly hashId?: number;
+  /** Embedded pack-checksum copy — never verified by the reader, so any
+   *  value round-trips; the trailer below is always recomputed to match
+   *  whatever body/header/packChecksum bytes actually precede it. */
+  readonly packChecksum?: Uint8Array;
+  /** Truncate the fully-built file to this many bytes — corrupts the
+   *  trailer along with everything past the cut, deliberately: the trailer
+   *  is recomputed BEFORE truncation, so a cut always leaves it wrong too. */
+  readonly truncateTo?: number;
+  readonly appendBytes?: number;
+  /** Flip one trailer byte after the real digest is computed — the ONLY
+   *  way to plant a structurally well-formed `.rev` whose checksum disagrees
+   *  with its own content. */
+  readonly flipChecksum?: boolean;
+}
+
+/**
+ * Write a synthetic pack reverse index (`pack-<name>.rev`) to `ctx`'s memory
+ * fs. `body` is the index-position-per-pack-position array the file stores
+ * — the caller supplies it correct (a healthy fixture) or deliberately wrong
+ * at chosen positions (a corruption fixture); this writer never derives or
+ * validates it. The trailer is always a real digest over the preceding
+ * bytes, computed with `ctx.hash` — so a fixture is only ever wrong in the
+ * one dimension its `opts` name.
+ */
+export async function writeSyntheticRevIndex(
+  ctx: Context,
+  packName: string,
+  body: ArrayLike<number>,
+  opts: RevIndexOverride = {},
+): Promise<void> {
+  const digestLength = ctx.hashConfig.digestLength;
+  const bodySize = body.length * 4;
+  const bytes = new Uint8Array(REV_HEADER_SIZE + bodySize + digestLength);
+  const view = new DataView(bytes.buffer);
+  view.setUint32(0, opts.magic ?? REV_MAGIC);
+  view.setUint32(4, opts.version ?? 1);
+  view.setUint32(8, opts.hashId ?? (digestLength === 32 ? 2 : 1));
+  for (let i = 0; i < body.length; i += 1) {
+    view.setUint32(REV_HEADER_SIZE + i * 4, body[i]!);
+  }
+  const packChecksum = opts.packChecksum ?? new Uint8Array(digestLength).fill(0xaa);
+  bytes.set(packChecksum, REV_HEADER_SIZE + bodySize);
+
+  const checksumHex = await ctx.hash.hashHex(bytes);
+  const trailer = hexToBytes(checksumHex);
+  if (opts.flipChecksum === true) trailer[0] = trailer[0]! ^ 0xff;
+
+  let out = concat(bytes, trailer);
+  if (opts.truncateTo !== undefined) out = out.slice(0, opts.truncateTo);
+  if (opts.appendBytes !== undefined) out = concat(out, new Uint8Array(opts.appendBytes));
+
+  const path = `${ctx.layout.gitDir}/objects/pack/pack-${packName}.rev`;
+  await ctx.fs.write(path, out);
+}
+
+export interface SyntheticBitmapOverride {
+  /**
+   * Body to compute the trailing digest over, when it differs from `body`
+   * itself — the only way to plant a bitmap whose trailer is STALE: correct
+   * for a body the caller has since corrupted, wrong for the bytes actually
+   * on disk. Defaults to `body` — a RESTAMPED trailer, correct for whatever
+   * bytes are actually written, however structurally corrupt.
+   */
+  readonly digestOver?: Uint8Array;
+  /** Flip one trailer byte after the digest (real or stale) is computed —
+   *  the only way to plant a bitmap whose trailer disagrees with EVERY
+   *  body, corrupted or not. */
+  readonly flipTrailer?: boolean;
+  /** Truncate the fully-assembled bytes (`body` + trailer) to this length —
+   *  corrupts the trailer along with everything past the cut, deliberately. */
+  readonly truncateTo?: number;
+}
+
+/**
+ * Writes a synthetic pack or multi-pack-index bitmap (`<name>.bitmap`) to
+ * `ctx`'s memory fs: `body` — arbitrary bytes this writer never inspects or
+ * validates, the caller's own structural shape or corruption of it — plus a
+ * trailing digest. `writeSyntheticBitmap` is the only thing this fixture
+ * gets to be wrong about: the digest, real (default) or stale
+ * (`digestOver`), flipped (`flipTrailer`) or truncated away (`truncateTo`).
+ */
+export async function writeSyntheticBitmap(
+  ctx: Context,
+  path: string,
+  body: Uint8Array,
+  opts: SyntheticBitmapOverride = {},
+): Promise<void> {
+  const checksumHex = await ctx.hash.hashHex(opts.digestOver ?? body);
+  const trailer = hexToBytes(checksumHex);
+  if (opts.flipTrailer === true) trailer[0] = trailer[0]! ^ 0xff;
+
+  let out = concat(body, trailer);
+  if (opts.truncateTo !== undefined) out = out.slice(0, opts.truncateTo);
+
+  await ctx.fs.write(path, out);
 }
 
 /* ──────────────── helpers ──────────────── */

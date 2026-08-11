@@ -39,3 +39,14 @@ doc-comment says so, and 28.3's real `.rev` reader lands with nothing to correct
 only the scan layer's retained skip records (`registry.indexFaults()`), so
 `full: false` / `connectivityOnly` read and parse every `.idx` but never open
 a `.pack` — the header probe runs only where the bit-4 report consumes it.
+
+**Correction (see ADR-607).** The closing sentence above — that the real `.rev`
+reader would land *with nothing to correct* — is **false**, and was falsified
+empirically against git 2.55.0. Bit 64 has a second cause this ADR could not
+test: a `.rev` file that exists, is readable, and is itself wrong. git sets bit
+64 for it; tsgit exited **0**. Because `git repack` writes the artefact by
+default, that gap was reachable in any maintained repository rather than an
+exotic one. A second finding variant now separates the two layers (ADR-607), and
+the exit-constant's doc-comment admission that it *"names a subsystem tsgit does
+not yet have"* no longer applies. The ungated posture this ADR established is
+**re-confirmed** for the new cause, and extends to exit bit 128.

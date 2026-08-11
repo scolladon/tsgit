@@ -22,12 +22,21 @@ const entryPoints = {
 const external = [/^node:/];
 
 const terserOptions = {
+  ecma: 2020,
   compress: {
-    passes: 2,
+    ecma: 2020,
+    passes: 3,
     pure_getters: true,
     unsafe_math: true,
+    module: true,
+    toplevel: true,
+  },
+  mangle: {
+    module: true,
+    toplevel: true,
   },
   format: {
+    ecma: 2020,
     comments: false,
   },
 };

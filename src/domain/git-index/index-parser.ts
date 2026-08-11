@@ -1,14 +1,41 @@
-import { bytesToHex, decode } from '../objects/encoding.js';
+import { bytesToHex, decode, indexOf } from '../objects/encoding.js';
 import type { FileMode, FilePath, ObjectId } from '../objects/index.js';
 import { FilePath as FilePathFactory, normalizeFileMode } from '../objects/index.js';
 import { invalidIndexEntry, invalidIndexHeader } from './error.js';
-import type { GitIndex, IndexEntry, IndexEntryFlags, IndexExtension } from './index-entry.js';
+import type {
+  CacheTreeEntry,
+  GitIndex,
+  IndexEntry,
+  IndexEntryFlags,
+  IndexExtension,
+} from './index-entry.js';
 import { validateIndexPath } from './path-validator.js';
 
 const DIRC_SIGNATURE = 0x44495243;
 const INDEX_HEADER_SIZE = 12;
-const INDEX_CHECKSUM_SIZE = 20;
+/**
+ * The width of EVERY oid this module reads — an entry's own sha, the file's
+ * trailing checksum, and a cache-tree entry's oid alike. The index parser is
+ * SHA-1-only, deliberately and as a whole: git sizes all three together from
+ * the repository's hash algorithm, so widening one without the others would
+ * mis-frame the file rather than read a SHA-256 index. That is why
+ * `parseCacheTree` takes no `digestLength` parameter the way the pack-side
+ * parsers do — the width is not a per-function choice here.
+ */
+const INDEX_OID_LENGTH = 20;
+const INDEX_CHECKSUM_SIZE = INDEX_OID_LENGTH;
 const ENTRY_HEADER_SIZE = 62;
+const CACHE_TREE_OID_LENGTH = INDEX_OID_LENGTH;
+const CACHE_TREE_SPACE = 0x20;
+const CACHE_TREE_LF = 0x0a;
+/**
+ * Same bound the tree walkers hold: a cache-tree nests through mutual
+ * recursion (`parseCacheTreeEntry` <-> `readCacheTreeChildren`), and its
+ * cheapest nesting unit is six bytes, so an index carrying a hostile `TREE`
+ * extension would otherwise drive the parser past the call stack from a few
+ * kilobytes of payload.
+ */
+const MAX_CACHE_TREE_DEPTH = 1024;
 
 export function parseIndex(bytes: Uint8Array): GitIndex {
   if (bytes.length < INDEX_HEADER_SIZE) {
@@ -52,7 +79,7 @@ export function parseIndex(bytes: Uint8Array): GitIndex {
     const gid = view.getUint32(offset + 32);
     const fileSize = view.getUint32(offset + 36);
 
-    const shaBytes = bytes.subarray(offset + 40, offset + 60);
+    const shaBytes = bytes.subarray(offset + 40, offset + 40 + INDEX_OID_LENGTH);
     const id = bytesToHex(shaBytes) as ObjectId;
 
     const flagsRaw = view.getUint16(offset + 60);
@@ -175,4 +202,125 @@ function parseExtensions(
   }
 
   return extensions;
+}
+
+/**
+ * Parse the index's `TREE` (cache-tree) extension payload into its rooted,
+ * depth-first entry tree. Per-entry grammar: a NUL-terminated path
+ * component, then ASCII `<entry_count> SP <subtree_count> LF`, then — only
+ * when `entry_count >= 0` — the raw oid. `subtree_count` further entries
+ * follow immediately, each parsed the same way, which is what produces the
+ * depth-first nesting — bounded at `MAX_CACHE_TREE_DEPTH`, since that nesting
+ * is the one thing an untrusted payload gets to drive without limit. The oid
+ * is read at `INDEX_OID_LENGTH`, the SHA-1 width the whole index parser is
+ * fixed to.
+ */
+export function parseCacheTree(data: Uint8Array): CacheTreeEntry {
+  const { entry, offset } = parseCacheTreeEntry(data, 0, 0);
+  if (offset !== data.length) {
+    throw invalidIndexEntry(offset, 'cache-tree data has trailing bytes');
+  }
+  return entry;
+}
+
+function parseCacheTreeEntry(
+  data: Uint8Array,
+  start: number,
+  depth: number,
+): { readonly entry: CacheTreeEntry; readonly offset: number } {
+  if (depth > MAX_CACHE_TREE_DEPTH) {
+    throw invalidIndexEntry(start, 'cache-tree nesting exceeds the maximum depth');
+  }
+  const pathEnd = findNul(data, start);
+  if (pathEnd === -1) {
+    throw invalidIndexEntry(start, 'cache-tree entry missing NUL-terminated path');
+  }
+  const path = decode(data.subarray(start, pathEnd));
+
+  const spaceIndex = indexOf(data, CACHE_TREE_SPACE, pathEnd + 1);
+  if (spaceIndex === -1) {
+    throw invalidIndexEntry(start, 'cache-tree entry missing entry-count separator');
+  }
+  const entryCount = parseCacheTreeEntryCount(
+    decode(data.subarray(pathEnd + 1, spaceIndex)),
+    start,
+  );
+
+  // Stryker disable next-line ArithmeticOperator: equivalent — the entry count parsed just above matched /^-?\d+$/, so data[spaceIndex-1] is always an ASCII digit and data[spaceIndex] the separator space; neither byte is LF, so a scan started at spaceIndex-1 finds the same LF as one started at spaceIndex+1
+  const lfIndex = indexOf(data, CACHE_TREE_LF, spaceIndex + 1);
+  if (lfIndex === -1) {
+    throw invalidIndexEntry(start, 'cache-tree entry missing subtree-count terminator');
+  }
+  const subtreeCount = parseCacheTreeSubtreeCount(
+    decode(data.subarray(spaceIndex + 1, lfIndex)),
+    start,
+  );
+
+  const { id, offset: afterOid } = readCacheTreeOid(data, lfIndex + 1, entryCount, start);
+  return readCacheTreeChildren(data, afterOid, subtreeCount, depth, {
+    path,
+    entryCount,
+    subtreeCount,
+    id,
+  });
+}
+
+function readCacheTreeOid(
+  data: Uint8Array,
+  offset: number,
+  entryCount: number,
+  entryStart: number,
+): { readonly id: ObjectId | undefined; readonly offset: number } {
+  if (entryCount < 0) return { id: undefined, offset };
+  if (offset + CACHE_TREE_OID_LENGTH > data.length) {
+    throw invalidIndexEntry(entryStart, 'cache-tree entry truncated oid');
+  }
+  const id = bytesToHex(data.subarray(offset, offset + CACHE_TREE_OID_LENGTH)) as ObjectId;
+  return { id, offset: offset + CACHE_TREE_OID_LENGTH };
+}
+
+function readCacheTreeChildren(
+  data: Uint8Array,
+  start: number,
+  subtreeCount: number,
+  depth: number,
+  base: {
+    readonly path: string;
+    readonly entryCount: number;
+    readonly subtreeCount: number;
+    readonly id: ObjectId | undefined;
+  },
+): { readonly entry: CacheTreeEntry; readonly offset: number } {
+  const children: CacheTreeEntry[] = [];
+  let cursor = start;
+  for (let i = 0; i < subtreeCount; i++) {
+    const child = parseCacheTreeEntry(data, cursor, depth + 1);
+    children.push(child.entry);
+    cursor = child.offset;
+  }
+  const entry: CacheTreeEntry =
+    base.id === undefined
+      ? { path: base.path, entryCount: base.entryCount, subtreeCount: base.subtreeCount, children }
+      : {
+          path: base.path,
+          entryCount: base.entryCount,
+          subtreeCount: base.subtreeCount,
+          id: base.id,
+          children,
+        };
+  return { entry, offset: cursor };
+}
+
+function parseCacheTreeEntryCount(text: string, offset: number): number {
+  if (!/^-?\d+$/.test(text)) {
+    throw invalidIndexEntry(offset, 'cache-tree entry has a malformed entry count');
+  }
+  return Number.parseInt(text, 10);
+}
+
+function parseCacheTreeSubtreeCount(text: string, offset: number): number {
+  if (!/^\d+$/.test(text)) {
+    throw invalidIndexEntry(offset, 'cache-tree entry has a malformed subtree count');
+  }
+  return Number.parseInt(text, 10);
 }

@@ -3,11 +3,12 @@ import type { LruCache } from '../../domain/storage/index.js';
 import type { Context } from '../../ports/context.js';
 import { enumerateObjects } from '../primitives/enumerate-objects.js';
 import { adoptPackRegistry } from '../primitives/read-object.js';
+import { runBitmapHealthPass } from './internal/fsck/bitmap-health.js';
 import {
   buildBlobFilenameMap,
   runContentValidationPass,
 } from './internal/fsck/content-validation.js';
-import { EXIT_MISSING } from './internal/fsck/exit-codes.js';
+import { EXIT_MISSING, EXIT_REFS_CONTENT } from './internal/fsck/exit-codes.js';
 import { runMidxHealthPass } from './internal/fsck/midx-health.js';
 import { assertTypesRecoverable, buildObjectCache } from './internal/fsck/object-cache.js';
 import { packAccessibilityReported, runPackHealthPass } from './internal/fsck/pack-health.js';
@@ -18,6 +19,7 @@ import {
   classifyObjects,
 } from './internal/fsck/reachability.js';
 import { runRefsVerifyPass } from './internal/fsck/refs-verify.js';
+import { runRevIndexHealthPass } from './internal/fsck/rev-index-health.js';
 import { collectRoots } from './internal/fsck/roots.js';
 import type { UnreadableMode } from './internal/fsck/types.js';
 import { assertRepository } from './internal/repo-state.js';
@@ -93,11 +95,25 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
       ? { findings: [] as FsckFinding[], exitBit: 0 }
       : await runContentValidationPass(auditCtx, universe, opts.strict === true, blobFilenames);
 
-  // Refs-verify pass
-  const refsResult = await runRefsVerifyPass(ctx, universe, opts.checkReferences !== false);
+  // Refs-verify pass — `confirmPackAccessibility` is true exactly when the
+  // universe above was built WITHOUT accessiblePacksOnly narrowing but WITH
+  // packs included (connectivityOnly): the only case `universe.has(oid)` can
+  // hold for an oid whose housing pack later fails its own header gate.
+  const confirmPackAccessibility = opts.full !== false && !packAccessibilityReported(opts);
+  const refsResult = await runRefsVerifyPass(
+    ctx,
+    universe,
+    opts.checkReferences !== false,
+    confirmPackAccessibility,
+  );
 
   // Pack-health pass — reports packs the registry could not open or index.
   const packResult = await runPackHealthPass(ctx, opts);
+
+  // Reverse-index health pass — reports a pack's own `.rev` when it exists,
+  // is readable and is wrong. Ungated, like the rest of bit 64: runs after
+  // the pack-health pass, whose universe (`registry.all()`) it shares.
+  const revIndexResult = await runRevIndexHealthPass(ctx, opts);
 
   // Multi-pack-index health pass — reports the midx's own accessibility and
   // integrity. Runs after enumerateObjects has already succeeded above,
@@ -105,7 +121,27 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
   // this pass is ever reached.
   const midxResult = await runMidxHealthPass(ctx, opts);
 
-  const roots = await collectRoots(ctx, opts, universe);
+  // Bitmap health pass — reports a pack's or the in-use multi-pack-index's
+  // bitmap by trailing checksum only. Runs after the midx pass, whose
+  // result settles the in-use midx layer's identity this pass's second
+  // step needs.
+  const bitmapResult = await runBitmapHealthPass(ctx, opts);
+
+  // Roots + the missing-entry-point condition — a whole-repository check,
+  // not a per-oid one: git sets bit 8 here exactly when the index carries a
+  // cache-tree (`TREE` extension) and at least one of its entries' tree
+  // oids fails to resolve. An ABSENT index, or one with no cache-tree
+  // extension, never contributes (a bare or never-staged repository is
+  // healthy) — regardless of ref, reflog, or stage-0 entry resolution.
+  // Measured against git 2.55.0: this bit is entirely independent of ref
+  // health — a broken ref beside a healthy cache-tree never sets it, and a
+  // healthy ref beside a broken cache-tree still does. `collectRoots`
+  // reads the index once for both reachability roots and this check (a
+  // bounded existence probe per cache-tree entry, deliberately independent
+  // of `universe`'s own mode-narrowing — see `existsInStore`'s doc comment)
+  // rather than re-scanning the store.
+  const { roots, missingEntryPoint } = await collectRoots(ctx, opts, universe);
+  const missingEntryPointBit = missingEntryPoint ? EXIT_REFS_CONTENT : 0;
   const inEdgePresent = buildInEdgeMap(universe, objectCache);
 
   const { reached, missingIds, brokenEdges, rootCommits, tagRefs } = buildReachableSet(
@@ -121,7 +157,9 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
     ...contentResult.findings,
     ...refsResult.findings,
     ...packResult.findings,
+    ...revIndexResult.findings,
     ...midxResult.findings,
+    ...bitmapResult.findings,
     ...assembleConnectivityFindings(
       { missingIds, brokenEdges, unreachable, dangling, rootCommits, tagRefs },
       { objectCache, recovered, unreadable },
@@ -134,7 +172,10 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
     connectivityBit |
     refsResult.exitBit |
     packResult.exitBit |
-    midxResult.exitBit;
+    revIndexResult.exitBit |
+    midxResult.exitBit |
+    bitmapResult.exitBit |
+    missingEntryPointBit;
 
   return { findings, exitCode };
 }

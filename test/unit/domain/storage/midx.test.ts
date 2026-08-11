@@ -4,9 +4,12 @@ import type { TsgitError } from '../../../../src/domain/error.js';
 import type { ObjectId } from '../../../../src/domain/objects/object-id.js';
 import type { MidxCheck } from '../../../../src/domain/storage/error.js';
 import {
+  lookupMidxPosition,
   lookupMultiPackIndex,
   midxEntryAt,
   midxOidAt,
+  midxReverseIndexAt,
+  midxReverseIndexPositions,
   parseMultiPackIndex,
 } from '../../../../src/domain/storage/midx.js';
 import { buildMidx, type MidxSpec } from './arbitraries.js';
@@ -1418,6 +1421,234 @@ describe('midx', () => {
 
           // Act & Assert — entry 1 routes to pack index 1, out of range for 1 name
           expectRefusal(() => midxEntryAt(midx, 1), 'pack-int-id', 'out of range');
+        });
+      });
+    });
+  });
+
+  describe('reverse-index chunk (RIDX)', () => {
+    describe('Given a midx with a reverse-index chunk', () => {
+      describe('When parsing', () => {
+        it('Then reverseIndexOffset is defined and midxReverseIndexAt reads position 0 and N − 1', () => {
+          // Arrange
+          const spec = baseSpec();
+          const revBody = [2, 0, 1];
+          const bytes = buildMidx({ ...spec, revBody });
+
+          // Act
+          const midx = parseMultiPackIndex(bytes, spec.digestLength);
+
+          // Assert
+          expect(midx.reverseIndexOffset).not.toBeUndefined();
+          expect(midxReverseIndexAt(midx, 0)).toBe(revBody[0]);
+          expect(midxReverseIndexAt(midx, midx.objectCount - 1)).toBe(revBody[revBody.length - 1]);
+        });
+      });
+    });
+
+    describe('Given a midx without a reverse-index chunk', () => {
+      describe('When parsing', () => {
+        it('Then reverseIndexOffset is undefined', () => {
+          // Arrange
+          const spec = baseSpec();
+          const bytes = buildMidx(spec);
+
+          // Act
+          const midx = parseMultiPackIndex(bytes, spec.digestLength);
+
+          // Assert
+          expect(midx.reverseIndexOffset).toBeUndefined();
+        });
+      });
+
+      describe('When calling midxReverseIndexAt', () => {
+        it('Then refuses with required-chunk', () => {
+          // Arrange
+          const spec = baseSpec();
+          const midx = parseMultiPackIndex(buildMidx(spec), spec.digestLength);
+
+          // Act & Assert
+          expectRefusal(() => midxReverseIndexAt(midx, 0), 'required-chunk', 'reverse-index');
+        });
+      });
+    });
+
+    describe('Given a RIDX chunk shorter than objectCount * 4', () => {
+      describe('When parsing', () => {
+        it('Then refuses with chunk-length', () => {
+          // Arrange — the chunk's own declared span (via a `revBody` one
+          // word short of `objectCount`) is what's wrong here; the chunk
+          // table around it stays self-consistent, built by `buildMidx`
+          // from the (mismatched) body length itself.
+          const spec = baseSpec();
+          const bytes = buildMidx({ ...spec, revBody: [0, 1] });
+
+          // Act & Assert
+          expectRefusal(
+            () => parseMultiPackIndex(bytes, spec.digestLength),
+            'chunk-length',
+            'RIDX',
+          );
+        });
+      });
+    });
+
+    describe('Given a RIDX chunk longer than objectCount * 4', () => {
+      describe('When parsing', () => {
+        it('Then refuses with chunk-length', () => {
+          // Arrange — same technique as the shorter-chunk row, one word
+          // over instead of under.
+          const spec = baseSpec();
+          const bytes = buildMidx({ ...spec, revBody: [0, 1, 2, 3] });
+
+          // Act & Assert
+          expectRefusal(
+            () => parseMultiPackIndex(bytes, spec.digestLength),
+            'chunk-length',
+            'RIDX',
+          );
+        });
+      });
+    });
+
+    describe('Given a midx with a reverse-index chunk', () => {
+      describe('When calling midxReverseIndexAt with position === objectCount', () => {
+        it('Then refuses with chunk-length', () => {
+          // Arrange
+          const spec = baseSpec();
+          const midx = parseMultiPackIndex(
+            buildMidx({ ...spec, revBody: [0, 1, 2] }),
+            spec.digestLength,
+          );
+
+          // Act & Assert
+          expectRefusal(
+            () => midxReverseIndexAt(midx, midx.objectCount),
+            'chunk-length',
+            'out of range',
+          );
+        });
+      });
+    });
+  });
+
+  describe('midxReverseIndexPositions', () => {
+    describe('Given a midx whose reverse-index chunk stores only in-range positions', () => {
+      describe('When the whole chunk is read as a table', () => {
+        it('Then it reproduces every stored value, in chunk order', () => {
+          // Arrange
+          const spec = baseSpec();
+          const revBody = [2, 0, 1];
+          const midx = parseMultiPackIndex(buildMidx({ ...spec, revBody }), spec.digestLength);
+          const sut = midxReverseIndexPositions;
+
+          // Act
+          const result = sut(midx);
+
+          // Assert
+          expect(result).toEqual(new Uint32Array(revBody));
+        });
+      });
+    });
+
+    describe('Given a midx with no reverse-index chunk at all', () => {
+      describe('When the whole chunk is read as a table', () => {
+        it('Then it declines with undefined rather than refusing', () => {
+          // Arrange
+          const spec = baseSpec();
+          const midx = parseMultiPackIndex(buildMidx(spec), spec.digestLength);
+          const sut = midxReverseIndexPositions;
+
+          // Act
+          const result = sut(midx);
+
+          // Assert
+          expect(result).toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given a midx whose reverse-index chunk stores a position it does not carry', () => {
+      describe('When the whole chunk is read as a table', () => {
+        it.each([
+          { label: 'objectCount itself', revBody: [0, 1, 3] },
+          { label: '0xffffffff', revBody: [0, 1, 0xffffffff] },
+          { label: 'an out-of-range value in the FIRST slot', revBody: [7, 1, 2] },
+        ])('Then $label declines the whole table', ({ revBody }) => {
+          // Arrange
+          const spec = baseSpec();
+          const midx = parseMultiPackIndex(buildMidx({ ...spec, revBody }), spec.digestLength);
+          const sut = midxReverseIndexPositions;
+
+          // Act
+          const result = sut(midx);
+
+          // Assert
+          expect(result).toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given a midx whose reverse-index chunk is followed by a large-offset chunk', () => {
+      describe('When the whole chunk is read as a table', () => {
+        it('Then it reads exactly the positions the midx carries and never the word past them', () => {
+          // Arrange — the first LOFF word sits immediately after the last RIDX
+          // word and holds a value no midx position could name.
+          const spec = baseSpec({
+            revBody: [2, 0, 1],
+            entries: [
+              { id: oid('01'), packIndex: 0, offset: 100 },
+              { id: oid('05'), packIndex: 1, offset: 200 },
+              { id: oid('09'), packIndex: 2, offset: 5 * 0x100000000 },
+            ],
+          });
+          const midx = parseMultiPackIndex(buildMidx(spec), spec.digestLength);
+          const sut = midxReverseIndexPositions;
+
+          // Act
+          const result = sut(midx);
+
+          // Assert
+          expect(result).toEqual(new Uint32Array([2, 0, 1]));
+        });
+      });
+    });
+  });
+
+  describe('lookupMidxPosition', () => {
+    describe('Given a midx carrying three objects', () => {
+      describe('When each id is looked up by position', () => {
+        it.each([
+          { prefix: '01', expected: 0 },
+          { prefix: '05', expected: 1 },
+          { prefix: '09', expected: 2 },
+        ])('Then $prefix reports midx position $expected', ({ prefix, expected }) => {
+          // Arrange
+          const spec = baseSpec();
+          const midx = parseMultiPackIndex(buildMidx(spec), spec.digestLength);
+          const sut = lookupMidxPosition;
+
+          // Act
+          const result = sut(midx, oid(prefix));
+
+          // Assert
+          expect(result).toBe(expected);
+          expect(midxOidAt(midx, result as number)).toBe(oid(prefix));
+        });
+      });
+
+      describe('When an id the midx does not carry is looked up', () => {
+        it('Then it returns undefined', () => {
+          // Arrange
+          const spec = baseSpec();
+          const midx = parseMultiPackIndex(buildMidx(spec), spec.digestLength);
+          const sut = lookupMidxPosition;
+
+          // Act
+          const result = sut(midx, oid('0a'));
+
+          // Assert
+          expect(result).toBeUndefined();
         });
       });
     });

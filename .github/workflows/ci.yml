@@ -30,7 +30,7 @@ jobs:
     outputs:
       code: ${{ steps.detect.outputs.code }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - id: detect
@@ -49,7 +49,7 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
       - run: npm run check
 
@@ -58,7 +58,7 @@ jobs:
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
       - run: npm run check:types
 
@@ -67,7 +67,7 @@ jobs:
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
       - run: npm run check:dead-code
 
@@ -76,14 +76,14 @@ jobs:
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
       - run: npm run check:duplicates
 
   filesystem:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
       - run: npm run check:filesystem
 
@@ -92,28 +92,28 @@ jobs:
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
       - run: npm run check:architecture
 
   spelling:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
       - run: npm run check:spelling
 
   deps:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
       - run: npm run check:deps
 
   security:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
       - run: npm run check:security
 
@@ -127,9 +127,9 @@ jobs:
     needs: [lint, typecheck]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Restore lychee cache
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: .lycheecache
           key: lychee-${{ hashFiles('.lychee.toml') }}-${{ github.run_id }}
@@ -152,7 +152,7 @@ jobs:
     needs: [lint, typecheck]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
       - run: npm run check:doc-coverage
 
@@ -160,7 +160,7 @@ jobs:
     needs: [lint, typecheck]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
       - run: npm run check:doc-typedoc
 
@@ -168,7 +168,7 @@ jobs:
     needs: [lint, typecheck]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
       - run: npm run check:test-pyramid
       - if: always()
@@ -189,7 +189,7 @@ jobs:
       contents: read
       pull-requests: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: Compute changed-file set and check for docs drift
@@ -211,7 +211,7 @@ jobs:
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
       - run: npm run build
       - run: npm run check:size
@@ -238,7 +238,7 @@ jobs:
         node: [22, 24]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
         with:
           node-version: ${{ matrix.node }}
@@ -273,7 +273,7 @@ jobs:
     needs: [unit-tests]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - uses: ./.github/actions/setup
@@ -318,7 +318,7 @@ jobs:
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
       - run: npm run test:integration
 
@@ -339,7 +339,7 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
       - run: npm run test:posix-integration
 
@@ -355,7 +355,7 @@ jobs:
     if: needs.changes.outputs.code == 'true'
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
       - run: npm run test:win-integration
 
@@ -372,7 +372,7 @@ jobs:
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
       - run: npm run test:parity
       - uses: actions/upload-artifact@v7
@@ -404,7 +404,7 @@ jobs:
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: denoland/setup-deno@v2
         with:
           deno-version: v2.x
@@ -419,7 +419,7 @@ jobs:
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
       - uses: actions/download-artifact@v8
         with:
@@ -432,7 +432,7 @@ jobs:
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
       - uses: actions/download-artifact@v8
         with:
@@ -453,7 +453,7 @@ jobs:
         browser: [chromium, firefox, webkit]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
       - run: npx playwright install --with-deps ${{ matrix.browser }}
       - run: npm run test:e2e -- --project=${{ matrix.browser }}
@@ -484,10 +484,10 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
       - name: Restore scaled bench fixture cache
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.cache/tsgit-bench
           key: tsgit-bench-${{ hashFiles('test/bench/support/fixture-generator.ts') }}
@@ -517,44 +517,126 @@ jobs:
     # hot-path-scoped (all CI-run tiers) — only the operations listed in
     # docs/perf/hot-paths.json, across every tier this job runs (small +
     # medium; large stays env-gated off), threshold N ≈ 10%.
+    #
+    # Four properties keep the RUNNER from deciding the verdict instead of the
+    # diff. Without them this job reported a >17% regression on a bench whose
+    # code the PR never touched, while calling ten unrelated scenarios faster:
+    #   * base and head get their own checkout, so alternating a round costs a
+    #     `cd` rather than a re-checkout and re-install;
+    #   * both sides run the SAME bench files — the hot-path set, intersected
+    #     across the two trees. A PR that adds bench files must not hand its
+    #     own side extra CPU contention that the base side never paid;
+    #   * rounds ALTERNATE base/head, so monotonic drift (page cache warming,
+    #     thermal, a noisy neighbour arriving) is shared instead of accruing
+    #     to whichever side always ran second;
+    #   * each side is reduced by its FASTEST round per scenario — bench noise
+    #     only ever adds time, so the minimum is the least contaminated
+    #     estimate. See `bestOfRounds` in tooling/bench-check.ts.
+    # No `npm run build`: `test:bench` depends on `check:types` only, and the
+    # bench files import from `src/`, so building was ~2 minutes of pure waste
+    # per side.
     continue-on-error: true
     permissions:
       pull-requests: write
+    env:
+      BENCH_ROUNDS: "3"
     steps:
       - name: Checkout base branch
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.base.sha }}
-
-      - uses: ./.github/actions/setup
-
-      - name: Build and bench base branch
-        run: |
-          npm run build
-          npm run test:bench
-          cp reports/benchmarks/raw.json /tmp/base-bench.json
-          rm -rf dist
+          path: base
 
       - name: Checkout PR branch
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
-          clean: false
+          path: head
 
-      - run: npm ci
+      # Deliberately NOT ./.github/actions/setup: that composite installs into
+      # the workspace ROOT, and this job is the one place with two trees and no
+      # package.json at the root. `cache-dependency-path` has to name both
+      # lockfiles for the same reason — setup-node looks for one at the root
+      # and finds nothing.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: |
+            base/package-lock.json
+            head/package-lock.json
 
-      - name: Build and bench PR branch
+      - name: Install base dependencies
+        working-directory: base
+        env:
+          HUSKY: "0"
+        run: npm ci
+
+      - name: Install PR dependencies
+        working-directory: head
+        env:
+          HUSKY: "0"
+        run: npm ci
+
+      - name: Restore scaled bench fixture cache
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/tsgit-bench
+          key: tsgit-bench-${{ hashFiles('head/test/bench/support/fixture-generator.ts') }}
+
+      - name: Resolve the bench files both trees share
+        id: bench-files
         run: |
-          npm run build
-          npm run test:bench
-          cp reports/benchmarks/raw.json /tmp/pr-bench.json
+          # The hot-path registry names operations; each maps to one bench
+          # file. Intersecting with what BOTH trees actually contain keeps the
+          # two sides comparable when a PR adds or renames a hot path.
+          FILES=""
+          while read -r op; do
+            candidate="test/bench/${op}.bench.ts"
+            if [ -f "base/${candidate}" ] && [ -f "head/${candidate}" ]; then
+              FILES="${FILES} ${candidate}"
+            else
+              echo "skipping ${candidate} — not present in both trees"
+            fi
+          done < <(jq -r '.hotOperations[]' head/docs/perf/hot-paths.json)
+          if [ -z "${FILES}" ]; then
+            echo "no shared hot-path bench files — nothing to compare" >&2
+            exit 1
+          fi
+          echo "files=${FILES# }" >> "$GITHUB_OUTPUT"
+
+      - name: Bench base and head in alternating rounds
+        env:
+          BENCH_FILES: ${{ steps.bench-files.outputs.files }}
+        run: |
+          set -euo pipefail
+          run_side() {
+            local dir="$1" tag="$2" round="$3"
+            ( cd "$dir" \
+              && npx vitest bench --run --config vitest.bench.config.ts ${BENCH_FILES} )
+            cp "${dir}/reports/benchmarks/raw.json" "/tmp/${tag}-bench-${round}.json"
+          }
+          for round in $(seq 1 "${BENCH_ROUNDS}"); do
+            run_side base base "${round}"
+            run_side head head "${round}"
+          done
 
       - name: Compare and comment
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REGRESSION_THRESHOLD: "10"
+        working-directory: head
         run: |
-          node --experimental-strip-types tooling/bench-check.ts /tmp/base-bench.json /tmp/pr-bench.json
+          set -euo pipefail
+          join_rounds() {
+            local tag="$1" acc=""
+            for round in $(seq 1 "${BENCH_ROUNDS}"); do
+              acc="${acc},/tmp/${tag}-bench-${round}.json"
+            done
+            echo "${acc#,}"
+          }
+          node --experimental-strip-types tooling/bench-check.ts \
+            "$(join_rounds base)" "$(join_rounds head)"
 
       - name: Post PR comment
         if: always()
@@ -592,10 +674,10 @@ jobs:
   megalinter:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: oxsecurity/megalinter@v9
+      - uses: oxsecurity/megalinter@v10
         env:
           VALIDATE_ALL_CODEBASE: false
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

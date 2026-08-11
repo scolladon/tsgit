@@ -1,11 +1,12 @@
 import fc from 'fast-check';
 import type {
+  CacheTreeEntry,
   GitIndex,
   IndexEntry,
   IndexEntryFlags,
   StatData,
 } from '../../../../src/domain/git-index/index-entry.js';
-import type { FileMode } from '../../../../src/domain/objects/index.js';
+import type { FileMode, ObjectId } from '../../../../src/domain/objects/index.js';
 import { FILE_MODE, FilePath } from '../../../../src/domain/objects/index.js';
 import { arbObjectId } from '../objects/arbitraries.js';
 
@@ -175,4 +176,48 @@ export function arbGitIndexV3(): fc.Arbitrary<GitIndex> {
       extensions: [] as ReadonlyArray<never>,
       trailerSha: EMPTY_TRAILER,
     }));
+}
+
+// Cache-tree path components are a single directory/file name, not a full
+// path (git-index nesting supplies the hierarchy) — a small printable-ASCII
+// alphabet is enough to exercise the grammar without domain-path semantics.
+const CACHE_TREE_PATH_CHARS = 'abcdefghijklmnopqrstuvwxyz0123456789-_.'.split('');
+
+function arbCacheTreePath(): fc.Arbitrary<string> {
+  return fc
+    .array(fc.constantFrom(...CACHE_TREE_PATH_CHARS), { minLength: 0, maxLength: 12 })
+    .map((chars) => chars.join(''));
+}
+
+function buildCacheTreeEntry(
+  path: string,
+  entryCount: number,
+  id: ObjectId,
+  children: ReadonlyArray<CacheTreeEntry>,
+): CacheTreeEntry {
+  const subtreeCount = children.length;
+  return entryCount >= 0
+    ? { path, entryCount, subtreeCount, id, children }
+    : { path, entryCount, subtreeCount, children };
+}
+
+/**
+ * An arbitrary cache-tree entry, depth-bounded to keep generated trees (and
+ * their encoded byte size) small. `entryCount` ranges over both valid
+ * (`>= 0`, carries an oid) and invalidated (`< 0`, no oid) values.
+ */
+export function arbCacheTreeEntry(depth = 3): fc.Arbitrary<CacheTreeEntry> {
+  return fc
+    .record({
+      path: arbCacheTreePath(),
+      entryCount: fc.integer({ min: -5, max: 20 }),
+      id: arbObjectId(),
+      children:
+        depth <= 0
+          ? fc.constant([] as ReadonlyArray<CacheTreeEntry>)
+          : fc.array(arbCacheTreeEntry(depth - 1), { maxLength: 3 }),
+    })
+    .map(({ path, entryCount, id, children }) =>
+      buildCacheTreeEntry(path, entryCount, id, children),
+    );
 }

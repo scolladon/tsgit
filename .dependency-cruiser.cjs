@@ -65,6 +65,14 @@ module.exports = {
       },
     },
     {
+      name: 'fsck-bitmap-pass-cannot-parse-bitmap',
+      comment:
+        "git's entire bitmap obligation is the trailing checksum comparison — parsing the container here would make tsgit stricter than git, itself a divergence",
+      severity: 'error',
+      from: { path: '^src/application/commands/internal/fsck/bitmap-health\\.ts$' },
+      to: { path: '^src/domain/storage/(bitmap|ewah)\\.ts$' },
+    },
+    {
       name: 'no-circular',
       comment: 'No circular dependencies allowed (type-only cycles are safe — erased at runtime)',
       severity: 'error',

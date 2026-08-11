@@ -2,8 +2,24 @@ import fc from 'fast-check';
 
 import { compareBytes, encode, hexToBytes } from '../../../../src/domain/objects/encoding.js';
 import type { ObjectId } from '../../../../src/domain/objects/object-id.js';
+import type {
+  BitmapEntrySpec,
+  BitmapSpec,
+  BitmapStreamSpec,
+} from '../../../fixtures/storage/bitmap-writers.js';
 import { arbObjectId } from '../objects/arbitraries.js';
 
+/** The bitmap/EWAH writers live in a `fast-check`-free module so the parity
+ *  scenarios can reach them without dragging a dev dependency into the Deno,
+ *  Bun and `workerd` graphs; re-exported here so importers of the arbitraries
+ *  keep a single entry point. */
+export {
+  type BitmapEntrySpec,
+  type BitmapSpec,
+  type BitmapStreamSpec,
+  buildBitmap,
+  encodeEwah,
+} from '../../../fixtures/storage/bitmap-writers.js';
 export { arbObjectId } from '../objects/arbitraries.js';
 
 /** A pack-header version git accepts on read (`pack_version_ok`). */
@@ -199,6 +215,8 @@ export interface MidxSpec {
   readonly numBaseFiles: number;
   readonly packNames: ReadonlyArray<string>;
   readonly entries: ReadonlyArray<MidxEntrySpec>;
+  /** When present, the midx carries a reverse-index (`RIDX`) chunk with this body. */
+  readonly revBody?: ReadonlyArray<number>;
 }
 
 /**
@@ -209,12 +227,13 @@ export interface MidxSpec {
  * never reads it, so this writer never hashes it.
  */
 export function buildMidx(spec: MidxSpec): Uint8Array {
-  const { version, hashVersion, digestLength, numBaseFiles, packNames, entries } = spec;
+  const { version, hashVersion, digestLength, numBaseFiles, packNames, entries, revBody } = spec;
   const sorted = [...entries].sort((a, b) => compareBytes(hexToBytes(a.id), hexToBytes(b.id)));
   const objectCount = sorted.length;
   const largeOffsets = sorted.map((entry) => entry.offset).filter((offset) => offset > 0x7fffffff);
   const hasLoff = largeOffsets.length > 0;
-  const numChunks = hasLoff ? 5 : 4;
+  const hasRev = revBody !== undefined;
+  const numChunks = 4 + (hasRev ? 1 : 0) + (hasLoff ? 1 : 0);
 
   const nameBytes = packNames.map((name) => encode(`${name}\0`));
   const pnamRawLength = nameBytes.reduce((sum, bytes) => sum + bytes.length, 0);
@@ -225,7 +244,8 @@ export function buildMidx(spec: MidxSpec): Uint8Array {
   const oidfStart = pnamStart + pnamLength;
   const oidlStart = oidfStart + MIDX_FANOUT_SIZE;
   const ooffStart = oidlStart + objectCount * digestLength;
-  const loffStart = ooffStart + objectCount * 8;
+  const revStart = ooffStart + objectCount * 8;
+  const loffStart = hasRev ? revStart + revBody!.length * 4 : revStart;
   const trailerStart = hasLoff ? loffStart + largeOffsets.length * 8 : loffStart;
 
   const bytes = new Uint8Array(trailerStart + digestLength);
@@ -244,6 +264,7 @@ export function buildMidx(spec: MidxSpec): Uint8Array {
     ['OIDL', oidlStart],
     ['OOFF', ooffStart],
   ];
+  if (hasRev) chunkRows.push(['RIDX', revStart]);
   if (hasLoff) chunkRows.push(['LOFF', loffStart]);
   chunkRows.push(['', trailerStart]);
 
@@ -283,6 +304,12 @@ export function buildMidx(spec: MidxSpec): Uint8Array {
     } else {
       view.setUint32(ooffStart + i * 8 + 4, entry.offset);
     }
+  }
+
+  if (hasRev) {
+    revBody!.forEach((value, i) => {
+      view.setUint32(revStart + i * 4, value);
+    });
   }
 
   return bytes;
@@ -339,9 +366,170 @@ export function arbMidxSpec(): fc.Arbitrary<MidxSpec> {
   );
 }
 
+/**
+ * `arbMidxSpec` plus a reverse-index (`RIDX`) chunk body matching the
+ * generated entry count — the round-trip oracle needs a generator that also
+ * exercises the optional chunk.
+ */
+export function arbMidxSpecWithRev(): fc.Arbitrary<MidxSpec> {
+  return arbMidxSpec().chain((spec) =>
+    fc
+      .array(fc.integer({ min: 0, max: 0xffffffff }), {
+        minLength: spec.entries.length,
+        maxLength: spec.entries.length,
+      })
+      .map((revBody): MidxSpec => ({ ...spec, revBody })),
+  );
+}
+
 function arbMidxOffset(): fc.Arbitrary<number> {
   return fc.oneof(
     fc.integer({ min: 0, max: 0x7fffffff }),
     fc.integer({ min: 0x80000000, max: Number.MAX_SAFE_INTEGER }),
+  );
+}
+
+// --- Pack reverse index --------------------------------------------------
+
+const REV_HEADER_SIZE = 12;
+
+export interface RevIndexSpec {
+  readonly hashId: 1 | 2;
+  readonly digestLength: number;
+  readonly body: ReadonlyArray<number>;
+  readonly packChecksum: Uint8Array;
+}
+
+/**
+ * Writer for the on-disk pack reverse-index layout — the model for
+ * `parsePackRevIndex`'s round-trip oracle. The trailer (`digestLength` bytes:
+ * a digest over everything before it) is left as zero bytes: the parser
+ * never reads it, so this writer never hashes it.
+ */
+export function buildRevIndex(spec: RevIndexSpec): Uint8Array {
+  const { hashId, digestLength, body, packChecksum } = spec;
+  const bodySize = body.length * 4;
+  const bytes = new Uint8Array(REV_HEADER_SIZE + bodySize + 2 * digestLength);
+  const view = new DataView(bytes.buffer);
+
+  bytes.set(encode('RIDX'), 0);
+  view.setUint32(4, 1);
+  view.setUint32(8, hashId);
+  body.forEach((value, i) => {
+    view.setUint32(REV_HEADER_SIZE + i * 4, value);
+  });
+  bytes.set(packChecksum, REV_HEADER_SIZE + bodySize);
+
+  return bytes;
+}
+
+/**
+ * An arbitrary rev-index spec. `hashId` and `digestLength` are drawn
+ * independently — canonical git accepts the disagreement — and body words
+ * are unconstrained integers so the generator also covers non-permutations
+ * and out-of-range values without special-casing them.
+ */
+export function arbRevIndexSpec(): fc.Arbitrary<RevIndexSpec> {
+  return fc.constantFrom<1 | 2>(1, 2).chain((hashId) =>
+    fc.constantFrom<20 | 32>(20, 32).chain((digestLength) =>
+      fc.integer({ min: 0, max: 500 }).chain((objectCount) =>
+        fc
+          .record({
+            body: fc.array(fc.integer({ min: 0, max: 0xffffffff }), {
+              minLength: objectCount,
+              maxLength: objectCount,
+            }),
+            packChecksum: fc.uint8Array({ minLength: digestLength, maxLength: digestLength }),
+          })
+          .map(
+            ({ body, packChecksum }): RevIndexSpec => ({
+              hashId,
+              digestLength,
+              body,
+              packChecksum,
+            }),
+          ),
+      ),
+    ),
+  );
+}
+
+// --- Pack bitmap: EWAH streams -------------------------------------------
+
+/** Upper bound (exclusive) of the bit-position range `arbBitSet` draws from. */
+export const EWAH_BIT_RANGE = 5000;
+
+/** Bit positions over `[0, EWAH_BIT_RANGE)`, drawn from both a sparse
+ *  generator (few bits set) and a dense one (few bits CLEAR) — the round-trip
+ *  property needs both to exercise `encodeEwah`'s clean-0 AND clean-1 runs. */
+export function arbBitSet(): fc.Arbitrary<ReadonlyArray<number>> {
+  const position = fc.integer({ min: 0, max: EWAH_BIT_RANGE - 1 });
+  const sparse = fc.uniqueArray(position, { maxLength: 60 });
+  const dense = fc.uniqueArray(position, { maxLength: 60 }).map((holes) => {
+    const holeSet = new Set(holes);
+    const bits: number[] = [];
+    for (let p = 0; p < EWAH_BIT_RANGE; p += 1) {
+      if (!holeSet.has(p)) bits.push(p);
+    }
+    return bits;
+  });
+  return fc.oneof(sparse, dense);
+}
+
+// --- Pack bitmap: container -----------------------------------------------
+
+/** Mandatory full-DAG bit — every generated spec carries it; clearing it is
+ *  a dedicated refusal row in the unit suite, not a shape the round-trip
+ *  generator needs to reach. */
+const BITMAP_FULL_DAG_FLAG = 0x1;
+
+function arbBitmapStreamSpec(): fc.Arbitrary<BitmapStreamSpec> {
+  return fc.record({
+    bitSize: fc.integer({ min: 0, max: EWAH_BIT_RANGE }),
+    bits: arbBitSet(),
+  });
+}
+
+/** Entry `i`'s `xorOffset` is drawn from `[0, i]` — the base must precede,
+ *  so a generated chain is acyclic by construction and the parser never has
+ *  to reject the generator's own output. */
+function arbBitmapEntrySpecs(): fc.Arbitrary<ReadonlyArray<BitmapEntrySpec>> {
+  return fc.integer({ min: 0, max: 8 }).chain((count) =>
+    fc.tuple(
+      ...Array.from({ length: count }, (_, i) =>
+        fc.record({
+          position: fc.integer({ min: 0, max: 0xffffffff }),
+          xorOffset: fc.integer({ min: 0, max: i }),
+          flags: fc.integer({ min: 0, max: 255 }),
+          bitSize: fc.integer({ min: 0, max: EWAH_BIT_RANGE }),
+          bits: arbBitSet(),
+        }),
+      ),
+    ),
+  );
+}
+
+/**
+ * An arbitrary, internally-consistent bitmap spec: `optionFlags` always
+ * carries the mandatory full-DAG bit, and `digestLength` is drawn first
+ * since both `checksum`'s length and the round-trip's expected offsets
+ * depend on it.
+ */
+export function arbBitmapSpec(): fc.Arbitrary<BitmapSpec> {
+  return fc.constantFrom<20 | 32>(20, 32).chain((digestLength) =>
+    fc
+      .record({
+        optionFlags: fc.integer({ min: 0, max: 0xfffe }).map((v) => v | BITMAP_FULL_DAG_FLAG),
+        checksum: fc.uint8Array({ minLength: digestLength, maxLength: digestLength }),
+        typeStreams: fc.tuple(
+          arbBitmapStreamSpec(),
+          arbBitmapStreamSpec(),
+          arbBitmapStreamSpec(),
+          arbBitmapStreamSpec(),
+        ),
+        entries: arbBitmapEntrySpecs(),
+        trailingBytes: fc.integer({ min: 0, max: 16 }),
+      })
+      .map((r): BitmapSpec => ({ ...r, digestLength })),
   );
 }

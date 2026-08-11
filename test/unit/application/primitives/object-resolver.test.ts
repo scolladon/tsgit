@@ -59,10 +59,20 @@ async function writeRawSingleEntryPack(
 function stubPackHandle(
   ctx: Context,
   packPath: string,
-): Pick<RegisteredPack, 'readSlice' | 'close'> {
+): Pick<
+  RegisteredPack,
+  'readSlice' | 'close' | 'hasRevIndex' | 'revIndex' | 'packPositions' | 'hasBitmap' | 'bitmapBytes'
+> {
   return {
     readSlice: (offset, length) => ctx.fs.readSlice(packPath, offset, length),
     close: async () => undefined,
+    // The object resolver never reads a pack's reverse index, position
+    // mapping or bitmap — these fields exist only to satisfy the type.
+    hasRevIndex: false,
+    revIndex: async () => ({ kind: 'absent' }),
+    packPositions: async () => new Uint32Array(0),
+    hasBitmap: false,
+    bitmapBytes: async () => ({ kind: 'absent' }),
   };
 }
 
@@ -101,7 +111,7 @@ async function stubRegistry(
         const stat = await ctx.fs.stat(packPath);
         const packFileSize = stat.size;
         return {
-          sortedOffsets: [match.offset],
+          sortedOffsets: Float64Array.of(match.offset),
           packFileSize,
           trailerStart: packFileSize - 20,
         };
@@ -126,6 +136,7 @@ async function stubRegistry(
       unresolvedEntries: [],
       checksumOk: undefined,
     }),
+    midxBitmap: async () => undefined,
   };
 }
 
@@ -1204,7 +1215,7 @@ describe('object-resolver', () => {
           const pack: RegisteredPack = {
             ...realPack,
             offsetTable: async () => ({
-              sortedOffsets: [entryOffset, boundary],
+              sortedOffsets: Float64Array.of(entryOffset, boundary),
               packFileSize: boundary,
               trailerStart: boundary - ctx.hashConfig.digestLength,
             }),
@@ -1226,6 +1237,7 @@ describe('object-resolver', () => {
               unresolvedEntries: [],
               checksumOk: undefined,
             }),
+            midxBitmap: async () => undefined,
           };
           const sut = resolveObject;
 
@@ -1271,7 +1283,7 @@ describe('object-resolver', () => {
             idxPath: `${packPath}.idx`,
             header: async () => ({ version: 2, objectCount: fillerIndex.objectCount }),
             offsetTable: async () => ({
-              sortedOffsets: [entryOffset],
+              sortedOffsets: Float64Array.of(entryOffset),
               packFileSize: entryOffset + 5,
               trailerStart: entryOffset + 5 - 20, // = entryOffset - 15 → next is trailerStart < entryOffset
             }),
@@ -1293,6 +1305,7 @@ describe('object-resolver', () => {
               unresolvedEntries: [],
               checksumOk: undefined,
             }),
+            midxBitmap: async () => undefined,
           };
           const sut = resolveObject;
 
@@ -1344,7 +1357,7 @@ describe('object-resolver', () => {
             idxPath: `${packPath}.idx`,
             header: async () => ({ version: 2, objectCount: fillerIndex.objectCount }),
             offsetTable: async () => ({
-              sortedOffsets: [entryOffset],
+              sortedOffsets: Float64Array.of(entryOffset),
               packFileSize: entryOffset + digestLength,
               trailerStart: entryOffset, // = entryOffset + digestLength - digestLength
             }),
@@ -1366,6 +1379,7 @@ describe('object-resolver', () => {
               unresolvedEntries: [],
               checksumOk: undefined,
             }),
+            midxBitmap: async () => undefined,
           };
           const sut = resolveObject;
 
@@ -1413,7 +1427,7 @@ describe('object-resolver', () => {
             idxPath: `${packPath}.idx`,
             header: async () => ({ version: 2, objectCount: fillerIndex.objectCount }),
             offsetTable: async () => ({
-              sortedOffsets: [entryOffset, entryOffset + 1000],
+              sortedOffsets: Float64Array.of(entryOffset, entryOffset + 1000),
               packFileSize: entryOffset + 500,
               trailerStart: entryOffset + 500 - 20,
             }),
@@ -1435,6 +1449,7 @@ describe('object-resolver', () => {
               unresolvedEntries: [],
               checksumOk: undefined,
             }),
+            midxBitmap: async () => undefined,
           };
           const sut = resolveObject;
 
@@ -1472,7 +1487,7 @@ describe('object-resolver', () => {
           // Compute expected slice lengths from the real offset table before resolveObject runs.
           const packs = await registry.all();
           const table = await packs[0]!.offsetTable();
-          const [off0, off1] = table.sortedOffsets as [number, number];
+          const [off0, off1] = table.sortedOffsets;
           // delta entry (off1) is resolved first, then base (off0).
           const expectedDeltaSlice = table.trailerStart - off1!;
           const expectedBaseSlice = off1! - off0!;

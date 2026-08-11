@@ -18,6 +18,20 @@ export type MidxCheck =
   | 'pack-int-id'
   | 'large-offset';
 
+/**
+ * The parse gate that refused a pack reverse index — a closed discriminant,
+ * same shape and reason as `MidxCheck`.
+ */
+export type RevIndexCheck = 'size' | 'signature' | 'version' | 'hash-id';
+
+/**
+ * The parse gate that refused a pack (or midx) bitmap, or one of its EWAH
+ * streams — a closed discriminant, same shape and reason as `MidxCheck`.
+ * `'stream'` is the only member raised so far (the EWAH decoder); the other
+ * five arrive with the bitmap container's own header and entry parsing.
+ */
+export type BitmapCheck = 'size' | 'signature' | 'version' | 'options' | 'stream' | 'entry';
+
 export type StorageError =
   | { readonly code: 'INVALID_PACK_HEADER'; readonly reason: string }
   | { readonly code: 'INVALID_PACK_INDEX'; readonly reason: string }
@@ -32,6 +46,16 @@ export type StorageError =
       readonly code: 'INVALID_MULTI_PACK_INDEX';
       readonly reason: string;
       readonly check: MidxCheck;
+    }
+  | {
+      readonly code: 'INVALID_PACK_REV_INDEX';
+      readonly reason: string;
+      readonly check: RevIndexCheck;
+    }
+  | {
+      readonly code: 'INVALID_PACK_BITMAP';
+      readonly reason: string;
+      readonly check: BitmapCheck;
     };
 
 export const invalidPackHeader = (reason: string): TsgitError =>
@@ -51,3 +75,9 @@ export const deltaChainTooDeep = (depth: number): TsgitError =>
 
 export const invalidMultiPackIndex = (check: MidxCheck, reason: string): TsgitError =>
   new TsgitError({ code: 'INVALID_MULTI_PACK_INDEX', check, reason });
+
+export const invalidPackRevIndex = (check: RevIndexCheck, reason: string): TsgitError =>
+  new TsgitError({ code: 'INVALID_PACK_REV_INDEX', check, reason });
+
+export const invalidPackBitmap = (check: BitmapCheck, reason: string): TsgitError =>
+  new TsgitError({ code: 'INVALID_PACK_BITMAP', check, reason });
