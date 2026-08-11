@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { enumerateObjects } from '../../../../src/application/primitives/enumerate-objects.js';
+import { REV_INDEX_MIN_OBJECTS } from '../../../../src/application/primitives/internal/pack-offset-table.js';
 import { packPositionMap } from '../../../../src/application/primitives/internal/pack-positions.js';
 import {
   createPackRegistry,
@@ -5061,6 +5062,18 @@ describe('PackRegistry — bitmap degradation', () => {
 
 const revAccelEnc = new TextEncoder();
 
+/**
+ * Object count for the describes below that need the `.rev` accelerator to
+ * actually run: `resolveSortedOffsets` sorts without opening the artefact at
+ * all beneath `REV_INDEX_MIN_OBJECTS`, so a handful of objects would make
+ * these assertions vacuous rather than failing. The arms themselves are
+ * covered far more cheaply in `internal/pack-offset-table.test.ts`, which
+ * needs no pack on disk; what these still prove is the REGISTRY wiring —
+ * that `offsetTable()` reaches the artefact, memoises one read, and applies
+ * the threshold to the pack's own object count.
+ */
+const ACCEL_OBJECTS = REV_INDEX_MIN_OBJECTS;
+
 const revAccelEntries = (n: number, prefix: string) =>
   Array.from({ length: n }, (_unused, i) => ({
     kind: 'base' as const,
@@ -5277,7 +5290,7 @@ describe('RegisteredPack.offsetTable — the .rev accelerator, fallback', () => 
         // two refusals apart: the loader's own gate reports the SIZE fault,
         // while `parsePackRevIndex` — reached only if that gate is gone —
         // reports the signature first.
-        const entries = revAccelEntries(4, 'fallback-oversized');
+        const entries = revAccelEntries(ACCEL_OBJECTS, 'fallback-oversized');
         const ctx = await buildSeededContext();
         await writeSyntheticPack(ctx, 'fallback-oversized', entries);
         await writeSyntheticRevIndex(
@@ -5318,7 +5331,7 @@ describe('RegisteredPack.offsetTable — the .rev accelerator, logging', () => {
     describe('When offsetTable() is called', () => {
       it('Then ctx.logger.warn is called once with the artefact name', async () => {
         // Arrange
-        const entries = revAccelEntries(3, 'log-refused');
+        const entries = revAccelEntries(ACCEL_OBJECTS, 'log-refused');
         const ctx = await buildSeededContext();
         await writeSyntheticPack(ctx, 'log-refused', entries);
         await writeSyntheticRevIndex(
@@ -5393,7 +5406,7 @@ describe('RegisteredPack.offsetTable — the .rev accelerator, trust', () => {
     describe('When offsetTable() is called', () => {
       it('Then sortedOffsets is what that body implies, not the sort, and no error is raised', async () => {
         // Arrange
-        const entries = revAccelEntries(3, 'trust');
+        const entries = revAccelEntries(ACCEL_OBJECTS, 'trust');
         const ctx = await buildSeededContext();
         await writeSyntheticPack(ctx, 'trust-pack', entries);
         const correct = await revAccelCorrectBody(ctx, 'trust-pack');
@@ -5418,15 +5431,15 @@ describe('RegisteredPack.offsetTable — the .rev accelerator, trust', () => {
 });
 
 describe('RegisteredPack.offsetTable — the .rev accelerator, out-of-range body', () => {
-  describe('Given a 12-object pack whose .rev body[0] is 999, restamped', () => {
+  describe('Given a pack whose .rev body[0] is one past its last index position, restamped', () => {
     describe('When offsetTable() is called', () => {
       it('Then falls back to the sort, warns once, and every object still reads', async () => {
         // Arrange
-        const entries = revAccelEntries(12, 'oob');
+        const entries = revAccelEntries(ACCEL_OBJECTS, 'oob');
         const ctx = await buildSeededContext();
         const ids = await writeSyntheticPack(ctx, 'oob-pack', entries);
         const correct = await revAccelCorrectBody(ctx, 'oob-pack');
-        const outOfRange = [999, ...correct.slice(1)];
+        const outOfRange = [correct.length, ...correct.slice(1)];
         await writeSyntheticRevIndex(ctx, 'oob-pack', outOfRange);
         const expected = ascendingSortOf(await revAccelRawOffsets(ctx, 'oob-pack'));
         const warn = vi.fn();
@@ -5439,8 +5452,13 @@ describe('RegisteredPack.offsetTable — the .rev accelerator, out-of-range body
         // Assert
         expect(result.sortedOffsets).toEqual(expected);
         expect(warn).toHaveBeenCalledTimes(1);
-        for (const [i, id] of ids.entries()) {
-          const object = await readObject(wrapped, id as ObjectId);
+        // First, last and a middle object rather than all of them: the claim
+        // is that the sort fallback produced a usable table, and a bad
+        // `nextOffsetForEntry` bound shows up at the ends — reading every one
+        // of an above-threshold pack's objects would cost seconds to prove
+        // the same thing.
+        for (const i of [0, ids.length >> 1, ids.length - 1]) {
+          const object = await readObject(wrapped, ids[i] as ObjectId);
           expect((object as Blob).content).toEqual(revAccelEnc.encode(`oob-${i}`));
         }
       });
@@ -5453,7 +5471,7 @@ describe('RegisteredPack.offsetTable — the .rev accelerator, read count', () =
     describe('When offsetTable() is called', () => {
       it('Then the .rev is read exactly once', async () => {
         // Arrange
-        const entries = revAccelEntries(3, 'count-present');
+        const entries = revAccelEntries(ACCEL_OBJECTS, 'count-present');
         const ctx = await buildSeededContext();
         await writeSyntheticPack(ctx, 'count-present', entries);
         await writeSyntheticRevIndex(
@@ -5504,7 +5522,7 @@ describe('RegisteredPack.offsetTable — the .rev accelerator, single-flight', (
     describe('When offsetTable() is called twice concurrently', () => {
       it('Then exactly one .rev read serves both calls', async () => {
         // Arrange
-        const entries = revAccelEntries(3, 'single-flight-offset');
+        const entries = revAccelEntries(ACCEL_OBJECTS, 'single-flight-offset');
         const ctx = await buildSeededContext();
         await writeSyntheticPack(ctx, 'single-flight-offset', entries);
         await writeSyntheticRevIndex(
@@ -5599,7 +5617,7 @@ describe('RegisteredPack.packPositions', () => {
         const ctx = await buildSeededContext();
         await writeSyntheticPack(ctx, 'positions-oob', entries);
         const correct = await revAccelCorrectBody(ctx, 'positions-oob');
-        const outOfRange = [999, ...correct.slice(1)];
+        const outOfRange = [correct.length, ...correct.slice(1)];
         await writeSyntheticRevIndex(ctx, 'positions-oob', outOfRange);
         const idxBytes = await ctx.fs.read(revAccelIdxPath(ctx, 'positions-oob'));
         const expected = packPositionMap(parsePackIndex(idxBytes));
@@ -5708,7 +5726,7 @@ describe('RegisteredPack.offsetTable — what the fallback warns say', () => {
     describe('When offsetTable() is called', () => {
       it('Then the warn names the discard and the artefact in one message', async () => {
         // Arrange
-        const entries = revAccelEntries(3, 'warn-refused');
+        const entries = revAccelEntries(ACCEL_OBJECTS, 'warn-refused');
         const ctx = await buildSeededContext();
         await writeSyntheticPack(ctx, 'warn-refused', entries);
         await writeSyntheticRevIndex(
@@ -5738,7 +5756,7 @@ describe('RegisteredPack.offsetTable — what the fallback warns say', () => {
       it('Then it falls back to the ascending sort and warns naming the out-of-range fallback and the artefact', async () => {
         // Arrange — one past the last valid index position, the boundary the
         // bound has to reject rather than gather `undefined` off the end.
-        const entries = revAccelEntries(6, 'warn-oob');
+        const entries = revAccelEntries(ACCEL_OBJECTS, 'warn-oob');
         const ctx = await buildSeededContext();
         await writeSyntheticPack(ctx, 'warn-oob', entries);
         const correct = await revAccelCorrectBody(ctx, 'warn-oob');

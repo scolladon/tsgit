@@ -41,21 +41,58 @@ function sortAscending(raw: ReadonlyArray<number>): Float64Array {
 }
 
 /**
- * `buildOffsetTable`'s fallback rule: gather from a usable `.rev` in O(n), or
- * sort `raw` for every other artefact state. Both arms return the same
- * `Float64Array` shape, so a caller cannot tell which one ran. The body is
- * trusted exactly as canonical git trusts it: no digest
- * check runs here, and a `refused` artefact is the one state that logs
+ * Object count from which reading a pack's `.rev` starts to pay for itself
+ * against simply sorting the offsets.
+ *
+ * Reading the artefact costs one bounded read plus a parse — a cost that is
+ * essentially FIXED per pack — to replace a sort that costs O(n log n) but
+ * with a very low constant now that it runs comparator-free. Below the
+ * crossover the fixed cost dominates and the accelerator only slows things
+ * down; above it the better growth rate takes over. Measured per pack,
+ * `.rev` present vs deleted:
+ *
+ * |   objects | `.rev` | sort  | winner       |
+ * |----------:|-------:|------:|--------------|
+ * |     3,000 |  0.494 | 0.416 | sort  +18.8% |
+ * |    10,000 |  0.648 | 0.820 | `.rev` +20.9% |
+ * |    20,000 |  0.933 | 1.472 | `.rev` +36.6% |
+ * |    40,000 |  1.412 | 2.913 | `.rev` +51.5% |
+ *
+ * The exact crossover moves with the machine's I/O-to-CPU ratio, so this is a
+ * tuned number rather than a derived one — but being slightly wrong costs
+ * almost nothing, because a value near the crossover is by definition a value
+ * where the two paths cost the same. It is the FAR side that matters: many
+ * small packs (a repository between `git gc` runs) paid this fixed cost once
+ * per pack for no benefit at all.
+ */
+export const REV_INDEX_MIN_OBJECTS = 5_000;
+
+/**
+ * `buildOffsetTable`'s rule: below `REV_INDEX_MIN_OBJECTS`, sort and never
+ * touch the artefact — the loader is passed unforced precisely so that the
+ * threshold skips the READ and not merely the gather, which is where the
+ * whole saving lives. Above it, gather from a usable `.rev` in O(n) and fall
+ * back to the sort for every other artefact state. Every arm returns the same
+ * `Float64Array` shape, so a caller cannot tell which one ran.
+ *
+ * The body is trusted exactly as canonical git trusts it: no digest check
+ * runs here, and a `refused` artefact is the one state that logs
  * (`absent`/`unreadable` mirror git's own silence). A stored position at or
  * beyond `raw.length` degrades this ONE pack to the sort rather than let
  * `undefined` reach `nextOffsetForEntry`.
+ *
+ * A gated-out pack is silent about a corrupt `.rev` it never opened, which is
+ * git's own posture: git does not diagnose an artefact it had no reason to
+ * read. `fsck` remains the authority that reports the fault.
  */
-export function resolveSortedOffsets(
+export async function resolveSortedOffsets(
   ctx: Context,
   name: string,
   raw: ReadonlyArray<number>,
-  load: ArtefactLoad<PackRevIndex>,
-): Float64Array {
+  loadRevIndex: () => Promise<ArtefactLoad<PackRevIndex>>,
+): Promise<Float64Array> {
+  if (raw.length < REV_INDEX_MIN_OBJECTS) return sortAscending(raw);
+  const load = await loadRevIndex();
   if (load.kind === 'refused') {
     ctx.logger?.warn?.('packRegistry: discarding unusable pack reverse index', {
       rev: `${name}.rev`,

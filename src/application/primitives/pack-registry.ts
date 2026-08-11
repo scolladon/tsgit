@@ -349,8 +349,10 @@ function loadPack(
     const stat = await ctx.fs.stat(packPath);
     const packFileSize = stat.size;
     const raw = entryOffsets(index);
-    const load = await revIndexMemo.get();
-    const sortedOffsets = resolveSortedOffsets(ctx, name, raw, load);
+    // The memo is handed over UNFORCED: below its object-count threshold
+    // `resolveSortedOffsets` sorts without ever calling it, so a small pack
+    // pays no `.rev` read at all.
+    const sortedOffsets = await resolveSortedOffsets(ctx, name, raw, revIndexMemo.get);
     // The pack file trailer is a single pack-checksum digest (SHA-1: 20 bytes,
     // SHA-256: 32 bytes). The last entry's data ends exactly at trailerStart.
     const trailerStart = packFileSize - ctx.hashConfig.digestLength;
