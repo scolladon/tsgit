@@ -80,7 +80,7 @@ interface FsckResult {
 |---|---|---|---|
 | `connectivityOnly` | `boolean` | `false` | Skip object-content validation (git's `--connectivity-only`); only verify that linked objects exist. |
 | `reflogRoots` | `boolean` | `true` | Treat reflog OIDs as reachability roots (git's default). Set `false` to exclude reflogs. |
-| `indexRoot` | `boolean` | `true` | Treat index blob OIDs as reachability roots (git's default). Set `false` to exclude the index. |
+| `indexRoot` | `boolean` | `true` | Treat index blob OIDs — and, when present, the index's cache-tree tree OIDs — as reachability roots (git's default). Set `false` to exclude the index from every role: roots and the cache-tree check below. |
 | `full` | `boolean` | `true` | Include pack objects (git's `--full`). Set `false` to scan loose objects only. |
 | `strict` | `boolean` | `false` | Upgrade WARN-class msg-ids to ERROR and contribute exit bit 1 (git's `--strict`). |
 | `checkReferences` | `boolean` | `true` | Run the `git refs verify` ref-content pass; malformed ref content produces `bad-ref` findings with exit bit 8. |
@@ -169,8 +169,8 @@ reconstructed from git's stderr text.
   | `3` | Bits 1 and 2 combined (e.g. corrupt object whose absence also breaks a link). |
   | `4` | A pack failed the header gate or `.idx` parse (bit 4, `pack-inaccessible` / `pack-index-unusable`). Full mode only — suppressed by `full: false` or `connectivityOnly: true`. |
   | `6` | Bits 2 and 4 combined (e.g. a missing object alongside an unrelated pack accessibility fault). |
-  | `8` | Refs-verify content failure only (bit 8). |
-  | `10` | Bits 2 and 8 combined (e.g. malformed ref content + ref→absent OID). |
+  | `8` | Malformed ref content (`badRefContent`, a `bad-ref` finding) **or** an index cache-tree entry whose tree OID fails to resolve (no finding — see "The cache-tree check is a whole-repository condition" below). Independent causes; either alone, or both together, reads as bit 8. |
+  | `10` | Bits 2 and 8 combined (e.g. malformed ref content + ref→absent OID, or a broken cache-tree alongside an unrelated missing object). |
   | `14` | Bits 2, 4 and 8 combined. |
   | `32` | The in-use multi-pack-index or chain layer was discarded, its trailer checksum disagreed, or it routes to a pack or entry it cannot resolve (bit 32, the four `midx-*` findings). Set in **every** mode, including `connectivityOnly` and `full: false` — ungated like bit 64, unlike bit 4. |
   | `42` | Bits 2, 8 and 32 combined (e.g. a midx-named pack fully deleted: missing objects, invalid ref pointers, and the midx's own pack-resolution failure, with no unrelated pack-accessibility fault). |
@@ -188,8 +188,19 @@ reconstructed from git's stderr text.
   have no in-edge from another present object (the tips of unreachable
   subgraphs), matching git's distinction. Both exit 0.
 - **Roots.** By default: all refs, reflog OIDs (`reflogRoots: true`), and index
-  blob OIDs (`indexRoot: true`). Refs that point at absent OIDs are reported as
-  `bad-ref` and excluded from the root set to avoid spurious `missing` findings.
+  blob OIDs (`indexRoot: true`) — plus, when the index carries a cache-tree
+  (`TREE` extension), each entry's resolvable tree OID. Refs that point at
+  absent OIDs are reported as `bad-ref` and excluded from the root set to
+  avoid spurious `missing` findings.
+- **The cache-tree check is a whole-repository condition, not a finding.**
+  When `indexRoot` is not `false` and the index carries a cache-tree, every
+  entry's tree OID is resolved; if any fails, exit bit 8 is set — with **no
+  corresponding finding** in `findings`, unlike every other exit bit. This
+  cause is independent of `checkReferences`/`badRefContent` (the other bit-8
+  cause, below) and of ref/reflog health: a broken ref beside a healthy
+  cache-tree never sets it, and a healthy ref beside a broken cache-tree still
+  does. An absent index, or one with no cache-tree extension, contributes
+  nothing — a bare or never-staged repository is not a fault.
 - **`--strict` upgrade.** Only the WARN-class msg-ids are affected:
   `emptyName`, `fullPathname`, `hasDot`, `hasDotdot`, `hasDotgit`,
   `largePathname`, `nulInCommit`, `nullSha1`, `zeroPaddedFilemode`. ERROR-class
