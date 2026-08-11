@@ -26,14 +26,25 @@ import {
   type LoadedMidx,
   type MidxHealth,
 } from './internal/midx-binding.js';
-import { loadMidxSet, type MidxLoadResult } from './internal/midx-source.js';
+import { loadMidxSet } from './internal/midx-source.js';
 import {
   type ArtefactLoad,
   loadBitmapBytes,
   loadPackRevIndex,
   midxBitmapName,
 } from './internal/pack-artefact-source.js';
-import { gatherByRevIndex, packPositionMap, revIndexPositions } from './internal/pack-positions.js';
+import {
+  emptyGeneration,
+  NO_PACKS,
+  type PackGeneration,
+  resolveIndexes,
+} from './internal/pack-generation.js';
+import {
+  nextOffsetForEntry,
+  type PackOffsetTable,
+  resolveSortedOffsets,
+} from './internal/pack-offset-table.js';
+import { packPositionMap, revIndexPositions } from './internal/pack-positions.js';
 import {
   faultContext,
   faultReason,
@@ -42,12 +53,12 @@ import {
   isSkippablePackFault,
   packBaseName,
 } from './internal/pack-shared.js';
-import { createPromiseMemo, type PromiseMemo } from './internal/promise-memo.js';
+import { createPromiseMemo } from './internal/promise-memo.js';
 import { commonGitDir, packsDir } from './path-layout.js';
 import { exceedsMaxPackIdxBytes, REASON_PACK_IDX_EXCEEDS_MAX } from './validators.js';
 
-export type { MidxHealth };
-export { faultReason, isSkippableIdxFault, isSkippablePackFault };
+export type { MidxHealth, PackGeneration, PackOffsetTable };
+export { faultReason, isSkippableIdxFault, isSkippablePackFault, nextOffsetForEntry };
 
 // Discriminates "this adapter cannot open persistent handles" (the browser
 // adapter's openWithNoFollow refusal) from errno-mapped faults that share the
@@ -60,12 +71,6 @@ function isUnsupportedOperation(err: unknown): boolean {
     err.data.code === 'UNSUPPORTED_OPERATION' &&
     err.data.operation === 'openWithNoFollow'
   );
-}
-
-export interface PackOffsetTable {
-  readonly sortedOffsets: ReadonlyArray<number>;
-  readonly packFileSize: number;
-  readonly trailerStart: number;
 }
 
 export interface RegisteredPack {
@@ -266,42 +271,6 @@ async function readBoundedIdx(ctx: Context, idxPath: string): Promise<Uint8Array
   return bytes;
 }
 
-function sortAscending(raw: ReadonlyArray<number>): number[] {
-  return [...raw].sort((a, b) => a - b);
-}
-
-/**
- * `buildOffsetTable`'s fallback rule: gather from a usable `.rev` in O(n), or
- * sort `raw` — the pre-existing O(n log n) path — for every other artefact
- * state. The body is trusted exactly as canonical git trusts it: no digest
- * check runs here, and a `refused` artefact is the one state that logs
- * (`absent`/`unreadable` mirror git's own silence). A stored position at or
- * beyond `raw.length` degrades this ONE pack to the sort rather than let
- * `undefined` reach `nextOffsetForEntry`.
- */
-function resolveSortedOffsets(
-  ctx: Context,
-  name: string,
-  raw: ReadonlyArray<number>,
-  load: ArtefactLoad<PackRevIndex>,
-): ReadonlyArray<number> {
-  if (load.kind === 'refused') {
-    ctx.logger?.warn?.('packRegistry: discarding unusable pack reverse index', {
-      rev: `${name}.rev`,
-      ...faultContext(load.data),
-    });
-    return sortAscending(raw);
-  }
-  if (load.kind !== 'usable') return sortAscending(raw);
-  const gathered = gatherByRevIndex(load.value, raw);
-  if (gathered !== undefined) return gathered;
-  ctx.logger?.warn?.(
-    'packRegistry: pack reverse index position out of range, falling back to sort',
-    { rev: `${name}.rev` },
-  );
-  return sortAscending(raw);
-}
-
 function loadPack(
   ctx: Context,
   dir: string,
@@ -468,118 +437,6 @@ function loadPack(
   };
 }
 
-function bisectLeft(arr: ReadonlyArray<number>, value: number): number {
-  let lo = 0;
-  let hi = arr.length;
-  while (lo < hi) {
-    const mid = (lo + hi) >>> 1;
-    if ((arr[mid] as number) < value) {
-      lo = mid + 1;
-    } else {
-      hi = mid;
-    }
-  }
-  return lo;
-}
-
-export function nextOffsetForEntry(table: PackOffsetTable, offset: number): number {
-  const { sortedOffsets, trailerStart } = table;
-  const rank = bisectLeft(sortedOffsets, offset);
-  // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — bisectLeft returns rank in [0, len], so rank > len is unreachable; at rank===len sortedOffsets[len] is undefined !== any numeric offset, so whether the first clause is forced always-false or its >= is mutated, the second clause fires the identical throw
-  if (rank >= sortedOffsets.length || sortedOffsets[rank] !== offset) {
-    throw invalidPackIndex('offset not in pack index: corrupt index');
-  }
-  if (rank === sortedOffsets.length - 1) {
-    return trailerStart;
-  }
-  return sortedOffsets[rank + 1] as number;
-}
-
-const NO_PACKS: ReadonlyArray<RegisteredPack> = Object.freeze([]);
-const NO_INDEX_FAULTS: ReadonlyArray<{ readonly name: string; readonly data: TsgitErrorData }> =
-  Object.freeze([]);
-
-/**
- * The scan layer's classification of one generation's candidates: which
- * ones have a loaded, parsed `.idx` (`packs`), and which were skipped as
- * unreadable/unparseable (`indexFaults`). Built once per generation by
- * `resolveIndexes`, behind `PackGeneration.indexed`.
- */
-interface IndexedPack {
-  readonly pack: RegisteredPack;
-  /** The settled parse — held here so lookup's fallback loop stays synchronous. */
-  readonly index: PackIndex;
-}
-
-interface IndexedPacks {
-  readonly packs: ReadonlyArray<IndexedPack>;
-  /** The same packs projected once — `all()` returns one stable reference per generation. */
-  readonly packList: ReadonlyArray<RegisteredPack>;
-  readonly indexFaults: ReadonlyArray<{ readonly name: string; readonly data: TsgitErrorData }>;
-}
-
-const NO_INDEXED_PACKS: ReadonlyArray<IndexedPack> = Object.freeze([]);
-
-const EMPTY_INDEXED: IndexedPacks = Object.freeze({
-  packs: NO_INDEXED_PACKS,
-  packList: NO_PACKS,
-  indexFaults: NO_INDEX_FAULTS,
-});
-
-const EMPTY_MIDX_LOAD: MidxLoadResult = Object.freeze({
-  set: undefined,
-  faults: Object.freeze([]),
-  flatFilePresent: false,
-});
-
-export interface PackGeneration {
-  /** Every candidate with a sibling `.pack` — orphans excluded, `.idx` not
-   *  yet read. The safe superset for `refresh()`/`dispose()` to close: a
-   *  pack whose index never loaded simply has nothing to close. */
-  readonly packs: ReadonlyArray<RegisteredPack>;
-  /** The multi-pack-index this generation's scan discovered, produced by the
-   *  SAME `scanPacks` call as `packs` — so no consumer can ever pair one
-   *  generation's midx with another's packs. Has no reader beyond
-   *  `assertLoadable` propagating its rejection: `midx` below is the bound,
-   *  lookup-facing view. */
-  readonly midxLoad: MidxLoadResult;
-  /** `midxLoad.set` bound to this generation's own `packs`, or `undefined`
-   *  exactly when `midxLoad.set` is. The one field `lookup` reads to decide
-   *  whether the midx is authoritative for this generation. */
-  readonly midx: LoadedMidx | undefined;
-  /** Forces every candidate's `.idx` load, once, on first use. */
-  readonly indexed: PromiseMemo<IndexedPacks>;
-  /**
-   * `.idx` names already warned about this generation — the lazy unclaimed
-   * scan retries a failed parse on every lookup (no negative cache), and
-   * without this dedup each retry would emit another identical warn.
-   */
-  readonly warnedIdx: Set<string>;
-  /** Every regular-file name this scan's `readdir` saw — the same set each
-   *  pack's own artefact discovery (`.rev`, and the bitmap arms) is built
-   *  from, so no artefact probe ever costs a second `readdir`. */
-  readonly fileNames: ReadonlySet<string>;
-  /** The in-use midx's bitmap, or `undefined` when there is no usable midx
-   *  for this generation. Memoised per **generation**, not per pack — the
-   *  artefact's identity depends on the midx layer in use, so it cannot
-   *  live on a `RegisteredPack` the way `.rev`/`.bitmap` do. */
-  readonly midxBitmap: PromiseMemo<MidxBitmapLoad | undefined>;
-}
-
-const NO_FILE_NAMES: ReadonlySet<string> = Object.freeze(new Set<string>());
-
-function emptyGeneration(): PackGeneration {
-  return {
-    packs: NO_PACKS,
-    midxLoad: EMPTY_MIDX_LOAD,
-    midx: undefined,
-    indexed: createPromiseMemo(() => Promise.resolve(EMPTY_INDEXED)),
-    warnedIdx: new Set(),
-    fileNames: NO_FILE_NAMES,
-    midxBitmap: createPromiseMemo(() => Promise.resolve(undefined)),
-  };
-}
-
 /**
  * Resolve one `.idx` candidate to a `RegisteredPack`, or `undefined` when its
  * sibling `.pack` is missing from this scan's own listing (an orphaned `.idx`
@@ -602,36 +459,6 @@ function loadCandidatePack(
     return undefined;
   }
   return loadPack(ctx, dir, entry.name, fileNames);
-}
-
-/**
- * The single site that classifies an index-layer fault — run once per
- * generation, behind `PackGeneration.indexed`, sequentially in candidate
- * order, never per lookup — so a generation warns for each unreadable index
- * exactly once no matter how many consumers later force the memo. Forces
- * every candidate's `.idx` load, not just the ones a lookup needed, so
- * `all()`, `indexFaults()` and `health()` see a complete classification even
- * when no lookup ever ran.
- */
-async function resolveIndexes(
-  ctx: Context,
-  packs: ReadonlyArray<RegisteredPack>,
-): Promise<IndexedPacks> {
-  const loaded: IndexedPack[] = [];
-  const faults: Array<{ readonly name: string; readonly data: TsgitErrorData }> = [];
-  for (const pack of packs) {
-    try {
-      loaded.push({ pack, index: await pack.index() });
-    } catch (err) {
-      if (!isSkippableIdxFault(err)) throw err;
-      ctx.logger?.warn?.('packRegistry: skipping unreadable pack index', {
-        idx: `${pack.name}.idx`,
-        ...faultContext(err.data),
-      });
-      faults.push({ name: pack.name, data: err.data });
-    }
-  }
-  return { packs: loaded, packList: loaded.map((entry) => entry.pack), indexFaults: faults };
 }
 
 const unusableEntry = (
