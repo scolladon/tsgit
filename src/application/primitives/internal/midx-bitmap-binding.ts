@@ -21,7 +21,11 @@
  * divergence is in which file is opened, never in an answer.
  */
 import type { ObjectId } from '../../../domain/objects/index.js';
-import { midxOidAt, midxReverseIndexAt } from '../../../domain/storage/index.js';
+import {
+  lookupMidxPosition,
+  midxOidAt,
+  midxReverseIndexPositions,
+} from '../../../domain/storage/index.js';
 import type { Context } from '../../../ports/context.js';
 // Type-only: keeps the dependency-cruiser no-circular rule happy and
 // structurally forbids this module from ever importing a runtime value out
@@ -29,6 +33,7 @@ import type { Context } from '../../../ports/context.js';
 import type { MidxBitmapLoad } from '../pack-registry.js';
 import {
   buildEntryByOwnPosition,
+  declineBitmap,
   invertPositions,
   type LoadedBitmapArtefact,
   usableBitmapBytes,
@@ -52,8 +57,9 @@ export type LoadedMidxBitmap = LoadedBitmapArtefact;
  * set bit (pseudo-pack positions) — is checked against `load.midx.objectCount`,
  * the pseudo-pack's own count, by the SAME `validateBitmapRanges` a pack
  * bitmap uses (it is already agnostic to which position space it
- * validates). `midxOidAt`/`midxReverseIndexAt` are reached ONLY after that
- * validation has already accepted every position the artefact decodes.
+ * validates). The reverse-index chunk's own STORED values are proved in the
+ * same space straight after, before either mapping exists; `midxOidAt` is
+ * reached only past both, and only as an emitted object's oid is needed.
  */
 export async function loadMidxBitmapArtefact(
   ctx: Context,
@@ -73,14 +79,27 @@ export async function loadMidxBitmapArtefact(
   if (container === undefined) return undefined;
   const { bitmap, headers, objectCount, laneCount, typeBits } = container;
 
-  // Both built AFTER validation, per the doc comment above: every midx
-  // position `midxOidAt` reads here is one of `[0, objectCount)` by
-  // construction (the loop bound), never a decoded, unvalidated position.
-  const oidByMidxPosition = Array.from({ length: objectCount }, (_unused, i) => midxOidAt(midx, i));
-  const oidToMidxPosition = new Map(oidByMidxPosition.map((oid, i) => [oid, i] as const));
-  const pseudoPackPositionOfMidxPosition = Array.from({ length: objectCount }, (_unused, p) =>
-    midxReverseIndexAt(midx, p),
-  );
+  // Read AFTER the container's own validation, and validated in turn:
+  // `midxReverseIndexAt` bounds-checks the position it is ASKED for, never
+  // the position it returns, so a hostile chunk storing a value past the
+  // OIDL's end would resolve a bit to no object at all — and hand the caller
+  // an entry with no id. The whole artefact declines instead.
+  const midxPositionOfBit = midxReverseIndexPositions(midx);
+  if (midxPositionOfBit === undefined) {
+    return declineBitmap(
+      ctx,
+      'midx reverse index position out of range, declining midx bitmap',
+      load.artefact,
+    );
+  }
+  const ownPositionToBitPosition = invertPositions(midxPositionOfBit);
+  if (ownPositionToBitPosition === undefined) {
+    return declineBitmap(
+      ctx,
+      'midx reverse index is not a permutation, declining midx bitmap',
+      load.artefact,
+    );
+  }
 
   return {
     artefactName: load.artefact,
@@ -89,10 +108,12 @@ export async function loadMidxBitmapArtefact(
     objectCount,
     laneCount,
     typeBits,
-    resolveOwnPosition: (oid) => oidToMidxPosition.get(oid),
+    resolveOwnPosition: (oid) => lookupMidxPosition(midx, oid),
     entryByOwnPosition: buildEntryByOwnPosition(headers),
-    ownPositionToBitPosition: invertPositions(pseudoPackPositionOfMidxPosition),
-    oidAtBitPosition: (bitPosition) =>
-      oidByMidxPosition[pseudoPackPositionOfMidxPosition[bitPosition] as number] as ObjectId,
+    ownPositionToBitPosition,
+    oidAtBitPosition: (bitPosition): ObjectId | undefined => {
+      const midxPosition = midxPositionOfBit[bitPosition];
+      return midxPosition === undefined ? undefined : midxOidAt(midx, midxPosition);
+    },
   };
 }

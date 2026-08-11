@@ -30,7 +30,7 @@ function verifyRevIndexBody(
   findings: FsckFinding[],
   pack: string,
   rev: PackRevIndex,
-  expected: ReadonlyArray<number>,
+  expected: Uint32Array,
 ): boolean {
   let mismatched = false;
   for (let position = 0; position < rev.objectCount; position += 1) {

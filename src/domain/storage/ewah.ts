@@ -7,7 +7,10 @@ const EWAH_WORD_SIZE = 8; // one 64-bit word, stored as two big-endian u32 halve
 // bounds-proved, which is why the empty stream is 20 bytes, not 12.
 const EWAH_POSITION_WORD_SIZE = 4;
 const LANES_PER_WORD = 2; // a 64-bit EWAH word maps to two 32-bit destination lanes
+const LANE_BITS = 32;
 const FULL_LANE = 0xffffffff;
+/** `maxSetBitPosition`'s answer for a stream that sets no bit at all. */
+const NO_SET_BIT = -1;
 
 export interface EwahStream {
   readonly bitSize: number;
@@ -141,4 +144,58 @@ export function foldEwahStream(
       lane = foldLiteralLane(into, lane, literalHigh, op);
     }
   }
+}
+
+/** The absolute position of `word`'s highest set bit within lane `lane`, or
+ *  `NO_SET_BIT` when the lane carries none. */
+function highestSetBitInLane(lane: number, word: number): number {
+  if (word === 0) return NO_SET_BIT;
+  return lane * LANE_BITS + (LANE_BITS - 1 - Math.clz32(word));
+}
+
+/**
+ * The highest bit position `stream` sets, or `NO_SET_BIT` when it sets none.
+ * Walks the run-length words ONCE and allocates nothing — the answer a
+ * caller range-checking a stream against an object count needs, without
+ * paying a full-width fold per stream just to throw the fold away. A clean
+ * run of ones contributes its own last bit, a literal word its own highest
+ * set bit, a clean run of zeroes nothing but the positions it advances past.
+ * Unlike `foldEwahStream` the walk is not clamped to a destination, so a bit
+ * declared far beyond the artefact's own bit space is observed rather than
+ * silently truncated.
+ */
+export function maxSetBitPosition(bytes: Uint8Array, view: DataView, stream: EwahStream): number {
+  const wordLimit = Math.min(stream.wordCount, availableWordCount(bytes, stream.wordsOffset));
+
+  let wordIndex = 0;
+  let lane = 0;
+  let max = NO_SET_BIT;
+
+  while (wordIndex < wordLimit) {
+    const [high, low] = readWordHalves(view, stream.wordsOffset + wordIndex * EWAH_WORD_SIZE);
+    wordIndex += 1;
+    const rlw = decodeRunLengthWord(high, low);
+
+    const cleanLanes = rlw.cleanWordCount * LANES_PER_WORD;
+    // Positions only ever grow across the walk, so the newest run's last bit
+    // is the new maximum outright — no comparison needed.
+    if (rlw.runValue === 1 && cleanLanes > 0) max = (lane + cleanLanes) * LANE_BITS - 1;
+    lane += cleanLanes;
+
+    for (let i = 0; i < rlw.literalWordCount && wordIndex < wordLimit; i += 1) {
+      const [literalHigh, literalLow] = readWordHalves(
+        view,
+        stream.wordsOffset + wordIndex * EWAH_WORD_SIZE,
+      );
+      wordIndex += 1;
+      max = Math.max(
+        max,
+        highestSetBitInLane(lane, literalLow),
+        highestSetBitInLane(lane + 1, literalHigh),
+      );
+      lane += LANES_PER_WORD;
+    }
+  }
+
+  return max;
 }

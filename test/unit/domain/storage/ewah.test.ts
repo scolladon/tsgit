@@ -2,7 +2,11 @@ import { describe, expect, it } from 'vitest';
 
 import type { TsgitError } from '../../../../src/domain/error.js';
 import type { BitmapCheck } from '../../../../src/domain/storage/error.js';
-import { foldEwahStream, readEwahStream } from '../../../../src/domain/storage/ewah.js';
+import {
+  foldEwahStream,
+  maxSetBitPosition,
+  readEwahStream,
+} from '../../../../src/domain/storage/ewah.js';
 import { encodeEwah } from './arbitraries.js';
 
 // --- Fixture helpers -------------------------------------------------------
@@ -426,6 +430,109 @@ describe('ewah', () => {
           // Assert
           expect(afterFirst).toBe(0b11);
           expect(into[0]).toBe(0);
+        });
+      });
+    });
+  });
+
+  describe('maxSetBitPosition', () => {
+    describe('Given hand-crafted streams covering every run-length shape', () => {
+      describe('When the highest set bit is read without folding', () => {
+        it.each<{
+          label: string;
+          bitSize: number;
+          words: ReadonlyArray<readonly [number, number]>;
+          expected: number;
+        }>([
+          { label: 'the empty stream', bitSize: 0, words: [[0x0, 0x0]], expected: -1 },
+          {
+            label: 'a literal word setting bits 0 and 1',
+            bitSize: 2,
+            words: [
+              [0x2, 0x0],
+              [0x0, 0x3],
+            ],
+            expected: 1,
+          },
+          {
+            label: "a literal word setting only its HIGH half's bit 0",
+            bitSize: 64,
+            words: [
+              [0x2, 0x0],
+              [0x1, 0x0],
+            ],
+            expected: 32,
+          },
+          {
+            label: 'a clean run of ones spanning two 64-bit words',
+            bitSize: 128,
+            words: [[0x0, 0x5]],
+            expected: 127,
+          },
+          {
+            label: 'a run of ones declaring ZERO clean words after a skipped run',
+            bitSize: 128,
+            words: [
+              [0x0, 0x2],
+              [0x0, 0x1],
+            ],
+            expected: -1,
+          },
+          {
+            label: 'a clean run of zeros followed by one literal word',
+            bitSize: 256,
+            words: [
+              [0x2, 0x6],
+              [0x0, 0x1],
+            ],
+            expected: 192,
+          },
+          {
+            label: 'a literal count larger than the words the stream actually carries',
+            bitSize: 128,
+            words: [
+              [0x4, 0x0],
+              [0x0, 0x1],
+            ],
+            expected: 0,
+          },
+        ])('Then $label reports its own highest bit', ({ bitSize, words, expected }) => {
+          // Arrange
+          const bytes = buildEwahStream(bitSize, words);
+          const view = new DataView(bytes.buffer);
+          const stream = readEwahStream(bytes, view, 0);
+          const sut = maxSetBitPosition;
+
+          // Act
+          const result = sut(bytes, view, stream);
+
+          // Assert
+          expect(result).toBe(expected);
+        });
+      });
+    });
+
+    describe('Given a stream whose only set bit lies far past any destination a fold would allocate', () => {
+      describe('When the highest set bit is read', () => {
+        it('Then it is observed rather than truncated, unlike the clamped fold', () => {
+          // Arrange: 1000 clean-zero words (2000 lanes) then one literal
+          // word setting its own local bit 0.
+          const bytes = buildEwahStream(64_064, [
+            [0x2, 1000 << 1],
+            [0x0, 0x1],
+          ]);
+          const view = new DataView(bytes.buffer);
+          const stream = readEwahStream(bytes, view, 0);
+          const into = new Uint32Array(4);
+          const sut = maxSetBitPosition;
+
+          // Act
+          const result = sut(bytes, view, stream);
+          foldEwahStream(bytes, view, stream, into, 'or');
+
+          // Assert
+          expect(result).toBe(64_000);
+          expect(bitsOf(into)).toEqual([]);
         });
       });
     });

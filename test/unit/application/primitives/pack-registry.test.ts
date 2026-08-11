@@ -5071,7 +5071,7 @@ const revAccelIdxPath = (ctx: Context, name: string): string =>
   `${ctx.layout.gitDir}/objects/pack/pack-${name}.idx`;
 
 /** The pack-position map the pack's own `.idx` implies — a correct `.rev` body. */
-async function revAccelCorrectBody(ctx: Context, name: string): Promise<ReadonlyArray<number>> {
+async function revAccelCorrectBody(ctx: Context, name: string): Promise<Uint32Array> {
   const idxBytes = await ctx.fs.read(revAccelIdxPath(ctx, name));
   return packPositionMap(parsePackIndex(idxBytes));
 }

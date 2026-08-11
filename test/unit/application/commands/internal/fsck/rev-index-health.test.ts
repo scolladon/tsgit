@@ -30,7 +30,7 @@ const manyPackEntries = (n: number, prefix: string) =>
 
 /** The pack's own reverse-index body, derived from its real `.idx` — the
  *  same reference `runRevIndexHealthPass` itself compares against. */
-async function correctBody(ctx: Context, name: string): Promise<ReadonlyArray<number>> {
+async function correctBody(ctx: Context, name: string): Promise<Uint32Array> {
   const idxBytes = await ctx.fs.read(idxFilePath(ctx, name));
   return packPositionMap(parsePackIndex(idxBytes));
 }

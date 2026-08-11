@@ -4,10 +4,12 @@ import type { TsgitError } from '../../../../src/domain/error.js';
 import type { ObjectId } from '../../../../src/domain/objects/object-id.js';
 import type { MidxCheck } from '../../../../src/domain/storage/error.js';
 import {
+  lookupMidxPosition,
   lookupMultiPackIndex,
   midxEntryAt,
   midxOidAt,
   midxReverseIndexAt,
+  midxReverseIndexPositions,
   parseMultiPackIndex,
 } from '../../../../src/domain/storage/midx.js';
 import { buildMidx, type MidxSpec } from './arbitraries.js';
@@ -1525,6 +1527,103 @@ describe('midx', () => {
             'chunk-length',
             'out of range',
           );
+        });
+      });
+    });
+  });
+
+  describe('midxReverseIndexPositions', () => {
+    describe('Given a midx whose reverse-index chunk stores only in-range positions', () => {
+      describe('When the whole chunk is read as a table', () => {
+        it('Then it reproduces every stored value, in chunk order', () => {
+          // Arrange
+          const spec = baseSpec();
+          const revBody = [2, 0, 1];
+          const midx = parseMultiPackIndex(buildMidx({ ...spec, revBody }), spec.digestLength);
+          const sut = midxReverseIndexPositions;
+
+          // Act
+          const result = sut(midx);
+
+          // Assert
+          expect(result).toEqual(new Uint32Array(revBody));
+        });
+      });
+    });
+
+    describe('Given a midx with no reverse-index chunk at all', () => {
+      describe('When the whole chunk is read as a table', () => {
+        it('Then it declines with undefined rather than refusing', () => {
+          // Arrange
+          const spec = baseSpec();
+          const midx = parseMultiPackIndex(buildMidx(spec), spec.digestLength);
+          const sut = midxReverseIndexPositions;
+
+          // Act
+          const result = sut(midx);
+
+          // Assert
+          expect(result).toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given a midx whose reverse-index chunk stores a position it does not carry', () => {
+      describe('When the whole chunk is read as a table', () => {
+        it.each([
+          { label: 'objectCount itself', revBody: [0, 1, 3] },
+          { label: '0xffffffff', revBody: [0, 1, 0xffffffff] },
+          { label: 'an out-of-range value in the FIRST slot', revBody: [7, 1, 2] },
+        ])('Then $label declines the whole table', ({ revBody }) => {
+          // Arrange
+          const spec = baseSpec();
+          const midx = parseMultiPackIndex(buildMidx({ ...spec, revBody }), spec.digestLength);
+          const sut = midxReverseIndexPositions;
+
+          // Act
+          const result = sut(midx);
+
+          // Assert
+          expect(result).toBeUndefined();
+        });
+      });
+    });
+  });
+
+  describe('lookupMidxPosition', () => {
+    describe('Given a midx carrying three objects', () => {
+      describe('When each id is looked up by position', () => {
+        it.each([
+          { prefix: '01', expected: 0 },
+          { prefix: '05', expected: 1 },
+          { prefix: '09', expected: 2 },
+        ])('Then $prefix reports midx position $expected', ({ prefix, expected }) => {
+          // Arrange
+          const spec = baseSpec();
+          const midx = parseMultiPackIndex(buildMidx(spec), spec.digestLength);
+          const sut = lookupMidxPosition;
+
+          // Act
+          const result = sut(midx, oid(prefix));
+
+          // Assert
+          expect(result).toBe(expected);
+          expect(midxOidAt(midx, result as number)).toBe(oid(prefix));
+        });
+      });
+
+      describe('When an id the midx does not carry is looked up', () => {
+        it('Then it returns undefined', () => {
+          // Arrange
+          const spec = baseSpec();
+          const midx = parseMultiPackIndex(buildMidx(spec), spec.digestLength);
+          const sut = lookupMidxPosition;
+
+          // Act
+          const result = sut(midx, oid('0a'));
+
+          // Assert
+          expect(result).toBeUndefined();
         });
       });
     });

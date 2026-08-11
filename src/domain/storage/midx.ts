@@ -328,7 +328,7 @@ function readMidxFanout(midx: MultiPackIndex, byte: number): number {
 function compareMidxOidAt(midx: MultiPackIndex, index: number, targetBytes: Uint8Array): number {
   const base = midx.oidLookupOffset + index * midx.digestLength;
   const bytes = midx._bytes;
-  // Stryker disable next-line EqualityOperator: equivalent — this loop's only caller is lookupMultiPackIndexBytes's binary search, whose `else` branch (exact match) fires whenever cmp is neither <0 nor >0; widening the bound only reaches an extra k when every real byte already compared equal, and the extra k compares targetBytes[digestLength] (undefined) producing NaN — NaN is neither <0 nor >0, so it still falls to the same `else` (found) branch as a genuine 0.
+  // Stryker disable next-line EqualityOperator: equivalent — this loop's only caller is searchMidxPosition's binary search, whose `else` branch (exact match) fires whenever cmp is neither <0 nor >0; widening the bound only reaches an extra k when every real byte already compared equal, and the extra k compares targetBytes[digestLength] (undefined) producing NaN — NaN is neither <0 nor >0, so it still falls to the same `else` (found) branch as a genuine 0.
   for (let k = 0; k < midx.digestLength; k += 1) {
     const diff = bytes[base + k]! - targetBytes[k]!;
     if (diff !== 0) return diff;
@@ -393,11 +393,49 @@ export function lookupMultiPackIndexBytes(
   midx: MultiPackIndex,
   targetBytes: Uint8Array,
 ): MidxEntry | undefined {
+  const position = searchMidxPosition(midx, targetBytes);
+  return position === undefined ? undefined : readMidxEntry(midx, position);
+}
+
+/**
+ * The MIDX POSITION of `id` — `lookupMultiPackIndex`'s own OIDL search,
+ * stopping before the `OOFF` decode: a caller mapping an oid to the position
+ * the midx addresses it by needs neither the pack id nor the offset, and
+ * must not inherit their deferred refusals.
+ */
+export function lookupMidxPosition(midx: MultiPackIndex, id: ObjectId): number | undefined {
+  return searchMidxPosition(midx, hexToBytes(id));
+}
+
+/**
+ * The whole reverse-index chunk read once, as a pseudo-pack position → midx
+ * position table, with every STORED value proved to name a position this
+ * midx actually carries. `undefined` when the file has no `RIDX` chunk, or
+ * when any stored value is out of range: `midxReverseIndexAt` bounds-checks
+ * its ARGUMENT and returns whatever the chunk holds, so a consumer that maps
+ * decoded bits through the chunk has to prove the values themselves before
+ * resolving any of them to an oid — and must decline the whole artefact when
+ * one is bad, never resolve past the OIDL's end.
+ */
+export function midxReverseIndexPositions(midx: MultiPackIndex): Uint32Array | undefined {
+  const chunkOffset = midx.reverseIndexOffset;
+  if (chunkOffset === undefined) return undefined;
+
+  const positions = new Uint32Array(midx.objectCount);
+  for (let position = 0; position < midx.objectCount; position += 1) {
+    const stored = midx._view.getUint32(chunkOffset + position * 4);
+    if (stored >= midx.objectCount) return undefined;
+    positions[position] = stored;
+  }
+  return positions;
+}
+
+function searchMidxPosition(midx: MultiPackIndex, targetBytes: Uint8Array): number | undefined {
   const firstByte = targetBytes[0]!;
   // Stryker disable next-line ConditionalExpression: equivalent — `lo` only narrows the search
   // window; the loop over [0, hi) still converges on the same index (the target, if present,
   // lies in [lo, hi) ⊆ [0, hi) regardless of the digest stride), so forcing `lo` to 0 cannot
-  // change the looked-up entry.
+  // change the position found.
   const lo = firstByte === 0 ? 0 : readMidxFanout(midx, firstByte - 1);
   const hi = readMidxFanout(midx, firstByte);
 
@@ -412,7 +450,7 @@ export function lookupMultiPackIndexBytes(
     } else if (cmp > 0) {
       high = mid;
     } else {
-      return readMidxEntry(midx, mid);
+      return mid;
     }
   }
 

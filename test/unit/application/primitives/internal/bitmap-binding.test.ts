@@ -26,7 +26,7 @@ import {
 import { loadPackBitmapArtefact } from '../../../../../src/application/primitives/internal/pack-bitmap-binding.js';
 import { packPositionMap } from '../../../../../src/application/primitives/internal/pack-positions.js';
 import { getPackRegistry } from '../../../../../src/application/primitives/read-object.js';
-import { permissionDenied } from '../../../../../src/domain/error.js';
+import { permissionDenied, type TsgitError } from '../../../../../src/domain/error.js';
 import type {
   AuthorIdentity,
   Blob,
@@ -648,6 +648,108 @@ describe('Given a want reachable only through a loose object', () => {
 });
 
 // ---------------------------------------------------------------------------
+// The result set obeys the SAME bound on both of its halves, and never
+// carries an object the artefact could not name
+// ---------------------------------------------------------------------------
+
+describe('Given a bitmap-tier answer larger than the push limit', () => {
+  describe('When the closure is resolved', () => {
+    it('Then it refuses with PACK_TOO_LARGE, the bound the extended-position path already raises', async () => {
+      // Arrange
+      vi.resetModules();
+      vi.doMock('../../../../../src/application/primitives/types.js', async (importOriginal) => {
+        const actual =
+          await importOriginal<
+            typeof import('../../../../../src/application/primitives/types.js')
+          >();
+        return { ...actual, MAX_PUSH_OBJECTS: 2 };
+      });
+
+      try {
+        const [
+          { resolveBitmapClosure: scopedResolve },
+          { loadPackBitmapArtefact: scopedLoad },
+          { createMemoryContext: scopedCreateContext },
+          { writeSyntheticPack: scopedWritePack, writeSyntheticBitmap: scopedWriteBitmap },
+          { getPackRegistry: scopedRegistry },
+        ] = await Promise.all([
+          import('../../../../../src/application/primitives/internal/bitmap-binding.js'),
+          import('../../../../../src/application/primitives/internal/pack-bitmap-binding.js'),
+          import('../../../../../src/adapters/memory/memory-adapter.js'),
+          import('../pack-fixture.js'),
+          import('../../../../../src/application/primitives/read-object.js'),
+        ]);
+        const scopedDeps: FixtureDeps = {
+          createContext: scopedCreateContext,
+          writePack: scopedWritePack,
+          writeBitmap: scopedWriteBitmap,
+          registry: scopedRegistry,
+        };
+        // One generation — blob, tree, commit — is three objects against a
+        // limit of two.
+        const fixture = await buildLinearBitmapFixture(1, { name: 'push-limit' }, scopedDeps);
+        const pack = await firstPack(fixture.ctx, scopedDeps);
+        const artefact = await scopedLoad(fixture.ctx, pack);
+        const sut = scopedResolve;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(fixture.ctx, artefact as LoadedPackBitmap, {
+            wants: [fixture.commitIds[0] as ObjectId],
+            not: [],
+            objects: true,
+          });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as TsgitError | undefined)?.data).toEqual({
+          code: 'PACK_TOO_LARGE',
+          objectCount: 3,
+          limit: 2,
+        });
+      } finally {
+        vi.doUnmock('../../../../../src/application/primitives/types.js');
+        vi.resetModules();
+      }
+    });
+  });
+});
+
+describe('Given an artefact whose position table cannot name one of the set bits', () => {
+  describe('When the closure is resolved', () => {
+    it('Then that bit is skipped, never emitted as an object with no id', async () => {
+      // Arrange — the blob's own bit (pack position 0) is made unnameable;
+      // an unguarded emit would push `{ id: undefined }` straight on.
+      const fixture = await buildLinearBitmapFixture(1, { name: 'unnamed-bit' });
+      const loaded = await loadArtefact(fixture.ctx);
+      const artefact: LoadedPackBitmap = {
+        ...(loaded as LoadedPackBitmap),
+        oidAtBitPosition: (bitPosition) =>
+          bitPosition === 0
+            ? undefined
+            : (loaded as LoadedPackBitmap).oidAtBitPosition(bitPosition),
+      };
+      const sut = resolveBitmapClosure;
+
+      // Act
+      const result = await sut(fixture.ctx, artefact, {
+        wants: [fixture.commitIds[0] as ObjectId],
+        not: [],
+        objects: true,
+      });
+
+      // Assert
+      expect(result.map((object) => object.id)).toEqual(
+        asOids([fixture.treeIds[0] as string, fixture.commitIds[0] as string]),
+      );
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Degradation — own it each: absent, unreadable, and four structural
 // refusals (bad magic, version 2, missing full-DAG flag, an overrunning
 // stream) — the binding declines every time; a warn fires for the refused
@@ -853,6 +955,72 @@ describe('Given a 2-object pack whose entry header names 999999', () => {
   });
 });
 
+describe.each([
+  { label: 'objectCount - 1', bit: 1, bitSize: 2, accepted: true },
+  { label: 'objectCount', bit: 2, bitSize: 3, accepted: false },
+  {
+    label: '999999, far past every lane a fold would allocate',
+    bit: 999999,
+    bitSize: 1000000,
+    accepted: false,
+  },
+])(
+  'Given a 2-object pack whose ENTRY stream sets a bit at $label',
+  ({ bit, bitSize, accepted }) => {
+    describe('When the artefact is loaded', () => {
+      it(`Then the artefact ${accepted ? 'is accepted' : 'declines'}`, async () => {
+        // Arrange
+        const { ctx, objectCount } = await buildMinimalBitmapFixture(`entry-bit-${bit}`);
+        const entries: BitmapEntrySpec[] = [
+          { position: 0, xorOffset: 0, flags: 0, bitSize, bits: [bit] },
+        ];
+
+        // Act
+        const artefact = await loadWithEntries(ctx, `entry-bit-${bit}`, objectCount, entries);
+
+        // Assert
+        expect(artefact === undefined).toBe(!accepted);
+      });
+    });
+  },
+);
+
+describe.each([
+  { label: 'exactly objectCount entries', entryCount: 2, accepted: true },
+  { label: 'one more entry than the pack has objects', entryCount: 3, accepted: false },
+])('Given a 2-object pack whose bitmap declares $label', ({ entryCount, accepted }) => {
+  describe('When the artefact is loaded', () => {
+    it(`Then the artefact ${accepted ? 'is accepted' : 'declines, naming the artefact in one warn'}`, async () => {
+      // Arrange
+      const name = `entry-count-${entryCount}`;
+      const { ctx, objectCount } = await buildMinimalBitmapFixture(name);
+      const entries: BitmapEntrySpec[] = Array.from({ length: entryCount }, (_unused, i) => ({
+        position: i % objectCount,
+        xorOffset: 0,
+        flags: 0,
+        bitSize: 0,
+        bits: [],
+      }));
+      const body = buildBitmap(healthySpec(ctx, typeStreamsFor(objectCount, {}), entries));
+      await writeSyntheticBitmap(ctx, packBitmapPath(ctx, name), body);
+      const warn = vi.fn();
+      const wrapped = { ...ctx, logger: { warn } };
+      const pack = await firstPack(wrapped);
+
+      // Act
+      const artefact = await loadPackBitmapArtefact(wrapped, pack);
+
+      // Assert
+      expect(artefact === undefined).toBe(!accepted);
+      expect(warn).toHaveBeenCalledTimes(accepted ? 0 : 1);
+      const [, context] = warn.mock.calls[0] ?? [];
+      if (!accepted) {
+        expect((context as { bitmap?: string } | undefined)?.bitmap).toBe(`pack-${name}.bitmap`);
+      }
+    });
+  });
+});
+
 describe('Given a 2-object pack whose commits type stream sets a bit at objectCount - 1', () => {
   describe('When the artefact is loaded', () => {
     it('Then the artefact is accepted', async () => {
@@ -893,6 +1061,67 @@ describe('Given a 2-object pack whose commits type stream sets a bit at objectCo
 
       // Assert
       expect(artefact).toBeUndefined();
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The position table must be a PERMUTATION — a .rev whose every stored value
+// is in range but names the same index position throughout passes every
+// structural gate and would leave the inverse full of holes
+// ---------------------------------------------------------------------------
+
+describe('Given a pack whose .rev stores index position 0 at every pack position', () => {
+  describe('When the artefact is loaded', () => {
+    it('Then the binding declines, naming the artefact in one warn, rather than mark bit 0 for every tip', async () => {
+      // Arrange — every stored value is in range (0 < objectCount), so size,
+      // signature, version, hash-id and the range rule all pass; only the
+      // permutation proof rejects it.
+      const fixture = await buildLinearBitmapFixture(1, {
+        name: 'rev-not-a-permutation',
+        writeRev: async (ctx, name, idxBytes) => {
+          const objectCount = parsePackIndex(idxBytes).objectCount;
+          await writeSyntheticRevIndex(ctx, name, new Array<number>(objectCount).fill(0));
+        },
+      });
+      const warn = vi.fn();
+      const wrapped = { ...fixture.ctx, logger: { warn } };
+      const pack = await firstPack(wrapped);
+
+      // Act
+      const artefact = await loadPackBitmapArtefact(wrapped, pack);
+
+      // Assert
+      expect(artefact).toBeUndefined();
+      expect(warn).toHaveBeenCalledTimes(1);
+      const [, context] = warn.mock.calls[0] ?? [];
+      expect((context as { bitmap?: string } | undefined)?.bitmap).toBe(
+        'pack-rev-not-a-permutation.bitmap',
+      );
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Parse, entry walk and range validation are paid once per artefact
+// ---------------------------------------------------------------------------
+
+describe('Given one pack bitmap loaded twice for two closures', () => {
+  describe('When the second load runs', () => {
+    it('Then it reuses the first validation rather than re-parsing the same bytes', async () => {
+      // Arrange
+      const fixture = await buildLinearBitmapFixture(2, { name: 'container-memo' });
+      const pack = await firstPack(fixture.ctx);
+
+      // Act
+      const first = await loadPackBitmapArtefact(fixture.ctx, pack);
+      const second = await loadPackBitmapArtefact(fixture.ctx, pack);
+
+      // Assert — a re-parse would produce fresh headers and fresh folded
+      // type-bit arrays, never the very same references.
+      expect(second?.headers).toBe(first?.headers);
+      expect(second?.typeBits[0]).toBe(first?.typeBits[0]);
+      expect(second?.bitmap).toBe(first?.bitmap);
     });
   });
 });
@@ -1623,6 +1852,7 @@ describe('Given a midx bitmap whose closure includes every type stream', () => {
 
 async function buildMinimalMidxBitmapFixture(
   name: string,
+  revBody: ReadonlyArray<number> = [0, 1],
 ): Promise<{ readonly ctx: Context; readonly objectCount: number; readonly hex: string }> {
   const ctx = createMemoryContext();
   const entries: EntrySpec[] = [
@@ -1637,7 +1867,7 @@ async function buildMinimalMidxBitmapFixture(
     buildMidx({
       ...baseMidxSpec(digestLength),
       ...binding,
-      revBody: [0, 1],
+      revBody,
     }),
   );
   return { ctx, objectCount: 2, hex: zeroTrailerHex(digestLength) };
@@ -1750,6 +1980,49 @@ describe('Given a 2-object midx whose commits type stream sets a bit at objectCo
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// The reverse-index chunk's own STORED values — bounds-checked on the way
+// OUT, not just on the way in, and proved a permutation
+// ---------------------------------------------------------------------------
+
+describe.each([
+  { label: 'objectCount itself', revBody: [0, 2], reason: 'out of range' },
+  { label: '0xffffffff', revBody: [0, 0xffffffff], reason: 'out of range' },
+  { label: 'midx position 0 twice', revBody: [0, 0], reason: 'not a permutation' },
+])(
+  'Given a 2-object midx whose reverse-index chunk stores $label, beside a structurally valid bitmap',
+  ({ revBody }) => {
+    describe('When the artefact is loaded', () => {
+      it('Then the binding declines the whole artefact, naming the MIDX bitmap in one warn', async () => {
+        // Arrange
+        const name = `midx-rev-${revBody.join('-')}`;
+        const { ctx, hex, objectCount } = await buildMinimalMidxBitmapFixture(name, revBody);
+        const entries: BitmapEntrySpec[] = [
+          { position: 0, xorOffset: 0, flags: 0, bitSize: 0, bits: [] },
+        ];
+        const body = buildBitmap(healthySpec(ctx, typeStreamsFor(objectCount, {}), entries));
+        await writeSyntheticBitmap(ctx, midxBitmapPath(ctx, hex), body);
+        const warn = vi.fn();
+        const wrapped = { ...ctx, logger: { warn } };
+
+        // Act
+        const artefact = await loadMidxBitmapArtefact(
+          wrapped,
+          await getPackRegistry(wrapped).midxBitmap(),
+        );
+
+        // Assert
+        expect(artefact).toBeUndefined();
+        expect(warn).toHaveBeenCalledTimes(1);
+        const [, context] = warn.mock.calls[0] ?? [];
+        expect((context as { bitmap?: string } | undefined)?.bitmap).toBe(
+          `multi-pack-index-${hex}.bitmap`,
+        );
+      });
+    });
+  },
+);
 
 // ---------------------------------------------------------------------------
 // The decline is whole-artefact, the fault is reported, the caller sees

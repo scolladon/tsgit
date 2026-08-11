@@ -240,7 +240,7 @@ export interface RevIndexOverride {
 export async function writeSyntheticRevIndex(
   ctx: Context,
   packName: string,
-  body: ReadonlyArray<number>,
+  body: ArrayLike<number>,
   opts: RevIndexOverride = {},
 ): Promise<void> {
   const digestLength = ctx.hashConfig.digestLength;
@@ -250,9 +250,9 @@ export async function writeSyntheticRevIndex(
   view.setUint32(0, opts.magic ?? REV_MAGIC);
   view.setUint32(4, opts.version ?? 1);
   view.setUint32(8, opts.hashId ?? (digestLength === 32 ? 2 : 1));
-  body.forEach((value, i) => {
-    view.setUint32(REV_HEADER_SIZE + i * 4, value);
-  });
+  for (let i = 0; i < body.length; i += 1) {
+    view.setUint32(REV_HEADER_SIZE + i * 4, body[i]!);
+  }
   const packChecksum = opts.packChecksum ?? new Uint8Array(digestLength).fill(0xaa);
   bytes.set(packChecksum, REV_HEADER_SIZE + bodySize);
 

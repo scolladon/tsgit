@@ -1,8 +1,8 @@
 /**
  * Range validation for a parsed pack bitmap — every position the artefact
  * decodes, in BOTH position spaces (per-commit entry headers, an index
- * position checked as a scalar; and every set bit a folded stream yields),
- * checked against the pack's own object count before `bitmap-binding.ts`
+ * position checked as a scalar; and every set bit any of its streams
+ * declares), checked against the pack's own object count before `bitmap-binding.ts`
  * ever resolves a decoded position to an oid. A violation declines the
  * whole artefact, never just the offending entry or stream — the caller
  * never learns which one was at fault, matching git's own "lose the
@@ -12,6 +12,7 @@ import {
   type BitmapEntryHeader,
   type EwahStream,
   foldEwahStream,
+  maxSetBitPosition,
   type PackBitmap,
 } from '../../../domain/storage/index.js';
 
@@ -43,13 +44,13 @@ function hasSetBitAtOrAfter(words: Uint32Array, limit: number): boolean {
   return false;
 }
 
-/** Folds `stream` alone (never XOR-chained) into a cleared `scratch`,
+/** Folds one TYPE stream (never XOR-chained) into a cleared `scratch`,
  *  declines on any bit `>= objectCount`, else returns the fold truncated to
- *  `laneCount` — the artefact's own bit space, no headroom. A stream's own
- *  literal bits are unaffected by any XOR chain it participates in (XOR
- *  never changes WHICH position a stream addresses, only the value stored
- *  there), so checking every entry's stream in isolation catches a
- *  violation regardless of where in a chain it was introduced. */
+ *  `laneCount` — the artefact's own bit space, no headroom. Only the four
+ *  type streams come through here: their bits are RETAINED (`typeOfPosition`
+ *  reads them for the artefact's whole life), so the fold is work the
+ *  artefact needs anyway. An entry stream's bits are never retained and are
+ *  range-proved by `maxSetBitPosition` instead. */
 function foldAndCheckRange(
   bitmap: PackBitmap,
   stream: EwahStream,
@@ -72,7 +73,9 @@ export interface ValidatedStreams {
  * streams and every per-commit entry header plus its own stream — against
  * `objectCount`, both position spaces, before anything is resolved to an
  * oid. Declines the whole artefact (returns `undefined`) on the first
- * violation, in either space.
+ * violation, in either space. Cost is one full-width fold for each of the
+ * four type streams (whose bits the artefact keeps) plus one allocation-free
+ * word walk per entry stream (whose bits it does not).
  */
 export function validateBitmapRanges(
   bitmap: PackBitmap,
@@ -111,7 +114,14 @@ export function validateBitmapRanges(
 
   for (const header of headers) {
     if (header.position >= objectCount) return undefined;
-    if (foldAndCheckRange(bitmap, header.stream, scratch, laneCount, objectCount) === undefined) {
+    // Allocation-free: an entry stream's bits are never RETAINED — only
+    // range-proved — so folding one into a full-width scratch (and clearing
+    // that scratch) per entry would cost O(entryCount × objectCount) memory
+    // traffic before a single oid is resolved. The stream's own highest set
+    // bit is the whole check, and XOR never moves WHICH position a stream
+    // addresses, so proving each stream in isolation proves every chain it
+    // takes part in.
+    if (maxSetBitPosition(bitmap._bytes, bitmap._view, header.stream) >= objectCount) {
       return undefined;
     }
   }

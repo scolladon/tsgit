@@ -70,7 +70,7 @@ function stubPackHandle(
     // mapping or bitmap — these fields exist only to satisfy the type.
     hasRevIndex: false,
     revIndex: async () => ({ kind: 'absent' }),
-    packPositions: async () => [],
+    packPositions: async () => new Uint32Array(0),
     hasBitmap: false,
     bitmapBytes: async () => ({ kind: 'absent' }),
   };

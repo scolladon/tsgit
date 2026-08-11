@@ -17,8 +17,8 @@
  *
  * Position mapping and range validation run entirely inside a flavour's own
  * loader, and in that order: every position a bitmap decodes — entry
- * headers AND every set bit a folded stream yields — is checked against the
- * indexed artefact's own object count BEFORE `resolveOwnPosition` or
+ * headers AND every set bit any of its streams declares — is checked against
+ * the indexed artefact's own object count BEFORE `resolveOwnPosition` or
  * `oidAtBitPosition` is ever built or called. A violation declines the
  * WHOLE artefact, never just the offending entry, and is reported through
  * `ctx.logger?.warn?.`; the caller falls back to the next artefact in the
@@ -80,22 +80,26 @@ export interface LoadedBitmapArtefact {
    * oid -> the position an entry header's own `position` field carries for
    * it: an INDEX position for a pack bitmap, a MIDX position for a midx
    * bitmap. `undefined` when the indexed artefact does not carry this oid
-   * at all.
+   * at all. A SEARCH, never a materialised map: the tier resolves a handful
+   * of tips, not every object the artefact carries.
    */
   readonly resolveOwnPosition: (oid: ObjectId) => number | undefined;
   /** own-position -> entry index, built once from `headers`. */
   readonly entryByOwnPosition: ReadonlyMap<number, number>;
   /**
    * own-position -> reachability bit position: a PACK position for a pack
-   * bitmap, a PSEUDO-PACK position for a midx bitmap.
+   * bitmap, a PSEUDO-PACK position for a midx bitmap. The one inverse
+   * mapping the closure genuinely needs, proved a permutation of
+   * `[0, objectCount)` by `invertPositions` before the artefact exists.
    */
-  readonly ownPositionToBitPosition: ReadonlyArray<number>;
+  readonly ownPositionToBitPosition: Uint32Array;
   /**
-   * reachability bit position -> oid: `allObjectIds` through
-   * `ownPositionToBitPosition`'s inverse for a pack bitmap,
-   * `midxOidAt`/`midxReverseIndexAt` for a midx bitmap.
+   * reachability bit position -> oid, resolved LAZILY at emit time — through
+   * the pack's `.idx` for a pack bitmap, the midx's OIDL for a midx bitmap.
+   * `undefined` when the artefact's own position table does not name that
+   * bit, which the emit loop skips rather than pushing an id-less object.
    */
-  readonly oidAtBitPosition: (bitPosition: number) => ObjectId;
+  readonly oidAtBitPosition: (bitPosition: number) => ObjectId | undefined;
 }
 
 /** Pack-flavour alias: same shape, kept distinct so a call site's own type
@@ -111,22 +115,47 @@ export function buildEntryByOwnPosition(
   return new Map(headers.map((header, i) => [header.position, i] as const));
 }
 
-/** Inverts an own-position -> bit-position array (`positions[bitPosition] =
- *  ownPosition`) into its bit-position -> own-position form. Shared by both
- *  flavours: a pack bitmap inverts `packPositions` (index position at each
- *  pack position); a midx bitmap inverts the reverse-index chunk (midx
- *  position at each pseudo-pack position) — same shape either way. */
-export function invertPositions(positions: ReadonlyArray<number>): ReadonlyArray<number> {
-  const inverse = new Array<number>(positions.length);
-  positions.forEach((ownPosition, bitPosition) => {
+/**
+ * Inverts a bit-position -> own-position table (`positions[bitPosition] =
+ * ownPosition`) into its own-position -> bit-position form, PROVING the
+ * input is a permutation of `[0, n)` first. Shared by both flavours: a pack
+ * bitmap inverts `packPositions` (index position at each pack position); a
+ * midx bitmap inverts the reverse-index chunk (midx position at each
+ * pseudo-pack position) — same shape either way.
+ *
+ * `undefined` — the caller's whole-artefact decline — whenever a stored
+ * value is out of range or names a slot already claimed. A table that names
+ * one own position twice necessarily leaves another unnamed (n values into n
+ * slots), and an unnamed own position has NO bit: a `.rev` body storing 0
+ * everywhere would otherwise leave a holey inverse, silently mark bit 0 for
+ * every tip, and answer a wrong pack. Rejecting a duplicate therefore
+ * rejects a hole too, with no separate pass.
+ */
+export function invertPositions(positions: Uint32Array): Uint32Array | undefined {
+  const inverse = new Uint32Array(positions.length);
+  const claimed = new Uint8Array(positions.length);
+  for (const [bitPosition, ownPosition] of positions.entries()) {
+    if (ownPosition >= positions.length || claimed[ownPosition] === 1) return undefined;
+    claimed[ownPosition] = 1;
     inverse[ownPosition] = bitPosition;
-  });
+  }
   return inverse;
 }
 
 export interface ParsedBitmapContainer {
   readonly bitmap: PackBitmap;
   readonly headers: ReadonlyArray<BitmapEntryHeader>;
+}
+
+/**
+ * The one decline shape for a present-but-unusable artefact this module
+ * recognises past the load: warn with the artefact's own name, return
+ * `undefined` so the caller falls through to the next artefact in the
+ * preference order with nothing surfaced.
+ */
+export function declineBitmap(ctx: Context, reason: string, artefactName: string): undefined {
+  ctx.logger?.warn?.(`bitmapBinding: ${reason}`, { bitmap: artefactName });
+  return undefined;
 }
 
 /**
@@ -143,9 +172,22 @@ export function parseBitmapContainer(
   bytes: Uint8Array,
   artefactName: string,
   flavour: 'pack' | 'midx',
+  objectCount: number,
 ): ParsedBitmapContainer | undefined {
   try {
     const bitmap = parsePackBitmap(bytes, ctx.hashConfig.digestLength);
+    // Canonical git never writes more per-commit entries than the artefact
+    // has objects — one entry names one commit, and every commit is an
+    // object — so refusing here refuses nothing git reads. Checked BEFORE
+    // the entry walk, so a hostile 32-bit `entryCount` never gets to
+    // allocate a header per declared entry.
+    if (bitmap.entryCount > objectCount) {
+      return declineBitmap(
+        ctx,
+        `${flavour} bitmap declares more entries than the artefact has objects, declining`,
+        artefactName,
+      );
+    }
     return { bitmap, headers: bitmapEntryHeaders(bitmap) };
   } catch (err) {
     if (!(err instanceof TsgitError) || err.data.code !== 'INVALID_PACK_BITMAP') throw err;
@@ -193,12 +235,25 @@ export interface ValidatedBitmapContainer {
 }
 
 /**
+ * Validated containers keyed by the exact bytes they were validated from.
+ * Both flavours' byte loads are already memoised — per pack for a `.bitmap`,
+ * per generation for a midx's — so the key is stable for as long as the
+ * artefact is, and one closure at the bitmap tier pays the parse, the entry
+ * walk and the range validation for every later one. A `refresh()` produces
+ * new bytes, and the entry keyed on the old ones dies with them. Only
+ * ACCEPTED containers are held: a decline must keep warning once per
+ * attempt, exactly as it did before this memo existed.
+ */
+const validatedContainers = new WeakMap<Uint8Array, ValidatedBitmapContainer>();
+
+/**
  * Parses `bytes` and range-validates the result against `objectCount` —
  * identical work for both flavours (see this module's own doc), taken once
  * a caller has `bytes` (from `usableBitmapBytes`) and its own artefact's
- * object count in hand. Returns `undefined` for the caller to decline —
- * a structural parse refusal warns inside `parseBitmapContainer` itself; an
- * out-of-range position warns here, with one `ctx.logger?.warn?.` either way.
+ * object count in hand. Returns `undefined` for the caller to decline — a
+ * structural parse refusal and an over-long entry table both warn inside
+ * `parseBitmapContainer` itself, an out-of-range position warns here, with
+ * one `ctx.logger?.warn?.` whichever fires.
  */
 export function validateBitmapContainer(
   ctx: Context,
@@ -207,26 +262,31 @@ export function validateBitmapContainer(
   bytes: Uint8Array,
   objectCount: number,
 ): ValidatedBitmapContainer | undefined {
-  const parsed = parseBitmapContainer(ctx, bytes, artefactName, flavour);
+  const memoised = validatedContainers.get(bytes);
+  if (memoised !== undefined) return memoised;
+
+  const parsed = parseBitmapContainer(ctx, bytes, artefactName, flavour, objectCount);
   if (parsed === undefined) return undefined;
   const { bitmap, headers } = parsed;
 
   const validated = validateBitmapRanges(bitmap, headers, objectCount);
   if (validated === undefined) {
-    ctx.logger?.warn?.(`bitmapBinding: ${flavour} bitmap position out of range, declining`, {
-      bitmap: artefactName,
-    });
-    return undefined;
+    return declineBitmap(ctx, `${flavour} bitmap position out of range, declining`, artefactName);
   }
 
-  return {
+  const container: ValidatedBitmapContainer = {
     bitmap,
     headers,
     objectCount,
     laneCount: laneCountFor(objectCount),
     typeBits: validated.typeBits,
   };
+  validatedContainers.set(bytes, container);
+  return container;
 }
+
+const WORD_BITS = 32;
+const FULL_LANE = 0xffffffff;
 
 function setBit(bits: Uint32Array, position: number): void {
   const lane = position >>> 5;
@@ -270,7 +330,11 @@ interface FillState {
 }
 
 /** Resolves `oid` to a bit — a reachability bit position when the artefact
- *  names it, else a shared extended position — and sets it in `state`. */
+ *  names it, else a shared extended position — and sets it in `state`. The
+ *  table read is folded into the same `undefined` test the own-position
+ *  lookup already needs, so an oid the position table cannot place lands in
+ *  the extended space (where it is resolved by oid) instead of coercing to
+ *  bit 0. */
 function markPosition(
   artefact: LoadedBitmapArtefact,
   extended: ExtendedPositions,
@@ -278,8 +342,10 @@ function markPosition(
   oid: ObjectId,
 ): void {
   const ownPosition = artefact.resolveOwnPosition(oid);
-  if (ownPosition !== undefined) {
-    setBit(state.bits, artefact.ownPositionToBitPosition[ownPosition] as number);
+  const bitPosition =
+    ownPosition === undefined ? undefined : artefact.ownPositionToBitPosition[ownPosition];
+  if (bitPosition !== undefined) {
+    setBit(state.bits, bitPosition);
     return;
   }
   state.extended.add(getOrAssignExtended(extended, oid));
@@ -327,8 +393,12 @@ async function walkPendingCommits(
 ): Promise<void> {
   const visited = new Set<ObjectId>();
   const queue: ObjectId[] = [...seeds];
-  while (queue.length > 0) {
-    const id = queue.shift() as ObjectId;
+  // Head cursor, never `shift()`: draining a repo-sized frontier one shift at
+  // a time re-indexes the whole queue per step, O(n²) in its own length.
+  let head = 0;
+  while (head < queue.length) {
+    const id = queue[head]!;
+    head += 1;
     if (visited.has(id)) continue;
     visited.add(id);
 
@@ -429,18 +499,64 @@ export async function resolveBitmapClosure(
   const notState = await fill(ctx, artefact, extended, rc, request.not, request.objects);
 
   const results: BitmapClosureObject[] = [];
-  for (let position = 0; position < artefact.objectCount; position += 1) {
-    if (!bitIsSet(wantState.bits, position) || bitIsSet(notState.bits, position)) continue;
-    const type = typeOfPosition(artefact, position);
-    if (!isIncludedType(type, request.objects)) continue;
-    results.push({ id: artefact.oidAtBitPosition(position), type });
-  }
+  emitInArtefactPositions(artefact, wantState, notState, request.objects, results);
   for (const extIndex of wantState.extended) {
     if (notState.extended.has(extIndex)) continue;
     const oid = extended.oids[extIndex] as ObjectId;
     const obj = await readObject(ctx, oid);
     if (!isIncludedType(obj.type, request.objects)) continue;
-    results.push({ id: oid, type: obj.type });
+    pushBounded(results, { id: oid, type: obj.type });
   }
   return results;
+}
+
+/** The same bound the extended-position path enforces, applied to the
+ *  in-artefact half of the SAME result set — one closure, one limit. */
+function pushBounded(results: BitmapClosureObject[], object: BitmapClosureObject): void {
+  if (results.length >= MAX_PUSH_OBJECTS) {
+    throw new TsgitError({
+      code: 'PACK_TOO_LARGE',
+      objectCount: results.length + 1,
+      limit: MAX_PUSH_OBJECTS,
+    });
+  }
+  results.push(object);
+}
+
+/** The bits of lane `lane` that name a real position — every bit for a whole
+ *  lane, the low `objectCount % 32` for the last one. */
+function laneMask(lane: number, objectCount: number): number {
+  const remaining = objectCount - lane * WORD_BITS;
+  return remaining >= WORD_BITS ? FULL_LANE : ((1 << remaining) - 1) >>> 0;
+}
+
+/**
+ * `W AND NOT N` over the artefact's own bit space, WORD-wise: an all-zero
+ * lane is skipped whole rather than tested bit by bit, and a non-zero lane
+ * walks only the bits it actually sets (`word & -word` isolates the lowest,
+ * `Math.clz32` names it). A repository-sized bitmap is overwhelmingly zero
+ * outside the answer, so the per-bit scan this replaces spent `objectCount`
+ * iterations to emit `|result|` objects.
+ */
+function emitInArtefactPositions(
+  artefact: LoadedBitmapArtefact,
+  wantState: FillState,
+  notState: FillState,
+  objects: boolean,
+  results: BitmapClosureObject[],
+): void {
+  for (let lane = 0; lane < artefact.laneCount; lane += 1) {
+    let word =
+      (wantState.bits[lane]! & ~notState.bits[lane]! & laneMask(lane, artefact.objectCount)) >>> 0;
+    while (word !== 0) {
+      const lowestSetBit = word & -word;
+      word = (word ^ lowestSetBit) >>> 0;
+      const position = lane * WORD_BITS + (WORD_BITS - 1 - Math.clz32(lowestSetBit));
+      const type = typeOfPosition(artefact, position);
+      if (!isIncludedType(type, objects)) continue;
+      const id = artefact.oidAtBitPosition(position);
+      if (id === undefined) continue;
+      pushBounded(results, { id, type });
+    }
+  }
 }

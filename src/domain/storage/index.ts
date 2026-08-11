@@ -19,7 +19,7 @@ export {
 } from './error.js';
 // Pack bitmap
 export type { EwahStream } from './ewah.js';
-export { foldEwahStream, readEwahStream } from './ewah.js';
+export { foldEwahStream, maxSetBitPosition, readEwahStream } from './ewah.js';
 // Loose path
 export { computeLooseObjectPath } from './loose-path.js';
 // LRU cache
@@ -28,10 +28,12 @@ export { createLruCache } from './lru-cache.js';
 // Multi-pack index
 export type { MidxEntry, MultiPackIndex } from './midx.js';
 export {
+  lookupMidxPosition,
   lookupMultiPackIndex,
   midxEntryAt,
   midxOidAt,
   midxReverseIndexAt,
+  midxReverseIndexPositions,
   parseMultiPackIndex,
 } from './midx.js';
 // Pack entry
@@ -55,7 +57,14 @@ export {
 } from './pack-entry.js';
 // Pack index
 export type { PackIndex } from './pack-index.js';
-export { entryOffsets, findByPrefix, lookupPackIndex, parsePackIndex } from './pack-index.js';
+export {
+  entryOffsets,
+  findByPrefix,
+  lookupPackIndex,
+  lookupPackIndexPosition,
+  objectIdAt,
+  parsePackIndex,
+} from './pack-index.js';
 // Pack writer
 export type {
   PackEntryMeta,

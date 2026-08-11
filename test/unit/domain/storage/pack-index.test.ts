@@ -7,6 +7,8 @@ import {
   entryOffsets,
   findByPrefix,
   lookupPackIndex,
+  lookupPackIndexPosition,
+  objectIdAt,
   parsePackIndex,
 } from '../../../../src/domain/storage/pack-index.js';
 import { arbObjectId, buildTestIndex, type TestIndexEntry } from './arbitraries.js';
@@ -781,6 +783,64 @@ describe('pack-index', () => {
               expect(result).toBeUndefined();
             }),
           );
+        });
+      });
+    });
+  });
+
+  describe('lookupPackIndexPosition', () => {
+    const positionEntries: TestIndexEntry[] = [
+      makeEntry('aa' + '00'.repeat(19), 100),
+      makeEntry('bb' + '00'.repeat(19), 200),
+      makeEntry('cc' + '00'.repeat(19), 300),
+    ];
+
+    describe('Given an index carrying three objects', () => {
+      describe('When each id is looked up by position', () => {
+        it.each([
+          { lookupId: 'aa' + '00'.repeat(19), expected: 0, label: 'the first id' },
+          { lookupId: 'bb' + '00'.repeat(19), expected: 1, label: 'the middle id' },
+          { lookupId: 'cc' + '00'.repeat(19), expected: 2, label: 'the last id' },
+        ])('Then $label reports its own index position', ({ lookupId, expected }) => {
+          // Arrange
+          const index = parsePackIndex(buildTestIndex(positionEntries));
+          const sut = lookupPackIndexPosition;
+
+          // Act
+          const result = sut(index, lookupId as ObjectId);
+
+          // Assert
+          expect(result).toBe(expected);
+        });
+      });
+
+      describe('When an id the index does not carry is looked up', () => {
+        it('Then it returns undefined', () => {
+          // Arrange
+          const index = parsePackIndex(buildTestIndex(positionEntries));
+          const sut = lookupPackIndexPosition;
+
+          // Act
+          const result = sut(index, ('dd' + '00'.repeat(19)) as ObjectId);
+
+          // Assert
+          expect(result).toBeUndefined();
+        });
+      });
+
+      describe('When every position is resolved back to an oid', () => {
+        it('Then objectIdAt inverts the position lookup for every entry', () => {
+          // Arrange
+          const index = parsePackIndex(buildTestIndex(positionEntries));
+          const sut = objectIdAt;
+
+          // Act
+          const roundTripped = positionEntries.map((entry) =>
+            sut(index, lookupPackIndexPosition(index, entry.id) as number),
+          );
+
+          // Assert
+          expect(roundTripped).toEqual(positionEntries.map((entry) => entry.id));
         });
       });
     });
