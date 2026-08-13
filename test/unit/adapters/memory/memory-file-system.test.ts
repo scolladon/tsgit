@@ -12,6 +12,14 @@ describe('MemoryFileSystem', () => {
       rootDir: '/repo',
       getRootDirSibling: async () => '/repo-evil/x',
       getExistingInRoot: async () => '/repo/existing.txt',
+      symlinkReadEscape: {
+        create: async () => {
+          const link = '/repo/escape-read-link';
+          await fs.symlink('/repo-evil/escape-read-target.txt', link);
+          return link;
+        },
+        expected: 'refused' as const,
+      },
     };
   });
 

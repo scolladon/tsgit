@@ -8,6 +8,22 @@ export interface FileSystemContractEnv {
   readonly getRootDirSibling: () => Promise<string>;
   readonly getExistingInRoot: () => Promise<string>;
   readonly cleanup?: () => Promise<void>;
+  /**
+   * Optional per-adapter declaration for the in-root-symlink-escaping-read
+   * row: `create` plants a symlink whose target lies outside every
+   * containment root and returns the in-root path to read THROUGH (the
+   * link itself, not its target). `expected` is the adapter's own
+   * containment posture for a read that follows it — Node declares
+   * `'allowed'` (git parity: reads follow symlinks, even escaping ones);
+   * Memory declares `'refused'` (its containment is structural — every
+   * lookup, including a symlink target reached mid-follow, is re-resolved
+   * against its own root). Omit entirely to skip the row (e.g. an adapter
+   * whose `symlink` is unsupported).
+   */
+  readonly symlinkReadEscape?: {
+    readonly create: () => Promise<string>;
+    readonly expected: 'allowed' | 'refused';
+  };
 }
 
 interface PathCall {
@@ -842,6 +858,49 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
           }
         });
       }
+    });
+
+    describe('Given an in-root symlink whose target escapes every root', () => {
+      describe('When reading through it', () => {
+        it('Then it is followed when the adapter declares escape reads allowed (git parity)', async (ctx) => {
+          const { symlinkReadEscape } = env;
+          if (symlinkReadEscape === undefined || symlinkReadEscape.expected !== 'allowed') {
+            ctx.skip();
+            return;
+          }
+
+          // Arrange
+          const link = await symlinkReadEscape.create();
+
+          // Act
+          const stat = await env.fs.stat(link);
+
+          // Assert
+          expect(stat.isFile).toBe(true);
+        });
+
+        it('Then it is refused when the adapter confines reads to its own addressing model', async (ctx) => {
+          const { symlinkReadEscape } = env;
+          if (symlinkReadEscape === undefined || symlinkReadEscape.expected !== 'refused') {
+            ctx.skip();
+            return;
+          }
+
+          // Arrange
+          const link = await symlinkReadEscape.create();
+
+          // Act
+          let caught: unknown;
+          try {
+            await env.fs.stat(link);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          assertPermissionDenied(caught);
+        });
+      });
     });
   });
 }

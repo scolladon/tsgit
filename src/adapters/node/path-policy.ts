@@ -113,8 +113,12 @@ const makePolicy = (impl: PathPolicySource, caseInsensitive: boolean): PathPolic
   dirname: (path: string) => impl.dirname(path),
   basename: (path: string) => impl.basename(path),
   rootOf: (path: string) => impl.parse(path).root,
+  // The `/` → `\` fold only applies on case-insensitive (Windows) hosts: a
+  // `joinPath`-produced path carries `/` unconditionally even there, so the
+  // containment prefix compare must fold it to match a root normalised
+  // through the same function.
   normalizeForCompare: (path: string) =>
-    caseInsensitive ? stripWinExtendedPrefix(path).toLowerCase() : path,
+    caseInsensitive ? stripWinExtendedPrefix(path).toLowerCase().replaceAll('/', '\\') : path,
 });
 
 export const posixPolicy: PathPolicy = makePolicy(nodePath.posix, false);

@@ -38,6 +38,16 @@ describe('NodeFileSystem', () => {
       rootDir,
       getRootDirSibling: async () => nodePath.join(siblingDir, 'file.txt'),
       getExistingInRoot: async () => existingFile,
+      symlinkReadEscape: {
+        create: async () => {
+          const escapeTarget = nodePath.join(siblingDir, 'escape-read-target.txt');
+          await fsPromises.writeFile(escapeTarget, Buffer.from('escape-read'));
+          const link = nodePath.join(rootDir, 'escape-read-link');
+          await fsPromises.symlink(escapeTarget, link);
+          return link;
+        },
+        expected: 'allowed' as const,
+      },
       cleanup: async () => {
         await fsPromises.rm(rootDir, { recursive: true, force: true });
         await fsPromises.rm(siblingDir, { recursive: true, force: true });
@@ -70,8 +80,10 @@ describe('NodeFileSystem', () => {
 
     describe('Given symlink in root pointing outside root', () => {
       describe('When reading through it', () => {
-        it('Then throws PERMISSION_DENIED', async () => {
-          // Arrange
+        it('Then it follows the symlink (read-side containment is lexical, git parity)', async () => {
+          // Arrange — the link itself is lexically inside root; only its
+          // target escapes. Read-side containment no longer realpaths the
+          // leaf, so the escape is admitted (matches git's own behaviour).
           const { fs, rootDir, siblingDir, cleanup } = await makeFs();
           const escapeTarget = nodePath.join(siblingDir, 'secret.txt');
           await fsPromises.writeFile(escapeTarget, Buffer.from('outside'));
@@ -79,9 +91,29 @@ describe('NodeFileSystem', () => {
           await fsPromises.symlink(escapeTarget, link);
 
           // Act
+          const result = await fs.read(link);
+
+          // Assert
+          expect(result).toEqual(new Uint8Array(Buffer.from('outside')));
+          await cleanup();
+        });
+      });
+    });
+
+    describe('Given a lexically out-of-root absolute path (no symlink involved)', () => {
+      describe('When reading it', () => {
+        it('Then throws PERMISSION_DENIED (the lexical gate still exists)', async () => {
+          // Arrange — proves the containment gate itself survives the move
+          // to a lexical-only check: an absolute path outside every root is
+          // still refused, with no I/O reaching the sibling directory.
+          const { fs, siblingDir, cleanup } = await makeFs();
+          const outsideFile = nodePath.join(siblingDir, 'plain.txt');
+          await fsPromises.writeFile(outsideFile, Buffer.from('sibling'));
+
+          // Act
           let caught: unknown;
           try {
-            await fs.read(link);
+            await fs.read(outsideFile);
           } catch (err) {
             caught = err;
           }
@@ -122,24 +154,21 @@ describe('NodeFileSystem', () => {
 
     describe('Given in-root directory symlink pointing outside root', () => {
       describe('When lstat of child path', () => {
-        it('Then throws PERMISSION_DENIED', async () => {
+        it('Then it follows the directory symlink (lstat containment is lexical, git parity)', async () => {
           // Arrange — plant a directory symlink inside root that resolves outside root.
-          // lstat mode realpaths the PARENT only; the check must catch the escaped parent.
+          // The link's OWN path is lexically inside root; lstat no longer realpaths
+          // any parent for containment, so the escaping directory is followed.
           const { fs, rootDir, siblingDir, cleanup } = await makeFs();
           const dirLink = nodePath.join(rootDir, 'outside-dir');
           await fsPromises.symlink(siblingDir, dirLink);
+          await fsPromises.writeFile(nodePath.join(siblingDir, 'child.txt'), Buffer.from([1]));
 
           // Act
-          let caught: unknown;
-          try {
-            await fs.lstat(nodePath.join('outside-dir', 'child.txt'));
-          } catch (err) {
-            caught = err;
-          }
+          const stat = await fs.lstat(nodePath.join('outside-dir', 'child.txt'));
 
           // Assert
-          expect(caught).toBeInstanceOf(TsgitError);
-          expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+          expect(stat.isFile).toBe(true);
+          expect(stat.isSymbolicLink).toBe(false);
           await cleanup();
         });
       });
@@ -1323,9 +1352,10 @@ describe('NodeFileSystem multi-root containment', () => {
 
   describe('Given a symlink inside the first root targeting a file outside every root', () => {
     describe('When reading through it', () => {
-      it('Then it throws PERMISSION_DENIED', async () => {
-        // Arrange — the post-realpath gate: the link is lexically inside
-        // root A, only its resolved target reveals the escape.
+      it('Then it follows the symlink (read-side containment is lexical, git parity)', async () => {
+        // Arrange — the link is lexically inside root A; only its resolved
+        // target escapes every root. Read-side containment no longer
+        // realpaths the leaf, so the escape is admitted.
         const { sut, rootA, outsideDir, cleanup } = await makeMultiRootFs();
         const escapeTarget = nodePath.join(outsideDir, 'secret.txt');
         await fsPromises.writeFile(escapeTarget, 'secret content');
@@ -1333,15 +1363,10 @@ describe('NodeFileSystem multi-root containment', () => {
         await fsPromises.symlink(escapeTarget, link);
 
         // Act
-        let caught: unknown;
-        try {
-          await sut.readUtf8(link);
-        } catch (err) {
-          caught = err;
-        }
+        const result = await sut.readUtf8(link);
 
         // Assert
-        expect((caught as TsgitError).data).toEqual({ code: 'PERMISSION_DENIED', path: link });
+        expect(result).toBe('secret content');
         await cleanup();
       });
     });

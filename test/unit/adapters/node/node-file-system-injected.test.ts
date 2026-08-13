@@ -548,7 +548,10 @@ describe('NodeFileSystem — guarded canonical-root await, first-call resolution
         // Arrange
         const rootDir = '/root';
         const realpathSpy = vi.fn().mockImplementation(async (input: string) => input);
-        const fsOps = fakeFsOps({ realpath: realpathSpy });
+        const fsOps = fakeFsOps({
+          realpath: realpathSpy,
+          stat: vi.fn().mockResolvedValue({}),
+        });
         const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
 
         // Act
@@ -868,18 +871,20 @@ describe('NodeFileSystem — openWithNoFollow Windows symlink refusal (DI)', () 
 });
 
 describe('NodeFileSystem — non-errno fault propagation (DI)', () => {
-  describe('Given `exists` and a realpath that rejects with a non-errno value', () => {
+  describe('Given `exists` and a stat that rejects with a non-errno value', () => {
     describe('When called', () => {
       it('Then the original value rethrows unchanged', async () => {
-        // Arrange — realpath rejects with a non-Error (string) so
-        // isErrnoException returns false. The defensive rethrow keeps the
-        // semantic that only errno faults flow through mapErrno.
+        // Arrange — `exists` now probes existence via `fsOps.stat`, not
+        // `fsOps.realpath` (which only runs once, for root canonicalisation).
+        // stat rejects with a non-Error (string) so isErrnoException returns
+        // false. The defensive rethrow keeps the semantic that only errno
+        // faults flow through mapErrno.
         const rootDir = 'C:\\canonical\\non-errno-exists';
-        const realpath = vi.fn().mockImplementation(async (input: string) => {
-          if (input === rootDir) return rootDir;
-          throw 'not-an-error';
+        const fsOps = fakeFsOps({
+          realpath: vi.fn().mockImplementation(async (input: string) => input),
+          stat: vi.fn().mockRejectedValue('not-an-error'),
         });
-        const sut = new NodeFileSystem(rootDir, windowsPolicy, fakeFsOps({ realpath }));
+        const sut = new NodeFileSystem(rootDir, windowsPolicy, fsOps);
 
         // Act
         let caught: unknown;
@@ -894,10 +899,12 @@ describe('NodeFileSystem — non-errno fault propagation (DI)', () => {
     });
   });
 
-  describe('Given `read` and a realpath that rejects with a non-errno value', () => {
+  describe('Given `chmod` and a realpath that rejects with a non-errno value', () => {
     describe('When called', () => {
       it('Then the original value rethrows unchanged', async () => {
-        // Arrange — same idea but through checkContainment's catch.
+        // Arrange — same idea but through checkContainment's catch. `chmod`
+        // stays on checkContainment's realpath-backed 'read' mode in this
+        // part (only the syscall-free read surfaces moved to `resolveRead`).
         const rootDir = 'C:\\canonical\\non-errno-read';
         const realpath = vi.fn().mockImplementation(async (input: string) => {
           if (input === rootDir) return rootDir;
@@ -908,7 +915,7 @@ describe('NodeFileSystem — non-errno fault propagation (DI)', () => {
         // Act
         let caught: unknown;
         try {
-          await sut.read('C:\\canonical\\non-errno-read\\a');
+          await sut.chmod('C:\\canonical\\non-errno-read\\a', 0o644);
         } catch (err) {
           caught = err;
         }
@@ -1051,6 +1058,7 @@ describe('NodeFileSystem — Windows-mocked containment (DI)', () => {
             if (input === child) return childCanonical;
             throw enoent();
           }),
+          stat: vi.fn().mockResolvedValue({}),
         });
         const sut = new NodeFileSystem(shortRoot, windowsPolicy, fsOps);
 
@@ -1101,6 +1109,7 @@ describe('NodeFileSystem — Windows-mocked containment (DI)', () => {
 
         const fsOps = fakeFsOps({
           realpath: vi.fn().mockImplementation(async (input: string) => input),
+          stat: vi.fn().mockResolvedValue({}),
         });
         const sut = new NodeFileSystem(root, windowsPolicy, fsOps);
 
@@ -1214,17 +1223,17 @@ describe('realpathNearestExisting — non-ENOENT rethrow (DI)', () => {
   });
 });
 
-describe('NodeFileSystem.exists — non-ENOENT errno from realpath (DI)', () => {
-  describe('Given realpath rejects with ENOTDIR', () => {
+describe('NodeFileSystem.exists — non-ENOENT errno from stat (DI)', () => {
+  describe('Given stat rejects with ENOTDIR', () => {
     describe('When exists is called', () => {
       it('Then throws NOT_A_DIRECTORY', async () => {
-        // Arrange
+        // Arrange — `exists` probes existence via `fsOps.stat`, not
+        // `fsOps.realpath` (which now runs only once, for root
+        // canonicalisation).
         const rootDir = '/root';
         const fsOps = fakeFsOps({
-          realpath: vi.fn().mockImplementation(async (input: string) => {
-            if (input === rootDir) return rootDir;
-            throw enotdir();
-          }),
+          realpath: vi.fn().mockImplementation(async (input: string) => input),
+          stat: vi.fn().mockRejectedValue(enotdir()),
         });
         const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
 
@@ -1243,41 +1252,36 @@ describe('NodeFileSystem.exists — non-ENOENT errno from realpath (DI)', () => 
     });
   });
 
-  describe('Given in-root path whose realpath resolves outside the canonical root', () => {
+  describe('Given an in-root path whose target lies outside the canonical root', () => {
     describe('When exists is called', () => {
-      it('Then throws PERMISSION_DENIED (escape branch)', async () => {
-        // Arrange — simulates an in-root symlink whose target lies outside.
+      it('Then it returns true (read-side containment is lexical, git parity)', async () => {
+        // Arrange — simulates an in-root symlink whose target lies outside
+        // every root. `exists` no longer realpaths the leaf to detect the
+        // escape, so it is followed exactly like `read`/`stat`.
         const rootDir = '/root';
-        const outside = '/elsewhere/secret.txt';
         const fsOps = fakeFsOps({
-          realpath: vi.fn().mockImplementation(async (input: string) => {
-            if (input === rootDir) return rootDir;
-            return outside;
-          }),
+          realpath: vi.fn().mockImplementation(async (input: string) => input),
+          stat: vi.fn().mockResolvedValue({}),
         });
         const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
 
         // Act
-        let caught: unknown;
-        try {
-          await sut.exists('/root/escape-link');
-        } catch (err) {
-          caught = err;
-        }
+        const result = await sut.exists('/root/escape-link');
 
         // Assert
-        expect(caught).toBeInstanceOf(TsgitError);
-        expect((caught as InstanceType<typeof TsgitError>).data.code).toBe('PERMISSION_DENIED');
+        expect(result).toBe(true);
       });
     });
   });
 });
 
 describe('NodeFileSystem.checkContainment — non-ENOENT errno from realpath (DI)', () => {
-  describe('Given `read` with realpath rejecting ENOTDIR', () => {
+  describe('Given `chmod` with realpath rejecting ENOTDIR', () => {
     describe('When called', () => {
       it('Then throws NOT_A_DIRECTORY (mapErrno branch in checkContainment catch)', async () => {
-        // Arrange
+        // Arrange — `chmod` stays on checkContainment's realpath-backed
+        // 'read' mode in this part; `read` itself moved to the syscall-free
+        // `resolveRead` and no longer reaches this catch.
         const rootDir = '/root';
         const fsOps = fakeFsOps({
           realpath: vi.fn().mockImplementation(async (input: string) => {
@@ -1290,7 +1294,7 @@ describe('NodeFileSystem.checkContainment — non-ENOENT errno from realpath (DI
         // Act
         let caught: unknown;
         try {
-          await sut.read('/root/block/child.txt');
+          await sut.chmod('/root/block/child.txt', 0o644);
         } catch (err) {
           caught = err;
         }
@@ -1341,105 +1345,38 @@ describe('resolveForMode — lstat mode pre-realpath check (DI)', () => {
   });
 });
 
-describe('resolveForMode — lstat of an exact root when the canonical root differs (DI)', () => {
-  const rootStat = {
-    ctimeMs: BigInt(0),
-    mtimeMs: BigInt(0),
-    dev: BigInt(0),
-    ino: BigInt(0),
-    mode: BigInt(0o040755),
-    uid: BigInt(0),
-    gid: BigInt(0),
-    size: BigInt(4096),
-    isFile: () => false,
-    isDirectory: () => true,
-    isSymbolicLink: () => false,
-  };
-
-  describe('Given lstat of the RAW rootDir while realpath(rootDir) yields a different canonical root', () => {
-    describe('When checkContainment reaches the exact-root shortcut', () => {
-      it('Then it returns the directory stat (raw-root recognition forces the full post-check, not the false-denying parent verdict)', async () => {
-        // Arrange — dirname(rootDir) is the root's own parent, which is NOT
-        // contained, so the cached per-parent verdict is `false`. The
-        // exact-root recognition (`c === root.normalized`) must fire so the
-        // leaf is reported as an exact root and re-checked on its own merits.
-        // realpath(rootDir) → canonicalRoot makes raw ≠ canonical, so the
-        // raw-root disjunct is the ONLY one that can recognise the leaf.
-        const rootDir = '/root';
-        const canonicalRoot = '/canon';
-        const realpath = vi
-          .fn()
-          .mockImplementation(async (input: string) => (input === rootDir ? canonicalRoot : input));
-        const fsOps = fakeFsOps({ realpath, lstat: vi.fn().mockResolvedValue(rootStat) });
-        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
-
-        // Act
-        const stat = await sut.lstat(rootDir);
-
-        // Assert
-        expect(stat.isDirectory).toBe(true);
-        expect(stat.size).toBe(4096);
-      });
-    });
-  });
-
-  describe('Given lstat of the CANONICAL rootDir while it differs from the raw root', () => {
-    describe('When checkContainment reaches the exact-root shortcut', () => {
-      it('Then it returns the directory stat (canonical-root recognition forces the full post-check, not the false-denying parent verdict)', async () => {
-        // Arrange — mirror image: the requested path is the CANONICAL root
-        // string (realpath(rootDir)), so recognition must fire on the
-        // `c === canonicalRoot.normalized` disjunct. Without it the cached
-        // per-parent verdict (dirname not contained → `false`) would
-        // false-deny this legitimate exact-root lstat.
-        const rootDir = '/root';
-        const canonicalRoot = '/canon';
-        const realpath = vi
-          .fn()
-          .mockImplementation(async (input: string) => (input === rootDir ? canonicalRoot : input));
-        const fsOps = fakeFsOps({ realpath, lstat: vi.fn().mockResolvedValue(rootStat) });
-        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
-
-        // Act
-        const stat = await sut.lstat(canonicalRoot);
-
-        // Assert
-        expect(stat.isDirectory).toBe(true);
-        expect(stat.size).toBe(4096);
-      });
-    });
-  });
-});
+// The `resolveForMode` lstat-mode "exact-root shortcut" (deferring to the
+// full post-check when the leaf IS a root, since the cached per-parent
+// verdict false-denies it) is no longer reachable from `lstat()` — that
+// port method moved to the syscall-free `resolveRead`, whose `===` prefix
+// arm admits an exact-root leaf directly, with no shortcut needed. The
+// mechanism itself is still load-bearing for `rm`/`rmRecursive`/
+// `openWithNoFollow(_, 'write')` (see the per-parent containment verdict
+// cache suite below); the admit-the-root regression for `lstat()` itself is
+// covered by "lstat exact-root leaf containment (DI)" → "Given a normal
+// rootDir with no symlinks".
 
 describe('NodeFileSystem — lstat-mode parent-realpath LRU (DI)', () => {
-  const fileStat = {
-    ctimeMs: BigInt(0),
-    mtimeMs: BigInt(0),
-    dev: BigInt(0),
-    ino: BigInt(0),
-    mode: BigInt(0o100644),
-    uid: BigInt(0),
-    gid: BigInt(0),
-    size: BigInt(0),
-    isFile: () => true,
-    isDirectory: () => false,
-    isSymbolicLink: () => false,
-  };
+  // Vehicle: `rm` — the internal ContainmentMode 'lstat' machinery this
+  // suite pins (cachedParentRealpath) is no longer reachable from the
+  // public `lstat()` port method (moved to the syscall-free `resolveRead`
+  // in this part), but stays load-bearing for `rm`/`rmRecursive`/
+  // `openWithNoFollow(_, 'write')`, which keep their current, stricter
+  // guard until Part 4. `rm` exercises the identical `checkContainment(path,
+  // 'lstat')` path with the least incidental setup.
 
-  describe('Given two lstats of same-directory siblings', () => {
+  describe('Given two rm calls on same-directory siblings', () => {
     describe('When the second fires', () => {
       it('Then realpath(dirname) is invoked exactly once', async () => {
         // Arrange
         const rootDir = '/root';
         const realpathSpy = vi.fn().mockImplementation(async (input: string) => input);
-        const fsOps = fakeFsOps({
-          realpath: realpathSpy,
-          lstat: vi.fn().mockResolvedValue(fileStat),
-        });
+        const fsOps = fakeFsOps({ realpath: realpathSpy });
         const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
 
         // Act
-        await sut.lstat('/root/sub/a');
-        await sut.lstat('/root/sub/b');
+        await sut.rm('/root/sub/a');
+        await sut.rm('/root/sub/b');
 
         // Assert
         const parentCalls = realpathSpy.mock.calls.filter(
@@ -1450,21 +1387,18 @@ describe('NodeFileSystem — lstat-mode parent-realpath LRU (DI)', () => {
     });
   });
 
-  describe('Given lstats in different directories', () => {
+  describe('Given rm calls in different directories', () => {
     describe('When both fire', () => {
       it('Then realpath is invoked once per distinct dirname', async () => {
         // Arrange
         const rootDir = '/root';
         const realpathSpy = vi.fn().mockImplementation(async (input: string) => input);
-        const fsOps = fakeFsOps({
-          realpath: realpathSpy,
-          lstat: vi.fn().mockResolvedValue(fileStat),
-        });
+        const fsOps = fakeFsOps({ realpath: realpathSpy });
         const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
 
         // Act
-        await sut.lstat('/root/x/a');
-        await sut.lstat('/root/y/a');
+        await sut.rm('/root/x/a');
+        await sut.rm('/root/y/a');
 
         // Assert
         const xCalls = realpathSpy.mock.calls.filter(
@@ -1479,23 +1413,24 @@ describe('NodeFileSystem — lstat-mode parent-realpath LRU (DI)', () => {
     });
   });
 
-  describe('Given an lstat populates the cache', () => {
-    describe('When rmRecursive then a same-dir lstat fires', () => {
+  describe('Given an rm call populates the cache', () => {
+    describe('When rmRecursive then a same-dir rm fires', () => {
       it('Then realpath(dirname) is invoked twice total', async () => {
         // Arrange
         const rootDir = '/root';
         const realpathSpy = vi.fn().mockImplementation(async (input: string) => input);
         const fsOps = fakeFsOps({
           realpath: realpathSpy,
-          lstat: vi.fn().mockResolvedValue(fileStat),
-          rm: vi.fn().mockResolvedValue(undefined),
+          lstat: vi
+            .fn()
+            .mockResolvedValue({ isDirectory: () => false, isSymbolicLink: () => false }),
         });
         const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
 
         // Act
-        await sut.lstat('/root/sub/a');
+        await sut.rm('/root/sub/a');
         await sut.rmRecursive('/root/sub/a');
-        await sut.lstat('/root/sub/b');
+        await sut.rm('/root/sub/b');
 
         // Assert
         const parentCalls = realpathSpy.mock.calls.filter(
@@ -1505,21 +1440,18 @@ describe('NodeFileSystem — lstat-mode parent-realpath LRU (DI)', () => {
       });
     });
 
-    describe('When rename then a same-dir lstat fires', () => {
+    describe('When rename then a same-dir rm fires', () => {
       it('Then realpath(dirname) is invoked twice total', async () => {
         // Arrange
         const rootDir = '/root';
         const realpathSpy = vi.fn().mockImplementation(async (input: string) => input);
-        const fsOps = fakeFsOps({
-          realpath: realpathSpy,
-          lstat: vi.fn().mockResolvedValue(fileStat),
-        });
+        const fsOps = fakeFsOps({ realpath: realpathSpy });
         const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
 
         // Act
-        await sut.lstat('/root/sub/a');
+        await sut.rm('/root/sub/a');
         await sut.rename('/root/sub/a', '/root/sub/renamed');
-        await sut.lstat('/root/sub/b');
+        await sut.rm('/root/sub/b');
 
         // Assert
         const parentCalls = realpathSpy.mock.calls.filter(
@@ -1530,9 +1462,9 @@ describe('NodeFileSystem — lstat-mode parent-realpath LRU (DI)', () => {
     });
   });
 
-  describe('Given an lstat whose parent is ENOENT', () => {
+  describe('Given an rm call whose parent is ENOENT', () => {
     describe('When it fires', () => {
-      it('Then nothing is cached and a later same-parent lstat re-attempts', async () => {
+      it('Then nothing is cached and a later same-parent rm re-attempts', async () => {
         // Arrange
         const rootDir = '/root';
         const realpathSpy = vi.fn().mockImplementation(async (input: string) => {
@@ -1545,13 +1477,13 @@ describe('NodeFileSystem — lstat-mode parent-realpath LRU (DI)', () => {
         // Act
         let firstCaught: unknown;
         try {
-          await sut.lstat('/root/missing/a');
+          await sut.rm('/root/missing/a');
         } catch (err) {
           firstCaught = err;
         }
         let secondCaught: unknown;
         try {
-          await sut.lstat('/root/missing/b');
+          await sut.rm('/root/missing/b');
         } catch (err) {
           secondCaught = err;
         }
@@ -1569,23 +1501,20 @@ describe('NodeFileSystem — lstat-mode parent-realpath LRU (DI)', () => {
     });
   });
 
-  describe('Given N loose-object lstats sharing one fanout dir (object-resolver probe shape)', () => {
-    describe('When each loose probe fires an lstat', () => {
+  describe('Given N loose-object rm calls sharing one fanout dir (object-resolver probe shape)', () => {
+    describe('When each loose probe fires an rm', () => {
       it('Then realpath(fanout dir) is invoked at most once per distinct fanout dir', async () => {
         // Arrange — 5 loose-object paths under the same fanout dir, mirroring
         // the object-resolver's `looseObjectPath` layout (objects/xx/<38 hex>).
         const rootDir = '/root';
         const realpathSpy = vi.fn().mockImplementation(async (input: string) => input);
-        const fsOps = fakeFsOps({
-          realpath: realpathSpy,
-          lstat: vi.fn().mockResolvedValue(fileStat),
-        });
+        const fsOps = fakeFsOps({ realpath: realpathSpy });
         const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
         const fanoutDir = '/root/objects/ab';
 
         // Act
         for (let i = 0; i < 5; i += 1) {
-          await sut.lstat(`${fanoutDir}/leaf${i}`);
+          await sut.rm(`${fanoutDir}/leaf${i}`);
         }
 
         // Assert — the fanout dir is realpath'd exactly once, not once per object.
@@ -1603,18 +1532,15 @@ describe('NodeFileSystem — lstat-mode parent-realpath LRU (DI)', () => {
         // evicted long before we re-touch it, forcing a second realpath.
         const rootDir = '/root';
         const realpathSpy = vi.fn().mockImplementation(async (input: string) => input);
-        const fsOps = fakeFsOps({
-          realpath: realpathSpy,
-          lstat: vi.fn().mockResolvedValue(fileStat),
-        });
+        const fsOps = fakeFsOps({ realpath: realpathSpy });
         const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
         const fanoutDir = (n: number): string => `/root/objects/${n.toString(16).padStart(2, '0')}`;
 
         // Act — touch 300 distinct fanout dirs, then re-touch dir #1.
         for (let i = 0; i < 300; i += 1) {
-          await sut.lstat(`${fanoutDir(i)}/leaf`);
+          await sut.rm(`${fanoutDir(i)}/leaf`);
         }
-        await sut.lstat(`${fanoutDir(1)}/leaf-again`);
+        await sut.rm(`${fanoutDir(1)}/leaf-again`);
 
         // Assert — dir #1's realpath was invoked exactly once across the whole run.
         const dir1Calls = realpathSpy.mock.calls.filter(
@@ -1627,19 +1553,10 @@ describe('NodeFileSystem — lstat-mode parent-realpath LRU (DI)', () => {
 });
 
 describe('NodeFileSystem — lstat-mode per-parent containment verdict cache (DI)', () => {
-  const fileStat = {
-    ctimeMs: BigInt(0),
-    mtimeMs: BigInt(0),
-    dev: BigInt(0),
-    ino: BigInt(0),
-    mode: BigInt(0o100644),
-    uid: BigInt(0),
-    gid: BigInt(0),
-    size: BigInt(0),
-    isFile: () => true,
-    isDirectory: () => false,
-    isSymbolicLink: () => false,
-  };
+  // Vehicle: `rm` (see the parent-realpath LRU suite above for why) — the
+  // per-parent containment VERDICT cache this suite pins is likewise no
+  // longer reachable from `lstat()`, but stays load-bearing for
+  // `rm`/`rmRecursive`.
 
   describe.each([
     {
@@ -1654,31 +1571,29 @@ describe('NodeFileSystem — lstat-mode per-parent containment verdict cache (DI
       rootDir: 'C:\\Root',
       sibling: (n: string) => `C:\\Root\\sub\\${n}`,
     },
-  ])('Given two lstats under the same parent ($label)', ({ policy, rootDir, sibling }) => {
+  ])('Given two rm calls under the same parent ($label)', ({ policy, rootDir, sibling }) => {
     describe('When the second fires', () => {
-      it('Then the second lstat post-check normalises the leaf zero times (served from the per-parent verdict)', async () => {
+      it('Then the second rm post-check normalises the leaf zero times (served from the per-parent verdict)', async () => {
         // Arrange — spy on normalizeForCompare to count containment-check
-        // work. Pre-B3, EVERY lstat normalises its full leaf path twice
-        // (the PRE-check on `resolved` + the POST-check on `real` — both
-        // equal `resolved` here since realpath is identity). Post-B3, the
-        // POST-check for a same-parent entry is served from the cached
-        // per-parent verdict, so only the PRE-check's one normalise call
-        // remains per subsequent entry.
+        // work. Every rm normalises its full leaf path twice (the PRE-check
+        // on `resolved` + the POST-check on `real` — both equal `resolved`
+        // here since realpath is identity) UNLESS the POST-check for a
+        // same-parent entry is served from the cached per-parent verdict,
+        // in which case only the PRE-check's one normalise call remains.
         const leafB = sibling('b');
         const normalizeSpy = vi.fn((p: string) => policy.normalizeForCompare(p));
         const spyPolicy = { ...policy, normalizeForCompare: normalizeSpy };
         const fsOps = fakeFsOps({
           realpath: vi.fn().mockImplementation(async (input: string) => input),
-          lstat: vi.fn().mockResolvedValue(fileStat),
         });
         const sut = new NodeFileSystem(rootDir, spyPolicy, fsOps);
 
         // Act
-        await sut.lstat(sibling('a'));
+        await sut.rm(sibling('a'));
         normalizeSpy.mockClear();
-        await sut.lstat(leafB);
+        await sut.rm(leafB);
 
-        // Assert — the second lstat's leaf normalises exactly once (the
+        // Assert — the second rm's leaf normalises exactly once (the
         // PRE-check only); the POST-check is served from the cached verdict
         // and issues no further normalise call for the leaf.
         const leafNormaliseCalls = normalizeSpy.mock.calls.filter(
@@ -1707,7 +1622,7 @@ describe('NodeFileSystem — lstat-mode per-parent containment verdict cache (DI
   ])(
     'Given a parent whose realpath escapes the root ($label)',
     ({ policy, rootDir, evilParent, outside }) => {
-      describe('When lstat fires twice under it', () => {
+      describe('When rm fires twice under it', () => {
         it('Then BOTH throw PERMISSION_DENIED (second served from the cached verdict)', async () => {
           // Arrange
           const secondLeaf = policy.join(evilParent, 'b');
@@ -1720,21 +1635,20 @@ describe('NodeFileSystem — lstat-mode per-parent containment verdict cache (DI
               if (input === evilParent) return outside;
               return input;
             }),
-            lstat: vi.fn().mockResolvedValue(fileStat),
           });
           const sut = new NodeFileSystem(rootDir, spyPolicy, fsOps);
 
           // Act
           let firstCaught: unknown;
           try {
-            await sut.lstat(policy.join(evilParent, 'a'));
+            await sut.rm(policy.join(evilParent, 'a'));
           } catch (err) {
             firstCaught = err;
           }
           normalizeSpy.mockClear();
           let secondCaught: unknown;
           try {
-            await sut.lstat(secondLeaf);
+            await sut.rm(secondLeaf);
           } catch (err) {
             secondCaught = err;
           }
@@ -1760,8 +1674,8 @@ describe('NodeFileSystem — lstat-mode per-parent containment verdict cache (DI
   describe.each([
     { label: 'posix', policy: posixPolicy, rootDir: '/root', parent: '/root/sub' },
     { label: 'windows', policy: windowsPolicy, rootDir: 'C:\\Root', parent: 'C:\\Root\\sub' },
-  ])('Given an lstat populated the verdict ($label)', ({ policy, rootDir, parent }) => {
-    describe('When rename then a same-parent lstat fires', () => {
+  ])('Given an rm populated the verdict ($label)', ({ policy, rootDir, parent }) => {
+    describe('When rename then a same-parent rm fires', () => {
       it('Then the verdict is recomputed (stale-serve would give the WRONG answer)', async () => {
         // Arrange — realpath(parent) starts contained, then AFTER rename
         // resolves to an escaping path. A stale-served verdict would still
@@ -1774,7 +1688,6 @@ describe('NodeFileSystem — lstat-mode per-parent containment verdict cache (DI
             if (input === parent) return escaped ? outside : parent;
             return input;
           }),
-          lstat: vi.fn().mockResolvedValue(fileStat),
         });
         const sut = new NodeFileSystem(rootDir, policy, fsOps);
         const a = policy.join(parent, 'a');
@@ -1782,12 +1695,12 @@ describe('NodeFileSystem — lstat-mode per-parent containment verdict cache (DI
         const b = policy.join(parent, 'b');
 
         // Act
-        await sut.lstat(a);
+        await sut.rm(a);
         escaped = true;
         await sut.rename(a, renamedDst);
         let caught: unknown;
         try {
-          await sut.lstat(b);
+          await sut.rm(b);
         } catch (err) {
           caught = err;
         }
@@ -1798,7 +1711,7 @@ describe('NodeFileSystem — lstat-mode per-parent containment verdict cache (DI
       });
     });
 
-    describe('When rmRecursive then a same-parent lstat fires', () => {
+    describe('When rmRecursive then a same-parent rm fires', () => {
       it('Then the verdict is recomputed (stale-serve would give the WRONG answer)', async () => {
         // Arrange — same shape as rename, but invalidation goes through
         // rmRecursive's `.clear()`.
@@ -1810,20 +1723,21 @@ describe('NodeFileSystem — lstat-mode per-parent containment verdict cache (DI
             if (input === parent) return escaped ? outside : parent;
             return input;
           }),
-          lstat: vi.fn().mockResolvedValue(fileStat),
-          rm: vi.fn().mockResolvedValue(undefined),
+          lstat: vi
+            .fn()
+            .mockResolvedValue({ isDirectory: () => false, isSymbolicLink: () => false }),
         });
         const sut = new NodeFileSystem(rootDir, policy, fsOps);
         const a = policy.join(parent, 'a');
         const b = policy.join(parent, 'b');
 
         // Act
-        await sut.lstat(a);
+        await sut.rm(a);
         escaped = true;
         await sut.rmRecursive(a);
         let caught: unknown;
         try {
-          await sut.lstat(b);
+          await sut.rm(b);
         } catch (err) {
           caught = err;
         }
@@ -1834,11 +1748,11 @@ describe('NodeFileSystem — lstat-mode per-parent containment verdict cache (DI
       });
     });
 
-    describe('When rm (leaf) then a same-parent lstat fires', () => {
+    describe('When rm (leaf) then a same-parent rm fires', () => {
       it('Then the verdict is NOT recomputed (rm invalidates neither cache)', async () => {
         // Arrange — realpath(parent) would escape if re-resolved, but `rm`
         // must not trigger a re-resolution: the cached (contained) verdict
-        // is still served and the second lstat succeeds.
+        // is still served and the second rm succeeds.
         const outside = policy.sep === '/' ? '/outside' : 'C:\\Outside';
         let afterRm = false;
         const fsOps = fakeFsOps({
@@ -1847,25 +1761,24 @@ describe('NodeFileSystem — lstat-mode per-parent containment verdict cache (DI
             if (input === parent) return afterRm ? outside : parent;
             return input;
           }),
-          lstat: vi.fn().mockResolvedValue(fileStat),
         });
         const sut = new NodeFileSystem(rootDir, policy, fsOps);
         const a = policy.join(parent, 'a');
         const b = policy.join(parent, 'b');
 
         // Act
-        await sut.lstat(a);
+        await sut.rm(a);
         afterRm = true;
         await sut.rm(a);
         let caught: unknown;
         try {
-          await sut.lstat(b);
+          await sut.rm(b);
         } catch (err) {
           caught = err;
         }
 
         // Assert — no throw: rm did not invalidate the (still-valid,
-        // cached-contained) verdict, so the second lstat is served from cache
+        // cached-contained) verdict, so the second rm is served from cache
         // rather than re-resolving to the now-escaping realpath.
         expect(caught).toBeUndefined();
       });
@@ -1873,33 +1786,18 @@ describe('NodeFileSystem — lstat-mode per-parent containment verdict cache (DI
   });
 
   describe.each([
-    {
-      label: 'posix',
-      policy: posixPolicy,
-      rootDir: '/root',
-      leaf: '/root/leaf.bin',
-      outside: '/outside/leaf.bin',
-    },
-    {
-      label: 'windows',
-      policy: windowsPolicy,
-      rootDir: 'C:\\Root',
-      leaf: 'C:\\Root\\leaf.bin',
-      outside: 'C:\\Outside\\leaf.bin',
-    },
+    { label: 'posix', policy: posixPolicy, rootDir: '/root', leaf: '/root/leaf.bin' },
+    { label: 'windows', policy: windowsPolicy, rootDir: 'C:\\Root', leaf: 'C:\\Root\\leaf.bin' },
   ])(
-    'Given a read whose leaf realpath escapes the root ($label)',
-    ({ policy, rootDir, leaf, outside }) => {
+    'Given a read whose leaf lexically stays inside the root ($label)',
+    ({ policy, rootDir, leaf }) => {
       describe('When read fires twice', () => {
-        it('Then EACH throws PERMISSION_DENIED per entry (no parent-verdict shortcut)', async () => {
-          // Arrange — the read arm does a full-leaf realpath, never
-          // `join(realParent, basename)`, so B3's lstat-only skip must not
-          // leak here: both calls must independently resolve+check.
-          const realpathSpy = vi.fn().mockImplementation(async (input: string) => {
-            if (input === rootDir) return rootDir;
-            if (input === leaf) return outside;
-            return input;
-          });
+        it('Then EACH succeeds without realpathing the leaf (read-side containment is lexical, git parity)', async () => {
+          // Arrange — the read arm no longer realpaths the leaf at all: only
+          // the one-time root canonicalisation calls `realpath`. A mocked
+          // escape via the leaf's OWN realpath (as the old 'read' mode's
+          // post-check consulted) therefore has no bearing on the outcome.
+          const realpathSpy = vi.fn().mockImplementation(async (input: string) => input);
           const fsOps = fakeFsOps({
             realpath: realpathSpy,
             readFile: vi.fn().mockResolvedValue(Buffer.from('x')),
@@ -1907,28 +1805,16 @@ describe('NodeFileSystem — lstat-mode per-parent containment verdict cache (DI
           const sut = new NodeFileSystem(rootDir, policy, fsOps);
 
           // Act
-          let firstCaught: unknown;
-          try {
-            await sut.read(leaf);
-          } catch (err) {
-            firstCaught = err;
-          }
-          let secondCaught: unknown;
-          try {
-            await sut.read(leaf);
-          } catch (err) {
-            secondCaught = err;
-          }
+          const first = await sut.read(leaf);
+          const second = await sut.read(leaf);
 
           // Assert
-          expect(firstCaught).toBeInstanceOf(TsgitError);
-          expect((firstCaught as TsgitError).data.code).toBe('PERMISSION_DENIED');
-          expect(secondCaught).toBeInstanceOf(TsgitError);
-          expect((secondCaught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+          expect(first).toEqual(new Uint8Array(Buffer.from('x')));
+          expect(second).toEqual(new Uint8Array(Buffer.from('x')));
           const leafCalls = realpathSpy.mock.calls.filter(
             ([arg]: readonly unknown[]) => arg === leaf,
           );
-          expect(leafCalls.length).toBe(2);
+          expect(leafCalls.length).toBe(0);
         });
       });
     },
@@ -2012,15 +1898,15 @@ describe('NodeFileSystem — lstat exact-root leaf containment (DI)', () => {
     'Given rootDir is a symlink whose leaf resolves outside its own tree ($label)',
     ({ policy, linkRoot, realParentDir, outside }) => {
       describe('When lstat(rootDir) is called', () => {
-        it('Then PERMISSION_DENIED is thrown (the exact-root leaf is NOT exempt from the post-check)', async () => {
-          // Arrange — rootDir itself is the symlink (`realpath(rootDir)` flips
-          // it to `outside`, so the canonical root IS `outside`). Both the raw
-          // and canonical roots therefore equal `linkRoot`/`outside`
-          // respectively, and lstat(linkRoot) hits the `isExactRoot` shortcut
-          // pre-fix. The dirname of `linkRoot` also resolves through a
-          // symlink (`realParentDir`), so a correctly-deferred post-check
-          // would realpath-join `realParentDir` + basename('repo') and find it
-          // outside BOTH roots — denied.
+        it('Then it is admitted (lexical `===` arm, not a deferred realpath post-check)', async () => {
+          // Arrange — rootDir itself is the symlink (`realpath(rootDir)`
+          // flips it to `outside`, so the canonical root IS `outside`).
+          // `resolveRead` never realpaths the leaf: it admits `linkRoot`
+          // because the RAW root prefix's `===` arm matches directly,
+          // regardless of what `linkRoot`'s own realpath resolves to. The
+          // dirname/`realParentDir` wiring below is dead for this call —
+          // kept only so the mock shape stays parallel to the sibling
+          // "normal rootDir" case.
           const dirnameOfRoot = policy.dirname(linkRoot);
           const realpathSpy = vi.fn().mockImplementation(async (input: string) => {
             if (input === linkRoot) return outside;
@@ -2046,16 +1932,10 @@ describe('NodeFileSystem — lstat exact-root leaf containment (DI)', () => {
           const sut = new NodeFileSystem(linkRoot, policy, fsOps);
 
           // Act
-          let caught: unknown;
-          try {
-            await sut.lstat(linkRoot);
-          } catch (err) {
-            caught = err;
-          }
+          const stat = await sut.lstat(linkRoot);
 
           // Assert
-          expect(caught).toBeInstanceOf(TsgitError);
-          expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+          expect(stat.isDirectory).toBe(true);
         });
       });
     },
@@ -2097,6 +1977,39 @@ describe('NodeFileSystem — lstat exact-root leaf containment (DI)', () => {
       });
     });
   });
+
+  describe.each([
+    { label: 'posix', policy: posixPolicy, rootDir: '/root' },
+    { label: 'windows', policy: windowsPolicy, rootDir: 'C:\\Root' },
+  ])(
+    'Given rm on the exact rootDir path, still on the internal lstat mode ($label)',
+    ({ policy, rootDir }) => {
+      describe('When rm is called', () => {
+        it('Then it is admitted (isExactRoot forces the full post-check, not the false-denying parent verdict)', async () => {
+          // Arrange — dirname(rootDir) is the root's own parent, which is
+          // NOT contained, so the cached per-parent verdict is `false`.
+          // isExactRoot recognition must still fire for `rm`/`rmRecursive`/
+          // `openWithNoFollow(_, 'write')`, which stay on this internal
+          // 'lstat' containment mode in this part.
+          const realpath = vi.fn().mockImplementation(async (input: string) => input);
+          const fsOps = fakeFsOps({ realpath });
+          const sut = new NodeFileSystem(rootDir, policy, fsOps);
+
+          // Act
+          let caught: unknown;
+          try {
+            await sut.rm(rootDir);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeUndefined();
+          expect(fsOps.rm).toHaveBeenCalledWith(rootDir);
+        });
+      });
+    },
+  );
 });
 
 describe('resolveForCreation — non-ENOENT errno on leaf lstat (DI)', () => {
@@ -2374,22 +2287,21 @@ describe('NodeFileSystem.openWithNoFollow — handle wrapper semantics (DI)', ()
 });
 
 describe('NodeFileSystem — TsgitError rethrow defence (DI)', () => {
-  describe('Given realpath synthesises a TsgitError', () => {
+  describe('Given `exists` and a stat that synthesises a TsgitError', () => {
     describe('When exists is called', () => {
       it('Then exists rethrows it unchanged (no re-wrap via mapErrno)', async () => {
-        // Arrange — exercises the defensive `if (err instanceof TsgitError)
-        // throw err` branch in `exists`'s catch. The mutant `if (false) throw
-        // err` would either funnel into mapErrno (errno path) or fall through
-        // to the final `throw err`. Both paths re-emit a TsgitError so the
-        // observable behaviour can drift. Pinning the *exact* same instance
-        // identity kills the early-return mutant.
+        // Arrange — `exists` probes existence via `fsOps.stat`, not
+        // `fsOps.realpath` (which now runs only once, for root
+        // canonicalisation). A TsgitError has no own `code` — `isErrnoException`
+        // is false for it — so exists's catch falls through both errno
+        // branches to the final defensive `throw err`. A mutant that widened
+        // either errno branch to swallow it would re-wrap or drop the
+        // instance instead of rethrowing it unchanged.
         const rootDir = '/root';
         const sentinel = new TsgitError({ code: 'OPERATION_ABORTED' });
         const fsOps = fakeFsOps({
-          realpath: vi.fn().mockImplementation(async (input: string) => {
-            if (input === rootDir) return rootDir;
-            throw sentinel;
-          }),
+          realpath: vi.fn().mockImplementation(async (input: string) => input),
+          stat: vi.fn().mockRejectedValue(sentinel),
         });
         const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
 
@@ -2405,9 +2317,12 @@ describe('NodeFileSystem — TsgitError rethrow defence (DI)', () => {
         expect(caught).toBe(sentinel);
       });
     });
-    describe('When read is called', () => {
+    describe('When chmod is called', () => {
       it('Then checkContainment rethrows it unchanged', async () => {
-        // Arrange — same logic for `checkContainment`'s catch block (line 551).
+        // Arrange — same logic for `checkContainment`'s catch block. `chmod`
+        // stays on checkContainment's realpath-backed 'read' mode in this
+        // part; `read` itself moved to the syscall-free `resolveRead` and no
+        // longer reaches this catch.
         const rootDir = '/root';
         const sentinel = new TsgitError({ code: 'OPERATION_ABORTED' });
         const fsOps = fakeFsOps({
@@ -2421,7 +2336,7 @@ describe('NodeFileSystem — TsgitError rethrow defence (DI)', () => {
         // Act
         let caught: unknown;
         try {
-          await sut.read('/root/probe.txt');
+          await sut.chmod('/root/probe.txt', 0o644);
         } catch (err) {
           caught = err;
         }
@@ -3002,84 +2917,15 @@ describe('NodeFileSystem — containment prefix precompute (DI)', () => {
     isSymbolicLink: () => false,
   };
 
-  describe('Given many containment checks', () => {
-    describe('When fired in sequence (posix)', () => {
-      it('Then normalizeForCompare runs at most once per constant parent AND the child normalises once per isContainedInEitherRoot', async () => {
-        // Arrange
-        const rootDir = '/root';
-        const normalizeSpy = vi.fn((p: string) => p);
-        const spyPolicy = { ...posixPolicy, normalizeForCompare: normalizeSpy };
-        const realpathSpy = vi.fn().mockImplementation(async (input: string) => input);
-        const fsOps = fakeFsOps({
-          realpath: realpathSpy,
-          lstat: vi.fn().mockResolvedValue(fileStat),
-        });
-        const sut = new NodeFileSystem(rootDir, spyPolicy, fsOps);
-
-        // Act — N lstats under the same parent.
-        for (let i = 0; i < 5; i++) {
-          await sut.lstat(`/root/sub/file-${i}`);
-        }
-
-        // Assert — rootDir and canonicalRoot normalise to the SAME string
-        // here (fake realpath echoes its input), so both memoised prefixes
-        // are keyed off one normalise call each: 2 total for the constant
-        // parent (rootDir's own prefix + the canonical-root prefix), never
-        // growing with N.
-        const parentCalls = normalizeSpy.mock.calls.filter(
-          ([arg]: readonly unknown[]) => arg === rootDir,
-        );
-        expect(parentCalls.length).toBe(2);
-
-        // The PRE-check normalises the child once (one isContainedInEitherRoot
-        // call now costs one normalise of `abs`, not one per root compared).
-        // The POST-check is served from the per-parent verdict cache
-        // (`cachedParentRealpath`), which normalises the PARENT realpath,
-        // not the child leaf — so `file-0`'s own string is normalised only
-        // by the PRE-check.
-        const childCalls = normalizeSpy.mock.calls.filter(
-          ([arg]: readonly unknown[]) => arg === '/root/sub/file-0',
-        );
-        expect(childCalls.length).toBe(1);
-      });
-    });
-
-    describe('When fired in sequence (windows)', () => {
-      it('Then normalizeForCompare runs at most once per constant parent AND the child normalises once per isContainedInEitherRoot', async () => {
-        // Arrange
-        const rootDir = 'C:\\Root';
-        const normalizeSpy = vi.fn((p: string) => p.toLowerCase());
-        const spyPolicy = { ...windowsPolicy, normalizeForCompare: normalizeSpy };
-        const realpathSpy = vi.fn().mockImplementation(async (input: string) => input);
-        const fsOps = fakeFsOps({
-          realpath: realpathSpy,
-          lstat: vi.fn().mockResolvedValue(fileStat),
-        });
-        const sut = new NodeFileSystem(rootDir, spyPolicy, fsOps);
-
-        // Act — N lstats under the same parent.
-        for (let i = 0; i < 5; i++) {
-          await sut.lstat(`C:\\Root\\sub\\file-${i}`);
-        }
-
-        // Assert — same rationale as the posix case: 2 total normalise
-        // calls for the constant parent (rootDir's own prefix + the
-        // canonical-root prefix), never growing with N.
-        const parentCalls = normalizeSpy.mock.calls.filter(
-          ([arg]: readonly unknown[]) => arg === rootDir,
-        );
-        expect(parentCalls.length).toBe(2);
-
-        // Same rationale as the posix case — the POST-check is served from
-        // the per-parent verdict cache, so only the PRE-check normalises
-        // the child leaf itself.
-        const childCalls = normalizeSpy.mock.calls.filter(
-          ([arg]: readonly unknown[]) => arg === 'C:\\Root\\sub\\file-0',
-        );
-        expect(childCalls.length).toBe(1);
-      });
-    });
-  });
+  // The "N lstats under the same parent normalise the constant parent
+  // exactly twice, the child exactly once" oracle used to prove the
+  // pre-check/cached-post-check split of the internal 'lstat' containment
+  // mode. `lstat()` moved to the syscall-free `resolveRead` in this part —
+  // one normalise call per check, full stop, no pre/post split to prove —
+  // so the oracle no longer describes a live mechanism for this port
+  // method. The equivalent regression coverage for the per-parent verdict
+  // cache (still load-bearing for `rm`/`rmRecursive`) lives in "lstat-mode
+  // per-parent containment verdict cache (DI)" above, via `rm`.
 
   describe('Given a child the root contains (equal to it, or strictly nested under it)', () => {
     describe('When lstat runs', () => {

@@ -545,13 +545,15 @@ export class NodeFileSystem implements FileSystem {
   }
 
   read = async (path: string): Promise<Uint8Array> => {
-    const real = await this.checkContainment(path, 'read');
+    const { all } = this.resolvedRootSet ?? (await this.loadRootSet());
+    const real = this.resolveRead(path, all);
     return runFs(async () => new Uint8Array(await this.fsOps.readFile(real)), path);
   };
 
   readSlice = async (path: string, offset: number, length: number): Promise<Uint8Array> => {
     if (offset < 0 || length < 0) throw permissionDenied(path);
-    const real = await this.checkContainment(path, 'read');
+    const { all } = this.resolvedRootSet ?? (await this.loadRootSet());
+    const real = this.resolveRead(path, all);
     let handle: fsPromises.FileHandle | undefined;
     try {
       return await runFs(async () => {
@@ -571,7 +573,8 @@ export class NodeFileSystem implements FileSystem {
   };
 
   readUtf8 = async (path: string): Promise<string> => {
-    const real = await this.checkContainment(path, 'read');
+    const { all } = this.resolvedRootSet ?? (await this.loadRootSet());
+    const real = this.resolveRead(path, all);
     return runFs(() => this.fsOps.readFile(real, 'utf-8'), path);
   };
 
@@ -615,48 +618,39 @@ export class NodeFileSystem implements FileSystem {
     }, path);
   };
 
+  // `exists` follows symlinks (port contract, `src/ports/file-system.ts`):
+  // a dangling symlink must report `false`, not `true`. `stat` already
+  // follows, so probing existence via `fsOps.stat` (never `lstat`) keeps
+  // that contract while dropping the realpath + double root consultation
+  // the old implementation paid on every call.
   exists = async (path: string): Promise<boolean> => {
-    const resolved = this.pathPolicy.resolve(toAbsolute(path, this.rootDir, this.pathPolicy));
-    const { canonical, all } = await this.resolveRootSet();
+    const { all } = this.resolvedRootSet ?? (await this.loadRootSet());
+    const real = this.resolveRead(path, all);
     try {
-      // Post-realpath check is the security gate against symlink escapes
-      // and 8.3 short-name aliasing.
-      const real = await this.fsOps.realpath(resolved);
-      if (!this.isContainedInAnyRoot(real, canonical)) {
-        throw permissionDenied(path);
-      }
+      await this.fsOps.stat(real);
       return true;
     } catch (err) {
-      // Stryker disable next-line ConditionalExpression: equivalent — a TsgitError is never an ErrnoException (no own `code`), so skipping this early rethrow lands it at the final `throw err` with the identical instance.
-      if (err instanceof TsgitError) throw err;
-      if (isErrnoException(err) && err.code === 'ENOENT') {
-        // ENOENT — the resolved path doesn't exist. But the caller might be
-        // probing `../outside`: verify the path WOULD have been inside one of
-        // the roots if it existed. Check against BOTH the raw and canonical
-        // forms so callers can pass paths in either one when a root's parent
-        // is 8.3-shortened on Windows.
-        if (!this.isContainedInAnyRoot(resolved, all)) {
-          throw permissionDenied(path);
-        }
-        return false;
-      }
+      if (isErrnoException(err) && err.code === 'ENOENT') return false;
       if (isErrnoException(err)) throw mapErrno(err, path);
       throw err;
     }
   };
 
   stat = async (path: string): Promise<FileStat> => {
-    const real = await this.checkContainment(path, 'read');
+    const { all } = this.resolvedRootSet ?? (await this.loadRootSet());
+    const real = this.resolveRead(path, all);
     return runFs(async () => mapStat(await this.fsOps.stat(real, { bigint: true })), path);
   };
 
   lstat = async (path: string): Promise<FileStat> => {
-    const real = await this.checkContainment(path, 'lstat');
+    const { all } = this.resolvedRootSet ?? (await this.loadRootSet());
+    const real = this.resolveRead(path, all);
     return runFs(async () => mapStat(await this.fsOps.lstat(real, { bigint: true })), path);
   };
 
   readdir = async (path: string): Promise<ReadonlyArray<DirEntry>> => {
-    const real = await this.checkContainment(path, 'read');
+    const { all } = this.resolvedRootSet ?? (await this.loadRootSet());
+    const real = this.resolveRead(path, all);
     return runFs(async () => {
       const entries = await this.fsOps.readdir(real, { withFileTypes: true });
       return entries.map((entry) => ({
@@ -697,7 +691,8 @@ export class NodeFileSystem implements FileSystem {
   };
 
   readlink = async (path: string): Promise<string> => {
-    const real = await this.checkContainment(path, 'lstat');
+    const { all } = this.resolvedRootSet ?? (await this.loadRootSet());
+    const real = this.resolveRead(path, all);
     return runFs(() => this.fsOps.readlink(real), path);
   };
 
@@ -753,7 +748,16 @@ export class NodeFileSystem implements FileSystem {
   };
 
   openWithNoFollow = async (path: string, mode: 'read' | 'write'): Promise<FileHandle> => {
-    const real = await this.checkContainment(path, 'lstat');
+    // 'read' never mutates state, so it takes the lexical, syscall-free
+    // gate like every other read surface; 'write' keeps the stricter
+    // realpath-backed 'lstat' guard until Part 4 reworks the write side.
+    let real: string;
+    if (mode === 'write') {
+      real = await this.checkContainment(path, 'lstat');
+    } else {
+      const { all } = this.resolvedRootSet ?? (await this.loadRootSet());
+      real = this.resolveRead(path, all);
+    }
     // Windows: `O_NOFOLLOW` is silently ignored by the underlying Win32 API
     // (Node forwards the flag but CreateFile has no equivalent), so the
     // kernel follows the symlink and opens the target. We must refuse
@@ -984,6 +988,36 @@ export class NodeFileSystem implements FileSystem {
     const isExactRoot = roots.some((root) => c === root.normalized);
     const contained = roots.some((root) => containedByPrefix(c, root.normalized, root.withSep));
     return { contained, isExactRoot };
+  }
+
+  /**
+   * Lexical, syscall-free containment gate for every read surface (`read`,
+   * `readSlice`, `readUtf8`, `stat`, `lstat`, `readdir`, `readlink`,
+   * `exists`, `openWithNoFollow(_, 'read')`). Git allows reading through a
+   * symlink that resolves outside every root — the realpath escape check
+   * `checkContainment` runs for write/'creation' surfaces does not apply
+   * here, so this never touches the filesystem.
+   *
+   * `roots` is the caller's already-resolved `RootSet.all` (never read from
+   * `this.resolvedRootSet` directly) so this stays synchronous and total:
+   * every caller guarantees the set is populated via the
+   * `this.resolvedRootSet ?? await this.loadRootSet()` sync-fast-arm idiom
+   * BEFORE calling in, so the one-time root canonicalisation still pays its
+   * microtask exactly once per adapter lifetime, never once per call.
+   */
+  private resolveRead(path: string, roots: ReadonlyArray<RootPrefix>): string {
+    const absolute = toAbsolute(path, this.rootDir, this.pathPolicy);
+    // Non-allocating `..` prefilter: the facade already rejects `..`
+    // segments, so a raw adapter call is the only way this arm fires. `.`
+    // segments and duplicate separators are left uncollapsed — both are
+    // OS-normalised at the syscall and neither can escape a prefix check.
+    const candidate = absolute.indexOf('..') === -1 ? absolute : this.pathPolicy.resolve(absolute);
+    const normalized = this.pathPolicy.normalizeForCompare(candidate);
+    const contained = roots.some((root) =>
+      containedByPrefix(normalized, root.normalized, root.withSep),
+    );
+    if (!contained) throw permissionDenied(path);
+    return candidate;
   }
 
   private async checkContainment(path: string, mode: ContainmentMode): Promise<string> {

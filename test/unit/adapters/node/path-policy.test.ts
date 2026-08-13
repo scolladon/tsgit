@@ -241,6 +241,13 @@ describe('windowsPolicy', () => {
           expected: '\\\\server\\share\\file.bin',
           label: 'a \\\\?\\UNC\\ extended-length path collapses to the plain UNC form',
         },
+        {
+          // A `joinPath`-produced path carries `/` unconditionally even on
+          // Windows; the containment prefix compare must fold it to `\` too.
+          input: 'C:\\repo/sub/file.bin',
+          expected: 'c:\\repo\\sub\\file.bin',
+          label: 'a forward-slash-separated tail is folded to backslashes',
+        },
       ])('Then $label', ({ input, expected }) => {
         // Arrange & Act
         const result = windowsPolicy.normalizeForCompare(input);
