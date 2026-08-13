@@ -2,8 +2,14 @@ import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 
 import type { TsgitError } from '../../../../src/domain/error.js';
-import { parsePackRevIndex, revIndexPositionAt } from '../../../../src/domain/storage/rev-index.js';
-import { arbRevIndexSpec, buildRevIndex } from './arbitraries.js';
+import { compareBytes, hexToBytes } from '../../../../src/domain/objects/encoding.js';
+import {
+  parsePackRevIndex,
+  REV_HEADER_SIZE,
+  revIndexPositionAt,
+  serializePackRevIndex,
+} from '../../../../src/domain/storage/rev-index.js';
+import { arbPackIndexWriterEntries, arbRevIndexSpec, buildRevIndex } from './arbitraries.js';
 
 describe('rev-index properties', () => {
   describe('Given an arbitrary rev-index spec', () => {
@@ -87,6 +93,77 @@ describe('rev-index properties', () => {
                   expect(['size', 'signature', 'version', 'hash-id']).toContain(data.check);
                 }
               }
+            },
+          ),
+          { numRuns: 100 },
+        );
+      });
+    });
+  });
+
+  describe('Given an arbitrary set of pack index writer entries with distinct oids and distinct offsets and a checksum of either width', () => {
+    describe('When serializing then parsing', () => {
+      it('Then every header field, the object count, the pack checksum and every revIndexPositionAt round-trip', () => {
+        // Arrange + Act + Assert
+        const sut = serializePackRevIndex;
+
+        fc.assert(
+          fc.property(
+            arbPackIndexWriterEntries(30),
+            fc.constantFrom<20 | 32>(20, 32),
+            (entries, digestLength) => {
+              const packChecksum = new Uint8Array(digestLength).fill(0xab);
+              const objectCount = entries.length;
+
+              const bytes = sut(entries, packChecksum);
+              const rev = parsePackRevIndex(bytes, digestLength, objectCount);
+
+              expect(rev.version).toBe(1);
+              expect(rev.hashId).toBe(digestLength === 32 ? 2 : 1);
+              expect(rev.digestLength).toBe(digestLength);
+              expect(rev.objectCount).toBe(objectCount);
+              expect(rev.packChecksum).toEqual(packChecksum);
+
+              const body = Array.from({ length: objectCount }, (_, p) =>
+                revIndexPositionAt(rev, p),
+              );
+              expect([...body].sort((a, b) => a - b)).toEqual(
+                Array.from({ length: objectCount }, (_, i) => i),
+              );
+
+              // Body entries are ranks into the OID-ascending order (the
+              // same order the `.idx` stores), not positions in `entries`.
+              const byOid = [...entries].sort((a, b) =>
+                compareBytes(hexToBytes(a.id), hexToBytes(b.id)),
+              );
+              const offsetsInBodyOrder = body.map((indexPosition) => byOid[indexPosition]!.offset);
+              for (let i = 1; i < offsetsInBodyOrder.length; i += 1) {
+                expect(offsetsInBodyOrder[i]!).toBeGreaterThan(offsetsInBodyOrder[i - 1]!);
+              }
+            },
+          ),
+          { numRuns: 200 },
+        );
+      });
+    });
+  });
+
+  describe('Given an arbitrary entry set and either digest width', () => {
+    describe('When serializing', () => {
+      it('Then it never throws and the size is exactly 12 + 4N + 2d', () => {
+        // Arrange + Act + Assert
+        const sut = serializePackRevIndex;
+
+        fc.assert(
+          fc.property(
+            arbPackIndexWriterEntries(30),
+            fc.constantFrom<20 | 32>(20, 32),
+            (entries, digestLength) => {
+              const packChecksum = new Uint8Array(digestLength);
+
+              const bytes = sut(entries, packChecksum);
+
+              expect(bytes.length).toBe(REV_HEADER_SIZE + 4 * entries.length + 2 * digestLength);
             },
           ),
           { numRuns: 100 },

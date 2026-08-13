@@ -10,7 +10,6 @@
  *   kind:    equivalent-under-readback
  *   format:  git-packfile-v2
  */
-import { compareBytes, hexToBytes } from '../objects/encoding.js';
 import { crc32 } from './crc32.js';
 import { invalidPackIndex } from './error.js';
 import {
@@ -19,6 +18,7 @@ import {
   GENERATED_PACK_VERSION,
   serializePackHeader,
 } from './pack-entry.js';
+import { sortPackIndexEntries } from './pack-order.js';
 
 export interface PackWriterEntry {
   readonly type: BasePackEntryType;
@@ -64,11 +64,6 @@ export function serializePackfile(entries: ReadonlyArray<PackWriterEntry>): Pack
 
 const IDX_SHA_LENGTH = 20;
 
-interface SortedEntry {
-  readonly shaBytes: Uint8Array;
-  readonly entry: PackIndexWriterEntry;
-}
-
 export function serializePackIndex(
   entries: ReadonlyArray<PackIndexWriterEntry>,
   packChecksum: Uint8Array,
@@ -79,11 +74,7 @@ export function serializePackIndex(
     );
   }
 
-  const withBytes: SortedEntry[] = entries.map((entry) => ({
-    shaBytes: hexToBytes(entry.id),
-    entry,
-  }));
-  withBytes.sort((a, b) => compareBytes(a.shaBytes, b.shaBytes));
+  const withBytes = sortPackIndexEntries(entries);
 
   const n = withBytes.length;
   let largeCount = 0;

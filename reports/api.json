@@ -47004,6 +47004,127 @@
 					]
 				},
 				{
+					"id": 8847,
+					"name": "serializePackRevIndex",
+					"variant": "declaration",
+					"kind": 64,
+					"flags": {},
+					"signatures": [
+						{
+							"id": 8848,
+							"name": "serializePackRevIndex",
+							"variant": "signature",
+							"kind": 4096,
+							"flags": {},
+							"comment": {
+								"summary": [
+									{
+										"kind": "text",
+										"text": "Serializes a pack reverse index from writer entries and a verified pack\nchecksum — the same "
+									},
+									{
+										"kind": "code",
+										"text": "`PackIndexWriterEntry`"
+									},
+									{
+										"kind": "text",
+										"text": " pair "
+									},
+									{
+										"kind": "code",
+										"text": "`serializePackIndex`"
+									},
+									{
+										"kind": "text",
+										"text": "\nconsumes, so the two artefacts cannot disagree about the entry set.\n\n"
+									},
+									{
+										"kind": "code",
+										"text": "`packChecksum`"
+									},
+									{
+										"kind": "text",
+										"text": "'s width picks "
+									},
+									{
+										"kind": "code",
+										"text": "`hashId`"
+									},
+									{
+										"kind": "text",
+										"text": " (SHA-1 ⇒ 1, SHA-256 ⇒ 2). An\nunrecognised width is refused with the same "
+									},
+									{
+										"kind": "code",
+										"text": "`'hash-id'`"
+									},
+									{
+										"kind": "text",
+										"text": " check the parser\nraises, though every production call site passes a verified pack trailer,\nso this guard is unreachable outside tests.\n\nThe trailer's "
+									},
+									{
+										"kind": "code",
+										"text": "`digestLength`"
+									},
+									{
+										"kind": "text",
+										"text": " bytes are left zero — this function does not\nhash; the caller fills them in place over the returned buffer."
+									}
+								]
+							},
+							"parameters": [
+								{
+									"id": 8849,
+									"name": "entries",
+									"variant": "param",
+									"kind": 32768,
+									"flags": {},
+									"type": {
+										"type": "typeOperator",
+										"operator": "readonly",
+										"target": {
+											"type": "array",
+											"elementType": {
+												"type": "reference",
+												"target": 8812,
+												"name": "PackIndexWriterEntry",
+												"package": "@scolladon/tsgit"
+											}
+										}
+									}
+								},
+								{
+									"id": 8850,
+									"name": "packChecksum",
+									"variant": "param",
+									"kind": 32768,
+									"flags": {},
+									"type": {
+										"type": "reference",
+										"target": {
+											"packageName": "typescript",
+											"packagePath": "lib/lib.es5.d.ts",
+											"qualifiedName": "Uint8Array"
+										},
+										"name": "Uint8Array",
+										"package": "typescript"
+									}
+								}
+							],
+							"type": {
+								"type": "reference",
+								"target": {
+									"packageName": "typescript",
+									"packagePath": "lib/lib.es5.d.ts",
+									"qualifiedName": "Uint8Array"
+								},
+								"name": "Uint8Array",
+								"package": "typescript"
+							}
+						}
+					]
+				},
+				{
 					"id": 8355,
 					"name": "serializeReflogLine",
 					"variant": "declaration",
@@ -49591,6 +49712,7 @@
 						8820,
 						8772,
 						8823,
+						8847,
 						8355,
 						8402,
 						8361,
@@ -194110,6 +194232,26 @@
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/rev-index.ts",
 			"qualifiedName": "p"
+		},
+		"8847": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/domain/storage/rev-index.ts",
+			"qualifiedName": "serializePackRevIndex"
+		},
+		"8848": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/domain/storage/rev-index.ts",
+			"qualifiedName": "serializePackRevIndex"
+		},
+		"8849": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/domain/storage/rev-index.ts",
+			"qualifiedName": "entries"
+		},
+		"8850": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/domain/storage/rev-index.ts",
+			"qualifiedName": "packChecksum"
 		}
 	},
 	"files": {

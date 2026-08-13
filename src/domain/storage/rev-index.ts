@@ -1,4 +1,17 @@
+/**
+ * Pack reverse index (`.rev`) parser and serializer. `parsePackRevIndex`
+ * decodes git's `pack-<sha>.rev` format; `serializePackRevIndex` emits it —
+ * the body maps each pack position (rank by ascending offset) to the index
+ * position (rank by ascending oid) the `.idx` and `.pack` agree on.
+ *
+ * @writes
+ *   surface: packRevIndex
+ *   kind:    byte-identical
+ *   format:  pack-rev-index-v1
+ */
 import { invalidPackRevIndex } from './error.js';
+import { sortPackIndexEntries } from './pack-order.js';
+import type { PackIndexWriterEntry } from './pack-writer.js';
 
 const REV_MAGIC = 0x52494458; // 'RIDX'
 
@@ -81,6 +94,66 @@ export function parsePackRevIndex(
     _bytes: bytes,
     _view: view,
   };
+}
+
+/**
+ * Serializes a pack reverse index from writer entries and a verified pack
+ * checksum — the same `PackIndexWriterEntry` pair `serializePackIndex`
+ * consumes, so the two artefacts cannot disagree about the entry set.
+ *
+ * `packChecksum`'s width picks `hashId` (SHA-1 ⇒ 1, SHA-256 ⇒ 2). An
+ * unrecognised width is refused with the same `'hash-id'` check the parser
+ * raises, though every production call site passes a verified pack trailer,
+ * so this guard is unreachable outside tests.
+ *
+ * The trailer's `digestLength` bytes are left zero — this function does not
+ * hash; the caller fills them in place over the returned buffer.
+ */
+export function serializePackRevIndex(
+  entries: ReadonlyArray<PackIndexWriterEntry>,
+  packChecksum: Uint8Array,
+): Uint8Array {
+  const digestLength = packChecksum.length;
+  if (digestLength !== 20 && digestLength !== 32) {
+    throw invalidPackRevIndex(
+      'hash-id',
+      `packChecksum must be 20 or 32 bytes, got ${digestLength}`,
+    );
+  }
+
+  const hashId = digestLength === 32 ? 2 : 1;
+  const objectCount = entries.length;
+  const body = packPositionsByOffset(entries);
+
+  const bytes = new Uint8Array(REV_HEADER_SIZE + 4 * objectCount + 2 * digestLength);
+  const view = new DataView(bytes.buffer);
+
+  view.setUint32(0, REV_MAGIC);
+  view.setUint32(4, 1);
+  view.setUint32(8, hashId);
+  body.forEach((indexPosition, packPosition) => {
+    view.setUint32(REV_HEADER_SIZE + packPosition * 4, indexPosition);
+  });
+  bytes.set(packChecksum, REV_HEADER_SIZE + 4 * objectCount);
+
+  return bytes;
+}
+
+/**
+ * Index positions `[0, N)` (rank by ascending oid, via `sortPackIndexEntries`)
+ * reordered by ascending pack offset — result entry `p` is the index
+ * position of the object at pack position `p`. Offsets are unique by
+ * construction (each pack entry begins where the previous one ends), so tie
+ * behaviour is undefined because ties cannot occur.
+ */
+function packPositionsByOffset(entries: ReadonlyArray<PackIndexWriterEntry>): Uint32Array {
+  const byOid = sortPackIndexEntries(entries);
+  const positions = new Uint32Array(byOid.length);
+  for (let indexPosition = 0; indexPosition < positions.length; indexPosition += 1) {
+    positions[indexPosition] = indexPosition;
+  }
+  positions.sort((a, b) => byOid[a]!.entry.offset - byOid[b]!.entry.offset);
+  return positions;
 }
 
 /**
