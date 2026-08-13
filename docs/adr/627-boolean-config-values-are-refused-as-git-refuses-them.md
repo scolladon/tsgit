@@ -25,9 +25,21 @@ ADR-249's data-not-rendering split). Both narrower alternatives — lenient with
 divergence, or strictness for `pack.writeReverseIndex` alone — were rejected: the first
 preserves a known unfaithfulness, the second trades one inconsistency for another.
 
-git's boolean grammar is adopted exactly: `true`/`yes`/`on`/`1` (and a valueless key) are
-true; `false`/`no`/`off`/`0` (and the empty value) are false; case-insensitive; anything
-else refuses.
+git's boolean grammar is adopted exactly as pinned in the design's Pin K (which
+supersedes this ADR's first draft, whose numeric arm listed only `1`/`0`):
+`true`/`yes`/`on` (and a valueless key) are true; `false`/`no`/`off` (and the empty
+value) are false; case-insensitive; otherwise git falls back to its full integer
+grammar narrowed to C `int` — any well-formed in-range integer is truthy when non-zero
+(`2`, `-1`, `007`, `0x1`, `+1`, `1k`) and falsy at zero (`00`, `0x0`, `0k`) — and the
+refusal set includes both non-integers (`maybe`) and well-formed integers that overflow
+`int` (`2147483648`, `0x80000000`, `2g`), which tsgit's 64-bit `parseGitInt` would
+otherwise accept.
+
+Refusal placement is git's, not a single eager gate: git refuses **lazily and
+three-tiered** (discovery keys kill even `config --list`; default-config keys kill
+operational commands but not all porcelain; the rest kill only their consuming command)
+— pinned per key in the design's Pin L. An eager whole-config validation would
+over-refuse and be unfaithful.
 
 ## Consequences
 
