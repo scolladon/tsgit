@@ -697,6 +697,36 @@ describe('status — progress reporting', () => {
         expect(result.untracked).toContain('b.txt');
       });
     });
+
+    describe('When status runs its untracked pass', () => {
+      it('Then no lstat is issued for the untracked path (path-only walk)', async () => {
+        // Arrange — the untracked pass binds `{ path }` only; it must never
+        // pay for the walker's lazy stat.
+        const ctx = await seedClean();
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'new');
+        const baseLstat = ctx.fs.lstat;
+        let untrackedLstatCalls = 0;
+        const trackingFs = new Proxy(ctx.fs, {
+          get(target, prop, receiver) {
+            if (prop === 'lstat') {
+              return async (p: string) => {
+                if (p.endsWith('/b.txt')) untrackedLstatCalls += 1;
+                return baseLstat(p);
+              };
+            }
+            return Reflect.get(target, prop, receiver);
+          },
+        });
+        const trackingCtx = { ...ctx, fs: trackingFs };
+
+        // Act
+        const result = await status(trackingCtx);
+
+        // Assert
+        expect(result.untracked).toContain('b.txt');
+        expect(untrackedLstatCalls).toBe(0);
+      });
+    });
   });
 
   describe('Given an untracked file matched by .gitignore', () => {

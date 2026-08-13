@@ -182,7 +182,11 @@ export interface WalkTreeOptions {
 
 export interface WalkWorkingTreeEntry {
   readonly path: FilePath;
-  readonly stat: FileStat;
+  readonly isFile: boolean;
+  readonly isDirectory: boolean;
+  readonly isSymbolicLink: boolean;
+  /** Lazily fetched, memoised per entry. Consumers that only need the path never pay it. */
+  readonly stat: () => Promise<FileStat>;
 }
 
 export type WalkIgnorePredicate = (

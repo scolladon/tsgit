@@ -5,6 +5,7 @@ import type { FilePath } from '../../domain/objects/object-id.js';
 import { isDotGitAlias } from '../../domain/path/verify-path.js';
 import { validateWorkingTreePath } from '../../domain/working-tree-path.js';
 import type { Context } from '../../ports/context.js';
+import type { FileStat } from '../../ports/file-system.js';
 import { joinPathSegment } from './internal/join-path-segment.js';
 import { joinPath } from './internal/join-working-tree-path.js';
 import type { WalkIgnorePredicate, WalkWorkingTreeEntry, WalkWorkingTreeOptions } from './types.js';
@@ -25,12 +26,15 @@ interface Counter {
 /**
  * Depth-first walk of the working tree starting at `ctx.layout.workDir`.
  *
- * Yields leaf entries (files and symlinks) as `{ path, stat }`. Directories
- * are descended into, not yielded. `.git` at any level is skipped
- * (case-insensitive, NTFS-trimmed). Embedded repositories (directories
- * containing a `.git` child) are skipped entirely — yields nothing under
- * them. Symlinks are surfaced via `lstat` (no follow); a symlink to a
- * directory is yielded as a leaf, not descended into.
+ * Yields leaf entries (files and symlinks) as `{ path, isFile, isDirectory,
+ * isSymbolicLink, stat }`. The three kind bits come straight off the
+ * underlying `readdir` `DirEntry`; `stat` is a lazily fetched, per-entry
+ * memoised accessor — a consumer that only reads `path` never pays an
+ * `lstat`. Directories are descended into, not yielded. `.git` at any level
+ * is skipped (case-insensitive, NTFS-trimmed). Embedded repositories
+ * (directories containing a `.git` child) are skipped entirely — yields
+ * nothing under them. Symlinks are surfaced via `lstat` (no follow); a
+ * symlink to a directory is yielded as a leaf, not descended into.
  *
  * The host repository's own `.git` is NOT treated as an embedded-repo
  * marker — at the workDir root we only skip the `.git` entry itself, not
@@ -98,9 +102,29 @@ async function* visitEntry(
   if (counter.value > config.maxEntries) {
     throw treeEntryLimitExceeded(counter.value, config.maxEntries);
   }
-  const stat = await config.ctx.fs.lstat(joinPath(config.ctx.layout.workDir, path));
-  yield { path, stat };
+  yield {
+    path,
+    isFile: entry.isFile,
+    isDirectory: entry.isDirectory,
+    isSymbolicLink: entry.isSymbolicLink,
+    stat: lazyStat(config, path),
+  };
 }
+
+/**
+ * Builds a memoised stat accessor for one leaf entry. `lstat` is deferred
+ * until a consumer actually reads the stat, and — unchanged from the prior
+ * eager fetch — carries no `.catch()`: a file deleted between `readdir` and
+ * the accessor's first call still throws, just later (on first read instead
+ * of on yield).
+ */
+const lazyStat = (config: WalkConfig, path: FilePath): (() => Promise<FileStat>) => {
+  let memo: Promise<FileStat> | undefined;
+  return () => {
+    memo ??= config.ctx.fs.lstat(joinPath(config.ctx.layout.workDir, path));
+    return memo;
+  };
+};
 
 const directoryPath = (config: WalkConfig, prefix: string): string =>
   prefix === '' ? config.ctx.layout.workDir : joinPath(config.ctx.layout.workDir, prefix);

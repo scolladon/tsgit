@@ -177,7 +177,7 @@ const collectUntracked = async (ctx: Context, index: GitIndex): Promise<Untracke
   const entries: IndexEntry[] = [];
   for await (const { path, stat } of walkWorkingTree(ctx, { ignore })) {
     if (tracked.has(path)) continue;
-    const { id, mode } = await hashFileAt(ctx, path, stat);
+    const { id, mode } = await hashFileAt(ctx, path, await stat());
     entries.push(stage0Entry(path, id, mode));
     paths.push(path);
   }

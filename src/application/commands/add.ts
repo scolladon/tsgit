@@ -331,13 +331,14 @@ const processWalkEntry = async (
   // already happened at walk-time in; this function only sees
   // leaves the walker chose to yield.
   seen.add(path);
+  const fileStat = await stat();
   // Pre-filter using the walk-time stat as an early reject; the authoritative
   // size check fires inside stageFromStat against the re-lstat'd value so a
   // grow-between-walk-and-stage race can't bypass the cap.
-  if (stat.size > MAX_WORKING_TREE_BLOB_BYTES) {
-    throw workingTreeFileTooLarge(path, stat.size, MAX_WORKING_TREE_BLOB_BYTES);
+  if (fileStat.size > MAX_WORKING_TREE_BLOB_BYTES) {
+    throw workingTreeFileTooLarge(path, fileStat.size, MAX_WORKING_TREE_BLOB_BYTES);
   }
-  const entry = await stageFromStat(ctx, path, stat, provider, existing.get(path), indexMtime);
+  const entry = await stageFromStat(ctx, path, fileStat, provider, existing.get(path), indexMtime);
   const previous = existing.get(path);
   if (previous === undefined) return { kind: 'added', path, entry };
   if (previous.id !== entry.id || previous.mode !== entry.mode) {

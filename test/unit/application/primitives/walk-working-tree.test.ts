@@ -174,12 +174,80 @@ describe('walkWorkingTree', () => {
         await ctx.fs.symlink('a.txt', `${ctx.layout.workDir}/link`);
 
         // Act
-        const entries: Array<{ path: string; stat: { isSymbolicLink: boolean } }> = [];
-        for await (const e of walkWorkingTree(ctx)) entries.push({ path: e.path, stat: e.stat });
+        const entries: Array<{ path: string; isSymbolicLink: boolean }> = [];
+        for await (const e of walkWorkingTree(ctx)) {
+          entries.push({ path: e.path, isSymbolicLink: e.isSymbolicLink });
+        }
         const linkEntry = entries.find((e) => e.path === 'link');
 
         // Assert
-        expect(linkEntry?.stat.isSymbolicLink).toBe(true);
+        expect(linkEntry?.isSymbolicLink).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a leaf yielded by the walker', () => {
+    const trackLstat = (ctx: Context): { readonly ctx: Context; calls: () => number } => {
+      const baseLstat = ctx.fs.lstat;
+      let calls = 0;
+      const trackingFs = new Proxy(ctx.fs, {
+        get(target, prop, receiver) {
+          if (prop === 'lstat') {
+            return async (p: string) => {
+              calls += 1;
+              return baseLstat(p);
+            };
+          }
+          return Reflect.get(target, prop, receiver);
+        },
+      });
+      return { ctx: { ...ctx, fs: trackingFs }, calls: () => calls };
+    };
+
+    describe('When only entry.path is read (never entry.stat)', () => {
+      it('Then ctx.fs.lstat is never called', async () => {
+        // Arrange
+        const seeded = await seedFs({ 'a.txt': '1', 'b.txt': '2' });
+        const { ctx, calls } = trackLstat(seeded);
+
+        // Act
+        await collect(walkWorkingTree(ctx));
+
+        // Assert
+        expect(calls()).toBe(0);
+      });
+    });
+
+    describe('When entry.stat() is read once per entry', () => {
+      it('Then ctx.fs.lstat is called exactly once per entry', async () => {
+        // Arrange
+        const seeded = await seedFs({ 'a.txt': '1', 'b.txt': '2' });
+        const { ctx, calls } = trackLstat(seeded);
+
+        // Act
+        for await (const entry of walkWorkingTree(ctx)) {
+          await entry.stat();
+        }
+
+        // Assert
+        expect(calls()).toBe(2);
+      });
+    });
+
+    describe('When entry.stat() is read twice for the same entry', () => {
+      it('Then ctx.fs.lstat is called exactly once (memoised)', async () => {
+        // Arrange
+        const seeded = await seedFs({ 'a.txt': '1' });
+        const { ctx, calls } = trackLstat(seeded);
+
+        // Act
+        for await (const entry of walkWorkingTree(ctx)) {
+          await entry.stat();
+          await entry.stat();
+        }
+
+        // Assert
+        expect(calls()).toBe(1);
       });
     });
   });
