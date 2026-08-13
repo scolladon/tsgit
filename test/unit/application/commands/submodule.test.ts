@@ -133,6 +133,24 @@ describe('commands/submodule', () => {
     });
   });
 
+  describe('Given a subsectionless [submodule] active holds a value git refuses', () => {
+    describe('When submodules()', () => {
+      it('Then no refusal — git ignores the subsectionless form of this per-instance key', async () => {
+        // Arrange
+        const text = '[submodule "foo"]\n\tpath = foo\n\turl = https://e/foo.git\n';
+        const { ctx } = await seedRepoWithHead(text, [{ name: 'foo', id: FAKE_COMMIT }]);
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[submodule]\n\tactive = maybe\n');
+        __resetConfigCacheForTests();
+
+        // Act
+        const result = await submoduleList(ctx);
+
+        // Assert
+        expect(result.entries).toHaveLength(1);
+      });
+    });
+  });
+
   describe('Given submodule.foo.active holds a value git accepts', () => {
     describe('When submodules()', () => {
       it('Then returns the entry — the guard no-ops on a valid value', async () => {

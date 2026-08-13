@@ -46,7 +46,7 @@ import { buildPack } from '../primitives/build-pack.js';
 import { findInvalidPushDefault, readConfig } from '../primitives/config-read.js';
 import { enumeratePushObjects } from '../primitives/enumerate-push-objects.js';
 import { enumerateRefs } from '../primitives/enumerate-refs.js';
-import { assertValidBooleanLiteral } from '../primitives/internal/boolean-config-guard.js';
+import { assertValidPushGpgSign } from '../primitives/internal/boolean-config-guard.js';
 import { assertNoValuelessConfig } from '../primitives/internal/valueless-config-guard.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import { runHook } from '../primitives/run-hook.js';
@@ -124,6 +124,9 @@ const assertValidPushDefault = async (ctx: Context): Promise<void> => {
 export const push = async (ctx: Context, opts: PushOptions = {}): Promise<PushResult> => {
   await assertOperationalRepository(ctx);
   await assertValidPushDefault(ctx);
+  // git validates push.gpgSign on the same config-read cold path — before the
+  // remote resolves or any session opens, even when nothing will be pushed.
+  await assertValidPushGpgSign(ctx);
   ctx.progress.start(PUSH_ENUMERATE_OBJECTS_OP);
   try {
     return await pushViaSession(ctx, opts);
@@ -359,9 +362,6 @@ type SignedPushMode = 'yes' | 'no' | 'if-asked';
 
 /** `opts.signed` wins; otherwise falls back to `push.gpgSign` (default `'no'`). */
 const resolveSignedPushMode = async (ctx: Context, opts: PushOptions): Promise<SignedPushMode> => {
-  // git reads push.gpgsign regardless of an explicit opts.signed override, so
-  // the guard runs before that early return.
-  await assertValidBooleanLiteral(ctx);
   if (opts.signed !== undefined) return opts.signed;
   const config = await readConfig(ctx);
   const configured = config.push?.gpgSign;

@@ -85,15 +85,15 @@ export const tagList = async (ctx: Context): Promise<TagListResult> => {
 
 export const tagCreate = async (ctx: Context, input: TagCreateInput): Promise<TagCreateResult> => {
   await assertOperationalRepository(ctx);
+  // git reads tag.gpgsign for a lightweight tag too, and refuses a malformed
+  // value before the target resolves — a bad target surfaces the boolean
+  // refusal, not the ref error — so the guard precedes name/target resolution.
+  await assertValidBooleanConfig(ctx, 'tag', undefined, ['gpgsign']);
   const name = validateRefName(`${TAGS_PREFIX}${input.name}`);
   const target = input.target !== undefined ? input.target : await currentHeadId(ctx);
   const targetId = /^[0-9a-f]{40}$/.test(target)
     ? (target as ObjectId)
     : await resolveRef(ctx, target as RefName);
-  // git reads tag.gpgsign for a lightweight tag too, so the guard runs before
-  // the annotate/lightweight branch — not inside resolveTagSignature, which
-  // only the annotated arm reaches.
-  await assertValidBooleanConfig(ctx, 'tag', undefined, ['gpgsign']);
   const id = wantsAnnotatedTag(input) ? await createAnnotatedTag(ctx, input, targetId) : targetId;
   await updateTagRef(ctx, name, id, input.force === true, `tag: ${input.name}`);
   return { name, id };

@@ -2019,8 +2019,36 @@ describe('push — signed', () => {
         expect(data.key).toBe('push.gpgsign');
         expect(data.value).toBe('maybe');
         expect(data.source).toMatch(/\/config$/);
-        // The guard fires before the pack POST — only the discovery GET landed.
-        expect(requests.map((r) => r.method)).toEqual(['GET']);
+        // The guard fires on the config cold path, before the session opens —
+        // no request lands at all, as with git.
+        expect(requests.map((r) => r.method)).toEqual([]);
+      });
+    });
+
+    describe('When the remote is already up to date (nothing to push)', () => {
+      it('Then still throws CONFIG_BAD_BOOLEAN_LITERAL — git refuses even a no-op push', async () => {
+        // Arrange — the advertised tip equals the local tip, so no ref moves.
+        const ctx = createMemoryContext();
+        const { tip } = await seedSignedPush(ctx, { otherExtra: '[push]\n  gpgSign = maybe\n' });
+        const { transport } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/main', id: tip.id }],
+          reportStatus: { unpack: 'ok', refs: [] },
+        });
+
+        // Act
+        let caught: unknown;
+        try {
+          await push({ ...ctx, transport });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as { code: string; key: string };
+        expect(data.code).toBe('CONFIG_BAD_BOOLEAN_LITERAL');
+        expect(data.key).toBe('push.gpgsign');
       });
     });
 

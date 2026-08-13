@@ -986,6 +986,29 @@ describe('commit — signing', () => {
         expect((caught as TsgitError).data.code).toBe('CONFIG_BAD_BOOLEAN_VALUE');
       });
     });
+
+    describe('When commit is called with nothing staged', () => {
+      it('Then the boolean refusal precedes NOTHING_TO_COMMIT — git dies before the tree is built', async () => {
+        // Arrange — no staged entry at all, only the malformed config.
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[commit]\n\tgpgSign = maybe\n');
+
+        // Act
+        let caught: unknown;
+        try {
+          await commit(ctx, { message: 'm', author });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as { code: string; key: string };
+        expect(data.code).toBe('CONFIG_BAD_BOOLEAN_VALUE');
+        expect(data.key).toBe('commit.gpgsign');
+      });
+    });
   });
 
   describe('Given commit.gpgsign=yes (word form) in config and opts.sign is undefined', () => {

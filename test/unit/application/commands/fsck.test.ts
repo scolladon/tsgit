@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { type FsckFinding, fsck } from '../../../../src/application/commands/fsck.js';
+import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
 import {
   commonGitDir,
   looseObjectPath,
@@ -6485,4 +6486,34 @@ describe('Given a midx-entry-unresolved finding', () => {
       expect(result).toEqual([id]);
     });
   });
+});
+
+describe('fsck — remote.promisor guard', () => {
+  it.each([
+    { config: '[remote]\n\tpromisor = maybe\n', expectedKey: 'remote.promisor' },
+    { config: '[remote "origin"]\n\tpromisor = maybe\n', expectedKey: 'remote.origin.promisor' },
+  ])(
+    'Given $expectedKey holds a value git refuses, When fsck runs, Then throws CONFIG_BAD_BOOLEAN_VALUE',
+    async ({ config, expectedKey }) => {
+      // Arrange
+      const ctx = await initBareCtx();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, config);
+      __resetConfigCacheForTests();
+
+      // Act
+      let caught: unknown;
+      try {
+        await fsck(ctx);
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert — each field individually (mutation-resistant)
+      expect(caught).toBeInstanceOf(TsgitError);
+      const data = (caught as TsgitError).data as { code: string; key: string; value: string };
+      expect(data.code).toBe('CONFIG_BAD_BOOLEAN_VALUE');
+      expect(data.key).toBe(expectedKey);
+      expect(data.value).toBe('maybe');
+    },
+  );
 });

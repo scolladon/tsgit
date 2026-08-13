@@ -646,6 +646,27 @@ describe('tag — signing', () => {
         expect(await ctx.fs.exists(tagRefPath(ctx, 'v1.0'))).toBe(false);
       });
     });
+
+    describe('When tag create targets a ref that does not exist', () => {
+      it('Then the boolean refusal precedes the ref error — git dies before resolving the target', async () => {
+        // Arrange
+        const ctx = await seedSigning(undefined, '[tag]\n  gpgSign = maybe\n');
+
+        // Act
+        let caught: unknown;
+        try {
+          await tagCreate(ctx, { name: 'v1.0', target: 'refs/heads/missing' });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as { code: string; key: string };
+        expect(data.code).toBe('CONFIG_BAD_BOOLEAN_VALUE');
+        expect(data.key).toBe('tag.gpgsign');
+      });
+    });
   });
 
   describe('Given tag.gpgSign=yes (word form) in config', () => {

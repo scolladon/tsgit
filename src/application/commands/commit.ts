@@ -95,6 +95,9 @@ export interface CommitResult {
 export const commit = async (ctx: Context, opts: CommitOptions): Promise<CommitResult> => {
   await assertOperationalRepository(ctx);
   await assertNotBare(ctx, 'commit');
+  // git refuses a malformed commit.gpgSign before hooks run, before the tree is
+  // written, and before the nothing-to-commit check — mirror that ordering.
+  await assertValidBooleanConfig(ctx, 'commit', undefined, ['gpgsign']);
   // Resolving a conflicted merge / cherry-pick / revert IS the legitimate way to
   // clear its marker — skip that marker's check. All other in-progress operations
   // still block. A cherry-pick / revert resolution stays single-parent (no
@@ -203,7 +206,6 @@ const resolveGpgSignature = async (
   committer: AuthorIdentity,
   opts: CommitOptions,
 ): Promise<string | undefined> => {
-  await assertValidBooleanConfig(ctx, 'commit', undefined, ['gpgsign']);
   const wantSign = opts.sign ?? config.commit?.gpgSign === true;
   if (!wantSign) return undefined;
   return signCommit(ctx, config, commitData, committer, opts.signKey);

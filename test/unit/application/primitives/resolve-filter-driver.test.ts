@@ -203,4 +203,50 @@ describe('resolveFilterDriver', () => {
       });
     });
   });
+
+  describe('Given *.y filter=other engages a filter and [filter "myf"].required = maybe', () => {
+    describe('When resolving the driver for the OTHER name', () => {
+      it('Then throws CONFIG_BAD_BOOLEAN_VALUE for myf — git validates every driver section once a filter engages', async () => {
+        // Arrange — the selected driver is `other`; the malformed value sits
+        // under the unselected `myf` section, even without an `other` section.
+        const ctx = createMemoryContext();
+        await seed(ctx, '*.y filter=other\n', '[filter "myf"]\n\trequired = maybe\n');
+
+        // Act
+        let caught: unknown;
+        try {
+          await choose(ctx, 'a.y');
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as { code: string; key: string; value: string };
+        expect(data.code).toBe('CONFIG_BAD_BOOLEAN_VALUE');
+        expect(data.key).toBe('filter.myf.required');
+        expect(data.value).toBe('maybe');
+      });
+    });
+  });
+
+  describe('Given *.y filter=myf and a subsectionless [filter] required = maybe', () => {
+    describe('When resolving the filter driver', () => {
+      it('Then no refusal — git ignores the subsectionless form, the key exists only per driver', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(
+          ctx,
+          '*.y filter=myf\n',
+          '[filter]\n\trequired = maybe\n[filter "myf"]\n\tclean = up\n',
+        );
+
+        // Act
+        const result = await choose(ctx, 'a.y');
+
+        // Assert
+        expect(result).toEqual({ kind: 'external', name: 'myf', clean: 'up', required: false });
+      });
+    });
+  });
 });

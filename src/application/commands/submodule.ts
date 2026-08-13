@@ -438,7 +438,11 @@ export const submoduleList = async (
   opts: SubmoduleListOptions = {},
 ): Promise<SubmoduleListResult> => {
   await assertOperationalRepository(ctx);
-  await assertValidBooleanConfigInSection(ctx, 'submodule', ['active']);
+  // A subsectionless `[submodule] active` is inert in git — only the
+  // per-instance `submodule.<name>.active` form can refuse.
+  await assertValidBooleanConfigInSection(ctx, 'submodule', ['active'], {
+    requireSubsection: true,
+  });
   const ref = coerceRef(opts.ref ?? 'HEAD');
   const recursive = opts.recursive === true;
   const entries: SubmoduleEntry[] = [];
@@ -756,7 +760,11 @@ export const submoduleUpdate = async (
   const updateModes = validateUpdateModes(rows);
   const index = await readIndex(ctx);
   let config = await readConfig(ctx);
-  await assertValidBooleanConfigInSection(ctx, 'submodule', ['active']);
+  // A subsectionless `[submodule] active` is inert in git — only the
+  // per-instance `submodule.<name>.active` form can refuse.
+  await assertValidBooleanConfigInSection(ctx, 'submodule', ['active'], {
+    requireSubsection: true,
+  });
   const entries: SubmoduleUpdateEntry[] = [];
   for (const row of selected) {
     const pinned = gitlinkFromIndex(index, row.path);

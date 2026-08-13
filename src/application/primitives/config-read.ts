@@ -1147,7 +1147,10 @@ const applyCoreBooleanEntry = (
   if (!parsed.ok) return undefined;
   if (lowered === 'bare') return { ...core, bare: parsed.value };
   if (lowered === 'sparsecheckout') return { ...core, sparseCheckout: parsed.value };
-  return { ...core, sparseCheckoutCone: parsed.value };
+  if (lowered === 'sparsecheckoutcone') return { ...core, sparseCheckoutCone: parsed.value };
+  // Unreachable while CORE_BOOLEAN_KEYS and the arms above agree; a key added
+  // to the set without an arm lands here instead of silently mis-assigning.
+  return undefined;
 };
 
 /**
@@ -1705,128 +1708,153 @@ export interface InvalidBooleanEntry {
 }
 
 /**
- * Cold-path detection: walk the cached tokens for `section`/`subsection` in file order
- * and return the FIRST entry among `keys` whose value fails `parseGitBoolean`. A
- * valueless entry (git's internal NULL) is always valid, so it is never reported.
- * Mirrors `findFirstInvalidCompression`'s structure; the qualified key is built exactly
- * as `findFirstValuelessEntry` builds it (section and key lower-cased, subsection verbatim).
+ * The one token walk behind every invalid-boolean finder: file-order scan of the
+ * cached tokens, returning the FIRST entry among `keys` whose value the target's
+ * `accepts` predicate rejects. A valueless entry (git's internal NULL) is always
+ * valid, so it is never reported. The qualified key is built exactly as
+ * `findFirstValuelessEntry` builds it (section and key lower-cased, subsection
+ * verbatim), unless the target pins a `fixedKey` (the tri-state singletons).
+ */
+interface BooleanWalkTarget {
+  readonly section: string;
+  /** Exact subsection to match; ignored when `anySubsection` is set. */
+  readonly subsection?: string | undefined;
+  /** Scan every subsection of `section` (the per-instance families). */
+  readonly anySubsection?: boolean;
+  /** Wildcard scans only: skip entries under a subsectionless header. */
+  readonly requireSubsection?: boolean;
+  readonly keys: ReadonlyArray<string>;
+  readonly accepts: (value: string) => boolean;
+  readonly fixedKey?: string;
+}
+
+const headerEntersTarget = (
+  section: string,
+  subsection: string | undefined,
+  target: BooleanWalkTarget,
+): boolean =>
+  target.anySubsection === true
+    ? section.toLowerCase() === target.section.toLowerCase()
+    : matchesSection(section, subsection, target.section, target.subsection);
+
+const entryValueRejected = (
+  value: string | null,
+  key: string,
+  subsection: string | undefined,
+  target: BooleanWalkTarget,
+  keySet: ReadonlySet<string>,
+): value is string => {
+  if (value === null) return false;
+  if (target.requireSubsection === true && subsection === undefined) return false;
+  if (!keySet.has(key.toLowerCase())) return false;
+  return !target.accepts(value);
+};
+
+const qualifiedBooleanKey = (
+  key: string,
+  subsection: string | undefined,
+  target: BooleanWalkTarget,
+): string => {
+  if (target.fixedKey !== undefined) return target.fixedKey;
+  const loweredSection = target.section.toLowerCase();
+  const loweredKey = key.toLowerCase();
+  return subsection === undefined
+    ? `${loweredSection}.${loweredKey}`
+    : `${loweredSection}.${subsection}.${loweredKey}`;
+};
+
+const findFirstRejectedBoolean = async (
+  ctx: Context,
+  target: BooleanWalkTarget,
+): Promise<InvalidBooleanEntry | undefined> => {
+  const { tokens, source: path } = await readConfigEntry(ctx);
+  const keySet = new Set(target.keys.map((k) => k.toLowerCase()));
+  let subsection: string | undefined;
+  let inSection = false;
+  for (const token of tokens) {
+    if (token.kind === 'header') {
+      subsection = token.subsection;
+      inSection = headerEntersTarget(token.section, token.subsection, target);
+      continue;
+    }
+    if (!inSection || token.kind !== 'entry') continue;
+    const value = token.value;
+    if (!entryValueRejected(value, token.key, subsection, target, keySet)) continue;
+    return {
+      key: qualifiedBooleanKey(token.key, subsection, target),
+      source: path,
+      line: token.startLine + 1,
+      value,
+    };
+  }
+  return undefined;
+};
+
+const acceptsGitBoolean = (value: string): boolean => parseGitBoolean(value).ok;
+
+/**
+ * Cold-path detection: the FIRST entry among `keys` under `[<section> "<subsection>"]`
+ * whose value fails `parseGitBoolean`. Mirrors `findFirstInvalidCompression`'s shape.
  */
 export const findFirstInvalidBoolean = async (
   ctx: Context,
   section: string,
   subsection: string | undefined,
   keys: ReadonlyArray<string>,
-): Promise<InvalidBooleanEntry | undefined> => {
-  const { tokens, source: path } = await readConfigEntry(ctx);
-  const keySet = new Set(keys.map((k) => k.toLowerCase()));
-  const loweredSection = section.toLowerCase();
-  let inSection = false;
-  for (const token of tokens) {
-    if (token.kind === 'header') {
-      inSection = matchesSection(token.section, token.subsection, section, subsection);
-      continue;
-    }
-    if (!inSection || token.kind !== 'entry' || token.value === null) continue;
-    const loweredKey = token.key.toLowerCase();
-    if (!keySet.has(loweredKey) || parseGitBoolean(token.value).ok) continue;
-    const qualifiedKey =
-      subsection === undefined
-        ? `${loweredSection}.${loweredKey}`
-        : `${loweredSection}.${subsection}.${loweredKey}`;
-    return { key: qualifiedKey, source: path, line: token.startLine + 1, value: token.value };
-  }
-  return undefined;
-};
+): Promise<InvalidBooleanEntry | undefined> =>
+  findFirstRejectedBoolean(ctx, { section, subsection, keys, accepts: acceptsGitBoolean });
 
 /**
  * Wildcard sibling of `findFirstInvalidBoolean`: scans every subsection of `section`
  * (mirrors `findFirstValuelessInSection`) rather than one exact subsection, for
  * per-instance families (`diff.<d>.*`, `filter.<d>.*`, `remote.<n>.*`, `submodule.<n>.*`).
+ * `requireSubsection` skips subsectionless entries — git ignores `[diff] cachetextconv`,
+ * `[filter] required` and `[submodule] active`, but refuses `[remote] promisor`, so each
+ * family passes what its own git behaviour pins.
  */
 export const findFirstInvalidBooleanInSection = async (
   ctx: Context,
   section: string,
   keys: ReadonlyArray<string>,
-): Promise<InvalidBooleanEntry | undefined> => {
-  const { tokens, source: path } = await readConfigEntry(ctx);
-  const keySet = new Set(keys.map((k) => k.toLowerCase()));
-  const loweredSection = section.toLowerCase();
-  let subsection: string | undefined;
-  let inSection = false;
-  for (const token of tokens) {
-    if (token.kind === 'header') {
-      inSection = token.section.toLowerCase() === loweredSection;
-      subsection = token.subsection;
-      continue;
-    }
-    if (!inSection || token.kind !== 'entry' || token.value === null) continue;
-    const loweredKey = token.key.toLowerCase();
-    if (!keySet.has(loweredKey) || parseGitBoolean(token.value).ok) continue;
-    const qualifiedKey =
-      subsection === undefined
-        ? `${loweredSection}.${loweredKey}`
-        : `${loweredSection}.${subsection}.${loweredKey}`;
-    return { key: qualifiedKey, source: path, line: token.startLine + 1, value: token.value };
-  }
-  return undefined;
-};
+  { requireSubsection = false }: { readonly requireSubsection?: boolean } = {},
+): Promise<InvalidBooleanEntry | undefined> =>
+  findFirstRejectedBoolean(ctx, {
+    section,
+    anySubsection: true,
+    requireSubsection,
+    keys,
+    accepts: acceptsGitBoolean,
+  });
 
 /**
- * `core.logAllRefUpdates`-specific sibling of `findFirstInvalidBoolean`: the key
- * accepts a third literal, `always`, beyond git's boolean grammar (mirrors
- * `parseLogAllRefUpdates`'s own tri-state check), so the plain boolean finder
- * would misreport it. Otherwise structurally identical — walks the cached
- * `[core]` tokens and returns the entry only when neither the tri-state literal
- * nor the boolean grammar accepts the value.
+ * `core.logAllRefUpdates`-specific finder: the key accepts a third literal,
+ * `always`, beyond git's boolean grammar (mirrors `parseLogAllRefUpdates`'s own
+ * tri-state check), so the plain boolean predicate would misreport it.
  */
 export const findFirstInvalidLogAllRefUpdates = async (
   ctx: Context,
-): Promise<InvalidBooleanEntry | undefined> => {
-  const { tokens, source: path } = await readConfigEntry(ctx);
-  let inSection = false;
-  for (const token of tokens) {
-    if (token.kind === 'header') {
-      inSection = matchesSection(token.section, token.subsection, 'core', undefined);
-      continue;
-    }
-    if (!inSection || token.kind !== 'entry' || token.value === null) continue;
-    if (token.key.toLowerCase() !== 'logallrefupdates') continue;
-    if (parseLogAllRefUpdates(token.value) !== undefined) continue;
-    return {
-      key: 'core.logallrefupdates',
-      source: path,
-      line: token.startLine + 1,
-      value: token.value,
-    };
-  }
-  return undefined;
-};
+): Promise<InvalidBooleanEntry | undefined> =>
+  findFirstRejectedBoolean(ctx, {
+    section: 'core',
+    keys: ['logallrefupdates'],
+    accepts: (value) => parseLogAllRefUpdates(value) !== undefined,
+    fixedKey: 'core.logallrefupdates',
+  });
 
 /**
- * `push.gpgSign`-specific sibling of `findFirstInvalidBoolean`: the key
- * accepts a third literal, `if-asked`, beyond git's boolean grammar (mirrors
- * `parsePushGpgSign`'s own tri-state check), so the plain boolean finder
- * would misreport it. Otherwise structurally identical — walks the cached
- * `[push]` tokens and returns the entry only when neither the tri-state
- * literal nor the boolean grammar accepts the value.
+ * `push.gpgSign`-specific finder: the key accepts a third literal, `if-asked`,
+ * beyond git's boolean grammar (mirrors `parsePushGpgSign`'s own tri-state
+ * check), so the plain boolean predicate would misreport it.
  */
 export const findFirstInvalidPushGpgSign = async (
   ctx: Context,
-): Promise<InvalidBooleanEntry | undefined> => {
-  const { tokens, source: path } = await readConfigEntry(ctx);
-  let inSection = false;
-  for (const token of tokens) {
-    if (token.kind === 'header') {
-      inSection = matchesSection(token.section, token.subsection, 'push', undefined);
-      continue;
-    }
-    if (!inSection || token.kind !== 'entry' || token.value === null) continue;
-    if (token.key.toLowerCase() !== 'gpgsign') continue;
-    if (parsePushGpgSign(token.value) !== undefined) continue;
-    return { key: 'push.gpgsign', source: path, line: token.startLine + 1, value: token.value };
-  }
-  return undefined;
-};
+): Promise<InvalidBooleanEntry | undefined> =>
+  findFirstRejectedBoolean(ctx, {
+    section: 'push',
+    keys: ['gpgsign'],
+    accepts: (value) => parsePushGpgSign(value) !== undefined,
+    fixedKey: 'push.gpgsign',
+  });
 
 type GitIntResult =
   | { readonly ok: true; readonly value: number }

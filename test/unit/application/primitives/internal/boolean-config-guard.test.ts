@@ -3,7 +3,7 @@ import { createMemoryContext } from '../../../../../src/adapters/memory/memory-a
 import {
   assertValidBooleanConfig,
   assertValidBooleanConfigInSection,
-  assertValidBooleanLiteral,
+  assertValidPushGpgSign,
 } from '../../../../../src/application/primitives/internal/boolean-config-guard.js';
 import { TsgitError } from '../../../../../src/domain/index.js';
 import type { Context } from '../../../../../src/ports/context.js';
@@ -152,7 +152,7 @@ describe('assertValidBooleanConfigInSection', () => {
   });
 });
 
-describe('assertValidBooleanLiteral', () => {
+describe('assertValidPushGpgSign', () => {
   describe('Given [push] gpgSign holds a value git refuses', () => {
     describe('When called', () => {
       it('Then throws CONFIG_BAD_BOOLEAN_LITERAL with key/source/value', async () => {
@@ -163,7 +163,7 @@ describe('assertValidBooleanLiteral', () => {
         // Act
         let caught: unknown;
         try {
-          await assertValidBooleanLiteral(ctx);
+          await assertValidPushGpgSign(ctx);
         } catch (err) {
           caught = err;
         }
@@ -187,7 +187,7 @@ describe('assertValidBooleanLiteral', () => {
         await seedConfig(ctx, '[push]\n\tgpgSign = true\n');
 
         // Act + Assert
-        await assertValidBooleanLiteral(ctx);
+        await assertValidPushGpgSign(ctx);
       });
     });
   });
@@ -200,7 +200,7 @@ describe('assertValidBooleanLiteral', () => {
         await seedConfig(ctx, '[push]\n\tgpgSign = if-asked\n');
 
         // Act + Assert
-        await assertValidBooleanLiteral(ctx);
+        await assertValidPushGpgSign(ctx);
       });
     });
   });
@@ -213,7 +213,7 @@ describe('assertValidBooleanLiteral', () => {
         await seedConfig(ctx, '[push]\n\tdefault = simple\n');
 
         // Act + Assert
-        await assertValidBooleanLiteral(ctx);
+        await assertValidPushGpgSign(ctx);
       });
     });
   });
@@ -226,7 +226,7 @@ describe('assertValidBooleanLiteral', () => {
         await seedConfig(ctx, '[commit]\n\tgpgSign = maybe\n');
 
         // Act + Assert
-        await assertValidBooleanLiteral(ctx);
+        await assertValidPushGpgSign(ctx);
       });
     });
   });

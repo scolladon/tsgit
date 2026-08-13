@@ -2,6 +2,7 @@ import type { ObjectId } from '../../domain/objects/index.js';
 import type { LruCache } from '../../domain/storage/index.js';
 import type { Context } from '../../ports/context.js';
 import { enumerateObjects } from '../primitives/enumerate-objects.js';
+import { assertValidBooleanConfigInSection } from '../primitives/internal/boolean-config-guard.js';
 import { adoptPackRegistry } from '../primitives/read-object.js';
 import { runBitmapHealthPass } from './internal/fsck/bitmap-health.js';
 import {
@@ -50,6 +51,9 @@ const NO_DELTA_CACHE: LruCache<Uint8Array> = {
 
 export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckResult> {
   await assertRepository(ctx);
+  // git's fsck loads promisor-remote config up front and refuses a malformed
+  // remote.<n>.promisor (subsectionless included), like status and unlike log.
+  await assertValidBooleanConfigInSection(ctx, 'remote', ['promisor']);
 
   // An integrity audit observes the STORE, never the session's read cache: a
   // delta base cached by an earlier read (or by this walk itself) would

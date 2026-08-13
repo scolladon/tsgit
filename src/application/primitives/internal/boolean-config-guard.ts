@@ -32,8 +32,9 @@ export const assertValidBooleanConfigInSection = async (
   ctx: Context,
   section: string,
   keys: ReadonlyArray<string>,
+  options: { readonly requireSubsection?: boolean } = {},
 ): Promise<void> => {
-  const found = await findFirstInvalidBooleanInSection(ctx, section, keys);
+  const found = await findFirstInvalidBooleanInSection(ctx, section, keys, options);
   if (found !== undefined) throw configBadBooleanValue(found.key, found.source, found.value);
 };
 
@@ -45,7 +46,7 @@ export const assertValidBooleanConfigInSection = async (
  * invalid. Throws the distinct `CONFIG_BAD_BOOLEAN_LITERAL` code, because git
  * reports a different message (`invalid value for '<key>'`) for this one key.
  */
-export const assertValidBooleanLiteral = async (ctx: Context): Promise<void> => {
+export const assertValidPushGpgSign = async (ctx: Context): Promise<void> => {
   const found = await findFirstInvalidPushGpgSign(ctx);
   if (found !== undefined) throw configBadBooleanLiteral(found.key, found.source, found.value);
 };

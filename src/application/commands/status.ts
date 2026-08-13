@@ -18,6 +18,7 @@ import {
   type WorkingTreeComparison,
   type WorkingTreeDelta,
 } from '../primitives/compare-working-tree-entry.js';
+import { assertValidBooleanConfigInSection } from '../primitives/internal/boolean-config-guard.js';
 import { joinPath } from '../primitives/internal/join-working-tree-path.js';
 import {
   type AttributeProvider,
@@ -121,6 +122,9 @@ interface GranularityTracker {
  */
 export const status = async (ctx: Context): Promise<StatusResult> => {
   await assertOperationalRepository(ctx);
+  // git's status loads promisor-remote config up front and refuses a malformed
+  // remote.<n>.promisor (subsectionless included) where log does not.
+  await assertValidBooleanConfigInSection(ctx, 'remote', ['promisor']);
   const head = await readHeadRaw(ctx);
   const branch = branchRefFromHead(head);
   const detached = head.kind === 'direct';

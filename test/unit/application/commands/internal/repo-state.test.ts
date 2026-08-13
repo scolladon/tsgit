@@ -998,6 +998,20 @@ describe('internal/repo-state', () => {
       });
     });
 
+    describe('Given a subsectionless [diff] cachetextconv holds a value git refuses', () => {
+      describe('When called', () => {
+        it('Then resolves without throw — git only knows the key per driver subsection', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx);
+          await seedConfig(ctx, '[diff]\n\tcachetextconv = maybe\n');
+
+          // Act + Assert — must not throw
+          await assertEagerConfigValid(ctx);
+        });
+      });
+    });
+
     describe('Given several malformed entries across the valueless, compression and boolean classes', () => {
       describe('When called', () => {
         it.each([

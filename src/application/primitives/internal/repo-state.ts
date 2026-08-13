@@ -142,7 +142,9 @@ export const assertEagerConfigValid = async (ctx: Context): Promise<void> => {
     findFirstInvalidCompression(ctx),
     findFirstInvalidBoolean(ctx, 'core', undefined, CORE_BOOLEAN_KEYS),
     findFirstInvalidLogAllRefUpdates(ctx),
-    findFirstInvalidBooleanInSection(ctx, 'diff', DIFF_BOOLEAN_KEYS),
+    // git ignores a subsectionless `[diff] cachetextconv` (the key only exists
+    // per-driver), so only subsectioned entries can refuse here.
+    findFirstInvalidBooleanInSection(ctx, 'diff', DIFF_BOOLEAN_KEYS, { requireSubsection: true }),
   ]);
   const candidates: ReadonlyArray<EagerCandidate | undefined> = [
     str === undefined ? undefined : { kind: 'valueless', line: str.line, entry: str },

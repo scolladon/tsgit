@@ -2,7 +2,7 @@ import { type AttributeValue, resolveAttribute } from '../../domain/attributes/i
 import type { FilePath } from '../../domain/objects/object-id.js';
 import type { Context } from '../../ports/context.js';
 import { readConfig } from './config-read.js';
-import { assertValidBooleanConfig } from './internal/boolean-config-guard.js';
+import { assertValidBooleanConfigInSection } from './internal/boolean-config-guard.js';
 import type { AttributeProvider } from './internal/read-gitattributes.js';
 
 /**
@@ -25,9 +25,13 @@ const IDENTITY: FilterChoice = { kind: 'identity' };
 
 /** Consult `[filter "<name>"]` and return the filter choice. */
 const namedFilterChoice = async (ctx: Context, name: string): Promise<FilterChoice> => {
+  // Once a filter attribute engages, git validates EVERY `[filter "<d>"]`
+  // required value — selected or not, section present or not — while a
+  // subsectionless `[filter] required` stays inert. So the section-wide guard
+  // runs before the per-driver section lookup and its early return.
+  await assertValidBooleanConfigInSection(ctx, 'filter', ['required'], { requireSubsection: true });
   const section = (await readConfig(ctx)).filter?.get(name);
   if (section === undefined) return IDENTITY;
-  await assertValidBooleanConfig(ctx, 'filter', name, ['required']);
   return {
     kind: 'external',
     name,
