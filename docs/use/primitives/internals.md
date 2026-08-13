@@ -94,5 +94,8 @@ Alphabetical.
 ### `updateShallow`
 `shallow-file.ts`. Write `.git/shallow` boundaries. Refuses (`SHALLOW_FILE_MALFORMED`) before writing when the resulting set would exceed the entry cap or an added oid's width doesn't match the repository hash.
 
+### `writePackArtifacts`
+`internal/write-pack-artifacts.ts`. **Fully internal.** Writes a pack's sibling artefacts in git's own order: `.pack`, `.idx`, an optional `.promisor` sentinel, then `.rev` last — `.rev` last because pack discovery keys on the `.pack`/`.idx` pair, so a concurrent reader that observes the pair before the `.rev` lands just takes the absent-artefact arm. The `.rev` write is gated by `pack.writeReverseIndex` (default `true`), resolved *before* any file is created, so a value git's boolean grammar refuses leaves the pack directory untouched. `buildIdx`/`buildRev` (same file) assemble each artefact's bytes — a body/trailer split where `ctx.hash` fills the trailer in place. Used by `fetchPack`, [`packObjects`](../commands/pack-objects.md).
+
 ### `writeSparsePatternText`
 `write-sparse-checkout.ts`. Write raw `.git/info/sparse-checkout` text.

@@ -146,15 +146,18 @@ reconstructed from git's stderr text.
   `assertRepository` (not `assertOperationalRepository`): a broken `[core]`
   config or an unborn/dangling HEAD symref is tolerated, because fsck must run
   on exactly the corrupt repo you point it at. Throws `notARepository` outside
-  a repo. One *content-driven* refusal exists alongside it — see
+  a repo. Two *content-driven* refusals exist alongside it — see
   [Throws](#throws) below.
-- **In-repo faults are findings, never throws — with one documented
-  exception.** Every read call inside the scan is wrapped; a thrown
+- **In-repo faults are findings, never throws — with two documented
+  exceptions.** Every read call inside the scan is wrapped; a thrown
   `TsgitError` is classified to a finding by its `.data.code`, and fsck
-  survives the worst repo state. The exception is `connectivityOnly: true`
-  against an unreachable object whose stored header cannot be recovered at
-  all: there git itself aborts (`die()`, exit 128), and tsgit rejects instead
-  of resolving (see [Throws](#throws)).
+  survives the worst repo state. The first exception is `connectivityOnly:
+  true` against an unreachable object whose stored header cannot be recovered
+  at all: there git itself aborts (`die()`, exit 128), and tsgit rejects
+  instead of resolving. The second is a malformed `remote.<n>.promisor` value
+  — checked once, only when the run has at least one root or an
+  absent-ref-target fault to walk, exactly where git's own promisor-config
+  load happens (see [Throws](#throws)).
 - **Exit code carries severity, not exception — outside that one case.** A
   repo with missing or corrupt objects returns a non-zero `exitCode` in a
   successfully-resolved `FsckResult` — it does **not** reject, except for the
@@ -286,8 +289,13 @@ process.exit(result.exitCode);
   non-numeric size). Not triggered by a header that parses but disagrees with
   the body's actual size — that object still resolves normally, as a
   `dangling` / `unreachable` finding carrying its real type.
+- `CONFIG_BAD_BOOLEAN_VALUE` — a `remote.<n>.promisor` entry holds a value
+  git's boolean grammar refuses. Checked once per run, only when there is at
+  least one root or an absent-ref-target fault to walk — a run with nothing
+  to walk never reads the key, matching git.
 
 ## See also
 
 - Primitives: [`readObject`](../primitives/read-object.md), [`enumerateObjects`](../primitives/internals.md#enumerateobjects), [`walkCommits`](../primitives/walk-commits.md)
 - Related commands: [`catFile`](cat-file.md), [`revParse`](rev-parse.md)
+- ADRs: [627](../../adr/627-boolean-config-values-are-refused-as-git-refuses-them.md)

@@ -75,6 +75,18 @@ the **cleaned** content, not the raw worktree bytes.
 - **Independent of `diff=`.** Clean/smudge and textconv are orthogonal. A path
   with `filter=<name>` only is diffed against raw committed bytes; textconv only
   applies to paths carrying `diff=<name>`.
+- **A malformed `required` value throws, but only when a path actually
+  converts.** `filter.<d>.required` set to a value git's boolean grammar
+  refuses throws `CONFIG_BAD_BOOLEAN_VALUE` — checked across every `[filter
+  "<d>"]` section once `add` starts converting a path, even one unrelated to
+  the driver that mismatched. A path whose stat is unchanged from the index
+  (the `ie_match_stat` short-circuit below) never converts, so it never
+  triggers this check — matching git.
+- **Stat-clean short-circuit (`ie_match_stat`).** A path whose stat
+  (`mtime`/`ctime`/`size`/`ino`) matches the index's recorded fields and whose
+  mode is unchanged is re-staged as-is: no read, no clean filter, no re-hash.
+  This only changes cost, never `AddResult` — a stat-clean path was already
+  neither `added` nor `modified`.
 
 **Status and diff after clean.** `status` and working-tree diffs re-apply the
 clean filter to the worktree file before comparing the result to the cleaned blob
@@ -92,4 +104,4 @@ section.
 - Primitives: [`walkWorkingTree`](../primitives/walk-working-tree.md), [`readIndex`](../primitives/read-index.md), [`writeObject`](../primitives/write-object.md)
 - Related commands: [`rm`](rm.md), [`checkout`](checkout.md) — share the pathspec syntax
 - Recipes: [stage with globs](../recipes.md#stage-with-globs), [bulk add --all](../recipes.md#bulk-add-all)
-- ADRs: [029](../../adr/029-add-all-ignore-stub.md), [030](../../adr/030-add-all-walk-strategy.md), [031](../../adr/031-add-all-symlink-gitlink-policy.md), [032](../../adr/032-add-all-large-file-guard.md), [037](../../adr/037-pathspec-auto-detect.md), [038](../../adr/038-pathspec-exclusion.md)
+- ADRs: [029](../../adr/029-add-all-ignore-stub.md), [030](../../adr/030-add-all-walk-strategy.md), [031](../../adr/031-add-all-symlink-gitlink-policy.md), [032](../../adr/032-add-all-large-file-guard.md), [037](../../adr/037-pathspec-auto-detect.md), [038](../../adr/038-pathspec-exclusion.md), [627](../../adr/627-boolean-config-values-are-refused-as-git-refuses-them.md)
