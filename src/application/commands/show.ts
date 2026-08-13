@@ -23,6 +23,7 @@ import type {
   Tree,
 } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
+import { assertValidBooleanConfigInSection } from '../primitives/internal/boolean-config-guard.js';
 import { loadShallowSet } from '../primitives/internal/shallow-set.js';
 import { readObject } from '../primitives/read-object.js';
 import { diffCommitAgainstParent } from './internal/commit-diff.js';
@@ -110,6 +111,9 @@ export async function show(
   opts: ShowOptions = {},
 ): Promise<ShowResult | ReadonlyArray<ShowResult>> {
   await assertOperationalRepository(ctx);
+  // git's show loads promisor-remote config with its object walk (measured:
+  // show refuses a malformed remote.<n>.promisor where log accepts it).
+  await assertValidBooleanConfigInSection(ctx, 'remote', ['promisor']);
   const withStat = opts.withStat === true;
   if (typeof rev === 'string') return buildForRev(ctx, rev, withStat);
   const results: ShowResult[] = [];

@@ -7,9 +7,13 @@ import { TsgitError } from '../../../../src/domain/index.js';
 import type { FilePath } from '../../../../src/domain/objects/object-id.js';
 import type { Context } from '../../../../src/ports/context.js';
 
-const choose = async (ctx: Context, path: string) => {
+const choose = async (
+  ctx: Context,
+  path: string,
+  options?: { readonly eagerSectionValidation?: boolean },
+) => {
   const provider = await buildAttributeProvider(ctx);
-  return resolveFilterDriver(ctx, provider, path as FilePath);
+  return resolveFilterDriver(ctx, provider, path as FilePath, options ?? {});
 };
 
 const seed = (ctx: Context, attrs?: string, config?: string) =>
@@ -246,6 +250,46 @@ describe('resolveFilterDriver', () => {
 
         // Assert
         expect(result).toEqual({ kind: 'external', name: 'myf', clean: 'up', required: false });
+      });
+    });
+  });
+
+  describe('Given a converting caller (eagerSectionValidation) and [filter "zed"].required = maybe with NO attributes', () => {
+    describe('When resolving the filter driver', () => {
+      it('Then throws CONFIG_BAD_BOOLEAN_VALUE — conversion validates every driver section even unmatched', async () => {
+        // Arrange — no filter attribute anywhere; only the malformed section.
+        const ctx = createMemoryContext();
+        await seed(ctx, undefined, '[filter "zed"]\n\trequired = maybe\n');
+
+        // Act
+        let caught: unknown;
+        try {
+          await choose(ctx, 'a.y', { eagerSectionValidation: true });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as { code: string; key: string };
+        expect(data.code).toBe('CONFIG_BAD_BOOLEAN_VALUE');
+        expect(data.key).toBe('filter.zed.required');
+      });
+    });
+  });
+
+  describe('Given a status-shaped caller (no eager flag) and the same malformed unmatched section', () => {
+    describe('When resolving the filter driver', () => {
+      it('Then identity resolves without refusal — status accepts what conversion refuses', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, undefined, '[filter "zed"]\n\trequired = maybe\n');
+
+        // Act
+        const result = await choose(ctx, 'a.y');
+
+        // Assert
+        expect(result).toEqual({ kind: 'identity' });
       });
     });
   });

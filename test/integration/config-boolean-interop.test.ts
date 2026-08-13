@@ -396,4 +396,60 @@ describe.skipIf(!GIT_AVAILABLE)('config boolean refusal tier interop', () => {
       });
     });
   });
+  describe('Given X17 — remote.origin.promisor = maybe, the command-split pin', () => {
+    beforeEach(() =>
+      writeConfig('[core]\n\trepositoryformatversion = 0\n[remote "origin"]\n\tpromisor = maybe\n'),
+    );
+
+    describe('When git and tsgit each run status (a refusing command)', () => {
+      it('Then both refuse naming remote.origin.promisor', async () => {
+        // Arrange & Act — armed in beforeEach
+        const g = tryRunGitWithExit(['-C', ours, 'status'], { env: runGitEnv() });
+        const caught = await withRepo(ours, (repo) => captureThrow(() => repo.status()));
+
+        // Assert — git
+        expect(g.exitCode).toBe(128);
+        expect(g.stderr).toContain("bad boolean config value 'maybe' for 'remote.origin.promisor'");
+        // Assert — tsgit
+        const data = asBadBoolean(caught);
+        expect(data.code).toBe('CONFIG_BAD_BOOLEAN_VALUE');
+        expect(data.key).toBe('remote.origin.promisor');
+      });
+    });
+
+    describe('When git and tsgit each run log (an accepting command)', () => {
+      it('Then both succeed — the promisor read is command-scoped, not repo-wide', async () => {
+        // Arrange — log needs history; commit it via git BEFORE arming would
+        // hit git's own commit-time refusal, so use a scratch config swap.
+        await writeConfig('[core]\n\trepositoryformatversion = 0\n');
+        runGit(
+          [
+            '-C',
+            ours,
+            '-c',
+            'user.name=t',
+            '-c',
+            'user.email=t@t',
+            'commit',
+            '--allow-empty',
+            '-q',
+            '-m',
+            'c1',
+          ],
+          { env: runGitEnv() },
+        );
+        await writeConfig(
+          '[core]\n\trepositoryformatversion = 0\n[remote "origin"]\n\tpromisor = maybe\n',
+        );
+
+        // Act
+        const g = tryRunGitWithExit(['-C', ours, 'log', '--oneline'], { env: runGitEnv() });
+        const entries = await withRepo(ours, (repo) => repo.log({ limit: 1 }));
+
+        // Assert
+        expect(g.exitCode).toBe(0);
+        expect(entries).toHaveLength(1);
+      });
+    });
+  });
 });

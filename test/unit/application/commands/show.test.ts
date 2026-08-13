@@ -1,13 +1,14 @@
 import { describe, expect, it } from 'vitest';
-
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { add } from '../../../../src/application/commands/add.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
 import { revParse } from '../../../../src/application/commands/rev-parse.js';
 import { show } from '../../../../src/application/commands/show.js';
+import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
+import { TsgitError } from '../../../../src/domain/error.js';
 import type { AuthorIdentity, ObjectId, TagData } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
 
@@ -306,6 +307,37 @@ describe('show', () => {
       // Assert
       expect(caught).toBeInstanceOf(Error);
       expect((caught as { data?: { code?: string } }).data?.code).toBe('OBJECT_NOT_FOUND');
+    });
+  });
+});
+
+describe('show — remote.promisor guard', () => {
+  describe('Given remote.origin.promisor holds a value git refuses', () => {
+    describe('When show runs on HEAD', () => {
+      it('Then throws CONFIG_BAD_BOOLEAN_VALUE naming remote.origin.promisor', async () => {
+        // Arrange
+        const ctx = await seedTwoCommits();
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[remote "origin"]\n\tpromisor = maybe\n',
+        );
+        __resetConfigCacheForTests();
+
+        // Act
+        let caught: unknown;
+        try {
+          await show(ctx, 'HEAD');
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — each field individually (mutation-resistant)
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as { code: string; key: string; value: string };
+        expect(data.code).toBe('CONFIG_BAD_BOOLEAN_VALUE');
+        expect(data.key).toBe('remote.origin.promisor');
+        expect(data.value).toBe('maybe');
+      });
     });
   });
 });

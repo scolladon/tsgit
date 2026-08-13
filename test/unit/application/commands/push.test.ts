@@ -2025,6 +2025,45 @@ describe('push — signed', () => {
       });
     });
 
+    describe.each([
+      {
+        extra: '[push]\n  gpgSign = maybe\n  default = bogus\n',
+        expectedCode: 'CONFIG_BAD_BOOLEAN_LITERAL',
+        label: 'gpgSign on the earlier line',
+      },
+      {
+        extra: '[push]\n  default = bogus\n  gpgSign = maybe\n',
+        expectedCode: 'INVALID_PUSH_DEFAULT',
+        label: 'default on the earlier line',
+      },
+    ])(
+      'When push.default and push.gpgSign are BOTH malformed ($label)',
+      ({ extra, expectedCode }) => {
+        it(`Then the first malformed line wins with ${'$'}{expectedCode}`, async () => {
+          // Arrange — git parses both keys in one config pass, first line wins.
+          const ctx = createMemoryContext();
+          const { parent } = await seedSignedPush(ctx, { otherExtra: extra });
+          const { transport } = fakeServer({
+            url: 'https://example.com/r.git',
+            advertisedRefs: [{ name: 'refs/heads/main', id: parent.id }],
+            reportStatus: { unpack: 'ok', refs: [] },
+          });
+
+          // Act
+          let caught: unknown;
+          try {
+            await push({ ...ctx, transport });
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data.code).toBe(expectedCode);
+        });
+      },
+    );
+
     describe('When the remote is already up to date (nothing to push)', () => {
       it('Then still throws CONFIG_BAD_BOOLEAN_LITERAL — git refuses even a no-op push', async () => {
         // Arrange — the advertised tip equals the local tip, so no ref moves.

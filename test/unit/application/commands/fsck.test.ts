@@ -6492,27 +6492,53 @@ describe('fsck — remote.promisor guard', () => {
   describe.each([
     { config: '[remote]\n\tpromisor = maybe\n', expectedKey: 'remote.promisor' },
     { config: '[remote "origin"]\n\tpromisor = maybe\n', expectedKey: 'remote.origin.promisor' },
-  ])('Given $expectedKey holds a value git refuses, When fsck runs', ({ config, expectedKey }) => {
-    it('Then throws CONFIG_BAD_BOOLEAN_VALUE', async () => {
-      // Arrange
-      const ctx = await initBareCtx();
-      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, config);
-      __resetConfigCacheForTests();
+  ])('Given $expectedKey holds a value git refuses', ({ config, expectedKey }) => {
+    describe('When fsck runs on a repo with a rooted ref', () => {
+      it('Then throws CONFIG_BAD_BOOLEAN_VALUE', async () => {
+        // Arrange — a reachable commit roots the walk, which is where git's
+        // fsck reaches promisor-remote config.
+        const ctx = await initBareCtx();
+        const blobId = await writeObject(ctx, makeBlob('hello'));
+        const treeId = await writeObject(
+          ctx,
+          makeTree([{ mode: FILE_MODE.REGULAR, name: 'hello.txt', id: blobId }]),
+        );
+        const commitId = await writeObject(ctx, makeCommit(treeId, []));
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, config);
+        __resetConfigCacheForTests();
 
-      // Act
-      let caught: unknown;
-      try {
-        await fsck(ctx);
-      } catch (err) {
-        caught = err;
-      }
+        // Act
+        let caught: unknown;
+        try {
+          await fsck(ctx);
+        } catch (err) {
+          caught = err;
+        }
 
-      // Assert — each field individually (mutation-resistant)
-      expect(caught).toBeInstanceOf(TsgitError);
-      const data = (caught as TsgitError).data as { code: string; key: string; value: string };
-      expect(data.code).toBe('CONFIG_BAD_BOOLEAN_VALUE');
-      expect(data.key).toBe(expectedKey);
-      expect(data.value).toBe('maybe');
+        // Assert — each field individually (mutation-resistant)
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as { code: string; key: string; value: string };
+        expect(data.code).toBe('CONFIG_BAD_BOOLEAN_VALUE');
+        expect(data.key).toBe(expectedKey);
+        expect(data.value).toBe('maybe');
+      });
+    });
+
+    describe('When fsck runs on a rootless repo (unborn HEAD, one dangling blob)', () => {
+      it('Then resolves — git only reaches promisor config once the walk has roots', async () => {
+        // Arrange
+        const ctx = await initBareCtx();
+        await writeObject(ctx, makeBlob('dangling'));
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, config);
+        __resetConfigCacheForTests();
+
+        // Act
+        const result = await fsck(ctx);
+
+        // Assert — the dangling blob is reported, but no config refusal fires
+        expect(result.findings.some((f) => f.type === 'dangling')).toBe(true);
+      });
     });
   });
 });

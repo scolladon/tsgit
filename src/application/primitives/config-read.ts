@@ -1126,12 +1126,18 @@ const applyLooseCompressionEntry = (
   return { ...core, looseCompression: r.value };
 };
 
-const CORE_BOOLEAN_KEYS = new Set([
-  'bare',
-  'logallrefupdates',
-  'sparsecheckout',
-  'sparsecheckoutcone',
-]);
+// One map is BOTH the key set and the field dispatch: a new boolean key
+// cannot join the set without naming its target field, so a silent
+// mis-assignment is structurally impossible.
+const CORE_BOOLEAN_FIELDS: Readonly<
+  Record<string, 'bare' | 'sparseCheckout' | 'sparseCheckoutCone'>
+> = {
+  bare: 'bare',
+  sparsecheckout: 'sparseCheckout',
+  sparsecheckoutcone: 'sparseCheckoutCone',
+};
+
+const CORE_BOOLEAN_KEYS = new Set(['logallrefupdates', ...Object.keys(CORE_BOOLEAN_FIELDS)]);
 
 /** Handles the four `[core]` keys whose value is boolean-typed (or the `always` tri-state). */
 const applyCoreBooleanEntry = (
@@ -1143,14 +1149,12 @@ const applyCoreBooleanEntry = (
     const parsed = parseLogAllRefUpdates(value);
     return parsed === undefined ? undefined : { ...core, logAllRefUpdates: parsed };
   }
+  const field = CORE_BOOLEAN_FIELDS[lowered];
+  // Stryker disable next-line ConditionalExpression: equivalent — callers gate on CORE_BOOLEAN_KEYS, which is derived from CORE_BOOLEAN_FIELDS plus the tri-state handled above, so no key without a field mapping can reach this line; the branch exists only to narrow the Record lookup's type.
+  if (field === undefined) return undefined;
   const parsed = parseGitBoolean(value);
   if (!parsed.ok) return undefined;
-  if (lowered === 'bare') return { ...core, bare: parsed.value };
-  if (lowered === 'sparsecheckout') return { ...core, sparseCheckout: parsed.value };
-  if (lowered === 'sparsecheckoutcone') return { ...core, sparseCheckoutCone: parsed.value };
-  // Unreachable while CORE_BOOLEAN_KEYS and the arms above agree; a key added
-  // to the set without an arm lands here instead of silently mis-assigning.
-  return undefined;
+  return { ...core, [field]: parsed.value };
 };
 
 /**

@@ -14,6 +14,7 @@
  *  10. Update local `refs/remotes/<remote>/*` cache for accepted refs.
  */
 import {
+  configBadBooleanLiteral,
   invalidOption,
   invalidPushDefault,
   nonFastForward,
@@ -43,10 +44,13 @@ import { isSafeRefName } from '../../domain/refs/ref-validation.js';
 import { shortBranchName } from '../../domain/refs/short-branch-name.js';
 import type { Context } from '../../ports/context.js';
 import { buildPack } from '../primitives/build-pack.js';
-import { findInvalidPushDefault, readConfig } from '../primitives/config-read.js';
+import {
+  findFirstInvalidPushGpgSign,
+  findInvalidPushDefault,
+  readConfig,
+} from '../primitives/config-read.js';
 import { enumeratePushObjects } from '../primitives/enumerate-push-objects.js';
 import { enumerateRefs } from '../primitives/enumerate-refs.js';
-import { assertValidPushGpgSign } from '../primitives/internal/boolean-config-guard.js';
 import { assertNoValuelessConfig } from '../primitives/internal/valueless-config-guard.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import { runHook } from '../primitives/run-hook.js';
@@ -111,22 +115,29 @@ const PUSH_UPLOAD_OP = 'push:upload';
 const ZERO_OID = ObjectId.from('0'.repeat(40));
 const SIDE_BAND_CAPS: ReadonlySet<string> = new Set(['side-band-64k', 'side-band']);
 
-// Real git validates `push.default` on the config-read cold path before resolving
-// the remote or the refspec, regardless of mode or an explicit refspec — mirror
-// that ordering here so a set-but-invalid value refuses before any session opens.
-const assertValidPushDefault = async (ctx: Context): Promise<void> => {
-  const invalid = await findInvalidPushDefault(ctx);
-  if (invalid !== undefined) {
-    throw invalidPushDefault(invalid.value, invalid.source, invalid.line);
+// Real git validates `push.default` AND `push.gpgSign` in the same config
+// callback pass on the cold path — before the remote resolves or any session
+// opens, even when nothing will be pushed — so the first malformed LINE wins
+// regardless of which key it belongs to (measured: swapping the two lines
+// swaps which error git reports).
+const assertValidPushConfig = async (ctx: Context): Promise<void> => {
+  const [badDefault, badGpgSign] = await Promise.all([
+    findInvalidPushDefault(ctx),
+    findFirstInvalidPushGpgSign(ctx),
+  ]);
+  const defaultWins =
+    badDefault !== undefined && (badGpgSign === undefined || badDefault.line < badGpgSign.line);
+  if (defaultWins) {
+    throw invalidPushDefault(badDefault.value, badDefault.source, badDefault.line);
+  }
+  if (badGpgSign !== undefined) {
+    throw configBadBooleanLiteral(badGpgSign.key, badGpgSign.source, badGpgSign.value);
   }
 };
 
 export const push = async (ctx: Context, opts: PushOptions = {}): Promise<PushResult> => {
   await assertOperationalRepository(ctx);
-  await assertValidPushDefault(ctx);
-  // git validates push.gpgSign on the same config-read cold path — before the
-  // remote resolves or any session opens, even when nothing will be pushed.
-  await assertValidPushGpgSign(ctx);
+  await assertValidPushConfig(ctx);
   ctx.progress.start(PUSH_ENUMERATE_OBJECTS_OP);
   try {
     return await pushViaSession(ctx, opts);

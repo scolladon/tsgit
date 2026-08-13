@@ -3,7 +3,6 @@ import { createMemoryContext } from '../../../../../src/adapters/memory/memory-a
 import {
   assertValidBooleanConfig,
   assertValidBooleanConfigInSection,
-  assertValidPushGpgSign,
 } from '../../../../../src/application/primitives/internal/boolean-config-guard.js';
 import { TsgitError } from '../../../../../src/domain/index.js';
 import type { Context } from '../../../../../src/ports/context.js';
@@ -147,86 +146,6 @@ describe('assertValidBooleanConfigInSection', () => {
 
         // Act + Assert
         await assertValidBooleanConfigInSection(ctx, 'diff', ['cachetextconv']);
-      });
-    });
-  });
-});
-
-describe('assertValidPushGpgSign', () => {
-  describe('Given [push] gpgSign holds a value git refuses', () => {
-    describe('When called', () => {
-      it('Then throws CONFIG_BAD_BOOLEAN_LITERAL with key/source/value', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await seedConfig(ctx, '[push]\n\tgpgSign = maybe\n');
-
-        // Act
-        let caught: unknown;
-        try {
-          await assertValidPushGpgSign(ctx);
-        } catch (err) {
-          caught = err;
-        }
-
-        // Assert
-        expect(caught).toBeInstanceOf(TsgitError);
-        const data = (caught as TsgitError).data as BadBooleanData;
-        expect(data.code).toBe('CONFIG_BAD_BOOLEAN_LITERAL');
-        expect(data.key).toBe('push.gpgsign');
-        expect(data.value).toBe('maybe');
-        expect(data.source).toMatch(/\/config$/);
-      });
-    });
-  });
-
-  describe('Given [push] gpgSign holds a value git accepts', () => {
-    describe('When called', () => {
-      it('Then resolves (no throw)', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await seedConfig(ctx, '[push]\n\tgpgSign = true\n');
-
-        // Act + Assert
-        await assertValidPushGpgSign(ctx);
-      });
-    });
-  });
-
-  describe('Given [push] gpgSign holds the tri-state literal "if-asked"', () => {
-    describe('When called', () => {
-      it('Then resolves (no throw) — the third literal is not the boolean grammar', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await seedConfig(ctx, '[push]\n\tgpgSign = if-asked\n');
-
-        // Act + Assert
-        await assertValidPushGpgSign(ctx);
-      });
-    });
-  });
-
-  describe('Given the requested key is absent', () => {
-    describe('When called', () => {
-      it('Then resolves (no throw)', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await seedConfig(ctx, '[push]\n\tdefault = simple\n');
-
-        // Act + Assert
-        await assertValidPushGpgSign(ctx);
-      });
-    });
-  });
-
-  describe('Given the malformed key sits in a different section', () => {
-    describe('When called', () => {
-      it('Then resolves (no throw — out of section)', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await seedConfig(ctx, '[commit]\n\tgpgSign = maybe\n');
-
-        // Act + Assert
-        await assertValidPushGpgSign(ctx);
       });
     });
   });

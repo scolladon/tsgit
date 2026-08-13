@@ -22,6 +22,7 @@ import type { FilePath } from '../../domain/objects/object-id.js';
 import { matchesPathspec, type Pathspec } from '../../domain/pathspec/index.js';
 import { CHERRY_PICK, MERGE, REBASE, REVERT } from '../../domain/sequencer/operation-labels.js';
 import type { Context } from '../../ports/context.js';
+import { assertValidBooleanConfigInSection } from '../primitives/internal/boolean-config-guard.js';
 import { indexEntryFromStat } from '../primitives/internal/index-entry-from-stat.js';
 import { joinPath } from '../primitives/internal/join-working-tree-path.js';
 import {
@@ -81,6 +82,9 @@ export const add = async (
   opts: AddOptions = {},
 ): Promise<AddResult> => {
   await assertOperationalRepository(ctx);
+  // git's add loads promisor-remote config via its convert/odb setup
+  // (measured: add refuses a malformed remote.<n>.promisor).
+  await assertValidBooleanConfigInSection(ctx, 'remote', ['promisor']);
   await assertNotBare(ctx, 'add');
   // Allow `add` during a conflicted operation — staging resolved files IS the
   // path forward for merge / cherry-pick / revert / rebase alike.
@@ -391,7 +395,7 @@ const applyCleanFilter = async (
   provider: AttributeProvider | undefined,
 ): Promise<Uint8Array> => {
   if (provider === undefined || ctx.command === undefined || isSymbolicLink) return bytes;
-  const choice = await resolveFilterDriver(ctx, provider, path);
+  const choice = await resolveFilterDriver(ctx, provider, path, { eagerSectionValidation: true });
   if (choice.kind !== 'external' || choice.clean === undefined) return bytes;
   const result = await runFilterDriver(ctx, ctx.command, choice.clean, bytes);
   if (result.ok) return result.bytes;

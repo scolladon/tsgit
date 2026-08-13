@@ -5,6 +5,8 @@ import { commit } from '../../../../src/application/commands/commit.js';
 import { diff } from '../../../../src/application/commands/diff.js';
 import { init } from '../../../../src/application/commands/init.js';
 import { rm } from '../../../../src/application/commands/rm.js';
+import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
+import { TsgitError } from '../../../../src/domain/error.js';
 import type { AuthorIdentity } from '../../../../src/domain/objects/index.js';
 
 const author: AuthorIdentity = {
@@ -701,6 +703,41 @@ describe('diff', () => {
 
         // Assert
         expect(result.changes[0]).toMatchObject(expected);
+      });
+    });
+  });
+});
+
+describe('diff — remote.promisor guard', () => {
+  describe('Given remote.origin.promisor holds a value git refuses', () => {
+    describe('When a tree-to-tree diff runs', () => {
+      it('Then throws CONFIG_BAD_BOOLEAN_VALUE naming remote.origin.promisor', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a1');
+        await add(ctx, ['a.txt']);
+        await commit(ctx, { message: 'first', author });
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[remote "origin"]\n\tpromisor = maybe\n',
+        );
+        __resetConfigCacheForTests();
+
+        // Act
+        let caught: unknown;
+        try {
+          await diff(ctx, {});
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — each field individually (mutation-resistant)
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as { code: string; key: string; value: string };
+        expect(data.code).toBe('CONFIG_BAD_BOOLEAN_VALUE');
+        expect(data.key).toBe('remote.origin.promisor');
+        expect(data.value).toBe('maybe');
       });
     });
   });

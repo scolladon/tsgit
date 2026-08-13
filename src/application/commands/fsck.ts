@@ -51,9 +51,6 @@ const NO_DELTA_CACHE: LruCache<Uint8Array> = {
 
 export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckResult> {
   await assertRepository(ctx);
-  // git's fsck loads promisor-remote config up front and refuses a malformed
-  // remote.<n>.promisor (subsectionless included), like status and unlike log.
-  await assertValidBooleanConfigInSection(ctx, 'remote', ['promisor']);
 
   // An integrity audit observes the STORE, never the session's read cache: a
   // delta base cached by an earlier read (or by this walk itself) would
@@ -145,6 +142,11 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
   // of `universe`'s own mode-narrowing — see `existsInStore`'s doc comment)
   // rather than re-scanning the store.
   const { roots, missingEntryPoint } = await collectRoots(ctx, opts, universe);
+  // git's fsck reaches promisor-remote config lazily, during the
+  // connectivity walk — measured: an unborn-HEAD repo and a repo without refs holding
+  // one dangling blob both accept a malformed remote.<n>.promisor (exit 0);
+  // the refusal appears once anything roots the walk.
+  if (roots.size > 0) await assertValidBooleanConfigInSection(ctx, 'remote', ['promisor']);
   const missingEntryPointBit = missingEntryPoint ? EXIT_REFS_CONTENT : 0;
   const inEdgePresent = buildInEdgeMap(universe, objectCache);
 

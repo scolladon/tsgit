@@ -22,7 +22,10 @@ import type { Context } from '../../ports/context.js';
 import type { ParsedConfig } from '../primitives/config-read.js';
 import { readConfig } from '../primitives/config-read.js';
 import { createCommit } from '../primitives/create-commit.js';
-import { assertValidBooleanConfig } from '../primitives/internal/boolean-config-guard.js';
+import {
+  assertValidBooleanConfig,
+  assertValidBooleanConfigInSection,
+} from '../primitives/internal/boolean-config-guard.js';
 import { assertNoValuelessConfig } from '../primitives/internal/valueless-config-guard.js';
 import { readIndex } from '../primitives/read-index.js';
 import { readObject } from '../primitives/read-object.js';
@@ -98,6 +101,9 @@ export const commit = async (ctx: Context, opts: CommitOptions): Promise<CommitR
   // git refuses a malformed commit.gpgSign before hooks run, before the tree is
   // written, and before the nothing-to-commit check — mirror that ordering.
   await assertValidBooleanConfig(ctx, 'commit', undefined, ['gpgsign']);
+  // git's commit also loads promisor-remote config up front (measured:
+  // commit refuses a malformed remote.<n>.promisor; log does not).
+  await assertValidBooleanConfigInSection(ctx, 'remote', ['promisor']);
   // Resolving a conflicted merge / cherry-pick / revert IS the legitimate way to
   // clear its marker — skip that marker's check. All other in-progress operations
   // still block. A cherry-pick / revert resolution stays single-parent (no

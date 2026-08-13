@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import type { AddOptions } from '../../../../src/application/commands/add.js';
 import { add, addAll as addAllInternal } from '../../../../src/application/commands/add.js';
+import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
 import { readBlob } from '../../../../src/application/primitives/read-blob.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import { MAX_WORKING_TREE_BLOB_BYTES } from '../../../../src/application/primitives/types.js';
@@ -13,6 +14,7 @@ import type {
   CommandResult,
   CommandRunner,
 } from '../../../../src/ports/command-runner.js';
+import { stubCommandRunner } from '../primitives/helpers/stub-command-runner.js';
 import { seedRepo } from './fixtures.js';
 
 const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
@@ -1875,6 +1877,69 @@ describe('add', () => {
         const blob = await readBlob(enrichedCtx, entry!.id as ObjectId);
         expect(dec(blob.content)).toBe('HELLO WORLD');
         expect(result.added).toEqual(['a.y']);
+      });
+    });
+  });
+});
+
+describe('add — remote.promisor guard', () => {
+  describe('Given remote.origin.promisor holds a value git refuses', () => {
+    describe('When add runs', () => {
+      it('Then throws CONFIG_BAD_BOOLEAN_VALUE naming remote.origin.promisor', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo({ 'a.txt': 'a' });
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[remote "origin"]\n\tpromisor = maybe\n',
+        );
+        __resetConfigCacheForTests();
+
+        // Act
+        let caught: unknown;
+        try {
+          await add(ctx, ['a.txt']);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — each field individually (mutation-resistant)
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as { code: string; key: string; value: string };
+        expect(data.code).toBe('CONFIG_BAD_BOOLEAN_VALUE');
+        expect(data.key).toBe('remote.origin.promisor');
+        expect(data.value).toBe('maybe');
+      });
+    });
+  });
+});
+
+describe('add — filter section validation', () => {
+  describe('Given [filter "zed"].required = maybe and NO filter attribute anywhere', () => {
+    describe('When add runs with a command runner wired', () => {
+      it('Then throws CONFIG_BAD_BOOLEAN_VALUE — the clean conversion validates every driver section', async () => {
+        // Arrange
+        const runner = stubCommandRunner({ stdout: new Uint8Array(0) });
+        const ctx = createMemoryContext({ command: runner });
+        await seedRepo(ctx, { workingTree: { 'a.txt': 'a' } });
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[filter "zed"]\n\trequired = maybe\n',
+        );
+        __resetConfigCacheForTests();
+
+        // Act
+        let caught: unknown;
+        try {
+          await add(ctx, ['a.txt']);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as { code: string; key: string };
+        expect(data.code).toBe('CONFIG_BAD_BOOLEAN_VALUE');
+        expect(data.key).toBe('filter.zed.required');
       });
     });
   });

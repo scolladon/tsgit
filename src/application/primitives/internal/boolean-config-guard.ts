@@ -1,10 +1,6 @@
-import { configBadBooleanLiteral, configBadBooleanValue } from '../../../domain/commands/error.js';
+import { configBadBooleanValue } from '../../../domain/commands/error.js';
 import type { Context } from '../../../ports/context.js';
-import {
-  findFirstInvalidBoolean,
-  findFirstInvalidBooleanInSection,
-  findFirstInvalidPushGpgSign,
-} from '../config-read.js';
+import { findFirstInvalidBoolean, findFirstInvalidBooleanInSection } from '../config-read.js';
 
 /**
  * Refuse with `CONFIG_BAD_BOOLEAN_VALUE` when any of `keys` (case-insensitive) under
@@ -36,17 +32,4 @@ export const assertValidBooleanConfigInSection = async (
 ): Promise<void> => {
   const found = await findFirstInvalidBooleanInSection(ctx, section, keys, options);
   if (found !== undefined) throw configBadBooleanValue(found.key, found.source, found.value);
-};
-
-/**
- * `push.gpgSign`'s tri-state literal check: `push.gpgSign` accepts a third
- * literal (`if-asked`) beyond git's boolean grammar, so it uses the dedicated
- * `findFirstInvalidPushGpgSign` finder rather than the plain boolean one —
- * reusing `findFirstInvalidBoolean` here would misreport `if-asked` as
- * invalid. Throws the distinct `CONFIG_BAD_BOOLEAN_LITERAL` code, because git
- * reports a different message (`invalid value for '<key>'`) for this one key.
- */
-export const assertValidPushGpgSign = async (ctx: Context): Promise<void> => {
-  const found = await findFirstInvalidPushGpgSign(ctx);
-  if (found !== undefined) throw configBadBooleanLiteral(found.key, found.source, found.value);
 };

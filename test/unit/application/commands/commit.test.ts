@@ -987,6 +987,32 @@ describe('commit — signing', () => {
       });
     });
 
+    describe('When commit is called with a malformed remote promisor beside it', () => {
+      it('Then throws CONFIG_BAD_BOOLEAN_VALUE for remote.origin.promisor — commit loads promisor config up front', async () => {
+        // Arrange — config lands AFTER seeding (add() also guards this key)
+        const ctx = await seedSigning();
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[remote "origin"]\n\tpromisor = maybe\n',
+        );
+        __resetConfigCacheForTests();
+
+        // Act
+        let caught: unknown;
+        try {
+          await commit(ctx, { message: 'm', author });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as { code: string; key: string };
+        expect(data.code).toBe('CONFIG_BAD_BOOLEAN_VALUE');
+        expect(data.key).toBe('remote.origin.promisor');
+      });
+    });
+
     describe('When commit is called with nothing staged', () => {
       it('Then the boolean refusal precedes NOTHING_TO_COMMIT — git dies before the tree is built', async () => {
         // Arrange — no staged entry at all, only the malformed config.
