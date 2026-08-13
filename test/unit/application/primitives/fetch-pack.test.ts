@@ -443,10 +443,12 @@ describe('fetchPack', () => {
             promisor: true,
           });
 
-          // Assert
+          // Assert — a zero-entry pack suppresses the whole artefact set
+          // before reaching the writer, so no `.idx` means no `.rev` either.
           expect(result.packPath).toBe('');
           const packDir = await ctx.fs.readdir(`${ctx.layout.gitDir}/objects/pack`);
           expect(packDir.some((e) => e.name.endsWith('.promisor'))).toBe(false);
+          expect(packDir.some((e) => e.name.endsWith('.rev'))).toBe(false);
         });
       });
     });

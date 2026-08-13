@@ -81,6 +81,8 @@ export interface ParsedConfig {
   readonly commit?: { readonly gpgSign?: boolean };
   /** `tag.gpgSign` — sign annotated tags by default when true. */
   readonly tag?: { readonly gpgSign?: boolean };
+  /** `pack.writeReverseIndex` — write a sibling `.rev` beside each pack index. git defaults to true. */
+  readonly pack?: { readonly writeReverseIndex?: boolean };
   readonly push?: {
     /** `push.gpgSign` — sign push certificates: `true`/`false`, or `if-asked` (server-requested). */
     readonly gpgSign?: 'true' | 'false' | 'if-asked';
@@ -1040,6 +1042,7 @@ interface MutableParsedConfig {
   extensions?: { partialClone?: string };
   commit?: { gpgSign?: boolean };
   tag?: { gpgSign?: boolean };
+  pack?: { writeReverseIndex?: boolean };
   push?: { gpgSign?: 'true' | 'false' | 'if-asked'; default?: PushDefaultMode };
   gpg?: MutableGpg;
 }
@@ -1069,6 +1072,8 @@ const dispatchSection = (acc: MutableParsedConfig, sec: IniSection): void => {
     mergeCommit(acc, sec);
   } else if (sec.section === 'tag') {
     mergeTag(acc, sec);
+  } else if (sec.section === 'pack') {
+    mergePack(acc, sec);
   } else if (sec.section === 'push') {
     mergePush(acc, sec);
   } else if (sec.section === 'gpg') {
@@ -1416,6 +1421,15 @@ const mergeTag = (acc: { tag?: { gpgSign?: boolean } }, sec: IniSection): void =
   }
 };
 
+const mergePack = (acc: { pack?: { writeReverseIndex?: boolean } }, sec: IniSection): void => {
+  for (const { key, value } of sec.entries) {
+    if (key.toLowerCase() === 'writereverseindex') {
+      const parsed = parseGitBoolean(value);
+      if (parsed.ok) acc.pack = { ...acc.pack, writeReverseIndex: parsed.value };
+    }
+  }
+};
+
 // `if-asked` is a third state beyond git's boolean values, checked ahead of the
 // standard boolean parse. A refusal there leaves the field absent (`undefined`).
 const parsePushGpgSign = (value: string | null): 'true' | 'false' | 'if-asked' | undefined => {
@@ -1545,6 +1559,7 @@ type FinalizeOut = {
   filter?: ReadonlyMap<string, FilterEntry>;
   commit?: { gpgSign?: boolean };
   tag?: { gpgSign?: boolean };
+  pack?: { writeReverseIndex?: boolean };
   push?: { gpgSign?: 'true' | 'false' | 'if-asked'; default?: PushDefaultMode };
   gpg?: MutableGpg;
 };
@@ -1575,13 +1590,14 @@ const finalizeUser = (
   };
 };
 
-// `mergeCommit`/`mergeTag`/`mergePush`/`mergeGpg`/`mergeGpgSsh` only assign
-// their bucket after observing a recognised key, so a defined value is
-// always non-empty (same invariant as `extensions`). Extracted to keep
-// `finalize` under the cognitive-complexity ceiling.
-const finalizeSigningBuckets = (acc: MutableParsedConfig, out: FinalizeOut): void => {
+// `mergeCommit`/`mergeTag`/`mergePack`/`mergePush`/`mergeGpg`/`mergeGpgSsh`
+// only assign their bucket after observing a recognised key, so a defined
+// value is always non-empty (same invariant as `extensions`). Extracted to
+// keep `finalize` under the cognitive-complexity ceiling.
+const finalizeScalarBuckets = (acc: MutableParsedConfig, out: FinalizeOut): void => {
   if (acc.commit !== undefined) out.commit = acc.commit;
   if (acc.tag !== undefined) out.tag = acc.tag;
+  if (acc.pack !== undefined) out.pack = acc.pack;
   if (acc.push !== undefined) out.push = acc.push;
   if (acc.gpg !== undefined) out.gpg = acc.gpg;
 };
@@ -1621,6 +1637,7 @@ const finalize = (acc: MutableParsedConfig): ParsedConfig => {
     extensions?: { partialClone?: string };
     commit?: { gpgSign?: boolean };
     tag?: { gpgSign?: boolean };
+    pack?: { writeReverseIndex?: boolean };
     push?: { gpgSign?: 'true' | 'false' | 'if-asked'; default?: PushDefaultMode };
     gpg?: MutableGpg;
   } = {};
@@ -1641,7 +1658,7 @@ const finalize = (acc: MutableParsedConfig): ParsedConfig => {
   // Stryker disable next-line EqualityOperator,ConditionalExpression: equivalent — `acc.merge` is only ever assigned after a `Map.set`, so when defined its size is always >= 1; `> 0`, `>= 0` and a constant `true` never differ.
   if (acc.merge !== undefined && acc.merge.size > 0) out.merge = acc.merge;
   finalizeDriverMaps(acc, out);
-  finalizeSigningBuckets(acc, out);
+  finalizeScalarBuckets(acc, out);
   return out;
 };
 

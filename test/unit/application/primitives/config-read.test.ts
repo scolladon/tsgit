@@ -5857,6 +5857,118 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
     });
   });
 
+  describe('Given [pack] writeReverseIndex = true', () => {
+    describe('When readConfig', () => {
+      it('Then pack.writeReverseIndex is true', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[pack]\n  writeReverseIndex = true\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.pack?.writeReverseIndex).toBe(true);
+      });
+    });
+  });
+
+  describe('Given [pack] writeReverseIndex = false', () => {
+    describe('When readConfig', () => {
+      it('Then pack.writeReverseIndex is false', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[pack]\n  writeReverseIndex = false\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.pack?.writeReverseIndex).toBe(false);
+      });
+    });
+  });
+
+  describe('Given [pack] writeReverseIndex is valueless', () => {
+    describe('When readConfig', () => {
+      it('Then pack.writeReverseIndex is true', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[pack]\n  writeReverseIndex\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.pack?.writeReverseIndex).toBe(true);
+      });
+    });
+  });
+
+  describe('Given [pack] writeReverseIndex in mixed case', () => {
+    describe('When readConfig', () => {
+      it('Then the key is still matched and parsed', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[pack]\n  WriteReverseIndex = true\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.pack?.writeReverseIndex).toBe(true);
+      });
+    });
+  });
+
+  describe('Given [pack] writeReverseIndex = 2', () => {
+    describe('When readConfig', () => {
+      it("Then pack.writeReverseIndex is true (git's integer arm: non-zero is true)", async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[pack]\n  writeReverseIndex = 2\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.pack?.writeReverseIndex).toBe(true);
+      });
+    });
+  });
+
+  describe('Given [pack] writeReverseIndex = 0', () => {
+    describe('When readConfig', () => {
+      it('Then pack.writeReverseIndex is false', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[pack]\n  writeReverseIndex = 0\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.pack?.writeReverseIndex).toBe(false);
+      });
+    });
+  });
+
+  describe('Given no [pack] section', () => {
+    describe('When readConfig', () => {
+      it('Then config.pack is undefined', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[core]\n  bare = false\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.pack).toBeUndefined();
+      });
+    });
+  });
+
   describe('Given a config with a [push] gpgSign value', () => {
     describe('When readConfig', () => {
       it.each([

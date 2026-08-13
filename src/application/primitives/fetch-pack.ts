@@ -24,7 +24,7 @@ import {
   parsePackHeader,
 } from '../../domain/storage/index.js';
 import type { Context } from '../../ports/context.js';
-import { buildIdx, writePackArtifacts } from './internal/write-pack-artifacts.js';
+import { writePackArtifacts } from './internal/write-pack-artifacts.js';
 import { commonGitDir, packsDir } from './path-layout.js';
 import { refreshPackRegistry } from './read-object.js';
 
@@ -166,21 +166,21 @@ const materializePack = async (
   if (entries.length === 0) {
     return emptyPackResult(download.shallow, download.unshallow);
   }
-  const idxBytes = await buildIdx(ctx, entries, packSha);
-  const written = await writePackArtifacts(
-    ctx,
-    packsDir(commonGitDir(ctx)),
-    download.packBytes,
-    idxBytes,
+  const written = await writePackArtifacts(ctx, {
+    packDir: packsDir(commonGitDir(ctx)),
+    packBytes: download.packBytes,
+    entries,
     packSha,
-    entries.length,
-    input.promisor === true,
-  );
+    promisor: input.promisor === true,
+  });
   // Drop the per-Context pack-registry cache so reads through this same
   // handle (e.g. a follow-up merge in `pull`) see the just-written pack.
   refreshPackRegistry(ctx);
   return {
-    ...written,
+    packPath: written.packPath,
+    idxPath: written.idxPath,
+    objectCount: written.objectCount,
+    packSha: written.packSha,
     shallow: download.shallow,
     unshallow: download.unshallow,
   };
