@@ -542,7 +542,7 @@ export const configParseError = (
  * `missing value for '<key>'` / `bad config variable '<key>' … at line <N>` refusal.
  */
 export const configMissingValue = (key: string, source: string, line: number): TsgitError =>
-  new TsgitError({ code: 'CONFIG_MISSING_VALUE', key, source, line });
+  new TsgitError({ code: 'CONFIG_MISSING_VALUE', key: sanitizeForDisplay(key), source, line });
 
 /**
  * A `[merge "<name>"]` section is registered (`name` and/or `recursive` set) but
@@ -568,7 +568,7 @@ export const configBadNumericValue = (
 ): TsgitError =>
   new TsgitError({
     code: 'CONFIG_BAD_NUMERIC_VALUE',
-    key,
+    key: sanitizeForDisplay(key),
     source,
     value: sanitizeForDisplay(value),
     reason,
@@ -583,7 +583,7 @@ export const configBadNumericValue = (
 export const configBadBooleanValue = (key: string, source: string, value: string): TsgitError =>
   new TsgitError({
     code: 'CONFIG_BAD_BOOLEAN_VALUE',
-    key,
+    key: sanitizeForDisplay(key),
     source,
     value: sanitizeForDisplay(value),
   });
@@ -596,7 +596,7 @@ export const configBadBooleanValue = (key: string, source: string, value: string
 export const configBadBooleanLiteral = (key: string, source: string, value: string): TsgitError =>
   new TsgitError({
     code: 'CONFIG_BAD_BOOLEAN_LITERAL',
-    key,
+    key: sanitizeForDisplay(key),
     source,
     value: sanitizeForDisplay(value),
   });

@@ -1184,6 +1184,23 @@ describe('domain commands error — config factory data', () => {
         expect(data.value).toBe('\\x01bad');
       });
     });
+
+    describe('When called with a key whose subsection carries a control byte', () => {
+      it('Then data.key is sanitized for display — subsections are file-verbatim bytes', () => {
+        // Arrange + Act — a `[filter "<ESC>[2J"]` style subsection reaches the key
+        const result = configBadBooleanValue(
+          'filter.\x1b[2J.required',
+          '/abs/.git/config',
+          'maybe',
+        );
+
+        // Assert
+        const data = result.data;
+        expect(data.code).toBe('CONFIG_BAD_BOOLEAN_VALUE');
+        if (data.code !== 'CONFIG_BAD_BOOLEAN_VALUE') return;
+        expect(data.key).toBe('filter.\\x1B[2J.required');
+      });
+    });
   });
 
   describe('Given the configBadBooleanLiteral helper', () => {

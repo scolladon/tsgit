@@ -59,7 +59,11 @@ export const buildRev = async (
 ): Promise<Uint8Array> => {
   const packChecksum = hexToBytes(packSha);
   const bytes = serializePackRevIndex(entries, packChecksum);
-  const trailerStart = bytes.length - ctx.hash.digestLength;
+  // The trailer offset derives from the SAME width the serializer sized the
+  // file with (`packChecksum.length`), never from `ctx.hash.digestLength` —
+  // one width source, so a hash/pack width disagreement overflows loudly in
+  // `set` instead of silently landing the digest inside the checksum field.
+  const trailerStart = bytes.length - packChecksum.length;
   const digest = await ctx.hash.hash(bytes.subarray(0, trailerStart));
   bytes.set(digest, trailerStart);
   return bytes;
