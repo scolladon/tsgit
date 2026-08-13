@@ -1,10 +1,16 @@
-import { invalidOption, pathspecNoMatch } from '../../../domain/commands/error.js';
+import {
+  invalidOption,
+  pathspecBeyondSymlink,
+  pathspecNoMatch,
+} from '../../../domain/commands/error.js';
 import type { FilePath } from '../../../domain/objects/object-id.js';
 import {
   compilePathspec,
   type Pathspec,
   type PathspecEntry,
 } from '../../../domain/pathspec/index.js';
+import type { Context } from '../../../ports/context.js';
+import { createLeadingPathScanner } from '../../primitives/internal/symlinked-leading-path.js';
 import { validatePath } from './working-tree.js';
 
 // Pathspec patterns are compiled to RegExp. Globs containing many `**`
@@ -90,6 +96,22 @@ export const enforceLiteralMustMatch = (
     if (matchedSet.has(lit)) continue;
     if (matched.some((m) => m.startsWith(`${lit}/`))) continue;
     throw pathspecNoMatch(lit);
+  }
+};
+
+// Refuse a literal that names a file beyond a symbolic link — git's
+// `has_symlinked_leading_path` refusal, shape-based (fires for an
+// intra-repo link target too). Builds one scanner per call so its
+// per-directory memo is shared across the whole literal set.
+export const assertNoSymlinkedLeadingPath = async (
+  ctx: Context,
+  literals: ReadonlyArray<FilePath>,
+): Promise<void> => {
+  const scanner = createLeadingPathScanner(ctx);
+  for (const literal of literals) {
+    if (await scanner.hasSymlinkedLeadingPath(literal)) {
+      throw pathspecBeyondSymlink(literal);
+    }
   }
 };
 

@@ -103,6 +103,7 @@ Codes are grouped by domain. Within each group, alphabetical.
 | `INVALID_INDEX_ENTRY` | `offset, reason` | Entry in `.git/index` malformed. |
 | `INVALID_INDEX_HEADER` | `reason` | `.git/index` header malformed. |
 | `INVALID_FILE_MODE` | `value` | Mode bits do not match any recognised git file mode. |
+| `PATHSPEC_BEYOND_SYMLINK` | `path` | `add` refused a literal pathspec whose leading directory is a symbolic link (fires for an intra-repo link target too — shape-based, not containment-based). |
 | `PATHSPEC_NO_MATCH` | `pattern` | A literal path pattern matched nothing. |
 | `PATHSPEC_OUTSIDE_REPO` | `pattern` | Pattern resolved to a path outside `workDir`. |
 | `SPARSE_PATTERN_FILE_TOO_LARGE` | `bytes, limit` | `.git/info/sparse-checkout` exceeds the cap. |

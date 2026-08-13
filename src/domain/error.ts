@@ -308,6 +308,8 @@ function extractDetail(data: TsgitErrorData): string {
       return `pathspec did not match any files: ${data.pattern}`;
     case 'PATHSPEC_OUTSIDE_REPO':
       return `pathspec resolves outside repository: ${basename(data.path)}`;
+    case 'PATHSPEC_BEYOND_SYMLINK':
+      return `pathspec is beyond a symbolic link: ${basename(data.path)}`;
     case 'NOTHING_TO_COMMIT':
       return 'nothing to commit (use allowEmpty: true to commit anyway)';
     case 'EMPTY_COMMIT_MESSAGE':

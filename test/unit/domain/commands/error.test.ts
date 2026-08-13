@@ -50,6 +50,7 @@ import {
   nothingToCommit,
   noUpstreamConfigured,
   operationInProgress,
+  pathspecBeyondSymlink,
   pathspecNoMatch,
   pathspecOutsideRepo,
   pushDefaultNothing,
@@ -254,6 +255,18 @@ describe('domain commands error — factory data', () => {
         expect(pathspecOutsideRepo('/etc/passwd' as FilePath).data).toEqual({
           code: 'PATHSPEC_OUTSIDE_REPO',
           path: '/etc/passwd',
+        });
+      });
+    });
+  });
+
+  describe('Given the pathspecBeyondSymlink error helper', () => {
+    describe('When called', () => {
+      it('Then data matches expected shape', () => {
+        // Arrange + Assert
+        expect(pathspecBeyondSymlink('dir/file' as FilePath).data).toEqual({
+          code: 'PATHSPEC_BEYOND_SYMLINK',
+          path: 'dir/file',
         });
       });
     });
@@ -1267,6 +1280,10 @@ describe('domain commands error — extractDetail message formatting', () => {
     [
       { code: 'PATHSPEC_OUTSIDE_REPO', path: '/etc/passwd' as FilePath },
       'PATHSPEC_OUTSIDE_REPO: pathspec resolves outside repository: passwd',
+    ],
+    [
+      { code: 'PATHSPEC_BEYOND_SYMLINK', path: 'dir/file' as FilePath },
+      'PATHSPEC_BEYOND_SYMLINK: pathspec is beyond a symbolic link: file',
     ],
     [
       { code: 'NOTHING_TO_COMMIT' },

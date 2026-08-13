@@ -85,6 +85,7 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'WORKING_TREE_DIRTY':
     case 'PATHSPEC_NO_MATCH':
     case 'PATHSPEC_OUTSIDE_REPO':
+    case 'PATHSPEC_BEYOND_SYMLINK':
     case 'NOTHING_TO_COMMIT':
     case 'EMPTY_COMMIT_MESSAGE':
     case 'AUTHOR_UNCONFIGURED':

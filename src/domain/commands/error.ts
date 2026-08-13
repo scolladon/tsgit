@@ -13,6 +13,7 @@ export type CommandError =
     }
   | { readonly code: 'PATHSPEC_NO_MATCH'; readonly pattern: string }
   | { readonly code: 'PATHSPEC_OUTSIDE_REPO'; readonly path: FilePath }
+  | { readonly code: 'PATHSPEC_BEYOND_SYMLINK'; readonly path: FilePath }
   | { readonly code: 'NOTHING_TO_COMMIT' }
   | { readonly code: 'EMPTY_COMMIT_MESSAGE' }
   | { readonly code: 'AUTHOR_UNCONFIGURED' }
@@ -313,6 +314,9 @@ export const pathspecNoMatch = (pattern: string): TsgitError =>
 
 export const pathspecOutsideRepo = (path: FilePath): TsgitError =>
   new TsgitError({ code: 'PATHSPEC_OUTSIDE_REPO', path });
+
+export const pathspecBeyondSymlink = (path: FilePath): TsgitError =>
+  new TsgitError({ code: 'PATHSPEC_BEYOND_SYMLINK', path });
 
 export const nothingToCommit = (): TsgitError => new TsgitError({ code: 'NOTHING_TO_COMMIT' });
 

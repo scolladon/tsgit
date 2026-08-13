@@ -139,6 +139,70 @@ describe('add', () => {
     });
   });
 
+  describe('Given a literal naming a file beyond a symlink pointing outside the repo', () => {
+    describe('When add', () => {
+      it('Then throws PATHSPEC_BEYOND_SYMLINK and stages nothing', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo();
+        await ctx.fs.symlink('/outside-the-repo', `${ctx.layout.workDir}/dir`);
+
+        // Act + Assert
+        const err = await expectError(() => add(ctx, ['dir/file.txt']), 'PATHSPEC_BEYOND_SYMLINK');
+        expect((err.data as { path: string }).path).toBe('dir/file.txt');
+        const index = await readIndex(ctx);
+        expect(index.entries).toHaveLength(0);
+      });
+    });
+  });
+
+  describe('Given a literal naming a file beyond a symlink pointing inside the repo', () => {
+    describe('When add', () => {
+      it('Then throws PATHSPEC_BEYOND_SYMLINK — shape-based, not containment-based', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo({ 'real.txt': 'x' });
+        await ctx.fs.symlink('real.txt', `${ctx.layout.workDir}/dir`);
+
+        // Act + Assert
+        await expectError(() => add(ctx, ['dir/file.txt']), 'PATHSPEC_BEYOND_SYMLINK');
+      });
+    });
+  });
+
+  describe('Given a genuine PERMISSION_DENIED from the adapter on a re-lstat of a literal path', () => {
+    describe('When add', () => {
+      it('Then the error propagates instead of degrading to PATHSPEC_NO_MATCH', async () => {
+        // Arrange — the first lstat (allLiteralsAreFiles's probe) reports a real
+        // file, routing to the literal-only path; the second lstat (stageOne's
+        // own read) fails with PERMISSION_DENIED. A narrowed catch must rethrow
+        // anything that is not FILE_NOT_FOUND; a bare `.catch(() => undefined)`
+        // would silently degrade this to a missing-path observable instead.
+        const ctx = await seedFreshRepo({ 'blocked.txt': 'x' });
+        const targetPath = `${ctx.layout.workDir}/blocked.txt`;
+        const baseLstat = ctx.fs.lstat;
+        let lstatCount = 0;
+        const fs = new Proxy(ctx.fs, {
+          get(target, prop, receiver) {
+            if (prop === 'lstat') {
+              return async (p: string) => {
+                if (p === targetPath) {
+                  lstatCount += 1;
+                  if (lstatCount > 1) {
+                    throw new TsgitError({ code: 'PERMISSION_DENIED', path: targetPath });
+                  }
+                }
+                return baseLstat(p);
+              };
+            }
+            return Reflect.get(target, prop, receiver);
+          },
+        });
+
+        // Act + Assert
+        await expectError(() => add({ ...ctx, fs }, ['blocked.txt']), 'PERMISSION_DENIED');
+      });
+    });
+  });
+
   describe('Given a bare repo (core.bare=true)', () => {
     describe('When add', () => {
       it('Then throws BARE_REPOSITORY with operation="add"', async () => {

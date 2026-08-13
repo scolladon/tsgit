@@ -49,7 +49,11 @@ import {
   assertNotBare,
   assertOperationalRepository,
 } from './internal/repo-state.js';
-import { enforceLiteralMustMatch, resolvePathspec } from './internal/resolve-pathspec.js';
+import {
+  assertNoSymlinkedLeadingPath,
+  enforceLiteralMustMatch,
+  resolvePathspec,
+} from './internal/resolve-pathspec.js';
 import { readFile } from './internal/working-tree.js';
 
 const INDEX_MISSING_CODES = new Set([
@@ -115,6 +119,7 @@ const dispatchPathspec = async (
   provider: AttributeProvider | undefined,
 ): Promise<AddResult> => {
   const { matcher, literalMustMatch, hasGlob } = resolvePathspec(paths);
+  await assertNoSymlinkedLeadingPath(ctx, literalMustMatch);
   if (!hasGlob && (await allLiteralsAreFiles(ctx, literalMustMatch))) {
     return addLiteralOnly(ctx, literalMustMatch, provider);
   }
@@ -153,11 +158,29 @@ const allLiteralsAreFiles = async (
 ): Promise<boolean> => {
   if (literals.length === 0) return false;
   for (const path of literals) {
-    const stat = await ctx.fs.lstat(joinPath(ctx.layout.workDir, path)).catch(() => undefined);
+    const stat = await lstatOrMissing(ctx, path);
     if (stat === undefined) return false;
     if (stat.isDirectory && !stat.isSymbolicLink) return false;
   }
   return true;
+};
+
+/**
+ * `lstat` a working-tree path, translating a missing path to `undefined`.
+ * Any other failure (e.g. PERMISSION_DENIED) propagates — narrowing the
+ * catch to FILE_NOT_FOUND-only is what keeps `git add missing-file` reporting
+ * PATHSPEC_NO_MATCH without silently absorbing a genuine I/O error.
+ */
+const lstatOrMissing = async (
+  ctx: Context,
+  path: FilePath,
+): Promise<Awaited<ReturnType<Context['fs']['lstat']>> | undefined> => {
+  try {
+    return await ctx.fs.lstat(joinPath(ctx.layout.workDir, path));
+  } catch (err) {
+    if (err instanceof TsgitError && err.data.code === 'FILE_NOT_FOUND') return undefined;
+    throw err;
+  }
 };
 
 // Walk-and-filter add: applies `.gitignore` (so build artefacts stay
@@ -351,7 +374,7 @@ const stageOne = async (
   previous: IndexEntry | undefined,
   indexMtime: IndexMtime | undefined,
 ): Promise<IndexEntry | 'missing'> => {
-  const stat = await ctx.fs.lstat(joinPath(ctx.layout.workDir, path)).catch(() => undefined);
+  const stat = await lstatOrMissing(ctx, path);
   if (stat === undefined) return 'missing';
   return stageFromStat(ctx, path, stat, provider, previous, indexMtime);
 };

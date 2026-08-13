@@ -277,7 +277,7 @@ const seedWorktreeWithEscapeLink = async (): Promise<{
 describe('Node shim — linked-worktree containment', () => {
   describe('Given a linked worktree holding a symlink to a directory outside every layout root', () => {
     describe('When adding a path through that symlink', () => {
-      it('Then the pathspec is refused and nothing is staged', async () => {
+      it('Then the pathspec is refused as beyond a symbolic link and nothing is staged', async () => {
         // Arrange
         const { worktreePath, cleanup } = await seedWorktreeWithEscapeLink();
         const sut = await openRepository({ cwd: worktreePath });
@@ -292,7 +292,10 @@ describe('Node shim — linked-worktree containment', () => {
           }
 
           // Assert
-          expect((caught as { data: { code: string } }).data.code).toBe('PATHSPEC_NO_MATCH');
+          expect((caught as { data: { code: string; path: string } }).data).toEqual({
+            code: 'PATHSPEC_BEYOND_SYMLINK',
+            path: 'link/key.txt',
+          });
           expect((await sut.status()).changes).toHaveLength(0);
         } finally {
           await sut.dispose();
