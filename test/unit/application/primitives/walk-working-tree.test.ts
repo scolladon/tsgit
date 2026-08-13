@@ -253,46 +253,42 @@ describe('walkWorkingTree', () => {
       });
     });
 
-    describe('Given a shared stat map with a sample already recorded for the leaf', () => {
-      describe('When entry.stat() is read', () => {
-        it('Then no lstat is issued and the recorded sample is returned', async () => {
-          // Arrange
-          const seeded = await seedFs({ 'a.txt': '1' });
-          const stat = await seeded.fs.lstat(`${seeded.layout.workDir}/a.txt`);
-          const stats = createWorkingTreeStatMap();
-          stats.record('a.txt' as FilePath, stat);
-          const { ctx, calls } = trackLstat(seeded);
+    describe('When entry.stat() is read with a shared map holding a recorded sample for the leaf', () => {
+      it('Then no lstat is issued and the recorded sample is returned', async () => {
+        // Arrange
+        const seeded = await seedFs({ 'a.txt': '1' });
+        const stat = await seeded.fs.lstat(`${seeded.layout.workDir}/a.txt`);
+        const stats = createWorkingTreeStatMap();
+        stats.record('a.txt' as FilePath, stat);
+        const { ctx, calls } = trackLstat(seeded);
 
-          // Act
-          let result: unknown;
-          for await (const entry of walkWorkingTree(ctx, { stats })) {
-            result = await entry.stat();
-          }
+        // Act
+        let result: unknown;
+        for await (const entry of walkWorkingTree(ctx, { stats })) {
+          result = await entry.stat();
+        }
 
-          // Assert
-          expect(calls()).toBe(0);
-          expect(result).toBe(stat);
-        });
+        // Assert
+        expect(calls()).toBe(0);
+        expect(result).toBe(stat);
       });
     });
 
-    describe('Given a shared stat map with nothing recorded for the leaf', () => {
-      describe('When entry.stat() is read', () => {
-        it('Then one lstat is issued and the sample is recorded into the map', async () => {
-          // Arrange
-          const seeded = await seedFs({ 'a.txt': '1' });
-          const stats = createWorkingTreeStatMap();
-          const { ctx, calls } = trackLstat(seeded);
+    describe('When entry.stat() is read with a shared map holding nothing for the leaf', () => {
+      it('Then one lstat is issued and the sample is recorded into the map', async () => {
+        // Arrange
+        const seeded = await seedFs({ 'a.txt': '1' });
+        const stats = createWorkingTreeStatMap();
+        const { ctx, calls } = trackLstat(seeded);
 
-          // Act
-          for await (const entry of walkWorkingTree(ctx, { stats })) {
-            await entry.stat();
-          }
+        // Act
+        for await (const entry of walkWorkingTree(ctx, { stats })) {
+          await entry.stat();
+        }
 
-          // Assert
-          expect(calls()).toBe(1);
-          expect(stats.sampled('a.txt' as FilePath)).toBeDefined();
-        });
+        // Assert
+        expect(calls()).toBe(1);
+        expect(stats.sampled('a.txt' as FilePath)).toBeDefined();
       });
     });
   });

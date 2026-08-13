@@ -9,7 +9,7 @@ import { buildSeededContext } from '../fixtures.js';
 type SeededContext = Awaited<ReturnType<typeof buildSeededContext>>;
 
 /**
- * R5 audit helper: a context whose `ctx.fs.read` throws if ever called with
+ * No-dereference audit helper: a context whose `ctx.fs.read` throws if ever called with
  * `symlinkPath` — the no-dereference discipline made a hard failure instead
  * of a passive spy assertion.
  */
@@ -18,7 +18,8 @@ const refuseReadOnSymlink = (base: Context, symlinkPath: string): Context => ({
   fs: {
     ...base.fs,
     read: async (p: string): Promise<Uint8Array> => {
-      if (p === symlinkPath) throw new Error(`R5 violation: ctx.fs.read called on ${p}`);
+      if (p === symlinkPath)
+        throw new Error(`no-dereference violation: ctx.fs.read called on ${p}`);
       return base.fs.read(p);
     },
   },
@@ -191,7 +192,7 @@ describe('createWorkdirEntry', () => {
     });
   });
 
-  describe('Given a symlink in the working tree (R5 no-dereference audit)', () => {
+  describe('Given a symlink in the working tree (no-dereference audit)', () => {
     describe('When read() is called, and ctx.fs.read is wired to fail on the symlink path', () => {
       it('Then it returns the readlink target bytes without ever calling ctx.fs.read', async () => {
         // Arrange

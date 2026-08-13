@@ -349,7 +349,7 @@ describe('applyChangeset', () => {
     });
   });
 
-  // R5 audit — this file covers site 1 (blobMatches) and the delete-skip.
+  // no-dereference audit — this file covers site 1 (blobMatches) and the delete-skip.
   // Sites 2-6 are covered by their own isolated tests in
   // compare-working-tree-entry.test.ts, snapshot/workdir-entry.test.ts,
   // commands/blame.test.ts, commands/grep.test.ts and commands/stash.test.ts.

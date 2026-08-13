@@ -71,7 +71,7 @@ const headId = async (ctx: Context): Promise<ObjectId> =>
   (await ctx.fs.readUtf8(`${ctx.layout.gitDir}/refs/heads/main`)).trim() as ObjectId;
 
 /**
- * R5 audit helper: a context whose `ctx.fs.read` throws if ever called with
+ * No-dereference audit helper: a context whose `ctx.fs.read` throws if ever called with
  * `symlinkPath` — the no-dereference discipline made a hard failure instead
  * of a passive spy assertion.
  */
@@ -80,7 +80,8 @@ const refuseReadOnSymlink = (base: Context, symlinkPath: string): Context => ({
   fs: {
     ...base.fs,
     read: async (p: string): Promise<Uint8Array> => {
-      if (p === symlinkPath) throw new Error(`R5 violation: ctx.fs.read called on ${p}`);
+      if (p === symlinkPath)
+        throw new Error(`no-dereference violation: ctx.fs.read called on ${p}`);
       return base.fs.read(p);
     },
   },
@@ -142,7 +143,7 @@ describe('stash push', () => {
     });
   });
 
-  describe('Given a tracked symlink retargeted in the working tree (R5 no-dereference audit)', () => {
+  describe('Given a tracked symlink retargeted in the working tree (no-dereference audit)', () => {
     describe('When push runs, and ctx.fs.read is wired to fail on the symlink path', () => {
       it('Then the W tree stores the new target without ever reading through the link', async () => {
         // Arrange

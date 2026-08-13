@@ -358,7 +358,10 @@ describe('verifyPath', () => {
           mode: FILE_MODE.REGULAR,
           expected: undefined,
         },
-      ])('Then $label', ({ path, mode, expected }) => {
+      ])('Then $label', (row) => {
+        // Arrange — the pinned matrix row supplies the name and mode
+        const { path, mode, expected } = row;
+
         // Act
         const result = verifyPath(path, mode);
 
@@ -383,7 +386,10 @@ describe('isDotGitAlias', () => {
           component: `.g${WORD_JOINER}it`,
           expected: false,
         },
-      ])('Then $label resolves to $expected', ({ component, expected }) => {
+      ])('Then $label resolves to $expected', (row) => {
+        // Arrange — the alias-family row supplies the component
+        const { component, expected } = row;
+
         // Act
         const result = isDotGitAlias(component);
 

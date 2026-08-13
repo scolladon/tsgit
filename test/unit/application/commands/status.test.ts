@@ -1131,7 +1131,7 @@ describe('status — unmerged column', () => {
     });
   });
 
-  describe('Given status shares one working-tree stat map across its two passes', () => {
+  describe('status with one working-tree stat map shared across its two passes', () => {
     // status's own untracked pass never reads the walker's lazy stat (see "no
     // lstat is issued for the untracked path" above), so wiring one shared
     // map through status is currently behaviour-preserving for status's own

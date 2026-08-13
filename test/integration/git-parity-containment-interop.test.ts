@@ -478,12 +478,15 @@ describe.skipIf(!GIT_AVAILABLE)('git-parity containment interop', () => {
       });
 
       it('Then both refuse the pathspec instead of writing through the symlink', async () => {
+        // Arrange — the symlinked-dir fixture is prepared once in beforeAll
+        const { pair } = fixture;
+
         // Act
-        const peerResult = tryRunGitWithExit(['-C', fixture.pair.peerDir, 'add', 'dir/file']);
+        const peerResult = tryRunGitWithExit(['-C', pair.peerDir, 'add', 'dir/file']);
         let oursCode: string | undefined;
         let oursPath: string | undefined;
         try {
-          await fixture.pair.repo.add(['dir/file']);
+          await pair.repo.add(['dir/file']);
         } catch (err) {
           const data = (
             err as { readonly data?: { readonly code?: string; readonly path?: string } }
@@ -617,7 +620,7 @@ describe.skipIf(!GIT_AVAILABLE)('git-parity containment interop', () => {
 
   // ── 5. checkout writes/deletes through a symlinked leading directory ─
 
-  describe('Given checkout writes a path back through a symlinked leading directory', () => {
+  describe('Given a tracked path behind a symlinked leading directory, When checkout writes it back', () => {
     let root: string;
     let pair: RepoPair;
     let outsideDir: string;
@@ -665,7 +668,7 @@ describe.skipIf(!GIT_AVAILABLE)('git-parity containment interop', () => {
     });
   });
 
-  describe('Given checkout deletes a path behind a symlinked leading directory', () => {
+  describe('Given a tracked path behind a symlinked leading directory, When checkout deletes it', () => {
     let root: string;
     let pair: RepoPair;
     let outsideDir: string;
@@ -838,7 +841,7 @@ describe.skipIf(!GIT_AVAILABLE)('git-parity containment interop', () => {
 
   // ── 7. working-tree root reached through a symlink ───────────────────
 
-  describe('Given the working-tree root is reached through a symlink', () => {
+  describe('Given the working-tree root is reached through a symlink, When each tool resolves the repository root', () => {
     let root: string;
     let peerRepoDir: string;
     let oursRepoDir: string;
