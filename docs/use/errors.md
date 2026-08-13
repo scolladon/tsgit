@@ -43,7 +43,7 @@ Codes are grouped by domain. Within each group, alphabetical.
 | `FILE_NOT_FOUND` | `path` | Read against a path that does not exist. |
 | `NOT_A_DIRECTORY` | `path` | Directory operation against a non-directory. |
 | `OPERATION_ABORTED` | — | An `AbortSignal` fired during an operation. |
-| `PERMISSION_DENIED` | `path` | Filesystem permission error, including symlink-escape rejections and 8.3 path mismatches on Windows. |
+| `PERMISSION_DENIED` | `path` | Filesystem permission error, including lexical out-of-root rejections, **write**-side symlink-escape rejections (a symlinked leading directory or leaf resolving outside the root set), and 8.3 path mismatches on Windows. A **read** through a symlink resolving outside the root set is not refused — reads are lexical, matching git. |
 | `RESOURCE_LOCKED` | `path` | A `.lock` file already exists; another writer holds it. |
 | `UNSUPPORTED_OPERATION` | `operation, reason` | Feature not available in this adapter / runtime. |
 

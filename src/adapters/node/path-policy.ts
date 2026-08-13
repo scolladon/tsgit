@@ -40,7 +40,6 @@ interface PathPolicySource {
   join(...parts: string[]): string;
   dirname(path: string): string;
   basename(path: string): string;
-  parse(path: string): { readonly root: string };
 }
 
 export interface PathPolicy {
@@ -104,6 +103,26 @@ const stripWinExtendedPrefix = (p: string): string => {
   return p;
 };
 
+/** POSIX root: `/` for an absolute path, `''` otherwise. No allocation. */
+const posixRootOf = (path: string): string => (path.startsWith('/') ? '/' : '');
+
+/** A plain UNC root (`\\server\share\`) — two non-separator segments after the leading `\\`. */
+const WIN_UNC_ROOT_PATTERN = /^\\\\[^\\]+\\[^\\]+\\/;
+/** A drive-absolute root (`C:\`). */
+const WIN_DRIVE_ROOT_PATTERN = /^[a-zA-Z]:\\/;
+
+/**
+ * Windows root, without `path.win32.parse`'s full-path allocation: a UNC
+ * share prefix, a drive-absolute prefix, or `''` for anything else
+ * (drive-relative and plain-relative paths alike — `rootOf`'s only caller,
+ * `realpathNearestExisting`, only ever receives an absolute path).
+ */
+const windowsRootOf = (path: string): string => {
+  const uncMatch = WIN_UNC_ROOT_PATTERN.exec(path);
+  if (uncMatch !== null) return uncMatch[0];
+  return WIN_DRIVE_ROOT_PATTERN.test(path) ? path.slice(0, 3) : '';
+};
+
 const makePolicy = (impl: PathPolicySource, caseInsensitive: boolean): PathPolicy => ({
   sep: narrowSep(impl.sep),
   caseInsensitive,
@@ -112,7 +131,7 @@ const makePolicy = (impl: PathPolicySource, caseInsensitive: boolean): PathPolic
   join: (...parts: string[]) => impl.join(...parts),
   dirname: (path: string) => impl.dirname(path),
   basename: (path: string) => impl.basename(path),
-  rootOf: (path: string) => impl.parse(path).root,
+  rootOf: (path: string) => (caseInsensitive ? windowsRootOf(path) : posixRootOf(path)),
   // The `/` → `\` fold only applies on case-insensitive (Windows) hosts: a
   // `joinPath`-produced path carries `/` unconditionally even there, so the
   // containment prefix compare must fold it to match a root normalised

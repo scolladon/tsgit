@@ -193,6 +193,21 @@ describe('posixPolicy', () => {
       });
     });
   });
+
+  describe('Given a relative POSIX path', () => {
+    describe('When rootOf is called', () => {
+      it('Then returns the empty string', () => {
+        // Arrange
+        const path = 'foo/bar';
+
+        // Act
+        const result = posixPolicy.rootOf(path);
+
+        // Assert
+        expect(result).toBe('');
+      });
+    });
+  });
 });
 
 describe('windowsPolicy', () => {
@@ -284,6 +299,21 @@ describe('windowsPolicy', () => {
 
         // Assert
         expect(result).toBe('\\\\server\\share\\');
+      });
+    });
+  });
+
+  describe('Given a drive-relative Windows path (neither UNC nor drive-absolute)', () => {
+    describe('When rootOf is called', () => {
+      it('Then returns the empty string', () => {
+        // Arrange
+        const path = 'Users\\Foo';
+
+        // Act
+        const result = windowsPolicy.rootOf(path);
+
+        // Assert
+        expect(result).toBe('');
       });
     });
   });

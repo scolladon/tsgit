@@ -314,9 +314,10 @@ describe('NodeFileSystem', () => {
         });
       });
       describe('When stat', () => {
-        it('Then returns directory stat (checkContainment rootDir===resolved branch)', async () => {
-          // Arrange — exercises the `abs !== rootDir` short-circuit inside checkContainment's
-          // check() closure (kills ConditionalExpression → true on the `!==` clause).
+        it('Then returns directory stat (resolveRead rootDir===candidate branch)', async () => {
+          // Arrange — exercises the `normalized === root.normalized` equality
+          // arm inside `resolveRead`'s containment check (kills
+          // ConditionalExpression → true on the `===` clause).
           const { fs, rootDir, cleanup } = await makeFs();
 
           // Act
@@ -389,6 +390,164 @@ describe('NodeFileSystem', () => {
               nodePath.join(rootDir, 'src.bin'),
               nodePath.join(siblingDir, 'dst.bin'),
             );
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+          await cleanup();
+        });
+      });
+    });
+
+    describe('Given chmod through a symlinked leading directory that resolves outside root', () => {
+      describe('When chmod', () => {
+        it('Then throws PERMISSION_DENIED', async () => {
+          // Arrange — the leading directory is a symlink whose OWN path is
+          // lexically inside root, but whose target is not; W1 refuses
+          // before ever reaching the leaf.
+          const { fs, rootDir, siblingDir, cleanup } = await makeFs();
+          const dirLink = nodePath.join(rootDir, 'escape-dir');
+          await fsPromises.symlink(siblingDir, dirLink);
+          const leaf = nodePath.join(dirLink, 'child.txt');
+
+          // Act
+          let caught: unknown;
+          try {
+            await fs.chmod(leaf, 0o600);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+          await cleanup();
+        });
+      });
+    });
+
+    describe('Given chmod on a symlink leaf whose parent is contained', () => {
+      describe('When chmod', () => {
+        it('Then throws PERMISSION_DENIED (no portable no-follow chmod, so the leaf is refused explicitly)', async () => {
+          // Arrange — the parent directory (rootDir itself) is fully
+          // contained; only the leaf is a symlink. chmod cannot use
+          // O_NOFOLLOW (no such syscall variant exists portably), so it must
+          // refuse this leaf via an explicit lstat rather than silently
+          // re-moding whatever the link points at.
+          const { fs, rootDir, cleanup } = await makeFs();
+          const target = nodePath.join(rootDir, 'chmod-target.txt');
+          const link = nodePath.join(rootDir, 'chmod-link');
+          await fsPromises.writeFile(target, Buffer.from([1]));
+          await fsPromises.symlink(target, link);
+
+          // Act
+          let caught: unknown;
+          try {
+            await fs.chmod(link, 0o600);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+          await cleanup();
+        });
+      });
+    });
+
+    describe('Given rename src through a symlinked leading directory that resolves outside root', () => {
+      describe('When rename', () => {
+        it('Then throws PERMISSION_DENIED', async () => {
+          // Arrange
+          const { fs, rootDir, siblingDir, cleanup } = await makeFs();
+          const dirLink = nodePath.join(rootDir, 'escape-src-dir');
+          await fsPromises.symlink(siblingDir, dirLink);
+          const src = nodePath.join(dirLink, 'child.txt');
+          const dst = nodePath.join(rootDir, 'dst.txt');
+
+          // Act
+          let caught: unknown;
+          try {
+            await fs.rename(src, dst);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+          await cleanup();
+        });
+      });
+    });
+
+    describe('Given rm through a symlinked leading directory that resolves outside root', () => {
+      describe('When rm', () => {
+        it('Then throws PERMISSION_DENIED', async () => {
+          // Arrange
+          const { fs, rootDir, siblingDir, cleanup } = await makeFs();
+          const dirLink = nodePath.join(rootDir, 'escape-rm-dir');
+          await fsPromises.symlink(siblingDir, dirLink);
+          const leaf = nodePath.join(dirLink, 'ghost.txt');
+
+          // Act
+          let caught: unknown;
+          try {
+            await fs.rm(leaf);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+          await cleanup();
+        });
+      });
+    });
+
+    describe('Given rmRecursive through a symlinked leading directory that resolves outside root', () => {
+      describe('When rmRecursive', () => {
+        it('Then throws PERMISSION_DENIED', async () => {
+          // Arrange
+          const { fs, rootDir, siblingDir, cleanup } = await makeFs();
+          const dirLink = nodePath.join(rootDir, 'escape-rmrec-dir');
+          await fsPromises.symlink(siblingDir, dirLink);
+          const leaf = nodePath.join(dirLink, 'ghost-tree');
+
+          // Act
+          let caught: unknown;
+          try {
+            await fs.rmRecursive(leaf);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+          await cleanup();
+        });
+      });
+    });
+
+    describe('Given openWithNoFollow(write) through a symlinked leading directory that resolves outside root', () => {
+      describe('When openWithNoFollow', () => {
+        it('Then throws PERMISSION_DENIED', async () => {
+          // Arrange
+          const { fs, rootDir, siblingDir, cleanup } = await makeFs();
+          const dirLink = nodePath.join(rootDir, 'escape-open-dir');
+          await fsPromises.symlink(siblingDir, dirLink);
+          const leaf = nodePath.join(dirLink, 'ghost.bin');
+
+          // Act
+          let caught: unknown;
+          try {
+            await fs.openWithNoFollow(leaf, 'write');
           } catch (err) {
             caught = err;
           }
@@ -930,7 +1089,7 @@ describe('NodeFileSystem', () => {
       });
 
       // The non-ENOENT-rethrow tests for realpathNearestExisting / exists /
-      // resolveForCreation live in `node-file-system-injected.test.ts`:
+      // assertLeafSafeToWrite live in `node-file-system-injected.test.ts`:
       // they pass a per-instance `FsOperations` fake to control
       // the realpath/lstat errno surface, which makes them cross-platform
       // (POSIX hosts produce ENOTDIR for "file used as directory"; Windows
@@ -990,7 +1149,7 @@ describe('NodeFileSystem', () => {
     });
 
     // `NodeFileSystem.exists` non-ENOENT and escape-branch tests +
-    // `resolveForCreation` non-ENOENT-on-leaf-lstat tests both moved to
+    // `assertLeafSafeToWrite` non-ENOENT-on-leaf-lstat tests both moved to
     // `node-file-system-injected.test.ts` where per-instance `FsOperations`
     // fakes control the errno surface — see comment above.
   });
@@ -1451,24 +1610,23 @@ describe('NodeFileSystem multi-root containment', () => {
 
   describe('Given an absolute symlink target outside every root', () => {
     describe('When creating the link', () => {
-      it('Then it throws PERMISSION_DENIED and creates no link', async () => {
-        // Arrange
+      it('Then the link is created with that target verbatim (no containment check)', async () => {
+        // Arrange — git writes a symlink's target as opaque bytes, never
+        // validated against the root set: the library must be able to
+        // create (and later clone) a link pointing anywhere, including
+        // outside every root.
         const { sut, rootA, outsideDir, cleanup } = await makeMultiRootFs();
         const target = nodePath.join(outsideDir, 'secret.txt');
         await fsPromises.writeFile(target, 'secret content');
         const link = nodePath.join(rootA, 'to-outside');
 
         // Act
-        let caught: unknown;
-        try {
-          await sut.symlink(target, link);
-        } catch (err) {
-          caught = err;
-        }
+        await sut.symlink(target, link);
 
-        // Assert
-        expect((caught as TsgitError).data).toEqual({ code: 'PERMISSION_DENIED', path: link });
-        expect(await lstatErrorCode(link)).toBe('ENOENT');
+        // Assert — the link exists and its target is byte-identical; the
+        // target file itself is never read or touched.
+        expect(await fsPromises.readlink(link)).toBe(target);
+        expect(await fsPromises.readFile(target, 'utf-8')).toBe('secret content');
         await cleanup();
       });
     });

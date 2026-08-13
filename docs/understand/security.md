@@ -1,30 +1,24 @@
 # Security model
 
-This document explains the security properties tsgit enforces by construction. The bottom line: every adapter's `FileSystem` and `HttpTransport` runs through a wrapping validator on construction, so the adapters never receive a path or URL that isn't already inside the contracted boundary.
+This document explains the security properties tsgit enforces by construction. The bottom line: every adapter's `FileSystem` and `HttpTransport` runs through a wrapping validator on construction, so the adapters never receive a path or URL that isn't already inside the contracted boundary — enforced against the resolved (real) location for writes, lexically for reads.
 
 To report a vulnerability, see [`SECURITY.md`](../../SECURITY.md) at the repo root.
 
 ## Path containment
 
-Every `FileSystem` adapter enforces that every input path resolves to a location **inside one of the adapter's containment roots**. For a normal repository (and a main worktree) that set is a single root, `workDir`. Opening a linked worktree, a submodule working directory, or a `--separate-git-dir` layout widens it to the resolved layout's `{ workDir, gitDir, commonDir }`, minimised so any root already contained in another is dropped — a normal repo still collapses to exactly `[workDir]`, byte-identical to before ([ADR-541](../adr/541-raw-node-adapter-layout-root-set.md)). Escapes via:
+Every `FileSystem` adapter enforces that every input path resolves to a location **inside one of the adapter's containment roots** — but the two directions of traffic are held to different standards, matching git's own posture. For a normal repository (and a main worktree) that set is a single root, `workDir`. Opening a linked worktree, a submodule working directory, or a `--separate-git-dir` layout widens it to the resolved layout's `{ workDir, gitDir, commonDir }`, minimised so any root already contained in another is dropped — a normal repo still collapses to exactly `[workDir]`, byte-identical to before ([ADR-541](../adr/541-raw-node-adapter-layout-root-set.md)).
 
-- `..` traversal
-- sibling-directory string tricks (`/repo-evil` vs `/repo`)
-- symlinks pointing outside every root in the set
+A **lexical** escape is refused on every surface, read and write alike — `..` traversal, an absolute foreign path, and the prefix-only sibling trick (`/repo-evil` vs `/repo`) all throw `PERMISSION_DENIED` before any I/O. What differs is the **post-realpath** stage:
 
-…all throw `PERMISSION_DENIED` before any data is read or written.
+- **Writes** additionally realpath the leading (parent) path and refuse if that resolution lands outside the root set — a symlinked leading directory cannot be used to write, rename, delete, or chmod outside the tree. A leaf that is itself a symlink is refused too, on every surface that would otherwise dereference it (`write`/`writeStream`/`writeUtf8`/`writeExclusive`/`appendUtf8`/`openWithNoFollow(_, 'write')`/`chmod`) — `rm`, `rmRecursive`, `rename`, `mkdir`, and `symlink`'s own link path act on the leaf itself and never follow it, matching POSIX and git semantics.
+- **Reads** do not realpath at all: an input already inside the root set is served even when it (or a leading directory) is a symlink resolving outside, exactly as git reads through symlinks without restriction.
+- A symlink's **target** — absolute or relative — is opaque bytes, written and read back verbatim, never validated against the root set, exactly like git ([ADR-632](../adr/632-symlink-targets-written-verbatim.md)). The defence against dereferencing a hostile planted link lives where git keeps it: working-tree content readers check `isSymbolicLink` before ever reading a path as content, never in the adapter.
 
-### Node — symlink-escape defense
+### Node — the write/read split
 
-`checkContainment` uses `realpath` in three modes:
+The write guard (`resolveWrite`) realpaths the leading path only — never the leaf, so a *dangling* symlink (whose leaf realpath would fail) stays removable — via a per-directory LRU-amortised cache, then re-checks containment on the joined result on every call. `chmod` layers an explicit leaf `lstat` on top (POSIX `chmod` follows its leaf and has no portable no-follow variant); every other leaf-dereferencing write surface instead composes `O_NOFOLLOW` into the underlying `open`/`writeFile` flags, which refuses a symlink leaf atomically at the syscall — on Windows, where `O_NOFOLLOW` is silently ignored, the explicit leaf `lstat` fallback covers it instead. The read path (`resolveRead`) is lexical and allocation-light: no `realpath` call, no syscall, matching every root's raw and canonicalised prefix against the input string alone.
 
-| Mode | Mechanism |
-|---|---|
-| **read** | Full `realpath` of the target path. |
-| **lstat** | `realpath` of the parent directory only — preserves lstat semantics for the leaf. |
-| **creation** | `realpathNearestExisting` + leaf symlink check. |
-
-This realpath-aware gate is the *only* symlink-aware containment layer, so the raw Node adapter is confined to exactly the layout's root set — never their common ancestor, which would admit everything between them (and degrade to the whole filesystem for a cross-top-level layout). Each mode is applied independently at every root. A root that doesn't exist yet (e.g. the not-yet-created target of `worktree add`) derives its canonical prefix from the realpath of its nearest existing ancestor plus the missing tail.
+This split makes the Node adapter's write side the *only* symlink-aware containment layer; the raw adapter's writes are confined to exactly the layout's root set — never their common ancestor, which would admit everything between them (and degrade to the whole filesystem for a cross-top-level layout). A root that doesn't exist yet (e.g. the not-yet-created target of `worktree add`) derives its canonical prefix from the realpath of its nearest existing ancestor plus the missing tail.
 
 8.3 short-name reconciliation on Windows (`C:\PROGRA~1` vs `C:\Program Files`) is handled by a lazy canonical-root cache ([ADR-042](../adr/042-canonical-root-lazy-realpath.md)). `\\?\` extended-length prefixes are stripped during comparison.
 
