@@ -1,4 +1,5 @@
 import {
+  configBadBooleanValue,
   configBadNumericValue,
   configBadZlibLevel,
   configMissingValue,
@@ -25,9 +26,15 @@ import {
 } from '../../../domain/sequencer/operation-labels.js';
 import type { Context } from '../../../ports/context.js';
 import {
+  findFirstInvalidBoolean,
+  findFirstInvalidBooleanInSection,
   findFirstInvalidCompression,
+  findFirstInvalidLogAllRefUpdates,
   findFirstValuelessEntry,
+  type InvalidBooleanEntry,
+  type InvalidCompressionEntry,
   readConfig,
+  type ValuelessEntry,
 } from '../config-read.js';
 
 const HEAD_REF = RefName.from('HEAD');
@@ -38,52 +45,119 @@ export type HeadState =
   | { readonly kind: 'direct'; readonly id: ObjectId };
 
 /**
- * Confirm `ctx` points at a real repository: `${gitDir}/HEAD` exists.
- * Returns the repo root (workDir for non-bare; gitDir for bare repos where
- * gitDir IS the root).
+ * Smallest-`line` selection shared by every eager gate in this file: distinct
+ * keys always occupy distinct physical config lines (the tokenizer emits at
+ * most one entry per line), so ties never occur and `<` alone decides.
+ */
+const pickLowerLine = <T extends { readonly line: number }>(
+  a: T | undefined,
+  b: T | undefined,
+): T | undefined => {
+  if (a === undefined) return b;
+  if (b === undefined) return a;
+  return a.line < b.line ? a : b;
+};
+
+const DISCOVERY_CORE_BOOLEAN_KEYS: ReadonlyArray<string> = ['bare'];
+const DISCOVERY_EXTENSIONS_BOOLEAN_KEYS: ReadonlyArray<string> = ['worktreeconfig'];
+
+/**
+ * git's discovery-tier boolean refusal: `core.bare` and
+ * `extensions.worktreeConfig` refuse EVERY command, the `config` porcelain
+ * included, which is why the gate sits in `assertRepository` rather than the
+ * `[core]`-only eager gate the porcelain deliberately skips.
+ */
+const assertDiscoveryBooleansValid = async (ctx: Context): Promise<void> => {
+  const [coreBare, worktreeConfig] = await Promise.all([
+    findFirstInvalidBoolean(ctx, 'core', undefined, DISCOVERY_CORE_BOOLEAN_KEYS),
+    findFirstInvalidBoolean(ctx, 'extensions', undefined, DISCOVERY_EXTENSIONS_BOOLEAN_KEYS),
+  ]);
+  const found = pickLowerLine(coreBare, worktreeConfig);
+  if (found !== undefined) throw configBadBooleanValue(found.key, found.source, found.value);
+};
+
+/**
+ * Confirm `ctx` points at a real repository: `${gitDir}/HEAD` exists, then run
+ * the discovery-tier boolean gate. Returns the repo root (workDir for
+ * non-bare; gitDir for bare repos where gitDir IS the root).
  */
 export const assertRepository = async (ctx: Context): Promise<FilePath> => {
   const headPath = `${ctx.layout.gitDir}/HEAD`;
   if (!(await ctx.fs.exists(headPath))) {
     throw notARepository(ctx.layout.workDir as FilePath);
   }
+  await assertDiscoveryBooleansValid(ctx);
   const root = ctx.layout.bare ? ctx.layout.gitDir : ctx.layout.workDir;
   return root as FilePath;
 };
 
 const CORE_STRING_KEYS: ReadonlyArray<string> = ['excludesfile', 'attributesfile'];
+// `logallrefupdates` is deliberately excluded: it accepts a third literal
+// ("always") beyond git's boolean grammar, so it takes its own tri-state-aware
+// finder (`findFirstInvalidLogAllRefUpdates`) rather than this plain set.
+const CORE_BOOLEAN_KEYS: ReadonlyArray<string> = ['sparsecheckout', 'sparsecheckoutcone'];
+const DIFF_BOOLEAN_KEYS: ReadonlyArray<string> = ['cachetextconv'];
+
+type EagerCandidate =
+  | { readonly kind: 'valueless'; readonly line: number; readonly entry: ValuelessEntry }
+  | { readonly kind: 'compression'; readonly line: number; readonly entry: InvalidCompressionEntry }
+  | { readonly kind: 'boolean'; readonly line: number; readonly entry: InvalidBooleanEntry };
+
+const throwEagerCandidate = (candidate: EagerCandidate): never => {
+  if (candidate.kind === 'valueless') {
+    const { entry } = candidate;
+    throw configMissingValue(entry.key, entry.source, entry.line);
+  }
+  if (candidate.kind === 'boolean') {
+    const { entry } = candidate;
+    throw configBadBooleanValue(entry.key, entry.source, entry.value);
+  }
+  const { entry } = candidate;
+  if (entry.failure.kind === 'numeric') {
+    throw configBadNumericValue(entry.key, entry.source, entry.failure.value, entry.failure.reason);
+  }
+  throw configBadZlibLevel(entry.failure.level);
+};
 
 /**
  * Refuse when a `[core]` path-like (`excludesfile`/`attributesfile`) is
- * present-but-valueless, or when a compression key (`loosecompression`/
+ * present-but-valueless, when a compression key (`loosecompression`/
  * `compression`) is present with any invalid value (valueless, bad integer,
- * or integer outside zlib's `-1..9`), mirroring git's eager
- * `git_default_config` validation which dies on the whole operational surface.
- * `hookspath` is NOT in this broad set: it dies on a narrower surface.
+ * or integer outside zlib's `-1..9`), or when a boolean key
+ * (`core.sparseCheckout`, `core.sparseCheckoutCone`, `core.logAllRefUpdates`,
+ * or any `[diff *]` subsection's `cachetextconv`) holds a value git's boolean
+ * grammar refuses — mirroring git's eager `git_default_config` validation,
+ * which dies on the operational surface while the `config` porcelain
+ * (`assertRepository` alone) survives. `hookspath` is NOT in this broad set:
+ * it dies on a narrower surface.
  *
- * Cross-class ordering: run both finders in parallel, compare their file-line
- * positions, and throw the LOWER-line entry's shape — string shape
- * (`CONFIG_MISSING_VALUE`, with `line`) or compression shape
- * (`CONFIG_BAD_NUMERIC_VALUE` / `CONFIG_BAD_ZLIB_LEVEL`). No-op for a valid
- * or absent `[core]` section.
+ * Cross-class ordering: run all five finders in parallel and throw the
+ * LOWEST-line entry's shape — string (`CONFIG_MISSING_VALUE`), compression
+ * (`CONFIG_BAD_NUMERIC_VALUE` / `CONFIG_BAD_ZLIB_LEVEL`), or boolean
+ * (`CONFIG_BAD_BOOLEAN_VALUE`). No-op when every class is valid or absent.
  */
-export const assertCoreConfigValid = async (ctx: Context): Promise<void> => {
-  const [str, comp] = await Promise.all([
+export const assertEagerConfigValid = async (ctx: Context): Promise<void> => {
+  const [str, comp, boolCore, logAllRefUpdates, boolDiff] = await Promise.all([
     findFirstValuelessEntry(ctx, 'core', undefined, CORE_STRING_KEYS),
     findFirstInvalidCompression(ctx),
+    findFirstInvalidBoolean(ctx, 'core', undefined, CORE_BOOLEAN_KEYS),
+    findFirstInvalidLogAllRefUpdates(ctx),
+    findFirstInvalidBooleanInSection(ctx, 'diff', DIFF_BOOLEAN_KEYS),
   ]);
-  // equivalent-mutant: the string entry and the compression entry are distinct config keys, each on
-  // its own config-file line, so `str.line === comp.line` can never occur — `<` and `<=` are
-  // indistinguishable.
-  if (str !== undefined && (comp === undefined || str.line < comp.line)) {
-    throw configMissingValue(str.key, str.source, str.line);
-  }
-  if (comp !== undefined) {
-    if (comp.failure.kind === 'numeric') {
-      throw configBadNumericValue(comp.key, comp.source, comp.failure.value, comp.failure.reason);
-    }
-    throw configBadZlibLevel(comp.failure.level);
-  }
+  const candidates: ReadonlyArray<EagerCandidate | undefined> = [
+    str === undefined ? undefined : { kind: 'valueless', line: str.line, entry: str },
+    comp === undefined ? undefined : { kind: 'compression', line: comp.line, entry: comp },
+    boolCore === undefined ? undefined : { kind: 'boolean', line: boolCore.line, entry: boolCore },
+    logAllRefUpdates === undefined
+      ? undefined
+      : { kind: 'boolean', line: logAllRefUpdates.line, entry: logAllRefUpdates },
+    boolDiff === undefined ? undefined : { kind: 'boolean', line: boolDiff.line, entry: boolDiff },
+  ];
+  const selected = candidates.reduce<EagerCandidate | undefined>(
+    (winner, candidate) => pickLowerLine(winner, candidate),
+    undefined,
+  );
+  if (selected !== undefined) throwEagerCandidate(selected);
 };
 
 /**
@@ -95,7 +169,7 @@ export const assertCoreConfigValid = async (ctx: Context): Promise<void> => {
  */
 export const assertOperationalRepository = async (ctx: Context): Promise<FilePath> => {
   const root = await assertRepository(ctx);
-  await assertCoreConfigValid(ctx);
+  await assertEagerConfigValid(ctx);
   return root;
 };
 

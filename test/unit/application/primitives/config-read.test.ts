@@ -6,6 +6,7 @@ import {
   findFirstInvalidBoolean,
   findFirstInvalidBooleanInSection,
   findFirstInvalidCompression,
+  findFirstInvalidLogAllRefUpdates,
   findFirstValuelessEntry,
   findFirstValuelessInSection,
   findInvalidPushDefault,
@@ -5559,6 +5560,110 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
 
           // Act
           const result = await findFirstInvalidBooleanInSection(ctx, 'diff', ['cachetextconv']);
+
+          // Assert
+          expect(result).toBeUndefined();
+        });
+      });
+    });
+  });
+
+  describe('findFirstInvalidLogAllRefUpdates', () => {
+    describe('Given core.logAllRefUpdates holds a value that fails both the tri-state literal and the boolean grammar', () => {
+      describe('When findFirstInvalidLogAllRefUpdates', () => {
+        it('Then it returns the entry', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[core]\n\tlogAllRefUpdates = maybe\n');
+
+          // Act
+          const result = await findFirstInvalidLogAllRefUpdates(ctx);
+
+          // Assert
+          expect(result?.key).toBe('core.logallrefupdates');
+          expect(result?.value).toBe('maybe');
+          expect(result?.line).toBe(2);
+        });
+      });
+    });
+
+    describe('Given core.logAllRefUpdates holds the tri-state literal "always" (any case)', () => {
+      describe('When findFirstInvalidLogAllRefUpdates', () => {
+        it.each([
+          { value: 'always', label: 'lower-case' },
+          { value: 'Always', label: 'mixed-case' },
+          { value: 'ALWAYS', label: 'upper-case' },
+        ])('Then it returns undefined ($label)', async ({ value }) => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, `[core]\n\tlogAllRefUpdates = ${value}\n`);
+
+          // Act
+          const result = await findFirstInvalidLogAllRefUpdates(ctx);
+
+          // Assert
+          expect(result).toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given core.logAllRefUpdates holds a valid boolean value', () => {
+      describe('When findFirstInvalidLogAllRefUpdates', () => {
+        it('Then it returns undefined', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[core]\n\tlogAllRefUpdates = true\n');
+
+          // Act
+          const result = await findFirstInvalidLogAllRefUpdates(ctx);
+
+          // Assert
+          expect(result).toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given core.logAllRefUpdates is valueless', () => {
+      describe('When findFirstInvalidLogAllRefUpdates', () => {
+        it('Then it returns undefined (valueless is boolean-true)', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[core]\n\tlogAllRefUpdates\n');
+
+          // Act
+          const result = await findFirstInvalidLogAllRefUpdates(ctx);
+
+          // Assert
+          expect(result).toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given the key is absent', () => {
+      describe('When findFirstInvalidLogAllRefUpdates', () => {
+        it('Then it returns undefined', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[core]\n\tbare = true\n');
+
+          // Act
+          const result = await findFirstInvalidLogAllRefUpdates(ctx);
+
+          // Assert
+          expect(result).toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given a malformed value sits under a non-[core] section', () => {
+      describe('When findFirstInvalidLogAllRefUpdates', () => {
+        it('Then it returns undefined (out of section)', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[other]\n\tlogAllRefUpdates = maybe\n');
+
+          // Act
+          const result = await findFirstInvalidLogAllRefUpdates(ctx);
 
           // Assert
           expect(result).toBeUndefined();

@@ -6,7 +6,7 @@ import {
 import { TsgitError } from '../../../domain/error.js';
 import type { Context } from '../../../ports/context.js';
 import type { IniSection } from '../config-read.js';
-import { parseIniSections } from '../config-read.js';
+import { parseGitBoolean, parseIniSections } from '../config-read.js';
 import { commonGitDir } from '../path-layout.js';
 
 /**
@@ -44,8 +44,9 @@ const callAdapterPath = (scope: ConfigScope, fn: () => string): string => {
 };
 
 /**
- * True iff the local config has `[extensions] worktreeConfig = true`, the gate
- * for the per-worktree config file at `${gitDir}/config.worktree`.
+ * True iff the local config's `[extensions] worktreeConfig` parses as true
+ * under git's boolean grammar, the gate for the per-worktree config file at
+ * `${gitDir}/config.worktree`.
  */
 export const isWorktreeScopeActive = async (ctx: Context): Promise<boolean> => {
   const path = `${commonGitDir(ctx)}/config`;
@@ -57,7 +58,11 @@ export const isWorktreeScopeActive = async (ctx: Context): Promise<boolean> => {
     if (section.subsection !== undefined) continue;
     for (const entry of section.entries) {
       if (entry.key.toLowerCase() !== 'worktreeconfig') continue;
-      return entry.value === 'true';
+      const parsed = parseGitBoolean(entry.value);
+      // A value git's boolean grammar refuses is inert here — the discovery-tier
+      // gate in `assertRepository` is what raises it, and it runs before this on
+      // every command.
+      return parsed.ok && parsed.value;
     }
   }
   return false;

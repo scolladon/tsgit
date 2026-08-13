@@ -1754,6 +1754,37 @@ export const findFirstInvalidBooleanInSection = async (
   return undefined;
 };
 
+/**
+ * `core.logAllRefUpdates`-specific sibling of `findFirstInvalidBoolean`: the key
+ * accepts a third literal, `always`, beyond git's boolean grammar (mirrors
+ * `parseLogAllRefUpdates`'s own tri-state check), so the plain boolean finder
+ * would misreport it. Otherwise structurally identical — walks the cached
+ * `[core]` tokens and returns the entry only when neither the tri-state literal
+ * nor the boolean grammar accepts the value.
+ */
+export const findFirstInvalidLogAllRefUpdates = async (
+  ctx: Context,
+): Promise<InvalidBooleanEntry | undefined> => {
+  const { tokens, source: path } = await readConfigEntry(ctx);
+  let inSection = false;
+  for (const token of tokens) {
+    if (token.kind === 'header') {
+      inSection = matchesSection(token.section, token.subsection, 'core', undefined);
+      continue;
+    }
+    if (!inSection || token.kind !== 'entry' || token.value === null) continue;
+    if (token.key.toLowerCase() !== 'logallrefupdates') continue;
+    if (parseLogAllRefUpdates(token.value) !== undefined) continue;
+    return {
+      key: 'core.logallrefupdates',
+      source: path,
+      line: token.startLine + 1,
+      value: token.value,
+    };
+  }
+  return undefined;
+};
+
 type GitIntResult =
   | { readonly ok: true; readonly value: number }
   | { readonly ok: false; readonly reason: 'invalid unit' | 'out of range' };

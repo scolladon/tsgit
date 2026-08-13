@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
 import {
-  assertCoreConfigValid,
+  assertEagerConfigValid,
   assertNoPendingOperation,
   assertNotBare,
   assertOperationalRepository,
@@ -44,6 +44,57 @@ describe('internal/repo-state', () => {
 
           // Assert
           expect(result).toBe(ctx.layout.workDir);
+        });
+      });
+    });
+
+    describe('Given a T1 boolean key holds a value git refuses', () => {
+      describe('When called', () => {
+        it.each([
+          {
+            config: '[core]\n\tbare = maybe\n',
+            expectedKey: 'core.bare',
+            label: 'core.bare = maybe',
+          },
+          {
+            config: '[extensions]\n\tworktreeConfig = maybe\n',
+            expectedKey: 'extensions.worktreeconfig',
+            label: 'extensions.worktreeConfig = maybe',
+          },
+        ])('Then $label throws CONFIG_BAD_BOOLEAN_VALUE', async ({ config, expectedKey }) => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx);
+          await seedConfig(ctx, config);
+
+          // Act
+          let caught: unknown;
+          try {
+            await assertRepository(ctx);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data as BadBooleanData;
+          expect(data.code).toBe('CONFIG_BAD_BOOLEAN_VALUE');
+          expect(data.key).toBe(expectedKey);
+          expect(data.value).toBe('maybe');
+        });
+      });
+    });
+
+    describe('Given a T2 boolean key (not T1) holds a value git refuses', () => {
+      describe('When called', () => {
+        it('Then resolves (no throw — T2 keys do not gate discovery)', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx);
+          await seedConfig(ctx, '[core]\n\tsparseCheckout = maybe\n');
+
+          // Act + Assert
+          await assertRepository(ctx);
         });
       });
     });
@@ -397,7 +448,7 @@ describe('internal/repo-state', () => {
     });
   });
 
-  describe('assertCoreConfigValid (string path-likes)', () => {
+  describe('assertEagerConfigValid (string path-likes)', () => {
     describe('Given a config with a valueless core path-like', () => {
       describe('When called', () => {
         it.each([
@@ -412,7 +463,7 @@ describe('internal/repo-state', () => {
           // Act
           let caught: unknown;
           try {
-            await assertCoreConfigValid(ctx);
+            await assertEagerConfigValid(ctx);
           } catch (err) {
             caught = err;
           }
@@ -440,7 +491,7 @@ describe('internal/repo-state', () => {
           );
 
           // Act + Assert — must not throw; hookspath is out of the broad gate.
-          await assertCoreConfigValid(ctx);
+          await assertEagerConfigValid(ctx);
         });
       });
     });
@@ -699,7 +750,7 @@ describe('internal/repo-state', () => {
     });
   });
 
-  describe('assertCoreConfigValid', () => {
+  describe('assertEagerConfigValid', () => {
     describe('Given an invalid-unit or still-invalid-after-precedence compression key', () => {
       describe('When called', () => {
         it.each([
@@ -739,7 +790,7 @@ describe('internal/repo-state', () => {
             // Act
             let caught: unknown;
             try {
-              await assertCoreConfigValid(ctx);
+              await assertEagerConfigValid(ctx);
             } catch (err) {
               caught = err;
             }
@@ -772,7 +823,7 @@ describe('internal/repo-state', () => {
             // Act
             let caught: unknown;
             try {
-              await assertCoreConfigValid(ctx);
+              await assertEagerConfigValid(ctx);
             } catch (err) {
               caught = err;
             }
@@ -828,7 +879,7 @@ describe('internal/repo-state', () => {
             // Act
             let caught: unknown;
             try {
-              await assertCoreConfigValid(ctx);
+              await assertEagerConfigValid(ctx);
             } catch (err) {
               caught = err;
             }
@@ -854,7 +905,7 @@ describe('internal/repo-state', () => {
           // Act
           let caught: unknown;
           try {
-            await assertCoreConfigValid(ctx);
+            await assertEagerConfigValid(ctx);
           } catch (err) {
             caught = err;
           }
@@ -895,7 +946,98 @@ describe('internal/repo-state', () => {
           await seedConfig(ctx, config);
 
           // Act + Assert — must not throw
-          await assertCoreConfigValid(ctx);
+          await assertEagerConfigValid(ctx);
+        });
+      });
+    });
+
+    describe('Given a T2 boolean key holds a value git refuses', () => {
+      describe('When called', () => {
+        it.each([
+          {
+            config: '[core]\n\tsparseCheckout = maybe\n',
+            expectedKey: 'core.sparsecheckout',
+            label: 'core.sparseCheckout = maybe',
+          },
+          {
+            config: '[core]\n\tsparseCheckoutCone = maybe\n',
+            expectedKey: 'core.sparsecheckoutcone',
+            label: 'core.sparseCheckoutCone = maybe',
+          },
+          {
+            config: '[core]\n\tlogAllRefUpdates = maybe\n',
+            expectedKey: 'core.logallrefupdates',
+            label: 'core.logAllRefUpdates = maybe',
+          },
+          {
+            config: '[diff "MyDriver"]\n\tcachetextconv = maybe\n',
+            expectedKey: 'diff.MyDriver.cachetextconv',
+            label: '[diff "MyDriver"] cachetextconv = maybe (subsection verbatim)',
+          },
+        ])('Then $label throws CONFIG_BAD_BOOLEAN_VALUE', async ({ config, expectedKey }) => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx);
+          await seedConfig(ctx, config);
+
+          // Act
+          let caught: unknown;
+          try {
+            await assertEagerConfigValid(ctx);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data as BadBooleanData;
+          expect(data.code).toBe('CONFIG_BAD_BOOLEAN_VALUE');
+          expect(data.key).toBe(expectedKey);
+          expect(data.value).toBe('maybe');
+        });
+      });
+    });
+
+    describe('Given several malformed entries across the valueless, compression and boolean classes', () => {
+      describe('When called', () => {
+        it.each([
+          {
+            config: '[core]\n\tsparseCheckout = maybe\n\texcludesFile\n',
+            expectedCode: 'CONFIG_BAD_BOOLEAN_VALUE',
+            label: 'boolean (line 2) before valueless (line 3) — boolean wins',
+          },
+          {
+            config: '[core]\n\texcludesFile\n\tsparseCheckout = maybe\n',
+            expectedCode: 'CONFIG_MISSING_VALUE',
+            label: 'valueless (line 2) before boolean (line 3) — valueless wins',
+          },
+          {
+            config: '[core]\n\tsparseCheckout = maybe\n\tloosecompression = abc\n',
+            expectedCode: 'CONFIG_BAD_BOOLEAN_VALUE',
+            label: 'boolean (line 2) before invalid compression (line 3) — boolean wins',
+          },
+          {
+            config: '[core]\n\tloosecompression = abc\n\tsparseCheckout = maybe\n',
+            expectedCode: 'CONFIG_BAD_NUMERIC_VALUE',
+            label: 'invalid compression (line 2) before boolean (line 3) — compression wins',
+          },
+        ])('Then $label ($expectedCode)', async ({ config, expectedCode }) => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx);
+          await seedConfig(ctx, config);
+
+          // Act
+          let caught: unknown;
+          try {
+            await assertEagerConfigValid(ctx);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data.code).toBe(expectedCode);
         });
       });
     });
@@ -912,4 +1054,10 @@ interface BadNumericData {
 interface BadZlibData {
   readonly code: string;
   readonly level: number;
+}
+
+interface BadBooleanData {
+  readonly code: string;
+  readonly key: string;
+  readonly value: string;
 }
