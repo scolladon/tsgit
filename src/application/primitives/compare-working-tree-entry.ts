@@ -74,7 +74,9 @@ const cleanWorktreeBytes = async (
   path: FilePath,
   bytes: Uint8Array,
 ): Promise<Uint8Array> => {
-  const choice = await resolveFilterDriver(ctx, provider, path);
+  // Conversion context: git validates every `[filter "<d>"].required` when
+  // it actually clean-converts a path — this call IS that conversion.
+  const choice = await resolveFilterDriver(ctx, provider, path, { eagerSectionValidation: true });
   if (choice.kind !== 'external' || choice.clean === undefined) return bytes;
   const result = await runFilterDriver(ctx, runner, choice.clean, bytes);
   return result.ok ? result.bytes : bytes;
@@ -111,6 +113,19 @@ export const compareWorkingTreeDelta = async (
     isEntryStatClean(entry, stat, indexMtime)
   ) {
     return { status: worktreeMode === entry.mode ? 'unchanged' : 'mode-changed', worktreeMode };
+  }
+  // Size settles the verdict without a read on the armed, non-racy path — as
+  // git does: a working file whose size differs from the staged stat cannot
+  // carry the staged raw bytes, and git reports it modified without running
+  // the clean filter (measured: a size-changing edit under a malformed
+  // `[filter *].required` leaves `git status` at exit 0).
+  if (
+    entry.mode !== FILE_MODE.GITLINK &&
+    !stat.isSymbolicLink &&
+    indexMtime !== undefined &&
+    entry.fileSize >>> 0 !== stat.size >>> 0
+  ) {
+    return { status: 'modified', worktreeMode };
   }
   try {
     const raw = stat.isSymbolicLink

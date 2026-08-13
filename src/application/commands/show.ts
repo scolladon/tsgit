@@ -111,9 +111,6 @@ export async function show(
   opts: ShowOptions = {},
 ): Promise<ShowResult | ReadonlyArray<ShowResult>> {
   await assertOperationalRepository(ctx);
-  // git's show loads promisor-remote config with its object walk (measured:
-  // show refuses a malformed remote.<n>.promisor where log accepts it).
-  await assertValidBooleanConfigInSection(ctx, 'remote', ['promisor']);
   const withStat = opts.withStat === true;
   if (typeof rev === 'string') return buildForRev(ctx, rev, withStat);
   const results: ShowResult[] = [];
@@ -121,8 +118,14 @@ export async function show(
   return results;
 }
 
-const buildForRev = async (ctx: Context, rev: string, withStat: boolean): Promise<ShowResult> =>
-  buildResult(ctx, await readObject(ctx, await revParse(ctx, rev)), withStat);
+const buildForRev = async (ctx: Context, rev: string, withStat: boolean): Promise<ShowResult> => {
+  const id = await revParse(ctx, rev);
+  // git's show loads promisor-remote config with its object walk, AFTER the
+  // rev resolves (measured: an unknown rev reports the rev error; a resolved
+  // one refuses a malformed remote.<n>.promisor where log accepts it).
+  await assertValidBooleanConfigInSection(ctx, 'remote', ['promisor']);
+  return buildResult(ctx, await readObject(ctx, id), withStat);
+};
 
 async function buildResult(ctx: Context, obj: GitObject, withStat: boolean): Promise<ShowResult> {
   switch (obj.type) {

@@ -6525,6 +6525,33 @@ describe('fsck — remote.promisor guard', () => {
       });
     });
 
+    describe('When fsck runs on a repo whose only ref names a missing object', () => {
+      it('Then throws CONFIG_BAD_BOOLEAN_VALUE — git probes the absent target via the promisor machinery', async () => {
+        // Arrange — a ref to an oid that exists nowhere; no index, no reflog.
+        const ctx = await initBareCtx();
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/refs/heads/main`,
+          '0123456789abcdef0123456789abcdef01234567\n',
+        );
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, config);
+        __resetConfigCacheForTests();
+
+        // Act
+        let caught: unknown;
+        try {
+          await fsck(ctx);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as { code: string; key: string };
+        expect(data.code).toBe('CONFIG_BAD_BOOLEAN_VALUE');
+        expect(data.key).toBe(expectedKey);
+      });
+    });
+
     describe('When fsck runs on a rootless repo (unborn HEAD, one dangling blob)', () => {
       it('Then resolves — git only reaches promisor config once the walk has roots', async () => {
         // Arrange

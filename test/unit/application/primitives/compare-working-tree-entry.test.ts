@@ -308,6 +308,42 @@ describe('compareWorkingTreeDelta', () => {
     });
   });
 
+  describe('Given an armed entry whose recorded size differs from the working file', () => {
+    describe('When comparing the delta', () => {
+      it("Then returns 'modified' without reading — size settles the verdict as git does", async () => {
+        // Arrange — non-racy index mtime; only the recorded size disagrees,
+        // so the stat-clean check fails and the size shortcut must answer
+        // before any content read (git never runs the clean filter here).
+        const { ctx, entry } = await seedFile('a.txt', 'hello\n');
+        const sizeMismatched: IndexEntry = { ...entry, fileSize: entry.fileSize + 1 };
+        const reads: string[] = [];
+        const spiedCtx: Context = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            read: async (readPath: string) => {
+              reads.push(readPath);
+              return ctx.fs.read(readPath);
+            },
+          },
+        };
+        const indexMtime = { seconds: entry.mtimeSeconds + 10, nanoseconds: 0 };
+
+        // Act
+        const result = await compareWorkingTreeDelta(
+          spiedCtx,
+          sizeMismatched,
+          undefined,
+          indexMtime,
+        );
+
+        // Assert
+        expect(result.status).toBe('modified');
+        expect(reads).toEqual([]);
+      });
+    });
+  });
+
   describe('Given a stat-clean file whose recorded mode differs from the working file, index mtime supplied', () => {
     describe('When comparing the delta', () => {
       it("Then returns 'mode-changed' without reading or hashing the content (stat-cache ternary distinguishes the mode mismatch)", async () => {

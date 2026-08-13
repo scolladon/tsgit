@@ -141,12 +141,15 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
   // bounded existence probe per cache-tree entry, deliberately independent
   // of `universe`'s own mode-narrowing — see `existsInStore`'s doc comment)
   // rather than re-scanning the store.
-  const { roots, missingEntryPoint } = await collectRoots(ctx, opts, universe);
+  const { roots, missingEntryPoint, sawAbsentRefTarget } = await collectRoots(ctx, opts, universe);
   // git's fsck reaches promisor-remote config lazily, during the
   // connectivity walk — measured: an unborn-HEAD repo and a repo without refs holding
   // one dangling blob both accept a malformed remote.<n>.promisor (exit 0);
-  // the refusal appears once anything roots the walk.
-  if (roots.size > 0) await assertValidBooleanConfigInSection(ctx, 'remote', ['promisor']);
+  // the refusal appears once anything roots the walk, INCLUDING a ref whose
+  // target is missing (git probes it via is_promisor_object).
+  if (roots.size > 0 || sawAbsentRefTarget) {
+    await assertValidBooleanConfigInSection(ctx, 'remote', ['promisor']);
+  }
   const missingEntryPointBit = missingEntryPoint ? EXIT_REFS_CONTENT : 0;
   const inEdgePresent = buildInEdgeMap(universe, objectCache);
 

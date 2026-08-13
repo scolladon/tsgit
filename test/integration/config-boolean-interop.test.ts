@@ -452,4 +452,41 @@ describe.skipIf(!GIT_AVAILABLE)('config boolean refusal tier interop', () => {
       });
     });
   });
+  describe('Given X18 — a malformed [filter "zed"].required and a settled stat-clean index, When each tool re-adds then modifies the path', () => {
+    it('Then both accept the stat-clean add and both refuse the modified one', async () => {
+      // Arrange — commit a file with a healthy config, let the stat cache
+      // settle (file mtime strictly older than the index write), THEN arm
+      // the malformed driver section.
+      await writeConfig('[core]\n\trepositoryformatversion = 0\n');
+      await writeFile(path.join(ours, 'f.txt'), 'clean\n');
+      // git's racy-clean guard is SECOND-resolution (USE_NSEC off in release
+      // builds): the file's mtime must be a strictly older second than the
+      // index write for the stat cache to settle.
+      await new Promise((r) => setTimeout(r, 1100));
+      runGit(['-C', ours, 'add', 'f.txt'], { env: runGitEnv() });
+      runGit(
+        ['-C', ours, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'c1'],
+        { env: runGitEnv() },
+      );
+      await writeConfig(
+        '[core]\n\trepositoryformatversion = 0\n[filter "zed"]\n\trequired = maybe\n',
+      );
+
+      // Act + Assert — stat-clean: git converts nothing and exits 0; tsgit
+      // takes the same ie_match_stat short-circuit and must not refuse.
+      const gClean = tryRunGitWithExit(['-C', ours, 'add', 'f.txt'], { env: runGitEnv() });
+      expect(gClean.exitCode).toBe(0);
+      await withRepo(ours, (repo) => repo.add(['f.txt']));
+
+      // Act + Assert — modified: the clean conversion engages and both refuse.
+      await writeFile(path.join(ours, 'f.txt'), 'changed\n');
+      const gDirty = tryRunGitWithExit(['-C', ours, 'add', 'f.txt'], { env: runGitEnv() });
+      expect(gDirty.exitCode).toBe(128);
+      expect(gDirty.stderr).toContain("bad boolean config value 'maybe' for 'filter.zed.required'");
+      const caught = await withRepo(ours, (repo) => captureThrow(() => repo.add(['f.txt'])));
+      const data = asBadBoolean(caught);
+      expect(data.code).toBe('CONFIG_BAD_BOOLEAN_VALUE');
+      expect(data.key).toBe('filter.zed.required');
+    }, 60_000);
+  });
 });

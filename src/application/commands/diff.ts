@@ -51,11 +51,12 @@ export function diff(ctx: Context, opts: DiffOptions & { withStat: true }): Prom
 export function diff(ctx: Context, opts?: DiffOptions): Promise<TreeDiff>;
 export async function diff(ctx: Context, opts: DiffOptions = {}): Promise<TreeDiff | StatTreeDiff> {
   await assertOperationalRepository(ctx);
-  // git's diff loads promisor-remote config with its object walk (measured:
-  // tree-to-tree and --cached diffs refuse a malformed remote.<n>.promisor).
-  await assertValidBooleanConfigInSection(ctx, 'remote', ['promisor']);
   const from = await resolveTreeish(ctx, opts.from ?? 'HEAD');
   const to = opts.to !== undefined ? await resolveTreeish(ctx, opts.to) : undefined;
+  // git's diff loads promisor-remote config with its object walk, AFTER the
+  // revs resolve (measured: an unknown rev reports the rev error, a resolved
+  // tree-to-tree or --cached diff refuses a malformed remote.<n>.promisor).
+  await assertValidBooleanConfigInSection(ctx, 'remote', ['promisor']);
   const treeOptions = resolveDiffOptions(opts, ctx.config);
   return diffTrees(ctx, from, to, treeOptions);
 }

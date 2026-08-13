@@ -2039,7 +2039,7 @@ describe('push — signed', () => {
     ])(
       'When push.default and push.gpgSign are BOTH malformed ($label)',
       ({ extra, expectedCode }) => {
-        it(`Then the first malformed line wins with ${'$'}{expectedCode}`, async () => {
+        it(`Then the first malformed line wins with ${expectedCode}`, async () => {
           // Arrange — git parses both keys in one config pass, first line wins.
           const ctx = createMemoryContext();
           const { parent } = await seedSignedPush(ctx, { otherExtra: extra });
