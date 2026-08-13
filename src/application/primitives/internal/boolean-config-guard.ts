@@ -33,3 +33,14 @@ export const assertValidBooleanConfigInSection = async (
   const found = await findFirstInvalidBooleanInSection(ctx, section, keys, options);
   if (found !== undefined) throw configBadBooleanValue(found.key, found.source, found.value);
 };
+
+/**
+ * git's `remote.<n>.promisor` refusal surface, measured on 2.55.0: status,
+ * fsck (rooted walks only), commit, add (matched paths), diff and show
+ * (after rev resolution), and the lazy-fetch path refuse a malformed value
+ * (subsectionless `[remote] promisor` included); log, checkout, tag, branch
+ * and the config porcelain accept it. Each consuming command calls this at
+ * the point git's own promisor-config load happens.
+ */
+export const assertValidPromisorRemoteConfig = (ctx: Context): Promise<void> =>
+  assertValidBooleanConfigInSection(ctx, 'remote', ['promisor']);

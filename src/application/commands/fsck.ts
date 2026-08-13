@@ -2,7 +2,7 @@ import type { ObjectId } from '../../domain/objects/index.js';
 import type { LruCache } from '../../domain/storage/index.js';
 import type { Context } from '../../ports/context.js';
 import { enumerateObjects } from '../primitives/enumerate-objects.js';
-import { assertValidBooleanConfigInSection } from '../primitives/internal/boolean-config-guard.js';
+import { assertValidPromisorRemoteConfig } from '../primitives/internal/boolean-config-guard.js';
 import { adoptPackRegistry } from '../primitives/read-object.js';
 import { runBitmapHealthPass } from './internal/fsck/bitmap-health.js';
 import {
@@ -142,13 +142,9 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
   // of `universe`'s own mode-narrowing — see `existsInStore`'s doc comment)
   // rather than re-scanning the store.
   const { roots, missingEntryPoint, sawAbsentRefTarget } = await collectRoots(ctx, opts, universe);
-  // git's fsck reaches promisor-remote config lazily, during the
-  // connectivity walk — measured: an unborn-HEAD repo and a repo without refs holding
-  // one dangling blob both accept a malformed remote.<n>.promisor (exit 0);
-  // the refusal appears once anything roots the walk, INCLUDING a ref whose
-  // target is missing (git probes it via is_promisor_object).
+  // Promisor-remote guard (see assertValidPromisorRemoteConfig) — only when the walk has roots.
   if (roots.size > 0 || sawAbsentRefTarget) {
-    await assertValidBooleanConfigInSection(ctx, 'remote', ['promisor']);
+    await assertValidPromisorRemoteConfig(ctx);
   }
   const missingEntryPointBit = missingEntryPoint ? EXIT_REFS_CONTENT : 0;
   const inEdgePresent = buildInEdgeMap(universe, objectCache);

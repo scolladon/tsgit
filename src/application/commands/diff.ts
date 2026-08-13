@@ -1,7 +1,7 @@
 import type { RenameDetectOptions, StatTreeDiff, TreeDiff } from '../../domain/diff/index.js';
 import type { Context, RepositoryConfig } from '../../ports/context.js';
 import { diffTrees } from '../primitives/diff-trees.js';
-import { assertValidBooleanConfigInSection } from '../primitives/internal/boolean-config-guard.js';
+import { assertValidPromisorRemoteConfig } from '../primitives/internal/boolean-config-guard.js';
 import type { DiffTreesOptions } from '../primitives/types.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
 import { resolveTreeish } from './internal/resolve-rev.js';
@@ -53,10 +53,8 @@ export async function diff(ctx: Context, opts: DiffOptions = {}): Promise<TreeDi
   await assertOperationalRepository(ctx);
   const from = await resolveTreeish(ctx, opts.from ?? 'HEAD');
   const to = opts.to !== undefined ? await resolveTreeish(ctx, opts.to) : undefined;
-  // git's diff loads promisor-remote config with its object walk, AFTER the
-  // revs resolve (measured: an unknown rev reports the rev error, a resolved
-  // tree-to-tree or --cached diff refuses a malformed remote.<n>.promisor).
-  await assertValidBooleanConfigInSection(ctx, 'remote', ['promisor']);
+  // Promisor-remote guard (see assertValidPromisorRemoteConfig) — after rev resolution.
+  await assertValidPromisorRemoteConfig(ctx);
   const treeOptions = resolveDiffOptions(opts, ctx.config);
   return diffTrees(ctx, from, to, treeOptions);
 }

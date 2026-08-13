@@ -23,7 +23,7 @@ import type {
   Tree,
 } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
-import { assertValidBooleanConfigInSection } from '../primitives/internal/boolean-config-guard.js';
+import { assertValidPromisorRemoteConfig } from '../primitives/internal/boolean-config-guard.js';
 import { loadShallowSet } from '../primitives/internal/shallow-set.js';
 import { readObject } from '../primitives/read-object.js';
 import { diffCommitAgainstParent } from './internal/commit-diff.js';
@@ -120,10 +120,8 @@ export async function show(
 
 const buildForRev = async (ctx: Context, rev: string, withStat: boolean): Promise<ShowResult> => {
   const id = await revParse(ctx, rev);
-  // git's show loads promisor-remote config with its object walk, AFTER the
-  // rev resolves (measured: an unknown rev reports the rev error; a resolved
-  // one refuses a malformed remote.<n>.promisor where log accepts it).
-  await assertValidBooleanConfigInSection(ctx, 'remote', ['promisor']);
+  // Promisor-remote guard (see assertValidPromisorRemoteConfig) — after rev resolution.
+  await assertValidPromisorRemoteConfig(ctx);
   return buildResult(ctx, await readObject(ctx, id), withStat);
 };
 

@@ -27,7 +27,7 @@ import type { FilePath } from '../../domain/objects/object-id.js';
 import { matchesPathspec, type Pathspec } from '../../domain/pathspec/index.js';
 import { CHERRY_PICK, MERGE, REBASE, REVERT } from '../../domain/sequencer/operation-labels.js';
 import type { Context } from '../../ports/context.js';
-import { assertValidBooleanConfigInSection } from '../primitives/internal/boolean-config-guard.js';
+import { assertValidPromisorRemoteConfig } from '../primitives/internal/boolean-config-guard.js';
 import { indexEntryFromStat } from '../primitives/internal/index-entry-from-stat.js';
 import { type IndexMtime, isEntryStatClean } from '../primitives/internal/is-entry-stat-clean.js';
 import { joinPath } from '../primitives/internal/join-working-tree-path.js';
@@ -370,11 +370,8 @@ const stageFromStat = async (
   // read through `ctx.fs.read` (which follows symlinks), break the mode
   // classification, or trip an opaque adapter error. Abort the whole add
   // on any type flip.
-  // git's add reads promisor-remote config once its write path engages —
-  // measured: a matched path (even unmodified) refuses a malformed
-  // remote.<n>.promisor, while a zero-match pathspec reports its pathspec
-  // error and a bare repo its bare refusal first.
-  await assertValidBooleanConfigInSection(ctx, 'remote', ['promisor']);
+  // Promisor-remote guard (see assertValidPromisorRemoteConfig) — once the write path engages.
+  await assertValidPromisorRemoteConfig(ctx);
   const fresh = await ctx.fs.lstat(joinPath(ctx.layout.workDir, path));
   if (
     fresh.isSymbolicLink !== stat.isSymbolicLink ||
