@@ -277,8 +277,14 @@ describe('isWorktreeScopeActive', () => {
           expected: false,
         },
         {
-          label: '[extensions] worktreeConfig = false (must be exactly "true")',
+          label: '[extensions] worktreeConfig = false (boolean-false word)',
           files: { '/repo/.git/config': u8('[extensions]\n\tworktreeConfig = false\n') },
+          expected: false,
+        },
+        {
+          label:
+            '[extensions] worktreeConfig = maybe (grammar-refused — inert HERE; the discovery gate raises it)',
+          files: { '/repo/.git/config': u8('[extensions]\n\tworktreeConfig = maybe\n') },
           expected: false,
         },
         {

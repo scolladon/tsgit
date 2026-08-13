@@ -93,6 +93,15 @@ async function freshRepo(slug: string): Promise<string> {
   return dir;
 }
 
+/** Delete every loose-object fanout dir so reads must come from packs. */
+async function removeLooseObjectDirs(dir: string): Promise<void> {
+  const objectsDir = path.join(dir, '.git', 'objects');
+  const fanout = readdirSync(objectsDir).filter((name) => /^[0-9a-f]{2}$/.test(name));
+  await Promise.all(
+    fanout.map((name) => rm(path.join(objectsDir, name), { recursive: true, force: true })),
+  );
+}
+
 // A fixed author/committer date, not the wall clock: the commit id feeds
 // directly into the oid-ascending .idx order that X2's permutation check
 // reads, and a wall-clock timestamp would make that permutation (and thus
@@ -297,6 +306,9 @@ describe.skipIf(!GIT_AVAILABLE)('.rev write surface, against real git', () => {
       await commitFiles(dir, SEED_FILES, 'seed');
       const writeCtx = trackedNodeContext(dir);
       await packObjects(writeCtx, { wants: ['HEAD'] });
+      // Precondition — the fsck rev pass skips an ABSENT .rev without a
+      // finding, so a green bit 64 only proves anything when the file exists.
+      expect(existsSync(packArtefactPaths(dir).rev)).toBe(true);
       const sut = trackedNodeContext(dir);
 
       // Act
@@ -401,6 +413,18 @@ describe.skipIf(!GIT_AVAILABLE)('.rev write surface, against real git', () => {
       expect(data.key).toBe('pack.writereverseindex');
       expect(data.value).toBe('maybe');
       expect(packDirEntries(dir)).toEqual([]);
+
+      // Over-refusal negative — the key is consumed ONLY on the pack-write
+      // path, so with the malformed value still in place both tools' read
+      // surfaces keep working. A tsgit that hoisted this gate into the
+      // repository pre-flight would fail here while X7 stayed green.
+      const gitStatus = tryRunGitWithExit(['-C', dir, 'status', '--short']);
+      expect(gitStatus.exitCode).toBe(0);
+      const repo = await openRepository({ cwd: dir });
+      const statusResult = await repo.status();
+      expect(statusResult.clean).toBe(true);
+      const logResult = await repo.log({ limit: 1 });
+      expect(logResult).toHaveLength(1);
     });
   });
 
@@ -574,13 +598,34 @@ describe.skipIf(!GIT_AVAILABLE)('.rev write surface, against real git', () => {
         crc32: pack.entries[i]!.crc32,
         offset: pack.entries[i]!.offset,
       }));
-      await writePackArtifacts(writeCtx, {
+      const written = await writePackArtifacts(writeCtx, {
         packDir: packsDir(commonGitDir(writeCtx)),
         packBytes: pack.bytes,
         entries: indexEntries,
         packSha: pack.sha,
         promisor: false,
       });
+      // Remove every loose copy: the object resolver probes loose storage
+      // BEFORE the pack registry, so with the loose objects present this test
+      // would pass without ever opening the pack, let alone the .rev.
+      await removeLooseObjectDirs(dir);
+      // Positive oracle at scale: the 5,000-object .rev itself is usable and
+      // agrees with the .idx-derived position map.
+      const parsedIdx = parsePackIndex(new Uint8Array(await readFile(written.idxPath)));
+      const revPath = `${written.packPath.slice(0, -'.pack'.length)}.rev`;
+      const scaleCtx = trackedNodeContext(dir);
+      const load = await loadPackRevIndex(
+        scaleCtx,
+        revPath,
+        true,
+        DIGEST_LENGTH,
+        written.objectCount,
+      );
+      expect(load.kind).toBe('usable');
+      if (load.kind !== 'usable') throw new Error('unreachable: load.kind was not usable');
+      expect(revIndexPositions(load.value, written.objectCount)).toEqual(
+        packPositionMap(parsedIdx),
+      );
       const warnCalls: Array<{
         readonly message: string;
         readonly context: Readonly<Record<string, unknown>> | undefined;
@@ -591,12 +636,28 @@ describe.skipIf(!GIT_AVAILABLE)('.rev write surface, against real git', () => {
         },
       });
 
-      // Act
+      // Act — the read now MUST come through the pack (no loose copies left).
       const object = await readObject(sut, oids[0] as ObjectId);
 
       // Assert
       expect(object.id).toBe(oids[0]);
       expect(warnCalls).toHaveLength(0);
+
+      // Control — corrupt the .rev's magic and re-read through a fresh
+      // context: the accelerator's refusal arm warns, proving the empty
+      // warnCalls above is a live assertion, not a path never taken.
+      const revBytes = new Uint8Array(await readFile(revPath));
+      revBytes[0] = 0x00;
+      await writeFile(revPath, revBytes);
+      const controlWarns: string[] = [];
+      const controlCtx = trackedNodeContext(dir, {
+        warn: (message) => {
+          controlWarns.push(message);
+        },
+      });
+      const reread = await readObject(controlCtx, oids[0] as ObjectId);
+      expect(reread.id).toBe(oids[0]);
+      expect(controlWarns).toContain('packRegistry: discarding unusable pack reverse index');
     }, 60_000);
   });
 });

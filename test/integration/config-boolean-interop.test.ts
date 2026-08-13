@@ -21,7 +21,13 @@ import { encodePktStream } from '../../src/domain/protocol/pkt-line.js';
 import { openRepository } from '../../src/index.node.js';
 import type { HttpRequest, HttpResponse, HttpTransport } from '../../src/ports/http-transport.js';
 import type { Repository } from '../../src/repository.js';
-import { GIT_AVAILABLE, runGit, runGitEnv, tryRunGit } from './interop-helpers.js';
+import {
+  GIT_AVAILABLE,
+  runGit,
+  runGitEnv,
+  tryRunGit,
+  tryRunGitWithExit,
+} from './interop-helpers.js';
 
 const ENCODER = new TextEncoder();
 const ZERO_OID = '0'.repeat(40);
@@ -129,19 +135,48 @@ describe.skipIf(!GIT_AVAILABLE)('config boolean refusal tier interop', () => {
     describe('When git config --list and tsgit config porcelain run', () => {
       it('Then both ALSO refuse — T1 kills the config porcelain too', async () => {
         // Arrange & Act — armed in beforeEach
-        const g = tryRunGit(['-C', ours, 'config', '--list'], { env: runGitEnv() });
-        const gGet = tryRunGit(['-C', ours, 'config', '--get', 'core.bare'], { env: runGitEnv() });
+        const g = tryRunGitWithExit(['-C', ours, 'config', '--list'], { env: runGitEnv() });
+        const gGet = tryRunGitWithExit(['-C', ours, 'config', '--get', 'core.bare'], {
+          env: runGitEnv(),
+        });
         const caughtList = await withRepo(ours, (repo) => captureThrow(() => repo.config.list()));
         const caughtGet = await withRepo(ours, (repo) =>
           captureThrow(() => repo.config.get({ key: 'core.bare' })),
         );
 
-        // Assert — git
-        expect(g.ok).toBe(false);
-        expect(gGet.ok).toBe(false);
+        // Assert — git, pinned to the exact refusal (any other failure —
+        // ownership, a different config fault — must not satisfy this row)
+        expect(g.exitCode).toBe(128);
+        expect(g.stderr).toContain("bad boolean config value 'maybe' for 'core.bare'");
+        expect(gGet.exitCode).toBe(128);
+        expect(gGet.stderr).toContain("bad boolean config value 'maybe' for 'core.bare'");
         // Assert — tsgit
         expect(asBadBoolean(caughtList).code).toBe('CONFIG_BAD_BOOLEAN_VALUE');
         expect(asBadBoolean(caughtGet).code).toBe('CONFIG_BAD_BOOLEAN_VALUE');
+      });
+    });
+  });
+
+  describe('Given a T2 key on an earlier line than a malformed T1 key', () => {
+    beforeEach(() =>
+      writeConfig(
+        '[core]\n\trepositoryformatversion = 0\n\tsparseCheckout = maybe\n\tbare = maybe\n',
+      ),
+    );
+
+    describe('When git status and tsgit status run', () => {
+      it('Then both name core.bare — the discovery pass precedes the default-config pass', async () => {
+        // Arrange & Act — armed in beforeEach
+        const g = tryRunGitWithExit(['-C', ours, 'status'], { env: runGitEnv() });
+        const caught = await withRepo(ours, (repo) => captureThrow(() => repo.status()));
+
+        // Assert — git
+        expect(g.exitCode).toBe(128);
+        expect(g.stderr).toContain("bad boolean config value 'maybe' for 'core.bare'");
+        // Assert — tsgit
+        const data = asBadBoolean(caught);
+        expect(data.code).toBe('CONFIG_BAD_BOOLEAN_VALUE');
+        expect(data.key).toBe('core.bare');
       });
     });
   });

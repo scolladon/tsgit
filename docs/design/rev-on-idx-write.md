@@ -991,6 +991,15 @@ The `.rev` is a **locally derived** artefact: no transport delivers one (a fetch
     `remote.<n>.promisor` out of `status` without anyone calling it a breaking change. The tier
     assignments are therefore the most fragile pins in this document, and the interop rows are what
     will notice when one moves.
+13. **The T1 gate's tokenize widens the blast radius beyond the boolean class.** The discovery
+    finders read the config through the shared tokenizer, so a repository whose `.git/config`
+    carries a line the tokenizer refuses (`bad!key`, an unclosed quote) now surfaces
+    `CONFIG_PARSE_ERROR` from every command — including the config porcelain editing a *sibling*
+    section, which previously tolerated it. That is the faithful behaviour (in-repo git exits 128
+    `bad config line N` on the same state; its `--file` mode, which skips discovery, is the only
+    tolerant surface and tsgit has no equivalent), but it is a behaviour change this design causes
+    without naming a boolean anywhere, pinned by the malformed-sibling refusal rows in
+    `config-interop.test.ts`.
 
 ## Decision candidates — all settled
 

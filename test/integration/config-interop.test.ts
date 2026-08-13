@@ -2727,9 +2727,11 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
 
     // In-repo (no --file), git's repository-discovery config read dies on a
     // malformed line ANYWHERE in .git/config — even for the config porcelain
-    // operating on a sibling section. The rewrite machinery itself tolerates
-    // these bytes (the --file rows above), so the refusal is pinned here
-    // against in-repo git, which is what tsgit's local-scope commands mirror.
+    // operating on a sibling section. Only that in-repo refusal is pinned
+    // here: git's rewrite machinery in `--file` mode (no repository
+    // discovery) tolerates these same bytes, but tsgit has no file-scope
+    // surface to compare it against. tsgit's local-scope commands mirror the
+    // in-repo path, whose discovery read tokenizes the whole file.
     const MALFORMED_SIBLING_ROWS: ReadonlyArray<{
       readonly label: string;
       readonly bytes: string;

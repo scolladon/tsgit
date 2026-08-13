@@ -1097,12 +1097,11 @@ describe('status — unmerged column', () => {
 });
 
 describe('status — remote.promisor guard', () => {
-  it.each([
+  describe.each([
     { config: '[remote]\n\tpromisor = maybe\n', expectedKey: 'remote.promisor' },
     { config: '[remote "origin"]\n\tpromisor = maybe\n', expectedKey: 'remote.origin.promisor' },
-  ])(
-    'Given $expectedKey holds a value git refuses, When status, Then throws CONFIG_BAD_BOOLEAN_VALUE',
-    async ({ config, expectedKey }) => {
+  ])('Given $expectedKey holds a value git refuses, When status', ({ config, expectedKey }) => {
+    it('Then throws CONFIG_BAD_BOOLEAN_VALUE', async () => {
       // Arrange — writeObject during the seed commit reads config eagerly, so
       // the cache must be reset after the override write.
       const ctx = await seedClean();
@@ -1123,8 +1122,8 @@ describe('status — remote.promisor guard', () => {
       expect(data.code).toBe('CONFIG_BAD_BOOLEAN_VALUE');
       expect(data.key).toBe(expectedKey);
       expect(data.value).toBe('maybe');
-    },
-  );
+    });
+  });
 
   describe('Given remote.origin.promisor holds a value git accepts', () => {
     describe('When status', () => {

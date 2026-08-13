@@ -998,6 +998,68 @@ describe('internal/repo-state', () => {
       });
     });
 
+    describe('Given BOTH discovery keys malformed in the same config', () => {
+      describe('When the operational entry point runs', () => {
+        it.each([
+          {
+            config: '[core]\n\tbare = maybe\n[extensions]\n\tworktreeConfig = maybe\n',
+            expectedKey: 'core.bare',
+            label: 'core.bare first',
+          },
+          {
+            config: '[extensions]\n\tworktreeConfig = maybe\n[core]\n\tbare = maybe\n',
+            expectedKey: 'extensions.worktreeconfig',
+            label: 'extensions.worktreeConfig first',
+          },
+        ])('Then the lower-line key wins ($label)', async ({ config, expectedKey }) => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx);
+          await seedConfig(ctx, config);
+
+          // Act
+          let caught: unknown;
+          try {
+            await assertOperationalRepository(ctx);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data as BadBooleanData;
+          expect(data.code).toBe('CONFIG_BAD_BOOLEAN_VALUE');
+          expect(data.key).toBe(expectedKey);
+        });
+      });
+    });
+
+    describe('Given a T2 key on an EARLIER line than a malformed T1 key', () => {
+      describe('When the operational entry point runs', () => {
+        it('Then the T1 key wins regardless of line order — discovery is a separate, earlier pass', async () => {
+          // Arrange — sparseCheckout (T2) on line 2, bare (T1) on line 3.
+          const ctx = createMemoryContext();
+          await seedRepo(ctx);
+          await seedConfig(ctx, '[core]\n\tsparseCheckout = maybe\n\tbare = maybe\n');
+
+          // Act
+          let caught: unknown;
+          try {
+            await assertOperationalRepository(ctx);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert — git names core.bare here too: its discovery-time config
+          // read runs wholly before the default-config pass.
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data as BadBooleanData;
+          expect(data.code).toBe('CONFIG_BAD_BOOLEAN_VALUE');
+          expect(data.key).toBe('core.bare');
+        });
+      });
+    });
+
     describe('Given a subsectionless [diff] cachetextconv holds a value git refuses', () => {
       describe('When called', () => {
         it('Then resolves without throw — git only knows the key per driver subsection', async () => {

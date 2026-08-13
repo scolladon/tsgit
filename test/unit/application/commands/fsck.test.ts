@@ -6489,12 +6489,11 @@ describe('Given a midx-entry-unresolved finding', () => {
 });
 
 describe('fsck — remote.promisor guard', () => {
-  it.each([
+  describe.each([
     { config: '[remote]\n\tpromisor = maybe\n', expectedKey: 'remote.promisor' },
     { config: '[remote "origin"]\n\tpromisor = maybe\n', expectedKey: 'remote.origin.promisor' },
-  ])(
-    'Given $expectedKey holds a value git refuses, When fsck runs, Then throws CONFIG_BAD_BOOLEAN_VALUE',
-    async ({ config, expectedKey }) => {
+  ])('Given $expectedKey holds a value git refuses, When fsck runs', ({ config, expectedKey }) => {
+    it('Then throws CONFIG_BAD_BOOLEAN_VALUE', async () => {
       // Arrange
       const ctx = await initBareCtx();
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, config);
@@ -6514,6 +6513,6 @@ describe('fsck — remote.promisor guard', () => {
       expect(data.code).toBe('CONFIG_BAD_BOOLEAN_VALUE');
       expect(data.key).toBe(expectedKey);
       expect(data.value).toBe('maybe');
-    },
-  );
+    });
+  });
 });

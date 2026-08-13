@@ -345,7 +345,14 @@ describe('config-read boolean grammar properties', () => {
             ),
             (value) => {
               const result = parseGitBoolean(value);
-              expect(result.ok === true || result.ok === false).toBe(true);
+              // Falsifiable shape invariant, not a tautology: an accepting
+              // parse must carry a real boolean payload, a refusing parse
+              // must carry none.
+              if (result.ok) {
+                expect(typeof result.value).toBe('boolean');
+              } else {
+                expect(Object.keys(result)).toEqual(['ok']);
+              }
             },
           ),
           { numRuns: 100 },

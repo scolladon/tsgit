@@ -6377,6 +6377,11 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
           label: 'tag.gpgSign',
           read: (result: Awaited<ReturnType<typeof readConfig>>) => result.tag?.gpgSign,
         },
+        {
+          config: '[pack]\n\twriteReverseIndex = maybe\n',
+          label: 'pack.writeReverseIndex (the whole pack bucket stays absent)',
+          read: (result: Awaited<ReturnType<typeof readConfig>>) => result.pack,
+        },
       ])('Then $label is absent, not a guessed default', async ({ config, read }) => {
         // Arrange
         const ctx = createMemoryContext();
