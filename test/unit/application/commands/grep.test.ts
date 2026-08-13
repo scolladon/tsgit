@@ -49,6 +49,22 @@ const commitAll = async (ctx: Context): Promise<void> => {
   await commit(ctx, { message: 'test commit', author: AUTHOR, committer: AUTHOR });
 };
 
+/**
+ * R5 audit helper: a context whose `ctx.fs.read` throws if ever called with
+ * `symlinkPath` — the no-dereference discipline made a hard failure instead
+ * of a passive spy assertion.
+ */
+const refuseReadOnSymlink = (base: Context, symlinkPath: string): Context => ({
+  ...base,
+  fs: {
+    ...base.fs,
+    read: async (p: string): Promise<Uint8Array> => {
+      if (p === symlinkPath) throw new Error(`R5 violation: ctx.fs.read called on ${p}`);
+      return base.fs.read(p);
+    },
+  },
+});
+
 // ─── Guard: ≥1 pattern required ──────────────────────────────────────────────
 
 describe('Given no patterns, When grep is called', () => {
@@ -498,6 +514,25 @@ describe('Given a tracked regular file replaced on disk by a symlink, When grep 
 
     // Act
     const result: GrepResult = await grep(ctx, { patterns: [{ fixed: 'NEEDLE' }] });
+
+    // Assert
+    expect(result.paths.map((p: GrepPathResult) => p.path)).toEqual(['found.txt']);
+  });
+});
+
+describe('Given a tracked regular file replaced on disk by a symlink (R5 no-dereference audit)', () => {
+  it('Then grep excludes it before any read is attempted — read is never called on the symlink path', async () => {
+    // Arrange
+    const ctx = await seedRepo();
+    await writeAndStage(ctx, 'found.txt', 'NEEDLE here');
+    await writeAndStage(ctx, 'linked.txt', 'NEEDLE original');
+    await commitAll(ctx);
+    await ctx.fs.rm(`${ctx.layout.workDir}/linked.txt`);
+    await ctx.fs.symlink('found.txt', `${ctx.layout.workDir}/linked.txt`);
+    const guarded = refuseReadOnSymlink(ctx, `${ctx.layout.workDir}/linked.txt`);
+
+    // Act
+    const result: GrepResult = await grep(guarded, { patterns: [{ fixed: 'NEEDLE' }] });
 
     // Assert
     expect(result.paths.map((p: GrepPathResult) => p.path)).toEqual(['found.txt']);

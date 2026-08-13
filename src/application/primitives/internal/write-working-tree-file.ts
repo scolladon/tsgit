@@ -6,8 +6,10 @@
  * regular on top of it. Shared by checkout's changeset application and the
  * three-way merge → working-tree application.
  */
+import { TsgitError } from '../../../domain/error.js';
 import { FILE_MODE, type FileMode, type FilePath } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
+import type { FileStat } from '../../../ports/file-system.js';
 import { joinPath } from './join-working-tree-path.js';
 
 const decoder = new TextDecoder();
@@ -17,16 +19,48 @@ const MODE_EXEC_PERM = 0o755;
 
 /**
  * Remove a working-tree path if it exists, probing with `lstat` (no symlink
- * follow) so dangling symlinks are detected and removed. Only the existence
- * probe may swallow an error (missing path); a failing `rm` propagates.
+ * follow) so dangling symlinks are detected and removed. A missing path is a
+ * no-op; any other `lstat` failure propagates instead of being swallowed.
  */
 export const rmIfExists = async (ctx: Context, fullPath: string): Promise<void> => {
-  const exists = await ctx.fs
-    .lstat(fullPath)
-    .then(() => true)
-    // Stryker disable next-line ArrowFunction: equivalent — `exists` feeds only `if (exists)`; a rejected lstat yielding `undefined` instead of `false` is falsy either way, so the rm is skipped identically.
-    .catch(() => false);
+  let exists: boolean;
+  try {
+    await ctx.fs.lstat(fullPath);
+    exists = true;
+  } catch (err) {
+    if (err instanceof TsgitError && err.data.code === 'FILE_NOT_FOUND') {
+      exists = false;
+    } else {
+      throw err;
+    }
+  }
   if (exists) await ctx.fs.rm(fullPath);
+};
+
+/**
+ * Unlink a symlinked leading directory component of `path`, if any, before a
+ * write lands beneath it — git's checkout materialisation: a leading
+ * directory that is a symlink, whether it resolves outside the repository or
+ * at an intra-repo sibling, is unlinked and replaced by a real directory.
+ * Only strict ancestors are scanned; the leaf itself is written by the
+ * caller. A missing ancestor means there is nothing to unlink.
+ */
+const unlinkSymlinkedLeadingComponent = async (ctx: Context, path: FilePath): Promise<void> => {
+  const segments = path.split('/');
+  for (let i = 1; i < segments.length; i += 1) {
+    const prefixPath = joinPath(ctx.layout.workDir, segments.slice(0, i).join('/'));
+    let stat: FileStat;
+    try {
+      stat = await ctx.fs.lstat(prefixPath);
+    } catch (err) {
+      if (err instanceof TsgitError && err.data.code === 'FILE_NOT_FOUND') return;
+      throw err;
+    }
+    if (stat.isSymbolicLink) {
+      await ctx.fs.rm(prefixPath);
+      return;
+    }
+  }
 };
 
 /**
@@ -56,6 +90,7 @@ export const writeWorkingTreeFile = async (
   path: FilePath,
   content: Uint8Array,
 ): Promise<void> => {
+  await unlinkSymlinkedLeadingComponent(ctx, path);
   await writeRegularFile(ctx, joinPath(ctx.layout.workDir, path), content);
 };
 
@@ -73,6 +108,7 @@ export const writeWorkingTreeEntry = async (
   content: Uint8Array,
   mode: FileMode,
 ): Promise<void> => {
+  await unlinkSymlinkedLeadingComponent(ctx, path);
   const fullPath = joinPath(ctx.layout.workDir, path);
   if (mode === FILE_MODE.SYMLINK) {
     await rmIfExists(ctx, fullPath);
@@ -117,6 +153,7 @@ export const writeWorkingTreeFileStream = async (
   path: FilePath,
   source: AsyncIterable<Uint8Array>,
 ): Promise<void> => {
+  await unlinkSymlinkedLeadingComponent(ctx, path);
   await writeRegularFileStream(ctx, joinPath(ctx.layout.workDir, path), source);
 };
 
@@ -133,6 +170,7 @@ export const writeWorkingTreeEntryStream = async (
   source: AsyncIterable<Uint8Array>,
   mode: FileMode,
 ): Promise<void> => {
+  await unlinkSymlinkedLeadingComponent(ctx, path);
   await writeRegularFileStream(ctx, joinPath(ctx.layout.workDir, path), source, mode);
 };
 

@@ -42,6 +42,10 @@ import { joinPath } from './internal/join-working-tree-path.js';
 import { type AttributeProvider, buildAttributeProvider } from './internal/read-gitattributes.js';
 import { serializeAndHash } from './internal/serialize-and-hash.js';
 import {
+  createLeadingPathScanner,
+  type LeadingPathScanner,
+} from './internal/symlinked-leading-path.js';
+import {
   rmIfExists,
   writeWorkingTreeEntry,
   writeWorkingTreeEntryStream,
@@ -65,10 +69,15 @@ export interface ApplyChangesetResult {
 
 const CHECKOUT_OP = 'checkout:materialize';
 
+const LINK_ENCODER = new TextEncoder();
+
 const blobMatches = async (ctx: Context, absPath: string, expectedId: string): Promise<boolean> => {
   let bytes: Uint8Array;
   try {
-    bytes = await ctx.fs.read(absPath);
+    const stat = await ctx.fs.lstat(absPath);
+    bytes = stat.isSymbolicLink
+      ? LINK_ENCODER.encode(await ctx.fs.readlink(absPath))
+      : await ctx.fs.read(absPath);
   } catch (err) {
     // FILE_NOT_FOUND on a `delete`/`update` target means the file is already
     // gone — treat as non-dirty so the apply step proceeds as a no-op.
@@ -229,11 +238,15 @@ const applyEntry = async (
   ctx: Context,
   workdir: string,
   entry: ChangesetEntry,
+  scanner: LeadingPathScanner,
   provider?: AttributeProvider,
 ): Promise<IndexEntry | undefined> => {
   const absPath = joinPath(workdir, entry.path);
   if (entry.kind === 'noop') return undefined;
   if (entry.kind === 'delete') {
+    // git skips a removal silently when the leading directory is a
+    // symlink — the delete is never attempted, not refused.
+    if (await scanner.hasSymlinkedLeadingPath(entry.path)) return undefined;
     await rmIfExists(ctx, absPath);
     return undefined;
   }
@@ -247,6 +260,7 @@ const applyAllEntries = async (
   changeset: Changeset,
   workdir: string,
   lazyProvider: () => Promise<AttributeProvider>,
+  scanner: LeadingPathScanner,
 ): Promise<ApplyChangesetResult> => {
   const writtenEntries: IndexEntry[] = [];
   let written = 0;
@@ -254,7 +268,7 @@ const applyAllEntries = async (
 
   for (const entry of changeset.entries) {
     const provider = ctx.command !== undefined ? await lazyProvider() : undefined;
-    const indexEntry = await applyEntry(ctx, workdir, entry, provider);
+    const indexEntry = await applyEntry(ctx, workdir, entry, scanner, provider);
     if (entry.kind === 'delete') {
       deleted += 1;
     } else if (entry.kind === 'add' || entry.kind === 'update') {
@@ -295,5 +309,9 @@ export const applyChangeset = async (
   const lazyProvider = (): Promise<AttributeProvider> =>
     (providerPromise ??= buildAttributeProvider(ctx));
 
-  return applyAllEntries(ctx, changeset, workdir, lazyProvider);
+  // One scanner per changeset application: its per-directory memo means a
+  // deep tree with many entries under the same symlinked directory costs one
+  // `lstat` per distinct directory, not one per entry.
+  const scanner = createLeadingPathScanner(ctx);
+  return applyAllEntries(ctx, changeset, workdir, lazyProvider, scanner);
 };

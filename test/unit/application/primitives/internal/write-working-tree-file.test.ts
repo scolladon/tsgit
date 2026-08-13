@@ -313,6 +313,62 @@ describe('write-working-tree-file', () => {
     });
   });
 
+  describe('unlink a symlinked leading component before a write lands beneath it', () => {
+    describe('Given a symlinked leading directory pointing outside the repo', () => {
+      describe('When a file is written beneath it', () => {
+        it('Then the symlink is unlinked, a real directory is created, and the file lands inside the repo', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const dirPath = `${ctx.layout.workDir}/dir`;
+          await ctx.fs.symlink('/outside/secret', dirPath);
+
+          // Act
+          await writeWorkingTreeEntry(
+            ctx,
+            'dir/file.txt' as FilePath,
+            encode('inside'),
+            FILE_MODE.REGULAR,
+          );
+
+          // Assert
+          const dirStat = await ctx.fs.lstat(dirPath);
+          expect(dirStat.isSymbolicLink).toBe(false);
+          expect(dirStat.isDirectory).toBe(true);
+          expect(decode(await ctx.fs.read(`${dirPath}/file.txt`))).toBe('inside');
+        });
+      });
+    });
+
+    describe('Given a symlinked leading directory pointing at a sibling directory inside the repo', () => {
+      describe('When a file is written beneath it', () => {
+        it('Then the symlink is unlinked, a real directory is created, and the sibling directory is untouched', async () => {
+          // Arrange — today this writes THROUGH the link into the sibling
+          // directory instead of unlinking it and creating a real `dir`.
+          const ctx = await buildSeededContext();
+          const dirPath = `${ctx.layout.workDir}/dir`;
+          const siblingKeepPath = `${ctx.layout.workDir}/inside/keep.txt`;
+          await ctx.fs.write(siblingKeepPath, encode('keep'));
+          await ctx.fs.symlink('inside', dirPath);
+
+          // Act
+          await writeWorkingTreeEntry(
+            ctx,
+            'dir/file.txt' as FilePath,
+            encode('inside-write'),
+            FILE_MODE.REGULAR,
+          );
+
+          // Assert
+          const dirStat = await ctx.fs.lstat(dirPath);
+          expect(dirStat.isSymbolicLink).toBe(false);
+          expect(decode(await ctx.fs.read(`${dirPath}/file.txt`))).toBe('inside-write');
+          expect(await ctx.fs.exists(`${dirPath}/keep.txt`)).toBe(false);
+          expect(decode(await ctx.fs.read(siblingKeepPath))).toBe('keep');
+        });
+      });
+    });
+  });
+
   describe('writeWorkingTreeEntry — chmod', () => {
     describe('Given an executable mode', () => {
       describe('When writeWorkingTreeEntry writes a regular payload', () => {

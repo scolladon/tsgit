@@ -8,6 +8,22 @@ import { buildSeededContext } from '../fixtures.js';
 
 type SeededContext = Awaited<ReturnType<typeof buildSeededContext>>;
 
+/**
+ * R5 audit helper: a context whose `ctx.fs.read` throws if ever called with
+ * `symlinkPath` — the no-dereference discipline made a hard failure instead
+ * of a passive spy assertion.
+ */
+const refuseReadOnSymlink = (base: Context, symlinkPath: string): Context => ({
+  ...base,
+  fs: {
+    ...base.fs,
+    read: async (p: string): Promise<Uint8Array> => {
+      if (p === symlinkPath) throw new Error(`R5 violation: ctx.fs.read called on ${p}`);
+      return base.fs.read(p);
+    },
+  },
+});
+
 const seedFile = async (
   ctx: SeededContext,
   relPath: string,
@@ -171,6 +187,40 @@ describe('createWorkdirEntry', () => {
 
         // Assert
         expect(target).toBe('target-path');
+      });
+    });
+  });
+
+  describe('Given a symlink in the working tree (R5 no-dereference audit)', () => {
+    describe('When read() is called, and ctx.fs.read is wired to fail on the symlink path', () => {
+      it('Then it returns the readlink target bytes without ever calling ctx.fs.read', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const linkAbs = `${ctx.layout.workDir}/link`;
+        await ctx.fs.symlink('target-path', linkAbs);
+        const live = await ctx.fs.lstat(linkAbs);
+        const stat: WorkdirStat = {
+          mode: '120000' as FileMode,
+          size: live.size,
+          mtimeMs: live.mtimeMs,
+          ...(live.mtimeNs === undefined ? {} : { mtimeNs: live.mtimeNs }),
+          ino: BigInt(live.ino),
+        };
+        const row: WorkdirEntryRow = {
+          source: 'workdir',
+          path: 'link' as FilePath,
+          mode: stat.mode,
+          kind: 'symlink',
+          stat,
+        };
+        const guarded = refuseReadOnSymlink(ctx, linkAbs);
+        const sut = createWorkdirEntry(guarded, row);
+
+        // Act
+        const bytes = await sut.read();
+
+        // Assert
+        expect(new TextDecoder().decode(bytes)).toBe('target-path');
       });
     });
   });

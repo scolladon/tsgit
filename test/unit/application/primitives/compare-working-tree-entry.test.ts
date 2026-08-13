@@ -32,6 +32,22 @@ class FakeRunner implements CommandRunner {
 
 const work = (ctx: Context, name: string): string => `${ctx.layout.workDir}/${name}`;
 
+/**
+ * R5 audit helper: a context whose `ctx.fs.read` throws if ever called with
+ * `symlinkPath` — the no-dereference discipline made a hard failure instead
+ * of a passive spy assertion.
+ */
+const refuseReadOnSymlink = (base: Context, symlinkPath: string): Context => ({
+  ...base,
+  fs: {
+    ...base.fs,
+    read: async (p: string): Promise<Uint8Array> => {
+      if (p === symlinkPath) throw new Error(`R5 violation: ctx.fs.read called on ${p}`);
+      return base.fs.read(p);
+    },
+  },
+});
+
 const seedFile = async (
   name: string,
   content: string,
@@ -251,6 +267,22 @@ describe('compareWorkingTreeEntry', () => {
 
         // Assert
         expect(result).toBe('modified');
+      });
+    });
+  });
+
+  describe('Given a staged symlink (R5 no-dereference audit)', () => {
+    describe('When comparing the entry to the working tree, and ctx.fs.read is wired to fail on the symlink path', () => {
+      it('Then it never dereferences the link', async () => {
+        // Arrange
+        const { ctx, entry } = await seedSymlink('link', 'target-a');
+        const guarded = refuseReadOnSymlink(ctx, work(ctx, 'link'));
+
+        // Act
+        const result = await compareWorkingTreeEntry(guarded, entry);
+
+        // Assert
+        expect(result).toBe('unchanged');
       });
     });
   });
