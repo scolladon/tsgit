@@ -432,6 +432,10 @@ function extractDetail(data: TsgitErrorData): string {
       return `custom merge driver ${data.name} lacks command line.`;
     case 'CONFIG_BAD_NUMERIC_VALUE':
       return `bad numeric config value '${data.value}' for '${data.key}' in file ${data.source}: ${data.reason}`;
+    case 'CONFIG_BAD_BOOLEAN_VALUE':
+      return `bad boolean config value '${data.value}' for '${data.key}' in file ${data.source}`;
+    case 'CONFIG_BAD_BOOLEAN_LITERAL':
+      return `invalid value for '${data.key}' in file ${data.source}`;
     case 'CONFIG_BAD_ZLIB_LEVEL':
       return `bad zlib compression level ${data.level}`;
     case 'CONFIG_INVALID_FILE':

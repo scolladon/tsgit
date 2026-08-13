@@ -1121,6 +1121,30 @@ const applyLooseCompressionEntry = (
   return { ...core, looseCompression: r.value };
 };
 
+const CORE_BOOLEAN_KEYS = new Set([
+  'bare',
+  'logallrefupdates',
+  'sparsecheckout',
+  'sparsecheckoutcone',
+]);
+
+/** Handles the four `[core]` keys whose value is boolean-typed (or the `always` tri-state). */
+const applyCoreBooleanEntry = (
+  core: MutableCore,
+  lowered: string,
+  value: string | null,
+): MutableCore | undefined => {
+  if (lowered === 'logallrefupdates') {
+    const parsed = parseLogAllRefUpdates(value);
+    return parsed === undefined ? undefined : { ...core, logAllRefUpdates: parsed };
+  }
+  const parsed = parseGitBoolean(value);
+  if (!parsed.ok) return undefined;
+  if (lowered === 'bare') return { ...core, bare: parsed.value };
+  if (lowered === 'sparsecheckout') return { ...core, sparseCheckout: parsed.value };
+  return { ...core, sparseCheckoutCone: parsed.value };
+};
+
 /**
  * Apply one [core] entry to a mutable core accumulator. Returns the updated
  * accumulator, or `undefined` when the key is not recognised (so the caller
@@ -1131,12 +1155,7 @@ const applyCoreEntry = (
   lowered: string,
   value: string | null,
 ): MutableCore | undefined => {
-  if (lowered === 'bare') return { ...core, bare: parseGitBoolean(value) };
-  if (lowered === 'logallrefupdates')
-    return { ...core, logAllRefUpdates: parseLogAllRefUpdates(value) };
-  if (lowered === 'sparsecheckout') return { ...core, sparseCheckout: parseGitBoolean(value) };
-  if (lowered === 'sparsecheckoutcone')
-    return { ...core, sparseCheckoutCone: parseGitBoolean(value) };
+  if (CORE_BOOLEAN_KEYS.has(lowered)) return applyCoreBooleanEntry(core, lowered, value);
   // String-typed and int-typed fields skip null (valueless key treated as absent).
   if (value === null) return undefined;
   if (lowered === 'excludesfile') return { ...core, excludesFile: value };
@@ -1162,9 +1181,12 @@ const mergeCore = (acc: { core?: MutableCore }, sec: IniSection): void => {
 
 // The literal `always` is a third state beyond git's boolean values; a null
 // value (valueless key) is boolean-true. Anything else falls through to the
-// standard boolean parse.
-const parseLogAllRefUpdates = (value: string | null): boolean | 'always' =>
-  value !== null && value.toLowerCase() === 'always' ? 'always' : parseGitBoolean(value);
+// standard boolean parse; a refusal there leaves the field absent (`undefined`).
+const parseLogAllRefUpdates = (value: string | null): boolean | 'always' | undefined => {
+  if (value !== null && value.toLowerCase() === 'always') return 'always';
+  const parsed = parseGitBoolean(value);
+  return parsed.ok ? parsed.value : undefined;
+};
 
 const mergeUser = (
   acc: { user?: { name?: string; email?: string; signingKey?: string } },
@@ -1207,7 +1229,8 @@ const applyRemoteEntry = (acc: MutableRemote, key: string, value: string | null)
       acc.fetch.push(value);
     }
   } else if (lowered === 'promisor') {
-    acc.promisor = parseGitBoolean(value);
+    const parsed = parseGitBoolean(value);
+    if (parsed.ok) acc.promisor = parsed.value;
   } else if (lowered === 'partialclonefilter') {
     if (value !== null) acc.partialCloneFilter = value;
   }
@@ -1264,26 +1287,29 @@ const mergeBranch = (
   acc.branch.set(name, next);
 };
 
+type MutableSubmodule = { url?: string; active?: boolean; update?: string };
+
+const applySubmoduleEntry = (next: MutableSubmodule, key: string, value: string | null): void => {
+  const lowered = key.toLowerCase();
+  if (lowered === 'active') {
+    const parsed = parseGitBoolean(value);
+    if (parsed.ok) next.active = parsed.value;
+    return;
+  }
+  // String-typed fields skip null (valueless key treated as absent).
+  if (value === null) return;
+  if (lowered === 'url') next.url = value;
+  else if (lowered === 'update') next.update = value;
+};
+
 const mergeSubmodule = (
-  acc: { submodule?: Map<string, { url?: string; active?: boolean; update?: string }> },
+  acc: { submodule?: Map<string, MutableSubmodule> },
   name: string,
   sec: IniSection,
 ): void => {
   acc.submodule ??= new Map();
-  const next: { url?: string; active?: boolean; update?: string } = {
-    ...(acc.submodule.get(name) ?? {}),
-  };
-  for (const { key, value } of sec.entries) {
-    const lowered = key.toLowerCase();
-    if (lowered === 'url') {
-      // String-typed fields skip null (valueless key treated as absent).
-      if (value !== null) next.url = value;
-    } else if (lowered === 'active') {
-      next.active = parseGitBoolean(value);
-    } else if (lowered === 'update') {
-      if (value !== null) next.update = value;
-    }
-  }
+  const next: MutableSubmodule = { ...(acc.submodule.get(name) ?? {}) };
+  for (const { key, value } of sec.entries) applySubmoduleEntry(next, key, value);
   acc.submodule.set(name, next);
 };
 
@@ -1323,7 +1349,8 @@ const mergeDiffDriver = (
       if (value === null) continue;
       next.textconv = value;
     } else if (lowered === 'cachetextconv') {
-      next.cachetextconv = parseGitBoolean(value);
+      const parsed = parseGitBoolean(value);
+      if (parsed.ok) next.cachetextconv = parsed.value;
     }
   }
   acc.diff.set(name, next);
@@ -1334,7 +1361,8 @@ type FilterEntry = { clean?: string; smudge?: string; process?: string; required
 const applyFilterEntry = (next: FilterEntry, key: string, value: string | null): void => {
   const lowered = key.toLowerCase();
   if (lowered === 'required') {
-    next.required = parseGitBoolean(value);
+    const parsed = parseGitBoolean(value);
+    if (parsed.ok) next.required = parsed.value;
     return;
   }
   // String-typed fields skip null (valueless key treated as absent).
@@ -1373,7 +1401,8 @@ const mergeExtensions = (
 const mergeCommit = (acc: { commit?: { gpgSign?: boolean } }, sec: IniSection): void => {
   for (const { key, value } of sec.entries) {
     if (key.toLowerCase() === 'gpgsign') {
-      acc.commit = { ...acc.commit, gpgSign: parseGitBoolean(value) };
+      const parsed = parseGitBoolean(value);
+      if (parsed.ok) acc.commit = { ...acc.commit, gpgSign: parsed.value };
     }
   }
 };
@@ -1381,17 +1410,19 @@ const mergeCommit = (acc: { commit?: { gpgSign?: boolean } }, sec: IniSection): 
 const mergeTag = (acc: { tag?: { gpgSign?: boolean } }, sec: IniSection): void => {
   for (const { key, value } of sec.entries) {
     if (key.toLowerCase() === 'gpgsign') {
-      acc.tag = { ...acc.tag, gpgSign: parseGitBoolean(value) };
+      const parsed = parseGitBoolean(value);
+      if (parsed.ok) acc.tag = { ...acc.tag, gpgSign: parsed.value };
     }
   }
 };
 
-const parsePushGpgSign = (value: string | null): 'true' | 'false' | 'if-asked' =>
-  value !== null && value.toLowerCase() === 'if-asked'
-    ? 'if-asked'
-    : parseGitBoolean(value)
-      ? 'true'
-      : 'false';
+// `if-asked` is a third state beyond git's boolean values, checked ahead of the
+// standard boolean parse. A refusal there leaves the field absent (`undefined`).
+const parsePushGpgSign = (value: string | null): 'true' | 'false' | 'if-asked' | undefined => {
+  if (value !== null && value.toLowerCase() === 'if-asked') return 'if-asked';
+  const parsed = parseGitBoolean(value);
+  return parsed.ok ? (parsed.value ? 'true' : 'false') : undefined;
+};
 
 // Lenient here: an unrecognized value (including wrong case) parses to `undefined` rather than
 // throwing — the hard refusal on an invalid `push.default` is a push-time concern, not the parser's.
@@ -1449,7 +1480,8 @@ const mergePush = (
 ): void => {
   for (const { key, value } of sec.entries) {
     if (key.toLowerCase() === 'gpgsign') {
-      acc.push = { ...acc.push, gpgSign: parsePushGpgSign(value) };
+      const gpgSign = parsePushGpgSign(value);
+      if (gpgSign !== undefined) acc.push = { ...acc.push, gpgSign };
     } else if (key.toLowerCase() === 'default') {
       const mode = parsePushDefault(value);
       if (mode !== undefined) acc.push = { ...acc.push, default: mode };
@@ -1613,14 +1645,114 @@ const finalize = (acc: MutableParsedConfig): ParsedConfig => {
   return out;
 };
 
-const TRUE_VALUES = new Set(['true', 'yes', 'on', '1']);
+// Word arms of git's boolean grammar, case-insensitive. `1`/`0` are NOT words here —
+// they resolve through the integer arm's arithmetic, which is what makes `2`, `007`
+// and `0x1` come out right.
+const TRUE_WORDS = new Set(['true', 'yes', 'on']);
+const FALSE_WORDS = new Set(['false', 'no', 'off']);
 
-// Anything not a recognized truthy value is false: explicit false aliases
-// (false/no/off/0/'') and unparseable values both fall through to `false`
-// (lenient, like git itself). A `null` value (valueless key, git's internal
-// NULL) maps to `true` — `git_config_bool(NULL) == 1`.
-const parseGitBoolean = (value: string | null): boolean =>
-  value === null || TRUE_VALUES.has(value.toLowerCase());
+type GitBooleanResult = { readonly ok: true; readonly value: boolean } | { readonly ok: false };
+
+// git's boolean path narrows the parsed value to a C `int`; its `--type=int` path
+// keeps parseGitInt's full 64-bit range, so these intentionally differ from
+// GIT_INT_MIN/GIT_INT_MAX below.
+const GIT_BOOL_INT_MAX = 2_147_483_647;
+const GIT_BOOL_INT_MIN = -2_147_483_648;
+
+/**
+ * git's exact `git_config_bool` grammar: a valueless key (`null`, git's internal NULL)
+ * is true; an empty value is false; the six words above are case-insensitive; anything
+ * else is handed to `parseGitInt` and narrowed to the C `int` range — non-zero is true,
+ * zero is false, and a magnitude `parseGitInt` accepts but that overflows `int` refuses
+ * here even though `--type=int` would allow it.
+ */
+export const parseGitBoolean = (value: string | null): GitBooleanResult => {
+  if (value === null) return { ok: true, value: true };
+  if (value === '') return { ok: true, value: false };
+  const lowered = value.toLowerCase();
+  if (TRUE_WORDS.has(lowered)) return { ok: true, value: true };
+  if (FALSE_WORDS.has(lowered)) return { ok: true, value: false };
+  const asInt = parseGitInt(value);
+  if (!asInt.ok || asInt.value < GIT_BOOL_INT_MIN || asInt.value > GIT_BOOL_INT_MAX) {
+    return { ok: false };
+  }
+  return { ok: true, value: asInt.value !== 0 };
+};
+
+/** One invalid boolean entry returned by `findFirstInvalidBoolean` / `…InSection`. */
+export interface InvalidBooleanEntry {
+  readonly key: string;
+  readonly source: string;
+  readonly line: number;
+  readonly value: string;
+}
+
+/**
+ * Cold-path detection: walk the cached tokens for `section`/`subsection` in file order
+ * and return the FIRST entry among `keys` whose value fails `parseGitBoolean`. A
+ * valueless entry (git's internal NULL) is always valid, so it is never reported.
+ * Mirrors `findFirstInvalidCompression`'s structure; the qualified key is built exactly
+ * as `findFirstValuelessEntry` builds it (section and key lower-cased, subsection verbatim).
+ */
+export const findFirstInvalidBoolean = async (
+  ctx: Context,
+  section: string,
+  subsection: string | undefined,
+  keys: ReadonlyArray<string>,
+): Promise<InvalidBooleanEntry | undefined> => {
+  const { tokens, source: path } = await readConfigEntry(ctx);
+  const keySet = new Set(keys.map((k) => k.toLowerCase()));
+  const loweredSection = section.toLowerCase();
+  let inSection = false;
+  for (const token of tokens) {
+    if (token.kind === 'header') {
+      inSection = matchesSection(token.section, token.subsection, section, subsection);
+      continue;
+    }
+    if (!inSection || token.kind !== 'entry' || token.value === null) continue;
+    const loweredKey = token.key.toLowerCase();
+    if (!keySet.has(loweredKey) || parseGitBoolean(token.value).ok) continue;
+    const qualifiedKey =
+      subsection === undefined
+        ? `${loweredSection}.${loweredKey}`
+        : `${loweredSection}.${subsection}.${loweredKey}`;
+    return { key: qualifiedKey, source: path, line: token.startLine + 1, value: token.value };
+  }
+  return undefined;
+};
+
+/**
+ * Wildcard sibling of `findFirstInvalidBoolean`: scans every subsection of `section`
+ * (mirrors `findFirstValuelessInSection`) rather than one exact subsection, for
+ * per-instance families (`diff.<d>.*`, `filter.<d>.*`, `remote.<n>.*`, `submodule.<n>.*`).
+ */
+export const findFirstInvalidBooleanInSection = async (
+  ctx: Context,
+  section: string,
+  keys: ReadonlyArray<string>,
+): Promise<InvalidBooleanEntry | undefined> => {
+  const { tokens, source: path } = await readConfigEntry(ctx);
+  const keySet = new Set(keys.map((k) => k.toLowerCase()));
+  const loweredSection = section.toLowerCase();
+  let subsection: string | undefined;
+  let inSection = false;
+  for (const token of tokens) {
+    if (token.kind === 'header') {
+      inSection = token.section.toLowerCase() === loweredSection;
+      subsection = token.subsection;
+      continue;
+    }
+    if (!inSection || token.kind !== 'entry' || token.value === null) continue;
+    const loweredKey = token.key.toLowerCase();
+    if (!keySet.has(loweredKey) || parseGitBoolean(token.value).ok) continue;
+    const qualifiedKey =
+      subsection === undefined
+        ? `${loweredSection}.${loweredKey}`
+        : `${loweredSection}.${subsection}.${loweredKey}`;
+    return { key: qualifiedKey, source: path, line: token.startLine + 1, value: token.value };
+  }
+  return undefined;
+};
 
 type GitIntResult =
   | { readonly ok: true; readonly value: number }

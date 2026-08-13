@@ -3,12 +3,15 @@ import { createMemoryContext } from '../../../../src/adapters/memory/memory-adap
 import {
   __resetConfigCacheForTests,
   type ConfigToken,
+  findFirstInvalidBoolean,
+  findFirstInvalidBooleanInSection,
   findFirstInvalidCompression,
   findFirstValuelessEntry,
   findFirstValuelessInSection,
   findInvalidPushDefault,
   type IniSection,
   invalidateConfigCache,
+  parseGitBoolean,
   parseGitInt,
   parseIniSections,
   readConfig,
@@ -55,7 +58,7 @@ describe('primitives/config-read', () => {
       it.each([
         { value: 'true', expected: true, label: 'parsed.core.bare is true' },
         { value: 'false', expected: false, label: 'parsed.core.bare is false' },
-        { value: 'nope', expected: false, label: 'an unparseable boolean defaults to false' },
+        { value: 'nope', expected: undefined, label: 'an unparseable boolean is absent' },
         { value: 'yes', expected: true, label: 'parsed.core.bare is true (yes truthy alias)' },
         { value: 'no', expected: false, label: 'parsed.core.bare is false (no falsy alias)' },
         { value: 'on', expected: true, label: 'parsed.core.bare is true (on truthy alias)' },
@@ -5095,6 +5098,151 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
     });
   });
 
+  describe('parseGitBoolean grammar (Pin K)', () => {
+    describe('Given a case-insensitive true word', () => {
+      it.each([
+        { value: 'true', label: 'true' },
+        { value: 'TRUE', label: 'TRUE' },
+        { value: 'TrUe', label: 'TrUe' },
+        { value: 'yes', label: 'yes' },
+        { value: 'Yes', label: 'Yes' },
+        { value: 'yEs', label: 'yEs' },
+        { value: 'on', label: 'on' },
+        { value: 'ON', label: 'ON' },
+      ])('Then parseGitBoolean($label) is { ok: true, value: true }', ({ value }) => {
+        // Arrange & Act
+        const result = parseGitBoolean(value);
+
+        // Assert
+        expect(result).toStrictEqual({ ok: true, value: true });
+      });
+    });
+
+    describe('Given a case-insensitive false word', () => {
+      it.each([
+        { value: 'false', label: 'false' },
+        { value: 'FALSE', label: 'FALSE' },
+        { value: 'no', label: 'no' },
+        { value: 'No', label: 'No' },
+        { value: 'off', label: 'off' },
+        { value: 'OFF', label: 'OFF' },
+        { value: 'oFf', label: 'oFf' },
+      ])('Then parseGitBoolean($label) is { ok: true, value: false }', ({ value }) => {
+        // Arrange & Act
+        const result = parseGitBoolean(value);
+
+        // Assert
+        expect(result).toStrictEqual({ ok: true, value: false });
+      });
+    });
+
+    describe('Given a valueless key (null, git internal NULL)', () => {
+      describe('When parseGitBoolean', () => {
+        it('Then it is { ok: true, value: true }', () => {
+          // Arrange & Act
+          const result = parseGitBoolean(null);
+
+          // Assert
+          expect(result).toStrictEqual({ ok: true, value: true });
+        });
+      });
+    });
+
+    describe('Given an empty value', () => {
+      describe('When parseGitBoolean', () => {
+        it('Then it is { ok: true, value: false }', () => {
+          // Arrange & Act
+          const result = parseGitBoolean('');
+
+          // Assert
+          expect(result).toStrictEqual({ ok: true, value: false });
+        });
+      });
+    });
+
+    describe('Given a single quoted space (not empty)', () => {
+      describe('When parseGitBoolean', () => {
+        it('Then it refuses', () => {
+          // Arrange & Act
+          const result = parseGitBoolean(' ');
+
+          // Assert
+          expect(result).toStrictEqual({ ok: false });
+        });
+      });
+    });
+
+    describe('Given an integer-arm value git accepts as true', () => {
+      it.each([
+        { value: '1', label: '1' },
+        { value: '2', label: '2' },
+        { value: '-1', label: '-1' },
+        { value: '+1', label: '+1' },
+        { value: '007', label: '007 (octal 7)' },
+        { value: '0x1', label: '0x1' },
+        { value: '0x7fffffff', label: '0x7fffffff (INT_MAX in hex)' },
+        { value: '1k', label: '1k' },
+        { value: '1K', label: '1K' },
+        { value: '1m', label: '1m' },
+        { value: '1M', label: '1M' },
+        { value: '1g', label: '1g' },
+        { value: '1G', label: '1G' },
+        { value: '2147483647', label: '2147483647 (INT_MAX, boundary)' },
+        { value: '-2147483648', label: '-2147483648 (INT_MIN, boundary)' },
+      ])('Then parseGitBoolean($label) is { ok: true, value: true }', ({ value }) => {
+        // Arrange & Act
+        const result = parseGitBoolean(value);
+
+        // Assert
+        expect(result).toStrictEqual({ ok: true, value: true });
+      });
+    });
+
+    describe('Given an integer-arm value git accepts as false (zero in every radix)', () => {
+      it.each([
+        { value: '0', label: '0' },
+        { value: '00', label: '00' },
+        { value: '0x0', label: '0x0' },
+        { value: '0k', label: '0k' },
+      ])('Then parseGitBoolean($label) is { ok: true, value: false }', ({ value }) => {
+        // Arrange & Act
+        const result = parseGitBoolean(value);
+
+        // Assert
+        expect(result).toStrictEqual({ ok: true, value: false });
+      });
+    });
+
+    describe('Given an integer-arm value that overflows the C int range', () => {
+      it.each([
+        { value: '2147483648', label: '2147483648 (one past INT_MAX)' },
+        { value: '-2147483649', label: '-2147483649 (one past INT_MIN)' },
+        { value: '0x80000000', label: '0x80000000 (same overflow, hex)' },
+        { value: '2g', label: '2g (same overflow, scaled)' },
+      ])('Then parseGitBoolean($label) refuses', ({ value }) => {
+        // Arrange & Act
+        const result = parseGitBoolean(value);
+
+        // Assert
+        expect(result).toStrictEqual({ ok: false });
+      });
+    });
+
+    describe('Given a value that is neither a word nor an integer', () => {
+      it.each([
+        { value: 'maybe', label: 'maybe' },
+        { value: 'truthy', label: 'truthy' },
+        { value: '1.0', label: '1.0' },
+      ])('Then parseGitBoolean($label) refuses', ({ value }) => {
+        // Arrange & Act
+        const result = parseGitBoolean(value);
+
+        // Assert
+        expect(result).toStrictEqual({ ok: false });
+      });
+    });
+  });
+
   describe('findFirstInvalidCompression', () => {
     describe('Given a config with no invalid compression value', () => {
       describe('When findFirstInvalidCompression', () => {
@@ -5256,6 +5404,164 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
 
           // Assert
           expect(result?.key).toBe('core.compression');
+        });
+      });
+    });
+  });
+
+  describe('findFirstInvalidBoolean', () => {
+    describe('Given two malformed boolean keys under [core]', () => {
+      describe('When findFirstInvalidBoolean', () => {
+        it('Then it returns the lower-line entry', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[core]\n\tsparseCheckout = maybe\n\tsparseCheckoutCone = also-bad\n');
+
+          // Act
+          const result = await findFirstInvalidBoolean(ctx, 'core', undefined, [
+            'sparsecheckout',
+            'sparsecheckoutcone',
+          ]);
+
+          // Assert
+          expect(result?.key).toBe('core.sparsecheckout');
+          expect(result?.value).toBe('maybe');
+          expect(result?.line).toBe(2);
+        });
+      });
+    });
+
+    describe('Given a malformed key under [core] but the caller asks about [commit]', () => {
+      describe('When findFirstInvalidBoolean', () => {
+        it('Then it returns undefined (out of section)', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[core]\n\tsparseCheckout = maybe\n');
+
+          // Act
+          const result = await findFirstInvalidBoolean(ctx, 'commit', undefined, ['gpgsign']);
+
+          // Assert
+          expect(result).toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given a valid boolean value', () => {
+      describe('When findFirstInvalidBoolean', () => {
+        it('Then it returns undefined', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[core]\n\tsparseCheckout = true\n');
+
+          // Act
+          const result = await findFirstInvalidBoolean(ctx, 'core', undefined, ['sparsecheckout']);
+
+          // Assert
+          expect(result).toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given the requested key is absent', () => {
+      describe('When findFirstInvalidBoolean', () => {
+        it('Then it returns undefined', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[core]\n\tbare = true\n');
+
+          // Act
+          const result = await findFirstInvalidBoolean(ctx, 'core', undefined, ['sparsecheckout']);
+
+          // Assert
+          expect(result).toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given a malformed key under an explicit subsection', () => {
+      describe('When findFirstInvalidBoolean', () => {
+        it('Then it returns the qualified key with the subsection verbatim', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[diff "MyDriver"]\n\tcachetextconv = maybe\n');
+
+          // Act
+          const result = await findFirstInvalidBoolean(ctx, 'diff', 'MyDriver', ['cachetextconv']);
+
+          // Assert
+          expect(result?.key).toBe('diff.MyDriver.cachetextconv');
+        });
+      });
+    });
+  });
+
+  describe('findFirstInvalidBooleanInSection', () => {
+    describe('Given [diff "a"] valid and [diff "MyDriver"] malformed cachetextconv', () => {
+      describe('When findFirstInvalidBooleanInSection', () => {
+        it('Then it returns the lower-line entry with the subsection kept verbatim', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(
+            ctx,
+            '[diff "a"]\n\tcachetextconv = true\n[diff "MyDriver"]\n\tcachetextconv = maybe\n',
+          );
+
+          // Act
+          const result = await findFirstInvalidBooleanInSection(ctx, 'diff', ['cachetextconv']);
+
+          // Assert
+          expect(result?.key).toBe('diff.MyDriver.cachetextconv');
+          expect(result?.value).toBe('maybe');
+          expect(result?.line).toBe(4);
+        });
+      });
+    });
+
+    describe('Given a malformed key under a flat (no-subsection) section', () => {
+      describe('When findFirstInvalidBooleanInSection', () => {
+        it('Then the qualified key has no subsection segment', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[diff]\n\tcachetextconv = maybe\n');
+
+          // Act
+          const result = await findFirstInvalidBooleanInSection(ctx, 'diff', ['cachetextconv']);
+
+          // Assert
+          expect(result?.key).toBe('diff.cachetextconv');
+        });
+      });
+    });
+
+    describe('Given a malformed key under a non-matching section', () => {
+      describe('When findFirstInvalidBooleanInSection', () => {
+        it('Then it returns undefined', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[other "x"]\n\tcachetextconv = maybe\n');
+
+          // Act
+          const result = await findFirstInvalidBooleanInSection(ctx, 'diff', ['cachetextconv']);
+
+          // Assert
+          expect(result).toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given a malformed non-target key under a matching subsection', () => {
+      describe('When findFirstInvalidBooleanInSection', () => {
+        it('Then it returns undefined', async () => {
+          // Arrange — `textconv` is not in the requested key set.
+          const ctx = createMemoryContext();
+          await seed(ctx, '[diff "a"]\n\ttextconv = maybe\n');
+
+          // Act
+          const result = await findFirstInvalidBooleanInSection(ctx, 'diff', ['cachetextconv']);
+
+          // Assert
+          expect(result).toBeUndefined();
         });
       });
     });
@@ -5622,6 +5928,131 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
         expect(result.tag).toBeUndefined();
         expect(result.push).toBeUndefined();
         expect(result.gpg).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a boolean-typed config field with a value git refuses', () => {
+    describe('When readConfig', () => {
+      it('Then core.bare is absent, not false', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[core]\n\tbare = maybe\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.core?.bare).toBeUndefined();
+      });
+
+      it('Then core.bare is true for an integer-true value (2)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[core]\n\tbare = 2\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.core?.bare).toBe(true);
+      });
+
+      it('Then push.gpgSign is absent, not a guessed default', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[push]\n\tgpgSign = maybe\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.push?.gpgSign).toBeUndefined();
+      });
+
+      it('Then core.logAllRefUpdates is absent for a malformed value', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[core]\n\tlogAllRefUpdates = maybe\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.core?.logAllRefUpdates).toBeUndefined();
+      });
+
+      it("Then core.logAllRefUpdates still yields 'always' (pre-check ahead of the boolean parse)", async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[core]\n\tlogAllRefUpdates = always\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.core?.logAllRefUpdates).toBe('always');
+      });
+    });
+  });
+
+  describe('Given every remaining boolean-typed field set to a value git refuses', () => {
+    describe('When readConfig', () => {
+      it.each([
+        {
+          config: '[core]\n\tsparseCheckout = maybe\n',
+          label: 'core.sparseCheckout',
+          read: (result: Awaited<ReturnType<typeof readConfig>>) => result.core?.sparseCheckout,
+        },
+        {
+          config: '[core]\n\tsparseCheckoutCone = maybe\n',
+          label: 'core.sparseCheckoutCone',
+          read: (result: Awaited<ReturnType<typeof readConfig>>) => result.core?.sparseCheckoutCone,
+        },
+        {
+          config: '[remote "origin"]\n\turl = u\n\tpromisor = maybe\n',
+          label: 'remote.<n>.promisor',
+          read: (result: Awaited<ReturnType<typeof readConfig>>) =>
+            result.remote?.get('origin')?.promisor,
+        },
+        {
+          config: '[submodule "libs/a"]\n\tactive = maybe\n',
+          label: 'submodule.<n>.active',
+          read: (result: Awaited<ReturnType<typeof readConfig>>) =>
+            result.submodule?.get('libs/a')?.active,
+        },
+        {
+          config: '[diff "upper"]\n\tcachetextconv = maybe\n',
+          label: 'diff.<d>.cachetextconv',
+          read: (result: Awaited<ReturnType<typeof readConfig>>) =>
+            result.diff?.get('upper')?.cachetextconv,
+        },
+        {
+          config: '[filter "f"]\n\trequired = maybe\n',
+          label: 'filter.<d>.required',
+          read: (result: Awaited<ReturnType<typeof readConfig>>) =>
+            result.filter?.get('f')?.required,
+        },
+        {
+          config: '[commit]\n\tgpgSign = maybe\n',
+          label: 'commit.gpgSign',
+          read: (result: Awaited<ReturnType<typeof readConfig>>) => result.commit?.gpgSign,
+        },
+        {
+          config: '[tag]\n\tgpgSign = maybe\n',
+          label: 'tag.gpgSign',
+          read: (result: Awaited<ReturnType<typeof readConfig>>) => result.tag?.gpgSign,
+        },
+      ])('Then $label is absent, not a guessed default', async ({ config, read }) => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, config);
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(read(result)).toBeUndefined();
       });
     });
   });

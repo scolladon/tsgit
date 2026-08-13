@@ -154,6 +154,18 @@ export type CommandError =
       readonly value: string;
       readonly reason: 'invalid unit' | 'out of range';
     }
+  | {
+      readonly code: 'CONFIG_BAD_BOOLEAN_VALUE';
+      readonly key: string;
+      readonly source: string;
+      readonly value: string;
+    }
+  | {
+      readonly code: 'CONFIG_BAD_BOOLEAN_LITERAL';
+      readonly key: string;
+      readonly source: string;
+      readonly value: string;
+    }
   | { readonly code: 'CONFIG_BAD_ZLIB_LEVEL'; readonly level: number }
   | {
       readonly code: 'CONFIG_MULTIPLE_VALUES';
@@ -560,6 +572,33 @@ export const configBadNumericValue = (
     source,
     value: sanitizeForDisplay(value),
     reason,
+  });
+
+/**
+ * A boolean-typed config key is present but its value fails git's boolean grammar
+ * (not a recognised word, and not an integer in the C `int` range). `key` is the
+ * fully-qualified config key (section and variable lower-cased, subsection verbatim),
+ * `source` is the file path, `value` is the raw post-tokenizer string.
+ */
+export const configBadBooleanValue = (key: string, source: string, value: string): TsgitError =>
+  new TsgitError({
+    code: 'CONFIG_BAD_BOOLEAN_VALUE',
+    key,
+    source,
+    value: sanitizeForDisplay(value),
+  });
+
+/**
+ * The `push.gpgSign` tri-state literal check fails its boolean fallback. Same shape as
+ * `configBadBooleanValue`, distinct code — git reports a different message for this one
+ * key (`invalid value for '<key>'` rather than `bad boolean config value '<v>' for '<k>'`).
+ */
+export const configBadBooleanLiteral = (key: string, source: string, value: string): TsgitError =>
+  new TsgitError({
+    code: 'CONFIG_BAD_BOOLEAN_LITERAL',
+    key,
+    source,
+    value: sanitizeForDisplay(value),
   });
 
 /**
