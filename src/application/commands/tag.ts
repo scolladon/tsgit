@@ -19,6 +19,7 @@ import type { Context } from '../../ports/context.js';
 import type { ParsedConfig } from '../primitives/config-read.js';
 import { readConfig } from '../primitives/config-read.js';
 import { createTag } from '../primitives/create-tag.js';
+import { assertValidBooleanConfig } from '../primitives/internal/boolean-config-guard.js';
 import { commonGitDir, perWorktreeRefDir } from '../primitives/path-layout.js';
 import { readObject } from '../primitives/read-object.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
@@ -89,6 +90,10 @@ export const tagCreate = async (ctx: Context, input: TagCreateInput): Promise<Ta
   const targetId = /^[0-9a-f]{40}$/.test(target)
     ? (target as ObjectId)
     : await resolveRef(ctx, target as RefName);
+  // git reads tag.gpgsign for a lightweight tag too, so the guard runs before
+  // the annotate/lightweight branch — not inside resolveTagSignature, which
+  // only the annotated arm reaches.
+  await assertValidBooleanConfig(ctx, 'tag', undefined, ['gpgsign']);
   const id = wantsAnnotatedTag(input) ? await createAnnotatedTag(ctx, input, targetId) : targetId;
   await updateTagRef(ctx, name, id, input.force === true, `tag: ${input.name}`);
   return { name, id };

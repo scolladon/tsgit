@@ -1987,6 +1987,69 @@ describe('push — signed', () => {
     });
   });
 
+  describe('Given push.gpgSign holds a value git refuses', () => {
+    describe('When push is called with opts.signed left undefined', () => {
+      it('Then throws CONFIG_BAD_BOOLEAN_LITERAL naming push.gpgsign and sends no pack', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const { parent } = await seedSignedPush(ctx, { otherExtra: '[push]\n  gpgSign = maybe\n' });
+        const { transport, requests } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/main', id: parent.id }],
+          reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/main', status: 'ok' }] },
+        });
+
+        // Act
+        let caught: unknown;
+        try {
+          await push({ ...ctx, transport });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — each field individually (mutation-resistant)
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as {
+          code: string;
+          key: string;
+          value: string;
+          source: string;
+        };
+        expect(data.code).toBe('CONFIG_BAD_BOOLEAN_LITERAL');
+        expect(data.key).toBe('push.gpgsign');
+        expect(data.value).toBe('maybe');
+        expect(data.source).toMatch(/\/config$/);
+        // The guard fires before the pack POST — only the discovery GET landed.
+        expect(requests.map((r) => r.method)).toEqual(['GET']);
+      });
+    });
+
+    describe('When push is called with opts.signed explicitly "no"', () => {
+      it('Then it still throws — git reads the config regardless of an explicit override', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const { parent } = await seedSignedPush(ctx, { otherExtra: '[push]\n  gpgSign = maybe\n' });
+        const { transport } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/main', id: parent.id }],
+          reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/main', status: 'ok' }] },
+        });
+
+        // Act
+        let caught: unknown;
+        try {
+          await push({ ...ctx, transport }, { signed: 'no' });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe('CONFIG_BAD_BOOLEAN_LITERAL');
+      });
+    });
+  });
+
   describe('Given user.signingKey is configured', () => {
     describe('When push signs', () => {
       it('Then the cert pusher line uses the signing key, not the identity string', async () => {

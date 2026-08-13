@@ -597,6 +597,75 @@ describe('tag — signing', () => {
     });
   });
 
+  describe('Given tag.gpgSign holds a value git refuses', () => {
+    describe('When tag create is called for a LIGHTWEIGHT tag (no annotate/message/sign)', () => {
+      it('Then it still throws CONFIG_BAD_BOOLEAN_VALUE — git reads tag.gpgsign for lightweight tags too', async () => {
+        // Arrange
+        const ctx = await seedSigning(undefined, '[tag]\n  gpgSign = maybe\n');
+
+        // Act
+        let caught: unknown;
+        try {
+          await tagCreate(ctx, { name: 'v1.0' });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — each field individually (mutation-resistant)
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as {
+          code: string;
+          key: string;
+          value: string;
+          source: string;
+        };
+        expect(data.code).toBe('CONFIG_BAD_BOOLEAN_VALUE');
+        expect(data.key).toBe('tag.gpgsign');
+        expect(data.value).toBe('maybe');
+        expect(data.source).toMatch(/\/config$/);
+        expect(await ctx.fs.exists(tagRefPath(ctx, 'v1.0'))).toBe(false);
+      });
+    });
+
+    describe('When tag create is called for an ANNOTATED tag', () => {
+      it('Then it throws CONFIG_BAD_BOOLEAN_VALUE and writes no tag object or ref', async () => {
+        // Arrange
+        const ctx = await seedSigning(undefined, '[tag]\n  gpgSign = maybe\n');
+
+        // Act
+        let caught: unknown;
+        try {
+          await tagCreate(ctx, { name: 'v1.0', message: 'v1' });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe('CONFIG_BAD_BOOLEAN_VALUE');
+        expect(await ctx.fs.exists(tagRefPath(ctx, 'v1.0'))).toBe(false);
+      });
+    });
+  });
+
+  describe('Given tag.gpgSign=yes (word form) in config', () => {
+    describe('When tag create with a message', () => {
+      it('Then it signs — the guard no-ops on an accepted value', async () => {
+        // Arrange
+        const runner = stubCommandRunner({ stdout: new TextEncoder().encode(armor()) });
+        const ctx = await seedSigning(runner, '[tag]\n  gpgSign = yes\n');
+
+        // Act
+        const result = await tagCreate(ctx, { name: 'v1.0', message: 'v1' });
+
+        // Assert
+        const stored = await readObject(ctx, result.id);
+        if (stored.type !== 'tag') throw new Error('expected a tag object');
+        expect(stored.data.gpgSignature).toBe(armor());
+      });
+    });
+  });
+
   describe('Given opts.signKey overrides a configured user.signingKey', () => {
     describe('When tag create signs', () => {
       it('Then the signer invocation uses the override key, not the configured one', async () => {

@@ -804,3 +804,54 @@ describe('Given a superproject whose submodule.lib has co-occurring valueless ke
     });
   });
 });
+
+/** `[submodule "lib"]` with a boolean-refused `active` value, alongside a valued `url`. */
+const BAD_ACTIVE_CONFIG = `[core]\n\trepositoryformatversion = 0\n[submodule "lib"]\n\turl = ${SUB_URL}\n\tactive = maybe\n`;
+
+/** Same shape but a valid `active` value — the guard must no-op. */
+const VALID_ACTIVE_CONFIG = `[core]\n\trepositoryformatversion = 0\n[submodule "lib"]\n\turl = ${SUB_URL}\n\tactive = true\n`;
+
+describe('Given a superproject whose submodule.lib.active holds a value git refuses', () => {
+  describe('When submoduleUpdate runs', () => {
+    it('Then it refuses with CONFIG_BAD_BOOLEAN_VALUE naming submodule.lib.active', async () => {
+      // Arrange
+      const ctx = await seedSuperWithConfigText(BAD_ACTIVE_CONFIG);
+
+      // Act
+      let caught: unknown;
+      try {
+        await submoduleUpdate(ctx, { paths: ['lib'] });
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert — each field individually (mutation-resistant)
+      expect(caught).toBeInstanceOf(TsgitError);
+      const data = (caught as TsgitError).data as {
+        code: string;
+        key: string;
+        value: string;
+        source: string;
+      };
+      expect(data.code).toBe('CONFIG_BAD_BOOLEAN_VALUE');
+      expect(data.key).toBe('submodule.lib.active');
+      expect(data.value).toBe('maybe');
+      expect(data.source).toMatch(/\/config$/);
+    });
+  });
+});
+
+describe('Given a superproject whose submodule.lib.active holds a value git accepts', () => {
+  describe('When submoduleUpdate runs', () => {
+    it('Then the guard no-ops and the pin is checked out', async () => {
+      // Arrange
+      const ctx = await seedSuperWithConfigText(VALID_ACTIVE_CONFIG);
+
+      // Act
+      const result = await submoduleUpdate(ctx, { paths: ['lib'] });
+
+      // Assert
+      expect(result.entries[0]).toMatchObject({ cloned: true, changed: true, mode: 'checkout' });
+    });
+  });
+});

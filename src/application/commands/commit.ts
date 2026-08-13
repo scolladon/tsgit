@@ -22,6 +22,7 @@ import type { Context } from '../../ports/context.js';
 import type { ParsedConfig } from '../primitives/config-read.js';
 import { readConfig } from '../primitives/config-read.js';
 import { createCommit } from '../primitives/create-commit.js';
+import { assertValidBooleanConfig } from '../primitives/internal/boolean-config-guard.js';
 import { assertNoValuelessConfig } from '../primitives/internal/valueless-config-guard.js';
 import { readIndex } from '../primitives/read-index.js';
 import { readObject } from '../primitives/read-object.js';
@@ -202,6 +203,7 @@ const resolveGpgSignature = async (
   committer: AuthorIdentity,
   opts: CommitOptions,
 ): Promise<string | undefined> => {
+  await assertValidBooleanConfig(ctx, 'commit', undefined, ['gpgsign']);
   const wantSign = opts.sign ?? config.commit?.gpgSign === true;
   if (!wantSign) return undefined;
   return signCommit(ctx, config, commitData, committer, opts.signKey);

@@ -96,6 +96,64 @@ describe('commands/submodule', () => {
     });
   });
 
+  describe('Given submodule.foo.active holds a value git refuses', () => {
+    describe('When submodules()', () => {
+      it('Then throws CONFIG_BAD_BOOLEAN_VALUE naming submodule.foo.active', async () => {
+        // Arrange — writeObject (in seedRepoWithHead) reads config eagerly for the
+        // compression level, so the cache must be reset after this override write.
+        const text = '[submodule "foo"]\n\tpath = foo\n\turl = https://e/foo.git\n';
+        const { ctx } = await seedRepoWithHead(text, [{ name: 'foo', id: FAKE_COMMIT }]);
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[submodule "foo"]\n\tactive = maybe\n',
+        );
+        __resetConfigCacheForTests();
+
+        // Act
+        let caught: unknown;
+        try {
+          await submoduleList(ctx);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — each field individually (mutation-resistant)
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as {
+          code: string;
+          key: string;
+          value: string;
+          source: string;
+        };
+        expect(data.code).toBe('CONFIG_BAD_BOOLEAN_VALUE');
+        expect(data.key).toBe('submodule.foo.active');
+        expect(data.value).toBe('maybe');
+        expect(data.source).toMatch(/\/config$/);
+      });
+    });
+  });
+
+  describe('Given submodule.foo.active holds a value git accepts', () => {
+    describe('When submodules()', () => {
+      it('Then returns the entry — the guard no-ops on a valid value', async () => {
+        // Arrange
+        const text = '[submodule "foo"]\n\tpath = foo\n\turl = https://e/foo.git\n';
+        const { ctx } = await seedRepoWithHead(text, [{ name: 'foo', id: FAKE_COMMIT }]);
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[submodule "foo"]\n\tactive = true\n',
+        );
+        __resetConfigCacheForTests();
+
+        // Act
+        const result = await submoduleList(ctx);
+
+        // Assert
+        expect(result.entries).toHaveLength(1);
+      });
+    });
+  });
+
   describe('Given a non-repository context (no HEAD)', () => {
     describe('When submodules()', () => {
       it('Then throws NOT_A_REPOSITORY', async () => {

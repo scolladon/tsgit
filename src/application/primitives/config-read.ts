@@ -1785,6 +1785,32 @@ export const findFirstInvalidLogAllRefUpdates = async (
   return undefined;
 };
 
+/**
+ * `push.gpgSign`-specific sibling of `findFirstInvalidBoolean`: the key
+ * accepts a third literal, `if-asked`, beyond git's boolean grammar (mirrors
+ * `parsePushGpgSign`'s own tri-state check), so the plain boolean finder
+ * would misreport it. Otherwise structurally identical — walks the cached
+ * `[push]` tokens and returns the entry only when neither the tri-state
+ * literal nor the boolean grammar accepts the value.
+ */
+export const findFirstInvalidPushGpgSign = async (
+  ctx: Context,
+): Promise<InvalidBooleanEntry | undefined> => {
+  const { tokens, source: path } = await readConfigEntry(ctx);
+  let inSection = false;
+  for (const token of tokens) {
+    if (token.kind === 'header') {
+      inSection = matchesSection(token.section, token.subsection, 'push', undefined);
+      continue;
+    }
+    if (!inSection || token.kind !== 'entry' || token.value === null) continue;
+    if (token.key.toLowerCase() !== 'gpgsign') continue;
+    if (parsePushGpgSign(token.value) !== undefined) continue;
+    return { key: 'push.gpgsign', source: path, line: token.startLine + 1, value: token.value };
+  }
+  return undefined;
+};
+
 type GitIntResult =
   | { readonly ok: true; readonly value: number }
   | { readonly ok: false; readonly reason: 'invalid unit' | 'out of range' };

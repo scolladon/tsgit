@@ -7,6 +7,7 @@ import {
   findFirstInvalidBooleanInSection,
   findFirstInvalidCompression,
   findFirstInvalidLogAllRefUpdates,
+  findFirstInvalidPushGpgSign,
   findFirstValuelessEntry,
   findFirstValuelessInSection,
   findInvalidPushDefault,
@@ -5664,6 +5665,110 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
 
           // Act
           const result = await findFirstInvalidLogAllRefUpdates(ctx);
+
+          // Assert
+          expect(result).toBeUndefined();
+        });
+      });
+    });
+  });
+
+  describe('findFirstInvalidPushGpgSign', () => {
+    describe('Given push.gpgSign holds a value that fails both the tri-state literal and the boolean grammar', () => {
+      describe('When findFirstInvalidPushGpgSign', () => {
+        it('Then it returns the entry', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[push]\n\tgpgSign = maybe\n');
+
+          // Act
+          const result = await findFirstInvalidPushGpgSign(ctx);
+
+          // Assert
+          expect(result?.key).toBe('push.gpgsign');
+          expect(result?.value).toBe('maybe');
+          expect(result?.line).toBe(2);
+        });
+      });
+    });
+
+    describe('Given push.gpgSign holds the tri-state literal "if-asked" (any case)', () => {
+      describe('When findFirstInvalidPushGpgSign', () => {
+        it.each([
+          { value: 'if-asked', label: 'lower-case' },
+          { value: 'If-Asked', label: 'mixed-case' },
+          { value: 'IF-ASKED', label: 'upper-case' },
+        ])('Then it returns undefined ($label)', async ({ value }) => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, `[push]\n\tgpgSign = ${value}\n`);
+
+          // Act
+          const result = await findFirstInvalidPushGpgSign(ctx);
+
+          // Assert
+          expect(result).toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given push.gpgSign holds a valid boolean value', () => {
+      describe('When findFirstInvalidPushGpgSign', () => {
+        it('Then it returns undefined', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[push]\n\tgpgSign = true\n');
+
+          // Act
+          const result = await findFirstInvalidPushGpgSign(ctx);
+
+          // Assert
+          expect(result).toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given push.gpgSign is valueless', () => {
+      describe('When findFirstInvalidPushGpgSign', () => {
+        it('Then it returns undefined (valueless is boolean-true)', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[push]\n\tgpgSign\n');
+
+          // Act
+          const result = await findFirstInvalidPushGpgSign(ctx);
+
+          // Assert
+          expect(result).toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given the key is absent', () => {
+      describe('When findFirstInvalidPushGpgSign', () => {
+        it('Then it returns undefined', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[push]\n\tdefault = simple\n');
+
+          // Act
+          const result = await findFirstInvalidPushGpgSign(ctx);
+
+          // Assert
+          expect(result).toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given a malformed value sits under a non-[push] section', () => {
+      describe('When findFirstInvalidPushGpgSign', () => {
+        it('Then it returns undefined (out of section)', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[other]\n\tgpgSign = maybe\n');
+
+          // Act
+          const result = await findFirstInvalidPushGpgSign(ctx);
 
           // Assert
           expect(result).toBeUndefined();

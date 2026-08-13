@@ -2,6 +2,7 @@ import { type AttributeValue, resolveAttribute } from '../../domain/attributes/i
 import type { FilePath } from '../../domain/objects/object-id.js';
 import type { Context } from '../../ports/context.js';
 import { readConfig } from './config-read.js';
+import { assertValidBooleanConfig } from './internal/boolean-config-guard.js';
 import type { AttributeProvider } from './internal/read-gitattributes.js';
 
 /**
@@ -26,6 +27,7 @@ const IDENTITY: FilterChoice = { kind: 'identity' };
 const namedFilterChoice = async (ctx: Context, name: string): Promise<FilterChoice> => {
   const section = (await readConfig(ctx)).filter?.get(name);
   if (section === undefined) return IDENTITY;
+  await assertValidBooleanConfig(ctx, 'filter', name, ['required']);
   return {
     kind: 'external',
     name,

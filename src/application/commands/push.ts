@@ -46,6 +46,7 @@ import { buildPack } from '../primitives/build-pack.js';
 import { findInvalidPushDefault, readConfig } from '../primitives/config-read.js';
 import { enumeratePushObjects } from '../primitives/enumerate-push-objects.js';
 import { enumerateRefs } from '../primitives/enumerate-refs.js';
+import { assertValidBooleanLiteral } from '../primitives/internal/boolean-config-guard.js';
 import { assertNoValuelessConfig } from '../primitives/internal/valueless-config-guard.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import { runHook } from '../primitives/run-hook.js';
@@ -358,6 +359,9 @@ type SignedPushMode = 'yes' | 'no' | 'if-asked';
 
 /** `opts.signed` wins; otherwise falls back to `push.gpgSign` (default `'no'`). */
 const resolveSignedPushMode = async (ctx: Context, opts: PushOptions): Promise<SignedPushMode> => {
+  // git reads push.gpgsign regardless of an explicit opts.signed override, so
+  // the guard runs before that early return.
+  await assertValidBooleanLiteral(ctx);
   if (opts.signed !== undefined) return opts.signed;
   const config = await readConfig(ctx);
   const configured = config.push?.gpgSign;

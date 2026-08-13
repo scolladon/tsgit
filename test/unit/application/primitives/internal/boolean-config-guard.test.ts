@@ -163,7 +163,7 @@ describe('assertValidBooleanLiteral', () => {
         // Act
         let caught: unknown;
         try {
-          await assertValidBooleanLiteral(ctx, 'push', undefined, ['gpgsign']);
+          await assertValidBooleanLiteral(ctx);
         } catch (err) {
           caught = err;
         }
@@ -187,7 +187,20 @@ describe('assertValidBooleanLiteral', () => {
         await seedConfig(ctx, '[push]\n\tgpgSign = true\n');
 
         // Act + Assert
-        await assertValidBooleanLiteral(ctx, 'push', undefined, ['gpgsign']);
+        await assertValidBooleanLiteral(ctx);
+      });
+    });
+  });
+
+  describe('Given [push] gpgSign holds the tri-state literal "if-asked"', () => {
+    describe('When called', () => {
+      it('Then resolves (no throw) — the third literal is not the boolean grammar', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedConfig(ctx, '[push]\n\tgpgSign = if-asked\n');
+
+        // Act + Assert
+        await assertValidBooleanLiteral(ctx);
       });
     });
   });
@@ -200,7 +213,7 @@ describe('assertValidBooleanLiteral', () => {
         await seedConfig(ctx, '[push]\n\tdefault = simple\n');
 
         // Act + Assert
-        await assertValidBooleanLiteral(ctx, 'push', undefined, ['gpgsign']);
+        await assertValidBooleanLiteral(ctx);
       });
     });
   });
@@ -210,10 +223,10 @@ describe('assertValidBooleanLiteral', () => {
       it('Then resolves (no throw — out of section)', async () => {
         // Arrange
         const ctx = createMemoryContext();
-        await seedConfig(ctx, '[push]\n\tgpgSign = maybe\n');
+        await seedConfig(ctx, '[commit]\n\tgpgSign = maybe\n');
 
         // Act + Assert
-        await assertValidBooleanLiteral(ctx, 'commit', undefined, ['gpgsign']);
+        await assertValidBooleanLiteral(ctx);
       });
     });
   });
