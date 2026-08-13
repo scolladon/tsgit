@@ -15,6 +15,7 @@ import type {
   Tree,
 } from '../../domain/objects/index.js';
 import type { FileStat } from '../../ports/file-system.js';
+import type { WorkingTreeStatMap } from './internal/working-tree-stat-map.js';
 
 /** Max symbolic-ref dereferences resolveRef will follow. */
 export const MAX_SYMBOLIC_REF_DEPTH = 5;
@@ -204,6 +205,12 @@ export interface WalkWorkingTreeOptions {
    * the leaf). May be sync or async.
    */
   readonly ignore?: WalkIgnorePredicate;
+  /**
+   * A shared stat cache, consulted before issuing each leaf's lazy `lstat`
+   * and populated on a successful sample. Only `status` supplies one — every
+   * other caller omits it and pays its own `lstat` exactly as before.
+   */
+  readonly stats?: WorkingTreeStatMap;
 }
 
 export interface CreateCommitInput {

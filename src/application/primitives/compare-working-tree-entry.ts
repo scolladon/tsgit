@@ -18,6 +18,11 @@
  * `compareWorkingTreeDelta` accepts an optional index-file mtime (the racy-guard
  * reference point for the `ie_match_stat` stat-cache short-circuit). Only
  * `status` supplies it; every other consumer keeps reading and hashing.
+ *
+ * It also accepts an optional {@link WorkingTreeStatMap}, consulted before
+ * issuing `lstat` and populated on a successful sample. Only `status` supplies
+ * it, sharing one instance with its untracked-pass walk; every other consumer
+ * omits it and issues its own `lstat` exactly as before.
  */
 import { isSameKind } from '../../domain/diff/mode-kind.js';
 import type { IndexEntry } from '../../domain/git-index/index-entry.js';
@@ -29,6 +34,7 @@ import { type IndexMtime, isEntryStatClean } from './internal/is-entry-stat-clea
 import { joinPath } from './internal/join-working-tree-path.js';
 import type { AttributeProvider } from './internal/read-gitattributes.js';
 import { serializeAndHash } from './internal/serialize-and-hash.js';
+import type { WorkingTreeStatMap } from './internal/working-tree-stat-map.js';
 import { resolveFilterDriver } from './resolve-filter-driver.js';
 import { runFilterDriver } from './run-filter-driver.js';
 
@@ -87,10 +93,12 @@ export const compareWorkingTreeDelta = async (
   entry: IndexEntry,
   provider?: AttributeProvider,
   indexMtime?: IndexMtime,
+  stats?: WorkingTreeStatMap,
 ): Promise<WorkingTreeDelta> => {
   const absPath = joinPath(ctx.layout.workDir, entry.path);
-  const stat = await ctx.fs.lstat(absPath).catch(() => undefined);
+  const stat = stats?.sampled(entry.path) ?? (await ctx.fs.lstat(absPath).catch(() => undefined));
   if (stat === undefined) return { status: 'absent' };
+  stats?.record(entry.path, stat);
   const worktreeMode = deriveWorkingMode(stat);
   // A file↔symlink kind change is git's `T`, decided on mode alone — no hash
   // needed and the content is meaningless across kinds. A gitlink (submodule)

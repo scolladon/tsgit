@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
+import { createWorkingTreeStatMap } from '../../../../src/application/primitives/internal/working-tree-stat-map.js';
 import { walkWorkingTree } from '../../../../src/application/primitives/walk-working-tree.js';
 import { TsgitError } from '../../../../src/domain/error.js';
+import type { FilePath } from '../../../../src/domain/objects/object-id.js';
 import type { Context } from '../../../../src/ports/context.js';
 
 const seedFs = async (
@@ -248,6 +250,49 @@ describe('walkWorkingTree', () => {
 
         // Assert
         expect(calls()).toBe(1);
+      });
+    });
+
+    describe('Given a shared stat map with a sample already recorded for the leaf', () => {
+      describe('When entry.stat() is read', () => {
+        it('Then no lstat is issued and the recorded sample is returned', async () => {
+          // Arrange
+          const seeded = await seedFs({ 'a.txt': '1' });
+          const stat = await seeded.fs.lstat(`${seeded.layout.workDir}/a.txt`);
+          const stats = createWorkingTreeStatMap();
+          stats.record('a.txt' as FilePath, stat);
+          const { ctx, calls } = trackLstat(seeded);
+
+          // Act
+          let result: unknown;
+          for await (const entry of walkWorkingTree(ctx, { stats })) {
+            result = await entry.stat();
+          }
+
+          // Assert
+          expect(calls()).toBe(0);
+          expect(result).toBe(stat);
+        });
+      });
+    });
+
+    describe('Given a shared stat map with nothing recorded for the leaf', () => {
+      describe('When entry.stat() is read', () => {
+        it('Then one lstat is issued and the sample is recorded into the map', async () => {
+          // Arrange
+          const seeded = await seedFs({ 'a.txt': '1' });
+          const stats = createWorkingTreeStatMap();
+          const { ctx, calls } = trackLstat(seeded);
+
+          // Act
+          for await (const entry of walkWorkingTree(ctx, { stats })) {
+            await entry.stat();
+          }
+
+          // Assert
+          expect(calls()).toBe(1);
+          expect(stats.sampled('a.txt' as FilePath)).toBeDefined();
+        });
       });
     });
   });
