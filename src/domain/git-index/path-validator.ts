@@ -9,6 +9,8 @@
  * The throw is shaped as `INVALID_INDEX_ENTRY` so the parser's error
  * vocabulary stays consistent.
  */
+import type { FileMode } from '../objects/index.js';
+import { type VerifyPathRejection, verifyPath } from '../path/verify-path.js';
 import { invalidIndexEntry } from './error.js';
 
 /**
@@ -51,6 +53,22 @@ const reasonFor = (segment: string): string => {
   return "'..' segment rejected";
 };
 
+// verifyPath's shape/absolute families are unreachable here — the checks
+// above already throw for them — but the table stays total over
+// VerifyPathRejection so the compiler enforces a distinct string for every
+// alias/gitmodules family verifyPath can still return at this call site.
+const VERIFY_PATH_REASON: Record<VerifyPathRejection, string> = {
+  'absolute-path': 'absolute path rejected',
+  'empty-segment': reasonFor(''),
+  'dot-segment': reasonFor('.'),
+  'dotdot-segment': reasonFor('..'),
+  'dotgit-alias': "'.git' component rejected",
+  'dotgit-ntfs-alias': "'git~1' NTFS short name rejected",
+  'dotgit-ntfs-stream': "'.git' NTFS alternate data stream rejected",
+  'dotgit-hfs-alias': "'.git' HFS+ ignorable-codepoint alias rejected",
+  'gitmodules-not-regular': "'.gitmodules' must not be a symlink",
+};
+
 const isControlChar = (code: number): boolean => code < 0x20 || (code >= 0x7f && code <= 0x9f);
 
 const unsafeReason = (path: string): string | undefined => {
@@ -81,6 +99,11 @@ const unsafeReason = (path: string): string | undefined => {
  *  misses.
  * - C0/C1 control characters and BIDI / isolate Unicode controls —
  *  defends against terminal-rendering attacks (U+202E etc.).
+ * - `.git` and its NTFS (`git~1`, `.git:`-stream) / HFS+
+ *  (ignorable-codepoint) aliases, mirroring git's `verify_path` — see
+ *  `verifyPath` in `../path/verify-path.js`.
+ * - A `.gitmodules` leaf entry whose `mode` is a symlink (CVE-2018-11235
+ *  hardening).
  *
  * The error `reason` deliberately does NOT echo the offending path
  * verbatim. Index entries can carry attacker-supplied paths up to
@@ -88,7 +111,7 @@ const unsafeReason = (path: string): string | undefined => {
  * embedding the path in `reason` would amplify log volume and reflect
  * untrusted content.
  */
-export const validateIndexPath = (path: string, offset: number): void => {
+export const validateIndexPath = (path: string, offset: number, mode: FileMode): void => {
   if (path.startsWith('/')) {
     throw invalidIndexEntry(offset, 'absolute path rejected');
   }
@@ -100,5 +123,9 @@ export const validateIndexPath = (path: string, offset: number): void => {
     if (UNSAFE_SEGMENTS.has(segment)) {
       throw invalidIndexEntry(offset, reasonFor(segment));
     }
+  }
+  const rejection = verifyPath(path, mode);
+  if (rejection !== undefined) {
+    throw invalidIndexEntry(offset, VERIFY_PATH_REASON[rejection]);
   }
 };

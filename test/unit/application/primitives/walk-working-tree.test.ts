@@ -109,6 +109,11 @@ describe('walkWorkingTree', () => {
           content: 'gitdir: /elsewhere',
           label: 'a regular file literally named `.git` is skipped but its siblings are yielded',
         },
+        {
+          path: 'git~1/HEAD',
+          content: 'ref: refs/heads/main\n',
+          label: 'a `git~1` directory (NTFS short-name alias) is skipped',
+        },
       ])('Then $label', async ({ path, content }) => {
         // Arrange
         const ctx = await seedFs({ 'a.txt': '1', [path]: content });
@@ -129,6 +134,26 @@ describe('walkWorkingTree', () => {
         const ctx = await seedFs({
           'a.txt': '1',
           'vendor/lib/.git/HEAD': 'ref: refs/heads/main',
+          'vendor/lib/src/x.ts': 'x',
+        });
+
+        // Act
+        const result = await collect(walkWorkingTree(ctx));
+
+        // Assert — only the top-level file is yielded; nothing under vendor/lib.
+        expect(result).toEqual(['a.txt']);
+      });
+    });
+  });
+
+  describe('Given a nested `git~1` directory (embedded repo via NTFS short-name alias)', () => {
+    describe('When walked', () => {
+      it('Then the whole directory is skipped', async () => {
+        // Arrange — vendor/lib looks like an embedded git repo disguised
+        // behind git's NTFS 8.3 short name for `.git`.
+        const ctx = await seedFs({
+          'a.txt': '1',
+          'vendor/lib/git~1/HEAD': 'ref: refs/heads/main',
           'vendor/lib/src/x.ts': 'x',
         });
 

@@ -2,16 +2,24 @@
  * Apply a Changeset to the working tree + return new IndexEntry records.
  *
  * Lifecycle:
- *  1. Dirty-tree guard (unless `force`): hash any working-tree file that
+ *  1. Entry-name guard (always, even under `force`): every `add`/`update`
+ *  target path is validated against git's index-write matrix before
+ *  anything is written — mirrors git's `unpack_trees` building the new
+ *  index in memory before `checkout_all` touches disk, so a hostile
+ *  target-tree entry anywhere in the changeset leaves the working tree
+ *  untouched rather than partially populated.
+ *  2. Dirty-tree guard (unless `force`): hash any working-tree file that
  *  `update`/`delete` would touch and compare against the changeset's
  *  `previousId`. Untracked paths that `add` would clobber are also
  *  flagged. Collected paths surface as CHECKOUT_OVERWRITE_DIRTY.
- *  2. Apply each non-noop entry — `delete` then `add`/`update` per path,
+ *  3. Apply each non-noop entry — `delete` then `add`/`update` per path,
  *  with per-file progress ticks.
- *  3. Build new stage-0 IndexEntry records from the post-write lstat.
+ *  4. Build new stage-0 IndexEntry records from the post-write lstat.
  *
- * Atomicity: per-file (matches canonical git). No cross-file rollback —
- * see.
+ * Atomicity: per-file for I/O failures (matches canonical git — no
+ * cross-file rollback on e.g. a permission error mid-apply). The entry-name
+ * guard is the one whole-changeset exception, matching git's own two-phase
+ * split between index-build validation and the write phase.
  */
 import {
   checkoutOverwriteDirty,
@@ -21,6 +29,7 @@ import {
 import { comparePaths } from '../../domain/diff/index.js';
 import { TsgitError } from '../../domain/error.js';
 import { type IndexEntry, STAGE0_FLAGS } from '../../domain/git-index/index.js';
+import { NO_PARSER_OFFSET, validateIndexPath } from '../../domain/git-index/path-validator.js';
 import {
   FILE_MODE,
   type FileMode,
@@ -117,6 +126,21 @@ const evaluateDirtyPath = async (
       : undefined;
   }
   return undefined;
+};
+
+// The checkout path's tree->index boundary. Every `add`/`update` entry
+// carries a path sourced from a target-tree walk (`walkTree` never
+// validates entry names — that is git's `mktree` escape hatch), so each
+// one is re-checked here before `applyAllEntries` writes anything.
+// `delete`/`noop` entries are skipped: their path already passed this same
+// check when the CURRENT index was parsed (`index-parser.ts`).
+const validateChangesetEntry = (entry: ChangesetEntry): void => {
+  if (entry.kind !== 'add' && entry.kind !== 'update') return;
+  validateIndexPath(entry.path, NO_PARSER_OFFSET, entry.mode);
+};
+
+const validateChangesetPaths = (changeset: Changeset): void => {
+  for (const entry of changeset.entries) validateChangesetEntry(entry);
 };
 
 const checkDirty = async (
@@ -255,6 +279,8 @@ export const applyChangeset = async (
   opts: ApplyChangesetOpts,
 ): Promise<ApplyChangesetResult> => {
   const { changeset, force, workdir } = opts;
+
+  validateChangesetPaths(changeset);
 
   if (!force) {
     const dirty = await checkDirty(ctx, workdir, changeset);

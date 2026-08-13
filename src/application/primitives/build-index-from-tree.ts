@@ -27,6 +27,7 @@ import {
   STAGE0_FLAGS,
   skipWorktreeEntry,
 } from '../../domain/git-index/index.js';
+import { NO_PARSER_OFFSET, validateIndexPath } from '../../domain/git-index/path-validator.js';
 import {
   FILE_MODE,
   type FileMode,
@@ -110,6 +111,7 @@ const projectLeaf = (
   donors: ReadonlyMap<FilePath, IndexEntry>,
   sparse: SparseMatcher | undefined,
 ): IndexEntry => {
+  validateIndexPath(leaf.path, NO_PARSER_OFFSET, leaf.mode);
   // An excluded path is rebuilt as a zero-stat skip-worktree entry — the file
   // is absent from disk, so any donor stat cache is meaningless.
   if (sparse !== undefined && !sparse(leaf.path)) return skipWorktreeEntry(leaf);

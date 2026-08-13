@@ -1,9 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { TsgitError } from '../../../src/domain/error.js';
-import {
-  isForbiddenGitComponent,
-  validateWorkingTreePath,
-} from '../../../src/domain/working-tree-path.js';
+import { isDotGitAlias } from '../../../src/domain/path/verify-path.js';
+import { validateWorkingTreePath } from '../../../src/domain/working-tree-path.js';
 
 const expectReject = (input: string): TsgitError => {
   let caught: unknown;
@@ -266,12 +264,12 @@ describe('validateWorkingTreePath', () => {
   });
 });
 
-describe('isForbiddenGitComponent', () => {
+describe('isDotGitAlias', () => {
   describe('Given the literal ".git"', () => {
     describe('When checked', () => {
       it('Then returns true', () => {
         // Arrange & Act
-        const result = isForbiddenGitComponent('.git');
+        const result = isDotGitAlias('.git');
 
         // Assert
         expect(result).toBe(true);
@@ -283,7 +281,7 @@ describe('isForbiddenGitComponent', () => {
     describe('When checked', () => {
       it('Then returns false', () => {
         // Arrange & Act
-        const result = isForbiddenGitComponent('src');
+        const result = isDotGitAlias('src');
 
         // Assert
         expect(result).toBe(false);
@@ -295,7 +293,7 @@ describe('isForbiddenGitComponent', () => {
     describe('When checked', () => {
       it('Then returns true (NTFS variant)', () => {
         // Arrange & Act
-        const result = isForbiddenGitComponent('.git.');
+        const result = isDotGitAlias('.git.');
 
         // Assert
         expect(result).toBe(true);
@@ -307,7 +305,7 @@ describe('isForbiddenGitComponent', () => {
     describe('When checked', () => {
       it('Then returns true (NTFS variant)', () => {
         // Arrange & Act
-        const result = isForbiddenGitComponent('.git ');
+        const result = isDotGitAlias('.git ');
 
         // Assert
         expect(result).toBe(true);
@@ -319,7 +317,7 @@ describe('isForbiddenGitComponent', () => {
     describe('When checked', () => {
       it('Then returns true (case-insensitive)', () => {
         // Arrange & Act
-        const result = isForbiddenGitComponent('.GIT');
+        const result = isDotGitAlias('.GIT');
 
         // Assert
         expect(result).toBe(true);
@@ -331,10 +329,75 @@ describe('isForbiddenGitComponent', () => {
     describe('When checked', () => {
       it('Then returns false', () => {
         // Arrange & Act
-        const result = isForbiddenGitComponent('.gitignore');
+        const result = isDotGitAlias('.gitignore');
 
         // Assert
         expect(result).toBe(false);
+      });
+    });
+  });
+
+  describe('Given the NTFS short name "git~1"', () => {
+    describe('When checked', () => {
+      it('Then returns true', () => {
+        // Arrange & Act
+        const result = isDotGitAlias('git~1');
+
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+  });
+
+  describe('Given the NTFS alternate-data-stream form ".git:$INDEX_ALLOCATION"', () => {
+    describe('When checked', () => {
+      it('Then returns true', () => {
+        // Arrange & Act
+        const result = isDotGitAlias('.git:$INDEX_ALLOCATION');
+
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+  });
+
+  describe('Given the HFS+ ignorable-codepoint form ".g<ZWNJ>it"', () => {
+    describe('When checked', () => {
+      it('Then returns true', () => {
+        // Arrange & Act
+        const result = isDotGitAlias(`.g${String.fromCodePoint(0x200c)}it`);
+
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+  });
+});
+
+describe('validateWorkingTreePath — widened `.git`-alias matrix', () => {
+  describe('Given a `git~1` component', () => {
+    describe('When validated', () => {
+      it('Then rejects (NTFS short-name alias)', () => {
+        // Arrange & Act + Assert
+        expectReject('a/git~1/b');
+      });
+    });
+  });
+
+  describe('Given a `.git:$INDEX_ALLOCATION` component', () => {
+    describe('When validated', () => {
+      it('Then rejects (NTFS alternate-data-stream alias)', () => {
+        // Arrange & Act + Assert
+        expectReject('a/.git:$INDEX_ALLOCATION/b');
+      });
+    });
+  });
+
+  describe('Given a `.g<ZWNJ>it` component', () => {
+    describe('When validated', () => {
+      it('Then rejects (HFS+ ignorable-codepoint alias)', () => {
+        // Arrange & Act + Assert
+        expectReject(`a/.g${String.fromCodePoint(0x200c)}it/b`);
       });
     });
   });

@@ -5,6 +5,7 @@ import {
   NO_PARSER_OFFSET,
   validateIndexPath,
 } from '../../../../src/domain/git-index/path-validator.js';
+import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 
 const catchError = (fn: () => void): unknown => {
   try {
@@ -23,7 +24,7 @@ describe('validateIndexPath', () => {
         const path = 'src/domain/file.ts';
 
         // Assert
-        expect(() => validateIndexPath(path, 0)).not.toThrow();
+        expect(() => validateIndexPath(path, 0, FILE_MODE.REGULAR)).not.toThrow();
       });
     });
   });
@@ -82,14 +83,71 @@ describe('validateIndexPath', () => {
           offset: NO_PARSER_OFFSET,
           reason: 'empty segment rejected',
         },
+        {
+          label: "throws INVALID_INDEX_ENTRY with the '.git' alias reason",
+          path: '.git',
+          offset: 0,
+          reason: "'.git' component rejected",
+        },
+        {
+          label: "throws INVALID_INDEX_ENTRY with the '.git' alias reason for a nested component",
+          path: 'a/.GIT/config',
+          offset: 0,
+          reason: "'.git' component rejected",
+        },
+        {
+          label: 'throws INVALID_INDEX_ENTRY with the NTFS short-name reason',
+          path: 'git~1/config',
+          offset: 0,
+          reason: "'git~1' NTFS short name rejected",
+        },
+        {
+          label: 'throws INVALID_INDEX_ENTRY with the NTFS alternate-data-stream reason',
+          path: '.git:$INDEX_ALLOCATION',
+          offset: 0,
+          reason: "'.git' NTFS alternate data stream rejected",
+        },
+        {
+          label: 'throws INVALID_INDEX_ENTRY with the HFS+ ignorable-codepoint reason',
+          path: `.g${String.fromCodePoint(0x200c)}it`,
+          offset: 0,
+          reason: "'.git' HFS+ ignorable-codepoint alias rejected",
+        },
       ])('Then $label', ({ path, offset, reason }) => {
         // Arrange & Act
-        const caught = catchError(() => validateIndexPath(path, offset));
+        const caught = catchError(() => validateIndexPath(path, offset, FILE_MODE.REGULAR));
 
         // Assert
         expect(caught).toBeInstanceOf(TsgitError);
         const data = (caught as TsgitError).data;
         expect(data).toEqual({ code: 'INVALID_INDEX_ENTRY', offset, reason });
+      });
+    });
+  });
+
+  describe('Given a `.gitmodules` leaf entry with symlink mode', () => {
+    describe('When validated', () => {
+      it('Then throws INVALID_INDEX_ENTRY with the gitmodules-not-regular reason', () => {
+        // Arrange & Act
+        const caught = catchError(() => validateIndexPath('.gitmodules', 3, FILE_MODE.SYMLINK));
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data;
+        expect(data).toEqual({
+          code: 'INVALID_INDEX_ENTRY',
+          offset: 3,
+          reason: "'.gitmodules' must not be a symlink",
+        });
+      });
+    });
+  });
+
+  describe('Given a `.gitmodules` leaf entry with regular mode', () => {
+    describe('When validated', () => {
+      it('Then it does not throw', () => {
+        // Arrange & Act + Assert
+        expect(() => validateIndexPath('.gitmodules', 0, FILE_MODE.REGULAR)).not.toThrow();
       });
     });
   });
@@ -102,7 +160,7 @@ describe('validateIndexPath', () => {
         const path = `a${String.fromCharCode(0xa0)}b`;
 
         // Assert
-        expect(() => validateIndexPath(path, 0)).not.toThrow();
+        expect(() => validateIndexPath(path, 0, FILE_MODE.REGULAR)).not.toThrow();
       });
     });
   });

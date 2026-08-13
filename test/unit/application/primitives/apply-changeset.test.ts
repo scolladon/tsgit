@@ -1224,4 +1224,98 @@ describe('applyChangeset', () => {
       });
     });
   });
+
+  describe('Given an add entry named `.GIT` (a `.git`-alias hostile name)', () => {
+    describe('When applyChangeset runs', () => {
+      it('Then throws INVALID_INDEX_ENTRY and writes nothing to the working tree', async () => {
+        // Arrange — the checkout path mints IndexEntry records here; a
+        // hostile target-tree entry must be refused before any write, the
+        // same index-write boundary `build-index-from-tree.ts` enforces for
+        // `reset --mixed`. `.GIT` (not the lowercase `.git` the seeded repo
+        // already owns) keeps this a clean no-write witness.
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, new TextEncoder().encode('hostile'));
+
+        // Act
+        let caught: unknown;
+        try {
+          await applyChangeset(ctx, {
+            changeset: makeChangeset([makeAdd('.GIT', id)]),
+            force: false,
+            workdir: WORKDIR,
+          });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe('INVALID_INDEX_ENTRY');
+        expect(await ctx.fs.exists(`${WORKDIR}/.GIT`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a changeset whose LAST entry is hostile and earlier entries are safe', () => {
+    describe('When applyChangeset runs', () => {
+      it('Then refuses before writing any entry (checks nothing out)', async () => {
+        // Arrange — mirrors git's unpack_trees: the whole target is
+        // validated before the first file is written, so one hostile
+        // tree entry anywhere in a clone/checkout leaves the working tree
+        // untouched rather than partially populated.
+        const ctx = await buildSeededContext();
+        const safeId = await writeBlob(ctx, new TextEncoder().encode('safe'));
+        const hostileId = await writeBlob(ctx, new TextEncoder().encode('hostile'));
+
+        // Act
+        let caught: unknown;
+        try {
+          await applyChangeset(ctx, {
+            changeset: makeChangeset([makeAdd('safe.txt', safeId), makeAdd('git~1', hostileId)]),
+            force: false,
+            workdir: WORKDIR,
+          });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe('INVALID_INDEX_ENTRY');
+        expect(await ctx.fs.exists(`${WORKDIR}/safe.txt`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given an update entry whose new path is a `.gitmodules` symlink', () => {
+    describe('When applyChangeset runs', () => {
+      it('Then throws INVALID_INDEX_ENTRY with the gitmodules-not-regular reason', async () => {
+        // Arrange — CVE-2018-11235 hardening on the checkout write path.
+        const ctx = await buildSeededContext();
+        const oldId = await writeBlob(ctx, new TextEncoder().encode('[submodule]'));
+        const newId = await writeBlob(ctx, new TextEncoder().encode('../outside'));
+
+        // Act
+        let caught: unknown;
+        try {
+          await applyChangeset(ctx, {
+            changeset: makeChangeset([makeUpdate('.gitmodules', oldId, newId, FILE_MODE.SYMLINK)]),
+            force: false,
+            workdir: WORKDIR,
+          });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data;
+        expect(data).toEqual({
+          code: 'INVALID_INDEX_ENTRY',
+          offset: -1,
+          reason: "'.gitmodules' must not be a symlink",
+        });
+      });
+    });
+  });
 });

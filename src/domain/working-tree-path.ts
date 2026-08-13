@@ -1,13 +1,10 @@
 import { pathspecOutsideRepo } from './commands/error.js';
 import type { FilePath } from './objects/object-id.js';
+import { isDotGitAlias } from './path/verify-path.js';
 
 const MAX_PATH_BYTES = 4096;
 const MAX_COMPONENT_BYTES = 255;
 const PATH_ENCODER = new TextEncoder();
-
-// `.git` reject is enforced via the regex strip in isForbiddenGitComponent
-// below; the explicit set carries only the canonical literal for clarity.
-const GIT_FORBIDDEN: ReadonlySet<string> = new Set(['.git']);
 
 /**
  * Validate a working-tree path. Throws `PATHSPEC_OUTSIDE_REPO` for any policy
@@ -20,9 +17,8 @@ const GIT_FORBIDDEN: ReadonlySet<string> = new Set(['.git']);
  * - No NUL bytes.
  * - Components allowed-char set: no control characters (0x00-0x1F, 0x7F).
  * - No `.` or `..` components, no empty components.
- * - No `.git` component (case-insensitive). Also rejects NTFS quirks
- *   `.git ` (trailing space), `.git.` (trailing dot), and other prefix-of-`.git`
- *   variants.
+ * - No `.git` component, or one of its NTFS (`git~1`, `.git:`-stream) /
+ *   HFS+ (ignorable-codepoint) aliases — see `isDotGitAlias`.
  * - Length caps: total path ≤ 4096 bytes; each component ≤ 255 bytes.
  */
 export const validateWorkingTreePath = (input: string): FilePath => {
@@ -41,22 +37,6 @@ export const validateWorkingTreePath = (input: string): FilePath => {
   return input as FilePath;
 };
 
-/**
- * True if `component` is `.git` or one of its NTFS-stripped variants
- * (case-insensitive, trailing-dot/space-trimmed). Used by the working-tree
- * walker to skip the host repo's metadata directory and by the path
- * validator to reject paths that would traverse into it.
- */
-export const isForbiddenGitComponent = (component: string): boolean => {
-  const lowered = component.toLowerCase();
-  // Stryker disable next-line ConditionalExpression: equivalent — the only member of GIT_FORBIDDEN is '.git', and the trailing-dot/space strip below maps '.git' to itself, so the regex-strip path returns true for exactly the same input.
-  if (GIT_FORBIDDEN.has(lowered)) return true;
-  // NTFS strips trailing spaces/dots — treat any `.git` followed only by
-  // whitespace/dots as `.git` (defensive against future variants).
-  const trimmed = lowered.replace(/[. ]+$/, '');
-  return trimmed === '.git';
-};
-
 const reject = (input: string): never => {
   throw pathspecOutsideRepo(input as FilePath);
 };
@@ -65,7 +45,7 @@ const rejectComponent = (component: string, original: string): void => {
   if (component === '') reject(original); // empty component → trailing slash or // sequence.
   if (component === '.' || component === '..') reject(original);
   if (byteLength(component) > MAX_COMPONENT_BYTES) reject(original);
-  if (isForbiddenGitComponent(component)) reject(original);
+  if (isDotGitAlias(component)) reject(original);
   // Reject `:` to block NTFS Alternate Data Streams (`.git:$DATA`) and
   // Windows drive-letter qualifiers (`C:relative`). POSIX paths never need `:`.
   if (component.includes(':')) reject(original);

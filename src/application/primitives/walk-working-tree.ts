@@ -2,10 +2,8 @@ import { MAX_FLAT_TREE_ENTRIES } from '../../domain/diff/index.js';
 import { operationAborted } from '../../domain/error.js';
 import { treeDepthExceeded, treeEntryLimitExceeded } from '../../domain/objects/error.js';
 import type { FilePath } from '../../domain/objects/object-id.js';
-import {
-  isForbiddenGitComponent,
-  validateWorkingTreePath,
-} from '../../domain/working-tree-path.js';
+import { isDotGitAlias } from '../../domain/path/verify-path.js';
+import { validateWorkingTreePath } from '../../domain/working-tree-path.js';
 import type { Context } from '../../ports/context.js';
 import { joinPathSegment } from './internal/join-path-segment.js';
 import { joinPath } from './internal/join-working-tree-path.js';
@@ -64,12 +62,12 @@ async function* walkInternal(
   // Embedded-repo gate: a non-root directory containing a `.git`
   // DIRECTORY (or a `.git` regular file pointing at a worktree gitdir)
   // is treated as an embedded clone and yields nothing. A spurious
-  // file literally named `.git` is filtered by `isForbiddenGitComponent`
+  // file literally named `.git` is filtered by `isDotGitAlias`
   // below but must NOT collapse the parent directory.
   if (!isRoot && entries.some(isEmbeddedGitMarker)) return;
   for (const entry of entries) {
     if (config.ctx.signal?.aborted) throw operationAborted();
-    if (isForbiddenGitComponent(entry.name)) continue;
+    if (isDotGitAlias(entry.name)) continue;
     yield* visitEntry(config, counter, prefix, depth, entry);
   }
 }
@@ -113,7 +111,7 @@ const isEmbeddedGitMarker = (entry: {
   readonly isDirectory: boolean;
   readonly isSymbolicLink: boolean;
 }): boolean => {
-  if (!isForbiddenGitComponent(entry.name)) return false;
+  if (!isDotGitAlias(entry.name)) return false;
   // A `.git` directory marks an embedded clone. A `.git` regular file is
   // git's worktree-pointer (`gitdir: /path/to/.git/worktrees/...`) — also
   // an embedded checkout. Symlinks are NOT treated as markers because the
