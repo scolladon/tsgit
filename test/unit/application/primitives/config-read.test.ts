@@ -5102,39 +5102,43 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
 
   describe('parseGitBoolean grammar (Pin K)', () => {
     describe('Given a case-insensitive true word', () => {
-      it.each([
-        { value: 'true', label: 'true' },
-        { value: 'TRUE', label: 'TRUE' },
-        { value: 'TrUe', label: 'TrUe' },
-        { value: 'yes', label: 'yes' },
-        { value: 'Yes', label: 'Yes' },
-        { value: 'yEs', label: 'yEs' },
-        { value: 'on', label: 'on' },
-        { value: 'ON', label: 'ON' },
-      ])('Then parseGitBoolean($label) is { ok: true, value: true }', ({ value }) => {
-        // Arrange & Act
-        const result = parseGitBoolean(value);
+      describe('When parseGitBoolean', () => {
+        it.each([
+          { value: 'true', label: 'true' },
+          { value: 'TRUE', label: 'TRUE' },
+          { value: 'TrUe', label: 'TrUe' },
+          { value: 'yes', label: 'yes' },
+          { value: 'Yes', label: 'Yes' },
+          { value: 'yEs', label: 'yEs' },
+          { value: 'on', label: 'on' },
+          { value: 'ON', label: 'ON' },
+        ])('Then parseGitBoolean($label) is { ok: true, value: true }', ({ value }) => {
+          // Arrange & Act
+          const result = parseGitBoolean(value);
 
-        // Assert
-        expect(result).toStrictEqual({ ok: true, value: true });
+          // Assert
+          expect(result).toStrictEqual({ ok: true, value: true });
+        });
       });
     });
 
     describe('Given a case-insensitive false word', () => {
-      it.each([
-        { value: 'false', label: 'false' },
-        { value: 'FALSE', label: 'FALSE' },
-        { value: 'no', label: 'no' },
-        { value: 'No', label: 'No' },
-        { value: 'off', label: 'off' },
-        { value: 'OFF', label: 'OFF' },
-        { value: 'oFf', label: 'oFf' },
-      ])('Then parseGitBoolean($label) is { ok: true, value: false }', ({ value }) => {
-        // Arrange & Act
-        const result = parseGitBoolean(value);
+      describe('When parseGitBoolean', () => {
+        it.each([
+          { value: 'false', label: 'false' },
+          { value: 'FALSE', label: 'FALSE' },
+          { value: 'no', label: 'no' },
+          { value: 'No', label: 'No' },
+          { value: 'off', label: 'off' },
+          { value: 'OFF', label: 'OFF' },
+          { value: 'oFf', label: 'oFf' },
+        ])('Then parseGitBoolean($label) is { ok: true, value: false }', ({ value }) => {
+          // Arrange & Act
+          const result = parseGitBoolean(value);
 
-        // Assert
-        expect(result).toStrictEqual({ ok: true, value: false });
+          // Assert
+          expect(result).toStrictEqual({ ok: true, value: false });
+        });
       });
     });
 
@@ -5175,72 +5179,80 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
     });
 
     describe('Given an integer-arm value git accepts as true', () => {
-      it.each([
-        { value: '1', label: '1' },
-        { value: '2', label: '2' },
-        { value: '-1', label: '-1' },
-        { value: '+1', label: '+1' },
-        { value: '007', label: '007 (octal 7)' },
-        { value: '0x1', label: '0x1' },
-        { value: '0x7fffffff', label: '0x7fffffff (INT_MAX in hex)' },
-        { value: '1k', label: '1k' },
-        { value: '1K', label: '1K' },
-        { value: '1m', label: '1m' },
-        { value: '1M', label: '1M' },
-        { value: '1g', label: '1g' },
-        { value: '1G', label: '1G' },
-        { value: '2147483647', label: '2147483647 (INT_MAX, boundary)' },
-        { value: '-2147483648', label: '-2147483648 (INT_MIN, boundary)' },
-      ])('Then parseGitBoolean($label) is { ok: true, value: true }', ({ value }) => {
-        // Arrange & Act
-        const result = parseGitBoolean(value);
+      describe('When parseGitBoolean', () => {
+        it.each([
+          { value: '1', label: '1' },
+          { value: '2', label: '2' },
+          { value: '-1', label: '-1' },
+          { value: '+1', label: '+1' },
+          { value: '007', label: '007 (octal 7)' },
+          { value: '0x1', label: '0x1' },
+          { value: '0x7fffffff', label: '0x7fffffff (INT_MAX in hex)' },
+          { value: '1k', label: '1k' },
+          { value: '1K', label: '1K' },
+          { value: '1m', label: '1m' },
+          { value: '1M', label: '1M' },
+          { value: '1g', label: '1g' },
+          { value: '1G', label: '1G' },
+          { value: '2147483647', label: '2147483647 (INT_MAX, boundary)' },
+          { value: '-2147483648', label: '-2147483648 (INT_MIN, boundary)' },
+        ])('Then parseGitBoolean($label) is { ok: true, value: true }', ({ value }) => {
+          // Arrange & Act
+          const result = parseGitBoolean(value);
 
-        // Assert
-        expect(result).toStrictEqual({ ok: true, value: true });
+          // Assert
+          expect(result).toStrictEqual({ ok: true, value: true });
+        });
       });
     });
 
     describe('Given an integer-arm value git accepts as false (zero in every radix)', () => {
-      it.each([
-        { value: '0', label: '0' },
-        { value: '00', label: '00' },
-        { value: '0x0', label: '0x0' },
-        { value: '0k', label: '0k' },
-      ])('Then parseGitBoolean($label) is { ok: true, value: false }', ({ value }) => {
-        // Arrange & Act
-        const result = parseGitBoolean(value);
+      describe('When parseGitBoolean', () => {
+        it.each([
+          { value: '0', label: '0' },
+          { value: '00', label: '00' },
+          { value: '0x0', label: '0x0' },
+          { value: '0k', label: '0k' },
+        ])('Then parseGitBoolean($label) is { ok: true, value: false }', ({ value }) => {
+          // Arrange & Act
+          const result = parseGitBoolean(value);
 
-        // Assert
-        expect(result).toStrictEqual({ ok: true, value: false });
+          // Assert
+          expect(result).toStrictEqual({ ok: true, value: false });
+        });
       });
     });
 
     describe('Given an integer-arm value that overflows the C int range', () => {
-      it.each([
-        { value: '2147483648', label: '2147483648 (one past INT_MAX)' },
-        { value: '-2147483649', label: '-2147483649 (one past INT_MIN)' },
-        { value: '0x80000000', label: '0x80000000 (same overflow, hex)' },
-        { value: '2g', label: '2g (same overflow, scaled)' },
-      ])('Then parseGitBoolean($label) refuses', ({ value }) => {
-        // Arrange & Act
-        const result = parseGitBoolean(value);
+      describe('When parseGitBoolean', () => {
+        it.each([
+          { value: '2147483648', label: '2147483648 (one past INT_MAX)' },
+          { value: '-2147483649', label: '-2147483649 (one past INT_MIN)' },
+          { value: '0x80000000', label: '0x80000000 (same overflow, hex)' },
+          { value: '2g', label: '2g (same overflow, scaled)' },
+        ])('Then parseGitBoolean($label) refuses', ({ value }) => {
+          // Arrange & Act
+          const result = parseGitBoolean(value);
 
-        // Assert
-        expect(result).toStrictEqual({ ok: false });
+          // Assert
+          expect(result).toStrictEqual({ ok: false });
+        });
       });
     });
 
     describe('Given a value that is neither a word nor an integer', () => {
-      it.each([
-        { value: 'maybe', label: 'maybe' },
-        { value: 'truthy', label: 'truthy' },
-        { value: '1.0', label: '1.0' },
-      ])('Then parseGitBoolean($label) refuses', ({ value }) => {
-        // Arrange & Act
-        const result = parseGitBoolean(value);
+      describe('When parseGitBoolean', () => {
+        it.each([
+          { value: 'maybe', label: 'maybe' },
+          { value: 'truthy', label: 'truthy' },
+          { value: '1.0', label: '1.0' },
+        ])('Then parseGitBoolean($label) refuses', ({ value }) => {
+          // Arrange & Act
+          const result = parseGitBoolean(value);
 
-        // Assert
-        expect(result).toStrictEqual({ ok: false });
+          // Assert
+          expect(result).toStrictEqual({ ok: false });
+        });
       });
     });
   });

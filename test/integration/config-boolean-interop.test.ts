@@ -106,12 +106,12 @@ describe.skipIf(!GIT_AVAILABLE)('config boolean refusal tier interop', () => {
   const writeConfig = (content: string): Promise<void> =>
     writeFile(path.join(ours, '.git', 'config'), content);
 
-  describe('X11 — core.bare = maybe (T1)', () => {
+  describe('Given X11 — core.bare = maybe (T1)', () => {
     beforeEach(() => writeConfig('[core]\n\trepositoryformatversion = 0\n\tbare = maybe\n'));
 
     describe('When git status and tsgit status run', () => {
       it('Then both refuse with exit 128 / CONFIG_BAD_BOOLEAN_VALUE naming core.bare', async () => {
-        // Act
+        // Arrange & Act — armed in beforeEach
         const g = tryRunGit(['-C', ours, 'status'], { env: runGitEnv() });
         const caught = await withRepo(ours, (repo) => captureThrow(() => repo.status()));
 
@@ -128,7 +128,7 @@ describe.skipIf(!GIT_AVAILABLE)('config boolean refusal tier interop', () => {
 
     describe('When git config --list and tsgit config porcelain run', () => {
       it('Then both ALSO refuse — T1 kills the config porcelain too', async () => {
-        // Act
+        // Arrange & Act — armed in beforeEach
         const g = tryRunGit(['-C', ours, 'config', '--list'], { env: runGitEnv() });
         const gGet = tryRunGit(['-C', ours, 'config', '--get', 'core.bare'], { env: runGitEnv() });
         const caughtList = await withRepo(ours, (repo) => captureThrow(() => repo.config.list()));
@@ -146,14 +146,14 @@ describe.skipIf(!GIT_AVAILABLE)('config boolean refusal tier interop', () => {
     });
   });
 
-  describe('X12 — core.sparseCheckout = maybe (T2)', () => {
+  describe('Given X12 — core.sparseCheckout = maybe (T2)', () => {
     beforeEach(() =>
       writeConfig('[core]\n\trepositoryformatversion = 0\n\tsparseCheckout = maybe\n'),
     );
 
     describe('When git status and tsgit status run', () => {
       it('Then both refuse with exit 128 / CONFIG_BAD_BOOLEAN_VALUE naming core.sparsecheckout', async () => {
-        // Act
+        // Arrange & Act — armed in beforeEach
         const g = tryRunGit(['-C', ours, 'status'], { env: runGitEnv() });
         const caught = await withRepo(ours, (repo) => captureThrow(() => repo.status()));
 
@@ -169,7 +169,7 @@ describe.skipIf(!GIT_AVAILABLE)('config boolean refusal tier interop', () => {
 
     describe('When git config --get and tsgit config porcelain run', () => {
       it('Then both STILL succeed — the porcelain survives the T2 boundary', async () => {
-        // Act
+        // Arrange & Act — armed in beforeEach
         const g = tryRunGit(['-C', ours, 'config', '--get', 'core.sparsecheckout'], {
           env: runGitEnv(),
         });
@@ -186,7 +186,7 @@ describe.skipIf(!GIT_AVAILABLE)('config boolean refusal tier interop', () => {
     });
   });
 
-  describe('X13 — commit.gpgSign = maybe (T3)', () => {
+  describe('Given X13 — commit.gpgSign = maybe (T3)', () => {
     const USER_CONFIG = '[user]\n\tname = Ada\n\temail = ada@example.com\n';
 
     beforeEach(async () => {
@@ -204,7 +204,7 @@ describe.skipIf(!GIT_AVAILABLE)('config boolean refusal tier interop', () => {
 
     describe('When git commit and tsgit commit run', () => {
       it('Then both refuse with exit 128 / CONFIG_BAD_BOOLEAN_VALUE naming commit.gpgsign', async () => {
-        // Act
+        // Arrange & Act — armed in beforeEach
         const g = tryRunGit(['-C', ours, 'commit', '-q', '-m', 'second'], { env: runGitEnv() });
         const caught = await withRepo(ours, (repo) =>
           captureThrow(() => repo.commit({ message: 'second' })),
@@ -222,7 +222,7 @@ describe.skipIf(!GIT_AVAILABLE)('config boolean refusal tier interop', () => {
 
     describe('When git status/log and tsgit status/log run', () => {
       it('Then neither refuses — commit.gpgsign is T3, unrelated commands must not refuse', async () => {
-        // Act
+        // Arrange & Act — armed in beforeEach
         const gStatus = tryRunGit(['-C', ours, 'status', '--porcelain'], { env: runGitEnv() });
         const gLog = tryRunGit(['-C', ours, 'log', '--oneline'], { env: runGitEnv() });
         const statusCaught = await withRepo(ours, (repo) => captureThrow(() => repo.status()));
@@ -238,12 +238,12 @@ describe.skipIf(!GIT_AVAILABLE)('config boolean refusal tier interop', () => {
     });
   });
 
-  describe('X14 — core.bare = 2 (accepted integer)', () => {
+  describe('Given X14 — core.bare = 2 (accepted integer)', () => {
     beforeEach(() => writeConfig('[core]\n\trepositoryformatversion = 0\n\tbare = 2\n'));
 
     describe('When git add and tsgit add run', () => {
       it('Then neither refuses the value — both now report the repository as bare', async () => {
-        // Act
+        // Arrange & Act — armed in beforeEach
         const g = tryRunGit(['-C', ours, 'add', 'nope.txt'], { env: runGitEnv() });
         const caught = await withRepo(ours, (repo) => captureThrow(() => repo.add(['nope.txt'])));
 
@@ -259,7 +259,7 @@ describe.skipIf(!GIT_AVAILABLE)('config boolean refusal tier interop', () => {
     });
   });
 
-  describe('X15 — push.gpgSign = maybe (T3, distinct message)', () => {
+  describe('Given X15 — push.gpgSign = maybe (T3, distinct message)', () => {
     beforeEach(async () => {
       await writeConfig(
         '[user]\n\tname = Ada\n\temail = ada@example.com\n' +
@@ -274,7 +274,7 @@ describe.skipIf(!GIT_AVAILABLE)('config boolean refusal tier interop', () => {
 
     describe('When git push and tsgit push run', () => {
       it('Then both refuse — git with "invalid value for \'push.gpgsign\'", tsgit with CONFIG_BAD_BOOLEAN_LITERAL', async () => {
-        // Act
+        // Arrange & Act — armed in beforeEach
         const g = tryRunGit(['-C', ours, 'push', 'origin', 'main'], { env: runGitEnv() });
         const repo = await openRepository({
           cwd: ours,
@@ -300,7 +300,7 @@ describe.skipIf(!GIT_AVAILABLE)('config boolean refusal tier interop', () => {
 
     describe('When git status and tsgit status run', () => {
       it('Then neither refuses — push.gpgsign is T3, status must not refuse', async () => {
-        // Act
+        // Arrange & Act — armed in beforeEach
         const g = tryRunGit(['-C', ours, 'status', '--porcelain'], { env: runGitEnv() });
         const caught = await withRepo(ours, (repo) => captureThrow(() => repo.status()));
 
