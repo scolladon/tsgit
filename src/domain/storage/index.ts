@@ -65,6 +65,7 @@ export {
   objectIdAt,
   parsePackIndex,
 } from './pack-index.js';
+export { type SortedEntry, sortPackIndexEntries } from './pack-order.js';
 // Pack writer
 export type {
   PackEntryMeta,

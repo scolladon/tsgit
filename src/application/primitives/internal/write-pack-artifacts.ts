@@ -15,8 +15,10 @@
 import { hexToBytes } from '../../../domain/objects/encoding.js';
 import {
   type PackIndexWriterEntry,
+  type SortedEntry,
   serializePackIndex,
   serializePackRevIndex,
+  sortPackIndexEntries,
 } from '../../../domain/storage/index.js';
 import type { Context } from '../../../ports/context.js';
 import { readConfig } from '../config-read.js';
@@ -26,14 +28,10 @@ export const buildIdx = async (
   ctx: Context,
   entries: ReadonlyArray<PackIndexWriterEntry>,
   packSha: string,
+  presorted?: ReadonlyArray<SortedEntry>,
 ): Promise<Uint8Array> => {
-  const writerEntries: PackIndexWriterEntry[] = entries.map((e) => ({
-    id: e.id,
-    crc32: e.crc32,
-    offset: e.offset,
-  }));
   const packShaBytes = hexToBytes(packSha);
-  const body = serializePackIndex(writerEntries, packShaBytes);
+  const body = serializePackIndex(entries, packShaBytes, presorted);
   // serializePackIndex writes the pack trailer SHA as the file's first checksum
   // (20 bytes at the tail of `body`); parsePackIndex expects a second checksum
   // immediately after — the SHA over the body itself. Real git produces both;
@@ -56,9 +54,10 @@ export const buildRev = async (
   ctx: Context,
   entries: ReadonlyArray<PackIndexWriterEntry>,
   packSha: string,
+  presorted?: ReadonlyArray<SortedEntry>,
 ): Promise<Uint8Array> => {
   const packChecksum = hexToBytes(packSha);
-  const bytes = serializePackRevIndex(entries, packChecksum);
+  const bytes = serializePackRevIndex(entries, packChecksum, presorted);
   // The trailer offset derives from the SAME width the serializer sized the
   // file with (`packChecksum.length`), never from `ctx.hash.digestLength` —
   // one width source, so a hash/pack width disagreement overflows loudly in
@@ -123,8 +122,9 @@ const writeRevArtifact = async (
   path: string,
   entries: ReadonlyArray<PackIndexWriterEntry>,
   packSha: string,
+  presorted: ReadonlyArray<SortedEntry>,
 ): Promise<void> => {
-  const revBytes = await buildRev(ctx, entries, packSha);
+  const revBytes = await buildRev(ctx, entries, packSha, presorted);
   await ctx.fs.writeExclusive(path, revBytes);
 };
 
@@ -144,11 +144,14 @@ export const writePackArtifacts = async (
   const wantRev = await writeReverseIndex(ctx);
   const paths = artifactPaths(input.packDir, input.packSha);
   await ctx.fs.mkdir(input.packDir);
-  const idxBytes = await buildIdx(ctx, input.entries, input.packSha);
+  // One oid sort per pack write, shared by the `.idx` and `.rev` serializers —
+  // the sort is the most expensive step of either artefact's assembly.
+  const sorted = sortPackIndexEntries(input.entries);
+  const idxBytes = await buildIdx(ctx, input.entries, input.packSha, sorted);
   await ctx.fs.writeExclusive(paths.packPath, input.packBytes);
   await ctx.fs.writeExclusive(paths.idxPath, idxBytes);
   if (input.promisor) await writeEmptySentinel(ctx, paths.promisorPath);
-  if (wantRev) await writeRevArtifact(ctx, paths.revPath, input.entries, input.packSha);
+  if (wantRev) await writeRevArtifact(ctx, paths.revPath, input.entries, input.packSha, sorted);
   return {
     packPath: paths.packPath,
     idxPath: paths.idxPath,
