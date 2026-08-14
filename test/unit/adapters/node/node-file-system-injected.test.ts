@@ -512,6 +512,68 @@ describe('NodeFileSystem — canonical-root cache (DI)', () => {
   });
 });
 
+describe('NodeFileSystem.resolveWrite — settled root-set fast path (DI)', () => {
+  // `resolveWrite` reads `this.resolvedRootSet ?? (await this.loadRootSet())`
+  // directly — the same idiom every read surface already used — instead of
+  // going through a `private async resolveRootSet()` wrapper that allocated
+  // a promise on every call even once the root set had settled. A raw call
+  // count on `realpath(rootDir)` can't distinguish the two implementations
+  // (both memoise the canonicalising `realpath` itself); what's pinned here
+  // is the observable contract: the very first write still lazily resolves
+  // the root set, every later write reuses it, and the loader underneath
+  // runs exactly once regardless of how many writes follow.
+  describe('Given a fresh adapter', () => {
+    describe('When the first write fires', () => {
+      it('Then it still resolves the root set and succeeds (lazy-load path)', async () => {
+        // Arrange
+        const rootDir = '/root';
+        const writeFile = vi.fn().mockResolvedValue(undefined);
+        const fsOps = fakeFsOps({
+          realpath: vi.fn().mockImplementation(async (input: string) => input),
+          writeFile,
+        });
+        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+
+        // Act
+        await sut.write('/root/first.bin', new Uint8Array([1]));
+
+        // Assert
+        expect(writeFile).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
+
+  describe('Given N writes from a fresh adapter', () => {
+    describe('When they fire in sequence', () => {
+      it('Then every write succeeds and the root-set loader (realpath(rootDir)) runs exactly once', async () => {
+        // Arrange
+        const rootDir = '/root';
+        const writeFile = vi.fn().mockResolvedValue(undefined);
+        const realpathSpy = vi.fn().mockImplementation(async (input: string) => input);
+        const fsOps = fakeFsOps({ realpath: realpathSpy, writeFile });
+        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+        const writeCount = 5;
+
+        // Act — first write hits the lazy-load arm, the rest hit the
+        // settled fast arm. Targets sit under `/root/sub` (not `/root`
+        // itself) so the root-set canonicalisation's `realpath(rootDir)`
+        // stays distinct from the separate parent-realpath cache's own
+        // `realpath('/root/sub')` lookups.
+        for (let i = 0; i < writeCount; i += 1) {
+          await sut.write(`/root/sub/leaf-${i}.bin`, new Uint8Array([i]));
+        }
+
+        // Assert
+        expect(writeFile).toHaveBeenCalledTimes(writeCount);
+        const rootCalls = realpathSpy.mock.calls.filter(
+          ([arg]: readonly unknown[]) => arg === rootDir,
+        );
+        expect(rootCalls.length).toBe(1);
+      });
+    });
+  });
+});
+
 describe('NodeFileSystem — guarded canonical-root await, first-call resolution (DI)', () => {
   describe('Given a fresh adapter', () => {
     describe('When the first FS op is a read (resolveRead)', () => {
@@ -1538,6 +1600,78 @@ describe('NodeFileSystem — write guard parent-realpath LRU (DI)', () => {
           ([arg]: readonly unknown[]) => arg === fanoutDir(1),
         );
         expect(dir1Calls.length).toBe(1);
+      });
+    });
+  });
+});
+
+describe('NodeFileSystem.rename — parent-realpath cache invalidation soundness (DI)', () => {
+  // `rename` clears the whole `parentRealpathCache` rather than narrowing to
+  // `dirname(src)`/`dirname(dst)`: `src` can itself be a directory
+  // (`worktree move`, `git mv` on a directory), so a cached entry keyed AT
+  // `src`/`dst` or nested under either would go stale if only the two
+  // dirnames were evicted. These tests pin that soundness call, not just
+  // the raw "does `rename` invalidate something" behaviour already covered
+  // by the parent-realpath LRU suite above.
+
+  describe('Given cached parent-realpath entries for both rename endpoints` own directories', () => {
+    describe('When rename fires', () => {
+      it('Then both dirname(src) and dirname(dst) are evicted (re-realpathed on the next write)', async () => {
+        // Arrange — seed the cache for `/root/a` (dirname(src)) and
+        // `/root/b` (dirname(dst)) via an unrelated sibling write in each.
+        const rootDir = '/root';
+        const realpathSpy = vi.fn().mockImplementation(async (input: string) => input);
+        const fsOps = fakeFsOps({ realpath: realpathSpy });
+        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+        await sut.rm('/root/a/sibling');
+        await sut.rm('/root/b/sibling');
+        realpathSpy.mockClear();
+
+        // Act
+        await sut.rename('/root/a/x', '/root/b/y');
+        await sut.rm('/root/a/another');
+        await sut.rm('/root/b/another');
+
+        // Assert — both dirs are re-realpathed after the rename: the cache
+        // no longer serves the pre-rename entries.
+        const aCalls = realpathSpy.mock.calls.filter(
+          ([arg]: readonly unknown[]) => arg === '/root/a',
+        );
+        const bCalls = realpathSpy.mock.calls.filter(
+          ([arg]: readonly unknown[]) => arg === '/root/b',
+        );
+        expect(aCalls.length).toBeGreaterThanOrEqual(1);
+        expect(bCalls.length).toBeGreaterThanOrEqual(1);
+      });
+    });
+  });
+
+  describe('Given a cached parent-realpath entry NESTED under the rename source (a subtree move)', () => {
+    describe('When rename fires', () => {
+      it('Then the nested entry is also evicted, not left stale', async () => {
+        // Arrange — `/root/olddir` is the rename source itself (e.g. a
+        // `worktree move`); `/root/olddir/nested` was cached as a parent by
+        // an earlier write two levels below the source. A `dirname(src)`
+        // /`dirname(dst)`-only invalidation would miss this key entirely
+        // (`dirname('/root/olddir/x') !== '/root/olddir'`), leaving it
+        // stale after the whole subtree moved.
+        const rootDir = '/root';
+        const realpathSpy = vi.fn().mockImplementation(async (input: string) => input);
+        const fsOps = fakeFsOps({ realpath: realpathSpy });
+        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+        await sut.rm('/root/olddir/nested/leaf');
+        realpathSpy.mockClear();
+
+        // Act
+        await sut.rename('/root/olddir', '/root/newdir');
+        await sut.rm('/root/olddir/nested/leaf-again');
+
+        // Assert — the nested entry is re-realpathed, proving it was
+        // invalidated by the rename rather than served stale from cache.
+        const nestedCalls = realpathSpy.mock.calls.filter(
+          ([arg]: readonly unknown[]) => arg === '/root/olddir/nested',
+        );
+        expect(nestedCalls.length).toBeGreaterThanOrEqual(1);
       });
     });
   });

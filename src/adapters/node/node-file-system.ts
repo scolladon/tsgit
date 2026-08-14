@@ -407,9 +407,18 @@ export class NodeFileSystem implements FileSystem {
    *   cached realpath shares one root set.
    * - Only EXISTING parents are cached. ENOENT walks fall back to
    *   `realpathNearestExisting` and are never recorded.
-   * - `rmRecursive` and `rename` clear the cache (the parent realpath may
-   *   have changed), which is cheap relative to a re-walk. `rm` clears
-   *   nothing — a leaf removal does not change the parent's realpath.
+   * - `rmRecursive` and `rename` clear the cache, which is cheap relative to
+   *   a re-walk. `rm` clears nothing — a leaf removal does not change the
+   *   parent's realpath. `rename` in particular cannot narrow this to just
+   *   `dirname(src)`/`dirname(dst)`: `src` is a legitimate `rename` argument
+   *   for a whole directory (`worktree move`, `git mv` on a directory), and
+   *   every cached entry keyed AT `src`/`dst` or NESTED under either (a
+   *   directory that was itself used as a parent for a deeper write) goes
+   *   stale the moment the subtree moves. Pruning exactly those entries
+   *   would need to enumerate this cache's keys by prefix — a capability
+   *   this LRU cache (shared, and public, across unrelated callers: the
+   *   delta-base and bitmap-reconstruction caches) intentionally does not
+   *   expose. `clear()` stays the sound choice here.
    * - Sized to exceed the 256 loose-object fanout directories so a
    *   full-history walk does not thrash the cache.
    */
@@ -526,23 +535,6 @@ export class NodeFileSystem implements FileSystem {
         });
     }
     return this.rootSetPromise;
-  }
-
-  /**
-   * Synchronous-first-path accessor for the roots: returns the
-   * already-settled `resolvedRootSet` field when populated (no `await`, no
-   * microtask), falling back to `loadRootSet()` only on the first call or
-   * after a rejection cleared the field. Used by
-   * every hot-path call site (`resolveWrite`, `exists`, `symlink`)
-   * instead of an unconditional `await this.loadRootSet()`.
-   */
-  private async resolveRootSet(): Promise<RootSet> {
-    let rootSet = this.resolvedRootSet;
-    // Stryker disable next-line ConditionalExpression: equivalent — when `resolvedRootSet` is already set, `loadRootSet()` returns the memoised promise resolving to that same `RootSet` (set in lockstep in its resolve arm, cleared with the promise on rejection), so forcing this guard true reassigns the identical value with no extra `realpath`; only the await fast-path is dropped.
-    if (rootSet === undefined) {
-      rootSet = await this.loadRootSet();
-    }
-    return rootSet;
   }
 
   read = async (path: string): Promise<Uint8Array> => {
@@ -700,6 +692,9 @@ export class NodeFileSystem implements FileSystem {
       await this.fsOps.mkdir(this.pathPolicy.dirname(realDst), { recursive: true });
       await this.fsOps.rename(realSrc, realDst);
     }, src);
+    // Deliberately a full clear, not a `dirname(src)`/`dirname(dst)`-scoped
+    // delete — see `parentRealpathCache`'s field doc for why a directory
+    // rename makes that narrowing unsound.
     this.parentRealpathCache.clear();
   };
 
@@ -965,12 +960,13 @@ export class NodeFileSystem implements FileSystem {
     // like-for-like.
     const resolved = this.pathPolicy.resolve(toAbsolute(path, this.rootDir, this.pathPolicy));
     // Every root is constant for the adapter's lifetime; their normalised
-    // raw and canonical prefixes are held as one `RootSet` instance field,
-    // read via `resolveRootSet()` (which skips the `await` entirely once the
-    // set has settled) — so the case-fold allocations AND the canonicalising
-    // microtask on the hot path each run once per adapter lifetime rather
-    // than once per containment check.
-    const { all } = await this.resolveRootSet();
+    // raw and canonical prefixes are held as one `RootSet` instance field.
+    // The same synchronous-first-path idiom as every read surface
+    // (`this.resolvedRootSet ?? await this.loadRootSet()`) reads it directly
+    // once settled, with no `await`/microtask on the write hot path either
+    // — so the case-fold allocations AND the canonicalising microtask each
+    // run once per adapter lifetime rather than once per containment check.
+    const { all } = this.resolvedRootSet ?? (await this.loadRootSet());
     try {
       const real = await this.realpathForCreation(resolved);
       // Containment passes if `real` is inside ANY root, in either its raw
