@@ -24,7 +24,12 @@ import {
   type VerifyPathRejection,
   verifyPath,
 } from '../../../../src/domain/path/verify-path.js';
-import { arbIgnorableCodepoint, arbPathComponent, arbSafeAsciiPath } from './arbitraries.js';
+import {
+  arbComponentPair,
+  arbIgnorableCodepoint,
+  arbSafeAsciiPath,
+  arbStringWithIgnorableCodepoint,
+} from './arbitraries.js';
 
 const TOTAL_FUNCTION_NUM_RUNS = 100;
 const COMPOSITION_NUM_RUNS = 100;
@@ -60,8 +65,10 @@ describe('Given an arbitrary string and file mode', () => {
     it('Then it never throws and always returns a rejection reason or undefined', () => {
       // Arrange + Act + Assert
       fc.assert(
-        fc.property(fc.string(), arbFileMode(), (path, mode) =>
-          isValidRejectionOrUndefined(verifyPath(path, mode)),
+        fc.property(
+          fc.oneof(fc.string(), arbStringWithIgnorableCodepoint()),
+          arbFileMode(),
+          (path, mode) => isValidRejectionOrUndefined(verifyPath(path, mode)),
         ),
         { numRuns: TOTAL_FUNCTION_NUM_RUNS },
       );
@@ -69,12 +76,12 @@ describe('Given an arbitrary string and file mode', () => {
   });
 });
 
-describe('Given two arbitrary non-alias path components', () => {
+describe('Given two arbitrary alias-adjacent path components, neither itself a .git alias', () => {
   describe('When they are joined with a backslash', () => {
     it('Then the joined component is still not a .git alias', () => {
       // Arrange + Act + Assert
       fc.assert(
-        fc.property(arbPathComponent(), arbPathComponent(), (left, right) => {
+        fc.property(arbComponentPair(), ([left, right]) => {
           fc.pre(!isDotGitAlias(left) && !isDotGitAlias(right));
           return !isDotGitAlias(`${left}\\${right}`);
         }),

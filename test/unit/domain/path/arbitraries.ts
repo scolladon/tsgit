@@ -44,3 +44,82 @@ export function arbSafeAsciiPath(): fc.Arbitrary<string> {
     .array(arbPathComponent(), { minLength: MIN_PATH_COMPONENTS, maxLength: MAX_PATH_COMPONENTS })
     .map((parts) => parts.join('/'));
 }
+
+const MIN_NTFS_SUFFIX_DIGITS = 1;
+const MAX_NTFS_SUFFIX_DIGITS = 20;
+
+/**
+ * A path component with a shape structurally adjacent to a `.git` alias —
+ * leading dot, tilde+digits, trailing dot/space, an embedded backslash, or
+ * an exact alias literal — mixed with plain non-alias components. Composition
+ * properties drawing from this (rather than plain lowercase ASCII) actually
+ * exercise `isDotGitAlias`'s alias branch instead of vacuously passing
+ * through components that can never match it.
+ */
+export function arbAliasAdjacentComponent(): fc.Arbitrary<string> {
+  return fc.oneof(
+    arbPathComponent(),
+    arbPathComponent().map((part) => `.${part}`),
+    fc
+      .tuple(
+        arbPathComponent(),
+        fc.integer({ min: MIN_NTFS_SUFFIX_DIGITS, max: MAX_NTFS_SUFFIX_DIGITS }),
+      )
+      .map(([part, digits]) => `${part}~${digits}`),
+    arbPathComponent().map((part) => `${part}.`),
+    arbPathComponent().map((part) => `${part} `),
+    fc.tuple(arbPathComponent(), arbPathComponent()).map(([left, right]) => `${left}\\${right}`),
+    fc.constantFrom('.git', 'git~1', '.git:x', '.GIT'),
+  );
+}
+
+/**
+ * A string with a codepoint from the closed HFS ignorable set spliced in at
+ * a random position. Plain `fc.string()` (fast-check's default grapheme-ascii
+ * charset) never draws one of these codepoints, so totality properties over
+ * bare `fc.string()` alone never exercise the ignorable-codepoint strip arm.
+ */
+export function arbStringWithIgnorableCodepoint(): fc.Arbitrary<string> {
+  return fc
+    .tuple(fc.string(), arbIgnorableCodepoint(), fc.nat())
+    .map(([base, codepoint, offset]) => {
+      const insertion = String.fromCodePoint(codepoint);
+      const index = offset % (base.length + 1);
+      return `${base.slice(0, index)}${insertion}${base.slice(index)}`;
+    });
+}
+
+const ALIAS_LITERALS = ['.git', 'git~1', '.git:x', '.GIT'] as const;
+
+/**
+ * A `.git`-alias-family literal cut at a random interior index into two
+ * fragments. Neither fragment is itself an alias, but their backslash-free
+ * concatenation reconstructs the literal exactly — the precise shape a
+ * mutant that drops the backslash separator (instead of splitting on it)
+ * would mis-detect as an alias. Composing this with an explicit backslash
+ * must stay accepted; without one of these pairs, a composition property
+ * built only from unrelated random components essentially never lands on a
+ * concatenation that happens to equal an alias literal.
+ */
+function arbAliasSplitPair(): fc.Arbitrary<readonly [string, string]> {
+  return fc
+    .constantFrom(...ALIAS_LITERALS)
+    .chain((alias) =>
+      fc.integer({ min: 1, max: alias.length - 1 }).map((cut) => [alias, cut] as const),
+    )
+    .map(([alias, cut]) => [alias.slice(0, cut), alias.slice(cut)] as const);
+}
+
+/**
+ * A pair of components for the backslash-composition property: usually two
+ * independent alias-adjacent components, occasionally a deliberately-split
+ * alias-literal pair — so the property both filters via `fc.pre` (some draws
+ * are, or reconstitute, a real alias) and can fail if the backslash split
+ * regresses to a naive concatenation.
+ */
+export function arbComponentPair(): fc.Arbitrary<readonly [string, string]> {
+  return fc.oneof(
+    fc.tuple(arbAliasAdjacentComponent(), arbAliasAdjacentComponent()),
+    arbAliasSplitPair(),
+  );
+}
