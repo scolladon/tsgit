@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { clone } from '../../../../src/application/commands/clone.js';
 import { submoduleUpdate } from '../../../../src/application/commands/submodule.js';
-import { readConfig } from '../../../../src/application/primitives/config-read.js';
+import {
+  __resetConfigCacheForTests,
+  readConfig,
+} from '../../../../src/application/primitives/config-read.js';
 import { acquireIndexLock } from '../../../../src/application/primitives/internal/index-lock.js';
 import { deriveSubmoduleCloneContext } from '../../../../src/application/primitives/internal/submodule-context.js';
 import { materializeWorktreeFromHead } from '../../../../src/application/primitives/materialize-worktree-from-head.js';
@@ -126,6 +129,25 @@ describe('Given a superproject pinning a registered submodule', () => {
       expect(result.entries[0]).toMatchObject({ cloned: true, changed: true, mode: 'checkout' });
       expect(result.entries[0]?.id).toBe(pinned);
       expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/lib/lib.txt`)).toBe('lib v1\n');
+    });
+
+    it('Then a subsectionless [submodule] active does NOT refuse — only the per-instance form can', async () => {
+      // Arrange — mirrors submoduleList's sibling test: git ignores the
+      // subsectionless `[submodule] active` form, only `submodule.<n>.active`
+      // can refuse. Appended after seedSuper's own config write.
+      const { ctx } = await seedSuper({ register: true });
+      const existingConfig = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+      await ctx.fs.writeUtf8(
+        `${ctx.layout.gitDir}/config`,
+        `${existingConfig}[submodule]\n\tactive = maybe\n`,
+      );
+      __resetConfigCacheForTests();
+
+      // Act
+      const result = await submoduleUpdate(ctx, { paths: ['lib'] });
+
+      // Assert — the update proceeds normally, exactly like the unguarded case
+      expect(result.entries[0]).toMatchObject({ cloned: true, changed: true, mode: 'checkout' });
     });
 
     it('Then a second update is an idempotent no-op', async () => {
