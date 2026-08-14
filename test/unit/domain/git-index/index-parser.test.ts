@@ -808,40 +808,6 @@ describe('parseIndex', () => {
           label: 'rejects `..` at the second entry, with the offset threaded to its start',
         },
         {
-          // `..\\bar` would slip past the slash-segment check on POSIX but
-          // resolve to a traversal on Windows.
-          entries: [{ path: 'foo\\..\\bar', sha: PATH_SHA }],
-          offset: 12,
-          reason: 'backslash rejected',
-          label: 'rejects a backslash (Windows separator)',
-        },
-        {
-          entries: [{ path: 'foo\tbar', sha: PATH_SHA }],
-          offset: 12,
-          reason: 'control character rejected',
-          label: 'rejects a TAB control character (0x09)',
-        },
-        {
-          entries: [{ path: 'foo\x7fbar', sha: PATH_SHA }],
-          offset: 12,
-          reason: 'control character rejected',
-          label: 'rejects DEL (0x7F), the boundary above C0 controls',
-        },
-        {
-          entries: [{ path: 'foo\x85bar', sha: PATH_SHA }],
-          offset: 12,
-          reason: 'control character rejected',
-          label: 'rejects a C1 control character (0x85 NEL)',
-        },
-        {
-          // RTL override can visually disguise filenames in terminals and
-          // log lines (e.g., `evil.exe` rendered as `exe.libtrust`).
-          entries: [{ path: `evil‮gnp.exe`, sha: PATH_SHA }],
-          offset: 12,
-          reason: 'bidi control character rejected',
-          label: 'rejects a BIDI override (U+202E)',
-        },
-        {
           entries: [{ path: 'foo//bar', sha: PATH_SHA }],
           offset: 12,
           reason: 'empty segment rejected',
@@ -866,6 +832,44 @@ describe('parseIndex', () => {
           offset,
           reason,
         });
+      });
+    });
+  });
+
+  describe('Given an entry whose path carries a byte git 2.55 stages but a stricter parser once rejected', () => {
+    describe('When parseIndex runs', () => {
+      const PATH_SHA = '0123456789abcdef0123456789abcdef01234567';
+
+      it.each([
+        {
+          // `..\bar` would slip past the slash-segment check on POSIX; real
+          // git does not treat `\` as a separator there either, so this is
+          // one literal path component, not a traversal.
+          path: 'foo\\..\\bar',
+          label: 'a backslash (Windows separator on POSIX is just a byte)',
+        },
+        { path: 'foo\tbar', label: 'a TAB control character (0x09)' },
+        { path: 'foo\x7fbar', label: 'DEL (0x7F)' },
+        { path: 'foo\x85bar', label: 'a C1 control character (0x85 NEL)' },
+        {
+          // RTL override can visually disguise filenames in terminals and
+          // log lines (e.g., `evil.exe` rendered as `exe.libtrust`); git
+          // stages it anyway, so tsgit's index-write boundary must too —
+          // rendering safety is the caller's display-layer concern, not a
+          // parse-boundary rejection.
+          path: `evil‮gnp.exe`,
+          label: 'a BIDI override (U+202E)',
+        },
+      ])('Then $label round-trips through the parsed path unchanged', ({ path }) => {
+        // Arrange
+        const bytes = buildTestIndex([{ path, sha: PATH_SHA }]);
+
+        // Act
+        const result = parseIndex(bytes);
+
+        // Assert
+        expect(result.entries).toHaveLength(1);
+        expect(result.entries[0]?.path).toBe(path);
       });
     });
   });

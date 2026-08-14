@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
+import { createWorkingTreeStatMap } from '../../../../src/application/primitives/internal/working-tree-stat-map.js';
 import { walkWorkingTree } from '../../../../src/application/primitives/walk-working-tree.js';
 import { TsgitError } from '../../../../src/domain/error.js';
+import type { FilePath } from '../../../../src/domain/objects/object-id.js';
 import type { Context } from '../../../../src/ports/context.js';
 
 const seedFs = async (
@@ -86,7 +88,7 @@ describe('walkWorkingTree', () => {
     });
   });
 
-  describe('Given a `.git` marker at the root (directory, case, trailing-space, or plain-file variant)', () => {
+  describe('Given a `.git` marker at the root (exact name or case, folded only — narrow git parity)', () => {
     describe('When walked', () => {
       it.each([
         {
@@ -97,12 +99,7 @@ describe('walkWorkingTree', () => {
         {
           path: '.GIT/HEAD',
           content: 'x',
-          label: 'a `.GIT` directory is skipped (case-insensitive)',
-        },
-        {
-          path: '.git /HEAD',
-          content: 'x',
-          label: 'a `.git ` (trailing space) directory is skipped (NTFS hardening)',
+          label: 'a `.GIT` directory is skipped (case-insensitive, matches core.ignorecase=true)',
         },
         {
           path: '.git',
@@ -118,6 +115,46 @@ describe('walkWorkingTree', () => {
 
         // Assert
         expect(result).toEqual(['a.txt']);
+      });
+    });
+  });
+
+  describe('Given a widened-alias name at the root that only the index-write boundary rejects (git-parity: the walk skips only exact `.git`)', () => {
+    describe('When walked', () => {
+      it.each([
+        {
+          path: 'git~1/HEAD',
+          content: 'ref: refs/heads/main\n',
+          label: 'a `git~1` directory (NTFS short-name alias) is walked, not skipped',
+        },
+        {
+          path: '.git /HEAD',
+          content: 'x',
+          label: 'a `.git ` (trailing space) directory is walked, not skipped',
+        },
+        {
+          path: '.git./HEAD',
+          content: 'x',
+          label: 'a `.git.` (trailing dot) directory is walked, not skipped',
+        },
+        {
+          path: '.git:stream/HEAD',
+          content: 'x',
+          label: 'a `.git:stream` (NTFS ADS alias) directory is walked, not skipped',
+        },
+      ])('Then $label', async ({ path, content }) => {
+        // Arrange — verified against real git's readdir walk (git 2.55.0,
+        // darwin): `git status --porcelain -uall` reports every one of
+        // these as `??`, never collapsing the directory the way it does
+        // for an exact (case-folded) `.git`.
+        const ctx = await seedFs({ 'a.txt': '1', [path]: content });
+
+        // Act
+        const result = await collect(walkWorkingTree(ctx));
+
+        // Assert — both the marker-named directory's file and the sibling
+        // are yielded; nothing is collapsed.
+        expect(result.sort()).toEqual([path, 'a.txt'].sort());
       });
     });
   });
@@ -141,6 +178,30 @@ describe('walkWorkingTree', () => {
     });
   });
 
+  describe('Given a nested `git~1` directory (NTFS short-name alias — walked, not an embedded-repo marker)', () => {
+    describe('When walked', () => {
+      it("Then the git~1 directory's own file AND its unrelated siblings are all yielded", async () => {
+        // Arrange — `git~1` is git's NTFS 8.3 short name for `.git`, but the
+        // walker's embedded-repo marker is narrowly exact `.git` (case-folded
+        // only): git~1 is not a marker, so vendor/lib is an ordinary
+        // directory and everything under it is walked.
+        const ctx = await seedFs({
+          'a.txt': '1',
+          'vendor/lib/git~1/HEAD': 'ref: refs/heads/main',
+          'vendor/lib/src/x.ts': 'x',
+        });
+
+        // Act
+        const result = await collect(walkWorkingTree(ctx));
+
+        // Assert — nothing is collapsed; every leaf is yielded.
+        expect(result.sort()).toEqual(
+          ['a.txt', 'vendor/lib/git~1/HEAD', 'vendor/lib/src/x.ts'].sort(),
+        );
+      });
+    });
+  });
+
   describe('Given a symlink leaf', () => {
     describe('When walked', () => {
       it('Then yields with isSymbolicLink=true', async () => {
@@ -149,12 +210,119 @@ describe('walkWorkingTree', () => {
         await ctx.fs.symlink('a.txt', `${ctx.layout.workDir}/link`);
 
         // Act
-        const entries: Array<{ path: string; stat: { isSymbolicLink: boolean } }> = [];
-        for await (const e of walkWorkingTree(ctx)) entries.push({ path: e.path, stat: e.stat });
+        const entries: Array<{ path: string; isSymbolicLink: boolean }> = [];
+        for await (const e of walkWorkingTree(ctx)) {
+          entries.push({ path: e.path, isSymbolicLink: e.isSymbolicLink });
+        }
         const linkEntry = entries.find((e) => e.path === 'link');
 
         // Assert
-        expect(linkEntry?.stat.isSymbolicLink).toBe(true);
+        expect(linkEntry?.isSymbolicLink).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a leaf yielded by the walker', () => {
+    const trackLstat = (ctx: Context): { readonly ctx: Context; calls: () => number } => {
+      const baseLstat = ctx.fs.lstat;
+      let calls = 0;
+      const trackingFs = new Proxy(ctx.fs, {
+        get(target, prop, receiver) {
+          if (prop === 'lstat') {
+            return async (p: string) => {
+              calls += 1;
+              return baseLstat(p);
+            };
+          }
+          return Reflect.get(target, prop, receiver);
+        },
+      });
+      return { ctx: { ...ctx, fs: trackingFs }, calls: () => calls };
+    };
+
+    describe('When only entry.path is read (never entry.stat)', () => {
+      it('Then ctx.fs.lstat is never called', async () => {
+        // Arrange
+        const seeded = await seedFs({ 'a.txt': '1', 'b.txt': '2' });
+        const { ctx, calls } = trackLstat(seeded);
+
+        // Act
+        await collect(walkWorkingTree(ctx));
+
+        // Assert
+        expect(calls()).toBe(0);
+      });
+    });
+
+    describe('When entry.stat() is read once per entry', () => {
+      it('Then ctx.fs.lstat is called exactly once per entry', async () => {
+        // Arrange
+        const seeded = await seedFs({ 'a.txt': '1', 'b.txt': '2' });
+        const { ctx, calls } = trackLstat(seeded);
+
+        // Act
+        for await (const entry of walkWorkingTree(ctx)) {
+          await entry.stat();
+        }
+
+        // Assert
+        expect(calls()).toBe(2);
+      });
+    });
+
+    describe('When entry.stat() is read twice for the same entry', () => {
+      it('Then ctx.fs.lstat is called exactly once (memoised)', async () => {
+        // Arrange
+        const seeded = await seedFs({ 'a.txt': '1' });
+        const { ctx, calls } = trackLstat(seeded);
+
+        // Act
+        for await (const entry of walkWorkingTree(ctx)) {
+          await entry.stat();
+          await entry.stat();
+        }
+
+        // Assert
+        expect(calls()).toBe(1);
+      });
+    });
+
+    describe('When entry.stat() is read with a shared map holding a recorded sample for the leaf', () => {
+      it('Then no lstat is issued and the recorded sample is returned', async () => {
+        // Arrange
+        const seeded = await seedFs({ 'a.txt': '1' });
+        const stat = await seeded.fs.lstat(`${seeded.layout.workDir}/a.txt`);
+        const stats = createWorkingTreeStatMap();
+        stats.record('a.txt' as FilePath, stat);
+        const { ctx, calls } = trackLstat(seeded);
+
+        // Act
+        let result: unknown;
+        for await (const entry of walkWorkingTree(ctx, { stats })) {
+          result = await entry.stat();
+        }
+
+        // Assert
+        expect(calls()).toBe(0);
+        expect(result).toBe(stat);
+      });
+    });
+
+    describe('When entry.stat() is read with a shared map holding nothing for the leaf', () => {
+      it('Then one lstat is issued and the sample is recorded into the map', async () => {
+        // Arrange
+        const seeded = await seedFs({ 'a.txt': '1' });
+        const stats = createWorkingTreeStatMap();
+        const { ctx, calls } = trackLstat(seeded);
+
+        // Act
+        for await (const entry of walkWorkingTree(ctx, { stats })) {
+          await entry.stat();
+        }
+
+        // Assert
+        expect(calls()).toBe(1);
+        expect(stats.sampled('a.txt' as FilePath)).toBeDefined();
       });
     });
   });

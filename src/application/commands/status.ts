@@ -24,6 +24,10 @@ import {
   type AttributeProvider,
   maybeBuildAttributeProvider,
 } from '../primitives/internal/read-gitattributes.js';
+import {
+  createWorkingTreeStatMap,
+  type WorkingTreeStatMap,
+} from '../primitives/internal/working-tree-stat-map.js';
 import { readHeadTree } from '../primitives/read-head-tree.js';
 import { readIndex } from '../primitives/read-index.js';
 import { walkWorkingTree } from '../primitives/walk-working-tree.js';
@@ -148,14 +152,20 @@ export const status = async (ctx: Context): Promise<StatusResult> => {
     // runner is wired. When absent, the provider is undefined and every
     // compareWorkingTreeDelta call takes the raw-bytes path (R11 guard).
     const provider = await maybeBuildAttributeProvider(ctx);
+    // One stat map per status invocation, shared between the tracked pass
+    // (records what it samples) and the untracked pass's walk (consults it
+    // before issuing its own lstat) — see WorkingTreeStatMap. Created here,
+    // passed explicitly down both call paths, unreachable once status returns.
+    const stats = createWorkingTreeStatMap();
     const workingMap = await scanWorkingTree(
       ctx,
       grouped.staged,
       tracker,
       provider,
       index.indexMtime,
+      stats,
     );
-    const untracked = await scanUntracked(ctx, trackedPaths);
+    const untracked = await scanUntracked(ctx, trackedPaths, stats);
     const headTree = await readHeadTree(ctx);
     const stagedKindMap = collectStagedKinds(index, headTree, grouped.unmerged);
     const changes = buildChanges(stagedKindMap, workingMap, headTree, stage0Map);
@@ -175,7 +185,8 @@ export const status = async (ctx: Context): Promise<StatusResult> => {
  * re-application so smudged-then-unmodified files report unchanged (F1). The
  * optional `indexMtime` (the `.git/index` file's own mtime) arms the
  * stat-cache short-circuit in `compareWorkingTreeDelta` — `status` is the
- * only consumer that supplies it today.
+ * only consumer that supplies it today. `stats` is the shared per-invocation
+ * map: this pass records every sample it takes.
  */
 const scanWorkingTree = async (
   ctx: Context,
@@ -183,12 +194,13 @@ const scanWorkingTree = async (
   tracker: GranularityTracker,
   provider: AttributeProvider | undefined,
   indexMtime: GitIndex['indexMtime'],
+  stats: WorkingTreeStatMap,
 ): Promise<Map<FilePath, WorkingTreeDelta>> => {
   const map = new Map<FilePath, WorkingTreeDelta>();
   await Promise.all(
     stage0.map(async (entry) => {
       if (!entry.flags.skipWorktree)
-        map.set(entry.path, await compareWorkingTreeDelta(ctx, entry, provider, indexMtime));
+        map.set(entry.path, await compareWorkingTreeDelta(ctx, entry, provider, indexMtime, stats));
       tracker.tick();
     }),
   );
@@ -198,15 +210,21 @@ const scanWorkingTree = async (
 /**
  * Untracked pass: walk the working tree (gitignore-filtered) and collect every
  * path not tracked (stage-0 or unmerged). Tracked-but-ignored entries stay
- * tracked; the ignore filter affects untracked emission only.
+ * tracked; the ignore filter affects untracked emission only. `stats` is the
+ * shared per-invocation map also populated by the tracked pass
+ * (`scanWorkingTree`): threading it through here guarantees at most one
+ * `lstat` sample per path across both passes — a guarantee this pass never
+ * itself cashes in, since it destructures only `path` from each walk entry
+ * and never reads a leaf's stat.
  */
 const scanUntracked = async (
   ctx: Context,
   trackedPaths: ReadonlySet<FilePath>,
+  stats: WorkingTreeStatMap,
 ): Promise<FilePath[]> => {
   const ignore = await buildRepoIgnorePredicate(ctx);
   const untracked: FilePath[] = [];
-  for await (const { path } of walkWorkingTree(ctx, { ignore })) {
+  for await (const { path } of walkWorkingTree(ctx, { ignore, stats })) {
     if (!trackedPaths.has(path)) untracked.push(path);
   }
   return untracked.sort(comparePaths);
@@ -319,6 +337,10 @@ const conflictStage = (entry: IndexEntry): BlobSide => ({ id: entry.id, mode: en
  * path: `groupUnmergedEntries` preserves the order of the index (whose entries
  * are required to be byte-sorted, a git index invariant) and `Promise.all`
  * preserves that array order.
+ *
+ * Deliberately outside the shared stat map: an unmerged path has no stage-0
+ * entry, so its key can never collide with one the tracked pass records —
+ * wiring it in could not add a single dedup hit, only untracked complexity.
  */
 const buildUnmergedEntries = (
   ctx: Context,

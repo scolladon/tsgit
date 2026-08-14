@@ -16,6 +16,7 @@ import {
 } from '../../domain/commands/error.js';
 import { operationAborted, TsgitError } from '../../domain/error.js';
 import type { IndexEntry } from '../../domain/git-index/index.js';
+import { NO_PARSER_OFFSET, validateIndexPath } from '../../domain/git-index/path-validator.js';
 import { emptyPathspec, pathspecNoMatch } from '../../domain/index.js';
 import {
   deriveWorkingMode,
@@ -27,6 +28,7 @@ import type { FilePath } from '../../domain/objects/object-id.js';
 import { matchesPathspec, type Pathspec } from '../../domain/pathspec/index.js';
 import { CHERRY_PICK, MERGE, REBASE, REVERT } from '../../domain/sequencer/operation-labels.js';
 import type { Context } from '../../ports/context.js';
+import type { FileStat } from '../../ports/file-system.js';
 import { assertValidPromisorRemoteConfig } from '../primitives/internal/boolean-config-guard.js';
 import { indexEntryFromStat } from '../primitives/internal/index-entry-from-stat.js';
 import { type IndexMtime, isEntryStatClean } from '../primitives/internal/is-entry-stat-clean.js';
@@ -49,8 +51,11 @@ import {
   assertNotBare,
   assertOperationalRepository,
 } from './internal/repo-state.js';
-import { enforceLiteralMustMatch, resolvePathspec } from './internal/resolve-pathspec.js';
-import { readFile } from './internal/working-tree.js';
+import {
+  assertNoSymlinkedLeadingPath,
+  enforceLiteralMustMatch,
+  resolvePathspec,
+} from './internal/resolve-pathspec.js';
 
 const INDEX_MISSING_CODES = new Set([
   'FILE_NOT_FOUND',
@@ -114,7 +119,8 @@ const dispatchPathspec = async (
   paths: ReadonlyArray<string>,
   provider: AttributeProvider | undefined,
 ): Promise<AddResult> => {
-  const { matcher, literalMustMatch, hasGlob } = resolvePathspec(paths);
+  const { matcher, literalMustMatch, hasGlob, symlinkScanTargets } = resolvePathspec(paths);
+  await assertNoSymlinkedLeadingPath(ctx, symlinkScanTargets);
   if (!hasGlob && (await allLiteralsAreFiles(ctx, literalMustMatch))) {
     return addLiteralOnly(ctx, literalMustMatch, provider);
   }
@@ -153,11 +159,29 @@ const allLiteralsAreFiles = async (
 ): Promise<boolean> => {
   if (literals.length === 0) return false;
   for (const path of literals) {
-    const stat = await ctx.fs.lstat(joinPath(ctx.layout.workDir, path)).catch(() => undefined);
+    const stat = await lstatOrMissing(ctx, path);
     if (stat === undefined) return false;
     if (stat.isDirectory && !stat.isSymbolicLink) return false;
   }
   return true;
+};
+
+/**
+ * `lstat` a working-tree path, translating a missing path to `undefined`.
+ * Any other failure (e.g. PERMISSION_DENIED) propagates — narrowing the
+ * catch to FILE_NOT_FOUND-only is what keeps `git add missing-file` reporting
+ * PATHSPEC_NO_MATCH without silently absorbing a genuine I/O error.
+ */
+const lstatOrMissing = async (
+  ctx: Context,
+  path: FilePath,
+): Promise<Awaited<ReturnType<Context['fs']['lstat']>> | undefined> => {
+  try {
+    return await ctx.fs.lstat(joinPath(ctx.layout.workDir, path));
+  } catch (err) {
+    if (err instanceof TsgitError && err.data.code === 'FILE_NOT_FOUND') return undefined;
+    throw err;
+  }
 };
 
 // Walk-and-filter add: applies `.gitignore` (so build artefacts stay
@@ -302,19 +326,25 @@ const processWalkEntry = async (
   provider: AttributeProvider | undefined,
   indexMtime: IndexMtime | undefined,
 ): Promise<WalkOutcome | undefined> => {
-  const { path, stat } = walkEntry;
+  const { path, isFile, isDirectory, isSymbolicLink } = walkEntry;
   // Mark presence BEFORE any further filter so the post-walk
   // "missing from disk → removed" pass is exact. Ignore filtering
   // already happened at walk-time in; this function only sees
   // leaves the walker chose to yield.
   seen.add(path);
-  // Pre-filter using the walk-time stat as an early reject; the authoritative
-  // size check fires inside stageFromStat against the re-lstat'd value so a
-  // grow-between-walk-and-stage race can't bypass the cap.
-  if (stat.size > MAX_WORKING_TREE_BLOB_BYTES) {
-    throw workingTreeFileTooLarge(path, stat.size, MAX_WORKING_TREE_BLOB_BYTES);
-  }
-  const entry = await stageFromStat(ctx, path, stat, provider, existing.get(path), indexMtime);
+  // The walker's kind bits come free from readdir (no `lstat`); passing them
+  // straight to stageFromStat's TOCTOU check retires the walk-time `stat()`
+  // this function used to pay just to re-derive the same three booleans.
+  // stageFromStat's own re-lstat (still authoritative for the size cap) is
+  // the only lstat left per file.
+  const entry = await stageFromStat(
+    ctx,
+    path,
+    { isFile, isDirectory, isSymbolicLink },
+    provider,
+    existing.get(path),
+    indexMtime,
+  );
   const previous = existing.get(path);
   if (previous === undefined) return { kind: 'added', path, entry };
   if (previous.id !== entry.id || previous.mode !== entry.mode) {
@@ -351,32 +381,43 @@ const stageOne = async (
   previous: IndexEntry | undefined,
   indexMtime: IndexMtime | undefined,
 ): Promise<IndexEntry | 'missing'> => {
-  const stat = await ctx.fs.lstat(joinPath(ctx.layout.workDir, path)).catch(() => undefined);
+  const stat = await lstatOrMissing(ctx, path);
   if (stat === undefined) return 'missing';
   return stageFromStat(ctx, path, stat, provider, previous, indexMtime);
 };
 
+/**
+ * The three kind bits `stageFromStat`'s TOCTOU check needs — satisfied
+ * structurally by both a full `FileStat` (`stageOne`'s literal-path lstat)
+ * and a `WalkWorkingTreeEntry` (`processWalkEntry`'s walk, readdir-sourced).
+ */
+type EntryKind = Pick<FileStat, 'isFile' | 'isDirectory' | 'isSymbolicLink'>;
+
 const stageFromStat = async (
   ctx: Context,
   path: FilePath,
-  stat: Awaited<ReturnType<Context['fs']['lstat']>>,
+  kind: EntryKind,
   provider: AttributeProvider | undefined,
   previous: IndexEntry | undefined,
   indexMtime: IndexMtime | undefined,
 ): Promise<IndexEntry> => {
-  // Re-lstat under the index lock to close the walk→stage TOCTOU window:
-  // an attacker swapping the inode (regular ↔ symlink, file ↔ directory)
-  // between the walk's lstat and our read would otherwise re-route the
-  // read through `ctx.fs.read` (which follows symlinks), break the mode
-  // classification, or trip an opaque adapter error. Abort the whole add
-  // on any type flip.
+  // Re-lstat under the index lock to close the TOCTOU window: an attacker
+  // swapping the inode (regular ↔ symlink, file ↔ directory) between `kind`
+  // being observed and our read would otherwise re-route the read through
+  // `ctx.fs.read` (which follows symlinks), break the mode classification, or
+  // trip an opaque adapter error. Abort the whole add on any type flip.
+  // `kind` comes either from a real lstat (`stageOne`) or from the walker's
+  // readdir dirent bits (`processWalkEntry`, spending no lstat to get here) —
+  // for the walked case the reference point is readdir instead of a walk-time
+  // lstat, a marginally wider window of the SAME TOCTOU class; this fresh
+  // lstat remains the sole authority either way.
   // Promisor-remote guard (see assertValidPromisorRemoteConfig) — once the write path engages.
   await assertValidPromisorRemoteConfig(ctx);
   const fresh = await ctx.fs.lstat(joinPath(ctx.layout.workDir, path));
   if (
-    fresh.isSymbolicLink !== stat.isSymbolicLink ||
-    fresh.isDirectory !== stat.isDirectory ||
-    fresh.isFile !== stat.isFile
+    fresh.isSymbolicLink !== kind.isSymbolicLink ||
+    fresh.isDirectory !== kind.isDirectory ||
+    fresh.isFile !== kind.isFile
   ) {
     throw operationAborted();
   }
@@ -402,6 +443,16 @@ const stageFromStat = async (
     throw workingTreeFileTooLarge(path, fresh.size, MAX_WORKING_TREE_BLOB_BYTES);
   }
   const mode: FileMode = deriveWorkingMode(fresh);
+  // Staging boundary: `.git`-alias (and NTFS/HFS-obscured variants) and a
+  // symlinked `.gitmodules` component must be refused HERE, before either
+  // read arm runs below — the walker (`validateWalkedEntryPath`) deliberately
+  // lets these through so `status` can still list them, exactly as git's own
+  // directory walk does. `validateIndexPath` mirrors git's `verify_path`, so
+  // both the regular-file and symlink arms of `readContent` refuse
+  // identically; the throw here aborts the whole add before any entry is
+  // added to `newEntries`, so the index commit never runs (git's add -A is
+  // all-or-nothing: one hostile path aborts the entire batch).
+  validateIndexPath(path, NO_PARSER_OFFSET, mode);
   const raw = await readContent(ctx, path, fresh);
   const bytes = await applyCleanFilter(ctx, path, raw, fresh.isSymbolicLink, provider);
   const id = (await writeObject(ctx, {
@@ -451,5 +502,12 @@ const readContent = async (
     }
     return bytes;
   }
-  return readFile(ctx, path);
+  // `path` is already validated at the staging boundary (`stageFromStat`,
+  // above `readContent`'s only call site) via `validateIndexPath` — the
+  // git-faithful `verify_path` rule set. Reading straight off `ctx.fs`
+  // (rather than through `internal/working-tree.ts`'s `readFile`, which
+  // layers on the wider `validateWorkingTreePath` — leading-colon and
+  // `.git`-alias rejections meant for user-typed pathspec text) keeps
+  // walked content from being rejected by a pathspec-only rule.
+  return ctx.fs.read(joinPath(ctx.layout.workDir, path));
 };

@@ -83,7 +83,7 @@ const stage0Entries = (entries: ReadonlyArray<IndexEntry>): PendingEntry[] => {
     // benefit from the second check. We pass NO_PARSER_OFFSET because
     // these entries did not come from a parsed byte buffer — see
     // `path-validator.ts` for the contract.
-    validateIndexPath(entry.path, NO_PARSER_OFFSET);
+    validateIndexPath(entry.path, NO_PARSER_OFFSET, entry.mode);
     assertDepthBounded(entry.path);
     out.push({ path: entry.path, id: entry.id, mode: entry.mode });
   }

@@ -1,13 +1,10 @@
 import { pathspecOutsideRepo } from './commands/error.js';
 import type { FilePath } from './objects/object-id.js';
+import { isDotGitAlias } from './path/verify-path.js';
 
 const MAX_PATH_BYTES = 4096;
 const MAX_COMPONENT_BYTES = 255;
 const PATH_ENCODER = new TextEncoder();
-
-// `.git` reject is enforced via the regex strip in isForbiddenGitComponent
-// below; the explicit set carries only the canonical literal for clarity.
-const GIT_FORBIDDEN: ReadonlySet<string> = new Set(['.git']);
 
 /**
  * Validate a working-tree path. Throws `PATHSPEC_OUTSIDE_REPO` for any policy
@@ -20,20 +17,17 @@ const GIT_FORBIDDEN: ReadonlySet<string> = new Set(['.git']);
  * - No NUL bytes.
  * - Components allowed-char set: no control characters (0x00-0x1F, 0x7F).
  * - No `.` or `..` components, no empty components.
- * - No `.git` component (case-insensitive). Also rejects NTFS quirks
- *   `.git ` (trailing space), `.git.` (trailing dot), and other prefix-of-`.git`
- *   variants.
+ * - No `.git` component, or one of its NTFS (`git~1`, `.git:`-stream) /
+ *   HFS+ (ignorable-codepoint) aliases — see `isDotGitAlias`.
+ * - No LEADING `:` (pathspec-magic lookalike) or leading single-letter
+ *   drive-letter qualifier (`C:...`) — a `:` anywhere else in the path is
+ *   POSIX-legal and git-accepted (pinned: `foo:bar/x`), so it is not
+ *   rejected.
  * - Length caps: total path ≤ 4096 bytes; each component ≤ 255 bytes.
  */
 export const validateWorkingTreePath = (input: string): FilePath => {
-  // Stryker disable next-line ConditionalExpression: equivalent — when this fast-path guard is removed (`if (false)`), the empty string still splits to `['']`, whose empty component is rejected by `rejectComponent` with the identical `pathspecOutsideRepo('')` error.
-  if (input === '') reject(input);
-  if (byteLength(input) > MAX_PATH_BYTES) reject(input);
-  // Stryker disable next-line ConditionalExpression,MethodExpression: equivalent — a leading or trailing `/` always produces an empty path component, which `rejectComponent` rejects regardless; this guard only changes which line throws, not the accept/reject verdict or the error data.
-  if (input.startsWith('/')) reject(input);
-  if (input.includes('\\')) reject(input);
-  // Stryker disable next-line ConditionalExpression: equivalent — a NUL byte is code 0x00, always `<= 0x1f`, so the per-component control-char scan rejects it regardless of this fast-path guard.
-  if (input.includes('\0')) reject(input);
+  rejectInputShape(input);
+  rejectLeadingColon(input);
   const components = input.split('/');
   for (const component of components) {
     rejectComponent(component, input);
@@ -42,38 +36,75 @@ export const validateWorkingTreePath = (input: string): FilePath => {
 };
 
 /**
- * True if `component` is `.git` or one of its NTFS-stripped variants
- * (case-insensitive, trailing-dot/space-trimmed). Used by the working-tree
- * walker to skip the host repo's metadata directory and by the path
- * validator to reject paths that would traverse into it.
+ * Narrow defence-in-depth for a walker consuming raw `readdir` entries
+ * (`walk-working-tree.ts`): the same traversal/injection protections as
+ * {@link validateWorkingTreePath} — absolute path, backslash, NUL,
+ * dot/dotdot/empty component, control characters, length caps — MINUS the
+ * `.git`-alias and `:` rejections. A directory a real filesystem legitimately
+ * returns named `git~1`, `.git:stream`, or carrying an HFS ignorable
+ * codepoint is not a traversal hazard; the walk boundary must surface it
+ * exactly as git's own directory walk does (only an exact, case-folded
+ * `.git` collapses there — see `isDotGitWalkEntry`). The widened alias
+ * rejection, and the leading-colon rejection, stay exclusive to
+ * `validateWorkingTreePath`'s other callers (user pathspec input,
+ * tree/index boundaries), where they are the correct, intentional refusal.
  */
-export const isForbiddenGitComponent = (component: string): boolean => {
-  const lowered = component.toLowerCase();
-  // Stryker disable next-line ConditionalExpression: equivalent — the only member of GIT_FORBIDDEN is '.git', and the trailing-dot/space strip below maps '.git' to itself, so the regex-strip path returns true for exactly the same input.
-  if (GIT_FORBIDDEN.has(lowered)) return true;
-  // NTFS strips trailing spaces/dots — treat any `.git` followed only by
-  // whitespace/dots as `.git` (defensive against future variants).
-  const trimmed = lowered.replace(/[. ]+$/, '');
-  return trimmed === '.git';
+export const validateWalkedEntryPath = (input: string): FilePath => {
+  rejectInputShape(input);
+  const components = input.split('/');
+  for (const component of components) {
+    rejectTraversalShape(component, input);
+  }
+  return input as FilePath;
 };
 
 const reject = (input: string): never => {
   throw pathspecOutsideRepo(input as FilePath);
 };
 
-const rejectComponent = (component: string, original: string): void => {
+const rejectInputShape = (input: string): void => {
+  // Stryker disable next-line ConditionalExpression: equivalent — when this fast-path guard is removed (`if (false)`), the empty string still splits to `['']`, whose empty component is rejected by `rejectTraversalShape` with the identical `pathspecOutsideRepo('')` error.
+  if (input === '') reject(input);
+  if (byteLength(input) > MAX_PATH_BYTES) reject(input);
+  // Stryker disable next-line ConditionalExpression,MethodExpression: equivalent — a leading or trailing `/` always produces an empty path component, which `rejectTraversalShape` rejects regardless; this guard only changes which line throws, not the accept/reject verdict or the error data.
+  if (input.startsWith('/')) reject(input);
+  if (input.includes('\\')) reject(input);
+  // Stryker disable next-line ConditionalExpression: equivalent — a NUL byte is code 0x00, always `<= 0x1f`, so the per-component control-char scan rejects it regardless of this fast-path guard.
+  if (input.includes('\0')) reject(input);
+};
+
+const rejectTraversalShape = (component: string, original: string): void => {
   if (component === '') reject(original); // empty component → trailing slash or // sequence.
   if (component === '.' || component === '..') reject(original);
   if (byteLength(component) > MAX_COMPONENT_BYTES) reject(original);
-  if (isForbiddenGitComponent(component)) reject(original);
-  // Reject `:` to block NTFS Alternate Data Streams (`.git:$DATA`) and
-  // Windows drive-letter qualifiers (`C:relative`). POSIX paths never need `:`.
-  if (component.includes(':')) reject(original);
   // Stryker disable next-line EqualityOperator: equivalent — `i <= component.length` reads one past the end where `charCodeAt` returns NaN; `NaN <= 0x1f` and `NaN === 0x7f` are both false, so the extra iteration never rejects.
   for (let i = 0; i < component.length; i += 1) {
     const code = component.charCodeAt(i);
     if (code <= 0x1f || code === 0x7f) reject(original);
   }
+};
+
+const rejectComponent = (component: string, original: string): void => {
+  rejectTraversalShape(component, original);
+  if (isDotGitAlias(component)) reject(original);
+};
+
+// Git treats a LEADING `:` as the start of pathspec magic (`:(icase)foo`,
+// `:!foo`); tsgit does not parse that syntax, so it conservatively refuses
+// rather than silently mis-stage a magic-looking pattern as a literal path.
+// A single-letter prefix (`C:relative`) is refused for the same reason a
+// leading drive-letter qualifier is dangerous: it is what an OS
+// reinterprets as an absolute path, not the repo-relative one the caller
+// meant — and that reinterpretation only happens when the qualifier LEADS
+// the string. A `:` anywhere else in the pathspec (`foo:bar/x`,
+// `dir/C:evil`) is an ordinary POSIX-legal byte — pinned against git 2.55,
+// which stages both without complaint — so it is not rejected. (The
+// `.git:$DATA` NTFS alternate-data-stream disguise is still caught,
+// independently, by `isDotGitAlias`'s own stream-suffix handling above.)
+const LEADING_MAGIC_OR_DRIVE_LETTER = /^[A-Za-z]?:/;
+
+const rejectLeadingColon = (input: string): void => {
+  if (LEADING_MAGIC_OR_DRIVE_LETTER.test(input)) reject(input);
 };
 
 const byteLength = (s: string): number => PATH_ENCODER.encode(s).length;

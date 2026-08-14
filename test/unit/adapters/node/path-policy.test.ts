@@ -1,9 +1,12 @@
+import * as nodeWin32Path from 'node:path/win32';
 import { describe, expect, it } from 'vitest';
 
 import {
   narrowSep,
   nativePolicy,
+  normalizeForCompareWithCapabilities,
   posixPolicy,
+  rootOfForSyntax,
   selectNativePolicy,
   windowsPolicy,
 } from '../../../../src/adapters/node/path-policy.js';
@@ -193,6 +196,21 @@ describe('posixPolicy', () => {
       });
     });
   });
+
+  describe('Given a relative POSIX path', () => {
+    describe('When rootOf is called', () => {
+      it('Then returns the empty string', () => {
+        // Arrange
+        const path = 'foo/bar';
+
+        // Act
+        const result = posixPolicy.rootOf(path);
+
+        // Assert
+        expect(result).toBe('');
+      });
+    });
+  });
 });
 
 describe('windowsPolicy', () => {
@@ -241,6 +259,13 @@ describe('windowsPolicy', () => {
           expected: '\\\\server\\share\\file.bin',
           label: 'a \\\\?\\UNC\\ extended-length path collapses to the plain UNC form',
         },
+        {
+          // A `joinPath`-produced path carries `/` unconditionally even on
+          // Windows; the containment prefix compare must fold it to `\` too.
+          input: 'C:\\repo/sub/file.bin',
+          expected: 'c:\\repo\\sub\\file.bin',
+          label: 'a forward-slash-separated tail is folded to backslashes',
+        },
       ])('Then $label', ({ input, expected }) => {
         // Arrange & Act
         const result = windowsPolicy.normalizeForCompare(input);
@@ -277,6 +302,144 @@ describe('windowsPolicy', () => {
 
         // Assert
         expect(result).toBe('\\\\server\\share\\');
+      });
+    });
+  });
+
+  describe('Given a drive-relative Windows path (neither UNC nor drive-absolute)', () => {
+    describe('When rootOf is called', () => {
+      it('Then returns the empty string', () => {
+        // Arrange
+        const path = 'Users\\Foo';
+
+        // Act
+        const result = windowsPolicy.rootOf(path);
+
+        // Assert
+        expect(result).toBe('');
+      });
+    });
+  });
+});
+
+describe('windowsPolicy.rootOf — parity with path.win32.parse(p).root', () => {
+  describe('Given each shape of Windows path root', () => {
+    describe('When rootOf is called', () => {
+      it.each([
+        { input: '\\\\server\\share', label: 'a bare UNC root with no trailing separator' },
+        { input: '\\\\server\\share\\', label: 'a UNC root with a trailing separator' },
+        { input: '\\\\server\\share\\dir', label: 'a UNC path with a segment past the share' },
+        { input: 'C:foo', label: 'a drive-relative path (no separator after the colon)' },
+        { input: 'C:\\foo', label: 'a drive-absolute path' },
+        { input: 'C:', label: 'a bare drive letter with no segment at all' },
+        { input: '\\foo', label: 'a root-relative path with no drive letter' },
+        { input: 'foo', label: 'a plain relative path' },
+        // Win32 accepts `/` as a separator everywhere `\` is accepted. A
+        // POSIX-shaped absolute path reaches this policy whenever a caller
+        // hands one in on Windows, and rooting it at `''` would make
+        // `realpathNearestExisting` join its segments onto nothing and
+        // realpath them against the process cwd.
+        { input: '/foo', label: 'a forward-slash root-relative path' },
+        { input: '/', label: 'a bare forward-slash root' },
+        { input: '/totally/made/up', label: 'a forward-slash absolute path' },
+        { input: 'C:/foo', label: 'a drive-absolute path spelled with a forward slash' },
+        { input: '//server/share', label: 'a bare UNC root spelled with forward slashes' },
+        { input: '//server/share/dir', label: 'a forward-slash UNC path past the share' },
+        { input: '', label: 'the empty string' },
+      ])('Then it agrees with path.win32.parse(p).root for $label ($input)', ({ input }) => {
+        // Arrange
+        const expected = nodeWin32Path.parse(input).root;
+
+        // Act
+        const result = windowsPolicy.rootOf(input);
+
+        // Assert
+        expect(result).toBe(expected);
+      });
+    });
+  });
+});
+
+describe('policy capability triples', () => {
+  describe('Given posixPolicy', () => {
+    describe('When its capability flags are read', () => {
+      it('Then caseInsensitive/windowsSyntax are false and honoursNoFollow is true', () => {
+        // Arrange & Act
+        const result = {
+          caseInsensitive: posixPolicy.caseInsensitive,
+          windowsSyntax: posixPolicy.windowsSyntax,
+          honoursNoFollow: posixPolicy.honoursNoFollow,
+        };
+
+        // Assert
+        expect(result).toStrictEqual({
+          caseInsensitive: false,
+          windowsSyntax: false,
+          honoursNoFollow: true,
+        });
+      });
+    });
+  });
+
+  describe('Given windowsPolicy', () => {
+    describe('When its capability flags are read', () => {
+      it('Then caseInsensitive/windowsSyntax are true and honoursNoFollow is false', () => {
+        // Arrange & Act
+        const result = {
+          caseInsensitive: windowsPolicy.caseInsensitive,
+          windowsSyntax: windowsPolicy.windowsSyntax,
+          honoursNoFollow: windowsPolicy.honoursNoFollow,
+        };
+
+        // Assert
+        expect(result).toStrictEqual({
+          caseInsensitive: true,
+          windowsSyntax: true,
+          honoursNoFollow: false,
+        });
+      });
+    });
+  });
+});
+
+describe('a hypothetical case-insensitive POSIX policy (caseInsensitive=true, windowsSyntax=false)', () => {
+  // Pins the exact latent break the capability split prevents: before it,
+  // both `rootOf` and `normalizeForCompare` were gated on the single
+  // `caseInsensitive` flag, so a case-insensitive POSIX policy would have
+  // been routed through Windows root parsing and the `/`→`\` separator
+  // fold, mangling every POSIX path. Keying both on `windowsSyntax`
+  // (false here) instead proves POSIX behaviour survives independently of
+  // case sensitivity.
+  const hypotheticalCapabilities = { caseInsensitive: true, windowsSyntax: false };
+
+  describe('Given an absolute POSIX path', () => {
+    describe('When rootOf is computed for the hypothetical capabilities', () => {
+      it('Then it still returns the POSIX root, not a Windows one', () => {
+        // Arrange
+        const path = '/foo/bar';
+
+        // Act
+        const result = rootOfForSyntax(hypotheticalCapabilities.windowsSyntax, path);
+
+        // Assert
+        expect(result).toBe('/');
+      });
+    });
+  });
+
+  describe('Given a POSIX path containing a forward slash', () => {
+    describe('When normalizeForCompare is computed for the hypothetical capabilities', () => {
+      it('Then the separator is left as "/" (no Windows fold) but the case is still folded', () => {
+        // Arrange
+        const path = '/Foo/Bar';
+
+        // Act
+        const result = normalizeForCompareWithCapabilities(hypotheticalCapabilities, path);
+
+        // Assert — case-folded (caseInsensitive: true) but the separator
+        // survives untouched (windowsSyntax: false); a pre-split policy
+        // would have folded it to "\\foo\\bar" instead.
+        expect(result).toBe('/foo/bar');
       });
     });
   });

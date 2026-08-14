@@ -5,13 +5,19 @@ Internal building blocks that power the Tier-1 commands. Most are exported from 
 Alphabetical.
 
 ### `applyChangeset`
-`apply-changeset.ts`. Apply a computed working-tree changeset (writes, deletes, chmods). Used by [`checkout`](../commands/checkout.md) and [`reset`](../commands/reset.md) (`hard`).
+`apply-changeset.ts`. Apply a computed working-tree changeset (writes, deletes, chmods). Every `add`/`update` target's entry name is validated against git's index-entry rules before anything is written — a hostile name aborts the whole apply, working tree untouched (git's own two-phase split between building the index in memory and checking it out). A write through a symlinked leading directory unlinks it and creates a real directory first, matching git; a delete through one is skipped silently, leaving the symlink untouched. Used by [`checkout`](../commands/checkout.md) and [`reset`](../commands/reset.md) (`hard`).
+
+### `applyMergeToWorktree`
+`apply-merge-to-worktree.ts`. **Fully internal.** Materialise a 3-way-merge outcome onto the working tree and index — clean outcomes are written through; conflicts get marker files (or a bare take-ours write for a symlink/gitlink pair) plus stage-1/2/3 index entries. Shares the same symlinked-leading-directory parity as `applyChangeset`: a write unlinks a symlinked leading component and creates a real directory first; a delete through one is skipped silently. The user-facing description of this shared behaviour lives on [`merge`](../commands/merge.md)'s "Conflict writes" section. Used by [`cherryPick`](../commands/cherry-pick.md), [`revert`](../commands/revert.md), [`rebase`](../commands/rebase.md), and [`stash`](../commands/stash.md) `apply`/`pop`.
 
 ### `buildIndexFromTree`
-`build-index-from-tree.ts`. Project a tree to a stage-0 IndexEntry list with stat-cache donor preservation. Used by [`reset`](../commands/reset.md) (`mixed`), [`checkout`](../commands/checkout.md).
+`build-index-from-tree.ts`. Project a tree to a stage-0 IndexEntry list with stat-cache donor preservation. Each leaf's entry name is validated against git's index-entry rules before it is projected — a `.git` alias (and its NTFS/HFS+ forms) or a `.gitmodules` entry staged as a symlink throws `INVALID_INDEX_ENTRY`. Used by [`reset`](../commands/reset.md) (`mixed`), [`checkout`](../commands/checkout.md).
 
 ### `buildPack`
 `build-pack.ts`. Construct a packfile from an enumerated object set. Returns the pack bytes, the trailer SHA, the object count, and `entries` — `serializePackfile`'s own per-entry crc32 and offset metadata, in `input.oids` order, so a caller writing a matching `.idx` reuses the offsets and checksums the serializer already computed instead of deriving them a second time. Used by [`push`](../commands/push.md), [`packObjects`](../commands/pack-objects.md), [`bundle`](../commands/bundle.md) (`create`).
+
+### `compareWorkingTreeDelta` · `compareWorkingTreeEntry`
+`compare-working-tree-entry.ts`. Compare one index entry against its working-tree file — the per-path building block behind [`status`](../commands/status.md)'s unstaged column, [`rm`](../commands/rm.md)'s dirty guard, and every stash/merge/cherry-pick/revert/rebase working-tree comparison. `compareWorkingTreeDelta` takes an index entry directly; `compareWorkingTreeEntry` resolves it from a path first. Both accept an optional index-file mtime that arms the `ie_match_stat` stat-cache short-circuit (only `status` supplies it) and an optional shared stat map, consulted before issuing `lstat` and populated on a successful sample — also only `status`, sharing one instance with its untracked-pass walk so a tracked path is `lstat`ed at most once per invocation.
 
 ### `computeChangeset`
 `compute-changeset.ts`. Tree-vs-working-tree diff for the dirty-tree guard. Used by [`checkout`](../commands/checkout.md), [`reset`](../commands/reset.md), [`status`](../commands/status.md).
@@ -89,7 +95,7 @@ Alphabetical.
 `path-layout.ts`. Canonical path for `.git/info/sparse-checkout`.
 
 ### `synthesizeTreeFromIndex`
-`synthesize-tree-from-index.ts`. Inverse of `buildIndexFromTree` — synthesize a tree from staged entries. Used by [`checkout`](../commands/checkout.md) (`{ paths, source: 'index' }`).
+`synthesize-tree-from-index.ts`. Inverse of `buildIndexFromTree` — synthesize a tree from staged entries. Each entry's name is re-validated against git's index-entry rules before being written to the tree — now mode-aware, so a `.gitmodules` entry staged as a symlink is refused here too (previously only caught at the index-write boundary). Used by [`checkout`](../commands/checkout.md) (`{ paths, source: 'index' }`).
 
 ### `updateShallow`
 `shallow-file.ts`. Write `.git/shallow` boundaries. Refuses (`SHALLOW_FILE_MALFORMED`) before writing when the resulting set would exceed the entry cap or an added oid's width doesn't match the repository hash.

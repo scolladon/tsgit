@@ -21,6 +21,7 @@ import { FILE_MODE, FilePath, type ObjectId } from '../../../../src/domain/objec
 import type { Context } from '../../../../src/ports/context.js';
 import {
   buildSeededContext,
+  refuseReadOnSymlink,
   serializeIndexFixtureAsync,
 } from '../../application/primitives/fixtures.js';
 
@@ -498,6 +499,25 @@ describe('Given a tracked regular file replaced on disk by a symlink, When grep 
 
     // Act
     const result: GrepResult = await grep(ctx, { patterns: [{ fixed: 'NEEDLE' }] });
+
+    // Assert
+    expect(result.paths.map((p: GrepPathResult) => p.path)).toEqual(['found.txt']);
+  });
+});
+
+describe('Given a tracked regular file replaced on disk by a symlink, When grep scans the working tree', () => {
+  it('Then the symlink is excluded before any read is attempted — read is never called on it', async () => {
+    // Arrange
+    const ctx = await seedRepo();
+    await writeAndStage(ctx, 'found.txt', 'NEEDLE here');
+    await writeAndStage(ctx, 'linked.txt', 'NEEDLE original');
+    await commitAll(ctx);
+    await ctx.fs.rm(`${ctx.layout.workDir}/linked.txt`);
+    await ctx.fs.symlink('found.txt', `${ctx.layout.workDir}/linked.txt`);
+    const guarded = refuseReadOnSymlink(ctx, `${ctx.layout.workDir}/linked.txt`);
+
+    // Act
+    const result: GrepResult = await grep(guarded, { patterns: [{ fixed: 'NEEDLE' }] });
 
     // Assert
     expect(result.paths.map((p: GrepPathResult) => p.path)).toEqual(['found.txt']);

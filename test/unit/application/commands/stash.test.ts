@@ -10,6 +10,7 @@ import {
   stashPop,
   stashPush,
 } from '../../../../src/application/commands/stash.js';
+import { createCommit } from '../../../../src/application/primitives/create-commit.js';
 import { flattenTree } from '../../../../src/application/primitives/flatten-tree.js';
 import * as writeFileMod from '../../../../src/application/primitives/internal/write-working-tree-file.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
@@ -18,6 +19,7 @@ import { pushStashRef, readStashStack } from '../../../../src/application/primit
 import * as streamBlobMod from '../../../../src/application/primitives/stream-blob.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { TsgitError } from '../../../../src/domain/error.js';
+import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import type { AuthorIdentity, FilePath, ObjectId } from '../../../../src/domain/objects/index.js';
 import type {
   CommandRequest,
@@ -25,6 +27,7 @@ import type {
   CommandRunner,
 } from '../../../../src/ports/command-runner.js';
 import type { Context } from '../../../../src/ports/context.js';
+import { refuseReadOnSymlink } from '../primitives/fixtures.js';
 
 const author: AuthorIdentity = {
   name: 'Ada',
@@ -69,6 +72,43 @@ const setupRepo = async (): Promise<Context> => {
 
 const headId = async (ctx: Context): Promise<ObjectId> =>
   (await ctx.fs.readUtf8(`${ctx.layout.gitDir}/refs/heads/main`)).trim() as ObjectId;
+
+/**
+ * Push a stash W whose untracked-tree parent is `untrackedTree` directly —
+ * bypasses `stashPush`'s own walk (which can never produce a hostile shape,
+ * since every walked entry is validated before it is ever hashed) to
+ * simulate a crafted/foreign stash exactly as one could arrive via a
+ * hand-edited `refs/stash` or a hostile remote's object stream.
+ */
+const pushHostileUntrackedStash = async (ctx: Context, untrackedTree: ObjectId): Promise<void> => {
+  const head = await headId(ctx);
+  const headTree = (await commitOf(ctx, head)).tree;
+  const untrackedParent = await createCommit(ctx, {
+    tree: untrackedTree,
+    parents: [],
+    author,
+    committer: author,
+    message: 'untracked files on main',
+    extraHeaders: [],
+  });
+  const indexParent = await createCommit(ctx, {
+    tree: headTree,
+    parents: [head],
+    author,
+    committer: author,
+    message: 'index on main',
+    extraHeaders: [],
+  });
+  const w = await createCommit(ctx, {
+    tree: headTree,
+    parents: [head, indexParent, untrackedParent],
+    author,
+    committer: author,
+    message: 'WIP on main',
+    extraHeaders: [],
+  });
+  await pushStashRef(ctx, w, 'WIP on main');
+};
 
 describe('stash push', () => {
   describe('Given a clean working tree', () => {
@@ -122,6 +162,29 @@ describe('stash push', () => {
         // The W tree drops the deleted path; the reset restores it from HEAD.
         expect(await treeContent(ctx, w.tree, 'a.txt')).toBe('<absent>');
         expect(await read(ctx, 'a.txt')).toBe('committed\n');
+      });
+    });
+  });
+
+  describe('Given a tracked symlink retargeted in the working tree (no-dereference audit)', () => {
+    describe('When push runs, and ctx.fs.read is wired to fail on the symlink path', () => {
+      it('Then the W tree stores the new target without ever reading through the link', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await ctx.fs.symlink('old-target', `${ctx.layout.workDir}/link`);
+        await add(ctx, ['link']);
+        await commit(ctx, { message: 'add link', author });
+        await ctx.fs.rm(`${ctx.layout.workDir}/link`);
+        await ctx.fs.symlink('new-target', `${ctx.layout.workDir}/link`);
+        const guarded = refuseReadOnSymlink(ctx, `${ctx.layout.workDir}/link`);
+
+        // Act
+        const result = await stashPush(guarded, {});
+
+        // Assert
+        if (result.kind !== 'saved') throw new Error('expected saved');
+        const w = await commitOf(ctx, result.stash);
+        expect(await treeContent(ctx, w.tree, 'link')).toBe('new-target');
       });
     });
   });
@@ -663,6 +726,78 @@ describe('stash apply', () => {
 
         streamBlobSpy.mockRestore();
       });
+    });
+  });
+
+  describe('Given an include-untracked stash whose untracked tree carries a hostile entry name', () => {
+    describe('When apply runs', () => {
+      it.each([
+        {
+          label: 'a `.git/hooks/pre-commit` path',
+          hostilePath: '.git/hooks/pre-commit',
+          buildUntrackedTree: async (ctx: Context): Promise<ObjectId> => {
+            const hookBlob = await writeObject(ctx, {
+              type: 'blob',
+              id: '' as ObjectId,
+              content: new TextEncoder().encode('#!/bin/sh\necho pwned\n'),
+            });
+            const hooksTree = await writeObject(ctx, {
+              type: 'tree',
+              id: '' as ObjectId,
+              entries: [{ mode: FILE_MODE.REGULAR, name: 'pre-commit', id: hookBlob }],
+            });
+            const gitDirTree = await writeObject(ctx, {
+              type: 'tree',
+              id: '' as ObjectId,
+              entries: [{ mode: FILE_MODE.DIRECTORY, name: 'hooks', id: hooksTree }],
+            });
+            return writeObject(ctx, {
+              type: 'tree',
+              id: '' as ObjectId,
+              entries: [{ mode: FILE_MODE.DIRECTORY, name: '.git', id: gitDirTree }],
+            });
+          },
+        },
+        {
+          label: 'a top-level `git~1` NTFS short-name alias entry',
+          hostilePath: 'git~1',
+          buildUntrackedTree: async (ctx: Context): Promise<ObjectId> => {
+            const blob = await writeObject(ctx, {
+              type: 'blob',
+              id: '' as ObjectId,
+              content: new TextEncoder().encode('payload\n'),
+            });
+            return writeObject(ctx, {
+              type: 'tree',
+              id: '' as ObjectId,
+              entries: [{ mode: FILE_MODE.REGULAR, name: 'git~1', id: blob }],
+            });
+          },
+        },
+      ])(
+        'Then it refuses with INVALID_INDEX_ENTRY and writes nothing to the working tree for $label',
+        async ({ buildUntrackedTree, hostilePath }) => {
+          // Arrange
+          const ctx = await setupRepo();
+          const untrackedTree = await buildUntrackedTree(ctx);
+          await pushHostileUntrackedStash(ctx, untrackedTree);
+
+          // Act
+          let caught: unknown;
+          try {
+            await stashApply(ctx, {});
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert — refused with the whole-tree name gate's error, and the
+          // hostile path was never written (the validation pre-pass runs
+          // over every entry before the write loop starts).
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data.code).toBe('INVALID_INDEX_ENTRY');
+          expect(await ctx.fs.exists(`${ctx.layout.workDir}/${hostilePath}`)).toBe(false);
+        },
+      );
     });
   });
 });

@@ -48,10 +48,36 @@ console.log(result.added.length, result.modified.length, result.removed.length);
 ## Throws
 
 - `PATHSPEC_NO_MATCH` — a literal pattern matched nothing. (Glob no-match is a silent no-op.)
+- `PATHSPEC_BEYOND_SYMLINK` — a literal or glob pathspec whose leading directory is a symbolic link. Not raised in bulk (`all: true`) mode.
+- `INVALID_INDEX_ENTRY` — a path this call would stage fails git's own index-entry name rules. Aborts the whole call; nothing is staged.
 - `INVALID_OPTION { option: 'all' }` — `all: true` with a non-empty pathspec.
 - `WORKING_TREE_FILE_TOO_LARGE` — a file exceeds `MAX_WORKING_TREE_BLOB_BYTES` (256 MiB).
 - `BARE_REPOSITORY` — `add` is not valid in a bare repository.
 - `EMPTY_PATHSPEC` — `paths` is empty and `all` is not set.
+
+## Entry name validation
+
+Every path this call would stage — literal, glob-matched, or walked in bulk
+(`all: true`) mode — is checked at the staging boundary against git's own
+`verify_path` rule set, the same check `.git/index` parsing enforces: a
+`.git` alias (any case, trailing dot/space, the NTFS `git~1` short name, a
+`.git:`-stream form, or an HFS+ ignorable-codepoint spelling), or a
+`.gitmodules` entry staged as a symlink, throws `INVALID_INDEX_ENTRY` and
+aborts the entire call before anything reaches the index — nothing partial
+is staged, matching `git add`'s all-or-nothing index write.
+
+Everything else git accepts is accepted too: a name carrying a backslash, a
+C0/C1 control byte, a BIDI/isolate Unicode control character, or a mid-path
+`:` stages exactly as `git add` stages it (only a *leading* `:` is
+pathspec-magic syntax, refused as such).
+
+A literal or glob pathspec whose leading directory is a symbolic link
+refuses with `PATHSPEC_BEYOND_SYMLINK` before any file is read — matching
+git's `fatal: pathspec … is beyond a symbolic link`. This check is
+shape-based, not containment-based: it fires identically whether the link
+points outside the repository or at a sibling directory inside it. It does
+not run in bulk mode, where `git add -A` stores the symlink itself rather
+than refusing.
 
 ## Clean filter drivers (`filter=<name>`)
 
@@ -104,4 +130,4 @@ section.
 - Primitives: [`walkWorkingTree`](../primitives/walk-working-tree.md), [`readIndex`](../primitives/read-index.md), [`writeObject`](../primitives/write-object.md)
 - Related commands: [`rm`](rm.md), [`checkout`](checkout.md) — share the pathspec syntax
 - Recipes: [stage with globs](../recipes.md#stage-with-globs), [bulk add --all](../recipes.md#bulk-add-all)
-- ADRs: [029](../../adr/029-add-all-ignore-stub.md), [030](../../adr/030-add-all-walk-strategy.md), [031](../../adr/031-add-all-symlink-gitlink-policy.md), [032](../../adr/032-add-all-large-file-guard.md), [037](../../adr/037-pathspec-auto-detect.md), [038](../../adr/038-pathspec-exclusion.md), [627](../../adr/627-boolean-config-values-are-refused-as-git-refuses-them.md)
+- ADRs: [029](../../adr/029-add-all-ignore-stub.md), [030](../../adr/030-add-all-walk-strategy.md), [031](../../adr/031-add-all-symlink-gitlink-policy.md), [032](../../adr/032-add-all-large-file-guard.md), [037](../../adr/037-pathspec-auto-detect.md), [038](../../adr/038-pathspec-exclusion.md), [627](../../adr/627-boolean-config-values-are-refused-as-git-refuses-them.md), [625](../../adr/625-git-parity-containment-posture.md), [626](../../adr/626-pathspec-beyond-symlink-error-code.md)

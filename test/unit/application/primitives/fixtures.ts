@@ -100,6 +100,23 @@ export async function writeRawObjectBytes(
 }
 
 /**
+ * No-dereference audit helper: a context whose `ctx.fs.read` throws if ever called with
+ * `symlinkPath` — the no-dereference discipline made a hard failure instead
+ * of a passive spy assertion.
+ */
+export const refuseReadOnSymlink = (base: Context, symlinkPath: string): Context => ({
+  ...base,
+  fs: {
+    ...base.fs,
+    read: async (p: string): Promise<Uint8Array> => {
+      if (p === symlinkPath)
+        throw new Error(`no-dereference violation: ctx.fs.read called on ${p}`);
+      return base.fs.read(p);
+    },
+  },
+});
+
+/**
  * Instrument a Context by wrapping its fs with call-tracking. Returns the wrapped
  * context and a `calls()` accessor that returns the ordered list of fs operations.
  */

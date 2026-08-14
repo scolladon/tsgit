@@ -96,7 +96,7 @@ export function parseIndex(bytes: Uint8Array): GitIndex {
     const nameLength = flagsRaw & 0xfff;
     const pathEnd = nameLength === 0xfff ? nulEnd : offset + nameLength;
     const path = decode(bytes.subarray(offset, pathEnd));
-    validateIndexPath(path, entryStart);
+    validateIndexPath(path, entryStart, mode);
 
     offset = nulEnd + 1;
 

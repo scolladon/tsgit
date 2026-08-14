@@ -25,6 +25,8 @@ import { collapsePosixSegments as normalizeAbsolutePosixPath } from '../domain/p
 export const portablePosixPolicy: PathPolicy = {
   sep: '/',
   caseInsensitive: false,
+  windowsSyntax: false,
+  honoursNoFollow: true,
   isAbsolute: (path) => path.startsWith('/'),
   resolve: (...parts) => normalizeAbsolutePosixPath(parts.join('/')),
   join: (...parts) => normalizeAbsolutePosixPath(parts.join('/')),

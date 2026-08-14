@@ -2,7 +2,6 @@ import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
 import {
   materializeFile,
-  readFile,
   removeFile,
   renameInWorkingTree,
   validatePath,
@@ -558,38 +557,6 @@ describe('internal/working-tree', () => {
             () => removeFile(ctx, '../escape' as FilePath),
             'PATHSPEC_OUTSIDE_REPO',
           );
-        });
-      });
-    });
-  });
-
-  describe('readFile', () => {
-    describe('Given a file at the path', () => {
-      describe('When readFile', () => {
-        it('Then returns its bytes', async () => {
-          // Arrange
-          const ctx = createMemoryContext();
-          const path = 'src/data.bin' as FilePath;
-          const data = new Uint8Array([1, 2, 3, 4]);
-          await ctx.fs.write(`${ctx.layout.workDir}/${path}`, data);
-
-          // Act
-          const result = await readFile(ctx, path);
-
-          // Assert
-          expect(result).toEqual(data);
-        });
-      });
-    });
-
-    describe('Given an invalid path', () => {
-      describe('When readFile', () => {
-        it('Then throws PATHSPEC_OUTSIDE_REPO', async () => {
-          // Arrange
-          const ctx = createMemoryContext();
-
-          // Assert
-          await expectError(() => readFile(ctx, '../oops' as FilePath), 'PATHSPEC_OUTSIDE_REPO');
         });
       });
     });

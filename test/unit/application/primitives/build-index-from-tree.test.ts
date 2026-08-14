@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { buildIndexFromTree } from '../../../../src/application/primitives/build-index-from-tree.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../src/application/primitives/write-tree.js';
+import { TsgitError } from '../../../../src/domain/error.js';
 import type { GitIndex, IndexEntry } from '../../../../src/domain/git-index/index.js';
 import { STAGE0_FLAGS } from '../../../../src/domain/git-index/index.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
@@ -579,6 +580,73 @@ describe('buildIndexFromTree', () => {
         expect(link?.id).toBe(linkBlob);
         expect(sub?.mode).toBe(FILE_MODE.GITLINK);
         expect(sub?.id).toBe(submoduleOid);
+      });
+    });
+  });
+
+  describe('Given a target tree with a `.git`-alias entry name', () => {
+    describe('When buildIndexFromTree runs', () => {
+      // `..`/`.`/empty/`/` names never reach this boundary through a real
+      // tree read: `parseTreeContent` already refuses to parse a tree
+      // containing one of those (pre-existing, stricter than git's own
+      // index-write refusal stage). `.git` and its NTFS short name are NOT
+      // rejected there — git accepts them at `mktree`/tree-parse and only
+      // refuses at index write — so these are the families this boundary's
+      // new check actually intercepts.
+      it.each([
+        { label: 'a `.git` entry', name: '.git' },
+        { label: 'a `git~1` entry', name: 'git~1' },
+      ])('Then $label throws INVALID_INDEX_ENTRY and produces no entries', async ({ name }) => {
+        // Arrange — `git mktree --literally` accepts these; the refusal is
+        // git's index-write stage, mirrored here at the tree->index boundary.
+        const ctx = await buildSeededContext();
+        const blobId = await writeBlob(ctx, 'hostile');
+        const treeId = await writeTree(ctx, [
+          { name: name as FilePath, id: blobId, mode: FILE_MODE.REGULAR },
+        ]);
+
+        // Act
+        let caught: unknown;
+        try {
+          await buildIndexFromTree(ctx, { targetTree: treeId, currentIndex: EMPTY_INDEX });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe('INVALID_INDEX_ENTRY');
+      });
+    });
+  });
+
+  describe('Given a `.gitmodules` leaf entry with symlink mode', () => {
+    describe('When buildIndexFromTree runs', () => {
+      it('Then throws INVALID_INDEX_ENTRY with the gitmodules-not-regular reason', async () => {
+        // Arrange — CVE-2018-11235 hardening: a symlinked .gitmodules must
+        // never reach the index.
+        const ctx = await buildSeededContext();
+        const blobId = await writeBlob(ctx, '../outside');
+        const treeId = await writeTree(ctx, [
+          { name: '.gitmodules' as FilePath, id: blobId, mode: FILE_MODE.SYMLINK },
+        ]);
+
+        // Act
+        let caught: unknown;
+        try {
+          await buildIndexFromTree(ctx, { targetTree: treeId, currentIndex: EMPTY_INDEX });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data;
+        expect(data).toEqual({
+          code: 'INVALID_INDEX_ENTRY',
+          offset: -1,
+          reason: "'.gitmodules' must not be a symlink",
+        });
       });
     });
   });

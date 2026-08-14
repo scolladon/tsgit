@@ -14,15 +14,21 @@ import {
   toStagedKind,
   toUnstagedKind,
 } from '../../../../src/application/commands/status.js';
+import { compareWorkingTreeDelta } from '../../../../src/application/primitives/compare-working-tree-entry.js';
 import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
+import { createWorkingTreeStatMap } from '../../../../src/application/primitives/internal/working-tree-stat-map.js';
+import { readIndex } from '../../../../src/application/primitives/read-index.js';
+import { walkWorkingTree } from '../../../../src/application/primitives/walk-working-tree.js';
 import type { DiffChange } from '../../../../src/domain/diff/index.js';
 import { TsgitError } from '../../../../src/domain/error.js';
+import type { IndexEntry } from '../../../../src/domain/git-index/index-entry.js';
 import type {
   AuthorIdentity,
   FileMode,
   FilePath,
   ObjectId,
 } from '../../../../src/domain/objects/index.js';
+import type { Context } from '../../../../src/ports/context.js';
 
 const author: AuthorIdentity = {
   name: 'Ada',
@@ -697,6 +703,36 @@ describe('status — progress reporting', () => {
         expect(result.untracked).toContain('b.txt');
       });
     });
+
+    describe('When status runs its untracked pass', () => {
+      it('Then no lstat is issued for the untracked path (path-only walk)', async () => {
+        // Arrange — the untracked pass binds `{ path }` only; it must never
+        // pay for the walker's lazy stat.
+        const ctx = await seedClean();
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'new');
+        const baseLstat = ctx.fs.lstat;
+        let untrackedLstatCalls = 0;
+        const trackingFs = new Proxy(ctx.fs, {
+          get(target, prop, receiver) {
+            if (prop === 'lstat') {
+              return async (p: string) => {
+                if (p.endsWith('/b.txt')) untrackedLstatCalls += 1;
+                return baseLstat(p);
+              };
+            }
+            return Reflect.get(target, prop, receiver);
+          },
+        });
+        const trackingCtx = { ...ctx, fs: trackingFs };
+
+        // Act
+        const result = await status(trackingCtx);
+
+        // Assert
+        expect(result.untracked).toContain('b.txt');
+        expect(untrackedLstatCalls).toBe(0);
+      });
+    });
   });
 
   describe('Given an untracked file matched by .gitignore', () => {
@@ -1091,6 +1127,112 @@ describe('status — unmerged column', () => {
 
         // Assert
         expect(result.unmerged).toEqual([]);
+      });
+    });
+  });
+
+  describe('status with one working-tree stat map shared across its two passes', () => {
+    // status's own untracked pass never reads the walker's lazy stat (see "no
+    // lstat is issued for the untracked path" above), so wiring one shared
+    // map through status is currently behaviour-preserving for status's own
+    // output — there is nothing IN status today to dedupe against. These
+    // tests pin the dedup CONTRACT the wiring establishes instead, composing
+    // the same two primitives (compareWorkingTreeDelta, walkWorkingTree) over
+    // the same shared instance status threads between its tracked and
+    // untracked passes — precisely the case Part 7's per-walk memoisation
+    // alone does not cover, and the guarantee any future untracked-pass stat
+    // read (or any other status-adjacent command) can now rely on.
+    const trackLstat = (ctx: Context): { readonly ctx: Context; readonly calls: () => number } => {
+      const baseLstat = ctx.fs.lstat;
+      let calls = 0;
+      const trackingFs = new Proxy(ctx.fs, {
+        get(target, prop, receiver) {
+          if (prop === 'lstat') {
+            return async (p: string) => {
+              calls += 1;
+              return baseLstat(p);
+            };
+          }
+          return Reflect.get(target, prop, receiver);
+        },
+      });
+      return { ctx: { ...ctx, fs: trackingFs }, calls: () => calls };
+    };
+
+    const stagedEntry = async (ctx: Context, path: string): Promise<IndexEntry> => {
+      const index = await readIndex(ctx);
+      const entry = index.entries.find((e) => e.path === path);
+      if (entry === undefined) throw new Error(`stagedEntry: ${path} not staged`);
+      return entry;
+    };
+
+    describe('Given a tracked path already recorded and a separate untracked-only path', () => {
+      describe("When a walk consumer reads every leaf's lazy stat", () => {
+        it('Then the tracked path costs one lstat total and the untracked path costs one of its own', async () => {
+          // Arrange
+          const ctx = await seedClean();
+          await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'new');
+          const entry = await stagedEntry(ctx, 'a.txt');
+          const stats = createWorkingTreeStatMap();
+          const { ctx: tracked, calls } = trackLstat(ctx);
+
+          // Act — pass 1: the tracked-pass comparison records a.txt's sample.
+          await compareWorkingTreeDelta(tracked, entry, undefined, undefined, stats);
+          // Act — pass 2: a walk consumer reads every leaf's lazy stat.
+          const samples = new Map<string, unknown>();
+          for await (const walked of walkWorkingTree(tracked, { stats })) {
+            samples.set(walked.path, await walked.stat());
+          }
+
+          // Assert — a.txt reuses pass 1's sample (no extra lstat); b.txt pays
+          // its own. Total: exactly 2, never a path stated twice.
+          expect(calls()).toBe(2);
+          expect(samples.get('a.txt')).toBeDefined();
+          expect(samples.get('b.txt')).toBeDefined();
+        });
+      });
+    });
+
+    describe('Given a tracked path deleted from disk before the tracked pass runs', () => {
+      describe('When compareWorkingTreeDelta is called with the shared map', () => {
+        it("Then the status is 'absent' and nothing is recorded", async () => {
+          // Arrange
+          const ctx = await seedClean();
+          await ctx.fs.rm(`${ctx.layout.workDir}/a.txt`);
+          const entry = await stagedEntry(ctx, 'a.txt');
+          const stats = createWorkingTreeStatMap();
+
+          // Act
+          const result = await compareWorkingTreeDelta(ctx, entry, undefined, undefined, stats);
+
+          // Assert
+          expect(result.status).toBe('absent');
+          expect(stats.sampled(entry.path)).toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given a tracked path absent during the tracked pass but recreated before a later walk reads it', () => {
+      describe("When a walk consumer reads that path's lazy stat", () => {
+        it('Then it takes a fresh sample rather than a stale negative', async () => {
+          // Arrange — the tracked pass sees the path missing and records
+          // nothing (no tombstone); the file then reappears before pass 2.
+          const ctx = await seedClean();
+          await ctx.fs.rm(`${ctx.layout.workDir}/a.txt`);
+          const entry = await stagedEntry(ctx, 'a.txt');
+          const stats = createWorkingTreeStatMap();
+          await compareWorkingTreeDelta(ctx, entry, undefined, undefined, stats);
+          await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'recreated');
+
+          // Act
+          let sample: unknown;
+          for await (const walked of walkWorkingTree(ctx, { stats })) {
+            if (walked.path === 'a.txt') sample = await walked.stat();
+          }
+
+          // Assert
+          expect(sample).toBeDefined();
+        });
       });
     });
   });

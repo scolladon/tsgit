@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
 import {
+  assertNoSymlinkedLeadingPath,
   enforceLiteralMustMatch,
   resolvePathspec,
 } from '../../../../../src/application/commands/internal/resolve-pathspec.js';
@@ -56,6 +58,43 @@ describe('resolvePathspec', () => {
         // Assert
         expect(result.hasGlob).toBe(hasGlob);
         expect(result.literalMustMatch).toEqual(literalMustMatch);
+      });
+    });
+  });
+
+  describe('Given a set of pathspec patterns, for the leading-symlink scan targets', () => {
+    describe('When resolved', () => {
+      it.each([
+        {
+          patterns: ['src/foo.ts'],
+          symlinkScanTargets: ['src/foo.ts'],
+          label: 'a single literal is included',
+        },
+        {
+          patterns: ['link/*.ts'],
+          symlinkScanTargets: ['link/*.ts'],
+          label: 'a single glob body is included (unlike literalMustMatch, which excludes it)',
+        },
+        {
+          patterns: ['src/foo', '*.ts', '!*.test.ts', '!src/skip'],
+          symlinkScanTargets: ['src/foo', '*.ts', '*.test.ts', 'src/skip'],
+          label:
+            'a mix of literal + glob keeps both, and negated entries are scanned too (git refuses a negated pathspec beyond a symlink exactly like a positive one)',
+        },
+        {
+          patterns: ['!*.ts', '!src/skip'],
+          symlinkScanTargets: ['*.ts', 'src/skip'],
+          label: 'a `!`-only spec still scans every negated body',
+        },
+      ])('Then $label', ({ patterns, symlinkScanTargets }) => {
+        // Arrange
+        const pathspecPatterns = patterns;
+
+        // Act
+        const result = resolvePathspec(pathspecPatterns);
+
+        // Assert
+        expect(result.symlinkScanTargets).toEqual(symlinkScanTargets);
       });
     });
   });
@@ -219,6 +258,97 @@ describe('enforceLiteralMustMatch', () => {
           'PATHSPEC_NO_MATCH',
         );
         expect((err.data as { pattern: string }).pattern).toBe('missing');
+      });
+    });
+  });
+});
+
+const expectAsyncError = async (fn: () => Promise<unknown>, code: string): Promise<TsgitError> => {
+  let caught: unknown;
+  try {
+    await fn();
+  } catch (err) {
+    caught = err;
+  }
+  expect(caught).toBeInstanceOf(TsgitError);
+  expect((caught as TsgitError).data.code).toBe(code);
+  return caught as TsgitError;
+};
+
+describe('assertNoSymlinkedLeadingPath', () => {
+  describe('Given a literal naming a file beyond a symlink pointing outside the repo', () => {
+    describe('When checked', () => {
+      it('Then throws PATHSPEC_BEYOND_SYMLINK carrying the literal', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.symlink('/outside-the-repo', `${ctx.layout.workDir}/dir`);
+
+        // Act + Assert
+        const err = await expectAsyncError(
+          () => assertNoSymlinkedLeadingPath(ctx, [path('dir/file')]),
+          'PATHSPEC_BEYOND_SYMLINK',
+        );
+        expect((err.data as { path: string }).path).toBe('dir/file');
+      });
+    });
+  });
+
+  describe('Given a literal naming a file beyond a symlink pointing inside the repo', () => {
+    describe('When checked', () => {
+      it('Then throws PATHSPEC_BEYOND_SYMLINK — shape-based, not containment-based', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.symlink('inside-target', `${ctx.layout.workDir}/dir`);
+
+        // Act + Assert
+        await expectAsyncError(
+          () => assertNoSymlinkedLeadingPath(ctx, [path('dir/file')]),
+          'PATHSPEC_BEYOND_SYMLINK',
+        );
+      });
+    });
+  });
+
+  describe('Given a literal naming an untracked, nonexistent file beyond the link', () => {
+    describe('When checked', () => {
+      it('Then it still throws PATHSPEC_BEYOND_SYMLINK (only the leading component is scanned)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.symlink('/outside-the-repo', `${ctx.layout.workDir}/dir`);
+
+        // Act + Assert
+        await expectAsyncError(
+          () => assertNoSymlinkedLeadingPath(ctx, [path('dir/never-created.txt')]),
+          'PATHSPEC_BEYOND_SYMLINK',
+        );
+      });
+    });
+  });
+
+  describe('Given a literal whose leaf itself is the symlink', () => {
+    describe('When checked', () => {
+      it('Then it does not throw (git stages a symlinked leaf as 120000)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.symlink('target.txt', `${ctx.layout.workDir}/link`);
+
+        // Act + Assert
+        await expect(assertNoSymlinkedLeadingPath(ctx, [path('link')])).resolves.toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given literals with no symlinked leading component', () => {
+    describe('When checked', () => {
+      it('Then it does not throw', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.mkdir(`${ctx.layout.workDir}/dir`);
+
+        // Act + Assert
+        await expect(
+          assertNoSymlinkedLeadingPath(ctx, [path('dir/file'), path('top-level.txt')]),
+        ).resolves.toBeUndefined();
       });
     });
   });

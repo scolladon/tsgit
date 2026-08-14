@@ -75,6 +75,12 @@ The entry selector is a numeric stack `index` (default `0`, the newest); the
   writing nothing — when a path it would change carries uncommitted working-tree
   modifications, or when restoring untracked files would clobber an existing
   file (git's "local changes would be overwritten").
+- **Untracked entries are name-validated before anything is restored.**
+  `apply`/`pop` of a stash saved with `includeUntracked` checks every path in
+  the untracked tree against git's index-entry name rules before writing the
+  first file — a stash carrying a hostile name (a `.git` alias, or a
+  traversal) is refused wholesale with `INVALID_INDEX_ENTRY`, and nothing is
+  written to the working tree.
 
 ## Examples
 
@@ -103,6 +109,8 @@ await repo.stash.apply({ restoreIndex: true });
 - `STASH_NOT_FOUND` — the selector `index` is out of range.
 - `STASH_APPLY_WOULD_OVERWRITE` — `apply`/`pop` would overwrite uncommitted
   working-tree changes or an existing untracked file.
+- `INVALID_INDEX_ENTRY` — an untracked entry in the stash fails git's own
+  index-entry name rules. `apply`/`pop` restores nothing.
 - `INVALID_COMMIT` — `refs/stash` points at a commit that is not a stash entry.
 
 See [`../errors.md`](../errors.md) for the canonical `TsgitError.data.code` list.
@@ -112,5 +120,5 @@ See [`../errors.md`](../errors.md) for the canonical `TsgitError.data.code` list
 - Primitives: [`readObject`](../primitives/read-object.md), [`writeObject`](../primitives/write-object.md)
 - Related commands: [`merge`](merge.md) · [`reset`](reset.md) · [`checkout`](checkout.md)
 - Recipes: [`../recipes.md`](../recipes.md)
-- ADRs: 210–216
+- ADRs: 210–216, 625, 627–628
 - Roadmap: Phase 21.3

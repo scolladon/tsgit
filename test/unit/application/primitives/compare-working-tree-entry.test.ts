@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { add } from '../../../../src/application/commands/add.js';
 import { init } from '../../../../src/application/commands/init.js';
@@ -9,6 +9,7 @@ import {
   type WorkingTreeComparison,
 } from '../../../../src/application/primitives/compare-working-tree-entry.js';
 import { buildAttributeProvider } from '../../../../src/application/primitives/internal/read-gitattributes.js';
+import { createWorkingTreeStatMap } from '../../../../src/application/primitives/internal/working-tree-stat-map.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import type { IndexEntry } from '../../../../src/domain/git-index/index-entry.js';
 import type {
@@ -17,6 +18,7 @@ import type {
   CommandRunner,
 } from '../../../../src/ports/command-runner.js';
 import type { Context } from '../../../../src/ports/context.js';
+import { refuseReadOnSymlink } from './fixtures.js';
 
 const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
 const dec = (b: Uint8Array): string => new TextDecoder().decode(b);
@@ -251,6 +253,22 @@ describe('compareWorkingTreeEntry', () => {
 
         // Assert
         expect(result).toBe('modified');
+      });
+    });
+  });
+
+  describe('Given a staged symlink (no-dereference audit)', () => {
+    describe('When comparing the entry to the working tree, and ctx.fs.read is wired to fail on the symlink path', () => {
+      it('Then it never dereferences the link', async () => {
+        // Arrange
+        const { ctx, entry } = await seedSymlink('link', 'target-a');
+        const guarded = refuseReadOnSymlink(ctx, work(ctx, 'link'));
+
+        // Act
+        const result = await compareWorkingTreeEntry(guarded, entry);
+
+        // Assert
+        expect(result).toBe('unchanged');
       });
     });
   });
@@ -718,6 +736,117 @@ describe('compareWorkingTreeDelta', () => {
         const result = await compareWorkingTreeDelta(ctx, symEntry, provider);
 
         // Assert — symlink target hashed raw (not cleaned) => unchanged
+        expect(result.status).toBe('unchanged');
+      });
+    });
+  });
+});
+
+describe('compareWorkingTreeDelta — shared stat map', () => {
+  const trackLstat = (ctx: Context): { readonly ctx: Context; readonly calls: () => number } => {
+    const baseLstat = ctx.fs.lstat;
+    let calls = 0;
+    const trackingFs = new Proxy(ctx.fs, {
+      get(target, prop, receiver) {
+        if (prop === 'lstat') {
+          return async (p: string) => {
+            calls += 1;
+            return baseLstat(p);
+          };
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+    return { ctx: { ...ctx, fs: trackingFs }, calls: () => calls };
+  };
+
+  describe('Given a map with a sample already recorded for the entry path', () => {
+    describe('When compareWorkingTreeDelta is called with the map', () => {
+      it('Then no lstat is issued and the recorded sample drives the verdict', async () => {
+        // Arrange
+        const { ctx, entry } = await seedFile('a.txt', 'hello\n');
+        const stat = await ctx.fs.lstat(work(ctx, 'a.txt'));
+        const stats = createWorkingTreeStatMap();
+        stats.record(entry.path, stat);
+        const { ctx: tracked, calls } = trackLstat(ctx);
+
+        // Act
+        const result = await compareWorkingTreeDelta(tracked, entry, undefined, undefined, stats);
+
+        // Assert
+        expect(calls()).toBe(0);
+        expect(result.status).toBe('unchanged');
+      });
+
+      it('Then record is not called again — the sample already came from the map, not a fresh lstat', async () => {
+        // Arrange
+        const { ctx, entry } = await seedFile('a.txt', 'hello\n');
+        const stat = await ctx.fs.lstat(work(ctx, 'a.txt'));
+        const stats = createWorkingTreeStatMap();
+        stats.record(entry.path, stat);
+        const recordSpy = vi.spyOn(stats, 'record');
+
+        // Act
+        await compareWorkingTreeDelta(ctx, entry, undefined, undefined, stats);
+
+        // Assert
+        expect(recordSpy).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('Given a map supplied but nothing recorded for the entry path', () => {
+    describe('When compareWorkingTreeDelta is called with the map', () => {
+      it('Then exactly one lstat is issued and the sample is recorded', async () => {
+        // Arrange
+        const { ctx, entry } = await seedFile('a.txt', 'hello\n');
+        const stats = createWorkingTreeStatMap();
+        const { ctx: tracked, calls } = trackLstat(ctx);
+
+        // Act
+        const result = await compareWorkingTreeDelta(tracked, entry, undefined, undefined, stats);
+        const recorded = stats.sampled(entry.path);
+        const reference = await ctx.fs.lstat(work(ctx, 'a.txt'));
+
+        // Assert
+        expect(calls()).toBe(1);
+        expect(result.status).toBe('unchanged');
+        expect(recorded?.ino).toBe(reference.ino);
+        expect(recorded?.size).toBe(reference.size);
+      });
+    });
+  });
+
+  describe('Given a map supplied and the working file is absent', () => {
+    describe('When compareWorkingTreeDelta is called with the map', () => {
+      it("Then the status is 'absent' and nothing is recorded", async () => {
+        // Arrange
+        const { ctx, entry } = await seedFile('a.txt', 'hello\n');
+        await ctx.fs.rm(work(ctx, 'a.txt'));
+        const stats = createWorkingTreeStatMap();
+
+        // Act
+        const result = await compareWorkingTreeDelta(ctx, entry, undefined, undefined, stats);
+
+        // Assert
+        expect(result.status).toBe('absent');
+        expect(stats.sampled(entry.path)).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given no map is supplied', () => {
+    describe('When compareWorkingTreeDelta is called', () => {
+      it('Then exactly one lstat is issued, unchanged from before the option existed', async () => {
+        // Arrange
+        const { ctx, entry } = await seedFile('a.txt', 'hello\n');
+        const { ctx: tracked, calls } = trackLstat(ctx);
+
+        // Act
+        const result = await compareWorkingTreeDelta(tracked, entry);
+
+        // Assert
+        expect(calls()).toBe(1);
         expect(result.status).toBe('unchanged');
       });
     });

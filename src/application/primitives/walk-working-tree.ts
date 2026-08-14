@@ -2,13 +2,13 @@ import { MAX_FLAT_TREE_ENTRIES } from '../../domain/diff/index.js';
 import { operationAborted } from '../../domain/error.js';
 import { treeDepthExceeded, treeEntryLimitExceeded } from '../../domain/objects/error.js';
 import type { FilePath } from '../../domain/objects/object-id.js';
-import {
-  isForbiddenGitComponent,
-  validateWorkingTreePath,
-} from '../../domain/working-tree-path.js';
+import { isDotGitWalkEntry } from '../../domain/path/verify-path.js';
+import { validateWalkedEntryPath } from '../../domain/working-tree-path.js';
 import type { Context } from '../../ports/context.js';
+import type { FileStat } from '../../ports/file-system.js';
 import { joinPathSegment } from './internal/join-path-segment.js';
 import { joinPath } from './internal/join-working-tree-path.js';
+import type { WorkingTreeStatMap } from './internal/working-tree-stat-map.js';
 import type { WalkIgnorePredicate, WalkWorkingTreeEntry, WalkWorkingTreeOptions } from './types.js';
 
 const DEFAULT_MAX_DEPTH = 4096;
@@ -18,6 +18,7 @@ interface WalkConfig {
   readonly maxDepth: number;
   readonly maxEntries: number;
   readonly ignore: WalkIgnorePredicate | undefined;
+  readonly stats: WorkingTreeStatMap | undefined;
 }
 
 interface Counter {
@@ -27,12 +28,20 @@ interface Counter {
 /**
  * Depth-first walk of the working tree starting at `ctx.layout.workDir`.
  *
- * Yields leaf entries (files and symlinks) as `{ path, stat }`. Directories
- * are descended into, not yielded. `.git` at any level is skipped
- * (case-insensitive, NTFS-trimmed). Embedded repositories (directories
- * containing a `.git` child) are skipped entirely — yields nothing under
- * them. Symlinks are surfaced via `lstat` (no follow); a symlink to a
- * directory is yielded as a leaf, not descended into.
+ * Yields leaf entries (files and symlinks) as `{ path, isFile, isDirectory,
+ * isSymbolicLink, stat }`. The three kind bits come straight off the
+ * underlying `readdir` `DirEntry`; `stat` is a lazily fetched, per-entry
+ * memoised accessor — a consumer that only reads `path` never pays an
+ * `lstat`. Directories are descended into, not yielded. `.git` at any level
+ * is skipped, folded only by case (`isDotGitWalkEntry`, matching git's own
+ * `read_directory` under `core.ignorecase`) — an NTFS/HFS-obscured alias
+ * (`git~1`, a `.git:`-stream name, a trailing-dot/space variant, an HFS
+ * ignorable-codepoint form) is walked like any other entry, exactly as
+ * real git's directory walk does; that widened matrix applies only at the
+ * index-write boundary (`verifyPath`), not here. Embedded repositories
+ * (directories containing a `.git` child) are skipped entirely — yields
+ * nothing under them. Symlinks are surfaced via `lstat` (no follow); a
+ * symlink to a directory is yielded as a leaf, not descended into.
  *
  * The host repository's own `.git` is NOT treated as an embedded-repo
  * marker — at the workDir root we only skip the `.git` entry itself, not
@@ -47,6 +56,7 @@ export async function* walkWorkingTree(
     maxDepth: options?.maxDepth ?? DEFAULT_MAX_DEPTH,
     maxEntries: options?.maxEntries ?? MAX_FLAT_TREE_ENTRIES,
     ignore: options?.ignore,
+    stats: options?.stats,
   };
   const counter: Counter = { value: 0 };
   yield* walkInternal(config, counter, '', 0, /* isRoot */ true);
@@ -64,12 +74,12 @@ async function* walkInternal(
   // Embedded-repo gate: a non-root directory containing a `.git`
   // DIRECTORY (or a `.git` regular file pointing at a worktree gitdir)
   // is treated as an embedded clone and yields nothing. A spurious
-  // file literally named `.git` is filtered by `isForbiddenGitComponent`
+  // file literally named `.git` is filtered by `isDotGitWalkEntry`
   // below but must NOT collapse the parent directory.
   if (!isRoot && entries.some(isEmbeddedGitMarker)) return;
   for (const entry of entries) {
     if (config.ctx.signal?.aborted) throw operationAborted();
-    if (isForbiddenGitComponent(entry.name)) continue;
+    if (isDotGitWalkEntry(entry.name)) continue;
     yield* visitEntry(config, counter, prefix, depth, entry);
   }
 }
@@ -87,8 +97,12 @@ async function* visitEntry(
   },
 ): AsyncIterable<WalkWorkingTreeEntry> {
   const path = joinPathSegment(prefix, entry.name) as FilePath;
-  // Defence-in-depth: a malicious adapter could return `..` etc.
-  validateWorkingTreePath(path);
+  // Defence-in-depth: a malicious adapter could return `..` etc. Narrow
+  // (validateWalkedEntryPath, not validateWorkingTreePath): a legitimate
+  // on-disk `git~1`/`.git:stream`/HFS-alias entry is not a traversal hazard
+  // and must reach the yield below, exactly as git's own directory walk
+  // treats it.
+  validateWalkedEntryPath(path);
   if (entry.isDirectory && !entry.isSymbolicLink) {
     if (config.ignore !== undefined && (await config.ignore(path, true))) return;
     yield* walkInternal(config, counter, path, depth + 1, /* isRoot */ false);
@@ -100,9 +114,39 @@ async function* visitEntry(
   if (counter.value > config.maxEntries) {
     throw treeEntryLimitExceeded(counter.value, config.maxEntries);
   }
-  const stat = await config.ctx.fs.lstat(joinPath(config.ctx.layout.workDir, path));
-  yield { path, stat };
+  yield {
+    path,
+    isFile: entry.isFile,
+    isDirectory: entry.isDirectory,
+    isSymbolicLink: entry.isSymbolicLink,
+    stat: lazyStat(config, path),
+  };
 }
+
+/**
+ * Builds a memoised stat accessor for one leaf entry. `lstat` is deferred
+ * until a consumer actually reads the stat, and — unchanged from the prior
+ * eager fetch — carries no `.catch()`: a file deleted between `readdir` and
+ * the accessor's first call still throws, just later (on first read instead
+ * of on yield). When a shared {@link WorkingTreeStatMap} is supplied, a prior
+ * sample for this path (recorded by another pass) short-circuits the `lstat`
+ * entirely; a fresh fetch is recorded back into the map for a later pass.
+ */
+const lazyStat = (config: WalkConfig, path: FilePath): (() => Promise<FileStat>) => {
+  let memo: Promise<FileStat> | undefined;
+  return () => {
+    memo ??= fetchStat(config, path);
+    return memo;
+  };
+};
+
+const fetchStat = async (config: WalkConfig, path: FilePath): Promise<FileStat> => {
+  const sampled = config.stats?.sampled(path);
+  if (sampled !== undefined) return sampled;
+  const stat = await config.ctx.fs.lstat(joinPath(config.ctx.layout.workDir, path));
+  config.stats?.record(path, stat);
+  return stat;
+};
 
 const directoryPath = (config: WalkConfig, prefix: string): string =>
   prefix === '' ? config.ctx.layout.workDir : joinPath(config.ctx.layout.workDir, prefix);
@@ -113,7 +157,7 @@ const isEmbeddedGitMarker = (entry: {
   readonly isDirectory: boolean;
   readonly isSymbolicLink: boolean;
 }): boolean => {
-  if (!isForbiddenGitComponent(entry.name)) return false;
+  if (!isDotGitWalkEntry(entry.name)) return false;
   // A `.git` directory marks an embedded clone. A `.git` regular file is
   // git's worktree-pointer (`gitdir: /path/to/.git/worktrees/...`) — also
   // an embedded checkout. Symlinks are NOT treated as markers because the

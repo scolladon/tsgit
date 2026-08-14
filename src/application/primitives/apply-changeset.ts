@@ -2,16 +2,24 @@
  * Apply a Changeset to the working tree + return new IndexEntry records.
  *
  * Lifecycle:
- *  1. Dirty-tree guard (unless `force`): hash any working-tree file that
+ *  1. Entry-name guard (always, even under `force`): every `add`/`update`
+ *  target path is validated against git's index-write matrix before
+ *  anything is written — mirrors git's `unpack_trees` building the new
+ *  index in memory before `checkout_all` touches disk, so a hostile
+ *  target-tree entry anywhere in the changeset leaves the working tree
+ *  untouched rather than partially populated.
+ *  2. Dirty-tree guard (unless `force`): hash any working-tree file that
  *  `update`/`delete` would touch and compare against the changeset's
  *  `previousId`. Untracked paths that `add` would clobber are also
  *  flagged. Collected paths surface as CHECKOUT_OVERWRITE_DIRTY.
- *  2. Apply each non-noop entry — `delete` then `add`/`update` per path,
+ *  3. Apply each non-noop entry — `delete` then `add`/`update` per path,
  *  with per-file progress ticks.
- *  3. Build new stage-0 IndexEntry records from the post-write lstat.
+ *  4. Build new stage-0 IndexEntry records from the post-write lstat.
  *
- * Atomicity: per-file (matches canonical git). No cross-file rollback —
- * see.
+ * Atomicity: per-file for I/O failures (matches canonical git — no
+ * cross-file rollback on e.g. a permission error mid-apply). The entry-name
+ * guard is the one whole-changeset exception, matching git's own two-phase
+ * split between index-build validation and the write phase.
  */
 import {
   checkoutOverwriteDirty,
@@ -21,6 +29,7 @@ import {
 import { comparePaths } from '../../domain/diff/index.js';
 import { TsgitError } from '../../domain/error.js';
 import { type IndexEntry, STAGE0_FLAGS } from '../../domain/git-index/index.js';
+import { NO_PARSER_OFFSET, validateIndexPath } from '../../domain/git-index/path-validator.js';
 import {
   FILE_MODE,
   type FileMode,
@@ -32,6 +41,10 @@ import type { Changeset, ChangesetEntry } from './compute-changeset.js';
 import { joinPath } from './internal/join-working-tree-path.js';
 import { type AttributeProvider, buildAttributeProvider } from './internal/read-gitattributes.js';
 import { serializeAndHash } from './internal/serialize-and-hash.js';
+import {
+  createLeadingPathScanner,
+  type LeadingPathScanner,
+} from './internal/symlinked-leading-path.js';
 import {
   rmIfExists,
   writeWorkingTreeEntry,
@@ -56,10 +69,15 @@ export interface ApplyChangesetResult {
 
 const CHECKOUT_OP = 'checkout:materialize';
 
+const LINK_ENCODER = new TextEncoder();
+
 const blobMatches = async (ctx: Context, absPath: string, expectedId: string): Promise<boolean> => {
   let bytes: Uint8Array;
   try {
-    bytes = await ctx.fs.read(absPath);
+    const stat = await ctx.fs.lstat(absPath);
+    bytes = stat.isSymbolicLink
+      ? LINK_ENCODER.encode(await ctx.fs.readlink(absPath))
+      : await ctx.fs.read(absPath);
   } catch (err) {
     // FILE_NOT_FOUND on a `delete`/`update` target means the file is already
     // gone — treat as non-dirty so the apply step proceeds as a no-op.
@@ -119,6 +137,22 @@ const evaluateDirtyPath = async (
   return undefined;
 };
 
+// The checkout path's tree->index boundary. Every `add`/`update` entry
+// carries a path sourced from a target-tree walk (`walkTree` never
+// validates entry names — that is git's `mktree` escape hatch), so each
+// one is re-checked here before `applyAllEntries` writes anything.
+// `delete`/`noop` entries are skipped: their path already passed this same
+// check when the CURRENT index was parsed (`index-parser.ts`).
+const validateChangesetEntry = (entry: ChangesetEntry): void => {
+  // Stryker disable next-line ConditionalExpression: equivalent — computeChangeset sources a `delete`/`noop` entry's `path` AND `mode` unchanged from the current index (`classify` in compute-changeset.ts), which index-parser.ts already ran through this same validateIndexPath(path, _, mode) at parse time; the throw decision depends only on (path, mode), not offset, so re-running it on an already-validated pair can never newly throw.
+  if (entry.kind !== 'add' && entry.kind !== 'update') return;
+  validateIndexPath(entry.path, NO_PARSER_OFFSET, entry.mode);
+};
+
+const validateChangesetPaths = (changeset: Changeset): void => {
+  for (const entry of changeset.entries) validateChangesetEntry(entry);
+};
+
 const checkDirty = async (
   ctx: Context,
   workdir: string,
@@ -168,15 +202,16 @@ const writeBlobToWorkingTree = async (
   path: FilePath,
   id: IndexEntry['id'],
   mode: FileMode,
+  scanner: LeadingPathScanner,
   provider?: AttributeProvider,
 ): Promise<void> => {
   if (mode === FILE_MODE.GITLINK) {
-    await writeWorkingTreeEntry(ctx, path, new Uint8Array(), mode);
+    await writeWorkingTreeEntry(ctx, path, new Uint8Array(), mode, scanner);
     return;
   }
   if (mode === FILE_MODE.SYMLINK) {
     const blob = await readBlob(ctx, id);
-    await writeWorkingTreeEntry(ctx, path, blob.content, mode);
+    await writeWorkingTreeEntry(ctx, path, blob.content, mode, scanner);
     return;
   }
   if (provider !== undefined && ctx.command !== undefined) {
@@ -190,31 +225,42 @@ const writeBlobToWorkingTree = async (
         if (choice.required) {
           throw smudgeFilterFailed(path, choice.name, result.exitCode);
         }
-        await writeWorkingTreeEntry(ctx, path, blob.content, mode);
+        await writeWorkingTreeEntry(ctx, path, blob.content, mode, scanner);
         return;
       }
-      await writeWorkingTreeEntry(ctx, path, result.bytes, mode);
+      await writeWorkingTreeEntry(ctx, path, result.bytes, mode, scanner);
       return;
     }
   }
   const stream = await streamBlob(ctx, id);
-  await writeWorkingTreeEntryStream(ctx, path, stream, mode);
+  await writeWorkingTreeEntryStream(ctx, path, stream, mode, scanner);
 };
 
 const applyEntry = async (
   ctx: Context,
   workdir: string,
   entry: ChangesetEntry,
+  scanner: LeadingPathScanner,
   provider?: AttributeProvider,
 ): Promise<IndexEntry | undefined> => {
   const absPath = joinPath(workdir, entry.path);
   if (entry.kind === 'noop') return undefined;
   if (entry.kind === 'delete') {
+    // git skips a removal silently when the leading directory is a
+    // symlink — the delete is never attempted, not refused.
+    if (await scanner.hasSymlinkedLeadingPath(entry.path)) return undefined;
     await rmIfExists(ctx, absPath);
     return undefined;
   }
   if (entry.id === undefined) return undefined;
-  await writeBlobToWorkingTree(ctx, entry.path, entry.id as IndexEntry['id'], entry.mode, provider);
+  await writeBlobToWorkingTree(
+    ctx,
+    entry.path,
+    entry.id as IndexEntry['id'],
+    entry.mode,
+    scanner,
+    provider,
+  );
   return buildIndexEntry(ctx, absPath, entry.path, entry.id, entry.mode);
 };
 
@@ -223,6 +269,7 @@ const applyAllEntries = async (
   changeset: Changeset,
   workdir: string,
   lazyProvider: () => Promise<AttributeProvider>,
+  scanner: LeadingPathScanner,
 ): Promise<ApplyChangesetResult> => {
   const writtenEntries: IndexEntry[] = [];
   let written = 0;
@@ -230,7 +277,7 @@ const applyAllEntries = async (
 
   for (const entry of changeset.entries) {
     const provider = ctx.command !== undefined ? await lazyProvider() : undefined;
-    const indexEntry = await applyEntry(ctx, workdir, entry, provider);
+    const indexEntry = await applyEntry(ctx, workdir, entry, scanner, provider);
     if (entry.kind === 'delete') {
       deleted += 1;
     } else if (entry.kind === 'add' || entry.kind === 'update') {
@@ -256,6 +303,8 @@ export const applyChangeset = async (
 ): Promise<ApplyChangesetResult> => {
   const { changeset, force, workdir } = opts;
 
+  validateChangesetPaths(changeset);
+
   if (!force) {
     const dirty = await checkDirty(ctx, workdir, changeset);
     if (dirty.localChanges.length > 0 || dirty.untracked.length > 0) {
@@ -269,5 +318,10 @@ export const applyChangeset = async (
   const lazyProvider = (): Promise<AttributeProvider> =>
     (providerPromise ??= buildAttributeProvider(ctx));
 
-  return applyAllEntries(ctx, changeset, workdir, lazyProvider);
+  // One scanner per changeset application, shared by BOTH the delete-skip
+  // check and the write-side unlink: its per-directory memo means a deep
+  // tree with many entries under the same symlinked directory costs one
+  // `lstat` per distinct directory, not one per entry.
+  const scanner = createLeadingPathScanner(ctx);
+  return applyAllEntries(ctx, changeset, workdir, lazyProvider, scanner);
 };

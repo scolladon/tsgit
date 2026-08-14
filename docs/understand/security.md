@@ -1,30 +1,24 @@
 # Security model
 
-This document explains the security properties tsgit enforces by construction. The bottom line: every adapter's `FileSystem` and `HttpTransport` runs through a wrapping validator on construction, so the adapters never receive a path or URL that isn't already inside the contracted boundary.
+This document explains the security properties tsgit enforces by construction. The bottom line: every adapter's `FileSystem` and `HttpTransport` runs through a wrapping validator on construction, so the adapters never receive a path or URL that isn't already inside the contracted boundary — enforced against the resolved (real) location for writes, lexically for reads.
 
 To report a vulnerability, see [`SECURITY.md`](../../SECURITY.md) at the repo root.
 
 ## Path containment
 
-Every `FileSystem` adapter enforces that every input path resolves to a location **inside one of the adapter's containment roots**. For a normal repository (and a main worktree) that set is a single root, `workDir`. Opening a linked worktree, a submodule working directory, or a `--separate-git-dir` layout widens it to the resolved layout's `{ workDir, gitDir, commonDir }`, minimised so any root already contained in another is dropped — a normal repo still collapses to exactly `[workDir]`, byte-identical to before ([ADR-541](../adr/541-raw-node-adapter-layout-root-set.md)). Escapes via:
+Every `FileSystem` adapter enforces that every input path resolves to a location **inside one of the adapter's containment roots** — but the two directions of traffic are held to different standards, matching git's own posture. For a normal repository (and a main worktree) that set is a single root, `workDir`. Opening a linked worktree, a submodule working directory, or a `--separate-git-dir` layout widens it to the resolved layout's `{ workDir, gitDir, commonDir }`, minimised so any root already contained in another is dropped — a normal repo still collapses to exactly `[workDir]`, byte-identical to before ([ADR-541](../adr/541-raw-node-adapter-layout-root-set.md)).
 
-- `..` traversal
-- sibling-directory string tricks (`/repo-evil` vs `/repo`)
-- symlinks pointing outside every root in the set
+A **lexical** escape is refused on every surface, read and write alike — `..` traversal, an absolute foreign path, and the prefix-only sibling trick (`/repo-evil` vs `/repo`) all throw `PERMISSION_DENIED` before any I/O. What differs is the **post-realpath** stage:
 
-…all throw `PERMISSION_DENIED` before any data is read or written.
+- **Writes** additionally realpath the leading (parent) path and refuse if that resolution lands outside the root set — a symlinked leading directory cannot be used to write, rename, delete, or chmod outside the tree. A leaf that is itself a symlink is refused too, on every surface that would otherwise dereference it (`write`/`writeStream`/`writeUtf8`/`writeExclusive`/`appendUtf8`/`openWithNoFollow(_, 'write')`/`chmod`) — `rm`, `rmRecursive`, `rename`, `mkdir`, and `symlink`'s own link path act on the leaf itself and never follow it, matching POSIX and git semantics.
+- **Reads** do not realpath at all: an input already inside the root set is served even when it (or a leading directory) is a symlink resolving outside, exactly as git reads through symlinks without restriction.
+- A symlink's **target** — absolute or relative — is opaque bytes, written and read back verbatim, never validated against the root set, exactly like git ([ADR-632](../adr/632-symlink-targets-written-verbatim.md)). The defence against dereferencing a hostile planted link lives where git keeps it: working-tree content readers check `isSymbolicLink` before ever reading a path as content, never in the adapter.
 
-### Node — symlink-escape defense
+### Node — the write/read split
 
-`checkContainment` uses `realpath` in three modes:
+The write guard (`resolveWrite`) realpaths the leading path only — never the leaf, so a *dangling* symlink (whose leaf realpath would fail) stays removable — via a per-directory LRU-amortised cache, then re-checks containment on the joined result on every call. `chmod` layers an explicit leaf `lstat` on top (POSIX `chmod` follows its leaf and has no portable no-follow variant); every other leaf-dereferencing write surface instead composes `O_NOFOLLOW` into the underlying `open`/`writeFile` flags, which refuses a symlink leaf atomically at the syscall — on Windows, where `O_NOFOLLOW` is silently ignored, the explicit leaf `lstat` fallback covers it instead. The read path (`resolveRead`) is lexical and allocation-light: no `realpath` call, no syscall, matching every root's raw and canonicalised prefix against the input string alone.
 
-| Mode | Mechanism |
-|---|---|
-| **read** | Full `realpath` of the target path. |
-| **lstat** | `realpath` of the parent directory only — preserves lstat semantics for the leaf. |
-| **creation** | `realpathNearestExisting` + leaf symlink check. |
-
-This realpath-aware gate is the *only* symlink-aware containment layer, so the raw Node adapter is confined to exactly the layout's root set — never their common ancestor, which would admit everything between them (and degrade to the whole filesystem for a cross-top-level layout). Each mode is applied independently at every root. A root that doesn't exist yet (e.g. the not-yet-created target of `worktree add`) derives its canonical prefix from the realpath of its nearest existing ancestor plus the missing tail.
+This split makes the Node adapter's write side the *only* symlink-aware containment layer; the raw adapter's writes are confined to exactly the layout's root set — never their common ancestor, which would admit everything between them (and degrade to the whole filesystem for a cross-top-level layout). A root that doesn't exist yet (e.g. the not-yet-created target of `worktree add`) derives its canonical prefix from the realpath of its nearest existing ancestor plus the missing tail.
 
 8.3 short-name reconciliation on Windows (`C:\PROGRA~1` vs `C:\Program Files`) is handled by a lazy canonical-root cache ([ADR-042](../adr/042-canonical-root-lazy-realpath.md)). `\\?\` extended-length prefixes are stripped during comparison.
 
@@ -35,6 +29,26 @@ OPFS is sandboxed per origin by the browser. The adapter does no extra path cont
 ### Memory — symlink loop cap
 
 The Memory adapter's symlink follower caps at 40 hops (POSIX `SYMLOOP_MAX`).
+
+## Index entry name validation
+
+Independent of path containment, every entry name that would become part of an index — parsed from `.git/index`, projected from a tree, or synthesized back into one — is validated once against git's own `verify_path` rule set: a leading `/`, a `..`/`.`/empty segment, a `.git` alias (any case, trailing dot/space, the NTFS `git~1` short name, a `.git:`-stream form, or an HFS+ ignorable-codepoint spelling), or a `.gitmodules` entry whose mode is a symlink (CVE-2018-11235) all throw `INVALID_INDEX_ENTRY`. A backslash, a C0/C1 control byte, or a BIDI/isolate Unicode control character is deliberately **not** rejected — git accepts all three in a path, and rejecting them was tsgit being stricter than the tool it replicates. The check fires at every tree↔index boundary (index parse, `buildIndexFromTree`, `synthesizeTreeFromIndex`) and at every write that projects a tree onto the working tree (`applyChangeset`, the shared 3-way-merge applier, `stash apply`'s untracked restore) — never at a tree *read*, so `cat-file`/`show`/`log` still print a hostile tree, matching git.
+
+The working-tree **walker** (`walkWorkingTree`) applies a narrower rule: it skips only an exact `.git` name, folded by case. An on-disk NTFS/HFS-alias entry (`git~1`, a `.git:`-stream name) is walked like any other path, exactly as git's own directory scan treats it — the wider rejection above applies only once that name would become an index entry.
+
+**One deliberate divergence, in the strict direction.** git gates the HFS+
+ignorable-codepoint spelling behind `core.protectHFS`, whose default is
+*platform-conditional*: true on macOS, false everywhere else. (`core.protectNTFS`,
+by contrast, defaults true on every platform — so the `git~1` and `.git:`-stream
+forms match git exactly.) tsgit applies the HFS guard **unconditionally on every
+platform** and does not read `core.protectHFS`, so on Linux it refuses a name git
+would accept. The reasoning: a repository is portable, the guard exists to stop a
+name that resolves to `.git` on someone *else's* HFS+ volume, and honouring a
+platform-conditional default would make the same repository validate differently on
+different machines. This is the one place the entry-name validator is knowingly
+stricter than the tool it replicates; the cross-tool test pins it with
+`-c core.protectHFS=true` so the comparison exercises the guard rather than the
+runner's platform.
 
 ## Lock files & atomicity
 

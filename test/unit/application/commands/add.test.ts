@@ -17,7 +17,7 @@ import type {
   CommandResult,
   CommandRunner,
 } from '../../../../src/ports/command-runner.js';
-import { serializeIndexFixtureAsync } from '../primitives/fixtures.js';
+import { instrumentedContext, serializeIndexFixtureAsync } from '../primitives/fixtures.js';
 import { stubCommandRunner } from '../primitives/helpers/stub-command-runner.js';
 import { seedRepo } from './fixtures.js';
 
@@ -135,6 +135,167 @@ describe('add', () => {
 
         // Act + Assert
         await expectError(() => add(ctx, ['nonexistent.txt']), 'PATHSPEC_NO_MATCH');
+      });
+    });
+  });
+
+  describe('Given a literal naming a file beyond a symlink pointing outside the repo', () => {
+    describe('When add', () => {
+      it('Then throws PATHSPEC_BEYOND_SYMLINK and stages nothing', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo();
+        await ctx.fs.symlink('/outside-the-repo', `${ctx.layout.workDir}/dir`);
+
+        // Act + Assert
+        const err = await expectError(() => add(ctx, ['dir/file.txt']), 'PATHSPEC_BEYOND_SYMLINK');
+        expect((err.data as { path: string }).path).toBe('dir/file.txt');
+        const index = await readIndex(ctx);
+        expect(index.entries).toHaveLength(0);
+      });
+    });
+  });
+
+  describe('Given a literal naming a file beyond a symlink pointing inside the repo', () => {
+    describe('When add', () => {
+      it('Then throws PATHSPEC_BEYOND_SYMLINK — shape-based, not containment-based', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo({ 'real.txt': 'x' });
+        await ctx.fs.symlink('real.txt', `${ctx.layout.workDir}/dir`);
+
+        // Act + Assert
+        await expectError(() => add(ctx, ['dir/file.txt']), 'PATHSPEC_BEYOND_SYMLINK');
+      });
+    });
+  });
+
+  describe('Given a glob pathspec naming files beyond a symlink pointing outside the repo', () => {
+    describe('When add', () => {
+      it('Then throws PATHSPEC_BEYOND_SYMLINK and stages nothing', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo();
+        await ctx.fs.symlink('/outside-the-repo', `${ctx.layout.workDir}/link`);
+
+        // Act + Assert
+        const err = await expectError(() => add(ctx, ['link/*.ts']), 'PATHSPEC_BEYOND_SYMLINK');
+        expect((err.data as { path: string }).path).toBe('link/*.ts');
+        const index = await readIndex(ctx);
+        expect(index.entries).toHaveLength(0);
+      });
+    });
+  });
+
+  describe('Given a glob pathspec naming files beyond a symlink pointing inside the repo', () => {
+    describe('When add', () => {
+      it('Then throws PATHSPEC_BEYOND_SYMLINK — shape-based, not containment-based', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo({ 'realdir/real.ts': 'x' });
+        await ctx.fs.symlink('realdir', `${ctx.layout.workDir}/link`);
+
+        // Act + Assert
+        await expectError(() => add(ctx, ['link/*.ts']), 'PATHSPEC_BEYOND_SYMLINK');
+      });
+    });
+  });
+
+  describe('Given a glob whose leading component is literally a symlinked directory that happens to look like glob magic', () => {
+    describe('When add', () => {
+      it('Then throws PATHSPEC_BEYOND_SYMLINK — git checks path components lexically, not glob-aware', async () => {
+        // Arrange — a literal directory named `li*` that is itself a symlink.
+        // Verified against real git 2.55: `git add 'li*/x.ts'` still refuses
+        // when a literal `li*` directory exists and is a symlink.
+        const ctx = await seedFreshRepo();
+        await ctx.fs.symlink('/outside-the-repo', `${ctx.layout.workDir}/li*`);
+
+        // Act + Assert
+        await expectError(() => add(ctx, ['li*/x.ts']), 'PATHSPEC_BEYOND_SYMLINK');
+      });
+    });
+  });
+
+  describe('Given a negated pathspec naming a file beyond a symlink', () => {
+    describe('When add', () => {
+      it('Then throws PATHSPEC_BEYOND_SYMLINK — git scans a negated pathspec body exactly like a positive one', async () => {
+        // Arrange — pinned against real git 2.55: `git add . ':!link/x'`
+        // refuses with `fatal: pathspec ':!link/x' is beyond a symbolic
+        // link'. The negation only controls whether a MATCH excludes the
+        // path from staging; it doesn't exempt the pathspec body from the
+        // symlinked-leading-path scan.
+        const ctx = await seedFreshRepo({ 'a.txt': 'a' });
+        await ctx.fs.symlink('/outside-the-repo', `${ctx.layout.workDir}/link`);
+
+        // Act + Assert
+        const err = await expectError(
+          () => add(ctx, ['a.txt', '!link/x']),
+          'PATHSPEC_BEYOND_SYMLINK',
+        );
+        expect((err.data as { path: string }).path).toBe('link/x');
+        const index = await readIndex(ctx);
+        expect(index.entries).toHaveLength(0);
+      });
+    });
+  });
+
+  describe('Given a glob whose magic sits in the leading path component and no literal directory exists there', () => {
+    describe('When add', () => {
+      it('Then it does not throw PATHSPEC_BEYOND_SYMLINK — verified against real git 2.55, which falls through to a plain no-match instead', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo();
+
+        // Act
+        const result = await add(ctx, ['li*/x.ts']);
+
+        // Assert
+        expect(result).toEqual({ added: [], modified: [], removed: [] });
+      });
+    });
+  });
+
+  describe('Given a glob whose leading directory is real (not a symlink)', () => {
+    describe('When add', () => {
+      it('Then it does not throw PATHSPEC_BEYOND_SYMLINK and stages the matches', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo({ 'realdir/real.ts': 'x' });
+
+        // Act
+        const result = await add(ctx, ['realdir/*.ts']);
+
+        // Assert
+        expect(result.added).toEqual(['realdir/real.ts']);
+      });
+    });
+  });
+
+  describe('Given a genuine PERMISSION_DENIED from the adapter on a re-lstat of a literal path', () => {
+    describe('When add', () => {
+      it('Then the error propagates instead of degrading to PATHSPEC_NO_MATCH', async () => {
+        // Arrange — the first lstat (allLiteralsAreFiles's probe) reports a real
+        // file, routing to the literal-only path; the second lstat (stageOne's
+        // own read) fails with PERMISSION_DENIED. A narrowed catch must rethrow
+        // anything that is not FILE_NOT_FOUND; a bare `.catch(() => undefined)`
+        // would silently degrade this to a missing-path observable instead.
+        const ctx = await seedFreshRepo({ 'blocked.txt': 'x' });
+        const targetPath = `${ctx.layout.workDir}/blocked.txt`;
+        const baseLstat = ctx.fs.lstat;
+        let lstatCount = 0;
+        const fs = new Proxy(ctx.fs, {
+          get(target, prop, receiver) {
+            if (prop === 'lstat') {
+              return async (p: string) => {
+                if (p === targetPath) {
+                  lstatCount += 1;
+                  if (lstatCount > 1) {
+                    throw new TsgitError({ code: 'PERMISSION_DENIED', path: targetPath });
+                  }
+                }
+                return baseLstat(p);
+              };
+            }
+            return Reflect.get(target, prop, receiver);
+          },
+        });
+
+        // Act + Assert
+        await expectError(() => add({ ...ctx, fs }, ['blocked.txt']), 'PERMISSION_DENIED');
       });
     });
   });
@@ -727,22 +888,18 @@ describe('add', () => {
     targetSuffix: string,
     flipTo: Partial<Awaited<ReturnType<typeof ctx.fs.lstat>>>,
   ) => {
-    // Boolean flag (not a positional counter) so extra lstat calls on
-    // OTHER paths don't desynchronise the swap point. The first lstat
-    // for `targetSuffix` returns the real stat; every subsequent lstat
-    // for it returns the flipped stat.
+    // The walk yields its kind bits straight from `readdir` (untouched here),
+    // reflecting the file's REAL on-disk shape; stageFromStat's single
+    // `lstat` — the only one issued per file now — is patched to report
+    // `flipTo` instead. That mismatch IS the TOCTOU window stageFromStat's
+    // re-lstat guards against, without needing a second racing call.
     const baseLstat = ctx.fs.lstat;
-    let firstSeen = false;
     return new Proxy(ctx.fs, {
       get(target, prop, receiver) {
         if (prop === 'lstat') {
           return async (path: string) => {
             const real = await baseLstat(path);
             if (!path.endsWith(targetSuffix)) return real;
-            if (!firstSeen) {
-              firstSeen = true;
-              return real;
-            }
             return { ...real, ...flipTo };
           };
         }
@@ -830,38 +987,10 @@ describe('add', () => {
     });
   });
 
-  describe('Given a file that grows past MAX_WORKING_TREE_BLOB_BYTES between walk and re-lstat', () => {
-    describe('When add({ all: true })', () => {
-      it('Then throws WORKING_TREE_FILE_TOO_LARGE (post-re-lstat guard fires)', async () => {
-        // Arrange — walk-time stat reports a small file; re-lstat reports the
-        // oversize value. The pre-filter (walk-time) skips; the authoritative
-        // post-re-lstat guard must catch it.
-        const ctx = await seedFreshRepo({ 'a.txt': 'a' });
-        const racingCtx = {
-          ...ctx,
-          fs: racingLstatFs(ctx, '/a.txt', { size: MAX_WORKING_TREE_BLOB_BYTES + 1 }),
-        };
-
-        // Act
-        const err = await expectError(
-          () => add(racingCtx, [], { all: true }),
-          'WORKING_TREE_FILE_TOO_LARGE',
-        );
-
-        // Assert — payload pins fresh size, not the stale walk-time size.
-        const data = err.data as { path: string; size: number; limit: number };
-        expect(data.path).toBe('a.txt');
-        expect(data.size).toBe(MAX_WORKING_TREE_BLOB_BYTES + 1);
-        expect(data.limit).toBe(MAX_WORKING_TREE_BLOB_BYTES);
-      });
-    });
-  });
-
   describe('Given a file of exactly MAX_WORKING_TREE_BLOB_BYTES bytes (boundary)', () => {
     describe('When add({ all: true })', () => {
-      it('Then accepts without throwing — kills the `>` → `>=` mutants on both pre-filter and authoritative caps', async () => {
-        // Arrange — lstat reports size exactly at the cap. Both the
-        // walk-time pre-filter (`stat.size > cap`) and the re-lstat
+      it('Then accepts without throwing — kills the `>` → `>=` mutant on the authoritative cap', async () => {
+        // Arrange — lstat reports size exactly at the cap. The re-lstat
         // authoritative check (`fresh.size > cap`) must accept this.
         const ctx = await seedFreshRepo({ 'a.txt': 'tiny' });
         const baseLstat = ctx.fs.lstat;
@@ -988,6 +1117,86 @@ describe('add', () => {
         // Assert — sibling staged; `.git` symlink filtered by name check.
         const idx = await readIndex(ctx);
         expect(idx.entries.map((e) => e.path).sort()).toEqual(['sub/keep.txt']);
+      });
+    });
+  });
+
+  describe('Given a `.git`-alias symlink at the staging boundary', () => {
+    describe('When add({ all: true })', () => {
+      it('Then a `.git.` symlink is refused with the invalid-path code and the index is unchanged', async () => {
+        // Arrange — `.git.` is a trailing-dot alias for `.git`; git refuses it
+        // at the index-write stage even though the walker (status-faithful)
+        // lets it through. A sibling legit file proves the whole call aborts
+        // with nothing partially staged, matching git's `add -A` all-or-nothing
+        // behaviour (pinned against git 2.55: a hostile entry alongside two
+        // valid ones leaves the index untouched, not partially updated).
+        const ctx = await seedFreshRepo({ 'ok.txt': 'ok' });
+        await ctx.fs.symlink('/etc/passwd', `${ctx.layout.workDir}/.git.`);
+        const before = (await readIndex(ctx)).entries.length;
+
+        // Act
+        const err = await expectError(() => add(ctx, [], { all: true }), 'INVALID_INDEX_ENTRY');
+
+        // Assert
+        expect(err.data).toMatchObject({ reason: "'.git' component rejected" });
+        const after = (await readIndex(ctx)).entries;
+        expect(after.length).toBe(before);
+        expect(after.map((e) => e.path)).not.toContain('ok.txt');
+      });
+
+      it('Then a symlink under a `git~1` NTFS-alias directory is refused with the invalid-path code and the index is unchanged', async () => {
+        // Arrange — `git~1` is the NTFS short-name alias for `.git`; the
+        // widened alias scan applies to every path component, not just the
+        // leaf, so a symlink nested under it is refused too.
+        const ctx = await seedFreshRepo({ 'ok.txt': 'ok' });
+        await ctx.fs.symlink('../ok.txt', `${ctx.layout.workDir}/git~1/link`);
+        const before = (await readIndex(ctx)).entries.length;
+
+        // Act
+        const err = await expectError(() => add(ctx, [], { all: true }), 'INVALID_INDEX_ENTRY');
+
+        // Assert
+        expect(err.data).toMatchObject({ reason: "'git~1' NTFS short name rejected" });
+        const after = (await readIndex(ctx)).entries;
+        expect(after.length).toBe(before);
+        expect(after.map((e) => e.path)).not.toContain('ok.txt');
+      });
+    });
+  });
+
+  describe('Given a regular file whose name contains a colon (POSIX-legal, git accepts)', () => {
+    describe('When add({ all: true })', () => {
+      it('Then it is staged (walked content was never subject to the pathspec `:` rule)', async () => {
+        // Arrange — pinned against git 2.55 on POSIX: `git add -A` stages
+        // `foo:bar/x` without complaint. `validateWalkedEntryPath` (used for
+        // walked content) never carried a `:` rejection at all.
+        const ctx = await seedFreshRepo({ 'foo:bar/x': 'x' });
+
+        // Act
+        const result = await add(ctx, [], { all: true });
+
+        // Assert
+        expect(result.added).toEqual(['foo:bar/x']);
+        const idx = await readIndex(ctx);
+        expect(idx.entries.map((e) => e.path)).toContain('foo:bar/x');
+      });
+    });
+
+    describe('When add([the literal pathspec])', () => {
+      it('Then it is staged too — a mid-path `:` is no longer rejected by validateWorkingTreePath', async () => {
+        // Arrange — before this fix, `add(['foo:bar/x'])` threw
+        // PATHSPEC_OUTSIDE_REPO: `validateWorkingTreePath` rejected any `:`
+        // in any component. Git only treats a LEADING `:` as pathspec
+        // magic; a mid-path `:` is an ordinary POSIX-legal byte it stages.
+        const ctx = await seedFreshRepo({ 'foo:bar/x': 'x' });
+
+        // Act
+        const result = await add(ctx, ['foo:bar/x']);
+
+        // Assert
+        expect(result.added).toEqual(['foo:bar/x']);
+        const idx = await readIndex(ctx);
+        expect(idx.entries.map((e) => e.path)).toContain('foo:bar/x');
       });
     });
   });
@@ -1451,6 +1660,30 @@ describe('add', () => {
     });
   });
 
+  describe('Given N new files staged via a walk (add --all)', () => {
+    describe('When add runs', () => {
+      it('Then it issues exactly one lstat per file, not two', async () => {
+        // Arrange — the walk's kind bits (isFile/isDirectory/isSymbolicLink,
+        // free from readdir) now feed stageFromStat's TOCTOU check directly;
+        // stageFromStat's own re-lstat under the index lock is the only
+        // lstat each file pays.
+        const base = await seedFreshRepo({ 'a.txt': 'a', 'b.txt': 'b', 'c.txt': 'c' });
+        const { ctx, calls } = instrumentedContext(base);
+
+        // Act
+        await add(ctx, [], { all: true });
+
+        // Assert — one lstat per seeded file (`.gitignore`/`info/exclude`
+        // probes from the ignore-predicate build are excluded on purpose).
+        const fileLstatCounts = ['a.txt', 'b.txt', 'c.txt'].map(
+          (name) =>
+            calls().filter((c) => c.method === 'lstat' && c.path.endsWith(`/${name}`)).length,
+        );
+        expect(fileLstatCounts).toEqual([1, 1, 1]);
+      });
+    });
+  });
+
   describe('Given multiple unsorted modified and removed files', () => {
     describe('When add({ all: true })', () => {
       it('Then modified and removed are each independently sorted', async () => {
@@ -1488,19 +1721,12 @@ describe('add', () => {
         const ctx = await seedFreshRepo({ 'a.sh': '#!/bin/sh\n' });
         await add(ctx, [], { all: true });
         const baseLstat = ctx.fs.lstat;
-        let firstSeen = false;
         const execFs = new Proxy(ctx.fs, {
           get(target, prop, receiver) {
             if (prop === 'lstat') {
               return async (path: string) => {
                 const real = await baseLstat(path);
                 if (!path.endsWith('/a.sh')) return real;
-                // First lstat is the walk-time stat (keep real so the pre-stage
-                // mode is plain); from the re-lstat onward report the exec bit.
-                if (!firstSeen) {
-                  firstSeen = true;
-                  return real;
-                }
                 return { ...real, mode: real.mode | 0o111 };
               };
             }
@@ -1590,50 +1816,6 @@ describe('add', () => {
           expect(idx.entries.map((e) => e.path)).toEqual(expectedEntries);
         },
       );
-    });
-  });
-
-  describe('Given a walk-time stat over the cap but a small re-lstat', () => {
-    describe('When add({ all: true })', () => {
-      it('Then throws WORKING_TREE_FILE_TOO_LARGE (pre-filter guard fires)', async () => {
-        // Arrange — the walk-time lstat reports oversize; the re-lstat under
-        // the lock reports the real (small) size. Only the L273 pre-filter in
-        // processWalkEntry can catch this — the authoritative L328 check sees
-        // a small file. Kills the L273 ConditionalExpression / BlockStatement.
-        const ctx = await seedFreshRepo({ 'a.txt': 'a' });
-        const baseLstat = ctx.fs.lstat;
-        let firstSeen = false;
-        const growThenShrinkFs = new Proxy(ctx.fs, {
-          get(target, prop, receiver) {
-            if (prop === 'lstat') {
-              return async (path: string) => {
-                const real = await baseLstat(path);
-                if (!path.endsWith('/a.txt')) return real;
-                // First lstat (walk-time) is oversize; the re-lstat is real.
-                if (!firstSeen) {
-                  firstSeen = true;
-                  return { ...real, size: MAX_WORKING_TREE_BLOB_BYTES + 1 };
-                }
-                return real;
-              };
-            }
-            return Reflect.get(target, prop, receiver);
-          },
-        });
-        const racingCtx = { ...ctx, fs: growThenShrinkFs };
-
-        // Act
-        const err = await expectError(
-          () => add(racingCtx, [], { all: true }),
-          'WORKING_TREE_FILE_TOO_LARGE',
-        );
-
-        // Assert — payload pins the walk-time (pre-filter) size.
-        const data = err.data as { path: string; size: number; limit: number };
-        expect(data.path).toBe('a.txt');
-        expect(data.size).toBe(MAX_WORKING_TREE_BLOB_BYTES + 1);
-        expect(data.limit).toBe(MAX_WORKING_TREE_BLOB_BYTES);
-      });
     });
   });
 

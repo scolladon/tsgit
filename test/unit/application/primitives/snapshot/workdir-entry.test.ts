@@ -4,7 +4,7 @@ import { createWorkdirEntry } from '../../../../../src/application/primitives/sn
 import type { FileMode, FilePath } from '../../../../../src/domain/objects/index.js';
 import type { WorkdirEntryRow, WorkdirStat } from '../../../../../src/domain/snapshot/index.js';
 import type { Context, FileStat } from '../../../../../src/ports/index.js';
-import { buildSeededContext } from '../fixtures.js';
+import { buildSeededContext, refuseReadOnSymlink } from '../fixtures.js';
 
 type SeededContext = Awaited<ReturnType<typeof buildSeededContext>>;
 
@@ -171,6 +171,40 @@ describe('createWorkdirEntry', () => {
 
         // Assert
         expect(target).toBe('target-path');
+      });
+    });
+  });
+
+  describe('Given a symlink in the working tree (no-dereference audit)', () => {
+    describe('When read() is called, and ctx.fs.read is wired to fail on the symlink path', () => {
+      it('Then it returns the readlink target bytes without ever calling ctx.fs.read', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const linkAbs = `${ctx.layout.workDir}/link`;
+        await ctx.fs.symlink('target-path', linkAbs);
+        const live = await ctx.fs.lstat(linkAbs);
+        const stat: WorkdirStat = {
+          mode: '120000' as FileMode,
+          size: live.size,
+          mtimeMs: live.mtimeMs,
+          ...(live.mtimeNs === undefined ? {} : { mtimeNs: live.mtimeNs }),
+          ino: BigInt(live.ino),
+        };
+        const row: WorkdirEntryRow = {
+          source: 'workdir',
+          path: 'link' as FilePath,
+          mode: stat.mode,
+          kind: 'symlink',
+          stat,
+        };
+        const guarded = refuseReadOnSymlink(ctx, linkAbs);
+        const sut = createWorkdirEntry(guarded, row);
+
+        // Act
+        const bytes = await sut.read();
+
+        // Assert
+        expect(new TextDecoder().decode(bytes)).toBe('target-path');
       });
     });
   });

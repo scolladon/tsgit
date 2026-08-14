@@ -33,6 +33,7 @@ export {
   nothingToCommit,
   noUpstreamConfigured,
   operationInProgress,
+  pathspecBeyondSymlink,
   pathspecNoMatch,
   pathspecOutsideRepo,
   pushRejected,

@@ -19,8 +19,6 @@ import { realFsOps } from './fs-operations.js';
 import type { PathPolicy } from './path-policy.js';
 import { nativePolicy } from './path-policy.js';
 
-type ContainmentMode = 'read' | 'lstat' | 'creation';
-
 /**
  * A normalised containment root paired with its precomputed `+sep` prefix.
  * Bundled together (never as two independent fields) so the prefix can
@@ -64,18 +62,30 @@ function unionRootPrefixes(
   return [...byNormalized.values()];
 }
 
-/**
- * A parent directory's realpath, paired with the containment verdict for
- * that realpath — computed once, right after the realpath resolves, and
- * always read together so the two can never diverge. See
- * `NodeFileSystem.cachedParentRealpath`.
- */
-interface ParentRealpathEntry {
-  readonly realParent: string;
-  readonly contained: boolean;
-}
-
 const REMOVE_TREE_CONCURRENCY = 8;
+
+/**
+ * Numeric `open`/`writeFile` flags for the write guard's W2 leaf no-follow:
+ * `O_NOFOLLOW` refuses a symlink leaf atomically at the syscall, closing the
+ * TOCTOU window between a pre-write `lstat` and the write and costing one
+ * fewer syscall per write. Ignored by Windows (the pre-write `lstat` fallback
+ * in `assertLeafSafeToWrite` covers that platform instead).
+ */
+const WRITE_CREATE_FLAGS =
+  fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC | fs.constants.O_NOFOLLOW;
+const WRITE_EXCLUSIVE_FLAGS =
+  fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW;
+const APPEND_FLAGS =
+  fs.constants.O_WRONLY | fs.constants.O_APPEND | fs.constants.O_CREAT | fs.constants.O_NOFOLLOW;
+
+/**
+ * `@types/node` types `WriteStreamOptions.flags` as `string`, but Node's own
+ * implementation (`stringToFlags`) returns a numeric `flags` argument
+ * unchanged rather than string-parsing it — verified against Node's source,
+ * not guessed. A numeric flag is the only way to compose `O_NOFOLLOW` into
+ * `writeStream`'s open; no string flag alias expresses it.
+ */
+type WriteStreamNumericFlags = Omit<fs.WriteStreamOptions, 'flags'> & { readonly flags: number };
 
 /**
  * Bounded-concurrency map. Issues up to `limit` `fn(item)` calls in
@@ -142,16 +152,21 @@ export function isErrnoException(err: unknown): err is NodeJS.ErrnoException {
  * @internal
  */
 export function isWindowsSymlinkRefusal(err: unknown, policy: PathPolicy = nativePolicy): boolean {
-  // Discriminator only fires on case-insensitive (Windows) platforms.
-  // POSIX symlink refusal flows through `mapErrno` directly via `ELOOP`.
-  if (!policy.caseInsensitive) return false;
+  // Discriminator only fires on a platform whose `open(2)` does NOT honour
+  // `O_NOFOLLOW` (Windows today). A platform that does honour it gets the
+  // real `ELOOP` and that flows through `mapErrno` directly — no rewrap
+  // needed. Gated on `honoursNoFollow`, not `caseInsensitive`: the two
+  // happen to coincide in every shipped policy, but they mean different
+  // things (see `PathPolicy`'s JSDoc) and a hypothetical case-insensitive
+  // POSIX filesystem must take the POSIX arm here.
+  if (policy.honoursNoFollow) return false;
   if (!(err instanceof TsgitError)) return false;
   return err.data.code === 'PERMISSION_DENIED' || err.data.code === 'UNSUPPORTED_OPERATION';
 }
 
 /**
  * True iff `child === parent` (after case-folding on Windows) or `child` is
- * strictly inside `parent`. Defends `NodeFileSystem.checkContainment` against
+ * strictly inside `parent`. Defends `NodeFileSystem.resolveWrite` against
  * (a) drive-letter casing differences on Windows and (b) the prefix-only
  * false-positive (parent='/tmp/foo', child='/tmp/foobar').
  *
@@ -382,37 +397,37 @@ export class NodeFileSystem implements FileSystem {
 
   /**
    * Memoised realpath of an *existing* parent directory, keyed by the raw
-   * (pre-realpath) parent path, paired with that parent's containment
-   * verdict (`isContainedInAnyRoot(realParent, …)`, computed once right
-   * after the realpath resolves). The cached value is mode-independent, so
-   * this single cache serves BOTH `resolveForCreation` (creation mode) and
-   * `resolveForMode`'s lstat arm (lstat mode): a clone/checkout writing N
-   * files into the same tree, or a status walk lstat-ing N entries under
-   * the same directory, pays the realpath walk-up — and, for the lstat
-   * arm, the containment POST-check — once per parent rather than once per
-   * file/entry. The verdict is a per-clean-leaf equivalence
-   * (`isContainedInAnyRoot(join(realParent, basename))` ≡
-   * `isContainedInAnyRoot(realParent)`, see the design doc's proof) and
-   * is consulted ONLY by the lstat arm; `read`/`creation` realpath the full
-   * leaf and keep their own per-entry post-check.
+   * (pre-realpath) parent path. Every write surface shares this one cache
+   * via `realpathForCreation`: a clone/checkout writing N files into the
+   * same tree, or an `rm`/`rmRecursive` walk removing N entries under it,
+   * pays the realpath walk-up once per parent rather than once per
+   * file/entry. Containment itself is never cached here — `resolveWrite`
+   * re-checks the joined leaf against the root set on every call, so a
+   * stale verdict can never be served.
    *
    * Invariants:
    * - The key is the parent path alone: the root set is resolved once and
    *   frozen for the adapter's lifetime (every root contributes a canonical
    *   prefix, missing ones via their nearest existing ancestor), so every
-   *   cached verdict shares one root set.
+   *   cached realpath shares one root set.
    * - Only EXISTING parents are cached. ENOENT walks fall back to
-   *   `realpathNearestExisting` (creation) or propagate (lstat) and are
-   *   never recorded.
-   * - The realpath and the verdict are set together — never divergent.
-   * - `rmRecursive` and `rename` clear the cache (invalidating BOTH the
-   *   realpath and the verdict), which is correct (the parent realpath may
-   *   have changed) and cheap relative to a re-walk. `rm` clears neither —
-   *   a leaf removal does not change the parent's realpath or containment.
+   *   `realpathNearestExisting` and are never recorded.
+   * - `rmRecursive` and `rename` clear the cache, which is cheap relative to
+   *   a re-walk. `rm` clears nothing — a leaf removal does not change the
+   *   parent's realpath. `rename` in particular cannot narrow this to just
+   *   `dirname(src)`/`dirname(dst)`: `src` is a legitimate `rename` argument
+   *   for a whole directory (`worktree move`, `git mv` on a directory), and
+   *   every cached entry keyed AT `src`/`dst` or NESTED under either (a
+   *   directory that was itself used as a parent for a deeper write) goes
+   *   stale the moment the subtree moves. Pruning exactly those entries
+   *   would need to enumerate this cache's keys by prefix — a capability
+   *   this LRU cache (shared, and public, across unrelated callers: the
+   *   delta-base and bitmap-reconstruction caches) intentionally does not
+   *   expose. `clear()` stays the sound choice here.
    * - Sized to exceed the 256 loose-object fanout directories so a
    *   full-history walk does not thrash the cache.
    */
-  private readonly parentRealpathCache = createLruCache<ParentRealpathEntry>(128 * 1024, 512);
+  private readonly parentRealpathCache = createLruCache<string>(128 * 1024, 512);
 
   /**
    * Lazy canonicalisation of every containment root, resolving to the whole
@@ -424,7 +439,7 @@ export class NodeFileSystem implements FileSystem {
   /**
    * Synchronous cache of the resolved `RootSet`, set on `loadRootSet()`'s
    * resolution arm and cleared on its rejection arm — always in lockstep
-   * with `rootSetPromise`. Lets hot-path callers (`checkContainment`,
+   * with `rootSetPromise`. Lets hot-path callers (`resolveWrite`,
    * `exists`, `symlink`) read the settled value directly, without an
    * `await` (and its microtask), once the roots have resolved at least once.
    */
@@ -527,31 +542,16 @@ export class NodeFileSystem implements FileSystem {
     return this.rootSetPromise;
   }
 
-  /**
-   * Synchronous-first-path accessor for the roots: returns the
-   * already-settled `resolvedRootSet` field when populated (no `await`, no
-   * microtask), falling back to `loadRootSet()` only on the first call or
-   * after a rejection cleared the field. Used by
-   * every hot-path call site (`checkContainment`, `exists`, `symlink`)
-   * instead of an unconditional `await this.loadRootSet()`.
-   */
-  private async resolveRootSet(): Promise<RootSet> {
-    let rootSet = this.resolvedRootSet;
-    // Stryker disable next-line ConditionalExpression: equivalent — when `resolvedRootSet` is already set, `loadRootSet()` returns the memoised promise resolving to that same `RootSet` (set in lockstep in its resolve arm, cleared with the promise on rejection), so forcing this guard true reassigns the identical value with no extra `realpath`; only the await fast-path is dropped.
-    if (rootSet === undefined) {
-      rootSet = await this.loadRootSet();
-    }
-    return rootSet;
-  }
-
   read = async (path: string): Promise<Uint8Array> => {
-    const real = await this.checkContainment(path, 'read');
+    const { all } = this.resolvedRootSet ?? (await this.loadRootSet());
+    const real = this.resolveRead(path, all);
     return runFs(async () => new Uint8Array(await this.fsOps.readFile(real)), path);
   };
 
   readSlice = async (path: string, offset: number, length: number): Promise<Uint8Array> => {
     if (offset < 0 || length < 0) throw permissionDenied(path);
-    const real = await this.checkContainment(path, 'read');
+    const { all } = this.resolvedRootSet ?? (await this.loadRootSet());
+    const real = this.resolveRead(path, all);
     let handle: fsPromises.FileHandle | undefined;
     try {
       return await runFs(async () => {
@@ -571,92 +571,93 @@ export class NodeFileSystem implements FileSystem {
   };
 
   readUtf8 = async (path: string): Promise<string> => {
-    const real = await this.checkContainment(path, 'read');
+    const { all } = this.resolvedRootSet ?? (await this.loadRootSet());
+    const real = this.resolveRead(path, all);
     return runFs(() => this.fsOps.readFile(real, 'utf-8'), path);
   };
 
   write = async (path: string, data: Uint8Array): Promise<void> => {
-    const real = await this.checkContainment(path, 'creation');
+    const real = await this.resolveWrite(path);
+    await this.assertWritableLeaf(real, path);
     await runFs(async () => {
       await this.fsOps.mkdir(this.pathPolicy.dirname(real), { recursive: true });
-      await this.fsOps.writeFile(real, data);
+      await this.fsOps.writeFile(real, data, { flag: WRITE_CREATE_FLAGS });
     }, path);
   };
 
   writeStream = async (path: string, source: AsyncIterable<Uint8Array>): Promise<void> => {
-    const real = await this.checkContainment(path, 'creation');
+    const real = await this.resolveWrite(path);
+    await this.assertWritableLeaf(real, path);
     await runFs(async () => {
       await this.fsOps.mkdir(this.pathPolicy.dirname(real), { recursive: true });
-      await pipeline(source, fs.createWriteStream(real));
+      const streamOptions: WriteStreamNumericFlags = { flags: WRITE_CREATE_FLAGS };
+      await pipeline(
+        source,
+        fs.createWriteStream(real, streamOptions as unknown as fs.WriteStreamOptions),
+      );
     }, path);
   };
 
   writeExclusive = async (path: string, data: Uint8Array): Promise<void> => {
-    const real = await this.checkContainment(path, 'creation');
+    const real = await this.resolveWrite(path);
+    await this.assertWritableLeaf(real, path);
     await runFs(async () => {
       await this.fsOps.mkdir(this.pathPolicy.dirname(real), { recursive: true });
-      await this.fsOps.writeFile(real, data, { flag: 'wx' });
+      await this.fsOps.writeFile(real, data, { flag: WRITE_EXCLUSIVE_FLAGS });
     }, path);
   };
 
   writeUtf8 = async (path: string, content: string): Promise<void> => {
-    const real = await this.checkContainment(path, 'creation');
+    const real = await this.resolveWrite(path);
+    await this.assertWritableLeaf(real, path);
     await runFs(async () => {
       await this.fsOps.mkdir(this.pathPolicy.dirname(real), { recursive: true });
-      await this.fsOps.writeFile(real, content, 'utf-8');
+      await this.fsOps.writeFile(real, content, { encoding: 'utf-8', flag: WRITE_CREATE_FLAGS });
     }, path);
   };
 
   appendUtf8 = async (path: string, content: string): Promise<void> => {
-    const real = await this.checkContainment(path, 'creation');
+    const real = await this.resolveWrite(path);
+    await this.assertWritableLeaf(real, path);
     await runFs(async () => {
       await this.fsOps.mkdir(this.pathPolicy.dirname(real), { recursive: true });
-      await this.fsOps.appendFile(real, content, 'utf-8');
+      await this.fsOps.appendFile(real, content, { encoding: 'utf-8', flag: APPEND_FLAGS });
     }, path);
   };
 
+  // `exists` follows symlinks (port contract, `src/ports/file-system.ts`):
+  // a dangling symlink must report `false`, not `true`. `stat` already
+  // follows, so probing existence via `fsOps.stat` (never `lstat`) keeps
+  // that contract while dropping the realpath + double root consultation
+  // the old implementation paid on every call.
   exists = async (path: string): Promise<boolean> => {
-    const resolved = this.pathPolicy.resolve(toAbsolute(path, this.rootDir, this.pathPolicy));
-    const { canonical, all } = await this.resolveRootSet();
+    const { all } = this.resolvedRootSet ?? (await this.loadRootSet());
+    const real = this.resolveRead(path, all);
     try {
-      // Post-realpath check is the security gate against symlink escapes
-      // and 8.3 short-name aliasing.
-      const real = await this.fsOps.realpath(resolved);
-      if (!this.isContainedInAnyRoot(real, canonical)) {
-        throw permissionDenied(path);
-      }
+      await this.fsOps.stat(real);
       return true;
     } catch (err) {
-      // Stryker disable next-line ConditionalExpression: equivalent — a TsgitError is never an ErrnoException (no own `code`), so skipping this early rethrow lands it at the final `throw err` with the identical instance.
-      if (err instanceof TsgitError) throw err;
-      if (isErrnoException(err) && err.code === 'ENOENT') {
-        // ENOENT — the resolved path doesn't exist. But the caller might be
-        // probing `../outside`: verify the path WOULD have been inside one of
-        // the roots if it existed. Check against BOTH the raw and canonical
-        // forms so callers can pass paths in either one when a root's parent
-        // is 8.3-shortened on Windows.
-        if (!this.isContainedInAnyRoot(resolved, all)) {
-          throw permissionDenied(path);
-        }
-        return false;
-      }
+      if (isErrnoException(err) && err.code === 'ENOENT') return false;
       if (isErrnoException(err)) throw mapErrno(err, path);
       throw err;
     }
   };
 
   stat = async (path: string): Promise<FileStat> => {
-    const real = await this.checkContainment(path, 'read');
+    const { all } = this.resolvedRootSet ?? (await this.loadRootSet());
+    const real = this.resolveRead(path, all);
     return runFs(async () => mapStat(await this.fsOps.stat(real, { bigint: true })), path);
   };
 
   lstat = async (path: string): Promise<FileStat> => {
-    const real = await this.checkContainment(path, 'lstat');
+    const { all } = this.resolvedRootSet ?? (await this.loadRootSet());
+    const real = this.resolveRead(path, all);
     return runFs(async () => mapStat(await this.fsOps.lstat(real, { bigint: true })), path);
   };
 
   readdir = async (path: string): Promise<ReadonlyArray<DirEntry>> => {
-    const real = await this.checkContainment(path, 'read');
+    const { all } = this.resolvedRootSet ?? (await this.loadRootSet());
+    const real = this.resolveRead(path, all);
     return runFs(async () => {
       const entries = await this.fsOps.readdir(real, { withFileTypes: true });
       return entries.map((entry) => ({
@@ -669,16 +670,16 @@ export class NodeFileSystem implements FileSystem {
   };
 
   mkdir = async (path: string): Promise<void> => {
-    const real = await this.checkContainment(path, 'creation');
+    const real = await this.resolveWrite(path);
     await runFs(() => this.fsOps.mkdir(real, { recursive: true }), path);
   };
 
   rm = async (path: string): Promise<void> => {
-    // Use 'lstat' mode (resolves parent via realpath, joins basename without
-    // following the leaf) so dangling symlinks — whose realpath would fail —
-    // can be removed. A regular file's containment is still verified via its
-    // parent directory, which is the same security guarantee.
-    const real = await this.checkContainment(path, 'lstat');
+    // W1 resolves the parent via realpath and joins the basename without
+    // following the leaf, so dangling symlinks — whose realpath would fail
+    // — can still be removed. A regular file's containment is still
+    // verified via its parent directory, which is the same guarantee.
+    const real = await this.resolveWrite(path);
     await runFs(() => this.fsOps.rm(real), path);
     // Node's `fs.rm` without `recursive` only removes leaves — a regular
     // file or symlink. The parent directory and its realpath are
@@ -687,42 +688,34 @@ export class NodeFileSystem implements FileSystem {
   };
 
   rename = async (src: string, dst: string): Promise<void> => {
-    const realSrc = await this.checkContainment(src, 'read');
-    const realDst = await this.checkContainment(dst, 'creation');
+    // Neither arm follows its leaf: `rename(2)` itself acts on the link
+    // entry, never its target (POSIX and git semantics) — renaming a
+    // symlink moves the link and leaves whatever it points at untouched.
+    const realSrc = await this.resolveWrite(src);
+    const realDst = await this.resolveWrite(dst);
     await runFs(async () => {
       await this.fsOps.mkdir(this.pathPolicy.dirname(realDst), { recursive: true });
       await this.fsOps.rename(realSrc, realDst);
     }, src);
+    // Deliberately a full clear, not a `dirname(src)`/`dirname(dst)`-scoped
+    // delete — see `parentRealpathCache`'s field doc for why a directory
+    // rename makes that narrowing unsound.
     this.parentRealpathCache.clear();
   };
 
   readlink = async (path: string): Promise<string> => {
-    const real = await this.checkContainment(path, 'lstat');
+    const { all } = this.resolvedRootSet ?? (await this.loadRootSet());
+    const real = this.resolveRead(path, all);
     return runFs(() => this.fsOps.readlink(real), path);
   };
 
   symlink = async (target: string, path: string): Promise<void> => {
-    // Absolute targets must point inside a root. Without this gate, a
-    // malicious tree could plant a `/etc/passwd`-style symlink that
-    // subsequent `readlink` exfiltrates. Relative targets are not
-    // validated at create time — they are resolved against the link
-    // entry's directory at OS-read time, and any follow-up `read`/`stat`
-    // re-realpaths the leaf and re-checks containment.
-    if (this.pathPolicy.isAbsolute(target)) {
-      // Lexical normalisation alone is insufficient: a Windows directory
-      // junction (`C:\repo\junction` → `C:\outside`) lexically passes the
-      // prefix check but the OS-resolved path lands outside every root.
-      // Resolve symlinks/junctions in the target's existing prefix and
-      // compare the *real* path. The resolve only ever expands the target
-      // — never the link entry, which doesn't exist yet.
-      const lexical = this.pathPolicy.resolve(target);
-      const resolvedTarget = await realpathNearestExisting(lexical, this.pathPolicy, this.fsOps);
-      const { all } = await this.resolveRootSet();
-      if (!this.isContainedInAnyRoot(resolvedTarget, all)) {
-        throw permissionDenied(path);
-      }
-    }
-    const real = await this.checkContainment(path, 'creation');
+    // A symlink's target — absolute or relative — is opaque bytes, written
+    // verbatim, exactly like git: it is never resolved or checked against
+    // the root set. Only the link's OWN path is contained (W1); `symlink(2)`
+    // itself refuses any existing leaf with EEXIST, so no leaf follow can
+    // occur here either.
+    const real = await this.resolveWrite(path);
     await runFs(async () => {
       await this.fsOps.mkdir(this.pathPolicy.dirname(real), { recursive: true });
       await this.fsOps.symlink(target, real);
@@ -730,17 +723,21 @@ export class NodeFileSystem implements FileSystem {
   };
 
   chmod = async (path: string, mode: number): Promise<void> => {
-    const real = await this.checkContainment(path, 'read');
+    // chmod both writes AND follows its leaf, and no portable no-follow
+    // chmod exists — so, unlike the other W2 surfaces, it cannot rely on
+    // `O_NOFOLLOW` and keeps an explicit leaf check on every platform.
+    const real = await this.resolveWrite(path);
+    await this.assertLeafSafeToWrite(real, path);
     await runFs(() => this.fsOps.chmod(real, mode), path);
   };
 
   rmRecursive = async (path: string): Promise<void> => {
     let real: string;
     try {
-      real = await this.checkContainment(path, 'lstat');
+      real = await this.resolveWrite(path);
       // Verify the leaf exists. Call `fsOps.lstat` directly — `real` is
       // already a contained, canonical-prefix path; re-entering the
-      // public `lstat` method would re-run checkContainment for no
+      // public `lstat` method would re-run the write guard for no
       // benefit. ENOENT surfaces as FILE_NOT_FOUND via runFs, which we
       // swallow for idempotency.
       await runFs(() => this.fsOps.lstat(real), path);
@@ -753,15 +750,27 @@ export class NodeFileSystem implements FileSystem {
   };
 
   openWithNoFollow = async (path: string, mode: 'read' | 'write'): Promise<FileHandle> => {
-    const real = await this.checkContainment(path, 'lstat');
+    // 'read' never mutates state, so it takes the lexical, syscall-free
+    // gate like every other read surface; 'write' takes the write guard
+    // (W1) and, like every other W2 surface, leans on `O_NOFOLLOW` at the
+    // `open` below rather than a pre-open leaf check.
+    let real: string;
+    if (mode === 'write') {
+      real = await this.resolveWrite(path);
+    } else {
+      const { all } = this.resolvedRootSet ?? (await this.loadRootSet());
+      real = this.resolveRead(path, all);
+    }
     // Windows: `O_NOFOLLOW` is silently ignored by the underlying Win32 API
     // (Node forwards the flag but CreateFile has no equivalent), so the
     // kernel follows the symlink and opens the target. We must refuse
     // upfront when the leaf IS a symlink. ELOOP flows through `mapErrno` to
-    // PERMISSION_DENIED on POSIX; Windows needs the proactive
-    // refusal + the discriminator (for errno-bearing failures like EACCES
-    // on a symlink target inside an inaccessible parent).
-    if (this.pathPolicy.caseInsensitive && (await this.isSymlinkLeaf(real))) {
+    // PERMISSION_DENIED on POSIX (which honours `O_NOFOLLOW` at `open`
+    // itself); a platform whose `open(2)` does NOT honour it needs the
+    // proactive refusal + the discriminator (for errno-bearing failures like
+    // EACCES on a symlink target inside an inaccessible parent). Gated on
+    // `honoursNoFollow`, not `caseInsensitive` — see `isWindowsSymlinkRefusal`.
+    if (!this.pathPolicy.honoursNoFollow && (await this.isSymlinkLeaf(real))) {
       throw permissionDenied(path);
     }
 
@@ -784,19 +793,20 @@ export class NodeFileSystem implements FileSystem {
 
   private async isSymlinkLeaf(real: string): Promise<boolean> {
     // equivalent-mutant: this method is only called when
-    // `pathPolicy.caseInsensitive` is true (Windows). On the Linux mutation
-    // runner the body is unreachable, so mutating returns/catch produces
-    // no observable effect. Windows-mocked tests in
-    // `node-file-system-injected.test.ts` (via `windowsPolicy` injected
-    // through the `PathPolicy` + `FsOperations` DI seam)
-    // cover both arms.
+    // `!pathPolicy.honoursNoFollow` (Windows today — no shipped policy sets
+    // `honoursNoFollow: false` on any other platform). On the Linux mutation
+    // runner `posixPolicy.honoursNoFollow` is true, so the body is
+    // unreachable and mutating returns/catch produces no observable effect.
+    // Windows-mocked tests in `node-file-system-injected.test.ts` (via
+    // `windowsPolicy` injected through the `PathPolicy` + `FsOperations` DI
+    // seam) cover both arms.
     try {
       const stat = await this.fsOps.lstat(real);
       return stat.isSymbolicLink();
     } catch (err) {
-      // TOCTOU: the leaf may have been removed between checkContainment's
-      // resolveForMode and this lstat. ENOENT is safe to swallow — the
-      // subsequent open call will surface its own errno. Other errors
+      // TOCTOU: the leaf may have been removed between `resolveWrite` and
+      // this lstat. ENOENT is safe to swallow — the subsequent open call
+      // will surface its own errno. Other errors
       // (EACCES, EIO) indicate a genuine I/O fault that callers must see.
       if (isErrnoException(err) && err.code === 'ENOENT') return false;
       throw err;
@@ -822,15 +832,16 @@ export class NodeFileSystem implements FileSystem {
     await runFs(() => this.fsOps.rmdir(real), originalPath);
   }
 
-  private async resolveForCreation(
-    path: string,
-    resolved: string,
-    roots: ReadonlyArray<RootPrefix>,
-  ): Promise<string> {
-    // realpathNearestExisting already resolved the existing prefix and rethrew any non-ENOENT
-    // error, so lstat on `real` here can only succeed (leaf exists) or throw ENOENT (leaf is
-    // the to-be-created tail). A symlink leaf is rejected to prevent writes through it.
-    const real = await this.realpathForCreation(resolved, roots);
+  /**
+   * Explicit leaf check for the two situations that cannot rely on
+   * `O_NOFOLLOW`: `chmod` (no portable no-follow chmod exists, on any
+   * platform) and the Windows arm of every other W2 write surface
+   * (`O_NOFOLLOW` is silently ignored there). A symlink leaf throws
+   * `PERMISSION_DENIED`; a leaf that doesn't exist yet (ENOENT) is a no-op
+   * — the ordinary creation case — and callers whose leaf must already
+   * exist (`chmod`) surface that via their own op's own ENOENT.
+   */
+  private async assertLeafSafeToWrite(real: string, path: string): Promise<void> {
     let lstatResult: { ok: true; isSymlink: boolean } | { ok: false; err: unknown };
     try {
       const leafStat = await this.fsOps.lstat(real);
@@ -839,49 +850,51 @@ export class NodeFileSystem implements FileSystem {
       lstatResult = { ok: false, err };
     }
     interpretCreationLstat(lstatResult, path);
-    return real;
   }
 
-  // Shared by `realpathForCreation` and the `resolveForMode` lstat arm: a
-  // status/walk touching many entries under the same directory pays the
-  // parent realpath — and the lstat arm's containment verdict — once, not
-  // once per entry. The leaf itself is never cached — only the parent
-  // directory realpath and its verdict. Throws on ENOENT (the `.set` below
-  // only runs after a successful await, so a failed realpath is never
-  // cached) — callers that need a fallback catch it themselves.
-  private async cachedParentRealpath(
-    parent: string,
-    roots: ReadonlyArray<RootPrefix>,
-  ): Promise<ParentRealpathEntry> {
+  /**
+   * Fallback for every W2 write surface on a platform whose `open(2)` does
+   * not honour `O_NOFOLLOW` (`honoursNoFollow: false` — currently Windows
+   * only, where the Win32 API silently ignores the flag): the explicit
+   * leaf lstat is the only defence there. A platform that DOES honour
+   * `O_NOFOLLOW` relies on it at the `open` itself and skips this entirely.
+   */
+  private async assertWritableLeaf(real: string, path: string): Promise<void> {
+    if (!this.pathPolicy.honoursNoFollow) {
+      await this.assertLeafSafeToWrite(real, path);
+    }
+  }
+
+  // Shared by every write surface via `realpathForCreation`: a
+  // clone/checkout writing N files into the same tree, or an `rm`/
+  // `rmRecursive` walk removing N entries under it, pays the realpath
+  // walk-up once per parent rather than once per file/entry. Throws on
+  // ENOENT (the `.set` below only runs after a successful await, so a
+  // failed realpath is never cached) — callers that need a fallback catch
+  // it themselves.
+  private async cachedParentRealpath(parent: string): Promise<string> {
     const cached = this.parentRealpathCache.get(parent);
     if (cached !== undefined) {
       return cached;
     }
     const realParent = await this.fsOps.realpath(parent);
-    const entry: ParentRealpathEntry = {
-      realParent,
-      contained: this.isContainedInAnyRoot(realParent, roots),
-    };
-    this.parentRealpathCache.set(parent, entry, parent.length + realParent.length);
-    return entry;
+    this.parentRealpathCache.set(parent, realParent, parent.length + realParent.length);
+    return realParent;
   }
 
-  private async realpathForCreation(
-    resolved: string,
-    roots: ReadonlyArray<RootPrefix>,
-  ): Promise<string> {
+  private async realpathForCreation(resolved: string): Promise<string> {
     // Fast path: parent already cached. The leaf realpath is meaningless
-    // for creation (the leaf often doesn't exist yet), so we cache the
-    // parent only and join the basename. Creation's own post-check (in
-    // `checkContainment`) verifies containment on the joined leaf itself;
-    // the cached `.contained` verdict is populated for a possible later
-    // lstat under the same parent but is not consulted here.
+    // here (the leaf often doesn't exist yet, and — for surfaces that act
+    // on the leaf itself, like `rm` or `rename` — realpathing it would be
+    // wrong even when it does), so we cache the parent only and join the
+    // basename. `resolveWrite`'s own post-check verifies containment on the
+    // joined leaf itself.
     const parent = this.pathPolicy.dirname(resolved);
     const basename = this.pathPolicy.basename(resolved);
     // Cache miss falls through to a direct parent realpath — when the
     // parent exists this is a single call instead of the full walk-up.
     try {
-      const { realParent } = await this.cachedParentRealpath(parent, roots);
+      const realParent = await this.cachedParentRealpath(parent);
       return this.pathPolicy.join(realParent, basename);
     } catch (err) {
       if (isErrnoException(err) && err.code === 'ENOENT') {
@@ -895,69 +908,6 @@ export class NodeFileSystem implements FileSystem {
   }
 
   /**
-   * Resolves `resolved` to its real, containment-checkable form. `contained`
-   * is `undefined` for `read`/`creation` — those arms realpath a full leaf,
-   * so `checkContainment` still runs its own per-entry POST-check on the
-   * returned `real`. For `lstat`, `contained` carries the per-parent
-   * verdict `cachedParentRealpath` already computed (once per parent,
-   * proven verdict-identical to a per-entry check for a single clean leaf)
-   * — `checkContainment` consults it directly instead of re-normalising.
-   */
-  private async resolveForMode(
-    path: string,
-    resolved: string,
-    mode: ContainmentMode,
-    roots: ReadonlyArray<RootPrefix>,
-  ): Promise<{ real: string; contained: boolean | undefined }> {
-    if (mode === 'read') {
-      if (!this.isContainedInAnyRoot(resolved, roots)) {
-        throw permissionDenied(path);
-      }
-      const real = await this.fsOps.realpath(resolved);
-      return { real, contained: undefined };
-    }
-    if (mode === 'lstat') {
-      // Mirror the `read` arm: fail-fast on obviously out-of-tree input
-      // BEFORE issuing the realpath I/O. Without this gate, an absolute
-      // escape path (`../../etc`) would still walk through
-      // `realpath(dirname)` before the post-check catches it.
-      const verdict = this.containmentVerdict(resolved, roots);
-      if (!verdict.contained) {
-        throw permissionDenied(path);
-      }
-      // The parent realpath — and its containment verdict — are cached
-      // (shared with `realpathForCreation` via `cachedParentRealpath`).
-      // ENOENT propagates to the caller here (no fallback), unlike the
-      // creation path.
-      const parent = this.pathPolicy.dirname(resolved);
-      const basename = this.pathPolicy.basename(resolved);
-      const { realParent, contained } = await this.cachedParentRealpath(parent, roots);
-      // The per-parent verdict equivalence (`contained(join(realParent,
-      // basename)) === contained(realParent)`) holds for every leaf
-      // STRICTLY UNDER a root, but not when `resolved` IS a root itself:
-      // `dirname(root)` is that root's own parent, which is never
-      // "contained in the root set" even though the root trivially is (the
-      // `===` arm) — so the cached per-parent verdict here would
-      // false-deny an exact-root leaf. The exact-root leaf is therefore
-      // the ONE exception to the per-parent equivalence: report
-      // `contained: undefined` so `checkContainment`'s
-      // `contained ?? isContainedInAnyRoot(real, …)` runs the FULL
-      // per-entry post-check on the realpath'd `real` instead of trusting
-      // the (inapplicable) per-parent verdict. This reproduces the
-      // pre-per-parent-cache behaviour: a root that is itself a symlink
-      // pointing outside its own tree is DENIED, because `real` — built
-      // from the SAME `realParent`/`basename` join as any other leaf — is
-      // then checked against every root on its own merits.
-      return {
-        real: this.pathPolicy.join(realParent, basename),
-        contained: verdict.isExactRoot ? undefined : contained,
-      };
-    }
-    const real = await this.resolveForCreation(path, resolved, roots);
-    return { real, contained: undefined };
-  }
-
-  /**
    * `abs` is normalised ONCE (not once per root) and compared against every
    * root's precomputed `+sep` prefix. Both the `=== root` equality arm and
    * the `startsWith(root + sep)` prefix arm are retained per root — dropping
@@ -966,57 +916,77 @@ export class NodeFileSystem implements FileSystem {
    * already-resolved `RootPrefix` values — no field read-back.
    */
   private isContainedInAnyRoot(abs: string, roots: ReadonlyArray<RootPrefix>): boolean {
-    return this.containmentVerdict(abs, roots).contained;
+    const c = this.pathPolicy.normalizeForCompare(abs);
+    return roots.some((root) => containedByPrefix(c, root.normalized, root.withSep));
   }
 
   /**
-   * Single source of truth for the multi-root, two-arm containment test —
-   * `isContainedInAnyRoot` and the lstat arm's PRE-check both delegate
-   * here so the "is `abs` exactly one of the roots" fact (needed by the
-   * lstat arm's exact-root shortcut) is derived from the SAME normalise
-   * call as the containment verdict, not a second one.
+   * Lexical, syscall-free containment gate for every read surface (`read`,
+   * `readSlice`, `readUtf8`, `stat`, `lstat`, `readdir`, `readlink`,
+   * `exists`, `openWithNoFollow(_, 'read')`). Git allows reading through a
+   * symlink that resolves outside every root — the realpath escape check
+   * `resolveWrite` runs for write surfaces does not apply
+   * here, so this never touches the filesystem.
+   *
+   * `roots` is the caller's already-resolved `RootSet.all` (never read from
+   * `this.resolvedRootSet` directly) so this stays synchronous and total:
+   * every caller guarantees the set is populated via the
+   * `this.resolvedRootSet ?? await this.loadRootSet()` sync-fast-arm idiom
+   * BEFORE calling in, so the one-time root canonicalisation still pays its
+   * microtask exactly once per adapter lifetime, never once per call.
    */
-  private containmentVerdict(
-    abs: string,
-    roots: ReadonlyArray<RootPrefix>,
-  ): { contained: boolean; isExactRoot: boolean } {
-    const c = this.pathPolicy.normalizeForCompare(abs);
-    const isExactRoot = roots.some((root) => c === root.normalized);
-    const contained = roots.some((root) => containedByPrefix(c, root.normalized, root.withSep));
-    return { contained, isExactRoot };
+  private resolveRead(path: string, roots: ReadonlyArray<RootPrefix>): string {
+    const absolute = toAbsolute(path, this.rootDir, this.pathPolicy);
+    // Non-allocating `..` prefilter: the facade already rejects `..`
+    // segments, so a raw adapter call is the only way this arm fires. `.`
+    // segments and duplicate separators are left uncollapsed — both are
+    // OS-normalised at the syscall and neither can escape a prefix check.
+    // Stryker disable next-line ConditionalExpression,StringLiteral: equivalent — forcing this ternary to always take the resolve() branch only trades the allocation-skip for an unconditional resolve(); when `absolute` carries no '..' substring at all, resolve() only strips `.` segments/duplicate separators/a trailing slash (never collapses anything else, since there's no ".." to collapse), none of which changes a startsWith-prefix containment verdict against the pre-canonicalised root prefixes.
+    const candidate = absolute.indexOf('..') === -1 ? absolute : this.pathPolicy.resolve(absolute);
+    const normalized = this.pathPolicy.normalizeForCompare(candidate);
+    const contained = roots.some((root) =>
+      containedByPrefix(normalized, root.normalized, root.withSep),
+    );
+    if (!contained) throw permissionDenied(path);
+    return candidate;
   }
 
-  private async checkContainment(path: string, mode: ContainmentMode): Promise<string> {
+  /**
+   * The single write guard (W1): leading-path containment via
+   * `realpathForCreation` (never the leaf itself — a dangling symlink,
+   * whose leaf realpath would ENOENT, must stay removable) followed by an
+   * unconditional per-entry post-check on the joined result. Every write
+   * surface resolves through here; surfaces that also dereference their
+   * leaf (`write`/`writeStream`/`writeUtf8`/`writeExclusive`/`appendUtf8`/
+   * `openWithNoFollow(_, 'write')`/`chmod`) layer their own leaf check on
+   * top of the `real` path this returns.
+   */
+  private async resolveWrite(path: string): Promise<string> {
     // `policy.resolve` normalises embedded `..`/`.` segments AND foreign
     // separators (a `/` on Windows). The adapter is contractually allowed
     // to receive mixed-separator input; resolving here produces a
     // platform-native form so the containment prefix-check compares
     // like-for-like.
     const resolved = this.pathPolicy.resolve(toAbsolute(path, this.rootDir, this.pathPolicy));
-    // Containment passes if `abs` is inside ANY root, in either its raw form
-    // (which matches user-supplied paths with the same short-name form as the
-    // constructor argument) OR its canonical form (which matches paths
-    // produced by `realpath` after short-name expansion). Without both forms,
-    // a Windows user passing a short-name input would hit the pre-resolve
-    // check against the canonical long-name root and fail spuriously.
-    //
     // Every root is constant for the adapter's lifetime; their normalised
-    // raw and canonical prefixes are held as one `RootSet` instance field,
-    // read via `resolveRootSet()` (which skips the `await` entirely once the
-    // set has settled) — so the case-fold allocations AND the canonicalising
-    // microtask on the hot path each run once per adapter lifetime rather
-    // than once per containment check.
-    const { all } = await this.resolveRootSet();
+    // raw and canonical prefixes are held as one `RootSet` instance field.
+    // The same synchronous-first-path idiom as every read surface
+    // (`this.resolvedRootSet ?? await this.loadRootSet()`) reads it directly
+    // once settled, with no `await`/microtask on the write hot path either
+    // — so the case-fold allocations AND the canonicalising microtask each
+    // run once per adapter lifetime rather than once per containment check.
+    const { all } = this.resolvedRootSet ?? (await this.loadRootSet());
     try {
-      const { real, contained } = await this.resolveForMode(path, resolved, mode, all);
-      // `contained !== undefined` means `resolveForMode` already produced
-      // the lstat arm's per-parent verdict (B3) — trust it and skip the
-      // redundant per-entry recomputation. `read`/`creation` return
-      // `undefined` and fall through to the per-entry POST-check, since
-      // their `real` is a full-leaf realpath (the clean-single-leaf
-      // equivalence B3 relies on does not hold for them).
-      const isContained = contained ?? this.isContainedInAnyRoot(real, all);
-      if (!isContained) {
+      const real = await this.realpathForCreation(resolved);
+      // Containment passes if `real` is inside ANY root, in either its raw
+      // form (which matches user-supplied paths with the same short-name
+      // form as the constructor argument) OR its canonical form (which
+      // matches paths produced by `realpath` after short-name expansion).
+      // Without both forms, a Windows user passing a short-name input would
+      // hit the pre-resolve check against the canonical long-name root and
+      // fail spuriously. This post-check runs unconditionally, on every
+      // call — no verdict is ever cached across calls.
+      if (!this.isContainedInAnyRoot(real, all)) {
         throw permissionDenied(path);
       }
       return real;

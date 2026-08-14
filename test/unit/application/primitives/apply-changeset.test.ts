@@ -349,6 +349,142 @@ describe('applyChangeset', () => {
     });
   });
 
+  // no-dereference audit — this file covers site 1 (blobMatches) and the delete-skip.
+  // Sites 2-6 are covered by their own isolated tests in
+  // compare-working-tree-entry.test.ts, snapshot/workdir-entry.test.ts,
+  // commands/blame.test.ts, commands/grep.test.ts and commands/stash.test.ts.
+  // Two adjacent call sites were audited and are already correct, so they
+  // carry no isolated test of their own: commands/add.ts's `readContent`
+  // (if/else form) and commands/internal/working-tree.ts's `readFile` (a
+  // bare `ctx.fs.read`, reachable only from add's own symlink-guarded path).
+  describe('Given a 120000 (symlink) entry whose working-tree link target differs from the stored blob', () => {
+    describe('When applyChangeset runs without force', () => {
+      it('Then the entry is dirty and CHECKOUT_OVERWRITE_DIRTY is thrown, without reading the link target', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, enc('/stored/target'));
+        await ctx.fs.symlink('/different/target', `${WORKDIR}/link`);
+        const readSpy = vi.spyOn(ctx.fs, 'read');
+
+        // Act
+        try {
+          await applyChangeset(ctx, {
+            changeset: makeChangeset([makeUpdate('link', id, id, FILE_MODE.SYMLINK)]),
+            force: false,
+            workdir: WORKDIR,
+          });
+          throw new Error('expected throw');
+        } catch (err) {
+          // Assert
+          expect(err).toBeInstanceOf(TsgitError);
+          if (!(err instanceof TsgitError)) throw err;
+          expect(err.data.code).toBe('CHECKOUT_OVERWRITE_DIRTY');
+        }
+        expect(readSpy).not.toHaveBeenCalledWith(`${WORKDIR}/link`);
+      });
+    });
+  });
+
+  describe('Given a 120000 (symlink) entry whose working-tree link target matches the stored blob', () => {
+    describe('When applyChangeset runs without force', () => {
+      it('Then the entry is not dirty and the checkout proceeds', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, enc('/same/target'));
+        await ctx.fs.symlink('/same/target', `${WORKDIR}/link`);
+
+        // Act
+        const result = await applyChangeset(ctx, {
+          changeset: makeChangeset([makeUpdate('link', id, id, FILE_MODE.SYMLINK)]),
+          force: false,
+          workdir: WORKDIR,
+        });
+
+        // Assert
+        expect(result.written).toBe(1);
+      });
+    });
+  });
+
+  describe('Given a delete entry whose leading directory component is a symlink, and lstat on the resolved leaf would (on a real filesystem) succeed by following the link', () => {
+    describe('When applyChangeset runs with force', () => {
+      it('Then the removal is skipped without calling rm, and the symlink is left intact', async () => {
+        // Arrange — dir is a symlink; simulate a real filesystem where lstat on
+        // dir/file.txt would succeed by following the symlinked leading
+        // component (git's exact hazard the delete-skip fix closes).
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, enc('gone'));
+        await ctx.fs.symlink('/outside/target', `${WORKDIR}/dir`);
+        const leafPath = `${WORKDIR}/dir/file.txt`;
+        const rmCalls: string[] = [];
+        const wrappedCtx: Context = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            lstat: async (p: string) =>
+              p === leafPath
+                ? { ...(await ctx.fs.lstat(`${WORKDIR}/dir`)), isSymbolicLink: false }
+                : ctx.fs.lstat(p),
+            rm: async (p: string): Promise<void> => {
+              rmCalls.push(p);
+              return ctx.fs.rm(p);
+            },
+          },
+        };
+
+        // Act
+        const result = await applyChangeset(wrappedCtx, {
+          changeset: makeChangeset([makeDelete('dir/file.txt', id)]),
+          force: true,
+          workdir: WORKDIR,
+        });
+
+        // Assert
+        expect(result.deleted).toBe(1);
+        expect(rmCalls).toHaveLength(0);
+        expect((await ctx.fs.lstat(`${WORKDIR}/dir`)).isSymbolicLink).toBe(true);
+      });
+    });
+  });
+
+  describe('Given the delete target lstat fails with PERMISSION_DENIED (not FILE_NOT_FOUND)', () => {
+    describe('When applyChangeset runs with force', () => {
+      it('Then the error propagates instead of being silently swallowed', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, enc('doomed'));
+        await ctx.fs.write(`${WORKDIR}/doomed.txt`, enc('doomed'));
+        const wrappedCtx: Context = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            lstat: async (p: string) => {
+              if (p === `${WORKDIR}/doomed.txt`) {
+                throw new TsgitError({ code: 'PERMISSION_DENIED', path: p });
+              }
+              return ctx.fs.lstat(p);
+            },
+          },
+        };
+
+        // Act
+        try {
+          await applyChangeset(wrappedCtx, {
+            changeset: makeChangeset([makeDelete('doomed.txt', id)]),
+            force: true,
+            workdir: WORKDIR,
+          });
+          throw new Error('expected throw');
+        } catch (err) {
+          // Assert
+          expect(err).toBeInstanceOf(TsgitError);
+          if (!(err instanceof TsgitError)) throw err;
+          expect(err.data.code).toBe('PERMISSION_DENIED');
+        }
+      });
+    });
+  });
+
   describe('Given a noop entry', () => {
     describe('When applyChangeset runs', () => {
       it('Then leaves the working tree unchanged and does not include the entry in writtenEntries', async () => {
@@ -1221,6 +1357,100 @@ describe('applyChangeset', () => {
         // Assert — symlink target is verbatim (not lowercased); runner not invoked
         expect(await ctx.fs.readlink(`${WORKDIR}/a.link`)).toBe(target);
         expect(runner.calls).toHaveLength(0);
+      });
+    });
+  });
+
+  describe('Given an add entry named `.GIT` (a `.git`-alias hostile name)', () => {
+    describe('When applyChangeset runs', () => {
+      it('Then throws INVALID_INDEX_ENTRY and writes nothing to the working tree', async () => {
+        // Arrange — the checkout path mints IndexEntry records here; a
+        // hostile target-tree entry must be refused before any write, the
+        // same index-write boundary `build-index-from-tree.ts` enforces for
+        // `reset --mixed`. `.GIT` (not the lowercase `.git` the seeded repo
+        // already owns) keeps this a clean no-write witness.
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, new TextEncoder().encode('hostile'));
+
+        // Act
+        let caught: unknown;
+        try {
+          await applyChangeset(ctx, {
+            changeset: makeChangeset([makeAdd('.GIT', id)]),
+            force: false,
+            workdir: WORKDIR,
+          });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe('INVALID_INDEX_ENTRY');
+        expect(await ctx.fs.exists(`${WORKDIR}/.GIT`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a changeset whose LAST entry is hostile and earlier entries are safe', () => {
+    describe('When applyChangeset runs', () => {
+      it('Then refuses before writing any entry (checks nothing out)', async () => {
+        // Arrange — mirrors git's unpack_trees: the whole target is
+        // validated before the first file is written, so one hostile
+        // tree entry anywhere in a clone/checkout leaves the working tree
+        // untouched rather than partially populated.
+        const ctx = await buildSeededContext();
+        const safeId = await writeBlob(ctx, new TextEncoder().encode('safe'));
+        const hostileId = await writeBlob(ctx, new TextEncoder().encode('hostile'));
+
+        // Act
+        let caught: unknown;
+        try {
+          await applyChangeset(ctx, {
+            changeset: makeChangeset([makeAdd('safe.txt', safeId), makeAdd('git~1', hostileId)]),
+            force: false,
+            workdir: WORKDIR,
+          });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe('INVALID_INDEX_ENTRY');
+        expect(await ctx.fs.exists(`${WORKDIR}/safe.txt`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given an update entry whose new path is a `.gitmodules` symlink', () => {
+    describe('When applyChangeset runs', () => {
+      it('Then throws INVALID_INDEX_ENTRY with the gitmodules-not-regular reason', async () => {
+        // Arrange — CVE-2018-11235 hardening on the checkout write path.
+        const ctx = await buildSeededContext();
+        const oldId = await writeBlob(ctx, new TextEncoder().encode('[submodule]'));
+        const newId = await writeBlob(ctx, new TextEncoder().encode('../outside'));
+
+        // Act
+        let caught: unknown;
+        try {
+          await applyChangeset(ctx, {
+            changeset: makeChangeset([makeUpdate('.gitmodules', oldId, newId, FILE_MODE.SYMLINK)]),
+            force: false,
+            workdir: WORKDIR,
+          });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data;
+        expect(data).toEqual({
+          code: 'INVALID_INDEX_ENTRY',
+          offset: -1,
+          reason: "'.gitmodules' must not be a symlink",
+        });
       });
     });
   });

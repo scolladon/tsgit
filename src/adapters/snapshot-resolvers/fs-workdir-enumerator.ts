@@ -77,6 +77,6 @@ async function* enumerate(ctx: Context, opts: WorkdirEnumOptions): AsyncIterable
     // is observably equivalent when ctx.signal aborts.
     if (isAborted()) throw operationAborted();
     if (opts.paths !== undefined && !matchesPathspec(opts.paths, path)) continue;
-    yield toRow(path, stat);
+    yield toRow(path, await stat());
   }
 }

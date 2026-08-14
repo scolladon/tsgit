@@ -2,7 +2,9 @@
 
 ## Status
 
-Accepted (at `50e6eed`)
+Superseded by [ADR-632](632-symlink-targets-written-verbatim.md) — symlink targets are
+written verbatim, like git; the absolute-target containment gate is removed. (Was:
+Accepted at `50e6eed`.)
 
 ## Context
 
