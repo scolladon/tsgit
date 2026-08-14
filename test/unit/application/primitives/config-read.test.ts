@@ -5981,6 +5981,23 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
     });
   });
 
+  describe('Given a [pack] section with an unrelated key (not writeReverseIndex)', () => {
+    describe('When readConfig', () => {
+      it('Then config.pack is undefined — the key guard only matches writeReverseIndex', async () => {
+        // Arrange — an always-true key guard would wrongly boolean-parse this
+        // unrelated (but real git) pack.* key and populate pack.writeReverseIndex.
+        const ctx = createMemoryContext();
+        await seed(ctx, '[pack]\n  threads = 4\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.pack).toBeUndefined();
+      });
+    });
+  });
+
   describe('Given a config with a [push] gpgSign value', () => {
     describe('When readConfig', () => {
       it.each([
