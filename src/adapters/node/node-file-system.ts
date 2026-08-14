@@ -850,13 +850,14 @@ export class NodeFileSystem implements FileSystem {
   }
 
   /**
-   * Windows fallback for every W2 write surface: `O_NOFOLLOW` is silently
-   * ignored by the Win32 API, so the explicit leaf lstat is the only
-   * defence there. POSIX relies on `O_NOFOLLOW` at the `open` itself and
-   * skips this entirely.
+   * Fallback for every W2 write surface on a platform whose `open(2)` does
+   * not honour `O_NOFOLLOW` (`honoursNoFollow: false` — currently Windows
+   * only, where the Win32 API silently ignores the flag): the explicit
+   * leaf lstat is the only defence there. A platform that DOES honour
+   * `O_NOFOLLOW` relies on it at the `open` itself and skips this entirely.
    */
   private async assertWritableLeaf(real: string, path: string): Promise<void> {
-    if (this.pathPolicy.caseInsensitive) {
+    if (!this.pathPolicy.honoursNoFollow) {
       await this.assertLeafSafeToWrite(real, path);
     }
   }

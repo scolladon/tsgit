@@ -9,9 +9,21 @@
  *
  * Design notes:
  * - `sep` is the platform separator string, used for prefix containment.
- * - `caseInsensitive` drives `normalizeForCompare`; Windows + macOS HFS+
- *  could share this in theory, but tsgit treats macOS as case-sensitive
- *  per Git's `core.ignorecase` default and POSIX convention.
+ * - Three independent capability flags — `caseInsensitive`, `windowsSyntax`,
+ *  `honoursNoFollow` — each say exactly what they gate, so a policy that
+ *  mixes capabilities (e.g. a hypothetical case-insensitive POSIX
+ *  filesystem) sets each on its own merits instead of one flag standing in
+ *  for all three. `caseInsensitive` drives ONLY the case-fold in
+ *  `normalizeForCompare`; tsgit treats macOS as case-sensitive per Git's
+ *  `core.ignorecase` default and POSIX convention, so no shipped policy
+ *  sets it without also being Windows today.
+ * - `windowsSyntax` drives the Windows-shaped parsing: `rootOf`'s
+ *  UNC/drive-letter recognition and `normalizeForCompare`'s extended-prefix
+ *  strip + `/`→`\` fold.
+ * - `honoursNoFollow` says whether the platform's `open(2)` refuses a
+ *  symlink leaf when passed `O_NOFOLLOW`. `false` means the write guard
+ *  must fall back to an explicit pre-write `lstat` (see
+ *  `NodeFileSystem.assertWritableLeaf`).
  * - `rootOf` returns the volume/drive prefix produced by `path.parse`.
  *  Examples: `/` on POSIX, `'C:\\'` on Windows, `'\\\\server\\share\\'`
  *  for UNC paths.
@@ -44,7 +56,19 @@ interface PathPolicySource {
 
 export interface PathPolicy {
   readonly sep: '\\' | '/';
+  /** Case-fold comparisons (`normalizeForCompare` lowercases). Nothing else. */
   readonly caseInsensitive: boolean;
+  /**
+   * Windows path syntax: `rootOf` recognises UNC/drive-letter roots and
+   * `normalizeForCompare` applies the extended-prefix strip + `/`→`\` fold.
+   */
+  readonly windowsSyntax: boolean;
+  /**
+   * Whether this platform's `open(2)` honours `O_NOFOLLOW` against a
+   * symlink leaf. `false` forces write surfaces onto an explicit pre-write
+   * `lstat` fallback instead of relying on the syscall flag.
+   */
+  readonly honoursNoFollow: boolean;
   isAbsolute(path: string): boolean;
   resolve(...parts: string[]): string;
   join(...parts: string[]): string;
@@ -123,25 +147,70 @@ const windowsRootOf = (path: string): string => {
   return WIN_DRIVE_ROOT_PATTERN.test(path) ? path.slice(0, 3) : '';
 };
 
-const makePolicy = (impl: PathPolicySource, caseInsensitive: boolean): PathPolicy => ({
+/**
+ * The three platform-capability flags a policy factory sets independently
+ * of one another — see the module header's design notes for what each one
+ * gates.
+ */
+interface PathPolicyCapabilities {
+  readonly caseInsensitive: boolean;
+  readonly windowsSyntax: boolean;
+  readonly honoursNoFollow: boolean;
+}
+
+/**
+ * `PathPolicy.rootOf`, parameterised directly on the `windowsSyntax`
+ * capability rather than closed over a constructed `PathPolicy` — lets a
+ * capability combination no exported policy carries (e.g. a hypothetical
+ * case-insensitive POSIX filesystem) be pinned in isolation, without
+ * exporting `makePolicy` itself.
+ * @internal — exported only for that combinatorial test coverage.
+ */
+export const rootOfForSyntax = (windowsSyntax: boolean, path: string): string =>
+  windowsSyntax ? windowsRootOf(path) : posixRootOf(path);
+
+/**
+ * `PathPolicy.normalizeForCompare`, parameterised directly on
+ * `windowsSyntax` (extended-prefix strip + `/`→`\` fold) and
+ * `caseInsensitive` (lowercase) rather than closed over a constructed
+ * `PathPolicy` — see `rootOfForSyntax`. The two folds are independent: a
+ * `joinPath`-produced path carries `/` unconditionally even on Windows, so
+ * the separator fold is gated on `windowsSyntax` alone, never on whether
+ * the platform also happens to be case-insensitive.
+ * @internal
+ */
+export const normalizeForCompareWithCapabilities = (
+  capabilities: Pick<PathPolicyCapabilities, 'caseInsensitive' | 'windowsSyntax'>,
+  path: string,
+): string => {
+  const syntaxNormalized = capabilities.windowsSyntax
+    ? stripWinExtendedPrefix(path).replaceAll('/', '\\')
+    : path;
+  return capabilities.caseInsensitive ? syntaxNormalized.toLowerCase() : syntaxNormalized;
+};
+
+const makePolicy = (impl: PathPolicySource, capabilities: PathPolicyCapabilities): PathPolicy => ({
   sep: narrowSep(impl.sep),
-  caseInsensitive,
+  ...capabilities,
   isAbsolute: (path: string) => impl.isAbsolute(path),
   resolve: (...parts: string[]) => impl.resolve(...parts),
   join: (...parts: string[]) => impl.join(...parts),
   dirname: (path: string) => impl.dirname(path),
   basename: (path: string) => impl.basename(path),
-  rootOf: (path: string) => (caseInsensitive ? windowsRootOf(path) : posixRootOf(path)),
-  // The `/` → `\` fold only applies on case-insensitive (Windows) hosts: a
-  // `joinPath`-produced path carries `/` unconditionally even there, so the
-  // containment prefix compare must fold it to match a root normalised
-  // through the same function.
-  normalizeForCompare: (path: string) =>
-    caseInsensitive ? stripWinExtendedPrefix(path).toLowerCase().replaceAll('/', '\\') : path,
+  rootOf: (path: string) => rootOfForSyntax(capabilities.windowsSyntax, path),
+  normalizeForCompare: (path: string) => normalizeForCompareWithCapabilities(capabilities, path),
 });
 
-export const posixPolicy: PathPolicy = makePolicy(nodePath.posix, false);
-export const windowsPolicy: PathPolicy = makePolicy(nodePath.win32, true);
+export const posixPolicy: PathPolicy = makePolicy(nodePath.posix, {
+  caseInsensitive: false,
+  windowsSyntax: false,
+  honoursNoFollow: true,
+});
+export const windowsPolicy: PathPolicy = makePolicy(nodePath.win32, {
+  caseInsensitive: true,
+  windowsSyntax: true,
+  honoursNoFollow: false,
+});
 
 /**
  * Pick the policy that matches the given platform string. Extracted as a

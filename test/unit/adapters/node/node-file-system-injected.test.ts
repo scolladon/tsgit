@@ -2103,6 +2103,33 @@ describe('NodeFileSystem — W2 leaf no-follow composition (DI)', () => {
     });
   });
 
+  describe('Given a hypothetical case-insensitive POSIX policy (caseInsensitive=true, honoursNoFollow=true)', () => {
+    describe('When write is called', () => {
+      it('Then no pre-write lstat is issued — the write guard keys off honoursNoFollow, not caseInsensitive', async () => {
+        // Arrange — pins the exact latent break the capability split
+        // prevents: before it, `assertWritableLeaf` ran the extra pre-write
+        // lstat whenever `caseInsensitive` was true, regardless of whether
+        // the platform's `open(2)` actually honours `O_NOFOLLOW`. A policy
+        // that is case-insensitive yet still honours `O_NOFOLLOW` (this
+        // one) must rely on the syscall flag alone, exactly like posixPolicy.
+        const rootDir = '/root';
+        const lstat = vi.fn().mockRejectedValue(enoent());
+        const fsOps = fakeFsOps({
+          realpath: vi.fn().mockImplementation(async (input: string) => input),
+          lstat,
+        });
+        const caseInsensitivePosixPolicy = { ...posixPolicy, caseInsensitive: true };
+        const sut = new NodeFileSystem(rootDir, caseInsensitivePosixPolicy, fsOps);
+
+        // Act
+        await sut.write('/root/leaf.bin', new Uint8Array([1]));
+
+        // Assert
+        expect(lstat).not.toHaveBeenCalled();
+      });
+    });
+  });
+
   describe('Given a Windows policy and a symlink leaf', () => {
     describe('When write is called', () => {
       it('Then the pre-write lstat refuses it with PERMISSION_DENIED before any write', async () => {

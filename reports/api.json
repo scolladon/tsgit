@@ -137931,7 +137931,55 @@
 									},
 									{
 										"kind": "text",
-										"text": " at any level\nis skipped (case-insensitive, NTFS-trimmed). Embedded repositories\n(directories containing a "
+										"text": " at any level\nis skipped, folded only by case ("
+									},
+									{
+										"kind": "code",
+										"text": "`isDotGitWalkEntry`"
+									},
+									{
+										"kind": "text",
+										"text": ", matching git's own\n"
+									},
+									{
+										"kind": "code",
+										"text": "`read_directory`"
+									},
+									{
+										"kind": "text",
+										"text": " under "
+									},
+									{
+										"kind": "code",
+										"text": "`core.ignorecase`"
+									},
+									{
+										"kind": "text",
+										"text": ") — an NTFS/HFS-obscured alias\n("
+									},
+									{
+										"kind": "code",
+										"text": "`git~1`"
+									},
+									{
+										"kind": "text",
+										"text": ", a "
+									},
+									{
+										"kind": "code",
+										"text": "`.git:`"
+									},
+									{
+										"kind": "text",
+										"text": "-stream name, a trailing-dot/space variant, an HFS\nignorable-codepoint form) is walked like any other entry, exactly as\nreal git's directory walk does; that widened matrix applies only at the\nindex-write boundary ("
+									},
+									{
+										"kind": "code",
+										"text": "`verifyPath`"
+									},
+									{
+										"kind": "text",
+										"text": "), not here. Embedded repositories\n(directories containing a "
 									},
 									{
 										"kind": "code",

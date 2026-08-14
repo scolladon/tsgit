@@ -3,7 +3,9 @@ import { describe, expect, it } from 'vitest';
 import {
   narrowSep,
   nativePolicy,
+  normalizeForCompareWithCapabilities,
   posixPolicy,
+  rootOfForSyntax,
   selectNativePolicy,
   windowsPolicy,
 } from '../../../../src/adapters/node/path-policy.js';
@@ -314,6 +316,91 @@ describe('windowsPolicy', () => {
 
         // Assert
         expect(result).toBe('');
+      });
+    });
+  });
+});
+
+describe('policy capability triples', () => {
+  describe('Given posixPolicy', () => {
+    describe('When its capability flags are read', () => {
+      it('Then caseInsensitive/windowsSyntax are false and honoursNoFollow is true', () => {
+        // Arrange & Act
+        const result = {
+          caseInsensitive: posixPolicy.caseInsensitive,
+          windowsSyntax: posixPolicy.windowsSyntax,
+          honoursNoFollow: posixPolicy.honoursNoFollow,
+        };
+
+        // Assert
+        expect(result).toStrictEqual({
+          caseInsensitive: false,
+          windowsSyntax: false,
+          honoursNoFollow: true,
+        });
+      });
+    });
+  });
+
+  describe('Given windowsPolicy', () => {
+    describe('When its capability flags are read', () => {
+      it('Then caseInsensitive/windowsSyntax are true and honoursNoFollow is false', () => {
+        // Arrange & Act
+        const result = {
+          caseInsensitive: windowsPolicy.caseInsensitive,
+          windowsSyntax: windowsPolicy.windowsSyntax,
+          honoursNoFollow: windowsPolicy.honoursNoFollow,
+        };
+
+        // Assert
+        expect(result).toStrictEqual({
+          caseInsensitive: true,
+          windowsSyntax: true,
+          honoursNoFollow: false,
+        });
+      });
+    });
+  });
+});
+
+describe('a hypothetical case-insensitive POSIX policy (caseInsensitive=true, windowsSyntax=false)', () => {
+  // Pins the exact latent break the capability split prevents: before it,
+  // both `rootOf` and `normalizeForCompare` were gated on the single
+  // `caseInsensitive` flag, so a case-insensitive POSIX policy would have
+  // been routed through Windows root parsing and the `/`→`\` separator
+  // fold, mangling every POSIX path. Keying both on `windowsSyntax`
+  // (false here) instead proves POSIX behaviour survives independently of
+  // case sensitivity.
+  const hypotheticalCapabilities = { caseInsensitive: true, windowsSyntax: false };
+
+  describe('Given an absolute POSIX path', () => {
+    describe('When rootOf is computed for the hypothetical capabilities', () => {
+      it('Then it still returns the POSIX root, not a Windows one', () => {
+        // Arrange
+        const path = '/foo/bar';
+
+        // Act
+        const result = rootOfForSyntax(hypotheticalCapabilities.windowsSyntax, path);
+
+        // Assert
+        expect(result).toBe('/');
+      });
+    });
+  });
+
+  describe('Given a POSIX path containing a forward slash', () => {
+    describe('When normalizeForCompare is computed for the hypothetical capabilities', () => {
+      it('Then the separator is left as "/" (no Windows fold) but the case is still folded', () => {
+        // Arrange
+        const path = '/Foo/Bar';
+
+        // Act
+        const result = normalizeForCompareWithCapabilities(hypotheticalCapabilities, path);
+
+        // Assert — case-folded (caseInsensitive: true) but the separator
+        // survives untouched (windowsSyntax: false); a pre-split policy
+        // would have folded it to "\\foo\\bar" instead.
+        expect(result).toBe('/foo/bar');
       });
     });
   });
