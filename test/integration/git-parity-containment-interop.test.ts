@@ -1224,6 +1224,10 @@ describe.skipIf(!GIT_AVAILABLE)('git-parity containment interop', () => {
       });
 
       it('Then both refuse the invalid path and neither writes the hostile hook file', async () => {
+        // Arrange — the hostile stash trio is built once in beforeAll
+        const peerHook = path.join(pair.peerDir, '.git', 'hooks', 'pre-commit');
+        const oursHook = path.join(pair.oursDir, '.git', 'hooks', 'pre-commit');
+
         // Act — `git stash apply <commit>` accepts any commit shaped like a
         // stash entry directly, no `refs/stash` required.
         const peerResult = tryRunGitWithExit(['-C', pair.peerDir, 'stash', 'apply', peerW]);
@@ -1238,10 +1242,10 @@ describe.skipIf(!GIT_AVAILABLE)('git-parity containment interop', () => {
         // beyond its own init-time `.sample` hook files
         expect(peerResult.exitCode).not.toBe(0);
         expect(peerResult.stderr).toContain("invalid path '.git/hooks/pre-commit'");
-        expect(existsSync(path.join(pair.peerDir, '.git', 'hooks', 'pre-commit'))).toBe(false);
+        expect(existsSync(peerHook)).toBe(false);
         // Assert — tsgit refuses too, and never wrote the hostile hook file
         expect(oursCode).toBe('INVALID_INDEX_ENTRY');
-        expect(existsSync(path.join(pair.oursDir, '.git', 'hooks', 'pre-commit'))).toBe(false);
+        expect(existsSync(oursHook)).toBe(false);
       });
     });
   });
