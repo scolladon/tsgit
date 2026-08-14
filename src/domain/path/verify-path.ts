@@ -42,18 +42,30 @@ const stripIgnorableCodepoints = (part: string): string =>
     .filter((char) => !IGNORABLE_CODEPOINTS.has(char.charCodeAt(0)))
     .join('');
 
+// Cheap pre-scan so the allocating split/filter/join strip only runs for the
+// rare component that actually carries an ignorable codepoint.
+const hasIgnorableCodepoint = (part: string): boolean => {
+  for (let i = 0; i < part.length; i += 1) {
+    if (IGNORABLE_CODEPOINTS.has(part.charCodeAt(i))) return true;
+  }
+  return false;
+};
+
 const matchAliasPart = (part: string): VerifyPathRejection | undefined => {
   const normalized = normalizeAliasCandidate(part);
   if (normalized === DOTGIT) return 'dotgit-alias';
   if (normalized === NTFS_SHORT_NAME) return 'dotgit-ntfs-alias';
   if (normalized.startsWith(NTFS_STREAM_PREFIX)) return 'dotgit-ntfs-stream';
+  if (!hasIgnorableCodepoint(part)) return undefined;
   const hfsNormalized = normalizeAliasCandidate(stripIgnorableCodepoints(part));
   return hfsNormalized === DOTGIT ? 'dotgit-hfs-alias' : undefined;
 };
 
 // The `\` split exists only to feed this scan (`.git\config` reads as two
-// parts, `.git` and `config`) — a bare backslash is never a rejection.
+// parts, `.git` and `config`) — a bare backslash is never a rejection. Most
+// components carry no backslash at all, so skip the allocating split for them.
 const matchAliasComponent = (component: string): VerifyPathRejection | undefined => {
+  if (component.indexOf('\\') === -1) return matchAliasPart(component);
   for (const part of component.split('\\')) {
     const reason = matchAliasPart(part);
     if (reason !== undefined) return reason;
