@@ -77,13 +77,14 @@ describe('resolvePathspec', () => {
         },
         {
           patterns: ['src/foo', '*.ts', '!*.test.ts', '!src/skip'],
-          symlinkScanTargets: ['src/foo', '*.ts'],
-          label: 'a mix of literal + glob keeps both, negated entries excluded',
+          symlinkScanTargets: ['src/foo', '*.ts', '*.test.ts', 'src/skip'],
+          label:
+            'a mix of literal + glob keeps both, and negated entries are scanned too (git refuses a negated pathspec beyond a symlink exactly like a positive one)',
         },
         {
           patterns: ['!*.ts', '!src/skip'],
-          symlinkScanTargets: [],
-          label: 'a `!`-only spec has an empty scan-target list',
+          symlinkScanTargets: ['*.ts', 'src/skip'],
+          label: 'a `!`-only spec still scans every negated body',
         },
       ])('Then $label', ({ patterns, symlinkScanTargets }) => {
         // Arrange

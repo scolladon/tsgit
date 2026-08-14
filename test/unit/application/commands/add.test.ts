@@ -212,6 +212,29 @@ describe('add', () => {
     });
   });
 
+  describe('Given a negated pathspec naming a file beyond a symlink', () => {
+    describe('When add', () => {
+      it('Then throws PATHSPEC_BEYOND_SYMLINK — git scans a negated pathspec body exactly like a positive one', async () => {
+        // Arrange — pinned against real git 2.55: `git add . ':!link/x'`
+        // refuses with `fatal: pathspec ':!link/x' is beyond a symbolic
+        // link'. The negation only controls whether a MATCH excludes the
+        // path from staging; it doesn't exempt the pathspec body from the
+        // symlinked-leading-path scan.
+        const ctx = await seedFreshRepo({ 'a.txt': 'a' });
+        await ctx.fs.symlink('/outside-the-repo', `${ctx.layout.workDir}/link`);
+
+        // Act + Assert
+        const err = await expectError(
+          () => add(ctx, ['a.txt', '!link/x']),
+          'PATHSPEC_BEYOND_SYMLINK',
+        );
+        expect((err.data as { path: string }).path).toBe('link/x');
+        const index = await readIndex(ctx);
+        expect(index.entries).toHaveLength(0);
+      });
+    });
+  });
+
   describe('Given a glob whose magic sits in the leading path component and no literal directory exists there', () => {
     describe('When add', () => {
       it('Then it does not throw PATHSPEC_BEYOND_SYMLINK — verified against real git 2.55, which falls through to a plain no-match instead', async () => {

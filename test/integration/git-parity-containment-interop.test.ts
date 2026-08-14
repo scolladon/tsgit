@@ -579,6 +579,44 @@ describe.skipIf(!GIT_AVAILABLE)('git-parity containment interop', () => {
       });
     });
 
+    describe('When a negated pathspec targets a path beyond the symlinked leading directory', () => {
+      let fixture: SymlinkedDirFixture;
+
+      beforeAll(async () => {
+        fixture = await buildSymlinkedDirFixture('symlinked-dir-add-negated');
+      }, SETUP_TIMEOUT);
+
+      afterAll(async () => {
+        await fixture.pair.repo.dispose();
+        await rm(fixture.root, { recursive: true, force: true });
+      });
+
+      it('Then both refuse the pathspec — negation does not exempt the body from the symlink scan', async () => {
+        // Arrange — the symlinked-dir fixture is prepared once in beforeAll
+        const { pair } = fixture;
+
+        // Act
+        const peerResult = tryRunGitWithExit(['-C', pair.peerDir, 'add', 'seed.txt', ':!dir/file']);
+        let oursCode: string | undefined;
+        let oursPath: string | undefined;
+        try {
+          await pair.repo.add(['seed.txt', '!dir/file']);
+        } catch (err) {
+          const data = (
+            err as { readonly data?: { readonly code?: string; readonly path?: string } }
+          ).data;
+          oursCode = data?.code;
+          oursPath = data?.path;
+        }
+
+        // Assert
+        expect(peerResult.exitCode).toBe(128);
+        expect(peerResult.stderr).toContain('beyond a symbolic link');
+        expect(oursCode).toBe('PATHSPEC_BEYOND_SYMLINK');
+        expect(oursPath).toBe('dir/file');
+      });
+    });
+
     describe('When `add -A` runs while the leading directory is a symlink', () => {
       let fixture: SymlinkedDirFixture;
 

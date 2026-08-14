@@ -32,10 +32,13 @@ export interface ResolvedPathspec {
   /** True iff any non-negated entry is a glob (relaxes whole-call no-match). */
   readonly hasGlob: boolean;
   /**
-   * Every non-negated pattern body — literal or glob — for
+   * Every pattern body — literal or glob, negated or not — for
    * {@link assertNoSymlinkedLeadingPath} to scan. A glob's own magic segment
    * (e.g. the `*.ts` in `link/*.ts`) never resolves as a literal path, so the
    * scan naturally stops there without a dedicated magic/literal splitter.
+   * Negation is a MATCH-time filter, not an exemption from this scan — git
+   * refuses `git add . ':!link/x'` with "pathspec ':!link/x' is beyond a
+   * symbolic link" exactly as it would the positive form.
    */
   readonly symlinkScanTargets: ReadonlyArray<FilePath>;
 }
@@ -57,7 +60,7 @@ export const resolvePathspec = (patterns: ReadonlyArray<string>): ResolvedPathsp
   const matcher = compilePathspec(patterns);
   const literalMustMatch = matcher.filter(isPositiveLiteral).map((e) => bodyOf(e));
   const hasGlob = matcher.some(isPositiveGlob);
-  const symlinkScanTargets = matcher.filter(isPositive).map((e) => bodyOf(e));
+  const symlinkScanTargets = matcher.map((e) => bodyOf(e));
   return { matcher, literalMustMatch, hasGlob, symlinkScanTargets };
 };
 
@@ -126,7 +129,6 @@ export const assertNoSymlinkedLeadingPath = async (
   }
 };
 
-const isPositive = (e: PathspecEntry): boolean => !e.negated;
 const isPositiveLiteral = (e: PathspecEntry): boolean => !e.negated && e.isLiteral;
 const isPositiveGlob = (e: PathspecEntry): boolean => !e.negated && !e.isLiteral;
 const bodyOf = (e: PathspecEntry): FilePath => e.body as FilePath;
