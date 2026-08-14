@@ -19,6 +19,7 @@ import {
   parsePackHeader,
 } from '../../domain/storage/pack-entry.js';
 import type { Context } from '../../ports/context.js';
+import { errorDataCode } from './internal/error-data-code.js';
 import {
   bindMidx,
   computeMidxHealth,
@@ -26,7 +27,7 @@ import {
   type LoadedMidx,
   type MidxHealth,
 } from './internal/midx-binding.js';
-import { errorDataCode, loadMidxSet, type MidxLoadResult } from './internal/midx-source.js';
+import { loadMidxSet, type MidxLoadResult } from './internal/midx-source.js';
 import {
   type ArtefactLoad,
   loadBitmapBytes,
