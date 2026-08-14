@@ -1378,8 +1378,11 @@ describe.skipIf(!GIT_AVAILABLE)('git-parity containment interop', () => {
       });
 
       it('Then both tools stage every name and the index states match', async () => {
+        // Arrange — the special-named files are written into both trees in beforeAll
+        const { peerDir, oursDir } = pair;
+
         // Act
-        const peerResult = tryRunGitWithExit(['-C', pair.peerDir, 'add', '-A']);
+        const peerResult = tryRunGitWithExit(['-C', peerDir, 'add', '-A']);
         await pair.repo.add([], { all: true });
 
         // Assert — git accepts the whole batch, and so does tsgit: neither
@@ -1388,13 +1391,13 @@ describe.skipIf(!GIT_AVAILABLE)('git-parity containment interop', () => {
         // control/BIDI bytes for terminal display (octal-escaped, e.g.
         // `"evil\342\200\256txt.exe"`), which is a rendering concern, not
         // the underlying staged path.
-        const peerStageRaw = git(pair.peerDir, 'ls-files', '--stage', '-z');
+        const peerStageRaw = git(peerDir, 'ls-files', '--stage', '-z');
         expect(peerResult.exitCode).toBe(0);
         for (const { name } of SPECIAL_NAMES) {
           expect(peerStageRaw).toContain(name);
         }
         // Assert — the structured index state matches byte for byte.
-        expect(lsStage(pair.oursDir)).toBe(lsStage(pair.peerDir));
+        expect(lsStage(oursDir)).toBe(lsStage(peerDir));
       });
     });
   });
