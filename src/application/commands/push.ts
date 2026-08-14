@@ -126,6 +126,7 @@ const assertValidPushConfig = async (ctx: Context): Promise<void> => {
     findFirstInvalidPushGpgSign(ctx),
   ]);
   const defaultWins =
+    // Stryker disable next-line EqualityOperator: equivalent — badDefault (push.default) and badGpgSign (push.gpgsign) are different keys, and the tokenizer yields at most one entry per physical config line, so badDefault.line === badGpgSign.line can never hold; `<` and `<=` decide identically here.
     badDefault !== undefined && (badGpgSign === undefined || badDefault.line < badGpgSign.line);
   if (defaultWins) {
     throw invalidPushDefault(badDefault.value, badDefault.source, badDefault.line);
