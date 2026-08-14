@@ -512,6 +512,72 @@ describe('NodeFileSystem — canonical-root cache (DI)', () => {
   });
 });
 
+describe('NodeFileSystem — pre-resolved roots (DI)', () => {
+  describe('Given a NodeFileSystem constructed with pre-resolved roots', () => {
+    describe('When the first path-taking call resolves the root set', () => {
+      it('Then fsOps.realpath is never called', async () => {
+        // Arrange
+        const rootDir = '/root';
+        const realpathSpy = vi.fn().mockImplementation(async (input: string) => input);
+        const fsOps = fakeFsOps({ realpath: realpathSpy });
+        const sut = new NodeFileSystem([rootDir], posixPolicy, fsOps, [rootDir]);
+
+        // Act
+        await sut.exists(`${rootDir}/file.txt`);
+
+        // Assert
+        expect(realpathSpy).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('Given a NodeFileSystem constructed WITHOUT pre-resolved roots', () => {
+    describe('When the first path-taking call resolves the root set', () => {
+      it('Then fsOps.realpath is called exactly once per root', async () => {
+        // Arrange
+        const rootA = '/root-a';
+        const rootB = '/root-b';
+        const realpathSpy = vi.fn().mockImplementation(async (input: string) => input);
+        const fsOps = fakeFsOps({ realpath: realpathSpy });
+        const sut = new NodeFileSystem([rootA, rootB], posixPolicy, fsOps);
+
+        // Act
+        await sut.exists(`${rootA}/file.txt`);
+
+        // Assert
+        expect(realpathSpy).toHaveBeenCalledTimes(2);
+        expect(realpathSpy).toHaveBeenCalledWith(rootA);
+        expect(realpathSpy).toHaveBeenCalledWith(rootB);
+      });
+    });
+  });
+
+  describe('Given pre-resolved roots whose length does not match the raw roots', () => {
+    describe('When the adapter is constructed', () => {
+      it('Then it refuses with UNSUPPORTED_OPERATION', () => {
+        // Arrange
+        const build = (): NodeFileSystem =>
+          new NodeFileSystem(['/root-a', '/root-b'], posixPolicy, fakeFsOps(), ['/root-a']);
+
+        // Act
+        let caught: unknown;
+        try {
+          build();
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'UNSUPPORTED_OPERATION',
+          operation: 'constructor',
+          reason: 'resolvedRoots must have the same length as rootDir',
+        });
+      });
+    });
+  });
+});
+
 describe('NodeFileSystem.resolveWrite — settled root-set fast path (DI)', () => {
   // `resolveWrite` reads `this.resolvedRootSet ?? (await this.loadRootSet())`
   // directly — the same idiom every read surface already used — instead of

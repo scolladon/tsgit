@@ -49,16 +49,22 @@ export const openRepository = async (opts: OpenNodeRepositoryOptions = {}): Prom
   // symlinks to /private/var/folders/..., and the NodeFileSystem's containment
   // check compares against the realpath of paths it operates on. Without
   // resolving here, every operation under a symlinked cwd would be rejected
-  // with PERMISSION_DENIED. realpath() throws if the path does not exist; fall
-  // back to nodePath.resolve in that case (init/clone callers legitimately
-  // point at a not-yet-existing directory).
-  const resolvedCwd = await realpath(nodePath.resolve(cwd)).catch(() => nodePath.resolve(cwd));
+  // with PERMISSION_DENIED. `canonicalize` falls back to the un-resolved path
+  // when realpath fails (init/clone callers legitimately point at a
+  // not-yet-existing directory), and reports that outcome via `canonical`.
+  const { path: resolvedCwd, canonical: cwdCanonical } = await canonicalize(nodePath.resolve(cwd));
   // Discover layout BEFORE constructing the bounded NodeFileSystem. Layout
   // discovery walks up the parent chain looking for `.git` (a directory OR a
   // gitfile pointer — linked worktree, submodule, `--separate-git-dir`); the
   // bounded FS would reject paths outside its rootDir, preventing the walk
   // from reaching a repo whose root is an ancestor of the user's cwd.
-  const layout = await resolveNodeLayout(resolvedCwd);
+  const { layout, canonical: layoutCanonical } = await resolveNodeLayout(resolvedCwd);
+  // The layout's roots are trustworthy as pre-resolved ONLY when every
+  // realpath performed above — cwd's own AND the layout's own — actually
+  // succeeded; a fallback that silently kept an un-resolved path must never
+  // be handed down as though it were already canonical.
+  const canonical = cwdCanonical && layoutCanonical;
+  const roots = layoutRootsOf(layout);
   // The raw adapter is confined to exactly the (containment-minimised) layout
   // roots — wide enough to reach a linked worktree's workDir AND its common
   // dir in one instance, and no wider. A common-ancestor root would admit
@@ -66,8 +72,12 @@ export const openRepository = async (opts: OpenNodeRepositoryOptions = {}): Prom
   // filesystem), and this adapter's realpath containment is the ONLY
   // symlink-aware gate — the facade's multi-root validator above it is purely
   // lexical, so a symlink planted inside a root would read and write through
-  // it into the ancestor.
-  const fs = new NodeFileSystem(layoutRootsOf(layout), nativePolicy);
+  // it into the ancestor. Handing down `roots` as the pre-resolved form too
+  // (when `canonical`) lets the adapter skip re-realpathing them on its own
+  // first call — the containment check itself is unchanged either way.
+  // `undefined` for the 3rd (`fsOps`) argument takes the constructor's own
+  // `realFsOps` default; this module never imports it directly.
+  const fs = new NodeFileSystem(roots, nativePolicy, undefined, canonical ? roots : undefined);
   const hash = new NodeHashService();
   const compressor = new NodeCompressor();
   const transport = new NodeHttpTransport({
@@ -94,6 +104,8 @@ export const openRepository = async (opts: OpenNodeRepositoryOptions = {}): Prom
     // passes the worktree paths followed by the layout roots), so it reaches
     // exactly those subtrees and nothing between them. `workDir` leads so it
     // stays the base for resolving a relative path, as in the main adapter.
+    // `worktreePaths` are caller-supplied and never realpathed here, so this
+    // instance always resolves its own roots — no pre-resolved hand-off.
     makeWorktreeFs: (worktreePaths: ReadonlyArray<string>): NodeFileSystem =>
       new NodeFileSystem([layout.workDir, ...worktreePaths], nativePolicy),
   };
@@ -125,8 +137,20 @@ const nodeLayoutProbe: LayoutProbe = {
   readUtf8: (p) => readFile(p, 'utf8').catch(() => undefined),
 };
 
-/** realpath with the same not-yet-existing-path fallback the resolved `cwd` above uses. */
-const canonicalize = (p: string): Promise<string> => realpath(p).catch(() => p);
+/**
+ * Realpath `p`, paired with whether that realpath actually succeeded. A
+ * not-yet-existing path (the `openRepository`/`init`/`clone` contract) falls
+ * back to `p` itself with `canonical: false` — callers must never treat that
+ * fallback as an already-resolved root; only a `true` outcome makes `path`
+ * safe to hand the adapter as pre-resolved.
+ */
+const canonicalize = async (p: string): Promise<{ path: string; canonical: boolean }> => {
+  try {
+    return { path: await realpath(p), canonical: true };
+  } catch {
+    return { path: p, canonical: false };
+  }
+};
 
 /**
  * Resolve the physical layout for `cwd`: walk up looking for a `.git` entry,
@@ -138,18 +162,33 @@ const canonicalize = (p: string): Promise<string> => realpath(p).catch(() => p);
  *
  * Falls back to `{cwd}/.git` when nothing is found up to the filesystem
  * root — the `openRepository`/`init`/`clone` contract against a
- * not-yet-existing repository.
+ * not-yet-existing repository. That branch never realpaths its synthesised
+ * `gitDir`, so it always reports `canonical: false`.
+ *
+ * The returned `canonical` flag is the AND of every realpath THIS function
+ * performed; `workDir`'s own canonicity depends only on the `cwd` it was
+ * derived from, so the caller folds in its own `cwd`-realpath outcome
+ * separately rather than this function re-deriving it.
  */
-const resolveNodeLayout = async (cwd: string): Promise<RepositoryLayoutInput> => {
+const resolveNodeLayout = async (
+  cwd: string,
+): Promise<{ layout: RepositoryLayoutInput; canonical: boolean }> => {
   const discovered = await findLayout(nodeLayoutProbe, cwd, nativePolicy);
   if (discovered === undefined) {
-    return { workDir: cwd, gitDir: nodePath.join(cwd, '.git'), bare: false };
+    return {
+      layout: { workDir: cwd, gitDir: nodePath.join(cwd, '.git'), bare: false },
+      canonical: false,
+    };
   }
   const gitDir = await canonicalize(discovered.gitDir);
   if (discovered.commonDir === undefined) {
-    return { ...discovered, gitDir };
+    return { layout: { ...discovered, gitDir: gitDir.path }, canonical: gitDir.canonical };
   }
-  return { ...discovered, gitDir, commonDir: await canonicalize(discovered.commonDir) };
+  const commonDir = await canonicalize(discovered.commonDir);
+  return {
+    layout: { ...discovered, gitDir: gitDir.path, commonDir: commonDir.path },
+    canonical: gitDir.canonical && commonDir.canonical,
+  };
 };
 
 export type { AdapterSet } from './adapter-detect.js';

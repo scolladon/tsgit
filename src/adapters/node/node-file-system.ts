@@ -396,6 +396,18 @@ export class NodeFileSystem implements FileSystem {
   private readonly fsOps: FsOperations;
 
   /**
+   * Pre-resolved (already-realpathed) form of `rootDirs`, one entry per
+   * indexed root. Supplied only by a caller that performed those realpaths
+   * itself and observed every one succeed — a data hand-off, never a
+   * trust flag the caller merely asserts. When present, `canonicalizeRoots`
+   * trusts it verbatim instead of re-realpathing: the containment check
+   * downstream is unaffected either way, since a successful realpath of an
+   * unresolved root and its already-resolved form canonicalise to the same
+   * prefix.
+   */
+  private readonly resolvedRoots: ReadonlyArray<string> | undefined;
+
+  /**
    * Memoised realpath of an *existing* parent directory, keyed by the raw
    * (pre-realpath) parent path. Every write surface shares this one cache
    * via `realpathForCreation`: a clone/checkout writing N files into the
@@ -449,6 +461,7 @@ export class NodeFileSystem implements FileSystem {
     rootDir: string | ReadonlyArray<string>,
     pathPolicy: PathPolicy = nativePolicy,
     fsOps: FsOperations = realFsOps,
+    resolvedRoots?: ReadonlyArray<string>,
   ) {
     const roots = typeof rootDir === 'string' ? [rootDir] : rootDir;
     const [primary] = roots;
@@ -458,10 +471,20 @@ export class NodeFileSystem implements FileSystem {
     if (primary === undefined) {
       throw unsupportedOperation('constructor', 'NodeFileSystem requires at least one root');
     }
+    // Fail closed on a length mismatch: a caller's realpath outcomes must
+    // line up 1:1 with `rootDir`, or trusting a partial/misaligned hand-off
+    // could silently confine to the wrong (or fewer) roots.
+    if (resolvedRoots !== undefined && resolvedRoots.length !== roots.length) {
+      throw unsupportedOperation(
+        'constructor',
+        'resolvedRoots must have the same length as rootDir',
+      );
+    }
     this.rootDirs = roots;
     this.rootDir = primary;
     this.pathPolicy = pathPolicy;
     this.fsOps = fsOps;
+    this.resolvedRoots = resolvedRoots;
   }
 
   /**
@@ -478,7 +501,10 @@ export class NodeFileSystem implements FileSystem {
   }
 
   /**
-   * Realpaths every root. A root that does not exist yet is a legitimate
+   * When `resolvedRoots` was supplied at construction, trusts it verbatim
+   * and skips realpathing entirely — the caller already performed those
+   * realpaths and observed every one succeed. Otherwise realpaths every
+   * root. A root that does not exist yet is a legitimate
    * root (`worktree add` probes its own target before creating it); its
    * canonical prefix is derived from the realpath of its nearest EXISTING ancestor
    * and re-joining the missing tail — exactly the form `realpathForCreation`
@@ -488,6 +514,9 @@ export class NodeFileSystem implements FileSystem {
    * rather than being swallowed.
    */
   private async canonicalizeRoots(): Promise<ReadonlyArray<RootPrefix>> {
+    if (this.resolvedRoots !== undefined) {
+      return this.resolvedRoots.map((root) => this.toRootPrefix(root));
+    }
     const resolved = await Promise.all(
       this.rootDirs.map(async (root) => {
         try {
