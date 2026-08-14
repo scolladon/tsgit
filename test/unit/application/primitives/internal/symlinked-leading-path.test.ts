@@ -215,4 +215,192 @@ describe('createLeadingPathScanner', () => {
       });
     });
   });
+
+  describe('Given a symlinked leading directory pointing outside the repo', () => {
+    describe('When unlinkSymlinkedLeadingComponent runs for a file beneath it', () => {
+      it('Then the symlink is removed via fs.rm', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const dirPath = `${ctx.layout.workDir}/dir`;
+        await ctx.fs.symlink('/outside-the-repo', dirPath);
+        const rmSpy: string[] = [];
+        const fs = new Proxy(ctx.fs, {
+          get(target, prop, receiver) {
+            if (prop === 'rm') {
+              return async (p: string) => {
+                rmSpy.push(p);
+                return Reflect.get(target, 'rm', receiver).call(target, p);
+              };
+            }
+            return Reflect.get(target, prop, receiver);
+          },
+        });
+        const sut = createLeadingPathScanner({ ...ctx, fs });
+
+        // Act
+        await sut.unlinkSymlinkedLeadingComponent(path('dir/file'));
+
+        // Assert
+        expect(rmSpy).toEqual([dirPath]);
+      });
+    });
+  });
+
+  describe('Given a leading component that does not exist on disk', () => {
+    describe('When unlinkSymlinkedLeadingComponent runs', () => {
+      it('Then it is a no-op — nothing to unlink', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const rmSpy: string[] = [];
+        const fs = new Proxy(ctx.fs, {
+          get(target, prop, receiver) {
+            if (prop === 'rm') {
+              return async (p: string) => {
+                rmSpy.push(p);
+                return Reflect.get(target, 'rm', receiver).call(target, p);
+              };
+            }
+            return Reflect.get(target, prop, receiver);
+          },
+        });
+        const sut = createLeadingPathScanner({ ...ctx, fs });
+
+        // Act
+        await sut.unlinkSymlinkedLeadingComponent(path('missing/file'));
+
+        // Assert
+        expect(rmSpy).toHaveLength(0);
+      });
+    });
+  });
+
+  describe('Given only the leaf itself is a symlink (every leading component is a plain directory)', () => {
+    describe('When unlinkSymlinkedLeadingComponent runs', () => {
+      it('Then the leaf is left untouched — the leaf is never scanned', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.mkdir(`${ctx.layout.workDir}/dir`);
+        await ctx.fs.symlink('target.txt', `${ctx.layout.workDir}/dir/leaf-link`);
+        const sut = createLeadingPathScanner(ctx);
+
+        // Act
+        await sut.unlinkSymlinkedLeadingComponent(path('dir/leaf-link'));
+
+        // Assert
+        expect((await ctx.fs.lstat(`${ctx.layout.workDir}/dir/leaf-link`)).isSymbolicLink).toBe(
+          true,
+        );
+      });
+    });
+  });
+
+  describe('Given a leading prefix chain with a plain directory followed by a deeper symlinked directory', () => {
+    describe('When unlinkSymlinkedLeadingComponent runs for a file beneath both', () => {
+      it('Then walking continues past the plain prefix and unlinks the deeper symlink', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.mkdir(`${ctx.layout.workDir}/dir`);
+        const deeperPath = `${ctx.layout.workDir}/dir/deeper`;
+        await ctx.fs.symlink('/outside-the-repo', deeperPath);
+        const sut = createLeadingPathScanner(ctx);
+
+        // Act
+        await sut.unlinkSymlinkedLeadingComponent(path('dir/deeper/file'));
+
+        // Assert
+        expect(await ctx.fs.exists(deeperPath)).toBe(false);
+        expect((await ctx.fs.lstat(`${ctx.layout.workDir}/dir`)).isDirectory).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a leading component whose lstat fails with a non-FILE_NOT_FOUND error', () => {
+    describe('When unlinkSymlinkedLeadingComponent runs', () => {
+      it('Then the error propagates instead of being swallowed', async () => {
+        // Arrange
+        const seed = createMemoryContext();
+        const failPath = `${seed.layout.workDir}/dir`;
+        const permissionDenied = new TsgitError({ code: 'PERMISSION_DENIED', path: failPath });
+        const ctx = withLstatFailure(seed, failPath, permissionDenied);
+        const sut = createLeadingPathScanner(ctx);
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut.unlinkSymlinkedLeadingComponent(path('dir/file'));
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+      });
+    });
+  });
+
+  describe('Given hasSymlinkedLeadingPath already classified a prefix on a scanner', () => {
+    describe('When unlinkSymlinkedLeadingComponent scans a different path sharing that prefix', () => {
+      it('Then the cached classification is reused — one lstat total for the shared prefix', async () => {
+        // Arrange — proves the delete-skip check (hasSymlinkedLeadingPath) and
+        // the write-unlink check (unlinkSymlinkedLeadingComponent) consult the
+        // SAME per-directory memo, not two independent ones.
+        const ctx = createMemoryContext();
+        await ctx.fs.mkdir(`${ctx.layout.workDir}/dir`);
+        const { ctx: countedCtx, calls } = withLstatCallCounter(ctx);
+        const sut = createLeadingPathScanner(countedCtx);
+        await sut.hasSymlinkedLeadingPath(path('dir/a.txt'));
+
+        // Act
+        await sut.unlinkSymlinkedLeadingComponent(path('dir/b.txt'));
+
+        // Assert
+        expect(calls).toHaveLength(1);
+      });
+    });
+  });
+
+  describe('Given a symlinked leading directory unlinked via unlinkSymlinkedLeadingComponent', () => {
+    describe('When a real directory replaces it and a later, unrelated path scans the same prefix', () => {
+      it('Then the memo is invalidated — the later scan re-lstats instead of reusing the stale symlink verdict', async () => {
+        // Arrange
+        const seed = createMemoryContext();
+        const dirPath = `${seed.layout.workDir}/dir`;
+        await seed.fs.symlink('/outside/target', dirPath);
+        const { ctx, calls } = withLstatCallCounter(seed);
+        const sut = createLeadingPathScanner(ctx);
+        await sut.unlinkSymlinkedLeadingComponent(path('dir/a.txt'));
+        await ctx.fs.mkdir(dirPath);
+
+        // Act
+        const result = await sut.hasSymlinkedLeadingPath(path('dir/b.txt'));
+
+        // Assert — a stale memo would answer `true` from the first lstat's
+        // cached 'symlink' verdict without ever re-checking; invalidation
+        // forces a second lstat that observes the real directory.
+        expect(result).toBe(false);
+        expect(calls.filter((c) => c === dirPath)).toHaveLength(2);
+      });
+    });
+  });
+
+  describe('Given a prefix already classified and cached on a scanner', () => {
+    describe('When invalidate is called for that exact prefix and a later path scans it again', () => {
+      it('Then the memo entry is dropped and a fresh lstat runs', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.mkdir(`${ctx.layout.workDir}/dir`);
+        const { ctx: countedCtx, calls } = withLstatCallCounter(ctx);
+        const sut = createLeadingPathScanner(countedCtx);
+        await sut.hasSymlinkedLeadingPath(path('dir/a.txt'));
+
+        // Act
+        sut.invalidate(path('dir'));
+        await sut.hasSymlinkedLeadingPath(path('dir/b.txt'));
+
+        // Assert
+        expect(calls).toHaveLength(2);
+      });
+    });
+  });
 });

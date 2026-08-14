@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { createLeadingPathScanner } from '../../../../../src/application/primitives/internal/symlinked-leading-path.js';
 import {
   removeWorkingTreeFile,
   writeRegularFile,
@@ -365,6 +366,157 @@ describe('write-working-tree-file', () => {
           expect(await ctx.fs.exists(`${dirPath}/keep.txt`)).toBe(false);
           expect(decode(await ctx.fs.read(siblingKeepPath))).toBe('keep');
         });
+      });
+    });
+  });
+
+  describe('writeWorkingTreeFile — unlink a symlinked leading component', () => {
+    describe('Given a symlinked leading directory pointing outside the repo', () => {
+      describe('When a file is written beneath it', () => {
+        it('Then the symlink is unlinked and the file lands inside the repo', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const dirPath = `${ctx.layout.workDir}/dir`;
+          await ctx.fs.symlink('/outside/secret', dirPath);
+
+          // Act
+          await writeWorkingTreeFile(ctx, 'dir/file.txt' as FilePath, encode('inside'));
+
+          // Assert
+          const dirStat = await ctx.fs.lstat(dirPath);
+          expect(dirStat.isSymbolicLink).toBe(false);
+          expect(decode(await ctx.fs.read(`${dirPath}/file.txt`))).toBe('inside');
+        });
+      });
+    });
+  });
+
+  describe('writeWorkingTreeFileStream — unlink a symlinked leading component', () => {
+    describe('Given a symlinked leading directory pointing outside the repo', () => {
+      describe('When a file is written beneath it', () => {
+        it('Then the symlink is unlinked and the file lands inside the repo', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const dirPath = `${ctx.layout.workDir}/dir`;
+          await ctx.fs.symlink('/outside/secret', dirPath);
+          const source = chunks(encode('inside'));
+
+          // Act
+          await writeWorkingTreeFileStream(ctx, 'dir/file.txt' as FilePath, source);
+
+          // Assert
+          const dirStat = await ctx.fs.lstat(dirPath);
+          expect(dirStat.isSymbolicLink).toBe(false);
+          expect(decode(await ctx.fs.read(`${dirPath}/file.txt`))).toBe('inside');
+        });
+      });
+    });
+  });
+
+  describe('writeWorkingTreeEntryStream — unlink a symlinked leading component', () => {
+    describe('Given a symlinked leading directory pointing outside the repo', () => {
+      describe('When a file is written beneath it', () => {
+        it('Then the symlink is unlinked and the file lands inside the repo', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const dirPath = `${ctx.layout.workDir}/dir`;
+          await ctx.fs.symlink('/outside/secret', dirPath);
+          const source = chunks(encode('inside'));
+
+          // Act
+          await writeWorkingTreeEntryStream(
+            ctx,
+            'dir/file.txt' as FilePath,
+            source,
+            FILE_MODE.REGULAR,
+          );
+
+          // Assert
+          const dirStat = await ctx.fs.lstat(dirPath);
+          expect(dirStat.isSymbolicLink).toBe(false);
+          expect(decode(await ctx.fs.read(`${dirPath}/file.txt`))).toBe('inside');
+        });
+      });
+    });
+  });
+
+  describe('Given N files under the same deep prefix, written through one shared scanner', () => {
+    describe('When each file is written via writeWorkingTreeEntry', () => {
+      it('Then the shared prefix is lstat-ed once, not once per file (memo effectiveness)', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.mkdir(`${ctx.layout.workDir}/dir/sub`);
+        const { ctx: instrumented, calls } = instrumentedContext(ctx);
+        const scanner = createLeadingPathScanner(instrumented);
+
+        // Act
+        await writeWorkingTreeEntry(
+          instrumented,
+          'dir/sub/a.txt' as FilePath,
+          encode('a'),
+          FILE_MODE.REGULAR,
+          scanner,
+        );
+        await writeWorkingTreeEntry(
+          instrumented,
+          'dir/sub/b.txt' as FilePath,
+          encode('b'),
+          FILE_MODE.REGULAR,
+          scanner,
+        );
+        await writeWorkingTreeEntry(
+          instrumented,
+          'dir/sub/c.txt' as FilePath,
+          encode('c'),
+          FILE_MODE.REGULAR,
+          scanner,
+        );
+
+        // Assert — the 2 distinct shared prefixes (`dir`, `dir/sub`) are each
+        // lstat-ed exactly once across 3 writes, not once per write (6 total)
+        // as an unmemoised scan would issue.
+        const prefixLstats = calls().filter(
+          (c) =>
+            c.method === 'lstat' &&
+            (c.path === `${ctx.layout.workDir}/dir` || c.path === `${ctx.layout.workDir}/dir/sub`),
+        );
+        expect(prefixLstats).toHaveLength(2);
+      });
+    });
+  });
+
+  describe('Given a symlinked leading directory already unlinked by an earlier write sharing a scanner', () => {
+    describe('When a later write under the same prefix runs', () => {
+      it('Then the stale symlink verdict is not reused — rm is not called again and the later file lands in the real directory', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const dirPath = `${ctx.layout.workDir}/dir`;
+        await ctx.fs.symlink('/outside/secret', dirPath);
+        const { ctx: instrumented, calls } = instrumentedContext(ctx);
+        const scanner = createLeadingPathScanner(instrumented);
+
+        // Act
+        await writeWorkingTreeEntry(
+          instrumented,
+          'dir/first.txt' as FilePath,
+          encode('first'),
+          FILE_MODE.REGULAR,
+          scanner,
+        );
+        await writeWorkingTreeEntry(
+          instrumented,
+          'dir/second.txt' as FilePath,
+          encode('second'),
+          FILE_MODE.REGULAR,
+          scanner,
+        );
+
+        // Assert — without invalidation, the memo would still answer 'symlink'
+        // for `dir` on the second write and attempt to unlink it again.
+        const rmCallsOnDir = calls().filter((c) => c.method === 'rm' && c.path === dirPath);
+        expect(rmCallsOnDir).toHaveLength(1);
+        expect(decode(await ctx.fs.read(`${dirPath}/first.txt`))).toBe('first');
+        expect(decode(await ctx.fs.read(`${dirPath}/second.txt`))).toBe('second');
       });
     });
   });

@@ -34,6 +34,7 @@ import {
   type HeadState,
   readHeadRaw,
 } from '../primitives/internal/repo-state.js';
+import { createLeadingPathScanner } from '../primitives/internal/symlinked-leading-path.js';
 import { stage0Entry } from '../primitives/internal/synthetic-index-entry.js';
 import {
   removeWorkingTreeFile,
@@ -381,9 +382,13 @@ const restoreUntracked = async (ctx: Context, uTree: ObjectId): Promise<void> =>
   for (const [path, entry] of flat.entries) {
     validateIndexPath(path, NO_PARSER_OFFSET, entry.mode);
   }
+  // One scanner for the whole restore: its per-directory memo means a deep
+  // untracked tree with many paths under the same symlinked directory costs
+  // one `lstat` per distinct directory, not one per path.
+  const scanner = createLeadingPathScanner(ctx);
   for (const [path, entry] of flat.entries) {
     const stream = await streamBlob(ctx, entry.id);
-    await writeWorkingTreeFileStream(ctx, path, stream);
+    await writeWorkingTreeFileStream(ctx, path, stream, scanner);
   }
 };
 

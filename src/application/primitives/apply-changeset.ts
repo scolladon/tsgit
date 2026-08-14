@@ -201,15 +201,16 @@ const writeBlobToWorkingTree = async (
   path: FilePath,
   id: IndexEntry['id'],
   mode: FileMode,
+  scanner: LeadingPathScanner,
   provider?: AttributeProvider,
 ): Promise<void> => {
   if (mode === FILE_MODE.GITLINK) {
-    await writeWorkingTreeEntry(ctx, path, new Uint8Array(), mode);
+    await writeWorkingTreeEntry(ctx, path, new Uint8Array(), mode, scanner);
     return;
   }
   if (mode === FILE_MODE.SYMLINK) {
     const blob = await readBlob(ctx, id);
-    await writeWorkingTreeEntry(ctx, path, blob.content, mode);
+    await writeWorkingTreeEntry(ctx, path, blob.content, mode, scanner);
     return;
   }
   if (provider !== undefined && ctx.command !== undefined) {
@@ -223,15 +224,15 @@ const writeBlobToWorkingTree = async (
         if (choice.required) {
           throw smudgeFilterFailed(path, choice.name, result.exitCode);
         }
-        await writeWorkingTreeEntry(ctx, path, blob.content, mode);
+        await writeWorkingTreeEntry(ctx, path, blob.content, mode, scanner);
         return;
       }
-      await writeWorkingTreeEntry(ctx, path, result.bytes, mode);
+      await writeWorkingTreeEntry(ctx, path, result.bytes, mode, scanner);
       return;
     }
   }
   const stream = await streamBlob(ctx, id);
-  await writeWorkingTreeEntryStream(ctx, path, stream, mode);
+  await writeWorkingTreeEntryStream(ctx, path, stream, mode, scanner);
 };
 
 const applyEntry = async (
@@ -251,7 +252,14 @@ const applyEntry = async (
     return undefined;
   }
   if (entry.id === undefined) return undefined;
-  await writeBlobToWorkingTree(ctx, entry.path, entry.id as IndexEntry['id'], entry.mode, provider);
+  await writeBlobToWorkingTree(
+    ctx,
+    entry.path,
+    entry.id as IndexEntry['id'],
+    entry.mode,
+    scanner,
+    provider,
+  );
   return buildIndexEntry(ctx, absPath, entry.path, entry.id, entry.mode);
 };
 
@@ -309,8 +317,9 @@ export const applyChangeset = async (
   const lazyProvider = (): Promise<AttributeProvider> =>
     (providerPromise ??= buildAttributeProvider(ctx));
 
-  // One scanner per changeset application: its per-directory memo means a
-  // deep tree with many entries under the same symlinked directory costs one
+  // One scanner per changeset application, shared by BOTH the delete-skip
+  // check and the write-side unlink: its per-directory memo means a deep
+  // tree with many entries under the same symlinked directory costs one
   // `lstat` per distinct directory, not one per entry.
   const scanner = createLeadingPathScanner(ctx);
   return applyAllEntries(ctx, changeset, workdir, lazyProvider, scanner);

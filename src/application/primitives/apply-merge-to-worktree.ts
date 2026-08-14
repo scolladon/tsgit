@@ -32,6 +32,10 @@ import type { Context } from '../../ports/context.js';
 import { buildContentMerger } from './build-content-merger.js';
 import { changedPaths, findWouldOverwrite } from './find-would-overwrite.js';
 import { flattenTree } from './flatten-tree.js';
+import {
+  createLeadingPathScanner,
+  type LeadingPathScanner,
+} from './internal/symlinked-leading-path.js';
 import { stage0Entry, zeroStat } from './internal/synthetic-index-entry.js';
 import { writeDistinctTypesSides } from './internal/write-distinct-types-sides.js';
 import {
@@ -138,7 +142,11 @@ const conflictBytes = async (
  * a symlink (a plain write over a symlink-occupied path refuses on the node
  * adapter).
  */
-export const writeMarkedConflict = async (ctx: Context, conflict: MergeConflict): Promise<void> => {
+export const writeMarkedConflict = async (
+  ctx: Context,
+  conflict: MergeConflict,
+  scanner?: LeadingPathScanner,
+): Promise<void> => {
   // Materialise with the merged mode when the merge resolved one, else the
   // surviving side's (ours, or theirs for modify-delete with ours deleted) so
   // the kind (symlink / exec bit) is preserved. Every conflict constructor
@@ -148,16 +156,23 @@ export const writeMarkedConflict = async (ctx: Context, conflict: MergeConflict)
   if (mode === undefined) return;
   const bytes = await conflictBytes(ctx, conflict);
   if (bytes === undefined) return;
-  await writeWorkingTreeEntry(ctx, conflict.path, bytes, mode);
+  await writeWorkingTreeEntry(ctx, conflict.path, bytes, mode, scanner);
 };
 
-/** Write the changed clean outcomes + conflict markers to the working tree. */
+/**
+ * Write the changed clean outcomes + conflict markers to the working tree.
+ * One scanner for the whole call: its per-directory memo serves every write
+ * below (clean outcomes and conflict markers alike), so a deep tree with
+ * many paths under the same symlinked directory costs one `lstat` per
+ * distinct directory, not one per path.
+ */
 const writeConflictWorktree = async (
   ctx: Context,
   outcomes: ReadonlyArray<MergeOutcome>,
   conflicts: ReadonlyArray<MergeConflict>,
   changed: ReadonlySet<FilePath>,
 ): Promise<void> => {
+  const scanner = createLeadingPathScanner(ctx);
   for (const outcome of outcomes) {
     // Stryker disable next-line ConditionalExpression: equivalent — the `!changed.has` half only skips outcomes that equal `ours` (writing them reproduces working bytes); the `if(true)` skip-all variant is killed by the multi-path conflict test that asserts the clean side is written.
     if (outcome.status === 'conflict' || !changed.has(outcome.path)) continue;
@@ -166,21 +181,21 @@ const writeConflictWorktree = async (
       continue;
     }
     if (outcome.status === 'resolved-merged') {
-      await writeWorkingTreeFile(ctx, outcome.path, outcome.bytes);
+      await writeWorkingTreeFile(ctx, outcome.path, outcome.bytes, scanner);
       continue;
     }
     // Stryker disable next-line ConditionalExpression: equivalent — only `resolved-known` reaches here after the deleted/merged guards; the `if(true)` variant changes nothing (the remaining outcomes are resolved-known), and `if(false)` is killed by the clean-side-written assertion.
     if (outcome.status === 'resolved-known') {
       const stream = await streamBlob(ctx, outcome.id);
-      await writeWorkingTreeFileStream(ctx, outcome.path, stream);
+      await writeWorkingTreeFileStream(ctx, outcome.path, stream, scanner);
     }
   }
   for (const conflict of conflicts) {
     if (conflict.type === 'distinct-types') {
-      await writeDistinctTypesSides(ctx, conflict);
+      await writeDistinctTypesSides(ctx, conflict, scanner);
       continue;
     }
-    await writeMarkedConflict(ctx, conflict);
+    await writeMarkedConflict(ctx, conflict, scanner);
   }
 };
 

@@ -9,8 +9,8 @@
 import { TsgitError } from '../../../domain/error.js';
 import { FILE_MODE, type FileMode, type FilePath } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
-import type { FileStat } from '../../../ports/file-system.js';
 import { joinPath } from './join-working-tree-path.js';
+import { createLeadingPathScanner, type LeadingPathScanner } from './symlinked-leading-path.js';
 
 const decoder = new TextDecoder();
 
@@ -38,30 +38,14 @@ export const rmIfExists = async (ctx: Context, fullPath: string): Promise<void> 
 };
 
 /**
- * Unlink a symlinked leading directory component of `path`, if any, before a
- * write lands beneath it — git's checkout materialisation: a leading
- * directory that is a symlink, whether it resolves outside the repository or
- * at an intra-repo sibling, is unlinked and replaced by a real directory.
- * Only strict ancestors are scanned; the leaf itself is written by the
- * caller. A missing ancestor means there is nothing to unlink.
+ * Resolve the scanner a write should consult for its leading-path unlink
+ * check: the caller-supplied one when the caller wants its memo shared
+ * across multiple writes in the same command invocation, or a fresh
+ * single-use one otherwise — identical behaviour to scanning with no memo
+ * at all, since it is discarded after this one call.
  */
-const unlinkSymlinkedLeadingComponent = async (ctx: Context, path: FilePath): Promise<void> => {
-  const segments = path.split('/');
-  for (let i = 1; i < segments.length; i += 1) {
-    const prefixPath = joinPath(ctx.layout.workDir, segments.slice(0, i).join('/'));
-    let stat: FileStat;
-    try {
-      stat = await ctx.fs.lstat(prefixPath);
-    } catch (err) {
-      if (err instanceof TsgitError && err.data.code === 'FILE_NOT_FOUND') return;
-      throw err;
-    }
-    if (stat.isSymbolicLink) {
-      await ctx.fs.rm(prefixPath);
-      return;
-    }
-  }
-};
+const resolveScanner = (ctx: Context, scanner?: LeadingPathScanner): LeadingPathScanner =>
+  scanner ?? createLeadingPathScanner(ctx);
 
 /**
  * Low-level regular-file writer and the single owner of the
@@ -89,8 +73,9 @@ export const writeWorkingTreeFile = async (
   ctx: Context,
   path: FilePath,
   content: Uint8Array,
+  scanner?: LeadingPathScanner,
 ): Promise<void> => {
-  await unlinkSymlinkedLeadingComponent(ctx, path);
+  await resolveScanner(ctx, scanner).unlinkSymlinkedLeadingComponent(path);
   await writeRegularFile(ctx, joinPath(ctx.layout.workDir, path), content);
 };
 
@@ -100,19 +85,26 @@ export const writeWorkingTreeFile = async (
  * first); gitlink (160000) → create the submodule directory (only checkout feeds
  * this arm); regular modes → delegate to `writeRegularFile`, which always unlinks
  * an occupant first so a kind change self-heals. Exported for the merge conflict
- * materialisation step and checkout's changeset application.
+ * materialisation step and checkout's changeset application. An optional `scanner`
+ * lets the caller share one leading-path memo across many writes in the same
+ * command invocation; creating a symlink here invalidates `path`'s own memo
+ * entry so a later write that scans `path` as one of ITS leading components
+ * observes the fresh shape rather than a stale pre-write verdict.
  */
 export const writeWorkingTreeEntry = async (
   ctx: Context,
   path: FilePath,
   content: Uint8Array,
   mode: FileMode,
+  scanner?: LeadingPathScanner,
 ): Promise<void> => {
-  await unlinkSymlinkedLeadingComponent(ctx, path);
+  const activeScanner = resolveScanner(ctx, scanner);
+  await activeScanner.unlinkSymlinkedLeadingComponent(path);
   const fullPath = joinPath(ctx.layout.workDir, path);
   if (mode === FILE_MODE.SYMLINK) {
     await rmIfExists(ctx, fullPath);
     await ctx.fs.symlink(decoder.decode(content), fullPath);
+    activeScanner.invalidate(path);
     return;
   }
   if (mode === FILE_MODE.GITLINK) {
@@ -152,8 +144,9 @@ export const writeWorkingTreeFileStream = async (
   ctx: Context,
   path: FilePath,
   source: AsyncIterable<Uint8Array>,
+  scanner?: LeadingPathScanner,
 ): Promise<void> => {
-  await unlinkSymlinkedLeadingComponent(ctx, path);
+  await resolveScanner(ctx, scanner).unlinkSymlinkedLeadingComponent(path);
   await writeRegularFileStream(ctx, joinPath(ctx.layout.workDir, path), source);
 };
 
@@ -169,8 +162,9 @@ export const writeWorkingTreeEntryStream = async (
   path: FilePath,
   source: AsyncIterable<Uint8Array>,
   mode: FileMode,
+  scanner?: LeadingPathScanner,
 ): Promise<void> => {
-  await unlinkSymlinkedLeadingComponent(ctx, path);
+  await resolveScanner(ctx, scanner).unlinkSymlinkedLeadingComponent(path);
   await writeRegularFileStream(ctx, joinPath(ctx.layout.workDir, path), source, mode);
 };
 

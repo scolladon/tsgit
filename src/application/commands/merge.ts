@@ -35,6 +35,10 @@ import { createCommit } from '../primitives/create-commit.js';
 import { changedPaths, findWouldOverwrite } from '../primitives/find-would-overwrite.js';
 import { flattenTree } from '../primitives/flatten-tree.js';
 import { boundedMap } from '../primitives/internal/bounded-map.js';
+import {
+  createLeadingPathScanner,
+  type LeadingPathScanner,
+} from '../primitives/internal/symlinked-leading-path.js';
 import { writeDistinctTypesSides } from '../primitives/internal/write-distinct-types-sides.js';
 import {
   removeWorkingTreeFile,
@@ -528,17 +532,22 @@ const writeConflictingWorkingTree = async (
   const touched = outcomes.filter(
     (outcome) => outcome.status !== 'conflict' && changed.has(outcome.path),
   );
+  // One scanner for the whole call, shared by both bounded batches below:
+  // its per-directory memo means a deep tree with many paths under the
+  // same symlinked directory costs one `lstat` per distinct directory, not
+  // one per path.
+  const scanner = createLeadingPathScanner(ctx);
   // Bounded parallelism — independent path writes overlap, but the pool
   // caps in-flight at MAX_CONCURRENT_PATH_WRITES so a 10k-path merge
   // doesn't exhaust file descriptors.
   await runBounded(touched, MAX_CONCURRENT_PATH_WRITES, (outcome) =>
-    writeOutcomeToTree(ctx, outcome, matcher),
+    writeOutcomeToTree(ctx, outcome, matcher, scanner),
   );
   // Conflicted paths are materialised even when sparse-excluded — a conflict
   // the user cannot see is unresolvable, so `writeConflictToTree` takes no
   // matcher.
   await runBounded(conflicts, MAX_CONCURRENT_PATH_WRITES, (conflict) =>
-    writeConflictToTree(ctx, conflict),
+    writeConflictToTree(ctx, conflict, scanner),
   );
 };
 
@@ -570,17 +579,18 @@ export const writeOutcomeToTree = async (
   ctx: Context,
   outcome: MergeOutcome,
   matcher: SparseMatcher | undefined,
+  scanner?: LeadingPathScanner,
 ): Promise<void> => {
   if (outcome.status === 'unchanged' || outcome.status === 'resolved-known') {
     if (isExcluded(matcher, outcome.path)) return;
     const stream = await streamBlob(ctx, outcome.id);
-    await writeWorkingTreeFileStream(ctx, outcome.path, stream);
+    await writeWorkingTreeFileStream(ctx, outcome.path, stream, scanner);
     return;
   }
   if (outcome.status === 'resolved-merged') {
     // The merged bytes exist only in memory — this write is their sole
     // persistence, so the path is materialised regardless of the matcher.
-    await writeWorkingTreeFile(ctx, outcome.path, outcome.bytes);
+    await writeWorkingTreeFile(ctx, outcome.path, outcome.bytes, scanner);
     return;
   }
   if (outcome.status === 'resolved-deleted') {
@@ -589,9 +599,13 @@ export const writeOutcomeToTree = async (
   // 'conflict' outcomes are handled by the parallel conflicts batch.
 };
 
-export const writeConflictToTree = async (ctx: Context, conflict: MergeConflict): Promise<void> => {
+export const writeConflictToTree = async (
+  ctx: Context,
+  conflict: MergeConflict,
+  scanner?: LeadingPathScanner,
+): Promise<void> => {
   if (conflict.type === 'distinct-types') {
-    await writeDistinctTypesSides(ctx, conflict);
+    await writeDistinctTypesSides(ctx, conflict, scanner);
     return;
   }
   // Materialise with the merged mode when the merge resolved one, else the
@@ -603,7 +617,7 @@ export const writeConflictToTree = async (ctx: Context, conflict: MergeConflict)
   if (mode === undefined) return;
   const bytes = await materialiseConflictBytes(ctx, conflict);
   if (bytes === undefined) return;
-  await writeWorkingTreeEntry(ctx, conflict.path, bytes, mode);
+  await writeWorkingTreeEntry(ctx, conflict.path, bytes, mode, scanner);
 };
 
 // Stryker disable next-line ObjectLiteral: equivalent — the 256 MiB cap is unobservable without a 256 MiB fixture; cap mechanics covered by read-blob.test.ts.

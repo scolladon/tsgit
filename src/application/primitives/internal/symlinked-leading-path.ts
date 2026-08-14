@@ -1,10 +1,11 @@
 /**
- * Detect whether any leading directory component of a working-tree-relative
- * path is a symbolic link — git's `has_symlinked_leading_path` +
- * `lstat_cache` equivalent. Shape-based: fires identically whether the link
- * points inside or outside the repository, and regardless of whether
- * anything exists beyond it. The leaf component itself is never scanned —
- * git stages a symlinked leaf as a regular `120000` entry.
+ * Detect (and, on request, unlink) a symlinked leading directory component of
+ * a working-tree-relative path — git's `has_symlinked_leading_path` +
+ * `lstat_cache` equivalent, plus checkout's leading-component unlink-before-write
+ * step built on the SAME per-directory memo. Shape-based: fires identically
+ * whether the link points inside or outside the repository, and regardless of
+ * whether anything exists beyond it. The leaf component itself is never
+ * scanned — git stages a symlinked leaf as a regular `120000` entry.
  */
 import { TsgitError } from '../../../domain/error.js';
 import type { FilePath } from '../../../domain/objects/object-id.js';
@@ -14,6 +15,22 @@ import { joinPath } from './join-working-tree-path.js';
 export interface LeadingPathScanner {
   /** True when any leading component of `path` (its directories, never the leaf) is a symlink. */
   readonly hasSymlinkedLeadingPath: (path: FilePath) => Promise<boolean>;
+  /**
+   * Unlink the first symlinked leading directory component of `path`, if
+   * any — git's checkout materialisation: a leading directory that is a
+   * symlink, whether it resolves outside the repository or at an intra-repo
+   * sibling, is unlinked and replaced by a real directory. A missing
+   * ancestor means there is nothing to unlink.
+   */
+  readonly unlinkSymlinkedLeadingComponent: (path: FilePath) => Promise<void>;
+  /**
+   * Drop `path`'s memo entry, forcing the next scan of it to re-`lstat`.
+   * Required after any write that changes what lives AT `path` and could
+   * later be scanned as an ancestor of a deeper path: creating a symlink
+   * there (was 'plain'/'missing', now 'symlink') or unlinking a symlink
+   * there (handled internally by `unlinkSymlinkedLeadingComponent`).
+   */
+  readonly invalidate: (path: FilePath) => void;
 }
 
 type PrefixShape = 'symlink' | 'plain' | 'missing';
@@ -48,16 +65,40 @@ export const createLeadingPathScanner = (ctx: Context): LeadingPathScanner => {
 
   const hasSymlinkedLeadingPath = async (path: FilePath): Promise<boolean> => {
     const segments = path.split('/');
+    let prefix = segments[0] ?? '';
     for (let i = 1; i < segments.length; i += 1) {
-      const prefix = segments.slice(0, i).join('/');
       const shape = await classifyPrefix(prefix);
       // A missing prefix means no real filesystem could have a deeper entry
       // beneath it either — stop walking rather than trust a longer prefix.
       if (shape === 'missing') return false;
       if (shape === 'symlink') return true;
+      prefix = `${prefix}/${segments[i]}`;
     }
     return false;
   };
 
-  return { hasSymlinkedLeadingPath };
+  const unlinkSymlinkedLeadingComponent = async (path: FilePath): Promise<void> => {
+    const segments = path.split('/');
+    let prefix = segments[0] ?? '';
+    for (let i = 1; i < segments.length; i += 1) {
+      const shape = await classifyPrefix(prefix);
+      if (shape === 'missing') return;
+      if (shape === 'symlink') {
+        await ctx.fs.rm(joinPath(ctx.layout.workDir, prefix));
+        // The prefix is no longer a symlink (or exists at all, until a
+        // deeper write recreates it as a real directory) — a stale 'symlink'
+        // verdict must not survive to serve a later lookup of this same
+        // prefix, so drop it rather than guess its post-unlink shape.
+        memo.delete(prefix);
+        return;
+      }
+      prefix = `${prefix}/${segments[i]}`;
+    }
+  };
+
+  const invalidate = (path: FilePath): void => {
+    memo.delete(path);
+  };
+
+  return { hasSymlinkedLeadingPath, unlinkSymlinkedLeadingComponent, invalidate };
 };
