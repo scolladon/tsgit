@@ -344,6 +344,73 @@ describe('compareWorkingTreeDelta', () => {
     });
   });
 
+  describe('Given a gitlink entry over a working directory with a size-mismatched entry, index mtime supplied', () => {
+    describe('When comparing the delta', () => {
+      it("Then the size-shortcut guard skips the gitlink and falls through to the read-based verdict ('modified')", async () => {
+        // Arrange — the gitlink guard (`entry.mode !== FILE_MODE.GITLINK`) must
+        // block the size shortcut for a submodule path even though the other
+        // three conjuncts are true (not a symlink, indexMtime armed, and the
+        // directory's always-0 stat.size differs from the entry's inherited
+        // content-length fileSize) — a directory read fails and degrades to
+        // 'modified' via the catch-all, but only after actually attempting it.
+        const { ctx, entry } = await seedFile('a.txt', 'hello\n');
+        await ctx.fs.mkdir(work(ctx, 'sub'));
+        const gitlinkEntry: IndexEntry = {
+          ...entry,
+          path: 'sub' as typeof entry.path,
+          mode: '160000',
+        };
+        const reads: string[] = [];
+        const spiedCtx: Context = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            read: async (readPath: string) => {
+              reads.push(readPath);
+              return ctx.fs.read(readPath);
+            },
+          },
+        };
+        const indexMtime = { seconds: entry.mtimeSeconds + 10, nanoseconds: 0 };
+
+        // Act
+        const result = await compareWorkingTreeDelta(spiedCtx, gitlinkEntry, undefined, indexMtime);
+
+        // Assert — content path taken (read attempted), verdict still 'modified'
+        expect(result.status).toBe('modified');
+        expect(reads).not.toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a converting caller (provider + command wired) and [filter "zed"].required = maybe with NO attributes, working file otherwise unchanged', () => {
+    describe('When comparing the delta', () => {
+      it('Then the content path degrades to \'modified\' — eager validation refuses even though no attribute selects "zed"', async () => {
+        // Arrange — no .gitattributes at all; only the malformed [filter "zed"]
+        // section, and the working file is byte-identical to the staged blob.
+        // Real code's eager clean-tier validation throws inside
+        // cleanWorktreeBytes, which the outer try/catch converts to
+        // 'modified'. A dropped eagerSectionValidation flag would instead
+        // compute the real (matching) hash and report 'unchanged' — that's
+        // the observable difference the {}/false mutants would produce.
+        const { ctx, entry } = await seedFile('a.txt', 'hello\n');
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[filter "zed"]\n\trequired = maybe\n',
+        );
+        const runner = new FakeRunner();
+        const enrichedCtx: Context = { ...ctx, command: runner };
+        const provider = await buildAttributeProvider(enrichedCtx);
+
+        // Act
+        const result = await compareWorkingTreeDelta(enrichedCtx, entry, provider);
+
+        // Assert
+        expect(result.status).toBe('modified');
+      });
+    });
+  });
+
   describe('Given a stat-clean file whose recorded mode differs from the working file, index mtime supplied', () => {
     describe('When comparing the delta', () => {
       it("Then returns 'mode-changed' without reading or hashing the content (stat-cache ternary distinguishes the mode mismatch)", async () => {
