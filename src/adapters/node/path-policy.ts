@@ -130,21 +130,36 @@ const stripWinExtendedPrefix = (p: string): string => {
 /** POSIX root: `/` for an absolute path, `''` otherwise. No allocation. */
 const posixRootOf = (path: string): string => (path.startsWith('/') ? '/' : '');
 
-/** A plain UNC root (`\\server\share\`) — two non-separator segments after the leading `\\`. */
-const WIN_UNC_ROOT_PATTERN = /^\\\\[^\\]+\\[^\\]+\\/;
+/**
+ * A UNC root (`\\server\share`) — two non-separator segments after the
+ * leading `\\`, with an OPTIONAL trailing separator: `\\server\share` (bare,
+ * nothing follows), `\\server\share\` and `\\server\share\dir` (trailing
+ * separator present, present-or-implied by a following segment) all match,
+ * mirroring `path.win32.parse(p).root`'s own root/no-trailing-separator
+ * split.
+ */
+const WIN_UNC_ROOT_PATTERN = /^\\\\[^\\]+\\[^\\]+\\?/;
 /** A drive-absolute root (`C:\`). */
 const WIN_DRIVE_ROOT_PATTERN = /^[a-zA-Z]:\\/;
+/** A drive-relative root (`C:foo`, bare `C:`) — a drive letter with no separator after the colon. */
+const WIN_DRIVE_RELATIVE_PATTERN = /^[a-zA-Z]:/;
 
 /**
  * Windows root, without `path.win32.parse`'s full-path allocation: a UNC
- * share prefix, a drive-absolute prefix, or `''` for anything else
- * (drive-relative and plain-relative paths alike — `rootOf`'s only caller,
- * `realpathNearestExisting`, only ever receives an absolute path).
+ * share prefix, a drive-absolute prefix, a drive-relative prefix, the
+ * single-backslash root-relative form, or `''` for a plain relative path.
+ * `rootOf`'s only caller, `realpathNearestExisting`, only ever receives an
+ * absolute path in practice — the drive-relative and root-relative arms
+ * exist so this stays a faithful, allocation-free stand-in for
+ * `path.win32.parse(p).root` across every input shape, not just the ones
+ * reachable today.
  */
 const windowsRootOf = (path: string): string => {
   const uncMatch = WIN_UNC_ROOT_PATTERN.exec(path);
   if (uncMatch !== null) return uncMatch[0];
-  return WIN_DRIVE_ROOT_PATTERN.test(path) ? path.slice(0, 3) : '';
+  if (WIN_DRIVE_ROOT_PATTERN.test(path)) return path.slice(0, 3);
+  if (WIN_DRIVE_RELATIVE_PATTERN.test(path)) return path.slice(0, 2);
+  return path.startsWith('\\') ? '\\' : '';
 };
 
 /**

@@ -1,3 +1,4 @@
+import * as nodeWin32Path from 'node:path/win32';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -316,6 +317,32 @@ describe('windowsPolicy', () => {
 
         // Assert
         expect(result).toBe('');
+      });
+    });
+  });
+});
+
+describe('windowsPolicy.rootOf — parity with path.win32.parse(p).root', () => {
+  describe('Given each shape of Windows path root', () => {
+    describe('When rootOf is called', () => {
+      it.each([
+        { input: '\\\\server\\share', label: 'a bare UNC root with no trailing separator' },
+        { input: '\\\\server\\share\\', label: 'a UNC root with a trailing separator' },
+        { input: '\\\\server\\share\\dir', label: 'a UNC path with a segment past the share' },
+        { input: 'C:foo', label: 'a drive-relative path (no separator after the colon)' },
+        { input: 'C:\\foo', label: 'a drive-absolute path' },
+        { input: 'C:', label: 'a bare drive letter with no segment at all' },
+        { input: '\\foo', label: 'a root-relative path with no drive letter' },
+        { input: 'foo', label: 'a plain relative path' },
+      ])('Then it agrees with path.win32.parse(p).root for $label ($input)', ({ input }) => {
+        // Arrange
+        const expected = nodeWin32Path.parse(input).root;
+
+        // Act
+        const result = windowsPolicy.rootOf(input);
+
+        // Assert
+        expect(result).toBe(expected);
       });
     });
   });
