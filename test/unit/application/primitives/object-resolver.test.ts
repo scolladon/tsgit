@@ -837,10 +837,10 @@ describe('object-resolver', () => {
 
         // Assert
         expect(result.type).toBe('blob');
-        const packDirReaddirs = calls().filter(
+        const packDirReaddirCalls = calls().filter(
           (call) => call.method === 'readdir' && call.path.endsWith('/objects/pack'),
         );
-        expect(packDirReaddirs).toEqual([]);
+        expect(packDirReaddirCalls).toEqual([]);
         // `exists` never fires for a stronger reason than "the scan didn't run
         // this time": scanPacks no longer calls it at all (the readdir fold
         // below replaced it), so this count is zero by construction, not by
@@ -907,10 +907,10 @@ describe('object-resolver', () => {
         // Assert
         expect(result.type).toBe('blob');
         expect((result as Blob).content).toEqual(content);
-        const packDirReaddirs = calls().filter(
+        const packDirReaddirCalls = calls().filter(
           (call) => call.method === 'readdir' && call.path.endsWith('/objects/pack'),
         );
-        expect(packDirReaddirs).toHaveLength(1);
+        expect(packDirReaddirCalls).toHaveLength(1);
       });
     });
   });
@@ -948,10 +948,10 @@ describe('object-resolver', () => {
         if (data.code === 'INVALID_MULTI_PACK_INDEX') {
           expect(data.check).toBe('signature');
         }
-        const fanoutReaddirs = calls().filter(
+        const fanoutReaddirCalls = calls().filter(
           (call) => call.method === 'readdir' && call.path.endsWith(`/objects/${id.slice(0, 2)}`),
         );
-        expect(fanoutReaddirs).toEqual([]);
+        expect(fanoutReaddirCalls).toEqual([]);
       });
     });
   });
@@ -982,10 +982,10 @@ describe('object-resolver', () => {
         // Assert
         expect(result.type).toBe('blob');
         expect(warn).toHaveBeenCalledTimes(1);
-        const packDirReaddirs = calls().filter(
+        const packDirReaddirCalls = calls().filter(
           (call) => call.method === 'readdir' && call.path.endsWith('/objects/pack'),
         );
-        expect(packDirReaddirs).toEqual([]);
+        expect(packDirReaddirCalls).toEqual([]);
       });
     });
   });

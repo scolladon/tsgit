@@ -995,10 +995,10 @@ describe('streamBlob', () => {
         await collect(sut);
 
         // Assert
-        const packDirReaddirs = calls().filter(
+        const packDirReaddirCalls = calls().filter(
           (call) => call.method === 'readdir' && call.path.endsWith('/objects/pack'),
         );
-        expect(packDirReaddirs).toEqual([]);
+        expect(packDirReaddirCalls).toEqual([]);
         const idxTouches = calls().filter((call) => call.path.endsWith('.idx'));
         expect(idxTouches).toEqual([]);
       });

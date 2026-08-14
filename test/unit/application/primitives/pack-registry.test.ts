@@ -4065,10 +4065,10 @@ describe('PackRegistry — multi-pack-index degradation', () => {
           (call) => call.method === 'read' && call.path.endsWith('multi-pack-index'),
         );
         expect(midxReads).toHaveLength(1);
-        const packDirReaddirs = calls().filter(
+        const packDirReaddirCalls = calls().filter(
           (call) => call.method === 'readdir' && call.path.endsWith('/objects/pack'),
         );
-        expect(packDirReaddirs).toEqual([]);
+        expect(packDirReaddirCalls).toEqual([]);
       });
     });
   });
