@@ -30,6 +30,7 @@ import { deriveWorkingMode, FILE_MODE, type FileMode } from '../../domain/object
 import type { FilePath, ObjectId } from '../../domain/objects/object-id.js';
 import type { CommandRunner } from '../../ports/command-runner.js';
 import type { Context } from '../../ports/context.js';
+import type { FileStat } from '../../ports/file-system.js';
 import { type IndexMtime, isEntryStatClean } from './internal/is-entry-stat-clean.js';
 import { joinPath } from './internal/join-working-tree-path.js';
 import type { AttributeProvider } from './internal/read-gitattributes.js';
@@ -88,6 +89,45 @@ const cleanWorktreeBytes = async (
   return result.ok ? result.bytes : bytes;
 };
 
+/**
+ * The verdicts reachable from the stat fields alone, before any content read.
+ * `undefined` means the stat cannot settle it and the caller must hash.
+ *
+ * Gitlinks are excluded from every arm: `deriveWorkingMode` cannot derive a
+ * gitlink (so the kind check would always spuriously read `T`), and git routes
+ * submodules through `ce_compare_gitlink` rather than the stat fields. They
+ * fall through to the content path, where an unreadable submodule directory
+ * degrades to `modified` — git's `M`.
+ */
+const statOnlyVerdict = (
+  entry: IndexEntry,
+  stat: FileStat,
+  worktreeMode: FileMode,
+  indexMtime: IndexMtime | undefined,
+): WorkingTreeDelta | undefined => {
+  if (entry.mode === FILE_MODE.GITLINK) return undefined;
+  // A file↔symlink kind change is git's `T`, decided on mode alone — no hash
+  // needed and the content is meaningless across kinds.
+  if (!isSameKind(worktreeMode, entry.mode)) return { status: 'type-changed', worktreeMode };
+  if (indexMtime === undefined) return undefined;
+  // Stat-cache short-circuit (`ie_match_stat`): only armed when the caller
+  // supplies the index file's own mtime (the racy-guard reference point).
+  // Absent — every non-`status` consumer — the fast path never fires and
+  // behaviour is exactly as before.
+  if (isEntryStatClean(entry, stat, indexMtime)) {
+    return { status: worktreeMode === entry.mode ? 'unchanged' : 'mode-changed', worktreeMode };
+  }
+  // Size settles the verdict without a read on the armed, non-racy path — as
+  // git does: a working file whose size differs from the staged stat cannot
+  // carry the staged raw bytes, and git reports it modified without running
+  // the clean filter (measured: a size-changing edit under a malformed
+  // `[filter *].required` leaves `git status` at exit 0).
+  if (!stat.isSymbolicLink && entry.fileSize >>> 0 !== stat.size >>> 0) {
+    return { status: 'modified', worktreeMode };
+  }
+  return undefined;
+};
+
 export const compareWorkingTreeDelta = async (
   ctx: Context,
   entry: IndexEntry,
@@ -103,41 +143,8 @@ export const compareWorkingTreeDelta = async (
   // map is already there; re-recording it is a guaranteed-redundant Map.set.
   if (sampled === undefined) stats?.record(entry.path, stat);
   const worktreeMode = deriveWorkingMode(stat);
-  // A file↔symlink kind change is git's `T`, decided on mode alone — no hash
-  // needed and the content is meaningless across kinds. A gitlink (submodule)
-  // entry is excluded: `deriveWorkingMode` cannot derive a gitlink, so the
-  // comparison would always spuriously read `T`; git reports a submodule as `M`,
-  // so the gitlink entry falls through to the content path (an unreadable
-  // submodule directory degrades to `modified`).
-  if (entry.mode !== FILE_MODE.GITLINK && !isSameKind(worktreeMode, entry.mode)) {
-    return { status: 'type-changed', worktreeMode };
-  }
-  // Stat-cache short-circuit (`ie_match_stat`): only armed when the caller
-  // supplies the index file's own mtime (the racy-guard reference point).
-  // Absent — every non-`status` consumer — the fast path never fires and
-  // behaviour is exactly as before.
-  // Gitlinks are excluded from the stat cache too: git routes them through
-  // `ce_compare_gitlink` (submodule HEAD comparison), never the stat fields.
-  if (
-    entry.mode !== FILE_MODE.GITLINK &&
-    indexMtime !== undefined &&
-    isEntryStatClean(entry, stat, indexMtime)
-  ) {
-    return { status: worktreeMode === entry.mode ? 'unchanged' : 'mode-changed', worktreeMode };
-  }
-  // Size settles the verdict without a read on the armed, non-racy path — as
-  // git does: a working file whose size differs from the staged stat cannot
-  // carry the staged raw bytes, and git reports it modified without running
-  // the clean filter (measured: a size-changing edit under a malformed
-  // `[filter *].required` leaves `git status` at exit 0).
-  if (
-    entry.mode !== FILE_MODE.GITLINK &&
-    !stat.isSymbolicLink &&
-    indexMtime !== undefined &&
-    entry.fileSize >>> 0 !== stat.size >>> 0
-  ) {
-    return { status: 'modified', worktreeMode };
-  }
+  const settled = statOnlyVerdict(entry, stat, worktreeMode, indexMtime);
+  if (settled !== undefined) return settled;
   try {
     const raw = stat.isSymbolicLink
       ? LINK_ENCODER.encode(await ctx.fs.readlink(absPath))
