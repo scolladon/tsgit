@@ -486,9 +486,9 @@ const unusableEntry = (
  * Structural on `data.code`, never `instanceof`: this classifies an error
  * thrown by `ctx.fs`, so in a mixed-module-graph harness (a source-graph
  * registry over a dist-bundle Context) the adapter's `TsgitError` is a
- * different class identity than this module's — the same hazard
- * `internal/midx-source.ts` documents for the gate's own probes, which is
- * why both now share `errorDataCode`.
+ * different class identity than this module's — the hazard
+ * `internal/error-data-code.ts` documents, and the reason every `ctx.fs`
+ * absence probe shares `errorDataCode`.
  */
 function isMissingPackDir(error: unknown): boolean {
   const code = errorDataCode(error);
