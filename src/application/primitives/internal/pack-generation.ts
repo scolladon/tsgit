@@ -47,7 +47,7 @@ const EMPTY_INDEXED: IndexedPacks = Object.freeze({
   indexFaults: NO_INDEX_FAULTS,
 });
 
-const EMPTY_MIDX_LOAD: MidxLoadResult = Object.freeze({
+export const EMPTY_MIDX_LOAD: MidxLoadResult = Object.freeze({
   set: undefined,
   faults: Object.freeze([]),
   flatFilePresent: false,
@@ -58,8 +58,9 @@ export interface PackGeneration {
    *  yet read. The safe superset for `refresh()`/`dispose()` to close: a
    *  pack whose index never loaded simply has nothing to close. */
   readonly packs: ReadonlyArray<RegisteredPack>;
-  /** The multi-pack-index this generation's scan discovered, produced by the
-   *  SAME `scanPacks` call as `packs` — so no consumer can ever pair one
+  /** The multi-pack-index load this generation's scan captured from the
+   *  store gate it awaited — the same `MidxLoadResult` `assertLoadable`
+   *  observed for this generation, so no consumer can ever pair one
    *  generation's midx with another's packs. Has no reader beyond
    *  `assertLoadable` propagating its rejection: `midx` below is the bound,
    *  lookup-facing view. */

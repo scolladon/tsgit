@@ -2918,6 +2918,52 @@ describe('PackRegistry — read path after dispose', () => {
       });
     });
   });
+
+  describe('Given a Context that only ever hit loose objects', () => {
+    describe('When dispose() is called', () => {
+      it('Then objects/pack is never listed', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeMidxBytes(ctx, buildMidx(healthyMidxSpec()));
+        const ledger = withHandleLedger(ctx);
+        const sut = createPackRegistry(ledger.ctx);
+        await sut.assertLoadable();
+
+        // Act
+        await sut.dispose();
+
+        // Assert
+        expect(ledger.readdirCalls()).toBe(0);
+        expect(ledger.opens()).toBe(0);
+      });
+    });
+  });
+
+  describe('Given a disposed registry', () => {
+    describe('When assertLoadable() is called again', () => {
+      it('Then it resolves without starting a new multi-pack-index load', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeMidxBytes(ctx, buildMidx(healthyMidxSpec()));
+        const { ctx: instrumented, calls } = instrumentedContext(ctx);
+        const sut = createPackRegistry(instrumented);
+        await sut.dispose();
+
+        // Act
+        await sut.assertLoadable();
+
+        // Assert — the gate was never forced: dispose() before any read
+        // leaves it idle, and the terminal-disposal rule resolves it to the
+        // empty load instead of starting a new multi-pack-index probe.
+        const midxReads = calls().filter(
+          (call) => call.method === 'read' && call.path.endsWith('multi-pack-index'),
+        );
+        expect(midxReads).toEqual([]);
+        const readdirCalls = calls().filter((call) => call.method === 'readdir');
+        expect(readdirCalls).toEqual([]);
+      });
+    });
+  });
 });
 
 describe('PackRegistry.dispose — idempotence', () => {
@@ -3901,7 +3947,7 @@ describe('PackRegistry — multi-pack-index degradation', () => {
 
   describe('Given two healthy packs and a healthy multi-pack-index', () => {
     describe('When a loose object is read', () => {
-      it('Then assertLoadable does not force any .idx load: the ledger shows the readdir, one midx read, and zero .idx reads', async () => {
+      it('Then assertLoadable forces only the midx load: one midx read, zero .idx reads, and objects/pack is never listed', async () => {
         // Arrange
         const ctx = await buildSeededContext();
         await writeSyntheticPack(ctx, 'midx-assert-a', [
@@ -3927,8 +3973,64 @@ describe('PackRegistry — multi-pack-index degradation', () => {
           (call) => call.method === 'read' && call.path.endsWith('multi-pack-index'),
         );
         expect(midxReads).toHaveLength(1);
+        const packDirReaddirs = calls().filter(
+          (call) => call.method === 'readdir' && call.path.endsWith('/objects/pack'),
+        );
+        expect(packDirReaddirs).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a registry whose gate has resolved but whose scan never ran', () => {
+    describe('When refresh() is called and a read follows', () => {
+      it('Then the multi-pack-index is probed again', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeMidxBytes(ctx, buildMidx(healthyMidxSpec()));
+        const { ctx: instrumented, calls } = instrumentedContext(ctx);
+        const sut = createPackRegistry(instrumented);
+        await sut.assertLoadable();
+
+        // Act
+        sut.refresh();
+        await sut.assertLoadable();
+
+        // Assert — assertLoadable alone never lists the pack directory: only
+        // the gate ran, twice.
         const readdirCalls = calls().filter((call) => call.method === 'readdir');
-        expect(readdirCalls.length).toBeGreaterThanOrEqual(1);
+        expect(readdirCalls).toEqual([]);
+        const midxReads = calls().filter(
+          (call) => call.method === 'read' && call.path.endsWith('multi-pack-index'),
+        );
+        expect(midxReads).toHaveLength(2);
+      });
+    });
+  });
+
+  describe('Given a registry with a populated scan', () => {
+    describe('When refresh() is called', () => {
+      it('Then both the multi-pack-index and the pack directory are re-read on the next lookup', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'refresh-repopulate', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('repopulate') },
+        ]);
+        await writeMidxBytes(ctx, buildMidx(healthyMidxSpec()));
+        const { ctx: instrumented, calls } = instrumentedContext(ctx);
+        const sut = createPackRegistry(instrumented);
+        await sut.all();
+
+        // Act
+        sut.refresh();
+        await sut.all();
+
+        // Assert
+        const midxReads = calls().filter(
+          (call) => call.method === 'read' && call.path.endsWith('multi-pack-index'),
+        );
+        expect(midxReads).toHaveLength(2);
+        const readdirCalls = calls().filter((call) => call.method === 'readdir');
+        expect(readdirCalls).toHaveLength(2);
       });
     });
   });

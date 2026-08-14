@@ -5,12 +5,30 @@ import { writeObject } from '../../../../src/application/primitives/write-object
 import { TsgitError } from '../../../../src/domain/error.js';
 import type { Blob, Commit, ObjectId } from '../../../../src/domain/objects/index.js';
 import { computeLooseObjectPath } from '../../../../src/domain/storage/loose-path.js';
+import type { Context } from '../../../../src/ports/context.js';
+import { buildMidx, type MidxSpec } from '../../domain/storage/arbitraries.js';
 import { buildSeededContext, instrumentedContext } from './fixtures.js';
 import { buildSyntheticPack, writeSyntheticPack } from './pack-fixture.js';
 
 const ZERO_ID = '0'.repeat(40) as ObjectId;
 
 const ENC = new TextEncoder();
+
+function healthyMidxSpec(overrides: Partial<MidxSpec> = {}): MidxSpec {
+  return {
+    version: 1,
+    hashVersion: 1,
+    digestLength: 20,
+    numBaseFiles: 0,
+    packNames: [],
+    entries: [],
+    ...overrides,
+  };
+}
+
+async function writeMidxBytes(ctx: Context, bytes: Uint8Array): Promise<void> {
+  await ctx.fs.write(`${ctx.layout.gitDir}/objects/pack/multi-pack-index`, bytes);
+}
 
 async function collect(it: AsyncIterable<Uint8Array>): Promise<Uint8Array> {
   const chunks: Uint8Array[] = [];
@@ -949,6 +967,41 @@ describe('streamBlob', () => {
           expect(data.reason).toContain(id);
         }
       }
+    });
+  });
+
+  describe('Given a cold Context and a loose blob', () => {
+    describe('When openBlobSource opens it', () => {
+      it('Then the ledger matches readObject: no objects/pack listing, no .idx touch', async () => {
+        // Arrange
+        const blob: Blob = {
+          type: 'blob',
+          content: ENC.encode('cold blob-source content'),
+          id: '' as ObjectId,
+        };
+        const baseCtx = await buildSeededContext({ objects: [blob] });
+        const id = await writeObject(baseCtx, blob);
+        await writeSyntheticPack(baseCtx, 'blob-source-cold-a', [
+          { kind: 'base', type: 'blob', content: ENC.encode('a') },
+        ]);
+        await writeSyntheticPack(baseCtx, 'blob-source-cold-b', [
+          { kind: 'base', type: 'blob', content: ENC.encode('b') },
+        ]);
+        await writeMidxBytes(baseCtx, buildMidx(healthyMidxSpec()));
+        const { ctx, calls } = instrumentedContext(baseCtx);
+
+        // Act
+        const sut = await streamBlob(ctx, id);
+        await collect(sut);
+
+        // Assert
+        const packDirReaddirs = calls().filter(
+          (call) => call.method === 'readdir' && call.path.endsWith('/objects/pack'),
+        );
+        expect(packDirReaddirs).toEqual([]);
+        const idxTouches = calls().filter((call) => call.path.endsWith('.idx'));
+        expect(idxTouches).toEqual([]);
+      });
     });
   });
 

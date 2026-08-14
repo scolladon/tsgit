@@ -18,10 +18,37 @@ import {
   serializePackHeader,
 } from '../../../../src/domain/storage/index.js';
 import type { Context } from '../../../../src/ports/context.js';
+import { buildMidx, type MidxSpec } from '../../domain/storage/arbitraries.js';
 import { buildSeededContext, instrumentedContext } from './fixtures.js';
 import { buildSyntheticPack, type EntrySpec, writeSyntheticPack } from './pack-fixture.js';
 
 const ENC = new TextEncoder();
+
+function midxPath(ctx: Context): string {
+  return `${ctx.layout.gitDir}/objects/pack/multi-pack-index`;
+}
+
+async function writeMidxBytes(ctx: Context, bytes: Uint8Array): Promise<void> {
+  await ctx.fs.write(midxPath(ctx), bytes);
+}
+
+function healthyMidxSpec(overrides: Partial<MidxSpec> = {}): MidxSpec {
+  return {
+    version: 1,
+    hashVersion: 1,
+    digestLength: 20,
+    numBaseFiles: 0,
+    packNames: [],
+    entries: [],
+    ...overrides,
+  };
+}
+
+/** Truncate to a size the parser cannot even read a header from — a Tier-B
+ *  (merely-unusable) fault, discarded rather than denying the read. */
+function truncateMidxTo8(bytes: Uint8Array): Uint8Array {
+  return bytes.slice(0, 8);
+}
 
 /**
  * Build a single-entry packfile (header + `entryBytes` + trailer) and write it
@@ -783,10 +810,151 @@ describe('object-resolver', () => {
     });
   });
 
+  describe('Given a cold Context whose requested object is loose', () => {
+    describe('When resolveObject reads it', () => {
+      it('Then no readdir targets objects/pack and no .idx path is ever statted or read', async () => {
+        // Arrange
+        const blob: Blob = {
+          type: 'blob',
+          content: ENC.encode('cold-read loose content'),
+          id: '' as ObjectId,
+        };
+        const ctx = await buildSeededContext({ objects: [blob] });
+        const { serializeObject } = await import('../../../../src/domain/objects/index.js');
+        const id = (await ctx.hash.hashHex(serializeObject(blob, ctx.hashConfig))) as ObjectId;
+        await writeSyntheticPack(ctx, 'cold-read-a', [
+          { kind: 'base', type: 'blob', content: ENC.encode('a') },
+        ]);
+        await writeSyntheticPack(ctx, 'cold-read-b', [
+          { kind: 'base', type: 'blob', content: ENC.encode('b') },
+        ]);
+        await writeMidxBytes(ctx, buildMidx(healthyMidxSpec()));
+        const { ctx: instrumented, calls } = instrumentedContext(ctx);
+        const registry = createPackRegistry(instrumented);
+
+        // Act
+        const result = await resolveObject(instrumented, registry, id, true);
+
+        // Assert
+        expect(result.type).toBe('blob');
+        const packDirReaddirs = calls().filter(
+          (call) => call.method === 'readdir' && call.path.endsWith('/objects/pack'),
+        );
+        expect(packDirReaddirs).toEqual([]);
+        const existsCalls = calls().filter((call) => call.method === 'exists');
+        expect(existsCalls).toEqual([]);
+        const idxTouches = calls().filter((call) => call.path.endsWith('.idx'));
+        expect(idxTouches).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a cold Context whose requested object is NOT loose but IS packed', () => {
+    describe('When resolveObject reads it', () => {
+      it('Then objects/pack is listed exactly once and the object still resolves', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const content = ENC.encode('cold-read packed content');
+        const [id] = await writeSyntheticPack(ctx, 'cold-read-packed', [
+          { kind: 'base', type: 'blob', content },
+        ]);
+        await writeMidxBytes(ctx, buildMidx(healthyMidxSpec()));
+        const { ctx: instrumented, calls } = instrumentedContext(ctx);
+        const registry = createPackRegistry(instrumented);
+
+        // Act
+        const result = await resolveObject(instrumented, registry, id as ObjectId, true);
+
+        // Assert
+        expect(result.type).toBe('blob');
+        expect((result as Blob).content).toEqual(content);
+        const packDirReaddirs = calls().filter(
+          (call) => call.method === 'readdir' && call.path.endsWith('/objects/pack'),
+        );
+        expect(packDirReaddirs).toHaveLength(1);
+      });
+    });
+  });
+
+  describe('Given a Tier-A multi-pack-index (flipped signature) and a loose object that exists', () => {
+    describe('When resolveObject reads it', () => {
+      it('Then the read throws INVALID_MULTI_PACK_INDEX with check signature before any fanout readdir runs', async () => {
+        // Arrange
+        const blob: Blob = {
+          type: 'blob',
+          content: ENC.encode('tier-a-denied loose content'),
+          id: '' as ObjectId,
+        };
+        const ctx = await buildSeededContext({ objects: [blob] });
+        const { serializeObject } = await import('../../../../src/domain/objects/index.js');
+        const id = (await ctx.hash.hashHex(serializeObject(blob, ctx.hashConfig))) as ObjectId;
+        const badMidx = new Uint8Array(16);
+        badMidx.set([0x00, 0x49, 0x44, 0x58, 1, 1, 1, 0], 0);
+        await writeMidxBytes(ctx, badMidx);
+        const { ctx: instrumented, calls } = instrumentedContext(ctx);
+        const registry = createPackRegistry(instrumented);
+
+        // Act
+        let caught: unknown;
+        try {
+          await resolveObject(instrumented, registry, id, true);
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('INVALID_MULTI_PACK_INDEX');
+        if (data.code === 'INVALID_MULTI_PACK_INDEX') {
+          expect(data.check).toBe('signature');
+        }
+        const fanoutReaddirs = calls().filter(
+          (call) => call.method === 'readdir' && call.path.endsWith(`/objects/${id.slice(0, 2)}`),
+        );
+        expect(fanoutReaddirs).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a Tier-B multi-pack-index (truncated) and a loose object that exists', () => {
+    describe('When resolveObject reads it', () => {
+      it('Then the blob resolves, the discard warn fires once, and objects/pack is never listed', async () => {
+        // Arrange
+        const blob: Blob = {
+          type: 'blob',
+          content: ENC.encode('tier-b-warned loose content'),
+          id: '' as ObjectId,
+        };
+        const baseCtx = await buildSeededContext({ objects: [blob] });
+        const { serializeObject } = await import('../../../../src/domain/objects/index.js');
+        const id = (await baseCtx.hash.hashHex(
+          serializeObject(blob, baseCtx.hashConfig),
+        )) as ObjectId;
+        const warn = vi.fn();
+        const ctx = { ...baseCtx, logger: { warn } };
+        await writeMidxBytes(ctx, truncateMidxTo8(buildMidx(healthyMidxSpec())));
+        const { ctx: instrumented, calls } = instrumentedContext(ctx);
+        const registry = createPackRegistry(instrumented);
+
+        // Act
+        const result = await resolveObject(instrumented, registry, id, true);
+
+        // Assert
+        expect(result.type).toBe('blob');
+        expect(warn).toHaveBeenCalledTimes(1);
+        const packDirReaddirs = calls().filter(
+          (call) => call.method === 'readdir' && call.path.endsWith('/objects/pack'),
+        );
+        expect(packDirReaddirs).toEqual([]);
+      });
+    });
+  });
+
   describe('loose-oid probe (A2/B7b — per-fanout-dir cache)', () => {
     describe('Given several seeded loose blobs', () => {
       describe('When resolveObject reads each of them, then reads every one again', () => {
-        it('Then each touched fanout dir is readdir-ed at most once and exists is called only for the pack-registry presence probe', async () => {
+        it('Then each touched fanout dir is readdir-ed at most once and the pack store is never probed', async () => {
           // Arrange
           const blobs: Blob[] = Array.from({ length: 5 }, (_, i) => ({
             type: 'blob',
@@ -814,13 +982,14 @@ describe('object-resolver', () => {
           }
 
           // Assert — one readdir per DISTINCT touched prefix, never per object
-          // or per read; the old per-object exists/realpath probe is gone. The
-          // single exists() call left is resolveObjectBytes's own assertLoadable
-          // gate probing the pack directory once (memoised for every later
-          // read, loose or not) — not a per-object or per-read cost.
+          // or per read; the old per-object exists/realpath probe is gone.
+          // exists() never fires at all: resolveObjectBytes's assertLoadable
+          // gate is now the multi-pack-index load alone, and the pack
+          // directory's own `exists` presence check moved behind the
+          // deferred scan, which a loose HIT never forces.
           const touchedPrefixes = new Set(ids.map((id) => id.slice(0, 2)));
           expect(readdirSpy.mock.calls.length).toBe(touchedPrefixes.size);
-          expect(existsSpy.mock.calls.length).toBe(1);
+          expect(existsSpy.mock.calls.length).toBe(0);
         });
       });
     });
