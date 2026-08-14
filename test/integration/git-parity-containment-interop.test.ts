@@ -1249,4 +1249,59 @@ describe.skipIf(!GIT_AVAILABLE)('git-parity containment interop', () => {
       });
     });
   });
+
+  // ── 11. add refuses a `.git`-alias symlink at the staging boundary ───
+
+  describe('Given a `git~1`-aliased directory holding a symlink and a `.git.`-aliased root symlink', () => {
+    describe('When each tool runs `add -A`', () => {
+      let root: string;
+      let pair: RepoPair;
+
+      beforeAll(async () => {
+        root = await mkRoot('add-alias-symlink');
+        pair = await buildSeededPair(root, 'add-alias');
+
+        mkdirSync(path.join(pair.peerDir, 'git~1'), { recursive: true });
+        symlinkSync('../seed.txt', path.join(pair.peerDir, 'git~1', 'link'));
+        symlinkSync('/etc/passwd', path.join(pair.peerDir, '.git.'));
+
+        mkdirSync(path.join(pair.oursDir, 'git~1'), { recursive: true });
+        symlinkSync('../seed.txt', path.join(pair.oursDir, 'git~1', 'link'));
+        symlinkSync('/etc/passwd', path.join(pair.oursDir, '.git.'));
+      }, SETUP_TIMEOUT);
+
+      afterAll(async () => {
+        await pair.repo.dispose();
+        await rm(root, { recursive: true, force: true });
+      });
+
+      it('Then both tools refuse the alias symlinks and neither leaves a staged entry', async () => {
+        // Arrange — the walk itself lists both entries (status-faithful,
+        // matches section 9); the refusal must fire at the staging boundary.
+        const stageBefore = lsStage(pair.oursDir);
+
+        // Act
+        const peerResult = tryRunGitWithExit(['-C', pair.peerDir, 'add', '-A']);
+        let oursCode: string | undefined;
+        try {
+          await pair.repo.add([], { all: true });
+        } catch (err) {
+          oursCode = (err as { readonly data?: { readonly code?: string } }).data?.code;
+        }
+
+        // Assert — git refuses the whole batch (all-or-nothing: `seed.txt`
+        // was already staged by the seed commit, and no new entry is added).
+        expect(peerResult.exitCode).toBe(128);
+        expect(peerResult.stderr).toMatch(/invalid path '(git~1\/link|\.git\.)'/);
+        expect(lsStage(pair.peerDir)).not.toContain('git~1/link');
+        expect(lsStage(pair.peerDir)).not.toContain('.git.');
+        // Assert — tsgit refuses too, with nothing staged beyond the seed.
+        expect(oursCode).toBe('INVALID_INDEX_ENTRY');
+        const stageAfter = lsStage(pair.oursDir);
+        expect(stageAfter).toBe(stageBefore);
+        expect(stageAfter).not.toContain('git~1/link');
+        expect(stageAfter).not.toContain('.git.');
+      });
+    });
+  });
 });

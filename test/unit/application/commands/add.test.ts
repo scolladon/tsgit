@@ -1098,6 +1098,70 @@ describe('add', () => {
     });
   });
 
+  describe('Given a `.git`-alias symlink at the staging boundary', () => {
+    describe('When add({ all: true })', () => {
+      it('Then a `.git.` symlink is refused with the invalid-path code and the index is unchanged', async () => {
+        // Arrange — `.git.` is a trailing-dot alias for `.git`; git refuses it
+        // at the index-write stage even though the walker (status-faithful)
+        // lets it through. A sibling legit file proves the whole call aborts
+        // with nothing partially staged, matching git's `add -A` all-or-nothing
+        // behaviour (pinned against git 2.55: a hostile entry alongside two
+        // valid ones leaves the index untouched, not partially updated).
+        const ctx = await seedFreshRepo({ 'ok.txt': 'ok' });
+        await ctx.fs.symlink('/etc/passwd', `${ctx.layout.workDir}/.git.`);
+        const before = (await readIndex(ctx)).entries.length;
+
+        // Act
+        const err = await expectError(() => add(ctx, [], { all: true }), 'INVALID_INDEX_ENTRY');
+
+        // Assert
+        expect(err.data).toMatchObject({ reason: "'.git' component rejected" });
+        const after = (await readIndex(ctx)).entries;
+        expect(after.length).toBe(before);
+        expect(after.map((e) => e.path)).not.toContain('ok.txt');
+      });
+
+      it('Then a symlink under a `git~1` NTFS-alias directory is refused with the invalid-path code and the index is unchanged', async () => {
+        // Arrange — `git~1` is the NTFS short-name alias for `.git`; the
+        // widened alias scan applies to every path component, not just the
+        // leaf, so a symlink nested under it is refused too.
+        const ctx = await seedFreshRepo({ 'ok.txt': 'ok' });
+        await ctx.fs.symlink('../ok.txt', `${ctx.layout.workDir}/git~1/link`);
+        const before = (await readIndex(ctx)).entries.length;
+
+        // Act
+        const err = await expectError(() => add(ctx, [], { all: true }), 'INVALID_INDEX_ENTRY');
+
+        // Assert
+        expect(err.data).toMatchObject({ reason: "'git~1' NTFS short name rejected" });
+        const after = (await readIndex(ctx)).entries;
+        expect(after.length).toBe(before);
+        expect(after.map((e) => e.path)).not.toContain('ok.txt');
+      });
+    });
+  });
+
+  describe('Given a regular file whose name contains a colon (POSIX-legal, git accepts)', () => {
+    describe('When add({ all: true })', () => {
+      it('Then it is staged (the pathspec-only `:` rule does not apply to walked content)', async () => {
+        // Arrange — pinned against git 2.55 on POSIX: `git add -A` stages
+        // `foo:bar/x` without complaint. The `:` rejection in
+        // `validateWorkingTreePath`'s `rejectComponent` guards NTFS
+        // alternate-data-stream syntax and is only correct for user-typed
+        // pathspec text, never for content the walker already found on disk.
+        const ctx = await seedFreshRepo({ 'foo:bar/x': 'x' });
+
+        // Act
+        const result = await add(ctx, [], { all: true });
+
+        // Assert
+        expect(result.added).toEqual(['foo:bar/x']);
+        const idx = await readIndex(ctx);
+        expect(idx.entries.map((e) => e.path)).toContain('foo:bar/x');
+      });
+    });
+  });
+
   describe('Given a custom ignore predicate that excludes node_modules', () => {
     describe('When addAll is called directly', () => {
       it('Then those paths are skipped', async () => {

@@ -16,6 +16,7 @@ import {
 } from '../../domain/commands/error.js';
 import { operationAborted, TsgitError } from '../../domain/error.js';
 import type { IndexEntry } from '../../domain/git-index/index.js';
+import { NO_PARSER_OFFSET, validateIndexPath } from '../../domain/git-index/path-validator.js';
 import { emptyPathspec, pathspecNoMatch } from '../../domain/index.js';
 import {
   deriveWorkingMode,
@@ -55,7 +56,6 @@ import {
   enforceLiteralMustMatch,
   resolvePathspec,
 } from './internal/resolve-pathspec.js';
-import { readFile } from './internal/working-tree.js';
 
 const INDEX_MISSING_CODES = new Set([
   'FILE_NOT_FOUND',
@@ -443,6 +443,16 @@ const stageFromStat = async (
     throw workingTreeFileTooLarge(path, fresh.size, MAX_WORKING_TREE_BLOB_BYTES);
   }
   const mode: FileMode = deriveWorkingMode(fresh);
+  // Staging boundary: `.git`-alias (and NTFS/HFS-obscured variants) and a
+  // symlinked `.gitmodules` component must be refused HERE, before either
+  // read arm runs below — the walker (`validateWalkedEntryPath`) deliberately
+  // lets these through so `status` can still list them, exactly as git's own
+  // directory walk does. `validateIndexPath` mirrors git's `verify_path`, so
+  // both the regular-file and symlink arms of `readContent` refuse
+  // identically; the throw here aborts the whole add before any entry is
+  // added to `newEntries`, so the index commit never runs (git's add -A is
+  // all-or-nothing: one hostile path aborts the entire batch).
+  validateIndexPath(path, NO_PARSER_OFFSET, mode);
   const raw = await readContent(ctx, path, fresh);
   const bytes = await applyCleanFilter(ctx, path, raw, fresh.isSymbolicLink, provider);
   const id = (await writeObject(ctx, {
@@ -492,5 +502,12 @@ const readContent = async (
     }
     return bytes;
   }
-  return readFile(ctx, path);
+  // `path` is already validated at the staging boundary (`stageFromStat`,
+  // above `readContent`'s only call site) via `validateIndexPath` — the
+  // git-faithful `verify_path` rule set. Reading straight off `ctx.fs`
+  // (rather than through `internal/working-tree.ts`'s `readFile`, which
+  // layers on the wider pathspec `validateWorkingTreePath` and its `:`
+  // rejection) keeps walked content — e.g. a POSIX-legal `foo:bar/x` — from
+  // being rejected by a rule that only applies to user-typed pathspec text.
+  return ctx.fs.read(joinPath(ctx.layout.workDir, path));
 };
