@@ -65,6 +65,7 @@ export const createLeadingPathScanner = (ctx: Context): LeadingPathScanner => {
 
   const hasSymlinkedLeadingPath = async (path: FilePath): Promise<boolean> => {
     const segments = path.split('/');
+    // Stryker disable next-line StringLiteral: equivalent — split() always returns at least one element, so the '' default can never activate.
     let prefix = segments[0] ?? '';
     for (let i = 1; i < segments.length; i += 1) {
       const shape = await classifyPrefix(prefix);
@@ -79,6 +80,7 @@ export const createLeadingPathScanner = (ctx: Context): LeadingPathScanner => {
 
   const unlinkSymlinkedLeadingComponent = async (path: FilePath): Promise<void> => {
     const segments = path.split('/');
+    // Stryker disable next-line StringLiteral: equivalent — split() always returns at least one element, so the '' default can never activate.
     let prefix = segments[0] ?? '';
     for (let i = 1; i < segments.length; i += 1) {
       const shape = await classifyPrefix(prefix);

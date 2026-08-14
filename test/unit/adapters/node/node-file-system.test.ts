@@ -126,6 +126,33 @@ describe('NodeFileSystem', () => {
       });
     });
 
+    describe('Given a literal absolute path whose text begins with a `..` segment that resolves back inside root', () => {
+      describe('When reading it', () => {
+        it('Then it is allowed — the raw `..` still routes through resolve() before the containment check', async () => {
+          // Arrange — toAbsolute returns an already-absolute path verbatim
+          // (no join/normalisation applied), so a literal leading `/..`
+          // survives into resolveRead's candidate with its `..` starting at
+          // index 1 of the raw string. The prefilter must still take the
+          // resolve() branch here so the escaping-looking literal collapses
+          // back to a legitimate in-root path before the prefix check runs
+          // — an off-by-one on the prefilter's start-index check would
+          // instead compare the UNRESOLVED literal against the root prefix
+          // and wrongly refuse a read that resolves inside root.
+          const { fs, rootDir, cleanup } = await makeFs();
+          const target = nodePath.join(rootDir, 'existing.txt');
+          await fsPromises.writeFile(target, Buffer.from('inside'));
+          const literalDotDotPrefix = `/..${rootDir}/existing.txt`;
+
+          // Act
+          const result = await fs.read(literalDotDotPrefix);
+
+          // Assert
+          expect(result).toEqual(new Uint8Array(Buffer.from('inside')));
+          await cleanup();
+        });
+      });
+    });
+
     describe('Given pre-existing symlink at target leaf', () => {
       describe('When write', () => {
         it('Then throws PERMISSION_DENIED', async () => {
@@ -630,6 +657,39 @@ describe('NodeFileSystem', () => {
           // Assert
           expect(caught).toBeInstanceOf(TsgitError);
           expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+          await cleanup();
+        });
+      });
+    });
+
+    describe('Given openWithNoFollow(read) through a symlinked leading directory that resolves outside root', () => {
+      describe('When openWithNoFollow', () => {
+        it('Then it follows the directory symlink and opens the target (read-mode containment is lexical, like read/lstat/readdir)', async () => {
+          // Arrange — the link's OWN path is lexically inside root; only its
+          // target escapes. openWithNoFollow(read) must route through
+          // resolveRead (lexical, syscall-free), not resolveWrite's
+          // realpath-based escape check the write-mode test above proves —
+          // otherwise a legitimate read through a symlinked leading
+          // directory would be wrongly refused.
+          const { fs, rootDir, siblingDir, cleanup } = await makeFs();
+          const dirLink = nodePath.join(rootDir, 'escape-open-read-dir');
+          await fsPromises.symlink(siblingDir, dirLink);
+          const target = nodePath.join(siblingDir, 'child.bin');
+          await fsPromises.writeFile(target, Buffer.from([7, 8, 9]));
+
+          // Act
+          const handle = await fs.openWithNoFollow(nodePath.join(dirLink, 'child.bin'), 'read');
+          const buffer = new Uint8Array(3);
+          let bytes = 0;
+          try {
+            bytes = await handle.read(buffer, 0, 3);
+          } finally {
+            await handle.close();
+          }
+
+          // Assert
+          expect(bytes).toBe(3);
+          expect(buffer).toEqual(new Uint8Array([7, 8, 9]));
           await cleanup();
         });
       });

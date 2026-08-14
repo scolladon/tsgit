@@ -941,6 +941,7 @@ export class NodeFileSystem implements FileSystem {
     // segments, so a raw adapter call is the only way this arm fires. `.`
     // segments and duplicate separators are left uncollapsed — both are
     // OS-normalised at the syscall and neither can escape a prefix check.
+    // Stryker disable next-line ConditionalExpression,StringLiteral: equivalent — forcing this ternary to always take the resolve() branch only trades the allocation-skip for an unconditional resolve(); when `absolute` carries no '..' substring at all, resolve() only strips `.` segments/duplicate separators/a trailing slash (never collapses anything else, since there's no ".." to collapse), none of which changes a startsWith-prefix containment verdict against the pre-canonicalised root prefixes.
     const candidate = absolute.indexOf('..') === -1 ? absolute : this.pathPolicy.resolve(absolute);
     const normalized = this.pathPolicy.normalizeForCompare(candidate);
     const contained = roots.some((root) =>

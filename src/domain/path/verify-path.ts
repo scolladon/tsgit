@@ -159,6 +159,7 @@ const matchGitmodulesAliasPart = (component: string): boolean => {
   if (normalized === GITMODULES) return true;
   if (GITMOD_NTFS_SHORT_NAME.test(normalized)) return true;
   if (GITMOD_NTFS_HASHED_SHORT_NAME.test(normalized)) return true;
+  // Stryker disable next-line ConditionalExpression: equivalent — when hasIgnorableCodepoint(component) is false, stripIgnorableCodepoints(component) removes nothing, so the line below reduces to normalizeAliasCandidate(component) === GITMODULES; component either equals `candidate` (already ruled out on line 159) or carries a `:` stream suffix that normalizeAliasCandidate never strips, so that comparison can never be true — skipping the early return produces the same `false` either way.
   if (!hasIgnorableCodepoint(component)) return false;
   return normalizeAliasCandidate(stripIgnorableCodepoints(component)) === GITMODULES;
 };

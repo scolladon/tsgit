@@ -485,6 +485,13 @@ describe('verifyPath', () => {
         },
         {
           label:
+            "'foo<ZWNJ>bar' accepts at 120000 (ignorable codepoint present, but stripped name is not .gitmodules)",
+          path: `foo${ZWNJ}bar`,
+          mode: FILE_MODE.SYMLINK,
+          expected: undefined,
+        },
+        {
+          label:
             "'.gitmodules:$DATA' rejects at 120000 (NTFS alternate data stream): gitmodules-not-regular",
           path: '.gitmodules:$DATA',
           mode: FILE_MODE.SYMLINK,

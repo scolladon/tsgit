@@ -411,6 +411,30 @@ describe('createLeadingPathScanner', () => {
     });
   });
 
+  describe('Given a leading prefix chain whose first two segments are both missing, walked once via unlinkSymlinkedLeadingComponent', () => {
+    describe('When a real directory and a deeper symlink later materialise there and hasSymlinkedLeadingPath scans the same chain', () => {
+      it('Then the deeper symlink is still detected — the shallow prefix does not keep a stale missing verdict', async () => {
+        // Arrange — the 'missing' branch must stop the walk and drop its own
+        // memo entry, so a later scan re-lstats the now-real 'a' instead of
+        // trusting a stale cached 'missing'. If the walk kept going instead
+        // (missing branch skipped), it would ALSO cache the deeper 'a/dir'
+        // prefix as 'missing' — a verdict that never gets invalidated once
+        // 'a/dir' later becomes a real symlink, hiding it from every later scan.
+        const ctx = createMemoryContext();
+        const sut = createLeadingPathScanner(ctx);
+
+        // Act — first scan while both 'a' and 'a/dir' are missing.
+        await sut.unlinkSymlinkedLeadingComponent(path('a/dir/file'));
+        // 'a/dir' materialises as a symlink (auto-creates 'a' as a real directory).
+        await ctx.fs.symlink('/outside-the-repo', `${ctx.layout.workDir}/a/dir`);
+        const result = await sut.hasSymlinkedLeadingPath(path('a/dir/file'));
+
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+  });
+
   describe('Given a prefix already classified and cached on a scanner', () => {
     describe('When invalidate is called for that exact prefix and a later path scans it again', () => {
       it('Then the memo entry is dropped and a fresh lstat runs', async () => {
