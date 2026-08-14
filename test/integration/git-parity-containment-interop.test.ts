@@ -1077,4 +1077,47 @@ describe.skipIf(!GIT_AVAILABLE)('git-parity containment interop', () => {
       });
     });
   });
+
+  // ── 9. untracked walk skips only exact `.git`, not the widened alias matrix ─
+
+  describe('Given an untracked working-tree directory named `git~1` (NTFS short-name alias for `.git`)', () => {
+    describe('When status is queried', () => {
+      let root: string;
+      let pair: RepoPair;
+
+      beforeAll(async () => {
+        root = await mkRoot('walker-narrow-skip');
+        pair = await buildSeededPair(root, 'walker');
+
+        mkdirSync(path.join(pair.peerDir, 'git~1'), { recursive: true });
+        writeFileSync(path.join(pair.peerDir, 'git~1', 'f'), 'x\n');
+        writeFileSync(path.join(pair.peerDir, 'sibling.txt'), 'y\n');
+
+        mkdirSync(path.join(pair.oursDir, 'git~1'), { recursive: true });
+        writeFileSync(path.join(pair.oursDir, 'git~1', 'f'), 'x\n');
+        writeFileSync(path.join(pair.oursDir, 'sibling.txt'), 'y\n');
+      }, SETUP_TIMEOUT);
+
+      afterAll(async () => {
+        await pair.repo.dispose();
+        await rm(root, { recursive: true, force: true });
+      });
+
+      it('Then both list the git~1 entry and the unrelated sibling as untracked — the walk collapses only exact `.git`', async () => {
+        // Arrange & Act — `-uall` matches tsgit's always-flattened untracked
+        // list (individual paths, never a collapsed wholly-untracked
+        // directory).
+        const peerStatus = git(pair.peerDir, 'status', '--porcelain', '-uall');
+        const oursStatus = await pair.repo.status();
+
+        // Assert — git's readdir walk never treats `git~1` as an embedded
+        // `.git` marker: both the alias directory's own file and the
+        // unrelated sibling are reported.
+        expect(peerStatus).toContain('?? git~1/f\n');
+        expect(peerStatus).toContain('?? sibling.txt\n');
+        expect(oursStatus.untracked).toContain('git~1/f');
+        expect(oursStatus.untracked).toContain('sibling.txt');
+      });
+    });
+  });
 });

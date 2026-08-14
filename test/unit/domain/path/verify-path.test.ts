@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
-import { isDotGitAlias, verifyPath } from '../../../../src/domain/path/verify-path.js';
+import {
+  isDotGitAlias,
+  isDotGitWalkEntry,
+  verifyPath,
+} from '../../../../src/domain/path/verify-path.js';
 
 // TAB (0x09) is accepted inside a component — verified by the matrix row below.
 const TAB = String.fromCharCode(0x09);
@@ -392,6 +396,53 @@ describe('isDotGitAlias', () => {
 
         // Act
         const result = isDotGitAlias(component);
+
+        // Assert
+        expect(result).toBe(expected);
+      });
+    });
+  });
+});
+
+describe('isDotGitWalkEntry', () => {
+  describe("Given a directory-walk entry name, pinned against git's readdir walk (git 2.55.0, darwin, core.ignorecase=true)", () => {
+    describe('When checked', () => {
+      it.each([
+        { label: 'exact .git', name: '.git', expected: true },
+        { label: '.GIT (case-folded, matches core.ignorecase=true)', name: '.GIT', expected: true },
+        { label: '.Git (mixed case)', name: '.Git', expected: true },
+        {
+          label: 'git~1 (NTFS short-name alias) — walked, NOT collapsed',
+          name: 'git~1',
+          expected: false,
+        },
+        {
+          label: '.git:stream (NTFS ADS alias) — walked, NOT collapsed',
+          name: '.git:stream',
+          expected: false,
+        },
+        {
+          label: `.g${ZWNJ}it (HFS ignorable-codepoint alias) — walked, NOT collapsed`,
+          name: `.g${ZWNJ}it`,
+          expected: false,
+        },
+        {
+          label: '.git. (trailing dot) — walked, NOT collapsed',
+          name: '.git.',
+          expected: false,
+        },
+        {
+          label: '.git  (trailing space) — walked, NOT collapsed',
+          name: '.git ',
+          expected: false,
+        },
+        { label: 'plain non-alias name', name: 'ok', expected: false },
+      ])('Then $label resolves to $expected', (row) => {
+        // Arrange — the pinned row supplies the entry name
+        const { name, expected } = row;
+
+        // Act
+        const result = isDotGitWalkEntry(name);
 
         // Assert
         expect(result).toBe(expected);

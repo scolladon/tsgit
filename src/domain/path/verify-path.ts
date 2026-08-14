@@ -65,6 +65,20 @@ const matchAliasComponent = (component: string): VerifyPathRejection | undefined
 export const isDotGitAlias = (component: string): boolean =>
   matchAliasComponent(component) !== undefined;
 
+/**
+ * True if `name` is `.git`, folded only by case — the narrow match git's own
+ * *directory walk* (`read_directory`, gated by `core.ignorecase`) applies
+ * when deciding whether an on-disk entry is its own control directory or an
+ * embedded repository's. Unlike {@link isDotGitAlias}, this does NOT widen to
+ * the NTFS/HFS index-write alias matrix: `git~1`, a `.git:`-stream name, an
+ * HFS ignorable-codepoint alias, and a trailing-dot/space variant all fail
+ * this test and are ordinary walked entries. Pinned empirically against
+ * `git status --porcelain -uall` (git 2.55.0, darwin, core.ignorecase=true):
+ * `.GIT` is invisible to the walk, while a nested `git~1`, `.git:stream`,
+ * `.g<ZWNJ>it`, `.git.` and `.git ` directory are all reported `??`.
+ */
+export const isDotGitWalkEntry = (name: string): boolean => name.toLowerCase() === DOTGIT;
+
 const matchShape = (component: string): VerifyPathRejection | undefined => {
   if (component === '') return 'empty-segment';
   if (component === '.') return 'dot-segment';
