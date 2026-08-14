@@ -3,17 +3,21 @@ import { createMemoryContext } from '../../../../src/adapters/memory/memory-adap
 import type { AddOptions } from '../../../../src/application/commands/add.js';
 import { add, addAll as addAllInternal } from '../../../../src/application/commands/add.js';
 import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
+import { indexEntryFromStat } from '../../../../src/application/primitives/internal/index-entry-from-stat.js';
 import { readBlob } from '../../../../src/application/primitives/read-blob.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import { MAX_WORKING_TREE_BLOB_BYTES } from '../../../../src/application/primitives/types.js';
-import { STAGE0_FLAGS } from '../../../../src/domain/git-index/index.js';
+import { writeObject } from '../../../../src/application/primitives/write-object.js';
+import { type GitIndex, STAGE0_FLAGS } from '../../../../src/domain/git-index/index.js';
 import { TsgitError } from '../../../../src/domain/index.js';
-import type { ObjectId } from '../../../../src/domain/objects/object-id.js';
+import { FILE_MODE } from '../../../../src/domain/objects/index.js';
+import { type FilePath, ObjectId } from '../../../../src/domain/objects/object-id.js';
 import type {
   CommandRequest,
   CommandResult,
   CommandRunner,
 } from '../../../../src/ports/command-runner.js';
+import { serializeIndexFixtureAsync } from '../primitives/fixtures.js';
 import { stubCommandRunner } from '../primitives/helpers/stub-command-runner.js';
 import { seedRepo } from './fixtures.js';
 
@@ -237,6 +241,112 @@ describe('add', () => {
         // Assert
         expect(result.added).toEqual(['b.txt']);
         expect(result.modified).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a previous index entry whose recorded stat provably predates the index mtime and matches the working file exactly', () => {
+    describe('When add re-stages it', () => {
+      it('Then it takes the stat-clean shortcut without reading the file', async () => {
+        // Arrange — pin the working file's lstat to a fixed pre-epoch stat so
+        // the index file's own (real) mtime provably postdates it — the
+        // racy-guard's non-racy branch — then craft the previous entry via the
+        // SAME production helper the real staging path uses, so every
+        // content-stat field lines up byte-for-byte with the pinned stat.
+        const ctx = await seedFreshRepo({ 'a.txt': 'content' });
+        const path = 'a.txt' as FilePath;
+        const filePath = `${ctx.layout.workDir}/a.txt`;
+        const baseLstat = ctx.fs.lstat;
+        const pinnedStat = { ...(await baseLstat(filePath)), mtimeMs: 1000, ctimeMs: 1000 };
+        const id = await writeObject(ctx, {
+          type: 'blob',
+          id: '' as ObjectId,
+          content: enc('content'),
+        });
+        const previousEntry = indexEntryFromStat(pinnedStat, FILE_MODE.REGULAR, id, path);
+        const index: GitIndex = {
+          version: 2,
+          entries: [previousEntry],
+          extensions: [],
+          trailerSha: new Uint8Array(0),
+        };
+        await ctx.fs.write(
+          `${ctx.layout.gitDir}/index`,
+          await serializeIndexFixtureAsync(index, ctx),
+        );
+        let readCalled = false;
+        const spyFs = new Proxy(ctx.fs, {
+          get(target, prop, receiver) {
+            if (prop === 'lstat') {
+              return async (p: string) => (p === filePath ? pinnedStat : baseLstat(p));
+            }
+            if (prop === 'read') {
+              return async (p: string) => {
+                if (p === filePath) readCalled = true;
+                return target.read(p);
+              };
+            }
+            return Reflect.get(target, prop, receiver);
+          },
+        });
+
+        // Act
+        const result = await add({ ...ctx, fs: spyFs }, ['a.txt']);
+
+        // Assert — the shortcut fired: no content read, no reclassification.
+        expect(readCalled).toBe(false);
+        expect(result.added).toEqual([]);
+        expect(result.modified).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a previous REGULAR entry whose working file has since gained the executable bit, with every stat-cache field otherwise unchanged', () => {
+    describe('When add re-stages it', () => {
+      it('Then the mode-mismatch guard blocks the shortcut and the path is reclassified', async () => {
+        // Arrange — isEntryStatClean deliberately excludes mode from its field
+        // set, so the stat cache alone would call this clean; only the
+        // mode-match conjunct can tell 'unchanged' from 'mode-changed' apart.
+        const ctx = await seedFreshRepo({ 'exec.txt': 'content' });
+        const path = 'exec.txt' as FilePath;
+        const filePath = `${ctx.layout.workDir}/exec.txt`;
+        const baseLstat = ctx.fs.lstat;
+        const realStat = await baseLstat(filePath);
+        const regularStat = {
+          ...realStat,
+          mtimeMs: 1000,
+          ctimeMs: 1000,
+          mode: realStat.mode & ~0o111,
+        };
+        const executableStat = { ...regularStat, mode: regularStat.mode | 0o111 };
+        const previousId = ObjectId.from('a'.repeat(40));
+        const previousEntry = indexEntryFromStat(regularStat, FILE_MODE.REGULAR, previousId, path);
+        const index: GitIndex = {
+          version: 2,
+          entries: [previousEntry],
+          extensions: [],
+          trailerSha: new Uint8Array(0),
+        };
+        await ctx.fs.write(
+          `${ctx.layout.gitDir}/index`,
+          await serializeIndexFixtureAsync(index, ctx),
+        );
+        const pinnedFs = new Proxy(ctx.fs, {
+          get(target, prop, receiver) {
+            if (prop === 'lstat') {
+              return async (p: string) => (p === filePath ? executableStat : baseLstat(p));
+            }
+            return Reflect.get(target, prop, receiver);
+          },
+        });
+
+        // Act
+        const result = await add({ ...ctx, fs: pinnedFs }, ['exec.txt']);
+
+        // Assert — real behavior re-derives an EXECUTABLE blob and reclassifies
+        // as modified; the {true}-mutant on the mode-match guard would wrongly
+        // let the shortcut return the stale REGULAR entry untouched instead.
+        expect(result.modified).toEqual(['exec.txt']);
       });
     });
   });

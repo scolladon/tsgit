@@ -389,6 +389,7 @@ const stageFromStat = async (
   if (
     previous !== undefined &&
     indexMtime !== undefined &&
+    // Stryker disable next-line ConditionalExpression: equivalent — deriveWorkingMode never returns FILE_MODE.GITLINK, so the next conjunct (mode match) is unconditionally false whenever previous.mode is GITLINK; forcing this operand's real-false case to `true` can never flip the chain's overall value.
     previous.mode !== FILE_MODE.GITLINK &&
     deriveWorkingMode(fresh) === previous.mode &&
     isEntryStatClean(previous, fresh, indexMtime)
