@@ -257,6 +257,32 @@ describe('loadShallowSet / isShallowRepository', () => {
     });
   });
 
+  describe('Given a readUtf8 that throws an error shaped like TsgitError but from a foreign module graph', () => {
+    describe('When loadShallowSet runs', () => {
+      it('Then treats it as absent and returns an empty set (classification is structural, not instanceof)', async () => {
+        // Arrange
+        const base = await buildSeededContext();
+        const foreignError = { data: { code: 'FILE_NOT_FOUND' } };
+        const ctx: Context = {
+          ...base,
+          fs: {
+            ...base.fs,
+            readUtf8: async () => {
+              throw foreignError;
+            },
+          },
+        };
+        const sut = loadShallowSet;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result.size).toBe(0);
+      });
+    });
+  });
+
   describe('Given a read that fails with a non-absence error', () => {
     describe('When loadShallowSet runs', () => {
       it('Then the foreign error propagates unchanged', async () => {

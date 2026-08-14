@@ -14,10 +14,10 @@
  * only ever ADD a loose object — tsgit never prunes them), so no re-readdir
  * is forced on read/write-interleaved flows; an unprobed prefix stays lazy.
  */
-import { TsgitError } from '../../../domain/error.js';
 import type { ObjectId } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
 import { commonGitDir, objectsDir } from '../path-layout.js';
+import { errorDataCode } from './error-data-code.js';
 
 const fanoutCache = new WeakMap<Context, Map<string, Set<string>>>();
 
@@ -25,10 +25,8 @@ const prefixOf = (id: ObjectId): string => id.slice(0, 2);
 const suffixOf = (id: ObjectId): string => id.slice(2);
 
 function isMissingFanoutDir(error: unknown): boolean {
-  return (
-    error instanceof TsgitError &&
-    (error.data.code === 'FILE_NOT_FOUND' || error.data.code === 'NOT_A_DIRECTORY')
-  );
+  const code = errorDataCode(error);
+  return code === 'FILE_NOT_FOUND' || code === 'NOT_A_DIRECTORY';
 }
 
 async function loadFanoutSet(ctx: Context, prefix: string): Promise<Set<string>> {

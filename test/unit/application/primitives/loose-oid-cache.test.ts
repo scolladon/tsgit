@@ -181,6 +181,33 @@ describe('loose-oid-cache', () => {
     });
   });
 
+  describe('Given a fanout readdir that throws an error shaped like TsgitError but from a foreign module graph', () => {
+    describe('When probeLooseOid is called', () => {
+      it('Then it resolves false without throwing (classification is structural, not instanceof)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const foreignError = { data: { code: 'FILE_NOT_FOUND' } };
+        const wrapped = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            readdir: async () => {
+              throw foreignError;
+            },
+          },
+        };
+        const id = 'ff'.repeat(20) as ObjectId;
+        const sut = probeLooseOid;
+
+        // Act
+        const result = await sut(wrapped, id);
+
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+  });
+
   describe('Given invalidateLooseOid called for a prefix that was never probed', () => {
     describe('When probeLooseOid runs afterwards', () => {
       it('Then it still resolves correctly (invalidation of an unknown prefix is a no-op)', async () => {
