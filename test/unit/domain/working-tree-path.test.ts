@@ -199,11 +199,34 @@ describe('validateWorkingTreePath', () => {
     });
   });
 
-  describe('Given a `:` character in a component', () => {
+  describe('Given a leading single-letter drive-letter qualifier (`a:b`)', () => {
     describe('When validated', () => {
-      it('Then rejects (NTFS ADS / drive-letter guard)', () => {
+      it('Then rejects (drive-letter / pathspec-magic-lookalike guard)', () => {
         // Arrange & Act + Assert
         expectReject('a:b');
+      });
+    });
+  });
+
+  describe('Given a bare leading `:` (pathspec-magic lookalike)', () => {
+    describe('When validated', () => {
+      it('Then rejects', () => {
+        // Arrange & Act + Assert
+        expectReject(':foo');
+      });
+    });
+  });
+
+  describe('Given a `:` that is NOT leading (POSIX-legal, git accepts)', () => {
+    describe('When validated', () => {
+      it.each([
+        { label: 'a colon inside the first component', path: 'foo:bar/x' },
+        { label: 'a colon inside a nested component', path: 'dir/C:evil' },
+      ])('Then $label is accepted, not rejected', ({ path }) => {
+        // Arrange & Act + Assert — pinned against git 2.55: `git add` stages
+        // both without complaint. The old guard rejected any `:` in any
+        // component; only a LEADING `:` is a git-parity/drive-letter hazard.
+        expect(validateWorkingTreePath(path)).toBe(path);
       });
     });
   });
@@ -401,7 +424,7 @@ describe('validateWorkingTreePath — widened `.git`-alias matrix', () => {
 
   describe('Given a `.git:$INDEX_ALLOCATION` component', () => {
     describe('When validated', () => {
-      it("Then rejects via the generic `:` guard (rejectComponent's own colon check fires here regardless of the NTFS-stream alias detection — that arm is pinned non-vacuously via isDotGitAlias in the describe block above)", () => {
+      it('Then rejects via isDotGitAlias (the NTFS-stream alias detection), not the leading-colon guard — the `:` here is not leading', () => {
         // Arrange & Act + Assert
         expectReject('a/.git:$INDEX_ALLOCATION/b');
       });

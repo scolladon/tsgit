@@ -19,10 +19,15 @@ const PATH_ENCODER = new TextEncoder();
  * - No `.` or `..` components, no empty components.
  * - No `.git` component, or one of its NTFS (`git~1`, `.git:`-stream) /
  *   HFS+ (ignorable-codepoint) aliases — see `isDotGitAlias`.
+ * - No LEADING `:` (pathspec-magic lookalike) or leading single-letter
+ *   drive-letter qualifier (`C:...`) — a `:` anywhere else in the path is
+ *   POSIX-legal and git-accepted (pinned: `foo:bar/x`), so it is not
+ *   rejected.
  * - Length caps: total path ≤ 4096 bytes; each component ≤ 255 bytes.
  */
 export const validateWorkingTreePath = (input: string): FilePath => {
   rejectInputShape(input);
+  rejectLeadingColon(input);
   const components = input.split('/');
   for (const component of components) {
     rejectComponent(component, input);
@@ -39,10 +44,10 @@ export const validateWorkingTreePath = (input: string): FilePath => {
  * returns named `git~1`, `.git:stream`, or carrying an HFS ignorable
  * codepoint is not a traversal hazard; the walk boundary must surface it
  * exactly as git's own directory walk does (only an exact, case-folded
- * `.git` collapses there — see `isDotGitWalkEntry`). The widened alias/`:`
- * rejection stays exclusive to `validateWorkingTreePath`'s other callers
- * (user pathspec input, tree/index boundaries), where it is the correct,
- * intentional refusal.
+ * `.git` collapses there — see `isDotGitWalkEntry`). The widened alias
+ * rejection, and the leading-colon rejection, stay exclusive to
+ * `validateWorkingTreePath`'s other callers (user pathspec input,
+ * tree/index boundaries), where they are the correct, intentional refusal.
  */
 export const validateWalkedEntryPath = (input: string): FilePath => {
   rejectInputShape(input);
@@ -82,9 +87,24 @@ const rejectTraversalShape = (component: string, original: string): void => {
 const rejectComponent = (component: string, original: string): void => {
   rejectTraversalShape(component, original);
   if (isDotGitAlias(component)) reject(original);
-  // Reject `:` to block NTFS Alternate Data Streams (`.git:$DATA`) and
-  // Windows drive-letter qualifiers (`C:relative`). POSIX paths never need `:`.
-  if (component.includes(':')) reject(original);
+};
+
+// Git treats a LEADING `:` as the start of pathspec magic (`:(icase)foo`,
+// `:!foo`); tsgit does not parse that syntax, so it conservatively refuses
+// rather than silently mis-stage a magic-looking pattern as a literal path.
+// A single-letter prefix (`C:relative`) is refused for the same reason a
+// leading drive-letter qualifier is dangerous: it is what an OS
+// reinterprets as an absolute path, not the repo-relative one the caller
+// meant — and that reinterpretation only happens when the qualifier LEADS
+// the string. A `:` anywhere else in the pathspec (`foo:bar/x`,
+// `dir/C:evil`) is an ordinary POSIX-legal byte — pinned against git 2.55,
+// which stages both without complaint — so it is not rejected. (The
+// `.git:$DATA` NTFS alternate-data-stream disguise is still caught,
+// independently, by `isDotGitAlias`'s own stream-suffix handling above.)
+const LEADING_MAGIC_OR_DRIVE_LETTER = /^[A-Za-z]?:/;
+
+const rejectLeadingColon = (input: string): void => {
+  if (LEADING_MAGIC_OR_DRIVE_LETTER.test(input)) reject(input);
 };
 
 const byteLength = (s: string): number => PATH_ENCODER.encode(s).length;

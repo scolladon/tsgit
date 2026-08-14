@@ -1166,16 +1166,32 @@ describe('add', () => {
 
   describe('Given a regular file whose name contains a colon (POSIX-legal, git accepts)', () => {
     describe('When add({ all: true })', () => {
-      it('Then it is staged (the pathspec-only `:` rule does not apply to walked content)', async () => {
+      it('Then it is staged (walked content was never subject to the pathspec `:` rule)', async () => {
         // Arrange — pinned against git 2.55 on POSIX: `git add -A` stages
-        // `foo:bar/x` without complaint. The `:` rejection in
-        // `validateWorkingTreePath`'s `rejectComponent` guards NTFS
-        // alternate-data-stream syntax and is only correct for user-typed
-        // pathspec text, never for content the walker already found on disk.
+        // `foo:bar/x` without complaint. `validateWalkedEntryPath` (used for
+        // walked content) never carried a `:` rejection at all.
         const ctx = await seedFreshRepo({ 'foo:bar/x': 'x' });
 
         // Act
         const result = await add(ctx, [], { all: true });
+
+        // Assert
+        expect(result.added).toEqual(['foo:bar/x']);
+        const idx = await readIndex(ctx);
+        expect(idx.entries.map((e) => e.path)).toContain('foo:bar/x');
+      });
+    });
+
+    describe('When add([the literal pathspec])', () => {
+      it('Then it is staged too — a mid-path `:` is no longer rejected by validateWorkingTreePath', async () => {
+        // Arrange — before this fix, `add(['foo:bar/x'])` threw
+        // PATHSPEC_OUTSIDE_REPO: `validateWorkingTreePath` rejected any `:`
+        // in any component. Git only treats a LEADING `:` as pathspec
+        // magic; a mid-path `:` is an ordinary POSIX-legal byte it stages.
+        const ctx = await seedFreshRepo({ 'foo:bar/x': 'x' });
+
+        // Act
+        const result = await add(ctx, ['foo:bar/x']);
 
         // Assert
         expect(result.added).toEqual(['foo:bar/x']);

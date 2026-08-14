@@ -506,8 +506,8 @@ const readContent = async (
   // above `readContent`'s only call site) via `validateIndexPath` — the
   // git-faithful `verify_path` rule set. Reading straight off `ctx.fs`
   // (rather than through `internal/working-tree.ts`'s `readFile`, which
-  // layers on the wider pathspec `validateWorkingTreePath` and its `:`
-  // rejection) keeps walked content — e.g. a POSIX-legal `foo:bar/x` — from
-  // being rejected by a rule that only applies to user-typed pathspec text.
+  // layers on the wider `validateWorkingTreePath` — leading-colon and
+  // `.git`-alias rejections meant for user-typed pathspec text) keeps
+  // walked content from being rejected by a pathspec-only rule.
   return ctx.fs.read(joinPath(ctx.layout.workDir, path));
 };
