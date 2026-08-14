@@ -194,6 +194,8 @@ describe.skipIf(!GIT_AVAILABLE)('git-parity containment interop', () => {
       readonly label: string;
       readonly name: string;
       readonly branch: string;
+      /** Extra `-c key=value` args the peer needs to make its verdict deterministic. */
+      readonly peerConfig?: ReadonlyArray<string>;
     }> = [
       { label: 'a `..` entry', name: '..', branch: 'case-dotdot' },
       { label: 'a `.git` entry', name: '.git', branch: 'case-dotgit' },
@@ -202,6 +204,15 @@ describe.skipIf(!GIT_AVAILABLE)('git-parity containment interop', () => {
         label: 'an HFS+ ignorable-codepoint `.git` alias',
         name: `.gi${String.fromCodePoint(0x200c)}t`,
         branch: 'case-hfs',
+        // `core.protectHFS` is the one alias family whose default is
+        // PLATFORM-CONDITIONAL: git defaults it true on macOS and false
+        // everywhere else, so an unpinned peer refuses this name on a darwin
+        // host and accepts it on a Linux runner. `core.protectNTFS` has no
+        // such split (it defaults true everywhere), which is why only this
+        // row needs the flag. Pinning it true makes the comparison test the
+        // guard itself rather than the runner's platform. tsgit applies this
+        // guard unconditionally — see the divergence note in security.md.
+        peerConfig: ['-c', 'core.protectHFS=true'],
       },
     ];
 
@@ -228,12 +239,13 @@ describe.skipIf(!GIT_AVAILABLE)('git-parity containment interop', () => {
       // tsgit repo — a refused checkout leaves state untouched (verified
       // below), but a case that later gets extended to an accepting mode
       // must never observe a sibling case's leftovers.
-      for (const { name, branch } of HOSTILE_NAMES) {
+      for (const { name, branch, peerConfig } of HOSTILE_NAMES) {
         const peerBlob = writeBlobText(peerSrcDir, 'hostile');
         const peerCommit = buildFloatingCommit(peerSrcDir, '100644', name, peerBlob, 'hostile');
         runGit(['-C', peerSrcDir, 'update-ref', `refs/heads/${branch}`, peerCommit]);
         const peerDestDir = path.join(root, `${branch}-peer-dest`);
         const peerCloneResult = tryRunGitWithExit([
+          ...(peerConfig ?? []),
           'clone',
           '-q',
           '--branch',

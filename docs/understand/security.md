@@ -36,6 +36,20 @@ Independent of path containment, every entry name that would become part of an i
 
 The working-tree **walker** (`walkWorkingTree`) applies a narrower rule: it skips only an exact `.git` name, folded by case. An on-disk NTFS/HFS-alias entry (`git~1`, a `.git:`-stream name) is walked like any other path, exactly as git's own directory scan treats it — the wider rejection above applies only once that name would become an index entry.
 
+**One deliberate divergence, in the strict direction.** git gates the HFS+
+ignorable-codepoint spelling behind `core.protectHFS`, whose default is
+*platform-conditional*: true on macOS, false everywhere else. (`core.protectNTFS`,
+by contrast, defaults true on every platform — so the `git~1` and `.git:`-stream
+forms match git exactly.) tsgit applies the HFS guard **unconditionally on every
+platform** and does not read `core.protectHFS`, so on Linux it refuses a name git
+would accept. The reasoning: a repository is portable, the guard exists to stop a
+name that resolves to `.git` on someone *else's* HFS+ volume, and honouring a
+platform-conditional default would make the same repository validate differently on
+different machines. This is the one place the entry-name validator is knowingly
+stricter than the tool it replicates; the cross-tool test pins it with
+`-c core.protectHFS=true` so the comparison exercises the guard rather than the
+runner's platform.
+
 ## Lock files & atomicity
 
 `writeExclusive` (Node: `{ flag: 'wx' }`) provides atomic create-or-fail. Used by:
