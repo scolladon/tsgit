@@ -475,12 +475,12 @@ const unusableEntry = (
 ): UnusablePack => ({ name, layer, data });
 
 /**
- * Node's `readdir` on a missing directory maps to `FILE_NOT_FOUND`;
- * `MemoryFileSystem.readdir` throws `NOT_A_DIRECTORY` for the same
- * missing-directory case — the memory adapter's code for it, not a
- * non-directory `objects/pack` on node (there the gate's own midx `stat`
- * already fails with `NOT_A_DIRECTORY` and denies the read before the
- * listing is ever reached).
+ * Node's `readdir` on a missing directory maps to `FILE_NOT_FOUND`.
+ * `NOT_A_DIRECTORY` covers two distinct real shapes: the memory adapter's
+ * code for a MISSING directory, and node's `ENOTDIR` when `objects/pack` is
+ * itself a regular file. Both mean the same thing here — there are no packs
+ * to list — and canonical git agrees, serving a loose read at exit 0 while
+ * printing `error: unable to open object pack directory: …: Not a directory`.
  *
  * Structural on `data.code`, never `instanceof`: this classifies an error
  * thrown by `ctx.fs`, so in a mixed-module-graph harness (a source-graph
@@ -520,16 +520,17 @@ export function createPackRegistry(ctx: Context): PackRegistry {
     // disposed, so the gate wrapper's own disposal check would be dead
     // weight here. Captured synchronously alongside the listing — not
     // awaited first — so a scan in flight keeps its own consistent
-    // MidxLoadResult, and every Context's first pack access still saves one
-    // sequential round-trip on high-latency adapters. The midx warn now
-    // lives inside the gate (above); the orphan-.idx warn below stays here,
-    // on the deferred side, because git is silent about an orphan .idx on a
-    // loose read — only the midx load denies one.
+    // MidxLoadResult. The midx warn now lives inside the gate (above); the
+    // orphan-.idx warn below stays here, on the deferred side, because git is
+    // silent about an orphan .idx on a loose read — only the midx load denies
+    // one.
     //
-    // The overlap is real only for a consumer that forces the scan with NO
-    // prior read — fsck's health/midxHealth/indexFaults, a bare all(). On the
-    // object-read paths assertLoadable has already settled the gate, so this
-    // arm resolves immediately and the listing is effectively serial there.
+    // The Promise.all overlap now only pays off for a consumer that forces the
+    // scan with NO prior read — fsck's health/midxHealth/indexFaults, a bare
+    // all(). On the object-read paths assertLoadable has already settled the
+    // gate, so this arm resolves immediately and the listing is serial: that
+    // costs a packed cold read the round-trip the two used to share, which is
+    // the accepted price of not listing the directory on a loose hit.
     //
     // No separate `exists(dir)` guard: a missing (or non-directory)
     // `objects/pack` folds to an empty listing right here, inside the same

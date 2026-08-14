@@ -18,6 +18,7 @@ import {
 } from '../../../../../src/application/primitives/validators.js';
 import {
   fileNotFound,
+  notADirectory,
   operationAborted,
   permissionDenied,
   TsgitError,
@@ -652,6 +653,37 @@ describe('midx-source', () => {
           expect(result.faults[0]?.artefact).toBe('multi-pack-index');
           expect(result.faults[0]?.data.code).toBe('PERMISSION_DENIED');
           expect(result.flatFilePresent).toBe(true);
+        });
+      });
+    });
+
+    describe('Given a flat midx whose stat throws NOT_A_DIRECTORY', () => {
+      describe('When loadMidxSet is called', () => {
+        it('Then it is a recorded discard, not a denial — git serves the read for this shape', async () => {
+          // Arrange — what node reports when `objects/pack` is itself a
+          // regular file: the midx path has a non-directory ancestor.
+          const ctx = await buildSeededContext();
+          const dir = packsDir(commonGitDir(ctx));
+          const flatPath = multiPackIndexPath(dir);
+          await writeChain(ctx, dir, [baseSpec()]);
+          const notDir: Context = {
+            ...ctx,
+            fs: {
+              ...ctx.fs,
+              stat: async (path) => {
+                if (path === flatPath) throw notADirectory(path);
+                return ctx.fs.stat(path);
+              },
+            },
+          };
+
+          // Act
+          const result = await loadMidxSet(notDir, dir);
+
+          // Assert
+          expect(result.faults).toHaveLength(1);
+          expect(result.faults[0]?.artefact).toBe('multi-pack-index');
+          expect(result.faults[0]?.data.code).toBe('NOT_A_DIRECTORY');
         });
       });
     });

@@ -258,6 +258,14 @@ describe.skipIf(!GIT_AVAILABLE)(
 
         // Act + Assert
         await expectLooseServed(dir, sut, base.looseOid);
+        // The stderr line is the evidence cited for classifying this shape as a
+        // discard rather than a denial, so pin it rather than quoting it in
+        // prose alone.
+        const diagnostic = tryRunGitWithExit(['-C', dir, 'cat-file', '-p', base.looseOid], {
+          env: runGitEnv(),
+        });
+        expect(diagnostic.stderr).toContain('unable to open object pack directory');
+        expect(diagnostic.stderr).toContain('Not a directory');
       });
     });
   },
