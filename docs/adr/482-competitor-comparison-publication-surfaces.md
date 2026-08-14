@@ -1,6 +1,6 @@
 # 482 — Publish the comparison: README "Why tsgit" slice + performance.md dataset
 
-- **Status:** accepted
+- **Status:** Superseded by [ADR-624](624-readme-links-performance-analysis-no-comparison-table.md) — the README no longer carries the comparison slice; `performance.md` is the single published surface.
 - **Date:** 2026-07-13
 - **Design:** docs/design/competitor-benchmarks.md · **Supersedes/Refines:** none
 
