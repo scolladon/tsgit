@@ -106,15 +106,42 @@ const findComponentRejection = (components: readonly string[]): VerifyPathReject
   return undefined;
 };
 
+// NTFS short-name form for `.gitmodules`: Windows' 8.3 generator only ever
+// emits `GITMOD~1`..`GITMOD~4` for this base name before falling back to a
+// hashed form — pinned against git 2.55 (`update-index --add --cacheinfo
+// 120000,<blob>,gitmod~N>`): `gitmod~1`..`gitmod~4` are refused, `gitmod~5`
+// and above are NOT.
+const GITMOD_NTFS_SHORT_NAME = /^gitmod~[1-4]$/;
+const GITMOD_NTFS_STREAM_PREFIX = '.gitmodules:';
+
+/**
+ * True if `component` is `.gitmodules` or one of its NTFS (`gitmod~1`..
+ * `gitmod~4` short name, `.gitmodules:`-stream) / HFS+ (ignorable-codepoint)
+ * aliases — the same normalisation {@link matchAliasPart} runs for `.git`,
+ * re-targeted at `.gitmodules`. Unlike {@link matchAliasComponent}, this
+ * skips the backslash-split: a component reaching `verifyPath` has already
+ * passed `validateIndexPath`'s unconditional backslash rejection, so a
+ * `.gitmodules`-alias component can never itself carry an embedded `\`.
+ */
+const matchGitmodulesAliasPart = (component: string): boolean => {
+  const normalized = normalizeAliasCandidate(component);
+  if (normalized === GITMODULES) return true;
+  if (GITMOD_NTFS_SHORT_NAME.test(normalized)) return true;
+  if (normalized.startsWith(GITMOD_NTFS_STREAM_PREFIX)) return true;
+  if (!hasIgnorableCodepoint(component)) return false;
+  return normalizeAliasCandidate(stripIgnorableCodepoints(component)) === GITMODULES;
+};
+
 // CVE-2018-11235 hardening: an entry whose mode is a symlink must not carry
-// a `.gitmodules` path component ANYWHERE — not only as the leaf. Verified
-// against git (`update-index --add --cacheinfo 120000,<blob>,.gitmodules/foo`
-// → `error: Invalid path`): the check runs once per path component, gated on
-// the entry's own mode, exactly like the `.git`-alias scan above — a
-// `.gitmodules` directory holding an unrelated symlinked leaf is refused
-// exactly as a symlinked `.gitmodules` leaf itself is.
+// a `.gitmodules` path component (or one of its NTFS/HFS-obscured aliases)
+// ANYWHERE — not only as the leaf. Verified against git (`update-index --add
+// --cacheinfo 120000,<blob>,.gitmodules/foo` → `error: Invalid path`): the
+// check runs once per path component, gated on the entry's own mode, exactly
+// like the `.git`-alias scan above — a `.gitmodules` directory holding an
+// unrelated symlinked leaf is refused exactly as a symlinked `.gitmodules`
+// leaf itself is.
 const hasGitmodulesSymlinkComponent = (components: readonly string[], mode: FileMode): boolean =>
-  mode === FILE_MODE.SYMLINK && components.some((component) => component === GITMODULES);
+  mode === FILE_MODE.SYMLINK && components.some(matchGitmodulesAliasPart);
 
 /**
  * Mirrors git's `verify_path(path, mode)`: a total function over any string,

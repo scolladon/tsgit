@@ -326,6 +326,75 @@ describe('verifyPath', () => {
           mode: FILE_MODE.SYMLINK,
           expected: undefined,
         },
+
+        // --- .gitmodules alias normalisation: NTFS/HFS widened matrix, pinned
+        // against git 2.55 (`update-index --add --cacheinfo 120000,<blob>,<name>`) ---
+        {
+          label: "'.GITMODULES' rejects at 120000 (case-folded alias): gitmodules-not-regular",
+          path: '.GITMODULES',
+          mode: FILE_MODE.SYMLINK,
+          expected: 'gitmodules-not-regular',
+        },
+        {
+          label: "'.gitmodules.' rejects at 120000 (trailing-dot alias): gitmodules-not-regular",
+          path: '.gitmodules.',
+          mode: FILE_MODE.SYMLINK,
+          expected: 'gitmodules-not-regular',
+        },
+        {
+          label: "'.gitmodules ' rejects at 120000 (trailing-space alias): gitmodules-not-regular",
+          path: '.gitmodules ',
+          mode: FILE_MODE.SYMLINK,
+          expected: 'gitmodules-not-regular',
+        },
+        {
+          label: "'gitmod~1' rejects at 120000 (NTFS short name): gitmodules-not-regular",
+          path: 'gitmod~1',
+          mode: FILE_MODE.SYMLINK,
+          expected: 'gitmodules-not-regular',
+        },
+        {
+          label:
+            "'gitmod~4' rejects at 120000 (NTFS short name, upper bound): gitmodules-not-regular",
+          path: 'gitmod~4',
+          mode: FILE_MODE.SYMLINK,
+          expected: 'gitmodules-not-regular',
+        },
+        {
+          label:
+            "'gitmod~5' accepts at 120000 (git's NTFS short-name generator never emits ~5+ for this base — not over-rejected)",
+          path: 'gitmod~5',
+          mode: FILE_MODE.SYMLINK,
+          expected: undefined,
+        },
+        {
+          label:
+            "'.gitmod<ZWNJ>ules' rejects at 120000 (HFS ignorable codepoint): gitmodules-not-regular",
+          path: `.gitmod${ZWNJ}ules`,
+          mode: FILE_MODE.SYMLINK,
+          expected: 'gitmodules-not-regular',
+        },
+        {
+          label:
+            "'.gitmodules:$DATA' rejects at 120000 (NTFS alternate data stream): gitmodules-not-regular",
+          path: '.gitmodules:$DATA',
+          mode: FILE_MODE.SYMLINK,
+          expected: 'gitmodules-not-regular',
+        },
+        {
+          label:
+            "'sub/.GITMODULES' rejects at 120000 (alias at a non-leaf component): gitmodules-not-regular",
+          path: 'sub/.GITMODULES',
+          mode: FILE_MODE.SYMLINK,
+          expected: 'gitmodules-not-regular',
+        },
+        {
+          label:
+            "'.GITMODULES' accepts at 100644 (regular) — the widened alias check is symlink-only",
+          path: '.GITMODULES',
+          mode: FILE_MODE.REGULAR,
+          expected: undefined,
+        },
         {
           label: "'..' named as a 160000 gitlink still rejects: dotdot-segment",
           path: '..',
