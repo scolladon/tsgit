@@ -1308,9 +1308,12 @@ describe('resolveRead — lstat() lexical pre-check (DI)', () => {
     describe('When resolveRead runs', () => {
       it('Then PERMISSION_DENIED fires BEFORE realpath(dirname)', async () => {
         // Arrange — `lstat()` never realpaths its parent at all: the lexical
-        // containment check fires and throws permissionDenied before any I/O
-        // on the leaf's parent. We pin the absence of the leaf-parent
-        // realpath call as the regression signal.
+        // containment check (`resolveRead`) is synchronous and syscall-free,
+        // so it throws permissionDenied before any I/O on the leaf's parent
+        // could even be reached. That absence is documented, not pinned by
+        // a call-count assertion below: `resolveRead` has no code path that
+        // ever calls `realpath('/elsewhere')`, so such an assertion could
+        // never fail and would not be a regression signal.
         const rootDir = '/root';
         const outside = '/elsewhere/leaf.bin';
         const realpathSpy = vi.fn().mockImplementation(async (input: string) => input);
@@ -1327,14 +1330,9 @@ describe('resolveRead — lstat() lexical pre-check (DI)', () => {
           caught = err;
         }
 
-        // Assert — PERMISSION_DENIED + only the canonical-root realpath
-        // fired (no realpath for `/elsewhere`).
+        // Assert — PERMISSION_DENIED is the load-bearing observable here.
         expect(caught).toBeInstanceOf(TsgitError);
         expect((caught as InstanceType<typeof TsgitError>).data.code).toBe('PERMISSION_DENIED');
-        const dirnameCalls = realpathSpy.mock.calls.filter(
-          ([arg]: readonly unknown[]) => arg === '/elsewhere',
-        );
-        expect(dirnameCalls.length).toBe(0);
       });
     });
   });
@@ -1720,6 +1718,11 @@ describe('NodeFileSystem — write guard per-call containment post-check (DI)', 
           // the one-time root canonicalisation calls `realpath`. A mocked
           // escape via the leaf's OWN realpath (as the old 'read' mode's
           // post-check consulted) therefore has no bearing on the outcome.
+          // This is documented here, not pinned by a call-count assertion:
+          // `resolveRead` has no code path that ever calls `realpath(leaf)`,
+          // so such an assertion could never fail and would not be a
+          // regression signal — the two successful reads below are the
+          // load-bearing observable.
           const realpathSpy = vi.fn().mockImplementation(async (input: string) => input);
           const fsOps = fakeFsOps({
             realpath: realpathSpy,
@@ -1734,10 +1737,6 @@ describe('NodeFileSystem — write guard per-call containment post-check (DI)', 
           // Assert
           expect(first).toEqual(new Uint8Array(Buffer.from('x')));
           expect(second).toEqual(new Uint8Array(Buffer.from('x')));
-          const leafCalls = realpathSpy.mock.calls.filter(
-            ([arg]: readonly unknown[]) => arg === leaf,
-          );
-          expect(leafCalls.length).toBe(0);
         });
       });
     },
@@ -2488,24 +2487,30 @@ describe('NodeFileSystem.rmRecursive — option-shape pin (DI)', () => {
 
   describe('Given rmRecursive existence probe', () => {
     describe('When the leaf is verified', () => {
-      it('Then the inner lstat does NOT re-enter the write guard (no third realpath(rootDir) call)', async () => {
-        // Arrange — pins: the existence probe was calling
-        // `this.lstat(real)` which re-entered the write guard and produced
-        // an extra `realpath(dirname)` (= rootDir for a top-level target)
-        // round-trip. After the fix, the probe calls
-        // `runFs(() => this.fsOps.lstat(real), path)` directly.
+      it('Then the inner probe calls `fsOps.lstat` directly, not the public `lstat` wrapper', async () => {
+        // Arrange — pins: the existence probe calls
+        // `runFs(() => this.fsOps.lstat(real), path)` directly rather than
+        // re-entering the public `this.lstat(real)` wrapper.
         //
-        // Pre-fix call count for realpath(rootDir): 3
-        //  - canonical-root resolution
-        //  - resolveWrite's own dirname resolution
-        //  - this.lstat(real) → resolveWrite's dirname resolution (re-entry)
-        // Post-fix count: 2 (the re-entry is gone).
+        // NOTE (retired oracle): this test used to count `realpath(rootDir)`
+        // calls, on the theory that re-entering `this.lstat` would re-run
+        // the write guard and add a round-trip. That stopped being true once
+        // `lstat` (a read surface) was moved onto `resolveRead` — a
+        // synchronous, syscall-free containment check — so a regression back
+        // to `this.lstat(real)` would add ZERO extra `realpath` calls and the
+        // old assertion could never fail again. The observable that still
+        // moves is `fsOps.lstat`'s own call shape: the public `lstat`
+        // wrapper always passes a second `{ bigint: true }` argument (for
+        // `mapStat`); the direct probe never does. A regression back to
+        // `this.lstat(real)` shows up here as a 3rd call carrying that
+        // second argument (the existence probe PLUS `removeTree`'s own
+        // unconditional leaf `lstat` normally total exactly 2 bare calls).
         const rootDir = '/root';
         const target = '/root/file.txt';
-        const realpathSpy = vi.fn().mockImplementation(async (input: string) => input);
+        const lstatSpy = vi.fn().mockResolvedValue(fileStat);
         const fsOps = fakeFsOps({
-          realpath: realpathSpy,
-          lstat: vi.fn().mockResolvedValue(fileStat),
+          realpath: vi.fn().mockImplementation(async (input: string) => input),
+          lstat: lstatSpy,
           rm: vi.fn().mockResolvedValue(undefined),
         });
         const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
@@ -2514,10 +2519,7 @@ describe('NodeFileSystem.rmRecursive — option-shape pin (DI)', () => {
         await sut.rmRecursive(target);
 
         // Assert
-        const rootCalls = realpathSpy.mock.calls.filter(
-          ([arg]: readonly unknown[]) => arg === rootDir,
-        );
-        expect(rootCalls.length).toBe(2);
+        expect(lstatSpy.mock.calls).toEqual([[target], [target]]);
       });
     });
   });
