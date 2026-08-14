@@ -70,14 +70,6 @@ export const materializeFile = async (
 };
 
 /**
- * Read the working-tree file at `path`. Validates the path first.
- */
-export const readFile = async (ctx: Context, rawPath: string): Promise<Uint8Array> => {
-  const path = validatePath(rawPath);
-  return ctx.fs.read(repoPath(ctx, path));
-};
-
-/**
  * Remove the working-tree file at `path`. Refuses to remove a directory or a
  * missing file (both treated as a divergence from what we expected to be there).
  * Throws `CHECKOUT_OVERWRITE_DIRTY` rather than blindly mutating.
