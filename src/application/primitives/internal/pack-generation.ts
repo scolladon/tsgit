@@ -47,7 +47,7 @@ const EMPTY_INDEXED: IndexedPacks = Object.freeze({
   indexFaults: NO_INDEX_FAULTS,
 });
 
-export const EMPTY_MIDX_LOAD: MidxLoadResult = Object.freeze({
+const EMPTY_MIDX_LOAD: MidxLoadResult = Object.freeze({
   set: undefined,
   faults: Object.freeze([]),
   flatFilePresent: false,
@@ -61,9 +61,10 @@ export interface PackGeneration {
   /** The multi-pack-index load this generation's scan captured from the
    *  store gate it awaited — the same `MidxLoadResult` `assertLoadable`
    *  observed for this generation, so no consumer can ever pair one
-   *  generation's midx with another's packs. Has no reader beyond
-   *  `assertLoadable` propagating its rejection: `midx` below is the bound,
-   *  lookup-facing view. */
+   *  generation's midx with another's packs. Read by `computeMidxHealth`
+   *  for the generation's fault set and flat-file presence; `midx` below is
+   *  the bound, lookup-facing view. `assertLoadable` does NOT read this
+   *  field — it awaits the same store gate this was captured from. */
   readonly midxLoad: MidxLoadResult;
   /** `midxLoad.set` bound to this generation's own `packs`, or `undefined`
    *  exactly when `midxLoad.set` is. The one field `lookup` reads to decide

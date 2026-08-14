@@ -9153,23 +9153,15 @@
 										},
 										{
 											"id": 6338,
-											"name": "resolvedRoots",
+											"name": "rootsArePreResolved",
 											"variant": "param",
 											"kind": 32768,
-											"flags": {
-												"isOptional": true
-											},
+											"flags": {},
 											"type": {
-												"type": "typeOperator",
-												"operator": "readonly",
-												"target": {
-													"type": "array",
-													"elementType": {
-														"type": "intrinsic",
-														"name": "string"
-													}
-												}
-											}
+												"type": "intrinsic",
+												"name": "boolean"
+											},
+											"defaultValue": "false"
 										}
 									],
 									"type": {
@@ -183094,7 +183086,7 @@
 		"6338": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/adapters/node/node-file-system.ts",
-			"qualifiedName": "resolvedRoots"
+			"qualifiedName": "rootsArePreResolved"
 		},
 		"6356": {
 			"packageName": "@scolladon/tsgit",

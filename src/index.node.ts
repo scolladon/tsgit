@@ -72,12 +72,13 @@ export const openRepository = async (opts: OpenNodeRepositoryOptions = {}): Prom
   // filesystem), and this adapter's realpath containment is the ONLY
   // symlink-aware gate — the facade's multi-root validator above it is purely
   // lexical, so a symlink planted inside a root would read and write through
-  // it into the ancestor. Handing down `roots` as the pre-resolved form too
-  // (when `canonical`) lets the adapter skip re-realpathing them on its own
-  // first call — the containment check itself is unchanged either way.
+  // it into the ancestor. Telling the adapter these roots are already resolved
+  // (when `canonical`) lets it skip re-realpathing them on its own first call —
+  // the containment check itself is unchanged either way, and the flag can only
+  // ever skip recomputing the SAME prefixes, never substitute different ones.
   // `undefined` for the 3rd (`fsOps`) argument takes the constructor's own
   // `realFsOps` default; this module never imports it directly.
-  const fs = new NodeFileSystem(roots, nativePolicy, undefined, canonical ? roots : undefined);
+  const fs = new NodeFileSystem(roots, nativePolicy, undefined, canonical);
   const hash = new NodeHashService();
   const compressor = new NodeCompressor();
   const transport = new NodeHttpTransport({

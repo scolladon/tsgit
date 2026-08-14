@@ -971,7 +971,7 @@ describe('streamBlob', () => {
   });
 
   describe('Given a cold Context and a loose blob', () => {
-    describe('When openBlobSource opens it', () => {
+    describe('When streamBlob opens it', () => {
       it('Then the ledger matches readObject: no objects/pack listing, no .idx touch', async () => {
         // Arrange
         const blob: Blob = {

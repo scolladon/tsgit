@@ -26,7 +26,7 @@ import {
   type LoadedMidx,
   type MidxHealth,
 } from './internal/midx-binding.js';
-import { loadMidxSet, type MidxLoadResult } from './internal/midx-source.js';
+import { errorDataCode, loadMidxSet, type MidxLoadResult } from './internal/midx-source.js';
 import {
   type ArtefactLoad,
   loadBitmapBytes,
@@ -34,7 +34,6 @@ import {
   midxBitmapName,
 } from './internal/pack-artefact-source.js';
 import {
-  EMPTY_MIDX_LOAD,
   emptyGeneration,
   NO_PACKS,
   type PackGeneration,
@@ -208,8 +207,10 @@ export interface PackRegistry {
    * and defeat the point of loading indexes lazily.
    */
   assertLoadable(): Promise<void>;
-  /** Drop the cached `.idx` scan so the next `all`/`lookup` re-scans the
-   *  pack directory — used after a lazy-fetch writes a new pack. */
+  /** Drop BOTH the cached multi-pack-index gate and the `.idx` scan, so the
+   *  next read re-probes the multi-pack-index and the next `all`/`lookup`
+   *  re-lists the pack directory — used after a lazy-fetch writes a new pack,
+   *  which may ship a new midx as well as new packs. */
   refresh(): void;
   /** Close every loaded pack's persistent handle. Idempotent; a registry
    *  that never scanned the pack directory disposes without touching `fs`. */
@@ -476,16 +477,21 @@ const unusableEntry = (
 /**
  * Node's `readdir` on a missing directory maps to `FILE_NOT_FOUND`;
  * `MemoryFileSystem.readdir` throws `NOT_A_DIRECTORY` for the same
- * missing-directory case. Mirrors `internal/loose-oid-cache.ts`'s
- * `isMissingFanoutDir` and `internal/shallow-set.ts`'s `isAbsentShallowFile`
- * — the same two-code absence shape, reproduced here rather than imported,
- * because each of those readers owns its own artefact's absence rule.
+ * missing-directory case — the memory adapter's code for it, not a
+ * non-directory `objects/pack` on node (there the gate's own midx `stat`
+ * already fails with `NOT_A_DIRECTORY` and denies the read before the
+ * listing is ever reached).
+ *
+ * Structural on `data.code`, never `instanceof`: this classifies an error
+ * thrown by `ctx.fs`, so in a mixed-module-graph harness (a source-graph
+ * registry over a dist-bundle Context) the adapter's `TsgitError` is a
+ * different class identity than this module's — the same hazard
+ * `internal/midx-source.ts` documents for the gate's own probes, which is
+ * why both now share `errorDataCode`.
  */
 function isMissingPackDir(error: unknown): boolean {
-  return (
-    error instanceof TsgitError &&
-    (error.data.code === 'FILE_NOT_FOUND' || error.data.code === 'NOT_A_DIRECTORY')
-  );
+  const code = errorDataCode(error);
+  return code === 'FILE_NOT_FOUND' || code === 'NOT_A_DIRECTORY';
 }
 
 export function createPackRegistry(ctx: Context): PackRegistry {
@@ -519,6 +525,11 @@ export function createPackRegistry(ctx: Context): PackRegistry {
     // lives inside the gate (above); the orphan-.idx warn below stays here,
     // on the deferred side, because git is silent about an orphan .idx on a
     // loose read — only the midx load denies one.
+    //
+    // The overlap is real only for a consumer that forces the scan with NO
+    // prior read — fsck's health/midxHealth/indexFaults, a bare all(). On the
+    // object-read paths assertLoadable has already settled the gate, so this
+    // arm resolves immediately and the listing is effectively serial there.
     //
     // No separate `exists(dir)` guard: a missing (or non-directory)
     // `objects/pack` folds to an empty listing right here, inside the same
@@ -612,8 +623,8 @@ export function createPackRegistry(ctx: Context): PackRegistry {
   // returning its settled (or still in-flight) result; an idle gate — never
   // forced, or self-cleared by its own rejection — resolves to the empty
   // load instead of starting one.
-  const currentGate = (): Promise<MidxLoadResult> =>
-    disposed ? (storeGate.peek() ?? Promise.resolve(EMPTY_MIDX_LOAD)) : storeGate.get();
+  const currentGate = (): Promise<unknown> =>
+    disposed ? (storeGate.peek() ?? Promise.resolve()) : storeGate.get();
   const allPacks = async (): Promise<ReadonlyArray<RegisteredPack>> => {
     const generation = await currentGeneration();
     return (await generation.indexed.get()).packList;

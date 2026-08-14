@@ -192,7 +192,7 @@ describe.skipIf(!GIT_AVAILABLE)(
 
     describe('Given the pack directory made unreadable via chmod 000 (row C4/E5 — the divergence closure), When both tools read the loose object', () => {
       it.skipIf(os.userInfo().uid === 0 || process.platform === 'win32')(
-        'Then git exits 0 with content and tsgit returns the same blob bytes — fails on main, passes here',
+        'Then git exits 0 with content and tsgit returns the same blob bytes',
         async () => {
           // Arrange
           const dir = await copyRow('c4-e5');
@@ -238,6 +238,22 @@ describe.skipIf(!GIT_AVAILABLE)(
         // Arrange
         const dir = await copyRow('e6');
         await rm(path.join(dir, '.git', 'objects', 'pack'), { recursive: true, force: true });
+        const sut = trackedNodeContext(dir);
+
+        // Act + Assert
+        await expectLooseServed(dir, sut, base.looseOid);
+      });
+    });
+
+    describe('Given the pack directory replaced by a regular file (row E7), When both tools read the loose object', () => {
+      it('Then git exits 0 and tsgit serves the same bytes', async () => {
+        // Arrange — git prints `error: unable to open object pack directory:
+        // …: Not a directory` and still serves the loose object at exit 0. The
+        // store setup it dies on is the multi-pack-index, never the listing.
+        const dir = await copyRow('e7');
+        const packDir = path.join(dir, '.git', 'objects', 'pack');
+        await rm(packDir, { recursive: true, force: true });
+        await writeFile(packDir, 'not a directory');
         const sut = trackedNodeContext(dir);
 
         // Act + Assert

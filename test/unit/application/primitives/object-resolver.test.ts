@@ -866,6 +866,14 @@ describe('object-resolver', () => {
         const { serializeObject } = await import('../../../../src/domain/objects/index.js');
         const id = (await ctx.hash.hashHex(serializeObject(blob, ctx.hashConfig))) as ObjectId;
         const packDir = `${ctx.layout.gitDir}/objects/pack`;
+        // The seeded context holds loose objects only, and the memory adapter
+        // materialises a directory only when something is written into it — so
+        // without this `mkdir` the pack dir never exists, the stub below is
+        // never reached, and the test would pass whatever the gate does.
+        // Creating it is what gives the assertion teeth: under an eager gate
+        // the scan lists this directory, the stub rejects, and the loose read
+        // is denied.
+        await ctx.fs.mkdir(packDir);
         const stubCtx: Context = {
           ...ctx,
           fs: {

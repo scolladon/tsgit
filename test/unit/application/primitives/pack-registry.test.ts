@@ -182,6 +182,41 @@ describe('pack-registry', () => {
     });
   });
 
+  describe('Given a pack directory whose readdir rejects with a plain Error carrying no data.code', () => {
+    describe('When all() is called', () => {
+      it('Then that error propagates unchanged', async () => {
+        // Arrange — the absence probe classifies structurally on `data.code`,
+        // so a fault with no such shape is not absence and must surface.
+        const ctx = await buildSeededContext();
+        const dir = `${ctx.layout.gitDir}/objects/pack`;
+        await ctx.fs.mkdir(dir);
+        const raw = new Error('readdir exploded');
+        const stubCtx: Context = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            readdir: async (path: string) => {
+              if (path === dir) throw raw;
+              return ctx.fs.readdir(path);
+            },
+          },
+        };
+        const sut = createPackRegistry(stubCtx);
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut.all();
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBe(raw);
+      });
+    });
+  });
+
   describe('Given a pack directory that exists but whose readdir rejects with PERMISSION_DENIED', () => {
     describe('When all() is called', () => {
       it('Then it rejects with PERMISSION_DENIED', async () => {
@@ -241,7 +276,6 @@ describe('pack-registry', () => {
           ...ctx,
           fs: {
             ...ctx.fs,
-            exists: async () => true,
             readdir: async (): Promise<ReadonlyArray<DirEntry>> => [
               dirEntry(badName),
               dirEntry(`${badName.slice(0, -'.idx'.length)}.pack`),
@@ -291,7 +325,6 @@ describe('pack-registry', () => {
           ...ctx,
           fs: {
             ...ctx.fs,
-            exists: async () => true,
             readdir: async (): Promise<ReadonlyArray<DirEntry>> => [
               dirEntry(spacedName),
               dirEntry('pack sp.pack'),
@@ -340,8 +373,6 @@ describe('pack-registry', () => {
           logger: { warn },
           fs: {
             ...ctx.fs,
-            exists: async (path: string) =>
-              path.endsWith('/objects/pack') ? true : ctx.fs.exists(path),
             readdir: async () => [
               { name: 'pack-bomb.idx', isFile: true, isDirectory: false, isSymbolicLink: false },
               { name: 'pack-bomb.pack', isFile: true, isDirectory: false, isSymbolicLink: false },
@@ -386,7 +417,6 @@ describe('pack-registry', () => {
           ...ctx,
           fs: {
             ...ctx.fs,
-            exists: async () => true,
             readdir: async (): Promise<ReadonlyArray<DirEntry>> => [],
           },
         });
@@ -409,7 +439,6 @@ describe('pack-registry', () => {
           ...ctx,
           fs: {
             ...ctx.fs,
-            exists: async () => true,
             readdir: async (): Promise<ReadonlyArray<DirEntry>> => [],
           },
         });
@@ -439,8 +468,6 @@ describe('pack-registry', () => {
           logger: { warn },
           fs: {
             ...ctx.fs,
-            exists: async (path: string) =>
-              path.endsWith('/objects/pack') ? true : ctx.fs.exists(path),
             readdir: async () => [
               { name: 'pack-toctou.idx', isFile: true, isDirectory: false, isSymbolicLink: false },
               { name: 'pack-toctou.pack', isFile: true, isDirectory: false, isSymbolicLink: false },
@@ -959,7 +986,6 @@ describe('PackRegistry — lazy pack-index loading', () => {
           ...ctx,
           fs: {
             ...ctx.fs,
-            exists: async () => true,
             readdir: async () => [
               {
                 name: 'pack-lazy-bomb.idx',
@@ -1455,7 +1481,6 @@ describe('PackRegistry.health — per-pack accessibility', () => {
           ...ctx,
           fs: {
             ...ctx.fs,
-            exists: async () => true,
             readdir: async () => [
               {
                 name: 'pack-health-oversize.idx',
