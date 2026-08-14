@@ -53,7 +53,7 @@ import {
   isSkippablePackFault,
   packBaseName,
 } from './internal/pack-shared.js';
-import { createPromiseMemo } from './internal/promise-memo.js';
+import { createPromiseMemo, type PromiseMemo } from './internal/promise-memo.js';
 import { commonGitDir, packsDir } from './path-layout.js';
 import { exceedsMaxPackIdxBytes, REASON_PACK_IDX_EXCEEDS_MAX } from './validators.js';
 
@@ -494,13 +494,13 @@ function isMissingPackDir(error: unknown): boolean {
   return code === 'FILE_NOT_FOUND' || code === 'NOT_A_DIRECTORY';
 }
 
-export function createPackRegistry(ctx: Context): PackRegistry {
-  // git dies during object-store setup ahead of every read, and the ONLY
-  // thing it dies on is a structurally self-inconsistent multi-pack-index —
-  // the directory listing and pack construction below are invisible to a
-  // successful loose read's outcome. So the gate is exactly the midx load,
-  // and its Tier-B discard diagnostic belongs here too: git prints that one
-  // on a loose read.
+// git dies during object-store setup ahead of every read, and the ONLY
+// thing it dies on is a structurally self-inconsistent multi-pack-index —
+// the directory listing and pack construction below are invisible to a
+// successful loose read's outcome. So the gate is exactly the midx load,
+// and its Tier-B discard diagnostic belongs here too: git prints that one
+// on a loose read.
+function createStoreGate(ctx: Context): PromiseMemo<MidxLoadResult> {
   const loadStoreGate = async (): Promise<MidxLoadResult> => {
     const midxLoad = await loadMidxSet(ctx, packsDir(commonGitDir(ctx)));
     for (const fault of midxLoad.faults) {
@@ -511,7 +511,11 @@ export function createPackRegistry(ctx: Context): PackRegistry {
     }
     return midxLoad;
   };
-  const storeGate = createPromiseMemo(loadStoreGate);
+  return createPromiseMemo(loadStoreGate);
+}
+
+export function createPackRegistry(ctx: Context): PackRegistry {
+  const storeGate = createStoreGate(ctx);
 
   const scanPacks = async (): Promise<PackGeneration> => {
     const dir = packsDir(commonGitDir(ctx));
