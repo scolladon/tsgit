@@ -24,8 +24,6 @@ import { invalidIndexEntry } from './error.js';
  */
 export const NO_PARSER_OFFSET = -1 as const;
 
-const UNSAFE_SEGMENTS: ReadonlySet<string> = new Set(['', '.', '..']);
-
 // Bidirectional / isolate Unicode controls per Unicode TR9 + RFC 9839.
 // Allowing these in index paths is a known social-engineering vector:
 // U+202E (right-to-left override) can disguise `evil.exe` as
@@ -53,10 +51,10 @@ const reasonFor = (segment: string): string => {
   return "'..' segment rejected";
 };
 
-// verifyPath's shape/absolute families are unreachable here — the checks
-// above already throw for them — but the table stays total over
-// VerifyPathRejection so the compiler enforces a distinct string for every
-// alias/gitmodules family verifyPath can still return at this call site.
+// verifyPath owns every shape (absolute/empty/dot/dotdot), alias, and
+// gitmodules family reachable through validateIndexPath — the table stays
+// total over VerifyPathRejection so the compiler enforces a distinct string
+// for every reason verifyPath can return at this call site.
 const VERIFY_PATH_REASON: Record<VerifyPathRejection, string> = {
   'absolute-path': 'absolute path rejected',
   'empty-segment': reasonFor(''),
@@ -92,18 +90,17 @@ const unsafeReason = (path: string): string | undefined => {
  * Rejection rules (every check at the input boundary so downstream
  * consumers can trust the branded `FilePath` value):
  *
- * - Leading `/` (absolute path).
- * - `..`, `.`, or empty segments.
  * - Backslash (`\`) anywhere — Windows separator that would otherwise
- *  produce post-normalisation `..` traversals that the segment check
+ *  produce post-normalisation `..` traversals that the shape check
  *  misses.
  * - C0/C1 control characters and BIDI / isolate Unicode controls —
  *  defends against terminal-rendering attacks (U+202E etc.).
- * - `.git` and its NTFS (`git~1`, `.git:`-stream) / HFS+
- *  (ignorable-codepoint) aliases, mirroring git's `verify_path` — see
- *  `verifyPath` in `../path/verify-path.js`.
- * - A `.gitmodules` leaf entry whose `mode` is a symlink (CVE-2018-11235
- *  hardening).
+ * - Leading `/` (absolute path); `..`, `.`, or empty segments; `.git`
+ *  and its NTFS (`git~1`, `.git:`-stream) / HFS+ (ignorable-codepoint)
+ *  aliases; and a `.gitmodules` component whose entry `mode` is a
+ *  symlink (CVE-2018-11235 hardening) — all delegated to a single,
+ *  git-faithful, first-component-wins pass over the path: `verifyPath`
+ *  in `../path/verify-path.js`.
  *
  * The error `reason` deliberately does NOT echo the offending path
  * verbatim. Index entries can carry attacker-supplied paths up to
@@ -112,17 +109,9 @@ const unsafeReason = (path: string): string | undefined => {
  * untrusted content.
  */
 export const validateIndexPath = (path: string, offset: number, mode: FileMode): void => {
-  if (path.startsWith('/')) {
-    throw invalidIndexEntry(offset, 'absolute path rejected');
-  }
   const reason = unsafeReason(path);
   if (reason !== undefined) {
     throw invalidIndexEntry(offset, reason);
-  }
-  for (const segment of path.split('/')) {
-    if (UNSAFE_SEGMENTS.has(segment)) {
-      throw invalidIndexEntry(offset, reasonFor(segment));
-    }
   }
   const rejection = verifyPath(path, mode);
   if (rejection !== undefined) {

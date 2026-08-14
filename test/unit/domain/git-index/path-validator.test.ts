@@ -164,6 +164,29 @@ describe('validateIndexPath', () => {
       });
     });
   });
+
+  describe('Given a path with an alias component earlier than a shape violation', () => {
+    describe('When validated', () => {
+      it("Then it rejects on the earlier '.git' alias, not the later '..' segment", () => {
+        // Arrange — left-to-right, first-component-wins: '.git' at index 0 must
+        // win over the '..' at index 1, mirroring git's single incremental
+        // left-to-right walk over verify_path.
+        const path = '.git/../evil';
+
+        // Act
+        const caught = catchError(() => validateIndexPath(path, 0, FILE_MODE.REGULAR));
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data;
+        expect(data).toEqual({
+          code: 'INVALID_INDEX_ENTRY',
+          offset: 0,
+          reason: "'.git' component rejected",
+        });
+      });
+    });
+  });
 });
 
 describe('NO_PARSER_OFFSET', () => {
