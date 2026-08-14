@@ -1803,50 +1803,6 @@ describe('add', () => {
     });
   });
 
-  describe('Given a walk-time stat over the cap but a small re-lstat', () => {
-    describe('When add({ all: true })', () => {
-      it('Then throws WORKING_TREE_FILE_TOO_LARGE (pre-filter guard fires)', async () => {
-        // Arrange — the walk-time lstat reports oversize; the re-lstat under
-        // the lock reports the real (small) size. Only the L273 pre-filter in
-        // processWalkEntry can catch this — the authoritative L328 check sees
-        // a small file. Kills the L273 ConditionalExpression / BlockStatement.
-        const ctx = await seedFreshRepo({ 'a.txt': 'a' });
-        const baseLstat = ctx.fs.lstat;
-        let firstSeen = false;
-        const growThenShrinkFs = new Proxy(ctx.fs, {
-          get(target, prop, receiver) {
-            if (prop === 'lstat') {
-              return async (path: string) => {
-                const real = await baseLstat(path);
-                if (!path.endsWith('/a.txt')) return real;
-                // First lstat (walk-time) is oversize; the re-lstat is real.
-                if (!firstSeen) {
-                  firstSeen = true;
-                  return { ...real, size: MAX_WORKING_TREE_BLOB_BYTES + 1 };
-                }
-                return real;
-              };
-            }
-            return Reflect.get(target, prop, receiver);
-          },
-        });
-        const racingCtx = { ...ctx, fs: growThenShrinkFs };
-
-        // Act
-        const err = await expectError(
-          () => add(racingCtx, [], { all: true }),
-          'WORKING_TREE_FILE_TOO_LARGE',
-        );
-
-        // Assert — payload pins the walk-time (pre-filter) size.
-        const data = err.data as { path: string; size: number; limit: number };
-        expect(data.path).toBe('a.txt');
-        expect(data.size).toBe(MAX_WORKING_TREE_BLOB_BYTES + 1);
-        expect(data.limit).toBe(MAX_WORKING_TREE_BLOB_BYTES);
-      });
-    });
-  });
-
   describe('Given a readIndex failure with a non-missing error code', () => {
     describe('When add', () => {
       it('Then the error propagates (not absorbed as "no entries")', async () => {

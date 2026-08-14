@@ -384,6 +384,33 @@ describe('createLeadingPathScanner', () => {
     });
   });
 
+  describe('Given a shared scanner whose first write materialises a prefix previously classified missing', () => {
+    describe('When unlinkSymlinkedLeadingComponent runs for a deeper path after that write', () => {
+      it('Then the stale missing verdict does not block the walk — the deeper symlink is still unlinked', async () => {
+        // Arrange — mirrors write-working-tree-file.ts's real sequence at
+        // each write call site: unlinkSymlinkedLeadingComponent runs BEFORE
+        // the write, and the write itself (ctx.fs.symlink here) auto-creates
+        // missing parent directories per the FileSystem port contract. `a`
+        // does not exist yet, so the first scan for `a/x` classifies `a` as
+        // missing (nothing to unlink) and memoises it — a fresh scanner
+        // would re-lstat `a` on the second call and correctly walk deeper
+        // into the now-real `a` to find and unlink the `a/x` symlink; a
+        // scanner that never invalidates the stale 'missing' verdict would
+        // short-circuit at `a` and leave `a/x` in place.
+        const ctx = createMemoryContext();
+        const sut = createLeadingPathScanner(ctx);
+
+        // Act
+        await sut.unlinkSymlinkedLeadingComponent(path('a/x'));
+        await ctx.fs.symlink('/outside-the-repo', `${ctx.layout.workDir}/a/x`);
+        await sut.unlinkSymlinkedLeadingComponent(path('a/x/y'));
+
+        // Assert
+        expect(await ctx.fs.exists(`${ctx.layout.workDir}/a/x`)).toBe(false);
+      });
+    });
+  });
+
   describe('Given a prefix already classified and cached on a scanner', () => {
     describe('When invalidate is called for that exact prefix and a later path scans it again', () => {
       it('Then the memo entry is dropped and a fresh lstat runs', async () => {

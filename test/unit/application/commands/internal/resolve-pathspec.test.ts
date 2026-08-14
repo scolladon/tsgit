@@ -87,7 +87,7 @@ describe('resolvePathspec', () => {
           label: 'a `!`-only spec still scans every negated body',
         },
       ])('Then $label', ({ patterns, symlinkScanTargets }) => {
-        // Arrange
+        // Act
         const result = resolvePathspec(patterns);
 
         // Assert

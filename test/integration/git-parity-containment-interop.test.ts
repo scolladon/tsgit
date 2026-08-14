@@ -198,7 +198,11 @@ describe.skipIf(!GIT_AVAILABLE)('git-parity containment interop', () => {
       { label: 'a `..` entry', name: '..', branch: 'case-dotdot' },
       { label: 'a `.git` entry', name: '.git', branch: 'case-dotgit' },
       { label: 'an NTFS `git~1` short-name alias', name: 'git~1', branch: 'case-ntfs' },
-      { label: 'an HFS+ ignorable-codepoint `.git` alias', name: '.gi‌t', branch: 'case-hfs' },
+      {
+        label: 'an HFS+ ignorable-codepoint `.git` alias',
+        name: `.gi${String.fromCodePoint(0x200c)}t`,
+        branch: 'case-hfs',
+      },
     ];
 
     interface HostileCaseFixture {

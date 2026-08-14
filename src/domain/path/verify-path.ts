@@ -79,15 +79,24 @@ export const isDotGitAlias = (component: string): boolean =>
 
 /**
  * True if `name` is `.git`, folded only by case — the narrow match git's own
- * *directory walk* (`read_directory`, gated by `core.ignorecase`) applies
- * when deciding whether an on-disk entry is its own control directory or an
- * embedded repository's. Unlike {@link isDotGitAlias}, this does NOT widen to
- * the NTFS/HFS index-write alias matrix: `git~1`, a `.git:`-stream name, an
- * HFS ignorable-codepoint alias, and a trailing-dot/space variant all fail
- * this test and are ordinary walked entries. Pinned empirically against
- * `git status --porcelain -uall` (git 2.55.0, darwin, core.ignorecase=true):
- * `.GIT` is invisible to the walk, while a nested `git~1`, `.git:stream`,
- * `.g<ZWNJ>it`, `.git.` and `.git ` directory are all reported `??`.
+ * *directory walk* (`read_directory`) applies when deciding whether an
+ * on-disk entry is its own control directory or an embedded repository's.
+ * Unlike {@link isDotGitAlias}, this does NOT widen to the NTFS/HFS
+ * index-write alias matrix: `git~1`, a `.git:`-stream name, an HFS
+ * ignorable-codepoint alias, and a trailing-dot/space variant all fail this
+ * test and are ordinary walked entries. Pinned empirically against
+ * `git status --porcelain -uall` (git 2.55.0, darwin, `core.ignorecase=true`
+ * — the platform default): `.GIT` is invisible to the walk, while a nested
+ * `git~1`, `.git:stream`, `.g<ZWNJ>it`, `.git.` and `.git ` directory are all
+ * reported `??`.
+ *
+ * The fold here is UNCONDITIONAL — this deliberately does not gate on the
+ * repository's own `core.ignorecase` the way real git's directory walk does.
+ * On a Linux repo with `core.ignorecase=false` (the platform default there),
+ * real git's walk is case-sensitive and would list a `.GIT` directory as an
+ * ordinary untracked entry; tsgit always folds and skips it regardless. This
+ * is a known, deliberate simplification — threading `core.ignorecase`
+ * through the walk boundary is out of scope here.
  */
 export const isDotGitWalkEntry = (name: string): boolean => name.toLowerCase() === DOTGIT;
 

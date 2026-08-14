@@ -401,7 +401,7 @@ describe('validateWorkingTreePath — widened `.git`-alias matrix', () => {
 
   describe('Given a `.git:$INDEX_ALLOCATION` component', () => {
     describe('When validated', () => {
-      it('Then rejects (NTFS alternate-data-stream alias)', () => {
+      it("Then rejects via the generic `:` guard (rejectComponent's own colon check fires here regardless of the NTFS-stream alias detection — that arm is pinned non-vacuously via isDotGitAlias in the describe block above)", () => {
         // Arrange & Act + Assert
         expectReject('a/.git:$INDEX_ALLOCATION/b');
       });

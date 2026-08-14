@@ -82,7 +82,18 @@ export const createLeadingPathScanner = (ctx: Context): LeadingPathScanner => {
     let prefix = segments[0] ?? '';
     for (let i = 1; i < segments.length; i += 1) {
       const shape = await classifyPrefix(prefix);
-      if (shape === 'missing') return;
+      if (shape === 'missing') {
+        // Every call site (write-working-tree-file.ts) writes to `path`
+        // immediately after this returns, and that write auto-creates any
+        // missing ancestor directory (the FileSystem port's `write`/`symlink`
+        // contract) — so `prefix` is very likely about to stop being
+        // missing. Drop the memo rather than let a stale 'missing' verdict
+        // survive to short-circuit a LATER scan (via this method or
+        // `hasSymlinkedLeadingPath`) before it ever reaches a symlink
+        // deeper under this now-materialised prefix.
+        memo.delete(prefix);
+        return;
+      }
       if (shape === 'symlink') {
         await ctx.fs.rm(joinPath(ctx.layout.workDir, prefix));
         // The prefix is no longer a symlink (or exists at all, until a
