@@ -94,10 +94,15 @@ const findComponentRejection = (components: readonly string[]): VerifyPathReject
   return undefined;
 };
 
-// CVE-2018-11235 hardening: a `.gitmodules` entry must not be a symlink
-// (a symlinked .gitmodules can point at an attacker-controlled config file).
-const isGitmodulesLeaf = (components: readonly string[], mode: FileMode): boolean =>
-  components.at(-1) === GITMODULES && mode === FILE_MODE.SYMLINK;
+// CVE-2018-11235 hardening: an entry whose mode is a symlink must not carry
+// a `.gitmodules` path component ANYWHERE — not only as the leaf. Verified
+// against git (`update-index --add --cacheinfo 120000,<blob>,.gitmodules/foo`
+// → `error: Invalid path`): the check runs once per path component, gated on
+// the entry's own mode, exactly like the `.git`-alias scan above — a
+// `.gitmodules` directory holding an unrelated symlinked leaf is refused
+// exactly as a symlinked `.gitmodules` leaf itself is.
+const hasGitmodulesSymlinkComponent = (components: readonly string[], mode: FileMode): boolean =>
+  mode === FILE_MODE.SYMLINK && components.some((component) => component === GITMODULES);
 
 /**
  * Mirrors git's `verify_path(path, mode)`: a total function over any string,
@@ -110,5 +115,5 @@ export const verifyPath = (path: string, mode: FileMode): VerifyPathRejection | 
   const components = path.split('/');
   const reason = findComponentRejection(components);
   if (reason !== undefined) return reason;
-  return isGitmodulesLeaf(components, mode) ? 'gitmodules-not-regular' : undefined;
+  return hasGitmodulesSymlinkComponent(components, mode) ? 'gitmodules-not-regular' : undefined;
 };

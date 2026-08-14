@@ -301,6 +301,32 @@ describe('verifyPath', () => {
           expected: undefined,
         },
         {
+          label:
+            "'.gitmodules/foo' rejects at 120000 (symlink, .gitmodules is a NON-leaf component): gitmodules-not-regular",
+          path: '.gitmodules/foo',
+          mode: FILE_MODE.SYMLINK,
+          expected: 'gitmodules-not-regular',
+        },
+        {
+          label: "'.gitmodules/foo' accepts at 100644 (regular) — the mode arm is symlink-only",
+          path: '.gitmodules/foo',
+          mode: FILE_MODE.REGULAR,
+          expected: undefined,
+        },
+        {
+          label:
+            "'a/.gitmodules/foo' rejects at 120000 (symlink, .gitmodules at depth 2): gitmodules-not-regular",
+          path: 'a/.gitmodules/foo',
+          mode: FILE_MODE.SYMLINK,
+          expected: 'gitmodules-not-regular',
+        },
+        {
+          label: "'.gitmodules.txt/foo' accepts at 120000 (near-miss name, not exact .gitmodules)",
+          path: '.gitmodules.txt/foo',
+          mode: FILE_MODE.SYMLINK,
+          expected: undefined,
+        },
+        {
           label: "'..' named as a 160000 gitlink still rejects: dotdot-segment",
           path: '..',
           mode: FILE_MODE.GITLINK,
