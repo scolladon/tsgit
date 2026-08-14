@@ -278,6 +278,24 @@ describe('resolveFilterDriver', () => {
     });
   });
 
+  describe('Given a converting caller (eagerSectionValidation) and a subsectionless [filter] required = maybe with NO attributes', () => {
+    describe('When resolving the filter driver', () => {
+      it('Then identity resolves without refusal — the subsectionless form stays inert even under eager validation', async () => {
+        // Arrange — requireSubsection:true means the eager gate skips the
+        // subsectionless form; a dropped/false requireSubsection would wrongly
+        // refuse it.
+        const ctx = createMemoryContext();
+        await seed(ctx, undefined, '[filter]\n\trequired = maybe\n');
+
+        // Act
+        const result = await choose(ctx, 'a.y', { eagerSectionValidation: true });
+
+        // Assert
+        expect(result).toEqual({ kind: 'identity' });
+      });
+    });
+  });
+
   describe('Given a status-shaped caller (no eager flag) and the same malformed unmatched section', () => {
     describe('When resolving the filter driver', () => {
       it('Then identity resolves without refusal — status accepts what conversion refuses', async () => {
