@@ -241,6 +241,7 @@ tsgit's current behaviour matches: a Tier-A signature corruption makes a **loose
 | E2 | healthy midx names a **renamed** pack | exit 0, content | *(silent)* | serves |
 | E4 | no midx, healthy packs | exit 0, content | *(silent)* | serves |
 | E6 | no `objects/pack` directory at all | exit 0, content | *(silent)* | serves |
+| **E7** | **`objects/pack` replaced by a REGULAR FILE** | **exit 0, content** | `error: unable to open object pack directory: …: Not a directory` | **denied `NOT_A_DIRECTORY`** ← divergence |
 | **C4/E5** | **`objects/pack` listing refused (`chmod 000`)** | **exit 0, content** | `error: unable to open object pack directory: …: Permission denied` | **throws `PERMISSION_DENIED`** ← divergence |
 
 Two conclusions:
@@ -325,7 +326,7 @@ gate used to hide:
 
 | `readdir(objects/pack)` outcome | Scan behaviour | Why |
 |---|---|---|
-| `FILE_NOT_FOUND` / `NOT_A_DIRECTORY` | empty listing → `emptyGeneration()`-equivalent | exactly what the removed `exists` guard produced (row E6) |
+| `FILE_NOT_FOUND` / `NOT_A_DIRECTORY` | empty listing → `emptyGeneration()`-equivalent | what the removed `exists` guard produced **for the absent case only** (row E6). It did NOT produce this for a regular file at `objects/pack` — there `exists` returned `true` and the scan's own `readdir` rejected, denying every read. Row E7 pins git serving that shape at exit 0, so the fold is the faithful behaviour and the old guard was the divergence. |
 | anything else (`PERMISSION_DENIED`, …) | **propagate** | the fault is real; it now reaches only the consumers that actually need the pack store |
 
 That second row is where the **C4/E5 divergence closes**. A `chmod 000` on `objects/pack` today
@@ -354,12 +355,24 @@ covers it.**
 
 #### §3.4 What this buys, and what it does not
 
-Removed from a loose first read: `exists` (0.0110) + `readdir` (0.0300) = **0.041 ms**.
+Removed from a loose first read: `exists` (0.0110) + `readdir` (0.0300) = **0.041 ms** of
+*issued* I/O — but the `readdir` previously ran CONCURRENTLY with the midx load inside one
+`Promise.all`, so its marginal serial cost was 0.0116, not 0.0300. The honest serial saving from
+the seam is therefore **≈0.021 ms**, with a further ≈0.014 ms of JS-side saving (the generation
+object, the `fileNames` `Set`, two extra `createPromiseMemo`s, the candidate loop) that §9's
+original table credited at zero.
 Not removed: the two midx presence stats (pinned), the fanout readdir (ADR-509), the loose read.
 
-**It does not help the secondary target.** `readBlob:cold-cache` (small pack) reads a **packed**
-object: the loose probe misses, `registry.lookup` forces the scan, and every deferred call is
-paid anyway — one tick later. The small-pack row's lever is §4, not §3.
+**It does not help the secondary target — and it mildly hurts it.** `readBlob:cold-cache`
+(small pack) reads a **packed** object: the loose probe misses, `registry.lookup` forces the scan,
+and every deferred call is paid anyway — one tick later. Worse, the `readdir` LOSES its overlap
+with the midx load: on `main` the two ran together inside one `Promise.all`, whereas now
+`assertLoadable` has already settled the gate by the time `scanPacks` runs from `lookup()`, so the
+listing is serial. Measured at **+0.0108 ms** on every read that reaches the pack store. Against
+§4's −0.0163 ms that leaves a cold packed read at ≈**−0.005 ms** — a wash, not the −0.0165 this
+design first projected. Restoring the overlap would mean issuing the pack `readdir` before the
+loose probe, i.e. restoring the very eagerness being removed, so this is accepted rather than
+fixed. The small-pack row's only real lever is §4, and it is a small one.
 
 #### §3.5 Blast radius per adapter
 
@@ -388,7 +401,12 @@ It then hands `layoutRootsOf(layout)` to `new NodeFileSystem(...)`, whose `loadR
 `canonicalizeRoots()` and **realpaths every root again** on the first port call. Measured:
 **0.0163 ms** for a normal repo (one root), ~0.034 ms for a linked worktree (two roots). That is
 13% of the first-access delta, and unlike §3 it is paid by **every** first read — loose or
-packed — so it is the lever that moves the small-pack row.
+packed — so it is the only lever that touches the small-pack row at all.
+
+It is also **conditional**: the hand-off applies only when every `realpath` the shim performed
+returned successfully, which is false whenever the cwd does not yet exist — i.e. exactly the
+`init`/`clone` callers. They keep today's behaviour and gain nothing here, so `clone:small-repo`
+should not be expected to move.
 
 This is *not* Lever 5c. Lever 5c proposes **skipping the containment check** for paths lexically
 under the canonical gitDir — a narrowing of the security boundary. This is: do not compute the
@@ -396,15 +414,30 @@ same canonical prefix twice. The check still runs, against the same canonical pr
 path. The only question is whether the caller may assert "these roots are already canonical", and
 that assertion is what DC-2 puts to the user.
 
-Threat model for the assertion (see §6): if a caller wrongly claims a root is already canonical, the
-containment prefixes are computed from a **not-yet-canonical** root. A symlinked repo root would then produce
-a prefix that no realpathed path matches, and every operation would fail **closed**
-(`PERMISSION_DENIED`) rather than open — which is exactly the macOS `/tmp` → `/private/tmp`
-failure the shim's `realpath` already exists to prevent. The dangerous direction (a prefix that
-admits more than it should) requires the claimed-canonical root to be a *shorter* prefix than the
-real one; `realpath` never lengthens a path's semantic scope, so a lexical root is never broader
-than its canonical form. The flag must nonetheless be internal-only (not on
-`OpenRepositoryOptions`) and set by exactly one call site.
+**How the "cannot widen" property is actually obtained — corrected after security review.**
+The first draft of this section argued that a wrong assertion "fails closed, because a lexical
+root prefix is never semantically broader than its realpathed form". That argument is sound for a
+BOOLEAN flag (same root value, realpath skipped) and **false for a hand-off of resolved values**,
+which is what DC-2 option (b) proposed. `loadRootSet` computes
+`all = unionRootPrefixes(getRootDirPrefixes(), canonical)` and every containment verdict consults
+`all` — so a caller-supplied `canonical` array is an ADDITIVE confinement input, not a
+computation shortcut. Executed counterexample against the option-(b) implementation:
+
+```
+new NodeFileSystem(['/tmp/r1'], nativePolicy, undefined, ['/etc']).readUtf8('/etc/hosts')
+  → 213 bytes returned
+new NodeFileSystem(['/tmp/r1'], nativePolicy).readUtf8('/etc/hosts')
+  → PERMISSION_DENIED
+```
+
+The shipped shape is therefore option **(a)**: a private `rootsArePreResolved` boolean, with
+`canonicalizeRoots()` returning `getRootDirPrefixes()` unchanged when it is set. The union then
+collapses to `raw ∪ raw = raw`, so a wrongly-set flag can only ever **narrow** the containment
+set, never widen it — the property is structural rather than argued. `NodeFileSystem` is exported
+via the `adapters/node` subpath, so a consumer can reach the parameter; under (a) that is
+harmless, because the same consumer already chooses `rootDir` outright and the flag cannot
+introduce a prefix that `rootDir` did not already permit. Nothing is added to
+`OpenNodeRepositoryOptions`.
 
 ---
 
@@ -477,18 +510,24 @@ and cannot do afterwards.
   git is silent about them on a loose read too (rows C3/C5/C6). Any read that reaches the pack
   store still emits them.
 
-**What newly succeeds that previously refused.** Exactly one case: an `objects/pack` whose listing is refused
-(`EACCES`, or a `readdir` that faults for any other non-ENOENT reason) no longer denies a loose
-read. This is a **loosening**, and it is deliberate: git serves the object with exit 0 (row
+**What newly succeeds that previously refused.** Two cases, both pinned against git 2.55.0 and
+both relaxations toward it. First, an `objects/pack` whose listing is refused (`EACCES`) no longer
+denies a loose read (row C4/E5). Second, an `objects/pack` that is a REGULAR FILE no longer denies
+one either (row E7) — that shape reached the gate's own midx `stat` as `NOT_A_DIRECTORY`, which
+was not classified Tier-B and so propagated; it now is, because git prints
+`error: unable to open object pack directory: …: Not a directory` and still serves the object at
+exit 0. This is a **loosening**, and it is deliberate: git serves the object with exit 0 (row
 C4/E5), so today's refusal is a divergence in the stricter direction, which ADR-226 requires
 closing. An attacker who can make `objects/pack` unreadable cannot use that to make tsgit read
 the *wrong* bytes — the loose read is oid-addressed and hash-verified. The refusal returns the
 moment the read needs the pack store.
 
-**What §4's already-canonical assertion risks.** Covered in §4: a wrong assertion fails closed, not
-open, because a lexical root prefix is never semantically broader than its realpathed form. The
-flag must be internal (not reachable from `OpenRepositoryOptions`) and set at exactly one call
-site, so a library consumer can never assert it.
+**What §4's already-resolved flag risks.** Nothing that `rootDir` does not already permit. Under
+the shipped boolean shape the flag only suppresses recomputation of the SAME prefixes
+(`canonicalizeRoots` returns `getRootDirPrefixes()`), so the union in `loadRootSet` is
+`raw ∪ raw = raw`: setting it wrongly can only narrow the containment set. This is a structural
+property, not an argument about path lengths — see §4 for the counterexample that killed the
+earlier value-hand-off shape, where a caller-supplied array WAS additive and did widen.
 
 **Non-goal.** This design does not narrow the containment boundary. Lever 5c remains out of
 scope and unproposed.
@@ -587,8 +626,9 @@ combined. The brief's acceptance wording — "move **materially toward** or past
 satisfiable; "past 1.0×" is not, on this scenario, without changing the unit of work. That is
 precisely what §7 exists to make visible.
 
-The small-pack row (0.74×) gains §4 only (≈0.0165 ms of its per-iteration cost), because its
-loose probe misses and the deferred scan is paid one tick later.
+The small-pack row (0.74×) nets ≈**−0.005 ms**: §4's −0.0163 ms less the +0.0108 ms the
+deferral costs it by serialising the pack listing behind the settled gate (§3.4). Expect it to
+read as a wash on the nightly, not as an improvement — it did (0.74× → 0.76×).
 
 Verification is a same-machine `main`-vs-branch absolute wall-clock A/B before and after each
 change, plus the CI nightly artifact for the citable number. Never a self-share percentage.
