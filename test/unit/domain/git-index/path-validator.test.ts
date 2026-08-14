@@ -39,31 +39,10 @@ describe('validateIndexPath', () => {
           reason: 'absolute path rejected',
         },
         {
-          label: 'throws INVALID_INDEX_ENTRY with the backslash reason',
-          path: 'src\\evil',
-          offset: 4,
-          reason: 'backslash rejected',
-        },
-        {
-          // 0x1F is the top of the C0 range (code < 0x20).
-          label: 'throws INVALID_INDEX_ENTRY with the control reason',
-          path: `a${String.fromCharCode(0x1f)}b`,
-          offset: 0,
-          reason: 'control character rejected',
-        },
-        {
-          // 0x9F is the inclusive upper bound: the guard is `code <= 0x9f`.
-          // A `code < 0x9f` mutant would let U+009F through and fail to throw.
-          label: 'throws INVALID_INDEX_ENTRY with the control reason',
-          path: `a${String.fromCharCode(0x9f)}b`,
-          offset: 7,
-          reason: 'control character rejected',
-        },
-        {
-          label: 'throws INVALID_INDEX_ENTRY with the bidi reason',
-          path: `a${String.fromCharCode(0x202e)}b`,
-          offset: 0,
-          reason: 'bidi control character rejected',
+          label: 'throws INVALID_INDEX_ENTRY with the NUL byte reason',
+          path: `a${String.fromCharCode(0x00)}b`,
+          offset: 5,
+          reason: 'NUL byte rejected',
         },
         {
           label: "throws INVALID_INDEX_ENTRY with the '..' reason",
@@ -152,14 +131,38 @@ describe('validateIndexPath', () => {
     });
   });
 
-  describe('Given a path containing a code point just above the C1 range (U+00A0)', () => {
+  describe('Given a path carrying a byte git 2.55 stages but a stricter validator once rejected', () => {
     describe('When validated', () => {
-      it('Then it does not throw', () => {
-        // Arrange — 0xA0 is one past the C1 upper bound and must be allowed; this
-        // pins the upper edge so a widened control range would be caught.
-        const path = `a${String.fromCharCode(0xa0)}b`;
-
-        // Assert
+      it.each([
+        { label: 'a literal backslash', path: 'src\\evil' },
+        {
+          label: 'a C0 control below the former 0x20 cutoff (SOH, U+0001)',
+          path: `a${String.fromCharCode(0x01)}b`,
+        },
+        { label: 'a TAB (U+0009)', path: `a${String.fromCharCode(0x09)}b` },
+        { label: 'a newline (U+000A)', path: `a${String.fromCharCode(0x0a)}b` },
+        { label: 'a C1 control (NEL, U+0085)', path: `a${String.fromCharCode(0x85)}b` },
+        {
+          label: 'the C1 upper bound the former guard used (U+009F)',
+          path: `a${String.fromCharCode(0x9f)}b`,
+        },
+        {
+          label: 'a code point just above the former C1 range (U+00A0)',
+          path: `a${String.fromCharCode(0xa0)}b`,
+        },
+        { label: 'DEL (U+007F)', path: `a${String.fromCharCode(0x7f)}b` },
+        { label: 'ALM (U+061C)', path: `a${String.fromCharCode(0x061c)}b` },
+        { label: 'LRM (U+200E)', path: `a${String.fromCharCode(0x200e)}b` },
+        { label: 'RLM (U+200F)', path: `a${String.fromCharCode(0x200f)}b` },
+        { label: 'LRE (U+202A)', path: `a${String.fromCharCode(0x202a)}b` },
+        { label: 'RLO (U+202E)', path: `a${String.fromCharCode(0x202e)}b` },
+        { label: 'LRI (U+2066)', path: `a${String.fromCharCode(0x2066)}b` },
+        { label: 'PDI (U+2069)', path: `a${String.fromCharCode(0x2069)}b` },
+      ])('Then $label does not throw', ({ path }) => {
+        // Arrange & Act + Assert — pinned against real git 2.55 (`update-index
+        // --add --cacheinfo` and a real `git add` of an on-disk file); every
+        // one of these is POSIX-legal to git and must round-trip through
+        // tsgit's index parse/write boundary identically.
         expect(() => validateIndexPath(path, 0, FILE_MODE.REGULAR)).not.toThrow();
       });
     });

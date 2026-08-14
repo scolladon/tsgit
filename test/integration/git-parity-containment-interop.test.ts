@@ -1346,4 +1346,56 @@ describe.skipIf(!GIT_AVAILABLE)('git-parity containment interop', () => {
       });
     });
   });
+
+  // ── 12. add stages a BIDI-marked / C1-marked filename identically ────
+
+  describe('Given a filename carrying a BIDI mark and one carrying a C1 control', () => {
+    const SPECIAL_NAMES: ReadonlyArray<{ readonly label: string; readonly name: string }> = [
+      {
+        label: 'a RLO (U+202E) BIDI override mark',
+        name: `evil${String.fromCharCode(0x202e)}txt.exe`,
+      },
+      { label: 'a NEL (U+0085) C1 control', name: `report${String.fromCharCode(0x85)}final.txt` },
+    ];
+
+    describe('When each tool runs `add -A`', () => {
+      let root: string;
+      let pair: RepoPair;
+
+      beforeAll(async () => {
+        root = await mkRoot('add-bidi-c1');
+        pair = await buildSeededPair(root, 'add-bidi-c1');
+
+        for (const { name } of SPECIAL_NAMES) {
+          writeFileSync(path.join(pair.peerDir, name), 'hebrew-arabic-tree\n');
+          writeFileSync(path.join(pair.oursDir, name), 'hebrew-arabic-tree\n');
+        }
+      }, SETUP_TIMEOUT);
+
+      afterAll(async () => {
+        await pair.repo.dispose();
+        await rm(root, { recursive: true, force: true });
+      });
+
+      it('Then both tools stage every name and the index states match', async () => {
+        // Act
+        const peerResult = tryRunGitWithExit(['-C', pair.peerDir, 'add', '-A']);
+        await pair.repo.add([], { all: true });
+
+        // Assert — git accepts the whole batch, and so does tsgit: neither
+        // one RTL-marked nor one C1-marked filename aborts `add -A`. `-z`
+        // reads the RAW (unquoted) name bytes — plain `--stage` C-quotes
+        // control/BIDI bytes for terminal display (octal-escaped, e.g.
+        // `"evil\342\200\256txt.exe"`), which is a rendering concern, not
+        // the underlying staged path.
+        const peerStageRaw = git(pair.peerDir, 'ls-files', '--stage', '-z');
+        expect(peerResult.exitCode).toBe(0);
+        for (const { name } of SPECIAL_NAMES) {
+          expect(peerStageRaw).toContain(name);
+        }
+        // Assert — the structured index state matches byte for byte.
+        expect(lsStage(pair.oursDir)).toBe(lsStage(pair.peerDir));
+      });
+    });
+  });
 });
