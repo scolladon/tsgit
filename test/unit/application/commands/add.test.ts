@@ -17,7 +17,7 @@ import type {
   CommandResult,
   CommandRunner,
 } from '../../../../src/ports/command-runner.js';
-import { serializeIndexFixtureAsync } from '../primitives/fixtures.js';
+import { instrumentedContext, serializeIndexFixtureAsync } from '../primitives/fixtures.js';
 import { stubCommandRunner } from '../primitives/helpers/stub-command-runner.js';
 import { seedRepo } from './fixtures.js';
 
@@ -865,22 +865,18 @@ describe('add', () => {
     targetSuffix: string,
     flipTo: Partial<Awaited<ReturnType<typeof ctx.fs.lstat>>>,
   ) => {
-    // Boolean flag (not a positional counter) so extra lstat calls on
-    // OTHER paths don't desynchronise the swap point. The first lstat
-    // for `targetSuffix` returns the real stat; every subsequent lstat
-    // for it returns the flipped stat.
+    // The walk yields its kind bits straight from `readdir` (untouched here),
+    // reflecting the file's REAL on-disk shape; stageFromStat's single
+    // `lstat` — the only one issued per file now — is patched to report
+    // `flipTo` instead. That mismatch IS the TOCTOU window stageFromStat's
+    // re-lstat guards against, without needing a second racing call.
     const baseLstat = ctx.fs.lstat;
-    let firstSeen = false;
     return new Proxy(ctx.fs, {
       get(target, prop, receiver) {
         if (prop === 'lstat') {
           return async (path: string) => {
             const real = await baseLstat(path);
             if (!path.endsWith(targetSuffix)) return real;
-            if (!firstSeen) {
-              firstSeen = true;
-              return real;
-            }
             return { ...real, ...flipTo };
           };
         }
@@ -968,38 +964,10 @@ describe('add', () => {
     });
   });
 
-  describe('Given a file that grows past MAX_WORKING_TREE_BLOB_BYTES between walk and re-lstat', () => {
-    describe('When add({ all: true })', () => {
-      it('Then throws WORKING_TREE_FILE_TOO_LARGE (post-re-lstat guard fires)', async () => {
-        // Arrange — walk-time stat reports a small file; re-lstat reports the
-        // oversize value. The pre-filter (walk-time) skips; the authoritative
-        // post-re-lstat guard must catch it.
-        const ctx = await seedFreshRepo({ 'a.txt': 'a' });
-        const racingCtx = {
-          ...ctx,
-          fs: racingLstatFs(ctx, '/a.txt', { size: MAX_WORKING_TREE_BLOB_BYTES + 1 }),
-        };
-
-        // Act
-        const err = await expectError(
-          () => add(racingCtx, [], { all: true }),
-          'WORKING_TREE_FILE_TOO_LARGE',
-        );
-
-        // Assert — payload pins fresh size, not the stale walk-time size.
-        const data = err.data as { path: string; size: number; limit: number };
-        expect(data.path).toBe('a.txt');
-        expect(data.size).toBe(MAX_WORKING_TREE_BLOB_BYTES + 1);
-        expect(data.limit).toBe(MAX_WORKING_TREE_BLOB_BYTES);
-      });
-    });
-  });
-
   describe('Given a file of exactly MAX_WORKING_TREE_BLOB_BYTES bytes (boundary)', () => {
     describe('When add({ all: true })', () => {
-      it('Then accepts without throwing — kills the `>` → `>=` mutants on both pre-filter and authoritative caps', async () => {
-        // Arrange — lstat reports size exactly at the cap. Both the
-        // walk-time pre-filter (`stat.size > cap`) and the re-lstat
+      it('Then accepts without throwing — kills the `>` → `>=` mutant on the authoritative cap', async () => {
+        // Arrange — lstat reports size exactly at the cap. The re-lstat
         // authoritative check (`fresh.size > cap`) must accept this.
         const ctx = await seedFreshRepo({ 'a.txt': 'tiny' });
         const baseLstat = ctx.fs.lstat;
@@ -1589,6 +1557,30 @@ describe('add', () => {
     });
   });
 
+  describe('Given N new files staged via a walk (add --all)', () => {
+    describe('When add runs', () => {
+      it('Then it issues exactly one lstat per file, not two', async () => {
+        // Arrange — the walk's kind bits (isFile/isDirectory/isSymbolicLink,
+        // free from readdir) now feed stageFromStat's TOCTOU check directly;
+        // stageFromStat's own re-lstat under the index lock is the only
+        // lstat each file pays.
+        const base = await seedFreshRepo({ 'a.txt': 'a', 'b.txt': 'b', 'c.txt': 'c' });
+        const { ctx, calls } = instrumentedContext(base);
+
+        // Act
+        await add(ctx, [], { all: true });
+
+        // Assert — one lstat per seeded file (`.gitignore`/`info/exclude`
+        // probes from the ignore-predicate build are excluded on purpose).
+        const fileLstatCounts = ['a.txt', 'b.txt', 'c.txt'].map(
+          (name) =>
+            calls().filter((c) => c.method === 'lstat' && c.path.endsWith(`/${name}`)).length,
+        );
+        expect(fileLstatCounts).toEqual([1, 1, 1]);
+      });
+    });
+  });
+
   describe('Given multiple unsorted modified and removed files', () => {
     describe('When add({ all: true })', () => {
       it('Then modified and removed are each independently sorted', async () => {
@@ -1626,19 +1618,12 @@ describe('add', () => {
         const ctx = await seedFreshRepo({ 'a.sh': '#!/bin/sh\n' });
         await add(ctx, [], { all: true });
         const baseLstat = ctx.fs.lstat;
-        let firstSeen = false;
         const execFs = new Proxy(ctx.fs, {
           get(target, prop, receiver) {
             if (prop === 'lstat') {
               return async (path: string) => {
                 const real = await baseLstat(path);
                 if (!path.endsWith('/a.sh')) return real;
-                // First lstat is the walk-time stat (keep real so the pre-stage
-                // mode is plain); from the re-lstat onward report the exec bit.
-                if (!firstSeen) {
-                  firstSeen = true;
-                  return real;
-                }
                 return { ...real, mode: real.mode | 0o111 };
               };
             }
