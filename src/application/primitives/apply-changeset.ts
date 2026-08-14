@@ -180,7 +180,9 @@ const writeBlobToWorkingTree = async (
     return;
   }
   if (provider !== undefined && ctx.command !== undefined) {
-    const choice = await resolveFilterDriver(ctx, provider, path);
+    const choice = await resolveFilterDriver(ctx, provider, path, {
+      eagerSectionValidation: true,
+    });
     if (choice.kind === 'external' && choice.smudge !== undefined) {
       const blob = await readBlob(ctx, id);
       const result = await runFilterDriver(ctx, ctx.command, choice.smudge, blob.content);

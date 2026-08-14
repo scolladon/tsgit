@@ -22,7 +22,7 @@ import type { ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import { buildPack } from '../primitives/build-pack.js';
 import { type ClosureTier, computeClosure } from '../primitives/internal/closure-engine.js';
-import { buildIdx, writePackArtifacts } from '../primitives/internal/write-pack-artifacts.js';
+import { writePackArtifacts } from '../primitives/internal/write-pack-artifacts.js';
 import { commonGitDir, packsDir } from '../primitives/path-layout.js';
 import { refreshPackRegistry } from '../primitives/read-object.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
@@ -87,18 +87,14 @@ export const packObjects = async (
     crc32: pack.entries[i]!.crc32,
     offset: pack.entries[i]!.offset,
   }));
-  const idxBytes = await buildIdx(ctx, indexEntries, pack.sha);
-
   const outputDirectory = opts.outputDirectory ?? packsDir(commonGitDir(ctx));
-  const written = await writePackArtifacts(
-    ctx,
-    outputDirectory,
-    pack.bytes,
-    idxBytes,
-    pack.sha,
-    pack.objectCount,
-    false,
-  );
+  const written = await writePackArtifacts(ctx, {
+    packDir: outputDirectory,
+    packBytes: pack.bytes,
+    entries: indexEntries,
+    packSha: pack.sha,
+    promisor: false,
+  });
   if (opts.outputDirectory === undefined) {
     refreshPackRegistry(ctx);
   }
@@ -107,6 +103,6 @@ export const packObjects = async (
     packId: written.packSha as ObjectId,
     objectCount: written.objectCount,
     packBytes: pack.bytes.length,
-    indexBytes: idxBytes.length,
+    indexBytes: written.indexBytes,
   };
 };

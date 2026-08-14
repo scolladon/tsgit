@@ -1987,6 +1987,136 @@ describe('push — signed', () => {
     });
   });
 
+  describe('Given push.gpgSign holds a value git refuses', () => {
+    describe('When push is called with opts.signed left undefined', () => {
+      it('Then throws CONFIG_BAD_BOOLEAN_LITERAL naming push.gpgsign and sends no pack', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const { parent } = await seedSignedPush(ctx, { otherExtra: '[push]\n  gpgSign = maybe\n' });
+        const { transport, requests } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/main', id: parent.id }],
+          reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/main', status: 'ok' }] },
+        });
+
+        // Act
+        let caught: unknown;
+        try {
+          await push({ ...ctx, transport });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — each field individually (mutation-resistant)
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as {
+          code: string;
+          key: string;
+          value: string;
+          source: string;
+        };
+        expect(data.code).toBe('CONFIG_BAD_BOOLEAN_LITERAL');
+        expect(data.key).toBe('push.gpgsign');
+        expect(data.value).toBe('maybe');
+        expect(data.source).toMatch(/\/config$/);
+        // The guard fires on the config cold path, before the session opens —
+        // no request lands at all, as with git.
+        expect(requests.map((r) => r.method)).toEqual([]);
+      });
+    });
+
+    describe.each([
+      {
+        extra: '[push]\n  gpgSign = maybe\n  default = bogus\n',
+        expectedCode: 'CONFIG_BAD_BOOLEAN_LITERAL',
+        label: 'gpgSign on the earlier line',
+      },
+      {
+        extra: '[push]\n  default = bogus\n  gpgSign = maybe\n',
+        expectedCode: 'INVALID_PUSH_DEFAULT',
+        label: 'default on the earlier line',
+      },
+    ])(
+      'When push.default and push.gpgSign are BOTH malformed ($label)',
+      ({ extra, expectedCode }) => {
+        it(`Then the first malformed line wins with ${expectedCode}`, async () => {
+          // Arrange — git parses both keys in one config pass, first line wins.
+          const ctx = createMemoryContext();
+          const { parent } = await seedSignedPush(ctx, { otherExtra: extra });
+          const { transport } = fakeServer({
+            url: 'https://example.com/r.git',
+            advertisedRefs: [{ name: 'refs/heads/main', id: parent.id }],
+            reportStatus: { unpack: 'ok', refs: [] },
+          });
+
+          // Act
+          let caught: unknown;
+          try {
+            await push({ ...ctx, transport });
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data.code).toBe(expectedCode);
+        });
+      },
+    );
+
+    describe('When the remote is already up to date (nothing to push)', () => {
+      it('Then still throws CONFIG_BAD_BOOLEAN_LITERAL — git refuses even a no-op push', async () => {
+        // Arrange — the advertised tip equals the local tip, so no ref moves.
+        const ctx = createMemoryContext();
+        const { tip } = await seedSignedPush(ctx, { otherExtra: '[push]\n  gpgSign = maybe\n' });
+        const { transport } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/main', id: tip.id }],
+          reportStatus: { unpack: 'ok', refs: [] },
+        });
+
+        // Act
+        let caught: unknown;
+        try {
+          await push({ ...ctx, transport });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as { code: string; key: string };
+        expect(data.code).toBe('CONFIG_BAD_BOOLEAN_LITERAL');
+        expect(data.key).toBe('push.gpgsign');
+      });
+    });
+
+    describe('When push is called with opts.signed explicitly "no"', () => {
+      it('Then it still throws — git reads the config regardless of an explicit override', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const { parent } = await seedSignedPush(ctx, { otherExtra: '[push]\n  gpgSign = maybe\n' });
+        const { transport } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/main', id: parent.id }],
+          reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/main', status: 'ok' }] },
+        });
+
+        // Act
+        let caught: unknown;
+        try {
+          await push({ ...ctx, transport }, { signed: 'no' });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe('CONFIG_BAD_BOOLEAN_LITERAL');
+      });
+    });
+  });
+
   describe('Given user.signingKey is configured', () => {
     describe('When push signs', () => {
       it('Then the cert pusher line uses the signing key, not the identity string', async () => {

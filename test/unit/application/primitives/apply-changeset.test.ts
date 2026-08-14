@@ -1056,6 +1056,65 @@ describe('applyChangeset', () => {
     });
   });
 
+  describe('Given an add whose path has NO matching .gitattributes but [filter "zed"].required holds a value git refuses', () => {
+    describe('When applyChangeset runs with a command runner wired', () => {
+      it('Then throws CONFIG_BAD_BOOLEAN_VALUE naming filter.zed.required — eager conversion validates every driver section', async () => {
+        // Arrange — no .gitattributes at all; no attribute ever selects "zed".
+        // A dropped eagerSectionValidation flag would let this resolve a
+        // verdict instead of refusing.
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, enc('content'));
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[filter "zed"]\n\trequired = maybe\n',
+        );
+        const runner = new FakeSmudgeRunner();
+        const enrichedCtx: Context = { ...ctx, command: runner };
+
+        // Act
+        let caught: unknown;
+        try {
+          await applyChangeset(enrichedCtx, {
+            changeset: makeChangeset([makeAdd('a.txt', id)]),
+            force: false,
+            workdir: WORKDIR,
+          });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as { code: string; key: string };
+        expect(data.code).toBe('CONFIG_BAD_BOOLEAN_VALUE');
+        expect(data.key).toBe('filter.zed.required');
+      });
+    });
+  });
+
+  describe('Given the subsectionless [filter] required holds a value git refuses (no attributes)', () => {
+    describe('When applyChangeset runs with a command runner wired', () => {
+      it('Then does NOT refuse — the subsectionless form stays inert even under eager validation', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, enc('content'));
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[filter]\n\trequired = maybe\n');
+        const runner = new FakeSmudgeRunner();
+        const enrichedCtx: Context = { ...ctx, command: runner };
+
+        // Act
+        const result = await applyChangeset(enrichedCtx, {
+          changeset: makeChangeset([makeAdd('a.txt', id)]),
+          force: false,
+          workdir: WORKDIR,
+        });
+
+        // Assert
+        expect(result.written).toBe(1);
+      });
+    });
+  });
+
   describe('Given a regular file add with a filter attribute but no ctx.command (R11 fallback)', () => {
     describe('When applyChangeset runs', () => {
       it('Then the worktree file contains the verbatim blob bytes and streamBlob is used', async () => {

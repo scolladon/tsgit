@@ -1,6 +1,7 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import {
+  parseGitBoolean,
   parseIniSections,
   scanHeaderPrefix,
 } from '../../../../src/application/primitives/config-read.js';
@@ -274,4 +275,109 @@ describe('config-read section-name totality property', () => {
       });
     });
   });
+});
+
+// git's boolean path narrows to a C `int`; these mirror the production
+// GIT_BOOL_INT_MIN/MAX constants without importing them (module-private).
+const INT32_MIN = -2_147_483_648;
+const INT32_MAX = 2_147_483_647;
+
+/** Unit factors accepted by git's boolean/integer grammar (k/K/m/M/g/G = ×1024^n). */
+const UNIT_FACTORS: ReadonlyArray<{ readonly suffix: string; readonly factor: number }> = [
+  { suffix: '', factor: 1 },
+  { suffix: 'k', factor: 1024 },
+  { suffix: 'K', factor: 1024 },
+  { suffix: 'm', factor: 1024 * 1024 },
+  { suffix: 'M', factor: 1024 * 1024 },
+  { suffix: 'g', factor: 1024 * 1024 * 1024 },
+  { suffix: 'G', factor: 1024 * 1024 * 1024 },
+];
+
+/** Unit factors whose corresponding base magnitude (`n / factor`) is an exact integer. */
+const factorsDividing = (
+  n: number,
+): ReadonlyArray<{ readonly suffix: string; readonly factor: number }> =>
+  UNIT_FACTORS.filter((u) => n % u.factor === 0);
+
+/** Render an unsigned magnitude in the given radix, matching git's accepted literal forms. */
+const renderMagnitude = (magnitude: number, radix: 'decimal' | 'octal' | 'hex'): string => {
+  if (radix === 'decimal') return magnitude.toString(10);
+  if (radix === 'octal') return `0${magnitude.toString(8)}`;
+  return `0x${magnitude.toString(16)}`;
+};
+
+/**
+ * An integer `n` in git's boolean int32 range, rendered as a literal git's grammar accepts:
+ * decimal/octal/hex, an optional `+` on non-negative values, and an optional unit factor that
+ * evenly divides `n` (so the rendering's magnitude, scaled, reproduces `n` exactly).
+ */
+const arbBooleanIntegerRendering = (): fc.Arbitrary<{
+  readonly text: string;
+  readonly n: number;
+}> =>
+  fc.integer({ min: INT32_MIN, max: INT32_MAX }).chain((n) =>
+    fc
+      .tuple(
+        fc.constantFrom(...factorsDividing(n)),
+        fc.constantFrom<'decimal' | 'octal' | 'hex'>('decimal', 'octal', 'hex'),
+        fc.boolean(),
+      )
+      .map(([unit, radix, explicitPlus]) => {
+        const base = n / unit.factor;
+        const digits = renderMagnitude(Math.abs(base), radix);
+        const sign = n < 0 ? '-' : explicitPlus ? '+' : '';
+        return { text: `${sign}${digits}${unit.suffix}`, n };
+      }),
+  );
+
+describe('config-read boolean grammar properties', () => {
+  describe('Given an arbitrary ASCII string without NUL (and null)', () => {
+    describe('When parseGitBoolean classifies it', () => {
+      it('Then it returns a result and never throws', () => {
+        // Arrange + Act + Assert
+        fc.assert(
+          fc.property(
+            fc.option(
+              fc.string({
+                unit: fc.integer({ min: 1, max: 0x7f }).map((cp) => String.fromCodePoint(cp)),
+              }),
+              { nil: null },
+            ),
+            (value) => {
+              const result = parseGitBoolean(value);
+              // Falsifiable shape invariant, not a tautology: an accepting
+              // parse must carry a real boolean payload, a refusing parse
+              // must carry none.
+              if (result.ok) {
+                expect(typeof result.value).toBe('boolean');
+              } else {
+                expect(Object.keys(result)).toEqual(['ok']);
+              }
+            },
+          ),
+          { numRuns: 100 },
+        );
+      });
+    });
+  });
+
+  describe(
+    'Given an arbitrary integer in [-2147483648, 2147483647] rendered in decimal, octal or ' +
+      'hex, with an optional sign and an optional in-range unit factor',
+    () => {
+      describe('When parseGitBoolean parses the rendering', () => {
+        it('Then it is ok and its value is n !== 0', () => {
+          // Arrange + Act + Assert — the oracle is arithmetic (n !== 0), not a
+          // re-implementation of the parse.
+          fc.assert(
+            fc.property(arbBooleanIntegerRendering(), ({ text, n }) => {
+              const result = parseGitBoolean(text);
+              expect(result).toEqual({ ok: true, value: n !== 0 });
+            }),
+            { numRuns: 100 },
+          );
+        });
+      });
+    },
+  );
 });

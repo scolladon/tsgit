@@ -218,7 +218,7 @@ describe('packObjects', () => {
 
   describe('Given the same seeded repo', () => {
     describe('When packObjects writes its pack', () => {
-      it('Then the pack directory gains exactly two files — no .rev, no bitmap', async () => {
+      it('Then the pack directory gains exactly three files — .pack, .idx and .rev, no bitmap', async () => {
         // Arrange
         const { ctx } = await seedOneCommit();
         const sut = packObjects;
@@ -228,8 +228,8 @@ describe('packObjects', () => {
 
         // Assert
         const entries = await ctx.fs.readdir(packDirOf(ctx));
-        expect(entries).toHaveLength(2);
-        expect(entries.some((entry) => entry.name.endsWith('.rev'))).toBe(false);
+        expect(entries).toHaveLength(3);
+        expect(entries.some((entry) => entry.name.endsWith('.rev'))).toBe(true);
         expect(entries.some((entry) => entry.name.endsWith('.bitmap'))).toBe(false);
       });
     });
@@ -327,9 +327,12 @@ describe('packObjects', () => {
         // Act
         const result = await sut(ctx, { wants: ['HEAD'], outputDirectory: customDir });
 
-        // Assert
+        // Assert — all three artefacts land in the external directory: the
+        // `.rev` is a property of the `.idx`, not of the directory it's
+        // written into.
         expect(await ctx.fs.exists(`${customDir}/pack-${result.packId}.pack`)).toBe(true);
         expect(await ctx.fs.exists(`${customDir}/pack-${result.packId}.idx`)).toBe(true);
+        expect(await ctx.fs.exists(`${customDir}/pack-${result.packId}.rev`)).toBe(true);
         expect(await ctx.fs.exists(`${packDirOf(ctx)}/pack-${result.packId}.pack`)).toBe(false);
         const after = await registry.all();
         expect(after).toHaveLength(0);

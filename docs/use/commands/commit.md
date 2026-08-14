@@ -71,10 +71,11 @@ await repo.commit({ message: 'resolve conflict' });
 - `BARE_REPOSITORY` — commit is not valid in a bare repository.
 - `AUTHOR_UNCONFIGURED` — no `user.name` / `user.email` in config and no caller-supplied identity.
 - `CONFIG_MISSING_VALUE` — a `[user]` `name` or `email` line is present but valueless (git NULL); carries `{ key, source, line }`. Distinct from the absent case (`AUTHOR_UNCONFIGURED`). The first valueless `user.*` entry by config-file line order is reported.
+- `CONFIG_BAD_BOOLEAN_VALUE` — `commit.gpgSign` or `remote.<n>.promisor` holds a value git's boolean grammar refuses. `commit.gpgSign` is checked first, before hooks run and before the tree is written; the promisor guard runs right after.
 - `SIGNING_FAILED` — `sign` requested but the signing program failed or is unavailable (e.g. off-node, no `gpg`, bad key, or `gpg.format=x509` which is unsupported).
 
 ## See also
 
 - Primitives: [`createCommit`](../primitives/create-commit.md), [`writeTree`](../primitives/write-tree.md), [`recordRefUpdate`](../primitives/internals.md#recordrefupdate), [`runHook`](../primitives/run-hook.md)
 - Related commands: [`add`](add.md), [`merge`](merge.md), [`reset`](reset.md)
-- ADRs: [065](../../adr/065-hook-runner-port.md), [066](../../adr/066-hooks-default-on.md), [067](../../adr/067-commit-msg-editmsg-roundtrip.md), [068](../../adr/068-windows-hook-execution.md), [442](../../adr/442-reuse-command-runner-for-signing.md), [445](../../adr/445-narrow-commit-signature-injection-guard.md), [446](../../adr/446-signing-success-exit-and-armor.md), [447](../../adr/447-off-node-signing-hard-refuse.md)
+- ADRs: [065](../../adr/065-hook-runner-port.md), [066](../../adr/066-hooks-default-on.md), [067](../../adr/067-commit-msg-editmsg-roundtrip.md), [068](../../adr/068-windows-hook-execution.md), [442](../../adr/442-reuse-command-runner-for-signing.md), [445](../../adr/445-narrow-commit-signature-injection-guard.md), [446](../../adr/446-signing-success-exit-and-armor.md), [447](../../adr/447-off-node-signing-hard-refuse.md), [627](../../adr/627-boolean-config-values-are-refused-as-git-refuses-them.md)

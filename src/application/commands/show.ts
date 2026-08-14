@@ -23,6 +23,7 @@ import type {
   Tree,
 } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
+import { assertValidPromisorRemoteConfig } from '../primitives/internal/boolean-config-guard.js';
 import { loadShallowSet } from '../primitives/internal/shallow-set.js';
 import { readObject } from '../primitives/read-object.js';
 import { diffCommitAgainstParent } from './internal/commit-diff.js';
@@ -117,8 +118,12 @@ export async function show(
   return results;
 }
 
-const buildForRev = async (ctx: Context, rev: string, withStat: boolean): Promise<ShowResult> =>
-  buildResult(ctx, await readObject(ctx, await revParse(ctx, rev)), withStat);
+const buildForRev = async (ctx: Context, rev: string, withStat: boolean): Promise<ShowResult> => {
+  const id = await revParse(ctx, rev);
+  // Promisor-remote guard (see assertValidPromisorRemoteConfig) — after rev resolution.
+  await assertValidPromisorRemoteConfig(ctx);
+  return buildResult(ctx, await readObject(ctx, id), withStat);
+};
 
 async function buildResult(ctx: Context, obj: GitObject, withStat: boolean): Promise<ShowResult> {
   switch (obj.type) {

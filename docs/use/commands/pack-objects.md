@@ -72,9 +72,15 @@ interface PackObjectsResult {
 - **Empty closure still writes a valid pack.** `wants` fully covered by
   `not` (or resolving to nothing) yields `objectCount: 0` and a valid
   32-byte (header + trailer) `.pack` plus its matching `.idx` — never a
-  refusal, matching git's own "nothing to send" behaviour.
-- **Nothing beyond `.pack` and `.idx` is written.** No `.rev`, no bitmap,
-  no delta compression — every entry is a full base object, exactly like
+  refusal, matching git's own "nothing to send" behaviour. A zero-object
+  `.rev` (52 bytes, header only) is still written alongside it.
+- **A sibling `.rev` is written next to every `.idx`.** `pack-<sha>.rev`,
+  byte-identical to what `git index-pack` produces for the same pack, lands
+  beside the `.pack`/`.idx` pair — in the repository's own pack directory
+  and in `outputDirectory` alike. Gated by `pack.writeReverseIndex`
+  (default `true`; see [`config`](config.md)) — set to `false` and only the
+  `.rev` is suppressed, the `.pack`/`.idx` are unaffected. No bitmap, no
+  delta compression — every entry is still a full base object, exactly like
   [`push`](push.md)'s and [`bundleCreate`](bundle.md)'s own packs.
 
 ## Examples
@@ -98,8 +104,10 @@ await repo.packObjects({ wants: ['HEAD'], outputDirectory: '/tmp/export' });
 - `OBJECT_NOT_FOUND` / `REVPARSE_UNRESOLVED` — a `wants` or `not` entry does not resolve.
 - `NOT_A_REPOSITORY` — `ctx` does not point at an initialized repository.
 - `PACK_TOO_LARGE` — the closure exceeds the walk's object cap.
+- `CONFIG_BAD_BOOLEAN_VALUE` — `pack.writeReverseIndex` holds a value git's boolean grammar refuses. Thrown before any artefact is written, so the pack directory stays untouched — matching git's own refusal.
 
 ## See also
 
 - Primitives: [`buildPack`](../primitives/internals.md#buildpack)
 - Related commands: [`revList`](rev-list.md), [`push`](push.md), [`bundle`](bundle.md)
+- ADRs: [624](../../adr/624-the-rev-index-serializer-lives-beside-its-parser.md), [625](../../adr/625-one-shared-pack-offset-sort-for-idx-and-rev.md), [626](../../adr/626-write-pack-artifacts-owns-assembly-and-the-gate.md), [627](../../adr/627-boolean-config-values-are-refused-as-git-refuses-them.md), [628](../../adr/628-the-rev-file-is-written-exclusively-like-its-siblings.md), [629](../../adr/629-the-rev-write-surface-gets-its-own-byte-identical-interop-file.md), [630](../../adr/630-a-failed-rev-write-fails-the-operation.md), [632](../../adr/632-no-per-call-reverse-index-override.md)

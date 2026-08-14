@@ -65,6 +65,7 @@ export {
   objectIdAt,
   parsePackIndex,
 } from './pack-index.js';
+export { type SortedEntry, sortPackIndexEntries } from './pack-order.js';
 // Pack writer
 export type {
   PackEntryMeta,
@@ -81,4 +82,5 @@ export {
   REASON_REV_INDEX_TOO_SMALL,
   REV_HEADER_SIZE,
   revIndexPositionAt,
+  serializePackRevIndex,
 } from './rev-index.js';

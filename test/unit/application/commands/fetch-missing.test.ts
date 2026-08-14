@@ -228,6 +228,79 @@ describe('fetchMissing', () => {
     });
   });
 
+  describe('Given the promisor remote holds a promisor value git refuses', () => {
+    describe('When fetchMissing', () => {
+      it('Then throws CONFIG_BAD_BOOLEAN_VALUE naming remote.origin.promisor', async () => {
+        // Arrange
+        const ctx: Context = { ...createMemoryContext(), transport: forbiddenTransport() };
+        await seedRepo(ctx, {});
+        await withConfig(ctx, `${PARTIAL_CONFIG}\tpromisor = maybe\n`);
+
+        // Act
+        let caught: unknown;
+        try {
+          await fetchMissing(ctx, { oids: [FAKE_TIP] });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — each field individually (mutation-resistant)
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as {
+          code: string;
+          key: string;
+          value: string;
+          source: string;
+        };
+        expect(data.code).toBe('CONFIG_BAD_BOOLEAN_VALUE');
+        expect(data.key).toBe('remote.origin.promisor');
+        expect(data.value).toBe('maybe');
+        expect(data.source).toMatch(/\/config$/);
+      });
+    });
+  });
+
+  describe('Given the promisor remote holds a promisor value git accepts', () => {
+    describe('When fetchMissing is called with an empty oid list', () => {
+      it('Then it is a no-op with no network call — the guard no-ops on a valid value', async () => {
+        // Arrange
+        const ctx: Context = { ...createMemoryContext(), transport: forbiddenTransport() };
+        await seedRepo(ctx, {});
+        await withConfig(ctx, `${PARTIAL_CONFIG}\tpromisor = true\n`);
+
+        // Act
+        const result = await fetchMissing(ctx, { oids: [] });
+
+        // Assert
+        expect(result).toEqual({ remote: 'origin', requested: 0, fetched: 0 });
+      });
+    });
+  });
+
+  describe('Given no [extensions] partialClone is configured, even with a malformed promisor elsewhere', () => {
+    describe('When fetchMissing', () => {
+      it('Then throws NO_PROMISOR_REMOTE, not CONFIG_BAD_BOOLEAN_VALUE — the guard never runs', async () => {
+        // Arrange — a malformed remote.origin.promisor sits in a repo that
+        // never selects a promisor remote, so the guard must not fire.
+        const ctx: Context = { ...createMemoryContext(), transport: forbiddenTransport() };
+        await seedRepo(ctx, {});
+        await withConfig(ctx, `[remote "origin"]\n\turl = ${URL}\n\tpromisor = maybe\n`);
+
+        // Act
+        let caught: unknown;
+        try {
+          await fetchMissing(ctx, { oids: [FAKE_TIP] });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe('NO_PROMISOR_REMOTE');
+      });
+    });
+  });
+
   describe('Given oids already present locally', () => {
     describe('When fetchMissing', () => {
       it('Then they are skipped with no network call', async () => {

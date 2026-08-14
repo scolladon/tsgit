@@ -2,11 +2,13 @@ import { describe, expect, it } from 'vitest';
 
 import type { TsgitError } from '../../../../src/domain/error.js';
 import type { RevIndexCheck } from '../../../../src/domain/storage/error.js';
+import type { PackIndexWriterEntry } from '../../../../src/domain/storage/pack-writer.js';
 import {
   parsePackRevIndex,
   REASON_REV_INDEX_CORRUPT,
   REASON_REV_INDEX_TOO_SMALL,
   revIndexPositionAt,
+  serializePackRevIndex,
 } from '../../../../src/domain/storage/rev-index.js';
 import { buildRevIndex, type RevIndexSpec } from './arbitraries.js';
 
@@ -48,6 +50,27 @@ function extend(bytes: Uint8Array, extraBytes: number): Uint8Array {
   const copy = new Uint8Array(bytes.length + extraBytes);
   copy.set(bytes, 0);
   return copy;
+}
+
+// Pin B (F1, SHA-1, 7 objects) — oid-ascending order with each oid's real
+// pack offset. Body derivation confirmed against `git verify-pack -v`.
+const F1_OID_PREFIXES = [
+  '035f9b74',
+  '4d4bc1c7',
+  '75db9909',
+  '7ee14440',
+  '9a554c2e',
+  'a0054e49',
+  'f1f36270',
+];
+const F1_OFFSETS = [333, 276, 314, 94, 106, 257, 295];
+
+function f1Entries(): PackIndexWriterEntry[] {
+  return F1_OID_PREFIXES.map((prefix, i) => ({
+    id: prefix + '00'.repeat(16),
+    crc32: 0,
+    offset: F1_OFFSETS[i]!,
+  }));
 }
 
 function expectRefusal(act: () => void, check: RevIndexCheck, reasonContains: string): void {
@@ -432,6 +455,194 @@ describe('rev-index', () => {
 
           // Assert
           expect(result).toEqual(spec.body);
+        });
+      });
+    });
+  });
+
+  describe('serializePackRevIndex', () => {
+    describe('Given the F1 fixture entries (7 objects, SHA-1)', () => {
+      describe('When serializing', () => {
+        it('Then bytes [0, 60) equal the Pin B literal and bytes [60, 80) are zero', () => {
+          // Arrange
+          const packChecksum = new Uint8Array(20).fill(0xfc);
+          const sut = serializePackRevIndex;
+
+          // Act
+          const result = sut(f1Entries(), packChecksum);
+
+          // Assert
+          expect(result.length).toBe(80);
+          const view = new DataView(result.buffer, result.byteOffset, result.byteLength);
+          expect(view.getUint32(0)).toBe(0x52494458); // 'RIDX'
+          expect(view.getUint32(4)).toBe(1); // version
+          expect(view.getUint32(8)).toBe(1); // hashId (SHA-1)
+          const body = Array.from({ length: 7 }, (_, p) => view.getUint32(12 + p * 4));
+          expect(body).toEqual([3, 4, 5, 1, 6, 2, 0]);
+          expect(result.subarray(0x28, 0x28 + 20)).toEqual(packChecksum);
+          expect(result.subarray(60, 80)).toEqual(new Uint8Array(20));
+        });
+      });
+    });
+
+    describe('Given the F1 fixture entries fed in different input orders', () => {
+      describe('When serializing', () => {
+        it.each([
+          { label: 'oid-ascending order (identity)', indices: [0, 1, 2, 3, 4, 5, 6] },
+          { label: 'offset-ascending order', indices: [3, 4, 5, 1, 6, 2, 0] },
+          { label: 'offset-descending order', indices: [0, 2, 6, 1, 5, 4, 3] },
+          { label: 'an interleaved order', indices: [1, 6, 3, 0, 5, 2, 4] },
+        ])('Then produces the identical body for $label', ({ indices }) => {
+          // Arrange
+          const entries = f1Entries();
+          const order = indices.map((i) => entries[i]!);
+          const packChecksum = new Uint8Array(20).fill(0xfc);
+          const sut = serializePackRevIndex;
+
+          // Act
+          const result = sut(order, packChecksum);
+
+          // Assert
+          const view = new DataView(result.buffer, result.byteOffset, result.byteLength);
+          const body = Array.from({ length: 7 }, (_, p) => view.getUint32(12 + p * 4));
+          expect(body).toEqual([3, 4, 5, 1, 6, 2, 0]);
+        });
+      });
+    });
+
+    describe('Given 0 entries', () => {
+      describe('When serializing', () => {
+        it('Then produces 52 bytes with an empty body and the checksum at offset 12', () => {
+          // Arrange
+          const packChecksum = new Uint8Array(20).fill(0xaa);
+          const sut = serializePackRevIndex;
+
+          // Act
+          const result = sut([], packChecksum);
+
+          // Assert
+          expect(result.length).toBe(52);
+          expect(result.subarray(12, 32)).toEqual(packChecksum);
+        });
+      });
+    });
+
+    describe('Given 1 entry', () => {
+      describe('When serializing', () => {
+        it('Then produces 56 bytes with body [0]', () => {
+          // Arrange
+          const entry = { id: `aa${'00'.repeat(19)}`, crc32: 0, offset: 42 };
+          const packChecksum = new Uint8Array(20).fill(0xbb);
+          const sut = serializePackRevIndex;
+
+          // Act
+          const result = sut([entry], packChecksum);
+
+          // Assert
+          expect(result.length).toBe(56);
+          const view = new DataView(result.buffer, result.byteOffset, result.byteLength);
+          expect(view.getUint32(12)).toBe(0);
+          expect(result.subarray(16, 36)).toEqual(packChecksum);
+        });
+      });
+    });
+
+    describe('Given a 32-byte (SHA-256) checksum and 3 entries', () => {
+      describe('When serializing', () => {
+        it('Then hashId is 2 and size is 12 + 4N + 64 with checksum at 12 + 4N', () => {
+          // Arrange
+          const entries = [
+            { id: `aa${'00'.repeat(19)}`, crc32: 0, offset: 10 },
+            { id: `bb${'00'.repeat(19)}`, crc32: 0, offset: 20 },
+            { id: `cc${'00'.repeat(19)}`, crc32: 0, offset: 5 },
+          ];
+          const packChecksum = new Uint8Array(32).fill(0xcc);
+          const sut = serializePackRevIndex;
+
+          // Act
+          const result = sut(entries, packChecksum);
+
+          // Assert
+          const view = new DataView(result.buffer, result.byteOffset, result.byteLength);
+          expect(view.getUint32(8)).toBe(2);
+          expect(result.length).toBe(12 + 4 * 3 + 64);
+          expect(result.subarray(12 + 4 * 3, 12 + 4 * 3 + 32)).toEqual(packChecksum);
+        });
+      });
+    });
+
+    describe('Given a packChecksum of 0 bytes', () => {
+      describe('When serializing', () => {
+        it('Then refuses with hash-id', () => {
+          // Arrange
+          const entries = [{ id: `aa${'00'.repeat(19)}`, crc32: 0, offset: 1 }];
+          const packChecksum = new Uint8Array(0);
+
+          // Act & Assert
+          expectRefusal(() => serializePackRevIndex(entries, packChecksum), 'hash-id', 'got 0');
+        });
+      });
+    });
+
+    describe('Given a packChecksum of 19 bytes', () => {
+      describe('When serializing', () => {
+        it('Then refuses with hash-id', () => {
+          // Arrange
+          const entries = [{ id: `aa${'00'.repeat(19)}`, crc32: 0, offset: 1 }];
+          const packChecksum = new Uint8Array(19);
+
+          // Act & Assert
+          expectRefusal(() => serializePackRevIndex(entries, packChecksum), 'hash-id', 'got 19');
+        });
+      });
+    });
+
+    describe('Given a packChecksum of 21 bytes', () => {
+      describe('When serializing', () => {
+        it('Then refuses with hash-id', () => {
+          // Arrange
+          const entries = [{ id: `aa${'00'.repeat(19)}`, crc32: 0, offset: 1 }];
+          const packChecksum = new Uint8Array(21);
+
+          // Act & Assert
+          expectRefusal(() => serializePackRevIndex(entries, packChecksum), 'hash-id', 'got 21');
+        });
+      });
+    });
+
+    describe('Given a packChecksum of 33 bytes', () => {
+      describe('When serializing', () => {
+        it('Then refuses with hash-id', () => {
+          // Arrange
+          const entries = [{ id: `aa${'00'.repeat(19)}`, crc32: 0, offset: 1 }];
+          const packChecksum = new Uint8Array(33);
+
+          // Act & Assert
+          expectRefusal(() => serializePackRevIndex(entries, packChecksum), 'hash-id', 'got 33');
+        });
+      });
+    });
+
+    describe('Given entries with offsets above 0x7fffffff', () => {
+      describe('When serializing', () => {
+        it('Then orders by the real offset, not the .idx large-offset encoding', () => {
+          // Arrange — oid order is aa(0), bb(1), cc(2); ascending real offset
+          // is bb < cc < aa, the opposite of their .idx large-offset ranks.
+          const entries = [
+            { id: `aa${'00'.repeat(19)}`, crc32: 0, offset: 0x200000000 },
+            { id: `bb${'00'.repeat(19)}`, crc32: 0, offset: 0x80000001 },
+            { id: `cc${'00'.repeat(19)}`, crc32: 0, offset: 0x100000000 },
+          ];
+          const packChecksum = new Uint8Array(20).fill(0xdd);
+          const sut = serializePackRevIndex;
+
+          // Act
+          const result = sut(entries, packChecksum);
+
+          // Assert
+          const view = new DataView(result.buffer, result.byteOffset, result.byteLength);
+          const body = [view.getUint32(12), view.getUint32(16), view.getUint32(20)];
+          expect(body).toEqual([1, 2, 0]);
         });
       });
     });

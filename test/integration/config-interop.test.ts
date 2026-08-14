@@ -46,6 +46,7 @@ import {
   type PeerPair,
   runGit,
   tryRunGit,
+  tryRunGitWithExit,
 } from './interop-helpers.js';
 
 const parseGitConfigList = (raw: string): ReadonlyMap<string, ReadonlyArray<string>> => {
@@ -2640,18 +2641,6 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
         oldName: 'a',
         newName: 'b',
       },
-      {
-        label: 'a bad-key sibling block (D2a)',
-        bytes: '[a]\n\tbad!key = v\n[b]\n\tk = w\n',
-        oldName: 'b',
-        newName: 'c',
-      },
-      {
-        label: 'the bad-key block itself (D2c)',
-        bytes: '[a]\n\tbad!key = v\n[b]\n\tk = w\n',
-        oldName: 'a',
-        newName: 'c',
-      },
     ];
 
     describe('When git and tsgit each --rename-section', () => {
@@ -2705,16 +2694,6 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
         bytes: 'o = 1\n[a]\n\tk = v\n',
         sectionName: 'a',
       },
-      {
-        label: 'a bad-key sibling block (D2b)',
-        bytes: '[a]\n\tbad!key = v\n[b]\n\tk = w\n',
-        sectionName: 'b',
-      },
-      {
-        label: 'a malformed-value sibling block (D2d)',
-        bytes: '[a]\n\tk = "unclosed\n[b]\n\tk = w\n',
-        sectionName: 'b',
-      },
     ];
 
     describe('When git and tsgit each --remove-section', () => {
@@ -2741,6 +2720,97 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
           // Assert
           const { oursConfig, peerConfig } = await readTwinConfigs(pair);
           expect(oursConfig).toBe(peerConfig);
+        },
+        60_000,
+      );
+    });
+
+    // In-repo (no --file), git's repository-discovery config read dies on a
+    // malformed line ANYWHERE in .git/config — even for the config porcelain
+    // operating on a sibling section. Only that in-repo refusal is pinned
+    // here: git's rewrite machinery in `--file` mode (no repository
+    // discovery) tolerates these same bytes, but tsgit has no file-scope
+    // surface to compare it against. tsgit's local-scope commands mirror the
+    // in-repo path, whose discovery read tokenizes the whole file.
+    const MALFORMED_SIBLING_ROWS: ReadonlyArray<{
+      readonly label: string;
+      readonly bytes: string;
+      readonly op: 'rename' | 'remove';
+      readonly sectionName: string;
+    }> = [
+      {
+        label: 'rename beside a bad-key block (D2a)',
+        bytes: '[a]\n\tbad!key = v\n[b]\n\tk = w\n',
+        op: 'rename',
+        sectionName: 'b',
+      },
+      {
+        label: 'rename of the bad-key block itself (D2c)',
+        bytes: '[a]\n\tbad!key = v\n[b]\n\tk = w\n',
+        op: 'rename',
+        sectionName: 'a',
+      },
+      {
+        label: 'remove beside a bad-key block (D2b)',
+        bytes: '[a]\n\tbad!key = v\n[b]\n\tk = w\n',
+        op: 'remove',
+        sectionName: 'b',
+      },
+      {
+        label: 'remove beside a malformed-value block (D2d)',
+        bytes: '[a]\n\tk = "unclosed\n[b]\n\tk = w\n',
+        op: 'remove',
+        sectionName: 'b',
+      },
+    ];
+
+    describe('When git (in-repo) and tsgit each edit a section beside a malformed line', () => {
+      it.each(MALFORMED_SIBLING_ROWS)(
+        'Then both refuse and the config bytes are untouched for "$label"',
+        async ({ bytes, op, sectionName }) => {
+          // Arrange — same malformed bytes in both repos' own .git/config
+          await seedTwinConfigs(pair, bytes);
+          const gitArgs =
+            op === 'rename'
+              ? ['-C', pair.peer, 'config', '--rename-section', sectionName, 'z']
+              : ['-C', pair.peer, 'config', '--remove-section', sectionName];
+
+          // Act — canonical git operating on its own repo config
+          const gitResult = tryRunGitWithExit(gitArgs);
+
+          // Act — tsgit local scope on its own repo config
+          const ctx = createNodeContext({ workDir: pair.ours });
+          let tsgitError: TsgitError | undefined;
+          try {
+            if (op === 'rename') {
+              await configRenameSectionCmd(ctx, {
+                oldName: sectionName,
+                newName: 'z',
+                scope: 'local',
+              });
+            } else {
+              await configRemoveSection(ctx, { name: sectionName, scope: 'local' });
+            }
+          } catch (err) {
+            if (err instanceof TsgitError) tsgitError = err;
+          }
+
+          // Assert — git refuses at discovery with the bad line named
+          expect(gitResult.exitCode).toBe(128);
+          expect(gitResult.stderr).toContain('bad config line 2');
+
+          // Assert — tsgit refuses with the same line in its structured data
+          expect(tsgitError, 'expected tsgit to throw TsgitError').not.toBeUndefined();
+          const data = (tsgitError as TsgitError).data;
+          expect(data.code).toBe('CONFIG_PARSE_ERROR');
+          if (data.code === 'CONFIG_PARSE_ERROR') {
+            expect(data.line).toBe(2);
+          }
+
+          // Assert — neither tool touched the bytes
+          const { oursConfig, peerConfig } = await readTwinConfigs(pair);
+          expect(oursConfig).toBe(bytes);
+          expect(peerConfig).toBe(bytes);
         },
         60_000,
       );

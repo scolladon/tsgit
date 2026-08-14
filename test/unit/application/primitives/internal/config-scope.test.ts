@@ -62,6 +62,17 @@ describe('resolveScopePath', () => {
           },
         },
         {
+          label:
+            'scope "worktree" with extensions.worktreeConfig = yes in local (accepted word, not the exact literal "true")',
+          scope: 'worktree' as const,
+          arrange: () => {
+            const ctx = createMemoryContext({
+              files: { '/repo/.git/config': u8('[extensions]\n\tworktreeConfig = yes\n') },
+            });
+            return { ctx, expected: `${ctx.layout.gitDir}/config.worktree` };
+          },
+        },
+        {
           label: 'scope "global" with the XDG file present',
           scope: 'global' as const,
           arrange: () => ({
@@ -266,8 +277,59 @@ describe('isWorktreeScopeActive', () => {
           expected: false,
         },
         {
-          label: '[extensions] worktreeConfig = false (must be exactly "true")',
+          label: '[extensions] worktreeConfig = false (boolean-false word)',
           files: { '/repo/.git/config': u8('[extensions]\n\tworktreeConfig = false\n') },
+          expected: false,
+        },
+        {
+          label:
+            '[extensions] worktreeConfig = maybe (grammar-refused — inert HERE; the discovery gate raises it)',
+          files: { '/repo/.git/config': u8('[extensions]\n\tworktreeConfig = maybe\n') },
+          expected: false,
+        },
+        {
+          label: '[extensions] worktreeConfig = TRUE (case-insensitive word)',
+          files: { '/repo/.git/config': u8('[extensions]\n\tworktreeConfig = TRUE\n') },
+          expected: true,
+        },
+        {
+          label: '[extensions] worktreeConfig = yes',
+          files: { '/repo/.git/config': u8('[extensions]\n\tworktreeConfig = yes\n') },
+          expected: true,
+        },
+        {
+          label: '[extensions] worktreeConfig = on',
+          files: { '/repo/.git/config': u8('[extensions]\n\tworktreeConfig = on\n') },
+          expected: true,
+        },
+        {
+          label: '[extensions] worktreeConfig = 1',
+          files: { '/repo/.git/config': u8('[extensions]\n\tworktreeConfig = 1\n') },
+          expected: true,
+        },
+        {
+          label: '[extensions] worktreeConfig = 2 (integer-true, magnitude arm)',
+          files: { '/repo/.git/config': u8('[extensions]\n\tworktreeConfig = 2\n') },
+          expected: true,
+        },
+        {
+          label: '[extensions] worktreeConfig (valueless — git’s internal NULL, always true)',
+          files: { '/repo/.git/config': u8('[extensions]\n\tworktreeConfig\n') },
+          expected: true,
+        },
+        {
+          label: '[extensions] worktreeConfig = off',
+          files: { '/repo/.git/config': u8('[extensions]\n\tworktreeConfig = off\n') },
+          expected: false,
+        },
+        {
+          label: '[extensions] worktreeConfig = 0',
+          files: { '/repo/.git/config': u8('[extensions]\n\tworktreeConfig = 0\n') },
+          expected: false,
+        },
+        {
+          label: '[extensions] worktreeConfig = "" (empty value)',
+          files: { '/repo/.git/config': u8('[extensions]\n\tworktreeConfig = ""\n') },
           expected: false,
         },
       ])('Then returns $expected ($label)', async ({ files, expected }) => {

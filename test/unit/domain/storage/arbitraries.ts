@@ -2,6 +2,7 @@ import fc from 'fast-check';
 
 import { compareBytes, encode, hexToBytes } from '../../../../src/domain/objects/encoding.js';
 import type { ObjectId } from '../../../../src/domain/objects/object-id.js';
+import type { PackIndexWriterEntry } from '../../../../src/domain/storage/pack-writer.js';
 import type {
   BitmapEntrySpec,
   BitmapSpec,
@@ -421,6 +422,34 @@ export function buildRevIndex(spec: RevIndexSpec): Uint8Array {
   bytes.set(packChecksum, REV_HEADER_SIZE + bodySize);
 
   return bytes;
+}
+
+/**
+ * Production-domain writer entries — distinct oids AND distinct offsets, the
+ * shape `serializePackRevIndex` actually receives (as opposed to
+ * `arbRevIndexSpec`'s hostile, disagreeing-width specs below, which the
+ * production writer can never emit). Offsets are unique by construction in
+ * every real pack, so a `.rev` round-trip property needs a generator that
+ * upholds the same invariant.
+ */
+export function arbPackIndexWriterEntries(maxLength: number): fc.Arbitrary<PackIndexWriterEntry[]> {
+  return fc
+    .array(fc.tuple(arbObjectId(40), fc.integer({ min: 0, max: 0xffffffff })), {
+      minLength: 0,
+      maxLength,
+    })
+    .map((tuples) => {
+      const seenOid = new Set<string>();
+      const seenOffset = new Set<number>();
+      const entries: PackIndexWriterEntry[] = [];
+      for (const [id, offset] of tuples) {
+        if (seenOid.has(id) || seenOffset.has(offset)) continue;
+        seenOid.add(id);
+        seenOffset.add(offset);
+        entries.push({ id, crc32: 0, offset });
+      }
+      return entries;
+    });
 }
 
 /**

@@ -19,6 +19,7 @@ import type { Context } from '../../ports/context.js';
 import type { ParsedConfig } from '../primitives/config-read.js';
 import { readConfig } from '../primitives/config-read.js';
 import { createTag } from '../primitives/create-tag.js';
+import { assertValidBooleanConfig } from '../primitives/internal/boolean-config-guard.js';
 import { commonGitDir, perWorktreeRefDir } from '../primitives/path-layout.js';
 import { readObject } from '../primitives/read-object.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
@@ -84,6 +85,10 @@ export const tagList = async (ctx: Context): Promise<TagListResult> => {
 
 export const tagCreate = async (ctx: Context, input: TagCreateInput): Promise<TagCreateResult> => {
   await assertOperationalRepository(ctx);
+  // git reads tag.gpgsign for a lightweight tag too, and refuses a malformed
+  // value before the target resolves — a bad target surfaces the boolean
+  // refusal, not the ref error — so the guard precedes name/target resolution.
+  await assertValidBooleanConfig(ctx, 'tag', undefined, ['gpgsign']);
   const name = validateRefName(`${TAGS_PREFIX}${input.name}`);
   const target = input.target !== undefined ? input.target : await currentHeadId(ctx);
   const targetId = /^[0-9a-f]{40}$/.test(target)

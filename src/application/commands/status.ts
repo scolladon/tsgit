@@ -18,6 +18,7 @@ import {
   type WorkingTreeComparison,
   type WorkingTreeDelta,
 } from '../primitives/compare-working-tree-entry.js';
+import { assertValidPromisorRemoteConfig } from '../primitives/internal/boolean-config-guard.js';
 import { joinPath } from '../primitives/internal/join-working-tree-path.js';
 import {
   type AttributeProvider,
@@ -121,6 +122,8 @@ interface GranularityTracker {
  */
 export const status = async (ctx: Context): Promise<StatusResult> => {
   await assertOperationalRepository(ctx);
+  // Promisor-remote guard (see assertValidPromisorRemoteConfig) — loaded up front.
+  await assertValidPromisorRemoteConfig(ctx);
   const head = await readHeadRaw(ctx);
   const branch = branchRefFromHead(head);
   const detached = head.kind === 'direct';

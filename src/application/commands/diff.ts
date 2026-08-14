@@ -1,6 +1,7 @@
 import type { RenameDetectOptions, StatTreeDiff, TreeDiff } from '../../domain/diff/index.js';
 import type { Context, RepositoryConfig } from '../../ports/context.js';
 import { diffTrees } from '../primitives/diff-trees.js';
+import { assertValidPromisorRemoteConfig } from '../primitives/internal/boolean-config-guard.js';
 import type { DiffTreesOptions } from '../primitives/types.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
 import { resolveTreeish } from './internal/resolve-rev.js';
@@ -52,6 +53,8 @@ export async function diff(ctx: Context, opts: DiffOptions = {}): Promise<TreeDi
   await assertOperationalRepository(ctx);
   const from = await resolveTreeish(ctx, opts.from ?? 'HEAD');
   const to = opts.to !== undefined ? await resolveTreeish(ctx, opts.to) : undefined;
+  // Promisor-remote guard (see assertValidPromisorRemoteConfig) — after rev resolution.
+  await assertValidPromisorRemoteConfig(ctx);
   const treeOptions = resolveDiffOptions(opts, ctx.config);
   return diffTrees(ctx, from, to, treeOptions);
 }

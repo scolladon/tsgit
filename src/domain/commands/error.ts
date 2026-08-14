@@ -154,6 +154,18 @@ export type CommandError =
       readonly value: string;
       readonly reason: 'invalid unit' | 'out of range';
     }
+  | {
+      readonly code: 'CONFIG_BAD_BOOLEAN_VALUE';
+      readonly key: string;
+      readonly source: string;
+      readonly value: string;
+    }
+  | {
+      readonly code: 'CONFIG_BAD_BOOLEAN_LITERAL';
+      readonly key: string;
+      readonly source: string;
+      readonly value: string;
+    }
   | { readonly code: 'CONFIG_BAD_ZLIB_LEVEL'; readonly level: number }
   | {
       readonly code: 'CONFIG_MULTIPLE_VALUES';
@@ -530,7 +542,7 @@ export const configParseError = (
  * `missing value for '<key>'` / `bad config variable '<key>' … at line <N>` refusal.
  */
 export const configMissingValue = (key: string, source: string, line: number): TsgitError =>
-  new TsgitError({ code: 'CONFIG_MISSING_VALUE', key, source, line });
+  new TsgitError({ code: 'CONFIG_MISSING_VALUE', key: sanitizeForDisplay(key), source, line });
 
 /**
  * A `[merge "<name>"]` section is registered (`name` and/or `recursive` set) but
@@ -556,10 +568,37 @@ export const configBadNumericValue = (
 ): TsgitError =>
   new TsgitError({
     code: 'CONFIG_BAD_NUMERIC_VALUE',
-    key,
+    key: sanitizeForDisplay(key),
     source,
     value: sanitizeForDisplay(value),
     reason,
+  });
+
+/**
+ * A boolean-typed config key is present but its value fails git's boolean grammar
+ * (not a recognised word, and not an integer in the C `int` range). `key` is the
+ * fully-qualified config key (section and variable lower-cased, subsection verbatim),
+ * `source` is the file path, `value` is the raw post-tokenizer string.
+ */
+export const configBadBooleanValue = (key: string, source: string, value: string): TsgitError =>
+  new TsgitError({
+    code: 'CONFIG_BAD_BOOLEAN_VALUE',
+    key: sanitizeForDisplay(key),
+    source,
+    value: sanitizeForDisplay(value),
+  });
+
+/**
+ * The `push.gpgSign` tri-state literal check fails its boolean fallback. Same shape as
+ * `configBadBooleanValue`, distinct code — git reports a different message for this one
+ * key (`invalid value for '<key>'` rather than `bad boolean config value '<v>' for '<k>'`).
+ */
+export const configBadBooleanLiteral = (key: string, source: string, value: string): TsgitError =>
+  new TsgitError({
+    code: 'CONFIG_BAD_BOOLEAN_LITERAL',
+    key: sanitizeForDisplay(key),
+    source,
+    value: sanitizeForDisplay(value),
   });
 
 /**

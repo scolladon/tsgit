@@ -814,10 +814,10 @@
   "devDependencies": {
     "@arethetypeswrong/cli": "0.18.5",
     "@biomejs/biome": "2.5.8",
-    "@cloudflare/vitest-pool-workers": "0.21.0",
-    "@cloudflare/workers-types": "5.20260811.1",
-    "@commitlint/cli": "21.2.1",
-    "@commitlint/config-conventional": "21.2.0",
+    "@cloudflare/vitest-pool-workers": "0.21.3",
+    "@cloudflare/workers-types": "5.20260814.1",
+    "@commitlint/cli": "21.2.2",
+    "@commitlint/config-conventional": "21.2.2",
     "@ls-lint/ls-lint": "2.3.1",
     "@playwright/test": "1.62.1",
     "@rollup/plugin-node-resolve": "16.0.3",
@@ -833,9 +833,9 @@
     "dependency-cruiser": "18.2.0",
     "fast-check": "4.9.0",
     "husky": "9.1.7",
-    "isomorphic-git": "1.41.3",
-    "jscpd": "5.0.14",
-    "knip": "6.32.1",
+    "isomorphic-git": "1.41.4",
+    "jscpd": "5.0.15",
+    "knip": "6.32.2",
     "lint-staged": "17.3.0",
     "minimatch": "10.2.6",
     "rollup": "4.62.4",
@@ -846,6 +846,6 @@
     "typescript": "6.0.3",
     "vitest": "4.1.10",
     "wireit": "0.14.13",
-    "wrangler": "4.120.1"
+    "wrangler": "4.123.0"
   }
 }

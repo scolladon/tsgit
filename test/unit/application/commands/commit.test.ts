@@ -938,6 +938,123 @@ describe('commit — signing', () => {
     });
   });
 
+  describe('Given commit.gpgsign holds a value git refuses', () => {
+    describe('When commit is called with opts.sign left undefined', () => {
+      it('Then throws CONFIG_BAD_BOOLEAN_VALUE naming commit.gpgsign and writes nothing', async () => {
+        // Arrange
+        const ctx = await seedSigning(undefined, '[commit]\n\tgpgSign = maybe\n');
+
+        // Act
+        let caught: unknown;
+        try {
+          await commit(ctx, { message: 'm', author });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — each field individually (mutation-resistant)
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as {
+          code: string;
+          key: string;
+          value: string;
+          source: string;
+        };
+        expect(data.code).toBe('CONFIG_BAD_BOOLEAN_VALUE');
+        expect(data.key).toBe('commit.gpgsign');
+        expect(data.value).toBe('maybe');
+        expect(data.source).toMatch(/\/config$/);
+        expect(await ctx.fs.exists(branchRefPath(ctx))).toBe(false);
+      });
+    });
+
+    describe('When commit is called with opts.sign explicitly false', () => {
+      it('Then it still throws — git reads the config regardless of an explicit override', async () => {
+        // Arrange
+        const ctx = await seedSigning(undefined, '[commit]\n\tgpgSign = maybe\n');
+
+        // Act
+        let caught: unknown;
+        try {
+          await commit(ctx, { message: 'm', author, sign: false });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe('CONFIG_BAD_BOOLEAN_VALUE');
+      });
+    });
+
+    describe('When commit is called with a malformed remote promisor beside it', () => {
+      it('Then throws CONFIG_BAD_BOOLEAN_VALUE for remote.origin.promisor — commit loads promisor config up front', async () => {
+        // Arrange — config lands AFTER seeding (add() also guards this key)
+        const ctx = await seedSigning();
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[remote "origin"]\n\tpromisor = maybe\n',
+        );
+        __resetConfigCacheForTests();
+
+        // Act
+        let caught: unknown;
+        try {
+          await commit(ctx, { message: 'm', author });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as { code: string; key: string };
+        expect(data.code).toBe('CONFIG_BAD_BOOLEAN_VALUE');
+        expect(data.key).toBe('remote.origin.promisor');
+      });
+    });
+
+    describe('When commit is called with nothing staged', () => {
+      it('Then the boolean refusal precedes NOTHING_TO_COMMIT — git dies before the tree is built', async () => {
+        // Arrange — no staged entry at all, only the malformed config.
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[commit]\n\tgpgSign = maybe\n');
+
+        // Act
+        let caught: unknown;
+        try {
+          await commit(ctx, { message: 'm', author });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as { code: string; key: string };
+        expect(data.code).toBe('CONFIG_BAD_BOOLEAN_VALUE');
+        expect(data.key).toBe('commit.gpgsign');
+      });
+    });
+  });
+
+  describe('Given commit.gpgsign=yes (word form) in config and opts.sign is undefined', () => {
+    describe('When commit is called', () => {
+      it('Then it signs — the guard no-ops on an accepted value', async () => {
+        // Arrange
+        const runner = stubCommandRunner({ stdout: new TextEncoder().encode(armor()) });
+        const ctx = await seedSigning(runner, '[commit]\n\tgpgSign = yes\n');
+
+        // Act
+        const result = await commit(ctx, { message: 'm', author });
+
+        // Assert
+        const stored = await readObject(ctx, result.id);
+        if (stored.type !== 'commit') throw new Error('expected a commit object');
+        expect(stored.data.gpgSignature).toBe(signedArmor());
+      });
+    });
+  });
+
   afterEach(() => __resetConfigCacheForTests());
 });
 

@@ -17,12 +17,19 @@ import {
 import { operationAborted, TsgitError } from '../../domain/error.js';
 import type { IndexEntry } from '../../domain/git-index/index.js';
 import { emptyPathspec, pathspecNoMatch } from '../../domain/index.js';
-import { deriveWorkingMode, type FileMode, type ObjectId } from '../../domain/objects/index.js';
+import {
+  deriveWorkingMode,
+  FILE_MODE,
+  type FileMode,
+  type ObjectId,
+} from '../../domain/objects/index.js';
 import type { FilePath } from '../../domain/objects/object-id.js';
 import { matchesPathspec, type Pathspec } from '../../domain/pathspec/index.js';
 import { CHERRY_PICK, MERGE, REBASE, REVERT } from '../../domain/sequencer/operation-labels.js';
 import type { Context } from '../../ports/context.js';
+import { assertValidPromisorRemoteConfig } from '../primitives/internal/boolean-config-guard.js';
 import { indexEntryFromStat } from '../primitives/internal/index-entry-from-stat.js';
+import { type IndexMtime, isEntryStatClean } from '../primitives/internal/is-entry-stat-clean.js';
 import { joinPath } from '../primitives/internal/join-working-tree-path.js';
 import {
   type AttributeProvider,
@@ -121,12 +128,12 @@ const addLiteralOnly = async (
 ): Promise<AddResult> => {
   const lock = await acquireIndexLock(ctx);
   try {
-    const existing = await readExistingEntries(ctx);
+    const { entries: existing, indexMtime } = await readExistingEntries(ctx);
     const newEntries = new Map<FilePath, IndexEntry>(existing);
     const added: FilePath[] = [];
     const modified: FilePath[] = [];
     for (const path of validated) {
-      const result = await stageOne(ctx, path, provider);
+      const result = await stageOne(ctx, path, provider, existing.get(path), indexMtime);
       if (result === 'missing') throw pathspecNoMatch(path);
       const previous = existing.get(path);
       newEntries.set(path, result);
@@ -172,14 +179,14 @@ const addByPathspec = async (
   };
   const lock = await acquireIndexLock(ctx);
   try {
-    const existing = await readExistingEntries(ctx);
+    const { entries: existing, indexMtime } = await readExistingEntries(ctx);
     const newEntries = new Map<FilePath, IndexEntry>(existing);
     const matched: FilePath[] = [];
     const added: FilePath[] = [];
     const modified: FilePath[] = [];
     const seen = new Set<FilePath>();
     for await (const walkEntry of walkWorkingTree(ctx, { ignore: combinedIgnore })) {
-      const result = await processWalkEntry(ctx, walkEntry, existing, seen, provider);
+      const result = await processWalkEntry(ctx, walkEntry, existing, seen, provider, indexMtime);
       if (result === undefined) continue;
       matched.push(result.path);
       newEntries.set(result.path, result.entry);
@@ -208,7 +215,7 @@ export const addAll = async (
   const ignore = ignoreOverride ?? (await buildRepoIgnorePredicate(ctx));
   const lock = await acquireIndexLock(ctx);
   try {
-    const existing = await readExistingEntries(ctx);
+    const { entries: existing, indexMtime } = await readExistingEntries(ctx);
     const newEntries = new Map<FilePath, IndexEntry>(existing);
     const seen = new Set<FilePath>();
     const added: FilePath[] = [];
@@ -218,7 +225,7 @@ export const addAll = async (
     // (skipping ignored subtrees) and every leaf. By the time we see a
     // leaf here, the ignore filter has already passed.
     for await (const walkEntry of walkWorkingTree(ctx, { ignore })) {
-      const result = await processWalkEntry(ctx, walkEntry, existing, seen, provider);
+      const result = await processWalkEntry(ctx, walkEntry, existing, seen, provider, indexMtime);
       if (result === undefined) continue;
       newEntries.set(result.path, result.entry);
       if (result.kind === 'added') added.push(result.path);
@@ -293,6 +300,7 @@ const processWalkEntry = async (
   existing: ReadonlyMap<FilePath, IndexEntry>,
   seen: Set<FilePath>,
   provider: AttributeProvider | undefined,
+  indexMtime: IndexMtime | undefined,
 ): Promise<WalkOutcome | undefined> => {
   const { path, stat } = walkEntry;
   // Mark presence BEFORE any further filter so the post-walk
@@ -306,7 +314,7 @@ const processWalkEntry = async (
   if (stat.size > MAX_WORKING_TREE_BLOB_BYTES) {
     throw workingTreeFileTooLarge(path, stat.size, MAX_WORKING_TREE_BLOB_BYTES);
   }
-  const entry = await stageFromStat(ctx, path, stat, provider);
+  const entry = await stageFromStat(ctx, path, stat, provider, existing.get(path), indexMtime);
   const previous = existing.get(path);
   if (previous === undefined) return { kind: 'added', path, entry };
   if (previous.id !== entry.id || previous.mode !== entry.mode) {
@@ -315,17 +323,22 @@ const processWalkEntry = async (
   return { kind: 'unchanged', path, entry };
 };
 
-const readExistingEntries = async (ctx: Context): Promise<ReadonlyMap<FilePath, IndexEntry>> => {
+interface ExistingIndexState {
+  readonly entries: ReadonlyMap<FilePath, IndexEntry>;
+  readonly indexMtime: IndexMtime | undefined;
+}
+
+const readExistingEntries = async (ctx: Context): Promise<ExistingIndexState> => {
   try {
     const index = await readIndex(ctx);
     const out = new Map<FilePath, IndexEntry>();
     for (const entry of index.entries) out.set(entry.path, entry);
-    return out;
+    return { entries: out, indexMtime: index.indexMtime };
   } catch (err) {
     // Missing-or-corrupt index = "no entries"; everything else propagates so
     // I/O failures and permission errors are not silently absorbed.
     if (err instanceof TsgitError && INDEX_MISSING_CODES.has(err.data.code)) {
-      return new Map();
+      return { entries: new Map(), indexMtime: undefined };
     }
     throw err;
   }
@@ -335,10 +348,12 @@ const stageOne = async (
   ctx: Context,
   path: FilePath,
   provider: AttributeProvider | undefined,
+  previous: IndexEntry | undefined,
+  indexMtime: IndexMtime | undefined,
 ): Promise<IndexEntry | 'missing'> => {
   const stat = await ctx.fs.lstat(joinPath(ctx.layout.workDir, path)).catch(() => undefined);
   if (stat === undefined) return 'missing';
-  return stageFromStat(ctx, path, stat, provider);
+  return stageFromStat(ctx, path, stat, provider, previous, indexMtime);
 };
 
 const stageFromStat = async (
@@ -346,6 +361,8 @@ const stageFromStat = async (
   path: FilePath,
   stat: Awaited<ReturnType<Context['fs']['lstat']>>,
   provider: AttributeProvider | undefined,
+  previous: IndexEntry | undefined,
+  indexMtime: IndexMtime | undefined,
 ): Promise<IndexEntry> => {
   // Re-lstat under the index lock to close the walk→stage TOCTOU window:
   // an attacker swapping the inode (regular ↔ symlink, file ↔ directory)
@@ -353,6 +370,8 @@ const stageFromStat = async (
   // read through `ctx.fs.read` (which follows symlinks), break the mode
   // classification, or trip an opaque adapter error. Abort the whole add
   // on any type flip.
+  // Promisor-remote guard (see assertValidPromisorRemoteConfig) — once the write path engages.
+  await assertValidPromisorRemoteConfig(ctx);
   const fresh = await ctx.fs.lstat(joinPath(ctx.layout.workDir, path));
   if (
     fresh.isSymbolicLink !== stat.isSymbolicLink ||
@@ -360,6 +379,22 @@ const stageFromStat = async (
     fresh.isFile !== stat.isFile
   ) {
     throw operationAborted();
+  }
+  // `ie_match_stat` short-circuit, as git's add takes it: a stat-clean path
+  // (against the racy-guarded index mtime) whose mode is unchanged is
+  // re-staged as-is — no read, no clean filter, no hash. This is also what
+  // keeps the filter-section validation surface faithful: git only validates
+  // `[filter *].required` when it actually converts, which a stat-clean path
+  // never does.
+  if (
+    previous !== undefined &&
+    indexMtime !== undefined &&
+    // Stryker disable next-line ConditionalExpression: equivalent — deriveWorkingMode never returns FILE_MODE.GITLINK, so the next conjunct (mode match) is unconditionally false whenever previous.mode is GITLINK; forcing this operand's real-false case to `true` can never flip the chain's overall value.
+    previous.mode !== FILE_MODE.GITLINK &&
+    deriveWorkingMode(fresh) === previous.mode &&
+    isEntryStatClean(previous, fresh, indexMtime)
+  ) {
+    return previous;
   }
   // Authoritative size cap — uses the fresh stat so a grow-between-walk-and-
   // stage race cannot smuggle an oversize blob past the pre-filter.
@@ -391,7 +426,7 @@ const applyCleanFilter = async (
   provider: AttributeProvider | undefined,
 ): Promise<Uint8Array> => {
   if (provider === undefined || ctx.command === undefined || isSymbolicLink) return bytes;
-  const choice = await resolveFilterDriver(ctx, provider, path);
+  const choice = await resolveFilterDriver(ctx, provider, path, { eagerSectionValidation: true });
   if (choice.kind !== 'external' || choice.clean === undefined) return bytes;
   const result = await runFilterDriver(ctx, ctx.command, choice.clean, bytes);
   if (result.ok) return result.bytes;

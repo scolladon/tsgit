@@ -15,6 +15,7 @@ import type { Context } from '../../ports/context.js';
 import type { PromisorRemote } from '../../ports/promisor.js';
 import { readConfig } from '../primitives/config-read.js';
 import { fetchPack } from '../primitives/fetch-pack.js';
+import { assertValidPromisorRemoteConfig } from '../primitives/internal/boolean-config-guard.js';
 import { createPackRegistry, type PackRegistry } from '../primitives/pack-registry.js';
 import { commonGitDir, looseObjectPath } from '../primitives/path-layout.js';
 import { negotiateDiscovery, negotiatePackBytes } from './internal/fetch-negotiation.js';
@@ -84,6 +85,8 @@ const fetchMissingInternal = async (
   const config = await readConfig(ctx);
   const remoteName = config.extensions?.partialClone;
   if (remoteName === undefined) return { kind: 'no-promisor' };
+  // Promisor-remote guard (see assertValidPromisorRemoteConfig) — on the lazy-fetch path.
+  await assertValidPromisorRemoteConfig(ctx);
   const url = config.remote?.get(remoteName)?.url;
   // An absent OR empty url means the promisor remote is not usably configured;
   // surface REMOTE_NOT_CONFIGURED rather than a cryptic INVALID_BASE_URL.

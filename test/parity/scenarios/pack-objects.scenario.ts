@@ -15,15 +15,15 @@ import type { Scenario } from './types.ts';
 interface PackObjectsScenarioResult {
   readonly objectCount: number;
   readonly idxObjectCount: number;
-  /** The pack directory holds exactly the `.pack` + `.idx` this call wrote —
-   *  no `.rev`, no bitmap. */
+  /** The pack directory holds exactly the `.pack` + `.idx` + `.rev` this
+   *  call wrote — no bitmap. */
   readonly packDirEntryCount: number;
 }
 
 export const packObjectsScenario: Scenario<PackObjectsScenarioResult> = {
   name: 'pack-objects',
   inputs: { files: [FILES.helloA], author: AUTHOR, message: MESSAGES.seed },
-  expected: { objectCount: 3, idxObjectCount: 3, packDirEntryCount: 2 },
+  expected: { objectCount: 3, idxObjectCount: 3, packDirEntryCount: 3 },
   run: async (repo, inputs) => {
     await repo.init();
     await repo.add(['a.txt']);

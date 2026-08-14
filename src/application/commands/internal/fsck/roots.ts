@@ -71,13 +71,19 @@ async function probePresence(ctx: Context, id: ObjectId): Promise<boolean | unde
   }
 }
 
-/** Add every resolvable ref's target to `roots`. */
+/**
+ * Add every resolvable ref's target to `roots`. Returns whether any ref
+ * resolved to an oid ABSENT from the universe — git probes such a target
+ * against the promisor machinery (`is_promisor_object`), so the caller's
+ * promisor-config gate must fire for it even though it roots nothing.
+ */
 async function addRefRoots(
   ctx: Context,
   roots: Set<ObjectId>,
   universe: ReadonlySet<ObjectId>,
-): Promise<void> {
+): Promise<boolean> {
   const refNames = await enumerateRefs(ctx);
+  let sawAbsentTarget = false;
   for (const ref of refNames) {
     try {
       // Stryker disable next-line ObjectLiteral: equivalent — peel defaults to false in resolveRef; {} and { peel: false } produce identical behavior.
@@ -86,10 +92,12 @@ async function addRefRoots(
       // Absent OIDs are reported as bad-ref(badRefOid) by the refs-verify pass
       // and must NOT be added to roots (would produce spurious 'missing' findings).
       if (universe.has(id)) roots.add(id);
+      else sawAbsentTarget = true;
     } catch {
       // Unresolvable ref (unborn, dangling symref, malformed content) — tolerated
     }
   }
+  return sawAbsentTarget;
 }
 
 async function addReflogRoots(ctx: Context, roots: Set<ObjectId>): Promise<void> {
@@ -234,6 +242,12 @@ export interface RootsCollection {
    * is not a fault. Ref and reflog resolution have no bearing on this bit.
    */
   readonly missingEntryPoint: boolean;
+  /**
+   * A ref resolved to an oid absent from the universe. git's fsck probes
+   * that target through the promisor machinery, which is what makes the
+   * promisor-config gate fire on a repo whose ONLY ref is broken.
+   */
+  readonly sawAbsentRefTarget: boolean;
 }
 
 /**
@@ -253,9 +267,9 @@ export async function collectRoots(
   universe: ReadonlySet<ObjectId>,
 ): Promise<RootsCollection> {
   const roots = new Set<ObjectId>();
-  await addRefRoots(ctx, roots, universe);
+  const sawAbsentRefTarget = await addRefRoots(ctx, roots, universe);
   if (opts.reflogRoots !== false) await addReflogRoots(ctx, roots);
   const missingEntryPoint =
     opts.indexRoot !== false ? await addIndexRoots(ctx, roots, universe) : false;
-  return { roots, missingEntryPoint };
+  return { roots, missingEntryPoint, sawAbsentRefTarget };
 }

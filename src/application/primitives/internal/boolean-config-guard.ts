@@ -1,0 +1,46 @@
+import { configBadBooleanValue } from '../../../domain/commands/error.js';
+import type { Context } from '../../../ports/context.js';
+import { findFirstInvalidBoolean, findFirstInvalidBooleanInSection } from '../config-read.js';
+
+/**
+ * Refuse with `CONFIG_BAD_BOOLEAN_VALUE` when any of `keys` (case-insensitive) under
+ * `[<section> "<subsection>"]` holds a value git's boolean grammar refuses, reporting
+ * the FIRST such entry by config-file line. Returns normally for a valid value, a
+ * valueless key (git's internal NULL, always true), an absent key, or an out-of-section
+ * key. The exact sibling of `assertNoValuelessConfig`, one class over.
+ */
+export const assertValidBooleanConfig = async (
+  ctx: Context,
+  section: string,
+  subsection: string | undefined,
+  keys: ReadonlyArray<string>,
+): Promise<void> => {
+  const found = await findFirstInvalidBoolean(ctx, section, subsection, keys);
+  if (found !== undefined) throw configBadBooleanValue(found.key, found.source, found.value);
+};
+
+/**
+ * Subsection-wildcard sibling of `assertValidBooleanConfig`: scans EVERY subsection of
+ * `section` (the per-instance families — `submodule.<n>.*`, `remote.<n>.*`) rather than
+ * one exact subsection.
+ */
+export const assertValidBooleanConfigInSection = async (
+  ctx: Context,
+  section: string,
+  keys: ReadonlyArray<string>,
+  options: { readonly requireSubsection?: boolean } = {},
+): Promise<void> => {
+  const found = await findFirstInvalidBooleanInSection(ctx, section, keys, options);
+  if (found !== undefined) throw configBadBooleanValue(found.key, found.source, found.value);
+};
+
+/**
+ * git's `remote.<n>.promisor` refusal surface, measured on 2.55.0: status,
+ * fsck (rooted walks only), commit, add (matched paths), diff and show
+ * (after rev resolution), and the lazy-fetch path refuse a malformed value
+ * (subsectionless `[remote] promisor` included); log, checkout, tag, branch
+ * and the config porcelain accept it. Each consuming command calls this at
+ * the point git's own promisor-config load happens.
+ */
+export const assertValidPromisorRemoteConfig = (ctx: Context): Promise<void> =>
+  assertValidBooleanConfigInSection(ctx, 'remote', ['promisor']);

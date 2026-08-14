@@ -3,12 +3,17 @@ import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { buildAttributeProvider } from '../../../../src/application/primitives/internal/read-gitattributes.js';
 import { resolveFilterDriver } from '../../../../src/application/primitives/resolve-filter-driver.js';
+import { TsgitError } from '../../../../src/domain/index.js';
 import type { FilePath } from '../../../../src/domain/objects/object-id.js';
 import type { Context } from '../../../../src/ports/context.js';
 
-const choose = async (ctx: Context, path: string) => {
+const choose = async (
+  ctx: Context,
+  path: string,
+  options?: { readonly eagerSectionValidation?: boolean },
+) => {
   const provider = await buildAttributeProvider(ctx);
-  return resolveFilterDriver(ctx, provider, path as FilePath);
+  return resolveFilterDriver(ctx, provider, path as FilePath, options ?? {});
 };
 
 const seed = (ctx: Context, attrs?: string, config?: string) =>
@@ -138,6 +143,171 @@ describe('resolveFilterDriver', () => {
 
         // Assert
         expect(result).toEqual(expected);
+      });
+    });
+  });
+
+  describe('Given *.y filter=myf and [filter "myf"].required holds a value git refuses', () => {
+    describe('When resolving the filter driver', () => {
+      it('Then throws CONFIG_BAD_BOOLEAN_VALUE naming filter.myf.required', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '*.y filter=myf\n', '[filter "myf"]\n\tclean = up\n\trequired = maybe\n');
+
+        // Act
+        let caught: unknown;
+        try {
+          await choose(ctx, 'a.y');
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — each field individually (mutation-resistant)
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as {
+          code: string;
+          key: string;
+          value: string;
+          source: string;
+        };
+        expect(data.code).toBe('CONFIG_BAD_BOOLEAN_VALUE');
+        expect(data.key).toBe('filter.myf.required');
+        expect(data.value).toBe('maybe');
+        expect(data.source).toMatch(/\/config$/);
+      });
+    });
+  });
+
+  describe('Given [filter "myf"].required holds an integer-false value git accepts', () => {
+    describe('When resolving the filter driver', () => {
+      it('Then required=false is chosen — the guard no-ops on a valid value', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '*.y filter=myf\n', '[filter "myf"]\n\tclean = up\n\trequired = 0\n');
+
+        // Act
+        const result = await choose(ctx, 'a.y');
+
+        // Assert
+        expect(result).toEqual({ kind: 'external', name: 'myf', clean: 'up', required: false });
+      });
+    });
+  });
+
+  describe('Given [filter "myf"].required = maybe but no matching filter=myf attribute', () => {
+    describe('When resolving the filter driver for an unrelated path', () => {
+      it('Then identity is chosen — an unselected driver subsection is inert', async () => {
+        // Arrange — the malformed key sits under a subsection no attribute selects.
+        const ctx = createMemoryContext();
+        await seed(ctx, undefined, '[filter "myf"]\n\trequired = maybe\n');
+
+        // Act + Assert — must not throw
+        const result = await choose(ctx, 'a.y');
+        expect(result).toEqual({ kind: 'identity' });
+      });
+    });
+  });
+
+  describe('Given *.y filter=other engages a filter and [filter "myf"].required = maybe', () => {
+    describe('When resolving the driver for the OTHER name', () => {
+      it('Then throws CONFIG_BAD_BOOLEAN_VALUE for myf — git validates every driver section once a filter engages', async () => {
+        // Arrange — the selected driver is `other`; the malformed value sits
+        // under the unselected `myf` section, even without an `other` section.
+        const ctx = createMemoryContext();
+        await seed(ctx, '*.y filter=other\n', '[filter "myf"]\n\trequired = maybe\n');
+
+        // Act
+        let caught: unknown;
+        try {
+          await choose(ctx, 'a.y');
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as { code: string; key: string; value: string };
+        expect(data.code).toBe('CONFIG_BAD_BOOLEAN_VALUE');
+        expect(data.key).toBe('filter.myf.required');
+        expect(data.value).toBe('maybe');
+      });
+    });
+  });
+
+  describe('Given *.y filter=myf and a subsectionless [filter] required = maybe', () => {
+    describe('When resolving the filter driver', () => {
+      it('Then no refusal — git ignores the subsectionless form, the key exists only per driver', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(
+          ctx,
+          '*.y filter=myf\n',
+          '[filter]\n\trequired = maybe\n[filter "myf"]\n\tclean = up\n',
+        );
+
+        // Act
+        const result = await choose(ctx, 'a.y');
+
+        // Assert
+        expect(result).toEqual({ kind: 'external', name: 'myf', clean: 'up', required: false });
+      });
+    });
+  });
+
+  describe('Given a converting caller (eagerSectionValidation) and [filter "zed"].required = maybe with NO attributes', () => {
+    describe('When resolving the filter driver', () => {
+      it('Then throws CONFIG_BAD_BOOLEAN_VALUE — conversion validates every driver section even unmatched', async () => {
+        // Arrange — no filter attribute anywhere; only the malformed section.
+        const ctx = createMemoryContext();
+        await seed(ctx, undefined, '[filter "zed"]\n\trequired = maybe\n');
+
+        // Act
+        let caught: unknown;
+        try {
+          await choose(ctx, 'a.y', { eagerSectionValidation: true });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as { code: string; key: string };
+        expect(data.code).toBe('CONFIG_BAD_BOOLEAN_VALUE');
+        expect(data.key).toBe('filter.zed.required');
+      });
+    });
+  });
+
+  describe('Given a converting caller (eagerSectionValidation) and a subsectionless [filter] required = maybe with NO attributes', () => {
+    describe('When resolving the filter driver', () => {
+      it('Then identity resolves without refusal — the subsectionless form stays inert even under eager validation', async () => {
+        // Arrange — requireSubsection:true means the eager gate skips the
+        // subsectionless form; a dropped/false requireSubsection would wrongly
+        // refuse it.
+        const ctx = createMemoryContext();
+        await seed(ctx, undefined, '[filter]\n\trequired = maybe\n');
+
+        // Act
+        const result = await choose(ctx, 'a.y', { eagerSectionValidation: true });
+
+        // Assert
+        expect(result).toEqual({ kind: 'identity' });
+      });
+    });
+  });
+
+  describe('Given a status-shaped caller (no eager flag) and the same malformed unmatched section', () => {
+    describe('When resolving the filter driver', () => {
+      it('Then identity resolves without refusal — status accepts what conversion refuses', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, undefined, '[filter "zed"]\n\trequired = maybe\n');
+
+        // Act
+        const result = await choose(ctx, 'a.y');
+
+        // Assert
+        expect(result).toEqual({ kind: 'identity' });
       });
     });
   });

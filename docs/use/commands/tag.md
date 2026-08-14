@@ -56,11 +56,12 @@ await repo.tag.delete({ name: 'v1.0.0' });
 - `TAG_EXISTS` — `create` with an existing name and no `force`.
 - `INVALID_REF` — name violates git ref syntax.
 - `TAG_NOT_FOUND` — `delete` on a name that does not exist.
+- `CONFIG_BAD_BOOLEAN_VALUE` — `tag.gpgSign` holds a value git's boolean grammar refuses. Checked for lightweight tags too, before the name/target resolve.
 - `SIGNING_FAILED` — `sign` requested but the signing program failed or is unavailable (e.g. off-node, no `gpg`).
 
 ## See also
 
 - Primitives: [`resolveRef`](../primitives/resolve-ref.md), [`updateRef`](../primitives/update-ref.md)
 - Related commands: [`branch`](branch.md), [`log`](log.md), [`revParse`](rev-parse.md)
-- ADRs: [181](../../adr/181-nested-namespace-porcelain.md), [192](../../adr/192-crud-namespace-per-verb-results.md), [193](../../adr/193-no-transition-shim-hard-remove-callable.md), [448](../../adr/448-signed-tag-signature-appended-to-body.md), [449](../../adr/449-annotated-tag-creation-with-signing.md)
+- ADRs: [181](../../adr/181-nested-namespace-porcelain.md), [192](../../adr/192-crud-namespace-per-verb-results.md), [193](../../adr/193-no-transition-shim-hard-remove-callable.md), [448](../../adr/448-signed-tag-signature-appended-to-body.md), [449](../../adr/449-annotated-tag-creation-with-signing.md), [627](../../adr/627-boolean-config-values-are-refused-as-git-refuses-them.md)
 ```

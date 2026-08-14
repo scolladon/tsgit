@@ -2,6 +2,7 @@ import type { ObjectId } from '../../domain/objects/index.js';
 import type { LruCache } from '../../domain/storage/index.js';
 import type { Context } from '../../ports/context.js';
 import { enumerateObjects } from '../primitives/enumerate-objects.js';
+import { assertValidPromisorRemoteConfig } from '../primitives/internal/boolean-config-guard.js';
 import { adoptPackRegistry } from '../primitives/read-object.js';
 import { runBitmapHealthPass } from './internal/fsck/bitmap-health.js';
 import {
@@ -140,7 +141,11 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
   // bounded existence probe per cache-tree entry, deliberately independent
   // of `universe`'s own mode-narrowing — see `existsInStore`'s doc comment)
   // rather than re-scanning the store.
-  const { roots, missingEntryPoint } = await collectRoots(ctx, opts, universe);
+  const { roots, missingEntryPoint, sawAbsentRefTarget } = await collectRoots(ctx, opts, universe);
+  // Promisor-remote guard (see assertValidPromisorRemoteConfig) — only when the walk has roots.
+  if (roots.size > 0 || sawAbsentRefTarget) {
+    await assertValidPromisorRemoteConfig(ctx);
+  }
   const missingEntryPointBit = missingEntryPoint ? EXIT_REFS_CONTENT : 0;
   const inEdgePresent = buildInEdgeMap(universe, objectCache);
 

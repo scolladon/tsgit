@@ -99,7 +99,7 @@ Every command and primitive takes a `Context` — a frozen record that carries:
 | **Partial clone** | `src/domain/protocol/object-filter.ts`, `src/application/commands/fetch-missing.ts` | `--filter` parsing, promisor remote port, lazy-fetch on read. |
 | **Submodules** | `src/application/primitives/walk-submodules.ts`, `src/application/commands/submodules.ts` | Tree-ish gitlink walk + `.gitmodules` join, recursive into absorbed nested gitdirs. |
 | **Cat-file batch** | `src/application/primitives/cat-file-batch.ts`, `src/application/commands/cat-file.ts` | Streaming `git cat-file --batch` equivalent. |
-| **Pack auxiliary artefacts** | `src/domain/storage/{rev-index,bitmap,ewah}.ts`, `src/application/primitives/internal/closure-engine.ts` | `.rev` (pack offset acceleration) and pack/midx `.bitmap` (EWAH-compressed reachability) parsers; the shared walk-or-bitmap closure engine behind [`revList`](../use/commands/rev-list.md) / [`packObjects`](../use/commands/pack-objects.md). |
+| **Pack auxiliary artefacts** | `src/domain/storage/{rev-index,bitmap,ewah}.ts`, `src/application/primitives/internal/closure-engine.ts` | `.rev` (pack offset acceleration) and pack/midx `.bitmap` (EWAH-compressed reachability) parsers — `rev-index.ts` also holds the `.rev` serializer, written beside every `.idx` tsgit writes; the shared walk-or-bitmap closure engine behind [`revList`](../use/commands/rev-list.md) / [`packObjects`](../use/commands/pack-objects.md). |
 | **Ports** | `src/ports/` | Interfaces for I/O and platform abstraction. |
 | **Adapters** | `src/adapters/{node,browser,memory}/` | Platform implementations. |
 | **Primitives** | `src/application/primitives/` | Tier-2 composable low-level operations. |

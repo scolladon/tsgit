@@ -22,6 +22,10 @@ import type { Context } from '../../ports/context.js';
 import type { ParsedConfig } from '../primitives/config-read.js';
 import { readConfig } from '../primitives/config-read.js';
 import { createCommit } from '../primitives/create-commit.js';
+import {
+  assertValidBooleanConfig,
+  assertValidPromisorRemoteConfig,
+} from '../primitives/internal/boolean-config-guard.js';
 import { assertNoValuelessConfig } from '../primitives/internal/valueless-config-guard.js';
 import { readIndex } from '../primitives/read-index.js';
 import { readObject } from '../primitives/read-object.js';
@@ -94,6 +98,11 @@ export interface CommitResult {
 export const commit = async (ctx: Context, opts: CommitOptions): Promise<CommitResult> => {
   await assertOperationalRepository(ctx);
   await assertNotBare(ctx, 'commit');
+  // git refuses a malformed commit.gpgSign before hooks run, before the tree is
+  // written, and before the nothing-to-commit check — mirror that ordering.
+  await assertValidBooleanConfig(ctx, 'commit', undefined, ['gpgsign']);
+  // Promisor-remote guard (see assertValidPromisorRemoteConfig) — loaded up front.
+  await assertValidPromisorRemoteConfig(ctx);
   // Resolving a conflicted merge / cherry-pick / revert IS the legitimate way to
   // clear its marker — skip that marker's check. All other in-progress operations
   // still block. A cherry-pick / revert resolution stays single-parent (no

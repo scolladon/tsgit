@@ -34,6 +34,7 @@ import { resolveSubmoduleUrl } from '../../domain/submodule/relative-url.js';
 import { parseUpdateMode, type SubmoduleUpdateMode } from '../../domain/submodule/update-mode.js';
 import type { Context } from '../../ports/context.js';
 import { type ParsedConfig, readConfig } from '../primitives/config-read.js';
+import { assertValidBooleanConfigInSection } from '../primitives/internal/boolean-config-guard.js';
 import { indexEntryFromStat } from '../primitives/internal/index-entry-from-stat.js';
 import { acquireIndexLock } from '../primitives/internal/index-lock.js';
 import { joinPath } from '../primitives/internal/join-working-tree-path.js';
@@ -437,6 +438,11 @@ export const submoduleList = async (
   opts: SubmoduleListOptions = {},
 ): Promise<SubmoduleListResult> => {
   await assertOperationalRepository(ctx);
+  // A subsectionless `[submodule] active` is inert in git — only the
+  // per-instance `submodule.<name>.active` form can refuse.
+  await assertValidBooleanConfigInSection(ctx, 'submodule', ['active'], {
+    requireSubsection: true,
+  });
   const ref = coerceRef(opts.ref ?? 'HEAD');
   const recursive = opts.recursive === true;
   const entries: SubmoduleEntry[] = [];
@@ -754,6 +760,11 @@ export const submoduleUpdate = async (
   const updateModes = validateUpdateModes(rows);
   const index = await readIndex(ctx);
   let config = await readConfig(ctx);
+  // A subsectionless `[submodule] active` is inert in git — only the
+  // per-instance `submodule.<name>.active` form can refuse.
+  await assertValidBooleanConfigInSection(ctx, 'submodule', ['active'], {
+    requireSubsection: true,
+  });
   const entries: SubmoduleUpdateEntry[] = [];
   for (const row of selected) {
     const pinned = gitlinkFromIndex(index, row.path);

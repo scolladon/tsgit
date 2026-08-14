@@ -14,7 +14,9 @@ import {
   toStagedKind,
   toUnstagedKind,
 } from '../../../../src/application/commands/status.js';
+import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
 import type { DiffChange } from '../../../../src/domain/diff/index.js';
+import { TsgitError } from '../../../../src/domain/error.js';
 import type {
   AuthorIdentity,
   FileMode,
@@ -1089,6 +1091,56 @@ describe('status — unmerged column', () => {
 
         // Assert
         expect(result.unmerged).toEqual([]);
+      });
+    });
+  });
+});
+
+describe('status — remote.promisor guard', () => {
+  describe.each([
+    { config: '[remote]\n\tpromisor = maybe\n', expectedKey: 'remote.promisor' },
+    { config: '[remote "origin"]\n\tpromisor = maybe\n', expectedKey: 'remote.origin.promisor' },
+  ])('Given $expectedKey holds a value git refuses, When status', ({ config, expectedKey }) => {
+    it('Then throws CONFIG_BAD_BOOLEAN_VALUE', async () => {
+      // Arrange — writeObject during the seed commit reads config eagerly, so
+      // the cache must be reset after the override write.
+      const ctx = await seedClean();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, config);
+      __resetConfigCacheForTests();
+
+      // Act
+      let caught: unknown;
+      try {
+        await status(ctx);
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert — each field individually (mutation-resistant)
+      expect(caught).toBeInstanceOf(TsgitError);
+      const data = (caught as TsgitError).data as { code: string; key: string; value: string };
+      expect(data.code).toBe('CONFIG_BAD_BOOLEAN_VALUE');
+      expect(data.key).toBe(expectedKey);
+      expect(data.value).toBe('maybe');
+    });
+  });
+
+  describe('Given remote.origin.promisor holds a value git accepts', () => {
+    describe('When status', () => {
+      it('Then resolves — the guard no-ops on a valid value', async () => {
+        // Arrange
+        const ctx = await seedClean();
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[remote "origin"]\n\tpromisor = true\n',
+        );
+        __resetConfigCacheForTests();
+
+        // Act
+        const result = await status(ctx);
+
+        // Assert
+        expect(result.clean).toBe(true);
       });
     });
   });

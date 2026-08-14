@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { clone } from '../../../../src/application/commands/clone.js';
 import { submoduleUpdate } from '../../../../src/application/commands/submodule.js';
-import { readConfig } from '../../../../src/application/primitives/config-read.js';
+import {
+  __resetConfigCacheForTests,
+  readConfig,
+} from '../../../../src/application/primitives/config-read.js';
 import { acquireIndexLock } from '../../../../src/application/primitives/internal/index-lock.js';
 import { deriveSubmoduleCloneContext } from '../../../../src/application/primitives/internal/submodule-context.js';
 import { materializeWorktreeFromHead } from '../../../../src/application/primitives/materialize-worktree-from-head.js';
@@ -126,6 +129,25 @@ describe('Given a superproject pinning a registered submodule', () => {
       expect(result.entries[0]).toMatchObject({ cloned: true, changed: true, mode: 'checkout' });
       expect(result.entries[0]?.id).toBe(pinned);
       expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/lib/lib.txt`)).toBe('lib v1\n');
+    });
+
+    it('Then a subsectionless [submodule] active does NOT refuse — only the per-instance form can', async () => {
+      // Arrange — mirrors submoduleList's sibling test: git ignores the
+      // subsectionless `[submodule] active` form, only `submodule.<n>.active`
+      // can refuse. Appended after seedSuper's own config write.
+      const { ctx } = await seedSuper({ register: true });
+      const existingConfig = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+      await ctx.fs.writeUtf8(
+        `${ctx.layout.gitDir}/config`,
+        `${existingConfig}[submodule]\n\tactive = maybe\n`,
+      );
+      __resetConfigCacheForTests();
+
+      // Act
+      const result = await submoduleUpdate(ctx, { paths: ['lib'] });
+
+      // Assert — the update proceeds normally, exactly like the unguarded case
+      expect(result.entries[0]).toMatchObject({ cloned: true, changed: true, mode: 'checkout' });
     });
 
     it('Then a second update is an idempotent no-op', async () => {
@@ -801,6 +823,57 @@ describe('Given a superproject whose submodule.lib has co-occurring valueless ke
       const data = (caught as TsgitError).data as { code: string; key: string };
       expect(data.code).toBe('CONFIG_MISSING_VALUE');
       expect(data.key).toBe(key);
+    });
+  });
+});
+
+/** `[submodule "lib"]` with a boolean-refused `active` value, alongside a valued `url`. */
+const BAD_ACTIVE_CONFIG = `[core]\n\trepositoryformatversion = 0\n[submodule "lib"]\n\turl = ${SUB_URL}\n\tactive = maybe\n`;
+
+/** Same shape but a valid `active` value — the guard must no-op. */
+const VALID_ACTIVE_CONFIG = `[core]\n\trepositoryformatversion = 0\n[submodule "lib"]\n\turl = ${SUB_URL}\n\tactive = true\n`;
+
+describe('Given a superproject whose submodule.lib.active holds a value git refuses', () => {
+  describe('When submoduleUpdate runs', () => {
+    it('Then it refuses with CONFIG_BAD_BOOLEAN_VALUE naming submodule.lib.active', async () => {
+      // Arrange
+      const ctx = await seedSuperWithConfigText(BAD_ACTIVE_CONFIG);
+
+      // Act
+      let caught: unknown;
+      try {
+        await submoduleUpdate(ctx, { paths: ['lib'] });
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert — each field individually (mutation-resistant)
+      expect(caught).toBeInstanceOf(TsgitError);
+      const data = (caught as TsgitError).data as {
+        code: string;
+        key: string;
+        value: string;
+        source: string;
+      };
+      expect(data.code).toBe('CONFIG_BAD_BOOLEAN_VALUE');
+      expect(data.key).toBe('submodule.lib.active');
+      expect(data.value).toBe('maybe');
+      expect(data.source).toMatch(/\/config$/);
+    });
+  });
+});
+
+describe('Given a superproject whose submodule.lib.active holds a value git accepts', () => {
+  describe('When submoduleUpdate runs', () => {
+    it('Then the guard no-ops and the pin is checked out', async () => {
+      // Arrange
+      const ctx = await seedSuperWithConfigText(VALID_ACTIVE_CONFIG);
+
+      // Act
+      const result = await submoduleUpdate(ctx, { paths: ['lib'] });
+
+      // Assert
+      expect(result.entries[0]).toMatchObject({ cloned: true, changed: true, mode: 'checkout' });
     });
   });
 });

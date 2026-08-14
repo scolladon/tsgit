@@ -15,6 +15,8 @@ import {
   cannotDescribe,
   checkoutOverwriteDirty,
   cherryPickMergeNoMainline,
+  configBadBooleanLiteral,
+  configBadBooleanValue,
   configBadNumericValue,
   configBadZlibLevel,
   configKeyInvalid,
@@ -1154,6 +1156,83 @@ describe('domain commands error — config factory data', () => {
     });
   });
 
+  describe('Given the configBadBooleanValue helper', () => {
+    describe("When called with key='core.bare', source='/abs/.git/config', value='maybe'", () => {
+      it('Then data carries code, key, source, and value individually', () => {
+        // Arrange + Act
+        const result = configBadBooleanValue('core.bare', '/abs/.git/config', 'maybe');
+
+        // Assert
+        const data = result.data;
+        expect(data.code).toBe('CONFIG_BAD_BOOLEAN_VALUE');
+        if (data.code !== 'CONFIG_BAD_BOOLEAN_VALUE') return;
+        expect(data.key).toBe('core.bare');
+        expect(data.source).toBe('/abs/.git/config');
+        expect(data.value).toBe('maybe');
+      });
+    });
+
+    describe('When called with a value containing a control byte', () => {
+      it('Then data.value is sanitized for display', () => {
+        // Arrange + Act
+        const result = configBadBooleanValue('core.bare', '/abs/.git/config', '\x01bad');
+
+        // Assert — control bytes are escaped so the rendered error cannot be injected
+        const data = result.data;
+        expect(data.code).toBe('CONFIG_BAD_BOOLEAN_VALUE');
+        if (data.code !== 'CONFIG_BAD_BOOLEAN_VALUE') return;
+        expect(data.value).toBe('\\x01bad');
+      });
+    });
+
+    describe('When called with a key whose subsection carries a control byte', () => {
+      it('Then data.key is sanitized for display — subsections are file-verbatim bytes', () => {
+        // Arrange + Act — a `[filter "<ESC>[2J"]` style subsection reaches the key
+        const result = configBadBooleanValue(
+          'filter.\x1b[2J.required',
+          '/abs/.git/config',
+          'maybe',
+        );
+
+        // Assert
+        const data = result.data;
+        expect(data.code).toBe('CONFIG_BAD_BOOLEAN_VALUE');
+        if (data.code !== 'CONFIG_BAD_BOOLEAN_VALUE') return;
+        expect(data.key).toBe('filter.\\x1B[2J.required');
+      });
+    });
+  });
+
+  describe('Given the configBadBooleanLiteral helper', () => {
+    describe("When called with key='push.gpgsign', source='/abs/.git/config', value='maybe'", () => {
+      it('Then data carries code, key, source, and value individually', () => {
+        // Arrange + Act
+        const result = configBadBooleanLiteral('push.gpgsign', '/abs/.git/config', 'maybe');
+
+        // Assert
+        const data = result.data;
+        expect(data.code).toBe('CONFIG_BAD_BOOLEAN_LITERAL');
+        if (data.code !== 'CONFIG_BAD_BOOLEAN_LITERAL') return;
+        expect(data.key).toBe('push.gpgsign');
+        expect(data.source).toBe('/abs/.git/config');
+        expect(data.value).toBe('maybe');
+      });
+    });
+
+    describe('When called with a value containing a control byte', () => {
+      it('Then data.value is sanitized for display', () => {
+        // Arrange + Act
+        const result = configBadBooleanLiteral('push.gpgsign', '/abs/.git/config', '\x01bad');
+
+        // Assert — control bytes are escaped so the rendered error cannot be injected
+        const data = result.data;
+        expect(data.code).toBe('CONFIG_BAD_BOOLEAN_LITERAL');
+        if (data.code !== 'CONFIG_BAD_BOOLEAN_LITERAL') return;
+        expect(data.value).toBe('\\x01bad');
+      });
+    });
+  });
+
   describe('Given the configBadZlibLevel helper', () => {
     describe('When called', () => {
       it.each([[99], [-2]] as const)('Then data carries code and level=%i', (level) => {
@@ -1428,6 +1507,24 @@ describe('domain commands error — extractDetail message formatting', () => {
         reason: 'out of range',
       },
       "CONFIG_BAD_NUMERIC_VALUE: bad numeric config value '2147483648' for 'core.loosecompression' in file /repo/.git/config: out of range",
+    ],
+    [
+      {
+        code: 'CONFIG_BAD_BOOLEAN_VALUE',
+        key: 'core.bare',
+        source: '/repo/.git/config',
+        value: 'maybe',
+      },
+      "CONFIG_BAD_BOOLEAN_VALUE: bad boolean config value 'maybe' for 'core.bare' in file /repo/.git/config",
+    ],
+    [
+      {
+        code: 'CONFIG_BAD_BOOLEAN_LITERAL',
+        key: 'push.gpgsign',
+        source: '/repo/.git/config',
+        value: 'maybe',
+      },
+      "CONFIG_BAD_BOOLEAN_LITERAL: invalid value for 'push.gpgsign' in file /repo/.git/config",
     ],
     [
       { code: 'CONFIG_BAD_ZLIB_LEVEL', level: 99 },

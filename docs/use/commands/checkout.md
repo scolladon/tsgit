@@ -85,6 +85,11 @@ holds the **smudged** content.
 - **Independent of `diff=`.** Clean/smudge and textconv are orthogonal. A path
   with `filter=<name>` only is diffed against raw committed bytes; textconv only
   applies to paths carrying `diff=<name>`.
+- **A malformed `required` value throws.** `filter.<d>.required` set to a
+  value git's boolean grammar refuses throws `CONFIG_BAD_BOOLEAN_VALUE` —
+  checked across every `[filter "<d>"]` section whenever `checkout` writes a
+  regular file's content, even a file whose own `filter=` attribute names a
+  different, unaffected driver.
 
 **Node.** The smudge command runs through the `CommandRunner` port (same trust
 model as merge drivers and hooks). In the browser / memory adapters, or in Node
@@ -97,4 +102,4 @@ and textconv drivers" section.
 - Primitives: [`materializeTree`](../primitives/internals.md#materializetree), [`buildIndexFromTree`](../primitives/internals.md#buildindexfromtree), [`synthesizeTreeFromIndex`](../primitives/internals.md#synthesizetreefromindex), [`readIndex`](../primitives/read-index.md)
 - Related commands: [`reset`](reset.md), [`add`](add.md), [`rm`](rm.md), [`sparseCheckout`](sparse-checkout.md)
 - Recipes: [clone + checkout](../recipes.md#clone-and-checkout)
-- ADRs: [018](../../adr/018-checkout-atomicity-model.md), [019](../../adr/019-checkout-dirty-tree-guard.md), [020](../../adr/020-checkout-paths-api-shape.md)
+- ADRs: [018](../../adr/018-checkout-atomicity-model.md), [019](../../adr/019-checkout-dirty-tree-guard.md), [020](../../adr/020-checkout-paths-api-shape.md), [627](../../adr/627-boolean-config-values-are-refused-as-git-refuses-them.md)
