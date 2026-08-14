@@ -12,6 +12,7 @@
 import { noInitialCommit, stashApplyWouldOverwrite } from '../../domain/commands/error.js';
 import { TsgitError } from '../../domain/error.js';
 import type { GitIndex, IndexEntry } from '../../domain/git-index/index.js';
+import { NO_PARSER_OFFSET, validateIndexPath } from '../../domain/git-index/path-validator.js';
 import { abbreviateOid, type ConflictType, STASH_LABELS } from '../../domain/merge/index.js';
 import { subjectLine } from '../../domain/objects/commit-message.js';
 import { invalidCommit, unexpectedObjectType } from '../../domain/objects/error.js';
@@ -373,6 +374,13 @@ const untrackedOverwrites = async (
 /** Check out the untracked tree into the working tree (clean-apply path only). */
 const restoreUntracked = async (ctx: Context, uTree: ObjectId): Promise<void> => {
   const flat = await flattenTree(ctx, uTree);
+  // Whole-tree name gate before the first write: a stash's untracked tree is
+  // attacker-controllable, so a hostile entry name (`.git/**`, a `.git` alias,
+  // a traversal) must refuse the entire restore untouched — mirroring the
+  // index-write boundary a checkout crosses.
+  for (const [path, entry] of flat.entries) {
+    validateIndexPath(path, NO_PARSER_OFFSET, entry.mode);
+  }
   for (const [path, entry] of flat.entries) {
     const stream = await streamBlob(ctx, entry.id);
     await writeWorkingTreeFileStream(ctx, path, stream);

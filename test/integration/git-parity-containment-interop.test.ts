@@ -20,6 +20,7 @@
  *   interopSurface: checkout, add, status, cat-file
  */
 import {
+  existsSync,
   lstatSync,
   mkdirSync,
   readdirSync,
@@ -36,6 +37,7 @@ import { mkdir, mkdtemp, realpath, rm } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { pushStashRef } from '../../src/application/primitives/stash-ref.js';
 import type { AuthorIdentity } from '../../src/domain/objects/index.js';
 import type { ObjectId } from '../../src/domain/objects/object-id.js';
 import { openRepository } from '../../src/index.node.js';
@@ -146,6 +148,42 @@ const buildFloatingCommit = (
     input: rawTreeEntryBytes(entryMode, entryName, entryOidHex),
   }).trim();
   return runGit(['-C', dir, 'commit-tree', treeOid, '-m', message], { env: COMMIT_ENV }).trim();
+};
+
+/** Writes a tree from plain `mktree` entry lines — unlike
+ * {@link buildFloatingCommit}'s single hostile-leaf case, `.git`/`git~1` are
+ * ordinary, ACCEPTED tree-entry names for plain `mktree` (the refusal fires
+ * at index-write/checkout, not tree construction), so no `--literally`
+ * escape hatch is needed here. */
+const writeTree = (dir: string, lines: ReadonlyArray<string>): string =>
+  runGit(['-C', dir, 'mktree'], { input: `${lines.join('\n')}\n` }).trim();
+
+/** Builds `.git/hooks/pre-commit` as a stash's untracked-tree root — the
+ * shape a crafted/foreign stash could carry to overwrite a hook on apply. */
+const buildHostileUntrackedTree = (dir: string): string => {
+  const hookBlob = writeBlobText(dir, '#!/bin/sh\necho pwned\n');
+  const hooksTree = writeTree(dir, [`100644 blob ${hookBlob}\tpre-commit`]);
+  const gitDirTree = writeTree(dir, [`40000 tree ${hooksTree}\thooks`]);
+  return writeTree(dir, [`40000 tree ${gitDirTree}\t.git`]);
+};
+
+/** Builds a stash W commit trio (index parent `i`, untracked parent `u`,
+ * working-tree commit `w`) whose W and I trees are the repo's current HEAD
+ * tree (no staged/working changes) and whose U tree is `untrackedTree` —
+ * isolating the untracked-tree shape as the only variable under test. */
+const buildStashCommitTrio = (dir: string, untrackedTree: string): string => {
+  const head = runGit(['-C', dir, 'rev-parse', 'HEAD']).trim();
+  const baseTree = runGit(['-C', dir, 'rev-parse', 'HEAD^{tree}']).trim();
+  const u = runGit(['-C', dir, 'commit-tree', untrackedTree, '-m', 'untracked files on main'], {
+    env: COMMIT_ENV,
+  }).trim();
+  const i = runGit(['-C', dir, 'commit-tree', baseTree, '-p', head, '-m', 'index on main'], {
+    env: COMMIT_ENV,
+  }).trim();
+  return runGit(
+    ['-C', dir, 'commit-tree', baseTree, '-p', head, '-p', i, '-p', u, '-m', 'WIP on main: base'],
+    { env: COMMIT_ENV },
+  ).trim();
 };
 
 describe.skipIf(!GIT_AVAILABLE)('git-parity containment interop', () => {
@@ -1117,6 +1155,55 @@ describe.skipIf(!GIT_AVAILABLE)('git-parity containment interop', () => {
         expect(peerStatus).toContain('?? sibling.txt\n');
         expect(oursStatus.untracked).toContain('git~1/f');
         expect(oursStatus.untracked).toContain('sibling.txt');
+      });
+    });
+  });
+
+  // ── 10. stash apply refuses a hostile untracked-tree entry name ──────
+
+  describe('Given a stash whose untracked tree carries a hostile `.git/hooks/pre-commit` path', () => {
+    describe('When each tool applies it', () => {
+      let root: string;
+      let pair: RepoPair;
+      let peerW: string;
+
+      beforeAll(async () => {
+        root = await mkRoot('stash-hostile-untracked');
+        pair = await buildSeededPair(root, 'stash-hostile');
+
+        // Every fixture object is written with real git plumbing — `mktree`
+        // accepts `.git` as an ordinary tree-entry name (the refusal fires
+        // at apply-time restore, not tree construction), so both the peer's
+        // and ours' object stores hold byte-identical hostile trees.
+        peerW = buildStashCommitTrio(pair.peerDir, buildHostileUntrackedTree(pair.peerDir));
+        const oursW = buildStashCommitTrio(pair.oursDir, buildHostileUntrackedTree(pair.oursDir));
+        await pushStashRef(pair.repo.ctx, oursW as ObjectId, 'WIP on main: base');
+      }, SETUP_TIMEOUT);
+
+      afterAll(async () => {
+        await pair.repo.dispose();
+        await rm(root, { recursive: true, force: true });
+      });
+
+      it('Then both refuse the invalid path and neither writes the hostile hook file', async () => {
+        // Act — `git stash apply <commit>` accepts any commit shaped like a
+        // stash entry directly, no `refs/stash` required.
+        const peerResult = tryRunGitWithExit(['-C', pair.peerDir, 'stash', 'apply', peerW]);
+        let oursCode: string | undefined;
+        try {
+          await pair.repo.stash.apply({});
+        } catch (err) {
+          oursCode = (err as { readonly data?: { readonly code?: string } }).data?.code;
+        }
+
+        // Assert — real git refuses the invalid path and restores nothing
+        // beyond its own init-time `.sample` hook files
+        expect(peerResult.exitCode).not.toBe(0);
+        expect(peerResult.stderr).toContain("invalid path '.git/hooks/pre-commit'");
+        expect(existsSync(path.join(pair.peerDir, '.git', 'hooks', 'pre-commit'))).toBe(false);
+        // Assert — tsgit refuses too, and never wrote the hostile hook file
+        expect(oursCode).toBe('INVALID_INDEX_ENTRY');
+        expect(existsSync(path.join(pair.oursDir, '.git', 'hooks', 'pre-commit'))).toBe(false);
       });
     });
   });
