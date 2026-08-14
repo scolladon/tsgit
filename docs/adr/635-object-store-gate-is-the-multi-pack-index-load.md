@@ -17,7 +17,7 @@ Pinned against `git version 2.55.0` in a `mktemp -d` throwaway (isolated `HOME`,
 ## Options considered
 
 1. **Move `assertLoadable` after `tryLoose`** — pros: removes all store setup from a loose hit / cons: contradicts Pin A; a Tier-A midx would stop denying loose reads, an observable divergence in the permissive direction.
-2. **Split the registry into a `storeGate` memo (the midx load) and the existing `scan` memo, gate as a strict prefix (recommended)** — pros: keeps Tier-A denial byte-identical while deferring the directory listing and pack construction behind the loose miss; closes both strictness divergences / cons: two memos to keep coherent across `refresh()`/`dispose()`; the warn loop must be split by faithfulness, not by convenience.
+2. **Split the registry into a `storeGate` memo (the midx load) and the existing `scan` memo, gate as a strict prefix (recommended)** — pros: keeps Tier-A denial byte-identical while deferring the directory listing and pack construction behind the loose miss; closes all three strictness divergences / cons: two memos to keep coherent across `refresh()`/`dispose()`; the warn loop must be split by faithfulness, not by convenience.
 3. **Nest `packs`/`fileNames`/`midx` behind a memo inside `PackGeneration`, leaving `midxLoad` eager** — pros: same I/O saved / cons: buries the pinned fact inside a generation struct whose "one `scanPacks` call" invariant then reads false.
 
 ## Decision
@@ -34,6 +34,6 @@ A flag, deliberately, and not the hand-off of resolved *values* first proposed. 
 
 ## Consequences
 
-A first loose read performs two midx presence stats instead of two stats plus an `exists` and a `readdir`. Three divergences close in git's direction: a pack directory whose listing is refused no longer denies a loose read, a pack directory that is a regular file no longer denies one either, and the orphan-`.idx` warn no longer fires on a loose hit. That second change is observable to consumers reading the logger channel — they still receive it on any read that reaches the pack store. The `.idx`-parse diagnostic gap (git prints `error: non-monotonic index` on a loose read where tsgit is silent, because `.idx` parsing was already lazy behind `generation.indexed`) is pre-existing, diagnostic-only under ADR-249, and explicitly unchanged here.
+A first loose read performs two midx presence stats instead of two stats plus an `exists` and a `readdir`. Three divergences close in git's direction: a pack directory whose listing is refused no longer denies a loose read, a pack directory that is a regular file no longer denies one either, and the orphan-`.idx` warn no longer fires on a loose hit. That last change is observable to consumers reading the logger channel — they still receive it on any read that reaches the pack store. The `.idx`-parse diagnostic gap (git prints `error: non-monotonic index` on a loose read where tsgit is silent, because `.idx` parsing was already lazy behind `generation.indexed`) is pre-existing, diagnostic-only under ADR-249, and explicitly unchanged here.
 
 The pinned matrix in the design doc is the durable artifact: pack-first reordering has now been proposed and rejected three times, and Pin A is the reason it stays foreclosed.
