@@ -13,9 +13,10 @@
  * every packed AND loose oid). They stay here, reduced to one loose-oid
  * assertion each, so a reader can see the "the deferral is safe because
  * Tier-A still denies a loose read" anchor without leaving this file. Rows
- * A4, E3, C4/E5, C5 and E6 are the genuinely new coverage: a scan that can no
- * longer list `objects/pack` at all must still serve the loose read. Row
- * C4/E5 is the divergence closure — it fails on `main` and passes here.
+ * A4, E3, C4/E5, C5, E6 and E7 are the genuinely new coverage: a scan that can
+ * no longer list `objects/pack` at all must still serve the loose read. Rows
+ * C4/E5 (listing refused) and E7 (`objects/pack` is a regular file) are the
+ * divergence closures — both denied every read before this change.
  *
  * @proves
  *   surface:        objectStore.storeGate
@@ -246,7 +247,7 @@ describe.skipIf(!GIT_AVAILABLE)(
     });
 
     describe('Given the pack directory replaced by a regular file (row E7), When both tools read the loose object', () => {
-      it('Then git exits 0 and tsgit serves the same bytes', async () => {
+      it('Then git exits 0 with its not-a-directory diagnostic and tsgit serves the same bytes', async () => {
         // Arrange — git prints `error: unable to open object pack directory:
         // …: Not a directory` and still serves the loose object at exit 0. The
         // store setup it dies on is the multi-pack-index, never the listing.

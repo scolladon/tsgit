@@ -89,9 +89,61 @@ describe('Given a working directory that does not exist yet', () => {
       }
 
       // Assert — the shim's own realpath rejected, so it must NOT claim the
-      // roots are resolved: the adapter re-resolves them itself (walking up to
-      // the nearest existing ancestor). Claiming them resolved collapses this
-      // to a single call, which is exactly the unsafe direction.
+      // roots are resolved: the adapter re-resolves them itself, walking up to
+      // the nearest existing ancestor. Claiming them resolved collapses this to
+      // a single call and gates on an un-resolved prefix — fail-closed, but
+      // wrong. The parent probe is the adapter's alone, so its presence in the
+      // ledger is what distinguishes the two.
+      expect(realpathSpy.mock.calls.length).toBe(4);
+      expect(realpathSpy.mock.calls.map(([target]) => target)).toContain(tmpdir);
+    });
+  });
+});
+
+describe('Given an existing directory with no repository anywhere above it', () => {
+  describe('When openRepository resolves its roots', () => {
+    it('Then the hand-off still applies, because every realpath the shim ran succeeded', async () => {
+      // Arrange — `findLayout` finds nothing, so the layout is the synthesised
+      // fallback and reports itself un-canonical. The cwd realpath DID succeed,
+      // so the two flags disagree: this is the shape that separates `&&` from
+      // `||`, and the one that catches the fallback branch claiming canonical.
+      const plain = path.join(tmpdir, 'plain');
+      await mkdir(plain, { recursive: true });
+
+      // Act
+      const sut = await openRepository({ cwd: plain });
+      try {
+        await sut.primitives.readObject('0'.repeat(40) as never).catch(() => undefined);
+      } finally {
+        await sut.dispose();
+      }
+
+      // Assert — shim realpath + the adapter's own resolution of the root.
+      expect(realpathSpy.mock.calls.length).toBe(2);
+    });
+  });
+});
+
+describe('Given a not-yet-created directory inside an existing repository', () => {
+  describe('When openRepository resolves its roots', () => {
+    it('Then the hand-off is withheld even though the layout itself resolved', async () => {
+      // Arrange — the only shape where the cwd realpath fails while the
+      // layout's own realpaths succeed, so it is the one that catches
+      // `canonicalize`'s catch arm claiming success.
+      const workDir = path.join(tmpdir, 'repo');
+      await mkdir(workDir, { recursive: true });
+      await makeGitDir(path.join(workDir, '.git'));
+      const missingChild = path.join(workDir, 'not-created-yet');
+
+      // Act
+      const sut = await openRepository({ cwd: missingChild });
+      try {
+        await sut.primitives.readObject('0'.repeat(40) as never).catch(() => undefined);
+      } finally {
+        await sut.dispose();
+      }
+
+      // Assert
       expect(realpathSpy.mock.calls.length).toBe(4);
     });
   });
