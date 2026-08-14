@@ -152,9 +152,14 @@ export function isErrnoException(err: unknown): err is NodeJS.ErrnoException {
  * @internal
  */
 export function isWindowsSymlinkRefusal(err: unknown, policy: PathPolicy = nativePolicy): boolean {
-  // Discriminator only fires on case-insensitive (Windows) platforms.
-  // POSIX symlink refusal flows through `mapErrno` directly via `ELOOP`.
-  if (!policy.caseInsensitive) return false;
+  // Discriminator only fires on a platform whose `open(2)` does NOT honour
+  // `O_NOFOLLOW` (Windows today). A platform that does honour it gets the
+  // real `ELOOP` and that flows through `mapErrno` directly — no rewrap
+  // needed. Gated on `honoursNoFollow`, not `caseInsensitive`: the two
+  // happen to coincide in every shipped policy, but they mean different
+  // things (see `PathPolicy`'s JSDoc) and a hypothetical case-insensitive
+  // POSIX filesystem must take the POSIX arm here.
+  if (policy.honoursNoFollow) return false;
   if (!(err instanceof TsgitError)) return false;
   return err.data.code === 'PERMISSION_DENIED' || err.data.code === 'UNSUPPORTED_OPERATION';
 }
@@ -760,10 +765,12 @@ export class NodeFileSystem implements FileSystem {
     // (Node forwards the flag but CreateFile has no equivalent), so the
     // kernel follows the symlink and opens the target. We must refuse
     // upfront when the leaf IS a symlink. ELOOP flows through `mapErrno` to
-    // PERMISSION_DENIED on POSIX; Windows needs the proactive
-    // refusal + the discriminator (for errno-bearing failures like EACCES
-    // on a symlink target inside an inaccessible parent).
-    if (this.pathPolicy.caseInsensitive && (await this.isSymlinkLeaf(real))) {
+    // PERMISSION_DENIED on POSIX (which honours `O_NOFOLLOW` at `open`
+    // itself); a platform whose `open(2)` does NOT honour it needs the
+    // proactive refusal + the discriminator (for errno-bearing failures like
+    // EACCES on a symlink target inside an inaccessible parent). Gated on
+    // `honoursNoFollow`, not `caseInsensitive` — see `isWindowsSymlinkRefusal`.
+    if (!this.pathPolicy.honoursNoFollow && (await this.isSymlinkLeaf(real))) {
       throw permissionDenied(path);
     }
 
@@ -786,12 +793,13 @@ export class NodeFileSystem implements FileSystem {
 
   private async isSymlinkLeaf(real: string): Promise<boolean> {
     // equivalent-mutant: this method is only called when
-    // `pathPolicy.caseInsensitive` is true (Windows). On the Linux mutation
-    // runner the body is unreachable, so mutating returns/catch produces
-    // no observable effect. Windows-mocked tests in
-    // `node-file-system-injected.test.ts` (via `windowsPolicy` injected
-    // through the `PathPolicy` + `FsOperations` DI seam)
-    // cover both arms.
+    // `!pathPolicy.honoursNoFollow` (Windows today — no shipped policy sets
+    // `honoursNoFollow: false` on any other platform). On the Linux mutation
+    // runner `posixPolicy.honoursNoFollow` is true, so the body is
+    // unreachable and mutating returns/catch produces no observable effect.
+    // Windows-mocked tests in `node-file-system-injected.test.ts` (via
+    // `windowsPolicy` injected through the `PathPolicy` + `FsOperations` DI
+    // seam) cover both arms.
     try {
       const stat = await this.fsOps.lstat(real);
       return stat.isSymbolicLink();

@@ -927,6 +927,51 @@ describe('NodeFileSystem — openWithNoFollow Windows symlink refusal (DI)', () 
       });
     });
   });
+
+  describe(
+    'Given a hypothetical mixed policy (caseInsensitive=true, windowsSyntax=false, ' +
+      'honoursNoFollow=true)',
+    () => {
+      describe('When openWithNoFollow(read) is called and open rejects with a generic errno', () => {
+        it('Then no proactive lstat runs and the mapped error is NOT rewrapped — both re-keyed sites take the POSIX arm', async () => {
+          // Arrange — before the re-key, `caseInsensitive=true` alone
+          // triggered both the proactive isSymlinkLeaf lstat and the
+          // isWindowsSymlinkRefusal rewrap, even though this policy's
+          // `open(2)` DOES honour O_NOFOLLOW. Re-keyed to `honoursNoFollow`,
+          // this mixed policy must rely on the syscall flag alone, exactly
+          // like posixPolicy. `EIO` maps to UNSUPPORTED_OPERATION (mapErrno's
+          // default arm), so a rewrap would be observable as PERMISSION_DENIED.
+          const eio = (): NodeJS.ErrnoException =>
+            Object.assign(new Error('io error'), { code: 'EIO' });
+          const root = '/canonical/mixed-policy';
+          const file = '/canonical/mixed-policy/target';
+          const lstat = vi.fn().mockResolvedValue({ isSymbolicLink: () => true });
+          const fsOps = fakeFsOps({
+            realpath: vi.fn().mockImplementation(async (input: string) => input),
+            lstat,
+            open: vi.fn().mockRejectedValue(eio()),
+          });
+          const mixedPolicy = { ...posixPolicy, caseInsensitive: true };
+          const sut = new NodeFileSystem(root, mixedPolicy, fsOps);
+
+          // Act
+          let caught: unknown;
+          try {
+            await sut.openWithNoFollow(file, 'read');
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(lstat).not.toHaveBeenCalled();
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as InstanceType<typeof TsgitError>).data.code).toBe(
+            'UNSUPPORTED_OPERATION',
+          );
+        });
+      });
+    },
+  );
 });
 
 describe('NodeFileSystem — non-errno fault propagation (DI)', () => {
