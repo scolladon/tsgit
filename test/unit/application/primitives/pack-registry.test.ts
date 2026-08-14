@@ -14,6 +14,7 @@ import { REASON_PACK_IDX_EXCEEDS_MAX } from '../../../../src/application/primiti
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import {
   fileNotFound,
+  notADirectory,
   permissionDenied,
   TsgitError,
   unsupportedOperation,
@@ -121,6 +122,97 @@ describe('pack-registry', () => {
 
         // Assert
         expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a pack directory that exists but whose readdir rejects with FILE_NOT_FOUND', () => {
+    describe('When all() is called', () => {
+      it('Then returns an empty array', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const dir = `${ctx.layout.gitDir}/objects/pack`;
+        await ctx.fs.mkdir(dir);
+        const stubCtx: Context = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            readdir: async (path: string) => {
+              if (path === dir) throw fileNotFound(dir);
+              return ctx.fs.readdir(path);
+            },
+          },
+        };
+        const sut = createPackRegistry(stubCtx);
+
+        // Act
+        const result = await sut.all();
+
+        // Assert
+        expect(result).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a pack directory that exists but whose readdir rejects with NOT_A_DIRECTORY', () => {
+    describe('When all() is called', () => {
+      it('Then returns an empty array', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const dir = `${ctx.layout.gitDir}/objects/pack`;
+        await ctx.fs.mkdir(dir);
+        const stubCtx: Context = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            readdir: async (path: string) => {
+              if (path === dir) throw notADirectory(dir);
+              return ctx.fs.readdir(path);
+            },
+          },
+        };
+        const sut = createPackRegistry(stubCtx);
+
+        // Act
+        const result = await sut.all();
+
+        // Assert
+        expect(result).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a pack directory that exists but whose readdir rejects with PERMISSION_DENIED', () => {
+    describe('When all() is called', () => {
+      it('Then it rejects with PERMISSION_DENIED', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const dir = `${ctx.layout.gitDir}/objects/pack`;
+        await ctx.fs.mkdir(dir);
+        const stubCtx: Context = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            readdir: async (path: string) => {
+              if (path === dir) throw permissionDenied(dir);
+              return ctx.fs.readdir(path);
+            },
+          },
+        };
+        const sut = createPackRegistry(stubCtx);
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut.all();
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
       });
     });
   });

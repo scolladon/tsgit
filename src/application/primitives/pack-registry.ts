@@ -473,6 +473,21 @@ const unusableEntry = (
   data: TsgitErrorData,
 ): UnusablePack => ({ name, layer, data });
 
+/**
+ * Node's `readdir` on a missing directory maps to `FILE_NOT_FOUND`;
+ * `MemoryFileSystem.readdir` throws `NOT_A_DIRECTORY` for the same
+ * missing-directory case. Mirrors `internal/loose-oid-cache.ts`'s
+ * `isMissingFanoutDir` and `internal/shallow-set.ts`'s `isAbsentShallowFile`
+ * — the same two-code absence shape, reproduced here rather than imported,
+ * because each of those readers owns its own artefact's absence rule.
+ */
+function isMissingPackDir(error: unknown): boolean {
+  return (
+    error instanceof TsgitError &&
+    (error.data.code === 'FILE_NOT_FOUND' || error.data.code === 'NOT_A_DIRECTORY')
+  );
+}
+
 export function createPackRegistry(ctx: Context): PackRegistry {
   // git dies during object-store setup ahead of every read, and the ONLY
   // thing it dies on is a structurally self-inconsistent multi-pack-index —
@@ -494,7 +509,6 @@ export function createPackRegistry(ctx: Context): PackRegistry {
 
   const scanPacks = async (): Promise<PackGeneration> => {
     const dir = packsDir(commonGitDir(ctx));
-    if (!(await ctx.fs.exists(dir))) return emptyGeneration();
     // storeGate.get() directly, not currentGate(): scanPacks is reachable
     // only through currentGeneration(), which already refuses to start once
     // disposed, so the gate wrapper's own disposal check would be dead
@@ -505,7 +519,20 @@ export function createPackRegistry(ctx: Context): PackRegistry {
     // lives inside the gate (above); the orphan-.idx warn below stays here,
     // on the deferred side, because git is silent about an orphan .idx on a
     // loose read — only the midx load denies one.
-    const [midxLoad, entries] = await Promise.all([storeGate.get(), ctx.fs.readdir(dir)]);
+    //
+    // No separate `exists(dir)` guard: a missing (or non-directory)
+    // `objects/pack` folds to an empty listing right here, inside the same
+    // `Promise.all` arm — never a sequential probe-then-list round trip.
+    // Everything else (PERMISSION_DENIED, …) is a real fault and propagates
+    // to the only consumers that actually need the pack store — `all()` and
+    // `lookup()` — never to a loose-only read, which never forces this scan.
+    const [midxLoad, entries] = await Promise.all([
+      storeGate.get(),
+      ctx.fs.readdir(dir).catch((error: unknown) => {
+        if (isMissingPackDir(error)) return [];
+        throw error;
+      }),
+    ]);
     // git registers a pack only when its .pack exists by name — an orphaned
     // .idx is garbage, never a pack. The listing already in hand is the same
     // data, so the check costs no I/O.

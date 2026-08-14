@@ -8,7 +8,7 @@ import {
   type RegisteredPack,
 } from '../../../../src/application/primitives/pack-registry.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
-import { TsgitError } from '../../../../src/domain/error.js';
+import { permissionDenied, TsgitError } from '../../../../src/domain/error.js';
 import { type Blob, EMPTY_TREE_OID, type ObjectId } from '../../../../src/domain/objects/index.js';
 import {
   encodeOfsDistance,
@@ -841,10 +841,49 @@ describe('object-resolver', () => {
           (call) => call.method === 'readdir' && call.path.endsWith('/objects/pack'),
         );
         expect(packDirReaddirs).toEqual([]);
+        // `exists` never fires for a stronger reason than "the scan didn't run
+        // this time": scanPacks no longer calls it at all (the readdir fold
+        // below replaced it), so this count is zero by construction, not by
+        // this read happening to take the loose branch.
         const existsCalls = calls().filter((call) => call.method === 'exists');
         expect(existsCalls).toEqual([]);
         const idxTouches = calls().filter((call) => call.path.endsWith('.idx'));
         expect(idxTouches).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a Context whose readdir of objects/pack rejects with PERMISSION_DENIED', () => {
+    describe('When resolveObject reads an object that is loose', () => {
+      it('Then it resolves with the blob', async () => {
+        // Arrange
+        const blob: Blob = {
+          type: 'blob',
+          content: ENC.encode('permission-denied-pack-dir loose content'),
+          id: '' as ObjectId,
+        };
+        const ctx = await buildSeededContext({ objects: [blob] });
+        const { serializeObject } = await import('../../../../src/domain/objects/index.js');
+        const id = (await ctx.hash.hashHex(serializeObject(blob, ctx.hashConfig))) as ObjectId;
+        const packDir = `${ctx.layout.gitDir}/objects/pack`;
+        const stubCtx: Context = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            readdir: async (path: string) => {
+              if (path === packDir) throw permissionDenied(packDir);
+              return ctx.fs.readdir(path);
+            },
+          },
+        };
+        const registry = createPackRegistry(stubCtx);
+
+        // Act
+        const result = await resolveObject(stubCtx, registry, id, true);
+
+        // Assert
+        expect(result.type).toBe('blob');
+        expect((result as Blob).content).toEqual(blob.content);
       });
     });
   });
