@@ -168,6 +168,80 @@ describe('add', () => {
     });
   });
 
+  describe('Given a glob pathspec naming files beyond a symlink pointing outside the repo', () => {
+    describe('When add', () => {
+      it('Then throws PATHSPEC_BEYOND_SYMLINK and stages nothing', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo();
+        await ctx.fs.symlink('/outside-the-repo', `${ctx.layout.workDir}/link`);
+
+        // Act + Assert
+        const err = await expectError(() => add(ctx, ['link/*.ts']), 'PATHSPEC_BEYOND_SYMLINK');
+        expect((err.data as { path: string }).path).toBe('link/*.ts');
+        const index = await readIndex(ctx);
+        expect(index.entries).toHaveLength(0);
+      });
+    });
+  });
+
+  describe('Given a glob pathspec naming files beyond a symlink pointing inside the repo', () => {
+    describe('When add', () => {
+      it('Then throws PATHSPEC_BEYOND_SYMLINK — shape-based, not containment-based', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo({ 'realdir/real.ts': 'x' });
+        await ctx.fs.symlink('realdir', `${ctx.layout.workDir}/link`);
+
+        // Act + Assert
+        await expectError(() => add(ctx, ['link/*.ts']), 'PATHSPEC_BEYOND_SYMLINK');
+      });
+    });
+  });
+
+  describe('Given a glob whose leading component is literally a symlinked directory that happens to look like glob magic', () => {
+    describe('When add', () => {
+      it('Then throws PATHSPEC_BEYOND_SYMLINK — git checks path components lexically, not glob-aware', async () => {
+        // Arrange — a literal directory named `li*` that is itself a symlink.
+        // Verified against real git 2.55: `git add 'li*/x.ts'` still refuses
+        // when a literal `li*` directory exists and is a symlink.
+        const ctx = await seedFreshRepo();
+        await ctx.fs.symlink('/outside-the-repo', `${ctx.layout.workDir}/li*`);
+
+        // Act + Assert
+        await expectError(() => add(ctx, ['li*/x.ts']), 'PATHSPEC_BEYOND_SYMLINK');
+      });
+    });
+  });
+
+  describe('Given a glob whose magic sits in the leading path component and no literal directory exists there', () => {
+    describe('When add', () => {
+      it('Then it does not throw PATHSPEC_BEYOND_SYMLINK — verified against real git 2.55, which falls through to a plain no-match instead', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo();
+
+        // Act
+        const result = await add(ctx, ['li*/x.ts']);
+
+        // Assert
+        expect(result).toEqual({ added: [], modified: [], removed: [] });
+      });
+    });
+  });
+
+  describe('Given a glob whose leading directory is real (not a symlink)', () => {
+    describe('When add', () => {
+      it('Then it does not throw PATHSPEC_BEYOND_SYMLINK and stages the matches', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo({ 'realdir/real.ts': 'x' });
+
+        // Act
+        const result = await add(ctx, ['realdir/*.ts']);
+
+        // Assert
+        expect(result.added).toEqual(['realdir/real.ts']);
+      });
+    });
+  });
+
   describe('Given a genuine PERMISSION_DENIED from the adapter on a re-lstat of a literal path', () => {
     describe('When add', () => {
       it('Then the error propagates instead of degrading to PATHSPEC_NO_MATCH', async () => {

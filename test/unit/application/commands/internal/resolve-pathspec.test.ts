@@ -62,6 +62,39 @@ describe('resolvePathspec', () => {
     });
   });
 
+  describe('Given a set of pathspec patterns, for the leading-symlink scan targets', () => {
+    describe('When resolved', () => {
+      it.each([
+        {
+          patterns: ['src/foo.ts'],
+          symlinkScanTargets: ['src/foo.ts'],
+          label: 'a single literal is included',
+        },
+        {
+          patterns: ['link/*.ts'],
+          symlinkScanTargets: ['link/*.ts'],
+          label: 'a single glob body is included (unlike literalMustMatch, which excludes it)',
+        },
+        {
+          patterns: ['src/foo', '*.ts', '!*.test.ts', '!src/skip'],
+          symlinkScanTargets: ['src/foo', '*.ts'],
+          label: 'a mix of literal + glob keeps both, negated entries excluded',
+        },
+        {
+          patterns: ['!*.ts', '!src/skip'],
+          symlinkScanTargets: [],
+          label: 'a `!`-only spec has an empty scan-target list',
+        },
+      ])('Then $label', ({ patterns, symlinkScanTargets }) => {
+        // Arrange
+        const result = resolvePathspec(patterns);
+
+        // Assert
+        expect(result.symlinkScanTargets).toEqual(symlinkScanTargets);
+      });
+    });
+  });
+
   describe('Given a pattern whose body resolves outside the repo', () => {
     describe('When resolved', () => {
       it.each([

@@ -118,8 +118,8 @@ const dispatchPathspec = async (
   paths: ReadonlyArray<string>,
   provider: AttributeProvider | undefined,
 ): Promise<AddResult> => {
-  const { matcher, literalMustMatch, hasGlob } = resolvePathspec(paths);
-  await assertNoSymlinkedLeadingPath(ctx, literalMustMatch);
+  const { matcher, literalMustMatch, hasGlob, symlinkScanTargets } = resolvePathspec(paths);
+  await assertNoSymlinkedLeadingPath(ctx, symlinkScanTargets);
   if (!hasGlob && (await allLiteralsAreFiles(ctx, literalMustMatch))) {
     return addLiteralOnly(ctx, literalMustMatch, provider);
   }
