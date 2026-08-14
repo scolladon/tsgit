@@ -597,6 +597,13 @@ change, plus the CI nightly artifact for the citable number. Never a self-share 
 
 ## Decision candidates
 
+> **All seven ratified by the user on 2026-08-14, each as the recommended option:** DC-1 (a) split
+> `storeGate` + `scan`; DC-2 (b) shim hands down pre-resolved roots; DC-3 (a) keep the midx probes
+> sequential; DC-4 (c) companion scenario **and** methodology note; DC-5 (a) one ADR —
+> [ADR-635](../adr/635-object-store-gate-is-the-multi-pack-index-load.md), which also carries DC-2;
+> DC-6 (a) leave `openRepository` eager; DC-7 (b) leave the fresh-repo row ungated. No deviations,
+> so nothing folds back into the sections above.
+
 | # | Choice | Alternatives (≤3) | Recommendation | Why |
 |---|---|---|---|---|
 | DC-1 | **Where the store-setup seam goes** — what `assertLoadable()` is allowed to force | (a) Split `createPackRegistry` into a `storeGate` memo (`loadMidxSet` only) + the existing `scan` memo, gate as a strict prefix (§3.2). (b) Keep one `scan` memo but restructure `PackGeneration` so `packs`/`fileNames`/`midx` sit behind a nested `PromiseMemo`, leaving `midxLoad` eager. (c) Leave `assertLoadable` forcing the whole scan; accept the 0.041 ms. | **(a)** | (a) makes the gate's contract legible — it *is* the midx load, which is exactly what git dies on (Pin A) — and keeps `refresh()`/`dispose()` reasoning to two memos cleared together. (b) achieves the same I/O but buries the pinned fact inside a generation struct whose "same `scanPacks` call" invariant then reads false. (c) forgoes the only lever available to the primary target. |
