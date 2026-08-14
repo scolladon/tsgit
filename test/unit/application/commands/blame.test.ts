@@ -18,6 +18,7 @@ import { TsgitError } from '../../../../src/domain/error.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import type { AuthorIdentity, ObjectId, Tree } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
+import { refuseReadOnSymlink } from '../primitives/fixtures.js';
 
 const ident = (name: string, timestamp: number): AuthorIdentity => ({
   name,
@@ -27,23 +28,6 @@ const ident = (name: string, timestamp: number): AuthorIdentity => ({
 });
 
 const text = (bytes: Uint8Array): string => new TextDecoder().decode(bytes);
-
-/**
- * No-dereference audit helper: a context whose `ctx.fs.read` throws if ever called with
- * `symlinkPath` — the no-dereference discipline made a hard failure instead
- * of a passive spy assertion.
- */
-const refuseReadOnSymlink = (base: Context, symlinkPath: string): Context => ({
-  ...base,
-  fs: {
-    ...base.fs,
-    read: async (p: string): Promise<Uint8Array> => {
-      if (p === symlinkPath)
-        throw new Error(`no-dereference violation: ctx.fs.read called on ${p}`);
-      return base.fs.read(p);
-    },
-  },
-});
 
 /** Narrow a committed-rev result to its committed lines, asserting none is uncommitted. */
 const committedLines = (result: BlameResult): readonly CommittedBlameLine[] =>

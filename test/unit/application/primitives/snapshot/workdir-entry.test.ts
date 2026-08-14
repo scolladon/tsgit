@@ -4,26 +4,9 @@ import { createWorkdirEntry } from '../../../../../src/application/primitives/sn
 import type { FileMode, FilePath } from '../../../../../src/domain/objects/index.js';
 import type { WorkdirEntryRow, WorkdirStat } from '../../../../../src/domain/snapshot/index.js';
 import type { Context, FileStat } from '../../../../../src/ports/index.js';
-import { buildSeededContext } from '../fixtures.js';
+import { buildSeededContext, refuseReadOnSymlink } from '../fixtures.js';
 
 type SeededContext = Awaited<ReturnType<typeof buildSeededContext>>;
-
-/**
- * No-dereference audit helper: a context whose `ctx.fs.read` throws if ever called with
- * `symlinkPath` — the no-dereference discipline made a hard failure instead
- * of a passive spy assertion.
- */
-const refuseReadOnSymlink = (base: Context, symlinkPath: string): Context => ({
-  ...base,
-  fs: {
-    ...base.fs,
-    read: async (p: string): Promise<Uint8Array> => {
-      if (p === symlinkPath)
-        throw new Error(`no-dereference violation: ctx.fs.read called on ${p}`);
-      return base.fs.read(p);
-    },
-  },
-});
 
 const seedFile = async (
   ctx: SeededContext,

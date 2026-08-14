@@ -21,6 +21,7 @@ import { FILE_MODE, FilePath, type ObjectId } from '../../../../src/domain/objec
 import type { Context } from '../../../../src/ports/context.js';
 import {
   buildSeededContext,
+  refuseReadOnSymlink,
   serializeIndexFixtureAsync,
 } from '../../application/primitives/fixtures.js';
 
@@ -48,23 +49,6 @@ const writeAndStage = async (ctx: Context, path: string, content: string): Promi
 const commitAll = async (ctx: Context): Promise<void> => {
   await commit(ctx, { message: 'test commit', author: AUTHOR, committer: AUTHOR });
 };
-
-/**
- * No-dereference audit helper: a context whose `ctx.fs.read` throws if ever called with
- * `symlinkPath` — the no-dereference discipline made a hard failure instead
- * of a passive spy assertion.
- */
-const refuseReadOnSymlink = (base: Context, symlinkPath: string): Context => ({
-  ...base,
-  fs: {
-    ...base.fs,
-    read: async (p: string): Promise<Uint8Array> => {
-      if (p === symlinkPath)
-        throw new Error(`no-dereference violation: ctx.fs.read called on ${p}`);
-      return base.fs.read(p);
-    },
-  },
-});
 
 // ─── Guard: ≥1 pattern required ──────────────────────────────────────────────
 

@@ -96,9 +96,12 @@ export const compareWorkingTreeDelta = async (
   stats?: WorkingTreeStatMap,
 ): Promise<WorkingTreeDelta> => {
   const absPath = joinPath(ctx.layout.workDir, entry.path);
-  const stat = stats?.sampled(entry.path) ?? (await ctx.fs.lstat(absPath).catch(() => undefined));
+  const sampled = stats?.sampled(entry.path);
+  const stat = sampled ?? (await ctx.fs.lstat(absPath).catch(() => undefined));
   if (stat === undefined) return { status: 'absent' };
-  stats?.record(entry.path, stat);
+  // Record only the freshly-lstat'd arm — a sample already pulled from the
+  // map is already there; re-recording it is a guaranteed-redundant Map.set.
+  if (sampled === undefined) stats?.record(entry.path, stat);
   const worktreeMode = deriveWorkingMode(stat);
   // A file↔symlink kind change is git's `T`, decided on mode alone — no hash
   // needed and the content is meaningless across kinds. A gitlink (submodule)

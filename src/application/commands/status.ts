@@ -211,8 +211,11 @@ const scanWorkingTree = async (
  * Untracked pass: walk the working tree (gitignore-filtered) and collect every
  * path not tracked (stage-0 or unmerged). Tracked-but-ignored entries stay
  * tracked; the ignore filter affects untracked emission only. `stats` is the
- * shared per-invocation map populated by `scanWorkingTree`: the walk consults
- * it before issuing its own lstat, for any consumer that reads a leaf's stat.
+ * shared per-invocation map also populated by the tracked pass
+ * (`scanWorkingTree`): threading it through here guarantees at most one
+ * `lstat` sample per path across both passes — a guarantee this pass never
+ * itself cashes in, since it destructures only `path` from each walk entry
+ * and never reads a leaf's stat.
  */
 const scanUntracked = async (
   ctx: Context,

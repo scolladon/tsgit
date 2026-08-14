@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { add } from '../../../../src/application/commands/add.js';
 import { init } from '../../../../src/application/commands/init.js';
@@ -18,6 +18,7 @@ import type {
   CommandRunner,
 } from '../../../../src/ports/command-runner.js';
 import type { Context } from '../../../../src/ports/context.js';
+import { refuseReadOnSymlink } from './fixtures.js';
 
 const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
 const dec = (b: Uint8Array): string => new TextDecoder().decode(b);
@@ -32,23 +33,6 @@ class FakeRunner implements CommandRunner {
 }
 
 const work = (ctx: Context, name: string): string => `${ctx.layout.workDir}/${name}`;
-
-/**
- * No-dereference audit helper: a context whose `ctx.fs.read` throws if ever called with
- * `symlinkPath` — the no-dereference discipline made a hard failure instead
- * of a passive spy assertion.
- */
-const refuseReadOnSymlink = (base: Context, symlinkPath: string): Context => ({
-  ...base,
-  fs: {
-    ...base.fs,
-    read: async (p: string): Promise<Uint8Array> => {
-      if (p === symlinkPath)
-        throw new Error(`no-dereference violation: ctx.fs.read called on ${p}`);
-      return base.fs.read(p);
-    },
-  },
-});
 
 const seedFile = async (
   name: string,
@@ -792,6 +776,21 @@ describe('compareWorkingTreeDelta — shared stat map', () => {
         // Assert
         expect(calls()).toBe(0);
         expect(result.status).toBe('unchanged');
+      });
+
+      it('Then record is not called again — the sample already came from the map, not a fresh lstat', async () => {
+        // Arrange
+        const { ctx, entry } = await seedFile('a.txt', 'hello\n');
+        const stat = await ctx.fs.lstat(work(ctx, 'a.txt'));
+        const stats = createWorkingTreeStatMap();
+        stats.record(entry.path, stat);
+        const recordSpy = vi.spyOn(stats, 'record');
+
+        // Act
+        await compareWorkingTreeDelta(ctx, entry, undefined, undefined, stats);
+
+        // Assert
+        expect(recordSpy).not.toHaveBeenCalled();
       });
     });
   });

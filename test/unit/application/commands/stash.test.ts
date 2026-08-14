@@ -27,6 +27,7 @@ import type {
   CommandRunner,
 } from '../../../../src/ports/command-runner.js';
 import type { Context } from '../../../../src/ports/context.js';
+import { refuseReadOnSymlink } from '../primitives/fixtures.js';
 
 const author: AuthorIdentity = {
   name: 'Ada',
@@ -71,23 +72,6 @@ const setupRepo = async (): Promise<Context> => {
 
 const headId = async (ctx: Context): Promise<ObjectId> =>
   (await ctx.fs.readUtf8(`${ctx.layout.gitDir}/refs/heads/main`)).trim() as ObjectId;
-
-/**
- * No-dereference audit helper: a context whose `ctx.fs.read` throws if ever called with
- * `symlinkPath` — the no-dereference discipline made a hard failure instead
- * of a passive spy assertion.
- */
-const refuseReadOnSymlink = (base: Context, symlinkPath: string): Context => ({
-  ...base,
-  fs: {
-    ...base.fs,
-    read: async (p: string): Promise<Uint8Array> => {
-      if (p === symlinkPath)
-        throw new Error(`no-dereference violation: ctx.fs.read called on ${p}`);
-      return base.fs.read(p);
-    },
-  },
-});
 
 /**
  * Push a stash W whose untracked-tree parent is `untrackedTree` directly —
