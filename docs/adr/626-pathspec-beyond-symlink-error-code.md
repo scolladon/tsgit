@@ -40,5 +40,6 @@ removed.
   this PR (surface gates).
 - The refusal is now deliberate, tested per guard condition, and byte-equivalent to
   git's refusal condition (not its message bytes — ADR-249).
-- `mv` and `blame`, which share the module, gain the same explicit refusal where git
-  raises it.
+- The refusal is `add`-only, matching git: `has_symlinked_leading_path` is git's
+  pathspec-validation refusal, and git raises it there and nowhere else. `mv` and
+  `blame` do not import `resolve-pathspec.ts` and gain no new refusal from this ADR.
