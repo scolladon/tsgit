@@ -131,35 +131,38 @@ const stripWinExtendedPrefix = (p: string): string => {
 const posixRootOf = (path: string): string => (path.startsWith('/') ? '/' : '');
 
 /**
- * A UNC root (`\\server\share`) — two non-separator segments after the
- * leading `\\`, with an OPTIONAL trailing separator: `\\server\share` (bare,
- * nothing follows), `\\server\share\` and `\\server\share\dir` (trailing
- * separator present, present-or-implied by a following segment) all match,
- * mirroring `path.win32.parse(p).root`'s own root/no-trailing-separator
- * split.
+ * A UNC root (`\\server\share` or `//server/share`) — two non-separator
+ * segments after the leading separator pair, with an OPTIONAL trailing
+ * separator: bare, trailing-separator, and followed-by-a-segment forms all
+ * match, mirroring `path.win32.parse(p).root`'s own root/no-trailing-separator
+ * split. Win32 accepts `/` and `\` interchangeably, so both spellings root.
  */
-const WIN_UNC_ROOT_PATTERN = /^\\\\[^\\]+\\[^\\]+\\?/;
-/** A drive-absolute root (`C:\`). */
-const WIN_DRIVE_ROOT_PATTERN = /^[a-zA-Z]:\\/;
+const WIN_UNC_ROOT_PATTERN = /^[\\/]{2}[^\\/]+[\\/][^\\/]+[\\/]?/;
+/** A drive-absolute root (`C:\` or `C:/`). */
+const WIN_DRIVE_ROOT_PATTERN = /^[a-zA-Z]:[\\/]/;
 /** A drive-relative root (`C:foo`, bare `C:`) — a drive letter with no separator after the colon. */
 const WIN_DRIVE_RELATIVE_PATTERN = /^[a-zA-Z]:/;
 
 /**
  * Windows root, without `path.win32.parse`'s full-path allocation: a UNC
  * share prefix, a drive-absolute prefix, a drive-relative prefix, the
- * single-backslash root-relative form, or `''` for a plain relative path.
- * `rootOf`'s only caller, `realpathNearestExisting`, only ever receives an
- * absolute path in practice — the drive-relative and root-relative arms
- * exist so this stays a faithful, allocation-free stand-in for
- * `path.win32.parse(p).root` across every input shape, not just the ones
- * reachable today.
+ * single-separator root-relative form, or `''` for a plain relative path.
+ *
+ * Win32 accepts `/` and `\` interchangeably as separators, so every arm
+ * matches BOTH spellings and the root-relative arm returns the leading
+ * character itself rather than a hard-coded `\` — `path.win32.parse('/x')`
+ * roots at `'/'`, not `'\'`. That distinction is load-bearing, not
+ * cosmetic: `rootOf`'s caller `realpathNearestExisting` joins the returned
+ * root onto the path's segments, so a `''` root for a `/`-rooted path makes
+ * every walk-up candidate RELATIVE and realpaths it against the process cwd.
  */
 const windowsRootOf = (path: string): string => {
   const uncMatch = WIN_UNC_ROOT_PATTERN.exec(path);
   if (uncMatch !== null) return uncMatch[0];
   if (WIN_DRIVE_ROOT_PATTERN.test(path)) return path.slice(0, 3);
   if (WIN_DRIVE_RELATIVE_PATTERN.test(path)) return path.slice(0, 2);
-  return path.startsWith('\\') ? '\\' : '';
+  const first = path.charAt(0);
+  return first === '\\' || first === '/' ? first : '';
 };
 
 /**

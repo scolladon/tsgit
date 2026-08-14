@@ -334,6 +334,18 @@ describe('windowsPolicy.rootOf — parity with path.win32.parse(p).root', () => 
         { input: 'C:', label: 'a bare drive letter with no segment at all' },
         { input: '\\foo', label: 'a root-relative path with no drive letter' },
         { input: 'foo', label: 'a plain relative path' },
+        // Win32 accepts `/` as a separator everywhere `\` is accepted. A
+        // POSIX-shaped absolute path reaches this policy whenever a caller
+        // hands one in on Windows, and rooting it at `''` would make
+        // `realpathNearestExisting` join its segments onto nothing and
+        // realpath them against the process cwd.
+        { input: '/foo', label: 'a forward-slash root-relative path' },
+        { input: '/', label: 'a bare forward-slash root' },
+        { input: '/totally/made/up', label: 'a forward-slash absolute path' },
+        { input: 'C:/foo', label: 'a drive-absolute path spelled with a forward slash' },
+        { input: '//server/share', label: 'a bare UNC root spelled with forward slashes' },
+        { input: '//server/share/dir', label: 'a forward-slash UNC path past the share' },
+        { input: '', label: 'the empty string' },
       ])('Then it agrees with path.win32.parse(p).root for $label ($input)', ({ input }) => {
         // Arrange
         const expected = nodeWin32Path.parse(input).root;

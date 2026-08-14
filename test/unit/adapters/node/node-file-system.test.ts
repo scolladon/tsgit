@@ -141,7 +141,19 @@ describe('NodeFileSystem', () => {
           const { fs, rootDir, cleanup } = await makeFs();
           const target = nodePath.join(rootDir, 'existing.txt');
           await fsPromises.writeFile(target, Buffer.from('inside'));
-          const literalDotDotPrefix = `/..${rootDir}/existing.txt`;
+          // Insert the `..` immediately AFTER the path's own root so the
+          // literal stays collapsible on both platforms: `/../var/…` on
+          // POSIX, `C:\..\Users\…` on Windows. Prefixing the whole absolute
+          // path with `/..` instead would produce `/..C:\Users\…` on
+          // Windows — a single nonsense segment that resolve() cannot
+          // collapse back inside the root.
+          // Concatenated, never `join`ed — `join` normalises the `..` away at
+          // construction time, which is exactly the collapsing the adapter is
+          // supposed to be doing.
+          const { root } = nodePath.parse(rootDir);
+          const belowRoot = rootDir.slice(root.length);
+          const sep = nodePath.sep;
+          const literalDotDotPrefix = `${root}..${sep}${belowRoot}${sep}existing.txt`;
 
           // Act
           const result = await fs.read(literalDotDotPrefix);
