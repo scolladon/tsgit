@@ -209,6 +209,32 @@ describe('verifyPath', () => {
           mode: FILE_MODE.REGULAR,
           expected: 'dotgit-ntfs-stream',
         },
+        {
+          label:
+            "'git~1:x' rejects: dotgit-ntfs-stream (stream suffix on the NTFS short-name alias)",
+          path: 'git~1:x',
+          mode: FILE_MODE.REGULAR,
+          expected: 'dotgit-ntfs-stream',
+        },
+        {
+          label: "'GIT~1:x' rejects: dotgit-ntfs-stream (case-folded short-name alias + stream)",
+          path: 'GIT~1:x',
+          mode: FILE_MODE.REGULAR,
+          expected: 'dotgit-ntfs-stream',
+        },
+        {
+          label:
+            "'git~1:x' rejects at 120000 (symlink) too — the alias scan is mode-independent: dotgit-ntfs-stream",
+          path: 'git~1:x',
+          mode: FILE_MODE.SYMLINK,
+          expected: 'dotgit-ntfs-stream',
+        },
+        {
+          label: "'git~2:x' accepts (non-alias short name keeps a stream suffix harmless)",
+          path: 'git~2:x',
+          mode: FILE_MODE.REGULAR,
+          expected: undefined,
+        },
 
         // --- backslash-split family (feeds the alias scan only) ---
         {
@@ -366,6 +392,89 @@ describe('verifyPath', () => {
           path: 'gitmod~5',
           mode: FILE_MODE.SYMLINK,
           expected: undefined,
+        },
+        {
+          label:
+            "'gitmod~0' accepts at 120000 (short-name generator never emits ~0 — lower boundary pinned)",
+          path: 'gitmod~0',
+          mode: FILE_MODE.SYMLINK,
+          expected: undefined,
+        },
+        {
+          label:
+            "'gitmod~1:x' rejects at 120000 (stream suffix on the truncated short-name alias): gitmodules-not-regular",
+          path: 'gitmod~1:x',
+          mode: FILE_MODE.SYMLINK,
+          expected: 'gitmodules-not-regular',
+        },
+        {
+          label:
+            "'gi7eba~1' rejects at 120000 (NTFS hashed short name, lower bound): gitmodules-not-regular",
+          path: 'gi7eba~1',
+          mode: FILE_MODE.SYMLINK,
+          expected: 'gitmodules-not-regular',
+        },
+        {
+          label: "'gi7eba~4' rejects at 120000 (NTFS hashed short name): gitmodules-not-regular",
+          path: 'gi7eba~4',
+          mode: FILE_MODE.SYMLINK,
+          expected: 'gitmodules-not-regular',
+        },
+        {
+          label:
+            "'gi7eba~5' rejects at 120000 (the hashed short name is NOT bounded to 1-4 like the truncated form): gitmodules-not-regular",
+          path: 'gi7eba~5',
+          mode: FILE_MODE.SYMLINK,
+          expected: 'gitmodules-not-regular',
+        },
+        {
+          label:
+            "'gi7eba~9' rejects at 120000 (NTFS hashed short name, upper single-digit bound): gitmodules-not-regular",
+          path: 'gi7eba~9',
+          mode: FILE_MODE.SYMLINK,
+          expected: 'gitmodules-not-regular',
+        },
+        {
+          label:
+            "'gi7eba~0' accepts at 120000 (hashed generator never emits digit 0 — lower boundary pinned)",
+          path: 'gi7eba~0',
+          mode: FILE_MODE.SYMLINK,
+          expected: undefined,
+        },
+        {
+          label:
+            "'gi7eba~10' accepts at 120000 (two-digit tail — the hashed form is single-digit only)",
+          path: 'gi7eba~10',
+          mode: FILE_MODE.SYMLINK,
+          expected: undefined,
+        },
+        {
+          label:
+            "'GI7EBA~1' rejects at 120000 (case-folded hashed short name): gitmodules-not-regular",
+          path: 'GI7EBA~1',
+          mode: FILE_MODE.SYMLINK,
+          expected: 'gitmodules-not-regular',
+        },
+        {
+          label:
+            "'gI7EBa~3' rejects at 120000 (mixed-case hashed short name): gitmodules-not-regular",
+          path: 'gI7EBa~3',
+          mode: FILE_MODE.SYMLINK,
+          expected: 'gitmodules-not-regular',
+        },
+        {
+          label:
+            "'abcdef~1' accepts at 120000 (arbitrary 6-char prefix — the hashed prefix is a hardcoded literal, not a computed check)",
+          path: 'abcdef~1',
+          mode: FILE_MODE.SYMLINK,
+          expected: undefined,
+        },
+        {
+          label:
+            "'gi7eba~1:x' rejects at 120000 (stream suffix on the hashed short-name alias): gitmodules-not-regular",
+          path: 'gi7eba~1:x',
+          mode: FILE_MODE.SYMLINK,
+          expected: 'gitmodules-not-regular',
         },
         {
           label:

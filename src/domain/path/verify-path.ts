@@ -13,7 +13,6 @@ export type VerifyPathRejection =
 
 const DOTGIT = '.git';
 const NTFS_SHORT_NAME = 'git~1';
-const NTFS_STREAM_PREFIX = '.git:';
 const GITMODULES = '.gitmodules';
 const TRAILING_DOT_SPACE = /[. ]+$/;
 
@@ -51,11 +50,28 @@ const hasIgnorableCodepoint = (part: string): boolean => {
   return false;
 };
 
+/**
+ * git's `is_ntfs_dot_generic` treats `:` as a component terminator: an NTFS
+ * alternate-data-stream suffix on EITHER the full name or a short-name alias
+ * still targets the same file, so it must match too. Splitting once here lets
+ * every alias comparison run against the pre-stream candidate while the
+ * caller still learns whether a stream suffix was present, to choose between
+ * the plain and the `-ntfs-stream` rejection reason.
+ */
+const splitAtStream = (part: string): { candidate: string; hasStream: boolean } => {
+  const colonIndex = part.indexOf(':');
+  return colonIndex === -1
+    ? { candidate: part, hasStream: false }
+    : { candidate: part.slice(0, colonIndex), hasStream: true };
+};
+
 const matchAliasPart = (part: string): VerifyPathRejection | undefined => {
-  const normalized = normalizeAliasCandidate(part);
-  if (normalized === DOTGIT) return 'dotgit-alias';
-  if (normalized === NTFS_SHORT_NAME) return 'dotgit-ntfs-alias';
-  if (normalized.startsWith(NTFS_STREAM_PREFIX)) return 'dotgit-ntfs-stream';
+  const { candidate, hasStream } = splitAtStream(part);
+  const normalized = normalizeAliasCandidate(candidate);
+  if (normalized === DOTGIT) return hasStream ? 'dotgit-ntfs-stream' : 'dotgit-alias';
+  if (normalized === NTFS_SHORT_NAME) {
+    return hasStream ? 'dotgit-ntfs-stream' : 'dotgit-ntfs-alias';
+  }
   if (!hasIgnorableCodepoint(part)) return undefined;
   const hfsNormalized = normalizeAliasCandidate(stripIgnorableCodepoints(part));
   return hfsNormalized === DOTGIT ? 'dotgit-hfs-alias' : undefined;
@@ -115,28 +131,34 @@ const findComponentRejection = (components: readonly string[]): VerifyPathReject
   return undefined;
 };
 
-// NTFS short-name form for `.gitmodules`: Windows' 8.3 generator only ever
-// emits `GITMOD~1`..`GITMOD~4` for this base name before falling back to a
-// hashed form — pinned against git 2.55 (`update-index --add --cacheinfo
-// 120000,<blob>,gitmod~N>`): `gitmod~1`..`gitmod~4` are refused, `gitmod~5`
-// and above are NOT.
+// NTFS short-name forms for `.gitmodules`: Windows' 8.3 generator emits
+// `GITMOD~1`..`GITMOD~4` for the truncated base name, then falls back to a
+// hashed 6-char prefix (`GI7EBA~<digit>`) once those four are taken — pinned
+// against git 2.55 (`update-index --add --cacheinfo 120000,<blob>,<name>`):
+// `gitmod~1`..`gitmod~4` are refused, `gitmod~0` and `gitmod~5`+ are not;
+// `gi7eba~1`..`gi7eba~9` are refused, while any OTHER 6-char prefix, digit
+// `0`, or 2+ digits (`gi7eba~10`) is not — the hashed prefix is a hardcoded
+// literal, not a computed check, and Windows only ever emits a single
+// trailing digit for the hashed form.
 const GITMOD_NTFS_SHORT_NAME = /^gitmod~[1-4]$/;
-const GITMOD_NTFS_STREAM_PREFIX = '.gitmodules:';
+const GITMOD_NTFS_HASHED_SHORT_NAME = /^gi7eba~[1-9]$/;
 
 /**
  * True if `component` is `.gitmodules` or one of its NTFS (`gitmod~1`..
- * `gitmod~4` short name, `.gitmodules:`-stream) / HFS+ (ignorable-codepoint)
- * aliases — the same normalisation {@link matchAliasPart} runs for `.git`,
- * re-targeted at `.gitmodules`. Unlike {@link matchAliasComponent}, this
- * skips the backslash-split: a component reaching `verifyPath` has already
- * passed `validateIndexPath`'s unconditional backslash rejection, so a
+ * `gitmod~4` truncated short name, `gi7eba~1`..`gi7eba~9` hashed short name —
+ * either with a `:`-stream suffix) / HFS+ (ignorable-codepoint) aliases — the
+ * same normalisation {@link matchAliasPart} runs for `.git`, re-targeted at
+ * `.gitmodules`. Unlike {@link matchAliasComponent}, this skips the
+ * backslash-split: a component reaching `verifyPath` has already passed
+ * `validateIndexPath`'s unconditional backslash rejection, so a
  * `.gitmodules`-alias component can never itself carry an embedded `\`.
  */
 const matchGitmodulesAliasPart = (component: string): boolean => {
-  const normalized = normalizeAliasCandidate(component);
+  const { candidate } = splitAtStream(component);
+  const normalized = normalizeAliasCandidate(candidate);
   if (normalized === GITMODULES) return true;
   if (GITMOD_NTFS_SHORT_NAME.test(normalized)) return true;
-  if (normalized.startsWith(GITMOD_NTFS_STREAM_PREFIX)) return true;
+  if (GITMOD_NTFS_HASHED_SHORT_NAME.test(normalized)) return true;
   if (!hasIgnorableCodepoint(component)) return false;
   return normalizeAliasCandidate(stripIgnorableCodepoints(component)) === GITMODULES;
 };
