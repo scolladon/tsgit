@@ -60,6 +60,7 @@ interface UnmergedEntry {
 - **Unmerged paths.** `unmerged` reports conflicted paths (index stages 1/2/3 — git's "Unmerged paths"), each with a `kind` (the seven git conflict states, reconstructing the `UU`/`AA`/`DD`/`AU`/`UA`/`DU`/`UD` codes), the present per-stage blobs (`base`/`ours`/`theirs`), and the conflicted file's on-disk mode (`worktree`, git's `mW`; omitted when the file is absent on disk — `git status --porcelain=v2` then prints `000000`). With the stages plus `worktree`, the full v2 `u` line (`u <XY> N... <m1> <m2> <m3> <mW> <h1> <h2> <h3> <path>`) reconstructs byte-for-byte. A conflicted path is reported **only** here, never in `changes`/`untracked` (ADR-256).
 - **Unborn HEAD.** With no commit yet, the HEAD tree is empty, so every staged entry is `added` (no `head` side).
 - **Stat-cache fast path:** entries whose `mtime/ctime/size/ino` match the index's recorded stat fields are not re-hashed. This is the hot path that `add`/`commit`/`reset --mixed` populate.
+- **One stat sample per path.** The tracked pass and the untracked walk share a single per-invocation stat cache, so a path is `lstat`ed at most once per `status()` call regardless of which pass samples it first.
 - **Sparse-aware:** out-of-cone paths marked `skip-worktree` are not reported as deletions.
 - **`.gitignore` integration:** untracked files matched by an ignore rule are filtered out before `clean` is computed.
 - **Detached HEAD:** `branch` is `undefined` and `detached: true` when HEAD points directly at a commit.
@@ -90,5 +91,5 @@ if (c?.head && c.index) {
 
 - Primitives: [`readIndex`](../primitives/read-index.md), [`walkWorkingTree`](../primitives/walk-working-tree.md), [`diffTrees`](../primitives/diff-trees.md), [`readBlob`](../primitives/read-blob.md)
 - Related commands: [`add`](add.md), [`diff`](diff.md), [`checkout`](checkout.md), [`describe`](describe.md)
-- ADRs: [039](../../adr/039-defer-status-pathspec.md), [254](../../adr/254-status-staged-column-coarse-changekind.md) (superseded), [255](../../adr/255-status-first-class-type-and-mode-change.md), [256](../../adr/256-status-unmerged-paths-field.md), [269](../../adr/269-status-correlated-changed-path-record.md)
+- ADRs: [039](../../adr/039-defer-status-pathspec.md), [254](../../adr/254-status-staged-column-coarse-changekind.md) (superseded), [255](../../adr/255-status-first-class-type-and-mode-change.md), [256](../../adr/256-status-unmerged-paths-field.md), [269](../../adr/269-status-correlated-changed-path-record.md), [633](../../adr/633-walk-working-tree-lazy-stat.md), [634](../../adr/634-status-shared-stat-map.md)
 - Roadmap: Phase 22 — pathspec scoping on `status`

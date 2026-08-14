@@ -30,6 +30,12 @@ OPFS is sandboxed per origin by the browser. The adapter does no extra path cont
 
 The Memory adapter's symlink follower caps at 40 hops (POSIX `SYMLOOP_MAX`).
 
+## Index entry name validation
+
+Independent of path containment, every entry name that would become part of an index — parsed from `.git/index`, projected from a tree, or synthesized back into one — is validated once against git's own `verify_path` rule set: a leading `/`, a `..`/`.`/empty segment, a `.git` alias (any case, trailing dot/space, the NTFS `git~1` short name, a `.git:`-stream form, or an HFS+ ignorable-codepoint spelling), or a `.gitmodules` entry whose mode is a symlink (CVE-2018-11235) all throw `INVALID_INDEX_ENTRY`. A backslash, a C0/C1 control byte, or a BIDI/isolate Unicode control character is deliberately **not** rejected — git accepts all three in a path, and rejecting them was tsgit being stricter than the tool it replicates. The check fires at every tree↔index boundary (index parse, `buildIndexFromTree`, `synthesizeTreeFromIndex`) and at every write that projects a tree onto the working tree (`applyChangeset`, the shared 3-way-merge applier, `stash apply`'s untracked restore) — never at a tree *read*, so `cat-file`/`show`/`log` still print a hostile tree, matching git.
+
+The working-tree **walker** (`walkWorkingTree`) applies a narrower rule: it skips only an exact `.git` name, folded by case. An on-disk NTFS/HFS-alias entry (`git~1`, a `.git:`-stream name) is walked like any other path, exactly as git's own directory scan treats it — the wider rejection above applies only once that name would become an index entry.
+
 ## Lock files & atomicity
 
 `writeExclusive` (Node: `{ flag: 'wx' }`) provides atomic create-or-fail. Used by:

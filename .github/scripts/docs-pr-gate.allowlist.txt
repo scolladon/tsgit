@@ -39,3 +39,18 @@ src/application/primitives/update-config.ts docs/use/primitives/internals.md
 # described where it actually bites (the command or registry entry that
 # enforces it), so `internals.md` remains the right place to look.
 src/application/primitives/validators.ts docs/use/primitives/internals.md
+
+# Same rationale, added by the git-parity-containment change: each of these
+# is either exported from the primitives package but not bound on
+# `repo.primitives.*` (compare-working-tree-entry.ts), not exported from the
+# package at all (apply-merge-to-worktree.ts), or already an internals.md
+# resident from an earlier phase (apply-changeset.ts, build-index-from-tree.ts,
+# synthesize-tree-from-index.ts). `types.ts` carries shared interface
+# definitions with no page of its own — same rationale as validators.ts above,
+# each type is documented on the primitive page that returns/accepts it.
+src/application/primitives/apply-changeset.ts docs/use/primitives/internals.md
+src/application/primitives/apply-merge-to-worktree.ts docs/use/primitives/internals.md
+src/application/primitives/build-index-from-tree.ts docs/use/primitives/internals.md
+src/application/primitives/compare-working-tree-entry.ts docs/use/primitives/internals.md
+src/application/primitives/synthesize-tree-from-index.ts docs/use/primitives/internals.md
+src/application/primitives/types.ts docs/use/primitives/internals.md
