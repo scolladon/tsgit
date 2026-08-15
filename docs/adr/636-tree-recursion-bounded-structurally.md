@@ -38,7 +38,19 @@ The six sites bounded at `cap + 1` frames — `flattenLevel`, `diffChangedSubtre
 
 That bound is on the **input**, not on the frames, and ADR-637 makes the cap user-controlled: at `core.maxTreeDepth = 100000` these six would recurse 100 001 frames and overflow before the guard fires — the defect this record exists to remove, re-entering through the config door. The two records do not compose on their face, and the evidence does not close the gap either way: the 20000 and 8000 rows prove the *guard* fired at depth 1025, not that 20 000 frames were ever held. Their real ceilings are unmeasured.
 
-**Resolution (user-ratified): measure before rewriting.** Each of the six is driven at a large configured cap using the same harness that produced the table above — one depth per fresh process — and its ceiling published as a measurement rather than an inference. Only those that cannot hold a stated headroom above the 2048 default are rewritten. This is the cheap half of the work and it discharges the caveat this record already carried on three inferred rows. Committing to four more rewrites — two on the raw-tree cursor path, which carries documented equivalent-mutant proofs that would need re-deriving — before knowing the size of the problem would repeat the mistake this record was written to stop. Until that measurement lands, "the cap is honoured unclamped" is a claim about the four structural sites only, and ADR-637's contract is qualified accordingly.
+**Resolution (user-ratified): measure before rewriting.** Each of the six is driven at a large configured cap using the same harness that produced the table above — one depth per fresh process — and its ceiling published as a measurement rather than an inference. Only those that cannot hold a stated headroom above the 2048 default are rewritten. Committing to four more rewrites — two on the raw-tree cursor path, which carries documented equivalent-mutant proofs that would need re-deriving — before knowing the size of the problem would repeat the mistake this record was written to stop.
+
+**Qualifier discharged — the measurement landed, and the anticipated asymmetry is empty.** Measured on darwin/arm64, Node v22.22.3, default V8 stack, each site cap-anchored (cap set to the target depth, one level deeper built, clean refusal confirmed at `cap + 1` rather than inferred from "did not crash"):
+
+| Site | Bound | Margin over the 4096 threshold |
+|---|---|---|
+| `flattenLevel`, `diffChangedSubtree`, `walkLevel` | ≥ 15000 | 3.7× |
+| `collectTreeObjects`, `emitTreeObjects` | ≥ 100000 | 24× |
+| `markTree` | ≥ 100000, ran to **exactly** the configured cap and refused at `cap + 1` | 24× |
+
+No raw `RangeError` at any site at any depth attempted. **Zero of six needed rewriting**; each took a documented invariant instead. So "the cap is honoured unclamped" holds across all ten sites, not four, and ADR-637's contract needs no standing qualification.
+
+Two things this measurement does **not** license. It is not evidence that async recursion is stack-safe in general: the four sites rewritten above are `async` too and genuinely overflow at 2250/1350/925, with a real `RangeError` in the suite as proof. The difference — these six await genuinely-pending I/O at every level, and an awaited frame is suspended rather than stacked — is consistent with the result but is not fully characterised here. And it does not mean the six are unbounded: `flattenLevel`, `diffChangedSubtree` and `walkLevel` hit a JS **heap** exhaustion near depth 32000, from an O(depth²) `[...stack, id]` copy rebuilt per level in their own cycle-detection stack. That is a heap wall, not a stack wall, and it is the one place where an unclamped cap still meets a limit that is not a typed refusal — carried to a later structural pass rather than fixed here.
 
 `MAX_SUBMODULE_DEPTH` is explicitly outside this: `walkInTree`'s `if (depth >= maxDepth) continue` is a non-throwing pruning backstop counting nested *repositories*, not tree levels, at 101 frames against a worst measured ceiling of 925. It is the one cap in the inventory whose number is not a guess about V8.
 
