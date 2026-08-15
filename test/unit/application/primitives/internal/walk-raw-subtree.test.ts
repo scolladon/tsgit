@@ -577,4 +577,30 @@ describe('walkRawSubtree', () => {
       });
     });
   });
+  describe('Given two sibling directories sharing one subtree oid', () => {
+    describe('When walkRawSubtree runs', () => {
+      it('Then both branches emit, with no false TREE_CYCLE_DETECTED', async () => {
+        // Arrange — the cycle guard tracks the root-to-current path, so an oid
+        // must be removed from it when its level returns. Without that removal
+        // the second sibling reads as a repeat visit and falsely refuses.
+        const ctx = await buildSeededContext();
+        const leaf = await writeBlob(ctx, 'shared');
+        const sharedId = await writeTree(ctx, [
+          { name: 'f.txt', mode: FILE_MODE.REGULAR, id: leaf },
+        ]);
+        const rootId = await writeTree(ctx, [
+          { name: 'x', mode: FILE_MODE.DIRECTORY, id: sharedId },
+          { name: 'y', mode: FILE_MODE.DIRECTORY, id: sharedId },
+        ]);
+
+        // Act
+        const entries = await collect(ctx, rootId);
+
+        // Assert
+        const paths = entries.map((entry) => entry.path);
+        expect(paths).toContain('top/x/f.txt');
+        expect(paths).toContain('top/y/f.txt');
+      });
+    });
+  });
 });

@@ -591,10 +591,10 @@ function withPrefix(change: DiffChange, prefix: string): DiffChange {
 }
 
 /**
- * This descent honours `core.maxTreeDepth` up to 15000 and refuses beyond it
- * by exhausting frames, not by policy — measured 2026-08-15: a fixture built
- * one level past a cap of 15000 refuses cleanly with `TREE_DEPTH_EXCEEDED`
- * at depth 15001.
+ * This descent was measured honouring `core.maxTreeDepth` to at least
+ * 15000 (2026-08-15): a fixture one level past a cap of 15000 refuses cleanly
+ * with `TREE_DEPTH_EXCEEDED` at depth 15001. Deeper than that is
+ * unmeasured — no raw stack overflow was observed at any depth tried.
  */
 async function diffChangedSubtree(
   ctx: Context,

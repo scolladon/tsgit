@@ -61,7 +61,9 @@ interface ArchiveEntry {
   - An invalid `[core]` value (`core.maxTreeDepth`, `core.loosecompression` / `core.compression`, or another eager-gate key) → `CONFIG_BAD_NUMERIC_VALUE` / `CONFIG_BAD_ZLIB_LEVEL` / `CONFIG_MISSING_VALUE` / `CONFIG_BAD_BOOLEAN_VALUE`, matching git's own eager `[core]` validation (see [`errors.md`](../errors.md)).
   - Unresolvable treeish (unborn HEAD, bad ref) → from `revParse`.
   - Treeish resolves to a blob → `UNEXPECTED_OBJECT_TYPE`.
-  - A tree past `core.maxTreeDepth` → `TREE_DEPTH_EXCEEDED`. `archive` had **no** depth refusal at any input before this change — git caps `archive`'s traversal exactly like every other traversal (`git archive --format=tar` on a tree past the cap exits 128). Its `maxEntries` override is unrelated and stays: git does **not** cap `archive`'s entry count, only its depth, so `archive` passes `walkTree` an effectively-unbounded `maxEntries` while leaving `maxDepth` at `walkTree`'s own `core.maxTreeDepth` default.
+  - (Not pre-stream — see below.) A tree past `core.maxTreeDepth` → `TREE_DEPTH_EXCEEDED`. `archive` had **no** depth refusal at any input before this change — git caps `archive`'s traversal exactly like every other traversal (`git archive --format=tar` on a tree past the cap exits 128). Its `maxEntries` override is unrelated and stays: git does **not** cap `archive`'s entry count, only its depth, so `archive` passes `walkTree` an effectively-unbounded `maxEntries` while leaving `maxDepth` at `walkTree`'s own `core.maxTreeDepth` default.
+
+  **This one refusal is raised while the entry stream is consumed, not before it is opened.** `archive` returns `entries` as a lazy async generator, so the depth guard fires on the iteration that reaches the offending level. A caller that awaits `archive(...)` inside a `try` but iterates `entries` outside it will see the refusal escape as an unhandled rejection — iterate inside the `try`.
 
 ## Examples
 

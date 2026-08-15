@@ -39,7 +39,10 @@ const mergeKey = (
 };
 
 const reduceSection = (section: IniSection): GitmodulesRow | undefined => {
-  if (section.section !== 'submodule') return undefined;
+  // Section names are matched case-insensitively, as git does — `[Submodule
+  // "libs/foo"]` is the same section as `[submodule "libs/foo"]`. The
+  // subsection stays case-sensitive, also as git does.
+  if (section.section.toLowerCase() !== 'submodule') return undefined;
   if (section.subsection === undefined) return undefined;
   if (isUnsafeSubmoduleName(section.subsection)) return undefined;
   const keys = section.entries.reduce(mergeKey, {});

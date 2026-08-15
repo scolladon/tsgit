@@ -72,10 +72,10 @@ interface BundleEmitState extends EmitState {
 // repo objects on the create path, and the PACK_TOO_LARGE guard in tryEmit
 // already bounds the total number of emitted (interesting) objects.
 //
-// This descent honours `core.maxTreeDepth` up to 100000 and refuses beyond
-// it by exhausting frames, not by policy — measured 2026-08-15: a fixture
-// built one level past a cap of 100000 refuses cleanly with
-// `TREE_DEPTH_EXCEEDED` at depth 100001.
+// This descent was measured honouring `core.maxTreeDepth` to at least
+// 100000 (2026-08-15): a fixture one level past a cap of 100000 refuses cleanly
+// with `TREE_DEPTH_EXCEEDED` at depth 100001. Deeper than that is
+// unmeasured — no raw stack overflow was observed at any depth tried.
 const collectTreeObjects = async (
   ctx: Context,
   treeId: ObjectId,
@@ -109,10 +109,10 @@ const collectTreeObjects = async (
 // their objects are already in `uninteresting` (nothing to emit) or they were
 // already emitted during an earlier commit's walk.
 //
-// This descent honours `core.maxTreeDepth` up to 100000 and refuses beyond
-// it by exhausting frames, not by policy — measured 2026-08-15: a fixture
-// built one level past a cap of 100000 refuses cleanly with
-// `TREE_DEPTH_EXCEEDED` at depth 100001.
+// This descent was measured honouring `core.maxTreeDepth` to at least
+// 100000 (2026-08-15): a fixture one level past a cap of 100000 refuses cleanly
+// with `TREE_DEPTH_EXCEEDED` at depth 100001. Deeper than that is
+// unmeasured — no raw stack overflow was observed at any depth tried.
 const emitTreeObjects = async (
   ctx: Context,
   treeId: ObjectId,

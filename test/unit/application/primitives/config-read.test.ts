@@ -351,6 +351,42 @@ describe('primitives/config-read', () => {
     });
   });
 
+  describe('Given a [REMOTE "origin"] section spelled in upper case', () => {
+    describe('When readConfig', () => {
+      it('Then the remote still resolves, because section names are case-insensitive', async () => {
+        // Arrange — git matches section names case-insensitively. This is the
+        // SUBSECTIONED dispatch path, distinct from the subsectionless one.
+        const ctx = createMemoryContext();
+        await seed(ctx, '[REMOTE "origin"]\n  url = https://example.com/r.git\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.remote?.get('origin')?.url).toBe('https://example.com/r.git');
+      });
+    });
+  });
+
+  describe('Given a [remote "Origin"] section whose SUBsection is upper case', () => {
+    describe('When readConfig', () => {
+      it('Then it resolves under "Origin", because subsection names stay case-sensitive', async () => {
+        // Arrange — the companion to the case above: git lower-cases the
+        // section name but preserves the subsection verbatim, so the two must
+        // not collapse onto one another.
+        const ctx = createMemoryContext();
+        await seed(ctx, '[remote "Origin"]\n  url = https://example.com/r.git\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.remote?.get('Origin')?.url).toBe('https://example.com/r.git');
+        expect(result.remote?.get('origin')).toBeUndefined();
+      });
+    });
+  });
+
   describe('Given a [remote "origin"] section with multiple fetch lines', () => {
     describe('When readConfig', () => {
       it('Then all fetch refspecs are collected in order', async () => {

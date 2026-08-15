@@ -15,6 +15,19 @@ describe('Given .gitmodules text', () => {
     });
   });
 
+  describe('When the section name itself is spelled in mixed case', () => {
+    it('Then the row still parses, because section names are case-insensitive', () => {
+      // Arrange — git matches section names case-insensitively, so
+      // `[Submodule "libs/a"]` is the same section as `[submodule "libs/a"]`;
+      // the subsection is kept verbatim.
+      const text = '[Submodule "libs/a"]\n\tpath = libs/a\n\turl = ../a\n';
+      // Act
+      const result = parseGitmodules(text);
+      // Assert
+      expect(result).toEqual([{ name: 'libs/a', path: 'libs/a', url: '../a' }]);
+    });
+  });
+
   describe('When keys vary in case and update/branch are present', () => {
     it('Then keys are read case-insensitively and update/branch surface', () => {
       // Arrange
