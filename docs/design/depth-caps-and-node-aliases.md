@@ -5,7 +5,9 @@
 > the hardcoded Node majors in CI with `actions/setup-node` release-line aliases.
 > Status: **ratified** — revised in place against [ADR-636](../adr/636-tree-recursion-bounded-structurally.md),
 > [ADR-637](../adr/637-tree-depth-cap-is-core-max-tree-depth.md) and
-> [ADR-638](../adr/638-ci-tracks-node-release-lines-by-alias.md).
+> [ADR-638](../adr/638-ci-tracks-node-release-lines-by-alias.md), then again against the four
+> cap-resolution boundaries those first two records were amended to carry (DC-11 to DC-14).
+> Every decision candidate is settled; one new one (DC-15) is surfaced and left open.
 
 Two independent robustness scopes batched into one change. **Scope A** is `src/` + `test/`;
 **Scope B** is `.github/` only. They share no file and can be reviewed independently; they are
@@ -84,7 +86,10 @@ Ratified after the first draft; they are the design's premises, not its options.
   configured value with no internal ceiling and no clamp. An invalid value is refused the way git
   refuses it. `archive` takes the shared cap; its `maxEntries` override stays. One residual
   divergence is recorded rather than fixed — tsgit caps the *synthesis* surface where git's
-  `write-tree` is unlimited (§A7 verdict 5).
+  `write-tree` is unlimited (§A7 verdict 5). **Its four boundaries are now settled too** (DC-11 to
+  DC-14): the configured value binds **all ten sites** uniformly; it is read **local-only**, a
+  divergence that is published rather than implicit; an invalid value refuses **repo-wide**; and
+  the six sites left recursive are **measured before** any decision to rewrite them.
 - **[ADR-638](../adr/638-ci-tracks-node-release-lines-by-alias.md)** — the composite default is
   **`lts/*`**, the matrix is `['lts/-1', 'lts/*', 'latest']` with **`latest` blocking**,
   `npm-service.yml` is aliased rather than pinned, and the coverage cell is re-anchored on an
@@ -142,10 +147,14 @@ When this ships:
    input, **at any cap value the user configures**. That includes `archive`, whose cap is
    disabled today (§A5). ADR-636 makes this a **structural property** — depth costs heap, not
    frames — so it holds on any engine, not merely on the engines §A2 measured. The earlier
-   draft's "empirical claim about the CI matrix" reading is retired. **Bounded by DC-14:** the six
-   sites ADR-636 leaves recursive satisfy this at the 2048 default but not, on present evidence,
-   at an arbitrarily large configured one. The requirement is stated at its full strength because
-   that is what ADR-637 promises; DC-14 is where the shortfall is resolved.
+   draft's "empirical claim about the CI matrix" reading is retired. **Qualified, temporarily and
+   precisely (DC-14 → measure first).** It holds unconditionally on the four sites that carry an
+   explicit stack. On the six that stay recursive it holds up to each site's own frame ceiling,
+   which is **unmeasured at HEAD**. §A12's measurement part publishes those ceilings before any
+   rewrite part runs; each site that clears the §A12 headroom keeps its recursion and carries the
+   asymmetry as a written invariant in its module doc, and each site that does not joins the
+   structural rewrite and loses the qualification. The asymmetry is therefore bounded in
+   scope, dated, and retired site by site — not a standing exception to this requirement.
 4. One resolved cap source feeds every site. No module restates it as a literal;
    `MAX_SUBMODULE_DEPTH` is explicitly excluded (§A6).
 
@@ -159,50 +168,65 @@ When this ships:
    `k`/`m`/`g` unit suffixes, narrowed to the C `int` range. Every row of §A7 Pin 4 is matched.
 7. An invalid value is **refused**, not silently defaulted: `2.5`, `""`, `"true"`, `"6 "` refuse
    as *invalid unit*; `2147483648` and beyond refuse as *out of range*. The refusal is a typed
-   `TsgitError`, never a fallback to 2048 (ADR-637). §A7 Pin 7 also pins that git refuses these
-   on commands that never enforce depth — how far tsgit propagates that is DC-13.
+   `TsgitError`, never a fallback to 2048 (ADR-637), and it fires **repo-wide** rather than only
+   where a depth is resolved (Requirement 11).
 8. Zero and negative values are **valid, not invalid** — they are the strictest possible caps
    under `slashCount > cap`, and tsgit must not special-case them into "disabled" (§A7 Pin 5).
-9. Which config **scopes** tsgit honours is stated in the shipped TSDoc and in `docs/use/`, so a
-   user who sets the key in a scope tsgit does not read learns it from the docs rather than from
-   a silent disagreement (DC-12).
+9. The **scope set tsgit honours for this key is stated in the shipped TSDoc** on every symbol
+   whose default the cap now supplies (`walkTree`, `walkWorkingTree`, `synthesizeTreeFromIndex`,
+   `diffTrees`), in the words "read from the repository-local config" — never the unqualified
+   "read from git config", which would assert git's precedence and be false (DC-12 → (a)).
 10. No test asserts a raw `RangeError`, an exact frame count, or any quantity that varies with
     V8's stack budget.
+11. **An invalid `core.maxTreeDepth` refuses the whole operational surface**, not just the ten cap
+    sites (DC-13 → (b)). Concretely, and matching §A7 Pin 7 + Pin 9: every command that today
+    passes through `assertOperationalRepository` refuses before doing any work, whether or not it
+    resolves a depth; the `config` porcelain and `init` still succeed, exactly as git's do. The
+    error is the **existing** `CONFIG_BAD_NUMERIC_VALUE` carrying `{ key, source, value, reason }`
+    with `reason` ∈ `{'invalid unit', 'out of range'}` — no new error code, so no new public
+    surface (§A8.5). The refusal is decided on the **effective (last-wins) entry**, not on the
+    first malformed line: §A7 Pin 9 rows N4/N5 pin that an invalid value followed by a valid one
+    leaves git at exit 0.
+12. **The config-scope divergence is published, not implicit.** `docs/use/commands/config.md` and
+    `docs/use/errors.md` both state that the keys the library itself honours are read from
+    **local scope only**, so a `core.maxTreeDepth` in `~/.gitconfig` is honoured by git and
+    ignored by tsgit (§A11). A user must be able to learn this from the docs rather than from a
+    silent disagreement.
 
 **Scope A — the debris**
 
-11. No source comment or published doc claims a git-faithfulness property that §A7 disproves.
+13. No source comment or published doc claims a git-faithfulness property that §A7 disproves.
     Specifically: `synthesize-tree-from-index.ts:30-31` ("4096, matching git's canonical limit"),
     `archive.ts:96` ("git archive imposes no entry or **depth** cap"), and `merge.ts:409-414`
     (which claims to match `synthesizeTreeFromIndex`'s *contract*, and misnames
     `MAX_FLAT_TREE_ENTRIES` as a depth cap).
-12. The mangled module-doc sentence at `synthesize-tree-from-index.ts:21` is repaired.
-13. `docs/use/errors.md`'s `TREE_DEPTH_EXCEEDED` row matches the shipped error: the data payload
+14. The mangled module-doc sentence at `synthesize-tree-from-index.ts:21` is repaired.
+15. `docs/use/errors.md`'s `TREE_DEPTH_EXCEEDED` row matches the shipped error: the data payload
     is `depth` only (there is no `limit` field), and the description names `core.maxTreeDepth`
     rather than a single 4096 cap.
-14. Every pinned git behaviour from §A7 is asserted by a cross-tool interop test in
+16. Every pinned git behaviour from §A7 is asserted by a cross-tool interop test in
     `test/integration/`. At minimum: the traverse/synthesise split (git refuses `ls-tree -r` at
     2049 and accepts `write-tree` at any depth), `archive`'s refusal at 2049, and the
     configured-cap rows C1–C3 — which tsgit now **follows** rather than documents diverging from.
-15. `reports/api.json` is regenerated in the same commit as any TSDoc change on a public symbol
+17. `reports/api.json` is regenerated in the same commit as any TSDoc change on a public symbol
     (§A10). The pre-push gate fails otherwise.
 
 **Scope B**
 
-16. No hardcoded Node major remains in `.github/` as a `node-version` value or as a matrix
+18. No hardcoded Node major remains in `.github/` as a `node-version` value or as a matrix
     element — **with no carve-out**. `npm-service.yml` is aliased too (§B1 P4).
-17. `unit-tests` runs three cells per OS from `node: ['lts/-1', 'lts/*', 'latest']`, all
+19. `unit-tests` runs three cells per OS from `node: ['lts/-1', 'lts/*', 'latest']`, all
     **blocking**. No `continue-on-error` on any cell.
-18. The coverage-artifact step runs on exactly one cell per full matrix, gated on an `include:`
+20. The coverage-artifact step runs on exactly one cell per full matrix, gated on an `include:`
     flag rather than a version literal, and its artifact name is `coverage-report-${os}` — no
     character `actions/upload-artifact` rejects, and stable across LTS transitions (§B3).
-19. The `benchmark-compare` job keeps its deliberate composite bypass and its
+21. The `benchmark-compare` job keeps its deliberate composite bypass and its
     `cache-dependency-path`; only the version value changes.
-20. The benchmark snapshot carries the **resolved** Node version in its metadata. This is work in
+22. The benchmark snapshot carries the **resolved** Node version in its metadata. This is work in
     this change, not a note for later: the composite default moving 22 → 24 steps the `gh-pages`
     series **on merge** (§B9).
-21. The matrix comment explaining the Node-20 floor is rewritten, not deleted (§B5).
-22. `main`'s ruleset still passes. Verified live: only `build` is required (§B6).
+23. The matrix comment explaining the Node-20 floor is rewritten, not deleted (§B5).
+24. `main`'s ruleset still passes. Verified live: only `build` is required (§B6).
 
 ---
 
@@ -273,9 +297,9 @@ pin that, and they run against the shipped code rather than a probe.
 | S5 | `walkInternal` via default (`walk-tree.ts:52`) | async generator `yield*` | 1024 | DURING | 1025 | 1024 OK, 1025 → `TREE_DEPTH_EXCEEDED:1025`; ceiling 2100 | **SAFE** — 2.0× margin |
 | S6 | `flattenLevel` (`flatten-raw.ts:108`) | plain `async` | 1024 | DURING | 1025 | 1024 OK; 1025/4000/**20000** → `TREE_DEPTH_EXCEEDED:1025` | **SAFE** |
 | S7 | `diffChangedSubtree` (`diff-trees.ts:576`) | plain `async`, cursor | 1024 | DURING | 1025 | 1025 OK; 2000/3000/5000/**8000** → `TREE_DEPTH_EXCEEDED:1025` | **SAFE** |
-| S8 | `collectTreeObjects` / `emitTreeObjects` (`enumerate-bundle-objects.ts:86,118`) | plain `async` | 1024 | DURING | 1025 | not driven directly; shape strictly cheaper than S6/S7, same guard position | **SAFE** (inferred — see caveat) |
-| S9 | `markTree` (`closure-not-marks.ts:54`) | plain `async` | 1024 | DURING | 1025 | not driven directly; same as S8 | **SAFE** (inferred — see caveat) |
-| S10 | `walkLevel` (`walk-raw-subtree.ts:131`) | plain `async` | `bounds.maxDepth` = 1024 | DURING | 1025 | shares `flattenLevel`'s frame shape (S6) | **SAFE** (inferred) |
+| S8 | `collectTreeObjects` / `emitTreeObjects` (`enumerate-bundle-objects.ts:86,118`) | plain `async` | 1024 | DURING | 1025 | not driven directly; shape strictly cheaper than S6/S7, same guard position | **SAFE** (inferred — **being measured**, §A12) |
+| S9 | `markTree` (`closure-not-marks.ts:54`) | plain `async` | 1024 | DURING | 1025 | not driven directly; same as S8 | **SAFE** (inferred — **being measured**, §A12) |
+| S10 | `walkLevel` (`walk-raw-subtree.ts:131`) | plain `async` | `bounds.maxDepth` = 1024 | DURING | 1025 | shares `flattenLevel`'s frame shape (S6) | **SAFE** (inferred — **being measured**, §A12) |
 | S11 | `walkInTree` (`walk-submodules.ts:71`) | async generator, `>=` **`continue`** | 100 | DURING, non-throwing | 101 | 101 ≪ 925 | **SAFE — different contract** (§A6) |
 
 **"SAFE" means "cannot overflow", not "needs no change".** Rows S5–S10 are safe against the
@@ -283,12 +307,15 @@ stack and *unfaithful* against git: every one of them caps a traversal at 1024 w
 traverses to 2048 (§A7). The two axes are independent, and a site can need work on the second
 while passing on the first.
 
-**Caveat on the three inferred rows.** S8/S9/S10 were not driven to their own ceilings; the
-budget went to the four unsafe sites. Their guard sits in the identical position (head of the
-recursive function, `depth > 1024`, before any descent), so they are structurally bounded at
-1025 frames for *any* input, exactly like S6 and S7 which were driven to 20000 and 8000
-respectively without overflow. The plan should still drive each to its cap once — cheap, and it
-converts an inference into a measurement.
+**The three inferred rows are inferences no longer accepted as such.** S8/S9/S10 were not driven
+to their own ceilings; the budget went to the four unsafe sites. Their guard sits in the identical
+position (head of the recursive function, `depth > 1024`, before any descent), so they are
+structurally bounded at 1025 frames for *any* input, exactly like S6 and S7 which were driven to
+20000 and 8000 respectively without overflow. **DC-14 turns "the plan should still drive each once"
+into a plan part that gates the rewrites** (§A12): S6–S10 are each driven at a large *configured*
+cap, and the rows above are replaced by measurements. Note what the existing S6/S7 entries do and
+do not say — 20000 and 8000 refused cleanly *because the guard fired at 1025*, so no run has ever
+held 20 000 frames. S6 and S7 are as unmeasured at their real ceilings as S8–S10 are.
 
 #### §A2.2 The two variables that move the ceiling — and the one that does not
 
@@ -405,12 +432,13 @@ against V8 and becomes whatever `core.maxTreeDepth` says — which is what makes
 inputs of 20000 and 8000 refuse cleanly today (§A2.1 rows S6/S7); rewriting them buys nothing and
 risks the hot raw-tree cursor path.
 
-**One consequence the six inherit that the four do not, and it is not settled by either ADR.**
-"Structurally bounded at `cap + 1` frames for any input" is a statement about the *input*, not
-about the *cap*. It held absolutely while the cap was the literal 1024. Under ADR-637 the cap is
-user-controlled, so a recursive site can only honour a configured cap **up to its own frame
-ceiling**: at `core.maxTreeDepth = 100000` the six would exhaust the stack before the guard fires
-— the exact failure mode this change exists to remove, re-entering through the config door.
+**One consequence the six inherit that the four do not, and it is settled by measurement, not by
+either ADR's text.** "Structurally bounded at `cap + 1` frames for any input" is a statement about
+the *input*, not about the *cap*. It held absolutely while the cap was the literal 1024. Under
+ADR-637 the cap is user-controlled, so a recursive site can only honour a configured cap **up to
+its own frame ceiling**: at `core.maxTreeDepth = 100000` the six would exhaust the stack before the
+guard fires — the exact failure mode this change exists to remove, re-entering through the config
+door.
 
 Note what §A2.1 does and does not establish here. S6 and S7 were driven to 20000 and 8000 and
 refused cleanly *because the guard fired at 1025* — no run ever held 20000 frames, so those rows
@@ -418,8 +446,11 @@ are evidence about the guard, not about the ceiling. The real frame ceilings of 
 **unmeasured**. S5, the most expensive traversal shape and one of the four getting a stack,
 measured 2100 — which is 2.5% above the new default of 2048.
 
-This is DC-14, and it is the one place where ADR-636's "six stay recursive" and ADR-637's
-"unclamped" do not compose. It is not resolved here.
+This is the one place where ADR-636's "six stay recursive" and ADR-637's "unclamped" do not
+compose on their face. **DC-14 settled it as measure-first**, as recommended: the six are driven
+to their own ceilings before any decision to rewrite them, and the measurement is an early plan
+part that **gates** the rewrite parts. §A12
+states what is measured, the headroom threshold, and what each branch costs.
 
 Per-site cost, using the §A2 shapes:
 
@@ -429,7 +460,7 @@ Per-site cost, using the §A2 shapes:
 | S2 `writeNestedTree` | Same transformation. Must preserve the `Promise.all` fan-out across sibling subdirs, which becomes level-wise parallelism over the explicit stack. | **Low-moderate** — the parallelism is the only subtlety, and it carries a documented equivalent-mutant comment that must be re-proved against the new structure | Moderate — once per merge | Exported (`MAX_MERGE_TREE_DEPTH`), but not in `reports/api.json`, so no public-surface gate |
 | S3 `walkWorkingTree.walkInternal`/`visitEntry` | Explicit DFS stack inside one flat `async function*`, yielding from the loop instead of `yield*`. | **Moderate** — two mutually-recursive generators collapse into one loop; `lazyStat` closures and the embedded-git-marker branch must survive verbatim | **Yes** — `status` | Also removes the per-yield bubbling cost (below) |
 | S4/S5 `walkTree.walkInternal` | Same transformation. | **Moderate-high** — the most-referenced walker in the codebase | **Yes** — `log`, `status`, `archive`, `diff`, `walkSubmodules` | Same bubbling win |
-| S6–S10 | none *structurally* | — | `diff`, `status` | Bounded at `cap + 1` frames for any input (§A2.1); rewriting them buys nothing and risks the hot raw-tree cursor path. Their **cap value** moves to the resolved `core.maxTreeDepth` — they are stricter than git today (§A10) — which is a constant change, not a rewrite, but it is also what exposes DC-14 |
+| S6–S10 | none *structurally* | — | `diff`, `status` | Bounded at `cap + 1` frames for any input (§A2.1); rewriting them buys nothing and risks the hot raw-tree cursor path. Their **cap value** moves to the resolved `core.maxTreeDepth` — they are stricter than git today (§A10) — which is a constant change, not a rewrite — but it is what makes their own frame ceilings load-bearing, which is why §A12 measures them before this row is final |
 
 **The perf argument cuts *toward* the rewrite for S3/S4, not against it.** `yield*` delegation in
 async generators does not flatten: every value yielded at depth *d* is re-yielded through all *d*
@@ -673,10 +704,11 @@ caps chosen so accept/refuse discriminates which scope won.
 Standard git precedence, no exception for this key: **system → global → local → worktree →
 `-c` / `GIT_CONFIG_*`**, last-wins within a file. Row P-7 is the one that matters for tsgit: a
 value set *only* in the global scope changes git's behaviour, so any reader that consults local
-scope alone will disagree with git for that user. What tsgit does about it is **DC-12** — tsgit
-ships both a local-only typed reader (`readConfig`) and a scope-aware raw reader
-(`readConfigSections`, `SCOPE_ORDER = ['system','global','local','worktree']`), and the choice
-between them is not made by either ADR (§A8).
+scope alone will disagree with git for that user. **DC-12 settled this as `readConfig` — local
+only**, the same reader every other typed `core.*` key uses, with the resulting divergence
+published rather than implicit (Requirement 12, §A11). tsgit also ships a scope-aware raw reader
+(`readConfigSections`, `SCOPE_ORDER = ['system','global','local','worktree']`); it stays wired to
+the `config` porcelain alone, and widening the typed reader is out of scope (§A8.1).
 
 #### Pin 7 — an invalid value is fatal on commands that never enforce depth
 
@@ -694,9 +726,18 @@ Same invalid value (`2.5`), different commands:
 
 Git parses `core.*` at startup, so the refusal reaches commands that have no depth surface at all
 — including `write-tree`, which Pin 3 shows ignores the *value* entirely. The blast radius of
-matching this in tsgit is therefore repo-wide, not scoped to the ten cap sites, because tsgit's
-`readConfig` is shared by every command. That is **DC-13**; ADR-637 settles *that* an invalid value
-is refused, not *where*.
+matching this in tsgit is therefore repo-wide, not scoped to the ten cap sites. **DC-13 settled it
+as (b) — repo-wide**, against the recommendation of scoping it to the cap sites. Pin 9 pins the two
+things this table leaves open and that the mechanism turns on: **which** commands survive, and
+**which entry** is validated when the key appears more than once.
+
+*One row of this table needs its fixture named.* `rev-list --objects --all` exits **0** here
+because the Pin 7 fixture is a **ref-less** repo built through `update-index --cacheinfo` +
+`write-tree` with no commit — `--all` matched no refs and the command returned before reaching the
+config read that kills every other row. Re-driven against the same invalid value in a repo with one
+commit, `rev-list --objects --all` and `rev-list --all` both exit **128** (Pin 9 row N3). The row
+stands as recorded; it is an artefact of the fixture, not an exception to git's refusal, and it is
+recorded here so no interop assertion is written against "`rev-list` survives".
 
 #### Pin 8 — on a real worktree, the OS bites first, and git does not error
 
@@ -719,6 +760,50 @@ worktree git **warns and silently skips**; it does not fail. Whatever cap S3 end
 refusal semantics are already unfaithful in a way this design does not fix and should not
 pretend to.
 
+#### Pin 9 — the refusal surface, and *which* entry is validated
+
+New pinning work, required by DC-13 landing as repo-wide: Pin 7 establishes that the refusal is
+broad but not *which* commands survive it, and says nothing about a key that appears twice. Same
+method as every pin above — `git version 2.55.0`, `mktemp -d` throwaway, isolated `HOME`,
+`GIT_CONFIG_NOSYSTEM=1`, every `GIT_*` scrubbed, signing off. Invalid value `2.5` in **local**
+scope; oracle is each command's exit code on a repo with one commit.
+
+| # | Command | Exit | Reads |
+|---|---|---|---|
+| N1 | `config --get user.name`, `config --list`, `config --local --list` | **0** | the porcelain **survives** |
+| N2 | `config --get core.maxTreeDepth` | **0** | reads the invalid value back verbatim (`2.5`) |
+| N2b | `config core.someKey someValue` (a **write**) | **0** | the porcelain writes fine |
+| N3 | `rev-parse HEAD`, `rev-parse --git-dir`, `rev-list --all`, `rev-list --objects --all`, `log`, `cat-file -t`, `add`, `commit` | **128** | `fatal: bad numeric config value '2.5' for '…': invalid unit` — key elided per Pin 4 note 3 (git quotes the all-lowercase spelling) |
+| N3b | `archive --format=tar`, `fsck`, `grep`, `bundle create`, `clone` | **128** | idem — the five surfaces tsgit does not gate today (§A8.5) |
+| N3c | `remote -v` | **0** | survives |
+| N4 | `init` (re-init) | **0** | survives |
+
+Then the validation model, same fixture, oracle `status --porcelain`:
+
+| # | `[core]` content | Exit | What it pins |
+|---|---|---|---|
+| N5 | `maxTreeDepth` (valueless, no `=`) | **128** | `bad numeric config value ''` … `invalid unit` — **not** `missing value`. Same shape as an empty value |
+| N6 | `maxTreeDepth =` (empty value) | **128** | idem — valueless and empty are one case |
+| N7 | `maxTreeDepth = 2.5` then `maxTreeDepth = 2048` | **0** | **invalid-then-valid does NOT refuse** |
+| N8 | `maxTreeDepth = 2048` then `maxTreeDepth = 2.5` | **128** | valid-then-invalid refuses |
+| N9 | `compression = bogus` then `compression = 5` | **128** | the **contrast**: compression refuses on *any* malformed line |
+| N10 | `maxTreeDepth = 2.5` (line 2) + `loosecompression = bogus` (line 1) | **128**, reports **maxTreeDepth** | maxTreeDepth wins regardless of line order |
+| N11 | `maxTreeDepth = 2.5` (line 2) + `sparseCheckout = bogus` (line 1) | **128**, reports **maxTreeDepth** | idem against a boolean key |
+
+Three facts fall out, and each one contradicts an obvious implementation:
+
+1. **The porcelain and `init` survive; every operational command dies** (N1/N2/N2b/N4 vs N3).
+   That is not a new tier — it is *exactly* the split tsgit already implements as
+   `assertRepository` (discovery) vs `assertOperationalRepository` (operational), documented in
+   `repo-state.ts:64-77` as "git's split".
+2. **git validates the effective, last-wins value — not every line** (N7 vs N8). This is a
+   genuinely different validation model from `core.compression`, which dies on any malformed
+   line (N9), and it is the model that decides the mechanism: a strict per-entry applier inside
+   `assembleParsed` would refuse N7, where git exits 0.
+3. **maxTreeDepth's refusal is not line-ordered against the other classes** (N10/N11). It
+   precedes them, because git reaches this key through its cached config-set lookup rather than
+   through the streaming `git_default_config` callback the other `[core]` keys ride.
+
 #### Verdict
 
 1. **Git does impose a path-depth limit** — `core.maxTreeDepth`, default **2048** (**512** under
@@ -738,7 +823,7 @@ pretend to.
 | `writeNestedTree` (S2) | 4096 | **none** — same write surface | same | **remains** — same argument, same ADR-637 paragraph |
 | `walkTree` (S5) / `archive` (S4) | 1024 / disabled | **2048** | S5 refuses trees git traverses; S4 accepts trees git refuses (R9) | **closed** — both take the resolved cap; `archive` gains a refusal it had at no input |
 | `walkWorkingTree` (S3) | 4096 | 2048 nominally, `File name too long` in practice (F5–F7) | both directions | **cap closed, refusal semantics not** — F5–F7's "warn and silently skip" is named and deliberately unmatched (Out of scope) |
-| `flattenRawTree`, `diffTrees`, `walkLevel`, bundle enumeration, `markTree` (S6–S10) | 1024 | **2048** | **stricter than git** — refuses trees `git diff`/`git rev-list` traverse happily | **closed at the default**; above the default it is DC-14 |
+| `flattenRawTree`, `diffTrees`, `walkLevel`, bundle enumeration, `markTree` (S6–S10) | 1024 | **2048** | **stricter than git** — refuses trees `git diff`/`git rev-list` traverse happily | **closed at the default**; above the default, bounded by each site's own ceiling until §A12 measures it |
 
 5. **`core.maxTreeDepth` is user-configurable, tsgit read it nowhere, and now it is the cap.**
    (Verified at HEAD: no occurrence of `maxTreeDepth` in `src/`.) The first draft framed this as
@@ -755,9 +840,11 @@ pretend to.
    failure a **segmentation fault whose threshold moves with `ulimit -s`** (139 near 29000 at the
    default, 100000 succeeding at `ulimit -s 65520`). Refusing where git segfaults is not a
    behaviour worth matching; a typed `TREE_DEPTH_EXCEEDED` is strictly better than a crash with a
-   stale 0-byte `index.lock`. ADR-637 records this and argues it. What ADR-637 does **not** settle
-   is whether the *configured* value moves those two sites or whether they keep an independent
-   bound — a live question precisely because git's config never reaches that surface. DC-11.
+   stale 0-byte `index.lock`. ADR-637 records this and argues it. **DC-11 settled the follow-on
+   question** ADR-637's first draft left open — whether the *configured* value moves those two
+   sites: it does, uniformly, on all ten. The user's `core.maxTreeDepth` therefore reaches a
+   surface git's own config never reaches, which is a deliberate extension and the mirror of this
+   divergence rather than a second one (§A8.3).
 6. **`archive.ts:96`'s comment is false about depth.** Row R9: `git archive` on a 2049-deep tree
    exits 128 with `error: exceeded maximum allowed tree depth`. Git caps archive exactly like
    every other traversal. The comment's *entry*-count claim remains true and stays.
@@ -772,7 +859,8 @@ sketched.
 
 #### §A8.1 How tsgit reads config today — the pattern to follow, not invent
 
-Two readers exist, and the difference between them is the whole of DC-12.
+Two readers exist. **DC-12 settled which one supplies the cap: `readConfig`, local-only** — the
+reader every other typed `core.*` key already uses.
 
 | Reader | File | Scopes | Shape | Caching |
 |---|---|---|---|---|
@@ -795,8 +883,22 @@ const looseLevel = config.core?.looseCompression;
 
 That is the shape `core.maxTreeDepth` follows. It also shows the existing house convention for an
 invalid numeric: `applyLooseCompressionEntry` (`config-read.ts:1113`) documents *"valued-but-invalid
-int merges as absent (lenient)"* — the field simply does not appear in `ParsedConfig`. **ADR-637
-requires the opposite for this key** (refuse, do not default), which is why DC-13 exists.
+int merges as absent (lenient)"* — the field simply does not appear in `ParsedConfig`.
+
+**That leniency is kept for this key too, and the refusal is built beside it rather than in it.**
+This is the part of DC-13 that is not obvious and that Pin 9 decides; §A8.5 is the argument. The
+short version: `readConfig` is the **value** path and must stay total, because the surfaces git
+lets survive an invalid value (`config`, `init` — Pin 9 rows N1/N2/N2b/N4) read config through the
+same machinery; the **refusal** path is the eager gate in `repo-state.ts`, which is where this repo
+already implements exactly this behaviour for `core.compression` (ADR-355).
+
+**Local-only is a divergence, and it is inherited rather than created.** Pin 6 row P-7 shows a
+global-only value changes git's behaviour, so a `core.maxTreeDepth` in `~/.gitconfig` is honoured
+by git and invisible to tsgit. No typed `core.*` key tsgit reads today consults global scope, so
+this introduces no new class of divergence — but this key is likelier than most to be hit by it,
+because git documents it as a fail-safe knob and fail-safe knobs get set once, globally. DC-12
+therefore carries a documentation obligation, not just a code one: Requirement 12, discharged at
+the two pages named in §A11.
 
 #### §A8.2 The parse is already written
 
@@ -815,8 +917,8 @@ resolves to, not the parameter list.
 
 | # | Site | Current signature / bound source | Change | Public? |
 |---|---|---|---|---|
-| S1 | `synthesizeTreeFromIndex(ctx, entries)` — `synthesize-tree-from-index.ts:140` | module const `MAX_TREE_DEPTH = 4096` (:52), checked at `slashCount > MAX_TREE_DEPTH` (:70) | **no signature change** — resolves from `ctx`. Subject to DC-11 | **yes** — barrel `:81`, `reports/api.json` |
-| S2 | `writeNestedTree(ctx, leaves, depth = 0)` — `merge.ts:405` | exported `MAX_MERGE_TREE_DEPTH = 4096` (:402) | **no signature change** — resolves from `ctx`; the `depth` param is internal recursion state and disappears with ADR-636's explicit stack. Subject to DC-11 | exported, **not** in `api.json` |
+| S1 | `synthesizeTreeFromIndex(ctx, entries)` — `synthesize-tree-from-index.ts:140` | module const `MAX_TREE_DEPTH = 4096` (:52), checked at `slashCount > MAX_TREE_DEPTH` (:70) | **no signature change** — resolves from `ctx`; takes the configured value like every other site (DC-11) | **yes** — barrel `:81`, `reports/api.json` |
+| S2 | `writeNestedTree(ctx, leaves, depth = 0)` — `merge.ts:405` | exported `MAX_MERGE_TREE_DEPTH = 4096` (:402) | **no signature change** — resolves from `ctx`; the `depth` param is internal recursion state and disappears with ADR-636's explicit stack; takes the configured value (DC-11) | exported, **not** in `api.json` |
 | S3 | `walkWorkingTree(ctx, options?)` — `walk-working-tree.ts:50` | `options?.maxDepth ?? DEFAULT_MAX_DEPTH` (const `4096`, :14) | default becomes the resolved cap; `DEFAULT_MAX_DEPTH` goes | **yes** — `WalkWorkingTreeOptions` in `api.json` |
 | S4 | `archive` → `buildEntryStream` — `archive.ts:97-101` | passes `maxDepth: Number.MAX_SAFE_INTEGER` explicitly | **drop the `maxDepth` key**; keep `maxEntries` | command is public; the override is internal |
 | S5 | `walkTree(ctx, treeIdOrObject, options?)` — `walk-tree.ts:33` | `options?.maxDepth ?? MAX_TREE_WALK_DEPTH` (:41) | default becomes the resolved cap | **yes** — `WalkTreeOptions` in `api.json` |
@@ -835,14 +937,27 @@ Two structural facts fall out of the table:
 - **Every site has `ctx` in hand.** `synthesizeTreeFromIndex` and `writeNestedTree` — the two with
   no options object — need no new parameter; they read from `ctx` exactly as `writeObject` does.
   Adding an options object to either would be a public-surface change bought for nothing.
+- **All ten rows take the same number (DC-11).** There is no synthesis carve-out to thread, so no
+  second resolver, no "which sites does this bind" branch in any test, and no mutant that can
+  survive by flipping one site's source of truth. The cost is named rather than hidden: a
+  configured `core.maxTreeDepth` reaches `synthesizeTreeFromIndex` and `writeNestedTree`, a
+  surface git's config never reaches (Pin 3 rows W2/W4). ADR-637 argues that as the mirror of the
+  residual divergence — tsgit caps that surface at all, so the user's value is the one it caps at.
 
 #### §A8.4 The resolver, and the two hazards it must not walk into
 
 One primitive, one name, one call per operation:
 
 ```
-resolveMaxTreeDepth(ctx): Promise<number>   // 2048 when unset; refuses per DC-13 when invalid
+resolveMaxTreeDepth(ctx): Promise<number>   // 2048 when unset or absent. Never throws — §A8.5
 ```
+
+**The resolver does not refuse.** The earlier draft had it throwing on an invalid value; DC-13
+moves the refusal out of it and up to the eager gate (§A8.5), leaving `resolveMaxTreeDepth` a
+total function: read `ParsedConfig.core.maxTreeDepth`, fall back to 2048. That is a simplification,
+not a loss — by the time any cap site runs, the gate has already refused an invalid value, so a
+throw here would be unreachable code on every gated surface and the wrong behaviour on the
+ungated ones (Pin 9 row N3b, §A8.5's open question).
 
 **Hazard 1 — it is `async`, and two of the ten call sites are sync-shaped.** `assertDepthBounded`
 (`synthesize-tree-from-index.ts:70`) runs inside an entry loop, and `exceedsMaxTreeDepth(depth,
@@ -861,7 +976,91 @@ failures in this repo before. `resolveMaxTreeDepth` inherits it: any command tha
 **When config is unavailable.** `readConfig` treats a missing file as empty, so a bare/uninitialised
 repo, the browser adapter with no config written, and the memory adapter all resolve to the
 default 2048. There is no "config unavailable" error path to design — absence is not failure. The
-only failure path is a **present but invalid** value (DC-13).
+only failure path is a **present but invalid** value, and it is handled a layer up.
+
+#### §A8.5 The repo-wide refusal — where it sits, what it throws, what it costs
+
+**DC-13 landed as (b), against the recommendation.** An invalid `core.maxTreeDepth` refuses
+repo-wide, not at the ten cap sites. This subsection designs that; it is the only part of the
+change whose blast radius is the whole library.
+
+**Where the refusal sits, and why not in `readConfig`.** Three mechanisms were available. Pin 9
+eliminates two of them on evidence:
+
+| Mechanism | Verdict |
+|---|---|
+| Strict `applyCoreEntry` — `applyLooseCompressionEntry`'s sibling at `config-read.ts:1165`, throwing instead of returning `undefined` | **Refuted by Pin 9 row N7.** `mergeCore` (`:1184`) is a per-entry fold, so a throwing applier refuses the *first* malformed line. Git exits 0 on invalid-then-valid: it validates the **effective** value. A strict applier is unfaithful on a case the pin covers |
+| `readConfig` rejects — the throw anywhere inside `assembleParsed` (`:1084`) | **Refuted mechanically.** `loadConfigEntry` (`:158`) builds `parsed` and `tokens` as **one** `ConfigCacheEntry` and caches the promise; a rejection poisons every consumer of `readConfigEntry`, which includes all seven `findFirstInvalid*` token finders. `assertRepository`'s discovery gate and the `config` porcelain would start failing — the two surfaces Pin 9 rows N1/N2/N2b/N4 show git keeps alive |
+| **The eager gate** — a new finder in `config-read.ts` beside `findFirstInvalidCompression` (`:301`), thrown from `repo-state.ts`'s `assertEagerConfigValid` (`:139`) | **This one.** It is the house pattern for exactly this behaviour (ADR-355), it reads the token stream so it can implement last-wins, and it fires at the tier Pin 9 pins |
+
+So the answer to "does `ParsedConfig` gain a field that can be an error, or does `readConfig`
+reject?" is **neither**. `ParsedConfig.core` gains an ordinary `maxTreeDepth?: number`, applied
+leniently by `applyCoreEntry` like every other int key; the refusal is a second, independent read
+of the same cached tokens.
+
+**The finder.** `findFirstInvalidCompression` is the template — same file, same cached-token walk,
+same `{ key, source, line, failure }` shape — with two deliberate differences forced by Pin 9:
+
+- it returns the **last** `core.maxTreeDepth` entry in file order (matched case-insensitively, as
+  the compression finder matches its own keys), not the first failing one
+  (rows N7/N8), so the entry it validates is the one git would use;
+- the valueless case (`token.value === null`) maps to `value: ''`, `reason: 'invalid unit'`,
+  exactly as the compression finder already does — pinned identical for this key by rows N5/N6.
+
+The parse is `parseGitInt` plus the C-`int` narrowing of §A8.2. `parseGitInt`'s own range is
+int64, so `4294967296` returns `ok` and the narrowing is what turns it into `out of range`
+(Pin 4 rows V16/V19).
+
+**Where it fires in the gate.** Not as a `pickLowerLine` participant. Pin 9 rows N10/N11 show
+`core.maxTreeDepth` reported ahead of both a malformed `loosecompression` and a malformed
+`sparseCheckout` **regardless of line order**, because git reaches this key through its cached
+config-set lookup rather than the streaming `git_default_config` pass the others ride. So
+`assertEagerConfigValid`
+checks it **first** and throws before the five-way lowest-line reduction runs. Writing it into the
+`pickLowerLine` candidate list would be the natural-looking mistake and would fail N10/N11.
+
+**What it throws — no new error code.** `CONFIG_BAD_NUMERIC_VALUE` already exists
+(`domain/commands/error.ts:152` for the union member, `:567` for `configBadNumericValue(key,
+source, value, reason)`), already carries `{ key, source, value, reason }`, and its `reason` is
+already the exact `'invalid unit' | 'out of range'` union `parseGitInt` returns — so the two
+refusal reasons §A7 Pin 4 distinguishes reach the thrown error unchanged, with no new type and no
+lossy mapping. That is how ADR-249 is satisfied: tsgit matches the *condition* and carries enough
+structured data to tell the two conditions apart, while git's stderr bytes are the caller's
+business. **Consequences of reusing the code:** the union member is already in `reports/api.json`
+(verified: one occurrence, as a literal type member), the factory is internal (zero occurrences),
+so **DC-13 adds no public surface** and gates only on `docs/use/errors.md` (§A11) — not on
+`reports/api.json`.
+
+**The deliberate inconsistency, and where it is written down.** `core.looseCompression` refuses on
+any malformed line; `core.maxTreeDepth` refuses only on the effective one. `core.looseCompression`
+merges as absent in `ParsedConfig`; so does `core.maxTreeDepth`, but a gate above it makes that
+unreachable on the operational surface. Neither asymmetry is tidy, and both are **git's**, pinned
+in one table (N7 vs N9). ADR-637 requires the *why* to live at the strict site as a code comment,
+not in this doc alone: the new finder's doc comment states that this key is validated last-wins
+because git reads it through its cached config-set lookup, cites the compression contrast as the
+thing a reader
+will otherwise assume is a bug, and says the gate ordering is pinned rather than chosen. A future
+reader "fixing" the finder to match its sibling must have to argue with a comment first.
+
+**Blast radius — the number this decision costs.** Verified at HEAD by reference search:
+
+| Surface | Count | Effect |
+|---|---|---|
+| `assertOperationalRepository` call sites | **106**, across **39 of 50** command files | all newly refuse on an invalid `core.maxTreeDepth`; this is the decision |
+| `assertRepository`-only call sites (the `config` porcelain) | **18** | unaffected — matches Pin 9 N1/N2/N2b |
+| Direct `readConfig(ctx)` call sites | **43**, across **25** files | unaffected — `readConfig` stays total |
+| Command files with **no** operational gate | **11**: `archive`, `bundle-create`, `bundle-list-heads`, `bundle-verify`, `clone`, `config`, `fsck`, `grep`, `index`, `init`, `remote` | `config` and `init` are correct (N1/N4); `remote` is correct (N3c); the other five are pinned as refusing by N3b and **do not**. That gap is DC-15 |
+
+**Does any path swallow it?** No path swallows a `readConfig` failure, because `readConfig` does
+not fail — that is a second reason the mechanism matters. For the gate the question is whether a
+`CONFIG_BAD_NUMERIC_VALUE` thrown from `assertOperationalRepository` reaches the caller uncaught,
+and that is **already proven by shipped tests** rather than by inspection: `test/integration/
+missing-value-refusal-interop.test.ts` asserts `status`, `log` and `branch.list` propagating this
+exact code from this exact gate today. The eight files that contain both a `readConfig` call and a
+`catch` were checked individually; in none of them does the `try` block enclose the `readConfig`
+call. A new key riding an already-proven propagation path is the cheapest possible way to buy
+repo-wide refusal, and it is the strongest argument available for the mechanism over a strict
+`readConfig`, whose propagation would be unproven at all 43 call sites.
 
 ### §A9 Blast radius
 
@@ -945,9 +1144,55 @@ Not a separate scope — debris the change must not step over.
 | `synthesize-tree-from-index.ts:114-118` | "A secondary `depth > MAX_TREE_DEPTH` guard would be dead code" | The observation is true and is the bug (§A3). Rewrite to state the invariant the shipped design actually establishes. |
 | `merge.ts:409-414` | two factual errors (§A10) — matches the *number* not the *contract*; names `MAX_FLAT_TREE_ENTRIES` (a breadth cap) as a depth cap | Rewrite. |
 | `archive.ts:96-97` | "git archive imposes no entry or depth cap — pass effectively-unbounded limits" | The **entry** claim is true and stays. The **depth** claim is false: §A7 row R9 has `git archive` exiting 128 with `error: exceeded maximum allowed tree depth` at D=2049. Split them. |
-| `docs/use/errors.md:111` | `` `TREE_DEPTH_EXCEEDED` \| `depth, limit` \| Tree recursion exceeded `MAX_TREE_DEPTH` (4096). `` | `treeDepthExceeded(depth)` constructs `{ code, depth }` — **there is no `limit` field**, so the documented payload is wrong. Rewrite both columns: payload `depth`; description names `core.maxTreeDepth` (default 2048) and the scopes tsgit honours (DC-12). |
-| `docs/use/` — configuration page | no `core.maxTreeDepth` entry | **New.** ADR-637 makes tsgit honour a config key it never read; the honoured range, the default, the invalid-value refusal and the scope answer are user-facing and belong in the published config reference, not only in TSDoc. |
+| `docs/use/errors.md:111` | `` `TREE_DEPTH_EXCEEDED` \| `depth, limit` \| Tree recursion exceeded `MAX_TREE_DEPTH` (4096). `` | `treeDepthExceeded(depth)` constructs `{ code, depth }` — **there is no `limit` field**, so the documented payload is wrong. Rewrite both columns: payload `depth`; description names `core.maxTreeDepth`, default 2048, honoured unclamped, **read from local scope only** (Requirement 12). |
+| `docs/use/errors.md:198` — the `CONFIG_BAD_NUMERIC_VALUE` row | *"Today scopes `core.loosecompression` / `core.compression`"*, and *"the gate reports the first failing `[core]` entry by file line"* | Both clauses go stale the moment this key joins. Add `core.maxTreeDepth` to the scope list **with its different validation model**: validated on the **effective (last-wins)** entry, and reported **ahead of** the line-ordered classes rather than within them (§A7 Pin 9 N7–N11). The tier sentence ("`status`, `log`, `branch` … die; `config --get` / `--list` still survive") is already right and stays. |
+| `docs/use/commands/config.md:70` — the int-typed-key paragraph | documents `core.loosecompression` / `core.compression` as the int-typed keys, with the eager-gate refusal shape | Add `core.maxTreeDepth` alongside them, and add the **scope divergence** this page is the natural home for: the porcelain reads all four scopes, but the keys the library itself honours are read from **local only**, so a `core.maxTreeDepth` in `~/.gitconfig` is honoured by git and ignored by tsgit. Requirement 12 is discharged here and at `errors.md`; both, not either — a reader hitting the divergence arrives from either the error or the config page. |
+| `docs/use/` — a standalone configuration page | does not exist | **Not created.** The two rows above put the key where readers already look for config semantics; a new page would duplicate `config.md:70` and start a second place to keep in sync. Recorded so its absence reads as a decision. |
 | `src/domain/fsck/validate-tree.ts` | no depth check | **Leave it.** §A7 row R13: `git fsck --strict` does not check tree depth. Recorded here so the absence is not read as an omission. |
+
+### §A12 The measurement part, and what it gates
+
+**DC-14 landed as measure-first.** That makes it a plan part with a decision at its end, and the
+parts after it are conditional on that decision. The plan must be ordered accordingly; this
+section is the contract the plan implements, not the plan itself.
+
+**Position: early — after the cap-resolution part, before any rewrite part.** It needs a
+configurable cap to drive (that is the whole method: set a large `core.maxTreeDepth`, then drive
+depth past it and see whether the guard fires or the stack does), and its outcome decides how many
+rewrite parts exist. Running it after the rewrites would be measuring the answer.
+
+**What is measured.** The six sites ADR-636 leaves recursive — `flattenLevel` (S6),
+`diffChangedSubtree` (S7), `collectTreeObjects`/`emitTreeObjects` (S8), `markTree` (S9),
+`walkLevel` (S10) — each driven to its own frame ceiling. Note that this includes S6 and S7, whose
+existing 20000/8000 rows measured the *guard*, not the ceiling (§A2.1).
+
+**Harness: §A2's, unchanged.** `esbuild --bundle --platform=node --format=esm` over a scratch
+entry importing the production modules by absolute path, `createMemoryContext()`, **one depth per
+fresh `node` process** so no run warms another, default V8 stack. It lives outside the worktree and
+outside the test suite — its output is rows in §A2.1, never assertions (§A2.2: the quantity moves
+with JIT tier and stack size, so a test asserting it would be asserting V8's mood).
+
+**The threshold: 2× the 2048 default — a site "holds" at a measured ceiling ≥ 4096.** The factor
+is not arbitrary. §A2.2 measured the ceiling **halving** with `--stack-size` at half the default,
+and tsgit's supported surface (three OSes, workers, three browser engines) was measured in exactly
+one corner (§A2.3). 2× is the smallest margin that survives the one adverse factor that *was*
+measured. It is also the margin S5 already enjoyed at cap 1024 and ceiling 2100 — the configuration
+this design calls SAFE — so the threshold is calibrated against a site the design already accepts
+rather than invented for the occasion.
+
+**Both branches, stated before the numbers arrive so neither is a surprise:**
+
+| Outcome | What happens |
+|---|---|
+| **Holds** (ceiling ≥ 4096) | The site keeps its recursion. Its module doc gains the asymmetry as a written invariant: this descent honours `core.maxTreeDepth` up to *N* and refuses beyond it by exhausting frames, not by policy — with the measured number and its date. Requirement 3's qualification stands for that site, and ADR-636's "provisionally" is discharged into a measurement |
+| **Does not hold** | The site joins ADR-636's structural rewrite — explicit stack, same transformation as the four. It inherits the full rewrite cost: the `iterative ≡ recursive` property test, and, for the two on the raw-tree cursor path, re-derivation of the carried equivalent-mutant proofs, which do **not** survive a structural change |
+
+**The gate is on the plan, not on a person.** The measurement part's exit condition is the six
+rows published in §A2.1 with a verdict each; no rewrite part for S6–S10 may be planned as
+unconditional work before that. If every site holds, the change is smaller than its worst case and
+the six-way asymmetry is the shipped contract, documented. If none holds, this becomes a ten-site
+structural change and the perf A/B (§A4) grows two more subjects. Neither outcome changes any
+requirement — that is the point of stating Requirement 3 at full strength and qualifying it here.
 
 ---
 
@@ -1104,7 +1349,7 @@ after merge the 27 non-matrix jobs assert "this project works" on 24 while the p
 oldest LTS, which is the closest available proxy for the declared floor, not the floor itself.
 Closing it properly means either raising `engines.node` (semver-relevant, deliberately out of
 scope) or adding a cell pinned to the declared minimum — which would reintroduce the hardcoded
-major Requirement 16 forbids.
+major Requirement 18 forbids.
 
 ### §B5 The matrix comment — rewritten, not deleted
 
@@ -1271,9 +1516,10 @@ under ADR-103, so the full matrix runs on the change that introduces it (test st
 
 ### Settled — ratified by the user, recorded in ADRs 636–638
 
-Every load-bearing choice the draft put to the user. **Four landed against the draft's
-recommendation**; those rows say so, because a design that hides where it was overruled is a
-design nobody can audit.
+Every load-bearing choice the draft put to the user, in the order it was settled — DC-1 to DC-10
+with the ADRs, DC-11 to DC-14 as the four boundaries ADRs 636 and 637 were amended to carry.
+**Six landed against the draft's recommendation**; those rows say so, because a design that hides
+where it was overruled is a design nobody can audit.
 
 | # | Choice | Chosen | vs recommendation | ADR | What changed in this doc |
 |---|---|---|---|---|---|
@@ -1285,21 +1531,23 @@ design nobody can audit.
 | DC-6 | Composite default | **(a) `lts/*`** | **against** the recommendation of `lts/-1` | [638](../adr/638-ci-tracks-node-release-lines-by-alias.md) | Part B intro and §B4: 27 jobs move 22 → 24 **on merge**, and the benchmark rollover is work in this change (§B9), not a future note |
 | DC-7 | Does `latest` block or warn? | **(b) Blocking** — no `continue-on-error` on any cell | **against** the recommendation of `continue-on-error` | [638](../adr/638-ci-tracks-node-release-lines-by-alias.md) | §B10: the `--experimental-strip-types` question stops being a footnote and becomes an established day-one finding with a named owner |
 | DC-8 | Coverage cell re-anchoring | **(a)** `include:` flag + `coverage-report-${{ matrix.os }}` | **as recommended** | [638](../adr/638-ci-tracks-node-release-lines-by-alias.md) | §B3 |
-| DC-9 | `npm-service.yml` | **(b) `lts/*`** | **against** the recommendation to keep it pinned at 24 | [638](../adr/638-ci-tracks-node-release-lines-by-alias.md) | §B1 P4: the comment is rewritten from *"we pin 24 to get npm 11"* to *"the npm ≥ 11 floor is why this can never go below the current LTS"*; no npm upgrade step is added; Requirement 16 needs **no carve-out** |
+| DC-9 | `npm-service.yml` | **(b) `lts/*`** | **against** the recommendation to keep it pinned at 24 | [638](../adr/638-ci-tracks-node-release-lines-by-alias.md) | §B1 P4: the comment is rewritten from *"we pin 24 to get npm 11"* to *"the npm ≥ 11 floor is why this can never go below the current LTS"*; no npm upgrade step is added; Requirement 18 needs **no carve-out** |
 | DC-10 | Does tsgit read `core.maxTreeDepth`? | **(c) Yes, unclamped** — default 2048, any configured value honoured, no internal ceiling | **against** the recommendation to defer it and record the divergence | [637](../adr/637-tree-depth-cap-is-core-max-tree-depth.md) | The largest revision. §A8 is new. §A7 gains Pins 4–7 and inverts verdict 5. Requirement 9 flips from "record the divergence" to "honour the config". Reading the config leaves Out of scope. The test strategy is rebuilt around a configurable cap |
+| DC-11 | Does the configured value bind the **synthesis** sites? | **(a) Yes — all ten sites uniformly**, synthesis included. One resolver, one number, no special case | **as recommended** | [637](../adr/637-tree-depth-cap-is-core-max-tree-depth.md) | §A8.3 gains a third structural fact and both "Subject to DC-11" rows are settled; §A7 verdict 5 stops leaving the follow-on question open |
+| DC-12 | Which config read path supplies the cap | **(a) `readConfig`** — local-only, typed, cached, the same reader every other `core.*` key uses. A value in `~/.gitconfig` is honoured by git and ignored by tsgit | **as recommended**, with the divergence **published** rather than implicit | [637](../adr/637-tree-depth-cap-is-core-max-tree-depth.md) | §A8.1 gains the divergence paragraph; Requirement 9 (TSDoc) and the **new** Requirement 12 (published docs) split the obligation; §A11 names the two pages that carry it — `docs/use/commands/config.md:70` and `docs/use/errors.md` — and records that no new configuration page is created |
+| DC-13 | Where an invalid value refuses | **(b) Repo-wide** — the whole operational surface refuses, not just the ten cap sites, matching §A7 Pin 7 | **against** the recommendation of (a), refusing at the cap sites only | [637](../adr/637-tree-depth-cap-is-core-max-tree-depth.md) | The second-largest revision. **§A8.5 is new**: the refusal sits in the eager gate, not in `readConfig` — §A7 **Pin 9** is new pinning work that refutes both `readConfig`-side mechanisms on evidence. No new error code (`CONFIG_BAD_NUMERIC_VALUE` is reused), so no `api.json` gate. New Requirement 11; the Out-of-scope bullet that excluded this is deleted; §A11 gains the `errors.md:198` row; the test strategy gains the gate cases. **Surfaces DC-15** |
+| DC-14 | What "unclamped" means for the six recursive sites | **(b) Measure first** — publish each ceiling, then rewrite only the sites that cannot hold the stated headroom | **as recommended** | [636](../adr/636-tree-recursion-bounded-structurally.md) | **§A12 is new** — the measurement is an early plan part that **gates** the rewrite parts, with the 2× / ≥4096 threshold and both branches stated in advance. §A2.1's three inferred rows are marked as being measured in this change; Requirement 3's qualification is restated as bounded and dated rather than open-ended |
 
-### Open — genuinely new, surfaced by the ratified decisions
+### Open — genuinely new, surfaced by the settled boundaries
 
-Four choices the ADRs do not settle. They are separated from the table above because they are
-**not decided**; each is a live question for the ADR conversation, with a recommendation and
-nothing more.
+**One.** Every candidate the ADR conversation inherited is settled; this one did not exist before
+DC-13 landed as repo-wide, because until the refusal was repo-wide there was no question about
+which surfaces carry it. It is **not decided** — a live question for the ADR conversation, with a
+recommendation and nothing more.
 
 | # | Choice | Alternatives (≤3) | Recommendation | Why |
 |---|---|---|---|---|
-| DC-11 | **Does the configured `core.maxTreeDepth` bind the synthesis sites?** ADR-637 says `synthesizeTreeFromIndex` and `writeNestedTree` are capped and that capping them is the residual divergence (§A7 verdict 5). It does not say whether the *user's value* moves them — a live question precisely because git's config never reaches `write-tree` at all (Pin 3 rows W2/W4). | (a) **Yes** — the configured value binds all ten sites uniformly; one resolver, one number, no special case. A deliberate extension of git's config to a surface git leaves unbounded. (b) **No** — the synthesis sites keep an independent bound (the 2048 default, fixed), and `core.maxTreeDepth` moves only the eight traversal sites, matching exactly which surfaces git's own config binds. (c) **Yes, but floored at the default** — the configured value may raise the synthesis bound, never lower it, so a user who tightens traversal cannot break `commit` on an index git would happily write. | **(a)** | ADR-637's "one shared source supplies the cap to every site" reads toward (a), and (a) is the only option with no special case to explain, test twice, or mutate around. It also gives the user a lever for the exact scenario tsgit uniquely has: a typed refusal where git segfaults (W3). (b) is the more literally faithful reading — git's config binds traversal, so mirroring *which surfaces it binds* is arguably more faithful than mirroring *the number* onto a surface git does not bind — but it means `core.maxTreeDepth=4096` lets `ls-tree` walk a tree that `commit` then refuses to write, which is a worse surprise than either divergence. (c) removes that specific trap at the cost of a rule with two behaviours in one key, and "raise only" is not a thing git does anywhere. **Not decided here.** |
-| DC-12 | **Which config read path supplies the cap.** §A7 Pin 6 pins git's precedence as system → global → local → worktree → `-c`/`GIT_CONFIG_*`, and Pin 6 row P-7 shows a **global-only** value changes git's behaviour. tsgit ships two readers (§A8.1): `readConfig` is typed but **local-only**; `readConfigSections` is scope-aware but returns raw sections and is wired to the `config` command alone. | (a) **`readConfig`** — local-only, typed, cached, identical to every other `core.*` key the codebase reads. Divergence: a value set in global/system/worktree scope is invisible to tsgit. (b) **`readConfigSections`** for this key — matches git's precedence for `core.maxTreeDepth` specifically, at the cost of one key reading through a different path from every other typed key, and re-implementing the `core` projection for it. (c) **Make `readConfig` scope-aware** — `ParsedConfig` starts merging `SCOPE_ORDER` for all keys. Faithful across the board; by far the largest blast radius, touching every config-reading command. | **(a)** for this change, with the divergence **written into the shipped docs** (Requirement 9) rather than left implicit | (a) is the only option that does not make this key special or this change large, and the local-only limitation is **pre-existing and repo-wide**: no typed `core.*` key tsgit reads today consults global scope, so (a) introduces no new class of divergence — it inherits one. That is also the argument against it: `core.maxTreeDepth` is documented by git as a *fail-safe* knob, which is exactly the kind of thing a user sets **once, globally**, so this key is more likely than most to be set in a scope tsgit cannot see. (b) is a one-key fix that leaves the general problem and adds a second reading path. (c) is the right end state and the wrong PR — it is a config-subsystem change wearing a depth-cap change's clothes. **This gap is not covered by ADR-637**, which names scope precedence as "tsgit's problem" without saying what tsgit does about it. **Not decided here; escalated.** |
-| DC-13 | **Where an invalid `core.maxTreeDepth` refuses.** ADR-637 settles *that* an invalid value is refused rather than silently defaulted. §A7 Pin 7 pins that git refuses it on **`write-tree`, `ls-files`, `cat-file -p`, `ls-tree`, `status`** — commands with no depth surface at all — because it parses `core.*` at startup. tsgit's `readConfig` is shared by every command, and its existing house convention is the opposite: *"valued-but-invalid int merges as absent (lenient)"* (`config-read.ts:1113`). | (a) **Refuse at the ten cap sites only** — `resolveMaxTreeDepth` throws; commands that never resolve a depth are unaffected. (b) **Refuse repo-wide** — `readConfig` fails on an invalid `core.maxTreeDepth`, matching Pin 7 exactly, and every command in the library starts failing for that user. (c) **Refuse at the cap sites, and additionally at the command entry points that git covers** — a named list rather than a blanket. | **(a)** | (a) is bounded, testable at exactly the sites this change touches, and gives the user a typed refusal precisely when the bad value would have mattered. It under-refuses relative to git: `readObject` on a repo with `core.maxTreeDepth = 2.5` succeeds in tsgit and fails in git. (b) is literally faithful and disproportionate — it turns a typo in one config key into a total library outage, and it inverts a documented lenient convention for every *other* numeric key at the same time, which is a config-subsystem decision, not a depth-cap one. (c) is (b)'s faithfulness without its blast radius, but "the commands git happens to cover" is not a principle — it is git's startup-parse order, an implementation artefact, and enumerating it is a list that rots. **Not decided here.** |
-| DC-14 | **What an unclamped cap means for the six sites that stay recursive.** ADR-636 keeps `flattenLevel`, `diffChangedSubtree`, `walkLevel`, `collectTreeObjects`/`emitTreeObjects` and `markTree` recursive because they are "structurally bounded at `cap + 1` frames for any input" — true while the cap was the literal 1024. ADR-637 makes the cap user-controlled. At `core.maxTreeDepth = 100000` those six recurse 100 000 frames deep and overflow before the guard fires, which is the defect this change exists to remove, re-entering through the config door (§A4). Their real frame ceilings are **unmeasured** — §A2.1's 20000/8000 rows prove the guard fired at 1025, not that 20 000 frames were held. | (a) **Extend ADR-636 to all ten** — every tree descent carries an explicit stack; "unclamped" becomes true everywhere, at the cost of four more rewrites including the hot raw-tree cursor path §A4 deliberately protected. (b) **Measure first, then decide** — drive each of the six at a large configured cap in a probe, publish the ceilings in §A2.1 as measurements rather than inferences, and rewrite only those that cannot hold a stated headroom above the 2048 default. (c) **Accept the ceiling on the six and say so** — `core.maxTreeDepth` is honoured unclamped on the four structural sites and is effectively bounded by the engine on the six recursive ones; document the asymmetry rather than engineer it away. | **(b)** | The disagreement between the two ADRs is real but its *size* is unknown, and (b) is the only option that does not guess at it. The measurement is cheap — §A2's harness already exists, one depth per fresh process — and it converts three inferred rows into measured ones, which §A2.1's own caveat already asks the plan to do. (a) is the honest maximal answer and may well be where (b) lands, but committing to four more rewrites (two of them on the raw-tree cursor path that carries documented equivalent-mutant proofs) before measuring is exactly the "tuned against a number nobody measured" mistake this design was written to stop. (c) contradicts Requirement 3 as re-derived — "no raw `RangeError` at any cap value the user configures" — and would have to be paired with a clamp, which ADR-637 ruled out as the worst of its three options. **Not decided here; this is the composition gap between ADR-636 and ADR-637.** |
+| DC-15 | **The five commands that would under-refuse.** DC-13 puts the refusal in the eager gate, which every command reaches through `assertOperationalRepository` — 106 call sites across 39 of 50 command files (§A8.5). Eleven command files have no operational gate. Three of those are **correct**: `config` and `init` survive in git (§A7 Pin 9 rows N1/N2/N2b/N4) and so does `remote` (N3c). The other five — **`archive`, `bundle-create`, `clone`, `fsck`, `grep`** — are pinned by row **N3b** as exiting 128 in git and would silently succeed in tsgit. (`bundle-list-heads` and `bundle-verify` are ungated too and share `bundle-create`'s shape, but were **not** pinned; whichever option lands, the plan pins them rather than assuming them.) Two of them, `archive` and `bundle-create`, are themselves cap sites (S4, S8), so they would run a *depth cap* resolved from a config value git refused to read. | (a) **Wire the five to `assertOperationalRepository`** — one call each, faithful for this key and for every key the gate already covers. (b) **Make `resolveMaxTreeDepth` refuse as well**, as a second, narrower guard — closes `archive` and `bundle-create` (the two that resolve a cap) with zero collateral, leaves `fsck` / `grep` / `clone` under-refusing. (c) **Accept and document the under-refusal on all five**, following the precedent already published for `core.hooksPath` — *"a documented narrower under-refusal"* (`docs/use/errors.md:197`). | **(a)**, with (b) as its complement rather than its alternative | (a) is the only option that closes the gap the pin actually measures, and it is one line per command. Its cost is **collateral convergence**: those five would also start refusing on an invalid `core.compression`, `core.sparseCheckout` and the `[core]` path-likes — which is *also* what git does (N3b covers every key the gate carries, not just this one), so the collateral moves toward faithfulness, not away. But it is behaviour change outside this change's stated subject, on five commands, unratified by any of ADRs 636–638 — which is exactly why it is escalated rather than assumed. (b) is the bounded fallback and has direct precedent: ADR-355 keeps `write-object`'s honour guard as *"a defensive fallback for any non-operational direct primitive path"*, which is the same shape. It leaves `fsck` / `grep` / `clone` diverging. (c) is honest and cheapest and has a published precedent, but it documents a gap the pin can quantify and (a) can close for one line each — and "we knew, we wrote it down, we did not fix it" is a weaker position when the fix is that small. **Not decided here.** |
 
 ---
 
@@ -1318,9 +1566,10 @@ simply unknown. Concretely, the following are forbidden:
 
 What is permitted, and deterministic everywhere, is asserting the **typed refusal** and the
 **at-cap success**. Under ADR-636 that is automatic on the four rewritten sites: with an explicit
-stack there is no ceiling for at-cap success to gamble against. Under DC-14 it is still an open
-question for the six that stay recursive at a large configured cap — which is why every boundary
-test below runs at a *small* configured cap, where no site is anywhere near any ceiling.
+stack there is no ceiling for at-cap success to gamble against. For the six that stay recursive
+pending §A12, a *large* configured cap is exactly the region where the ceiling lives — which is why
+every boundary test below runs at a **small** configured cap, where no site is anywhere near any
+ceiling, and why §A12's ceiling work is a probe rather than a test.
 
 ### The simplification a configurable cap unlocks
 
@@ -1367,7 +1616,7 @@ Three things, and only three:
 |---|---|---|
 | **The default is 2048.** Unset config → depth 2048 completes, 2049 refuses with `depth === 2049` | The number under test *is* the default; configuring anything defeats the test | One pair, memory adapter, one site (`walkTree` — the canonical traversal). A 2049-slash path is a ~4 KB string; a 2049-link tree chain is 2049 small objects in memory. Not free, not expensive |
 | **Interop rows R4/R5, R9, W2/W4** (§A7) | The oracle is real git at *its* default; the whole point is that tsgit and git agree at the same number | `update-index --cacheinfo` + `write-tree` at D=2048/2049 — path-as-data, never materialised on disk |
-| **DC-14's ceiling probe**, if DC-14 lands as (b) | It is a measurement of where the six recursive sites break, which is by definition a large-depth question | A probe outside the suite (§A2's harness), not a test. Its output is rows in §A2.1, not assertions |
+| **§A12's ceiling probe** (DC-14 landed as measure-first) | It is a measurement of where the six recursive sites break, which is by definition a large-depth question | A probe outside the suite (§A2's harness), not a test. Its output is rows in §A2.1 and a verdict per site, never assertions |
 
 Everything else — every per-site at-cap/past-cap pair, every `depth` payload assertion, every
 guard-reachability check — runs at a configured cap in the single digits.
@@ -1449,8 +1698,49 @@ a depth-0 tree. Each condition gets its own test — one test covering both prov
 `cap <= 0 → unlimited` branch that someone adds later must fail loudly.
 
 **Unset and absent.** No `[core]` section → 2048. No config file at all (bare/fresh/memory
-adapter) → 2048, not an error. §A8.4: absence is not failure, and the only failure path is a
-present-but-invalid value.
+adapter) → 2048, not an error. §A8.4: absence is not failure, and `resolveMaxTreeDepth` never
+throws — the refusal is the gate's job, tested separately below.
+
+### Unit — the repo-wide refusal (new, DC-13)
+
+The gate is a guard clause, so CLAUDE.md's isolation rule binds hard: each condition gets its own
+test, and one test tripping two of them proves neither.
+
+**The refusal fires, and carries both reasons.** An invalid `core.maxTreeDepth` in `.git/config`
+makes an operational command refuse with `CONFIG_BAD_NUMERIC_VALUE`. Assert the **whole payload** —
+`key` (the qualified key, lower-cased exactly as the compression finder emits it), `source` (the
+config file path), `value` (the raw string), and
+`reason` — via try/catch and direct `.data` reads, never `toThrow(TsgitError)`. Two isolated cases:
+`2.5` → `'invalid unit'`, `2147483648` → `'out of range'`. The reason strings are precisely the
+StringLiteral mutants a code-only assertion leaves alive, and the second case is also the only test
+that proves the C-`int` narrowing sits on this path — `parseGitInt` alone returns `ok` for it.
+
+**The surface is the operational one, both directions.** Two tests, because they are two claims:
+an operational command refuses; the `config` porcelain still reads and writes, including reading
+the invalid value back verbatim (§A7 Pin 9 rows N1/N2/N2b). The second is the test that fails if
+someone "simplifies" the design into a strict `readConfig` — the specific wrong turn §A8.5 exists
+to prevent, so it earns a test rather than a comment.
+
+**Last-wins, isolated per direction.** Pin 9 rows N7/N8 are two tests, never one: invalid-then-valid
+**succeeds**; valid-then-invalid **refuses**. A finder that returns the first failing entry passes
+the second and fails the first — precisely the sibling-shaped mistake §A8.5 predicts.
+
+**Gate ordering.** Pin 9 rows N10/N11: with a malformed `loosecompression` (or `sparseCheckout`) on
+an *earlier* line, the reported error is still the `maxTreeDepth` one. This pins the "checked before
+the lowest-line reduction" placement; without it, dropping the new finder into the `pickLowerLine`
+candidate list passes everything else.
+
+**Valueless and empty are one case, and both are `invalid unit` with `value: ''`** (rows N5/N6) —
+two tests, not a parameterised pair, because a `null` token and an empty string reach the finder by
+different branches.
+
+**Existing fixtures: none affected, and the check is cheap to state.** Verified at HEAD —
+`maxTreeDepth` occurs **zero** times in `src/` and **zero** times in `test/`. No fixture writes the
+key, so none can newly fail; every config-writing fixture parses exactly as it does today, because
+`applyCoreEntry` stays lenient and the gate fires only on a key nothing writes yet. That is a
+consequence of the mechanism: had the design made `readConfig` strict, the blast radius would have
+covered every fixture writing *any* malformed value, and this claim would have needed a survey
+rather than a grep.
 
 ### The acceptance oracle
 
@@ -1481,7 +1771,8 @@ documented divergence**, which is the point.
 | C1/C2/C3 | `-c core.maxTreeDepth=<n>` moves git's boundary in both directions. **tsgit now follows**: the same configured value moves tsgit's boundary the same way, including C3's 100000 on a shallow tree. The draft's "tsgit is expected *not* to follow" clause is deleted |
 | Pin 4 (V-rows) | A representative refused value (`2.5`) and a representative unit value (`1k`, calibrated at D=1024/1025) asserted against both tools. tsgit matches the **refusal condition**, not git's stderr bytes — and not the all-lowercase key spelling git quotes back (Pin 4 note 3) |
 | Pin 5 (Z-rows) | `-c core.maxTreeDepth=0` accepts a depth-0 tree and refuses a depth-1 one in both tools |
-| Pin 6 (P-rows) | Bounded by DC-12. Under (a) this row asserts the **local** scope agreeing and explicitly records that global/system are not consulted; under (b) or (c) it asserts the full precedence chain. Written once DC-12 lands |
+| Pin 6 (P-rows) | DC-12 landed as local-only, so this row asserts the **local** scope agreeing with git, and asserts the divergence explicitly rather than omitting it: the same value in a throwaway `GIT_CONFIG_GLOBAL` moves git's boundary (row P-7) and leaves tsgit's unmoved. A divergence that is documented (Requirement 12) is a divergence that gets a test, not a gap in the matrix |
+| **Pin 9** (N-rows) | The refusal surface, against both tools on one repo: an invalid `core.maxTreeDepth` makes an operational command exit 128 / throw `CONFIG_BAD_NUMERIC_VALUE`, while `config --get`/`--list` succeed in both (N1/N2). Plus the validation model — invalid-then-valid succeeds in both (N7), valid-then-invalid refuses in both (N8). N7 is the row that proves tsgit reads the *effective* value the way git does, and it is the assertion that fails on any per-entry strict variant |
 
 Four traps this file must dodge, all from §A7's method:
 
@@ -1631,14 +1922,19 @@ Three gate-level specifics for this change:
   invalid-value refusal are designed in §A8 and pinned in §A7 Pins 4–7. The plan grows a part.
 - **Making `readConfig` scope-aware for every key** — DC-12 option (c). `readConfig` is local-only
   today for *all* typed `core.*` keys, not just this one; widening it to `SCOPE_ORDER` is a
-  config-subsystem change touching every config-reading command, and it is not this PR whichever
-  way DC-12 lands. If DC-12 lands as (a), the resulting gap is **documented** (Requirement 9), not
-  closed.
-- **Matching git's repo-wide fatal on an invalid `core.maxTreeDepth`** — §A7 Pin 7 shows git
-  refusing on `write-tree`, `ls-files`, `cat-file -p` and `status`, commands with no depth surface
-  at all. Scoping tsgit's refusal is DC-13; option (b)'s repo-wide version is named here because it
-  would also invert the documented lenient convention for every *other* numeric config key
-  (`config-read.ts:1113`), which is a decision about the config subsystem rather than about depth.
+  config-subsystem change touching every config-reading command. DC-12 landed as (a), so the gap
+  is **documented** (Requirement 12, §A11), not closed.
+- ~~**Matching git's repo-wide fatal on an invalid `core.maxTreeDepth`**~~ — **moved into scope.**
+  DC-13 landed as (b): the refusal is repo-wide, designed in §A8.5 and pinned by §A7 Pin 9. What
+  stays out of scope is the thing this bullet was really protecting — **generalising strictness to
+  the other numeric keys.** `core.looseCompression` keeps its documented lenient merge
+  (`config-read.ts:1113`) and its per-line validation; only `core.maxTreeDepth` is validated
+  last-wins, because that is what git does with it (Pin 9 N7 vs N9). The asymmetry is deliberate,
+  is git's, and is written at the strict site as a code comment (§A8.5).
+- **Wiring the five ungated commands to the operational gate** — `archive`, `bundle-create`,
+  `clone`, `fsck`, `grep` under-refuse relative to Pin 9 row N3b. That is **DC-15**, open and
+  undecided; it is listed here only so its absence from the current scope is deliberate rather
+  than overlooked.
 - **The `walkWorkingTree` refusal-semantics divergence** — §A7 rows F5–F7: on a genuinely deep
   worktree git warns `File name too long` and **silently stages nothing**, exit 0. tsgit throws
   `TREE_DEPTH_EXCEEDED`. That divergence exists today, is not created here, and matching it would
