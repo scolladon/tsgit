@@ -125,7 +125,8 @@ describe.skipIf(!GIT_AVAILABLE)('core.maxTreeDepth eager refusal — cross-tool 
   describe('Given a repo whose local config holds an invalid core.maxTreeDepth', () => {
     describe('When the config porcelain reads or writes', () => {
       it('Then git config --get user.name exits 0 and configGet succeeds', async () => {
-        // Act
+        // Arrange + Act — against the shared beforeAll repo, whose local
+        // config already holds an invalid core.maxTreeDepth.
         const g = tryRunGitWithExit(['-C', dir, 'config', '--get', 'user.name']);
         const result = await configGet(ctx, { key: 'user.name' });
 
@@ -135,7 +136,8 @@ describe.skipIf(!GIT_AVAILABLE)('core.maxTreeDepth eager refusal — cross-tool 
       });
 
       it('Then git config --list exits 0 and configList succeeds', async () => {
-        // Act
+        // Arrange + Act — against the shared beforeAll repo, whose local
+        // config already holds an invalid core.maxTreeDepth.
         const g = tryRunGitWithExit(['-C', dir, 'config', '--list']);
         const result = await configList(ctx);
 
@@ -145,7 +147,8 @@ describe.skipIf(!GIT_AVAILABLE)('core.maxTreeDepth eager refusal — cross-tool 
       });
 
       it('Then git config --local --list exits 0 and configList (local scope) succeeds', async () => {
-        // Act
+        // Arrange + Act — against the shared beforeAll repo, whose local
+        // config already holds an invalid core.maxTreeDepth.
         const g = tryRunGitWithExit(['-C', dir, 'config', '--local', '--list']);
         const result = await configList(ctx, { scope: 'local' });
 
@@ -155,7 +158,8 @@ describe.skipIf(!GIT_AVAILABLE)('core.maxTreeDepth eager refusal — cross-tool 
       });
 
       it('Then git config --get core.maxTreeDepth reads 2.5 back and configGet matches verbatim', async () => {
-        // Act
+        // Arrange + Act — against the shared beforeAll repo, whose local
+        // config already holds an invalid core.maxTreeDepth.
         const g = tryRunGitWithExit(['-C', dir, 'config', '--get', 'core.maxTreeDepth']);
         const result = await configGet(ctx, { key: 'core.maxTreeDepth' });
 
@@ -166,7 +170,8 @@ describe.skipIf(!GIT_AVAILABLE)('core.maxTreeDepth eager refusal — cross-tool 
       });
 
       it('Then a git config write exits 0 and configSet succeeds', async () => {
-        // Act
+        // Arrange + Act — against the shared beforeAll repo, whose local
+        // config already holds an invalid core.maxTreeDepth.
         const g = tryRunGitWithExit(['-C', dir, 'config', 'interop.gitMark', 'git-wrote-this']);
         const result = await configSet(ctx, {
           key: 'interop.tsgitMark',
@@ -187,7 +192,8 @@ describe.skipIf(!GIT_AVAILABLE)('core.maxTreeDepth eager refusal — cross-tool 
   describe('Given a repo whose local config holds an invalid core.maxTreeDepth', () => {
     describe('When an operational command runs', () => {
       it('Then git log exits 128 and tsgit log throws', async () => {
-        // Act
+        // Arrange + Act — against the shared beforeAll repo, whose local
+        // config already holds an invalid core.maxTreeDepth.
         const g = tryRunGitWithExit(['-C', dir, 'log']);
 
         // Assert
@@ -196,7 +202,8 @@ describe.skipIf(!GIT_AVAILABLE)('core.maxTreeDepth eager refusal — cross-tool 
       });
 
       it('Then git rev-parse HEAD exits 128 and tsgit revParse throws', async () => {
-        // Act
+        // Arrange + Act — against the shared beforeAll repo, whose local
+        // config already holds an invalid core.maxTreeDepth.
         const g = tryRunGitWithExit(['-C', dir, 'rev-parse', 'HEAD']);
 
         // Assert
@@ -205,7 +212,8 @@ describe.skipIf(!GIT_AVAILABLE)('core.maxTreeDepth eager refusal — cross-tool 
       });
 
       it('Then git add exits 128 and tsgit add throws', async () => {
-        // Act
+        // Arrange + Act — against the shared beforeAll repo, whose local
+        // config already holds an invalid core.maxTreeDepth.
         const g = tryRunGitWithExit(['-C', dir, 'add', '-A']);
 
         // Assert
@@ -214,7 +222,8 @@ describe.skipIf(!GIT_AVAILABLE)('core.maxTreeDepth eager refusal — cross-tool 
       });
 
       it('Then git commit exits 128 and tsgit commit throws', async () => {
-        // Act
+        // Arrange + Act — against the shared beforeAll repo, whose local
+        // config already holds an invalid core.maxTreeDepth.
         const g = tryRunGitWithExit(['-C', dir, 'commit', '-q', '--no-gpg-sign', '-m', 'nope']);
 
         // Assert
@@ -231,7 +240,8 @@ describe.skipIf(!GIT_AVAILABLE)('core.maxTreeDepth eager refusal — cross-tool 
   describe('Given a repo whose local config holds an invalid core.maxTreeDepth', () => {
     describe('When a newly-gated command runs', () => {
       it('Then git archive --format=tar exits 128 and tsgit archive throws', async () => {
-        // Act
+        // Arrange + Act — against the shared beforeAll repo, whose local
+        // config already holds an invalid core.maxTreeDepth.
         const g = tryRunGitWithExit(['-C', dir, 'archive', '--format=tar', 'HEAD']);
 
         // Assert
@@ -240,7 +250,8 @@ describe.skipIf(!GIT_AVAILABLE)('core.maxTreeDepth eager refusal — cross-tool 
       });
 
       it('Then git fsck exits 128 and tsgit fsck throws', async () => {
-        // Act
+        // Arrange + Act — against the shared beforeAll repo, whose local
+        // config already holds an invalid core.maxTreeDepth.
         const g = tryRunGitWithExit(['-C', dir, 'fsck']);
 
         // Assert
@@ -249,7 +260,8 @@ describe.skipIf(!GIT_AVAILABLE)('core.maxTreeDepth eager refusal — cross-tool 
       });
 
       it('Then git grep exits 128 and tsgit grep throws', async () => {
-        // Act
+        // Arrange + Act — against the shared beforeAll repo, whose local
+        // config already holds an invalid core.maxTreeDepth.
         const g = tryRunGitWithExit(['-C', dir, 'grep', 'hello']);
 
         // Assert
@@ -258,7 +270,8 @@ describe.skipIf(!GIT_AVAILABLE)('core.maxTreeDepth eager refusal — cross-tool 
       });
 
       it('Then git bundle create exits 128 and tsgit bundleCreate throws', async () => {
-        // Act
+        // Arrange + Act — against the shared beforeAll repo, whose local
+        // config already holds an invalid core.maxTreeDepth.
         const g = tryRunGitWithExit([
           '-C',
           dir,
@@ -282,7 +295,8 @@ describe.skipIf(!GIT_AVAILABLE)('core.maxTreeDepth eager refusal — cross-tool 
       // it has no analogue for the source-side read and deliberately grows
       // no destination-side gate — one would refuse where git succeeds.
       it('Then git clone FROM the poisoned repo exits 128 (source-side config read)', async () => {
-        // Act
+        // Arrange + Act — against the shared beforeAll repo, whose local
+        // config already holds an invalid core.maxTreeDepth.
         const target = path.join(os.tmpdir(), `tsgit-maxtreedepth-clone-${Date.now()}`);
         const g = tryRunGitWithExit(['-C', dir, 'clone', '.', target]);
 
@@ -291,7 +305,9 @@ describe.skipIf(!GIT_AVAILABLE)('core.maxTreeDepth eager refusal — cross-tool 
       });
 
       it('Then git clone INTO the poisoned repo reports occupancy, not the bad config', async () => {
-        // Act — the destination is the poisoned repo itself.
+        // Arrange + Act — the destination is the shared beforeAll repo
+        // itself, whose local config already holds an invalid
+        // core.maxTreeDepth.
         const g = tryRunGitWithExit(['clone', dir, dir]);
 
         // Assert — occupancy wins; the config is never read. The absence
@@ -312,7 +328,8 @@ describe.skipIf(!GIT_AVAILABLE)('core.maxTreeDepth eager refusal — cross-tool 
   describe('Given a repo whose local config holds an invalid core.maxTreeDepth', () => {
     describe('When remote -v runs', () => {
       it('Then git remote -v exits 0 and tsgit remoteList succeeds', async () => {
-        // Act
+        // Arrange + Act — against the shared beforeAll repo, whose local
+        // config already holds an invalid core.maxTreeDepth.
         const g = tryRunGitWithExit(['-C', dir, 'remote', '-v']);
         const result = await remoteList(ctx);
 
@@ -324,7 +341,8 @@ describe.skipIf(!GIT_AVAILABLE)('core.maxTreeDepth eager refusal — cross-tool 
 
     describe('When init re-runs against the same directory', () => {
       it('Then git init exits 0 (a harmless re-init)', () => {
-        // Act
+        // Arrange + Act — against the shared beforeAll repo, whose local
+        // config already holds an invalid core.maxTreeDepth.
         const g = tryRunGitWithExit(['-C', dir, 'init']);
 
         // Assert
@@ -338,7 +356,8 @@ describe.skipIf(!GIT_AVAILABLE)('core.maxTreeDepth eager refusal — cross-tool 
       // negative: the refusal reason is unrelated to core.maxTreeDepth, not
       // that tsgit mirrors git's re-init success.
       it('Then tsgit init throws ALREADY_INITIALIZED, never CONFIG_BAD_NUMERIC_VALUE', async () => {
-        // Act
+        // Arrange + Act — against the shared beforeAll repo, whose local
+        // config already holds an invalid core.maxTreeDepth.
         let caught: unknown;
         try {
           await init(ctx);
@@ -362,7 +381,8 @@ describe.skipIf(!GIT_AVAILABLE)('core.maxTreeDepth eager refusal — cross-tool 
   describe('Given a bundle git built while config was still valid', () => {
     describe('When bundle list-heads / verify run against the now-poisoned repo', () => {
       it('Then git bundle list-heads exits 0 and tsgit bundleListHeads succeeds (ungated)', async () => {
-        // Act
+        // Arrange + Act — against the shared beforeAll repo, whose local
+        // config already holds an invalid core.maxTreeDepth.
         const g = tryRunGitWithExit(['-C', dir, 'bundle', 'list-heads', bundleFile]);
         const result = await bundleListHeads(ctx, { path: bundleFile });
 
@@ -372,7 +392,8 @@ describe.skipIf(!GIT_AVAILABLE)('core.maxTreeDepth eager refusal — cross-tool 
       });
 
       it('Then git bundle verify exits 0 and tsgit bundleVerify succeeds (ungated)', async () => {
-        // Act
+        // Arrange + Act — against the shared beforeAll repo, whose local
+        // config already holds an invalid core.maxTreeDepth.
         const g = tryRunGitWithExit(['-C', dir, 'bundle', 'verify', bundleFile]);
         const result = await bundleVerify(ctx, { path: bundleFile });
 
