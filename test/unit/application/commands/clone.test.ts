@@ -243,10 +243,11 @@ describe('clone', () => {
     });
   });
 
-  describe('Given an existing.git whose config holds an invalid core.maxTreeDepth', () => {
+  describe('Given an occupied destination whose config holds an invalid core.maxTreeDepth', () => {
     describe('When clone', () => {
-      it('Then throws CONFIG_BAD_NUMERIC_VALUE (a bad config refuses ahead of TARGET_DIRECTORY_NOT_EMPTY)', async () => {
-        // Arrange
+      it('Then throws TARGET_DIRECTORY_NOT_EMPTY, never a config refusal', async () => {
+        // Arrange — git reports "already exists" here and never reads the
+        // destination's config, so occupancy must win over config validity.
         const ctx = createMemoryContext();
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tmaxTreeDepth = 2.5\n');
@@ -261,23 +262,15 @@ describe('clone', () => {
 
         // Assert
         expect(caught).toBeInstanceOf(TsgitError);
-        const data = (caught as TsgitError).data as {
-          readonly code: string;
-          readonly key: string;
-          readonly value: string;
-          readonly reason: string;
-        };
-        expect(data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
-        expect(data.key).toBe('core.maxtreedepth');
-        expect(data.value).toBe('2.5');
-        expect(data.reason).toBe('invalid unit');
+        const data = (caught as TsgitError).data as { readonly code: string };
+        expect(data.code).toBe('TARGET_DIRECTORY_NOT_EMPTY');
       });
     });
   });
 
-  describe('Given a target with no HEAD (genuinely empty) but a config file holding an invalid core.maxTreeDepth', () => {
+  describe('Given an empty destination alongside a config file holding an invalid core.maxTreeDepth', () => {
     describe('When clone', () => {
-      it('Then proceeds normally (the config gate only fires once a repository is there to read)', async () => {
+      it('Then proceeds normally (clone never reads a destination-side config)', async () => {
         // Arrange
         const ctx = createMemoryContext();
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tmaxTreeDepth = 2.5\n');

@@ -19,7 +19,6 @@ import { bootstrapRepository } from './internal/bootstrap.js';
 import { negotiateDiscovery, negotiatePackBytes } from './internal/fetch-negotiation.js';
 import { type GitServiceSession, openGitSession } from './internal/git-service-session.js';
 import { anonymizeRemoteUrl } from './internal/remote-url.js';
-import { assertEagerConfigValid } from './internal/repo-state.js';
 import {
   advertisesFilter,
   selectFetchCapabilities,
@@ -71,8 +70,16 @@ const CLONE_DISCOVER_OP = 'clone:discover';
 const CLONE_WRITE_OBJECTS_OP = 'clone:write-objects';
 
 export const clone = async (ctx: Context, opts: CloneOptions): Promise<CloneResult> => {
+  // No config gate here, deliberately. Canonical git refuses a clone on an
+  // invalid `core.maxTreeDepth` only when the SOURCE repository carries it —
+  // that refusal comes from the process serving a local-path clone, which
+  // reads its own config at startup. Git never reads the DESTINATION's config
+  // (an occupied destination fails with "already exists" first) and never
+  // reads the ambient repository it happens to be standing in. This clone is
+  // client-only and reaches its source through a transport, so it has no
+  // analogue for the source-side read; a destination-side gate would refuse
+  // where git succeeds.
   if (await ctx.fs.exists(`${ctx.layout.gitDir}/HEAD`)) {
-    await assertEagerConfigValid(ctx);
     throw targetDirectoryNotEmpty(ctx.layout.workDir as FilePath);
   }
   if (opts.url === '') throw remoteAdvertisesNoRefs();

@@ -3,16 +3,17 @@
  * Builds ONE repository with real git (deterministic dates, signing off),
  * poisons its local config with an invalid `core.maxTreeDepth`, then proves
  * canonical git's refusal/survival split at that boundary matches tsgit's:
- * the five previously-ungated commands (archive, fsck, grep, bundle create,
- * clone) now refuse; config/init/remote and the two bundle-reading commands
- * survive; and the gate observes the effective (last-wins) value, not line
- * position.
+ * four previously-ungated commands (archive, fsck, grep, bundle create) now
+ * refuse; config/init/remote and the two bundle-reading commands survive; and
+ * the gate observes the effective (last-wins) value, not line position.
+ * clone is pinned separately: git's refusal there is SOURCE-side only, so
+ * this client-only clone deliberately grows no destination-side gate.
  *
  * @proves
  *   surface:        repo-state
  *   bucket:         cross-tool-interop
  *   unique:         an invalid core.maxTreeDepth refuses the same operational surface real git refuses (git 2.55.0) and survives the same porcelain surface real git survives, keyed on the effective last-wins value
- *   interopSurface: archive, bundleCreate, bundleListHeads, bundleVerify, clone, config, fsck, grep, init, log, remote, status
+ *   interopSurface: archive, bundleCreate, bundleListHeads, bundleVerify, config, fsck, grep, init, log, remote, status
  */
 import { readFileSync, writeFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -25,7 +26,6 @@ import { archive } from '../../src/application/commands/archive.js';
 import { bundleCreate } from '../../src/application/commands/bundle-create.js';
 import { bundleListHeads } from '../../src/application/commands/bundle-list-heads.js';
 import { bundleVerify } from '../../src/application/commands/bundle-verify.js';
-import { clone } from '../../src/application/commands/clone.js';
 import { commit } from '../../src/application/commands/commit.js';
 import { configGet, configList, configSet } from '../../src/application/commands/config.js';
 import { fsck } from '../../src/application/commands/fsck.js';
@@ -273,16 +273,15 @@ describe.skipIf(!GIT_AVAILABLE)('core.maxTreeDepth eager refusal — cross-tool 
         await assertRefusesWithBadMaxTreeDepth(() => bundleCreate(ctx, { all: true }));
       });
 
-      // clone has no single scenario in common between the two tools: git's
-      // refusal fires while SERVING a local-path clone whose SOURCE carries
-      // the bad config (a server-side read tsgit's client-only clone() has
-      // no analogue for); tsgit's refusal fires on a DESTINATION that
-      // already contains a repository with the bad config (repo-state.ts's
-      // assertEagerConfigValid, gated on `${gitDir}/HEAD` already existing).
-      // Both hinge on the exact same on-disk `core.maxTreeDepth = 2.5`, so
-      // each side is pinned in its own reachable shape rather than forcing
-      // one fixture neither tool would naturally hit.
-      it('Then git clone from the poisoned repo exits 128 (source-side config read)', async () => {
+      // clone's refusal is SOURCE-side only, and that is the whole point of
+      // these two rows. Git refuses while serving a local-path clone whose
+      // SOURCE carries the bad config — the serving process reads its own
+      // config at startup. Git does NOT read the destination's config: an
+      // occupied destination fails with "already exists" first. tsgit's
+      // clone is client-only and reaches its source through a transport, so
+      // it has no analogue for the source-side read and deliberately grows
+      // no destination-side gate — one would refuse where git succeeds.
+      it('Then git clone FROM the poisoned repo exits 128 (source-side config read)', async () => {
         // Act
         const target = path.join(os.tmpdir(), `tsgit-maxtreedepth-clone-${Date.now()}`);
         const g = tryRunGitWithExit(['-C', dir, 'clone', '.', target]);
@@ -291,11 +290,17 @@ describe.skipIf(!GIT_AVAILABLE)('core.maxTreeDepth eager refusal — cross-tool 
         expect(g.exitCode).toBe(128);
       });
 
-      it('Then tsgit clone into the poisoned repo throws (destination-side config read)', async () => {
-        // Act + Assert
-        await assertRefusesWithBadMaxTreeDepth(() =>
-          clone(ctx, { url: 'https://example.invalid/repo.git' }),
-        );
+      it('Then git clone INTO the poisoned repo reports occupancy, not the bad config', async () => {
+        // Act — the destination is the poisoned repo itself.
+        const g = tryRunGitWithExit(['clone', dir, dir]);
+
+        // Assert — occupancy wins; the config is never read. The absence
+        // oracle is the config-error signature, not the key name: the
+        // fixture directory is itself named `…-maxtreedepth-config-…`, so a
+        // bare key-name check matches the path git echoes back.
+        expect(g.exitCode).toBe(128);
+        expect(g.stderr).toContain('already exists');
+        expect(g.stderr).not.toContain('bad numeric config value');
       });
     });
   });

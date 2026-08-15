@@ -774,7 +774,10 @@ scope; oracle is each command's exit code on a repo with one commit.
 | N2 | `config --get core.maxTreeDepth` | **0** | reads the invalid value back verbatim (`2.5`) |
 | N2b | `config core.someKey someValue` (a **write**) | **0** | the porcelain writes fine |
 | N3 | `rev-parse HEAD`, `rev-parse --git-dir`, `rev-list --all`, `rev-list --objects --all`, `log`, `cat-file -t`, `add`, `commit` | **128** | `fatal: bad numeric config value '2.5' for '…': invalid unit` — key elided per Pin 4 note 3 (git quotes the all-lowercase spelling) |
-| N3b | `archive --format=tar`, `fsck`, `grep`, `bundle create`, `clone` | **128** | idem — the five surfaces tsgit does not gate today (§A8.5) |
+| N3b | `archive --format=tar`, `fsck`, `grep`, `bundle create` | **128** | idem — surfaces tsgit does not gate today (§A8.5) |
+| N3b′ | `clone` **from** a poisoned source | **128** | the process serving the local-path clone reads its own config at startup — a **source-side** read |
+| N3b″ | `clone` **into** an occupied poisoned destination | **128** | `destination path … already exists` — occupancy wins; the destination's config is **never read** |
+| N3b‴ | `clone` a clean source while **standing inside** a poisoned repo | **0** | the ambient repository's config is never read during a clone |
 | N3c | `remote -v` | **0** | survives |
 | N4 | `init` (re-init) | **0** | survives |
 
@@ -1049,7 +1052,7 @@ reader "fixing" the finder to match its sibling must have to argue with a commen
 | `assertOperationalRepository` call sites | **106**, across **39 of 50** command files | all newly refuse on an invalid `core.maxTreeDepth`; this is the decision |
 | `assertRepository`-only call sites (the `config` porcelain) | **18** | unaffected — matches Pin 9 N1/N2/N2b |
 | Direct `readConfig(ctx)` call sites | **43**, across **25** files | unaffected — `readConfig` stays total |
-| Command files with **no** operational gate | **11**: `archive`, `bundle-create`, `bundle-list-heads`, `bundle-verify`, `clone`, `config`, `fsck`, `grep`, `index`, `init`, `remote` | `config` and `init` are correct (N1/N4); `remote` is correct (N3c); the other five are pinned as refusing by N3b and **do not**. That gap is DC-15 |
+| Command files with **no** operational gate | **11**: `archive`, `bundle-create`, `bundle-list-heads`, `bundle-verify`, `clone`, `config`, `fsck`, `grep`, `index`, `init`, `remote` | `config` and `init` are correct (N1/N4); `remote` is correct (N3c); `archive`, `bundle-create`, `fsck`, `grep` are pinned as refusing by N3b and **do not**. That gap is DC-15, settled by the ungated-commands record. `clone` was originally counted here on a misread of N3b — rows N3b′/N3b″/N3b‴ show git's refusal is **source-side only**, which this client-only `clone` cannot reach, so it stays ungated |
 
 **Does any path swallow it?** No path swallows a `readConfig` failure, because `readConfig` does
 not fail — that is a second reason the mechanism matters. For the gate the question is whether a
@@ -1931,10 +1934,13 @@ Three gate-level specifics for this change:
   (`config-read.ts:1113`) and its per-line validation; only `core.maxTreeDepth` is validated
   last-wins, because that is what git does with it (Pin 9 N7 vs N9). The asymmetry is deliberate,
   is git's, and is written at the strict site as a code comment (§A8.5).
-- **Wiring the five ungated commands to the operational gate** — `archive`, `bundle-create`,
-  `clone`, `fsck`, `grep` under-refuse relative to Pin 9 row N3b. That is **DC-15**, open and
-  undecided; it is listed here only so its absence from the current scope is deliberate rather
-  than overlooked.
+- **Wiring the ungated commands to the operational gate** — `archive`, `bundle-create`,
+  `fsck` and `grep` under-refuse relative to Pin 9 row N3b. That was **DC-15**, since settled
+  (they are wired, plus a complementary guard in the resolver). `clone` was originally in this
+  list and is **not** wired: rows N3b′/N3b″/N3b‴ pin git's clone refusal as source-side only —
+  it never reads the destination's config, nor the ambient repository's — and this client-only
+  `clone` reaches its source through a transport, so a destination-side gate would refuse where
+  git succeeds.
 - **The `walkWorkingTree` refusal-semantics divergence** — §A7 rows F5–F7: on a genuinely deep
   worktree git warns `File name too long` and **silently stages nothing**, exit 0. tsgit throws
   `TREE_DEPTH_EXCEEDED`. That divergence exists today, is not created here, and matching it would
