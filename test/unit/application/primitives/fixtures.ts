@@ -2,6 +2,7 @@
  * Shared test fixtures for primitives —.
  */
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
+import { invalidateConfigCache } from '../../../../src/application/primitives/config-read.js';
 import {
   commitGraphChainPath,
   commitGraphPath,
@@ -26,6 +27,17 @@ import {
   type CommitGraphCommitModel,
   type CommitGraphLayerModel,
 } from '../../domain/commit/arbitraries.js';
+
+/**
+ * Write `core.maxTreeDepth = <value>` to `ctx`'s `.git/config` and invalidate
+ * the per-`Context` config cache so a subsequent read observes it. `value` is
+ * the raw config string (not a number) so callers can seed malformed grammar
+ * (`'2.5'`, `''`, etc.) alongside valid values.
+ */
+export const seedMaxTreeDepth = async (ctx: Context, value: string): Promise<void> => {
+  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, `[core]\n\tmaxTreeDepth = ${value}\n`);
+  invalidateConfigCache(ctx);
+};
 
 export interface BuildSeededContextParts {
   readonly objects?: ReadonlyArray<GitObject>;

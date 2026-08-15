@@ -11,6 +11,7 @@ import {
   findFirstValuelessEntry,
   findFirstValuelessInSection,
   findInvalidPushDefault,
+  findLastInvalidMaxTreeDepth,
   type IniSection,
   invalidateConfigCache,
   parseGitBoolean,
@@ -1963,6 +1964,47 @@ describe('primitives/config-read', () => {
         // Assert
         expect(result.core).toEqual({ looseCompression: 9 });
       });
+    });
+  });
+
+  describe('Given a config with a [core] maxTreeDepth value', () => {
+    describe('When readConfig', () => {
+      it('Then parsed.core.maxTreeDepth carries the value', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[core]\n\tmaxTreeDepth = 4096\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.core?.maxTreeDepth).toBe(4096);
+      });
+    });
+  });
+
+  describe('Given a [core] section with an invalid maxTreeDepth value', () => {
+    describe('When readConfig', () => {
+      it.each([
+        { config: '[core]\n\tmaxTreeDepth = 2.5\n', label: 'invalid unit (2.5)' },
+        {
+          config: '[core]\n\tmaxTreeDepth = 2147483648\n',
+          label: 'out of range (2147483648 — the C-int narrowing applies here too)',
+        },
+      ])(
+        'Then maxTreeDepth is absent and readConfig does not throw ($label)',
+        async ({ config }) => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, config);
+
+          // Act
+          const result = await readConfig(ctx);
+
+          // Assert
+          expect(result.core?.maxTreeDepth).toBeUndefined();
+        },
+      );
     });
   });
 
@@ -5418,6 +5460,99 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
 
           // Assert
           expect(result?.key).toBe('core.compression');
+        });
+      });
+    });
+  });
+
+  describe('findLastInvalidMaxTreeDepth', () => {
+    describe('Given core.maxTreeDepth = 2.5 (line 2) then core.maxTreeDepth = 2048 (line 3)', () => {
+      describe('When findLastInvalidMaxTreeDepth', () => {
+        it('Then returns undefined (the last, valid entry is the effective one)', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await ctx.fs.writeUtf8(
+            `${ctx.layout.gitDir}/config`,
+            '[core]\n\tmaxTreeDepth = 2.5\n\tmaxTreeDepth = 2048\n',
+          );
+
+          // Act
+          const result = await findLastInvalidMaxTreeDepth(ctx);
+
+          // Assert
+          expect(result).toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given core.maxTreeDepth = 2048 (line 2) then core.maxTreeDepth = 2.5 (line 3)', () => {
+      describe('When findLastInvalidMaxTreeDepth', () => {
+        it('Then returns the entry for 2.5 (only the last entry is validated)', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await ctx.fs.writeUtf8(
+            `${ctx.layout.gitDir}/config`,
+            '[core]\n\tmaxTreeDepth = 2048\n\tmaxTreeDepth = 2.5\n',
+          );
+
+          // Act
+          const result = await findLastInvalidMaxTreeDepth(ctx);
+
+          // Assert
+          expect(result).not.toBeUndefined();
+          expect(result?.key).toBe('core.maxtreedepth');
+          expect(result?.value).toBe('2.5');
+          expect(result?.reason).toBe('invalid unit');
+        });
+      });
+    });
+
+    describe('Given a valueless core.maxTreeDepth entry (no "=")', () => {
+      describe('When findLastInvalidMaxTreeDepth', () => {
+        it("Then returns an entry with value '' and reason invalid unit", async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tmaxTreeDepth\n');
+
+          // Act
+          const result = await findLastInvalidMaxTreeDepth(ctx);
+
+          // Assert
+          expect(result?.value).toBe('');
+          expect(result?.reason).toBe('invalid unit');
+        });
+      });
+    });
+
+    describe('Given an empty core.maxTreeDepth value ("maxTreeDepth =")', () => {
+      describe('When findLastInvalidMaxTreeDepth', () => {
+        it("Then returns an entry with value '' and reason invalid unit", async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tmaxTreeDepth =\n');
+
+          // Act
+          const result = await findLastInvalidMaxTreeDepth(ctx);
+
+          // Assert
+          expect(result?.value).toBe('');
+          expect(result?.reason).toBe('invalid unit');
+        });
+      });
+    });
+
+    describe('Given a mixed-case core.MaxTreeDepth key with an invalid value', () => {
+      describe('When findLastInvalidMaxTreeDepth', () => {
+        it('Then reports the qualified key all-lowercase', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tMaxTreeDepth = 2.5\n');
+
+          // Act
+          const result = await findLastInvalidMaxTreeDepth(ctx);
+
+          // Assert
+          expect(result?.key).toBe('core.maxtreedepth');
         });
       });
     });

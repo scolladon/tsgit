@@ -22,6 +22,8 @@ export interface ParsedConfig {
     readonly sparseCheckout?: boolean;
     readonly sparseCheckoutCone?: boolean;
     readonly looseCompression?: number;
+    /** `core.maxTreeDepth` — max tree-recursion depth; git defaults to 2048 when unset. */
+    readonly maxTreeDepth?: number;
     /** `core.sshCommand` — shell string resolved by `resolveSshCommand` ahead of `GIT_SSH`. */
     readonly sshCommand?: string;
   };
@@ -338,6 +340,62 @@ export const findFirstInvalidCompression = async (
         failure: { kind: 'zlib', level: parsed.value },
       };
     }
+  }
+  return undefined;
+};
+
+const MAX_TREE_DEPTH_KEY = 'maxtreedepth';
+
+/** One invalid `core.maxTreeDepth` entry returned by `findLastInvalidMaxTreeDepth`. */
+export interface InvalidMaxTreeDepthEntry {
+  readonly key: string;
+  readonly source: string;
+  readonly line: number;
+  readonly value: string;
+  readonly reason: 'invalid unit' | 'out of range';
+}
+
+/**
+ * Cold-path detection for `core.maxTreeDepth`: walk the cached `[core]`
+ * (subsectionless) tokens in file order and validate only the LAST
+ * `maxtreedepth` entry — not the first, unlike `findFirstInvalidCompression`
+ * above. This is forced by git, not a stylistic choice: git resolves
+ * `core.maxTreeDepth` through its cached config-set lookup (last write wins),
+ * not through the streaming `git_default_config` callback the other `[core]`
+ * keys ride, so an earlier malformed line that a later valid line overrides
+ * is never observed. `core.compression`, by contrast, dies on any malformed
+ * line regardless of what follows it. Returns `undefined` when the key is
+ * absent or its last entry is valid. Runs ONLY on a command's refusal path.
+ */
+export const findLastInvalidMaxTreeDepth = async (
+  ctx: Context,
+): Promise<InvalidMaxTreeDepthEntry | undefined> => {
+  const { tokens, source: path } = await readConfigEntry(ctx);
+  let inSection = false;
+  let last: { readonly line: number; readonly value: string | null } | undefined;
+  for (const token of tokens) {
+    if (token.kind === 'header') {
+      inSection = matchesSection(token.section, token.subsection, 'core', undefined);
+      continue;
+    }
+    if (!inSection || token.kind !== 'entry') continue;
+    if (token.key.toLowerCase() !== MAX_TREE_DEPTH_KEY) continue;
+    last = { line: token.startLine + 1, value: token.value };
+  }
+  if (last === undefined) return undefined;
+  const key = `core.${MAX_TREE_DEPTH_KEY}`;
+  if (last.value === null) {
+    return { key, source: path, line: last.line, value: '', reason: 'invalid unit' };
+  }
+  const parsed = parseGitInt(last.value);
+  if (!parsed.ok) {
+    return { key, source: path, line: last.line, value: last.value, reason: parsed.reason };
+  }
+  // The C-`int` narrowing sits here, on top of `parseGitInt`: `parseGitInt`'s own
+  // bounds are int64, so a magnitude like 4294967296 comes back `ok` from it —
+  // this comparison is what turns that into `out of range` for this key.
+  if (parsed.value < GIT_C_INT_MIN || parsed.value > GIT_C_INT_MAX) {
+    return { key, source: path, line: last.line, value: last.value, reason: 'out of range' };
   }
   return undefined;
 };
@@ -1099,6 +1157,7 @@ type MutableCore = {
   sparseCheckout?: boolean;
   sparseCheckoutCone?: boolean;
   looseCompression?: number;
+  maxTreeDepth?: number;
   sshCommand?: string;
   /** Transient: true when looseCompression was set via loosecompression key (not compression).
    *  Dropped by finalizeCore. Guards order-independent precedence: loosecompression > compression. */
@@ -1124,6 +1183,20 @@ const applyLooseCompressionEntry = (
   // compression: set only if loosecompression has not already claimed the field
   if (core.looseCompressionFromLoose === true) return undefined;
   return { ...core, looseCompression: r.value };
+};
+
+/**
+ * Apply `core.maxTreeDepth`: parse with `parseGitInt`, narrow to the C `int`
+ * range, and merge the field as absent (`undefined`) on any failure. Stays
+ * lenient by design — `readConfig` is total, so the refusal for an invalid
+ * value lives in `resolveMaxTreeDepth`, a separate read of the same cached
+ * tokens.
+ */
+const applyMaxTreeDepthEntry = (core: MutableCore, value: string): MutableCore | undefined => {
+  const parsed = parseGitInt(value);
+  if (!parsed.ok) return undefined;
+  if (parsed.value < GIT_C_INT_MIN || parsed.value > GIT_C_INT_MAX) return undefined;
+  return { ...core, maxTreeDepth: parsed.value };
 };
 
 // One map is BOTH the key set and the field dispatch: a new boolean key
@@ -1178,6 +1251,7 @@ const applyCoreEntry = (
   if (lowered === 'loosecompression' || lowered === 'compression') {
     return applyLooseCompressionEntry(core, lowered, value);
   }
+  if (lowered === MAX_TREE_DEPTH_KEY) return applyMaxTreeDepthEntry(core, value);
   return undefined;
 };
 
@@ -1557,6 +1631,7 @@ const finalizeCore = (core: MutableCore | undefined): ParsedConfig['core'] => {
       ? { sparseCheckoutCone: core.sparseCheckoutCone }
       : {}),
     ...(core.looseCompression !== undefined ? { looseCompression: core.looseCompression } : {}),
+    ...(core.maxTreeDepth !== undefined ? { maxTreeDepth: core.maxTreeDepth } : {}),
     ...(core.sshCommand !== undefined ? { sshCommand: core.sshCommand } : {}),
   };
 };
@@ -1620,6 +1695,7 @@ const finalize = (acc: MutableParsedConfig): ParsedConfig => {
       sparseCheckout?: boolean;
       sparseCheckoutCone?: boolean;
       looseCompression?: number;
+      maxTreeDepth?: number;
     };
     user?: { name?: string; email?: string; signingKey?: string };
     remote?: ReadonlyMap<
@@ -1677,11 +1753,12 @@ const FALSE_WORDS = new Set(['false', 'no', 'off']);
 
 type GitBooleanResult = { readonly ok: true; readonly value: boolean } | { readonly ok: false };
 
-// git's boolean path narrows the parsed value to a C `int`; its `--type=int` path
-// keeps parseGitInt's full 64-bit range, so these intentionally differ from
+// The shared C-`int` narrowing: git's boolean grammar and `core.maxTreeDepth`
+// both narrow the parsed value to this range; parseGitInt's own `--type=int`
+// path keeps its full 64-bit range, so these intentionally differ from
 // GIT_INT_MIN/GIT_INT_MAX below.
-const GIT_BOOL_INT_MAX = 2_147_483_647;
-const GIT_BOOL_INT_MIN = -2_147_483_648;
+const GIT_C_INT_MAX = 2_147_483_647;
+const GIT_C_INT_MIN = -2_147_483_648;
 
 /**
  * git's exact `git_config_bool` grammar: a valueless key (`null`, git's internal NULL)
@@ -1697,7 +1774,7 @@ export const parseGitBoolean = (value: string | null): GitBooleanResult => {
   if (TRUE_WORDS.has(lowered)) return { ok: true, value: true };
   if (FALSE_WORDS.has(lowered)) return { ok: true, value: false };
   const asInt = parseGitInt(value);
-  if (!asInt.ok || asInt.value < GIT_BOOL_INT_MIN || asInt.value > GIT_BOOL_INT_MAX) {
+  if (!asInt.ok || asInt.value < GIT_C_INT_MIN || asInt.value > GIT_C_INT_MAX) {
     return { ok: false };
   }
   return { ok: true, value: asInt.value !== 0 };
