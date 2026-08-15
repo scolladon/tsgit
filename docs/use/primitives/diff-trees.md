@@ -70,6 +70,7 @@ unrelated to `recursive: true`.)
 - `TREE_CYCLE_DETECTED` / `TREE_DEPTH_EXCEEDED` — a gitlink loop, or recursion past `core.maxTreeDepth` (`recursive: true` only). The depth bound is `core.maxTreeDepth`, read from the repository-local config only (default 2048 when unset) and honoured unclamped at any configured value; there is no caller override.
 - `TREE_ENTRY_LIMIT_EXCEEDED` — total entries walked — every merge-join level plus every expanded added/deleted subtree — exceeds 1,000,000. One shared budget for the whole `recursive: true` call, not one per subtree.
 - `OPERATION_ABORTED` — `ctx.signal` is already aborted.
+- `CONFIG_BAD_NUMERIC_VALUE` — the repository-local config holds a `core.maxTreeDepth` value git's numeric grammar refuses. Primitives resolve the cap themselves, so this reaches a direct primitive caller that never went through a command.
 
 ## See also
 

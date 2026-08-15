@@ -55,6 +55,7 @@ for await (const entry of repo.primitives.walkWorkingTree()) {
 - `TREE_DEPTH_EXCEEDED` — walk depth exceeds `maxDepth`.
 - `TREE_ENTRY_LIMIT_EXCEEDED` — yielded-entry count exceeds `maxEntries`.
 - `OPERATION_ABORTED` — the context's `AbortSignal` fired mid-walk.
+- `CONFIG_BAD_NUMERIC_VALUE` — the repository-local config holds a `core.maxTreeDepth` value git's numeric grammar refuses. Primitives resolve the cap themselves, so this reaches a direct primitive caller that never went through a command.
 
 ## See also
 

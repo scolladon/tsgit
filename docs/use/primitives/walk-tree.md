@@ -38,6 +38,15 @@ const ts = pipe(
 for await (const entry of ts) console.log(entry.path, entry.id);
 ```
 
+## Throws
+
+- `TREE_DEPTH_EXCEEDED` — the walk descends past the depth bound. That bound is `core.maxTreeDepth`, read from the repository-local config only (default 2048 when unset) and honoured unclamped at any configured value, unless the caller supplies `maxDepth` explicitly.
+- `TREE_ENTRY_LIMIT_EXCEEDED` — yielded-entry count exceeds `maxEntries`.
+- `TREE_CYCLE_DETECTED` — a tree oid reappears on its own root-to-current path.
+- `OBJECT_NOT_FOUND` / `UNEXPECTED_OBJECT_TYPE` — the root oid is missing, or does not resolve to a tree.
+- `OPERATION_ABORTED` — `ctx.signal` is already aborted.
+- `CONFIG_BAD_NUMERIC_VALUE` — the repository-local config holds a `core.maxTreeDepth` value git's numeric grammar refuses. Primitives resolve the cap themselves, so this reaches a direct primitive caller that never went through a command.
+
 ## See also
 
 - Tier-1: [`diff`](../commands/diff.md), [`checkout`](../commands/checkout.md)

@@ -38,6 +38,7 @@ for (const [path, entry] of flat.entries) {
 - `INVALID_TREE_ENTRY` — a structurally malformed entry, or a `.`/`..`/embedded-`/`-name refusal (an empty name is refused structurally before the name-shape check ever runs).
 - `TREE_DEPTH_EXCEEDED` / `TREE_ENTRY_LIMIT_EXCEEDED` / `TREE_CYCLE_DETECTED` — the traversal's bounded-recursion guards. The depth bound is `core.maxTreeDepth`, read from the repository-local config only (default 2048 when unset) and honoured unclamped at any configured value; there is no caller override.
 - `OPERATION_ABORTED` — `ctx.signal` is already aborted.
+- `CONFIG_BAD_NUMERIC_VALUE` — the repository-local config holds a `core.maxTreeDepth` value git's numeric grammar refuses. Primitives resolve the cap themselves, so this reaches a direct primitive caller that never went through a command.
 
 Two on-disk entries sharing the same name are not refused here — the later entry on disk wins; `git fsck --strict` is where duplicate-name detection lives.
 
