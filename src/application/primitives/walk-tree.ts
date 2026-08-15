@@ -42,20 +42,31 @@ interface WalkFrame {
   index: number;
   readonly prefix: string;
   readonly depth: number;
-  readonly ancestry: ReadonlyArray<ObjectId>;
+  readonly id: ObjectId;
 }
 
-/** Guard a tree on entry (cycle, then depth) and build its stack frame. */
+/**
+ * Guard a tree on entry (cycle, then depth) and build its stack frame.
+ *
+ * `ancestry` is the single root-to-current path, owned by the walk and mutated
+ * as the stack moves: the id is added here and removed when the frame pops.
+ * It is deliberately not a per-frame array — rebuilding one at every level
+ * costs O(depth²) live pointers, which turns a deep descent into a heap
+ * exhaustion (an uncatchable abort) instead of the typed refusal the depth cap
+ * exists to produce. Since the cap is a user-supplied config value with no
+ * internal ceiling, that ceiling would be reachable by configuration.
+ */
 function enterTree(
   maxDepth: number,
   tree: Tree,
   prefix: string,
   depth: number,
-  ancestry: ReadonlyArray<ObjectId>,
+  ancestry: Set<ObjectId>,
 ): WalkFrame {
-  if (ancestry.includes(tree.id)) throw treeCycleDetected(tree.id);
+  if (ancestry.has(tree.id)) throw treeCycleDetected(tree.id);
   if (exceedsMaxTreeDepth(depth, maxDepth)) throw treeDepthExceeded(depth);
-  return { entries: tree.entries, index: 0, prefix, depth, ancestry: [...ancestry, tree.id] };
+  ancestry.add(tree.id);
+  return { entries: tree.entries, index: 0, prefix, depth, id: tree.id };
 }
 
 /** Build the once-per-operation {@link WalkConfig}, resolving `maxDepth` from
@@ -116,11 +127,13 @@ export async function* walkTree(
       ? await resolveTree(ctx, treeIdOrObject as ObjectId)
       : treeIdOrObject;
 
-  const stack: WalkFrame[] = [enterTree(config.maxDepth, rootTree, '', 0, [])];
+  const ancestry = new Set<ObjectId>();
+  const stack: WalkFrame[] = [enterTree(config.maxDepth, rootTree, '', 0, ancestry)];
   while (stack.length > 0) {
     const frame = stack[stack.length - 1]!;
     if (frame.index >= frame.entries.length) {
       stack.pop();
+      ancestry.delete(frame.id);
       continue;
     }
     const { path, entry } = nextFrameEntry(config, counter, frame);
@@ -128,7 +141,7 @@ export async function* walkTree(
     if (!shouldRecurse(config.recursive, entry.mode)) continue;
     const subtreeObj = await readObject(config.ctx, entry.id);
     if (subtreeObj.type === 'tree') {
-      stack.push(enterTree(config.maxDepth, subtreeObj, path, frame.depth + 1, frame.ancestry));
+      stack.push(enterTree(config.maxDepth, subtreeObj, path, frame.depth + 1, ancestry));
     }
   }
 }
