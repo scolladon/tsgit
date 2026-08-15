@@ -19,6 +19,7 @@ import { bootstrapRepository } from './internal/bootstrap.js';
 import { negotiateDiscovery, negotiatePackBytes } from './internal/fetch-negotiation.js';
 import { type GitServiceSession, openGitSession } from './internal/git-service-session.js';
 import { anonymizeRemoteUrl } from './internal/remote-url.js';
+import { assertEagerConfigValid } from './internal/repo-state.js';
 import {
   advertisesFilter,
   selectFetchCapabilities,
@@ -71,6 +72,7 @@ const CLONE_WRITE_OBJECTS_OP = 'clone:write-objects';
 
 export const clone = async (ctx: Context, opts: CloneOptions): Promise<CloneResult> => {
   if (await ctx.fs.exists(`${ctx.layout.gitDir}/HEAD`)) {
+    await assertEagerConfigValid(ctx);
     throw targetDirectoryNotEmpty(ctx.layout.workDir as FilePath);
   }
   if (opts.url === '') throw remoteAdvertisesNoRefs();

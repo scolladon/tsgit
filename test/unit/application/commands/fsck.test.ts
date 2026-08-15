@@ -185,17 +185,56 @@ describe('Given a context without a HEAD file (not a repository)', () => {
 
 describe('Given a repo with a broken [core] config (valueless key)', () => {
   describe('When fsck runs', () => {
-    it('Then returns no findings (core config failure tolerated)', async () => {
+    it('Then throws CONFIG_MISSING_VALUE (fsck now takes assertOperationalRepository)', async () => {
       // Arrange
       const ctx = await initBareCtx();
       // Write a broken config with a valueless key
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\texcludesfile\n');
 
       // Act
-      const result = await fsck(ctx);
+      let caught: unknown;
+      try {
+        await fsck(ctx);
+      } catch (err) {
+        caught = err;
+      }
 
-      // Assert — assertRepository only, assertOperationalRepository NOT used
-      expect(result.exitCode).toBe(0);
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      const data = (caught as TsgitError).data as { readonly code: string; readonly key: string };
+      expect(data.code).toBe('CONFIG_MISSING_VALUE');
+      expect(data.key).toBe('core.excludesfile');
+    });
+  });
+});
+
+describe('Given a repo whose config holds an invalid core.maxTreeDepth', () => {
+  describe('When fsck runs', () => {
+    it('Then throws CONFIG_BAD_NUMERIC_VALUE with reason invalid unit', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tmaxTreeDepth = 2.5\n');
+
+      // Act
+      let caught: unknown;
+      try {
+        await fsck(ctx);
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      const data = (caught as TsgitError).data as {
+        readonly code: string;
+        readonly key: string;
+        readonly value: string;
+        readonly reason: string;
+      };
+      expect(data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+      expect(data.key).toBe('core.maxtreedepth');
+      expect(data.value).toBe('2.5');
+      expect(data.reason).toBe('invalid unit');
     });
   });
 });

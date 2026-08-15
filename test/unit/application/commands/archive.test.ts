@@ -468,6 +468,41 @@ describe('Given a commit with 3 blob entries', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Eager config gate — archive now takes assertOperationalRepository
+// ---------------------------------------------------------------------------
+
+describe('Given a repository whose config holds an invalid core.maxTreeDepth', () => {
+  describe('When archive is called', () => {
+    it('Then throws CONFIG_BAD_NUMERIC_VALUE with reason invalid unit', async () => {
+      // Arrange
+      const ctx = await initUnbornCtx();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tmaxTreeDepth = 2.5\n');
+
+      // Act
+      let caught: unknown;
+      try {
+        await archive(ctx, { treeish: 'HEAD' });
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      const data = (caught as TsgitError).data as {
+        readonly code: string;
+        readonly key: string;
+        readonly value: string;
+        readonly reason: string;
+      };
+      expect(data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+      expect(data.key).toBe('core.maxtreedepth');
+      expect(data.value).toBe('2.5');
+      expect(data.reason).toBe('invalid unit');
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Unbounded depth cap — tree nested deeper than walkTree's default maxDepth
 // ---------------------------------------------------------------------------
 

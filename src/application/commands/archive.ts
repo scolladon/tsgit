@@ -7,7 +7,7 @@ import { peel } from '../primitives/internal/peel.js';
 import { readBlob } from '../primitives/read-blob.js';
 import { readObject } from '../primitives/read-object.js';
 import { walkTree } from '../primitives/walk-tree.js';
-import { assertRepository } from './internal/repo-state.js';
+import { assertOperationalRepository } from './internal/repo-state.js';
 import { revParse } from './rev-parse.js';
 
 export type { ArchiveEntry, ArchiveResult } from '../../domain/archive/index.js';
@@ -32,7 +32,7 @@ export interface ArchiveOptions {
  * - `UNEXPECTED_OBJECT_TYPE`: treeish resolves to a blob, not a tree/commit/tag.
  */
 export async function archive(ctx: Context, opts: ArchiveOptions): Promise<ArchiveResult> {
-  await assertRepository(ctx);
+  await assertOperationalRepository(ctx);
   const oid = await revParse(ctx, opts.treeish);
   const classified = await classifyOid(ctx, oid);
   const { tree } = classified;

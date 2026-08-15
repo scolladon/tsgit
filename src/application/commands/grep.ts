@@ -13,6 +13,7 @@ import type { Context } from '../../ports/context.js';
 import { readBlob, readIndex, walkTree } from '../primitives/index.js';
 import { boundedMap, MAX_CONCURRENT_OBJECT_LOADS } from '../primitives/internal/bounded-map.js';
 import { joinPath } from '../primitives/internal/join-working-tree-path.js';
+import { assertOperationalRepository } from './internal/repo-state.js';
 import { resolvePathspec } from './internal/resolve-pathspec.js';
 import { resolveTreeish } from './internal/resolve-rev.js';
 
@@ -166,6 +167,7 @@ export async function grep(ctx: Context, opts: GrepOptions): Promise<GrepResult>
   if (opts.patterns.length === 0) {
     throw invalidOption('patterns', 'at least one pattern required');
   }
+  await assertOperationalRepository(ctx);
 
   const matcher = buildGrepMatcher(opts.patterns, {
     ...(opts.wholeWord === true ? { wholeWord: true } : {}),

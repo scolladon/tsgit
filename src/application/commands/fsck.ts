@@ -23,7 +23,7 @@ import { runRefsVerifyPass } from './internal/fsck/refs-verify.js';
 import { runRevIndexHealthPass } from './internal/fsck/rev-index-health.js';
 import { collectRoots } from './internal/fsck/roots.js';
 import type { UnreadableMode } from './internal/fsck/types.js';
-import { assertRepository } from './internal/repo-state.js';
+import { assertOperationalRepository } from './internal/repo-state.js';
 
 export type { FsckObjectType, FsckSeverity } from '../../domain/fsck/index.js';
 export type { FsckFinding, FsckOptions, FsckResult } from './internal/fsck/types.js';
@@ -50,7 +50,7 @@ const NO_DELTA_CACHE: LruCache<Uint8Array> = {
 };
 
 export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckResult> {
-  await assertRepository(ctx);
+  await assertOperationalRepository(ctx);
 
   // An integrity audit observes the STORE, never the session's read cache: a
   // delta base cached by an earlier read (or by this walk itself) would

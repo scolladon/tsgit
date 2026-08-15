@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
+import { configGet, configList } from '../../../../../src/application/commands/config.js';
 import {
   assertEagerConfigValid,
   assertNoPendingOperation,
@@ -1114,6 +1115,190 @@ describe('internal/repo-state', () => {
           // Assert
           expect(caught).toBeInstanceOf(TsgitError);
           expect((caught as TsgitError).data.code).toBe(expectedCode);
+        });
+      });
+    });
+  });
+
+  describe('assertEagerConfigValid (core.maxTreeDepth)', () => {
+    describe('Given core.maxTreeDepth = 2.5', () => {
+      describe('When called', () => {
+        it('Then throws CONFIG_BAD_NUMERIC_VALUE with reason invalid unit', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx);
+          await seedConfig(ctx, '[core]\n\tmaxTreeDepth = 2.5\n');
+
+          // Act
+          let caught: unknown;
+          try {
+            await assertEagerConfigValid(ctx);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert — the whole payload, each field individually (mutation-resistant)
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data as BadNumericData;
+          expect(data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+          expect(data.key).toBe('core.maxtreedepth');
+          expect(data.value).toBe('2.5');
+          expect(data.reason).toBe('invalid unit');
+        });
+      });
+    });
+
+    describe('Given core.maxTreeDepth = 2147483648 (past the C int ceiling)', () => {
+      describe('When called', () => {
+        it('Then throws CONFIG_BAD_NUMERIC_VALUE with reason out of range', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx);
+          await seedConfig(ctx, '[core]\n\tmaxTreeDepth = 2147483648\n');
+
+          // Act
+          let caught: unknown;
+          try {
+            await assertEagerConfigValid(ctx);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data as BadNumericData;
+          expect(data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+          expect(data.key).toBe('core.maxtreedepth');
+          expect(data.value).toBe('2147483648');
+          expect(data.reason).toBe('out of range');
+        });
+      });
+    });
+
+    describe('Given core.maxTreeDepth = 2.5 (an otherwise-clean config)', () => {
+      describe('When the porcelain-only assertRepository is called', () => {
+        it('Then resolves without throwing (the config porcelain survives)', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx);
+          await seedConfig(ctx, '[core]\n\tmaxTreeDepth = 2.5\n');
+
+          // Act + Assert — must not throw
+          await assertRepository(ctx);
+        });
+      });
+
+      describe('When configGet and configList are called', () => {
+        it('Then both succeed and configGet reads the invalid value back verbatim', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx);
+          await seedConfig(ctx, '[core]\n\tmaxTreeDepth = 2.5\n');
+
+          // Act
+          const got = await configGet(ctx, { key: 'core.maxTreeDepth' });
+          let listCaught: unknown;
+          try {
+            await configList(ctx);
+          } catch (err) {
+            listCaught = err;
+          }
+
+          // Assert
+          expect(got.value).toBe('2.5');
+          expect(listCaught).toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given core.loosecompression = bogus on an earlier line than core.maxTreeDepth = 2.5', () => {
+      describe('When the operational entry point runs', () => {
+        it('Then maxTreeDepth wins despite loosecompression sitting on the earlier line', async () => {
+          // Arrange — line 2 = loosecompression (invalid), line 3 = maxTreeDepth (invalid)
+          const ctx = createMemoryContext();
+          await seedRepo(ctx);
+          await seedConfig(ctx, '[core]\n\tloosecompression = bogus\n\tmaxTreeDepth = 2.5\n');
+
+          // Act
+          let caught: unknown;
+          try {
+            await assertOperationalRepository(ctx);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data as BadNumericData;
+          expect(data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+          expect(data.key).toBe('core.maxtreedepth');
+          expect(data.value).toBe('2.5');
+        });
+      });
+    });
+
+    describe('Given core.sparseCheckout = bogus on an earlier line than core.maxTreeDepth = 2.5', () => {
+      describe('When the operational entry point runs', () => {
+        it('Then maxTreeDepth wins despite sparseCheckout sitting on the earlier line', async () => {
+          // Arrange — line 2 = sparseCheckout (invalid), line 3 = maxTreeDepth (invalid)
+          const ctx = createMemoryContext();
+          await seedRepo(ctx);
+          await seedConfig(ctx, '[core]\n\tsparseCheckout = bogus\n\tmaxTreeDepth = 2.5\n');
+
+          // Act
+          let caught: unknown;
+          try {
+            await assertOperationalRepository(ctx);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data as BadNumericData;
+          expect(data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+          expect(data.key).toBe('core.maxtreedepth');
+          expect(data.value).toBe('2.5');
+        });
+      });
+    });
+
+    describe('Given maxTreeDepth = 2.5 on line 2 then maxTreeDepth = 2048 on line 3 (invalid-then-valid)', () => {
+      describe('When called', () => {
+        it('Then resolves without throwing (the effective last-wins value reaches the gate)', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx);
+          await seedConfig(ctx, '[core]\n\tmaxTreeDepth = 2.5\n\tmaxTreeDepth = 2048\n');
+
+          // Act + Assert — must not throw
+          await assertEagerConfigValid(ctx);
+        });
+      });
+    });
+
+    describe('Given maxTreeDepth = 2048 on line 2 then maxTreeDepth = 2.5 on line 3 (valid-then-invalid)', () => {
+      describe('When called', () => {
+        it('Then throws CONFIG_BAD_NUMERIC_VALUE (the effective last-wins value reaches the gate)', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx);
+          await seedConfig(ctx, '[core]\n\tmaxTreeDepth = 2048\n\tmaxTreeDepth = 2.5\n');
+
+          // Act
+          let caught: unknown;
+          try {
+            await assertEagerConfigValid(ctx);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data as BadNumericData;
+          expect(data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+          expect(data.key).toBe('core.maxtreedepth');
+          expect(data.value).toBe('2.5');
         });
       });
     });

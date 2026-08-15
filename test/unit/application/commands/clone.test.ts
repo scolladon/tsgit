@@ -243,6 +243,62 @@ describe('clone', () => {
     });
   });
 
+  describe('Given an existing.git whose config holds an invalid core.maxTreeDepth', () => {
+    describe('When clone', () => {
+      it('Then throws CONFIG_BAD_NUMERIC_VALUE (a bad config refuses ahead of TARGET_DIRECTORY_NOT_EMPTY)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tmaxTreeDepth = 2.5\n');
+
+        // Act
+        let caught: unknown;
+        try {
+          await clone(ctx, { url: REMOTE_URL });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as {
+          readonly code: string;
+          readonly key: string;
+          readonly value: string;
+          readonly reason: string;
+        };
+        expect(data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+        expect(data.key).toBe('core.maxtreedepth');
+        expect(data.value).toBe('2.5');
+        expect(data.reason).toBe('invalid unit');
+      });
+    });
+  });
+
+  describe('Given a target with no HEAD (genuinely empty) but a config file holding an invalid core.maxTreeDepth', () => {
+    describe('When clone', () => {
+      it('Then proceeds normally (the config gate only fires once a repository is there to read)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tmaxTreeDepth = 2.5\n');
+        const { packBytes, blobId } = await buildPackFromSingleBlob(ctx, 'hello\n');
+        const transport = buildCloneRemote({
+          capabilities: ['side-band-64k', 'ofs-delta', 'symref=HEAD:refs/heads/main'],
+          refs: [{ name: 'refs/heads/main', id: blobId }],
+          head: 'refs/heads/main',
+          packBytes,
+        });
+        const networkCtx = withTransport(ctx, transport);
+
+        // Act
+        const result = await clone(networkCtx, { url: REMOTE_URL });
+
+        // Assert — no CONFIG_BAD_NUMERIC_VALUE; the clone completes.
+        expect(result.head).toBe('refs/heads/main');
+      });
+    });
+  });
+
   describe('Given empty url', () => {
     describe('When clone', () => {
       it('Then throws REMOTE_ADVERTISES_NO_REFS before any I/O', async () => {

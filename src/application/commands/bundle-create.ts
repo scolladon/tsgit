@@ -11,7 +11,7 @@ import { peel } from '../primitives/internal/peel.js';
 import { mergeBase } from '../primitives/merge-base.js';
 import { readObject } from '../primitives/read-object.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
-import { assertRepository } from './internal/repo-state.js';
+import { assertOperationalRepository } from './internal/repo-state.js';
 import { revParse } from './rev-parse.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -249,7 +249,7 @@ export const bundleCreate = async (
   ctx: Context,
   opts: BundleCreateOptions,
 ): Promise<BundleCreateResult> => {
-  await assertRepository(ctx);
+  await assertOperationalRepository(ctx);
   const allRefs = await enumerateRefs(ctx);
   const acc: Accumulator = { refs: [], wants: [], haves: [] };
   await expandPseudoRefs(ctx, opts, allRefs, acc);
