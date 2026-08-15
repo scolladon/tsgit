@@ -148,3 +148,34 @@ describe('Given a not-yet-created directory inside an existing repository', () =
     });
   });
 });
+
+describe('Given a linked worktree whose gitDir and commonDir both resolve', () => {
+  describe('When openRepository resolves its roots', () => {
+    it('Then the hand-off applies and BOTH roots are counted, not just the gitDir', async () => {
+      // Arrange — a linked worktree is the only layout with two distinct
+      // containment roots, so it is the only shape where the canonical flag
+      // is an AND over two realpaths rather than a pass-through of one.
+      const mainRepo = path.join(tmpdir, 'main');
+      const adminDir = path.join(mainRepo, '.git', 'worktrees', 'wt');
+      await makeGitDir(path.join(mainRepo, '.git'));
+      await mkdir(adminDir, { recursive: true });
+      await writeFile(path.join(adminDir, 'HEAD'), 'ref: refs/heads/wt\n');
+      await writeFile(path.join(adminDir, 'commondir'), '../..\n');
+      const linked = path.join(tmpdir, 'linked');
+      await mkdir(linked, { recursive: true });
+      await writeFile(path.join(linked, '.git'), `gitdir: ${adminDir}\n`);
+
+      // Act
+      const sut = await openRepository({ cwd: linked });
+      try {
+        await sut.primitives.readObject('0'.repeat(40) as never).catch(() => undefined);
+      } finally {
+        await sut.dispose();
+      }
+
+      // Assert — cwd, gitDir and commonDir, each realpathed exactly once by
+      // the shim, with nothing left for the adapter to redo.
+      expect(realpathSpy.mock.calls.length).toBe(3);
+    });
+  });
+});
