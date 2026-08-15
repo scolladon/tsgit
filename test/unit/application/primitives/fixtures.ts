@@ -84,6 +84,38 @@ export async function buildTreeChain(ctx: Context, depth: number): Promise<Objec
   return childId;
 }
 
+/**
+ * Create `depth` nested directories under `ctx.layout.workDir` in the
+ * **memory** adapter, with one leaf file (`leaf`) at the bottom. Every
+ * level reuses the SAME single-character directory name (`a`) — the chain
+ * has no siblings, so no name collision is possible, and a 1-byte segment
+ * maximises how deep a fixture can go before `validateWalkedEntryPath`'s own
+ * 4096-byte total-path cap (independent of `core.maxTreeDepth`) becomes the
+ * binding constraint rather than the depth guard under test.
+ * `createMemoryContext()` has no path-length limit, so the same fixture runs
+ * identically on linux, macOS and Windows — a real on-disk deep checkout
+ * would fail with `File name too long` long before reaching a realistic
+ * `core.maxTreeDepth`. `depth` follows `walkWorkingTree`'s own counter: the
+ * deepest directory frame the walker enters is checked against the depth
+ * guard at exactly this value.
+ */
+export async function seedDeepWorkingTree(ctx: Context, depth: number): Promise<void> {
+  const chain = Array.from({ length: depth }, () => 'a').join('/');
+  await ctx.fs.writeUtf8(`${ctx.layout.workDir}/${chain}/leaf`, 'leaf');
+}
+
+/**
+ * Like {@link seedDeepWorkingTree}, but the deepest directory is left EMPTY
+ * (no leaf file). Even a single-character leaf name pushes a `depth`-2048
+ * chain's leaf path one byte past `validateWalkedEntryPath`'s 4096-byte
+ * total-path cap, so a fixture probing right at that boundary must stop one
+ * segment short of a leaf.
+ */
+export async function seedDeepEmptyWorkingTree(ctx: Context, depth: number): Promise<void> {
+  const chain = Array.from({ length: depth }, () => 'a').join('/');
+  await ctx.fs.mkdir(`${ctx.layout.workDir}/${chain}`);
+}
+
 export interface BuildSeededContextParts {
   readonly objects?: ReadonlyArray<GitObject>;
   readonly refs?: ReadonlyArray<{ readonly name: RefName; readonly id: ObjectId }>;

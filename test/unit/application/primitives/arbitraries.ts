@@ -644,3 +644,136 @@ const forceSharedSubtree = (
 
 export const treeShapeArb = (): fc.Arbitrary<ReadonlyArray<TreeShapeEntry>> =>
   arbTreeShapeChildren(TREE_SHAPE_MAX_DEPTH, TREE_SHAPE_MAX_BREADTH).map(forceSharedSubtree);
+
+// ---------------------------------------------------------------------------
+// Working-tree shape generator for walkWorkingTree's "iterative ≡ recursive"
+// property: files, directories, a symlink-to-directory leaf, a non-file
+// non-symlink "phantom" leaf (only constructible via a hostile-readdir
+// wrapper — the memory adapter itself never produces one), and an optional
+// `.git` marker (directory or regular file) per directory level — including
+// the root — so the embedded-repo gate and the root's own `.git` are both
+// generically exercised alongside ordinary shapes.
+// ---------------------------------------------------------------------------
+
+export type WorkingTreeDotGitMarker = 'none' | 'directory' | 'file';
+
+export type WorkingTreeShapeEntry =
+  | { readonly kind: 'file'; readonly name: string; readonly content: string }
+  | { readonly kind: 'symlinkToDir'; readonly name: string }
+  | { readonly kind: 'phantom'; readonly name: string }
+  | {
+      readonly kind: 'dir';
+      readonly name: string;
+      readonly dotGit: WorkingTreeDotGitMarker;
+      readonly children: ReadonlyArray<WorkingTreeShapeEntry>;
+    };
+
+export interface WorkingTreeShape {
+  readonly rootDotGit: WorkingTreeDotGitMarker;
+  readonly entries: ReadonlyArray<WorkingTreeShapeEntry>;
+}
+
+const WORKING_TREE_SHAPE_NAME_POOL = ['a', 'b', 'c', 'd'] as const;
+const WORKING_TREE_SHAPE_MAX_DEPTH = 3;
+const WORKING_TREE_SHAPE_MAX_BREADTH = 3;
+
+const arbDotGitMarker = (): fc.Arbitrary<WorkingTreeDotGitMarker> =>
+  fc.oneof(
+    { weight: 3, arbitrary: fc.constant<WorkingTreeDotGitMarker>('none') },
+    { weight: 1, arbitrary: fc.constant<WorkingTreeDotGitMarker>('directory') },
+    { weight: 1, arbitrary: fc.constant<WorkingTreeDotGitMarker>('file') },
+  );
+
+type WorkingTreeLeafEntry = Extract<
+  WorkingTreeShapeEntry,
+  { readonly kind: 'file' | 'symlinkToDir' | 'phantom' }
+>;
+
+const arbWorkingTreeLeaf = (name: string): fc.Arbitrary<WorkingTreeLeafEntry> =>
+  fc.oneof(
+    {
+      weight: 3,
+      arbitrary: fc
+        .string({ maxLength: 6 })
+        .map((content): WorkingTreeLeafEntry => ({ kind: 'file', name, content })),
+    },
+    { weight: 1, arbitrary: fc.constant<WorkingTreeLeafEntry>({ kind: 'symlinkToDir', name }) },
+    { weight: 1, arbitrary: fc.constant<WorkingTreeLeafEntry>({ kind: 'phantom', name }) },
+  );
+
+const arbWorkingTreeEntry = (
+  name: string,
+  depthRemaining: number,
+): fc.Arbitrary<WorkingTreeShapeEntry> =>
+  depthRemaining <= 0
+    ? arbWorkingTreeLeaf(name)
+    : fc.oneof(
+        { weight: 2, arbitrary: arbWorkingTreeLeaf(name) },
+        {
+          weight: 1,
+          arbitrary: fc
+            .tuple(arbDotGitMarker(), arbWorkingTreeShapeChildren(depthRemaining - 1))
+            .map(
+              ([dotGit, children]): WorkingTreeShapeEntry => ({
+                kind: 'dir',
+                name,
+                dotGit,
+                children,
+              }),
+            ),
+        },
+      );
+
+/**
+ * Recursive shape-children generator, depth-bounded via an explicit
+ * countdown. Entry names within one directory are forced unique — drawing
+ * without replacement from the name pool, then folding one dependent
+ * per-name arbitrary at a time (`.chain`) rather than a variadic `fc.tuple`,
+ * since the per-position arbitraries are built at runtime from a
+ * variable-length name list — mirroring `arbTreeShapeChildren` above.
+ */
+function arbWorkingTreeShapeChildren(
+  depthRemaining: number,
+): fc.Arbitrary<ReadonlyArray<WorkingTreeShapeEntry>> {
+  return fc
+    .uniqueArray(fc.constantFrom(...WORKING_TREE_SHAPE_NAME_POOL), {
+      minLength: 0,
+      maxLength: WORKING_TREE_SHAPE_MAX_BREADTH,
+    })
+    .chain((names) =>
+      names.reduce<fc.Arbitrary<WorkingTreeShapeEntry[]>>(
+        (acc, name) =>
+          acc.chain((built) =>
+            arbWorkingTreeEntry(name, depthRemaining).map((entry) => [...built, entry]),
+          ),
+        fc.constant([]),
+      ),
+    );
+}
+
+export const workingTreeShapeArb = (): fc.Arbitrary<WorkingTreeShape> =>
+  fc
+    .tuple(arbDotGitMarker(), arbWorkingTreeShapeChildren(WORKING_TREE_SHAPE_MAX_DEPTH))
+    .map(([rootDotGit, entries]) => ({ rootDotGit, entries }));
+
+/**
+ * An `ignore` predicate profile: which basenames the predicate drops when
+ * seen as a directory, and which it drops when seen as a file/leaf — drawn
+ * from the same name pool `workingTreeShapeArb` uses, so a run's predicate
+ * has a real chance of matching entries the same run generated.
+ */
+export interface WorkingTreeIgnoreProfile {
+  readonly ignoredDirNames: ReadonlySet<string>;
+  readonly ignoredFileNames: ReadonlySet<string>;
+}
+
+export const workingTreeIgnoreProfileArb = (): fc.Arbitrary<WorkingTreeIgnoreProfile> =>
+  fc
+    .tuple(
+      fc.subarray([...WORKING_TREE_SHAPE_NAME_POOL]),
+      fc.subarray([...WORKING_TREE_SHAPE_NAME_POOL]),
+    )
+    .map(([ignoredDirs, ignoredFiles]) => ({
+      ignoredDirNames: new Set(ignoredDirs),
+      ignoredFileNames: new Set(ignoredFiles),
+    }));
