@@ -8,9 +8,12 @@
  * are named `<group> > <bench>`. This module declares its own minimal view of
  * the raw.json schema rather than sharing types with bench-summarize.ts.
  *
- * Every entry also carries the resolved Node version (never the CI alias,
- * which is constant) in `extra`, so a step in the `gh-pages` trend series can
- * be attributed to a runtime change rather than misread as a regression.
+ * `toSnapshotEntries` returns the plain parse result — no Node-version
+ * metadata attached. Only the published (gh-pages) path needs that metadata,
+ * so `withNodeVersion` stamps it on separately: every entry carries the
+ * resolved Node version (never the CI alias, which is constant) in `extra`,
+ * so a step in the `gh-pages` trend series can be attributed to a runtime
+ * change rather than misread as a regression.
  */
 import { readFile, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
@@ -41,26 +44,36 @@ export interface SnapshotEntry {
   readonly name: string;
   readonly unit: 'ms';
   readonly value: number;
+}
+
+/** A {@link SnapshotEntry} stamped with the resolved Node version — the
+ * shape the `gh-pages` trend series (and only that path) consumes. */
+export interface StampedSnapshotEntry extends SnapshotEntry {
   readonly extra: string;
 }
 
 /**
  * Flattens every (group, benchmark) pair into one snapshot entry. `value` is
  * the median runtime (fallback: mean) in ms — smaller is better, matching
- * `customSmallerIsBetter`. `resolvedNodeVersion` is stamped onto every entry
- * as `extra`.
+ * `customSmallerIsBetter`.
  */
-export const toSnapshotEntries = (raw: RawReport, resolvedNodeVersion: string): SnapshotEntry[] =>
+export const toSnapshotEntries = (raw: RawReport): SnapshotEntry[] =>
   raw.files.flatMap((file) =>
     file.groups.flatMap((group) =>
       group.benchmarks.map((bench) => ({
         name: `${group.fullName} > ${bench.name}`,
         unit: 'ms' as const,
         value: bench.median ?? bench.mean,
-        extra: resolvedNodeVersion,
       })),
     ),
   );
+
+/** Stamps every entry with the resolved Node version, producing the shape
+ * the `gh-pages` publish path writes. */
+export const withNodeVersion = (
+  entries: readonly SnapshotEntry[],
+  resolvedNodeVersion: string,
+): StampedSnapshotEntry[] => entries.map((entry) => ({ ...entry, extra: resolvedNodeVersion }));
 
 /**
  * Reads and validates the resolved Node version the CI runner reported.
@@ -90,7 +103,7 @@ const OUT = path.join(ROOT, 'reports', 'benchmarks', 'snapshot.json');
 const main = async (): Promise<void> => {
   const resolvedNodeVersion = resolveNodeVersion(process.env);
   const raw = JSON.parse(await readFile(RAW, 'utf8')) as RawReport;
-  const entries = toSnapshotEntries(raw, resolvedNodeVersion);
+  const entries = withNodeVersion(toSnapshotEntries(raw), resolvedNodeVersion);
   await writeFile(OUT, JSON.stringify(entries, null, 2), 'utf8');
   process.stdout.write(`Wrote ${entries.length} snapshot entries to ${OUT}\n`);
 };

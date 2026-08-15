@@ -29,7 +29,6 @@ export const snapshotEntryArb = (): fc.Arbitrary<SnapshotEntry> =>
       name: `${scenario}${TSGIT_KEY_SUFFIX}`,
       unit: 'ms' as const,
       value,
-      extra: 'n/a',
     }));
 
 export const gatedEntrySetArb = (): fc.Arbitrary<readonly SnapshotEntry[]> =>

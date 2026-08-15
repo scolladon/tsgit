@@ -12,7 +12,6 @@ const entry = (name: string, value: number): SnapshotEntry => ({
   name,
   unit: 'ms',
   value,
-  extra: 'n/a',
 });
 
 describe('Given an arbitrary gated entry set', () => {

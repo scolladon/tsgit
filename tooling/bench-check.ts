@@ -102,17 +102,15 @@ export const compareToBaseline = (
 
 const PR_COMMENT_PATH = '/tmp/bench-comment.md';
 
-// This comparison is same-runner base-vs-head (no gh-pages publish), so the
-// resolved-Node-version metadata `toSnapshotEntries` stamps onto `extra` is
-// not applicable here — bench-check never reads it.
-const NOT_APPLICABLE = 'n/a';
-
+// This comparison is same-runner base-vs-head (no gh-pages publish), so it
+// reads the plain (un-stamped) parse result — `toSnapshotEntries` carries no
+// Node-version metadata to name a placeholder for.
 const readReport = async (
   filePath: string,
   hot: readonly string[],
 ): Promise<readonly SnapshotEntry[]> =>
   hotGatedEntries(
-    toSnapshotEntries(JSON.parse(await readFile(filePath, 'utf8')) as RawReport, NOT_APPLICABLE),
+    toSnapshotEntries(JSON.parse(await readFile(filePath, 'utf8')) as RawReport),
     hot,
   );
 

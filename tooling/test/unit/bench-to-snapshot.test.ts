@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import { type RawReport, resolveNodeVersion, toSnapshotEntries } from '../../bench-to-snapshot.js';
+import {
+  type RawReport,
+  resolveNodeVersion,
+  toSnapshotEntries,
+  withNodeVersion,
+} from '../../bench-to-snapshot.js';
 
 describe('toSnapshotEntries', () => {
   describe('Given a report with no files', () => {
@@ -10,7 +15,7 @@ describe('toSnapshotEntries', () => {
         const report: RawReport = { files: [] };
 
         // Act
-        const result = toSnapshotEntries(report, '24.19.0');
+        const result = toSnapshotEntries(report);
 
         // Assert
         expect(result).toEqual([]);
@@ -20,7 +25,7 @@ describe('toSnapshotEntries', () => {
 
   describe('Given a benchmark with a median', () => {
     describe('When toSnapshotEntries runs', () => {
-      it('Then the entry value is the median and carries the resolved version', () => {
+      it('Then the entry value is the median, with no extra field', () => {
         // Arrange
         const report: RawReport = {
           files: [
@@ -33,12 +38,10 @@ describe('toSnapshotEntries', () => {
         };
 
         // Act
-        const result = toSnapshotEntries(report, '24.19.0');
+        const result = toSnapshotEntries(report);
 
         // Assert
-        expect(result).toEqual([
-          { name: 'log:walk > tsgit', unit: 'ms', value: 4, extra: '24.19.0' },
-        ]);
+        expect(result).toEqual([{ name: 'log:walk > tsgit', unit: 'ms', value: 4 }]);
       });
     });
   });
@@ -52,19 +55,17 @@ describe('toSnapshotEntries', () => {
         };
 
         // Act
-        const result = toSnapshotEntries(report, '24.19.0');
+        const result = toSnapshotEntries(report);
 
         // Assert
-        expect(result).toEqual([
-          { name: 'log:walk > tsgit', unit: 'ms', value: 9, extra: '24.19.0' },
-        ]);
+        expect(result).toEqual([{ name: 'log:walk > tsgit', unit: 'ms', value: 9 }]);
       });
     });
   });
 
   describe('Given a report with multiple groups', () => {
     describe('When toSnapshotEntries runs', () => {
-      it('Then every group-benchmark pair becomes a named entry carrying the resolved version', () => {
+      it('Then every group-benchmark pair becomes a named entry', () => {
         // Arrange
         const report: RawReport = {
           files: [
@@ -84,7 +85,59 @@ describe('toSnapshotEntries', () => {
         };
 
         // Act
-        const result = toSnapshotEntries(report, '24.19.0');
+        const result = toSnapshotEntries(report);
+
+        // Assert
+        expect(result).toEqual([
+          { name: 'log:walk > tsgit', unit: 'ms', value: 1 },
+          { name: 'log:walk > isomorphic-git', unit: 'ms', value: 2 },
+          { name: 'status:clean > tsgit', unit: 'ms', value: 3 },
+        ]);
+      });
+    });
+  });
+});
+
+describe('withNodeVersion', () => {
+  describe('Given a resolved version and an empty entry list', () => {
+    describe('When withNodeVersion runs', () => {
+      it('Then it returns an empty array', () => {
+        // Arrange
+        const sut = withNodeVersion;
+
+        // Act
+        const result = sut([], '24.19.0');
+
+        // Assert
+        expect(result).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given several entries from a multi-group, multi-benchmark report', () => {
+    describe('When withNodeVersion stamps them', () => {
+      it('Then every entry carries the resolved version in extra, with its other fields unchanged', () => {
+        // Arrange
+        const entries = toSnapshotEntries({
+          files: [
+            {
+              groups: [
+                {
+                  fullName: 'log:walk',
+                  benchmarks: [
+                    { name: 'tsgit', mean: 1, median: 1 },
+                    { name: 'isomorphic-git', mean: 2, median: 2 },
+                  ],
+                },
+                { fullName: 'status:clean', benchmarks: [{ name: 'tsgit', mean: 3, median: 3 }] },
+              ],
+            },
+          ],
+        });
+        const sut = withNodeVersion;
+
+        // Act
+        const result = sut(entries, '24.19.0');
 
         // Assert
         expect(result).toEqual([
