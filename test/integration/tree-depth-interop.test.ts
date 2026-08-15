@@ -38,7 +38,7 @@ import type { WalkTreeEntry } from '../../src/application/primitives/types.js';
 import { walkTree } from '../../src/application/primitives/walk-tree.js';
 import { TsgitError } from '../../src/domain/error.js';
 import type { IndexEntry } from '../../src/domain/git-index/index.js';
-import type { ObjectId } from '../../src/domain/objects/index.js';
+import { isDirectory, type ObjectId } from '../../src/domain/objects/index.js';
 import type { Context } from '../../src/ports/context.js';
 import {
   disableAutoMaintenance,
@@ -68,6 +68,26 @@ const datedEnv = (epoch: number): NodeJS.ProcessEnv => ({
 /** A path with exactly `slashes` slashes: `d0/d1/…/d{slashes}`. */
 const deepPath = (slashes: number): string =>
   Array.from({ length: slashes + 1 }, (_unused, i) => `d${i}`).join('/');
+
+/**
+ * Extracts the path column from `git ls-tree -r` stdout — one
+ * `<mode> blob <oid>\t<path>` line per blob — so an at-cap row can compare
+ * git's own enumeration against tsgit's, not merely count git's exit code.
+ */
+const parseLsTreePaths = (stdout: string): string[] =>
+  stdout
+    .split('\n')
+    .filter((line) => line !== '')
+    .map((line) => line.slice(line.indexOf('\t') + 1));
+
+/**
+ * Narrows `walkTree`'s pre-order output — every directory AND blob entry on
+ * the path — down to blob paths only, the same scope `git ls-tree -r`
+ * reports (trees are elided without `-t`), so tsgit's enumeration is
+ * comparable to git's.
+ */
+const blobPathsOf = (entries: readonly WalkTreeEntry[]): string[] =>
+  entries.filter((entry) => !isDirectory(entry.mode)).map((entry) => entry.path);
 
 const resetIndex = (dir: string): void => {
   const indexFile = path.join(dir, '.git', 'index');
@@ -227,14 +247,21 @@ describe.skipIf(!GIT_AVAILABLE)('core.maxTreeDepth — deep-tree cross-tool inte
 
   describe('Given config unset (default cap 2048) and trees at D=2048 and D=2049', () => {
     describe('When ls-tree -r / walkTree are driven at D=2048 (at cap)', () => {
-      it('Then git ls-tree -r exits 0 and walkTree completes', async () => {
+      it('Then git ls-tree -r and walkTree both enumerate exactly the one deep blob, at the same path', async () => {
         // Arrange + Act
         const g = tryRunGitWithExit(['-C', dir, 'ls-tree', '-r', tree2048]);
         const entries = await drain<WalkTreeEntry>(walkTree(ctx, tree2048 as ObjectId));
 
-        // Assert
+        // Assert — the fixture's single index entry means exactly one blob
+        // exists at any depth; comparing the path (not just a nonzero count)
+        // against git's own stdout proves the walk reached the real leaf
+        // rather than yielding a wrong node early. walkTree's pre-order
+        // output also carries every intermediate directory, so it is
+        // narrowed to blob paths before the cross-tool comparison.
         expect(g.exitCode).toBe(0);
-        expect(entries.length).toBeGreaterThan(0);
+        const gitPaths = parseLsTreePaths(g.stdout);
+        expect(gitPaths).toEqual([deepPath(2048)]);
+        expect(blobPathsOf(entries)).toEqual(gitPaths);
       });
     });
 
@@ -345,7 +372,7 @@ describe.skipIf(!GIT_AVAILABLE)('core.maxTreeDepth — deep-tree cross-tool inte
     });
 
     describe('When core.maxTreeDepth = 4097 (exactly at cap)', () => {
-      it('Then git ls-tree -r exits 0 and walkTree completes', async () => {
+      it('Then git ls-tree -r and walkTree both enumerate exactly the one deep blob, at the same path', async () => {
         // Arrange
         setLocalMaxTreeDepth('4097');
 
@@ -363,12 +390,14 @@ describe.skipIf(!GIT_AVAILABLE)('core.maxTreeDepth — deep-tree cross-tool inte
 
         // Assert
         expect(g.exitCode).toBe(0);
-        expect(entries.length).toBeGreaterThan(0);
+        const gitPaths = parseLsTreePaths(g.stdout);
+        expect(gitPaths).toEqual([deepPath(4097)]);
+        expect(blobPathsOf(entries)).toEqual(gitPaths);
       });
     });
 
     describe('When core.maxTreeDepth = 100000 (two orders of magnitude above default)', () => {
-      it('Then git ls-tree -r exits 0 and walkTree completes', async () => {
+      it('Then git ls-tree -r and walkTree both enumerate exactly the one deep blob, at the same path', async () => {
         // Arrange
         setLocalMaxTreeDepth('100000');
 
@@ -386,7 +415,9 @@ describe.skipIf(!GIT_AVAILABLE)('core.maxTreeDepth — deep-tree cross-tool inte
 
         // Assert
         expect(g.exitCode).toBe(0);
-        expect(entries.length).toBeGreaterThan(0);
+        const gitPaths = parseLsTreePaths(g.stdout);
+        expect(gitPaths).toEqual([deepPath(4097)]);
+        expect(blobPathsOf(entries)).toEqual(gitPaths);
       });
     });
   });
@@ -424,7 +455,7 @@ describe.skipIf(!GIT_AVAILABLE)('core.maxTreeDepth — deep-tree cross-tool inte
 
   describe('Given core.maxTreeDepth = "1k" (unit-suffixed, parses as 1024)', () => {
     describe('When driven at D=1024 (at cap)', () => {
-      it('Then git ls-tree -r exits 0 and walkTree completes', async () => {
+      it('Then git ls-tree -r and walkTree both enumerate exactly the one deep blob, at the same path', async () => {
         // Arrange
         setLocalMaxTreeDepth('1k');
 
@@ -442,7 +473,9 @@ describe.skipIf(!GIT_AVAILABLE)('core.maxTreeDepth — deep-tree cross-tool inte
 
         // Assert
         expect(g.exitCode).toBe(0);
-        expect(entries.length).toBeGreaterThan(0);
+        const gitPaths = parseLsTreePaths(g.stdout);
+        expect(gitPaths).toEqual([deepPath(1024)]);
+        expect(blobPathsOf(entries)).toEqual(gitPaths);
       });
     });
 
@@ -476,7 +509,7 @@ describe.skipIf(!GIT_AVAILABLE)('core.maxTreeDepth — deep-tree cross-tool inte
 
   describe('Given core.maxTreeDepth = 0 and a depth-0 tree', () => {
     describe('When ls-tree -r / walkTree are driven', () => {
-      it('Then git exits 0 and walkTree completes (0 > 0 is false)', async () => {
+      it('Then git and walkTree both enumerate exactly the one blob, at the same path (0 > 0 is false)', async () => {
         // Arrange
         setLocalMaxTreeDepth('0');
 
@@ -494,7 +527,9 @@ describe.skipIf(!GIT_AVAILABLE)('core.maxTreeDepth — deep-tree cross-tool inte
 
         // Assert
         expect(g.exitCode).toBe(0);
-        expect(entries.length).toBeGreaterThan(0);
+        const gitPaths = parseLsTreePaths(g.stdout);
+        expect(gitPaths).toEqual([deepPath(0)]);
+        expect(blobPathsOf(entries)).toEqual(gitPaths);
       });
     });
   });
@@ -531,7 +566,7 @@ describe.skipIf(!GIT_AVAILABLE)('core.maxTreeDepth — deep-tree cross-tool inte
 
   describe('Given core.maxTreeDepth = 3 in a global-only scope, no local override, and a D=6 tree', () => {
     describe('When ls-tree -r / walkTree are driven', () => {
-      it('Then git exits 1 (global scope wins) but walkTree completes (tsgit ignores global scope)', async () => {
+      it('Then git exits 1 (global scope wins) but walkTree enumerates exactly the one deep blob (tsgit ignores global scope)', async () => {
         // Arrange
         clearLocalMaxTreeDepth();
         const globalConfigPath = path.join(dir, 'throwaway-global-config');
@@ -545,9 +580,12 @@ describe.skipIf(!GIT_AVAILABLE)('core.maxTreeDepth — deep-tree cross-tool inte
         const g = tryRunGitWithExit(['-C', dir, 'ls-tree', '-r', tree6], { env: envWithGlobal });
         const entries = await drain(walkTree(ctx, tree6 as ObjectId));
 
-        // Assert
+        // Assert — git refuses here (exit 1), so there is no successful
+        // stdout to cross-check; the exact blob path still pins that
+        // walkTree reached the real leaf rather than yielding a wrong node
+        // early.
         expect(g.exitCode).toBe(1);
-        expect(entries.length).toBeGreaterThan(0);
+        expect(blobPathsOf(entries)).toEqual([deepPath(6)]);
       });
     });
   });

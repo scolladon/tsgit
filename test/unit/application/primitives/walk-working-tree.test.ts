@@ -5,7 +5,12 @@ import { walkWorkingTree } from '../../../../src/application/primitives/walk-wor
 import { TsgitError } from '../../../../src/domain/error.js';
 import type { FilePath } from '../../../../src/domain/objects/object-id.js';
 import type { Context } from '../../../../src/ports/context.js';
-import { seedDeepEmptyWorkingTree, seedDeepWorkingTree, seedMaxTreeDepth } from './fixtures.js';
+import {
+  seedDeepEmptyWorkingTree,
+  seedDeepWorkingTree,
+  seedDeepWorkingTreeWithNearBottomLeaf,
+  seedMaxTreeDepth,
+} from './fixtures.js';
 
 const seedFs = async (
   workingTree: Readonly<Record<string, string>>,
@@ -402,24 +407,31 @@ describe('walkWorkingTree', () => {
     });
   });
 
-  describe('Given a working tree exactly 2048 levels deep (config unset, default cap)', () => {
+  describe('Given a working tree exactly 2048 levels deep (config unset, default cap), with a leaf one level short of the bottom', () => {
     describe('When walked', () => {
-      it('Then completes without throwing (boundary)', async () => {
-        // Arrange — the deepest directory is left empty: even a
-        // single-character leaf filename would push this fixture's leaf
-        // path one byte past validateWalkedEntryPath's OWN 4096-byte
-        // total-path cap (independent of core.maxTreeDepth), so "does not
-        // throw at exactly the default cap" is proven from the completion
-        // side. 2048 is the default cap, not a measured ceiling; the
+      it('Then it yields exactly that leaf, proving genuine descent (positive boundary)', async () => {
+        // Arrange — a leaf at the very bottom (depth 2048) does not fit:
+        // validateWalkedEntryPath's OWN 4096-byte total-path cap (independent
+        // of core.maxTreeDepth) would be 2*2048+1 = 4097 bytes for a
+        // 1-character leaf there, one byte over. One level up, at depth
+        // 2047, the same 1-character leaf's path is 2*2048-1 = 4095 bytes —
+        // safely under the cap — so the leaf is planted there while the
+        // deepest directory (2048) stays empty, preserving the "completes
+        // exactly at the default cap" boundary this fixture also proves.
+        // 2048 is the default cap, not a measured ceiling; the
         // explicit-stack walker has no frame ceiling to gamble against.
         const ctx = createMemoryContext();
-        await seedDeepEmptyWorkingTree(ctx, 2048);
+        const leafPath = await seedDeepWorkingTreeWithNearBottomLeaf(ctx, 2048);
 
         // Act
         const result = await collect(walkWorkingTree(ctx));
 
-        // Assert
-        expect(result).toEqual([]);
+        // Assert — a frame-push regression that stops descending short of
+        // the leaf, or one that never reaches the empty 2048th directory
+        // (still drained by the walk above), fails this; the previous
+        // `toEqual([])` oracle could not distinguish either from a correct
+        // full descent.
+        expect(result).toEqual([leafPath]);
       });
     });
   });

@@ -116,6 +116,34 @@ export async function seedDeepEmptyWorkingTree(ctx: Context, depth: number): Pro
   await ctx.fs.mkdir(`${ctx.layout.workDir}/${chain}`);
 }
 
+/**
+ * Like {@link seedDeepEmptyWorkingTree}, but plants one 1-character leaf
+ * file one level short of the bottom instead of leaving the whole chain
+ * empty — a positive oracle for "the walk actually descended" rather than
+ * merely "didn't throw". The deepest directory (`depth`) stays empty, so
+ * the boundary {@link seedDeepEmptyWorkingTree} probes (walking exactly to
+ * `depth` without throwing) is unchanged; the leaf sits one level up, at
+ * `depth - 1`.
+ *
+ * No leaf fits any deeper: a 1-character leaf inside the `depth`-th
+ * directory would be `2*depth + 1` bytes, one byte past
+ * `validateWalkedEntryPath`'s 4096-byte total-path cap (independent of
+ * `core.maxTreeDepth`); the same leaf one level up, inside the
+ * `(depth - 1)`-th directory, is `2*depth - 1` bytes — safely under it.
+ * Returns the leaf's repo-relative path.
+ */
+export async function seedDeepWorkingTreeWithNearBottomLeaf(
+  ctx: Context,
+  depth: number,
+): Promise<string> {
+  const leafParent = Array.from({ length: depth - 1 }, () => 'a').join('/');
+  const leafPath = `${leafParent}/x`;
+  await ctx.fs.writeUtf8(`${ctx.layout.workDir}/${leafPath}`, 'leaf');
+  const chain = Array.from({ length: depth }, () => 'a').join('/');
+  await ctx.fs.mkdir(`${ctx.layout.workDir}/${chain}`);
+  return leafPath;
+}
+
 export interface BuildSeededContextParts {
   readonly objects?: ReadonlyArray<GitObject>;
   readonly refs?: ReadonlyArray<{ readonly name: RefName; readonly id: ObjectId }>;
