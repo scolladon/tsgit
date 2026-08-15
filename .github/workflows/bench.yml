@@ -19,7 +19,8 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
-      - uses: ./.github/actions/setup
+      - id: setup
+        uses: ./.github/actions/setup
       # Restore the scaled bench fixture cache. Keyed on the generator source
       # so any shape change (the version bump included) invalidates it.
       - name: Restore scaled bench fixture cache

@@ -131,7 +131,7 @@ inputs)` body. The same scenario runs against three adapters:
 ### Pipeline Stages
 
 1. **Static Analysis** — biome, tsc, knip, jscpd, ls-lint, npm outdated (parallel)
-2. **Unit Tests** — Matrix: Ubuntu/macOS/Windows × Node 22/24 (Windows re-added in Phase 14.4)
+2. **Unit Tests** — Matrix: Ubuntu/macOS/Windows × Node `lts/-1`/`lts/*`/`latest` (Windows re-added in Phase 14.4)
 3. **Mutation Testing** — Stryker incremental on PRs (Linux, ADR-044); macOS + Windows nightly via `mutation-os.yml` (ADR-055)
 3a. **Testing-pyramid audit** — `npm run check:test-pyramid` runs in the `test-pyramid-audit` job; reports are uploaded as the `test-pyramid-audit` artifact. Report-only — never gates merges (ADR-104).
 4. **Integration Tests** — Three jobs split by platform contract (see below)

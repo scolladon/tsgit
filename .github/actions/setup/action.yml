@@ -5,12 +5,18 @@ inputs:
   node-version:
     description: Node.js version to use
     required: false
-    default: "22"
+    default: "lts/*"
+
+outputs:
+  node-version:
+    description: The Node.js version actions/setup-node resolved the input to
+    value: ${{ steps.setup-node.outputs.node-version }}
 
 runs:
   using: composite
   steps:
-    - uses: actions/setup-node@v7
+    - id: setup-node
+      uses: actions/setup-node@v7
       with:
         node-version: ${{ inputs.node-version }}
         cache: npm

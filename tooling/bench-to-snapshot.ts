@@ -7,10 +7,16 @@
  * The tracked metric is median runtime in ms (smaller is better) and entries
  * are named `<group> > <bench>`. This module declares its own minimal view of
  * the raw.json schema rather than sharing types with bench-summarize.ts.
+ *
+ * Every entry also carries the resolved Node version (never the CI alias,
+ * which is constant) in `extra`, so a step in the `gh-pages` trend series can
+ * be attributed to a runtime change rather than misread as a regression.
  */
 import { readFile, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+const RESOLVED_NODE_VERSION_ENV_VAR = 'RESOLVED_NODE_VERSION';
 
 interface RawBenchmark {
   readonly name: string;
@@ -35,31 +41,56 @@ export interface SnapshotEntry {
   readonly name: string;
   readonly unit: 'ms';
   readonly value: number;
+  readonly extra: string;
 }
 
 /**
  * Flattens every (group, benchmark) pair into one snapshot entry. `value` is
  * the median runtime (fallback: mean) in ms — smaller is better, matching
- * `customSmallerIsBetter`.
+ * `customSmallerIsBetter`. `resolvedNodeVersion` is stamped onto every entry
+ * as `extra`.
  */
-export const toSnapshotEntries = (raw: RawReport): SnapshotEntry[] =>
+export const toSnapshotEntries = (raw: RawReport, resolvedNodeVersion: string): SnapshotEntry[] =>
   raw.files.flatMap((file) =>
     file.groups.flatMap((group) =>
       group.benchmarks.map((bench) => ({
         name: `${group.fullName} > ${bench.name}`,
         unit: 'ms' as const,
         value: bench.median ?? bench.mean,
+        extra: resolvedNodeVersion,
       })),
     ),
   );
+
+/**
+ * Reads and validates the resolved Node version the CI runner reported.
+ * Refuses (rather than silently emitting useless metadata) when the variable
+ * is missing, empty, or still alias-shaped — a resolved version never
+ * contains `*` or `/`.
+ */
+export const resolveNodeVersion = (env: NodeJS.ProcessEnv): string => {
+  const version = env[RESOLVED_NODE_VERSION_ENV_VAR];
+  if (!version) {
+    throw new Error(
+      `${RESOLVED_NODE_VERSION_ENV_VAR} is required (the resolved Node version for this run) but was not set`,
+    );
+  }
+  if (version.includes('*') || version.includes('/')) {
+    throw new Error(
+      `${RESOLVED_NODE_VERSION_ENV_VAR} must be a resolved Node version, not an alias: "${version}"`,
+    );
+  }
+  return version;
+};
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const RAW = path.join(ROOT, 'reports', 'benchmarks', 'raw.json');
 const OUT = path.join(ROOT, 'reports', 'benchmarks', 'snapshot.json');
 
 const main = async (): Promise<void> => {
+  const resolvedNodeVersion = resolveNodeVersion(process.env);
   const raw = JSON.parse(await readFile(RAW, 'utf8')) as RawReport;
-  const entries = toSnapshotEntries(raw);
+  const entries = toSnapshotEntries(raw, resolvedNodeVersion);
   await writeFile(OUT, JSON.stringify(entries, null, 2), 'utf8');
   process.stdout.write(`Wrote ${entries.length} snapshot entries to ${OUT}\n`);
 };
