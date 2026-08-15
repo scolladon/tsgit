@@ -26,6 +26,7 @@ import {
   type FilePath,
   type ObjectId,
   type RefName,
+  type TreeEntry,
 } from '../../domain/objects/index.js';
 import type { SparseMatcher } from '../../domain/sparse/index.js';
 import type { Context } from '../../ports/context.js';
@@ -35,6 +36,7 @@ import { createCommit } from '../primitives/create-commit.js';
 import { changedPaths, findWouldOverwrite } from '../primitives/find-would-overwrite.js';
 import { flattenTree } from '../primitives/flatten-tree.js';
 import { boundedMap } from '../primitives/internal/bounded-map.js';
+import { resolveMaxTreeDepth } from '../primitives/internal/resolve-max-tree-depth.js';
 import {
   createLeadingPathScanner,
   type LeadingPathScanner,
@@ -399,39 +401,108 @@ const partitionByPrefix = (leaves: ReadonlyArray<LeafRecord>): PartitionedLeaves
   return { files, subdirs };
 };
 
-export const MAX_MERGE_TREE_DEPTH = 4096;
+/** Sentinel `parentIndex` for the root frame — it has no parent to attach to. */
+const NO_PARENT_LEVEL_INDEX = -1;
+
+interface LeafTrieFrame {
+  readonly name: FilePath | undefined;
+  readonly files: ReadonlyArray<LeafRecord>;
+  readonly parentIndex: number;
+}
+
+interface LeafTrie {
+  readonly frames: ReadonlyArray<LeafTrieFrame>;
+  /** `levels[d]` lists every frame index at nesting depth `d`. */
+  readonly levels: ReadonlyArray<ReadonlyArray<number>>;
+}
+
+/**
+ * Discover the leaf trie level by level with an explicit queue instead of
+ * recursion, checking the depth cap BEFORE partitioning each level — an
+ * adversarial commit with pathologically deep paths is refused the moment
+ * it crosses `maxDepth`, without ever partitioning the level beyond it.
+ * Matches the previous recursive guard's contract exactly (it checked
+ * `depth > maxDepth` at the top of each call, before doing that call's
+ * work), so both sites refuse at `depth === maxDepth + 1`.
+ */
+const buildLeafTrie = (rootLeaves: ReadonlyArray<LeafRecord>, maxDepth: number): LeafTrie => {
+  const frames: LeafTrieFrame[] = [];
+  const levels: number[][] = [];
+  let currentLevel: Array<{
+    readonly name: FilePath | undefined;
+    readonly leaves: ReadonlyArray<LeafRecord>;
+    readonly parentIndex: number;
+  }> = [{ name: undefined, leaves: rootLeaves, parentIndex: NO_PARENT_LEVEL_INDEX }];
+  let depth = 0;
+  while (currentLevel.length > 0) {
+    if (depth > maxDepth) throw treeDepthExceeded(depth);
+    const levelIndices: number[] = [];
+    const nextLevel: typeof currentLevel = [];
+    for (const node of currentLevel) {
+      const index = frames.length;
+      const { files, subdirs } = partitionByPrefix(node.leaves);
+      frames.push({ name: node.name, files, parentIndex: node.parentIndex });
+      levelIndices.push(index);
+      for (const [prefix, subLeaves] of subdirs) {
+        nextLevel.push({ name: prefix as FilePath, leaves: subLeaves, parentIndex: index });
+      }
+    }
+    levels.push(levelIndices);
+    currentLevel = nextLevel;
+    depth += 1;
+  }
+  return { frames, levels };
+};
+
+const leavesToTreeEntries = (files: ReadonlyArray<LeafRecord>): TreeEntry[] =>
+  files.map((f) => ({ name: f.path, id: f.id, mode: f.mode }));
+
+/**
+ * Write the leaf trie deepest-level-first. Every frame WITHIN a level is
+ * resolved in parallel via `Promise.all` — each depends only on its own
+ * files (already known) and its own children's already-written ids (from
+ * the level below, already merged into its entry list by the previous
+ * iteration), never on a level-sibling — so this is the same "resolve
+ * independent subdirs concurrently" property the original recursive
+ * `Promise.all` had over one parent's direct children, generalised to a
+ * whole level (a strictly wider, still-correct parallelism: entries from
+ * unrelated parents at the same depth now overlap too). Swapping this
+ * `Promise.all` for a sequential `for` loop would still produce the exact
+ * same final tree oid — the write order across independent branches never
+ * affects any individual branch's content-addressed id — so unit-level
+ * output assertions cannot distinguish parallel from serial without timing
+ * or call-order instrumentation; the parallelism is a wall-clock
+ * optimisation for merges with many top-level directories, not an
+ * observable behaviour.
+ */
+const writeLeafTrie = async (ctx: Context, trie: LeafTrie): Promise<ObjectId> => {
+  const treeEntries = trie.frames.map((frame) => leavesToTreeEntries(frame.files));
+  for (let level = trie.levels.length - 1; level >= 1; level -= 1) {
+    const written = await Promise.all(
+      trie.levels[level]!.map(async (index) => ({
+        index,
+        id: await writeTree(ctx, treeEntries[index]!),
+      })),
+    );
+    for (const { index, id } of written) {
+      const frame = trie.frames[index]!;
+      treeEntries[frame.parentIndex]!.push({
+        name: frame.name as FilePath,
+        id,
+        mode: FILE_MODE.DIRECTORY,
+      });
+    }
+  }
+  return writeTree(ctx, treeEntries[0]!);
+};
 
 /** Build a nested tree from flat leaf records. Exported for direct unit testing. */
 export const writeNestedTree = async (
   ctx: Context,
   leaves: ReadonlyArray<LeafRecord>,
-  depth = 0,
 ): Promise<ObjectId> => {
-  // Depth cap matches `synthesizeTreeFromIndex`'s contract — an adversarial
-  // commit with pathologically deep paths would otherwise exhaust the JS
-  // call stack before any async tick yielded. The cap fires upstream too:
-  // walkTree (via flattenTree) caps at MAX_FLAT_TREE_ENTRIES depth, but
-  // re-asserting here keeps the primitive safe under future composers.
-  if (depth > MAX_MERGE_TREE_DEPTH) throw treeDepthExceeded(depth);
-  const { files, subdirs } = partitionByPrefix(leaves);
-  // Resolve sub-trees in parallel — each branch is independent of the
-  // others, so awaiting them serially would needlessly stretch the
-  // merge wall time when a target tree has many top-level dirs.
-  // equivalent-mutant: swapping Promise.all for a serial for-await loop
-  // produces the same output (the merge is deterministic and order-
-  // independent at the tree-content level). The parallelisation is a
-  // performance optimisation; a unit-level mutation test cannot
-  // distinguish parallel from serial without timing or call-order
-  // instrumentation, so we accept the mutant as documented.
-  const subdirEntries = await Promise.all(
-    Array.from(subdirs, async ([prefix, subLeaves]) => ({
-      name: prefix as FilePath,
-      id: await writeNestedTree(ctx, subLeaves, depth + 1),
-      mode: FILE_MODE.DIRECTORY,
-    })),
-  );
-  const fileEntries = files.map((f) => ({ name: f.path, id: f.id, mode: f.mode }));
-  return writeTree(ctx, [...fileEntries, ...subdirEntries]);
+  const maxDepth = await resolveMaxTreeDepth(ctx);
+  return writeLeafTrie(ctx, buildLeafTrie(leaves, maxDepth));
 };
 
 /**

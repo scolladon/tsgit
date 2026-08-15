@@ -504,3 +504,52 @@ export const arbShallowFileText = (): fc.Arbitrary<{
       const joined = lines.join('\n');
       return { text: trailingNewline ? `${joined}\n` : joined, lineCount: lines.length };
     });
+
+// ---------------------------------------------------------------------------
+// Flat path-entry generators for tree-synthesis "iterative ≡ recursive"
+// properties: a set of distinct, non-conflicting relative paths — no path is
+// a prefix of another, so no name is ever required to be both a file and a
+// directory in the same generated set.
+// ---------------------------------------------------------------------------
+
+const FLAT_PATH_SEGMENT_POOL = ['a', 'b', 'c', 'd'] as const;
+
+const arbFlatPathSegments = (): fc.Arbitrary<ReadonlyArray<string>> =>
+  fc.array(fc.constantFrom(...FLAT_PATH_SEGMENT_POOL), { minLength: 1, maxLength: 4 });
+
+/** True when no path's segments are a strict prefix of another's. */
+const noPathIsAPrefixOfAnother = (paths: ReadonlyArray<ReadonlyArray<string>>): boolean =>
+  paths.every(
+    (candidate, i) =>
+      !paths.some(
+        (other, j) =>
+          i !== j &&
+          other.length > candidate.length &&
+          candidate.every((segment, k) => segment === other[k]),
+      ),
+  );
+
+export interface FlatPathEntrySpec {
+  readonly path: string;
+  readonly content: string;
+}
+
+/**
+ * A set of 1–10 distinct relative paths (1–4 segments each, drawn from a
+ * 4-letter pool) with no path a prefix of another, each paired with unique
+ * blob content. Every generated set is a well-formed flat index/leaf list —
+ * each path can become either a FILE or a DIRECTORY entry without
+ * contradiction — feeding the tree-synthesis `iterative ≡ recursive`
+ * properties (`synthesizeTreeFromIndex`, `writeNestedTree`).
+ */
+export const flatPathEntrySpecsArb = (): fc.Arbitrary<ReadonlyArray<FlatPathEntrySpec>> =>
+  fc
+    .uniqueArray(arbFlatPathSegments(), {
+      selector: (segments) => segments.join('/'),
+      minLength: 1,
+      maxLength: 10,
+    })
+    .filter(noPathIsAPrefixOfAnother)
+    .map((pathSegmentsList) =>
+      pathSegmentsList.map((segments, i) => ({ path: segments.join('/'), content: `c${i}` })),
+    );

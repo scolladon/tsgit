@@ -7,11 +7,16 @@ import {
   commitGraphChainPath,
   commitGraphPath,
 } from '../../../../src/application/primitives/path-layout.js';
+import { writeObject } from '../../../../src/application/primitives/write-object.js';
+import { writeTree } from '../../../../src/application/primitives/write-tree.js';
 import type { GitIndex } from '../../../../src/domain/git-index/index-entry.js';
 import { serializeIndex } from '../../../../src/domain/git-index/index-writer.js';
+import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import { serializeObject } from '../../../../src/domain/objects/git-object.js';
 import type {
   Commit,
+  FileMode,
+  FilePath,
   GitObject,
   ObjectId,
   ObjectType,
@@ -38,6 +43,46 @@ export const seedMaxTreeDepth = async (ctx: Context, value: string): Promise<voi
   await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, `[core]\n\tmaxTreeDepth = ${value}\n`);
   invalidateConfigCache(ctx);
 };
+
+/** A path with exactly `slashes` slashes: `d0/d1/…/d{slashes}`. */
+export const deepIndexPath = (slashes: number): string =>
+  Array.from({ length: slashes + 1 }, (_unused, i) => `d${i}`).join('/');
+
+/**
+ * Fixed leaf content `buildTreeChain` writes at the bottom of its chain. A
+ * caller that wants to compare `buildTreeChain`'s output against an
+ * independently-synthesised tree for the same depth (e.g. a
+ * `synthesizeTreeFromIndex`/`writeNestedTree` round-trip) writes a blob with
+ * this SAME content — content-addressing then makes the two blob ids equal
+ * regardless of which writer produced them, without threading an id across
+ * the two call sites.
+ */
+export const DEEP_CHAIN_LEAF_CONTENT = 'deep-chain-leaf';
+
+/**
+ * Build a `depth`-level nested tree chain: one leaf blob at the bottom,
+ * wrapped in `depth` levels of single-entry directory trees named
+ * `d0`..`d{depth}` — the exact shape `synthesizeTreeFromIndex` and
+ * `writeNestedTree` produce for a single entry at `deepIndexPath(depth)`.
+ * `depth` follows the same slash-count convention as `deepIndexPath` and
+ * `seedMaxTreeDepth`'s callers. Returns the root tree's `ObjectId`.
+ */
+export async function buildTreeChain(ctx: Context, depth: number): Promise<ObjectId> {
+  const leafId = await writeObject(ctx, {
+    type: 'blob',
+    content: new TextEncoder().encode(DEEP_CHAIN_LEAF_CONTENT),
+    id: '' as ObjectId,
+  });
+  let childId: ObjectId = leafId;
+  let childMode: FileMode = FILE_MODE.REGULAR;
+  for (let segment = depth; segment >= 0; segment -= 1) {
+    childId = await writeTree(ctx, [
+      { name: `d${segment}` as FilePath, id: childId, mode: childMode },
+    ]);
+    childMode = FILE_MODE.DIRECTORY;
+  }
+  return childId;
+}
 
 export interface BuildSeededContextParts {
   readonly objects?: ReadonlyArray<GitObject>;
