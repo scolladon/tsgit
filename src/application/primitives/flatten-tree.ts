@@ -17,9 +17,9 @@
 import type { FlatTree } from '../../domain/diff/flat-tree.js';
 import type { ObjectId, Tree } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
-import { DEFAULT_FLATTEN_BOUNDS, flattenRawTree } from './internal/flatten-raw.js';
+import { flattenRawTree, resolveFlattenBounds } from './internal/flatten-raw.js';
 
 export const flattenTree = async (
   ctx: Context,
   treeIdOrObject: ObjectId | Tree,
-): Promise<FlatTree> => flattenRawTree(ctx, treeIdOrObject, DEFAULT_FLATTEN_BOUNDS);
+): Promise<FlatTree> => flattenRawTree(ctx, treeIdOrObject, await resolveFlattenBounds(ctx));

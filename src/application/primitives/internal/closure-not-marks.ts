@@ -22,10 +22,7 @@ import type { Context } from '../../../ports/context.js';
 import { readObject } from '../read-object.js';
 import { isGitlink } from '../validators.js';
 import { walkCommits } from '../walk-commits.js';
-
-/** Same bound as walk-tree.ts's default maxDepth and enumerate-bundle-objects.ts's
- *  marking pass — prevents stack overflow on a pathologically deep tree. */
-const MAX_TREE_DEPTH = 1024;
+import { resolveMaxTreeDepth } from './resolve-max-tree-depth.js';
 
 export interface NotMarks {
   readonly commits: ReadonlySet<ObjectId>;
@@ -39,6 +36,9 @@ export interface NotMarks {
   /** Threaded through to `markBoundaryTrees` so a tree already marked here
    *  (the tip's own) is never re-walked. */
   readonly seenTrees: Set<ObjectId>;
+  /** Resolved once by `markNotSide` from `core.maxTreeDepth` — `markBoundaryTrees`
+   *  reads it back from here instead of resolving it again. */
+  readonly maxDepth: number;
 }
 
 /** Recursively mark `treeId` and its non-gitlink contents uninteresting. */
@@ -47,11 +47,12 @@ async function markTree(
   treeId: ObjectId,
   marked: Set<ObjectId>,
   seenTrees: Set<ObjectId>,
+  maxDepth: number,
   depth = 0,
 ): Promise<void> {
   if (seenTrees.has(treeId)) return;
   seenTrees.add(treeId);
-  if (depth > MAX_TREE_DEPTH) throw treeDepthExceeded(depth);
+  if (depth > maxDepth) throw treeDepthExceeded(depth);
   // Stryker disable next-line ConditionalExpression: equivalent — the readObject below re-checks ctx.signal and throws the identical operationAborted; the only mark this guard saves is discarded by that same throw.
   if (ctx.signal?.aborted) throw operationAborted();
   marked.add(treeId);
@@ -63,7 +64,7 @@ async function markTree(
       marked.add(entry.id);
       continue;
     }
-    await markTree(ctx, entry.id, marked, seenTrees, depth + 1);
+    await markTree(ctx, entry.id, marked, seenTrees, maxDepth, depth + 1);
   }
 }
 
@@ -112,6 +113,7 @@ async function markUninteresting(
   commitTrees: Map<ObjectId, ObjectId>,
   markedObjects: Set<ObjectId>,
   seenTrees: Set<ObjectId>,
+  maxDepth: number,
 ): Promise<void> {
   const obj = await readObject(ctx, id);
   if (obj.type === 'tag') {
@@ -122,16 +124,17 @@ async function markUninteresting(
       commitTrees,
       markedObjects,
       seenTrees,
+      maxDepth,
     );
     return;
   }
   if (obj.type === 'commit') {
     await markCommitAncestry(ctx, id, markedCommits, commitTrees);
-    await markTree(ctx, obj.data.tree, markedObjects, seenTrees);
+    await markTree(ctx, obj.data.tree, markedObjects, seenTrees, maxDepth);
     return;
   }
   if (obj.type === 'tree') {
-    await markTree(ctx, id, markedObjects, seenTrees);
+    await markTree(ctx, id, markedObjects, seenTrees, maxDepth);
     return;
   }
   markedObjects.add(id);
@@ -144,10 +147,11 @@ export async function markNotSide(ctx: Context, not: ReadonlyArray<ObjectId>): P
   const commitTrees = new Map<ObjectId, ObjectId>();
   const objects = new Set<ObjectId>();
   const seenTrees = new Set<ObjectId>();
+  const maxDepth = await resolveMaxTreeDepth(ctx);
   for (const notId of not) {
-    await markUninteresting(ctx, notId, commits, commitTrees, objects, seenTrees);
+    await markUninteresting(ctx, notId, commits, commitTrees, objects, seenTrees, maxDepth);
   }
-  return { commits, commitTrees, objects, seenTrees };
+  return { commits, commitTrees, objects, seenTrees, maxDepth };
 }
 
 /**
@@ -175,7 +179,7 @@ export async function markBoundaryTrees(
       // `markCommitAncestry` always sets `commitTrees` alongside `commits`
       // for the same id — this lookup is guaranteed to hit.
       const parentTree = marks.commitTrees.get(parentId) as ObjectId;
-      await markTree(ctx, parentTree, marks.objects, marks.seenTrees);
+      await markTree(ctx, parentTree, marks.objects, marks.seenTrees, marks.maxDepth);
     }
   }
 }

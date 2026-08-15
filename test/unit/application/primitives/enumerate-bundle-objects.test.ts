@@ -17,7 +17,7 @@ import {
   type TreeEntry,
 } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
-import { buildSeededContext, instrumentedContext } from './fixtures.js';
+import { buildSeededContext, instrumentedContext, seedMaxTreeDepth } from './fixtures.js';
 
 const AUTHOR: AuthorIdentity = {
   name: 'Test',
@@ -39,6 +39,18 @@ const makeBlob = async (ctx: Context, content: string): Promise<ObjectId> => {
 
 const makeTree = async (ctx: Context, entries: ReadonlyArray<TreeEntry>): Promise<ObjectId> =>
   writeTree(ctx, entries);
+
+/** Build a chain of `levels` nested DIRECTORY wrappers around a real,
+ *  blob-containing leaf tree — a small, config-cap-reachable stand-in for
+ *  the 1000+-level fixtures a hardcoded 1024 cap used to require. */
+const buildDeepTree = async (ctx: Context, levels: number): Promise<ObjectId> => {
+  const leafBlob = await makeBlob(ctx, 'deep-leaf');
+  let current: ObjectId = await makeTree(ctx, [{ mode: BLOB_MODE, name: 'f.txt', id: leafBlob }]);
+  for (let i = 0; i < levels; i++) {
+    current = await makeTree(ctx, [{ mode: FILE_MODE.DIRECTORY, name: 'sub', id: current }]);
+  }
+  return current;
+};
 
 const makeCommit = async (
   ctx: Context,
@@ -527,19 +539,30 @@ describe('enumerateBundleObjects — ignoreMissing on missing parents', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('enumerateBundleObjects — tree-walk safety rails', () => {
-  describe('Given a wants commit pointing to a tree nested 1025 levels deep', () => {
-    describe('When enumerateBundleObjects is called', () => {
-      it('Then throws TREE_DEPTH_EXCEEDED, not a RangeError', async () => {
-        // Arrange — build 1025 wrapper trees around a phantom sub-tree ID.
-        // The phantom is never read from storage; the guard fires before the
-        // readObject call at depth 1025 (> MAX_TREE_DEPTH 1024).
+  describe('Given a repository configured with core.maxTreeDepth = 4', () => {
+    describe('When a wants commit points to a tree nested 4 levels deep', () => {
+      it('Then it completes', async () => {
+        // Arrange
         const ctx = await buildSeededContext();
-        const PHANTOM_ID = 'a'.repeat(40) as ObjectId;
-        let current: ObjectId = PHANTOM_ID;
-        for (let i = 0; i < 1025; i++) {
-          current = await makeTree(ctx, [{ mode: FILE_MODE.DIRECTORY, name: 'sub', id: current }]);
-        }
-        const commit = await makeCommit(ctx, current, [], 'deep', 1);
+        await seedMaxTreeDepth(ctx, '4');
+        const treeId = await buildDeepTree(ctx, 4);
+        const commit = await makeCommit(ctx, treeId, [], 'at-cap', 1);
+
+        // Act
+        const result = await enumerateBundleObjects(ctx, { wants: [commit], haves: [] });
+
+        // Assert
+        expect(result.objects).toContain(commit);
+      });
+    });
+
+    describe('When a wants commit points to a tree nested 5 levels deep', () => {
+      it('Then throws TREE_DEPTH_EXCEEDED with depth === 5', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await seedMaxTreeDepth(ctx, '4');
+        const treeId = await buildDeepTree(ctx, 5);
+        const commit = await makeCommit(ctx, treeId, [], 'over-cap', 1);
 
         // Act
         let thrown: unknown;
@@ -551,58 +574,113 @@ describe('enumerateBundleObjects — tree-walk safety rails', () => {
 
         // Assert
         expect(thrown).toBeInstanceOf(TsgitError);
-        expect((thrown as TsgitError).data.code).toBe('TREE_DEPTH_EXCEEDED');
+        const data = (thrown as TsgitError).data as { code: string; depth: number };
+        expect(data.code).toBe('TREE_DEPTH_EXCEEDED');
+        expect(data.depth).toBe(5);
       });
     });
   });
 
-  describe('Given a wants commit pointing to a tree nested exactly 1025 levels deep with a real leaf blob', () => {
+  describe('Given a repository configured with core.maxTreeDepth = 4 and a wants tree 20x past the cap', () => {
     describe('When enumerateBundleObjects is called', () => {
-      it('Then succeeds without throwing TREE_DEPTH_EXCEEDED (depth 1024 is the last allowed level)', async () => {
-        // Arrange — build 1024 wrapper trees around a real blob-containing tree.
-        // The blob-containing tree sits at depth 1024; the depth guard fires only
-        // at depth > 1024.  A depth>=1024 mutant would throw prematurely here.
+      it('Then throws TREE_DEPTH_EXCEEDED with depth === 5, not the deeper structural depth', async () => {
+        // Arrange
         const ctx = await buildSeededContext();
-        const leafBlob = await makeBlob(ctx, 'leaf');
-        let current: ObjectId = await makeTree(ctx, [
-          { mode: BLOB_MODE, name: 'f.txt', id: leafBlob },
-        ]);
-        for (let i = 0; i < 1024; i++) {
-          current = await makeTree(ctx, [{ mode: FILE_MODE.DIRECTORY, name: 'sub', id: current }]);
-        }
-        const commit = await makeCommit(ctx, current, [], 'at-limit', 1);
+        await seedMaxTreeDepth(ctx, '4');
+        const treeId = await buildDeepTree(ctx, 80);
+        const commit = await makeCommit(ctx, treeId, [], 'far-over-cap', 1);
 
         // Act
         let thrown: unknown;
-        const result = await enumerateBundleObjects(ctx, { wants: [commit], haves: [] }).catch(
-          (err) => {
-            thrown = err;
-            return null;
-          },
-        );
+        try {
+          await enumerateBundleObjects(ctx, { wants: [commit], haves: [] });
+        } catch (err) {
+          thrown = err;
+        }
 
-        // Assert — no TREE_DEPTH_EXCEEDED; all objects present
-        expect(thrown).toBeUndefined();
-        expect(result).not.toBeNull();
-        expect(result!.objects).toContain(leafBlob);
+        // Assert
+        expect(thrown).toBeInstanceOf(TsgitError);
+        const data = (thrown as TsgitError).data as { code: string; depth: number };
+        expect(data.code).toBe('TREE_DEPTH_EXCEEDED');
+        expect(data.depth).toBe(5);
       });
     });
   });
 
-  describe('Given a haves commit pointing to a tree nested 1026 levels deep', () => {
-    describe('When enumerateBundleObjects is called', () => {
-      it('Then throws TREE_DEPTH_EXCEEDED from the haves-side collectTreeObjects walk', async () => {
-        // Arrange — build 1025 real wrapper trees around a phantom child.
-        // collectTreeObjects (haves side) reaches depth 1025 when visiting the
-        // phantom and throws.  A ConditionalExpression→false or depth-1 mutant
-        // on the guard would never fire, yielding a different error instead.
+  describe('Given the same depth-4 wants tree tested at two different core.maxTreeDepth values', () => {
+    describe('When core.maxTreeDepth = 4', () => {
+      it('Then it completes', async () => {
+        // Arrange
         const ctx = await buildSeededContext();
-        const PHANTOM_ID = 'b'.repeat(40) as ObjectId;
-        let current: ObjectId = PHANTOM_ID;
-        for (let i = 0; i < 1025; i++) {
-          current = await makeTree(ctx, [{ mode: FILE_MODE.DIRECTORY, name: 'sub', id: current }]);
+        await seedMaxTreeDepth(ctx, '4');
+        const treeId = await buildDeepTree(ctx, 4);
+        const commit = await makeCommit(ctx, treeId, [], 'boundary-pass', 1);
+
+        // Act
+        const result = await enumerateBundleObjects(ctx, { wants: [commit], haves: [] });
+
+        // Assert
+        expect(result.objects).toContain(commit);
+      });
+    });
+
+    describe('When core.maxTreeDepth = 3', () => {
+      it('Then throws TREE_DEPTH_EXCEEDED with depth === 4', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await seedMaxTreeDepth(ctx, '3');
+        const treeId = await buildDeepTree(ctx, 4);
+        const commit = await makeCommit(ctx, treeId, [], 'boundary-fail', 1);
+
+        // Act
+        let thrown: unknown;
+        try {
+          await enumerateBundleObjects(ctx, { wants: [commit], haves: [] });
+        } catch (err) {
+          thrown = err;
         }
-        const haveCommit = await makeCommit(ctx, current, [], 'too-deep-have', 1);
+
+        // Assert
+        expect(thrown).toBeInstanceOf(TsgitError);
+        const data = (thrown as TsgitError).data as { code: string; depth: number };
+        expect(data.code).toBe('TREE_DEPTH_EXCEEDED');
+        expect(data.depth).toBe(4);
+      });
+    });
+  });
+
+  describe('Given a repository configured with core.maxTreeDepth = 4 and a haves commit whose tree is nested 4 levels deep', () => {
+    describe('When enumerateBundleObjects is called', () => {
+      it('Then it completes (the haves-side collectTreeObjects walk stays within the cap)', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await seedMaxTreeDepth(ctx, '4');
+        const haveTreeId = await buildDeepTree(ctx, 4);
+        const haveCommit = await makeCommit(ctx, haveTreeId, [], 'have-at-cap', 1);
+        const wantBlob = await makeBlob(ctx, 'want');
+        const wantTree = await makeTree(ctx, [{ mode: BLOB_MODE, name: 'w.txt', id: wantBlob }]);
+        const wantCommit = await makeCommit(ctx, wantTree, [haveCommit], 'want', 2);
+
+        // Act
+        const result = await enumerateBundleObjects(ctx, {
+          wants: [wantCommit],
+          haves: [haveCommit],
+        });
+
+        // Assert
+        expect(result.objects).toContain(wantBlob);
+      });
+    });
+  });
+
+  describe('Given a repository configured with core.maxTreeDepth = 4 and a haves commit whose tree is nested 5 levels deep', () => {
+    describe('When enumerateBundleObjects is called', () => {
+      it('Then throws TREE_DEPTH_EXCEEDED with depth === 5 from the haves-side collectTreeObjects walk', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await seedMaxTreeDepth(ctx, '4');
+        const haveTreeId = await buildDeepTree(ctx, 5);
+        const haveCommit = await makeCommit(ctx, haveTreeId, [], 'have-over-cap', 1);
         const wantBlob = await makeBlob(ctx, 'want');
         const wantTree = await makeTree(ctx, [{ mode: BLOB_MODE, name: 'w.txt', id: wantBlob }]);
         const wantCommit = await makeCommit(ctx, wantTree, [haveCommit], 'want', 2);
@@ -617,44 +695,89 @@ describe('enumerateBundleObjects — tree-walk safety rails', () => {
 
         // Assert
         expect(thrown).toBeInstanceOf(TsgitError);
-        expect((thrown as TsgitError).data.code).toBe('TREE_DEPTH_EXCEEDED');
+        const data = (thrown as TsgitError).data as { code: string; depth: number };
+        expect(data.code).toBe('TREE_DEPTH_EXCEEDED');
+        expect(data.depth).toBe(5);
       });
     });
   });
 
-  describe('Given a haves commit pointing to a tree nested exactly 1025 levels deep with a real leaf blob', () => {
+  describe('Given a repository configured with core.maxTreeDepth = 4 and a haves tree 20x past the cap', () => {
     describe('When enumerateBundleObjects is called', () => {
-      it('Then succeeds without throwing TREE_DEPTH_EXCEEDED (depth 1024 is the last allowed level)', async () => {
-        // Arrange — build 1024 wrapper trees around a real blob-containing tree.
-        // collectTreeObjects reaches depth 1024 for the innermost tree (depth
-        // guard fires at depth > 1024).  A depth>=1024 mutant would throw here.
+      it('Then throws TREE_DEPTH_EXCEEDED with depth === 5, not the deeper structural depth', async () => {
+        // Arrange
         const ctx = await buildSeededContext();
-        const leafBlob = await makeBlob(ctx, 'leaf-have');
-        let current: ObjectId = await makeTree(ctx, [
-          { mode: BLOB_MODE, name: 'f.txt', id: leafBlob },
-        ]);
-        for (let i = 0; i < 1024; i++) {
-          current = await makeTree(ctx, [{ mode: FILE_MODE.DIRECTORY, name: 'sub', id: current }]);
-        }
-        const haveCommit = await makeCommit(ctx, current, [], 'have-at-limit', 1);
-        const wantBlob = await makeBlob(ctx, 'new');
-        const wantTree = await makeTree(ctx, [{ mode: BLOB_MODE, name: 'n.txt', id: wantBlob }]);
+        await seedMaxTreeDepth(ctx, '4');
+        const haveTreeId = await buildDeepTree(ctx, 80);
+        const haveCommit = await makeCommit(ctx, haveTreeId, [], 'have-far-over-cap', 1);
+        const wantBlob = await makeBlob(ctx, 'want');
+        const wantTree = await makeTree(ctx, [{ mode: BLOB_MODE, name: 'w.txt', id: wantBlob }]);
         const wantCommit = await makeCommit(ctx, wantTree, [haveCommit], 'want', 2);
 
         // Act
         let thrown: unknown;
+        try {
+          await enumerateBundleObjects(ctx, { wants: [wantCommit], haves: [haveCommit] });
+        } catch (err) {
+          thrown = err;
+        }
+
+        // Assert
+        expect(thrown).toBeInstanceOf(TsgitError);
+        const data = (thrown as TsgitError).data as { code: string; depth: number };
+        expect(data.code).toBe('TREE_DEPTH_EXCEEDED');
+        expect(data.depth).toBe(5);
+      });
+    });
+  });
+
+  describe('Given the same depth-4 haves tree tested at two different core.maxTreeDepth values', () => {
+    describe('When core.maxTreeDepth = 4', () => {
+      it('Then it completes', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await seedMaxTreeDepth(ctx, '4');
+        const haveTreeId = await buildDeepTree(ctx, 4);
+        const haveCommit = await makeCommit(ctx, haveTreeId, [], 'have-boundary-pass', 1);
+        const wantBlob = await makeBlob(ctx, 'want');
+        const wantTree = await makeTree(ctx, [{ mode: BLOB_MODE, name: 'w.txt', id: wantBlob }]);
+        const wantCommit = await makeCommit(ctx, wantTree, [haveCommit], 'want', 2);
+
+        // Act
         const result = await enumerateBundleObjects(ctx, {
           wants: [wantCommit],
           haves: [haveCommit],
-        }).catch((err) => {
-          thrown = err;
-          return null;
         });
 
-        // Assert — no TREE_DEPTH_EXCEEDED
-        expect(thrown).toBeUndefined();
-        expect(result).not.toBeNull();
-        expect(result!.objects).toContain(wantBlob);
+        // Assert
+        expect(result.objects).toContain(wantBlob);
+      });
+    });
+
+    describe('When core.maxTreeDepth = 3', () => {
+      it('Then throws TREE_DEPTH_EXCEEDED with depth === 4', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await seedMaxTreeDepth(ctx, '3');
+        const haveTreeId = await buildDeepTree(ctx, 4);
+        const haveCommit = await makeCommit(ctx, haveTreeId, [], 'have-boundary-fail', 1);
+        const wantBlob = await makeBlob(ctx, 'want');
+        const wantTree = await makeTree(ctx, [{ mode: BLOB_MODE, name: 'w.txt', id: wantBlob }]);
+        const wantCommit = await makeCommit(ctx, wantTree, [haveCommit], 'want', 2);
+
+        // Act
+        let thrown: unknown;
+        try {
+          await enumerateBundleObjects(ctx, { wants: [wantCommit], haves: [haveCommit] });
+        } catch (err) {
+          thrown = err;
+        }
+
+        // Assert
+        expect(thrown).toBeInstanceOf(TsgitError);
+        const data = (thrown as TsgitError).data as { code: string; depth: number };
+        expect(data.code).toBe('TREE_DEPTH_EXCEEDED');
+        expect(data.depth).toBe(4);
       });
     });
   });

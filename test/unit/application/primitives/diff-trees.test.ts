@@ -29,7 +29,7 @@ import type {
 } from '../../../../src/domain/objects/index.js';
 import { serializeTreeContent } from '../../../../src/domain/objects/tree.js';
 import type { CommandRunner } from '../../../../src/ports/command-runner.js';
-import { buildSeededContext, instrumentedContext } from './fixtures.js';
+import { buildSeededContext, instrumentedContext, seedMaxTreeDepth } from './fixtures.js';
 
 type Ctx = Awaited<ReturnType<typeof buildSeededContext>>;
 
@@ -49,6 +49,56 @@ const blob = (ctx: Ctx, content: string): Promise<ObjectId> =>
 
 const subTree = (ctx: Ctx, name: string, id: ObjectId, mode: FileMode): Promise<ObjectId> =>
   writeTree(ctx, [{ name, mode, id }]);
+
+/** Build a chain of `hops` real nested directory-modify levels whose
+ *  innermost entry points to a phantom (never-written) id on each side — a
+ *  depth guard that failed to trip surfaces as OBJECT_NOT_FOUND, not a
+ *  silent pass, so this shape is reserved for tests asserting the throw. */
+const buildPhantomModifyChain = async (
+  ctx: Ctx,
+  hops: number,
+): Promise<{ oldId: ObjectId; newId: ObjectId }> => {
+  const PHANTOM_OLD = 'b'.repeat(40) as ObjectId;
+  const PHANTOM_NEW = 'c'.repeat(40) as ObjectId;
+  let oldId: ObjectId = await subTree(ctx, 'sub', PHANTOM_OLD, FILE_MODE.DIRECTORY);
+  let newId: ObjectId = await subTree(ctx, 'sub', PHANTOM_NEW, FILE_MODE.DIRECTORY);
+  for (let i = 0; i < hops; i++) {
+    oldId = await subTree(ctx, 'sub', oldId, FILE_MODE.DIRECTORY);
+    newId = await subTree(ctx, 'sub', newId, FILE_MODE.DIRECTORY);
+  }
+  return { oldId, newId };
+};
+
+/** Build a chain of `hops` real nested directory-modify levels whose
+ *  innermost entry is a real, differing leaf blob — never touches a phantom
+ *  id, so it can only ever complete or throw TREE_DEPTH_EXCEEDED, never
+ *  OBJECT_NOT_FOUND. */
+const buildRealModifyChain = async (
+  ctx: Ctx,
+  hops: number,
+): Promise<{ oldId: ObjectId; newId: ObjectId }> => {
+  const oldLeaf = await blob(ctx, 'old-leaf');
+  const newLeaf = await blob(ctx, 'new-leaf');
+  let oldId = await subTree(ctx, 'sub', oldLeaf, FILE_MODE.REGULAR);
+  let newId = await subTree(ctx, 'sub', newLeaf, FILE_MODE.REGULAR);
+  for (let i = 0; i < hops; i++) {
+    oldId = await subTree(ctx, 'sub', oldId, FILE_MODE.DIRECTORY);
+    newId = await subTree(ctx, 'sub', newId, FILE_MODE.DIRECTORY);
+  }
+  return { oldId, newId };
+};
+
+/** Build a chain of `levels` nested DIRECTORY wrappers around a real leaf
+ *  tree — used as a whole-directory ADD (or, read backwards, DELETE) so the
+ *  recursive diff expands it via `walkRawSubtree`. */
+const buildDirectoryChain = async (ctx: Ctx, levels: number): Promise<ObjectId> => {
+  const leaf = await blob(ctx, 'added-leaf');
+  let current = await subTree(ctx, 'leaf', leaf, FILE_MODE.REGULAR);
+  for (let i = 0; i < levels; i++) {
+    current = await subTree(ctx, 'sub', current, FILE_MODE.DIRECTORY);
+  }
+  return current;
+};
 
 /** Build a `readRawObject`-shaped stub for a hand-forged self-referential
  *  tree — `bytes` mirrors `content` since these cycle-detection tests only
@@ -2600,34 +2650,215 @@ describe('diffTrees', () => {
 
   // --- recursion safety rails: depth cap and cycle detection ---
 
-  describe('Given a recursive diff whose directory-modify chain is exactly 1025 levels deep', () => {
-    describe('When diffTrees is called with recursive:true', () => {
-      it('Then throws TREE_DEPTH_EXCEEDED (the guard fires before reading the 1026th level)', async () => {
-        // Arrange — build 1025 real nested directory-modify levels; the innermost one's
-        // entry points to a phantom (never-written) id on each side, so the depth guard
-        // must throw before diffChangedSubtree ever attempts to read it.
+  describe('Given a repository configured with core.maxTreeDepth = 4', () => {
+    describe('When a recursive directory-modify chain is driven at depth 4', () => {
+      it('Then it completes', async () => {
+        // Arrange
         const ctx = await buildSeededContext();
-        const PHANTOM_OLD = 'b'.repeat(40) as ObjectId;
-        const PHANTOM_NEW = 'c'.repeat(40) as ObjectId;
-        let oldId: ObjectId = await subTree(ctx, 'sub', PHANTOM_OLD, FILE_MODE.DIRECTORY);
-        let newId: ObjectId = await subTree(ctx, 'sub', PHANTOM_NEW, FILE_MODE.DIRECTORY);
-        for (let i = 0; i < 1025; i++) {
-          oldId = await subTree(ctx, 'sub', oldId, FILE_MODE.DIRECTORY);
-          newId = await subTree(ctx, 'sub', newId, FILE_MODE.DIRECTORY);
-        }
+        await seedMaxTreeDepth(ctx, '4');
+        const { oldId, newId } = await buildRealModifyChain(ctx, 5);
 
         // Act
-        let thrown: unknown;
+        const result = await diffTrees(ctx, oldId, newId, { recursive: true });
+
+        // Assert
+        expect(result.changes).toHaveLength(1);
+      });
+    });
+
+    describe('When a recursive directory-modify chain is driven at depth 5', () => {
+      it('Then throws TREE_DEPTH_EXCEEDED with depth === 5 (the guard fires before reading the phantom level)', async () => {
+        // Arrange — the innermost entry points to a phantom (never-written) id
+        // on each side, so the depth guard must throw before diffChangedSubtree
+        // ever attempts to read it.
+        const ctx = await buildSeededContext();
+        await seedMaxTreeDepth(ctx, '4');
+        const { oldId, newId } = await buildPhantomModifyChain(ctx, 5);
+
+        // Act + Assert
         try {
           await diffTrees(ctx, oldId, newId, { recursive: true });
           expect.unreachable();
         } catch (error) {
-          thrown = error;
+          const { data } = error as { data: { code: string; depth: number } };
+          expect(data.code).toBe('TREE_DEPTH_EXCEEDED');
+          expect(data.depth).toBe(5);
         }
+      });
+    });
+  });
+
+  describe('Given a repository configured with core.maxTreeDepth = 4 and a directory-modify chain 20x past the cap', () => {
+    describe('When diffTrees is called with recursive:true', () => {
+      it('Then throws TREE_DEPTH_EXCEEDED with depth === 5, not the deeper structural depth', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await seedMaxTreeDepth(ctx, '4');
+        const { oldId, newId } = await buildPhantomModifyChain(ctx, 80);
+
+        // Act + Assert
+        try {
+          await diffTrees(ctx, oldId, newId, { recursive: true });
+          expect.unreachable();
+        } catch (error) {
+          const { data } = error as { data: { code: string; depth: number } };
+          expect(data.code).toBe('TREE_DEPTH_EXCEEDED');
+          expect(data.depth).toBe(5);
+        }
+      });
+    });
+  });
+
+  describe('Given the same depth-5 directory-modify chain tested at two different core.maxTreeDepth values', () => {
+    describe('When core.maxTreeDepth = 4', () => {
+      it('Then it completes', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await seedMaxTreeDepth(ctx, '4');
+        const { oldId, newId } = await buildRealModifyChain(ctx, 5);
+
+        // Act
+        const result = await diffTrees(ctx, oldId, newId, { recursive: true });
 
         // Assert
-        const data = (thrown as { data: { code: string } }).data;
-        expect(data.code).toBe('TREE_DEPTH_EXCEEDED');
+        expect(result.changes).toHaveLength(1);
+      });
+    });
+
+    describe('When core.maxTreeDepth = 3', () => {
+      it('Then throws TREE_DEPTH_EXCEEDED with depth === 4', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await seedMaxTreeDepth(ctx, '3');
+        const { oldId, newId } = await buildRealModifyChain(ctx, 5);
+
+        // Act + Assert
+        try {
+          await diffTrees(ctx, oldId, newId, { recursive: true });
+          expect.unreachable();
+        } catch (error) {
+          const { data } = error as { data: { code: string; depth: number } };
+          expect(data.code).toBe('TREE_DEPTH_EXCEEDED');
+          expect(data.depth).toBe(4);
+        }
+      });
+    });
+  });
+
+  // --- the added/deleted-subtree expansion (walkRawSubtree) takes the same
+  // resolved cap ---
+
+  describe('Given a repository configured with core.maxTreeDepth = 4 and a newly ADDED directory nested 4 levels deep', () => {
+    describe('When diffTrees is called with recursive:true', () => {
+      it('Then it completes', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await seedMaxTreeDepth(ctx, '4');
+        const oldRoot = await writeTree(ctx, []);
+        const addedId = await buildDirectoryChain(ctx, 4);
+        const newRoot = await writeTree(ctx, [
+          { name: 'added', mode: FILE_MODE.DIRECTORY, id: addedId },
+        ]);
+
+        // Act
+        const result = await diffTrees(ctx, oldRoot, newRoot, { recursive: true });
+
+        // Assert
+        expect(result.changes).toHaveLength(1);
+      });
+    });
+  });
+
+  describe('Given a repository configured with core.maxTreeDepth = 4 and a newly ADDED directory nested 5 levels deep', () => {
+    describe('When diffTrees is called with recursive:true', () => {
+      it('Then throws TREE_DEPTH_EXCEEDED with depth === 5', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await seedMaxTreeDepth(ctx, '4');
+        const oldRoot = await writeTree(ctx, []);
+        const addedId = await buildDirectoryChain(ctx, 5);
+        const newRoot = await writeTree(ctx, [
+          { name: 'added', mode: FILE_MODE.DIRECTORY, id: addedId },
+        ]);
+
+        // Act + Assert
+        try {
+          await diffTrees(ctx, oldRoot, newRoot, { recursive: true });
+          expect.unreachable();
+        } catch (error) {
+          const { data } = error as { data: { code: string; depth: number } };
+          expect(data.code).toBe('TREE_DEPTH_EXCEEDED');
+          expect(data.depth).toBe(5);
+        }
+      });
+    });
+  });
+
+  describe('Given a repository configured with core.maxTreeDepth = 4 and an ADDED directory 20x past the cap', () => {
+    describe('When diffTrees is called with recursive:true', () => {
+      it('Then throws TREE_DEPTH_EXCEEDED with depth === 5, not the deeper structural depth', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await seedMaxTreeDepth(ctx, '4');
+        const oldRoot = await writeTree(ctx, []);
+        const addedId = await buildDirectoryChain(ctx, 80);
+        const newRoot = await writeTree(ctx, [
+          { name: 'added', mode: FILE_MODE.DIRECTORY, id: addedId },
+        ]);
+
+        // Act + Assert
+        try {
+          await diffTrees(ctx, oldRoot, newRoot, { recursive: true });
+          expect.unreachable();
+        } catch (error) {
+          const { data } = error as { data: { code: string; depth: number } };
+          expect(data.code).toBe('TREE_DEPTH_EXCEEDED');
+          expect(data.depth).toBe(5);
+        }
+      });
+    });
+  });
+
+  describe('Given the same depth-4 ADDED directory tested at two different core.maxTreeDepth values', () => {
+    describe('When core.maxTreeDepth = 4', () => {
+      it('Then it completes', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await seedMaxTreeDepth(ctx, '4');
+        const oldRoot = await writeTree(ctx, []);
+        const addedId = await buildDirectoryChain(ctx, 4);
+        const newRoot = await writeTree(ctx, [
+          { name: 'added', mode: FILE_MODE.DIRECTORY, id: addedId },
+        ]);
+
+        // Act
+        const result = await diffTrees(ctx, oldRoot, newRoot, { recursive: true });
+
+        // Assert
+        expect(result.changes).toHaveLength(1);
+      });
+    });
+
+    describe('When core.maxTreeDepth = 3', () => {
+      it('Then throws TREE_DEPTH_EXCEEDED with depth === 4', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await seedMaxTreeDepth(ctx, '3');
+        const oldRoot = await writeTree(ctx, []);
+        const addedId = await buildDirectoryChain(ctx, 4);
+        const newRoot = await writeTree(ctx, [
+          { name: 'added', mode: FILE_MODE.DIRECTORY, id: addedId },
+        ]);
+
+        // Act + Assert
+        try {
+          await diffTrees(ctx, oldRoot, newRoot, { recursive: true });
+          expect.unreachable();
+        } catch (error) {
+          const { data } = error as { data: { code: string; depth: number } };
+          expect(data.code).toBe('TREE_DEPTH_EXCEEDED');
+          expect(data.depth).toBe(4);
+        }
       });
     });
   });

@@ -109915,6 +109915,62 @@
 					"variant": "declaration",
 					"kind": 2097152,
 					"flags": {},
+					"comment": {
+						"summary": [
+							{
+								"kind": "text",
+								"text": "Diff two tree-like targets, returning the structured "
+							},
+							{
+								"kind": "code",
+								"text": "`TreeDiff`"
+							},
+							{
+								"kind": "text",
+								"text": ". Pass\n"
+							},
+							{
+								"kind": "code",
+								"text": "`recursive: true`"
+							},
+							{
+								"kind": "text",
+								"text": " to expand nested directories into per-file leaf changes\ninstead of directory-mode entries, and "
+							},
+							{
+								"kind": "code",
+								"text": "`withStat: true`"
+							},
+							{
+								"kind": "text",
+								"text": " to attach per-file\nline counts (a "
+							},
+							{
+								"kind": "code",
+								"text": "`StatTreeDiff`"
+							},
+							{
+								"kind": "text",
+								"text": ").\n\nA recursive descent is bounded by "
+							},
+							{
+								"kind": "code",
+								"text": "`core.maxTreeDepth`"
+							},
+							{
+								"kind": "text",
+								"text": ", read from the\nrepository-local config (default 2048 when unset) and honoured unclamped —\na tree nested deeper than the configured cap throws "
+							},
+							{
+								"kind": "code",
+								"text": "`TREE_DEPTH_EXCEEDED`"
+							},
+							{
+								"kind": "text",
+								"text": "."
+							}
+						]
+					},
 					"type": {
 						"type": "reflection",
 						"declaration": {

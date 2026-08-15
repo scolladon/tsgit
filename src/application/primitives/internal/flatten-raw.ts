@@ -11,10 +11,9 @@
  *
  * Bounds are an explicit parameter rather than an inlined literal so the
  * entry-limit guard is reachable from a test with a small cap; `flattenTree`
- * calls this with `DEFAULT_FLATTEN_BOUNDS`.
+ * calls this with `resolveFlattenBounds(ctx)`.
  */
 import type { FlatTree, FlatTreeEntry } from '../../../domain/diff/flat-tree.js';
-import { MAX_TREE_WALK_DEPTH } from '../../../domain/diff/flat-tree.js';
 import { MAX_FLAT_TREE_ENTRIES } from '../../../domain/diff/index.js';
 import { operationAborted } from '../../../domain/error.js';
 import {
@@ -44,16 +43,26 @@ import { MAX_CONCURRENT_OBJECT_LOADS } from './bounded-map.js';
 import { type ConcurrencyLimiter, createConcurrencyLimiter } from './concurrency-limiter.js';
 import { prefetchSubtreeChildren, type SubtreePrefetch } from './raw-subtree-prefetch.js';
 import { joinPath, readRawTreeById } from './raw-tree-io.js';
+import { resolveMaxTreeDepth } from './resolve-max-tree-depth.js';
 
 export interface FlattenBounds {
   readonly maxDepth: number;
   readonly maxEntries: number;
 }
 
-export const DEFAULT_FLATTEN_BOUNDS: FlattenBounds = {
-  maxDepth: MAX_TREE_WALK_DEPTH,
+/**
+ * Resolve the bounds `flattenRawTree` uses by default: `maxDepth` from the
+ * repository-local `core.maxTreeDepth` (default 2048 when unset), `maxEntries`
+ * fixed at `MAX_FLAT_TREE_ENTRIES`. `FlattenBounds.maxDepth` stays a required
+ * field rather than an optional one so a call site can never forget the cap —
+ * an optional field would push the default down into `flattenLevel` (i.e. per
+ * level), which is exactly the hazard a single resolve-at-the-entry-point call
+ * avoids.
+ */
+export const resolveFlattenBounds = async (ctx: Context): Promise<FlattenBounds> => ({
+  maxDepth: await resolveMaxTreeDepth(ctx),
   maxEntries: MAX_FLAT_TREE_ENTRIES,
-};
+});
 
 interface FlattenConfig {
   readonly ctx: Context;

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { MAX_CONCURRENT_OBJECT_LOADS } from '../../../../../src/application/primitives/internal/bounded-map.js';
-import { DEFAULT_FLATTEN_BOUNDS } from '../../../../../src/application/primitives/internal/flatten-raw.js';
+import type { FlattenBounds } from '../../../../../src/application/primitives/internal/flatten-raw.js';
 import {
   type Counter,
   type RawSubtreeEntry,
@@ -9,6 +9,10 @@ import {
 import * as readObjectMod from '../../../../../src/application/primitives/read-object.js';
 import { writeObject } from '../../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../../src/application/primitives/write-tree.js';
+import {
+  DEFAULT_MAX_TREE_DEPTH,
+  MAX_FLAT_TREE_ENTRIES,
+} from '../../../../../src/domain/diff/flat-tree.js';
 import {
   FILE_MODE,
   type FileMode,
@@ -20,6 +24,15 @@ import {
 import { buildSeededContext } from '../fixtures.js';
 
 type Ctx = Awaited<ReturnType<typeof buildSeededContext>>;
+
+/** A generously large bounds pair for tests that are not themselves
+ *  exercising the depth or entry cap — mirrors the shape a resolved
+ *  `resolveFlattenBounds(ctx)` call would produce for an unconfigured
+ *  repository. */
+const TEST_BOUNDS: FlattenBounds = {
+  maxDepth: DEFAULT_MAX_TREE_DEPTH,
+  maxEntries: MAX_FLAT_TREE_ENTRIES,
+};
 
 async function writeBlob(ctx: Ctx, content: string): Promise<ObjectId> {
   return writeObject(ctx, {
@@ -33,7 +46,7 @@ async function writeBlob(ctx: Ctx, content: string): Promise<ObjectId> {
 async function collect(
   ctx: Ctx,
   root: ObjectId,
-  bounds = DEFAULT_FLATTEN_BOUNDS,
+  bounds = TEST_BOUNDS,
   prefix = 'top',
   counter: Counter = { value: 0 },
 ): Promise<RawSubtreeEntry[]> {
@@ -158,7 +171,7 @@ describe('walkRawSubtree', () => {
         const rootId = await writeTree(ctx, [
           { name: 'root', mode: FILE_MODE.DIRECTORY, id: midId },
         ]);
-        const bounds = { maxDepth: 1, maxEntries: DEFAULT_FLATTEN_BOUNDS.maxEntries };
+        const bounds = { maxDepth: 1, maxEntries: TEST_BOUNDS.maxEntries };
 
         // Act + Assert
         try {
@@ -188,7 +201,7 @@ describe('walkRawSubtree', () => {
         const rootId = await writeTree(ctx, [
           { name: 'root', mode: FILE_MODE.DIRECTORY, id: midId },
         ]);
-        const bounds = { maxDepth: 2, maxEntries: DEFAULT_FLATTEN_BOUNDS.maxEntries };
+        const bounds = { maxDepth: 2, maxEntries: TEST_BOUNDS.maxEntries };
 
         // Act
         const entries = await collect(ctx, rootId, bounds);
@@ -212,7 +225,7 @@ describe('walkRawSubtree', () => {
           { name: 'b', mode: FILE_MODE.REGULAR, id: blobId },
           { name: 'c', mode: FILE_MODE.REGULAR, id: blobId },
         ]);
-        const bounds = { maxDepth: DEFAULT_FLATTEN_BOUNDS.maxDepth, maxEntries: 2 };
+        const bounds = { maxDepth: TEST_BOUNDS.maxDepth, maxEntries: 2 };
 
         // Act + Assert
         try {
@@ -239,7 +252,7 @@ describe('walkRawSubtree', () => {
           { name: 'b', mode: FILE_MODE.REGULAR, id: blobId },
           { name: 'c', mode: FILE_MODE.REGULAR, id: blobId },
         ]);
-        const bounds = { maxDepth: DEFAULT_FLATTEN_BOUNDS.maxDepth, maxEntries: 3 };
+        const bounds = { maxDepth: TEST_BOUNDS.maxDepth, maxEntries: 3 };
 
         // Act
         const entries = await collect(ctx, treeId, bounds);
@@ -297,7 +310,7 @@ describe('walkRawSubtree', () => {
 
         // Act + Assert
         try {
-          await sut(aborted, treeId, DEFAULT_FLATTEN_BOUNDS, 'top', { value: 0 }, (entry) => {
+          await sut(aborted, treeId, TEST_BOUNDS, 'top', { value: 0 }, (entry) => {
             emitted.push(entry);
             controller.abort();
           });
@@ -533,7 +546,7 @@ describe('walkRawSubtree', () => {
         const rootId = await writeTree(ctx, [
           { name: 'd', mode: FILE_MODE.DIRECTORY, id: childLevelId },
         ]);
-        const bounds = { maxDepth: DEFAULT_FLATTEN_BOUNDS.maxDepth, maxEntries: 2 };
+        const bounds = { maxDepth: TEST_BOUNDS.maxDepth, maxEntries: 2 };
         const remainingBudgetAtChildLevel = 1;
         let speculativeReadCount = 0;
         const realReadRawObject = readObjectMod.readRawObject;

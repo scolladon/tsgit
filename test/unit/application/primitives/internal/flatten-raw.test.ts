@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { MAX_CONCURRENT_OBJECT_LOADS } from '../../../../../src/application/primitives/internal/bounded-map.js';
 import {
-  DEFAULT_FLATTEN_BOUNDS,
   type FlattenBounds,
   flattenRawTree,
 } from '../../../../../src/application/primitives/internal/flatten-raw.js';
@@ -9,6 +8,10 @@ import * as rawTreeIoMod from '../../../../../src/application/primitives/interna
 import * as readObjectMod from '../../../../../src/application/primitives/read-object.js';
 import { writeObject } from '../../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../../src/application/primitives/write-tree.js';
+import {
+  DEFAULT_MAX_TREE_DEPTH,
+  MAX_FLAT_TREE_ENTRIES,
+} from '../../../../../src/domain/diff/flat-tree.js';
 import { encode } from '../../../../../src/domain/objects/encoding.js';
 import {
   FILE_MODE,
@@ -60,6 +63,15 @@ function truncatedEntry(mode: string, name: string, id: ObjectId, keepBytes: num
 
 const LEAF_OID = 'a'.repeat(40) as ObjectId;
 const WEIRD_MODE_OID = 'd'.repeat(40) as ObjectId;
+
+/** A generously large bounds pair for tests that are not themselves
+ *  exercising the depth or entry cap — mirrors the shape a resolved
+ *  `resolveFlattenBounds(ctx)` call would produce for an unconfigured
+ *  repository. */
+const TEST_BOUNDS: FlattenBounds = {
+  maxDepth: DEFAULT_MAX_TREE_DEPTH,
+  maxEntries: MAX_FLAT_TREE_ENTRIES,
+};
 
 /** Swap `readRawObject`'s response for `rootId` with hand-crafted, possibly
  *  malformed, raw content — the only way to get a level's OWN bytes past
@@ -174,7 +186,7 @@ describe('flattenRawTree', () => {
         ]);
         const bounds: FlattenBounds = {
           maxDepth: 1,
-          maxEntries: DEFAULT_FLATTEN_BOUNDS.maxEntries,
+          maxEntries: TEST_BOUNDS.maxEntries,
         };
         const sut = flattenRawTree;
 
@@ -210,7 +222,7 @@ describe('flattenRawTree', () => {
         ]);
         const bounds: FlattenBounds = {
           maxDepth: 2,
-          maxEntries: DEFAULT_FLATTEN_BOUNDS.maxEntries,
+          maxEntries: TEST_BOUNDS.maxEntries,
         };
         const sut = flattenRawTree;
 
@@ -254,7 +266,7 @@ describe('flattenRawTree', () => {
 
         // Act + Assert
         try {
-          await sut(ctx, realTreeId, DEFAULT_FLATTEN_BOUNDS);
+          await sut(ctx, realTreeId, TEST_BOUNDS);
           expect.unreachable();
         } catch (error) {
           const { data } = error as { data: { code: string; id: string } };
@@ -299,7 +311,7 @@ describe('flattenRawTree', () => {
 
         // Act + Assert
         try {
-          await sut(aborted, treeId, DEFAULT_FLATTEN_BOUNDS);
+          await sut(aborted, treeId, TEST_BOUNDS);
           expect.unreachable();
         } catch (error) {
           const { data } = error as { data: { code: string } };
@@ -326,7 +338,7 @@ describe('flattenRawTree', () => {
         const sut = flattenRawTree;
 
         // Act
-        const result = await sut(ctx, treeId, DEFAULT_FLATTEN_BOUNDS);
+        const result = await sut(ctx, treeId, TEST_BOUNDS);
 
         // Assert
         expect(result.entries.size).toBe(1);
@@ -372,7 +384,7 @@ describe('flattenRawTree', () => {
 
         // Act
         try {
-          const result = await sut(ctx, rootId, DEFAULT_FLATTEN_BOUNDS);
+          const result = await sut(ctx, rootId, TEST_BOUNDS);
 
           // Assert
           expect(result.entries.size).toBe(width);
@@ -437,7 +449,7 @@ describe('flattenRawTree', () => {
 
         // Act
         try {
-          const result = await sut(ctx, rootId, DEFAULT_FLATTEN_BOUNDS);
+          const result = await sut(ctx, rootId, TEST_BOUNDS);
 
           // Assert
           expect([...result.entries.keys()]).toEqual([
@@ -490,7 +502,7 @@ describe('flattenRawTree', () => {
 
         // Act + Assert
         try {
-          await sut(ctx, realTreeId, DEFAULT_FLATTEN_BOUNDS);
+          await sut(ctx, realTreeId, TEST_BOUNDS);
           expect.unreachable();
         } catch (error) {
           const { data } = error as { data: { code: string; id: string } };
@@ -525,7 +537,7 @@ describe('flattenRawTree', () => {
           truncatedEntry(FILE_MODE.REGULAR, 'd', LEAF_OID, 5),
         );
         const spy = stubRootContent(rootId, content);
-        const bounds: FlattenBounds = { maxDepth: DEFAULT_FLATTEN_BOUNDS.maxDepth, maxEntries: 2 };
+        const bounds: FlattenBounds = { maxDepth: TEST_BOUNDS.maxDepth, maxEntries: 2 };
         const sut = flattenRawTree;
 
         // Act + Assert
@@ -562,7 +574,7 @@ describe('flattenRawTree', () => {
 
         // Act + Assert
         try {
-          await sut(aborted, rootId, DEFAULT_FLATTEN_BOUNDS);
+          await sut(aborted, rootId, TEST_BOUNDS);
           expect.unreachable();
         } catch (error) {
           const { data } = error as { data: { code: string } };
@@ -589,7 +601,7 @@ describe('flattenRawTree', () => {
 
         // Act + Assert
         try {
-          await sut(ctx, rootId, DEFAULT_FLATTEN_BOUNDS);
+          await sut(ctx, rootId, TEST_BOUNDS);
           expect.unreachable();
         } catch (error) {
           const { data } = error as { data: { code: string; offset: number; reason: string } };
@@ -618,7 +630,7 @@ describe('flattenRawTree', () => {
 
         // Act + Assert
         try {
-          await sut(ctx, rootId, DEFAULT_FLATTEN_BOUNDS);
+          await sut(ctx, rootId, TEST_BOUNDS);
           expect.unreachable();
         } catch (error) {
           const { data } = error as { data: { code: string; value: string } };
@@ -659,7 +671,7 @@ describe('flattenRawTree', () => {
         const rootId = await writeTree(ctx, [
           { name: 'd', mode: FILE_MODE.DIRECTORY, id: childLevelId },
         ]);
-        const bounds: FlattenBounds = { maxDepth: DEFAULT_FLATTEN_BOUNDS.maxDepth, maxEntries: 2 };
+        const bounds: FlattenBounds = { maxDepth: TEST_BOUNDS.maxDepth, maxEntries: 2 };
         const remainingBudgetAtChildLevel = 1;
         let speculativeReadCount = 0;
         const realReadRawObject = readObjectMod.readRawObject;
