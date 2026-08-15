@@ -295,11 +295,11 @@ pin that, and they run against the shipped code rather than a probe.
 | S3 | `walkInternal`+`visitEntry` (`walk-working-tree.ts:65,87`) | async generator, **2 `yield*` frames per level** | 4096 | DURING | 4097 | **925 OK / 950 FAIL** (n=3) | **UNSAFE** — cap 4.4× the ceiling |
 | S4 | `walkInternal` via `archive` (`archive.ts:99`) | async generator `yield*` | `Number.MAX_SAFE_INTEGER` | DURING (unreachable) | unbounded | **2100 OK / 2200 FAIL** (n=3) | **UNSAFE** — cap disabled |
 | S5 | `walkInternal` via default (`walk-tree.ts:52`) | async generator `yield*` | 1024 | DURING | 1025 | 1024 OK, 1025 → `TREE_DEPTH_EXCEEDED:1025`; ceiling 2100 | **SAFE** — 2.0× margin |
-| S6 | `flattenLevel` (`flatten-raw.ts:108`) | plain `async` | 1024 | DURING | 1025 | 1024 OK; 1025/4000/**20000** → `TREE_DEPTH_EXCEEDED:1025` | **SAFE** |
-| S7 | `diffChangedSubtree` (`diff-trees.ts:576`) | plain `async`, cursor | 1024 | DURING | 1025 | 1025 OK; 2000/3000/5000/**8000** → `TREE_DEPTH_EXCEEDED:1025` | **SAFE** |
-| S8 | `collectTreeObjects` / `emitTreeObjects` (`enumerate-bundle-objects.ts:86,118`) | plain `async` | 1024 | DURING | 1025 | not driven directly; shape strictly cheaper than S6/S7, same guard position | **SAFE** (inferred — **being measured**, §A12) |
-| S9 | `markTree` (`closure-not-marks.ts:54`) | plain `async` | 1024 | DURING | 1025 | not driven directly; same as S8 | **SAFE** (inferred — **being measured**, §A12) |
-| S10 | `walkLevel` (`walk-raw-subtree.ts:131`) | plain `async` | `bounds.maxDepth` = 1024 | DURING | 1025 | shares `flattenLevel`'s frame shape (S6) | **SAFE** (inferred — **being measured**, §A12) |
+| S6 | `flattenLevel` (`flatten-raw.ts:108`) | plain `async` | 1024 | DURING | 1025 | **cleared 16000 clean; cap-anchored to 15000** — cap 15000 refuses `TREE_DEPTH_EXCEEDED:15001` (2026-08-15) | **HOLDS** — ≥15000, 3.7× the 4096 threshold (§A12) |
+| S7 | `diffChangedSubtree` (`diff-trees.ts:576`) | plain `async`, cursor | 1024 | DURING | 1025 | **cleared 16000 clean; cap-anchored to 15000** — cap 15000 refuses `TREE_DEPTH_EXCEEDED:15001` (2026-08-15) | **HOLDS** — ≥15000, 3.7× the 4096 threshold (§A12) |
+| S8 | `collectTreeObjects` / `emitTreeObjects` (`enumerate-bundle-objects.ts:86,118`) | plain `async` | 1024 | DURING | 1025 | **cleared 64000 clean; cap-anchored to 100000** for both functions — cap 100000 refuses `TREE_DEPTH_EXCEEDED:100001` (2026-08-15) | **HOLDS** — ≥100000, 24× the 4096 threshold (§A12) |
+| S9 | `markTree` (`closure-not-marks.ts:54`) | plain `async` | 1024 | DURING | 1025 | **depth 100000 OK (exact); depth 100001 → `TREE_DEPTH_EXCEEDED:100001`** (2026-08-15) — the tightest of the six: the configured cap, not the stack, is the limiting factor | **HOLDS** — ≥100000, 24× the 4096 threshold (§A12) |
+| S10 | `walkLevel` (`walk-raw-subtree.ts:131`) | plain `async` | `bounds.maxDepth` = 1024 | DURING | 1025 | **cleared 16000 clean; cap-anchored to 15000** — cap 15000 refuses `TREE_DEPTH_EXCEEDED:15001` (2026-08-15) | **HOLDS** — ≥15000, 3.7× the 4096 threshold (§A12) |
 | S11 | `walkInTree` (`walk-submodules.ts:71`) | async generator, `>=` **`continue`** | 100 | DURING, non-throwing | 101 | 101 ≪ 925 | **SAFE — different contract** (§A6) |
 
 **"SAFE" means "cannot overflow", not "needs no change".** Rows S5–S10 are safe against the
@@ -1196,6 +1196,65 @@ unconditional work before that. If every site holds, the change is smaller than 
 the six-way asymmetry is the shipped contract, documented. If none holds, this becomes a ten-site
 structural change and the perf A/B (§A4) grows two more subjects. Neither outcome changes any
 requirement — that is the point of stating Requirement 3 at full strength and qualifying it here.
+
+#### Results (measured 2026-08-15)
+
+**Machine and method.** darwin 25.5.0, arm64, Node **v22.22.3**, default V8 stack (no
+`--stack-size` passed). Probe built with `esbuild --bundle --platform=node --format=esm` over a
+scratch entry under a `mktemp -d` outside the worktree, importing the six production modules by
+absolute path and driving each against `createMemoryContext()`. One depth per fresh `node`
+process, as §A2/§A12 require. Each site was driven two ways: (a) an exponential-then-binary
+depth sweep at a large configured cap (100000), recording the deepest input that still completes
+cleanly; (b) a cap-anchored confirmation — set `core.maxTreeDepth` to the target depth itself and
+build the fixture one level deeper, so a clean `TREE_DEPTH_EXCEEDED` at `cap + 1` proves the
+recursion really reached `cap` real frames, independent of whether a stack overflow was ever
+observed.
+
+| Site | Symbol | Deepest clean sweep | Cap-anchored proof | Verdict |
+|---|---|---|---|---|
+| S6 | `flattenLevel` | 16000 (no refusal, no error) | cap 15000 → `TREE_DEPTH_EXCEEDED:15001` | **HOLDS**, ≥15000 (3.7×) |
+| S7 | `diffChangedSubtree` | 16000 | cap 15000 → `TREE_DEPTH_EXCEEDED:15001` | **HOLDS**, ≥15000 (3.7×) |
+| S8 | `collectTreeObjects` | 64000 | cap 100000 → `TREE_DEPTH_EXCEEDED:100001` | **HOLDS**, ≥100000 (24×) |
+| S8 | `emitTreeObjects` | 64000 | cap 100000 → `TREE_DEPTH_EXCEEDED:100001` | **HOLDS**, ≥100000 (24×) |
+| S9 | `markTree` | 100000 (exact) | cap 100000 → `TREE_DEPTH_EXCEEDED:100001` | **HOLDS**, ≥100000 (24×) |
+| S10 | `walkLevel` | 16000 | cap 15000 → `TREE_DEPTH_EXCEEDED:15001` | **HOLDS**, ≥15000 (3.7×) |
+
+No RangeError was observed for any of the six sites at any depth tried, at any point in this
+campaign. **All six HOLD** against the 4096 threshold, by margins of 3.7× to 24×. Under §A12's
+table, all six take the **Holds** branch: every site keeps its recursion; part 8's work for all
+six is the doc-invariant addition, not a rewrite.
+
+**A confound worth recording, not a caveat on the verdict.** S6, S7 and S10 each keep an
+ancestor-path array for cycle detection (`descentStack = [...stack, id]`, and S7's cursor
+equivalent on both sides) that is copied — not mutated — at every level, so a walk to depth *d*
+allocates O(d²) array elements over its lifetime. At depth 32000 this hits a **JavaScript heap
+OOM** (`Ineffective mark-compacts near heap limit`, confirmed running alone, not under
+parallel-process contention) — a real, pre-existing memory cost of these three sites' own
+cycle-detection design, and unrelated to the call-stack ceiling this section measures: it is heap
+exhaustion, not a `RangeError`. It is why S6/S7/S10's directly-observed floor (15000–16000) is
+smaller than S8/S9's (100000, which dedupe via a shared `Set` and carry no such O(d²) cost) —
+not because S6/S7/S10 are closer to a stack limit. The threshold question was already decisively
+answered below 16000 (3.7× the 4096 bar), so the campaign did not chase this further; doing so
+would trade a stack-ceiling measurement for a heap-cost one.
+
+**Mechanism.** All six sites are `async function`s with a genuinely-pending `await` (a
+`readObject` / `readRawObject` / `readRawTreeById` call) on every level before descending
+further. Because the awaited promise resolves through a real microtask turn rather than
+synchronously, the awaiting frame does not stay resident on the native V8 call stack while the
+descent continues — the continuation resumes in a fresh stack frame when the promise settles. That
+is *consistent with* why these six clear depths one to two orders of magnitude beyond where §A2.1's
+S1–S3 overflow (2250 / 1350 / 925, all measured with a real, observed `RangeError`) — but S1–S3
+are also `async` functions, so "await suspends the frame" does not by itself explain their
+overflow, and this measurement does not establish it as a general rule. It establishes the
+empirical fact for these six specific sites, driven against the real source, nothing broader.
+
+**What this means for ADR-636's "provisionally".** The asymmetry ADR-636 anticipated — that some
+subset of the six sites left recursive would need to join the structural rewrite — is, on this
+evidence, narrower than expected: it is empty. Every one of the six holds by a wide margin,
+including S9's exact, cap-anchored proof at 100000 frames (≈49× the 2048 default) with zero stack
+cost. Whether that discharges ADR-636's "provisionally" outright, or the ADR should still record a
+bounded exception, is the session's call to make from this record — this part does not edit the
+ADR.
 
 ---
 
