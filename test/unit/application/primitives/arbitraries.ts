@@ -553,3 +553,94 @@ export const flatPathEntrySpecsArb = (): fc.Arbitrary<ReadonlyArray<FlatPathEntr
     .map((pathSegmentsList) =>
       pathSegmentsList.map((segments, i) => ({ path: segments.join('/'), content: `c${i}` })),
     );
+
+// ---------------------------------------------------------------------------
+// Tree-shape generator for walkTree's "iterative ≡ recursive" property:
+// varying breadth and depth, a mix of blob / tree / gitlink entries, and a
+// forced shared-subtree case (two sibling entries whose subtree content is
+// byte-identical, so content-addressing gives them the SAME oid) — the case
+// that most directly exercises that the cycle guard's ancestry is scoped to
+// the current descent path, not a global "seen this oid before" set.
+// ---------------------------------------------------------------------------
+
+export type TreeShapeEntry =
+  | { readonly kind: 'blob'; readonly name: string; readonly content: string }
+  | { readonly kind: 'gitlink'; readonly name: string }
+  | {
+      readonly kind: 'tree';
+      readonly name: string;
+      readonly children: ReadonlyArray<TreeShapeEntry>;
+    };
+
+const TREE_SHAPE_NAME_POOL = ['a', 'b', 'c', 'd', 'e'] as const;
+const TREE_SHAPE_MAX_DEPTH = 3;
+const TREE_SHAPE_MAX_BREADTH = 3;
+
+const arbTreeShapeName = (): fc.Arbitrary<string> => fc.constantFrom(...TREE_SHAPE_NAME_POOL);
+
+const arbLeafEntry = (name: string): fc.Arbitrary<TreeShapeEntry> =>
+  fc.oneof(
+    fc.string({ maxLength: 6 }).map((content): TreeShapeEntry => ({ kind: 'blob', name, content })),
+    fc.constant<TreeShapeEntry>({ kind: 'gitlink', name }),
+  );
+
+const arbTreeShapeEntry = (
+  name: string,
+  depthRemaining: number,
+  maxBreadth: number,
+): fc.Arbitrary<TreeShapeEntry> =>
+  depthRemaining <= 0
+    ? arbLeafEntry(name)
+    : fc.oneof(
+        { weight: 2, arbitrary: arbLeafEntry(name) },
+        {
+          weight: 1,
+          arbitrary: arbTreeShapeChildren(depthRemaining - 1, maxBreadth).map(
+            (children): TreeShapeEntry => ({ kind: 'tree', name, children }),
+          ),
+        },
+      );
+
+/**
+ * Recursive tree-shape generator, depth-bounded via an explicit countdown
+ * (not a self-referencing recursive arbitrary, so the depth bound is exact
+ * rather than size-driven). Entry names within one level are forced unique —
+ * a real git tree can never hold two entries with the same name — by drawing
+ * without replacement from the name pool, then folding one dependent
+ * per-name arbitrary at a time (`.chain`) rather than a variadic
+ * `fc.tuple`, since the per-position arbitraries are built at runtime from a
+ * variable-length name list.
+ */
+function arbTreeShapeChildren(
+  depthRemaining: number,
+  maxBreadth: number,
+): fc.Arbitrary<ReadonlyArray<TreeShapeEntry>> {
+  return fc
+    .uniqueArray(arbTreeShapeName(), { minLength: 0, maxLength: maxBreadth })
+    .chain((names) =>
+      names.reduce<fc.Arbitrary<TreeShapeEntry[]>>(
+        (acc, name) =>
+          acc.chain((built) =>
+            arbTreeShapeEntry(name, depthRemaining, maxBreadth).map((entry) => [...built, entry]),
+          ),
+        fc.constant([]),
+      ),
+    );
+}
+
+/** Clone the first `tree` child under a fresh name, forcing a shared oid via content-addressing. */
+const forceSharedSubtree = (
+  children: ReadonlyArray<TreeShapeEntry>,
+): ReadonlyArray<TreeShapeEntry> => {
+  const firstTree = children.find(
+    (c): c is Extract<TreeShapeEntry, { kind: 'tree' }> => c.kind === 'tree',
+  );
+  if (firstTree === undefined) return children;
+  const usedNames = new Set(children.map((c) => c.name));
+  const cloneName = TREE_SHAPE_NAME_POOL.find((n) => !usedNames.has(n));
+  if (cloneName === undefined) return children;
+  return [...children, { ...firstTree, name: cloneName }];
+};
+
+export const treeShapeArb = (): fc.Arbitrary<ReadonlyArray<TreeShapeEntry>> =>
+  arbTreeShapeChildren(TREE_SHAPE_MAX_DEPTH, TREE_SHAPE_MAX_BREADTH).map(forceSharedSubtree);

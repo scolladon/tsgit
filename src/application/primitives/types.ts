@@ -177,6 +177,11 @@ export interface WalkTreeEntry {
 
 export interface WalkTreeOptions {
   readonly recursive?: boolean;
+  /**
+   * Cap on recursion depth. Defaults to `core.maxTreeDepth`, read from the
+   * repository-local config (default 2048, honoured unclamped) — never from
+   * `~/.gitconfig` or any other scope, which tsgit does not read for this key.
+   */
   readonly maxDepth?: number;
   readonly maxEntries?: number;
 }

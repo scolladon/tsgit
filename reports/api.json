@@ -105193,6 +105193,30 @@
 								"isOptional": true,
 								"isReadonly": true
 							},
+							"comment": {
+								"summary": [
+									{
+										"kind": "text",
+										"text": "Cap on recursion depth. Defaults to "
+									},
+									{
+										"kind": "code",
+										"text": "`core.maxTreeDepth`"
+									},
+									{
+										"kind": "text",
+										"text": ", read from the\nrepository-local config (default 2048, honoured unclamped) — never from\n"
+									},
+									{
+										"kind": "code",
+										"text": "`~/.gitconfig`"
+									},
+									{
+										"kind": "text",
+										"text": " or any other scope, which tsgit does not read for this key."
+									}
+								]
+							},
 							"type": {
 								"type": "intrinsic",
 								"name": "number"
@@ -138396,6 +138420,46 @@
 							"variant": "signature",
 							"kind": 4096,
 							"flags": {},
+							"comment": {
+								"summary": [
+									{
+										"kind": "text",
+										"text": "Lazy pre-order walk of a tree (directory before its contents), one entry\nat a time. Descends with an explicit stack of tree frames instead of\nrecursion — depth costs an array push, not a JS/generator call frame — so\n"
+									},
+									{
+										"kind": "code",
+										"text": "`maxDepth`"
+									},
+									{
+										"kind": "text",
+										"text": " is the only ceiling on how deep a walk can go.\n\n"
+									},
+									{
+										"kind": "code",
+										"text": "`maxDepth`"
+									},
+									{
+										"kind": "text",
+										"text": " defaults to "
+									},
+									{
+										"kind": "code",
+										"text": "`core.maxTreeDepth`"
+									},
+									{
+										"kind": "text",
+										"text": ", read from the repository-local\nconfig (default 2048, honoured unclamped) — never from "
+									},
+									{
+										"kind": "code",
+										"text": "`~/.gitconfig`"
+									},
+									{
+										"kind": "text",
+										"text": " or\nany other scope, which tsgit does not read for this key."
+									}
+								]
+							},
 							"parameters": [
 								{
 									"id": 3318,

@@ -88,15 +88,17 @@ async function classifyOid(ctx: Context, oid: ObjectId): Promise<ClassifyResult>
 
 /**
  * Lazy async generator over all tree entries in pre-order (dir before contents).
- * git archive imposes no entry or depth cap — pass effectively-unbounded limits
- * so walkTree's diff-oriented defaults never abort a large tree.
+ * git archive imposes no entry cap — pass an effectively-unbounded maxEntries
+ * so walkTree's diff-oriented default never aborts a large tree. Depth is left
+ * at walkTree's own default: git caps archive's depth exactly like every
+ * other traversal (`git archive --format=tar` on a tree past
+ * `core.maxTreeDepth` exits 128), so no override belongs here.
  * Blob content is hydrated per-entry as the caller iterates; no upfront
  * materialisation of the full tree.
  */
 async function* buildEntryStream(ctx: Context, tree: ObjectId): AsyncIterable<ArchiveEntry> {
   for await (const entry of walkTree(ctx, tree, {
     maxEntries: Number.MAX_SAFE_INTEGER,
-    maxDepth: Number.MAX_SAFE_INTEGER,
   })) {
     const { path, id, mode } = entry;
     if (mode === FILE_MODE.DIRECTORY || mode === FILE_MODE.GITLINK) {

@@ -3,8 +3,10 @@ import type { WalkTreeEntry as WTE } from '../../../../src/application/primitive
 import { walkTree } from '../../../../src/application/primitives/walk-tree.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../src/application/primitives/write-tree.js';
+import { DEFAULT_MAX_TREE_DEPTH } from '../../../../src/domain/diff/flat-tree.js';
+import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import type { Blob, FileMode, ObjectId, TreeEntry } from '../../../../src/domain/objects/index.js';
-import { buildSeededContext } from './fixtures.js';
+import { buildSeededContext, buildTreeChain, seedMaxTreeDepth } from './fixtures.js';
 
 async function collect(iter: AsyncIterable<WTE>): Promise<WTE[]> {
   const out: WTE[] = [];
@@ -344,6 +346,149 @@ describe('walkTree', () => {
           expect(code).toBe('UNEXPECTED_OBJECT_TYPE');
         }
       });
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The structural bound at the DEFAULT cap — this is the assertion that
+// distinguishes an explicit stack from recursion: before the rewrite,
+// walkInternal's own recursion overflows the JS/generator call stack well
+// before reaching DEFAULT_MAX_TREE_DEPTH (2048), even though the guard
+// itself admits the path.
+// ---------------------------------------------------------------------------
+
+describe('Given config unset (default cap) and a tree chain at exactly the default depth', () => {
+  describe('When walkTree is iterated', () => {
+    it('Then it completes and yields the leaf entry', async () => {
+      // Arrange
+      const ctx = await buildSeededContext();
+      const rootId = await buildTreeChain(ctx, DEFAULT_MAX_TREE_DEPTH);
+      // Act
+      const out = await collect(walkTree(ctx, rootId));
+      // Assert
+      expect(out).toHaveLength(DEFAULT_MAX_TREE_DEPTH + 1);
+      expect(out[out.length - 1]?.mode).toBe(FILE_MODE.REGULAR);
+    });
+  });
+});
+
+describe('Given config unset (default cap) and a tree chain one level past the default depth', () => {
+  describe('When walkTree is iterated', () => {
+    it('Then throws TREE_DEPTH_EXCEEDED with depth = default cap + 1', async () => {
+      // Arrange
+      const ctx = await buildSeededContext();
+      const rootId = await buildTreeChain(ctx, DEFAULT_MAX_TREE_DEPTH + 1);
+      // Act + Assert
+      try {
+        await collect(walkTree(ctx, rootId));
+        expect.unreachable();
+      } catch (error) {
+        const data = (error as { data: { code: string; depth: number } }).data;
+        expect(data.code).toBe('TREE_DEPTH_EXCEEDED');
+        expect(data.depth).toBe(DEFAULT_MAX_TREE_DEPTH + 1);
+      }
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// core.maxTreeDepth configured to a small cap — the guard is reachable at
+// any distance past the cap, and the cap value is READ from config, not a
+// hardcoded default.
+// ---------------------------------------------------------------------------
+
+describe('Given core.maxTreeDepth configured to a small cap', () => {
+  const SMALL_CAP = 4;
+
+  describe('When a tree chain is driven exactly at the configured cap', () => {
+    it('Then completes and yields the leaf entry (boundary)', async () => {
+      // Arrange — the guard is `depth > maxDepth`, so a frame entered at
+      // exactly `maxDepth` must NOT raise TREE_DEPTH_EXCEEDED. Pins `>`
+      // against `>=` (which would reject this) and against `<` (which
+      // would reject every shallower chain too).
+      const ctx = await buildSeededContext();
+      await seedMaxTreeDepth(ctx, String(SMALL_CAP));
+      const rootId = await buildTreeChain(ctx, SMALL_CAP);
+      // Act
+      const out = await collect(walkTree(ctx, rootId));
+      // Assert
+      expect(out).toHaveLength(SMALL_CAP + 1);
+      expect(out[out.length - 1]?.mode).toBe(FILE_MODE.REGULAR);
+    });
+  });
+
+  describe('When a tree chain is driven one level past the configured cap', () => {
+    it('Then throws TREE_DEPTH_EXCEEDED with depth = cap + 1', async () => {
+      // Arrange
+      const ctx = await buildSeededContext();
+      await seedMaxTreeDepth(ctx, String(SMALL_CAP));
+      const rootId = await buildTreeChain(ctx, SMALL_CAP + 1);
+      // Act + Assert
+      try {
+        await collect(walkTree(ctx, rootId));
+        expect.unreachable();
+      } catch (error) {
+        const data = (error as { data: { code: string; depth: number } }).data;
+        expect(data.code).toBe('TREE_DEPTH_EXCEEDED');
+        expect(data.depth).toBe(SMALL_CAP + 1);
+      }
+    });
+  });
+
+  describe('When a tree chain is driven far beyond the configured cap (20x)', () => {
+    it('Then still throws TREE_DEPTH_EXCEEDED with depth = cap + 1, never a deeper value or a RangeError', async () => {
+      // Arrange — proves the guard is reachable (not dead code behind a
+      // stack overflow or a runaway loop) at any input size, however far
+      // past the cap, and that it reports the boundary depth, not the
+      // structural depth of the fixture.
+      const ctx = await buildSeededContext();
+      await seedMaxTreeDepth(ctx, String(SMALL_CAP));
+      const rootId = await buildTreeChain(ctx, SMALL_CAP * 20);
+      // Act + Assert
+      try {
+        await collect(walkTree(ctx, rootId));
+        expect.unreachable();
+      } catch (error) {
+        const data = (error as { data: { code: string; depth: number } }).data;
+        expect(data.code).toBe('TREE_DEPTH_EXCEEDED');
+        expect(data.depth).toBe(SMALL_CAP + 1);
+      }
+    });
+  });
+});
+
+describe('Given the same depth-5 tree chain tested at two different core.maxTreeDepth values', () => {
+  describe('When core.maxTreeDepth = 5', () => {
+    it('Then completes', async () => {
+      // Arrange — a site that ignored config and kept a hardcoded cap would
+      // pass the small-cap pair above against that hardcoded value and fail
+      // only here.
+      const ctx = await buildSeededContext();
+      await seedMaxTreeDepth(ctx, '5');
+      const rootId = await buildTreeChain(ctx, 5);
+      // Act
+      const out = await collect(walkTree(ctx, rootId));
+      // Assert
+      expect(out).toHaveLength(6);
+    });
+  });
+
+  describe('When core.maxTreeDepth = 4', () => {
+    it('Then throws TREE_DEPTH_EXCEEDED with depth = 5', async () => {
+      // Arrange — the SAME chain shape, only the configured cap changes.
+      const ctx = await buildSeededContext();
+      await seedMaxTreeDepth(ctx, '4');
+      const rootId = await buildTreeChain(ctx, 5);
+      // Act + Assert
+      try {
+        await collect(walkTree(ctx, rootId));
+        expect.unreachable();
+      } catch (error) {
+        const data = (error as { data: { code: string; depth: number } }).data;
+        expect(data.code).toBe('TREE_DEPTH_EXCEEDED');
+        expect(data.depth).toBe(5);
+      }
     });
   });
 });
