@@ -396,6 +396,22 @@ export class NodeFileSystem implements FileSystem {
   private readonly fsOps: FsOperations;
 
   /**
+   * Whether `rootDirs` are ALREADY realpathed, so `canonicalizeRoots` may
+   * return them unchanged instead of realpathing each one again. Set only by
+   * a caller that performed those realpaths itself and observed every one
+   * succeed.
+   *
+   * Deliberately a flag over the resolved values themselves: the canonical
+   * prefixes are UNIONED into the containment set, so accepting an
+   * independent array would make it an additive confinement input — a caller
+   * passing a broader path than it resolved would WIDEN the set. Re-deriving
+   * the prefixes from `rootDirs` means the union is `raw ∪ raw = raw`, so a
+   * wrongly-set flag can only ever narrow, never widen. Skipping a
+   * recomputation is safe in a way that supplying a second value is not.
+   */
+  private readonly rootsArePreResolved: boolean;
+
+  /**
    * Memoised realpath of an *existing* parent directory, keyed by the raw
    * (pre-realpath) parent path. Every write surface shares this one cache
    * via `realpathForCreation`: a clone/checkout writing N files into the
@@ -449,6 +465,7 @@ export class NodeFileSystem implements FileSystem {
     rootDir: string | ReadonlyArray<string>,
     pathPolicy: PathPolicy = nativePolicy,
     fsOps: FsOperations = realFsOps,
+    rootsArePreResolved = false,
   ) {
     const roots = typeof rootDir === 'string' ? [rootDir] : rootDir;
     const [primary] = roots;
@@ -462,6 +479,7 @@ export class NodeFileSystem implements FileSystem {
     this.rootDir = primary;
     this.pathPolicy = pathPolicy;
     this.fsOps = fsOps;
+    this.rootsArePreResolved = rootsArePreResolved;
   }
 
   /**
@@ -478,7 +496,13 @@ export class NodeFileSystem implements FileSystem {
   }
 
   /**
-   * Realpaths every root. A root that does not exist yet is a legitimate
+   * When `rootsArePreResolved` was set at construction, returns the raw root
+   * prefixes unchanged — the caller already realpathed these exact values and
+   * observed every one succeed, and `realpath` is idempotent, so re-running it
+   * would return the same strings. The union in `loadRootSet` then collapses to
+   * `raw ∪ raw = raw`: a wrongly-set flag can only narrow the containment set,
+   * never widen it. Otherwise realpaths every
+   * root. A root that does not exist yet is a legitimate
    * root (`worktree add` probes its own target before creating it); its
    * canonical prefix is derived from the realpath of its nearest EXISTING ancestor
    * and re-joining the missing tail — exactly the form `realpathForCreation`
@@ -488,6 +512,9 @@ export class NodeFileSystem implements FileSystem {
    * rather than being swallowed.
    */
   private async canonicalizeRoots(): Promise<ReadonlyArray<RootPrefix>> {
+    if (this.rootsArePreResolved) {
+      return this.getRootDirPrefixes();
+    }
     const resolved = await Promise.all(
       this.rootDirs.map(async (root) => {
         try {

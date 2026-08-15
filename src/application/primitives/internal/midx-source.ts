@@ -32,6 +32,7 @@ import {
   REASON_MIDX_CHAIN_TOO_LONG,
   REASON_MIDX_EXCEEDS_MAX,
 } from '../validators.js';
+import { errorDataCode } from './error-data-code.js';
 
 const FLAT_ARTEFACT = 'multi-pack-index';
 const CHAIN_ARTEFACT = 'multi-pack-index-chain';
@@ -91,22 +92,18 @@ function tierOf(check: MidxCheck): MidxTier {
  * the caller. Never invert this into a Tier-A allow-list: that would
  * silently swallow a future `MidxCheck` member the tier map forgot.
  */
-/**
- * Structural, never `instanceof`: the probes below classify errors thrown by
- * `ctx.fs`, and in mixed-module-graph test harnesses (a source-graph
- * registry over a dist-bundle Context) the adapter's `TsgitError` class is
- * a different identity than this module's. The `data.code` shape is the
- * stable contract; class identity is not.
- */
-function errorDataCode(error: unknown): string | undefined {
-  if (typeof error !== 'object' || error === null) return undefined;
-  const data = (error as { readonly data?: { readonly code?: unknown } }).data;
-  return typeof data?.code === 'string' ? data.code : undefined;
-}
-
 export function isTierBMidxFault(err: unknown): err is TsgitError {
   const code = errorDataCode(err);
-  if (code === 'FILE_NOT_FOUND' || code === 'PERMISSION_DENIED') return true;
+  // NOT_A_DIRECTORY joins the two absence-ish codes: it is what probing
+  // `objects/pack/multi-pack-index` reports when `objects/pack` is itself a
+  // regular file. Canonical git prints `error: unable to open object pack
+  // directory: …: Not a directory` and still serves a loose read at exit 0 —
+  // it dies during object-store setup on a self-inconsistent multi-pack-index,
+  // never on the pack directory's shape. Treating it as a Tier-B discard is
+  // what reproduces that.
+  if (code === 'FILE_NOT_FOUND' || code === 'PERMISSION_DENIED' || code === 'NOT_A_DIRECTORY') {
+    return true;
+  }
   if (code !== 'INVALID_MULTI_PACK_INDEX') return false;
   const check = (err as { readonly data: { readonly check: MidxCheck } }).data.check;
   return tierOf(check) === 'B';

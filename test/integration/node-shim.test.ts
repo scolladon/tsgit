@@ -106,6 +106,36 @@ describe('Node shim — round-trip', () => {
   });
 });
 
+describe('Node shim — symlinked root', () => {
+  describe('Given a real repo and a symlink pointing at it, When openRepository opens the symlink path', () => {
+    it('Then a read through the returned handle succeeds', async () => {
+      // Arrange — the macOS /var -> /private/var / /tmp -> /private/tmp class:
+      // cwd resolves through a symlink to a different real path, and the
+      // adapter's containment roots must be derived from the REAL path.
+      const setup = await openRepository({ cwd: tmpdir });
+      await setup.init();
+      await writeFile(path.join(tmpdir, 'a.txt'), 'hello\n');
+      await setup.add(['a.txt']);
+      await setup.commit({ message: 'first', author });
+      await setup.dispose();
+      const linkPath = `${tmpdir}-link`;
+      await symlink(tmpdir, linkPath);
+
+      // Act
+      const sut = await openRepository({ cwd: linkPath });
+      try {
+        const status = await sut.status();
+
+        // Assert
+        expect(status.clean).toBe(true);
+      } finally {
+        await sut.dispose();
+        await rm(linkPath, { force: true });
+      }
+    });
+  });
+});
+
 describe('Node shim — findLayout walk-up', () => {
   describe('Given a sub-directory of an initialized repo as cwd, When openRepository runs', () => {
     it('Then findLayout discovers the parent .git', async () => {

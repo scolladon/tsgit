@@ -181,10 +181,15 @@ describe('stash push', () => {
         // Act
         const result = await stashPush(guarded, {});
 
-        // Assert
+        // Assert — read back through the SAME Context that wrote. The
+        // loose-object fanout cache is per-Context and `writeObject`
+        // invalidates only the writing one, so reading the freshly-written
+        // stash objects through `ctx` consults a set that never learned about
+        // them — a miss whenever `ctx` had already probed and cached that
+        // oid's prefix as absent, which is why it failed intermittently.
         if (result.kind !== 'saved') throw new Error('expected saved');
-        const w = await commitOf(ctx, result.stash);
-        expect(await treeContent(ctx, w.tree, 'link')).toBe('new-target');
+        const w = await commitOf(guarded, result.stash);
+        expect(await treeContent(guarded, w.tree, 'link')).toBe('new-target');
       });
     });
   });

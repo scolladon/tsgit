@@ -512,6 +512,91 @@ describe('NodeFileSystem — canonical-root cache (DI)', () => {
   });
 });
 
+describe('NodeFileSystem — pre-resolved roots (DI)', () => {
+  describe('Given a NodeFileSystem told its roots are already resolved', () => {
+    describe('When the first path-taking call resolves the root set', () => {
+      it('Then fsOps.realpath is never called', async () => {
+        // Arrange
+        const rootDir = '/root';
+        const realpathSpy = vi.fn().mockImplementation(async (input: string) => input);
+        const fsOps = fakeFsOps({ realpath: realpathSpy });
+        const sut = new NodeFileSystem([rootDir], posixPolicy, fsOps, true);
+
+        // Act
+        await sut.exists(`${rootDir}/file.txt`);
+
+        // Assert
+        expect(realpathSpy).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('When a path outside the raw root is resolved', () => {
+      it('Then it is still refused — skipping the realpath never widens the root set', async () => {
+        // Arrange
+        const fsOps = fakeFsOps({
+          realpath: vi.fn().mockImplementation(async (input: string) => input),
+        });
+        const sut = new NodeFileSystem(['/root'], posixPolicy, fsOps, true);
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut.readUtf8('/elsewhere/secret.txt');
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+      });
+    });
+  });
+
+  describe('Given a NodeFileSystem NOT told its roots are already resolved', () => {
+    describe('When the first path-taking call resolves the root set', () => {
+      it('Then fsOps.realpath is called exactly once per root', async () => {
+        // Arrange
+        const rootA = '/root-a';
+        const rootB = '/root-b';
+        const realpathSpy = vi.fn().mockImplementation(async (input: string) => input);
+        const fsOps = fakeFsOps({ realpath: realpathSpy });
+        const sut = new NodeFileSystem([rootA, rootB], posixPolicy, fsOps);
+
+        // Act
+        await sut.exists(`${rootA}/file.txt`);
+
+        // Assert
+        expect(realpathSpy).toHaveBeenCalledTimes(2);
+        expect(realpathSpy).toHaveBeenCalledWith(rootA);
+        expect(realpathSpy).toHaveBeenCalledWith(rootB);
+      });
+    });
+  });
+
+  describe('Given a root whose realpath would resolve to a BROADER path', () => {
+    describe('When the adapter is told the roots are already resolved', () => {
+      it('Then the containment set stays the raw prefix — the flag cannot widen it', async () => {
+        // Arrange — were the adapter to accept a caller-supplied resolved
+        // VALUE, `/` would enter the prefix set and admit everything. The
+        // flag only ever skips recomputing the same prefixes.
+        const fsOps = fakeFsOps({ realpath: vi.fn().mockResolvedValue('/') });
+        const sut = new NodeFileSystem(['/root'], posixPolicy, fsOps, true);
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut.readUtf8('/outside/file.txt');
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+      });
+    });
+  });
+});
+
 describe('NodeFileSystem.resolveWrite — settled root-set fast path (DI)', () => {
   // `resolveWrite` reads `this.resolvedRootSet ?? (await this.loadRootSet())`
   // directly — the same idiom every read surface already used — instead of

@@ -58,11 +58,13 @@ export interface PackGeneration {
    *  yet read. The safe superset for `refresh()`/`dispose()` to close: a
    *  pack whose index never loaded simply has nothing to close. */
   readonly packs: ReadonlyArray<RegisteredPack>;
-  /** The multi-pack-index this generation's scan discovered, produced by the
-   *  SAME `scanPacks` call as `packs` — so no consumer can ever pair one
-   *  generation's midx with another's packs. Has no reader beyond
-   *  `assertLoadable` propagating its rejection: `midx` below is the bound,
-   *  lookup-facing view. */
+  /** The multi-pack-index load this generation's scan captured from the
+   *  store gate it awaited — the same `MidxLoadResult` `assertLoadable`
+   *  observed for this generation, so no consumer can ever pair one
+   *  generation's midx with another's packs. Read by `computeMidxHealth`
+   *  for the generation's fault set and flat-file presence; `midx` below is
+   *  the bound, lookup-facing view. `assertLoadable` does NOT read this
+   *  field — it awaits the same store gate this was captured from. */
   readonly midxLoad: MidxLoadResult;
   /** `midxLoad.set` bound to this generation's own `packs`, or `undefined`
    *  exactly when `midxLoad.set` is. The one field `lookup` reads to decide

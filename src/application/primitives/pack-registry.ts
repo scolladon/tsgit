@@ -19,6 +19,7 @@ import {
   parsePackHeader,
 } from '../../domain/storage/pack-entry.js';
 import type { Context } from '../../ports/context.js';
+import { errorDataCode } from './internal/error-data-code.js';
 import {
   bindMidx,
   computeMidxHealth,
@@ -26,7 +27,7 @@ import {
   type LoadedMidx,
   type MidxHealth,
 } from './internal/midx-binding.js';
-import { loadMidxSet } from './internal/midx-source.js';
+import { loadMidxSet, type MidxLoadResult } from './internal/midx-source.js';
 import {
   type ArtefactLoad,
   loadBitmapBytes,
@@ -53,7 +54,7 @@ import {
   isSkippablePackFault,
   packBaseName,
 } from './internal/pack-shared.js';
-import { createPromiseMemo } from './internal/promise-memo.js';
+import { createPromiseMemo, type PromiseMemo } from './internal/promise-memo.js';
 import { commonGitDir, packsDir } from './path-layout.js';
 import { exceedsMaxPackIdxBytes, REASON_PACK_IDX_EXCEEDS_MAX } from './validators.js';
 
@@ -195,17 +196,22 @@ export interface PackRegistry {
   all(): Promise<ReadonlyArray<RegisteredPack>>;
   lookup(id: ObjectId): Promise<PackLookupHit | undefined>;
   /**
-   * Await the current generation for its rejection only, discarding the
-   * result. A structurally self-inconsistent multi-pack-index must deny
-   * EVERY read — loose objects included — before any loose-vs-pack branch is
-   * even reached, and this is the single gate that makes that true. Returns
-   * `void` on purpose: it must never become a second way to reach the packs.
-   * Never forces `generation.indexed` — that would pay every pack's `.idx`
-   * load eagerly and defeat the point of loading indexes lazily.
+   * Await the store gate — the multi-pack-index load alone — for its
+   * rejection only, discarding the result. Canonical git dies during
+   * object-store setup on exactly one thing, a structurally
+   * self-inconsistent multi-pack-index, and on nothing else: this is the
+   * single gate that reproduces that death ahead of EVERY read — loose
+   * objects included — before any loose-vs-pack branch is even reached.
+   * Returns `void` on purpose: it must never become a second way to reach
+   * the packs. Never forces the deferred pack-directory scan or
+   * `generation.indexed` — that would pay every pack's `.idx` load eagerly
+   * and defeat the point of loading indexes lazily.
    */
   assertLoadable(): Promise<void>;
-  /** Drop the cached `.idx` scan so the next `all`/`lookup` re-scans the
-   *  pack directory — used after a lazy-fetch writes a new pack. */
+  /** Drop BOTH the cached multi-pack-index gate and the `.idx` scan, so the
+   *  next read re-probes the multi-pack-index and the next `all`/`lookup`
+   *  re-lists the pack directory — used after a lazy-fetch writes a new pack,
+   *  which may ship a new midx as well as new packs. */
   refresh(): void;
   /** Close every loaded pack's persistent handle. Idempotent; a registry
    *  that never scanned the pack directory disposes without touching `fs`. */
@@ -469,26 +475,81 @@ const unusableEntry = (
   data: TsgitErrorData,
 ): UnusablePack => ({ name, layer, data });
 
-export function createPackRegistry(ctx: Context): PackRegistry {
-  const scanPacks = async (): Promise<PackGeneration> => {
-    const dir = packsDir(commonGitDir(ctx));
-    if (!(await ctx.fs.exists(dir))) return emptyGeneration();
-    // A SEPARATE step from the .idx candidate loop below — never folded into
-    // it, so a structurally self-inconsistent midx fault is never caught by
-    // isSkippableIdxFault and laundered into "skip one pack". A rejection
-    // here aborts the whole scan, and the scan memo never caches a
-    // rejection, so the very next lookup re-attempts it from scratch.
-    // Parallel with the listing: the two rejection paths stay distinct (the
-    // catch scope, not the ordering, is what keeps a Tier-A midx fault out of
-    // isSkippableIdxFault), and every Context's first pack access saves one
-    // sequential round-trip on high-latency adapters.
-    const [midxLoad, entries] = await Promise.all([loadMidxSet(ctx, dir), ctx.fs.readdir(dir)]);
+/**
+ * Node's `readdir` on a missing directory maps to `FILE_NOT_FOUND`.
+ * `NOT_A_DIRECTORY` covers two distinct real shapes: the memory adapter's
+ * code for a MISSING directory, and node's `ENOTDIR` when `objects/pack` is
+ * itself a regular file. Both mean the same thing here — there are no packs
+ * to list — and canonical git agrees, serving a loose read at exit 0 while
+ * printing `error: unable to open object pack directory: …: Not a directory`.
+ *
+ * Structural on `data.code`, never `instanceof`: this classifies an error
+ * thrown by `ctx.fs`, so in a mixed-module-graph harness (a source-graph
+ * registry over a dist-bundle Context) the adapter's `TsgitError` is a
+ * different class identity than this module's — the hazard
+ * `internal/error-data-code.ts` documents, and the reason every `ctx.fs`
+ * absence probe shares `errorDataCode`.
+ */
+function isMissingPackDir(error: unknown): boolean {
+  const code = errorDataCode(error);
+  return code === 'FILE_NOT_FOUND' || code === 'NOT_A_DIRECTORY';
+}
+
+// git dies during object-store setup ahead of every read, and the ONLY
+// thing it dies on is a structurally self-inconsistent multi-pack-index —
+// the directory listing and pack construction below are invisible to a
+// successful loose read's outcome. So the gate is exactly the midx load,
+// and its Tier-B discard diagnostic belongs here too: git prints that one
+// on a loose read.
+function createStoreGate(ctx: Context): PromiseMemo<MidxLoadResult> {
+  const loadStoreGate = async (): Promise<MidxLoadResult> => {
+    const midxLoad = await loadMidxSet(ctx, packsDir(commonGitDir(ctx)));
     for (const fault of midxLoad.faults) {
       ctx.logger?.warn?.('packRegistry: discarding unusable multi-pack-index', {
         artefact: fault.artefact,
         ...faultContext(fault.data),
       });
     }
+    return midxLoad;
+  };
+  return createPromiseMemo(loadStoreGate);
+}
+
+export function createPackRegistry(ctx: Context): PackRegistry {
+  const storeGate = createStoreGate(ctx);
+
+  const scanPacks = async (): Promise<PackGeneration> => {
+    const dir = packsDir(commonGitDir(ctx));
+    // storeGate.get() directly, not currentGate(): scanPacks is reachable
+    // only through currentGeneration(), which already refuses to start once
+    // disposed, so the gate wrapper's own disposal check would be dead
+    // weight here. Captured synchronously alongside the listing — not
+    // awaited first — so a scan in flight keeps its own consistent
+    // MidxLoadResult. The midx warn now lives inside the gate (above); the
+    // orphan-.idx warn below stays here, on the deferred side, because git is
+    // silent about an orphan .idx on a loose read — only the midx load denies
+    // one.
+    //
+    // The Promise.all overlap now only pays off for a consumer that forces the
+    // scan with NO prior read — fsck's health/midxHealth/indexFaults, a bare
+    // all(). On the object-read paths assertLoadable has already settled the
+    // gate, so this arm resolves immediately and the listing is serial: that
+    // costs a packed cold read the round-trip the two used to share, which is
+    // the accepted price of not listing the directory on a loose hit.
+    //
+    // No separate `exists(dir)` guard: a missing (or non-directory)
+    // `objects/pack` folds to an empty listing right here, inside the same
+    // `Promise.all` arm — never a sequential probe-then-list round trip.
+    // Everything else (PERMISSION_DENIED, …) is a real fault and propagates
+    // to the only consumers that actually need the pack store — `all()` and
+    // `lookup()` — never to a loose-only read, which never forces this scan.
+    const [midxLoad, entries] = await Promise.all([
+      storeGate.get(),
+      ctx.fs.readdir(dir).catch((error: unknown) => {
+        if (isMissingPackDir(error)) return [];
+        throw error;
+      }),
+    ]);
     // git registers a pack only when its .pack exists by name — an orphaned
     // .idx is garbage, never a pack. The listing already in hand is the same
     // data, so the check costs no I/O.
@@ -563,6 +624,13 @@ export function createPackRegistry(ctx: Context): PackRegistry {
     if (!disposed) return scan.get();
     return scan.peek() ?? Promise.resolve(emptyGeneration());
   };
+  // Mirrors currentGeneration's terminal-disposal rule for the gate alone:
+  // once disposed, never start a new midx load. A gate already forced keeps
+  // returning its settled (or still in-flight) result; an idle gate — never
+  // forced, or self-cleared by its own rejection — resolves to the empty
+  // load instead of starting one.
+  const currentGate = (): Promise<unknown> =>
+    disposed ? (storeGate.peek() ?? Promise.resolve()) : storeGate.get();
   const allPacks = async (): Promise<ReadonlyArray<RegisteredPack>> => {
     const generation = await currentGeneration();
     return (await generation.indexed.get()).packList;
@@ -705,7 +773,7 @@ export function createPackRegistry(ctx: Context): PackRegistry {
   return {
     all: allPacks,
     async assertLoadable(): Promise<void> {
-      await currentGeneration();
+      await currentGate();
     },
     midxHealth: midxHealthMemo.get,
     async midxBitmap(): Promise<MidxBitmapLoad | undefined> {
@@ -716,6 +784,11 @@ export function createPackRegistry(ctx: Context): PackRegistry {
       if (disposed) return;
       healthMemo.clear();
       midxHealthMemo.clear();
+      // Cleared before the early return below: a Context that only ever
+      // called assertLoadable (a loose-only read) never forces the scan, so
+      // clearing the gate here — not after the guard — is the only way a
+      // stale multi-pack-index load doesn't outlive this refresh().
+      storeGate.clear();
       // The outgoing packs may hold open persistent handles; close them before
       // dropping the references or every refresh leaks one fd per touched pack.
       const outgoing = scan.clear();

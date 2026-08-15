@@ -14,10 +14,10 @@
  * The promise itself (not its resolved value) is memoised, so concurrent
  * grafted reads racing the first probe share one `readUtf8` call.
  */
-import { TsgitError } from '../../../domain/error.js';
 import type { ObjectId } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
 import { commonGitDir, shallowFilePath } from '../path-layout.js';
+import { errorDataCode } from './error-data-code.js';
 import { parseShallowFile } from './parse-shallow.js';
 
 interface ShallowState {
@@ -38,10 +38,8 @@ const shallowCache = new WeakMap<Context, Promise<ShallowState>>();
  * not make every read throw.
  */
 export function isAbsentShallowFile(error: unknown): boolean {
-  return (
-    error instanceof TsgitError &&
-    (error.data.code === 'FILE_NOT_FOUND' || error.data.code === 'NOT_A_DIRECTORY')
-  );
+  const code = errorDataCode(error);
+  return code === 'FILE_NOT_FOUND' || code === 'NOT_A_DIRECTORY';
 }
 
 async function loadStateUncached(ctx: Context): Promise<ShallowState> {
