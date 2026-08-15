@@ -63,6 +63,8 @@ await repo.clone({ url: 'https://github.com/owner/repo.git', depth: 1 });
 
 ## Throws
 
+`clone` does **not** validate `[core]` config (`core.maxTreeDepth`, `core.loosecompression` / `core.compression`, …) on either the destination or the ambient repository the caller happens to be standing in — a deliberate divergence from a blanket "every operational command gates" rule, not an oversight. Canonical git's own refusal on an invalid `core.maxTreeDepth` is a **source-side** effect: the process serving a local-path clone reads its own config at startup and dies before it can serve anything. Git never reads the destination's config (an occupied destination fails with "already exists" first, before any config read) and never reads the ambient repository's. tsgit's `clone` is client-only and reaches its source through a transport, so it has no analogue for that source-side read; gating on the destination or ambient config here would refuse a clone git accepts.
+
 - `TARGET_DIRECTORY_NOT_EMPTY` — `.git/HEAD` already exists in `cwd`.
 - `REMOTE_ADVERTISES_NO_REFS` — server returned an empty ref list (or `url === ''`).
 - `INVALID_URL` — malformed remote URL; HTTP: failed SSRF / DNS validation; SSH/scp: a control character, or the host/path begins with `-` (argv-injection guard).

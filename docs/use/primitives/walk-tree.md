@@ -7,7 +7,7 @@
 ```ts
 repo.primitives.walkTree(
   treeIdOrObject: ObjectId | Tree,
-  options?: { recursive?: boolean },
+  options?: { recursive?: boolean; maxDepth?: number; maxEntries?: number },
 ): AsyncIterable<TreeEntry>;
 
 interface TreeEntry {
@@ -22,6 +22,8 @@ interface TreeEntry {
 | Option | Default | Meaning |
 |---|---|---|
 | `recursive` | `true` | Descend into sub-trees. When `false`, yields only the top-level entries. |
+| `maxDepth` | `core.maxTreeDepth` | Cap on recursion depth, read from the repository-local config (default 2048 when unset) and honoured unclamped at any configured value — never read from `~/.gitconfig` or any other scope. Descends with an explicit stack, not JS recursion, so `maxDepth` is the only ceiling on how deep a walk can go. Exceeding it throws `TREE_DEPTH_EXCEEDED`. |
+| `maxEntries` | `MAX_FLAT_TREE_ENTRIES` | Cap on the total entry count yielded. Exceeding it throws `TREE_ENTRY_LIMIT_EXCEEDED`. |
 
 ## Example
 

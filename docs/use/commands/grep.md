@@ -160,6 +160,10 @@ await repo.grep({ patterns: [/^\s*\/\//], invert: true });
 
 - `INVALID_OPTION` — `patterns` is empty (`option: 'patterns'`), or a `RegExp`
   carries the `u` flag (`option: 'pattern'`, unsupported over byte content).
+  Checked before the repository gate below, so an empty `patterns` array is
+  reported even against a repository with a malformed `[core]` entry.
+- `NOT_A_REPOSITORY` — outside a git repository.
+- `CONFIG_BAD_NUMERIC_VALUE` / `CONFIG_BAD_ZLIB_LEVEL` / `CONFIG_MISSING_VALUE` / `CONFIG_BAD_BOOLEAN_VALUE` — an invalid `[core]` entry, reached through the same eager operational gate every other operational command reads (see [`errors.md`](../errors.md)); includes an invalid `core.maxTreeDepth`.
 - `OBJECT_NOT_FOUND` / `REVPARSE_UNRESOLVED` — a `{ treeish }` target cannot be
   resolved.
 - `GREP_LINE_TOO_LONG` — a single line's bytes exceed the JS engine's maximum

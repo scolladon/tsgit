@@ -14,7 +14,7 @@
  *  7. If `prune: true`, delete `refs/remotes/<remote>/<branch>` refs the
  *  server no longer advertises. Local refs are never touched.
  *
- * Working-tree materialization is.1; out of scope.
+ * Working-tree materialization is out of scope.
  */
 import { TsgitError } from '../../domain/error.js';
 import { remoteAdvertisesNoRefs, remoteNotConfigured } from '../../domain/index.js';

@@ -275,6 +275,7 @@ process.exit(result.exitCode);
 ## Throws
 
 - `NOT_A_REPOSITORY` — `cwd` (or `gitDir`) does not point inside a git repository.
+- `CONFIG_BAD_NUMERIC_VALUE` / `CONFIG_BAD_ZLIB_LEVEL` / `CONFIG_MISSING_VALUE` / `CONFIG_BAD_BOOLEAN_VALUE` — an invalid `[core]` entry, reached through the same eager operational gate every other operational command reads (see [`errors.md`](../errors.md)); includes an invalid `core.maxTreeDepth`. `fsck` is the command a user reaches for when a repository is already suspect, and it now refuses to run at all against one whose `core.maxTreeDepth` is malformed — matching git, which does the same. That refusal does not deadlock: `config --get` / `config --set` stay on the narrower, non-eager gate and keep working against the same repository, so `config --set core.maxTreeDepth <n>` is the recovery path. Separately: `fsck` itself does **not** check tree depth — `git fsck --strict` exits 0 on a repository containing a 2049-deep tree, and tsgit matches.
 - `DECOMPRESS_FAILED` — `connectivityOnly: true` only, and only for an object
   that is not reachable from any root: the object is loose, its zlib stream
   cannot be inflated, and no other pack holds a readable copy of the same id.

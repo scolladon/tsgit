@@ -61,7 +61,7 @@ export interface CloneResult {
  * `refs/remotes/origin/<branch>`, tags under `refs/tags/<tag>`), and
  * points `HEAD` at the remote's HEAD line.
  *
- * Working-tree materialization is.1 — out of scope here.
+ * Working-tree materialization is out of scope here.
  *
  * Throws `TARGET_DIRECTORY_NOT_EMPTY` if `gitDir` already exists and
  * `REMOTE_ADVERTISES_NO_REFS` when discovery returns no refs.

@@ -36,7 +36,7 @@ for (const [path, entry] of flat.entries) {
 - `OBJECT_NOT_FOUND` — the root oid (or a passed-in `Tree`'s `id`) is not in the store.
 - `UNEXPECTED_OBJECT_TYPE` — the root oid (or a passed-in `Tree`'s `id`) does not resolve to a tree. A directory-mode entry deeper in the walk whose oid resolves to a non-tree is silently skipped instead — never recursed into, never recorded — mirroring `walkTree`'s own asymmetry.
 - `INVALID_TREE_ENTRY` — a structurally malformed entry, or a `.`/`..`/embedded-`/`-name refusal (an empty name is refused structurally before the name-shape check ever runs).
-- `TREE_DEPTH_EXCEEDED` / `TREE_ENTRY_LIMIT_EXCEEDED` / `TREE_CYCLE_DETECTED` — the traversal's bounded-recursion guards.
+- `TREE_DEPTH_EXCEEDED` / `TREE_ENTRY_LIMIT_EXCEEDED` / `TREE_CYCLE_DETECTED` — the traversal's bounded-recursion guards. The depth bound is `core.maxTreeDepth`, read from the repository-local config only (default 2048 when unset) and honoured unclamped at any configured value; there is no caller override.
 - `OPERATION_ABORTED` — `ctx.signal` is already aborted.
 
 Two on-disk entries sharing the same name are not refused here — the later entry on disk wins; `git fsck --strict` is where duplicate-name detection lives.
