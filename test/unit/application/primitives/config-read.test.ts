@@ -5556,6 +5556,77 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
         });
       });
     });
+
+    describe('Given core.maxTreeDepth under an unrelated section', () => {
+      describe('When findLastInvalidMaxTreeDepth', () => {
+        it('Then it reports nothing', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[foo]\n\tmaxTreeDepth = 2.5\n');
+
+          // Act
+          const result = await findLastInvalidMaxTreeDepth(ctx);
+
+          // Assert
+          expect(result).toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given core.maxTreeDepth under a [core "sub"] subsection', () => {
+      describe('When findLastInvalidMaxTreeDepth', () => {
+        it('Then it reports nothing', async () => {
+          // Arrange — the key is `core.maxTreeDepth` only when [core] carries
+          // no subsection; a subsectioned block is a different key entirely.
+          const ctx = createMemoryContext();
+          await seed(ctx, '[core "sub"]\n\tmaxTreeDepth = 2.5\n');
+
+          // Act
+          const result = await findLastInvalidMaxTreeDepth(ctx);
+
+          // Assert
+          expect(result).toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given the same key split across [core] and [CORE]', () => {
+      describe('When the value is applied and validated', () => {
+        it('Then both observe the last-wins value, as git does', async () => {
+          // Arrange — git matches section names case-insensitively, so [CORE]
+          // is the same section and its entry wins. The applier and the
+          // validator must agree on which entry is effective; a case-sensitive
+          // applier would apply 4096 while the gate cleared 2048.
+          const ctx = createMemoryContext();
+          await seed(ctx, '[core]\n\tmaxTreeDepth = 4096\n[CORE]\n\tmaxTreeDepth = 2048\n');
+
+          // Act
+          const parsed = await readConfig(ctx);
+          const invalid = await findLastInvalidMaxTreeDepth(ctx);
+
+          // Assert
+          expect(parsed.core?.maxTreeDepth).toBe(2048);
+          expect(invalid).toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given an invalid core.maxTreeDepth in an upper-case [CORE] block', () => {
+      describe('When findLastInvalidMaxTreeDepth', () => {
+        it('Then it reports the entry, because [CORE] is [core]', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[CORE]\n\tmaxTreeDepth = 2.5\n');
+
+          // Act
+          const result = await findLastInvalidMaxTreeDepth(ctx);
+
+          // Assert
+          expect(result?.key).toBe('core.maxtreedepth');
+          expect(result?.value).toBe('2.5');
+        });
+      });
+    });
   });
 
   describe('findFirstInvalidBoolean', () => {

@@ -92,7 +92,33 @@ describe('Given no patterns, When grep is called', () => {
   });
 });
 
-// ─── Guard: the eager config gate runs after the patterns check ─────────────
+// ─── Guard: the eager config gate runs before the patterns check ────────────
+
+describe('Given a malformed config and no pattern supplied, When grep is called', () => {
+  it('Then it reports the config fault, not the missing pattern', async () => {
+    // Arrange — measured against real git: `git grep` with no pattern, in a
+    // repository carrying an invalid core.maxTreeDepth, exits 128 with the
+    // config error, because git parses config at startup before it validates
+    // arguments. Both guards apply to this input, so this pins their ORDER.
+    const ctx = createMemoryContext();
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tmaxTreeDepth = 2.5\n');
+
+    // Act
+    let caught: unknown;
+    try {
+      await grep(ctx, { patterns: [] });
+    } catch (e) {
+      caught = e;
+    }
+
+    // Assert
+    expect(caught).toBeInstanceOf(TsgitError);
+    const data = (caught as TsgitError).data as { code: string; reason: string };
+    expect(data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+    expect(data.reason).toBe('invalid unit');
+  });
+});
 
 describe('Given a repository whose config holds an invalid core.maxTreeDepth, When grep is called', () => {
   it('Then it throws CONFIG_BAD_NUMERIC_VALUE with reason invalid unit', async () => {

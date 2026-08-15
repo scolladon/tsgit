@@ -1106,35 +1106,43 @@ interface MutableParsedConfig {
 }
 
 const dispatchSubsection = (acc: MutableParsedConfig, sec: IniSection, name: string): void => {
-  if (sec.section === 'remote') mergeRemote(acc, name, sec);
-  else if (sec.section === 'branch') mergeBranch(acc, name, sec);
-  else if (sec.section === 'submodule') mergeSubmodule(acc, name, sec);
-  else if (sec.section === 'merge') mergeMergeDriver(acc, name, sec);
-  else if (sec.section === 'diff') mergeDiffDriver(acc, name, sec);
-  else if (sec.section === 'filter') mergeFilterDriver(acc, name, sec);
-  else if (sec.section === 'gpg') mergeGpgSsh(acc, name, sec);
+  // Case-insensitive section match, as git does; the subsection `name` stays
+  // case-sensitive, also as git does.
+  const section = sec.section.toLowerCase();
+  if (section === 'remote') mergeRemote(acc, name, sec);
+  else if (section === 'branch') mergeBranch(acc, name, sec);
+  else if (section === 'submodule') mergeSubmodule(acc, name, sec);
+  else if (section === 'merge') mergeMergeDriver(acc, name, sec);
+  else if (section === 'diff') mergeDiffDriver(acc, name, sec);
+  else if (section === 'filter') mergeFilterDriver(acc, name, sec);
+  else if (section === 'gpg') mergeGpgSsh(acc, name, sec);
 };
 
 const dispatchSection = (acc: MutableParsedConfig, sec: IniSection): void => {
+  // git matches section names case-insensitively (subsection names are
+  // case-sensitive), so `[CORE]` is `[core]`. Normalise here rather than at the
+  // tokenizer: the config writer reconstructs headers from the token's section
+  // and must preserve the author's casing on write, exactly as git does.
+  const section = sec.section.toLowerCase();
   if (sec.subsection !== undefined) {
     dispatchSubsection(acc, sec, sec.subsection);
-  } else if (sec.section === 'remote') {
+  } else if (section === 'remote') {
     mergeRemoteTopLevel(acc, sec);
-  } else if (sec.section === 'core') {
+  } else if (section === 'core') {
     mergeCore(acc, sec);
-  } else if (sec.section === 'user') {
+  } else if (section === 'user') {
     mergeUser(acc, sec);
-  } else if (sec.section === 'extensions') {
+  } else if (section === 'extensions') {
     mergeExtensions(acc, sec);
-  } else if (sec.section === 'commit') {
+  } else if (section === 'commit') {
     mergeCommit(acc, sec);
-  } else if (sec.section === 'tag') {
+  } else if (section === 'tag') {
     mergeTag(acc, sec);
-  } else if (sec.section === 'pack') {
+  } else if (section === 'pack') {
     mergePack(acc, sec);
-  } else if (sec.section === 'push') {
+  } else if (section === 'push') {
     mergePush(acc, sec);
-  } else if (sec.section === 'gpg') {
+  } else if (section === 'gpg') {
     mergeGpg(acc, sec);
   }
 };

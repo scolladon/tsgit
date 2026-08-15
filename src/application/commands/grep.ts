@@ -164,10 +164,14 @@ function scanBlob(
 }
 
 export async function grep(ctx: Context, opts: GrepOptions): Promise<GrepResult> {
+  // Repository state is checked BEFORE the argument guard, because that is the
+  // order git refuses in: `git grep` with no pattern, in a repository whose
+  // config is malformed, reports the config fault rather than the missing
+  // pattern — git parses config at startup, before validating arguments.
+  await assertOperationalRepository(ctx);
   if (opts.patterns.length === 0) {
     throw invalidOption('patterns', 'at least one pattern required');
   }
-  await assertOperationalRepository(ctx);
 
   const matcher = buildGrepMatcher(opts.patterns, {
     ...(opts.wholeWord === true ? { wholeWord: true } : {}),

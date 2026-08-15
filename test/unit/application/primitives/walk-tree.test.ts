@@ -398,6 +398,50 @@ describe('Given config unset (default cap) and a tree chain one level past the d
 // hardcoded default.
 // ---------------------------------------------------------------------------
 
+describe('Given core.maxTreeDepth configured to a negative value', () => {
+  describe('When a flat tree is walked', () => {
+    it('Then throws TREE_DEPTH_EXCEEDED at depth 0 — the root itself is refused', async () => {
+      // Arrange — a negative cap is a valid cap, not "unlimited" and not
+      // clamped to zero: `depth > cap` is already true for the root at depth
+      // 0, so nothing is walkable. Matches real git, where
+      // `-c core.maxTreeDepth=-1 ls-tree -r` refuses a flat tree that
+      // `core.maxTreeDepth=0` accepts. Pins the resolver's raw value against
+      // any clamp-to-zero.
+      const ctx = await buildSeededContext();
+      await seedMaxTreeDepth(ctx, '-1');
+      const rootId = await buildTreeChain(ctx, 0);
+
+      // Act + Assert
+      try {
+        await collect(walkTree(ctx, rootId));
+        expect.unreachable();
+      } catch (error) {
+        const data = (error as { data: { code: string; depth: number } }).data;
+        expect(data.code).toBe('TREE_DEPTH_EXCEEDED');
+        expect(data.depth).toBe(0);
+      }
+    });
+  });
+});
+
+describe('Given core.maxTreeDepth configured to zero', () => {
+  describe('When a flat tree is walked', () => {
+    it('Then completes — zero permits exactly the top level', async () => {
+      // Arrange — the companion to the negative case: cap 0 accepts depth 0,
+      // so the two together prove the cap is read as a number, not a switch.
+      const ctx = await buildSeededContext();
+      await seedMaxTreeDepth(ctx, '0');
+      const rootId = await buildTreeChain(ctx, 0);
+
+      // Act
+      const out = await collect(walkTree(ctx, rootId));
+
+      // Assert
+      expect(out).toHaveLength(1);
+    });
+  });
+});
+
 describe('Given core.maxTreeDepth configured to a small cap', () => {
   const SMALL_CAP = 4;
 

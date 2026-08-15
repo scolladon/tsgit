@@ -161,6 +161,29 @@ describe('resolveNodeVersion', () => {
     });
   });
 
+  describe('Given a resolved-version env var containing a wildcard but no slash', () => {
+    describe('When resolveNodeVersion runs', () => {
+      it('Then it refuses, naming the offending value', () => {
+        // Arrange — `lts/*` trips BOTH the slash and the wildcard condition,
+        // so it cannot prove either alone. This value trips only the
+        // wildcard, which is what pins that half of the guard.
+        const env = { RESOLVED_NODE_VERSION: '24.*' };
+
+        // Act
+        let thrown: unknown;
+        try {
+          resolveNodeVersion(env);
+        } catch (err) {
+          thrown = err;
+        }
+
+        // Assert
+        expect(thrown).toBeInstanceOf(Error);
+        expect((thrown as Error).message).toContain('24.*');
+      });
+    });
+  });
+
   describe('Given the resolved-version env var still contains an alias slash', () => {
     describe('When resolveNodeVersion runs', () => {
       it('Then it refuses, naming the offending value', () => {
