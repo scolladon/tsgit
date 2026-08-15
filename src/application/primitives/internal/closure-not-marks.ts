@@ -41,7 +41,15 @@ export interface NotMarks {
   readonly maxDepth: number;
 }
 
-/** Recursively mark `treeId` and its non-gitlink contents uninteresting. */
+/**
+ * Recursively mark `treeId` and its non-gitlink contents uninteresting.
+ *
+ * This descent honours `core.maxTreeDepth` up to 100000 and refuses beyond
+ * it by exhausting frames, not by policy — measured 2026-08-15: depth
+ * 100000 completes exactly, and a fixture one level deeper refuses cleanly
+ * with `TREE_DEPTH_EXCEEDED` at depth 100001 — the configured cap, not the
+ * call stack, is the limiting factor here.
+ */
 async function markTree(
   ctx: Context,
   treeId: ObjectId,

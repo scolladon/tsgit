@@ -12,6 +12,11 @@
  * Bounds are an explicit parameter rather than an inlined literal so the
  * entry-limit guard is reachable from a test with a small cap; `flattenTree`
  * calls this with `resolveFlattenBounds(ctx)`.
+ *
+ * This descent honours `core.maxTreeDepth` up to 15000 and refuses beyond it
+ * by exhausting frames, not by policy — measured 2026-08-15: a fixture built
+ * one level past a cap of 15000 refuses cleanly with `TREE_DEPTH_EXCEEDED`
+ * at depth 15001.
  */
 import type { FlatTree, FlatTreeEntry } from '../../../domain/diff/flat-tree.js';
 import { MAX_FLAT_TREE_ENTRIES } from '../../../domain/diff/index.js';

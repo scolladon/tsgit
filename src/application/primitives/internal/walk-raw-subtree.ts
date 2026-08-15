@@ -31,6 +31,11 @@
  * single mutable `Counter`, threaded through and back to the caller (see
  * `diff-trees.ts`), so ONE `diffRecursive` call spends ONE total entry
  * budget across every subtree it expands, not one fresh budget per subtree.
+ *
+ * This descent honours `core.maxTreeDepth` up to 15000 and refuses beyond it
+ * by exhausting frames, not by policy — measured 2026-08-15: a fixture built
+ * one level past a cap of 15000 refuses cleanly with `TREE_DEPTH_EXCEEDED`
+ * at depth 15001.
  */
 import { operationAborted } from '../../../domain/error.js';
 import {

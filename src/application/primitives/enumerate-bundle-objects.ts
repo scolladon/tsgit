@@ -71,6 +71,11 @@ interface BundleEmitState extends EmitState {
 // No per-walk flat-entry cap is applied here: this is a prepass over LOCAL
 // repo objects on the create path, and the PACK_TOO_LARGE guard in tryEmit
 // already bounds the total number of emitted (interesting) objects.
+//
+// This descent honours `core.maxTreeDepth` up to 100000 and refuses beyond
+// it by exhausting frames, not by policy — measured 2026-08-15: a fixture
+// built one level past a cap of 100000 refuses cleanly with
+// `TREE_DEPTH_EXCEEDED` at depth 100001.
 const collectTreeObjects = async (
   ctx: Context,
   treeId: ObjectId,
@@ -103,6 +108,11 @@ const collectTreeObjects = async (
 // `uninteresting`. Subtrees already in `seenTrees` are skipped — either all
 // their objects are already in `uninteresting` (nothing to emit) or they were
 // already emitted during an earlier commit's walk.
+//
+// This descent honours `core.maxTreeDepth` up to 100000 and refuses beyond
+// it by exhausting frames, not by policy — measured 2026-08-15: a fixture
+// built one level past a cap of 100000 refuses cleanly with
+// `TREE_DEPTH_EXCEEDED` at depth 100001.
 const emitTreeObjects = async (
   ctx: Context,
   treeId: ObjectId,
