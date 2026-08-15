@@ -56,7 +56,7 @@ interface ArchiveEntry {
   `result.commitTime` holds the committer epoch seconds. Serializers use
   `commitTime` as the default archive entry mtime. Both are absent (`undefined`)
   when `treeish` is a raw tree oid.
-- **Refusals match git** (thrown before the stream is opened):
+- **Refusals match git** (thrown before the stream is opened, except where noted):
   - Outside a repository → `NOT_A_REPOSITORY`.
   - An invalid `[core]` value (`core.maxTreeDepth`, `core.loosecompression` / `core.compression`, or another eager-gate key) → `CONFIG_BAD_NUMERIC_VALUE` / `CONFIG_BAD_ZLIB_LEVEL` / `CONFIG_MISSING_VALUE` / `CONFIG_BAD_BOOLEAN_VALUE`, matching git's own eager `[core]` validation (see [`errors.md`](../errors.md)).
   - Unresolvable treeish (unborn HEAD, bad ref) → from `revParse`.
