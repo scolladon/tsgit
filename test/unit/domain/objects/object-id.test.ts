@@ -48,6 +48,120 @@ describe('object-id', () => {
         });
       });
     });
+
+    describe('Given a 40-char hex string with a single character replaced at an accept boundary', () => {
+      describe('When calling ObjectId.from', () => {
+        it.each([
+          { char: '0', label: "'0' (0x30) — low end of the digit range" },
+          { char: '9', label: "'9' (0x39) — high end of the digit range" },
+          { char: 'a', label: "'a' (0x61) — low end of the lower-alpha range" },
+          { char: 'f', label: "'f' (0x66) — high end of the lower-alpha range" },
+        ])('Then accepts the boundary character $label', ({ char }) => {
+          // Arrange
+          const hex = `${char}${'a'.repeat(39)}`;
+
+          // Act
+          const result = ObjectId.from(hex);
+
+          // Assert
+          expect(result).toBe(hex);
+        });
+      });
+    });
+
+    describe('Given a 40-char hex string with a single character replaced at a reject boundary', () => {
+      describe('When calling ObjectId.from', () => {
+        it.each([
+          { char: '/', label: "'/' (0x2F) — one below the digit range" },
+          { char: ':', label: "':' (0x3A) — one above the digit range" },
+          { char: '`', label: "'`' (0x60) — one below the lower-alpha range" },
+          { char: 'g', label: "'g' (0x67) — one above the lower-alpha range" },
+          { char: 'A', label: "'A' — uppercase is rejected, not case-folded" },
+          { char: 'F', label: "'F' — uppercase is rejected, not case-folded" },
+        ])('Then throws INVALID_OBJECT_ID for $label', ({ char }) => {
+          // Arrange
+          const hex = `${char}${'a'.repeat(39)}`;
+
+          // Act + Assert
+          try {
+            ObjectId.from(hex);
+            expect.unreachable();
+          } catch (error) {
+            expect(error).toBeInstanceOf(TsgitError);
+            expect((error as TsgitError).data).toEqual({
+              code: 'INVALID_OBJECT_ID',
+              value: hex,
+            });
+          }
+        });
+      });
+    });
+
+    describe('Given a 40-char hex string with trailing whitespace', () => {
+      describe('When calling ObjectId.from', () => {
+        it.each([
+          { suffix: '\n', label: 'a trailing newline' },
+          { suffix: '\r', label: 'a trailing carriage return' },
+        ])('Then throws INVALID_OBJECT_ID for $label', ({ suffix }) => {
+          // Arrange
+          const hex = `${'a'.repeat(40)}${suffix}`;
+
+          // Act + Assert
+          try {
+            ObjectId.from(hex);
+            expect.unreachable();
+          } catch (error) {
+            expect(error).toBeInstanceOf(TsgitError);
+            expect((error as TsgitError).data).toEqual({
+              code: 'INVALID_OBJECT_ID',
+              value: hex,
+            });
+          }
+        });
+      });
+    });
+
+    describe('Given a 63-char hex string (one under the SHA-256 width)', () => {
+      describe('When calling ObjectId.from', () => {
+        it('Then throws INVALID_OBJECT_ID', () => {
+          // Arrange
+          const hex = 'a'.repeat(63);
+
+          // Act + Assert
+          try {
+            ObjectId.from(hex);
+            expect.unreachable();
+          } catch (error) {
+            expect(error).toBeInstanceOf(TsgitError);
+            expect((error as TsgitError).data).toEqual({
+              code: 'INVALID_OBJECT_ID',
+              value: hex,
+            });
+          }
+        });
+      });
+    });
+
+    describe('Given a 39-char hex string with one astral-plane character appended (41 UTF-16 code units)', () => {
+      describe('When calling ObjectId.from', () => {
+        it('Then throws INVALID_OBJECT_ID (length is measured in code units, not code points)', () => {
+          // Arrange
+          const hex = `${'a'.repeat(39)}\u{1f600}`;
+
+          // Act + Assert
+          try {
+            ObjectId.from(hex);
+            expect.unreachable();
+          } catch (error) {
+            expect(error).toBeInstanceOf(TsgitError);
+            expect((error as TsgitError).data).toEqual({
+              code: 'INVALID_OBJECT_ID',
+              value: hex,
+            });
+          }
+        });
+      });
+    });
   });
 
   describe('ObjectId.fromRaw', () => {

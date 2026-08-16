@@ -1,14 +1,45 @@
 import { bytesToHex } from './encoding.js';
 import { invalidObjectId } from './error.js';
 
-const SHA1_HEX_RE = /^[0-9a-f]{40}$/;
-const SHA256_HEX_RE = /^[0-9a-f]{64}$/;
+const SHA1_HEX_LENGTH = 40;
+const SHA256_HEX_LENGTH = 64;
+
+// Inclusive code-unit boundaries of the two accepted ranges: ASCII '0'-'9'
+// and ASCII 'a'-'f'. Uppercase hex is deliberately not accepted (R1 keeps
+// the accept set byte-identical to the two regexes this replaces).
+const DIGIT_ZERO_CODE = 0x30; // '0'
+const DIGIT_NINE_CODE = 0x39; // '9'
+const LOWER_A_CODE = 0x61; // 'a'
+const LOWER_F_CODE = 0x66; // 'f'
+
+function isHexDigitCodeUnit(codeUnit: number): boolean {
+  if (codeUnit >= DIGIT_ZERO_CODE && codeUnit <= DIGIT_NINE_CODE) {
+    return true;
+  }
+  return codeUnit >= LOWER_A_CODE && codeUnit <= LOWER_F_CODE;
+}
+
+// Scans code units (not code points) so a string is measured the same way
+// `String.length`/`charCodeAt` see it — a surrogate half or an astral
+// character both land outside the accepted ranges or shift the length,
+// exactly like the two regex literals this replaces (no `u` flag).
+function isValidObjectIdHex(hex: string): boolean {
+  if (hex.length !== SHA1_HEX_LENGTH && hex.length !== SHA256_HEX_LENGTH) {
+    return false;
+  }
+  for (let i = 0; i < hex.length; i += 1) {
+    if (!isHexDigitCodeUnit(hex.charCodeAt(i))) {
+      return false;
+    }
+  }
+  return true;
+}
 
 export type ObjectId = string & { readonly __brand: unique symbol };
 
 export const ObjectId = {
   from(hex: string): ObjectId {
-    if (!SHA1_HEX_RE.test(hex) && !SHA256_HEX_RE.test(hex)) {
+    if (!isValidObjectIdHex(hex)) {
       throw invalidObjectId(hex);
     }
     return hex as ObjectId;

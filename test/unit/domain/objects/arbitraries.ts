@@ -15,6 +15,39 @@ export function arbObjectId(length: 40 | 64 = 40): fc.Arbitrary<ObjectId> {
     .map((chars) => chars.join('') as ObjectId);
 }
 
+// A single arbitrary UTF-16 code unit, as a one-character string.
+function arbCodeUnit(): fc.Arbitrary<string> {
+  return fc.integer({ min: 0, max: 0xffff }).map((code) => String.fromCharCode(code));
+}
+
+// Concatenates arbitrary UTF-16 code units directly, unlike `fc.string()`
+// (which only ever emits well-formed code points) — the only way to generate
+// lone surrogate halves the way `String.prototype.charCodeAt` observes them.
+export function arbCodeUnitString(): fc.Arbitrary<string> {
+  return fc.string({ unit: arbCodeUnit(), maxLength: 70 });
+}
+
+// A valid ObjectId hex string with exactly one character replaced by an
+// arbitrary Unicode code point (itself one or two UTF-16 code units),
+// probing a validator's per-character boundaries beyond fixed examples.
+export function arbObjectIdWithOneCharReplaced(length: 40 | 64 = 40): fc.Arbitrary<string> {
+  return fc
+    .tuple(
+      arbObjectId(length),
+      fc.nat({ max: length - 1 }),
+      fc.integer({ min: 0, max: 0x10ffff }).map((codePoint) => String.fromCodePoint(codePoint)),
+    )
+    .map(([id, index, replacement]) => `${id.slice(0, index)}${replacement}${id.slice(index + 1)}`);
+}
+
+// A valid ObjectId hex string with arbitrary text prepended and/or appended,
+// probing length-boundary mutations independently of character-boundary ones.
+export function arbObjectIdWithPadding(length: 40 | 64 = 40): fc.Arbitrary<string> {
+  return fc
+    .tuple(fc.string({ maxLength: 5 }), arbObjectId(length), fc.string({ maxLength: 5 }))
+    .map(([prefix, id, suffix]) => `${prefix}${id}${suffix}`);
+}
+
 export function arbObjectType(): fc.Arbitrary<ObjectType> {
   return fc.constantFrom<ObjectType>('blob', 'tree', 'commit', 'tag');
 }
