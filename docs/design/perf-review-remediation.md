@@ -5,7 +5,12 @@
 > cadence) and seven measured work items (stale perf baseline, `ObjectId.from` hex validation,
 > `status` GC churn, commit-graph header-cache bound, fsck object-cache bound + bench-memory
 > coverage, `tsc` incremental + CI cache, vitest pool/prepush pilot).
-> Status: draft → self-reviewed ×3 → accepted
+> Status: draft → self-reviewed ×3 → accepted → **revised against ADR-640 … ADR-652**
+>
+> All 14 decision candidates are settled (ADR-640 … ADR-652; D1 and D5 fold into ADR-640).
+> Two ratifications deviate from the design's recommendation and add work: the per-command
+> export surface is **built in this change** (ADR-640, **W9**), and the two heavy PR jobs are
+> **label-gated** (ADR-641 + ADR-651, **W10**). `benchmark-snapshot` is untouched (ADR-642).
 
 ---
 
@@ -18,18 +23,21 @@ profiles taken through the repo's own `tooling/profile.ts` child mode. This work
 from that same commit, so every anchor below was re-verified in place; drift from the brief's
 anchors is called out where it exists.
 
-This is a **remediation** change, not a feature: it touches four source files, one tooling
-file, three config files, one committed artifact, and — decision-dependent — `package.json`'s
-`exports` map and `.github/workflows/ci.yml`. There is no new public command, no new error
-code, no new on-disk format. The run has no backlog id (the input is a spec file), so no
-`docs/BACKLOG.md` tick is owed unless a decision creates a follow-up.
+This is a **remediation** change, not a feature: it touches four source files, two tooling
+files (`bench-memory.ts`, `verify-tarball.sh`), five config files (`tsconfig.typecheck.json`,
+`package.json`, `rollup.config.ts`, `.size-limit.json`, `.github/workflows/ci.yml`) and one
+committed artifact. There is no new public command, no new error code, no new on-disk format.
+After ADR-640 there **is** a new published export surface — 49 per-command subpaths plus the
+`./commands` barrel — but no new *symbol*: every entry is an existing module already re-exported
+through the built barrel. The run has no backlog id (the input is a spec file), so no
+`docs/BACKLOG.md` tick is owed.
 
 ### Work-item labels
 
-The brief's seven items map to eight labels here, because its item 5 bundles two separable
-edits:
+The brief's seven items map to eight labels here (its item 5 bundles two separable edits); the
+ADR phase added two more, W9 and W10:
 
-| Label | Brief item |
+| Label | Brief item / source |
 |---|---|
 | W1 | regenerate the committed perf baseline |
 | W2 | `ObjectId.from` hex validation |
@@ -39,20 +47,24 @@ edits:
 | W6 | `tsc` incremental + CI cache |
 | W7 | bench-memory coverage for both cache bounds *(item 5, second half)* |
 | W8 | vitest pool / prepush pilot |
+| **W9** | **build the per-command export surface** — ADR-640 (+ folded D5), ADR-643, ADR-644 |
+| **W10** | **label-gate the two heavy PR jobs** — ADR-641, ADR-651 |
 
 ### What constrains it
 
 | Constraint | Source | Effect on this design |
 |---|---|---|
 | Git-faithfulness is the prime directive | `CLAUDE.md`, ADR-226 | The `ObjectId.from` rewrite must keep the accept/reject set and the `invalidObjectId` error data **byte-identical**. No other item touches a refusal path. |
-| Structured output, not cosmetics | ADR-249 | Not engaged — no command surface changes. |
 | Coverage 100 % on `src/domain/**`, `src/ports/**`, `src/adapters/{node,memory}/**`, `src/operators/**` | `vitest.config.ts:80-98` | Only `src/domain/objects/object-id.ts` falls inside the gated set. The three application-layer edits are outside coverage but inside Stryker. |
 | Mutation budgets | `mutation-budgets.json` | `domain` bucket: break **99**, low/high **100**. `application` bucket: break **95**, low **98**. The new validator lands in `domain` — the strictest bucket. |
 | Equivalent-mutant proofs are structure-specific | prior-run learning | `ignore-evaluator.ts` and `object-cache.ts` carry `// Stryker disable next-line … equivalent` proofs written against the **current** data structures. Any rewrite invalidates them; they must be re-proven against the new shape or removed, never carried forward. |
 | No suppression directives | `CLAUDE.md` | No `v8 ignore` / `stryker-disable` / `biome-ignore` added. Existing proven-equivalent Stryker directives may be *revised or removed*, not extended without a fresh proof. |
-| Size budgets | `.size-limit.json` | Full library 335 kB gzip (at 186.6 kB); browser no-build bundle **160 kB gzip and currently 156.04 kB — 97.5 % consumed**. Any byte added to a module reachable from `src/index.browser.ts` spends from a ~3.96 kB reserve. |
+| Size budgets | `.size-limit.json` | Full library 335 kB gzip (at 186.6 kB today, **284.35 kB after W9's split** — see W9); browser no-build bundle **160 kB gzip and currently 156.04 kB — 97.5 % consumed**. Any byte added to a module reachable from `src/index.browser.ts` spends from a ~3.96 kB reserve. W9 does **not** spend from it: the bundle is byte-identical before and after the split (pinned in W9). |
+| Tarball cap | `tooling/verify-tarball.sh` `SIZE_CAP` | 750 KiB compressed, "tight by choice". The published 3.3.0 pack is 736 732 B — **95.9 % consumed**. W9 pushes the pack past it; W9 moves the cap with measured justification. This constraint was not engaged before ADR-640. |
+| Structured output, not cosmetics | ADR-249 | Not engaged. W9 publishes new *paths* to existing functions, not new options or rendered text. |
 | `check:types` wireit fan-in | `package.json` wireit block | `check:types` is a declared dependency of `build:js`, `test`, `test:unit`, `test:integration`, `test:posix-integration`, `test:win-integration`, `test:parity`, `test:coverage`, `test:mutation`, `test:mutation:pr`, `test:mutation:local`, `test:bench`, `test:perf` — 13 downstream tasks. Anything that speeds `tsc` speeds all of them. |
-| CI workflow edits are outside `npm run validate` | — | `validate` never parses `.github/workflows/**`. Verification for those edits is named in **Verification of CI-only edits** under W6. |
+| CI workflow edits are outside `npm run validate` | — | `validate` never parses `.github/workflows/**`. Verification for those edits (W6's cache steps, W10's label gates) is named in **Verification of CI-only edits** under W6 and restated for W10. |
+| The `main` ruleset requires exactly one status check | `gh api repos/scolladon/tsgit/rulesets/16502004` | `required_status_checks` names `build` only, with `strict_required_status_checks_policy: true`. Neither `mutation` nor `benchmark-compare` is a required check, so W10's label gate cannot block a merge. |
 | Actions stay on floating major tags | brief constraint, prior learning | `actions/cache@v6`, `actions/setup-node@v7` and friends — no SHA pinning in anything this change adds. |
 | Published perf numbers come from the CI nightly bench artifact | brief constraint, prior learning | Local numbers here are labelled **local, dev-machine** and are used for design sizing and revert rules only. No number in this document is a publishable claim. |
 
@@ -108,7 +120,10 @@ statements — all must hold when this ships.
   count.
 - **R9** The `status` GC tick share on the profiled `status` workload is strictly lower than
   its pre-change value on the same machine/fixture/iterations, **and** the change is attributed
-  to a named construct by an allocation profile captured *before* any code edit.
+  to a single named construct by an allocation profile captured *before* any code edit, whose
+  top site accounts for **≥10 % of allocated bytes** (ADR-650). If no site clears 10 %, the
+  requirement is discharged by the recorded finding and no code change — that is a pass, not a
+  miss.
 - **R10** Peak `heapUsed` for the fsck memory workload added in R7 is bounded independently of
   total repository blob bytes — demonstrated by two fixture sizes whose blob content differs by
   ≥4× showing sub-linear peak growth.
@@ -121,12 +136,40 @@ statements — all must hold when this ships.
 
 **Gates**
 
-- **R13** `npm run validate` is green at every commit. `check:size` in particular stays green —
-  the browser no-build bundle must remain ≤160 kB gzip.
-- **R14** No new public export, so `reports/api.json` is unchanged unless a decision adds one;
-  if D1 lands as "build", `reports/api.json`, `.size-limit.json` and `check:exports` all move
-  together in that change.
+- **R13** `npm run validate` is green at every commit. Three of its checks move together under
+  W9 and must be observed green on the built artifacts, never assumed:
+  `check:size` (browser no-build bundle ≤160 kB gzip — measured byte-identical across the split;
+  Full library ≤335 kB gzip — measured 186.61 kB today, **284.35 kB after the split**, 84.9 % of
+  the budget), `check:tarball` (whose 750 KiB cap the split exceeds — W9 moves the cap and
+  records the measurement), and `check:exports` (R17).
+- **R14** `reports/api.json` is generated by typedoc from the **source** entry points listed in
+  `typedoc.json`, not from `package.json`'s `exports` map nor from `dist/`. Adding 49 export
+  subpaths therefore leaves it byte-identical, and `check:doc-typedoc`
+  (`git diff --exit-code -- reports/api.json`) stays green on that account alone. It engages the
+  moment W9 adds a public **type** re-export to fix a TS2742 leak (W9 lists the 10 leaked type
+  names): any such re-export from a typedoc entry point changes `reports/api.json`, and the
+  regenerated report must be committed in the same change.
 - **R15** No provenance references (phase / ADR / backlog numbers) in source or test code.
+
+**Published surface (W9)**
+
+- **R16** Every subpath the `exports` map publishes resolves in a packed tarball — the 49
+  `./commands/<name>` specifiers, `./commands`, and the pre-existing `./commands/index` — and
+  `tooling/verify-tarball.sh` fails if any one of them does not (ADR-644). Verified by the guard
+  itself plus an out-of-tree resolution probe on the packed artifact.
+- **R17** `check:exports` (attw, `--profile node16`) reports every published entry green for
+  `node16` (from CJS **and** from ESM) and `bundler`. A wildcard-only entry reports `(wildcard)`
+  and proves nothing — pinned in W9 — so the map carries explicit per-command keys.
+- **R18** `tooling/dts-entries.ts` enumerates the split without modification, and
+  `tooling/truthful-dts.ts` completes over every enumerated entry.
+
+**CI cadence (W10)**
+
+- **R19** The labels `mutation` and `bench` exist in the repository; an unlabelled PR runs
+  **neither** the `mutation` nor the `benchmark-compare` job (both render as `skipping`), and a
+  PR carrying a label runs the corresponding job. Verified on this PR itself by applying the
+  labels and reading `gh pr checks` in both states. Push-to-`main` behaviour is unchanged, and
+  `benchmark-snapshot` is untouched (ADR-642).
 
 ---
 
@@ -143,6 +186,9 @@ W1 regenerate baseline        ← ground truth for W2 and W3 oracles; must be fi
    ├── W4 header-cache bound  ─┐
    └── W5 fsck cache bound    ─┴── W7 bench-memory workloads cover both
 W6 tsc incremental + CI cache  (independent; touches config + workflow only)
+W9 per-command export surface  (independent of W1-W5; internally ordered — see below)
+   rollup entries ──► exports keys ──► size-limit rows ──► verify-tarball guard
+W10 label-gate mutation + benchmark-compare (independent; workflow only)
 W8 vitest pool / prepush pilot (last, because it perturbs the test harness that every
                                 other item's gate runs through)
 ```
@@ -150,6 +196,21 @@ W8 vitest pool / prepush pilot (last, because it perturbs the test harness that 
 `W1` first is not a preference: the committed baseline is the only pre-change artifact the
 `log` and `status` oracles can compare against, and it is currently stale by four merged
 perf PRs.
+
+`W9` is independent of W1-W5 — different files, no shared symbol — but is **internally**
+ordered, and the order is forced rather than chosen:
+
+- the rollup entries must exist before the `exports` keys name them, or every added key
+  resolves to nothing;
+- the `exports` keys must exist before ADR-644's `verify-tarball` guard can pass, because the
+  guard's whole job is to fail on a subpath that resolves to nothing — landing the guard first
+  reddens `check:tarball` for exactly as long as the entries are missing;
+- the `.size-limit.json` rows must land with the entries, because `check:size`'s `Full library`
+  row measures `dist/esm/**/*.js` and the split moves it by +97.7 kB gzip in one step.
+
+`W10` touches only `.github/workflows/ci.yml` and the repository's label set; it shares no file
+with any other item and can land anywhere in the sequence. It is listed before W8 only so the
+harness pilot stays last.
 
 ---
 
@@ -200,6 +261,14 @@ inline.
 **Risk.** `npm run profile` needs the `git` CLI and the cached medium fixture, and spawns 13
 profiled children. It is a long single-shot command; it must not run concurrently with any
 other CPU-heavy task in the same session or the shares are noise.
+
+**No staleness guard is added (ADR-652).** A profile frame name is not required to be a live
+symbol — V8 emits `<anonymous>`, minifier artefacts and pattern-keyed regular-expression
+entries — so a "every named symbol still exists in `src/`" check would false-positive and get
+muted, and a regenerate-and-diff job cannot work because shares are machine-dependent. The
+staleness mode is recorded as a known limitation instead: the baseline is trusted only as of its
+generation commit, and perf work starts by reading `git log -- docs/perf/baseline.json` against
+the perf-relevant merges that followed.
 
 ---
 
@@ -354,10 +423,12 @@ the mutant killed honestly. The same applies to `is-ignored.ts:46-50` if the hel
 iterations, before vs after — plus the allocation profile's own top-site bytes for the
 attributed construct. Both reported as absolute numbers.
 
-**Exit criterion.** If the allocation profile attributes no meaningful share to any single
-construct — i.e. the churn is genuinely diffuse — the honest outcome is *no code change* and a
-recorded finding. Choosing that threshold and that behaviour is **D12**, not something this
-design settles.
+**Exit criterion (ADR-650) — top site, at 10 % of allocated bytes.** The allocation profile is
+captured first, on the unmodified tree. If its **top** site accounts for **≥10 % of allocated
+bytes** on the `status` workload, that one site — and only that one — is fixed and re-measured.
+Below 10 %, the churn is diffuse: the outcome is a recorded finding and **no code change**.
+Either outcome closes the item. One site, not several, keeps the GC-share oracle attributable to
+a single edit; the 10 % floor keeps "investigate, then fix" honest in the other direction.
 
 **Gate interactions.** `ignore-evaluator.ts` and `status.ts` sit in the `application` mutation
 bucket (break 95 / low 98) and outside the coverage gate. `check:duplicates` (jscpd, threshold
@@ -401,16 +472,17 @@ string)` and `set(key, value, byteSize)` — and `ObjectId` is a branded `string
 assignable to the cache's `string` key without a cast.
 
 `createLruCache(maxSizeBytes, maxEntries)` supports entry-count sizing directly: `evict()`
-(`lru-cache.ts:56-63`) loops while `currentSize > maxSizeBytes || map.size > maxEntries`. Two
-usable sizings; the choice between them is **D7**:
+(`lru-cache.ts:56-63`) loops while `currentSize > maxSizeBytes || map.size > maxEntries`.
 
-- entry-count — `createLruCache<CommitHeader>(Number.POSITIVE_INFINITY, CAP)` with
-  `set(id, header, 1)`. Both of `set`'s guards are satisfied (`byteSize <= 0` throws;
-  `byteSize > maxSizeBytes` silently drops). `currentSize` degenerates into an insert counter
-  and `maxSize` reports `Infinity`; neither is read here.
-- byte-estimated — `createLruCache<CommitHeader>(BYTES)` with
-  `byteSize ≈ (1 + parents.length) × hashHexLength × 2 + 16`, matching how the siblings are
-  sized.
+**Sizing, settled (ADR-645): entry-count, cap 65 536.**
+`createLruCache<CommitHeader>(Number.POSITIVE_INFINITY, 65_536)` with `set(id, header, 1)`. Both
+of `set`'s guards are satisfied (`byteSize <= 0` throws; `byteSize > maxSizeBytes` silently
+drops). `currentSize` degenerates into an insert counter and `maxSize` reports `Infinity`;
+neither is read here. `CommitHeader` is small and fixed-shape, so entry count is an honest proxy
+for bytes, and 65 536 mirrors `DEFAULT_DELTA_CACHE_ENTRIES` (`src/index.node.ts:32`) so the repo
+gains no second magic number. The byte-estimated alternative
+(`byteSize ≈ (1 + parents.length) × hashHexLength × 2 + 16`) buys accuracy this shape does not
+need, and a two-bound cache adds a knob with no reader.
 
 **Correctness (R3).** Eviction is hazard-free by construction. `commitHeader` (`:257-288`)
 consults the cache purely as a memo: on a miss it re-runs `findOwnPosition` → `commitDataAt` →
@@ -466,7 +538,8 @@ traced:
 Content validation reads raw bytes on its own (`content-validation.ts`
 `tryGetRawObjectBody`), never through this cache. **Blob content is retained and never read.**
 
-That makes a *structural projection* — not an LRU — the natural fix: replace
+That makes a *structural projection* — not an LRU — the fix, and ADR-646 settles it as one:
+replace
 `CachedGitObject = GitObject | null` with a projection carrying `{ type }` plus the out-edge
 data each type actually contributes, and `null` for unreadable. Peak drops from O(repo content)
 to O(graph metadata), with **zero** re-reads, zero added I/O, and no async signature changes.
@@ -479,7 +552,9 @@ deliberately carries `NO_DELTA_CACHE` (`fsck.ts:39-50`, `:64`) — so every evic
 re-pays full delta-chain resolution. The audit walk touches each object at least twice (in-edge
 scan, then reachability walk), so eviction thrash is not hypothetical.
 
-The exact bounding strategy is **D8**.
+ADR-646 also declines the further step of folding `buildBlobFilenameMap` into the build pass so
+tree-entry *names* are never retained either: it moves fsck's special-filename knowledge into
+the cache builder, and is worth doing only if W7's oracle shows tree names are material.
 
 **Correctness (R4).** The projection preserves the two distinctions the passes depend on:
 `null` (unreadable) versus present, and the object's `type`. `applyGraft(obj, shallow)`
@@ -553,37 +628,41 @@ Setting `incremental: true` in `tsconfig.json` and `incremental: false` in
 directly. The zero-blast-radius shape is therefore a dedicated `tsconfig.typecheck.json`
 extending `tsconfig.json`, carrying only `incremental` + `tsBuildInfoFile`, with `check:types`
 becoming `tsc --noEmit -p tsconfig.typecheck.json` and the new file added to that task's
-wireit `files`. That is **D9**.
+wireit `files`. **ADR-647 settles exactly that shape**; no other consumer's input changes.
 
 **wireit interaction — the trap that would silently void the win.** `check:types` declares
 `output: []` today. wireit's default `clean: true` **deletes declared outputs before running a
 task**: declaring the `.tsbuildinfo` as an output without `clean: false` would delete the cache
-on every run and leave `tsc` permanently cold. The options are to leave it undeclared (wireit
-keeps caching task *success* exactly as today, and the cache file simply persists on disk) or
-to declare it with `clean: false` (wireit additionally stores and restores it in
-`.wireit/cache`, surviving branch switches). This is **D10**.
+on every run and leave `tsc` permanently cold. **ADR-648 leaves it undeclared**: `output: []`
+stays, wireit keeps caching task *success* exactly as today, and the cache file simply persists
+on disk under its already-gitignored name, invisible to wireit. Declaring it with
+`clean: false` would additionally survive branch switches through `.wireit/cache` — a secondary
+benefit that introduces a caching semantic to a task that has never had one.
 
 The two caches compose rather than compete: wireit skips `check:types` entirely when its input
 hashes are unchanged; the TypeScript cache only pays off on the runs wireit *does* execute —
 which is exactly the changed-source case that hurts today.
 
-**CI cache shape.** `actions/cache@v6` (floating major, per constraint) around the
-`.tsbuildinfo`, restored before and saved after the type-consuming step. Keying is **D11**; the
-mechanical constraints on any key are that it must include `runner.os` (a Linux cache file is
-not valid on Windows), the resolved Node version, and a hash of `tsconfig*.json` +
-`package-lock.json`, with a `restore-keys` prefix so a source-only change can reuse a near-miss.
+**CI cache shape (ADR-649).** `actions/cache@v6` (floating major, per constraint) around the
+`.tsbuildinfo`, restored before and saved after the type-consuming step, keyed
+`${{ runner.os }}-${{ node-version }}-${{ hashFiles('tsconfig*.json','package-lock.json') }}`
+plus a source-hash suffix, with a `restore-keys` prefix so a source-only change reuses a
+near-miss. `runner.os` in the key is mandatory — a Linux cache file is not valid on Windows —
+and it also makes cross-OS reuse impossible by construction, which is why an Ubuntu-only cache
+would buy nothing this key does not already provide.
 
-**Clean-run authority (brief constraint).** Exactly one job must remain the cold authority so a
-stale or poisoned cache file can never mask a type error. The `typecheck` job is the natural
-choice: it is the only job whose sole purpose is `tsc`, it already gates `build` and
-`unit-tests` through `needs`, and running it cold costs ~37 s in CI. Whether that job skips the
-cache entirely or restores-without-saving is part of **D11**.
+**Clean-run authority (ADR-649).** Exactly one job must remain the cold authority so a stale or
+poisoned cache file can never mask a type error. That job is `typecheck`: it is the only job
+whose sole purpose is `tsc`, it already gates `build` and `unit-tests` through `needs`, and
+running it cold costs ~37 s in CI. It **skips the cache entirely** — never restores, never saves
+— so no cache file can reach the one job whose only purpose is the check. Restoring without
+saving was rejected for exactly that reason.
 
 **Oracle (R11).** Local: `npm run check:types` timed cold (cache file deleted), warm-unchanged,
 and warm-after-one-edit, three alternating rounds each, main vs branch. CI: see below.
 
 **Verification of CI-only edits.** `npm run validate` never reads `.github/workflows/**`. The
-verification for W6's workflow edit — and for D2 / D3 if they land — is:
+verification for W6's workflow edit — and for W10's label gates — is:
 
 1. The `megalinter` job already in `ci.yml`. `.mega-linter.yml` enables `YAML_YAMLLINT`, so it
    catches **YAML syntax** errors in a workflow file. It enables **no** GitHub-Actions
@@ -693,9 +772,380 @@ from genuinely cold task runs, not cache hits.
 
 ---
 
+### W9 — Build the per-command export surface
+
+**Decisions this implements.** ADR-640 (build ~49 per-command entries, **in this change** —
+folding candidate D5), ADR-643 (add the missing `./commands` barrel key), ADR-644 (extend
+`verify-tarball.sh` to resolve every `exports` subpath). The defect this repairs is pinned under
+**D1 evidence** below and is unchanged by the revision: `@scolladon/tsgit/commands/add` throws
+`ERR_MODULE_NOT_FOUND` and `@scolladon/tsgit/commands` throws `ERR_PACKAGE_PATH_NOT_EXPORTED` on
+3.3.0.
+
+#### Measurement method for every number in this section
+
+The split was built, packed and gated in a throwaway directory — a copy of `src/`,
+`tsconfig*.json`, `package.json`, `LICENSE`, `README.md` and `tooling/`, with `node_modules`
+symlinked to this worktree and `dist/` redirected out of tree. Nothing was written into the
+worktree. Two builds were produced from the repo's **own** `rollup.config.ts` (the only edit
+being the output directory and the removal of the visualizer plugin, which writes into
+`reports/`): a *base* build with today's 11 entries and a *split* build with 60. The base build
+reproduces the published package exactly — 94 files, `unpackedSize` 2 486 119 B, matching
+`npm view @scolladon/tsgit@3.3.0 dist.fileCount dist.unpackedSize` — and `npx size-limit` run
+against it reports `Full library 186.61 kB`, the number this document already carried. That
+agreement is what licenses the split numbers below.
+
+#### The entry set, enumerated
+
+`src/application/commands/*.ts` is **50 modules — 49 commands plus `index.ts`**:
+
+```text
+abort-merge  add  archive  blame  branch  bundle-create  bundle-list-heads  bundle-verify
+cat-file  checkout  cherry-pick  clone  commit  config  continue-merge  describe  diff
+fetch  fetch-missing  fsck  grep  init  log  merge  mv  name-rev  notes  pack-objects
+pull  push  range-diff  read-file-at  rebase  reflog  remote  reset  rev-list  rev-parse
+revert  rm  shortlog  show  sparse-checkout  stash  status  submodule  tag  whatchanged
+worktree
+```
+
+`src/application/commands/internal/` is **not** an entry directory — it holds shared helpers and
+stays behind the chunk boundary.
+
+#### Rollup mechanics, verified against the config
+
+`rollup.config.ts` exports three configs. `entryPoints` (`:8-20`) feeds **two** of them: config
+#1 (`dist/esm` + `dist/cjs`) and config #3 (`dist/types`, `.d.ts` + `.d.cts` through
+`rollup-plugin-dts`). Config #2 — the no-build browser bundle — takes `src/index.browser.ts`
+alone with `inlineDynamicImports: true` and never reads `entryPoints`, so **the split cannot
+touch it**. Confirmed rather than argued: `dist/browser/tsgit.js` is byte-identical across the
+two builds, `sha256 a1aac9bb5b39096c502a6660351b6a3c55168f95c8cf0f7fb6bdb87a3114fa64`, and
+`size-limit` reports 156.04 kB gzip on both. Per-command entries relieve **bundler-using**
+consumers; they do not shrink the CDN bundle by one byte.
+
+That corrects a premise the brief carried into ADR-640's context — "this decision also
+structurally caps the browser bundle, which is the only real answer to it sitting at 97.5 % of
+budget". It does not. The no-build bundle is one inlined file built from `src/index.browser.ts`,
+and nothing about per-command entries reaches it. The 97.5 %-of-budget problem is untouched by
+W9 and stays open; the decision stands on the broken-specifier repair, which is reason enough.
+
+Chunking is `preserveModules: false` with `chunkFileNames: 'chunks/[name]-[hash].js'`, so shared
+modules hoist into `chunks/`. Measured:
+
+| Metric | base — 11 entries | split — 60 entries |
+|---|---|---|
+| `dist/esm` files | 27 | 203 |
+| of which chunks | 16 | 143 |
+| chunks reachable from ≥2 entries | 16 (all) | **143 (all)** — no chunk is private to one entry |
+| chunk raw size min / p50 / max | — | 34 B / 900 B / 32.6 kB |
+| `dist/esm/**/*.js` raw | 564.04 kB | 717.53 kB (+27 %) |
+| `dist/esm/**/*.js` gzip (= `size-limit` *Full library*) | **186.61 kB** | **284.35 kB** (+52 %) |
+| `dist/cjs` files | 27 | 203 |
+| `dist/types` `.d.ts` / `.d.cts` | 18 / 18 | 85 / 85 |
+| `dist/browser/tsgit.js` | 156.04 kB gzip | identical bytes |
+| rollup wall clock, all three configs | 17.45 s | 17.87 s |
+
+Chunk *sharing* works exactly as the promise assumed — every chunk is reachable from at least
+two entries, so the split duplicates no module. The gzip inflation is a **per-file** artefact:
+raw bytes grow 27 % while the sum of per-file gzip grows 52 %, because 143 small files each pay
+their own gzip window and lose cross-file redundancy (the median chunk is 900 raw bytes; the
+smallest is 34). `size-limit`'s `Full library` row sums per-file gzip over the glob, so it reads
+the inflated number, not the raw one.
+
+Build wall clock is a non-event: +0.42 s (+2.4 %) for 49 more entries across esm, cjs, the
+browser bundle and both declaration formats.
+
+#### `.size-limit.json` — what the rows can actually measure
+
+The repo installs **`@size-limit/file`** (`package.json:826`) and no bundler preset. That preset
+measures **the named file's own bytes**, gzipped — it does not follow imports. Pinned: with the
+split built, `size-limit` reports `Core (main entry) 7.51 kB` for `dist/esm/index.js`, a file
+whose transitive chunk closure is 244 kB. Today's per-entry rows are therefore already
+entry-file measurements, which is why `Core` sits at 5.56 kB against a 50 kB limit.
+
+That is the honest answer to the design-doc promise of "1.5 kB gzipped each". Two different
+numbers wear that name:
+
+| What is measured | 49 commands: min / p50 / p90 / max |
+|---|---|
+| **entry file only** — what a `.size-limit.json` row can enforce | 0.27 / 1.33 / 3.93 / **7.79 kB** gzip |
+| **entry + its transitive chunk closure** — what a consumer actually downloads | 7.21 / 51.95 / 84.86 / **136.90 kB** gzip |
+
+So: the 1.5 kB figure is roughly right for the *entry file* of a *median* command, and wrong for
+every consumer-facing reading of it. `commands.md:1435`'s "importing only `tsgit/commands/init`
+ships ~1.5 kB instead of ~20 kB" does not survive measurement — `init` is the cheapest command in
+the set and its closure is **7.21 kB**; `submodule`'s is 136.90 kB. The split is still worth
+building — it is the difference between a broken specifier and a working one, and a bundler
+consumer of `commands/init` pulls 5 files instead of 180 — but the sizing claim must be restated
+in the numbers above rather than repeated. Recorded here for the documentation phase; no
+`commands.md` edit is owed by this design.
+
+Budgets are therefore sized from the measured entry bytes with ~25 % headroom, in four tiers so
+the config gains four constants rather than 49 bespoke ones:
+
+| Budget | Commands (measured entry gzip, kB) |
+|---|---|
+| **1.5 kB** (21) | show 1.16, whatchanged 1.15, fetch-missing 1.07, worktree 1.07, shortlog 0.99, abort-merge 0.99, pack-objects 0.99, rev-list 0.97, diff 0.97, archive 0.88, log 0.88, continue-merge 0.85, config 0.82, bundle-verify 0.79, status 0.68, read-file-at 0.56, name-rev 0.47, cat-file 0.45, rev-parse 0.42, init 0.29, bundle-list-heads 0.27 |
+| **3 kB** (16) | fetch 2.35, add 2.34, grep 2.14, bundle-create 2.14, checkout 2.07, sparse-checkout 2.05, remote 1.82, pull 1.80, clone 1.73, notes 1.71, mv 1.65, tag 1.39, rm 1.33, reset 1.31, reflog 1.24, branch 1.22 |
+| **6 kB** (9) | range-diff 4.06, push 4.05, merge 3.93, cherry-pick 3.60, revert 3.51, stash 3.37, describe 2.84, blame 2.51, commit 2.40 |
+| **10 kB** (3) | fsck 7.79, rebase 7.62, submodule 4.88 |
+
+Plus one row for the barrel — `dist/esm/commands/index.js`, measured 3.76 kB, budget **6 kB** —
+which has no row today at all. That is not the `28 kB` "Commands (barrel)" cap of
+`commands.md:194`: that figure was a closure-style estimate (unique code plus shared
+`internal/*` chunks counted once), and `@size-limit/file` cannot express it. A single glob row
+over `dist/esm/commands/*.js` was rejected too: it sums, so one command doubling in size hides
+behind 48 unchanged ones.
+
+**What of the promise text becomes true.** `commands.md:1425` promises "17 export entries: one
+barrel and one per command" — after this change the map carries **51** (49 commands, the barrel,
+the retained wildcard), because the command set grew from 16 to 49 since that text was written.
+`:1433`'s build wiring becomes literally true. `:1435`'s and `:194`'s per-command *byte* claims
+do not, for the reason measured above. Those pages are point-in-time records by this repo's
+convention, so this design owes them no edit; the numbers here are what the documentation phase
+should quote if it decides to refresh them.
+
+The `Full library` row stays at 335 kB and stays green at 284.35 kB — but its reserve falls from
+148 kB to **50.6 kB**, which is the number the next bundle-touching change inherits.
+
+#### `exports` map — explicit keys, because a wildcard proves nothing
+
+Pinned with `attw --pack . --profile node16` (the exact `check:exports` command) against the
+split build: for `"./commands/*"` attw prints
+
+```text
+"@scolladon/tsgit/commands/*"
+node16 (from CJS): (wildcard)
+node16 (from ESM): (wildcard)
+bundler:           (wildcard)
+```
+
+— it enumerates `exports` **keys** literally and validates nothing behind a pattern. That is
+true before and after the split, and it is why the broken wildcard shipped past a green
+`check:exports` in the first place. ADR-640 requires attw coverage for the new entries, so the
+map carries explicit keys:
+
+- 49 `"./commands/<name>"` keys, each with the same `import`/`require` × `types`/`default`
+  shape as the existing subpath entries;
+- `"./commands"` → `dist/*/commands/index.*` (ADR-643);
+- `"./commands/*"` **retained** as the catch-all, which is what keeps `./commands/index` — the
+  one specifier that resolves on 3.3.0 — working, so nothing is retracted and the semver note
+  under D1 evidence is moot.
+
+Explicit keys and the retained wildcard do not fight: Node resolves the most specific match
+first. Pinned in a throwaway package on Node v22.22.3 — `exports` carrying both `"./x/*"` and
+`"./x/a"` resolves `./x/a` to the explicit target and `./x/b` through the pattern.
+
+With the 61-key map and the split `dist/`, attw reports **61 entries, all green** for
+`node16 (from CJS)`, `node16 (from ESM)` and `bundler` (`node10` is ignored by profile, as
+today), exit 0, 7.63 s — against 2.54 s for the 11-key map. That is R17's oracle.
+
+#### `tooling/dts-entries.ts` — auto-pickup, confirmed by running it
+
+`getPublishedEntries` walks the `exports` map, expands wildcard subpaths against the files
+present under `dist/`, and de-duplicates. Run against the probe root: **20 published entry pairs
+on the base build, 118 on the split** — 18 non-command pairs plus 50 command modules × 2 formats,
+where the base build's `commands/` directory held only `index`. The count is the same whether the
+map reaches those files through the wildcard or through the explicit keys, because the
+de-duplication is keyed on the `(dtsPath, runtimePath)` pair. No edit to the module was needed.
+
+`tooling/truthful-dts.ts`, which imports every enumerated entry at build time and rewrites leaked
+value exports, completes over all 118 in **0.79 s** and exits 0 — so the last step of `build:js`
+absorbs the split without change either.
+
+#### The one thing the split breaks: declaration sharing
+
+`rollup-plugin-dts` warns when an entry's declarations reference a type that lives in a shared
+declaration chunk with no public re-export — the TS2742 hazard for downstream consumers. The base
+build emits 6 such warnings (the three adapter entries × 2 formats, pre-existing). The split
+emits **30**: the same 6, plus 18 new ones across 9 entries × 2 formats:
+
+| Entry | Leaked type names |
+|---|---|
+| `commands/merge` | `ConflictType`, `IndexEntry`, `MergeConflict`, `MergeOutcome`, `SparseMatcher` |
+| `commands/config` | `ConfigKey`, `ConfigScope` |
+| `commands/cherry-pick`, `commands/rebase`, `commands/revert`, `commands/stash` | `ConflictType` |
+| `commands/reflog` | `ReflogEntry` |
+| `commands/add` | `AttributeProvider` |
+| `primitives/index` | `ConfigKey`, `ConfigScope`, `IndexEntry`, `ReflogEntry`, `SparseMatcher`, `TreeEntry` |
+
+Two facts to hold together. First, `primitives/index` is in that list and is **not** a new entry
+— its declarations are clean today; the split changes how `rollup-plugin-dts` partitions shared
+declaration chunks, and a type that was public-by-accident stops being so. Second, these are
+warnings: rollup exits 0, `truthful-dts` exits 0 and attw is green, so **no gate is red**. The
+consequence is a worse published type surface, not a broken build.
+
+The remedy the warning itself names is to re-export the 10 named types from a public entry. That
+is the path on which **R14 engages**: `reports/api.json` is produced by typedoc from the source
+entry points in `typedoc.json` — which already include `src/application/commands/index.ts` — so
+the 49 new export subpaths change it by exactly nothing, while adding a public type re-export
+changes it immediately and the regenerated report must be committed in the same change
+(`check:doc-typedoc` is `git diff --exit-code -- reports/api.json`).
+
+#### The tarball cap — the one blocker, measured
+
+`tooling/verify-tarball.sh` caps the packed tarball at `SIZE_CAP = 750 KiB` (768 000 B),
+described in the script as "tight by choice: a change that meaningfully grows any of the three
+fires the guard for a considered review rather than an automatic bump". It fires.
+
+| Pack | Files | Bytes | vs 768 000 B cap |
+|---|---|---|---|
+| published `@scolladon/tsgit@3.3.0` (registry) | 94 | 736 732 | 95.9 % |
+| probe, base build | 94 | 753 783 | 98.1 % |
+| **probe, split build** | **580** | **864 106** | **112.5 % — FAIL** |
+
+The probe packs 2.3 % heavier than the registry tarball (npm/gzip version skew, tar metadata),
+so the honest projection for the real split pack is 864 106 × (736 732 / 753 783) ≈ **844 500 B
+≈ 825 KiB** — still ~10 % over. The cap must move for ADR-640 to ship. Applying the script's own
+convention (cap ≈ 14 % above the honest floor, which is what produced 750 from 656) gives
+**940 KiB**; the comment block must be rewritten with the new floor, its composition (dual
+runtime + dual declarations, now across 60 entries and 143 chunks) and these measurements, so the
+next reader sees why it moved. This is the considered review the guard exists to force, and it is
+the one W9 side effect that loosens an existing repo-wide guard rather than tightening one.
+
+#### `verify-tarball.sh` — the resolution guard (ADR-644)
+
+The guard enumerates the `exports` map inside the packed tarball, expands any wildcard against
+the packed `dist/`, resolves every concrete specifier and fails on a miss. Two mechanics matter.
+It must run against the **packed** tree, not the worktree's `dist/`, or it re-verifies files that
+`files: ["dist","LICENSE","README.md"]` might not ship. And it must resolve through Node's own
+resolver rather than by path arithmetic — the defect it guards against is a *resolution* failure,
+and the D1 evidence probe (a throwaway directory with the package symlinked into
+`node_modules/`) is the shape to reuse. The guard and the explicit keys land together; landing
+the guard first would redden `check:tarball` until the entries exist.
+
+#### Gate interactions, gathered
+
+| Gate | Effect |
+|---|---|
+| `check:size` | `Full library` 186.61 → 284.35 kB against a 335 kB limit (green, reserve 50.6 kB); 50 new rows; browser bundle unchanged |
+| `check:tarball` / `verify:tarball` | **red until `SIZE_CAP` moves** (measured above); gains the resolution guard |
+| `check:exports` | 11 → 61 attw entries, all green; runtime 2.54 → 7.63 s |
+| `check:doc-typedoc` | unchanged by the entries; engages only if a public type re-export lands |
+| `build:js` | +0.42 s rollup; `truthful-dts` now imports 118 entries in 0.79 s |
+| `check:filesystem` (ls-lint) | no new source file — every entry is an existing kebab-case module |
+| `check:architecture` | no new import edge; the split is a build-time partition |
+| coverage / mutation | no `src/**` edit, so neither moves |
+
+---
+
+### W10 — Label-gate the two heavy PR jobs
+
+**Decisions this implements.** ADR-641 (`mutation` runs only on a PR carrying a `mutation`
+label) and ADR-651 (`benchmark-compare` runs only on a PR carrying a `bench` label). The two
+labels are deliberately distinct so each heavy job toggles independently. ADR-641 chose the label
+gate **instead of** the `timeout-minutes` guard this design originally recommended, so no timeout
+is added. ADR-642 leaves `benchmark-snapshot` alone; the D3 evidence below stays as record.
+
+**Anchors (verified).**
+
+```text
+.github/workflows/ci.yml:283-285   mutation:          if: github.event_name == 'pull_request'
+                                                      needs: [unit-tests]
+.github/workflows/ci.yml:525-527   benchmark-compare: if: github.event_name == 'pull_request'
+                                                          && needs.changes.outputs.code == 'true'
+                                                      needs: [changes, unit-tests]
+.github/workflows/ci.yml:3-7       on: push[main] + pull_request[main]   ← no `types:` key
+.github/workflows/ci.yml:9-11      concurrency: ci-${{ github.ref }}, cancel-in-progress: true
+```
+
+**The `if:` shape.** One conjunct added to each existing condition, nothing else:
+
+```yaml
+mutation:
+  if: >-
+    github.event_name == 'pull_request' &&
+    contains(github.event.pull_request.labels.*.name, 'mutation')
+
+benchmark-compare:
+  if: >-
+    github.event_name == 'pull_request' &&
+    needs.changes.outputs.code == 'true' &&
+    contains(github.event.pull_request.labels.*.name, 'bench')
+```
+
+`github.event.pull_request` carries the PR object as of the event, whose `labels` is an array of
+objects with a `name` — the object-filter form `labels.*.name` yields the name list and
+`contains` tests it. On a `push` event that context is absent, the filter yields nothing and
+`contains` is false; both jobs already carry the `github.event_name == 'pull_request'` conjunct,
+so push behaviour is unchanged twice over. `benchmark-snapshot` (`if: github.event_name ==
+'push'`) is not touched.
+
+The `mutation` job's **inner** skip — `compute-mutation-scope.sh` setting `skip=true` when the
+diff touches no `src/` file — is orthogonal and stays exactly as it is. The label decides whether
+the job runs; the scope script decides whether a running job does work.
+
+**`needs:` edges — counted, not assumed.** Every `needs:` in `ci.yml`, read off the file:
+`typecheck`/`dead-code`/`duplicates`/`architecture` → `changes`;
+`doc-links`/`doc-coverage`/`doc-typedoc`/`test-pyramid-audit` → `lint, typecheck`;
+`build`/`unit-tests` → `changes, lint, typecheck`;
+`integration`/`posix-integration`/`win-integration`/`parity-tests` → `changes, unit-tests`;
+`parity-deno`/`parity-bun`/`parity-workers` → `changes, build`; `e2e` → `changes, integration`;
+`mutation` → `unit-tests`; `benchmark-snapshot` → `unit-tests`;
+`benchmark-compare` → `changes, unit-tests`.
+
+**No job declares `needs:` on `mutation` or on `benchmark-compare`.** Both are leaves, so a
+skip propagates to nothing — there is no `if: always()` aggregator downstream to reason about,
+and the "a skipped job blocks the jobs that need it" failure mode does not arise. `cancel-on-merge.yml`
+is likewise unaffected: it cancels *in-progress runs* for the merged head SHA
+(`listWorkflowRunsForRepo` filtered `status: 'in_progress'`), and a skipped job is not a run.
+
+**How a skip reads to the merge policy — pinned.** The `main` branch has no legacy branch
+protection (`/branches/main/protection` → 404 *Branch not protected*); the policy is repository
+ruleset `main` (id 16502004, `enforcement: active`), whose `required_status_checks` rule names
+exactly one context: **`build`**, with `strict_required_status_checks_policy: true`. Neither
+label-gated job is a required check, so gating them cannot block or unblock a merge. The
+operator-facing view is `gh pr checks`, which renders a job-level skip as `skipping` and does not
+count it as a failure — measured on PR #275, where `benchmark-snapshot` (push-only, therefore
+always skipped on a PR) prints exactly that row today and `gh pr checks` still exits 0. A
+label-gated `mutation` will look precisely like `benchmark-snapshot` looks now.
+
+**The labels do not exist yet.** `gh label list` returns twelve labels: the nine GitHub defaults
+(`bug`, `documentation`, `duplicate`, `enhancement`, `good first issue`, `help wanted`,
+`invalid`, `question`, `wontfix`), `dependencies`, and the two the release bot manages. Neither
+`mutation` nor `bench` is present. Creating both — `gh label create mutation`, `gh label create
+bench` — is part of W10, and it is not optional bookkeeping: a `contains()` against a label
+nobody can apply is permanently false, which would silently retire both jobs rather than gate
+them.
+
+**Re-run behaviour — the operational consequence.** `on.pull_request` declares no `types:`, so
+the default trigger set applies: `opened`, `synchronize`, `reopened`. A `labeled` event is not in
+that set, and re-running an existing run replays that run's original event payload — including
+its label list as it stood then. **Adding a label to an already-open PR therefore does not, by
+itself, produce a run in which the gated job appears.** The label takes effect on the next
+`synchronize` (any push to the PR branch) or on `reopened`. Operationally: apply the label at
+open time when the signal is wanted, or push after labelling; a close→reopen is the cheapest
+forcing move on a PR with nothing left to push.
+
+Adding `labeled` to `types:` would remove that friction and is deliberately not part of this
+change: the workflow's concurrency group is `ci-${{ github.ref }}` with `cancel-in-progress:
+true`, so a label event arriving mid-run would cancel the entire in-flight matrix and restart it
+— trading a documented two-step for an unpredictable one. Recorded so the trade is visible if
+the friction turns out to bite.
+
+**Oracle (R19).** Verified on this PR itself, in three readings of `gh pr checks`:
+
+1. unlabelled — neither `mutation` nor `benchmark-compare` appears as a running job; both read
+   `skipping`, alongside the `benchmark-snapshot` row that already does;
+2. after applying both labels **and pushing** — both jobs run;
+3. `gh api repos/scolladon/tsgit/actions/runs/<id>/jobs` for the labelled run, showing each
+   job's `conclusion` and duration, so the recovered PR wall clock is an absolute number
+   (reference points from the D2/D13 evidence below: `mutation` 22 s–47 m, `benchmark-compare`
+   23 m 15 s on run 31945837471).
+
+Step 2 is also the empirical confirmation of the re-run behaviour described above: if the job
+appears without a push, the payload-replay reasoning was wrong and this section is corrected in
+place rather than left standing.
+
+**Verification of the workflow edit** is the same three-step ladder given under W6 — megalinter's
+YAML syntax check (which catches malformed YAML and nothing semantic), a green CI run on the PR,
+and post-merge run timings.
+
+---
+
 ### The three decision-gated items — pinned evidence
 
-These are not designed here; the evidence is pinned so the ADR conversation is grounded.
+All three are now decided (ADR-640/643/644, ADR-641/651, ADR-642). The evidence that grounded
+the ADR conversation is kept verbatim below as the record behind those decisions — including the
+D3 measurements, which argued for a cadence change the user declined.
 
 #### D1 evidence — per-command export surface
 
@@ -722,17 +1172,20 @@ Sizing for the "build it" branch: `src/application/commands/*.ts` is **50 files*
 `index.ts`), so roughly 49 new rollup entries, 49 `.size-limit.json` rows, and 49 more entry
 pairs for `attw --pack . --profile node16`. `tooling/dts-entries.ts:1-9` already expands
 wildcard subpaths against the files present under `dist/`, so the truthful-`.d.ts` audit picks a
-split up automatically — that piece is pre-built.
+split up automatically — that piece is pre-built. ADR-640 took that branch; W9 carries the
+measured version of every one of these estimates, and corrects two of them (attw covers explicit
+keys only, and the entry count is 60 rather than 49+11 because the barrel joins them).
 
 `check:exports` (attw) does **not** currently catch either failure: it validates the entries it
-can resolve and says nothing about a wildcard with no matching files. Whatever D1 decides, a
-guard against silent recurrence belongs with it (**D6**).
+can resolve and says nothing about a wildcard with no matching files. ADR-644 adds the guard that
+does (W9).
 
-**Semver note.** Removing `"./commands/*"` from `exports` also removes the one specifier under
-it that resolves today, `@scolladon/tsgit/commands/index`. It is undocumented, but it *works* on
-3.3.0, so a retraction is a breaking change to the published surface under a strict reading of
-semver. The user should decide that consciously; pairing the retraction with an added
-`"./commands"` (**D4**) gives every plausible consumer a supported landing spot.
+**Semver note.** Removing `"./commands/*"` from `exports` would also remove the one specifier
+under it that resolves today, `@scolladon/tsgit/commands/index` — undocumented, but working on
+3.3.0, so a retraction would be a breaking change to the published surface under a strict reading
+of semver. ADR-640 builds instead of retracting and ADR-643 adds `"./commands"`, and W9 keeps the
+wildcard alongside the explicit keys, so nothing that resolves today stops resolving: the note is
+recorded as the hazard that was avoided, not one that is live.
 
 The promise text lives in design docs — `commands.md:196`, `:1425-1435`, `:1660`, `:1703`;
 `repository-facade.md:63`, `:81`, `:581`; `public-type-re-exports.md:26`, `:181` — which are
@@ -775,7 +1228,14 @@ this repo — rather than with `mutation` systematically starving the pool.
 
 One incidental observation from the same data: on run 31945837471 `mutation` took 22 s and
 `benchmark-compare` took **23m15s**. On current PRs the long tail is `benchmark-compare`, not
-`mutation`. Recorded rather than acted on; see **D13**.
+`mutation`.
+
+**How this decided.** The refutation held, and the user still gated the job — for a different
+reason than the brief's: the repo's merge policy already treats `mutation` as informational (the
+local diff-scoped Stryker run plus triage is the real gate), so on most PRs the job spends a
+runner for tens of minutes on a signal nobody waits for (ADR-641). The incidental
+`benchmark-compare` observation was pulled into scope by the same conversation and gated the same
+way (ADR-651). Both are implemented in W10; no `timeout-minutes` guard is added.
 
 #### D3 evidence — benchmark-snapshot cadence
 
@@ -794,13 +1254,49 @@ trade the brief names still stands: a nightly cadence costs per-merge granularit
 `gh-pages` data branch — which is benchmark data, not a website, and whose deletion would break
 this job — and `benchmark-compare` already gives PR-time signal.
 
+**How this decided.** The user kept the per-merge cadence (ADR-642): one bisectable trend point
+per merge is worth the 12-18 minute tail, and the two observed failures stay visible rather than
+being silenced by `continue-on-error`. **Nothing in this change edits `benchmark-snapshot`** —
+no cadence change, no job move, no `bench.yml` fold-in. The measurements above are kept as the
+record of what that granularity costs, so the next reader does not re-measure it. Note the
+interaction with W10: after ADR-651, `benchmark-compare` no longer runs on an unlabelled PR, so
+on those PRs the *only* benchmark signal on the merge path is this per-merge snapshot — which is
+part of why keeping it matters more now than it did when the evidence was taken.
+
 ---
 
-## Decision candidates
+## Decision candidates — all 14 settled
 
-The designer decides none of these. **D1-D3 are the brief's own three user decisions;** D4-D14
-are further load-bearing choices uncovered while designing. The user decides each in the ADR
-phase.
+**D1-D3 were the brief's own three user decisions; D4-D14 were further load-bearing choices
+uncovered while designing. Every one is now decided and recorded as an ADR** — thirteen ADRs for
+fourteen candidates, because D5 (own run vs this PR) is folded into ADR-640's ratification. The
+table below is kept as the record of what was on the table; the **Outcome** column is what binds
+this design, and it wins over the Recommendation column wherever the two disagree.
+
+| # | Outcome | ADR |
+|---|---|---|
+| D1 | Build ~49 per-command entries — **deviates** from the recommendation to retract | [ADR-640](../adr/640-per-command-export-surface-is-built-in-this-change.md) |
+| D2 | Gate the PR `mutation` job behind a `mutation` label — **deviates** from "keep as-is + timeout guard" | [ADR-641](../adr/641-pr-mutation-job-is-label-gated.md) |
+| D3 | `benchmark-snapshot` stays per-merge — **deviates** from the recommendation to go nightly | [ADR-642](../adr/642-benchmark-snapshot-stays-per-merge.md) |
+| D4 | Add the `"./commands"` barrel subpath — as recommended | [ADR-643](../adr/643-commands-barrel-subpath-is-exported.md) |
+| D5 | The split rides **this** PR — folded into D1's ratification, **deviates** from "own run" | [ADR-640](../adr/640-per-command-export-surface-is-built-in-this-change.md) |
+| D6 | `verify-tarball.sh` resolves every `exports` subpath — as recommended | [ADR-644](../adr/644-verify-tarball-resolves-every-exports-subpath.md) |
+| D7 | Header cache entry-capped at 65 536 — as recommended | [ADR-645](../adr/645-commit-graph-header-cache-is-entry-capped.md) |
+| D8 | fsck cache stores a structural projection — as recommended | [ADR-646](../adr/646-fsck-object-cache-stores-a-structural-projection.md) |
+| D9 | Dedicated `tsconfig.typecheck.json` — as recommended | [ADR-647](../adr/647-typecheck-owns-a-dedicated-incremental-tsconfig.md) |
+| D10 | `.tsbuildinfo` stays an undeclared wireit output — as recommended | [ADR-648](../adr/648-tsbuildinfo-is-not-a-declared-wireit-output.md) |
+| D11 | Cache key + `typecheck` skips the cache entirely — as recommended | [ADR-649](../adr/649-ci-tsbuildinfo-cache-keying-and-cold-authority.md) |
+| D12 | Top allocation site only, at a **10 %** threshold — recommendation adopted, threshold set by the user | [ADR-650](../adr/650-status-churn-fix-gate-is-top-site-at-ten-percent.md) |
+| D13 | `benchmark-compare` label-gated behind `bench` — **deviates** from "out of scope, record only" | [ADR-651](../adr/651-benchmark-compare-is-label-gated.md) |
+| D14 | No staleness guard for the perf baseline — as recommended | [ADR-652](../adr/652-no-staleness-guard-for-the-perf-baseline.md) |
+
+Four ratifications deviate from the design's recommendation (D1/D5, D2, D3, D13). Three of them
+add work — **W9** (D1, D5, D4, D6) and **W10** (D2, D13) — and one removes it: D3 means
+`benchmark-snapshot` is not touched at all.
+
+The original candidate table follows unedited, as the record of the alternatives each ADR chose
+between. Read it as history: where a Recommendation below differs from the Outcome above, the
+Outcome is what ships.
 
 | # | Choice | Alternatives (≤3) | Recommendation | Why |
 |---|---|---|---|---|
@@ -917,6 +1413,41 @@ plus a green `npm run validate` **and** a green `npm run build` — the latter e
 rollup and typedoc path that must *not* inherit `incremental`. W8's proof is the ≥3-round
 alternating wall-clock comparison plus an unchanged pass/fail verdict across the whole suite.
 
+### W9 — the published surface
+
+No unit test is owed: W9 adds no `src/**` code, so there is nothing to drive Red-Green with, and
+a unit test asserting the *content* of `package.json` would assert the diff back at itself. The
+verification is executable and lives in the harness the change extends:
+
+- **The resolution guard is the test (R16).** `verify-tarball.sh` resolves every `exports`
+  subpath — 49 command keys, `./commands`, `./commands/index` through the retained wildcard, and
+  the 10 pre-existing entries — against the **packed** tarball, from an out-of-tree consumer
+  directory with the package symlinked into `node_modules/`. It fails on the first miss. Its own
+  negative proof is cheap and should be taken once during implementation: delete one built entry
+  file, confirm the guard goes red, restore it. A guard nobody has seen fail is a guard nobody
+  has tested.
+- **`check:exports` is the type-side test (R17).** 61 attw entries, all green for
+  `node16 (from CJS)`, `node16 (from ESM)` and `bundler`; a `(wildcard)` line anywhere in the
+  output for a command subpath means the explicit keys did not land.
+- **`check:size` is the budget test (R13).** 50 new rows must be green on the real build, and
+  the `Full library` row must be **observed**, not assumed — the split moves it by +97.7 kB in
+  one commit.
+- **`check:tarball` is the packaging test (R13).** Expected red until `SIZE_CAP` moves; the new
+  cap must be justified in the script's comment by the measured pack, not rounded up until green.
+- **The declaration warnings are read, not ignored.** The rollup build's
+  `still references private shared type exports` warnings are counted before and after (6 → 30);
+  any change in that set is a change to the published type surface and is reported with the
+  implementation, together with `reports/api.json`'s state (R14).
+
+### W10 — the CI gates
+
+No test artifacts and no local proof: GitHub expression evaluation cannot be exercised on this
+machine, and `npm run validate` never parses `.github/workflows/**`. The verification is the
+three-reading oracle in the W10 section, executed on this PR (R19) — unlabelled, labelled +
+pushed, and the per-job timing pull — plus megalinter's YAML syntax check. Both label-creation
+commands are part of the change, and the unlabelled reading is worthless unless the labels exist
+at the time it is taken.
+
 ### Interop
 
 No interop test is owed. Faithfulness here binds an internal refusal (`INVALID_OBJECT_ID`),
@@ -941,13 +1472,29 @@ Verbatim from the brief's own out-of-scope list — reviewed healthy, do not tou
 - Sync zlib in `node-compressor` — correct for small-object workloads.
 - Internal `export *` barrels — zero live bundle cost under rollup.
 
-Added by this design:
+Added by this design, and re-scoped by the ADRs:
 
-- **The per-command split itself**, if D1 lands as "build it" — see **D5**; it gets its own run.
-- **`benchmark-compare`'s 23-minute PR tail** — see **D13**; observed, recorded, not acted on.
-- **Any change to the `gh-pages` branch** — it is the benchmark data branch, not a website; D3
-  changes only *how often* the snapshot job writes to it.
+- **`benchmark-snapshot`, in every respect** — cadence, placement, `continue-on-error`. ADR-642
+  keeps it per-merge; no line of that job changes. Its measured 12-18 minute solo tail stays as
+  recorded evidence.
+- **A `timeout-minutes` guard on `mutation`** — ADR-641 chose the label gate *instead*, so no
+  timeout is added. Reopening it would need a runaway run the label gate did not prevent.
+- **Adding `labeled` to the workflow's `pull_request` `types:`** — W10 records why (the
+  cancel-in-progress concurrency group would restart the whole matrix on a label event) and
+  accepts the two-step instead.
+- **Any change to the `gh-pages` branch** — it is the benchmark data branch, not a website, and
+  after ADR-642 nothing in this change writes to it differently.
+- **Folding `buildBlobFilenameMap` into fsck's cache build pass** — ADR-646 declines it unless
+  W7's oracle shows tree-entry names are material.
+- **Re-exporting the 10 leaked declaration types from a public entry** — W9 measures and names
+  them; whether to publish them is a public-API question with an `api.json` consequence, and it
+  is not forced by any red gate here. Raised with the implementation, not decided by this design.
+- **`typedoc.json`'s entry points** — the 49 command modules are already documented through the
+  barrel entry, so the split adds no typedoc entry and no `reports/api.json` churn (R14).
 - **`ObjectId.fromRaw`** — its trusted-path skip is already proven vacuous
   (`object-id.ts:21-24`) and stays as-is (R2).
 - **The other 11 `/^[0-9a-f]{40}$/` literals** in `src/` — none is on a profiled hot path, so
   converting them would be churn without an oracle.
+
+**No longer out of scope** (both were, in the accepted draft): the per-command split is **in**
+(ADR-640 → W9), and `benchmark-compare`'s 23-minute PR tail is **in** (ADR-651 → W10).
