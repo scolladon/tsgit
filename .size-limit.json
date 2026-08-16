@@ -60,6 +60,306 @@
     "gzip": true
   },
   {
+    "name": "Commands (barrel)",
+    "path": "dist/esm/commands/index.js",
+    "limit": "6 kB",
+    "gzip": true
+  },
+  {
+    "name": "Command (abort-merge)",
+    "path": "dist/esm/commands/abort-merge.js",
+    "limit": "1.5 kB",
+    "gzip": true
+  },
+  {
+    "name": "Command (add)",
+    "path": "dist/esm/commands/add.js",
+    "limit": "3 kB",
+    "gzip": true
+  },
+  {
+    "name": "Command (archive)",
+    "path": "dist/esm/commands/archive.js",
+    "limit": "1.5 kB",
+    "gzip": true
+  },
+  {
+    "name": "Command (blame)",
+    "path": "dist/esm/commands/blame.js",
+    "limit": "6 kB",
+    "gzip": true
+  },
+  {
+    "name": "Command (branch)",
+    "path": "dist/esm/commands/branch.js",
+    "limit": "3 kB",
+    "gzip": true
+  },
+  {
+    "name": "Command (bundle-create)",
+    "path": "dist/esm/commands/bundle-create.js",
+    "limit": "3 kB",
+    "gzip": true
+  },
+  {
+    "name": "Command (bundle-list-heads)",
+    "path": "dist/esm/commands/bundle-list-heads.js",
+    "limit": "1.5 kB",
+    "gzip": true
+  },
+  {
+    "name": "Command (bundle-verify)",
+    "path": "dist/esm/commands/bundle-verify.js",
+    "limit": "1.5 kB",
+    "gzip": true
+  },
+  {
+    "name": "Command (cat-file)",
+    "path": "dist/esm/commands/cat-file.js",
+    "limit": "1.5 kB",
+    "gzip": true
+  },
+  {
+    "name": "Command (checkout)",
+    "path": "dist/esm/commands/checkout.js",
+    "limit": "3 kB",
+    "gzip": true
+  },
+  {
+    "name": "Command (cherry-pick)",
+    "path": "dist/esm/commands/cherry-pick.js",
+    "limit": "6 kB",
+    "gzip": true
+  },
+  {
+    "name": "Command (clone)",
+    "path": "dist/esm/commands/clone.js",
+    "limit": "3 kB",
+    "gzip": true
+  },
+  {
+    "name": "Command (commit)",
+    "path": "dist/esm/commands/commit.js",
+    "limit": "6 kB",
+    "gzip": true
+  },
+  {
+    "name": "Command (config)",
+    "path": "dist/esm/commands/config.js",
+    "limit": "1.5 kB",
+    "gzip": true
+  },
+  {
+    "name": "Command (continue-merge)",
+    "path": "dist/esm/commands/continue-merge.js",
+    "limit": "1.5 kB",
+    "gzip": true
+  },
+  {
+    "name": "Command (describe)",
+    "path": "dist/esm/commands/describe.js",
+    "limit": "6 kB",
+    "gzip": true
+  },
+  {
+    "name": "Command (diff)",
+    "path": "dist/esm/commands/diff.js",
+    "limit": "1.5 kB",
+    "gzip": true
+  },
+  {
+    "name": "Command (fetch)",
+    "path": "dist/esm/commands/fetch.js",
+    "limit": "3 kB",
+    "gzip": true
+  },
+  {
+    "name": "Command (fetch-missing)",
+    "path": "dist/esm/commands/fetch-missing.js",
+    "limit": "1.5 kB",
+    "gzip": true
+  },
+  {
+    "name": "Command (fsck)",
+    "path": "dist/esm/commands/fsck.js",
+    "limit": "10 kB",
+    "gzip": true
+  },
+  {
+    "name": "Command (grep)",
+    "path": "dist/esm/commands/grep.js",
+    "limit": "3 kB",
+    "gzip": true
+  },
+  {
+    "name": "Command (init)",
+    "path": "dist/esm/commands/init.js",
+    "limit": "1.5 kB",
+    "gzip": true
+  },
+  {
+    "name": "Command (log)",
+    "path": "dist/esm/commands/log.js",
+    "limit": "1.5 kB",
+    "gzip": true
+  },
+  {
+    "name": "Command (merge)",
+    "path": "dist/esm/commands/merge.js",
+    "limit": "6 kB",
+    "gzip": true
+  },
+  {
+    "name": "Command (mv)",
+    "path": "dist/esm/commands/mv.js",
+    "limit": "3 kB",
+    "gzip": true
+  },
+  {
+    "name": "Command (name-rev)",
+    "path": "dist/esm/commands/name-rev.js",
+    "limit": "1.5 kB",
+    "gzip": true
+  },
+  {
+    "name": "Command (notes)",
+    "path": "dist/esm/commands/notes.js",
+    "limit": "3 kB",
+    "gzip": true
+  },
+  {
+    "name": "Command (pack-objects)",
+    "path": "dist/esm/commands/pack-objects.js",
+    "limit": "1.5 kB",
+    "gzip": true
+  },
+  {
+    "name": "Command (pull)",
+    "path": "dist/esm/commands/pull.js",
+    "limit": "3 kB",
+    "gzip": true
+  },
+  {
+    "name": "Command (push)",
+    "path": "dist/esm/commands/push.js",
+    "limit": "6 kB",
+    "gzip": true
+  },
+  {
+    "name": "Command (range-diff)",
+    "path": "dist/esm/commands/range-diff.js",
+    "limit": "6 kB",
+    "gzip": true
+  },
+  {
+    "name": "Command (read-file-at)",
+    "path": "dist/esm/commands/read-file-at.js",
+    "limit": "1.5 kB",
+    "gzip": true
+  },
+  {
+    "name": "Command (rebase)",
+    "path": "dist/esm/commands/rebase.js",
+    "limit": "10 kB",
+    "gzip": true
+  },
+  {
+    "name": "Command (reflog)",
+    "path": "dist/esm/commands/reflog.js",
+    "limit": "3 kB",
+    "gzip": true
+  },
+  {
+    "name": "Command (remote)",
+    "path": "dist/esm/commands/remote.js",
+    "limit": "3 kB",
+    "gzip": true
+  },
+  {
+    "name": "Command (reset)",
+    "path": "dist/esm/commands/reset.js",
+    "limit": "3 kB",
+    "gzip": true
+  },
+  {
+    "name": "Command (rev-list)",
+    "path": "dist/esm/commands/rev-list.js",
+    "limit": "1.5 kB",
+    "gzip": true
+  },
+  {
+    "name": "Command (rev-parse)",
+    "path": "dist/esm/commands/rev-parse.js",
+    "limit": "1.5 kB",
+    "gzip": true
+  },
+  {
+    "name": "Command (revert)",
+    "path": "dist/esm/commands/revert.js",
+    "limit": "6 kB",
+    "gzip": true
+  },
+  {
+    "name": "Command (rm)",
+    "path": "dist/esm/commands/rm.js",
+    "limit": "3 kB",
+    "gzip": true
+  },
+  {
+    "name": "Command (shortlog)",
+    "path": "dist/esm/commands/shortlog.js",
+    "limit": "1.5 kB",
+    "gzip": true
+  },
+  {
+    "name": "Command (show)",
+    "path": "dist/esm/commands/show.js",
+    "limit": "1.5 kB",
+    "gzip": true
+  },
+  {
+    "name": "Command (sparse-checkout)",
+    "path": "dist/esm/commands/sparse-checkout.js",
+    "limit": "3 kB",
+    "gzip": true
+  },
+  {
+    "name": "Command (stash)",
+    "path": "dist/esm/commands/stash.js",
+    "limit": "6 kB",
+    "gzip": true
+  },
+  {
+    "name": "Command (status)",
+    "path": "dist/esm/commands/status.js",
+    "limit": "1.5 kB",
+    "gzip": true
+  },
+  {
+    "name": "Command (submodule)",
+    "path": "dist/esm/commands/submodule.js",
+    "limit": "10 kB",
+    "gzip": true
+  },
+  {
+    "name": "Command (tag)",
+    "path": "dist/esm/commands/tag.js",
+    "limit": "3 kB",
+    "gzip": true
+  },
+  {
+    "name": "Command (whatchanged)",
+    "path": "dist/esm/commands/whatchanged.js",
+    "limit": "1.5 kB",
+    "gzip": true
+  },
+  {
+    "name": "Command (worktree)",
+    "path": "dist/esm/commands/worktree.js",
+    "limit": "1.5 kB",
+    "gzip": true
+  },
+  {
     "name": "Full library",
     "path": "dist/esm/**/*.js",
     "limit": "335 kB",
