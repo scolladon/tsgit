@@ -1,24 +1,24 @@
 import type { FsckObjectType } from '../../../../domain/fsck/index.js';
 import { FILE_MODE } from '../../../../domain/objects/file-mode.js';
-import type { GitObject, ObjectId } from '../../../../domain/objects/index.js';
-import type { CachedGitObject } from './object-cache.js';
+import type { ObjectId } from '../../../../domain/objects/index.js';
+import type { CachedGitObject, ProjectedGitObject } from './object-cache.js';
 import type { FsckFinding, UnreadableMode } from './types.js';
 
 // ---------------------------------------------------------------------------
 // In-edge map (needed for dangling vs merely-unreachable classification)
 // ---------------------------------------------------------------------------
 
-function recordOutEdges(obj: GitObject, inEdge: Set<ObjectId>): void {
+function recordOutEdges(obj: ProjectedGitObject, inEdge: Set<ObjectId>): void {
   if (obj.type === 'commit') {
-    inEdge.add(obj.data.tree);
-    for (const p of obj.data.parents) inEdge.add(p);
+    inEdge.add(obj.tree);
+    for (const p of obj.parents) inEdge.add(p);
   } else if (obj.type === 'tree') {
     for (const entry of obj.entries) {
       // Stryker disable next-line ConditionalExpression: equivalent — gitlink shas (external commits) are not in the local universe; classifyObjects only iterates universe objects, so adding them to inEdge has no effect.
       if (entry.mode !== FILE_MODE.GITLINK) inEdge.add(entry.id);
     }
   } else if (obj.type === 'tag') {
-    inEdge.add(obj.data.object);
+    inEdge.add(obj.object);
   }
 }
 
@@ -83,8 +83,12 @@ function enqueueIfPresent(state: WalkState, id: ObjectId): void {
   }
 }
 
-function processCommit(state: WalkState, id: ObjectId, obj: GitObject & { type: 'commit' }): void {
-  const { tree, parents } = obj.data;
+function processCommit(
+  state: WalkState,
+  id: ObjectId,
+  obj: ProjectedGitObject & { type: 'commit' },
+): void {
+  const { tree, parents } = obj;
   if (!state.universe.has(tree)) {
     state.missingIds.add(tree);
     state.brokenEdges.push({ fromId: id, fromType: 'commit', toId: tree, toType: 'tree' });
@@ -102,7 +106,11 @@ function processCommit(state: WalkState, id: ObjectId, obj: GitObject & { type: 
   if (parents.length === 0) state.rootCommits.push(id);
 }
 
-function processTree(state: WalkState, id: ObjectId, obj: GitObject & { type: 'tree' }): void {
+function processTree(
+  state: WalkState,
+  id: ObjectId,
+  obj: ProjectedGitObject & { type: 'tree' },
+): void {
   for (const entry of obj.entries) {
     if (entry.mode === FILE_MODE.GITLINK) continue;
     const toType: FsckObjectType = entry.mode === FILE_MODE.DIRECTORY ? 'tree' : 'blob';
@@ -115,8 +123,12 @@ function processTree(state: WalkState, id: ObjectId, obj: GitObject & { type: 't
   }
 }
 
-function processTag(state: WalkState, id: ObjectId, obj: GitObject & { type: 'tag' }): void {
-  const { object: target, objectType: targetType, tagName } = obj.data;
+function processTag(
+  state: WalkState,
+  id: ObjectId,
+  obj: ProjectedGitObject & { type: 'tag' },
+): void {
+  const { object: target, objectType: targetType, tagName } = obj;
   if (!state.universe.has(target)) {
     state.missingIds.add(target);
     state.brokenEdges.push({ fromId: id, fromType: 'tag', toId: target, toType: targetType });
@@ -126,7 +138,7 @@ function processTag(state: WalkState, id: ObjectId, obj: GitObject & { type: 'ta
   }
 }
 
-function visitObject(state: WalkState, id: ObjectId, obj: GitObject): void {
+function visitObject(state: WalkState, id: ObjectId, obj: ProjectedGitObject): void {
   state.reached.add(id);
   if (obj.type === 'commit') processCommit(state, id, obj);
   if (obj.type === 'tree') processTree(state, id, obj);

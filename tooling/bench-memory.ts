@@ -29,6 +29,8 @@ import {
   HEADER_CACHE_FIXTURE,
   LARGE_FIXTURE,
   MEDIUM_FIXTURE_WITH_COMMIT_GRAPH,
+  SMALL_FAT_BLOB_FIXTURE,
+  SMALL_FIXTURE,
 } from '../test/bench/support/fixture-generator.ts';
 
 /** The compiled entry — the source tree is unreachable from a strip-only runtime. */
@@ -269,6 +271,52 @@ const runHeaderCacheLargeWorkload = (
     'commit-walk-header-cache-large',
   );
 
+/** Concurrent-poller interval for `runFsckObjectCacheWorkload` — short
+ *  enough to catch a peak inside a single non-streaming async call, coarse
+ *  enough not to dominate the call's own wall clock. */
+const PEAK_POLL_INTERVAL_MS = 5;
+
+/**
+ * Peak `heapUsed` for `repo.fsck()` over a fixture — fsck's object cache
+ * decodes and retains the whole repository universe for the entire command,
+ * so this workload is what the structural-projection bound (peak tracks
+ * commit/tree count, not blob bytes) is measured against. `SMALL_FIXTURE`
+ * and `SMALL_FAT_BLOB_FIXTURE` share the same commit/tree/blob count and
+ * differ only in blob content, so the two reports isolate that one variable.
+ * `fsck()` is a single non-streaming call with no per-step hook to sample
+ * from, so a concurrent poller — not a post-hoc sample — tracks the peak:
+ * the command's own I/O awaits give the event loop ticks to run it, and a
+ * post-hoc sample alone can read BELOW the true peak once V8's incremental
+ * GC reclaims short-lived garbage between those awaits.
+ */
+const runFsckObjectCacheWorkload = async (
+  gc: () => void,
+  openRepository: OpenRepository,
+  spec: FixtureSpec,
+): Promise<WorkloadReport> => {
+  const fixture = await ensureScaledFixture(spec);
+
+  const before = gcBaseline(gc);
+  let peak = before;
+  const poll = setInterval(() => {
+    peak = maxSample(peak, sampleMemory());
+  }, PEAK_POLL_INTERVAL_MS);
+  try {
+    const repo = await openRepository({ cwd: fixture.cwd });
+    try {
+      await repo.fsck();
+      peak = maxSample(peak, sampleMemory());
+    } finally {
+      await repo.dispose();
+    }
+  } finally {
+    clearInterval(poll);
+  }
+  const after = gcBaseline(gc);
+
+  return toReport(`fsck-object-cache-${spec.label}`, before, peak, after);
+};
+
 const toMarkdownRow = (report: WorkloadReport): string =>
   `| ${report.workload} | ${report.rss.before} | ${report.rss.peak} | ${report.rss.after} | ` +
   `${report.heapUsed.before} | ${report.heapUsed.peak} | ${report.heapUsed.after} |`;
@@ -298,6 +346,8 @@ const main = async (): Promise<void> => {
   try {
     reports.push(await runDeltaChainWorkload(gc, openRepository));
     reports.push(await runHeaderCacheWorkload(gc, openRepository));
+    reports.push(await runFsckObjectCacheWorkload(gc, openRepository, SMALL_FIXTURE));
+    reports.push(await runFsckObjectCacheWorkload(gc, openRepository, SMALL_FAT_BLOB_FIXTURE));
     if (process.env.TSGIT_BENCH_LARGE !== undefined) {
       reports.push(await runLargePackWorkload(gc, openRepository));
     }
