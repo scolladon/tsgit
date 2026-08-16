@@ -401,18 +401,30 @@ const partitionByPrefix = (leaves: ReadonlyArray<LeafRecord>): PartitionedLeaves
   return { files, subdirs };
 };
 
-/** Sentinel `parentIndex` for the root frame — it has no parent to attach to. */
-const NO_PARENT_LEVEL_INDEX = -1;
+/**
+ * Sentinel `parentIndex` meaning "this frame's parent is the root" — the
+ * root is never itself a member of `frames` (see `LeafTrieFrame`), so it
+ * can't be addressed by a real array index.
+ */
+const ROOT_PARENT_LEVEL_INDEX = -1;
 
+/**
+ * One NAMED node of the leaf trie below the root. The root itself is
+ * excluded from `frames` — it's the one node with no name, so keeping it out
+ * of the array (its files live in `LeafTrie.rootFiles` instead) makes `name`
+ * non-optional for every real frame. `parentIndex` is either
+ * `ROOT_PARENT_LEVEL_INDEX` or another index into `frames`.
+ */
 interface LeafTrieFrame {
-  readonly name: FilePath | undefined;
+  readonly name: FilePath;
   readonly files: ReadonlyArray<LeafRecord>;
   readonly parentIndex: number;
 }
 
 interface LeafTrie {
+  readonly rootFiles: ReadonlyArray<LeafRecord>;
   readonly frames: ReadonlyArray<LeafTrieFrame>;
-  /** `levels[d]` lists every frame index at nesting depth `d`. */
+  /** `levels[d]` lists every frame index at nesting depth `d + 1` — the root's own depth (0) is never a `frames` member. */
   readonly levels: ReadonlyArray<ReadonlyArray<number>>;
 }
 
@@ -423,17 +435,30 @@ interface LeafTrie {
  * it crosses `maxDepth`, without ever partitioning the level beyond it.
  * Matches the previous recursive guard's contract exactly (it checked
  * `depth > maxDepth` at the top of each call, before doing that call's
- * work), so both sites refuse at `depth === maxDepth + 1`.
+ * work), so both sites refuse at `depth === maxDepth + 1`. The root's own
+ * check (`depth === 0`) is applied before its leaves are partitioned, same
+ * as every other level — reachable whenever `core.maxTreeDepth` is
+ * configured negative.
  */
 const buildLeafTrie = (rootLeaves: ReadonlyArray<LeafRecord>, maxDepth: number): LeafTrie => {
+  if (maxDepth < 0) throw treeDepthExceeded(0);
+  const { files: rootFiles, subdirs: rootSubdirs } = partitionByPrefix(rootLeaves);
+
   const frames: LeafTrieFrame[] = [];
   const levels: number[][] = [];
   let currentLevel: Array<{
-    readonly name: FilePath | undefined;
+    readonly name: FilePath;
     readonly leaves: ReadonlyArray<LeafRecord>;
     readonly parentIndex: number;
-  }> = [{ name: undefined, leaves: rootLeaves, parentIndex: NO_PARENT_LEVEL_INDEX }];
-  let depth = 0;
+  }> = [];
+  for (const [prefix, subLeaves] of rootSubdirs) {
+    currentLevel.push({
+      name: prefix as FilePath,
+      leaves: subLeaves,
+      parentIndex: ROOT_PARENT_LEVEL_INDEX,
+    });
+  }
+  let depth = 1;
   while (currentLevel.length > 0) {
     if (depth > maxDepth) throw treeDepthExceeded(depth);
     const levelIndices: number[] = [];
@@ -451,7 +476,7 @@ const buildLeafTrie = (rootLeaves: ReadonlyArray<LeafRecord>, maxDepth: number):
     currentLevel = nextLevel;
     depth += 1;
   }
-  return { frames, levels };
+  return { rootFiles, frames, levels };
 };
 
 const leavesToTreeEntries = (files: ReadonlyArray<LeafRecord>): TreeEntry[] =>
@@ -476,8 +501,9 @@ const leavesToTreeEntries = (files: ReadonlyArray<LeafRecord>): TreeEntry[] =>
  * observable behaviour.
  */
 const writeLeafTrie = async (ctx: Context, trie: LeafTrie): Promise<ObjectId> => {
+  const rootTreeEntries = leavesToTreeEntries(trie.rootFiles);
   const treeEntries = trie.frames.map((frame) => leavesToTreeEntries(frame.files));
-  for (let level = trie.levels.length - 1; level >= 1; level -= 1) {
+  for (let level = trie.levels.length - 1; level >= 0; level -= 1) {
     const written = await Promise.all(
       trie.levels[level]!.map(async (index) => ({
         index,
@@ -486,14 +512,18 @@ const writeLeafTrie = async (ctx: Context, trie: LeafTrie): Promise<ObjectId> =>
     );
     for (const { index, id } of written) {
       const frame = trie.frames[index]!;
-      treeEntries[frame.parentIndex]!.push({
-        name: frame.name as FilePath,
+      const parentEntries =
+        frame.parentIndex === ROOT_PARENT_LEVEL_INDEX
+          ? rootTreeEntries
+          : treeEntries[frame.parentIndex]!;
+      parentEntries.push({
+        name: frame.name,
         id,
         mode: FILE_MODE.DIRECTORY,
       });
     }
   }
-  return writeTree(ctx, treeEntries[0]!);
+  return writeTree(ctx, rootTreeEntries);
 };
 
 /** Build a nested tree from flat leaf records. Exported for direct unit testing. */

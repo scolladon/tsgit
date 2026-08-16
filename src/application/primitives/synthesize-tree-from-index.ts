@@ -112,21 +112,34 @@ const groupByPrefix = (
   return { files, subdirs };
 };
 
-/** Sentinel `parentIndex` for the root frame — it has no parent to attach to. */
-const NO_PARENT_INDEX = -1;
+/**
+ * Sentinel `parentIndex` meaning "this frame's parent is the root" — the
+ * root is never itself a member of `frames` (see `TrieFrame`), so it can't
+ * be addressed by a real array index.
+ */
+const ROOT_PARENT_INDEX = -1;
 
 /**
- * One node of the prefix trie, already grouped into its own files and
- * flattened into `frames` at a fixed index. `parentIndex` points back into
- * `frames`, always strictly less than this node's own index — `buildTrieFrames`
- * only appends a child after its parent has already been pushed, so a plain
- * reverse scan of `frames` is a valid post-order (every descendant is visited
- * before its ancestor).
+ * One NAMED node of the prefix trie below the root, already grouped into its
+ * own files and flattened into `frames` at a fixed index. The root itself is
+ * excluded from `frames` — it's the one node with no name, so keeping it out
+ * of the array (its files live in `rootFiles` instead) makes `name`
+ * non-optional for every real frame. `parentIndex` is either
+ * `ROOT_PARENT_INDEX` or another index into `frames`, and when it IS another
+ * index it's always strictly less than this node's own index —
+ * `buildTrieFrames` only appends a child after its parent has already been
+ * pushed, so a plain reverse scan of `frames` is a valid post-order (every
+ * descendant is visited before its ancestor).
  */
 interface TrieFrame {
-  readonly name: FilePath | undefined;
+  readonly name: FilePath;
   readonly files: ReadonlyArray<PendingEntry>;
   readonly parentIndex: number;
+}
+
+interface Trie {
+  readonly rootFiles: ReadonlyArray<PendingEntry>;
+  readonly frames: ReadonlyArray<TrieFrame>;
 }
 
 /**
@@ -135,13 +148,17 @@ interface TrieFrame {
  * regardless of how deeply nested `rootEntries` is (bounded separately by
  * `assertDepthBounded` at the input boundary).
  */
-const buildTrieFrames = (rootEntries: ReadonlyArray<PendingEntry>): TrieFrame[] => {
+const buildTrieFrames = (rootEntries: ReadonlyArray<PendingEntry>): Trie => {
+  const { files: rootFiles, subdirs: rootSubdirs } = groupByPrefix(rootEntries);
   const frames: TrieFrame[] = [];
   const toVisit: Array<{
-    readonly name: FilePath | undefined;
+    readonly name: FilePath;
     readonly entries: ReadonlyArray<PendingEntry>;
     readonly parentIndex: number;
-  }> = [{ name: undefined, entries: rootEntries, parentIndex: NO_PARENT_INDEX }];
+  }> = [];
+  for (const [prefix, subEntries] of rootSubdirs) {
+    toVisit.push({ name: prefix as FilePath, entries: subEntries, parentIndex: ROOT_PARENT_INDEX });
+  }
   while (toVisit.length > 0) {
     const { name, entries, parentIndex } = toVisit.pop()!;
     const { files, subdirs } = groupByPrefix(entries);
@@ -151,7 +168,7 @@ const buildTrieFrames = (rootEntries: ReadonlyArray<PendingEntry>): TrieFrame[] 
       toVisit.push({ name: prefix as FilePath, entries: subEntries, parentIndex: index });
     }
   }
-  return frames;
+  return { rootFiles, frames };
 };
 
 const filesToTreeEntries = (files: ReadonlyArray<PendingEntry>): TreeEntry[] =>
@@ -160,23 +177,27 @@ const filesToTreeEntries = (files: ReadonlyArray<PendingEntry>): TreeEntry[] =>
 /**
  * Write every frame bottom-up: a plain reverse scan over `frames` visits
  * every child before its parent (see `TrieFrame`), so by the time a frame is
- * written, its own sub-tree entries have already been appended to it.
+ * written, its own sub-tree entries have already been appended to it — either
+ * to its parent frame's entry list, or to `rootTreeEntries` when the parent
+ * is the root. The root itself is written last, once the scan has appended
+ * every top-level subtree to `rootTreeEntries`.
  */
-const writeTrieFrames = async (
-  ctx: Context,
-  frames: ReadonlyArray<TrieFrame>,
-): Promise<ObjectId> => {
+const writeTrieFrames = async (ctx: Context, trie: Trie): Promise<ObjectId> => {
+  const { rootFiles, frames } = trie;
+  const rootTreeEntries = filesToTreeEntries(rootFiles);
   const treeEntries = frames.map((frame) => filesToTreeEntries(frame.files));
-  for (let index = frames.length - 1; index >= 1; index -= 1) {
+  for (let index = frames.length - 1; index >= 0; index -= 1) {
     const frame = frames[index]!;
     const subId = await writeTree(ctx, treeEntries[index]!);
-    treeEntries[frame.parentIndex]!.push({
-      name: frame.name as FilePath,
+    const parentEntries =
+      frame.parentIndex === ROOT_PARENT_INDEX ? rootTreeEntries : treeEntries[frame.parentIndex]!;
+    parentEntries.push({
+      name: frame.name,
       id: subId,
       mode: FILE_MODE.DIRECTORY,
     });
   }
-  return writeTree(ctx, treeEntries[0]!);
+  return writeTree(ctx, rootTreeEntries);
 };
 
 /**
