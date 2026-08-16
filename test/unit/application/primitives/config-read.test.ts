@@ -41,6 +41,15 @@ describe('primitives/config-read', () => {
     __resetConfigCacheForTests();
   });
 
+  // `readConfig` now resolves system/global/local/worktree scope in one
+  // `loadConfigEntry` call (`readConfigSections` walks all four, PLUS the
+  // worktree-active gate's own local-file check, PLUS `loadConfigEntry`'s
+  // own direct local read for its LOCAL-only tokens) — five `readUtf8` calls
+  // per uncached call on the memory adapter's default scope layout, not one.
+  // These counts assert the SHAPE (N per fresh load, 0 on a cache hit, N
+  // again after invalidation), not a literal single read.
+  const READS_PER_LOAD = 5;
+
   describe('Given missing .git/config', () => {
     describe('When readConfig', () => {
       it('Then returns empty parsed config', async () => {
@@ -1061,8 +1070,8 @@ describe('primitives/config-read', () => {
         await readConfig(ctx);
         await readConfig(ctx);
 
-        // Assert — only one underlying read.
-        expect(spy).toHaveBeenCalledTimes(1);
+        // Assert — only one underlying scope walk.
+        expect(spy).toHaveBeenCalledTimes(READS_PER_LOAD);
       });
     });
   });
@@ -1079,7 +1088,7 @@ describe('primitives/config-read', () => {
         await readConfig(ctx);
 
         // Assert
-        expect(spy).toHaveBeenCalledTimes(1);
+        expect(spy).toHaveBeenCalledTimes(READS_PER_LOAD);
       });
     });
   });
@@ -1244,7 +1253,7 @@ describe('primitives/config-read', () => {
         await readConfig(ctx);
 
         // Assert — reset replaces the WeakMap, so the second call misses the cache.
-        expect(spy).toHaveBeenCalledTimes(2);
+        expect(spy).toHaveBeenCalledTimes(READS_PER_LOAD * 2);
       });
     });
   });
@@ -2043,7 +2052,6 @@ describe('primitives/config-read', () => {
       );
     });
   });
-
   describe('Given a cached config and invalidateConfigCache for that context', () => {
     describe('When readConfig is called again', () => {
       it('Then the file is re-read', async () => {
@@ -2057,8 +2065,8 @@ describe('primitives/config-read', () => {
         invalidateConfigCache(ctx);
         await readConfig(ctx);
 
-        // Assert — the dropped entry forces a second underlying read.
-        expect(spy).toHaveBeenCalledTimes(2);
+        // Assert — the dropped entry forces a second underlying scope walk.
+        expect(spy).toHaveBeenCalledTimes(READS_PER_LOAD * 2);
       });
     });
   });
@@ -2079,8 +2087,8 @@ describe('primitives/config-read', () => {
         invalidateConfigCache(ctxA);
         await readConfig(ctxB);
 
-        // Assert — ctxB still served from cache: only one read.
-        expect(spyB).toHaveBeenCalledTimes(1);
+        // Assert — ctxB still served from cache: only its own one scope walk.
+        expect(spyB).toHaveBeenCalledTimes(READS_PER_LOAD);
       });
     });
   });
@@ -2109,11 +2117,11 @@ describe('primitives/config-read', () => {
         await readConfig(ctx);
         const result = await findFirstValuelessEntry(ctx, 'core', undefined, ['excludesfile']);
 
-        // Assert — the finder served the cached tokens, no second read.
+        // Assert — the finder served the cached entry, no second scope walk.
         expect(result?.key).toBe('core.excludesfile');
         expect(result?.line).toBe(2);
         expect(result?.source).toBe(`${ctx.layout.gitDir}/config`);
-        expect(spy).toHaveBeenCalledTimes(1);
+        expect(spy).toHaveBeenCalledTimes(READS_PER_LOAD);
       });
 
       it('Then after invalidateConfigCache the next finder re-reads (spy count 2)', async () => {
@@ -2128,7 +2136,7 @@ describe('primitives/config-read', () => {
         await findFirstValuelessEntry(ctx, 'core', undefined, ['excludesfile']);
 
         // Assert
-        expect(spy).toHaveBeenCalledTimes(2);
+        expect(spy).toHaveBeenCalledTimes(READS_PER_LOAD * 2);
       });
     });
 
@@ -2143,10 +2151,10 @@ describe('primitives/config-read', () => {
         const found = await findFirstValuelessEntry(ctx, 'core', undefined, ['excludesfile']);
         const parsed = await readConfig(ctx);
 
-        // Assert — one read, and readConfig yields the parse built from those tokens.
+        // Assert — one scope walk, and readConfig yields the parse built from it.
         expect(found?.key).toBe('core.excludesfile');
         expect(parsed.core).toBeUndefined();
-        expect(spy).toHaveBeenCalledTimes(1);
+        expect(spy).toHaveBeenCalledTimes(READS_PER_LOAD);
       });
     });
   });
@@ -2164,7 +2172,7 @@ describe('primitives/config-read', () => {
 
         // Assert
         expect(result).toBeUndefined();
-        expect(spy).toHaveBeenCalledTimes(1);
+        expect(spy).toHaveBeenCalledTimes(READS_PER_LOAD);
       });
     });
   });
