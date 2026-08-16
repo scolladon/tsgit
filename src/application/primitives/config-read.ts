@@ -350,7 +350,6 @@ const MAX_TREE_DEPTH_KEY = 'maxtreedepth';
 export interface InvalidMaxTreeDepthEntry {
   readonly key: string;
   readonly source: string;
-  readonly line: number;
   readonly value: string;
   readonly reason: 'invalid unit' | 'out of range';
 }
@@ -372,7 +371,7 @@ export const findLastInvalidMaxTreeDepth = async (
 ): Promise<InvalidMaxTreeDepthEntry | undefined> => {
   const { tokens, source: path } = await readConfigEntry(ctx);
   let inSection = false;
-  let last: { readonly line: number; readonly value: string | null } | undefined;
+  let last: { readonly value: string | null } | undefined;
   for (const token of tokens) {
     if (token.kind === 'header') {
       inSection = matchesSection(token.section, token.subsection, 'core', undefined);
@@ -380,22 +379,22 @@ export const findLastInvalidMaxTreeDepth = async (
     }
     if (!inSection || token.kind !== 'entry') continue;
     if (token.key.toLowerCase() !== MAX_TREE_DEPTH_KEY) continue;
-    last = { line: token.startLine + 1, value: token.value };
+    last = { value: token.value };
   }
   if (last === undefined) return undefined;
   const key = `core.${MAX_TREE_DEPTH_KEY}`;
   if (last.value === null) {
-    return { key, source: path, line: last.line, value: '', reason: 'invalid unit' };
+    return { key, source: path, value: '', reason: 'invalid unit' };
   }
   const parsed = parseGitInt(last.value);
   if (!parsed.ok) {
-    return { key, source: path, line: last.line, value: last.value, reason: parsed.reason };
+    return { key, source: path, value: last.value, reason: parsed.reason };
   }
   // The C-`int` narrowing sits here, on top of `parseGitInt`: `parseGitInt`'s own
   // bounds are int64, so a magnitude like 4294967296 comes back `ok` from it —
   // this comparison is what turns that into `out of range` for this key.
   if (parsed.value < GIT_C_INT_MIN || parsed.value > GIT_C_INT_MAX) {
-    return { key, source: path, line: last.line, value: last.value, reason: 'out of range' };
+    return { key, source: path, value: last.value, reason: 'out of range' };
   }
   return undefined;
 };

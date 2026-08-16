@@ -1987,6 +1987,27 @@ describe('resolveMergeAuthor / resolveMergeCommitter (direct)', () => {
 });
 
 describe('writeNestedTree (direct)', () => {
+  describe('Given core.maxTreeDepth configured to zero and a top-level leaf', () => {
+    describe('When writeNestedTree runs', () => {
+      it('Then it completes — zero permits exactly the top level', async () => {
+        // Arrange — the companion to the negative case, and the one that
+        // separates `maxDepth < 0` from `maxDepth <= 0`: a cap of 0 must still
+        // admit depth-0 entries, so a flat leaf list writes a tree.
+        const ctx = await buildSeededContext();
+        await seedMaxTreeDepth(ctx, '0');
+        const blobId = await writeBlob(ctx, DEEP_CHAIN_LEAF_CONTENT);
+        const leaves = [{ path: 'f.txt' as FilePath, id: blobId, mode: FILE_MODE.REGULAR }];
+
+        // Act
+        const result = await writeNestedTree(ctx, leaves);
+
+        // Assert
+        const tree = await readObject(ctx, result);
+        expect(tree.type).toBe('tree');
+      });
+    });
+  });
+
   describe('Given core.maxTreeDepth configured negative and a top-level leaf', () => {
     describe('When writeNestedTree runs', () => {
       it('Then it throws TREE_DEPTH_EXCEEDED at depth 0 — the root itself is refused', async () => {
