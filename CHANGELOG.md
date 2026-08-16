@@ -1,5 +1,24 @@
 # Changelog
 
+## [3.4.0](https://github.com/scolladon/tsgit/compare/v3.3.0...v3.4.0) (2026-08-16)
+
+
+### Features
+
+* make the object-store gate the multi-pack-index load alone ([#274](https://github.com/scolladon/tsgit/issues/274)) ([a4a1663](https://github.com/scolladon/tsgit/commit/a4a166385f6b78c17be31ef6df14bc913f1c9cc6))
+* relax path containment to git's security model and recover the containment tax ([#273](https://github.com/scolladon/tsgit/issues/273)) ([a4c924a](https://github.com/scolladon/tsgit/commit/a4c924a7db3ffceae561ee475e49adc1421cc9bd))
+* write the pack reverse index beside every pack index as git does ([#271](https://github.com/scolladon/tsgit/issues/271)) ([5ecb26e](https://github.com/scolladon/tsgit/commit/5ecb26ebf86983e126282a7b69c7e2c97222ed5e))
+
+
+### Bug Fixes
+
+* make the tree-depth caps bound what they claim, and track Node release lines by alias ([#275](https://github.com/scolladon/tsgit/issues/275)) ([46c6bd1](https://github.com/scolladon/tsgit/commit/46c6bd1c7d8791143f281260548dc2c232807ee6))
+
+
+### Performance
+
+* remediate the 2026-08-16 performance review ([#276](https://github.com/scolladon/tsgit/issues/276)) ([3f5b9ba](https://github.com/scolladon/tsgit/commit/3f5b9ba6a665056aa04387fb227932e3afb1af91))
+
 ## [3.3.0](https://github.com/scolladon/tsgit/compare/v3.2.1...v3.3.0) (2026-08-11)
 
 
