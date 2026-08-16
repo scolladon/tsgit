@@ -41,14 +41,12 @@ describe('primitives/config-read', () => {
     __resetConfigCacheForTests();
   });
 
-  // `readConfig` now resolves system/global/local/worktree scope in one
-  // `loadConfigEntry` call (`readConfigSections` walks all four, PLUS the
-  // worktree-active gate's own local-file check, PLUS `loadConfigEntry`'s
-  // own direct local read for its LOCAL-only tokens) — five `readUtf8` calls
-  // per uncached call on the memory adapter's default scope layout, not one.
-  // These counts assert the SHAPE (N per fresh load, 0 on a cache hit, N
-  // again after invalidation), not a literal single read.
-  const READS_PER_LOAD = 5;
+  // `readConfig` reads the LOCAL config file and nothing else, so an uncached
+  // load is exactly one `readUtf8`. These counts assert the SHAPE — N per
+  // fresh load, 0 on a cache hit, N again after invalidation — so naming the
+  // number keeps the single-flight invariant legible rather than burying it
+  // in a bare literal.
+  const READS_PER_LOAD = 1;
 
   describe('Given missing .git/config', () => {
     describe('When readConfig', () => {

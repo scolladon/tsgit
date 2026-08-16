@@ -1,16 +1,12 @@
 import { TsgitError } from '../../domain/error.js';
 import type { Context } from '../../ports/context.js';
-import {
-  __resetSectionsCacheForTests,
-  invalidateScopedConfigCache,
-  readConfigSections,
-} from './config-scoped-read.js';
 import type { ConfigToken, IniSection } from './internal/config-ini.js';
 import {
   GIT_C_INT_MAX,
   GIT_C_INT_MIN,
   parseGitBoolean,
   parseGitInt,
+  parseIniSectionsFromTokens,
   tokenizeConfig,
 } from './internal/config-ini.js';
 import { commonGitDir } from './path-layout.js';
@@ -189,7 +185,6 @@ const readConfigEntry = (ctx: Context): Promise<ConfigCacheEntry> => {
 /** @internal — test-only cache reset between cases. Replaces the entire WeakMap. */
 export const __resetConfigCacheForTests = (): void => {
   cache = new WeakMap();
-  __resetSectionsCacheForTests();
 };
 
 /**
@@ -203,7 +198,6 @@ export const __resetConfigCacheForTests = (): void => {
  */
 export const invalidateConfigCache = (ctx: Context): void => {
   cache.delete(ctx);
-  invalidateScopedConfigCache(ctx);
 };
 
 /**
@@ -218,10 +212,9 @@ export const invalidateConfigCache = (ctx: Context): void => {
 const loadConfigEntry = async (ctx: Context): Promise<ConfigCacheEntry> => {
   const path = `${commonGitDir(ctx)}/config`;
   const raw = await readRawConfig(ctx, path);
-  const tokens = raw === undefined ? [] : tokenizeConfig(raw, path);
-  const scoped = await readConfigSections({ ctx });
-  const parsed = assembleParsed(scoped.map(({ section }) => section));
-  return { parsed, tokens, source: path };
+  if (raw === undefined) return { parsed: {}, tokens: [], source: path };
+  const tokens = tokenizeConfig(raw, path);
+  return { parsed: assembleParsed(parseIniSectionsFromTokens(tokens)), tokens, source: path };
 };
 
 const readRawConfig = async (ctx: Context, path: string): Promise<string | undefined> => {
