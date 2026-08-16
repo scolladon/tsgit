@@ -285,7 +285,9 @@ npm run test:mutation
 npm run check:mutation-budgets
 ```
 
-**CI workflow** (diff-scoped): `.github/scripts/compute-mutation-scope.sh` derives the file list from the PR diff vs `base.sha`; `test:mutation:pr` runs Stryker over that scope; `check:mutation-budgets` evaluates the resulting report. PRs that don't touch `src/` skip mutation entirely. See `docs/design/phase-19-1-mutation-pyramid.md` and ADRs 100–102.
+**CI workflow** (diff-scoped): `.github/scripts/compute-mutation-scope.sh` derives the file list from the PR diff vs `base.sha`; `test:mutation:pr` runs Stryker over that scope; `check:mutation-budgets` evaluates the resulting report. PRs that don't touch `src/` skip mutation entirely — that scope-script skip is unchanged and orthogonal to the label gate below. See `docs/design/phase-19-1-mutation-pyramid.md` and ADRs 100–102.
+
+The PR mutation job itself only runs on a PR carrying the `mutation` label. GitHub's `labeled` event is deliberately not a workflow trigger, so labelling an already-open PR does not by itself start the job — apply the label, then push (any `synchronize` picks it up).
 
 **Equivalent mutants.** When a mutant is provably equivalent (the test would pass for both the original and the mutant), annotate the source with `// equivalent-mutant: <why>` on the line above. No catalogue, no allowlist — the annotation is the documentation.
 
@@ -457,7 +459,7 @@ Examples:
 Before any PR can merge, all of these must pass:
 
 - [ ] `npm run check` — biome lint + format
-- [ ] `npm run check:types` — tsc strict compilation
+- [ ] `npm run check:types` — tsc strict compilation against `tsconfig.typecheck.json` (extends `tsconfig.json` with `incremental` + a gitignored `.tsbuildinfo`); a warm re-check with no source changes runs about 4× faster than a cold one
 - [ ] `npm run check:dead-code` — knip (no unused code)
 - [ ] `npm run check:duplicates` — jscpd (no copy-paste)
 - [ ] `npm run check:filesystem` — ls-lint (naming conventions)

@@ -2,6 +2,13 @@
 
 Every method bound on a `Repository` handle. 45 entries, alphabetical.
 
+Each command is also published as its own entry point —
+`import { add } from '@scolladon/tsgit/commands/add'` — one subpath per
+command, matching the page names below, plus the `@scolladon/tsgit/commands`
+barrel. These are the same functions the `Repository` facade binds; called
+directly, each takes an explicit `Context` as its first argument in place of
+a bound `this`.
+
 | Command | Summary |
 |---|---|
 | [`add`](add.md) | Stage paths into `.git/index`. Literal paths or `all: true` bulk mode. |
