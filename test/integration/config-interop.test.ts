@@ -11,6 +11,7 @@
  *   unique:         .git/config readable by git config --list with matching keys; quoted-value bytes + refusal
  *   interopSurface: config
  */
+import { existsSync } from 'node:fs';
 import { readFile, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -3010,6 +3011,24 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
         expect(oursConfig).toBe('[a][b]\nx=1\n');
         expect(peerConfig).toBe('[a][b]\nx=1\n');
       }, 60_000);
+    });
+  });
+
+  describe('Given the developer machine may have its own real global git config', () => {
+    describe('When a node-backed context resolves its global-scope paths', () => {
+      it('Then the pinned test sentinel is read, never the real HOME/XDG_CONFIG_HOME', async () => {
+        // Arrange
+        const ctx = createNodeContext({ workDir: pair.ours });
+
+        // Assert — the resolved paths ARE the pinned, non-existent test
+        // sentinel (proves the vitest-level env pin took effect, not merely
+        // that these keys happen to be absent from a real config). Without
+        // the pin, `${os.homedir()}/.gitconfig` exists on a machine with any
+        // git identity configured — this assertion fails on an unpinned run.
+        expect(ctx.fs.homedir()).toBe(process.env['HOME']);
+        expect(existsSync(`${ctx.fs.homedir()}/.gitconfig`)).toBe(false);
+        expect(existsSync(`${ctx.fs.xdgConfigHome()}/git/config`)).toBe(false);
+      });
     });
   });
 });
