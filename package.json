@@ -280,12 +280,13 @@
       "output": []
     },
     "check:types": {
-      "command": "tsc --noEmit",
+      "command": "tsc --noEmit -p tsconfig.typecheck.json",
       "files": [
         "src/**/*.ts",
         "test/**/*.ts",
         "tooling/**/*.ts",
-        "tsconfig.json"
+        "tsconfig.json",
+        "tsconfig.typecheck.json"
       ],
       "output": []
     },
