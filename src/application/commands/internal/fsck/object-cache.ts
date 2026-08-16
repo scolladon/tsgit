@@ -66,16 +66,22 @@ export type ProjectedGitObject =
 /** null = unreadable / corrupt object */
 export type CachedGitObject = ProjectedGitObject | null;
 
+// One shared, immutable projection for every blob: the variant carries no
+// per-object data, and a blob-heavy universe would otherwise retain one
+// identical object per blob for the whole command.
+const BLOB_PROJECTION: ProjectedGitObject = { type: 'blob' };
+
 /**
  * Reduce a decoded object to the structural projection its fsck consumers
  * read. A switch over the discriminated union, not a default fallthrough —
- * `noFallthroughCasesInSwitch` proves every `GitObject` variant is handled
- * (same pattern as `git-object.ts`'s `parseObject`/`serializeObject`).
+ * the declared non-nullable `ProjectedGitObject` return type makes a missing
+ * variant a compile error (TS2366, "lacks ending return statement"), the
+ * same pattern as `git-object.ts`'s `parseObject`/`serializeObject`.
  */
 function project(obj: GitObject): ProjectedGitObject {
   switch (obj.type) {
     case 'blob':
-      return { type: 'blob' };
+      return BLOB_PROJECTION;
     case 'tree':
       return { type: 'tree', entries: obj.entries };
     case 'commit':
