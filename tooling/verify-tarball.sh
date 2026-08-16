@@ -83,12 +83,19 @@ RESOLVE_DIR=$(mktemp -d -t tsgit-resolve.XXXXXX)
 mkdir -p "$RESOLVE_DIR/node_modules/@scolladon"
 tar -xzf "$TARBALL" -C "$RESOLVE_DIR"
 mv "$RESOLVE_DIR/package" "$RESOLVE_DIR/node_modules/@scolladon/tsgit"
+# Name-less sentinel package.json at the staged root: it stops Node's upward
+# package.json walk, so the eval referrer below can never self-reference the
+# WORKTREE's package.json. Without it, imports of "@scolladon/tsgit/..." from
+# a repo-rooted cwd resolve through the worktree exports map into the
+# worktree dist/ — verifying files the tarball might not ship, which is the
+# exact defect class this guard exists to catch.
+printf '{"type":"module"}\n' > "$RESOLVE_DIR/package.json"
 
-RESOLVE_DIR="$RESOLVE_DIR" node --input-type=module -e '
+(cd "$RESOLVE_DIR" && node --input-type=module -e '
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import * as path from "node:path";
 
-const pkgDir = path.resolve(process.env.RESOLVE_DIR, "node_modules/@scolladon/tsgit");
+const pkgDir = path.resolve("node_modules/@scolladon/tsgit");
 const pkg = JSON.parse(readFileSync(path.join(pkgDir, "package.json"), "utf8"));
 
 // A leaf conditions node carries a `default` runtime target somewhere in
@@ -106,6 +113,7 @@ const findRuntimeTarget = (node) => {
 };
 
 const specifiers = new Set();
+const failures = [];
 for (const [key, node] of Object.entries(pkg.exports ?? {})) {
   const target = findRuntimeTarget(node);
   if (target === undefined) continue;
@@ -117,18 +125,35 @@ for (const [key, node] of Object.entries(pkg.exports ?? {})) {
   const targetDir = path.posix.dirname(target);
   const targetSuffix = path.posix.basename(target).replace("*", "");
   const absTargetDir = path.join(pkgDir, targetDir);
-  if (!existsSync(absTargetDir)) continue;
+  if (!existsSync(absTargetDir)) {
+    failures.push(`${key}: wildcard target directory ${targetDir} missing from tarball`);
+    continue;
+  }
+  let expanded = 0;
   for (const file of readdirSync(absTargetDir)) {
     if (!file.endsWith(targetSuffix)) continue;
     const stem = file.slice(0, -targetSuffix.length);
     specifiers.add(`${keyDir}/${stem}`);
+    expanded += 1;
+  }
+  if (expanded === 0) {
+    failures.push(`${key}: wildcard expanded to zero specifiers in ${targetDir}`);
   }
 }
 
-const failures = [];
+// Self-check: every resolved URL must live inside this staged tree. If a
+// future edit moves the cwd back out of the staged dir, self-reference would
+// silently re-target the worktree — this assertion turns that into a failure.
+const { pathToFileURL } = await import("node:url");
+const stagedPrefix = pathToFileURL(path.resolve("node_modules/@scolladon/tsgit/")).href;
 for (const key of [...specifiers].sort()) {
   const specifier = key === "." ? pkg.name : `${pkg.name}${key.slice(1)}`;
   try {
+    const resolved = import.meta.resolve(specifier);
+    if (!resolved.startsWith(stagedPrefix)) {
+      failures.push(`${specifier}: resolved outside the staged tarball tree (${resolved})`);
+      continue;
+    }
     await import(specifier);
   } catch (err) {
     failures.push(`${specifier}: ${err.code ?? err.message}`);
@@ -140,7 +165,7 @@ if (failures.length > 0) {
   process.exit(1);
 }
 console.log(`${specifiers.size} export subpaths resolve.`);
-' || {
+') || {
   echo "FAIL: one or more exports subpaths failed to resolve from the packed tarball" >&2
   exit 1
 }
