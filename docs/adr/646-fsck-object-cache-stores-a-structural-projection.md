@@ -33,3 +33,9 @@ projection carrying the object type and exactly the fields the passes consume; b
 content is never retained. `applyGraft` is applied before projecting a commit so shallow
 reachability verdicts are unchanged. Findings, their order, and exit codes are
 byte-identical for every repository shape.
+
+Scope note (review-measured): the O(repo content) term removed here is the RETAINED
+peak. `buildObjectCache` still fully decodes each object before projecting, so a
+transient O(largest single blob) spike remains during the build pass; on this
+runtime the retained win is visible in `rss` (typed-array backing stores live
+outside the V8 heap, so `heapUsed` barely tracks blob bytes at all).

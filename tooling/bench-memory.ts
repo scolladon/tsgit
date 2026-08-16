@@ -351,6 +351,13 @@ const main = async (): Promise<void> => {
     if (process.env.TSGIT_BENCH_LARGE !== undefined) {
       reports.push(await runLargePackWorkload(gc, openRepository));
     }
+    // Opt-in only: nightly bench.yml runs a bare `npm run bench:memory`, so
+    // the above-cap eviction reading is a LOCAL-ONLY measurement by design —
+    // the 70k-commit fixture is too expensive to regenerate inside the
+    // nightly job's 30-minute budget. Its recorded readings live in the
+    // header-cache decision record. Note the fixture sits only ~1.07x above
+    // the 65 536 cap, so it measures overhead-at-the-cap, not the bound's
+    // payoff at scale.
     if (process.env.TSGIT_BENCH_HEADER_CACHE !== undefined) {
       reports.push(await runHeaderCacheLargeWorkload(gc, openRepository));
     }

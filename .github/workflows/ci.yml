@@ -218,8 +218,9 @@ jobs:
         uses: actions/cache@v6
         with:
           path: .typecheck.tsbuildinfo
-          key: tsbuildinfo-${{ runner.os }}-${{ steps.setup.outputs.node-version }}-${{ hashFiles('tsconfig*.json', 'package-lock.json') }}-${{ hashFiles('src/**/*.ts', 'test/**/*.ts', 'tooling/**/*.ts') }}
+          key: tsbuildinfo-${{ runner.os }}-${{ steps.setup.outputs.node-version }}-${{ hashFiles('tsconfig*.json', 'package-lock.json') }}-${{ hashFiles('src/**/*.ts', 'test/**/*.ts', 'tooling/**/*.ts') }}-${{ github.job }}
           restore-keys: |
+            tsbuildinfo-${{ runner.os }}-${{ steps.setup.outputs.node-version }}-${{ hashFiles('tsconfig*.json', 'package-lock.json') }}-${{ hashFiles('src/**/*.ts', 'test/**/*.ts', 'tooling/**/*.ts') }}-
             tsbuildinfo-${{ runner.os }}-${{ steps.setup.outputs.node-version }}-${{ hashFiles('tsconfig*.json', 'package-lock.json') }}-
       - run: npm run build
       - run: npm run check:size
@@ -265,8 +266,9 @@ jobs:
         uses: actions/cache@v6
         with:
           path: .typecheck.tsbuildinfo
-          key: tsbuildinfo-${{ runner.os }}-${{ steps.setup.outputs.node-version }}-${{ hashFiles('tsconfig*.json', 'package-lock.json') }}-${{ hashFiles('src/**/*.ts', 'test/**/*.ts', 'tooling/**/*.ts') }}
+          key: tsbuildinfo-${{ runner.os }}-${{ steps.setup.outputs.node-version }}-${{ hashFiles('tsconfig*.json', 'package-lock.json') }}-${{ hashFiles('src/**/*.ts', 'test/**/*.ts', 'tooling/**/*.ts') }}-${{ github.job }}
           restore-keys: |
+            tsbuildinfo-${{ runner.os }}-${{ steps.setup.outputs.node-version }}-${{ hashFiles('tsconfig*.json', 'package-lock.json') }}-${{ hashFiles('src/**/*.ts', 'test/**/*.ts', 'tooling/**/*.ts') }}-
             tsbuildinfo-${{ runner.os }}-${{ steps.setup.outputs.node-version }}-${{ hashFiles('tsconfig*.json', 'package-lock.json') }}-
       # Coverage threshold (100%) is enforced on the Linux gate cell only.
       # Other matrix cells run plain `test:unit` (cross-platform — no
@@ -312,8 +314,9 @@ jobs:
         uses: actions/cache@v6
         with:
           path: .typecheck.tsbuildinfo
-          key: tsbuildinfo-${{ runner.os }}-${{ steps.setup.outputs.node-version }}-${{ hashFiles('tsconfig*.json', 'package-lock.json') }}-${{ hashFiles('src/**/*.ts', 'test/**/*.ts', 'tooling/**/*.ts') }}
+          key: tsbuildinfo-${{ runner.os }}-${{ steps.setup.outputs.node-version }}-${{ hashFiles('tsconfig*.json', 'package-lock.json') }}-${{ hashFiles('src/**/*.ts', 'test/**/*.ts', 'tooling/**/*.ts') }}-${{ github.job }}
           restore-keys: |
+            tsbuildinfo-${{ runner.os }}-${{ steps.setup.outputs.node-version }}-${{ hashFiles('tsconfig*.json', 'package-lock.json') }}-${{ hashFiles('src/**/*.ts', 'test/**/*.ts', 'tooling/**/*.ts') }}-
             tsbuildinfo-${{ runner.os }}-${{ steps.setup.outputs.node-version }}-${{ hashFiles('tsconfig*.json', 'package-lock.json') }}-
       - id: scope
         name: Compute mutated file set
@@ -363,8 +366,9 @@ jobs:
         uses: actions/cache@v6
         with:
           path: .typecheck.tsbuildinfo
-          key: tsbuildinfo-${{ runner.os }}-${{ steps.setup.outputs.node-version }}-${{ hashFiles('tsconfig*.json', 'package-lock.json') }}-${{ hashFiles('src/**/*.ts', 'test/**/*.ts', 'tooling/**/*.ts') }}
+          key: tsbuildinfo-${{ runner.os }}-${{ steps.setup.outputs.node-version }}-${{ hashFiles('tsconfig*.json', 'package-lock.json') }}-${{ hashFiles('src/**/*.ts', 'test/**/*.ts', 'tooling/**/*.ts') }}-${{ github.job }}
           restore-keys: |
+            tsbuildinfo-${{ runner.os }}-${{ steps.setup.outputs.node-version }}-${{ hashFiles('tsconfig*.json', 'package-lock.json') }}-${{ hashFiles('src/**/*.ts', 'test/**/*.ts', 'tooling/**/*.ts') }}-
             tsbuildinfo-${{ runner.os }}-${{ steps.setup.outputs.node-version }}-${{ hashFiles('tsconfig*.json', 'package-lock.json') }}-
       - run: npm run test:integration
 
@@ -392,8 +396,9 @@ jobs:
         uses: actions/cache@v6
         with:
           path: .typecheck.tsbuildinfo
-          key: tsbuildinfo-${{ runner.os }}-${{ steps.setup.outputs.node-version }}-${{ hashFiles('tsconfig*.json', 'package-lock.json') }}-${{ hashFiles('src/**/*.ts', 'test/**/*.ts', 'tooling/**/*.ts') }}
+          key: tsbuildinfo-${{ runner.os }}-${{ steps.setup.outputs.node-version }}-${{ hashFiles('tsconfig*.json', 'package-lock.json') }}-${{ hashFiles('src/**/*.ts', 'test/**/*.ts', 'tooling/**/*.ts') }}-${{ github.job }}
           restore-keys: |
+            tsbuildinfo-${{ runner.os }}-${{ steps.setup.outputs.node-version }}-${{ hashFiles('tsconfig*.json', 'package-lock.json') }}-${{ hashFiles('src/**/*.ts', 'test/**/*.ts', 'tooling/**/*.ts') }}-
             tsbuildinfo-${{ runner.os }}-${{ steps.setup.outputs.node-version }}-${{ hashFiles('tsconfig*.json', 'package-lock.json') }}-
       - run: npm run test:posix-integration
 
@@ -416,8 +421,9 @@ jobs:
         uses: actions/cache@v6
         with:
           path: .typecheck.tsbuildinfo
-          key: tsbuildinfo-${{ runner.os }}-${{ steps.setup.outputs.node-version }}-${{ hashFiles('tsconfig*.json', 'package-lock.json') }}-${{ hashFiles('src/**/*.ts', 'test/**/*.ts', 'tooling/**/*.ts') }}
+          key: tsbuildinfo-${{ runner.os }}-${{ steps.setup.outputs.node-version }}-${{ hashFiles('tsconfig*.json', 'package-lock.json') }}-${{ hashFiles('src/**/*.ts', 'test/**/*.ts', 'tooling/**/*.ts') }}-${{ github.job }}
           restore-keys: |
+            tsbuildinfo-${{ runner.os }}-${{ steps.setup.outputs.node-version }}-${{ hashFiles('tsconfig*.json', 'package-lock.json') }}-${{ hashFiles('src/**/*.ts', 'test/**/*.ts', 'tooling/**/*.ts') }}-
             tsbuildinfo-${{ runner.os }}-${{ steps.setup.outputs.node-version }}-${{ hashFiles('tsconfig*.json', 'package-lock.json') }}-
       - run: npm run test:win-integration
 
@@ -441,8 +447,9 @@ jobs:
         uses: actions/cache@v6
         with:
           path: .typecheck.tsbuildinfo
-          key: tsbuildinfo-${{ runner.os }}-${{ steps.setup.outputs.node-version }}-${{ hashFiles('tsconfig*.json', 'package-lock.json') }}-${{ hashFiles('src/**/*.ts', 'test/**/*.ts', 'tooling/**/*.ts') }}
+          key: tsbuildinfo-${{ runner.os }}-${{ steps.setup.outputs.node-version }}-${{ hashFiles('tsconfig*.json', 'package-lock.json') }}-${{ hashFiles('src/**/*.ts', 'test/**/*.ts', 'tooling/**/*.ts') }}-${{ github.job }}
           restore-keys: |
+            tsbuildinfo-${{ runner.os }}-${{ steps.setup.outputs.node-version }}-${{ hashFiles('tsconfig*.json', 'package-lock.json') }}-${{ hashFiles('src/**/*.ts', 'test/**/*.ts', 'tooling/**/*.ts') }}-
             tsbuildinfo-${{ runner.os }}-${{ steps.setup.outputs.node-version }}-${{ hashFiles('tsconfig*.json', 'package-lock.json') }}-
       - run: npm run test:parity
       - uses: actions/upload-artifact@v7

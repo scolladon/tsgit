@@ -115,17 +115,22 @@ statements — all must hold when this ships.
 
 **Performance (each with an oracle, below)**
 
-- **R8** The hex-validation frame's self-share in the regenerated `log` profile is strictly
-  lower than in the pre-change profile taken on the same machine, same fixture, same iteration
-  count.
+- **R8** The hex-validation frame's self-share in the `log` profile is strictly lower than
+  pre-change, same machine/fixture/iterations. *Amended in review:* the committed baseline
+  structurally excludes `RegExp:` digest rows, so the evidence lives in raw `--prof-process`
+  digests, recorded in `docs/perf/object-id-validation.md` (before 3.9 % of total ticks;
+  after: frame absent).
 - **R9** The `status` GC tick share on the profiled `status` workload is strictly lower than
   its pre-change value on the same machine/fixture/iterations, **and** the change is attributed
   to a single named construct by an allocation profile captured *before* any code edit, whose
   top site accounts for **≥10 % of allocated bytes** (ADR-650). If no site clears 10 %, the
   requirement is discharged by the recorded finding and no code change — that is a pass, not a
   miss.
-- **R10** Peak `heapUsed` for the fsck memory workload added in R7 is bounded independently of
-  total repository blob bytes — demonstrated by two fixture sizes whose blob content differs by
+- **R10** Peak memory for the fsck memory workload added in R7 is bounded independently of
+  total repository blob bytes — *amended in review:* on this Node/V8 the observing metric is
+  `rss` (typed-array backing stores are off-heap; `heapUsed` barely tracks blob bytes), and the
+  bound is on the RETAINED peak (a transient O(largest blob) spike remains during the build
+  pass, see ADR-646's scope note). Bounded independently of — demonstrated by two fixture sizes whose blob content differs by
   ≥4× showing sub-linear peak growth.
 - **R11** A warm `npm run check:types` (unchanged sources) completes in under half its cold
   time on the measurement host, and a cold run is not slower than today's.
