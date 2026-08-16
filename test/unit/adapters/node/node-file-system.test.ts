@@ -4,6 +4,7 @@ import * as nodePath from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import {
   interpretCreationLstat,
+  isEnvBooleanTrue,
   isErrnoException,
   isWindowsSymlinkRefusal,
   mapConcurrent,
@@ -1533,7 +1534,10 @@ describe('NodeFileSystem config-path capabilities', () => {
           Object.defineProperty(process, 'platform', { value: platform, configurable: true });
           if (programData === undefined) delete process.env['ProgramData'];
           else process.env['ProgramData'] = programData;
-          const fs = new NodeFileSystem(tmp, policy);
+          // GIT_CONFIG_NOSYSTEM is pinned true suite-wide (test isolation); an
+          // explicit "unset" reader keeps this platform/ProgramData matrix
+          // focused on its own branch, not the suppression short-circuit.
+          const fs = new NodeFileSystem(tmp, policy, undefined, false, { get: () => undefined });
 
           // Act
           const result = fs.systemConfigPath();
@@ -1549,6 +1553,111 @@ describe('NodeFileSystem config-path capabilities', () => {
           else process.env['ProgramData'] = priorProgramData;
           await fsPromises.rm(tmp, { recursive: true, force: true });
         }
+      });
+    });
+  });
+
+  describe("Given GIT_CONFIG_NOSYSTEM values pinned by git's own boolean-env matrix", () => {
+    describe('When systemConfigPath is called', () => {
+      it.each([
+        { value: '1', label: '"1" suppresses the system scope (empty path)' },
+        { value: 'true', label: '"true" suppresses the system scope (empty path)' },
+        { value: 'TRUE', label: '"TRUE" is case-insensitive and suppresses the system scope' },
+        { value: 'yes', label: '"yes" suppresses the system scope (empty path)' },
+        { value: '2', label: 'a non-zero integer suppresses the system scope (empty path)' },
+      ])('Then $label', async ({ value }) => {
+        // Arrange
+        const tmp = await fsPromises.mkdtemp(nodePath.join(os.tmpdir(), 'tsgit-fs-'));
+        try {
+          const fs = new NodeFileSystem(tmp, posixPolicy, undefined, false, {
+            get: () => value,
+          });
+
+          // Act
+          const result = fs.systemConfigPath();
+
+          // Assert
+          expect(result).toBe('');
+        } finally {
+          await fsPromises.rm(tmp, { recursive: true, force: true });
+        }
+      });
+
+      it.each([
+        { value: '0', label: '"0" does NOT suppress — the system path resolves normally' },
+        { value: 'false', label: '"false" does NOT suppress — the system path resolves normally' },
+        { value: 'no', label: '"no" does NOT suppress — the system path resolves normally' },
+        { value: '', label: 'an empty string does NOT suppress (git treats it as false)' },
+        { value: undefined, label: 'unset does NOT suppress — the system path resolves normally' },
+        { value: 'banana', label: 'an unparseable value does NOT suppress (lenient, no throw)' },
+      ])('Then $label', async ({ value }) => {
+        // Arrange
+        const tmp = await fsPromises.mkdtemp(nodePath.join(os.tmpdir(), 'tsgit-fs-'));
+        try {
+          const fs = new NodeFileSystem(tmp, posixPolicy, undefined, false, {
+            get: () => value,
+          });
+
+          // Act
+          const result = fs.systemConfigPath();
+
+          // Assert
+          expect(result).toBe('/etc/gitconfig');
+        } finally {
+          await fsPromises.rm(tmp, { recursive: true, force: true });
+        }
+      });
+    });
+  });
+});
+
+describe('isEnvBooleanTrue', () => {
+  describe('Given a recognised boolean word', () => {
+    describe('When isEnvBooleanTrue is called', () => {
+      it.each([
+        { raw: 'true', expected: true },
+        { raw: 'True', expected: true },
+        { raw: 'YES', expected: true },
+        { raw: 'on', expected: true },
+        { raw: 'false', expected: false },
+        { raw: 'False', expected: false },
+        { raw: 'NO', expected: false },
+        { raw: 'off', expected: false },
+      ])('Then "$raw" resolves to $expected', ({ raw, expected }) => {
+        // Arrange & Act
+        const result = isEnvBooleanTrue(raw);
+
+        // Assert
+        expect(result).toBe(expected);
+      });
+    });
+  });
+
+  describe('Given a value outside the recognised word set', () => {
+    describe('When isEnvBooleanTrue is called', () => {
+      it.each([
+        { raw: undefined, expected: false, label: 'unset is false' },
+        { raw: '', expected: false, label: 'empty string is false' },
+        { raw: '2', expected: true, label: 'a non-zero decimal integer is true' },
+        { raw: '-1', expected: true, label: 'a negative non-zero integer is true' },
+        { raw: '0', expected: false, label: 'the integer zero is false' },
+        {
+          raw: '007',
+          expected: true,
+          label: 'a leading-zero decimal (not octal) is non-zero, true',
+        },
+        { raw: '0x1', expected: true, label: 'a hex literal is non-zero, true' },
+        {
+          raw: 'banana',
+          expected: false,
+          label: 'an unparseable word is false (lenient, no throw)',
+        },
+      ])('Then $label', ({ raw, expected }) => {
+        // Arrange & Act
+        const result = isEnvBooleanTrue(raw);
+
+        // Assert
+        expect(result).toBe(expected);
       });
     });
   });
