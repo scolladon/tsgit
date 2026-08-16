@@ -6650,6 +6650,10 @@ describe('Given a dangling loose tree with a duplicate entry name (full decode f
       // INVALID_TREE_ENTRY (duplicate name), so the cache entry is null; the
       // header-recovery probe still reads a valid `tree <size>\0` header from
       // the same bytes, populating the `recovered` map with the real type.
+      // NOTE: on this path project() is never invoked — this case pins the
+      // unreadable/recovered-map behaviour that surrounds the projection, not
+      // a projected field; the three cases above carry the field-preservation
+      // load.
       const ctx = await initBareCtx();
       const entryA = 'b'.repeat(40) as ObjectId;
       const entryB = 'c'.repeat(40) as ObjectId;

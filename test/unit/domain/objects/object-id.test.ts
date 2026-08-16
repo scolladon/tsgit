@@ -37,14 +37,23 @@ describe('object-id', () => {
           { hex: 'A'.repeat(40), label: 'uppercase hex' },
           { hex: 'a'.repeat(39), label: 'a 39-char (one under SHA-1 width) string' },
           { hex: 'a'.repeat(41), label: 'a 41-char (one over SHA-1 width) string' },
+          { hex: 'a'.repeat(63), label: 'a 63-char (one under SHA-256 width) string' },
           { hex: 'a'.repeat(65), label: 'a 65-char (one over SHA-256 width) string' },
         ])('Then throws INVALID_OBJECT_ID for $label', ({ hex }) => {
-          // Arrange & Act + Assert
-          expect(() => ObjectId.from(hex)).toThrow(
-            expect.objectContaining({
-              data: { code: 'INVALID_OBJECT_ID', value: hex },
-            }),
-          );
+          // Arrange
+          const sut = ObjectId.from;
+
+          // Act + Assert
+          try {
+            sut(hex);
+            expect.unreachable();
+          } catch (error) {
+            expect(error).toBeInstanceOf(TsgitError);
+            expect((error as TsgitError).data).toEqual({
+              code: 'INVALID_OBJECT_ID',
+              value: hex,
+            });
+          }
         });
       });
     });
@@ -123,13 +132,14 @@ describe('object-id', () => {
 
     describe('Given a 63-char hex string (one under the SHA-256 width)', () => {
       describe('When calling ObjectId.from', () => {
-        it('Then throws INVALID_OBJECT_ID', () => {
+        it('Then throws INVALID_OBJECT_ID with the exact input echoed back', () => {
           // Arrange
+          const sut = ObjectId.from;
           const hex = 'a'.repeat(63);
 
           // Act + Assert
           try {
-            ObjectId.from(hex);
+            sut(hex);
             expect.unreachable();
           } catch (error) {
             expect(error).toBeInstanceOf(TsgitError);
@@ -206,17 +216,20 @@ describe('object-id', () => {
 
     describe('Given a length-checked 20-byte slice', () => {
       describe('When calling ObjectId.fromRaw', () => {
-        it('Then it never revalidates via regex (bytesToHex output is provably [0-9a-f]-only)', () => {
-          // Arrange
+        it('Then it never re-scans the hex (bytesToHex output is provably [0-9a-f]-only)', () => {
+          // Arrange — the validator's only observable primitive is
+          // String.prototype.charCodeAt: a fromRaw that delegated to
+          // ObjectId.from would scan 40 code units and trip this spy.
+          const sut = ObjectId.fromRaw;
           const bytes = new Uint8Array(20).fill(0xab);
-          const testSpy = vi.spyOn(RegExp.prototype, 'test');
+          const charCodeAtSpy = vi.spyOn(String.prototype, 'charCodeAt');
 
           // Act
-          ObjectId.fromRaw(bytes);
+          sut(bytes);
 
           // Assert
-          expect(testSpy).not.toHaveBeenCalled();
-          testSpy.mockRestore();
+          expect(charCodeAtSpy).not.toHaveBeenCalled();
+          charCodeAtSpy.mockRestore();
         });
       });
     });
