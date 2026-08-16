@@ -20,7 +20,6 @@ import {
 import { invalidCommitGraphChunk } from '../../../domain/commit/error.js';
 import { TsgitError } from '../../../domain/error.js';
 import { ObjectId } from '../../../domain/objects/index.js';
-import { createLruCache, type LruCache } from '../../../domain/storage/lru-cache.js';
 import type { Context } from '../../../ports/context.js';
 import {
   commitGraphChainPath,
@@ -74,7 +73,26 @@ const HEADER_CACHE_MAX_ENTRIES = 65_536;
 // same "stale per-Context cache" class as a graph rewritten mid-`Context` —
 // already covered by the "construct a fresh `Context` after every write"
 // discipline this module's other caches rely on; it is not a new hazard.
-const headerCache = new WeakMap<Context, LruCache<CommitHeader>>();
+// Insertion-order (FIFO) bound over a plain Map rather than an LRU: a
+// commit-graph walk touches each oid roughly once, so recency ordering never
+// repays its per-entry node bookkeeping — at the cap that bookkeeping alone
+// costs ~2 MiB. Map iteration order is insertion order, so evicting
+// `keys().next()` drops the oldest entry in O(1) with zero extra structure.
+const headerCache = new WeakMap<Context, Map<ObjectId, CommitHeader>>();
+
+/**
+ * Insert into an insertion-order-bounded Map: when the map is at `cap`,
+ * evict the oldest entry (Map iteration order is insertion order) before
+ * inserting. Overwriting an existing key never evicts — the size does not
+ * grow.
+ */
+export function insertBounded<K, V>(map: Map<K, V>, cap: number, key: K, value: V): void {
+  if (!map.has(key) && map.size >= cap) {
+    const oldest = map.keys().next().value;
+    if (oldest !== undefined) map.delete(oldest);
+  }
+  map.set(key, value);
+}
 
 function isFileNotFound(error: unknown): boolean {
   return error instanceof TsgitError && error.data.code === 'FILE_NOT_FOUND';
@@ -198,10 +216,10 @@ function loadGraph(ctx: Context): Promise<LoadedGraph | undefined> {
   return cached;
 }
 
-function getHeaderCache(ctx: Context): LruCache<CommitHeader> {
+function getHeaderCache(ctx: Context): Map<ObjectId, CommitHeader> {
   let cache = headerCache.get(ctx);
   if (cache === undefined) {
-    cache = createLruCache<CommitHeader>(Number.POSITIVE_INFINITY, HEADER_CACHE_MAX_ENTRIES);
+    cache = new Map<ObjectId, CommitHeader>();
     headerCache.set(ctx, cache);
   }
   return cache;
@@ -283,7 +301,7 @@ export async function commitHeader(ctx: Context, id: ObjectId): Promise<CommitHe
       committerDate: data.committerDate,
       generation: data.generation,
     };
-    cache.set(id, header, 1);
+    insertBounded(cache, HEADER_CACHE_MAX_ENTRIES, id, header);
     return header;
   } catch (error) {
     // A parsed-but-internally-inconsistent graph (out-of-range parent

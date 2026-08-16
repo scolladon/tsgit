@@ -30,3 +30,16 @@ generation }`, dominated by hex oid strings.
 1)`. The cap mirrors `DEFAULT_DELTA_CACHE_ENTRIES` (`src/index.node.ts`), so the repo
 gains no second magic number. Eviction re-derives from the already-parsed graph layers
 and performs no I/O, so no observable result changes.
+
+## Amendment (user-ratified, same change)
+
+Review measurement falsified the structure choice while confirming the cap. At the
+70 000-commit eviction fixture, peak `heapUsed` (3 runs each): unbounded `Map`
+91.5 MB mean; `createLruCache(∞, 65 536)` 94.7 MB mean — the LRU's per-entry node
+wrapper (~32 B × 65 536 ≈ 2 MiB) plus move-to-front pointer writes on every hit cost
+more than eviction recovered, because a commit-graph walk touches each oid roughly
+once and recency ordering never repays. An insertion-order-bounded plain `Map`
+(evict `keys().next()` at the cap — FIFO via Map's own iteration order) measured
+92.8 MB mean with the same cap, the same hazard-free re-derivation on miss, and no
+per-hit bookkeeping. **The structure is the bounded FIFO `Map` (`insertBounded`); the
+65 536 entry cap and every R3 invariant stand unchanged.**

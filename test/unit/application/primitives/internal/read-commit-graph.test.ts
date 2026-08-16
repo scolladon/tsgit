@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { createCommit } from '../../../../../src/application/primitives/create-commit.js';
-import { commitHeader } from '../../../../../src/application/primitives/internal/read-commit-graph.js';
+import {
+  commitHeader,
+  insertBounded,
+} from '../../../../../src/application/primitives/internal/read-commit-graph.js';
 import {
   commitGraphChainPath,
   commitGraphPath,
@@ -372,7 +375,11 @@ describe('read-commit-graph', () => {
             expectHeaderMatchesCommit(header, commits[i]!);
           }
           for (const [i, header] of secondPass.entries()) {
-            expect(header).toEqual(firstPass[i]);
+            // Reference identity, not deep equality: a header is built as a
+            // fresh object literal on every miss, so only a genuine cache hit
+            // can return the same reference — deleting or silently dropping
+            // the memo fails this assertion where toEqual would still pass.
+            expect(header).toBe(firstPass[i]);
           }
         });
       });
@@ -389,23 +396,24 @@ describe('read-commit-graph', () => {
           await writeCommitGraph(base, [[c0, c1, c2, c3, c4]]);
           const { ctx, calls } = instrumentedContext(base);
           await commitHeader(ctx, c0.id);
+          const callsAfterGraphLoad = calls().length;
 
           // Act — c4's header has never been computed, so it is a cache miss.
           const header = await commitHeader(ctx, c4.id);
 
-          // Assert
+          // Assert — TOTAL fs-call invariance, not a filtered subset: any fs
+          // call the miss path might gain on any method or path (a loose or
+          // pack object fallback included) fails this, where a
+          // commit-graph-path filter would let it slip through.
           expectHeaderMatchesCommit(header, c4);
-          const graphReads = calls().filter(
-            (call) => call.method === 'read' && call.path.includes('commit-graph'),
-          );
-          expect(graphReads.length).toBe(1);
+          expect(calls().length).toBe(callsAfterGraphLoad);
         });
       });
     });
 
     describe('Given an oid absent from the graph', () => {
       describe('When commitHeader is called for it twice', () => {
-        it('Then both calls return undefined — the uncached-miss asymmetry holds across repeat calls', async () => {
+        it('Then both calls return undefined', async () => {
           // Arrange — the graph only covers c0..c3; c4 is real but not included.
           const ctx = await buildSeededContext();
           const { c0, c1, c2, c3, c4 } = await buildFiveCommitHistory(ctx);
@@ -756,6 +764,87 @@ describe('read-commit-graph', () => {
           // Assert
           expect(header).toBeUndefined();
         });
+      });
+    });
+  });
+});
+
+describe('insertBounded', () => {
+  describe('Given a map below its cap', () => {
+    describe('When a new key is inserted', () => {
+      it('Then the entry is added and nothing is evicted', () => {
+        // Arrange
+        const sut = insertBounded;
+        const map = new Map<string, number>([['a', 1]]);
+
+        // Act
+        sut(map, 3, 'b', 2);
+
+        // Assert
+        expect([...map.entries()]).toEqual([
+          ['a', 1],
+          ['b', 2],
+        ]);
+      });
+    });
+  });
+
+  describe('Given a map exactly at its cap', () => {
+    describe('When a new key is inserted', () => {
+      it('Then the oldest-inserted entry is evicted and the size stays at the cap', () => {
+        // Arrange
+        const sut = insertBounded;
+        const map = new Map<string, number>([
+          ['a', 1],
+          ['b', 2],
+        ]);
+
+        // Act
+        sut(map, 2, 'c', 3);
+
+        // Assert
+        expect(map.has('a')).toBe(false);
+        expect([...map.entries()]).toEqual([
+          ['b', 2],
+          ['c', 3],
+        ]);
+      });
+    });
+
+    describe('When an existing key is overwritten', () => {
+      it('Then no entry is evicted and the value is replaced in place', () => {
+        // Arrange
+        const sut = insertBounded;
+        const map = new Map<string, number>([
+          ['a', 1],
+          ['b', 2],
+        ]);
+
+        // Act
+        sut(map, 2, 'a', 9);
+
+        // Assert
+        expect([...map.entries()]).toEqual([
+          ['a', 9],
+          ['b', 2],
+        ]);
+      });
+    });
+  });
+
+  describe('Given a map one below its cap', () => {
+    describe('When a new key is inserted', () => {
+      it('Then nothing is evicted — the boundary is at the cap, not below it', () => {
+        // Arrange
+        const sut = insertBounded;
+        const map = new Map<string, number>([['a', 1]]);
+
+        // Act
+        sut(map, 2, 'b', 2);
+
+        // Assert
+        expect(map.size).toBe(2);
+        expect(map.has('a')).toBe(true);
       });
     });
   });
