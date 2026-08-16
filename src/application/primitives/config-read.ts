@@ -201,13 +201,20 @@ export const invalidateConfigCache = (ctx: Context): void => {
 };
 
 /**
- * Build the cache entry: LOCAL tokens (unchanged from before scope-awareness
- * — the eager-gate/finder contract above), and the `parsed` merge built from
- * EVERY scope `readConfigSections` can reach, in git's precedence order.
- * `assembleParsed` dispatches over a flat, precedence-ordered section list —
- * single-valued keys take the last write (a later scope overriding an
- * earlier one), multi-valued keys (`remote.<n>.fetch`) accumulate in that
- * same order, exactly as `mergeConfigsByScope`'s doc describes.
+ * Build the cache entry from the LOCAL config file alone — both the tokens the
+ * eager-gate finders walk and the `parsed` projection every typed reader
+ * consumes.
+ *
+ * Local-only is deliberate, not an oversight. Resolving all four scopes the
+ * way git does was implemented and reverted: the filesystem port confines a
+ * repository to `[workDir, gitDir, commonDir]`, so `~/.gitconfig` and
+ * `/etc/gitconfig` sit outside containment and every non-local scope comes
+ * back empty regardless. Merging them would be machinery that cannot observe
+ * anything. A value set only in global scope is therefore honoured by git and
+ * ignored here — a divergence the published docs state outright. Closing it
+ * means widening the containment root set, which is a security decision, not
+ * a config one. The scope-aware porcelain reader (`readConfigSections`) is
+ * unaffected and still serves the `config` command.
  */
 const loadConfigEntry = async (ctx: Context): Promise<ConfigCacheEntry> => {
   const path = `${commonGitDir(ctx)}/config`;
