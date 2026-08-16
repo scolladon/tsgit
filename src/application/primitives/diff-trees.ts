@@ -456,14 +456,44 @@ async function peelToTree(ctx: Context, id: ObjectId): Promise<PeeledTree> {
  * prefix plus per-side cycle/depth guards, mirroring `walkTree`'s protection
  * (the merge-join below descends into changed subtrees directly, bypassing
  * `walkTree`, so it must re-establish the same safety net). */
+/**
+ * The root-to-current path for one side, as an immutable cons list: each level
+ * allocates ONE node pointing at its parent, so every sibling shares its
+ * ancestors' nodes instead of copying them.
+ *
+ * Deliberately not a per-level array copy and deliberately not a shared
+ * mutable `Set`. An array copy costs O(depth) fresh pointers per level, so a
+ * descent holds O(depth^2) of them live — which at a large configured
+ * `core.maxTreeDepth` is heap exhaustion, an uncatchable abort rather than the
+ * typed refusal the depth cap exists to produce. A mutable `Set` would fix the
+ * memory but not survive this walk: `diffRecursiveLevel` fans changed subtrees
+ * out through `boundedMap`, so several sibling descents share one cursor at
+ * the same instant and would observe each other's ancestry. Immutable sharing
+ * is what satisfies both constraints at once — O(depth) total memory, and
+ * every concurrent sibling still sees exactly its own path.
+ */
+interface AncestryNode {
+  readonly id: ObjectId;
+  readonly parent: AncestryNode | undefined;
+}
+
+/** Walk the chain looking for `id`. O(depth), the same comparison count the
+ *  array's `includes()` cost — only the memory changed. */
+const ancestryHas = (node: AncestryNode | undefined, id: ObjectId): boolean => {
+  for (let cur = node; cur !== undefined; cur = cur.parent) {
+    if (cur.id === id) return true;
+  }
+  return false;
+};
+
 interface DiffCursor {
   readonly prefix: string;
   readonly depth: number;
-  readonly oldStack: ReadonlyArray<ObjectId>;
-  readonly newStack: ReadonlyArray<ObjectId>;
+  readonly oldStack: AncestryNode | undefined;
+  readonly newStack: AncestryNode | undefined;
 }
 
-const ROOT_CURSOR: DiffCursor = { prefix: '', depth: 0, oldStack: [], newStack: [] };
+const ROOT_CURSOR: DiffCursor = { prefix: '', depth: 0, oldStack: undefined, newStack: undefined };
 
 interface DiffWalkCounter {
   value: number;
@@ -605,8 +635,8 @@ async function diffChangedSubtree(
   if (exceedsMaxTreeDepth(cursor.depth, state.maxDepth)) {
     throw treeDepthExceeded(cursor.depth);
   }
-  if (cursor.oldStack.includes(change.oldId)) throw treeCycleDetected(change.oldId);
-  if (cursor.newStack.includes(change.newId)) throw treeCycleDetected(change.newId);
+  if (ancestryHas(cursor.oldStack, change.oldId)) throw treeCycleDetected(change.oldId);
+  if (ancestryHas(cursor.newStack, change.newId)) throw treeCycleDetected(change.newId);
 
   const [oldContent, newContent] = await Promise.all([
     readRawTree(ctx, change.oldId),
@@ -615,8 +645,8 @@ async function diffChangedSubtree(
   const nextCursor: DiffCursor = {
     prefix: joinPath(cursor.prefix, change.path),
     depth: cursor.depth + 1,
-    oldStack: [...cursor.oldStack, change.oldId],
-    newStack: [...cursor.newStack, change.newId],
+    oldStack: { id: change.oldId, parent: cursor.oldStack },
+    newStack: { id: change.newId, parent: cursor.newStack },
   };
   return diffRecursiveLevel(ctx, oldContent, newContent, nextCursor, state);
 }

@@ -194,6 +194,39 @@ describe('diffTrees', () => {
     });
   });
 
+  describe('Given recursive=true and two sibling directories sharing one changed subtree oid', () => {
+    describe('When diffTrees is called', () => {
+      it('Then both branches diff, with no false TREE_CYCLE_DETECTED', async () => {
+        // Arrange — x/ and y/ hold the SAME subtree oid on each side, and both
+        // change. The two descents run concurrently and share one cursor, so
+        // each must see only its own root-to-current path: an ancestry shared
+        // mutably between siblings would read the second as a repeat visit.
+        const ctx = await buildSeededContext();
+        const oldInner = await blob(ctx, 'before');
+        const newInner = await blob(ctx, 'after');
+        const oldSub = await subTree(ctx, 'f.txt', oldInner, FILE_MODE.REGULAR);
+        const newSub = await subTree(ctx, 'f.txt', newInner, FILE_MODE.REGULAR);
+        const before = await writeTree(ctx, [
+          { name: 'x', mode: FILE_MODE.DIRECTORY, id: oldSub },
+          { name: 'y', mode: FILE_MODE.DIRECTORY, id: oldSub },
+        ]);
+        const after = await writeTree(ctx, [
+          { name: 'x', mode: FILE_MODE.DIRECTORY, id: newSub },
+          { name: 'y', mode: FILE_MODE.DIRECTORY, id: newSub },
+        ]);
+
+        // Act
+        const result = await diffTrees(ctx, before, after, { recursive: true });
+
+        // Assert — both branches surface, keyed by their own full path.
+        const paths = result.changes
+          .flatMap((change) => ('path' in change ? [change.path] : []))
+          .sort();
+        expect(paths).toEqual(['x/f.txt', 'y/f.txt']);
+      });
+    });
+  });
+
   describe('Given recursive=true and a sub-directory added between two trees', () => {
     describe('When diffTrees is called', () => {
       it('Then the nested blob surfaces as a full-path AddChange', async () => {
