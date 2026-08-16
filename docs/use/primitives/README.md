@@ -33,6 +33,14 @@ The composable building blocks every Tier-1 command is built from. Same `Context
 
 For internal building blocks referenced from command pages (`materializeTree`, `fetchPack`, `buildPack`, etc.) see [`internals.md`](internals.md).
 
+### Re-exported types
+
+The `@scolladon/tsgit/primitives` entry also re-exports the types its own signatures
+reference, so a consumer never needs a deep import to name a parameter or return
+value: `ConfigKey`, `ConfigScope`, `IndexEntry`, `ReflogEntry`, `SparseMatcher`,
+`TreeEntry`. These are type-only re-exports — the values (where any exist) keep their
+documented homes.
+
 ## Snapshot + join surface (Phase 20.1)
 
 The lazy, atomic-iteration query stack — `repo.snapshot.*` + `join` / `innerJoin` + operators — is documented as a unified primer instead of one page per primitive: the pieces compose into a single user-facing surface and the operator catalogue is the relevant unit. See [`snapshots.md`](../snapshots.md) (mental model + worked examples) and [`caching.md`](../../understand/caching.md) (cache protocol, lock-ordering, racy-stat handling).
