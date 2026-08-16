@@ -43,3 +43,7 @@ once and recency ordering never repays. An insertion-order-bounded plain `Map`
 92.8 MB mean with the same cap, the same hazard-free re-derivation on miss, and no
 per-hit bookkeeping. **The structure is the bounded FIFO `Map` (`insertBounded`); the
 65 536 entry cap and every R3 invariant stand unchanged.**
+
+Measurement environment: darwin arm64 / Apple M3 Pro, Node v22.22.3 — a local-only
+reading (the eviction fixture cannot fit the nightly bench budget); published
+performance numbers come from the CI nightly bench artifact, never from these runs.

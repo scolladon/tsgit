@@ -100,21 +100,28 @@ const treeshakeOptions = {
 // `import '@scolladon/tsgit'` resolves/parses/links ~190 files — measured at
 // ~178 ms versus ~27 ms for the pre-split 27-file dist on the same machine.
 // Grouping shared modules by architectural layer caps the default entry's
-// closure at roughly a dozen files while per-command entries stay separate.
+// closure at 39 files (8 shared chunks + the re-exported command entries),
+// down from ~190, while per-command entries stay separate FILES — their
+// static closure is the shared layer chunks, so bundler tree-shaking, not
+// chunk boundaries, is what keeps a single command's shipped bytes small.
 // Platform adapters are NEVER merged with each other or with neutral code:
 // a node adapter module inside a shared chunk would drag `node:` externals
 // into browser consumers' module graphs.
-const manualChunks = (id) => {
-  if (id.includes('/src/adapters/node/')) return 'adapter-node';
-  if (id.includes('/src/adapters/browser/')) return 'adapter-browser';
-  if (id.includes('/src/adapters/memory/')) return 'adapter-memory';
-  if (id.includes('/src/adapters/')) return 'adapters-shared';
-  if (id.includes('/src/domain/')) return 'domain';
-  if (id.includes('/src/application/commands/internal/')) return 'commands-internal';
-  if (id.includes('/src/application/primitives/')) return 'primitives';
-  if (id.includes('/src/operators/')) return 'operators';
-  if (id.includes('/src/transport/')) return 'transport';
-  if (id.includes('/src/ports/')) return 'ports';
+const manualChunks = (/** @type {string} */ id) => {
+  // Rollup ids carry backslash separators on Windows; normalise so every
+  // branch below matches — a silent fall-through would revert the build to
+  // ~143 micro-chunks with no failing gate.
+  const moduleId = id.replaceAll('\\', '/');
+  if (moduleId.includes('/src/adapters/node/')) return 'adapter-node';
+  if (moduleId.includes('/src/adapters/browser/')) return 'adapter-browser';
+  if (moduleId.includes('/src/adapters/memory/')) return 'adapter-memory';
+  if (moduleId.includes('/src/adapters/')) return 'adapters-shared';
+  if (moduleId.includes('/src/domain/')) return 'domain';
+  if (moduleId.includes('/src/application/commands/internal/')) return 'commands-internal';
+  if (moduleId.includes('/src/application/primitives/')) return 'primitives';
+  if (moduleId.includes('/src/operators/')) return 'operators';
+  if (moduleId.includes('/src/transport/')) return 'transport';
+  if (moduleId.includes('/src/ports/')) return 'ports';
   return undefined;
 };
 

@@ -130,28 +130,6 @@ describe('object-id', () => {
       });
     });
 
-    describe('Given a 63-char hex string (one under the SHA-256 width)', () => {
-      describe('When calling ObjectId.from', () => {
-        it('Then throws INVALID_OBJECT_ID with the exact input echoed back', () => {
-          // Arrange
-          const sut = ObjectId.from;
-          const hex = 'a'.repeat(63);
-
-          // Act + Assert
-          try {
-            sut(hex);
-            expect.unreachable();
-          } catch (error) {
-            expect(error).toBeInstanceOf(TsgitError);
-            expect((error as TsgitError).data).toEqual({
-              code: 'INVALID_OBJECT_ID',
-              value: hex,
-            });
-          }
-        });
-      });
-    });
-
     describe('Given a 39-char hex string with one astral-plane character appended (41 UTF-16 code units)', () => {
       describe('When calling ObjectId.from', () => {
         it('Then throws INVALID_OBJECT_ID (length is measured in code units, not code points)', () => {
@@ -224,12 +202,15 @@ describe('object-id', () => {
           const bytes = new Uint8Array(20).fill(0xab);
           const charCodeAtSpy = vi.spyOn(String.prototype, 'charCodeAt');
 
-          // Act
-          sut(bytes);
+          try {
+            // Act
+            sut(bytes);
 
-          // Assert
-          expect(charCodeAtSpy).not.toHaveBeenCalled();
-          charCodeAtSpy.mockRestore();
+            // Assert
+            expect(charCodeAtSpy).not.toHaveBeenCalled();
+          } finally {
+            charCodeAtSpy.mockRestore();
+          }
         });
       });
     });

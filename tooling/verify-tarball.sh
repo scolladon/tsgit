@@ -24,7 +24,7 @@ done
 # old cap — the failure that forced this review); the shipped layer-coarse
 # chunking packs the same surface at 787 783 B, because ~10 consolidated
 # chunks stop paying a per-file gzip window 143 times. The cap is set ~14%
-# above that measured 788 KiB floor — the same convention that produced
+# above that measured 769 KiB (787 783 B) floor — the same convention that produced
 # 750 KiB from a 656 KiB floor — so a change that meaningfully grows any of
 # the three still fires the guard for a considered review rather than an
 # automatic bump. Source maps are not shipped, so they do not count against

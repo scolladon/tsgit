@@ -84,12 +84,15 @@ const headerCache = new WeakMap<Context, Map<ObjectId, CommitHeader>>();
  * Insert into an insertion-order-bounded Map: when the map is at `cap`,
  * evict the oldest entry (Map iteration order is insertion order) before
  * inserting. Overwriting an existing key never evicts — the size does not
- * grow.
+ * grow. Precondition: `cap >= 1` — a full map always has a first key, so the
+ * eviction loop always finds one and breaks.
  */
 export function insertBounded<K, V>(map: Map<K, V>, cap: number, key: K, value: V): void {
   if (!map.has(key) && map.size >= cap) {
-    const oldest = map.keys().next().value;
-    if (oldest !== undefined) map.delete(oldest);
+    for (const oldest of map.keys()) {
+      map.delete(oldest);
+      break;
+    }
   }
   map.set(key, value);
 }

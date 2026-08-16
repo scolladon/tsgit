@@ -110,8 +110,10 @@ statements — all must hold when this ships.
 - **R6** `docs/perf/baseline.json` and `docs/perf/baseline.md` are regenerated from
   `npm run profile` on the current tree, and name no symbol absent from `src/`.
 - **R7** `tooling/bench-memory.ts` gains at least one workload that exercises the commit-graph
-  header cache and at least one that exercises the fsck object cache, so both bounds are
-  measured by the nightly `bench.yml` artifact rather than asserted.
+  header cache and at least one that exercises the fsck object cache. *Amended in review:* the
+  fsck bound is nightly-measured; the above-cap header-cache eviction reading is a LOCAL-ONLY
+  measurement (the 70k-commit fixture cannot fit the nightly budget), recorded in ADR-645's
+  amendment, with the eviction logic itself covered by the `insertBounded` unit tests.
 
 **Performance (each with an oracle, below)**
 
@@ -130,8 +132,8 @@ statements — all must hold when this ships.
   total repository blob bytes — *amended in review:* on this Node/V8 the observing metric is
   `rss` (typed-array backing stores are off-heap; `heapUsed` barely tracks blob bytes), and the
   bound is on the RETAINED peak (a transient O(largest blob) spike remains during the build
-  pass, see ADR-646's scope note). Bounded independently of — demonstrated by two fixture sizes whose blob content differs by
-  ≥4× showing sub-linear peak growth.
+  pass, see ADR-646's scope note). Demonstrated by two fixture sizes whose blob content
+  differs by ≥4× showing sub-linear peak growth.
 - **R11** A warm `npm run check:types` (unchanged sources) completes in under half its cold
   time on the measurement host, and a cold run is not slower than today's.
 - **R12** Both pilots (vitest pool, prepush worker caps) either show a wall-clock win on
