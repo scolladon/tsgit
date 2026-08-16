@@ -20,6 +20,7 @@ import {
 import { invalidCommitGraphChunk } from '../../../domain/commit/error.js';
 import { TsgitError } from '../../../domain/error.js';
 import { ObjectId } from '../../../domain/objects/index.js';
+import { createLruCache, type LruCache } from '../../../domain/storage/lru-cache.js';
 import type { Context } from '../../../ports/context.js';
 import {
   commitGraphChainPath,
@@ -51,9 +52,18 @@ interface LoadedGraph {
 // at most once per repo lifetime — mirrors `registryCache` in read-object.ts.
 const graphCache = new WeakMap<Context, Promise<LoadedGraph | undefined>>();
 
+// Entry cap mirrors `DEFAULT_DELTA_CACHE_ENTRIES` (`src/index.node.ts`) — the
+// repo's existing bound for a per-repository memo cache, reused here rather
+// than inventing a second magic number.
+const HEADER_CACHE_MAX_ENTRIES = 65_536;
+
 // Per-Repository resolved-header cache (oid → header), populated as the graph
 // is consulted. Cheap: avoids repeating the cross-layer position arithmetic
-// for an oid every walk in the repo's lifetime re-visits.
+// for an oid every walk in the repo's lifetime re-visits. Entry-capped
+// (`HEADER_CACHE_MAX_ENTRIES`) so a full-history walk on a very large repo
+// cannot retain one entry per commit forever — eviction is hazard-free
+// because a miss is always re-derivable from `graph` (already parsed, held
+// by `graphCache`) with zero further `ctx.fs` calls.
 //
 // Cannot serve a header computed under a stale shallow-gate verdict: every
 // entry is populated by `commitHeader` only after `loadGraph(ctx)` resolves,
@@ -64,7 +74,7 @@ const graphCache = new WeakMap<Context, Promise<LoadedGraph | undefined>>();
 // same "stale per-Context cache" class as a graph rewritten mid-`Context` —
 // already covered by the "construct a fresh `Context` after every write"
 // discipline this module's other caches rely on; it is not a new hazard.
-const headerCache = new WeakMap<Context, Map<ObjectId, CommitHeader>>();
+const headerCache = new WeakMap<Context, LruCache<CommitHeader>>();
 
 function isFileNotFound(error: unknown): boolean {
   return error instanceof TsgitError && error.data.code === 'FILE_NOT_FOUND';
@@ -188,10 +198,10 @@ function loadGraph(ctx: Context): Promise<LoadedGraph | undefined> {
   return cached;
 }
 
-function getHeaderCache(ctx: Context): Map<ObjectId, CommitHeader> {
+function getHeaderCache(ctx: Context): LruCache<CommitHeader> {
   let cache = headerCache.get(ctx);
   if (cache === undefined) {
-    cache = new Map();
+    cache = createLruCache<CommitHeader>(Number.POSITIVE_INFINITY, HEADER_CACHE_MAX_ENTRIES);
     headerCache.set(ctx, cache);
   }
   return cache;
@@ -273,7 +283,7 @@ export async function commitHeader(ctx: Context, id: ObjectId): Promise<CommitHe
       committerDate: data.committerDate,
       generation: data.generation,
     };
-    cache.set(id, header);
+    cache.set(id, header, 1);
     return header;
   } catch (error) {
     // A parsed-but-internally-inconsistent graph (out-of-range parent

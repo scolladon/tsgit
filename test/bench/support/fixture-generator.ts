@@ -39,6 +39,7 @@ export interface FixtureSpec {
     | 'deep-ancestry-small'
     | 'deep-ancestry-medium'
     | 'deep-ancestry-large'
+    | 'header-cache'
     | 'many-pack'
     | 'many-pack-no-midx'
     | 'single-pack'
@@ -183,6 +184,21 @@ export const DEEP_ANCESTRY_LARGE: FixtureSpec = {
   commits: DEEP_ANCESTRY_LARGE_COMMITS,
   blobs: 1,
   blobBytes: DEEP_ANCESTRY_BLOB_BYTES,
+};
+
+// Sized above the commit-graph header cache's 65 536-entry cap so a full
+// walk actually exercises eviction — no existing spec crosses that line
+// (LARGE_FIXTURE tops out at 50 000 commits).
+const HEADER_CACHE_COMMITS = 70_000;
+const HEADER_CACHE_BLOB_BYTES = 256;
+
+export const HEADER_CACHE_FIXTURE: FixtureSpec = {
+  label: 'header-cache',
+  strategy: 'deep-ancestry',
+  commits: HEADER_CACHE_COMMITS,
+  blobs: 1,
+  blobBytes: HEADER_CACHE_BLOB_BYTES,
+  commitGraph: true,
 };
 
 export interface ScaledFixture {

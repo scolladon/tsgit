@@ -348,6 +348,80 @@ describe('read-commit-graph', () => {
       });
     });
 
+    describe('Given a commit-graph and a repeated walk over the same commit set', () => {
+      describe('When commitHeader is called for every commit across two full passes', () => {
+        it('Then every returned CommitHeader is deep-equal across both passes', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const { c0, c1, c2, c3, c4 } = await buildFiveCommitHistory(ctx);
+          await writeCommitGraph(ctx, [[c0, c1, c2, c3, c4]]);
+          const commits = [c0, c1, c2, c3, c4];
+
+          // Act
+          const firstPass: Array<Awaited<ReturnType<typeof commitHeader>>> = [];
+          for (const commit of commits) {
+            firstPass.push(await commitHeader(ctx, commit.id));
+          }
+          const secondPass: Array<Awaited<ReturnType<typeof commitHeader>>> = [];
+          for (const commit of commits) {
+            secondPass.push(await commitHeader(ctx, commit.id));
+          }
+
+          // Assert
+          for (const [i, header] of firstPass.entries()) {
+            expectHeaderMatchesCommit(header, commits[i]!);
+          }
+          for (const [i, header] of secondPass.entries()) {
+            expect(header).toEqual(firstPass[i]);
+          }
+        });
+      });
+    });
+
+    describe('Given a commit-graph already loaded via a prior commitHeader call', () => {
+      describe('When commitHeader is called for a different commit whose header is not yet cached', () => {
+        it('Then no additional read on a commit-graph path occurs — the header is re-derived from the already-parsed graph', async () => {
+          // Arrange — pins the R3 eviction-safety property: a header-cache
+          // miss (whether never-computed or evicted) must be re-derivable
+          // from `graph` alone, with zero further `ctx.fs` calls.
+          const base = await buildSeededContext();
+          const { c0, c1, c2, c3, c4 } = await buildFiveCommitHistory(base);
+          await writeCommitGraph(base, [[c0, c1, c2, c3, c4]]);
+          const { ctx, calls } = instrumentedContext(base);
+          await commitHeader(ctx, c0.id);
+
+          // Act — c4's header has never been computed, so it is a cache miss.
+          const header = await commitHeader(ctx, c4.id);
+
+          // Assert
+          expectHeaderMatchesCommit(header, c4);
+          const graphReads = calls().filter(
+            (call) => call.method === 'read' && call.path.includes('commit-graph'),
+          );
+          expect(graphReads.length).toBe(1);
+        });
+      });
+    });
+
+    describe('Given an oid absent from the graph', () => {
+      describe('When commitHeader is called for it twice', () => {
+        it('Then both calls return undefined — the uncached-miss asymmetry holds across repeat calls', async () => {
+          // Arrange — the graph only covers c0..c3; c4 is real but not included.
+          const ctx = await buildSeededContext();
+          const { c0, c1, c2, c3, c4 } = await buildFiveCommitHistory(ctx);
+          await writeCommitGraph(ctx, [[c0, c1, c2, c3]]);
+
+          // Act
+          const first = await commitHeader(ctx, c4.id);
+          const second = await commitHeader(ctx, c4.id);
+
+          // Assert
+          expect(first).toBeUndefined();
+          expect(second).toBeUndefined();
+        });
+      });
+    });
+
     describe('Given ctx.fs.read throws a non-FILE_NOT_FOUND error while probing the single-file graph', () => {
       describe('When commitHeader is called', () => {
         it('Then the error propagates unchanged (not swallowed as absent/corrupt)', async () => {
