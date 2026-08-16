@@ -1,3 +1,8 @@
+export type { ConfigKey, ConfigScope } from '../../domain/commands/config-key.js';
+export type { IndexEntry } from '../../domain/git-index/index.js';
+export type { TreeEntry } from '../../domain/objects/index.js';
+export type { ReflogEntry } from '../../domain/reflog/reflog-entry.js';
+export type { SparseMatcher } from '../../domain/sparse/index.js';
 export type { ApplyChangesetOpts, ApplyChangesetResult } from './apply-changeset.js';
 export { applyChangeset, isWorkingTreeDirty } from './apply-changeset.js';
 export { bisectMidpoint } from './bisect-midpoint.js';

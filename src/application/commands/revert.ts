@@ -73,6 +73,8 @@ import {
 } from './internal/sequencer-state.js';
 import { revParse } from './rev-parse.js';
 
+export type { ConflictType } from '../../domain/merge/index.js';
+
 export interface RevertRunInput {
   /** Revisions to revert, in argument order — a commit-ish each. */
   readonly commits: ReadonlyArray<string>;

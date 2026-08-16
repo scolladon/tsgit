@@ -28,6 +28,8 @@ import {
 } from '../primitives/update-config.js';
 import { assertRepository } from './internal/repo-state.js';
 
+export type { ConfigKey, ConfigScope } from '../../domain/commands/config-key.js';
+
 const brandKey = (raw: string): ConfigKey => raw as unknown as ConfigKey;
 
 // ─── Read methods ───────────────────────────────────────────────────────────

@@ -82,6 +82,8 @@ import {
 } from './internal/rebase-state.js';
 import { hardResetWorktreeToCommit } from './internal/reset-worktree.js';
 
+export type { ConflictType } from '../../domain/merge/index.js';
+
 const HEAD = 'HEAD' as RefName;
 /** `post-rewrite`'s command-name argument when fired from a rebase. */
 const REBASE_REWRITE_LABEL = 'rebase';
