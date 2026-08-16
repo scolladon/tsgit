@@ -393,6 +393,40 @@ describe('Given an orphan commit subgraph (commit→tree→blob, all unreachable
   });
 });
 
+describe('Given two unreachable commits where the child references the parent (no ref to either)', () => {
+  describe('When fsck runs', () => {
+    it('Then the parent is unreachable but not dangling: the unreachable child still records its in-edge', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const treeId = await writeObject(ctx, makeTree([]));
+      const parentId = await writeObject(ctx, makeCommit(treeId, []));
+      const childId = await writeObject(ctx, makeCommit(treeId, [parentId]));
+      // No ref → both commits are unreachable, but the child's `parents` array
+      // still records an in-edge to the parent when the universe is scanned.
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert — the parent is unreachable ...
+      const unreachableIds = result.findings
+        .filter((f) => f.type === 'unreachable')
+        .map((f) => (f as { type: 'unreachable'; id: ObjectId }).id);
+      expect(unreachableIds).toContain(parentId);
+
+      // ... but NOT dangling: the child, though itself unreachable, is still
+      // scanned for out-edges, so the parent has an in-edge.
+      const danglingIds = result.findings
+        .filter((f) => f.type === 'dangling')
+        .map((f) => (f as { type: 'dangling'; id: ObjectId }).id);
+      expect(danglingIds).not.toContain(parentId);
+
+      // The child itself has no in-edge from anything: it is dangling.
+      expect(danglingIds).toContain(childId);
+      expect(result.exitCode).toBe(0);
+    });
+  });
+});
+
 // ---------------------------------------------------------------------------
 // MISSING — referenced oid absent from the object store
 // ---------------------------------------------------------------------------
