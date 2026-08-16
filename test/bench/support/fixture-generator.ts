@@ -32,6 +32,7 @@ const BASE_TIMESTAMP = 1_700_000_000;
 export interface FixtureSpec {
   readonly label:
     | 'small'
+    | 'small-fat-blob'
     | 'medium'
     | 'medium-commit-graph'
     | 'large'
@@ -39,6 +40,7 @@ export interface FixtureSpec {
     | 'deep-ancestry-small'
     | 'deep-ancestry-medium'
     | 'deep-ancestry-large'
+    | 'header-cache'
     | 'many-pack'
     | 'many-pack-no-midx'
     | 'single-pack'
@@ -66,6 +68,18 @@ export const SMALL_FIXTURE: FixtureSpec = {
   commits: 50,
   blobs: 200,
   blobBytes: 2_560,
+};
+
+// Same commit/tree/blob COUNT as SMALL_FIXTURE — only blobBytes differs, so
+// graph metadata is held constant and blob content is the sole variable
+// (25× SMALL_FIXTURE's 2 560 B ≈ 13 MB total, still trivial to generate and
+// well inside bench.yml's 30-minute nightly budget).
+const SMALL_FAT_BLOB_BYTES = 65_536;
+
+export const SMALL_FAT_BLOB_FIXTURE: FixtureSpec = {
+  ...SMALL_FIXTURE,
+  label: 'small-fat-blob',
+  blobBytes: SMALL_FAT_BLOB_BYTES,
 };
 
 export const MEDIUM_FIXTURE: FixtureSpec = {
@@ -183,6 +197,21 @@ export const DEEP_ANCESTRY_LARGE: FixtureSpec = {
   commits: DEEP_ANCESTRY_LARGE_COMMITS,
   blobs: 1,
   blobBytes: DEEP_ANCESTRY_BLOB_BYTES,
+};
+
+// Sized above the commit-graph header cache's 65 536-entry cap so a full
+// walk actually exercises eviction — no existing spec crosses that line
+// (LARGE_FIXTURE tops out at 50 000 commits).
+const HEADER_CACHE_COMMITS = 70_000;
+const HEADER_CACHE_BLOB_BYTES = 256;
+
+export const HEADER_CACHE_FIXTURE: FixtureSpec = {
+  label: 'header-cache',
+  strategy: 'deep-ancestry',
+  commits: HEADER_CACHE_COMMITS,
+  blobs: 1,
+  blobBytes: HEADER_CACHE_BLOB_BYTES,
+  commitGraph: true,
 };
 
 export interface ScaledFixture {

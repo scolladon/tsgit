@@ -132,11 +132,11 @@ inputs)` body. The same scenario runs against three adapters:
 
 1. **Static Analysis** — biome, tsc, knip, jscpd, ls-lint, npm outdated (parallel)
 2. **Unit Tests** — Matrix: Ubuntu/macOS/Windows × Node `lts/-1`/`lts/*`/`latest` (Windows re-added in Phase 14.4)
-3. **Mutation Testing** — Stryker incremental on PRs (Linux, ADR-044); macOS + Windows nightly via `mutation-os.yml` (ADR-055)
+3. **Mutation Testing** — Stryker incremental on PRs (Linux, ADR-044), gated behind the `mutation` PR label — apply the label, then push, since GitHub's `labeled` event is not a workflow trigger (ADR-641); macOS + Windows nightly per-OS mutation via `mutation-os.yml` is unaffected (ADR-055)
 3a. **Testing-pyramid audit** — `npm run check:test-pyramid` runs in the `test-pyramid-audit` job; reports are uploaded as the `test-pyramid-audit` artifact. Report-only — never gates merges (ADR-104).
 4. **Integration Tests** — Three jobs split by platform contract (see below)
 5. **E2E Tests** — Playwright: Chrome, Firefox, Safari (Linux runner)
-6. **Performance** — vitest bench (PR base-vs-PR compare + main-push snapshot to the `gh-pages` data branch) + bundle size checks
+6. **Performance** — vitest bench (PR base-vs-PR compare, gated behind the `bench` PR label — ADR-651; main-push snapshot to the `gh-pages` data branch, cadence unchanged — ADR-642) + bundle size checks
 7. **MegaLinter** — Comprehensive linting (parallel with all stages)
 
 Action references float on major-version tags (`@v4`); Dependabot bumps them
@@ -170,8 +170,10 @@ read. The `win-integration` job covers the OS → Node → adapter wiring
 that simulation cannot fake (8.3 short-name expansion through real
 `fsPromises.realpath`, NTFS reparse-point behaviour). Wall time is
 ~2–3× Linux; expect ~12–15 min for the `unit-tests` job. Per-PR
-mutation stays on Linux (per ADR-044 cost analysis); per-OS mutation on
-macOS + Windows runs nightly via the `mutation-os.yml` workflow (ADR-055).
+mutation stays on Linux (per ADR-044 cost analysis) and only runs on a
+PR carrying the `mutation` label (ADR-641); per-OS mutation on
+macOS + Windows runs nightly via the `mutation-os.yml` workflow (ADR-055),
+unaffected by the label gate.
 
 ### Release Process
 

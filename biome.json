@@ -12,6 +12,7 @@
       "test/**",
       "*.ts",
       "*.json",
+      "tooling/bench-memory.ts",
       "tooling/profile.ts",
       "tooling/profile-*.ts",
       "tooling/test/unit/profile-*.test.ts",

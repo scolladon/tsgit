@@ -18,6 +18,8 @@ import { resolveRef } from '../primitives/resolve-ref.js';
 import { walkCommits } from '../primitives/walk-commits.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
 
+export type { ReflogEntry } from '../../domain/reflog/reflog-entry.js';
+
 export type ReflogAction =
   | { readonly action?: 'show'; readonly ref?: string }
   | { readonly action: 'exists'; readonly ref: string }

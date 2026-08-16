@@ -15,12 +15,21 @@ done
 # Compressed tarball cap. The published package ships dual ESM+CJS code plus
 # dual .d.ts/.d.cts types (both structurally required — dropping either is a
 # breaking change) plus the single-file browser bundle served from the CDN
-# root fields, so the honest floor is code+types+bundle ≈ 656 KiB compressed;
-# the real pack measures around that mark. The cap is set ~14% above that —
-# tight by choice: a change that meaningfully grows any of the three fires the
-# guard for a considered review rather than an automatic bump. Source maps are
-# not shipped, so they do not count against this cap.
-SIZE_CAP=$((750 * 1024))
+# root fields. Since the per-command export split (one rollup entry per
+# `src/application/commands/*.ts`, ADR-640), that runtime/types pair is now
+# emitted across 60 entries and layer-coarse shared chunks instead of 11
+# entries and 16 chunks, so the honest floor moved with it. Measured:
+# published 3.3.0 packed 94 files / 736 732 B (95.9% of the old 750 KiB cap);
+# the naive fine-chunked split packed 580 files / 867 276 B (112.9% of the
+# old cap — the failure that forced this review); the shipped layer-coarse
+# chunking packs the same surface at 787 783 B, because ~10 consolidated
+# chunks stop paying a per-file gzip window 143 times. The cap is set ~14%
+# above that measured 769 KiB (787 783 B) floor — the same convention that produced
+# 750 KiB from a 656 KiB floor — so a change that meaningfully grows any of
+# the three still fires the guard for a considered review rather than an
+# automatic bump. Source maps are not shipped, so they do not count against
+# this cap.
+SIZE_CAP=$((880 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders
@@ -29,10 +38,12 @@ PACKDIR=""
 INVENTORY=""
 BUNDLE=""
 DEFAULT_ENTRY_DIR=""
+RESOLVE_DIR=""
 cleanup() {
   rm -f "$INVENTORY" "$BUNDLE"
   if [ -n "$PACKDIR" ]; then rm -rf "$PACKDIR"; fi
   if [ -n "$DEFAULT_ENTRY_DIR" ]; then rm -rf "$DEFAULT_ENTRY_DIR"; fi
+  if [ -n "$RESOLVE_DIR" ]; then rm -rf "$RESOLVE_DIR"; fi
 }
 trap cleanup EXIT
 
@@ -51,6 +62,113 @@ if (( SIZE > SIZE_CAP )); then
   echo "FAIL: tarball $(basename "$TARBALL") is ${SIZE} bytes (cap ${SIZE_CAP})" >&2
   exit 1
 fi
+
+# Subpath resolution guard (ADR-644). `attw --pack` enumerates `exports`
+# keys literally and prints "(wildcard)" for a pattern without resolving
+# anything behind it — that is precisely how a `./commands/*` wildcard whose
+# only built file was `commands/index` shipped past a green check:exports
+# while every other command subpath 404'd. This proves what attw cannot:
+# every concrete specifier the packed `exports` map promises — explicit keys
+# and wildcard expansions alike — actually loads. It runs unconditionally
+# (not gated by QUICK) because it is the check this file exists to host, and
+# early — before any content/shape check below — so a broken specifier fails
+# on its own resolution error rather than as a side effect of some other
+# check tripping over the same missing file. Resolved against the packed
+# tree, never the worktree's dist/, or it would verify files
+# `files: ["dist","LICENSE","README.md"]` might not ship; and through
+# Node's own resolver via dynamic `import()`, never path arithmetic, because
+# the defect is a *resolution* failure and path arithmetic proves nothing
+# about it.
+RESOLVE_DIR=$(mktemp -d -t tsgit-resolve.XXXXXX)
+mkdir -p "$RESOLVE_DIR/node_modules/@scolladon"
+tar -xzf "$TARBALL" -C "$RESOLVE_DIR"
+mv "$RESOLVE_DIR/package" "$RESOLVE_DIR/node_modules/@scolladon/tsgit"
+# Name-less sentinel package.json at the staged root: it stops Node's upward
+# package.json walk, so the eval referrer below can never self-reference the
+# WORKTREE's package.json. Without it, imports of "@scolladon/tsgit/..." from
+# a repo-rooted cwd resolve through the worktree exports map into the
+# worktree dist/ — verifying files the tarball might not ship, which is the
+# exact defect class this guard exists to catch.
+printf '{"type":"module"}\n' > "$RESOLVE_DIR/package.json"
+
+(cd "$RESOLVE_DIR" && node --input-type=module -e '
+import { existsSync, readFileSync, readdirSync } from "node:fs";
+import * as path from "node:path";
+
+const pkgDir = path.resolve("node_modules/@scolladon/tsgit");
+const pkg = JSON.parse(readFileSync(path.join(pkgDir, "package.json"), "utf8"));
+
+// A leaf conditions node carries a `default` runtime target somewhere in
+// its condition tree (node/browser/default, import/require, ...); walk
+// down to the first one found — every branch of a given key shares the
+// same `*` position, so any branch is representative for wildcard expansion.
+const findRuntimeTarget = (node) => {
+  if (node === null || typeof node !== "object") return undefined;
+  if (typeof node.default === "string") return node.default;
+  for (const child of Object.values(node)) {
+    const found = findRuntimeTarget(child);
+    if (found !== undefined) return found;
+  }
+  return undefined;
+};
+
+const specifiers = new Set();
+const failures = [];
+for (const [key, node] of Object.entries(pkg.exports ?? {})) {
+  const target = findRuntimeTarget(node);
+  if (target === undefined) continue;
+  if (!key.includes("*")) {
+    specifiers.add(key);
+    continue;
+  }
+  const keyDir = path.posix.dirname(key);
+  const targetDir = path.posix.dirname(target);
+  const targetSuffix = path.posix.basename(target).replace("*", "");
+  const absTargetDir = path.join(pkgDir, targetDir);
+  if (!existsSync(absTargetDir)) {
+    failures.push(`${key}: wildcard target directory ${targetDir} missing from tarball`);
+    continue;
+  }
+  let expanded = 0;
+  for (const file of readdirSync(absTargetDir)) {
+    if (!file.endsWith(targetSuffix)) continue;
+    const stem = file.slice(0, -targetSuffix.length);
+    specifiers.add(`${keyDir}/${stem}`);
+    expanded += 1;
+  }
+  if (expanded === 0) {
+    failures.push(`${key}: wildcard expanded to zero specifiers in ${targetDir}`);
+  }
+}
+
+// Self-check: every resolved URL must live inside this staged tree. If a
+// future edit moves the cwd back out of the staged dir, self-reference would
+// silently re-target the worktree — this assertion turns that into a failure.
+const { pathToFileURL } = await import("node:url");
+const stagedPrefix = pathToFileURL(path.resolve("node_modules/@scolladon/tsgit/")).href;
+for (const key of [...specifiers].sort()) {
+  const specifier = key === "." ? pkg.name : `${pkg.name}${key.slice(1)}`;
+  try {
+    const resolved = import.meta.resolve(specifier);
+    if (!resolved.startsWith(stagedPrefix)) {
+      failures.push(`${specifier}: resolved outside the staged tarball tree (${resolved})`);
+      continue;
+    }
+    await import(specifier);
+  } catch (err) {
+    failures.push(`${specifier}: ${err.code ?? err.message}`);
+  }
+}
+
+if (failures.length > 0) {
+  console.error(failures.join("\n"));
+  process.exit(1);
+}
+console.log(`${specifiers.size} export subpaths resolve.`);
+') || {
+  echo "FAIL: one or more exports subpaths failed to resolve from the packed tarball" >&2
+  exit 1
+}
 
 tar -tzf "$TARBALL" >"$INVENTORY"
 

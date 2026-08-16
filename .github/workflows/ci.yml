@@ -212,7 +212,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: ./.github/actions/setup
+      - id: setup
+        uses: ./.github/actions/setup
+      - name: Restore incremental type-check state
+        uses: actions/cache@v6
+        with:
+          path: .typecheck.tsbuildinfo
+          key: tsbuildinfo-${{ runner.os }}-${{ steps.setup.outputs.node-version }}-${{ hashFiles('tsconfig*.json', 'package-lock.json') }}-${{ hashFiles('src/**/*.ts', 'test/**/*.ts', 'tooling/**/*.ts') }}-${{ github.job }}
+          restore-keys: |
+            tsbuildinfo-${{ runner.os }}-${{ steps.setup.outputs.node-version }}-${{ hashFiles('tsconfig*.json', 'package-lock.json') }}-${{ hashFiles('src/**/*.ts', 'test/**/*.ts', 'tooling/**/*.ts') }}-
+            tsbuildinfo-${{ runner.os }}-${{ steps.setup.outputs.node-version }}-${{ hashFiles('tsconfig*.json', 'package-lock.json') }}-
       - run: npm run build
       - run: npm run check:size
       - run: npm run check:exports
@@ -249,9 +258,18 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
-      - uses: ./.github/actions/setup
+      - id: setup
+        uses: ./.github/actions/setup
         with:
           node-version: ${{ matrix.node }}
+      - name: Restore incremental type-check state
+        uses: actions/cache@v6
+        with:
+          path: .typecheck.tsbuildinfo
+          key: tsbuildinfo-${{ runner.os }}-${{ steps.setup.outputs.node-version }}-${{ hashFiles('tsconfig*.json', 'package-lock.json') }}-${{ hashFiles('src/**/*.ts', 'test/**/*.ts', 'tooling/**/*.ts') }}-${{ github.job }}
+          restore-keys: |
+            tsbuildinfo-${{ runner.os }}-${{ steps.setup.outputs.node-version }}-${{ hashFiles('tsconfig*.json', 'package-lock.json') }}-${{ hashFiles('src/**/*.ts', 'test/**/*.ts', 'tooling/**/*.ts') }}-
+            tsbuildinfo-${{ runner.os }}-${{ steps.setup.outputs.node-version }}-${{ hashFiles('tsconfig*.json', 'package-lock.json') }}-
       # Coverage threshold (100%) is enforced on the Linux gate cell only.
       # Other matrix cells run plain `test:unit` (cross-platform — no
       # platform skipIfs after Phase 14.4's PathPolicy + FsOperations DI
@@ -281,14 +299,25 @@ jobs:
   # ──────────────────────────────────────────────
 
   mutation:
-    if: github.event_name == 'pull_request'
+    if: >-
+      github.event_name == 'pull_request' &&
+      contains(github.event.pull_request.labels.*.name, 'mutation')
     needs: [unit-tests]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: ./.github/actions/setup
+      - id: setup
+        uses: ./.github/actions/setup
+      - name: Restore incremental type-check state
+        uses: actions/cache@v6
+        with:
+          path: .typecheck.tsbuildinfo
+          key: tsbuildinfo-${{ runner.os }}-${{ steps.setup.outputs.node-version }}-${{ hashFiles('tsconfig*.json', 'package-lock.json') }}-${{ hashFiles('src/**/*.ts', 'test/**/*.ts', 'tooling/**/*.ts') }}-${{ github.job }}
+          restore-keys: |
+            tsbuildinfo-${{ runner.os }}-${{ steps.setup.outputs.node-version }}-${{ hashFiles('tsconfig*.json', 'package-lock.json') }}-${{ hashFiles('src/**/*.ts', 'test/**/*.ts', 'tooling/**/*.ts') }}-
+            tsbuildinfo-${{ runner.os }}-${{ steps.setup.outputs.node-version }}-${{ hashFiles('tsconfig*.json', 'package-lock.json') }}-
       - id: scope
         name: Compute mutated file set
         env:
@@ -331,7 +360,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: ./.github/actions/setup
+      - id: setup
+        uses: ./.github/actions/setup
+      - name: Restore incremental type-check state
+        uses: actions/cache@v6
+        with:
+          path: .typecheck.tsbuildinfo
+          key: tsbuildinfo-${{ runner.os }}-${{ steps.setup.outputs.node-version }}-${{ hashFiles('tsconfig*.json', 'package-lock.json') }}-${{ hashFiles('src/**/*.ts', 'test/**/*.ts', 'tooling/**/*.ts') }}-${{ github.job }}
+          restore-keys: |
+            tsbuildinfo-${{ runner.os }}-${{ steps.setup.outputs.node-version }}-${{ hashFiles('tsconfig*.json', 'package-lock.json') }}-${{ hashFiles('src/**/*.ts', 'test/**/*.ts', 'tooling/**/*.ts') }}-
+            tsbuildinfo-${{ runner.os }}-${{ steps.setup.outputs.node-version }}-${{ hashFiles('tsconfig*.json', 'package-lock.json') }}-
       - run: npm run test:integration
 
   # ──────────────────────────────────────────────
@@ -352,7 +390,16 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
-      - uses: ./.github/actions/setup
+      - id: setup
+        uses: ./.github/actions/setup
+      - name: Restore incremental type-check state
+        uses: actions/cache@v6
+        with:
+          path: .typecheck.tsbuildinfo
+          key: tsbuildinfo-${{ runner.os }}-${{ steps.setup.outputs.node-version }}-${{ hashFiles('tsconfig*.json', 'package-lock.json') }}-${{ hashFiles('src/**/*.ts', 'test/**/*.ts', 'tooling/**/*.ts') }}-${{ github.job }}
+          restore-keys: |
+            tsbuildinfo-${{ runner.os }}-${{ steps.setup.outputs.node-version }}-${{ hashFiles('tsconfig*.json', 'package-lock.json') }}-${{ hashFiles('src/**/*.ts', 'test/**/*.ts', 'tooling/**/*.ts') }}-
+            tsbuildinfo-${{ runner.os }}-${{ steps.setup.outputs.node-version }}-${{ hashFiles('tsconfig*.json', 'package-lock.json') }}-
       - run: npm run test:posix-integration
 
   # ──────────────────────────────────────────────
@@ -368,7 +415,16 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: ./.github/actions/setup
+      - id: setup
+        uses: ./.github/actions/setup
+      - name: Restore incremental type-check state
+        uses: actions/cache@v6
+        with:
+          path: .typecheck.tsbuildinfo
+          key: tsbuildinfo-${{ runner.os }}-${{ steps.setup.outputs.node-version }}-${{ hashFiles('tsconfig*.json', 'package-lock.json') }}-${{ hashFiles('src/**/*.ts', 'test/**/*.ts', 'tooling/**/*.ts') }}-${{ github.job }}
+          restore-keys: |
+            tsbuildinfo-${{ runner.os }}-${{ steps.setup.outputs.node-version }}-${{ hashFiles('tsconfig*.json', 'package-lock.json') }}-${{ hashFiles('src/**/*.ts', 'test/**/*.ts', 'tooling/**/*.ts') }}-
+            tsbuildinfo-${{ runner.os }}-${{ steps.setup.outputs.node-version }}-${{ hashFiles('tsconfig*.json', 'package-lock.json') }}-
       - run: npm run test:win-integration
 
   # ──────────────────────────────────────────────
@@ -385,7 +441,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: ./.github/actions/setup
+      - id: setup
+        uses: ./.github/actions/setup
+      - name: Restore incremental type-check state
+        uses: actions/cache@v6
+        with:
+          path: .typecheck.tsbuildinfo
+          key: tsbuildinfo-${{ runner.os }}-${{ steps.setup.outputs.node-version }}-${{ hashFiles('tsconfig*.json', 'package-lock.json') }}-${{ hashFiles('src/**/*.ts', 'test/**/*.ts', 'tooling/**/*.ts') }}-${{ github.job }}
+          restore-keys: |
+            tsbuildinfo-${{ runner.os }}-${{ steps.setup.outputs.node-version }}-${{ hashFiles('tsconfig*.json', 'package-lock.json') }}-${{ hashFiles('src/**/*.ts', 'test/**/*.ts', 'tooling/**/*.ts') }}-
+            tsbuildinfo-${{ runner.os }}-${{ steps.setup.outputs.node-version }}-${{ hashFiles('tsconfig*.json', 'package-lock.json') }}-
       - run: npm run test:parity
       - uses: actions/upload-artifact@v7
         if: failure()
@@ -523,7 +588,10 @@ jobs:
           fail-on-alert: false
 
   benchmark-compare:
-    if: github.event_name == 'pull_request' && needs.changes.outputs.code == 'true'
+    if: >-
+      github.event_name == 'pull_request' &&
+      needs.changes.outputs.code == 'true' &&
+      contains(github.event.pull_request.labels.*.name, 'bench')
     needs: [changes, unit-tests]
     runs-on: ubuntu-latest
     # Informative only — a flagged regression is a prompt to look, never a

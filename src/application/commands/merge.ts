@@ -71,6 +71,10 @@ import {
   readHeadRaw,
 } from './internal/repo-state.js';
 
+export type { IndexEntry } from '../../domain/git-index/index.js';
+export type { ConflictType, MergeConflict, MergeOutcome } from '../../domain/merge/index.js';
+export type { SparseMatcher } from '../../domain/sparse/index.js';
+
 export interface MergeRunInput {
   readonly rev: string;
   readonly message?: string;

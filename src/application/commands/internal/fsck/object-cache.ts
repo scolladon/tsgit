@@ -1,7 +1,12 @@
 import { applyGraft } from '../../../../domain/commit/graft.js';
 import { decompressFailed, TsgitError } from '../../../../domain/error.js';
 import type { FsckObjectType } from '../../../../domain/fsck/index.js';
-import type { GitObject, ObjectId } from '../../../../domain/objects/index.js';
+import type {
+  GitObject,
+  ObjectId,
+  ObjectType,
+  TreeEntry,
+} from '../../../../domain/objects/index.js';
 import { invalidObjectHeader, parseHeader } from '../../../../domain/objects/index.js';
 import { MAX_DELTA_CHAIN_DEPTH } from '../../../../domain/storage/delta.js';
 import {
@@ -21,6 +26,13 @@ import type { UnreadableMode } from './types.js';
 // here; hash correctness is checked separately in the content-validation pass
 // from the raw bytes that pass already reads).
 //
+// The cache retains a STRUCTURAL PROJECTION, not the whole decoded object:
+// `{ type }` plus the out-edge data each downstream pass actually reads
+// (commit: tree + grafted parents; tree: entries' id/mode/name; tag: target
+// object/type/name). No consumer ever reads a blob's content, so blob
+// content is never retained. Peak memory tracks graph metadata (commit/tree/
+// tag count) instead of total repository content.
+//
 // In `'classify'` mode (connectivityOnly), a decode failure additionally
 // triggers a probe that re-asks git's own question about the object's STORED
 // form: can a `<type> <size>\0` header be recovered from it at all? The
@@ -30,8 +42,59 @@ import type { UnreadableMode } from './types.js';
 // to reject exactly where real git aborts.
 // ---------------------------------------------------------------------------
 
+/**
+ * The out-edge data each fsck consumer reads for one object type — see the
+ * design's traced-consumer table. A blob contributes nothing beyond `type`:
+ * content validation reads raw bytes on its own path, never through this
+ * cache.
+ */
+export type ProjectedGitObject =
+  | { readonly type: 'blob' }
+  | { readonly type: 'tree'; readonly entries: ReadonlyArray<TreeEntry> }
+  | {
+      readonly type: 'commit';
+      readonly tree: ObjectId;
+      readonly parents: ReadonlyArray<ObjectId>;
+    }
+  | {
+      readonly type: 'tag';
+      readonly object: ObjectId;
+      readonly objectType: ObjectType;
+      readonly tagName: string;
+    };
+
 /** null = unreadable / corrupt object */
-export type CachedGitObject = GitObject | null;
+export type CachedGitObject = ProjectedGitObject | null;
+
+// One shared, immutable projection for every blob: the variant carries no
+// per-object data, and a blob-heavy universe would otherwise retain one
+// identical object per blob for the whole command.
+const BLOB_PROJECTION: ProjectedGitObject = { type: 'blob' };
+
+/**
+ * Reduce a decoded object to the structural projection its fsck consumers
+ * read. A switch over the discriminated union, not a default fallthrough —
+ * the declared non-nullable `ProjectedGitObject` return type makes a missing
+ * variant a compile error (TS2366, "lacks ending return statement"), the
+ * same pattern as `git-object.ts`'s `parseObject`/`serializeObject`.
+ */
+function project(obj: GitObject): ProjectedGitObject {
+  switch (obj.type) {
+    case 'blob':
+      return BLOB_PROJECTION;
+    case 'tree':
+      return { type: 'tree', entries: obj.entries };
+    case 'commit':
+      return { type: 'commit', tree: obj.data.tree, parents: obj.data.parents };
+    case 'tag':
+      return {
+        type: 'tag',
+        object: obj.data.object,
+        objectType: obj.data.objectType,
+        tagName: obj.data.tagName,
+      };
+  }
+}
 
 /** The subset of `TsgitErrorData` a header-recovery probe can itself throw. */
 type DecodeError = TsgitError & {
@@ -295,7 +358,8 @@ export async function buildObjectCache(
     try {
       // Stryker disable next-line ObjectLiteral,BooleanLiteral: equivalent — verifyHash defaults true; any hash-verification throw is caught → stored as null, same as with verifyHash:false.
       const obj = await readObject(ctx, id, { verifyHash: false });
-      acc.cache.set(id, obj.type === 'commit' ? applyGraft(obj, shallow) : obj);
+      const grafted = obj.type === 'commit' ? applyGraft(obj, shallow) : obj;
+      acc.cache.set(id, project(grafted));
     } catch (err) {
       await recordUnreadable(ctx, id, err, unreadable, acc);
     }

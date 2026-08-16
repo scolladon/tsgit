@@ -99,6 +99,506 @@
         "default": "./dist/cjs/primitives/index.cjs"
       }
     },
+    "./commands": {
+      "import": {
+        "types": "./dist/types/commands/index.d.ts",
+        "default": "./dist/esm/commands/index.js"
+      },
+      "require": {
+        "types": "./dist/types/commands/index.d.cts",
+        "default": "./dist/cjs/commands/index.cjs"
+      }
+    },
+    "./commands/abort-merge": {
+      "import": {
+        "types": "./dist/types/commands/abort-merge.d.ts",
+        "default": "./dist/esm/commands/abort-merge.js"
+      },
+      "require": {
+        "types": "./dist/types/commands/abort-merge.d.cts",
+        "default": "./dist/cjs/commands/abort-merge.cjs"
+      }
+    },
+    "./commands/add": {
+      "import": {
+        "types": "./dist/types/commands/add.d.ts",
+        "default": "./dist/esm/commands/add.js"
+      },
+      "require": {
+        "types": "./dist/types/commands/add.d.cts",
+        "default": "./dist/cjs/commands/add.cjs"
+      }
+    },
+    "./commands/archive": {
+      "import": {
+        "types": "./dist/types/commands/archive.d.ts",
+        "default": "./dist/esm/commands/archive.js"
+      },
+      "require": {
+        "types": "./dist/types/commands/archive.d.cts",
+        "default": "./dist/cjs/commands/archive.cjs"
+      }
+    },
+    "./commands/blame": {
+      "import": {
+        "types": "./dist/types/commands/blame.d.ts",
+        "default": "./dist/esm/commands/blame.js"
+      },
+      "require": {
+        "types": "./dist/types/commands/blame.d.cts",
+        "default": "./dist/cjs/commands/blame.cjs"
+      }
+    },
+    "./commands/branch": {
+      "import": {
+        "types": "./dist/types/commands/branch.d.ts",
+        "default": "./dist/esm/commands/branch.js"
+      },
+      "require": {
+        "types": "./dist/types/commands/branch.d.cts",
+        "default": "./dist/cjs/commands/branch.cjs"
+      }
+    },
+    "./commands/bundle-create": {
+      "import": {
+        "types": "./dist/types/commands/bundle-create.d.ts",
+        "default": "./dist/esm/commands/bundle-create.js"
+      },
+      "require": {
+        "types": "./dist/types/commands/bundle-create.d.cts",
+        "default": "./dist/cjs/commands/bundle-create.cjs"
+      }
+    },
+    "./commands/bundle-list-heads": {
+      "import": {
+        "types": "./dist/types/commands/bundle-list-heads.d.ts",
+        "default": "./dist/esm/commands/bundle-list-heads.js"
+      },
+      "require": {
+        "types": "./dist/types/commands/bundle-list-heads.d.cts",
+        "default": "./dist/cjs/commands/bundle-list-heads.cjs"
+      }
+    },
+    "./commands/bundle-verify": {
+      "import": {
+        "types": "./dist/types/commands/bundle-verify.d.ts",
+        "default": "./dist/esm/commands/bundle-verify.js"
+      },
+      "require": {
+        "types": "./dist/types/commands/bundle-verify.d.cts",
+        "default": "./dist/cjs/commands/bundle-verify.cjs"
+      }
+    },
+    "./commands/cat-file": {
+      "import": {
+        "types": "./dist/types/commands/cat-file.d.ts",
+        "default": "./dist/esm/commands/cat-file.js"
+      },
+      "require": {
+        "types": "./dist/types/commands/cat-file.d.cts",
+        "default": "./dist/cjs/commands/cat-file.cjs"
+      }
+    },
+    "./commands/checkout": {
+      "import": {
+        "types": "./dist/types/commands/checkout.d.ts",
+        "default": "./dist/esm/commands/checkout.js"
+      },
+      "require": {
+        "types": "./dist/types/commands/checkout.d.cts",
+        "default": "./dist/cjs/commands/checkout.cjs"
+      }
+    },
+    "./commands/cherry-pick": {
+      "import": {
+        "types": "./dist/types/commands/cherry-pick.d.ts",
+        "default": "./dist/esm/commands/cherry-pick.js"
+      },
+      "require": {
+        "types": "./dist/types/commands/cherry-pick.d.cts",
+        "default": "./dist/cjs/commands/cherry-pick.cjs"
+      }
+    },
+    "./commands/clone": {
+      "import": {
+        "types": "./dist/types/commands/clone.d.ts",
+        "default": "./dist/esm/commands/clone.js"
+      },
+      "require": {
+        "types": "./dist/types/commands/clone.d.cts",
+        "default": "./dist/cjs/commands/clone.cjs"
+      }
+    },
+    "./commands/commit": {
+      "import": {
+        "types": "./dist/types/commands/commit.d.ts",
+        "default": "./dist/esm/commands/commit.js"
+      },
+      "require": {
+        "types": "./dist/types/commands/commit.d.cts",
+        "default": "./dist/cjs/commands/commit.cjs"
+      }
+    },
+    "./commands/config": {
+      "import": {
+        "types": "./dist/types/commands/config.d.ts",
+        "default": "./dist/esm/commands/config.js"
+      },
+      "require": {
+        "types": "./dist/types/commands/config.d.cts",
+        "default": "./dist/cjs/commands/config.cjs"
+      }
+    },
+    "./commands/continue-merge": {
+      "import": {
+        "types": "./dist/types/commands/continue-merge.d.ts",
+        "default": "./dist/esm/commands/continue-merge.js"
+      },
+      "require": {
+        "types": "./dist/types/commands/continue-merge.d.cts",
+        "default": "./dist/cjs/commands/continue-merge.cjs"
+      }
+    },
+    "./commands/describe": {
+      "import": {
+        "types": "./dist/types/commands/describe.d.ts",
+        "default": "./dist/esm/commands/describe.js"
+      },
+      "require": {
+        "types": "./dist/types/commands/describe.d.cts",
+        "default": "./dist/cjs/commands/describe.cjs"
+      }
+    },
+    "./commands/diff": {
+      "import": {
+        "types": "./dist/types/commands/diff.d.ts",
+        "default": "./dist/esm/commands/diff.js"
+      },
+      "require": {
+        "types": "./dist/types/commands/diff.d.cts",
+        "default": "./dist/cjs/commands/diff.cjs"
+      }
+    },
+    "./commands/fetch": {
+      "import": {
+        "types": "./dist/types/commands/fetch.d.ts",
+        "default": "./dist/esm/commands/fetch.js"
+      },
+      "require": {
+        "types": "./dist/types/commands/fetch.d.cts",
+        "default": "./dist/cjs/commands/fetch.cjs"
+      }
+    },
+    "./commands/fetch-missing": {
+      "import": {
+        "types": "./dist/types/commands/fetch-missing.d.ts",
+        "default": "./dist/esm/commands/fetch-missing.js"
+      },
+      "require": {
+        "types": "./dist/types/commands/fetch-missing.d.cts",
+        "default": "./dist/cjs/commands/fetch-missing.cjs"
+      }
+    },
+    "./commands/fsck": {
+      "import": {
+        "types": "./dist/types/commands/fsck.d.ts",
+        "default": "./dist/esm/commands/fsck.js"
+      },
+      "require": {
+        "types": "./dist/types/commands/fsck.d.cts",
+        "default": "./dist/cjs/commands/fsck.cjs"
+      }
+    },
+    "./commands/grep": {
+      "import": {
+        "types": "./dist/types/commands/grep.d.ts",
+        "default": "./dist/esm/commands/grep.js"
+      },
+      "require": {
+        "types": "./dist/types/commands/grep.d.cts",
+        "default": "./dist/cjs/commands/grep.cjs"
+      }
+    },
+    "./commands/init": {
+      "import": {
+        "types": "./dist/types/commands/init.d.ts",
+        "default": "./dist/esm/commands/init.js"
+      },
+      "require": {
+        "types": "./dist/types/commands/init.d.cts",
+        "default": "./dist/cjs/commands/init.cjs"
+      }
+    },
+    "./commands/log": {
+      "import": {
+        "types": "./dist/types/commands/log.d.ts",
+        "default": "./dist/esm/commands/log.js"
+      },
+      "require": {
+        "types": "./dist/types/commands/log.d.cts",
+        "default": "./dist/cjs/commands/log.cjs"
+      }
+    },
+    "./commands/merge": {
+      "import": {
+        "types": "./dist/types/commands/merge.d.ts",
+        "default": "./dist/esm/commands/merge.js"
+      },
+      "require": {
+        "types": "./dist/types/commands/merge.d.cts",
+        "default": "./dist/cjs/commands/merge.cjs"
+      }
+    },
+    "./commands/mv": {
+      "import": {
+        "types": "./dist/types/commands/mv.d.ts",
+        "default": "./dist/esm/commands/mv.js"
+      },
+      "require": {
+        "types": "./dist/types/commands/mv.d.cts",
+        "default": "./dist/cjs/commands/mv.cjs"
+      }
+    },
+    "./commands/name-rev": {
+      "import": {
+        "types": "./dist/types/commands/name-rev.d.ts",
+        "default": "./dist/esm/commands/name-rev.js"
+      },
+      "require": {
+        "types": "./dist/types/commands/name-rev.d.cts",
+        "default": "./dist/cjs/commands/name-rev.cjs"
+      }
+    },
+    "./commands/notes": {
+      "import": {
+        "types": "./dist/types/commands/notes.d.ts",
+        "default": "./dist/esm/commands/notes.js"
+      },
+      "require": {
+        "types": "./dist/types/commands/notes.d.cts",
+        "default": "./dist/cjs/commands/notes.cjs"
+      }
+    },
+    "./commands/pack-objects": {
+      "import": {
+        "types": "./dist/types/commands/pack-objects.d.ts",
+        "default": "./dist/esm/commands/pack-objects.js"
+      },
+      "require": {
+        "types": "./dist/types/commands/pack-objects.d.cts",
+        "default": "./dist/cjs/commands/pack-objects.cjs"
+      }
+    },
+    "./commands/pull": {
+      "import": {
+        "types": "./dist/types/commands/pull.d.ts",
+        "default": "./dist/esm/commands/pull.js"
+      },
+      "require": {
+        "types": "./dist/types/commands/pull.d.cts",
+        "default": "./dist/cjs/commands/pull.cjs"
+      }
+    },
+    "./commands/push": {
+      "import": {
+        "types": "./dist/types/commands/push.d.ts",
+        "default": "./dist/esm/commands/push.js"
+      },
+      "require": {
+        "types": "./dist/types/commands/push.d.cts",
+        "default": "./dist/cjs/commands/push.cjs"
+      }
+    },
+    "./commands/range-diff": {
+      "import": {
+        "types": "./dist/types/commands/range-diff.d.ts",
+        "default": "./dist/esm/commands/range-diff.js"
+      },
+      "require": {
+        "types": "./dist/types/commands/range-diff.d.cts",
+        "default": "./dist/cjs/commands/range-diff.cjs"
+      }
+    },
+    "./commands/read-file-at": {
+      "import": {
+        "types": "./dist/types/commands/read-file-at.d.ts",
+        "default": "./dist/esm/commands/read-file-at.js"
+      },
+      "require": {
+        "types": "./dist/types/commands/read-file-at.d.cts",
+        "default": "./dist/cjs/commands/read-file-at.cjs"
+      }
+    },
+    "./commands/rebase": {
+      "import": {
+        "types": "./dist/types/commands/rebase.d.ts",
+        "default": "./dist/esm/commands/rebase.js"
+      },
+      "require": {
+        "types": "./dist/types/commands/rebase.d.cts",
+        "default": "./dist/cjs/commands/rebase.cjs"
+      }
+    },
+    "./commands/reflog": {
+      "import": {
+        "types": "./dist/types/commands/reflog.d.ts",
+        "default": "./dist/esm/commands/reflog.js"
+      },
+      "require": {
+        "types": "./dist/types/commands/reflog.d.cts",
+        "default": "./dist/cjs/commands/reflog.cjs"
+      }
+    },
+    "./commands/remote": {
+      "import": {
+        "types": "./dist/types/commands/remote.d.ts",
+        "default": "./dist/esm/commands/remote.js"
+      },
+      "require": {
+        "types": "./dist/types/commands/remote.d.cts",
+        "default": "./dist/cjs/commands/remote.cjs"
+      }
+    },
+    "./commands/reset": {
+      "import": {
+        "types": "./dist/types/commands/reset.d.ts",
+        "default": "./dist/esm/commands/reset.js"
+      },
+      "require": {
+        "types": "./dist/types/commands/reset.d.cts",
+        "default": "./dist/cjs/commands/reset.cjs"
+      }
+    },
+    "./commands/rev-list": {
+      "import": {
+        "types": "./dist/types/commands/rev-list.d.ts",
+        "default": "./dist/esm/commands/rev-list.js"
+      },
+      "require": {
+        "types": "./dist/types/commands/rev-list.d.cts",
+        "default": "./dist/cjs/commands/rev-list.cjs"
+      }
+    },
+    "./commands/rev-parse": {
+      "import": {
+        "types": "./dist/types/commands/rev-parse.d.ts",
+        "default": "./dist/esm/commands/rev-parse.js"
+      },
+      "require": {
+        "types": "./dist/types/commands/rev-parse.d.cts",
+        "default": "./dist/cjs/commands/rev-parse.cjs"
+      }
+    },
+    "./commands/revert": {
+      "import": {
+        "types": "./dist/types/commands/revert.d.ts",
+        "default": "./dist/esm/commands/revert.js"
+      },
+      "require": {
+        "types": "./dist/types/commands/revert.d.cts",
+        "default": "./dist/cjs/commands/revert.cjs"
+      }
+    },
+    "./commands/rm": {
+      "import": {
+        "types": "./dist/types/commands/rm.d.ts",
+        "default": "./dist/esm/commands/rm.js"
+      },
+      "require": {
+        "types": "./dist/types/commands/rm.d.cts",
+        "default": "./dist/cjs/commands/rm.cjs"
+      }
+    },
+    "./commands/shortlog": {
+      "import": {
+        "types": "./dist/types/commands/shortlog.d.ts",
+        "default": "./dist/esm/commands/shortlog.js"
+      },
+      "require": {
+        "types": "./dist/types/commands/shortlog.d.cts",
+        "default": "./dist/cjs/commands/shortlog.cjs"
+      }
+    },
+    "./commands/show": {
+      "import": {
+        "types": "./dist/types/commands/show.d.ts",
+        "default": "./dist/esm/commands/show.js"
+      },
+      "require": {
+        "types": "./dist/types/commands/show.d.cts",
+        "default": "./dist/cjs/commands/show.cjs"
+      }
+    },
+    "./commands/sparse-checkout": {
+      "import": {
+        "types": "./dist/types/commands/sparse-checkout.d.ts",
+        "default": "./dist/esm/commands/sparse-checkout.js"
+      },
+      "require": {
+        "types": "./dist/types/commands/sparse-checkout.d.cts",
+        "default": "./dist/cjs/commands/sparse-checkout.cjs"
+      }
+    },
+    "./commands/stash": {
+      "import": {
+        "types": "./dist/types/commands/stash.d.ts",
+        "default": "./dist/esm/commands/stash.js"
+      },
+      "require": {
+        "types": "./dist/types/commands/stash.d.cts",
+        "default": "./dist/cjs/commands/stash.cjs"
+      }
+    },
+    "./commands/status": {
+      "import": {
+        "types": "./dist/types/commands/status.d.ts",
+        "default": "./dist/esm/commands/status.js"
+      },
+      "require": {
+        "types": "./dist/types/commands/status.d.cts",
+        "default": "./dist/cjs/commands/status.cjs"
+      }
+    },
+    "./commands/submodule": {
+      "import": {
+        "types": "./dist/types/commands/submodule.d.ts",
+        "default": "./dist/esm/commands/submodule.js"
+      },
+      "require": {
+        "types": "./dist/types/commands/submodule.d.cts",
+        "default": "./dist/cjs/commands/submodule.cjs"
+      }
+    },
+    "./commands/tag": {
+      "import": {
+        "types": "./dist/types/commands/tag.d.ts",
+        "default": "./dist/esm/commands/tag.js"
+      },
+      "require": {
+        "types": "./dist/types/commands/tag.d.cts",
+        "default": "./dist/cjs/commands/tag.cjs"
+      }
+    },
+    "./commands/whatchanged": {
+      "import": {
+        "types": "./dist/types/commands/whatchanged.d.ts",
+        "default": "./dist/esm/commands/whatchanged.js"
+      },
+      "require": {
+        "types": "./dist/types/commands/whatchanged.d.cts",
+        "default": "./dist/cjs/commands/whatchanged.cjs"
+      }
+    },
+    "./commands/worktree": {
+      "import": {
+        "types": "./dist/types/commands/worktree.d.ts",
+        "default": "./dist/esm/commands/worktree.js"
+      },
+      "require": {
+        "types": "./dist/types/commands/worktree.d.cts",
+        "default": "./dist/cjs/commands/worktree.cjs"
+      }
+    },
     "./commands/*": {
       "import": {
         "types": "./dist/types/commands/*.d.ts",
@@ -280,12 +780,13 @@
       "output": []
     },
     "check:types": {
-      "command": "tsc --noEmit",
+      "command": "tsc --noEmit -p tsconfig.typecheck.json",
       "files": [
         "src/**/*.ts",
         "test/**/*.ts",
         "tooling/**/*.ts",
-        "tsconfig.json"
+        "tsconfig.json",
+        "tsconfig.typecheck.json"
       ],
       "output": []
     },

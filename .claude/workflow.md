@@ -11,6 +11,7 @@ phases:
   planning:       { context: .claude/workflow/surface-gates.md }
   implementation: { context: [.claude/workflow/surface-gates.md, .claude/workflow/faithfulness.md] }
   review:         { context: .claude/workflow/surface-gates.md }
+  documentation:  { context: .claude/workflow/docs-drift.md }
   validation:     { override: .claude/workflow/mutation.md }
   integrate:      { merge-flags: "--admin", non-blocking-jobs: [mutation, benchmark-compare] }
 pr: { creator: session, pre-pr-gate: "npm outdated" }

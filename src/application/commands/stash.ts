@@ -66,6 +66,8 @@ import {
   wipMessage,
 } from './internal/stash-message.js';
 
+export type { ConflictType } from '../../domain/merge/index.js';
+
 export interface StashPushInput {
   readonly message?: string;
   readonly includeUntracked?: boolean;

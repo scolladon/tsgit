@@ -71,6 +71,8 @@ import {
 } from './internal/sequencer-state.js';
 import { revParse } from './rev-parse.js';
 
+export type { ConflictType } from '../../domain/merge/index.js';
+
 export interface CherryPickRunInput {
   /** Revisions to pick, in argument order — a commit-ish or an `A..B` range each. */
   readonly commits: ReadonlyArray<string>;

@@ -393,6 +393,40 @@ describe('Given an orphan commit subgraph (commit→tree→blob, all unreachable
   });
 });
 
+describe('Given two unreachable commits where the child references the parent (no ref to either)', () => {
+  describe('When fsck runs', () => {
+    it('Then the parent is unreachable but not dangling: the unreachable child still records its in-edge', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const treeId = await writeObject(ctx, makeTree([]));
+      const parentId = await writeObject(ctx, makeCommit(treeId, []));
+      const childId = await writeObject(ctx, makeCommit(treeId, [parentId]));
+      // No ref → both commits are unreachable, but the child's `parents` array
+      // still records an in-edge to the parent when the universe is scanned.
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert — the parent is unreachable ...
+      const unreachableIds = result.findings
+        .filter((f) => f.type === 'unreachable')
+        .map((f) => (f as { type: 'unreachable'; id: ObjectId }).id);
+      expect(unreachableIds).toContain(parentId);
+
+      // ... but NOT dangling: the child, though itself unreachable, is still
+      // scanned for out-edges, so the parent has an in-edge.
+      const danglingIds = result.findings
+        .filter((f) => f.type === 'dangling')
+        .map((f) => (f as { type: 'dangling'; id: ObjectId }).id);
+      expect(danglingIds).not.toContain(parentId);
+
+      // The child itself has no in-edge from anything: it is dangling.
+      expect(danglingIds).toContain(childId);
+      expect(result.exitCode).toBe(0);
+    });
+  });
+});
+
 // ---------------------------------------------------------------------------
 // MISSING — referenced oid absent from the object store
 // ---------------------------------------------------------------------------
@@ -6605,6 +6639,146 @@ describe('fsck — remote.promisor guard', () => {
         // Assert — the dangling blob is reported, but no config refusal fires
         expect(result.findings.some((f) => f.type === 'dangling')).toBe(true);
       });
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// STRUCTURAL PROJECTION — FIELD PRESERVATION
+//
+// The object cache stores a structural projection ({type} plus each type's
+// out-edge data) instead of the whole decoded GitObject. Each case below
+// pins one field the projection must carry through, asserting the FULL
+// findings array (not a filtered subset) plus the exit code: a projection
+// that silently drops the field it names changes the assembled array, not
+// just an isolated predicate.
+// ---------------------------------------------------------------------------
+
+describe('Given a shallow-boundary root commit whose true (unfetched) parent is absent from the universe', () => {
+  describe('When fsck runs', () => {
+    it('Then findings are exactly one root finding with a clean exit code — applyGraft must run on the full commit before its tree/parents out-edges are projected', async () => {
+      // Arrange — without graft-before-projection the boundary's raw parent
+      // oid would surface as a missing target plus a broken-link edge instead.
+      const ctx = await initBareCtx();
+      const missingParent = 'a'.repeat(40) as ObjectId;
+      const treeId = await writeObject(ctx, makeTree([]));
+      const boundaryId = await writeObject(ctx, makeCommit(treeId, [missingParent]));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${boundaryId}\n`);
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/shallow`, `${boundaryId}\n`);
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert — pins: projected commit's `tree` and `parents` fields, and
+      // that the parent list projected is the GRAFTED one.
+      expect(result.findings).toEqual([{ type: 'root', id: boundaryId }]);
+      expect(result.exitCode).toBe(0);
+    });
+  });
+});
+
+describe('Given a dangling loose tree with a duplicate entry name (full decode fails, stored header still recovers), connectivityOnly: true', () => {
+  describe('When fsck runs with connectivityOnly: true', () => {
+    it('Then the findings array carries the header-recovered type, not "unknown"', async () => {
+      // Arrange — buildObjectCache's primary readObject call throws
+      // INVALID_TREE_ENTRY (duplicate name), so the cache entry is null; the
+      // header-recovery probe still reads a valid `tree <size>\0` header from
+      // the same bytes, populating the `recovered` map with the real type.
+      // NOTE: on this path project() is never invoked — this case pins the
+      // unreadable/recovered-map behaviour that surrounds the projection, not
+      // a projected field; the three cases above carry the field-preservation
+      // load.
+      const ctx = await initBareCtx();
+      const entryA = 'b'.repeat(40) as ObjectId;
+      const entryB = 'c'.repeat(40) as ObjectId;
+      const treeId = await writeObject(
+        ctx,
+        makeTree([
+          { mode: FILE_MODE.REGULAR, name: 'dup.txt', id: entryA },
+          { mode: FILE_MODE.REGULAR, name: 'dup.txt', id: entryB },
+        ]),
+      );
+
+      // Act
+      const result = await fsck(ctx, { connectivityOnly: true });
+
+      // Assert — pins: `null` (unreadable) versus present in the cache, and
+      // resolveObjectType's `recovered`-map fallback for a null entry.
+      expect(result.findings).toEqual([
+        { type: 'unreachable', id: treeId, objectType: 'tree' },
+        { type: 'dangling', id: treeId, objectType: 'tree' },
+      ]);
+      expect(result.exitCode).toBe(0);
+    });
+  });
+});
+
+describe('Given a tree carrying a GITLINK entry whose target commit is absent from the universe', () => {
+  describe('When fsck runs', () => {
+    it('Then findings are exactly one root finding with a clean exit code — entry.mode must survive the projection so the walk skips the gitlink edge', async () => {
+      // Arrange — without `mode` surviving the projection, recordOutEdges and
+      // processTree could no longer tell GITLINK apart from a regular entry,
+      // and the gitlink target would surface as missing plus a broken-link.
+      const ctx = await initBareCtx();
+      const submoduleCommitId = '9'.repeat(40) as ObjectId;
+      const treeId = await writeObject(
+        ctx,
+        makeTree([{ mode: FILE_MODE.GITLINK, name: 'vendor', id: submoduleCommitId }]),
+      );
+      const commitId = await writeObject(ctx, makeCommit(treeId, []));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      expect(result.findings).toEqual([{ type: 'root', id: commitId }]);
+      expect(result.exitCode).toBe(0);
+    });
+  });
+});
+
+describe('Given a .gitmodules blob with a disallowed URL nested below the root tree', () => {
+  describe('When fsck runs', () => {
+    it('Then the findings array carries the gitmodulesUrl bad-object finding — entry.name must survive the projection for buildBlobFilenameMap', async () => {
+      // Arrange — without `name` surviving the projection, buildBlobFilenameMap
+      // could not recognise the blob as `.gitmodules` at any tree depth, and
+      // the content-validation pass would never dispatch the gitmodules checks.
+      const ctx = await initBareCtx();
+      const gitmodulesContent = enc.encode(
+        '[submodule "evil"]\n\tpath = evil\n\turl = --upload-pack=evil\n',
+      );
+      const blobId = await writeObject(ctx, {
+        type: 'blob' as const,
+        id: '' as ObjectId,
+        content: gitmodulesContent,
+      });
+      const subTreeId = await writeObject(
+        ctx,
+        makeTree([{ mode: FILE_MODE.REGULAR, name: '.gitmodules', id: blobId }]),
+      );
+      const rootTreeId = await writeObject(
+        ctx,
+        makeTree([{ mode: FILE_MODE.DIRECTORY, name: 'sub', id: subTreeId }]),
+      );
+      const commitId = await writeObject(ctx, makeCommit(rootTreeId, []));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      expect(result.findings).toEqual([
+        {
+          type: 'bad-object',
+          id: blobId,
+          objectType: 'blob',
+          msgId: 'gitmodulesUrl',
+          severity: 'error',
+        },
+        { type: 'root', id: commitId },
+      ]);
+      expect(result.exitCode).toBe(1);
     });
   });
 });

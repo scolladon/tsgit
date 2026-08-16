@@ -51,9 +51,18 @@ interface LoadedGraph {
 // at most once per repo lifetime — mirrors `registryCache` in read-object.ts.
 const graphCache = new WeakMap<Context, Promise<LoadedGraph | undefined>>();
 
+// Entry cap mirrors `DEFAULT_DELTA_CACHE_ENTRIES` (`src/index.node.ts`) — the
+// repo's existing bound for a per-repository memo cache, reused here rather
+// than inventing a second magic number.
+const HEADER_CACHE_MAX_ENTRIES = 65_536;
+
 // Per-Repository resolved-header cache (oid → header), populated as the graph
 // is consulted. Cheap: avoids repeating the cross-layer position arithmetic
-// for an oid every walk in the repo's lifetime re-visits.
+// for an oid every walk in the repo's lifetime re-visits. Entry-capped
+// (`HEADER_CACHE_MAX_ENTRIES`) so a full-history walk on a very large repo
+// cannot retain one entry per commit forever — eviction is hazard-free
+// because a miss is always re-derivable from `graph` (already parsed, held
+// by `graphCache`) with zero further `ctx.fs` calls.
 //
 // Cannot serve a header computed under a stale shallow-gate verdict: every
 // entry is populated by `commitHeader` only after `loadGraph(ctx)` resolves,
@@ -64,7 +73,29 @@ const graphCache = new WeakMap<Context, Promise<LoadedGraph | undefined>>();
 // same "stale per-Context cache" class as a graph rewritten mid-`Context` —
 // already covered by the "construct a fresh `Context` after every write"
 // discipline this module's other caches rely on; it is not a new hazard.
+// Insertion-order (FIFO) bound over a plain Map rather than an LRU: a
+// commit-graph walk touches each oid roughly once, so recency ordering never
+// repays its per-entry node bookkeeping — at the cap that bookkeeping alone
+// costs ~2 MiB. Map iteration order is insertion order, so evicting
+// `keys().next()` drops the oldest entry in O(1) with zero extra structure.
 const headerCache = new WeakMap<Context, Map<ObjectId, CommitHeader>>();
+
+/**
+ * Insert into an insertion-order-bounded Map: when the map is at `cap`,
+ * evict the oldest entry (Map iteration order is insertion order) before
+ * inserting. Overwriting an existing key never evicts — the size does not
+ * grow. Precondition: `cap >= 1` — a full map always has a first key, so the
+ * eviction loop always finds one and breaks.
+ */
+export function insertBounded<K, V>(map: Map<K, V>, cap: number, key: K, value: V): void {
+  if (!map.has(key) && map.size >= cap) {
+    for (const oldest of map.keys()) {
+      map.delete(oldest);
+      break;
+    }
+  }
+  map.set(key, value);
+}
 
 function isFileNotFound(error: unknown): boolean {
   return error instanceof TsgitError && error.data.code === 'FILE_NOT_FOUND';
@@ -191,7 +222,7 @@ function loadGraph(ctx: Context): Promise<LoadedGraph | undefined> {
 function getHeaderCache(ctx: Context): Map<ObjectId, CommitHeader> {
   let cache = headerCache.get(ctx);
   if (cache === undefined) {
-    cache = new Map();
+    cache = new Map<ObjectId, CommitHeader>();
     headerCache.set(ctx, cache);
   }
   return cache;
@@ -273,7 +304,7 @@ export async function commitHeader(ctx: Context, id: ObjectId): Promise<CommitHe
       committerDate: data.committerDate,
       generation: data.generation,
     };
-    cache.set(id, header);
+    insertBounded(cache, HEADER_CACHE_MAX_ENTRIES, id, header);
     return header;
   } catch (error) {
     // A parsed-but-internally-inconsistent graph (out-of-range parent

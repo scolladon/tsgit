@@ -57,6 +57,8 @@ import {
   resolvePathspec,
 } from './internal/resolve-pathspec.js';
 
+export type { AttributeProvider } from '../primitives/internal/read-gitattributes.js';
+
 const INDEX_MISSING_CODES = new Set([
   'FILE_NOT_FOUND',
   'INVALID_INDEX_HEADER',
