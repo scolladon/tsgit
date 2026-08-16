@@ -13,11 +13,9 @@ import {
   unsupportedOperation,
 } from '../../domain/index.js';
 import { createLruCache } from '../../domain/storage/lru-cache.js';
-import type { EnvReader } from '../../ports/env-reader.js';
 import type { DirEntry, FileHandle, FileStat, FileSystem } from '../../ports/file-system.js';
 import type { FsOperations } from './fs-operations.js';
 import { realFsOps } from './fs-operations.js';
-import { NodeEnvReader } from './node-env-reader.js';
 import type { PathPolicy } from './path-policy.js';
 import { nativePolicy } from './path-policy.js';
 
@@ -65,33 +63,6 @@ function unionRootPrefixes(
 }
 
 const REMOVE_TREE_CONCURRENCY = 8;
-
-const ENV_BOOLEAN_TRUE_WORDS: ReadonlySet<string> = new Set(['true', 'yes', 'on']);
-const ENV_BOOLEAN_FALSE_WORDS: ReadonlySet<string> = new Set(['false', 'no', 'off']);
-
-/**
- * git's `git_env_bool` grammar for a boolean environment variable — the same
- * recognised words as a boolean config value, case-insensitive, else a
- * signed integer (non-zero is true; `0x`/leading-zero forms included).
- * Unset or empty is false. Pinned empirically against git 2.55.0.
- *
- * git itself dies with "bad boolean environment value" on an unparseable
- * value; this treats that case as false (not set) instead — a narrow
- * leniency short of git's own fatal refusal, chosen so a garbled
- * `GIT_CONFIG_NOSYSTEM` cannot itself crash every repository operation.
- *
- * @internal
- */
-export function isEnvBooleanTrue(raw: string | undefined): boolean {
-  if (raw === undefined || raw === '') return false;
-  const lowered = raw.toLowerCase();
-  if (ENV_BOOLEAN_TRUE_WORDS.has(lowered)) return true;
-  if (ENV_BOOLEAN_FALSE_WORDS.has(lowered)) return false;
-  // No radix: parseInt auto-detects a `0x`/`0X` prefix as hex and otherwise
-  // reads decimal digits (leading zeros are NOT octal, matching `007` => 7).
-  const asInt = Number.parseInt(raw);
-  return Number.isFinite(asInt) && asInt !== 0;
-}
 
 /**
  * Numeric `open`/`writeFile` flags for the write guard's W2 leaf no-follow:
@@ -441,13 +412,6 @@ export class NodeFileSystem implements FileSystem {
   private readonly rootsArePreResolved: boolean;
 
   /**
-   * Reader for the process environment, consulted by `systemConfigPath()`
-   * for `GIT_CONFIG_NOSYSTEM`. Injectable so tests can simulate the variable
-   * without mutating real process state.
-   */
-  private readonly envReader: EnvReader;
-
-  /**
    * Memoised realpath of an *existing* parent directory, keyed by the raw
    * (pre-realpath) parent path. Every write surface shares this one cache
    * via `realpathForCreation`: a clone/checkout writing N files into the
@@ -502,7 +466,6 @@ export class NodeFileSystem implements FileSystem {
     pathPolicy: PathPolicy = nativePolicy,
     fsOps: FsOperations = realFsOps,
     rootsArePreResolved = false,
-    envReader: EnvReader = new NodeEnvReader(),
   ) {
     const roots = typeof rootDir === 'string' ? [rootDir] : rootDir;
     const [primary] = roots;
@@ -517,7 +480,6 @@ export class NodeFileSystem implements FileSystem {
     this.pathPolicy = pathPolicy;
     this.fsOps = fsOps;
     this.rootsArePreResolved = rootsArePreResolved;
-    this.envReader = envReader;
   }
 
   /**
@@ -1076,11 +1038,6 @@ export class NodeFileSystem implements FileSystem {
   }
 
   systemConfigPath(): string {
-    // git suppresses the system config file ENTIRELY when this is set — not
-    // a fallback to some other file. An empty path is already the adapter's
-    // "unresolved" signal (`resolveScopePath` throws `configSystemPathUnresolved`
-    // on it), so returning `''` reuses that existing mechanism verbatim.
-    if (isEnvBooleanTrue(this.envReader.get('GIT_CONFIG_NOSYSTEM'))) return '';
     if (process.platform === 'win32') {
       const programData = process.env.ProgramData ?? 'C:\\ProgramData';
       return `${programData}\\Git\\config`;
