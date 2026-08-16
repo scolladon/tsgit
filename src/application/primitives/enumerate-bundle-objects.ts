@@ -28,14 +28,11 @@ import { treeDepthExceeded } from '../../domain/objects/error.js';
 import { type FileMode, isDirectory, type ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import { type EmitState, resolveTagChain, tryEmit } from './internal/object-emit.js';
+import { resolveMaxTreeDepth } from './internal/resolve-max-tree-depth.js';
 import { readObject } from './read-object.js';
 import { MAX_PUSH_OBJECTS } from './types.js';
 import { isGitlink } from './validators.js';
 import { walkCommits } from './walk-commits.js';
-
-// Same bound as walk-tree.ts's default maxDepth — prevents stack overflow on
-// pathologically deep tree structures.
-const MAX_TREE_DEPTH = 1024;
 
 export interface EnumerateBundleObjectsInput {
   /** Positive endpoint oids — commits or annotated tags. */
@@ -74,16 +71,22 @@ interface BundleEmitState extends EmitState {
 // No per-walk flat-entry cap is applied here: this is a prepass over LOCAL
 // repo objects on the create path, and the PACK_TOO_LARGE guard in tryEmit
 // already bounds the total number of emitted (interesting) objects.
+//
+// This descent was measured honouring `core.maxTreeDepth` to at least
+// 100000 (2026-08-15): a fixture one level past a cap of 100000 refuses cleanly
+// with `TREE_DEPTH_EXCEEDED` at depth 100001. Deeper than that is
+// unmeasured — no raw stack overflow was observed at any depth tried.
 const collectTreeObjects = async (
   ctx: Context,
   treeId: ObjectId,
   objects: Set<ObjectId>,
   seenTrees: Set<ObjectId>,
+  maxDepth: number,
   depth = 0,
 ): Promise<void> => {
   if (seenTrees.has(treeId)) return;
   seenTrees.add(treeId);
-  if (depth > MAX_TREE_DEPTH) throw treeDepthExceeded(depth);
+  if (depth > maxDepth) throw treeDepthExceeded(depth);
   // Stryker disable next-line ConditionalExpression: equivalent — resolveObject calls checkAborted at the start of every read, so the unconditional readObject two lines below throws the identical OPERATION_ABORTED
   if (ctx.signal?.aborted) throw operationAborted();
   objects.add(treeId);
@@ -97,7 +100,7 @@ const collectTreeObjects = async (
       objects.add(entry.id);
       continue;
     }
-    await collectTreeObjects(ctx, entry.id, objects, seenTrees, depth + 1);
+    await collectTreeObjects(ctx, entry.id, objects, seenTrees, maxDepth, depth + 1);
   }
 };
 
@@ -105,17 +108,23 @@ const collectTreeObjects = async (
 // `uninteresting`. Subtrees already in `seenTrees` are skipped — either all
 // their objects are already in `uninteresting` (nothing to emit) or they were
 // already emitted during an earlier commit's walk.
+//
+// This descent was measured honouring `core.maxTreeDepth` to at least
+// 100000 (2026-08-15): a fixture one level past a cap of 100000 refuses cleanly
+// with `TREE_DEPTH_EXCEEDED` at depth 100001. Deeper than that is
+// unmeasured — no raw stack overflow was observed at any depth tried.
 const emitTreeObjects = async (
   ctx: Context,
   treeId: ObjectId,
   uninteresting: Set<ObjectId>,
   state: BundleEmitState,
   seenTrees: Set<ObjectId>,
+  maxDepth: number,
   depth = 0,
 ): Promise<void> => {
   if (seenTrees.has(treeId)) return;
   seenTrees.add(treeId);
-  if (depth > MAX_TREE_DEPTH) throw treeDepthExceeded(depth);
+  if (depth > maxDepth) throw treeDepthExceeded(depth);
   // Stryker disable next-line ConditionalExpression: equivalent — resolveObject calls checkAborted at the start of every read, so the unconditional readObject two lines below throws the identical OPERATION_ABORTED
   if (ctx.signal?.aborted) throw operationAborted();
   // Stryker disable next-line ConditionalExpression: equivalent — every uninteresting tree was collected into seenTrees during the haves phase, so the seenTrees guard at the top returns first; !uninteresting.has(treeId) is always true when this line is reached
@@ -126,7 +135,7 @@ const emitTreeObjects = async (
     if (isGitlink(entry.mode)) continue;
     // equivalent-mutant: ConditionalExpression→true — all entries recurse into emitTreeObjects; blobs are emitted via the tryEmit call at the top of the recursive invocation before the type-check return; final emitted set is identical
     if (isDirectory(entry.mode as FileMode)) {
-      await emitTreeObjects(ctx, entry.id, uninteresting, state, seenTrees, depth + 1);
+      await emitTreeObjects(ctx, entry.id, uninteresting, state, seenTrees, maxDepth, depth + 1);
       continue;
     }
     if (!uninteresting.has(entry.id)) tryEmit(state, entry.id);
@@ -137,6 +146,7 @@ const collectUninteresting = async (
   ctx: Context,
   haves: ReadonlyArray<ObjectId>,
   seenTrees: Set<ObjectId>,
+  maxDepth: number,
 ): Promise<UninterestingClosure> => {
   const commits = new Set<ObjectId>();
   const objects = new Set<ObjectId>();
@@ -144,7 +154,7 @@ const collectUninteresting = async (
   for await (const commit of walkCommits(ctx, { from: haves, ignoreMissing: true })) {
     commits.add(commit.id);
     objects.add(commit.id);
-    await collectTreeObjects(ctx, commit.data.tree, objects, seenTrees);
+    await collectTreeObjects(ctx, commit.data.tree, objects, seenTrees, maxDepth);
   }
   return { commits, objects };
 };
@@ -155,6 +165,7 @@ const walkInteresting = async (
   uninteresting: UninterestingClosure,
   state: BundleEmitState,
   seenTrees: Set<ObjectId>,
+  maxDepth: number,
 ): Promise<void> => {
   for await (const commit of walkCommits(ctx, {
     from: seeds,
@@ -162,7 +173,7 @@ const walkInteresting = async (
     ignoreMissing: true,
   })) {
     tryEmit(state, commit.id);
-    await emitTreeObjects(ctx, commit.data.tree, uninteresting.objects, state, seenTrees);
+    await emitTreeObjects(ctx, commit.data.tree, uninteresting.objects, state, seenTrees, maxDepth);
     for (const parent of commit.data.parents) {
       if (uninteresting.commits.has(parent)) state.boundary.add(parent);
     }
@@ -174,13 +185,14 @@ export const enumerateBundleObjects = async (
   input: EnumerateBundleObjectsInput,
 ): Promise<BundleObjectClosure> => {
   if (input.wants.length === 0) return { objects: [], boundary: [] };
+  const maxDepth = await resolveMaxTreeDepth(ctx);
   const state: BundleEmitState = {
     emitted: new Set<ObjectId>(),
     boundary: new Set<ObjectId>(),
     cap: input.maxObjects ?? MAX_PUSH_OBJECTS,
   };
   const seenTrees = new Set<ObjectId>();
-  const uninteresting = await collectUninteresting(ctx, input.haves, seenTrees);
+  const uninteresting = await collectUninteresting(ctx, input.haves, seenTrees, maxDepth);
   const seeds: ObjectId[] = [];
   for (const want of input.wants) {
     seeds.push(
@@ -189,6 +201,6 @@ export const enumerateBundleObjects = async (
       }),
     );
   }
-  await walkInteresting(ctx, seeds, uninteresting, state, seenTrees);
+  await walkInteresting(ctx, seeds, uninteresting, state, seenTrees, maxDepth);
   return { objects: [...state.emitted], boundary: [...state.boundary] };
 };

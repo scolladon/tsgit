@@ -13,6 +13,7 @@ import type { Context } from '../../ports/context.js';
 import { readBlob, readIndex, walkTree } from '../primitives/index.js';
 import { boundedMap, MAX_CONCURRENT_OBJECT_LOADS } from '../primitives/internal/bounded-map.js';
 import { joinPath } from '../primitives/internal/join-working-tree-path.js';
+import { assertOperationalRepository } from './internal/repo-state.js';
 import { resolvePathspec } from './internal/resolve-pathspec.js';
 import { resolveTreeish } from './internal/resolve-rev.js';
 
@@ -163,6 +164,11 @@ function scanBlob(
 }
 
 export async function grep(ctx: Context, opts: GrepOptions): Promise<GrepResult> {
+  // Repository state is checked BEFORE the argument guard, because that is the
+  // order git refuses in: `git grep` with no pattern, in a repository whose
+  // config is malformed, reports the config fault rather than the missing
+  // pattern — git parses config at startup, before validating arguments.
+  await assertOperationalRepository(ctx);
   if (opts.patterns.length === 0) {
     throw invalidOption('patterns', 'at least one pattern required');
   }

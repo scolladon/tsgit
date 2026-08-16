@@ -92,6 +92,64 @@ describe('Given no patterns, When grep is called', () => {
   });
 });
 
+// ─── Guard: the eager config gate runs before the patterns check ────────────
+
+describe('Given a malformed config and no pattern supplied, When grep is called', () => {
+  it('Then it reports the config fault, not the missing pattern', async () => {
+    // Arrange — measured against real git: `git grep` with no pattern, in a
+    // repository carrying an invalid core.maxTreeDepth, exits 128 with the
+    // config error, because git parses config at startup before it validates
+    // arguments. Both guards apply to this input, so this pins their ORDER.
+    const ctx = createMemoryContext();
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tmaxTreeDepth = 2.5\n');
+
+    // Act
+    let caught: unknown;
+    try {
+      await grep(ctx, { patterns: [] });
+    } catch (e) {
+      caught = e;
+    }
+
+    // Assert
+    expect(caught).toBeInstanceOf(TsgitError);
+    const data = (caught as TsgitError).data as { code: string; reason: string };
+    expect(data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+    expect(data.reason).toBe('invalid unit');
+  });
+});
+
+describe('Given a repository whose config holds an invalid core.maxTreeDepth, When grep is called', () => {
+  it('Then it throws CONFIG_BAD_NUMERIC_VALUE with reason invalid unit', async () => {
+    // Arrange
+    const ctx = createMemoryContext();
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tmaxTreeDepth = 2.5\n');
+
+    // Act
+    let caught: unknown;
+    try {
+      await grep(ctx, { patterns: [{ fixed: 'needle' }] });
+    } catch (e) {
+      caught = e;
+    }
+
+    // Assert
+    expect(caught).toBeInstanceOf(TsgitError);
+    const data = (caught as TsgitError).data as {
+      readonly code: string;
+      readonly key: string;
+      readonly value: string;
+      readonly reason: string;
+    };
+    expect(data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+    expect(data.key).toBe('core.maxtreedepth');
+    expect(data.value).toBe('2.5');
+    expect(data.reason).toBe('invalid unit');
+  });
+});
+
 // ─── Guard: u-flag propagates from matcher ────────────────────────────────────
 
 describe('Given a u-flagged RegExp pattern, When grep is called', () => {
@@ -885,6 +943,7 @@ describe('Given an index with a stage-1 conflict entry, When grep runs with defa
   it('Then the conflict entry is skipped (stage≠0 filter)', async () => {
     // Arrange — use buildSeededContext to get an initialized repo, then plant a custom index
     const ctx = await buildSeededContext();
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
     // Write the working-tree file so it exists
     await ctx.fs.mkdir(ctx.layout.workDir);
     await ctx.fs.writeUtf8(`${ctx.layout.workDir}/conflict.txt`, 'needle\n');
@@ -908,6 +967,7 @@ describe('Given an index with a symlink-mode entry (120000), When grep runs with
   it('Then the symlink entry is skipped (mode filter in working-tree enumeration)', async () => {
     // Arrange
     const ctx = await buildSeededContext();
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
     await ctx.fs.mkdir(ctx.layout.workDir);
     await ctx.fs.writeUtf8(`${ctx.layout.workDir}/link.txt`, 'needle\n');
     const index: GitIndex = {
@@ -932,6 +992,7 @@ describe('Given an index with a stage-2 conflict entry, When grep runs with targ
   it('Then the conflict entry is skipped (stage===0 filter on index enumeration)', async () => {
     // Arrange
     const ctx = await buildSeededContext();
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
     const index: GitIndex = {
       version: 2,
       entries: [makeEntry('conflict.txt', { stage: 2 })],
@@ -985,6 +1046,7 @@ describe('Given an index with a gitlink-mode entry (160000), When grep runs with
   it('Then the gitlink entry is skipped (mode filter on index enumeration)', async () => {
     // Arrange
     const ctx = await buildSeededContext();
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
     const index: GitIndex = {
       version: 2,
       entries: [makeEntry('sub', { mode: FILE_MODE.GITLINK })],

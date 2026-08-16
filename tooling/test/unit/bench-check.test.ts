@@ -12,7 +12,11 @@ import {
 } from '../../bench-check.js';
 import type { SnapshotEntry } from '../../bench-to-snapshot.js';
 
-const entry = (name: string, value: number): SnapshotEntry => ({ name, unit: 'ms', value });
+const entry = (name: string, value: number): SnapshotEntry => ({
+  name,
+  unit: 'ms',
+  value,
+});
 
 describe('bestOfRounds', () => {
   describe('Given several rounds measuring the same scenario', () => {

@@ -56,10 +56,14 @@ interface ArchiveEntry {
   `result.commitTime` holds the committer epoch seconds. Serializers use
   `commitTime` as the default archive entry mtime. Both are absent (`undefined`)
   when `treeish` is a raw tree oid.
-- **Refusals match git** (thrown before the stream is opened):
+- **Refusals match git** (thrown before the stream is opened, except where noted):
   - Outside a repository → `NOT_A_REPOSITORY`.
+  - An invalid `[core]` value (`core.maxTreeDepth`, `core.loosecompression` / `core.compression`, or another eager-gate key) → `CONFIG_BAD_NUMERIC_VALUE` / `CONFIG_BAD_ZLIB_LEVEL` / `CONFIG_MISSING_VALUE` / `CONFIG_BAD_BOOLEAN_VALUE`, matching git's own eager `[core]` validation (see [`errors.md`](../errors.md)).
   - Unresolvable treeish (unborn HEAD, bad ref) → from `revParse`.
   - Treeish resolves to a blob → `UNEXPECTED_OBJECT_TYPE`.
+  - (Not pre-stream — see below.) A tree past `core.maxTreeDepth` → `TREE_DEPTH_EXCEEDED`. `archive` had **no** depth refusal at any input before this change — git caps `archive`'s traversal exactly like every other traversal (`git archive --format=tar` on a tree past the cap exits 128). Its `maxEntries` override is unrelated and stays: git does **not** cap `archive`'s entry count, only its depth, so `archive` passes `walkTree` an effectively-unbounded `maxEntries` while leaving `maxDepth` at `walkTree`'s own `core.maxTreeDepth` default.
+
+  **This one refusal is raised while the entry stream is consumed, not before it is opened.** `archive` returns `entries` as a lazy async generator, so the depth guard fires on the iteration that reaches the offending level. A caller that awaits `archive(...)` inside a `try` but iterates `entries` outside it will see the refusal escape as an unhandled rejection — iterate inside the `try`.
 
 ## Examples
 
@@ -99,9 +103,11 @@ console.log(tagResult.commitTime); // <committer epoch>
 ## Throws
 
 - `NOT_A_REPOSITORY` — `cwd` (or `gitDir`) does not point inside a git repository.
+- `CONFIG_BAD_NUMERIC_VALUE` / `CONFIG_BAD_ZLIB_LEVEL` / `CONFIG_MISSING_VALUE` / `CONFIG_BAD_BOOLEAN_VALUE` — an invalid `[core]` entry, reached through the same eager operational gate every other operational command reads (see [`errors.md`](../errors.md)); includes an invalid `core.maxTreeDepth`.
 - `OBJECT_NOT_FOUND` — `treeish` is an unresolvable ref name, an unborn HEAD, or an abbreviated oid that matches no object.
 - `REVPARSE_UNRESOLVED` — `treeish` uses a reflog-selector form (`@{n}`, `@{date}`) that cannot be resolved (e.g. empty reflog).
 - `UNEXPECTED_OBJECT_TYPE` — `treeish` resolves to a blob; only tree, commit, and tag are accepted.
+- `TREE_DEPTH_EXCEEDED` — the tree exceeds `core.maxTreeDepth` (default 2048). Newly refused by this version — `archive` previously imposed no depth cap at any input.
 
 ## Serializers
 

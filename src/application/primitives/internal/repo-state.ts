@@ -31,6 +31,7 @@ import {
   findFirstInvalidCompression,
   findFirstInvalidLogAllRefUpdates,
   findFirstValuelessEntry,
+  findLastInvalidMaxTreeDepth,
   type InvalidBooleanEntry,
   type InvalidCompressionEntry,
   readConfig,
@@ -123,21 +124,42 @@ const throwEagerCandidate = (candidate: EagerCandidate): never => {
  * Refuse when a `[core]` path-like (`excludesfile`/`attributesfile`) is
  * present-but-valueless, when a compression key (`loosecompression`/
  * `compression`) is present with any invalid value (valueless, bad integer,
- * or integer outside zlib's `-1..9`), or when a boolean key
+ * or integer outside zlib's `-1..9`), when a boolean key
  * (`core.sparseCheckout`, `core.sparseCheckoutCone`, `core.logAllRefUpdates`,
  * or any `[diff *]` subsection's `cachetextconv`) holds a value git's boolean
- * grammar refuses — mirroring git's eager `git_default_config` validation,
- * which dies on the operational surface while the `config` porcelain
- * (`assertRepository` alone) survives. `hookspath` is NOT in this broad set:
- * it dies on a narrower surface.
+ * grammar refuses, or when `core.maxTreeDepth` resolves to an invalid value —
+ * mirroring git's eager `git_default_config` validation, which dies on the
+ * operational surface while the `config` porcelain (`assertRepository`
+ * alone) survives. `hookspath` is NOT in this broad set: it dies on a
+ * narrower surface.
  *
- * Cross-class ordering: run all five finders in parallel and throw the
- * LOWEST-line entry's shape — string (`CONFIG_MISSING_VALUE`), compression
- * (`CONFIG_BAD_NUMERIC_VALUE` / `CONFIG_BAD_ZLIB_LEVEL`), or boolean
- * (`CONFIG_BAD_BOOLEAN_VALUE`). No-op when every class is valid or absent.
+ * `core.maxTreeDepth` is checked FIRST, unconditionally, ahead of the
+ * five-way line-ordered reduction below, and is thrown before that
+ * reduction ever runs — it is not a `pickLowerLine` candidate. Every other
+ * key here dies on its first malformed occurrence, because git observes
+ * each config line once through its streaming `git_default_config`
+ * callback, so "lowest line wins" is a faithful proxy for "first
+ * encountered". `core.maxTreeDepth` is different: git resolves it through
+ * its cached config-set lookup, which is last-wins on the EFFECTIVE value —
+ * an earlier malformed line that a later valid line overrides is never
+ * observed, and conversely an earlier valid line can be overridden by a
+ * later malformed one regardless of what other classes occupy the lines in
+ * between. That validation model cannot be folded into a line-position
+ * comparison against the other five classes, so `core.maxTreeDepth` is
+ * resolved and, if invalid, thrown separately before they are even
+ * consulted. This ordering is PINNED against measured git behaviour (a
+ * malformed `core.loosecompression` or `core.sparseCheckout` on an earlier
+ * line still loses to `core.maxTreeDepth`), not a stylistic choice.
+ *
+ * Cross-class ordering (the remaining five): run all five finders in
+ * parallel and throw the LOWEST-line entry's shape — string
+ * (`CONFIG_MISSING_VALUE`), compression (`CONFIG_BAD_NUMERIC_VALUE` /
+ * `CONFIG_BAD_ZLIB_LEVEL`), or boolean (`CONFIG_BAD_BOOLEAN_VALUE`). No-op
+ * when every class is valid or absent.
  */
 export const assertEagerConfigValid = async (ctx: Context): Promise<void> => {
-  const [str, comp, boolCore, logAllRefUpdates, boolDiff] = await Promise.all([
+  const [maxTreeDepth, str, comp, boolCore, logAllRefUpdates, boolDiff] = await Promise.all([
+    findLastInvalidMaxTreeDepth(ctx),
     findFirstValuelessEntry(ctx, 'core', undefined, CORE_STRING_KEYS),
     findFirstInvalidCompression(ctx),
     findFirstInvalidBoolean(ctx, 'core', undefined, CORE_BOOLEAN_KEYS),
@@ -146,6 +168,14 @@ export const assertEagerConfigValid = async (ctx: Context): Promise<void> => {
     // per-driver), so only subsectioned entries can refuse here.
     findFirstInvalidBooleanInSection(ctx, 'diff', DIFF_BOOLEAN_KEYS, { requireSubsection: true }),
   ]);
+  if (maxTreeDepth !== undefined) {
+    throw configBadNumericValue(
+      maxTreeDepth.key,
+      maxTreeDepth.source,
+      maxTreeDepth.value,
+      maxTreeDepth.reason,
+    );
+  }
   const candidates: ReadonlyArray<EagerCandidate | undefined> = [
     str === undefined ? undefined : { kind: 'valueless', line: str.line, entry: str },
     comp === undefined ? undefined : { kind: 'compression', line: comp.line, entry: comp },

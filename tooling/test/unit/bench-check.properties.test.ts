@@ -8,7 +8,11 @@ import { gatedEntrySetArb } from './arbitraries.js';
 const THRESHOLD_PCT = 10;
 const EPSILON = 1;
 
-const entry = (name: string, value: number): SnapshotEntry => ({ name, unit: 'ms', value });
+const entry = (name: string, value: number): SnapshotEntry => ({
+  name,
+  unit: 'ms',
+  value,
+});
 
 describe('Given an arbitrary gated entry set', () => {
   describe('When base and current are both empty', () => {

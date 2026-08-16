@@ -31,6 +31,11 @@
  * single mutable `Counter`, threaded through and back to the caller (see
  * `diff-trees.ts`), so ONE `diffRecursive` call spends ONE total entry
  * budget across every subtree it expands, not one fresh budget per subtree.
+ *
+ * This descent was measured honouring `core.maxTreeDepth` to at least
+ * 15000 (2026-08-15): a fixture one level past a cap of 15000 refuses cleanly
+ * with `TREE_DEPTH_EXCEEDED` at depth 15001. Deeper than that is
+ * unmeasured — no raw stack overflow was observed at any depth tried.
  */
 import { operationAborted } from '../../../domain/error.js';
 import {
@@ -115,7 +120,7 @@ export async function walkRawSubtree(
 ): Promise<void> {
   const content = await readRawTreeById(ctx, root);
   const config: WalkConfig = { ctx, bounds, limiter, emit };
-  await walkLevel(config, counter, content, root, prefix, 0, []);
+  await walkLevel(config, counter, content, root, prefix, 0, new Set());
 }
 
 async function walkLevel(
@@ -125,11 +130,20 @@ async function walkLevel(
   id: ObjectId,
   prefix: string,
   depth: number,
-  stack: ReadonlyArray<ObjectId>,
+  stack: Set<ObjectId>,
 ): Promise<void> {
-  if (stack.includes(id)) throw treeCycleDetected(id);
+  if (stack.has(id)) throw treeCycleDetected(id);
   if (exceedsMaxTreeDepth(depth, config.bounds.maxDepth)) throw treeDepthExceeded(depth);
-  const descentStack = [...stack, id];
+  // `stack` is the single root-to-current path, owned by the entry point and
+  // mutated as the descent moves: added here, removed when this level returns.
+  // Deliberately not a fresh per-level copy — rebuilding one at every level
+  // costs O(depth^2) live pointers, which turns a deep descent into heap
+  // exhaustion (an uncatchable abort) instead of the typed refusal the depth
+  // cap exists to produce. The cap is a user-supplied config value with no
+  // internal ceiling, so that wall would be reachable by configuration alone.
+  // The delete is what keeps two siblings sharing one subtree oid from
+  // reading as a cycle.
+  stack.add(id);
   // Fires off bounded-concurrency reads for a bounded WINDOW of directory
   // children at THIS level before the (unchanged) sequential loop below even
   // starts — the loop still processes entries and awaits each descent one at
@@ -141,9 +155,10 @@ async function walkLevel(
   const prefetch = prefetchSubtreeChildren(config.ctx, content, config.limiter, remainingEntries);
   const cursor = openTreeCursor(content, config.ctx.hashConfig);
   while (!cursor.done) {
-    await emitEntry(config, counter, cursor, prefix, depth, descentStack, prefetch);
+    await emitEntry(config, counter, cursor, prefix, depth, stack, prefetch);
     advanceCursor(cursor);
   }
+  stack.delete(id);
 }
 
 async function emitEntry(
@@ -152,7 +167,7 @@ async function emitEntry(
   cursor: TreeCursor,
   prefix: string,
   depth: number,
-  stack: ReadonlyArray<ObjectId>,
+  stack: Set<ObjectId>,
   prefetch: SubtreePrefetch,
 ): Promise<void> {
   if (config.ctx.signal?.aborted) throw operationAborted();

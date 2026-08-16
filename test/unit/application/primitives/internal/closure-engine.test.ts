@@ -37,7 +37,7 @@ import {
   buildMidx,
   type MidxSpec,
 } from '../../../domain/storage/arbitraries.js';
-import { buildSeededContext } from '../fixtures.js';
+import { buildSeededContext, seedMaxTreeDepth } from '../fixtures.js';
 import { writeSyntheticBitmap, writeSyntheticPack } from '../pack-fixture.js';
 
 const AUTHOR: AuthorIdentity = {
@@ -45,6 +45,21 @@ const AUTHOR: AuthorIdentity = {
   email: 'a@a',
   timestamp: 0,
   timezoneOffset: '+0000',
+};
+
+/** Build a chain of `levels` nested DIRECTORY wrappers (git's `40000` tree
+ *  mode) around a real, blob-containing leaf tree — a small,
+ *  config-cap-reachable stand-in for the 1000+-level fixtures a hardcoded
+ *  1024 cap used to require. */
+const buildDeepTree = async (ctx: Context, levels: number): Promise<ObjectId> => {
+  const leafBlob = await writeBlob(ctx, 'deep-not-leaf');
+  let current: ObjectId = await writeTree(ctx, [
+    { name: 'f.txt', mode: '100644' as FileMode, id: leafBlob },
+  ]);
+  for (let i = 0; i < levels; i += 1) {
+    current = await writeTree(ctx, [{ name: 'sub', mode: '40000' as FileMode, id: current }]);
+  }
+  return current;
 };
 
 const writeBlob = async (ctx: Context, content: string): Promise<ObjectId> => {
@@ -640,16 +655,39 @@ describe('computeClosure', () => {
     });
   });
 
-  describe('Given a not id nested 1025 levels deep', () => {
-    describe('When computeClosure marks it uninteresting', () => {
-      it('Then it throws TREE_DEPTH_EXCEEDED at the first level past the cap, not a stack overflow', async () => {
-        // Arrange — mirrors enumerate-bundle-objects.ts's own deep-tree guard test.
+  describe('Given a repository configured with core.maxTreeDepth = 4', () => {
+    describe('When a not id is nested 4 levels deep', () => {
+      it('Then it completes', async () => {
+        // Arrange
         const ctx = await buildSeededContext();
-        const PHANTOM_ID = 'a'.repeat(40) as ObjectId;
-        let current: ObjectId = PHANTOM_ID;
-        for (let i = 0; i < 1025; i += 1) {
-          current = await writeTree(ctx, [{ name: 'sub', mode: '40000' as FileMode, id: current }]);
-        }
+        await seedMaxTreeDepth(ctx, '4');
+        const notTreeId = await buildDeepTree(ctx, 4);
+        const blobId = await writeBlob(ctx, 'shallow want leaf');
+        const treeId = await writeTree(ctx, [
+          { name: 'f.txt', mode: '100644' as FileMode, id: blobId },
+        ]);
+        const commitId = await writeCommit(ctx, treeId, [], 'shallow want');
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, {
+          tier: 'walk',
+          wants: [commitId],
+          not: [notTreeId],
+          objects: false,
+        });
+
+        // Assert — no throw; the unrelated want commit is still emitted
+        expect(result.objects.map((o) => o.id)).toContain(commitId);
+      });
+    });
+
+    describe('When a not id is nested 5 levels deep', () => {
+      it('Then it throws TREE_DEPTH_EXCEEDED with depth === 5, not a stack overflow', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await seedMaxTreeDepth(ctx, '4');
+        const notTreeId = await buildDeepTree(ctx, 5);
         const blobId = await writeBlob(ctx, 'unreachable want');
         const treeId = await writeTree(ctx, [
           { name: 'f.txt', mode: '100644' as FileMode, id: blobId },
@@ -660,7 +698,7 @@ describe('computeClosure', () => {
         // Act
         let caught: unknown;
         try {
-          await sut(ctx, { tier: 'walk', wants: [commitId], not: [current], objects: false });
+          await sut(ctx, { tier: 'walk', wants: [commitId], not: [notTreeId], objects: false });
         } catch (err) {
           caught = err;
         }
@@ -671,9 +709,99 @@ describe('computeClosure', () => {
         if (data.code !== 'TREE_DEPTH_EXCEEDED') {
           expect.fail(`expected TREE_DEPTH_EXCEEDED, got ${data.code}`);
         }
-        // All 1025 levels are marked; the phantom below them is level 1025,
-        // the first one past the cap — 1024 itself is still walked.
-        expect(data.depth).toBe(1025);
+        expect(data.depth).toBe(5);
+      });
+    });
+  });
+
+  describe('Given a repository configured with core.maxTreeDepth = 4 and a not id 20x past the cap', () => {
+    describe('When computeClosure marks it uninteresting', () => {
+      it('Then it throws TREE_DEPTH_EXCEEDED with depth === 5, not the deeper structural depth', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await seedMaxTreeDepth(ctx, '4');
+        const notTreeId = await buildDeepTree(ctx, 80);
+        const blobId = await writeBlob(ctx, 'unreachable want');
+        const treeId = await writeTree(ctx, [
+          { name: 'f.txt', mode: '100644' as FileMode, id: blobId },
+        ]);
+        const commitId = await writeCommit(ctx, treeId, [], 'shallow want');
+        const sut = computeClosure;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, { tier: 'walk', wants: [commitId], not: [notTreeId], objects: false });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data;
+        if (data.code !== 'TREE_DEPTH_EXCEEDED') {
+          expect.fail(`expected TREE_DEPTH_EXCEEDED, got ${data.code}`);
+        }
+        expect(data.depth).toBe(5);
+      });
+    });
+  });
+
+  describe('Given the same depth-4 not id tested at two different core.maxTreeDepth values', () => {
+    describe('When core.maxTreeDepth = 4', () => {
+      it('Then it completes', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await seedMaxTreeDepth(ctx, '4');
+        const notTreeId = await buildDeepTree(ctx, 4);
+        const blobId = await writeBlob(ctx, 'boundary want leaf');
+        const treeId = await writeTree(ctx, [
+          { name: 'f.txt', mode: '100644' as FileMode, id: blobId },
+        ]);
+        const commitId = await writeCommit(ctx, treeId, [], 'boundary want');
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, {
+          tier: 'walk',
+          wants: [commitId],
+          not: [notTreeId],
+          objects: false,
+        });
+
+        // Assert — no throw; the unrelated want commit is still emitted
+        expect(result.objects.map((o) => o.id)).toContain(commitId);
+      });
+    });
+
+    describe('When core.maxTreeDepth = 3', () => {
+      it('Then it throws TREE_DEPTH_EXCEEDED with depth === 4', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await seedMaxTreeDepth(ctx, '3');
+        const notTreeId = await buildDeepTree(ctx, 4);
+        const blobId = await writeBlob(ctx, 'boundary want leaf');
+        const treeId = await writeTree(ctx, [
+          { name: 'f.txt', mode: '100644' as FileMode, id: blobId },
+        ]);
+        const commitId = await writeCommit(ctx, treeId, [], 'boundary want');
+        const sut = computeClosure;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, { tier: 'walk', wants: [commitId], not: [notTreeId], objects: false });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data;
+        if (data.code !== 'TREE_DEPTH_EXCEEDED') {
+          expect.fail(`expected TREE_DEPTH_EXCEEDED, got ${data.code}`);
+        }
+        expect(data.depth).toBe(4);
       });
     });
   });

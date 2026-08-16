@@ -232,10 +232,20 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Node 20 dropped: cspell@10 + lint-staged@17 require >=22.18 /
-        # >=22.22.1; the engines floor matches.
+        # Release-line aliases, not pinned majors: lts/-1 and lts/* track the
+        # two current LTS lines and roll forward on their own; `latest` is the
+        # Current line, kept as early warning.
+        # The real floor is package.json `engines.node` (>=22.22.1, forced by
+        # `engine-strict=true` in .npmrc): a line below it fails `npm ci`
+        # rather than testing on an unsupported runtime. That floor is what
+        # dropped Node 20 — cspell@10 and lint-staged@17 need >=22.18 and
+        # >=22.22.1.
         os: [ubuntu-latest, macos-latest, windows-latest]
-        node: [22, 24]
+        node: ['lts/-1', 'lts/*', 'latest']
+        include:
+          - os: ubuntu-latest
+            node: 'lts/-1'
+            coverage: true
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
@@ -251,12 +261,14 @@ jobs:
       - if: matrix.os != 'ubuntu-latest'
         run: npm run test:unit
       # Upload regardless of pass/fail so a threshold breach can be diagnosed
-      # from the artifact instead of just the failed step. Per-matrix cell
-      # naming avoids `actions/upload-artifact@v4` rejecting duplicate names.
+      # from the artifact instead of just the failed step. Gated on the
+      # `coverage` matrix flag (set via `include:`, not a version literal) so
+      # the artifact name and upload condition stay stable across every LTS
+      # transition instead of rearming this trap at the next one.
       - uses: actions/upload-artifact@v7
-        if: always() && matrix.os == 'ubuntu-latest' && matrix.node == 22
+        if: always() && matrix.coverage == true
         with:
-          name: coverage-report-${{ matrix.os }}-node${{ matrix.node }}
+          name: coverage-report-${{ matrix.os }}
           path: coverage/
           retention-days: 14
           if-no-files-found: warn
@@ -485,7 +497,8 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v7
-      - uses: ./.github/actions/setup
+      - id: setup
+        uses: ./.github/actions/setup
       - name: Restore scaled bench fixture cache
         uses: actions/cache@v6
         with:
@@ -493,6 +506,8 @@ jobs:
           key: tsgit-bench-${{ hashFiles('test/bench/support/fixture-generator.ts') }}
       - run: npm run test:bench
       - run: node --experimental-strip-types tooling/bench-to-snapshot.ts
+        env:
+          RESOLVED_NODE_VERSION: ${{ steps.setup.outputs.node-version }}
       - name: Publish benchmark snapshot
         uses: benchmark-action/github-action-benchmark@v1
         with:
@@ -559,7 +574,7 @@ jobs:
       # and finds nothing.
       - uses: actions/setup-node@v7
         with:
-          node-version: "22"
+          node-version: "lts/*"
           cache: npm
           cache-dependency-path: |
             base/package-lock.json

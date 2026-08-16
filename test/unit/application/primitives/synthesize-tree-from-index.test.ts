@@ -3,12 +3,19 @@ import { readObject } from '../../../../src/application/primitives/read-object.j
 import { synthesizeTreeFromIndex } from '../../../../src/application/primitives/synthesize-tree-from-index.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../src/application/primitives/write-tree.js';
+import { DEFAULT_MAX_TREE_DEPTH } from '../../../../src/domain/diff/flat-tree.js';
 import type { GitIndex, IndexEntry } from '../../../../src/domain/git-index/index.js';
 import { STAGE0_FLAGS } from '../../../../src/domain/git-index/index.js';
 import { NO_PARSER_OFFSET } from '../../../../src/domain/git-index/path-validator.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import type { FileMode, FilePath, ObjectId, Tree } from '../../../../src/domain/objects/index.js';
-import { buildSeededContext } from './fixtures.js';
+import {
+  buildSeededContext,
+  buildTreeChain,
+  DEEP_CHAIN_LEAF_CONTENT,
+  deepIndexPath,
+  seedMaxTreeDepth,
+} from './fixtures.js';
 
 const EMPTY_INDEX: GitIndex = {
   version: 2,
@@ -311,63 +318,43 @@ describe('synthesizeTreeFromIndex', () => {
     });
   });
 
-  describe('Given an index path with depth exceeding MAX_TREE_DEPTH', () => {
+  describe('Given config unset (default cap) and an entry at exactly the default depth', () => {
     describe('When synthesise', () => {
-      it('Then throws TREE_DEPTH_EXCEEDED carrying the exact slash count', async () => {
-        // Arrange — a path with 4098 segments has 4097 slashes, one over the
-        // cap (4096). The error's `depth` is the slash count: asserting its
-        // exact value pins the slash-counting loop. A mutation that empties
-        // the loop body, flips `+= 1` to `-= 1`, or counts non-slash chars
-        // would produce a different `depth` (or skip the throw entirely).
+      it('Then completes and the tree round-trips', async () => {
+        // Arrange — this is the assertion that distinguishes an explicit
+        // stack from recursion: before the rewrite, synthesizeLevel's own
+        // recursion overflows the JS call stack well before reaching
+        // DEFAULT_MAX_TREE_DEPTH (2048), even though the guard itself
+        // admits the path.
         const ctx = await buildSeededContext();
-        const blobId = await writeBlob(ctx, 'deep');
-        const segments = Array.from({ length: 4098 }, (_, i) => `d${i}`);
-        const deepPath = segments.join('/');
-        const index: GitIndex = {
-          ...EMPTY_INDEX,
-          entries: [makeIndexEntry(deepPath, blobId)],
-        };
+        const blobId = await writeBlob(ctx, DEEP_CHAIN_LEAF_CONTENT);
+        const path = deepIndexPath(DEFAULT_MAX_TREE_DEPTH);
+        const index: GitIndex = { ...EMPTY_INDEX, entries: [makeIndexEntry(path, blobId)] };
+        const expectedRootId = await buildTreeChain(ctx, DEFAULT_MAX_TREE_DEPTH);
         const sut = synthesizeTreeFromIndex;
 
         // Act
-        let caught: unknown;
-        try {
-          await sut(ctx, index.entries);
-        } catch (err) {
-          caught = err;
-        }
+        const result = await sut(ctx, index.entries);
 
-        // Assert — code AND the exact slash count (4097).
-        const data = (caught as { data?: { code?: string; depth?: number } })?.data;
-        expect(data?.code).toBe('TREE_DEPTH_EXCEEDED');
-        expect(data?.depth).toBe(4097);
+        // Assert — identity against an independently-built chain of the
+        // same shape proves the write order too, not just "no throw".
+        expect(result).toBe(expectedRootId);
       });
     });
   });
 
-  describe('Given an index path with exactly MAX_TREE_DEPTH slashes', () => {
+  describe('Given config unset (default cap) and an entry one past the default depth', () => {
     describe('When synthesise', () => {
-      it('Then the depth cap does NOT reject it (boundary)', async () => {
-        // Arrange — 4097 segments => exactly 4096 slashes, which equals the
-        // cap. The guard is `slashCount > MAX_TREE_DEPTH`, so 4096 must NOT
-        // raise TREE_DEPTH_EXCEEDED. This pins `>` against `>=` (which would
-        // reject this path with a TREE_DEPTH_EXCEEDED carrying depth 4096)
-        // and against `<` (which rejects every shallower path too).
-        //
-        // Synthesis itself recurses 4096 frames deep and overflows the JS
-        // call stack with a plain RangeError — exactly the behaviour the
-        // module doc predicts (the cap is enforced at the input boundary
-        // because the stack overflows before recursion could re-check it).
-        // We therefore assert the *kind* of failure: NOT a tsgit depth
-        // error, proving `assertDepthBounded` accepted the boundary path.
+      it('Then throws TREE_DEPTH_EXCEEDED carrying the exact slash count', async () => {
+        // Arrange — one slash beyond the default cap. The error's `depth`
+        // is the slash count: asserting its exact value pins the
+        // slash-counting loop. A mutation that empties the loop body, flips
+        // `+= 1` to `-= 1`, or counts non-slash chars would produce a
+        // different `depth` (or skip the throw entirely).
         const ctx = await buildSeededContext();
-        const blobId = await writeBlob(ctx, 'edge');
-        const segments = Array.from({ length: 4097 }, (_, i) => `d${i}`);
-        const boundaryPath = segments.join('/');
-        const index: GitIndex = {
-          ...EMPTY_INDEX,
-          entries: [makeIndexEntry(boundaryPath, blobId)],
-        };
+        const blobId = await writeBlob(ctx, 'deep');
+        const path = deepIndexPath(DEFAULT_MAX_TREE_DEPTH + 1);
+        const index: GitIndex = { ...EMPTY_INDEX, entries: [makeIndexEntry(path, blobId)] };
         const sut = synthesizeTreeFromIndex;
 
         // Act
@@ -378,9 +365,140 @@ describe('synthesizeTreeFromIndex', () => {
           caught = err;
         }
 
-        // Assert — the boundary path is NOT rejected by the depth cap.
-        const data = (caught as { data?: { code?: string } })?.data;
-        expect(data?.code).not.toBe('TREE_DEPTH_EXCEEDED');
+        // Assert — code AND the exact slash count.
+        const data = (caught as { data?: { code?: string; depth?: number } })?.data;
+        expect(data?.code).toBe('TREE_DEPTH_EXCEEDED');
+        expect(data?.depth).toBe(DEFAULT_MAX_TREE_DEPTH + 1);
+      });
+    });
+  });
+
+  describe('Given core.maxTreeDepth configured to a small cap', () => {
+    const SMALL_CAP = 4;
+
+    describe('When an entry is exactly at the configured cap', () => {
+      it('Then completes and the tree round-trips (boundary)', async () => {
+        // Arrange — the guard is `slashCount > maxDepth`, so a path with
+        // exactly `maxDepth` slashes must NOT raise TREE_DEPTH_EXCEEDED.
+        // This pins `>` against `>=` (which would reject this path) and
+        // against `<` (which would reject every shallower path too).
+        const ctx = await buildSeededContext();
+        await seedMaxTreeDepth(ctx, String(SMALL_CAP));
+        const blobId = await writeBlob(ctx, DEEP_CHAIN_LEAF_CONTENT);
+        const path = deepIndexPath(SMALL_CAP);
+        const index: GitIndex = { ...EMPTY_INDEX, entries: [makeIndexEntry(path, blobId)] };
+        const expectedRootId = await buildTreeChain(ctx, SMALL_CAP);
+        const sut = synthesizeTreeFromIndex;
+
+        // Act
+        const result = await sut(ctx, index.entries);
+
+        // Assert
+        expect(result).toBe(expectedRootId);
+      });
+    });
+
+    describe('When an entry is one slash past the configured cap', () => {
+      it('Then throws TREE_DEPTH_EXCEEDED with depth = cap + 1', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await seedMaxTreeDepth(ctx, String(SMALL_CAP));
+        const blobId = await writeBlob(ctx, 'deep');
+        const path = deepIndexPath(SMALL_CAP + 1);
+        const index: GitIndex = { ...EMPTY_INDEX, entries: [makeIndexEntry(path, blobId)] };
+        const sut = synthesizeTreeFromIndex;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, index.entries);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        const data = (caught as { data?: { code?: string; depth?: number } })?.data;
+        expect(data?.code).toBe('TREE_DEPTH_EXCEEDED');
+        expect(data?.depth).toBe(SMALL_CAP + 1);
+      });
+    });
+
+    describe('When an entry is far beyond the configured cap (20x)', () => {
+      it('Then still throws TREE_DEPTH_EXCEEDED with the exact slash count, never a RangeError', async () => {
+        // Arrange — `assertDepthBounded` counts the WHOLE path up front, so
+        // it reports the true slash count rather than stopping early; proves
+        // the guard is reachable (not dead code behind a stack overflow) at
+        // any input size, however far past the cap.
+        const ctx = await buildSeededContext();
+        await seedMaxTreeDepth(ctx, String(SMALL_CAP));
+        const blobId = await writeBlob(ctx, 'deep');
+        const farDepth = SMALL_CAP * 20;
+        const path = deepIndexPath(farDepth);
+        const index: GitIndex = { ...EMPTY_INDEX, entries: [makeIndexEntry(path, blobId)] };
+        const sut = synthesizeTreeFromIndex;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, index.entries);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        const data = (caught as { data?: { code?: string; depth?: number } })?.data;
+        expect(data?.code).toBe('TREE_DEPTH_EXCEEDED');
+        expect(data?.depth).toBe(farDepth);
+      });
+    });
+  });
+
+  describe('Given the same fixture evaluated against two different configured caps', () => {
+    const FIXTURE_DEPTH = 5;
+
+    describe('When core.maxTreeDepth equals the fixture depth', () => {
+      it('Then it completes (the cap is read from config, not hardcoded)', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await seedMaxTreeDepth(ctx, String(FIXTURE_DEPTH));
+        const blobId = await writeBlob(ctx, DEEP_CHAIN_LEAF_CONTENT);
+        const path = deepIndexPath(FIXTURE_DEPTH);
+        const index: GitIndex = { ...EMPTY_INDEX, entries: [makeIndexEntry(path, blobId)] };
+        const expectedRootId = await buildTreeChain(ctx, FIXTURE_DEPTH);
+        const sut = synthesizeTreeFromIndex;
+
+        // Act
+        const result = await sut(ctx, index.entries);
+
+        // Assert
+        expect(result).toBe(expectedRootId);
+      });
+    });
+
+    describe('When core.maxTreeDepth is one less than the fixture depth', () => {
+      it('Then the same fixture now refuses with depth = fixture depth', async () => {
+        // Arrange — SAME fixture depth as the passing case above; only the
+        // configured cap changes. A guard reading a hardcoded constant
+        // instead of config would pass both cases identically.
+        const ctx = await buildSeededContext();
+        await seedMaxTreeDepth(ctx, String(FIXTURE_DEPTH - 1));
+        const blobId = await writeBlob(ctx, 'deep');
+        const path = deepIndexPath(FIXTURE_DEPTH);
+        const index: GitIndex = { ...EMPTY_INDEX, entries: [makeIndexEntry(path, blobId)] };
+        const sut = synthesizeTreeFromIndex;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, index.entries);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        const data = (caught as { data?: { code?: string; depth?: number } })?.data;
+        expect(data?.code).toBe('TREE_DEPTH_EXCEEDED');
+        expect(data?.depth).toBe(FIXTURE_DEPTH);
       });
     });
   });

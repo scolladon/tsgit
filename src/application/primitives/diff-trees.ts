@@ -1,11 +1,7 @@
 import { resolveAttribute } from '../../domain/attributes/index.js';
 import type { BinaryOverride } from '../../domain/diff/binary-decision.js';
 import { primaryPath } from '../../domain/diff/change-path.js';
-import {
-  type FlatTree,
-  type FlatTreeEntry,
-  MAX_TREE_WALK_DEPTH,
-} from '../../domain/diff/flat-tree.js';
+import type { FlatTree, FlatTreeEntry } from '../../domain/diff/flat-tree.js';
 import {
   type AddChange,
   computeStatFields,
@@ -47,13 +43,14 @@ import {
   createConcurrencyLimiter,
 } from './internal/concurrency-limiter.js';
 import {
-  DEFAULT_FLATTEN_BOUNDS,
   type FlattenBounds,
   flattenRawTree,
+  resolveFlattenBounds,
 } from './internal/flatten-raw.js';
 import { peelChain } from './internal/peel-chain.js';
 import { joinPath, readRawTreeById as readRawTree } from './internal/raw-tree-io.js';
 import { type AttributeProvider, buildAttributeProvider } from './internal/read-gitattributes.js';
+import { resolveMaxTreeDepth } from './internal/resolve-max-tree-depth.js';
 import { walkRawSubtree } from './internal/walk-raw-subtree.js';
 import { isWhitespaceOnlyModify } from './internal/whitespace-drop-predicate.js';
 import { materialisePatchFiles } from './materialise-patch-files.js';
@@ -64,6 +61,16 @@ import { exceedsMaxTreeDepth, exceedsMaxTreeEntries } from './validators.js';
 
 const EMPTY = new Uint8Array(0);
 
+/**
+ * Diff two tree-like targets, returning the structured `TreeDiff`. Pass
+ * `recursive: true` to expand nested directories into per-file leaf changes
+ * instead of directory-mode entries, and `withStat: true` to attach per-file
+ * line counts (a `StatTreeDiff`).
+ *
+ * A recursive descent is bounded by `core.maxTreeDepth`, read from the
+ * repository-local config (default 2048 when unset) and honoured unclamped —
+ * a tree nested deeper than the configured cap throws `TREE_DEPTH_EXCEEDED`.
+ */
 export function diffTrees(
   ctx: Context,
   a: DiffTreesInput,
@@ -234,6 +241,7 @@ async function expandDirectoryChanges(
   const state: DiffWalkState = {
     counter: { value: 0 },
     maxEntries: MAX_FLAT_TREE_ENTRIES,
+    maxDepth: await resolveMaxTreeDepth(ctx),
     limiter: createConcurrencyLimiter(MAX_CONCURRENT_OBJECT_LOADS),
   };
   const expanded = await boundedMap(changes, MAX_CONCURRENT_OBJECT_LOADS, (change) =>
@@ -387,11 +395,12 @@ async function buildPreimage(
   renameOptions: RenameDetectOptions | undefined,
 ): Promise<FlatTree['entries'] | undefined> {
   if (renameOptions?.copies !== 'harder' || a === undefined) return undefined;
+  const bounds = await resolveFlattenBounds(ctx);
   if (typeof a !== 'string') {
-    return (await flattenRawTree(ctx, a, DEFAULT_FLATTEN_BOUNDS)).entries;
+    return (await flattenRawTree(ctx, a, bounds)).entries;
   }
   const peeled = await peelToTree(ctx, a);
-  return (await flattenRawTree(ctx, peeled.id, DEFAULT_FLATTEN_BOUNDS, peeled.content)).entries;
+  return (await flattenRawTree(ctx, peeled.id, bounds, peeled.content)).entries;
 }
 
 async function resolveInput(ctx: Context, input: DiffTreesInput): Promise<Tree | undefined> {
@@ -447,14 +456,44 @@ async function peelToTree(ctx: Context, id: ObjectId): Promise<PeeledTree> {
  * prefix plus per-side cycle/depth guards, mirroring `walkTree`'s protection
  * (the merge-join below descends into changed subtrees directly, bypassing
  * `walkTree`, so it must re-establish the same safety net). */
+/**
+ * The root-to-current path for one side, as an immutable cons list: each level
+ * allocates ONE node pointing at its parent, so every sibling shares its
+ * ancestors' nodes instead of copying them.
+ *
+ * Deliberately not a per-level array copy and deliberately not a shared
+ * mutable `Set`. An array copy costs O(depth) fresh pointers per level, so a
+ * descent holds O(depth^2) of them live — which at a large configured
+ * `core.maxTreeDepth` is heap exhaustion, an uncatchable abort rather than the
+ * typed refusal the depth cap exists to produce. A mutable `Set` would fix the
+ * memory but not survive this walk: `diffRecursiveLevel` fans changed subtrees
+ * out through `boundedMap`, so several sibling descents share one cursor at
+ * the same instant and would observe each other's ancestry. Immutable sharing
+ * is what satisfies both constraints at once — O(depth) total memory, and
+ * every concurrent sibling still sees exactly its own path.
+ */
+interface AncestryNode {
+  readonly id: ObjectId;
+  readonly parent: AncestryNode | undefined;
+}
+
+/** Walk the chain looking for `id`. O(depth), the same comparison count the
+ *  array's `includes()` cost — only the memory changed. */
+const ancestryHas = (node: AncestryNode | undefined, id: ObjectId): boolean => {
+  for (let cur = node; cur !== undefined; cur = cur.parent) {
+    if (cur.id === id) return true;
+  }
+  return false;
+};
+
 interface DiffCursor {
   readonly prefix: string;
   readonly depth: number;
-  readonly oldStack: ReadonlyArray<ObjectId>;
-  readonly newStack: ReadonlyArray<ObjectId>;
+  readonly oldStack: AncestryNode | undefined;
+  readonly newStack: AncestryNode | undefined;
 }
 
-const ROOT_CURSOR: DiffCursor = { prefix: '', depth: 0, oldStack: [], newStack: [] };
+const ROOT_CURSOR: DiffCursor = { prefix: '', depth: 0, oldStack: undefined, newStack: undefined };
 
 interface DiffWalkCounter {
   value: number;
@@ -476,6 +515,11 @@ interface DiffWalkCounter {
 interface DiffWalkState {
   readonly counter: DiffWalkCounter;
   readonly maxEntries: number;
+  /** Resolved once per `diffRecursive`/`expandDirectoryChanges` call (never
+   *  per level) from `core.maxTreeDepth` — see `diffChangedSubtree`'s guard
+   *  and `subtreeExpansionBounds`, both of which read it back from here
+   *  instead of resolving again. */
+  readonly maxDepth: number;
   readonly limiter: ConcurrencyLimiter;
 }
 
@@ -483,7 +527,9 @@ interface DiffWalkState {
  * Diff two raw tree contents recursively. `maxEntries` bounds the total
  * number of merge-join entries the walk may visit (default `MAX_FLAT_TREE_ENTRIES`,
  * the same cap `flattenRawTree` uses) — an explicit parameter rather than an
- * inlined literal so the guard is reachable from a test with a small cap.
+ * inlined literal so the guard is reachable from a test with a small cap. The
+ * recursion depth is bounded separately, by the repository-local
+ * `core.maxTreeDepth`, resolved once here.
  */
 export async function diffRecursive(
   ctx: Context,
@@ -494,6 +540,7 @@ export async function diffRecursive(
   const state: DiffWalkState = {
     counter: { value: 0 },
     maxEntries,
+    maxDepth: await resolveMaxTreeDepth(ctx),
     limiter: createConcurrencyLimiter(MAX_CONCURRENT_OBJECT_LOADS),
   };
   const changes = await diffRecursiveLevel(ctx, a, b, ROOT_CURSOR, state);
@@ -573,17 +620,23 @@ function withPrefix(change: DiffChange, prefix: string): DiffChange {
   }
 }
 
+/**
+ * This descent was measured honouring `core.maxTreeDepth` to at least
+ * 15000 (2026-08-15): a fixture one level past a cap of 15000 refuses cleanly
+ * with `TREE_DEPTH_EXCEEDED` at depth 15001. Deeper than that is
+ * unmeasured — no raw stack overflow was observed at any depth tried.
+ */
 async function diffChangedSubtree(
   ctx: Context,
   change: ModifyChange,
   cursor: DiffCursor,
   state: DiffWalkState,
 ): Promise<DiffChange[]> {
-  if (exceedsMaxTreeDepth(cursor.depth, MAX_TREE_WALK_DEPTH)) {
+  if (exceedsMaxTreeDepth(cursor.depth, state.maxDepth)) {
     throw treeDepthExceeded(cursor.depth);
   }
-  if (cursor.oldStack.includes(change.oldId)) throw treeCycleDetected(change.oldId);
-  if (cursor.newStack.includes(change.newId)) throw treeCycleDetected(change.newId);
+  if (ancestryHas(cursor.oldStack, change.oldId)) throw treeCycleDetected(change.oldId);
+  if (ancestryHas(cursor.newStack, change.newId)) throw treeCycleDetected(change.newId);
 
   const [oldContent, newContent] = await Promise.all([
     readRawTree(ctx, change.oldId),
@@ -592,14 +645,14 @@ async function diffChangedSubtree(
   const nextCursor: DiffCursor = {
     prefix: joinPath(cursor.prefix, change.path),
     depth: cursor.depth + 1,
-    oldStack: [...cursor.oldStack, change.oldId],
-    newStack: [...cursor.newStack, change.newId],
+    oldStack: { id: change.oldId, parent: cursor.oldStack },
+    newStack: { id: change.newId, parent: cursor.newStack },
   };
   return diffRecursiveLevel(ctx, oldContent, newContent, nextCursor, state);
 }
 
 function subtreeExpansionBounds(state: DiffWalkState): FlattenBounds {
-  return { maxDepth: DEFAULT_FLATTEN_BOUNDS.maxDepth, maxEntries: state.maxEntries };
+  return { maxDepth: state.maxDepth, maxEntries: state.maxEntries };
 }
 
 /**
@@ -611,7 +664,8 @@ function subtreeExpansionBounds(state: DiffWalkState): FlattenBounds {
  * instead. `state.counter` is threaded straight into the walk so a diamond
  * DAG reached via more than one add/delete pays out of the SAME entry
  * budget `diffRecursiveLevel` itself counts against, not a fresh one per
- * subtree; only `maxDepth` stays fixed at `DEFAULT_FLATTEN_BOUNDS`' value.
+ * subtree; `maxDepth` comes from `state.maxDepth`, the cap resolved once for
+ * the whole diff operation.
  */
 async function expandAddedSubtree(
   ctx: Context,

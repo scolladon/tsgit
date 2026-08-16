@@ -6,7 +6,7 @@ import { writeObject } from '../../../../src/application/primitives/write-object
 import { TsgitError } from '../../../../src/domain/error.js';
 import { FILE_MODE, type ObjectId, type TreeEntry } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
-import { instrumentedContext } from '../primitives/fixtures.js';
+import { buildTreeChain, instrumentedContext, seedMaxTreeDepth } from '../primitives/fixtures.js';
 
 // ---------------------------------------------------------------------------
 // Shared fixtures
@@ -468,29 +468,54 @@ describe('Given a commit with 3 blob entries', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Unbounded depth cap — tree nested deeper than walkTree's default maxDepth
+// Eager config gate — archive now takes assertOperationalRepository
 // ---------------------------------------------------------------------------
 
-describe('Given a commit with a tree nested 1025 levels deep (beyond walkTree default maxDepth)', () => {
-  describe('When archive iterates all entries', () => {
-    it('Then no TREE_DEPTH_EXCEEDED is thrown (maxDepth is effectively unbounded)', async () => {
-      // Arrange — build a chain of 1026 tree objects (1025 directory levels)
-      const DEPTH = 1025; // exceeds walkTree's default maxDepth of 1024
+describe('Given a repository whose config holds an invalid core.maxTreeDepth', () => {
+  describe('When archive is called', () => {
+    it('Then throws CONFIG_BAD_NUMERIC_VALUE with reason invalid unit', async () => {
+      // Arrange
       const ctx = await initUnbornCtx();
-      const leafBlobId = await writeObject(ctx, makeBlob('leaf'));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tmaxTreeDepth = 2.5\n');
 
-      // Start from the innermost tree containing the blob, wrap DEPTH times
-      let innerTree: ObjectId = await writeObject(
-        ctx,
-        makeTree([{ mode: FILE_MODE.REGULAR, name: 'leaf.txt', id: leafBlobId }]),
-      );
-      for (let i = 0; i < DEPTH; i++) {
-        innerTree = await writeObject(
-          ctx,
-          makeTree([{ mode: FILE_MODE.DIRECTORY, name: 'd', id: innerTree }]),
-        );
+      // Act
+      let caught: unknown;
+      try {
+        await archive(ctx, { treeish: 'HEAD' });
+      } catch (err) {
+        caught = err;
       }
-      const commitId = await writeObject(ctx, makeCommit(innerTree));
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      const data = (caught as TsgitError).data as {
+        readonly code: string;
+        readonly key: string;
+        readonly value: string;
+        readonly reason: string;
+      };
+      expect(data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+      expect(data.key).toBe('core.maxtreedepth');
+      expect(data.value).toBe('2.5');
+      expect(data.reason).toBe('invalid unit');
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Depth cap — archive no longer overrides walkTree's own maxDepth, so it
+// inherits core.maxTreeDepth exactly like every other walkTree caller.
+// ---------------------------------------------------------------------------
+
+describe('Given core.maxTreeDepth configured to a small cap and a tree chain exactly at the cap', () => {
+  describe('When archive iterates all entries', () => {
+    it('Then no TREE_DEPTH_EXCEEDED is thrown (boundary)', async () => {
+      // Arrange
+      const SMALL_CAP = 4;
+      const ctx = await initUnbornCtx();
+      await seedMaxTreeDepth(ctx, String(SMALL_CAP));
+      const treeId = await buildTreeChain(ctx, SMALL_CAP);
+      const commitId = await writeObject(ctx, makeCommit(treeId));
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
 
       // Act — drain the full entry stream
@@ -500,9 +525,46 @@ describe('Given a commit with a tree nested 1025 levels deep (beyond walkTree de
         entries.push(entry);
       }
 
-      // Assert — DEPTH directory entries + 1 blob = DEPTH + 1 total; no throws
-      expect(entries).toHaveLength(DEPTH + 1);
+      // Assert — SMALL_CAP directory entries + 1 leaf blob; no throw
+      expect(entries).toHaveLength(SMALL_CAP + 1);
       expect(entries[entries.length - 1]?.mode).toBe(FILE_MODE.REGULAR);
+    });
+  });
+});
+
+describe('Given core.maxTreeDepth configured to a small cap and a tree chain one level past the cap', () => {
+  describe('When archive iterates all entries', () => {
+    it('Then throws TREE_DEPTH_EXCEEDED with the exact depth', async () => {
+      // Arrange — this is the assertion that fails on `main` today: archive
+      // passed walkTree an effectively-unbounded maxDepth, so it refused at
+      // no input at all.
+      const SMALL_CAP = 4;
+      const ctx = await initUnbornCtx();
+      await seedMaxTreeDepth(ctx, String(SMALL_CAP));
+      const treeId = await buildTreeChain(ctx, SMALL_CAP + 1);
+      const commitId = await writeObject(ctx, makeCommit(treeId));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+
+      // Act — drain the full entry stream
+      let caught: unknown;
+      try {
+        const result = await archive(ctx, { treeish: 'HEAD' });
+        for await (const _entry of result.entries) {
+          // drain — the throw only fires once the generator descends far
+          // enough to enter the frame past the cap.
+        }
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      const data = (caught as TsgitError).data as {
+        readonly code: string;
+        readonly depth: number;
+      };
+      expect(data.code).toBe('TREE_DEPTH_EXCEEDED');
+      expect(data.depth).toBe(SMALL_CAP + 1);
     });
   });
 });

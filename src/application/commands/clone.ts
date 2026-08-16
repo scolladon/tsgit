@@ -61,7 +61,7 @@ export interface CloneResult {
  * `refs/remotes/origin/<branch>`, tags under `refs/tags/<tag>`), and
  * points `HEAD` at the remote's HEAD line.
  *
- * Working-tree materialization is.1 — out of scope here.
+ * Working-tree materialization is out of scope here.
  *
  * Throws `TARGET_DIRECTORY_NOT_EMPTY` if `gitDir` already exists and
  * `REMOTE_ADVERTISES_NO_REFS` when discovery returns no refs.
@@ -70,6 +70,15 @@ const CLONE_DISCOVER_OP = 'clone:discover';
 const CLONE_WRITE_OBJECTS_OP = 'clone:write-objects';
 
 export const clone = async (ctx: Context, opts: CloneOptions): Promise<CloneResult> => {
+  // No config gate here, deliberately. Canonical git refuses a clone on an
+  // invalid `core.maxTreeDepth` only when the SOURCE repository carries it —
+  // that refusal comes from the process serving a local-path clone, which
+  // reads its own config at startup. Git never reads the DESTINATION's config
+  // (an occupied destination fails with "already exists" first) and never
+  // reads the ambient repository it happens to be standing in. This clone is
+  // client-only and reaches its source through a transport, so it has no
+  // analogue for the source-side read; a destination-side gate would refuse
+  // where git succeeds.
   if (await ctx.fs.exists(`${ctx.layout.gitDir}/HEAD`)) {
     throw targetDirectoryNotEmpty(ctx.layout.workDir as FilePath);
   }

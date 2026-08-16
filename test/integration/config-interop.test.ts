@@ -11,6 +11,7 @@
  *   unique:         .git/config readable by git config --list with matching keys; quoted-value bytes + refusal
  *   interopSurface: config
  */
+import { existsSync } from 'node:fs';
 import { readFile, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -165,6 +166,40 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
           expect(readback).toBe(`${value}\n`);
         },
       );
+    });
+  });
+
+  describe('Given a config whose section names vary in case', () => {
+    describe('When both tsgit and git resolve the affected keys', () => {
+      it('Then section names match case-insensitively and subsections stay case-sensitive', async () => {
+        // Arrange — git lower-cases the SECTION name but keeps the SUBSECTION
+        // verbatim, so `[CORE]` is `[core]` while `[remote "Origin"]` is not
+        // `[remote "origin"]`. tsgit must agree on both halves.
+        const configContent = `${[
+          '[core]',
+          '\trepositoryformatversion = 0',
+          '[CORE]',
+          '\tbare = false',
+          '[REMOTE "origin"]',
+          '\turl = https://example.com/upper.git',
+          '[remote "Origin"]',
+          '\turl = https://example.com/mixed.git',
+        ].join('\n')}\n`;
+        await writeFile(path.join(pair.ours, '.git', 'config'), configContent, 'utf8');
+
+        // Act + Assert — per key, tsgit's resolved value equals git's.
+        const keys = ['core.bare', 'remote.origin.url', 'remote.Origin.url'];
+        for (const key of keys) {
+          const ctx = createNodeContext({ workDir: pair.ours });
+          const gitResult = tryRunGit(['-C', pair.ours, 'config', '--local', '--get', key]);
+          expect(gitResult.ok, `git rejected key ${key}: ${gitResult.stderr}`).toBe(true);
+          const gitValue = gitResult.stdout.endsWith('\n')
+            ? gitResult.stdout.slice(0, -1)
+            : gitResult.stdout;
+          const ours = await getConfigValue({ ctx, key, scope: 'local' });
+          expect(ours.value, `tsgit value for ${key}`).toBe(gitValue);
+        }
+      });
     });
   });
 
@@ -2976,6 +3011,24 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
         expect(oursConfig).toBe('[a][b]\nx=1\n');
         expect(peerConfig).toBe('[a][b]\nx=1\n');
       }, 60_000);
+    });
+  });
+
+  describe('Given the developer machine may have its own real global git config', () => {
+    describe('When a node-backed context resolves its global-scope paths', () => {
+      it('Then the pinned test sentinel is read, never the real HOME/XDG_CONFIG_HOME', async () => {
+        // Arrange
+        const ctx = createNodeContext({ workDir: pair.ours });
+
+        // Assert — the resolved paths ARE the pinned, non-existent test
+        // sentinel (proves the vitest-level env pin took effect, not merely
+        // that these keys happen to be absent from a real config). Without
+        // the pin, `${os.homedir()}/.gitconfig` exists on a machine with any
+        // git identity configured — this assertion fails on an unpinned run.
+        expect(ctx.fs.homedir()).toBe(process.env['HOME']);
+        expect(existsSync(`${ctx.fs.homedir()}/.gitconfig`)).toBe(false);
+        expect(existsSync(`${ctx.fs.xdgConfigHome()}/git/config`)).toBe(false);
+      });
     });
   });
 });

@@ -5,13 +5,12 @@ import type { FilePath } from '../../domain/objects/object-id.js';
 import { isDotGitWalkEntry } from '../../domain/path/verify-path.js';
 import { validateWalkedEntryPath } from '../../domain/working-tree-path.js';
 import type { Context } from '../../ports/context.js';
-import type { FileStat } from '../../ports/file-system.js';
+import type { DirEntry, FileStat } from '../../ports/file-system.js';
 import { joinPathSegment } from './internal/join-path-segment.js';
 import { joinPath } from './internal/join-working-tree-path.js';
+import { resolveMaxTreeDepth } from './internal/resolve-max-tree-depth.js';
 import type { WorkingTreeStatMap } from './internal/working-tree-stat-map.js';
 import type { WalkIgnorePredicate, WalkWorkingTreeEntry, WalkWorkingTreeOptions } from './types.js';
-
-const DEFAULT_MAX_DEPTH = 4096;
 
 interface WalkConfig {
   readonly ctx: Context;
@@ -23,6 +22,102 @@ interface WalkConfig {
 
 interface Counter {
   value: number;
+}
+
+/**
+ * One directory entered on the explicit DFS stack: its entries plus the
+ * cursor (`index`) of the next one to process. Pushed once per directory, in
+ * the same place the former recursive descent used to happen, so the depth
+ * guard and embedded-repo gate fire exactly once per directory, not once per
+ * entry.
+ */
+interface WalkFrame {
+  readonly entries: ReadonlyArray<DirEntry>;
+  index: number;
+  readonly prefix: string;
+  readonly depth: number;
+}
+
+/** Guard a directory on entry (depth), `readdir` it, and build its stack frame. */
+async function readDirectoryFrame(
+  config: WalkConfig,
+  prefix: string,
+  depth: number,
+): Promise<WalkFrame> {
+  if (depth > config.maxDepth) throw treeDepthExceeded(depth);
+  const entries = await config.ctx.fs.readdir(directoryPath(config, prefix));
+  return { entries, index: 0, prefix, depth };
+}
+
+/**
+ * `readDirectoryFrame` plus the embedded-repo gate: `undefined` when the
+ * directory itself is an embedded repository (a `.git` directory or
+ * worktree-pointer file among its entries), in which case nothing under it
+ * is walked. Never applied to the workDir root — the host repository's own
+ * `.git` is not an embedded-repo marker, so the root always enters via
+ * `readDirectoryFrame` directly.
+ */
+async function enterSubdirectory(
+  config: WalkConfig,
+  prefix: string,
+  depth: number,
+): Promise<WalkFrame | undefined> {
+  const frame = await readDirectoryFrame(config, prefix, depth);
+  // Embedded-repo gate: a directory containing a `.git` DIRECTORY (or a
+  // `.git` regular file pointing at a worktree gitdir) is treated as an
+  // embedded clone and yields nothing. A spurious file literally named
+  // `.git` is filtered by `isDotGitWalkEntry` in the main loop but must NOT
+  // collapse the parent directory.
+  if (frame.entries.some(isEmbeddedGitMarker)) return undefined;
+  return frame;
+}
+
+type StackStep =
+  | { readonly kind: 'skip' }
+  | { readonly kind: 'push'; readonly frame: WalkFrame }
+  | { readonly kind: 'yield'; readonly entry: WalkWorkingTreeEntry };
+
+/**
+ * Decide what one directory entry does to the walk: descend (`push` a new
+ * frame, or `skip` when ignored / gated as embedded), drop (`skip`, a
+ * non-file/dir/symlink entry or an ignored leaf), or surface (`yield`).
+ * Extracted so the driving loop in {@link walkWorkingTree} stays flat.
+ */
+async function stepEntry(
+  config: WalkConfig,
+  counter: Counter,
+  frame: WalkFrame,
+  entry: DirEntry,
+): Promise<StackStep> {
+  const path = joinPathSegment(frame.prefix, entry.name) as FilePath;
+  // Defence-in-depth: a malicious adapter could return `..` etc. Narrow
+  // (validateWalkedEntryPath, not validateWorkingTreePath): a legitimate
+  // on-disk `git~1`/`.git:stream`/HFS-alias entry is not a traversal hazard
+  // and must reach the yield below, exactly as git's own directory walk
+  // treats it.
+  validateWalkedEntryPath(path);
+
+  if (entry.isDirectory && !entry.isSymbolicLink) {
+    if (config.ignore !== undefined && (await config.ignore(path, true))) return { kind: 'skip' };
+    const childFrame = await enterSubdirectory(config, path, frame.depth + 1);
+    return childFrame === undefined ? { kind: 'skip' } : { kind: 'push', frame: childFrame };
+  }
+  if (!entry.isFile && !entry.isSymbolicLink) return { kind: 'skip' };
+  if (config.ignore !== undefined && (await config.ignore(path, false))) return { kind: 'skip' };
+  counter.value += 1;
+  if (counter.value > config.maxEntries) {
+    throw treeEntryLimitExceeded(counter.value, config.maxEntries);
+  }
+  return {
+    kind: 'yield',
+    entry: {
+      path,
+      isFile: entry.isFile,
+      isDirectory: entry.isDirectory,
+      isSymbolicLink: entry.isSymbolicLink,
+      stat: lazyStat(config, path),
+    },
+  };
 }
 
 /**
@@ -46,6 +141,14 @@ interface Counter {
  * The host repository's own `.git` is NOT treated as an embedded-repo
  * marker — at the workDir root we only skip the `.git` entry itself, not
  * the workDir.
+ *
+ * Descends with an explicit stack of directory frames instead of recursion
+ * — depth costs an array push, not a JS/generator call frame — so `maxDepth`
+ * is the only ceiling on how deep a walk can go.
+ *
+ * `maxDepth` defaults to `core.maxTreeDepth`, read from the repository-local
+ * config (default 2048, honoured unclamped) — never from `~/.gitconfig` or
+ * any other scope, which tsgit does not read for this key.
  */
 export async function* walkWorkingTree(
   ctx: Context,
@@ -53,74 +156,29 @@ export async function* walkWorkingTree(
 ): AsyncIterable<WalkWorkingTreeEntry> {
   const config: WalkConfig = {
     ctx,
-    maxDepth: options?.maxDepth ?? DEFAULT_MAX_DEPTH,
+    maxDepth: options?.maxDepth ?? (await resolveMaxTreeDepth(ctx)),
     maxEntries: options?.maxEntries ?? MAX_FLAT_TREE_ENTRIES,
     ignore: options?.ignore,
     stats: options?.stats,
   };
   const counter: Counter = { value: 0 };
-  yield* walkInternal(config, counter, '', 0, /* isRoot */ true);
-}
+  const stack: WalkFrame[] = [await readDirectoryFrame(config, '', 0)];
 
-async function* walkInternal(
-  config: WalkConfig,
-  counter: Counter,
-  prefix: string,
-  depth: number,
-  isRoot: boolean,
-): AsyncIterable<WalkWorkingTreeEntry> {
-  if (depth > config.maxDepth) throw treeDepthExceeded(depth);
-  const entries = await config.ctx.fs.readdir(directoryPath(config, prefix));
-  // Embedded-repo gate: a non-root directory containing a `.git`
-  // DIRECTORY (or a `.git` regular file pointing at a worktree gitdir)
-  // is treated as an embedded clone and yields nothing. A spurious
-  // file literally named `.git` is filtered by `isDotGitWalkEntry`
-  // below but must NOT collapse the parent directory.
-  if (!isRoot && entries.some(isEmbeddedGitMarker)) return;
-  for (const entry of entries) {
+  while (stack.length > 0) {
+    const frame = stack[stack.length - 1]!;
+    if (frame.index >= frame.entries.length) {
+      stack.pop();
+      continue;
+    }
+    const entry = frame.entries[frame.index]!;
+    frame.index += 1;
     if (config.ctx.signal?.aborted) throw operationAborted();
     if (isDotGitWalkEntry(entry.name)) continue;
-    yield* visitEntry(config, counter, prefix, depth, entry);
-  }
-}
 
-async function* visitEntry(
-  config: WalkConfig,
-  counter: Counter,
-  prefix: string,
-  depth: number,
-  entry: {
-    readonly name: string;
-    readonly isFile: boolean;
-    readonly isDirectory: boolean;
-    readonly isSymbolicLink: boolean;
-  },
-): AsyncIterable<WalkWorkingTreeEntry> {
-  const path = joinPathSegment(prefix, entry.name) as FilePath;
-  // Defence-in-depth: a malicious adapter could return `..` etc. Narrow
-  // (validateWalkedEntryPath, not validateWorkingTreePath): a legitimate
-  // on-disk `git~1`/`.git:stream`/HFS-alias entry is not a traversal hazard
-  // and must reach the yield below, exactly as git's own directory walk
-  // treats it.
-  validateWalkedEntryPath(path);
-  if (entry.isDirectory && !entry.isSymbolicLink) {
-    if (config.ignore !== undefined && (await config.ignore(path, true))) return;
-    yield* walkInternal(config, counter, path, depth + 1, /* isRoot */ false);
-    return;
+    const step = await stepEntry(config, counter, frame, entry);
+    if (step.kind === 'push') stack.push(step.frame);
+    if (step.kind === 'yield') yield step.entry;
   }
-  if (!entry.isFile && !entry.isSymbolicLink) return;
-  if (config.ignore !== undefined && (await config.ignore(path, false))) return;
-  counter.value += 1;
-  if (counter.value > config.maxEntries) {
-    throw treeEntryLimitExceeded(counter.value, config.maxEntries);
-  }
-  yield {
-    path,
-    isFile: entry.isFile,
-    isDirectory: entry.isDirectory,
-    isSymbolicLink: entry.isSymbolicLink,
-    stat: lazyStat(config, path),
-  };
 }
 
 /**

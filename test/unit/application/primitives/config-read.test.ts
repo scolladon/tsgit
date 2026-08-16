@@ -11,6 +11,7 @@ import {
   findFirstValuelessEntry,
   findFirstValuelessInSection,
   findInvalidPushDefault,
+  findLastInvalidMaxTreeDepth,
   type IniSection,
   invalidateConfigCache,
   parseGitBoolean,
@@ -39,6 +40,13 @@ describe('primitives/config-read', () => {
   beforeEach(() => {
     __resetConfigCacheForTests();
   });
+
+  // `readConfig` reads the LOCAL config file and nothing else, so an uncached
+  // load is exactly one `readUtf8`. These counts assert the SHAPE — N per
+  // fresh load, 0 on a cache hit, N again after invalidation — so naming the
+  // number keeps the single-flight invariant legible rather than burying it
+  // in a bare literal.
+  const READS_PER_LOAD = 1;
 
   describe('Given missing .git/config', () => {
     describe('When readConfig', () => {
@@ -346,6 +354,42 @@ describe('primitives/config-read', () => {
 
         // Assert
         expect(result.remote?.get('origin')?.url).toBe('https://example.com/r.git');
+      });
+    });
+  });
+
+  describe('Given a [REMOTE "origin"] section spelled in upper case', () => {
+    describe('When readConfig', () => {
+      it('Then the remote still resolves, because section names are case-insensitive', async () => {
+        // Arrange — git matches section names case-insensitively. This is the
+        // SUBSECTIONED dispatch path, distinct from the subsectionless one.
+        const ctx = createMemoryContext();
+        await seed(ctx, '[REMOTE "origin"]\n  url = https://example.com/r.git\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.remote?.get('origin')?.url).toBe('https://example.com/r.git');
+      });
+    });
+  });
+
+  describe('Given a [remote "Origin"] section whose SUBsection is upper case', () => {
+    describe('When readConfig', () => {
+      it('Then it resolves under "Origin", because subsection names stay case-sensitive', async () => {
+        // Arrange — the companion to the case above: git lower-cases the
+        // section name but preserves the subsection verbatim, so the two must
+        // not collapse onto one another.
+        const ctx = createMemoryContext();
+        await seed(ctx, '[remote "Origin"]\n  url = https://example.com/r.git\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.remote?.get('Origin')?.url).toBe('https://example.com/r.git');
+        expect(result.remote?.get('origin')).toBeUndefined();
       });
     });
   });
@@ -1024,8 +1068,8 @@ describe('primitives/config-read', () => {
         await readConfig(ctx);
         await readConfig(ctx);
 
-        // Assert — only one underlying read.
-        expect(spy).toHaveBeenCalledTimes(1);
+        // Assert — only one underlying scope walk.
+        expect(spy).toHaveBeenCalledTimes(READS_PER_LOAD);
       });
     });
   });
@@ -1042,7 +1086,7 @@ describe('primitives/config-read', () => {
         await readConfig(ctx);
 
         // Assert
-        expect(spy).toHaveBeenCalledTimes(1);
+        expect(spy).toHaveBeenCalledTimes(READS_PER_LOAD);
       });
     });
   });
@@ -1207,7 +1251,7 @@ describe('primitives/config-read', () => {
         await readConfig(ctx);
 
         // Assert — reset replaces the WeakMap, so the second call misses the cache.
-        expect(spy).toHaveBeenCalledTimes(2);
+        expect(spy).toHaveBeenCalledTimes(READS_PER_LOAD * 2);
       });
     });
   });
@@ -1966,6 +2010,46 @@ describe('primitives/config-read', () => {
     });
   });
 
+  describe('Given a config with a [core] maxTreeDepth value', () => {
+    describe('When readConfig', () => {
+      it('Then parsed.core.maxTreeDepth carries the value', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[core]\n\tmaxTreeDepth = 4096\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.core?.maxTreeDepth).toBe(4096);
+      });
+    });
+  });
+
+  describe('Given a [core] section with an invalid maxTreeDepth value', () => {
+    describe('When readConfig', () => {
+      it.each([
+        { config: '[core]\n\tmaxTreeDepth = 2.5\n', label: 'invalid unit (2.5)' },
+        {
+          config: '[core]\n\tmaxTreeDepth = 2147483648\n',
+          label: 'out of range (2147483648 — the C-int narrowing applies here too)',
+        },
+      ])(
+        'Then maxTreeDepth is absent and readConfig does not throw ($label)',
+        async ({ config }) => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, config);
+
+          // Act
+          const result = await readConfig(ctx);
+
+          // Assert
+          expect(result.core?.maxTreeDepth).toBeUndefined();
+        },
+      );
+    });
+  });
   describe('Given a cached config and invalidateConfigCache for that context', () => {
     describe('When readConfig is called again', () => {
       it('Then the file is re-read', async () => {
@@ -1979,8 +2063,8 @@ describe('primitives/config-read', () => {
         invalidateConfigCache(ctx);
         await readConfig(ctx);
 
-        // Assert — the dropped entry forces a second underlying read.
-        expect(spy).toHaveBeenCalledTimes(2);
+        // Assert — the dropped entry forces a second underlying scope walk.
+        expect(spy).toHaveBeenCalledTimes(READS_PER_LOAD * 2);
       });
     });
   });
@@ -2001,8 +2085,8 @@ describe('primitives/config-read', () => {
         invalidateConfigCache(ctxA);
         await readConfig(ctxB);
 
-        // Assert — ctxB still served from cache: only one read.
-        expect(spyB).toHaveBeenCalledTimes(1);
+        // Assert — ctxB still served from cache: only its own one scope walk.
+        expect(spyB).toHaveBeenCalledTimes(READS_PER_LOAD);
       });
     });
   });
@@ -2031,11 +2115,11 @@ describe('primitives/config-read', () => {
         await readConfig(ctx);
         const result = await findFirstValuelessEntry(ctx, 'core', undefined, ['excludesfile']);
 
-        // Assert — the finder served the cached tokens, no second read.
+        // Assert — the finder served the cached entry, no second scope walk.
         expect(result?.key).toBe('core.excludesfile');
         expect(result?.line).toBe(2);
         expect(result?.source).toBe(`${ctx.layout.gitDir}/config`);
-        expect(spy).toHaveBeenCalledTimes(1);
+        expect(spy).toHaveBeenCalledTimes(READS_PER_LOAD);
       });
 
       it('Then after invalidateConfigCache the next finder re-reads (spy count 2)', async () => {
@@ -2050,7 +2134,7 @@ describe('primitives/config-read', () => {
         await findFirstValuelessEntry(ctx, 'core', undefined, ['excludesfile']);
 
         // Assert
-        expect(spy).toHaveBeenCalledTimes(2);
+        expect(spy).toHaveBeenCalledTimes(READS_PER_LOAD * 2);
       });
     });
 
@@ -2065,10 +2149,10 @@ describe('primitives/config-read', () => {
         const found = await findFirstValuelessEntry(ctx, 'core', undefined, ['excludesfile']);
         const parsed = await readConfig(ctx);
 
-        // Assert — one read, and readConfig yields the parse built from those tokens.
+        // Assert — one scope walk, and readConfig yields the parse built from it.
         expect(found?.key).toBe('core.excludesfile');
         expect(parsed.core).toBeUndefined();
-        expect(spy).toHaveBeenCalledTimes(1);
+        expect(spy).toHaveBeenCalledTimes(READS_PER_LOAD);
       });
     });
   });
@@ -2086,7 +2170,7 @@ describe('primitives/config-read', () => {
 
         // Assert
         expect(result).toBeUndefined();
-        expect(spy).toHaveBeenCalledTimes(1);
+        expect(spy).toHaveBeenCalledTimes(READS_PER_LOAD);
       });
     });
   });
@@ -5418,6 +5502,170 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
 
           // Assert
           expect(result?.key).toBe('core.compression');
+        });
+      });
+    });
+  });
+
+  describe('findLastInvalidMaxTreeDepth', () => {
+    describe('Given core.maxTreeDepth = 2.5 (line 2) then core.maxTreeDepth = 2048 (line 3)', () => {
+      describe('When findLastInvalidMaxTreeDepth', () => {
+        it('Then returns undefined (the last, valid entry is the effective one)', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await ctx.fs.writeUtf8(
+            `${ctx.layout.gitDir}/config`,
+            '[core]\n\tmaxTreeDepth = 2.5\n\tmaxTreeDepth = 2048\n',
+          );
+
+          // Act
+          const result = await findLastInvalidMaxTreeDepth(ctx);
+
+          // Assert
+          expect(result).toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given core.maxTreeDepth = 2048 (line 2) then core.maxTreeDepth = 2.5 (line 3)', () => {
+      describe('When findLastInvalidMaxTreeDepth', () => {
+        it('Then returns the entry for 2.5 (only the last entry is validated)', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await ctx.fs.writeUtf8(
+            `${ctx.layout.gitDir}/config`,
+            '[core]\n\tmaxTreeDepth = 2048\n\tmaxTreeDepth = 2.5\n',
+          );
+
+          // Act
+          const result = await findLastInvalidMaxTreeDepth(ctx);
+
+          // Assert
+          expect(result).not.toBeUndefined();
+          expect(result?.key).toBe('core.maxtreedepth');
+          expect(result?.value).toBe('2.5');
+          expect(result?.reason).toBe('invalid unit');
+        });
+      });
+    });
+
+    describe('Given a valueless core.maxTreeDepth entry (no "=")', () => {
+      describe('When findLastInvalidMaxTreeDepth', () => {
+        it("Then returns an entry with value '' and reason invalid unit", async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tmaxTreeDepth\n');
+
+          // Act
+          const result = await findLastInvalidMaxTreeDepth(ctx);
+
+          // Assert
+          expect(result?.value).toBe('');
+          expect(result?.reason).toBe('invalid unit');
+        });
+      });
+    });
+
+    describe('Given an empty core.maxTreeDepth value ("maxTreeDepth =")', () => {
+      describe('When findLastInvalidMaxTreeDepth', () => {
+        it("Then returns an entry with value '' and reason invalid unit", async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tmaxTreeDepth =\n');
+
+          // Act
+          const result = await findLastInvalidMaxTreeDepth(ctx);
+
+          // Assert
+          expect(result?.value).toBe('');
+          expect(result?.reason).toBe('invalid unit');
+        });
+      });
+    });
+
+    describe('Given a mixed-case core.MaxTreeDepth key with an invalid value', () => {
+      describe('When findLastInvalidMaxTreeDepth', () => {
+        it('Then reports the qualified key all-lowercase', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tMaxTreeDepth = 2.5\n');
+
+          // Act
+          const result = await findLastInvalidMaxTreeDepth(ctx);
+
+          // Assert
+          expect(result?.key).toBe('core.maxtreedepth');
+        });
+      });
+    });
+
+    describe('Given core.maxTreeDepth under an unrelated section', () => {
+      describe('When findLastInvalidMaxTreeDepth', () => {
+        it('Then it reports nothing', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[foo]\n\tmaxTreeDepth = 2.5\n');
+
+          // Act
+          const result = await findLastInvalidMaxTreeDepth(ctx);
+
+          // Assert
+          expect(result).toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given core.maxTreeDepth under a [core "sub"] subsection', () => {
+      describe('When findLastInvalidMaxTreeDepth', () => {
+        it('Then it reports nothing', async () => {
+          // Arrange — the key is `core.maxTreeDepth` only when [core] carries
+          // no subsection; a subsectioned block is a different key entirely.
+          const ctx = createMemoryContext();
+          await seed(ctx, '[core "sub"]\n\tmaxTreeDepth = 2.5\n');
+
+          // Act
+          const result = await findLastInvalidMaxTreeDepth(ctx);
+
+          // Assert
+          expect(result).toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given the same key split across [core] and [CORE]', () => {
+      describe('When the value is applied and validated', () => {
+        it('Then both observe the last-wins value, as git does', async () => {
+          // Arrange — git matches section names case-insensitively, so [CORE]
+          // is the same section and its entry wins. The applier and the
+          // validator must agree on which entry is effective; a case-sensitive
+          // applier would apply 4096 while the gate cleared 2048.
+          const ctx = createMemoryContext();
+          await seed(ctx, '[core]\n\tmaxTreeDepth = 4096\n[CORE]\n\tmaxTreeDepth = 2048\n');
+
+          // Act
+          const parsed = await readConfig(ctx);
+          const invalid = await findLastInvalidMaxTreeDepth(ctx);
+
+          // Assert
+          expect(parsed.core?.maxTreeDepth).toBe(2048);
+          expect(invalid).toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given an invalid core.maxTreeDepth in an upper-case [CORE] block', () => {
+      describe('When findLastInvalidMaxTreeDepth', () => {
+        it('Then it reports the entry, because [CORE] is [core]', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[CORE]\n\tmaxTreeDepth = 2.5\n');
+
+          // Act
+          const result = await findLastInvalidMaxTreeDepth(ctx);
+
+          // Assert
+          expect(result?.key).toBe('core.maxtreedepth');
+          expect(result?.value).toBe('2.5');
         });
       });
     });

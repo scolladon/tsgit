@@ -102,6 +102,9 @@ export const compareToBaseline = (
 
 const PR_COMMENT_PATH = '/tmp/bench-comment.md';
 
+// This comparison is same-runner base-vs-head (no gh-pages publish), so it
+// reads the plain (un-stamped) parse result — `toSnapshotEntries` carries no
+// Node-version metadata to name a placeholder for.
 const readReport = async (
   filePath: string,
   hot: readonly string[],

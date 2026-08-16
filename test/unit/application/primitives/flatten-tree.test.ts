@@ -8,17 +8,37 @@ import type { FlatTreeEntry } from '../../../../src/domain/diff/flat-tree.js';
 import { encode, hexToBytes } from '../../../../src/domain/objects/encoding.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import type { FilePath, ObjectId, Tree } from '../../../../src/domain/objects/index.js';
-import { buildSeededContext, instrumentedContext, writeRawObjectBytes } from './fixtures.js';
+import {
+  buildSeededContext,
+  instrumentedContext,
+  seedMaxTreeDepth,
+  writeRawObjectBytes,
+} from './fixtures.js';
 
-const writeBlob = async (
-  ctx: Awaited<ReturnType<typeof buildSeededContext>>,
-  content: string,
-): Promise<ObjectId> =>
+type Ctx = Awaited<ReturnType<typeof buildSeededContext>>;
+
+const writeBlob = async (ctx: Ctx, content: string): Promise<ObjectId> =>
   writeObject(ctx, {
     type: 'blob',
     content: new TextEncoder().encode(content),
     id: '' as ObjectId,
   });
+
+/** Build a chain of `levels` nested DIRECTORY wrappers around a real leaf
+ *  tree (one blob entry) — a small, config-cap-reachable stand-in for the
+ *  1000+-level fixtures a hardcoded 1024/2048 cap used to require. */
+const buildDirectoryChain = async (ctx: Ctx, levels: number): Promise<ObjectId> => {
+  const blobId = await writeBlob(ctx, 'leaf');
+  let current = await writeTree(ctx, [
+    { name: 'leaf' as FilePath, id: blobId, mode: FILE_MODE.REGULAR },
+  ]);
+  for (let i = 0; i < levels; i++) {
+    current = await writeTree(ctx, [
+      { name: `d${i}` as FilePath, id: current, mode: FILE_MODE.DIRECTORY },
+    ]);
+  }
+  return current;
+};
 
 function concatBytes(...parts: ReadonlyArray<Uint8Array>): Uint8Array {
   const total = parts.reduce((sum, part) => sum + part.length, 0);
@@ -503,6 +523,101 @@ describe('flattenTree', () => {
         } catch (error) {
           const { data } = error as { data: { code: string } };
           expect(data.code).toBe('OPERATION_ABORTED');
+        }
+      });
+    });
+  });
+
+  // --- core.maxTreeDepth boundary: the resolved cap, not a hardcoded value ---
+
+  describe('Given a repository configured with core.maxTreeDepth = 4', () => {
+    describe('When flattenTree is driven at depth 4', () => {
+      it('Then it completes', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await seedMaxTreeDepth(ctx, '4');
+        const treeId = await buildDirectoryChain(ctx, 4);
+
+        // Act
+        const result = await flattenTree(ctx, treeId);
+
+        // Assert
+        expect(result.entries.size).toBe(1);
+      });
+    });
+
+    describe('When flattenTree is driven at depth 5', () => {
+      it('Then throws TREE_DEPTH_EXCEEDED with depth === 5', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await seedMaxTreeDepth(ctx, '4');
+        const treeId = await buildDirectoryChain(ctx, 5);
+
+        // Act + Assert
+        try {
+          await flattenTree(ctx, treeId);
+          expect.unreachable();
+        } catch (error) {
+          const { data } = error as { data: { code: string; depth: number } };
+          expect(data.code).toBe('TREE_DEPTH_EXCEEDED');
+          expect(data.depth).toBe(5);
+        }
+      });
+    });
+  });
+
+  describe('Given a repository configured with core.maxTreeDepth = 4 and a tree 20x past the cap', () => {
+    describe('When flattenTree runs', () => {
+      it('Then throws TREE_DEPTH_EXCEEDED with depth === 5, not the deeper structural depth', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await seedMaxTreeDepth(ctx, '4');
+        const treeId = await buildDirectoryChain(ctx, 80);
+
+        // Act + Assert
+        try {
+          await flattenTree(ctx, treeId);
+          expect.unreachable();
+        } catch (error) {
+          const { data } = error as { data: { code: string; depth: number } };
+          expect(data.code).toBe('TREE_DEPTH_EXCEEDED');
+          expect(data.depth).toBe(5);
+        }
+      });
+    });
+  });
+
+  describe('Given the same depth-4 tree tested at two different core.maxTreeDepth values', () => {
+    describe('When core.maxTreeDepth = 4', () => {
+      it('Then it completes', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await seedMaxTreeDepth(ctx, '4');
+        const treeId = await buildDirectoryChain(ctx, 4);
+
+        // Act
+        const result = await flattenTree(ctx, treeId);
+
+        // Assert
+        expect(result.entries.size).toBe(1);
+      });
+    });
+
+    describe('When core.maxTreeDepth = 3', () => {
+      it('Then throws TREE_DEPTH_EXCEEDED with depth === 4', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await seedMaxTreeDepth(ctx, '3');
+        const treeId = await buildDirectoryChain(ctx, 4);
+
+        // Act + Assert
+        try {
+          await flattenTree(ctx, treeId);
+          expect.unreachable();
+        } catch (error) {
+          const { data } = error as { data: { code: string; depth: number } };
+          expect(data.code).toBe('TREE_DEPTH_EXCEEDED');
+          expect(data.depth).toBe(4);
         }
       });
     });

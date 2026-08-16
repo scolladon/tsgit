@@ -6,6 +6,7 @@ import {
   type BundleCreateResult,
   bundleCreate,
 } from '../../../../src/application/commands/bundle-create.js';
+import { invalidateConfigCache } from '../../../../src/application/primitives/config-read.js';
 import { createCommit } from '../../../../src/application/primitives/create-commit.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../src/application/primitives/write-tree.js';
@@ -583,6 +584,38 @@ describe('bundleCreate', () => {
         // Assert — explicit ordered golden from real git 2.54.0
         const refNames = result.refs.map((r) => r.name as string);
         expect(refNames).toEqual(['refs/heads/main', 'HEAD']);
+      });
+    });
+  });
+
+  describe('Given a repository whose config holds an invalid core.maxTreeDepth', () => {
+    describe('When bundleCreate is called', () => {
+      it('Then throws CONFIG_BAD_NUMERIC_VALUE with reason invalid unit', async () => {
+        // Arrange
+        const { ctx } = await buildSingleCommitRepo();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tmaxTreeDepth = 2.5\n');
+        invalidateConfigCache(ctx);
+
+        // Act
+        let caught: unknown;
+        try {
+          await bundleCreate(ctx, { all: true });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as {
+          readonly code: string;
+          readonly key: string;
+          readonly value: string;
+          readonly reason: string;
+        };
+        expect(data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+        expect(data.key).toBe('core.maxtreedepth');
+        expect(data.value).toBe('2.5');
+        expect(data.reason).toBe('invalid unit');
       });
     });
   });

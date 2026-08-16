@@ -204,6 +204,7 @@ const filtered = await repo.bundle.listHeads({
 ### `create`
 
 - `NOT_A_REPOSITORY` — outside a git repository.
+- `CONFIG_BAD_NUMERIC_VALUE` / `CONFIG_BAD_ZLIB_LEVEL` / `CONFIG_MISSING_VALUE` / `CONFIG_BAD_BOOLEAN_VALUE` — an invalid `[core]` entry, reached through the same eager operational gate every other operational command reads (see [`errors.md`](../errors.md)); includes an invalid `core.maxTreeDepth`. `verify` and `listHeads` do not read this gate — they operate on the bundle file, not the ambient repository's config.
 - `BUNDLE_EMPTY` `reason: 'no-refs'` — no rev arg resolves to a named ref
   (no `--all`/`--branches`/`--tags` and no `{ tip }` DWIMs to a ref).
 - `BUNDLE_EMPTY` `reason: 'no-objects'` — the rev selection yields an empty

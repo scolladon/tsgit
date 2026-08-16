@@ -10,7 +10,20 @@ export default defineConfig({
     testTimeout: 120_000,
     // Pin the timezone so calendar-component date arithmetic (approxidate's
     // ISO-form parsing) is deterministic across hosts and CI runners.
-    env: { TZ: 'UTC' },
+    //
+    // HOME/USERPROFILE/XDG_CONFIG_HOME point at a path that cannot exist, so
+    // no test can reach the machine's real user config. The scope-aware
+    // porcelain reader (`git config --global …`) resolves those paths, and a
+    // node-backed test would otherwise resolve them to this developer's own
+    // `~/.gitconfig` — which has already broken a byte comparison here. A
+    // missing file reads as empty config (already the contract for the local
+    // file), so a non-existent directory is sufficient; no fixture is created.
+    env: {
+      TZ: 'UTC',
+      HOME: '/nonexistent/tsgit-vitest-isolated-home',
+      USERPROFILE: '/nonexistent/tsgit-vitest-isolated-home',
+      XDG_CONFIG_HOME: '/nonexistent/tsgit-vitest-isolated-home/.config',
+    },
     // Use every logical core (default is n-1 on runs and n/2 in watch mode);
     // the percentage form scales to each machine, so CI stays safe.
     maxWorkers: '100%',

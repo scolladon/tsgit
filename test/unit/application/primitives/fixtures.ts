@@ -2,15 +2,21 @@
  * Shared test fixtures for primitives —.
  */
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
+import { invalidateConfigCache } from '../../../../src/application/primitives/config-read.js';
 import {
   commitGraphChainPath,
   commitGraphPath,
 } from '../../../../src/application/primitives/path-layout.js';
+import { writeObject } from '../../../../src/application/primitives/write-object.js';
+import { writeTree } from '../../../../src/application/primitives/write-tree.js';
 import type { GitIndex } from '../../../../src/domain/git-index/index-entry.js';
 import { serializeIndex } from '../../../../src/domain/git-index/index-writer.js';
+import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import { serializeObject } from '../../../../src/domain/objects/git-object.js';
 import type {
   Commit,
+  FileMode,
+  FilePath,
   GitObject,
   ObjectId,
   ObjectType,
@@ -26,6 +32,117 @@ import {
   type CommitGraphCommitModel,
   type CommitGraphLayerModel,
 } from '../../domain/commit/arbitraries.js';
+
+/**
+ * Write `core.maxTreeDepth = <value>` to `ctx`'s `.git/config` and invalidate
+ * the per-`Context` config cache so a subsequent read observes it. `value` is
+ * the raw config string (not a number) so callers can seed malformed grammar
+ * (`'2.5'`, `''`, etc.) alongside valid values.
+ */
+export const seedMaxTreeDepth = async (ctx: Context, value: string): Promise<void> => {
+  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, `[core]\n\tmaxTreeDepth = ${value}\n`);
+  invalidateConfigCache(ctx);
+};
+
+/** A path with exactly `slashes` slashes: `d0/d1/…/d{slashes}`. */
+export const deepIndexPath = (slashes: number): string =>
+  Array.from({ length: slashes + 1 }, (_unused, i) => `d${i}`).join('/');
+
+/**
+ * Fixed leaf content `buildTreeChain` writes at the bottom of its chain. A
+ * caller that wants to compare `buildTreeChain`'s output against an
+ * independently-synthesised tree for the same depth (e.g. a
+ * `synthesizeTreeFromIndex`/`writeNestedTree` round-trip) writes a blob with
+ * this SAME content — content-addressing then makes the two blob ids equal
+ * regardless of which writer produced them, without threading an id across
+ * the two call sites.
+ */
+export const DEEP_CHAIN_LEAF_CONTENT = 'deep-chain-leaf';
+
+/**
+ * Build a `depth`-level nested tree chain: one leaf blob at the bottom,
+ * wrapped in `depth` levels of single-entry directory trees named
+ * `d0`..`d{depth}` — the exact shape `synthesizeTreeFromIndex` and
+ * `writeNestedTree` produce for a single entry at `deepIndexPath(depth)`.
+ * `depth` follows the same slash-count convention as `deepIndexPath` and
+ * `seedMaxTreeDepth`'s callers. Returns the root tree's `ObjectId`.
+ */
+export async function buildTreeChain(ctx: Context, depth: number): Promise<ObjectId> {
+  const leafId = await writeObject(ctx, {
+    type: 'blob',
+    content: new TextEncoder().encode(DEEP_CHAIN_LEAF_CONTENT),
+    id: '' as ObjectId,
+  });
+  let childId: ObjectId = leafId;
+  let childMode: FileMode = FILE_MODE.REGULAR;
+  for (let segment = depth; segment >= 0; segment -= 1) {
+    childId = await writeTree(ctx, [
+      { name: `d${segment}` as FilePath, id: childId, mode: childMode },
+    ]);
+    childMode = FILE_MODE.DIRECTORY;
+  }
+  return childId;
+}
+
+/**
+ * Create `depth` nested directories under `ctx.layout.workDir` in the
+ * **memory** adapter, with one leaf file (`leaf`) at the bottom. Every
+ * level reuses the SAME single-character directory name (`a`) — the chain
+ * has no siblings, so no name collision is possible, and a 1-byte segment
+ * maximises how deep a fixture can go before `validateWalkedEntryPath`'s own
+ * 4096-byte total-path cap (independent of `core.maxTreeDepth`) becomes the
+ * binding constraint rather than the depth guard under test.
+ * `createMemoryContext()` has no path-length limit, so the same fixture runs
+ * identically on linux, macOS and Windows — a real on-disk deep checkout
+ * would fail with `File name too long` long before reaching a realistic
+ * `core.maxTreeDepth`. `depth` follows `walkWorkingTree`'s own counter: the
+ * deepest directory frame the walker enters is checked against the depth
+ * guard at exactly this value.
+ */
+export async function seedDeepWorkingTree(ctx: Context, depth: number): Promise<void> {
+  const chain = Array.from({ length: depth }, () => 'a').join('/');
+  await ctx.fs.writeUtf8(`${ctx.layout.workDir}/${chain}/leaf`, 'leaf');
+}
+
+/**
+ * Like {@link seedDeepWorkingTree}, but the deepest directory is left EMPTY
+ * (no leaf file). Even a single-character leaf name pushes a `depth`-2048
+ * chain's leaf path one byte past `validateWalkedEntryPath`'s 4096-byte
+ * total-path cap, so a fixture probing right at that boundary must stop one
+ * segment short of a leaf.
+ */
+export async function seedDeepEmptyWorkingTree(ctx: Context, depth: number): Promise<void> {
+  const chain = Array.from({ length: depth }, () => 'a').join('/');
+  await ctx.fs.mkdir(`${ctx.layout.workDir}/${chain}`);
+}
+
+/**
+ * Like {@link seedDeepEmptyWorkingTree}, but plants one 1-character leaf
+ * file one level short of the bottom instead of leaving the whole chain
+ * empty — a positive oracle for "the walk actually descended" rather than
+ * merely "didn't throw". The deepest directory (`depth`) stays empty, so
+ * the boundary {@link seedDeepEmptyWorkingTree} probes (walking exactly to
+ * `depth` without throwing) is unchanged; the leaf sits one level up, at
+ * `depth - 1`.
+ *
+ * No leaf fits any deeper: a 1-character leaf inside the `depth`-th
+ * directory would be `2*depth + 1` bytes, one byte past
+ * `validateWalkedEntryPath`'s 4096-byte total-path cap (independent of
+ * `core.maxTreeDepth`); the same leaf one level up, inside the
+ * `(depth - 1)`-th directory, is `2*depth - 1` bytes — safely under it.
+ * Returns the leaf's repo-relative path.
+ */
+export async function seedDeepWorkingTreeWithNearBottomLeaf(
+  ctx: Context,
+  depth: number,
+): Promise<string> {
+  const leafParent = Array.from({ length: depth - 1 }, () => 'a').join('/');
+  const leafPath = `${leafParent}/x`;
+  await ctx.fs.writeUtf8(`${ctx.layout.workDir}/${leafPath}`, 'leaf');
+  const chain = Array.from({ length: depth }, () => 'a').join('/');
+  await ctx.fs.mkdir(`${ctx.layout.workDir}/${chain}`);
+  return leafPath;
+}
 
 export interface BuildSeededContextParts {
   readonly objects?: ReadonlyArray<GitObject>;

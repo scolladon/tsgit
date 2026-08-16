@@ -9,7 +9,6 @@ import { init } from '../../../../src/application/commands/init.js';
 import {
   asMergeDirtyError,
   buildConflictIndexEntries,
-  MAX_MERGE_TREE_DEPTH,
   materialiseConflictBytes,
   mergeRun,
   resolveMergeAuthor,
@@ -27,6 +26,7 @@ import { resolveRef } from '../../../../src/application/primitives/resolve-ref.j
 import * as streamBlobMod from '../../../../src/application/primitives/stream-blob.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { checkoutOverwriteDirty } from '../../../../src/domain/commands/error.js';
+import { DEFAULT_MAX_TREE_DEPTH } from '../../../../src/domain/diff/flat-tree.js';
 import { TsgitError } from '../../../../src/domain/error.js';
 import type { MergeConflict, MergeOutcome } from '../../../../src/domain/merge/index.js';
 import type {
@@ -37,6 +37,23 @@ import type {
   Tree,
 } from '../../../../src/domain/objects/index.js';
 import { FILE_MODE } from '../../../../src/domain/objects/index.js';
+import {
+  buildSeededContext,
+  buildTreeChain,
+  DEEP_CHAIN_LEAF_CONTENT,
+  deepIndexPath,
+  seedMaxTreeDepth,
+} from '../primitives/fixtures.js';
+
+const writeBlob = async (
+  ctx: Awaited<ReturnType<typeof buildSeededContext>>,
+  content: string,
+): Promise<ObjectId> =>
+  writeObject(ctx, {
+    type: 'blob',
+    content: new TextEncoder().encode(content),
+    id: '' as ObjectId,
+  });
 
 const author: AuthorIdentity = {
   name: 'Ada',
@@ -1970,55 +1987,219 @@ describe('resolveMergeAuthor / resolveMergeCommitter (direct)', () => {
 });
 
 describe('writeNestedTree (direct)', () => {
-  describe('Given flat leaves at depth exactly MAX_MERGE_TREE_DEPTH', () => {
+  describe('Given core.maxTreeDepth configured to zero and a top-level leaf', () => {
     describe('When writeNestedTree runs', () => {
-      it('Then it succeeds (depth > cap, not >=)', async () => {
-        // Arrange — no subdirs, so no recursion; depth === cap must NOT throw.
-        const ctx = createMemoryContext();
-        await init(ctx);
-        const blobId = await writeObject(ctx, {
-          type: 'blob',
-          content: new TextEncoder().encode('x'),
-          id: '' as ObjectId,
-        });
+      it('Then it completes — zero permits exactly the top level', async () => {
+        // Arrange — the companion to the negative case, and the one that
+        // separates `maxDepth < 0` from `maxDepth <= 0`: a cap of 0 must still
+        // admit depth-0 entries, so a flat leaf list writes a tree.
+        const ctx = await buildSeededContext();
+        await seedMaxTreeDepth(ctx, '0');
+        const blobId = await writeBlob(ctx, DEEP_CHAIN_LEAF_CONTENT);
         const leaves = [{ path: 'f.txt' as FilePath, id: blobId, mode: FILE_MODE.REGULAR }];
 
         // Act
-        const result = await writeNestedTree(ctx, leaves, MAX_MERGE_TREE_DEPTH);
+        const result = await writeNestedTree(ctx, leaves);
 
-        // Assert — a real tree id was produced.
+        // Assert
         const tree = await readObject(ctx, result);
         expect(tree.type).toBe('tree');
       });
     });
   });
 
-  describe('Given a nested leaf at depth MAX_MERGE_TREE_DEPTH', () => {
-    describe('When writeNestedTree recurses', () => {
-      it('Then it throws TREE_DEPTH_EXCEEDED with depth=cap+1', async () => {
-        // Arrange — a leaf with a `/` forces one recursion to depth cap+1.
-        const ctx = createMemoryContext();
-        await init(ctx);
-        const blobId = await writeObject(ctx, {
-          type: 'blob',
-          content: new TextEncoder().encode('x'),
-          id: '' as ObjectId,
-        });
-        const leaves = [{ path: 'sub/f.txt' as FilePath, id: blobId, mode: FILE_MODE.REGULAR }];
+  describe('Given core.maxTreeDepth configured negative and a top-level leaf', () => {
+    describe('When writeNestedTree runs', () => {
+      it('Then it throws TREE_DEPTH_EXCEEDED at depth 0 — the root itself is refused', async () => {
+        // Arrange — a negative cap is a valid cap, not "unlimited": the root
+        // sits at depth 0 and `0 > -1`, so even a flat leaf list is refused
+        // before anything is partitioned. Matches the traversal sites, where
+        // real git also refuses a flat tree under a negative cap.
+        const ctx = await buildSeededContext();
+        await seedMaxTreeDepth(ctx, '-1');
+        const blobId = await writeBlob(ctx, DEEP_CHAIN_LEAF_CONTENT);
+        const leaves = [{ path: 'f.txt' as FilePath, id: blobId, mode: FILE_MODE.REGULAR }];
+
+        // Act + Assert
+        try {
+          await writeNestedTree(ctx, leaves);
+          expect.unreachable();
+        } catch (error) {
+          const data = (error as { data: { code: string; depth: number } }).data;
+          expect(data.code).toBe('TREE_DEPTH_EXCEEDED');
+          expect(data.depth).toBe(0);
+        }
+      });
+    });
+  });
+
+  describe('Given config unset (default cap) and a leaf at exactly the default depth', () => {
+    describe('When writeNestedTree runs', () => {
+      it('Then it completes and the tree round-trips', async () => {
+        // Arrange — this is the assertion that distinguishes an explicit
+        // stack from recursion: before the rewrite, writeNestedTree's own
+        // recursion overflows the JS call stack well before reaching
+        // DEFAULT_MAX_TREE_DEPTH (2048).
+        const ctx = await buildSeededContext();
+        const blobId = await writeBlob(ctx, DEEP_CHAIN_LEAF_CONTENT);
+        const path = deepIndexPath(DEFAULT_MAX_TREE_DEPTH) as FilePath;
+        const leaves = [{ path, id: blobId, mode: FILE_MODE.REGULAR }];
+        const expectedRootId = await buildTreeChain(ctx, DEFAULT_MAX_TREE_DEPTH);
+
+        // Act
+        const result = await writeNestedTree(ctx, leaves);
+
+        // Assert — identity against an independently-built chain of the
+        // same shape proves the write order too, not just "no throw".
+        expect(result).toBe(expectedRootId);
+      });
+    });
+  });
+
+  describe('Given config unset (default cap) and a leaf one past the default depth', () => {
+    describe('When writeNestedTree runs', () => {
+      it('Then it throws TREE_DEPTH_EXCEEDED with the exact depth', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const blobId = await writeBlob(ctx, 'x');
+        const path = deepIndexPath(DEFAULT_MAX_TREE_DEPTH + 1) as FilePath;
+        const leaves = [{ path, id: blobId, mode: FILE_MODE.REGULAR }];
 
         // Act
         let caught: unknown;
         try {
-          await writeNestedTree(ctx, leaves, MAX_MERGE_TREE_DEPTH);
+          await writeNestedTree(ctx, leaves);
         } catch (err) {
           caught = err;
         }
 
-        // Assert — the recursion adds exactly 1 (depth + 1), tripping the cap at
-        // cap+1; this kills `depth - 1` and the `false` conditional mutant.
+        // Assert
         const data = (caught as { data?: { code?: string; depth?: number } })?.data;
         expect(data?.code).toBe('TREE_DEPTH_EXCEEDED');
-        expect(data?.depth).toBe(MAX_MERGE_TREE_DEPTH + 1);
+        expect(data?.depth).toBe(DEFAULT_MAX_TREE_DEPTH + 1);
+      });
+    });
+  });
+
+  describe('Given core.maxTreeDepth configured to a small cap', () => {
+    const SMALL_CAP = 4;
+
+    describe('When a leaf is exactly at the configured cap', () => {
+      it('Then it succeeds (depth > cap, not >=)', async () => {
+        // Arrange — no subdirs beyond the cap; depth === cap must NOT throw.
+        const ctx = await buildSeededContext();
+        await seedMaxTreeDepth(ctx, String(SMALL_CAP));
+        const blobId = await writeBlob(ctx, DEEP_CHAIN_LEAF_CONTENT);
+        const path = deepIndexPath(SMALL_CAP) as FilePath;
+        const leaves = [{ path, id: blobId, mode: FILE_MODE.REGULAR }];
+        const expectedRootId = await buildTreeChain(ctx, SMALL_CAP);
+
+        // Act
+        const result = await writeNestedTree(ctx, leaves);
+
+        // Assert
+        expect(result).toBe(expectedRootId);
+      });
+    });
+
+    describe('When a leaf is one level past the configured cap', () => {
+      it('Then it throws TREE_DEPTH_EXCEEDED with depth = cap + 1', async () => {
+        // Arrange — one extra `/` forces one extra level, tripping the cap
+        // at cap + 1; this kills a `depth - 1` mutant and a `false`
+        // conditional mutant on the guard.
+        const ctx = await buildSeededContext();
+        await seedMaxTreeDepth(ctx, String(SMALL_CAP));
+        const blobId = await writeBlob(ctx, 'x');
+        const path = deepIndexPath(SMALL_CAP + 1) as FilePath;
+        const leaves = [{ path, id: blobId, mode: FILE_MODE.REGULAR }];
+
+        // Act
+        let caught: unknown;
+        try {
+          await writeNestedTree(ctx, leaves);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        const data = (caught as { data?: { code?: string; depth?: number } })?.data;
+        expect(data?.code).toBe('TREE_DEPTH_EXCEEDED');
+        expect(data?.depth).toBe(SMALL_CAP + 1);
+      });
+    });
+
+    describe('When a leaf sits far beyond the configured cap (20x)', () => {
+      it('Then it throws TREE_DEPTH_EXCEEDED with depth = cap + 1, never larger, never a RangeError', async () => {
+        // Arrange — the DURING-descent guard fires as soon as depth crosses
+        // the cap, without ever partitioning the levels beyond it: proves
+        // the guard is reachable (not dead code behind a stack overflow)
+        // regardless of how much deeper the input actually goes.
+        const ctx = await buildSeededContext();
+        await seedMaxTreeDepth(ctx, String(SMALL_CAP));
+        const blobId = await writeBlob(ctx, 'x');
+        const path = deepIndexPath(SMALL_CAP * 20) as FilePath;
+        const leaves = [{ path, id: blobId, mode: FILE_MODE.REGULAR }];
+
+        // Act
+        let caught: unknown;
+        try {
+          await writeNestedTree(ctx, leaves);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        const data = (caught as { data?: { code?: string; depth?: number } })?.data;
+        expect(data?.code).toBe('TREE_DEPTH_EXCEEDED');
+        expect(data?.depth).toBe(SMALL_CAP + 1);
+      });
+    });
+  });
+
+  describe('Given the same fixture evaluated against two different configured caps', () => {
+    const FIXTURE_DEPTH = 5;
+
+    describe('When core.maxTreeDepth equals the fixture depth', () => {
+      it('Then it completes (the cap is read from config, not hardcoded)', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await seedMaxTreeDepth(ctx, String(FIXTURE_DEPTH));
+        const blobId = await writeBlob(ctx, DEEP_CHAIN_LEAF_CONTENT);
+        const path = deepIndexPath(FIXTURE_DEPTH) as FilePath;
+        const leaves = [{ path, id: blobId, mode: FILE_MODE.REGULAR }];
+        const expectedRootId = await buildTreeChain(ctx, FIXTURE_DEPTH);
+
+        // Act
+        const result = await writeNestedTree(ctx, leaves);
+
+        // Assert
+        expect(result).toBe(expectedRootId);
+      });
+    });
+
+    describe('When core.maxTreeDepth is one less than the fixture depth', () => {
+      it('Then the same fixture now refuses with depth = fixture depth', async () => {
+        // Arrange — SAME fixture depth as the passing case above; only the
+        // configured cap changes. A guard reading a hardcoded constant
+        // instead of config would pass both cases identically.
+        const ctx = await buildSeededContext();
+        await seedMaxTreeDepth(ctx, String(FIXTURE_DEPTH - 1));
+        const blobId = await writeBlob(ctx, 'x');
+        const path = deepIndexPath(FIXTURE_DEPTH) as FilePath;
+        const leaves = [{ path, id: blobId, mode: FILE_MODE.REGULAR }];
+
+        // Act
+        let caught: unknown;
+        try {
+          await writeNestedTree(ctx, leaves);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        const data = (caught as { data?: { code?: string; depth?: number } })?.data;
+        expect(data?.code).toBe('TREE_DEPTH_EXCEEDED');
+        expect(data?.depth).toBe(FIXTURE_DEPTH);
       });
     });
   });

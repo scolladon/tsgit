@@ -11,10 +11,14 @@
  *
  * Bounds are an explicit parameter rather than an inlined literal so the
  * entry-limit guard is reachable from a test with a small cap; `flattenTree`
- * calls this with `DEFAULT_FLATTEN_BOUNDS`.
+ * calls this with `resolveFlattenBounds(ctx)`.
+ *
+ * This descent was measured honouring `core.maxTreeDepth` to at least
+ * 15000 (2026-08-15): a fixture one level past a cap of 15000 refuses cleanly
+ * with `TREE_DEPTH_EXCEEDED` at depth 15001. Deeper than that is
+ * unmeasured — no raw stack overflow was observed at any depth tried.
  */
 import type { FlatTree, FlatTreeEntry } from '../../../domain/diff/flat-tree.js';
-import { MAX_TREE_WALK_DEPTH } from '../../../domain/diff/flat-tree.js';
 import { MAX_FLAT_TREE_ENTRIES } from '../../../domain/diff/index.js';
 import { operationAborted } from '../../../domain/error.js';
 import {
@@ -44,16 +48,26 @@ import { MAX_CONCURRENT_OBJECT_LOADS } from './bounded-map.js';
 import { type ConcurrencyLimiter, createConcurrencyLimiter } from './concurrency-limiter.js';
 import { prefetchSubtreeChildren, type SubtreePrefetch } from './raw-subtree-prefetch.js';
 import { joinPath, readRawTreeById } from './raw-tree-io.js';
+import { resolveMaxTreeDepth } from './resolve-max-tree-depth.js';
 
 export interface FlattenBounds {
   readonly maxDepth: number;
   readonly maxEntries: number;
 }
 
-export const DEFAULT_FLATTEN_BOUNDS: FlattenBounds = {
-  maxDepth: MAX_TREE_WALK_DEPTH,
+/**
+ * Resolve the bounds `flattenRawTree` uses by default: `maxDepth` from the
+ * repository-local `core.maxTreeDepth` (default 2048 when unset), `maxEntries`
+ * fixed at `MAX_FLAT_TREE_ENTRIES`. `FlattenBounds.maxDepth` stays a required
+ * field rather than an optional one so a call site can never forget the cap —
+ * an optional field would push the default down into `flattenLevel` (i.e. per
+ * level), which is exactly the hazard a single resolve-at-the-entry-point call
+ * avoids.
+ */
+export const resolveFlattenBounds = async (ctx: Context): Promise<FlattenBounds> => ({
+  maxDepth: await resolveMaxTreeDepth(ctx),
   maxEntries: MAX_FLAT_TREE_ENTRIES,
-};
+});
 
 interface FlattenConfig {
   readonly ctx: Context;
@@ -98,7 +112,7 @@ export async function flattenRawTree(
     limiter: createConcurrencyLimiter(MAX_CONCURRENT_OBJECT_LOADS),
   };
   const state: FlattenState = { counter: { value: 0 }, entries: new Map() };
-  await flattenLevel(config, state, content, rootId, '', 0, []);
+  await flattenLevel(config, state, content, rootId, '', 0, new Set());
   return { entries: state.entries };
 }
 
@@ -109,11 +123,20 @@ async function flattenLevel(
   id: ObjectId,
   prefix: string,
   depth: number,
-  stack: ReadonlyArray<ObjectId>,
+  stack: Set<ObjectId>,
 ): Promise<void> {
-  if (stack.includes(id)) throw treeCycleDetected(id);
+  if (stack.has(id)) throw treeCycleDetected(id);
   if (exceedsMaxTreeDepth(depth, config.bounds.maxDepth)) throw treeDepthExceeded(depth);
-  const descentStack = [...stack, id];
+  // `stack` is the single root-to-current path, owned by the entry point and
+  // mutated as the descent moves: added here, removed when this level returns.
+  // Deliberately not a fresh per-level copy — rebuilding one at every level
+  // costs O(depth^2) live pointers, which turns a deep descent into heap
+  // exhaustion (an uncatchable abort) instead of the typed refusal the depth
+  // cap exists to produce. The cap is a user-supplied config value with no
+  // internal ceiling, so that wall would be reachable by configuration alone.
+  // The delete is what keeps two siblings sharing one subtree oid from
+  // reading as a cycle.
+  stack.add(id);
   // Fires off bounded-concurrency reads for a bounded WINDOW of directory
   // children at THIS level before the (unchanged) sequential loop below even
   // starts — the loop still processes entries and awaits each descent one at
@@ -127,10 +150,11 @@ async function flattenLevel(
   while (!cursor.done) {
     const child = flattenEntry(config, state, cursor, prefix);
     if (child !== undefined) {
-      await descendIfTree(config, state, child.id, child.path, depth, descentStack, prefetch);
+      await descendIfTree(config, state, child.id, child.path, depth, stack, prefetch);
     }
     advanceCursor(cursor);
   }
+  stack.delete(id);
 }
 
 /**
@@ -181,7 +205,7 @@ async function descendIfTree(
   childId: ObjectId,
   path: FilePath,
   depth: number,
-  stack: ReadonlyArray<ObjectId>,
+  stack: Set<ObjectId>,
   prefetch: SubtreePrefetch,
 ): Promise<void> {
   // `prefetch` only covers a bounded window of this level's directory

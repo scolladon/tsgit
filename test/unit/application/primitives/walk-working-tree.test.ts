@@ -5,6 +5,12 @@ import { walkWorkingTree } from '../../../../src/application/primitives/walk-wor
 import { TsgitError } from '../../../../src/domain/error.js';
 import type { FilePath } from '../../../../src/domain/objects/object-id.js';
 import type { Context } from '../../../../src/ports/context.js';
+import {
+  seedDeepEmptyWorkingTree,
+  seedDeepWorkingTree,
+  seedDeepWorkingTreeWithNearBottomLeaf,
+  seedMaxTreeDepth,
+} from './fixtures.js';
 
 const seedFs = async (
   workingTree: Readonly<Record<string, string>>,
@@ -401,6 +407,140 @@ describe('walkWorkingTree', () => {
     });
   });
 
+  describe('Given a working tree exactly 2048 levels deep (config unset, default cap), with a leaf one level short of the bottom', () => {
+    describe('When walked', () => {
+      it('Then it yields exactly that leaf, proving genuine descent (positive boundary)', async () => {
+        // Arrange — a leaf at the very bottom (depth 2048) does not fit:
+        // validateWalkedEntryPath's OWN 4096-byte total-path cap (independent
+        // of core.maxTreeDepth) would be 2*2048+1 = 4097 bytes for a
+        // 1-character leaf there, one byte over. One level up, at depth
+        // 2047, the same 1-character leaf's path is 2*2048-1 = 4095 bytes —
+        // safely under the cap — so the leaf is planted there while the
+        // deepest directory (2048) stays empty, preserving the "completes
+        // exactly at the default cap" boundary this fixture also proves.
+        // 2048 is the default cap, not a measured ceiling; the
+        // explicit-stack walker has no frame ceiling to gamble against.
+        const ctx = createMemoryContext();
+        const leafPath = await seedDeepWorkingTreeWithNearBottomLeaf(ctx, 2048);
+
+        // Act
+        const result = await collect(walkWorkingTree(ctx));
+
+        // Assert — a frame-push regression that stops descending short of
+        // the leaf, or one that never reaches the empty 2048th directory
+        // (still drained by the walk above), fails this; the previous
+        // `toEqual([])` oracle could not distinguish either from a correct
+        // full descent.
+        expect(result).toEqual([leafPath]);
+      });
+    });
+  });
+
+  describe('Given a working tree 2049 levels deep (config unset, default cap)', () => {
+    describe('When walked', () => {
+      it('Then throws PATHSPEC_OUTSIDE_REPO, never a raw RangeError', async () => {
+        // Arrange — a 2049-segment path cannot be constructed at all under
+        // validateWalkedEntryPath's independent 4096-byte total-path cap,
+        // even with 1-character directory names (2*2049-1 = 4097 > 4096):
+        // that guard fires on the 2049th directory's own entry, before the
+        // depth guard (checked one entry later) ever runs. The default
+        // cap's own "throws past cap" side is exercised at a small
+        // configured cap below, comfortably inside the path-length budget;
+        // this test instead pins that no raw RangeError resurfaces here.
+        const ctx = createMemoryContext();
+        await seedDeepEmptyWorkingTree(ctx, 2049);
+
+        // Act + Assert
+        await expectError(() => collect(walkWorkingTree(ctx)), 'PATHSPEC_OUTSIDE_REPO');
+      });
+    });
+  });
+
+  describe('Given core.maxTreeDepth configured to a small cap', () => {
+    const SMALL_CAP = 4;
+
+    describe('When a working tree exactly at the configured cap is walked', () => {
+      it('Then completes and yields the leaf entry (boundary)', async () => {
+        // Arrange — the guard is `depth > maxDepth`, so a frame entered at
+        // exactly `maxDepth` must NOT raise TREE_DEPTH_EXCEEDED.
+        const ctx = createMemoryContext();
+        await seedMaxTreeDepth(ctx, String(SMALL_CAP));
+        await seedDeepWorkingTree(ctx, SMALL_CAP);
+
+        // Act
+        const result = await collect(walkWorkingTree(ctx));
+
+        // Assert
+        expect(result).toHaveLength(1);
+      });
+    });
+
+    describe('When a working tree one level past the configured cap is walked', () => {
+      it('Then throws TREE_DEPTH_EXCEEDED with depth = cap + 1', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedMaxTreeDepth(ctx, String(SMALL_CAP));
+        await seedDeepWorkingTree(ctx, SMALL_CAP + 1);
+
+        // Act
+        const err = await expectError(() => collect(walkWorkingTree(ctx)), 'TREE_DEPTH_EXCEEDED');
+
+        // Assert
+        expect((err.data as { depth: number }).depth).toBe(SMALL_CAP + 1);
+      });
+    });
+
+    describe('When a working tree far past the configured cap is walked', () => {
+      it('Then throws at depth = cap + 1, never the fixture depth or a RangeError', async () => {
+        // Arrange — 20x past the cap, proving the guard fires at the cap
+        // boundary rather than deferring to the fixture's structural depth.
+        const ctx = createMemoryContext();
+        await seedMaxTreeDepth(ctx, String(SMALL_CAP));
+        await seedDeepWorkingTree(ctx, SMALL_CAP * 20);
+
+        // Act
+        const err = await expectError(() => collect(walkWorkingTree(ctx)), 'TREE_DEPTH_EXCEEDED');
+
+        // Assert
+        expect((err.data as { depth: number }).depth).toBe(SMALL_CAP + 1);
+      });
+    });
+  });
+
+  describe('Given the same depth-5 working tree tested at two different core.maxTreeDepth values', () => {
+    describe('When core.maxTreeDepth = 5', () => {
+      it('Then completes', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedMaxTreeDepth(ctx, '5');
+        await seedDeepWorkingTree(ctx, 5);
+
+        // Act
+        const result = await collect(walkWorkingTree(ctx));
+
+        // Assert
+        expect(result).toHaveLength(1);
+      });
+    });
+
+    describe('When core.maxTreeDepth = 4', () => {
+      it('Then throws TREE_DEPTH_EXCEEDED with depth = 5', async () => {
+        // Arrange — the SAME fixture shape, only the configured cap changes:
+        // a site that ignored config would pass the pair above against a
+        // hardcoded value and fail only here.
+        const ctx = createMemoryContext();
+        await seedMaxTreeDepth(ctx, '4');
+        await seedDeepWorkingTree(ctx, 5);
+
+        // Act
+        const err = await expectError(() => collect(walkWorkingTree(ctx)), 'TREE_DEPTH_EXCEEDED');
+
+        // Assert
+        expect((err.data as { depth: number }).depth).toBe(5);
+      });
+    });
+  });
+
   describe('Given entries above maxEntries', () => {
     describe('When walked', () => {
       it('Then throws TREE_ENTRY_LIMIT_EXCEEDED carrying count and limit', async () => {
@@ -675,6 +815,65 @@ describe('walkWorkingTree', () => {
 
         // Assert — yielded normal entries;.git skipped; b/c.txt yielded.
         expect(result.sort()).toEqual(['a.txt', 'b/c.txt']);
+      });
+    });
+  });
+
+  describe('Given a non-root directory containing a `.git` DIRECTORY, with a sibling directory at the same level', () => {
+    describe('When walked', () => {
+      it('Then nothing under the embedded directory is yielded, but its sibling is', async () => {
+        // Arrange — one test per embedded-repo-gate condition: this one
+        // isolates the `.git` DIRECTORY marker alone.
+        const ctx = await seedFs({
+          'embedded/.git/HEAD': 'ref: refs/heads/main\n',
+          'embedded/file.txt': 'x',
+          'sibling/file.txt': 'y',
+        });
+
+        // Act
+        const result = await collect(walkWorkingTree(ctx));
+
+        // Assert
+        expect(result).toEqual(['sibling/file.txt']);
+      });
+    });
+  });
+
+  describe('Given a non-root directory containing a `.git` REGULAR FILE (a worktree gitdir pointer)', () => {
+    describe('When walked', () => {
+      it('Then the directory is treated as embedded and yields nothing under it', async () => {
+        // Arrange — isolates the `.git` FILE marker alone, distinct from
+        // the DIRECTORY marker above.
+        const ctx = await seedFs({
+          'checkout/.git': 'gitdir: /elsewhere/.git/worktrees/checkout\n',
+          'checkout/file.txt': 'x',
+          'sibling.txt': 'y',
+        });
+
+        // Act
+        const result = await collect(walkWorkingTree(ctx));
+
+        // Assert
+        expect(result).toEqual(['sibling.txt']);
+      });
+    });
+  });
+
+  describe('Given a non-root directory containing a `.git` SYMLINK (neither a directory nor a regular file)', () => {
+    describe('When walked', () => {
+      it('Then the directory is NOT treated as embedded and its file is yielded', async () => {
+        // Arrange — a stray `.git` symlink must NOT be a marker: treating it
+        // as one would let an attacker silently hide siblings by planting a
+        // symlink literally named `.git`. The symlink entry itself is still
+        // skipped (isDotGitWalkEntry), but the directory is walked normally.
+        const ctx = await seedFs({ 'checkout/file.txt': 'x' });
+        await ctx.fs.symlink('/elsewhere/.git', `${ctx.layout.workDir}/checkout/.git`);
+
+        // Act
+        const result = await collect(walkWorkingTree(ctx));
+
+        // Assert
+        expect(result).toEqual(['checkout/file.txt']);
       });
     });
   });

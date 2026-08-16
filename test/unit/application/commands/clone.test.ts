@@ -243,6 +243,55 @@ describe('clone', () => {
     });
   });
 
+  describe('Given an occupied destination whose config holds an invalid core.maxTreeDepth', () => {
+    describe('When clone', () => {
+      it('Then throws TARGET_DIRECTORY_NOT_EMPTY, never a config refusal', async () => {
+        // Arrange — git reports "already exists" here and never reads the
+        // destination's config, so occupancy must win over config validity.
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tmaxTreeDepth = 2.5\n');
+
+        // Act
+        let caught: unknown;
+        try {
+          await clone(ctx, { url: REMOTE_URL });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as { readonly code: string };
+        expect(data.code).toBe('TARGET_DIRECTORY_NOT_EMPTY');
+      });
+    });
+  });
+
+  describe('Given an empty destination alongside a config file holding an invalid core.maxTreeDepth', () => {
+    describe('When clone', () => {
+      it('Then proceeds normally (clone never reads a destination-side config)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tmaxTreeDepth = 2.5\n');
+        const { packBytes, blobId } = await buildPackFromSingleBlob(ctx, 'hello\n');
+        const transport = buildCloneRemote({
+          capabilities: ['side-band-64k', 'ofs-delta', 'symref=HEAD:refs/heads/main'],
+          refs: [{ name: 'refs/heads/main', id: blobId }],
+          head: 'refs/heads/main',
+          packBytes,
+        });
+        const networkCtx = withTransport(ctx, transport);
+
+        // Act
+        const result = await clone(networkCtx, { url: REMOTE_URL });
+
+        // Assert — no CONFIG_BAD_NUMERIC_VALUE; the clone completes.
+        expect(result.head).toBe('refs/heads/main');
+      });
+    });
+  });
+
   describe('Given empty url', () => {
     describe('When clone', () => {
       it('Then throws REMOTE_ADVERTISES_NO_REFS before any I/O', async () => {
