@@ -1987,6 +1987,31 @@ describe('resolveMergeAuthor / resolveMergeCommitter (direct)', () => {
 });
 
 describe('writeNestedTree (direct)', () => {
+  describe('Given core.maxTreeDepth configured negative and a top-level leaf', () => {
+    describe('When writeNestedTree runs', () => {
+      it('Then it throws TREE_DEPTH_EXCEEDED at depth 0 — the root itself is refused', async () => {
+        // Arrange — a negative cap is a valid cap, not "unlimited": the root
+        // sits at depth 0 and `0 > -1`, so even a flat leaf list is refused
+        // before anything is partitioned. Matches the traversal sites, where
+        // real git also refuses a flat tree under a negative cap.
+        const ctx = await buildSeededContext();
+        await seedMaxTreeDepth(ctx, '-1');
+        const blobId = await writeBlob(ctx, DEEP_CHAIN_LEAF_CONTENT);
+        const leaves = [{ path: 'f.txt' as FilePath, id: blobId, mode: FILE_MODE.REGULAR }];
+
+        // Act + Assert
+        try {
+          await writeNestedTree(ctx, leaves);
+          expect.unreachable();
+        } catch (error) {
+          const data = (error as { data: { code: string; depth: number } }).data;
+          expect(data.code).toBe('TREE_DEPTH_EXCEEDED');
+          expect(data.depth).toBe(0);
+        }
+      });
+    });
+  });
+
   describe('Given config unset (default cap) and a leaf at exactly the default depth', () => {
     describe('When writeNestedTree runs', () => {
       it('Then it completes and the tree round-trips', async () => {
