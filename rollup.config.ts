@@ -95,6 +95,29 @@ const treeshakeOptions = {
   propertyReadSideEffects: false,
 };
 
+// Coarse, layer-aligned chunking for the runtime outputs. Left to its own
+// devices with 60 entries, rollup emits ~143 micro-chunks and a plain
+// `import '@scolladon/tsgit'` resolves/parses/links ~190 files — measured at
+// ~178 ms versus ~27 ms for the pre-split 27-file dist on the same machine.
+// Grouping shared modules by architectural layer caps the default entry's
+// closure at roughly a dozen files while per-command entries stay separate.
+// Platform adapters are NEVER merged with each other or with neutral code:
+// a node adapter module inside a shared chunk would drag `node:` externals
+// into browser consumers' module graphs.
+const manualChunks = (id) => {
+  if (id.includes('/src/adapters/node/')) return 'adapter-node';
+  if (id.includes('/src/adapters/browser/')) return 'adapter-browser';
+  if (id.includes('/src/adapters/memory/')) return 'adapter-memory';
+  if (id.includes('/src/adapters/')) return 'adapters-shared';
+  if (id.includes('/src/domain/')) return 'domain';
+  if (id.includes('/src/application/commands/internal/')) return 'commands-internal';
+  if (id.includes('/src/application/primitives/')) return 'primitives';
+  if (id.includes('/src/operators/')) return 'operators';
+  if (id.includes('/src/transport/')) return 'transport';
+  if (id.includes('/src/ports/')) return 'ports';
+  return undefined;
+};
+
 const tsPluginOptions = {
   tsconfig: './tsconfig.build.json',
   compilerOptions: {
@@ -118,6 +141,7 @@ export default defineConfig([
         preserveModules: false,
         entryFileNames: '[name].js',
         chunkFileNames: 'chunks/[name]-[hash].js',
+        manualChunks,
       },
       {
         dir: 'dist/cjs',
@@ -127,6 +151,7 @@ export default defineConfig([
         entryFileNames: '[name].cjs',
         chunkFileNames: 'chunks/[name]-[hash].cjs',
         exports: 'named',
+        manualChunks,
       },
     ],
     external,

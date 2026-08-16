@@ -17,19 +17,19 @@ done
 # breaking change) plus the single-file browser bundle served from the CDN
 # root fields. Since the per-command export split (one rollup entry per
 # `src/application/commands/*.ts`, ADR-640), that runtime/types pair is now
-# emitted across 60 entries and 143 shared chunks instead of 11 entries and
-# 16 chunks, so the honest floor moved with it. Measured: published 3.3.0
-# packed 94 files / 736 732 B (95.9% of the old 750 KiB cap); the real
-# split-build pack, packed and measured in this change, is 580 files /
-# 867 276 B — 846.95 KiB, 112.9% of the old cap, which is why it FAILed and
-# the cap had to move. The new cap is set ~14% above the honest pre-split
-# floor (≈825 KiB, the registry-corrected projection that grounded this
-# number before the split was built) — the same convention that produced
-# 750 KiB from a 656 KiB floor — leaving ~93 KiB of headroom over the actual
-# pack, so a change that meaningfully grows any of the three still fires the
-# guard for a considered review rather than an automatic bump. Source maps
-# are not shipped, so they do not count against this cap.
-SIZE_CAP=$((940 * 1024))
+# emitted across 60 entries and layer-coarse shared chunks instead of 11
+# entries and 16 chunks, so the honest floor moved with it. Measured:
+# published 3.3.0 packed 94 files / 736 732 B (95.9% of the old 750 KiB cap);
+# the naive fine-chunked split packed 580 files / 867 276 B (112.9% of the
+# old cap — the failure that forced this review); the shipped layer-coarse
+# chunking packs the same surface at 787 783 B, because ~10 consolidated
+# chunks stop paying a per-file gzip window 143 times. The cap is set ~14%
+# above that measured 788 KiB floor — the same convention that produced
+# 750 KiB from a 656 KiB floor — so a change that meaningfully grows any of
+# the three still fires the guard for a considered review rather than an
+# automatic bump. Source maps are not shipped, so they do not count against
+# this cap.
+SIZE_CAP=$((880 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders
