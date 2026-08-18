@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { posixPolicy } from '../../../src/adapters/node/path-policy.js';
+import { posixPolicy, windowsPolicy } from '../../../src/adapters/node/path-policy.js';
 import { longestStrictAncestor } from '../../../src/repository/ceiling-stop.js';
 
 // cwd `/T/normal/deep/deeper`; the repo root is `/T/normal` — the shape
@@ -149,6 +149,20 @@ describe('longestStrictAncestor', () => {
 
         // Assert
         expect(result).toBeUndefined();
+      });
+    });
+  });
+  describe('Given a case-insensitive policy and a ceiling whose casing differs from the cwd', () => {
+    describe('When longestStrictAncestor runs', () => {
+      it('Then the ceiling still matches — a raw string compare would fail open and unbound the walk', () => {
+        // Arrange
+        const sut = longestStrictAncestor;
+
+        // Act
+        const result = sut(['c:\\users\\bob'], 'C:\\Users\\Bob\\proj', windowsPolicy);
+
+        // Assert
+        expect(result).toBe('c:\\users\\bob');
       });
     });
   });

@@ -78,14 +78,14 @@ export const findLayout = async (
   ceilingDirs?: ReadonlyArray<string>,
 ): Promise<WalkOutcome | undefined> => {
   let current = pathPolicy.resolve(cwd);
-  const ceilStop = longestStrictAncestor(ceilingDirs, current, pathPolicy);
+  const atCeiling = ceilingTest(ceilingDirs, current, pathPolicy);
   while (true) {
-    if (current === ceilStop) return undefined;
+    if (atCeiling(current)) return undefined;
     const candidate = pathPolicy.join(current, '.git');
     // stat, not lstat — a .git symlink to a real gitdir behaves as a directory.
     const stat = await probe.stat(candidate);
     if (stat?.isDirectory === true) {
-      const located = await layoutFor(probe, candidate, pathPolicy);
+      const located = await candidateLocation(probe, candidate, pathPolicy);
       if (located !== undefined) return { ...located, route: 'DISCOVERED', origin: current };
     } else if (stat?.isFile === true) {
       const located = await layoutFromGitfile(probe, current, candidate, pathPolicy, stat.size);
@@ -100,6 +100,24 @@ export const findLayout = async (
     if (parent === current) return undefined; // reached filesystem root
     current = parent;
   }
+};
+
+/**
+ * The walk's loop-head ceiling predicate, computed ONCE before the loop.
+ * Comparison goes through `normalizeForCompare` — the same normalisation the
+ * ceiling selection itself uses — because a raw equality would walk straight
+ * past a case-mismatched stop on a case-insensitive filesystem, failing open
+ * on the one bound the caller set.
+ */
+const ceilingTest = (
+  ceilingDirs: ReadonlyArray<string> | undefined,
+  resolvedCwd: string,
+  pathPolicy: PathPolicy,
+): ((current: string) => boolean) => {
+  const ceilStop = longestStrictAncestor(ceilingDirs, resolvedCwd, pathPolicy);
+  if (ceilStop === undefined) return () => false;
+  const ceilKey = pathPolicy.normalizeForCompare(ceilStop);
+  return (current) => pathPolicy.normalizeForCompare(current) === ceilKey;
 };
 
 /**
@@ -167,9 +185,10 @@ export const resolvePointer = async (
 };
 
 /**
- * Validates `gitDir` and resolves its `commonDir`, returning the location
- * when valid or `undefined` when not — the directory branch's "candidate,
- * not commitment" contract (caller decides whether to walk up or throw).
+ * COMMITTED-route validation: resolves `commonDir` first — a `commondir`
+ * file this route cannot use is a hard stop (`resolveCommonDir` throws), the
+ * gitfile/explicit contract — then validates `HEAD` and the shared dirs,
+ * returning `undefined` when the directory is simply not a git directory.
  */
 const layoutFor = async (
   probe: LayoutProbe,
@@ -177,7 +196,8 @@ const layoutFor = async (
   pathPolicy: PathPolicy,
 ): Promise<GitDirLocation | undefined> => {
   const commonDir = await resolveCommonDir(probe, gitDir, pathPolicy);
-  if (!(await isGitDirectory(probe, gitDir, commonDir, pathPolicy))) return undefined;
+  if (!(await hasValidHead(probe, gitDir, pathPolicy))) return undefined;
+  if (!(await sharedDirsValid(probe, commonDir, pathPolicy))) return undefined;
   return {
     gitDir,
     // Omitted (not set to undefined) when equal to gitDir — exactOptionalPropertyTypes
@@ -188,24 +208,44 @@ const layoutFor = async (
 };
 
 /**
- * The per-level check for whether `current` itself is a git directory
- * (rather than merely holding a `.git` entry). A cheap `HEAD`-file `stat`
- * gates the expensive `resolveCommonDir` + `objects`/`refs` probes
- * `layoutFor` pays — a level with no `HEAD` file costs exactly this one
- * extra `stat`, never the full validation. Reusing `layoutFor` here means the
- * `HEAD` file is stat'ed twice on the rare level that passes the cheap gate
- * (once here, once inside `isGitDirectory`), which is the accepted cost of
- * not duplicating the validation logic.
+ * CANDIDATE-route validation — the walk's `.git`-directory branch and the
+ * cwd-is-gitdir check. Ordering and error posture both differ from the
+ * committed route, deliberately: `HEAD` is validated FIRST (the cheap
+ * `stat` alone rejects a level with no `HEAD` file, so a miss level costs
+ * exactly one extra `stat`), and a `commondir` file the parse cannot use is
+ * IGNORED — the directory is judged on its own `objects`/`refs` instead of
+ * being a hard stop. Both are measured git behaviour: a planted directory
+ * with garbage `HEAD` and an empty `commondir` is climbed past (the parse is
+ * never even reached here), and a valid-`HEAD` directory whose `commondir`
+ * is unusable is still accepted when it carries its own shared dirs. A
+ * throwing candidate would hand any hostile tree on the walk path a
+ * denial-of-discovery, the opposite of the skip-and-climb contract.
  */
-const isCwdGitDirectory = async (
+const candidateLocation = async (
+  probe: LayoutProbe,
+  gitDir: string,
+  pathPolicy: PathPolicy,
+): Promise<GitDirLocation | undefined> => {
+  if (!(await hasValidHead(probe, gitDir, pathPolicy))) return undefined;
+  const commonDir = await resolveCommonDir(probe, gitDir, pathPolicy).catch(() => gitDir);
+  if (!(await sharedDirsValid(probe, commonDir, pathPolicy))) return undefined;
+  return {
+    gitDir,
+    ...(commonDir !== gitDir ? { commonDir } : {}),
+  };
+};
+
+/**
+ * The per-level check for whether `current` itself is a git directory
+ * (rather than merely holding a `.git` entry). `candidateLocation`'s own
+ * `HEAD`-first ordering IS the cheap gate: a level with no `HEAD` file is
+ * rejected on that single `stat`, before any read or shared-dir probe.
+ */
+const isCwdGitDirectory = (
   probe: LayoutProbe,
   current: string,
   pathPolicy: PathPolicy,
-): Promise<GitDirLocation | undefined> => {
-  const headStat = await probe.stat(pathPolicy.join(current, 'HEAD'));
-  if (headStat?.isFile !== true) return undefined;
-  return layoutFor(probe, current, pathPolicy);
-};
+): Promise<GitDirLocation | undefined> => candidateLocation(probe, current, pathPolicy);
 
 /**
  * Resolves `gitDir`'s `commondir` file. An absent file means `commonDir`
@@ -220,6 +260,11 @@ export const resolveCommonDir = async (
   const commondirPath = pathPolicy.join(gitDir, 'commondir');
   const stat = await probe.stat(commondirPath);
   if (stat === undefined) return gitDir;
+  // A non-regular `commondir` (a directory, or a FIFO/device on the node
+  // probe) is treated as absent, never read: `readUtf8` on a FIFO would
+  // block forever waiting for a writer, handing any planted special file a
+  // denial of the whole discovery.
+  if (stat.isFile !== true) return gitDir;
   if (stat.size > GITFILE_MAX_BYTES) throw gitfileInvalidFormat(commondirPath);
   const raw = await probe.readUtf8(commondirPath);
   if (raw === undefined) return gitDir;
@@ -231,23 +276,23 @@ export const resolveCommonDir = async (
 };
 
 /**
- * Git's `is_git_directory`, narrowed: `HEAD` must be a regular file (via a
- * following `stat`, so a symlinked HEAD qualifies when its target exists and
- * reads back as valid content) and its content must parse as either a hex
- * object id or a `ref:` symbolic ref — the same grammar `isValidHeadContent`
- * checks. This is what stops a planted directory holding innocuous `HEAD`,
- * `objects/`, `refs/` entries from shadowing an enclosing repository: real
- * git climbs past it, and so must this. The one residual gap from real git:
- * a `HEAD` symlink whose *link text* begins `refs/` but whose target does
- * not exist is accepted by git and rejected here, because this probe only
- * exposes a following `stat` plus `readUtf8`, never the raw link text. A
- * directory named `HEAD` is not a head and fails the check; an oversized
- * `HEAD` is rejected on its `stat`ed size, without being read.
+ * The `HEAD` half of git's `is_git_directory`, narrowed: `HEAD` must be a
+ * regular file (via a following `stat`, so a symlinked HEAD qualifies when
+ * its target exists and reads back as valid content) and its content must
+ * parse as either a hex object id or a `ref:` symbolic ref — the grammar
+ * `isValidHeadContent` checks. This is what stops a planted directory
+ * holding innocuous `HEAD`, `objects/`, `refs/` entries from shadowing an
+ * enclosing repository: real git climbs past it, and so must this. The one
+ * residual gap from real git: a `HEAD` symlink whose *link text* begins
+ * `refs/` but whose target does not exist is accepted by git and rejected
+ * here, because this probe only exposes a following `stat` plus `readUtf8`,
+ * never the raw link text. A directory named `HEAD` is not a head and fails
+ * the check; an oversized `HEAD` is rejected on its `stat`ed size, without
+ * being read.
  */
-const isGitDirectory = async (
+const hasValidHead = async (
   probe: LayoutProbe,
   gitDir: string,
-  commonDir: string,
   pathPolicy: PathPolicy,
 ): Promise<boolean> => {
   const headPath = pathPolicy.join(gitDir, 'HEAD');
@@ -255,7 +300,15 @@ const isGitDirectory = async (
   if (head?.isFile !== true) return false;
   if (head.size > GITFILE_MAX_BYTES) return false;
   const content = await probe.readUtf8(headPath);
-  if (content === undefined || !isValidHeadContent(content)) return false;
+  return content !== undefined && isValidHeadContent(content);
+};
+
+/** The shared-dir half of git's `is_git_directory`: `objects/` and `refs/` at the common dir. */
+const sharedDirsValid = async (
+  probe: LayoutProbe,
+  commonDir: string,
+  pathPolicy: PathPolicy,
+): Promise<boolean> => {
   const objects = await probe.stat(pathPolicy.join(commonDir, 'objects'));
   if (objects?.isDirectory !== true) return false;
   const refs = await probe.stat(pathPolicy.join(commonDir, 'refs'));

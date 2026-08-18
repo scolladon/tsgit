@@ -213,11 +213,41 @@ describe('readRepositoryFormat', () => {
 
   describe('Given a local config file larger than the size cap', () => {
     describe('When readRepositoryFormat runs', () => {
-      it('Then it is treated as absent — capped, not parsed, not thrown', async () => {
+      it('Then it refuses with the gitfile-format code naming the config path — never a silent bareness flip', async () => {
         // Arrange
         const fs = new MemoryFileSystem({ rootDir: '/repo' });
         const head = '[core]\n\tbare = true\n';
         await fs.writeUtf8('/repo/.git/config', `${head}${'x'.repeat(70_000 - head.length)}`);
+        let caught: TsgitError | undefined;
+
+        // Act
+        try {
+          await readRepositoryFormat(
+            fileSystemLayoutProbe(fs),
+            '/repo/.git',
+            '/repo/.git',
+            posixPolicy,
+          );
+        } catch (err) {
+          if (err instanceof TsgitError) caught = err;
+        }
+
+        // Assert — the cap refuses BEFORE parsing, loudly: treating an
+        // oversized real config as empty would silently flip bareness.
+        expect(caught?.data).toMatchObject({
+          code: 'GITFILE_INVALID_FORMAT',
+          path: '/repo/.git/config',
+        });
+      });
+    });
+  });
+  describe('Given a config entry that is a directory rather than a regular file', () => {
+    describe('When readRepositoryFormat runs', () => {
+      it('Then it is treated as absent — a non-regular config is never read', async () => {
+        // Arrange — on the node probe a planted FIFO stats at size 0 and would
+        // pass the size cap; reading it would block forever. isFile is the gate.
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await fs.mkdir('/repo/.git/config');
 
         // Act
         const result = await readRepositoryFormat(
@@ -227,8 +257,7 @@ describe('readRepositoryFormat', () => {
           posixPolicy,
         );
 
-        // Assert — an oversized file that WOULD have parsed to bare:true is
-        // instead silently ignored, proving the cap runs before parsing.
+        // Assert
         expect(result).toStrictEqual({
           bare: undefined,
           worktree: undefined,

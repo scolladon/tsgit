@@ -2,6 +2,7 @@ import type { PathPolicy } from '../adapters/node/path-policy.js';
 import { configBadBooleanValue, configMissingValue } from '../domain/commands/error.js';
 import type { ConfigToken } from '../domain/config/config-ini.js';
 import { parseGitBoolean, tokenizeConfig } from '../domain/config/config-ini.js';
+import { gitfileInvalidFormat } from '../domain/worktree/error.js';
 import type { LayoutProbe } from '../ports/layout-probe.js';
 import { GITFILE_MAX_BYTES } from './find-layout.js';
 
@@ -63,7 +64,7 @@ const lastTopLevelEntry = (
   return found;
 };
 
-/** One config file's relevant entries, or `undefined` when absent/oversized (treated as empty — not a refusal). */
+/** One config file's relevant entries, or `undefined` when absent (treated as empty — not a refusal). */
 interface ScannedFormat {
   readonly bare: ScannedEntry | undefined;
   readonly worktree: ScannedEntry | undefined;
@@ -75,7 +76,15 @@ const scanConfigFile = async (
   path: string,
 ): Promise<ScannedFormat | undefined> => {
   const stat = await probe.stat(path);
-  if (stat === undefined || stat.size > GITFILE_MAX_BYTES) return undefined;
+  // Absent stays lenient (the init/clone bootstrap state). A NON-REGULAR
+  // entry is treated as absent, never read: `readUtf8` on a planted FIFO
+  // would block forever waiting for a writer — the size cap alone cannot
+  // stop that, a FIFO stats at size 0.
+  if (stat === undefined || stat.isFile !== true) return undefined;
+  // An OVERSIZED real config is a loud refusal, not silent emptiness — the
+  // same hostile-or-corrupt posture as the `commondir` cap. Treating it as
+  // empty would silently flip the repository's bareness.
+  if (stat.size > GITFILE_MAX_BYTES) throw gitfileInvalidFormat(path);
   const text = await probe.readUtf8(path);
   if (text === undefined) return undefined;
   const tokens = tokenizeConfig(text, path);
@@ -119,12 +128,13 @@ const isWorktreeConfigActive = (entry: ScannedEntry | undefined): boolean => {
  * three keys are extracted; everything else in the file is validated later,
  * on first command, by the existing two-tier eager gates.
  *
- * Throws `CONFIG_BAD_BOOLEAN_VALUE` for a malformed `core.bare` and
+ * Throws `CONFIG_BAD_BOOLEAN_VALUE` for a malformed `core.bare`,
  * `CONFIG_MISSING_VALUE` for a valueless `core.worktree` — git's setup-time
- * refusals, now surfacing at `openRepository` rather than the first command.
- * An absent or oversized config file behaves as empty, never as a refusal:
- * discovery must stay lenient so `init`/`clone` can bootstrap into a gitDir
- * that is not yet a repository.
+ * refusals, now surfacing at `openRepository` rather than the first command —
+ * and the gitfile-format refusal for an oversized config file (the same cap
+ * the `commondir` read enforces). An absent or non-regular config file
+ * behaves as empty, never as a refusal: discovery must stay lenient so
+ * `init`/`clone` can bootstrap into a gitDir that is not yet a repository.
  */
 export const readRepositoryFormat = async (
   probe: LayoutProbe,
@@ -135,28 +145,27 @@ export const readRepositoryFormat = async (
   const localPath = pathPolicy.join(commonDir, CONFIG_FILE);
   const local = await scanConfigFile(probe, localPath);
   const worktreeConfig = isWorktreeConfigActive(local?.worktreeConfig);
-
-  let bareEntry = local?.bare;
-  let bareSource = localPath;
-  let worktreeEntry = local?.worktree;
-  let worktreeSource = localPath;
-
-  if (worktreeConfig) {
-    const scopedPath = pathPolicy.join(gitDir, WORKTREE_CONFIG_FILE);
-    const scoped = await scanConfigFile(probe, scopedPath);
-    if (scoped?.bare !== undefined) {
-      bareEntry = scoped.bare;
-      bareSource = scopedPath;
-    }
-    if (scoped?.worktree !== undefined) {
-      worktreeEntry = scoped.worktree;
-      worktreeSource = scopedPath;
-    }
-  }
-
+  const scopedPath = pathPolicy.join(gitDir, WORKTREE_CONFIG_FILE);
+  const scoped = worktreeConfig ? await scanConfigFile(probe, scopedPath) : undefined;
+  const bare = pickScoped(local?.bare, localPath, scoped?.bare, scopedPath);
+  const worktree = pickScoped(local?.worktree, localPath, scoped?.worktree, scopedPath);
   return {
-    bare: resolveBare(bareEntry, bareSource),
-    worktree: resolveWorktree(worktreeEntry, worktreeSource),
+    bare: resolveBare(bare.entry, bare.source),
+    worktree: resolveWorktree(worktree.entry, worktree.source),
     worktreeConfig,
   };
 };
+
+/** A key's winning entry with the file it came from — scoped (`config.worktree`) wins when present. */
+interface AttributedEntry {
+  readonly entry: ScannedEntry | undefined;
+  readonly source: string;
+}
+
+const pickScoped = (
+  base: ScannedEntry | undefined,
+  basePath: string,
+  scoped: ScannedEntry | undefined,
+  scopedPath: string,
+): AttributedEntry =>
+  scoped !== undefined ? { entry: scoped, source: scopedPath } : { entry: base, source: basePath };

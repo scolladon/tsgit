@@ -6,9 +6,17 @@ import type { PathPolicy } from '../adapters/node/path-policy.js';
  * to cwd AND the repo root) a no-op rather than a refusal.
  */
 const isStrictAncestor = (ancestor: string, path: string, pathPolicy: PathPolicy): boolean => {
-  if (ancestor === path) return false;
-  const prefix = ancestor.endsWith(pathPolicy.sep) ? ancestor : `${ancestor}${pathPolicy.sep}`;
-  return path.startsWith(prefix);
+  // Compare through `normalizeForCompare`, the same normalisation every other
+  // containment check uses — a raw string compare would silently miss a
+  // case-mismatched ceiling on a case-insensitive filesystem, failing OPEN
+  // (the walk would run past the fence the caller set).
+  const cmpAncestor = pathPolicy.normalizeForCompare(ancestor);
+  const cmpPath = pathPolicy.normalizeForCompare(path);
+  if (cmpAncestor === cmpPath) return false;
+  const prefix = cmpAncestor.endsWith(pathPolicy.sep)
+    ? cmpAncestor
+    : `${cmpAncestor}${pathPolicy.sep}`;
+  return cmpPath.startsWith(prefix);
 };
 
 /**

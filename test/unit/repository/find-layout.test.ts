@@ -4,7 +4,7 @@ import { posixPolicy } from '../../../src/adapters/node/path-policy.js';
 import { TsgitError } from '../../../src/domain/error.js';
 import type { LayoutProbe } from '../../../src/ports/layout-probe.js';
 import { fileSystemLayoutProbe } from '../../../src/repository/file-system-layout-probe.js';
-import { findLayout } from '../../../src/repository/find-layout.js';
+import { findLayout, resolveCommonDir } from '../../../src/repository/find-layout.js';
 
 // All tests use POSIX paths with the in-memory FS (which is POSIX-only by
 // design) and inject `posixPolicy` so the walk stays POSIX-rooted on any
@@ -829,6 +829,65 @@ describe('findLayout', () => {
 
         // Assert
         expect(result).toBeUndefined();
+      });
+    });
+  });
+  describe('Given a candidate directory with a valid HEAD, its own objects and refs, and an empty commondir file', () => {
+    describe('When findLayout runs', () => {
+      it('Then the unusable commondir is ignored and the directory is accepted on its own shared dirs', async () => {
+        // Arrange
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await makeGitDir(fs, '/repo/bare');
+        await fs.writeUtf8('/repo/bare/commondir', '');
+
+        // Act
+        const result = await findLayout(fileSystemLayoutProbe(fs), '/repo/bare', posixPolicy);
+
+        // Assert — commonDir falls back to the directory itself, so the key is omitted.
+        expect(result).toStrictEqual({ gitDir: '/repo/bare', route: 'BARE_DIR' });
+      });
+    });
+  });
+
+  describe('Given a planted directory with a garbage HEAD and an empty commondir inside a real repo', () => {
+    describe('When findLayout runs from inside the planted directory', () => {
+      it('Then the walk climbs past to the enclosing repo instead of hard-stopping on the commondir', async () => {
+        // Arrange — HEAD is validated FIRST, so the unusable commondir is never
+        // even parsed for a directory whose HEAD already disqualifies it.
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await makeGitDir(fs, '/repo/.git');
+        await fs.mkdir('/repo/bait/objects');
+        await fs.mkdir('/repo/bait/refs');
+        await fs.writeUtf8('/repo/bait/HEAD', 'garbage');
+        await fs.writeUtf8('/repo/bait/commondir', '');
+
+        // Act
+        const result = await findLayout(fileSystemLayoutProbe(fs), '/repo/bait', posixPolicy);
+
+        // Assert
+        expect(result).toStrictEqual({
+          gitDir: '/repo/.git',
+          route: 'DISCOVERED',
+          origin: '/repo',
+        });
+      });
+    });
+  });
+
+  describe('Given a commondir entry that is a directory rather than a regular file', () => {
+    describe('When resolveCommonDir runs', () => {
+      it('Then it is treated as absent and the gitDir is its own common dir', async () => {
+        // Arrange — a non-regular commondir must never be read: on the node
+        // probe a planted FIFO would block the read forever.
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await makeGitDir(fs, '/repo/.git');
+        await fs.mkdir('/repo/.git/commondir');
+
+        // Act
+        const result = await resolveCommonDir(fileSystemLayoutProbe(fs), '/repo/.git', posixPolicy);
+
+        // Assert
+        expect(result).toBe('/repo/.git');
       });
     });
   });
