@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { TsgitError } from '../../src/domain/error.js';
 import { openRepository } from '../../src/index.browser.js';
 import type { FileSystem } from '../../src/ports/file-system.js';
 import { resolveFixedEntryLayout } from '../../src/repository/fixed-entry-layout.js';
@@ -53,6 +54,65 @@ describe('browser shim — openRepository', () => {
 
         // Assert
         expect(sut.ctx.layout.gitDir).toBe('/dot-git');
+      });
+    });
+  });
+
+  describe('Given an explicit relative gitDir', () => {
+    describe('When openRepository runs', () => {
+      it('Then it resolves against the fixed root, overriding the default gitDirName entry', async () => {
+        // Arrange / Act
+        const sut = await openRepository({ rootHandle: fakeHandle, gitDir: 'custom.git' });
+
+        // Assert
+        expect(sut.ctx.layout.gitDir).toBe('/custom.git');
+      });
+    });
+  });
+
+  describe('Given an explicit absolute gitDir', () => {
+    describe('When openRepository runs', () => {
+      it('Then it is used verbatim, not nested under the fixed root', async () => {
+        // Arrange / Act
+        const sut = await openRepository({ rootHandle: fakeHandle, gitDir: '/elsewhere.git' });
+
+        // Assert
+        expect(sut.ctx.layout.gitDir).toBe('/elsewhere.git');
+      });
+    });
+  });
+
+  describe('Given an explicit workDir', () => {
+    describe('When openRepository runs', () => {
+      it('Then repo.layout.workDir reflects it, overriding the fixed-entry default', async () => {
+        // Arrange / Act
+        const sut = await openRepository({ rootHandle: fakeHandle, workDir: '/custom-wt' });
+
+        // Assert
+        expect(sut.layout.workDir).toBe('/custom-wt');
+      });
+    });
+  });
+
+  describe('Given gitDir: "" (empty string)', () => {
+    describe('When openRepository runs', () => {
+      it('Then it throws INVALID_OPTION{option: "gitDir"} rather than resolving a layout', async () => {
+        // Arrange / Act
+        let caught: unknown;
+        try {
+          await openRepository({ rootHandle: fakeHandle, gitDir: '' });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — validateOptions runs BEFORE resolveFixedEntryLayout in
+        // this shim.
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('INVALID_OPTION');
+        if (data.code === 'INVALID_OPTION') {
+          expect(data.option).toBe('gitDir');
+        }
       });
     });
   });
@@ -224,6 +284,25 @@ describe('fixed-entry layout resolution (the browser shim path)', () => {
     });
   });
 
+  describe('Given a /.git directory whose config says core.bare = true, AND an explicit workDir', () => {
+    describe('When resolveFixedEntryLayout runs', () => {
+      it('Then the explicit workDir wins outright over core.bare', async () => {
+        // Arrange
+        const fs = stubFsOver({
+          '/.git': { kind: 'dir' },
+          '/.git/config': { kind: 'file', content: '[core]\n\tbare = true\n' },
+        });
+        const sut = resolveFixedEntryLayout;
+
+        // Act
+        const result = await sut(fs, '/', '/.git', undefined, '/custom-wt');
+
+        // Assert
+        expect(result).toStrictEqual({ gitDir: '/.git', workDir: '/custom-wt', bare: false });
+      });
+    });
+  });
+
   describe('Given a /.git entry that is a directory', () => {
     describe('When resolveFixedEntryLayout runs', () => {
       it('Then the literal fixed layout is kept', async () => {
@@ -236,6 +315,45 @@ describe('fixed-entry layout resolution (the browser shim path)', () => {
 
         // Assert
         expect(result).toEqual({ workDir: '/', gitDir: '/.git', bare: false });
+      });
+    });
+  });
+
+  describe('Given a /.git directory whose config says core.bare = true', () => {
+    describe('When resolveFixedEntryLayout runs with no bare override', () => {
+      it('Then the layout has no workDir key and bare is true', async () => {
+        // Arrange — the memory/node-equivalent Stage 2/3 wiring now runs for
+        // the browser shim too: config alone decides bareness.
+        const fs = stubFsOver({
+          '/.git': { kind: 'dir' },
+          '/.git/config': { kind: 'file', content: '[core]\n\tbare = true\n' },
+        });
+        const sut = resolveFixedEntryLayout;
+
+        // Act
+        const result = await sut(fs, '/', '/.git', undefined);
+
+        // Assert
+        expect(result).toStrictEqual({ gitDir: '/.git', bare: true });
+      });
+    });
+  });
+
+  describe('Given a /.git directory whose config sets an absolute core.worktree', () => {
+    describe('When resolveFixedEntryLayout runs', () => {
+      it('Then the resolved workDir is the configured value, not the fixed root', async () => {
+        // Arrange
+        const fs = stubFsOver({
+          '/.git': { kind: 'dir' },
+          '/.git/config': { kind: 'file', content: '[core]\n\tworktree = /custom-wt\n' },
+        });
+        const sut = resolveFixedEntryLayout;
+
+        // Act
+        const result = await sut(fs, '/', '/.git', undefined);
+
+        // Assert
+        expect(result).toStrictEqual({ gitDir: '/.git', workDir: '/custom-wt', bare: false });
       });
     });
   });

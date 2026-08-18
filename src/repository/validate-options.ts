@@ -9,6 +9,10 @@ import type { RepositoryConfig } from '../ports/context.js';
 interface ValidatableOptions {
   readonly cwd?: string;
   readonly config?: RepositoryConfig;
+  readonly gitDir?: string;
+  readonly workDir?: string;
+  readonly bare?: boolean;
+  readonly ceilingDirs?: ReadonlyArray<string>;
 }
 
 const PARALLELISM_MIN = 1;
@@ -30,6 +34,9 @@ export const validateOptions = (opts: ValidatableOptions): void => {
   if (opts.cwd !== undefined && !isAbsolutePath(opts.cwd)) {
     throw invalidOption('cwd', 'must be an absolute path');
   }
+  validateGitDir(opts.gitDir);
+  validateWorkDir(opts.workDir);
+  validateCeilingDirs(opts.ceilingDirs);
   const config = opts.config;
   if (config === undefined) return;
   validateParallelism(config.parallelism);
@@ -47,6 +54,26 @@ export const validateOptions = (opts: ValidatableOptions): void => {
 const ABS_WINDOWS = /^[A-Za-z]:[/\\]/;
 const isAbsolutePath = (value: string): boolean =>
   value.startsWith('/') || value.startsWith('\\\\') || ABS_WINDOWS.test(value);
+
+const validateGitDir = (value: string | undefined): void => {
+  if (value === undefined) return;
+  if (value.length === 0) throw invalidOption('gitDir', 'must not be empty');
+};
+
+const validateWorkDir = (value: string | undefined): void => {
+  if (value === undefined) return;
+  if (value.length === 0) throw invalidOption('workDir', 'must not be empty');
+};
+
+const validateCeilingDirs = (value: ReadonlyArray<string> | undefined): void => {
+  if (value === undefined) return;
+  for (const entry of value) {
+    if (entry.length === 0) throw invalidOption('ceilingDirs', 'entries must not be empty');
+    if (!isAbsolutePath(entry)) {
+      throw invalidOption('ceilingDirs', 'entries must be absolute paths');
+    }
+  }
+};
 
 const validateParallelism = (value: number | undefined): void => {
   if (value === undefined) return;

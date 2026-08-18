@@ -28,6 +28,7 @@ interface ResetResult {
 
 ## Behaviour
 
+- **Work-tree requirement differs per mode, and by a different question each time.** `hard` needs an actual work tree to rewrite — it refuses `WORK_TREE_REQUIRED` when the repository has none (bare, or opened without one). `mixed` only refuses when the repository is bare (`layout.bare`, git's `is_bare_repository()`) — a repository opened with an explicit work tree over `core.bare = true` is not bare and `mixed` proceeds there even though `hard` still needs a resolvable work tree of its own. `soft` never touches the working tree and is never gated.
 - **Sparse-aware:** `mode: 'hard'` and `mode: 'mixed'` honour the active sparse pattern. Out-of-cone paths keep `skipWorktree: true`; their working-tree files are not materialised.
 - **Stat-cache donor strategy** (mixed): index entries whose `id + mode` match the prior index preserve their stat fields, so the next `status()` stays fast.
 - **Untracked files outside the target tree** are left alone in `hard` mode — only tracked paths are rewritten.
@@ -50,7 +51,8 @@ await repo.reset({ mode: 'hard', rev: 'ORIG_HEAD' });
 
 ## Throws
 
-- `BARE_REPOSITORY` — `hard` (or `mixed` writing the working tree) is not valid in a bare repository.
+- `WORK_TREE_REQUIRED` — `hard` against a repository with no work tree (bare, or opened without one).
+- `BARE_REPOSITORY` — `mixed` against a bare repository (`operation: 'reset --mixed'`) — git refuses to write an `index` file a bare repository never has, even when `hard`'s work-tree check above would have passed.
 - `REF_NOT_FOUND` / `INVALID_REF` — `target` does not resolve.
 
 ## See also

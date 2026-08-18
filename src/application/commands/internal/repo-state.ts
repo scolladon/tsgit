@@ -6,11 +6,10 @@
 export {
   assertEagerConfigValid,
   assertNoPendingOperation,
-  assertNotBare,
   assertOperationalRepository,
   assertRepository,
   branchRefFromHead,
   currentBranchRef,
-  isBare,
   readHeadRaw,
+  requireWorkTree,
 } from '../../primitives/internal/repo-state.js';

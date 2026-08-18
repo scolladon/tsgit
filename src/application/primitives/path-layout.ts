@@ -9,11 +9,13 @@ import { computeLooseObjectPath } from '../../domain/storage/loose-path.js';
 import type { Context, RepositoryLayout } from '../../ports/context.js';
 
 /**
- * Repository working-tree root. Returns the workDir from the current context;
- * facade-tier code is responsible for discovery / realpath pinning
- * at construction time. Primitives consume the already-resolved path.
+ * Repository root. The working tree when the repository has one; the gitDir
+ * itself for a bare repository or a work-tree-less discovery. Facade-tier
+ * code is responsible for discovery / realpath pinning at construction time;
+ * primitives consume the already-resolved path.
  */
-export const getRepoRoot = (ctx: Context): FilePath => ctx.layout.workDir as FilePath;
+export const getRepoRoot = (ctx: Context): FilePath =>
+  (ctx.layout.workDir ?? ctx.layout.gitDir) as FilePath;
 
 /**
  * The shared (common) git dir: objects, `packed-refs`, `config`, shared refs and
@@ -21,7 +23,20 @@ export const getRepoRoot = (ctx: Context): FilePath => ctx.layout.workDir as Fil
  * `gitDir`; for a linked worktree it is the repository's common dir, while
  * per-worktree state (HEAD/index/…) stays under `gitDir`.
  */
-export const commonDirOf = (layout: RepositoryLayout): string => layout.commonDir ?? layout.gitDir;
+// Written as the explicit undefined test, not `??`: `commonDir` is never the
+// empty string, so a `??`→`||` mutant would be equivalent noise where this
+// form keeps every mutant killable.
+export const commonDirOf = (layout: RepositoryLayout): string =>
+  layout.commonDir === undefined ? layout.gitDir : layout.commonDir;
+
+/**
+ * Working directory for a spawned child process (hook, signer, textconv,
+ * merge/filter driver): the work tree when the repository has one, else the
+ * gitDir — git's own bare hooks run with `PWD=<bare.git>`. Same value as
+ * `getRepoRoot`, distinct in intent: this names the spawn contract, so call
+ * sites stop restating its why-comment.
+ */
+export const getSpawnCwd = (layout: RepositoryLayout): string => layout.workDir ?? layout.gitDir;
 
 export const commonGitDir = (ctx: Context): string => commonDirOf(ctx.layout);
 

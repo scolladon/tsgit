@@ -20,8 +20,10 @@ import {
   describeName,
   shouldReplaceName,
 } from '../../domain/describe/index.js';
+import { TsgitError } from '../../domain/error.js';
 import type { Commit, ObjectId, RefName } from '../../domain/objects/index.js';
 import { RefName as RefNameFactory } from '../../domain/objects/object-id.js';
+import { workTreeRequired } from '../../domain/repository/error.js';
 import type { Context } from '../../ports/context.js';
 import { enumerateRefs } from '../primitives/enumerate-refs.js';
 import {
@@ -187,10 +189,15 @@ const computeDirty = async (ctx: Context, plan: ResolvedDescribePlan): Promise<b
     const state = await status(ctx);
     return state.changes.length > 0 || state.unmerged.length > 0;
   } catch (err) {
-    // Stryker disable next-line all: equivalent — defensive `--broken` tolerance:
-    // `status` does not throw for a valid HEAD on the node/memory adapters, so
-    // this catch has no reachable failure path to exercise in tests.
+    // `--broken` tolerates ANY failure to read the working tree — including a
+    // repository that has no working tree at all, where the delegate refuses —
+    // and reports it dirty-broken instead of refusing (git appends `-broken`
+    // and exits 0 there). Without `broken`, a work-tree refusal is re-labelled
+    // as describe's own: the caller asked `describe --dirty`, not `status`.
     if (plan.broken) return true;
+    if (err instanceof TsgitError && err.data.code === 'WORK_TREE_REQUIRED') {
+      throw workTreeRequired('describe --dirty');
+    }
     throw err;
   }
 };

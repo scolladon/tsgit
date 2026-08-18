@@ -19,7 +19,7 @@
  * asserted as "did it re-resolve at all", which is exactly the property the
  * hand-off decides, and is the same answer on every platform.
  */
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
@@ -61,8 +61,11 @@ interface RealpathSplit {
  * Opens `cwd`, forces the adapter's lazy root-set resolution with one read,
  * and reports how many realpaths each side performed.
  */
-const splitRealpathCalls = async (cwd: string): Promise<RealpathSplit> => {
-  const repo = await openRepository({ cwd });
+const splitRealpathCalls = async (
+  cwd: string,
+  extraOpts: { readonly workDir?: string; readonly gitDir?: string; readonly bare?: boolean } = {},
+): Promise<RealpathSplit> => {
+  const repo = await openRepository({ cwd, ...extraOpts });
   const shim = realpathSpy.mock.calls.length;
   try {
     // The read's own outcome is irrelevant — resolving the root set is what is
@@ -76,7 +79,7 @@ const splitRealpathCalls = async (cwd: string): Promise<RealpathSplit> => {
 
 describe('Given a repository whose layout resolves and whose realpaths all succeed', () => {
   describe('When openRepository is followed by a first object-store read', () => {
-    it('Then the shim resolves cwd and gitDir, and the adapter re-resolves nothing', async () => {
+    it('Then the shim resolves cwd and gitDir only — a discovered workDir is an ancestor of the realpathed cwd and needs no realpath of its own', async () => {
       // Arrange
       const workDir = path.join(tmpdir, 'repo');
       await mkdir(workDir, { recursive: true });
@@ -144,8 +147,8 @@ describe('Given a not-yet-created directory inside an existing repository', () =
       // Act
       const result = await sut(path.join(workDir, 'not-created-yet'));
 
-      // Assert
-      expect(result.shim).toBe(2);
+      // Assert — cwd, gitDir and workDir, each realpathed once by the shim.
+      expect(result.shim).toBe(3);
       expect(result.adapter).toBeGreaterThan(0);
     });
   });
@@ -171,8 +174,164 @@ describe('Given a linked worktree whose gitDir and commonDir both resolve', () =
       // Act
       const result = await sut(linked);
 
-      // Assert — cwd, gitDir and commonDir, each realpathed once by the shim.
+      // Assert — cwd, gitDir and commonDir, each realpathed once by the shim;
+      // the linked worktree's own path IS the realpathed cwd, so it is skipped.
       expect(result).toEqual({ shim: 3, adapter: 0 });
+    });
+  });
+});
+
+describe('Given an explicit workDir argument outside the discovery chain', () => {
+  describe('When openRepository resolves its roots', () => {
+    it('Then the shim pays one extra realpath for the lexical work-tree source', async () => {
+      // Arrange — an explicit workDir is not derived from the realpathed cwd,
+      // so the zero-syscall proof of canonical form does not apply and the shim
+      // must physically resolve it like any other lexical layout path.
+      const workDir = path.join(tmpdir, 'repo');
+      await mkdir(workDir, { recursive: true });
+      await makeGitDir(path.join(workDir, '.git'));
+      const elsewhere = path.join(tmpdir, 'elsewhere-wt');
+      await mkdir(elsewhere, { recursive: true });
+      const sut = splitRealpathCalls;
+
+      // Act
+      const result = await sut(workDir, { workDir: elsewhere });
+
+      // Assert — cwd, gitDir, and the explicit workDir.
+      expect(result).toEqual({ shim: 3, adapter: 0 });
+    });
+  });
+});
+
+describe('Given an explicit workDir reached through a symlink', () => {
+  describe('When openRepository resolves its roots', () => {
+    it("Then layout.workDir is the realpathed target, not the symlink's own lexical path", async () => {
+      // Arrange — the raw (pre-realpath) explicit workDir is the symlink path
+      // itself; only `canonicalize` resolves it to the real target. If the
+      // shim dropped its own `{ workDir: workDir.path }` override, the
+      // EARLIER `...resolved` spread would leave the raw (symlink) path
+      // standing instead — observable ONLY because the two differ here.
+      const realWt = path.join(tmpdir, 'real-wt');
+      await mkdir(realWt, { recursive: true });
+      const linkWt = path.join(tmpdir, 'link-wt');
+      await symlink(realWt, linkWt);
+      const workDir = path.join(tmpdir, 'repo');
+      await mkdir(workDir, { recursive: true });
+      await makeGitDir(path.join(workDir, '.git'));
+      const resolvedRealWt = await realpath(realWt);
+
+      // Act
+      const repo = await openRepository({ cwd: workDir, workDir: linkWt });
+
+      try {
+        // Assert
+        expect(repo.ctx.layout.workDir).toBe(resolvedRealWt);
+        expect(repo.ctx.layout.workDir).not.toBe(linkWt);
+      } finally {
+        await repo.dispose();
+      }
+    });
+  });
+});
+
+describe('Given a linked worktree whose commondir is reached through a symlink', () => {
+  describe('When openRepository resolves its roots', () => {
+    it("Then layout.commonDir is the realpathed target, not the symlink's own lexical path", async () => {
+      // Arrange — `resolveCommonDir`'s `../..` collapse is purely lexical, so
+      // the raw commonDir it derives from a symlinked gitDir still names the
+      // symlink; only `canonicalize` resolves it to the real target. If the
+      // shim dropped its own `{ commonDir: commonDir.path }` override, the
+      // EARLIER `...resolved` spread would leave that raw (symlink-lexical)
+      // path standing instead — observable ONLY because the two differ here.
+      const realMain = path.join(tmpdir, 'real-main');
+      await makeGitDir(path.join(realMain, '.git'));
+      const mainLink = path.join(tmpdir, 'main-link');
+      await symlink(realMain, mainLink);
+      const adminDir = path.join(mainLink, '.git', 'worktrees', 'wt');
+      await mkdir(adminDir, { recursive: true });
+      await writeFile(path.join(adminDir, 'HEAD'), 'ref: refs/heads/wt\n');
+      await writeFile(path.join(adminDir, 'commondir'), '../..\n');
+      const linked = path.join(tmpdir, 'linked');
+      await mkdir(linked, { recursive: true });
+      await writeFile(path.join(linked, '.git'), `gitdir: ${adminDir}\n`);
+      const resolvedRealCommonDir = await realpath(path.join(realMain, '.git'));
+
+      // Act
+      const repo = await openRepository({ cwd: linked });
+
+      try {
+        // Assert
+        expect(repo.ctx.layout.commonDir).toBe(resolvedRealCommonDir);
+        expect(repo.ctx.layout.commonDir).not.toBe(path.join(mainLink, '.git'));
+      } finally {
+        await repo.dispose();
+      }
+    });
+  });
+});
+
+describe('Given cwd nested (a true descendant, not equal) inside the discovered workDir', () => {
+  describe('When openRepository resolves its roots', () => {
+    it("Then the workDir shortcut still avoids its own realpath (isDerivedFromCanonicalCwd's startsWith, not endsWith)", async () => {
+      // Arrange — cwd !== workDir here, so `isDerivedFromCanonicalCwd`'s
+      // first disjunct (`workDir === cwd`) cannot short-circuit the
+      // evaluation; only the second (`cwd.startsWith(workDir + sep)`) can.
+      // The MethodExpression mutant (`startsWith` → `endsWith`) fails that
+      // check for an ordinary descendant path, forcing an extra realpath.
+      const workDir = path.join(tmpdir, 'repo');
+      await mkdir(workDir, { recursive: true });
+      await makeGitDir(path.join(workDir, '.git'));
+      const nested = path.join(workDir, 'nested');
+      await mkdir(nested, { recursive: true });
+      const sut = splitRealpathCalls;
+
+      // Act
+      const result = await sut(nested);
+
+      // Assert — cwd + gitDir only; the workDir shortcut avoided a 3rd realpath.
+      expect(result).toEqual({ shim: 2, adapter: 0 });
+    });
+  });
+});
+
+describe('Given an explicit gitDir that does not exist yet, combined with bare:true', () => {
+  describe('When openRepository resolves its roots', () => {
+    it("Then the hand-off is withheld, because gitDir's own realpath failed", async () => {
+      // Arrange — the explicit-gitDir route is lenient about a not-yet-existing
+      // path, so `gitDir.canonical` is false while `commonDir`/`workDir` fall
+      // back to their `?? true` defaults (bare: no workDir; no linked
+      // worktree: no commonDir). gitDir.canonical is the ONLY false conjunct,
+      // which is what separates `&&` from `||` at both nesting levels of the
+      // canonical expression, and what separates the whole expression from an
+      // always-true mutant.
+      const ghostGitDir = path.join(tmpdir, 'ghost.git');
+      const sut = splitRealpathCalls;
+
+      // Act
+      const result = await sut(tmpdir, { gitDir: ghostGitDir, bare: true });
+
+      // Assert — canonical came out false, so the adapter re-resolves its roots.
+      expect(result.adapter).toBeGreaterThan(0);
+    });
+  });
+});
+
+describe('Given a discovered bare repository (workDir undefined, gitDir real)', () => {
+  describe('When openRepository resolves its roots', () => {
+    it('Then the hand-off proceeds, because the workDir fallback (no work tree to canonicalize) is true', async () => {
+      // Arrange — gitDir is realpathed successfully (it exists) and workDir is
+      // undefined (bare), so `workDir?.canonical ?? true` hits its fallback —
+      // the BooleanLiteral mutant on that `true` is what this pins: flipping
+      // it to `false` would make the overall AND false, forcing the adapter
+      // to re-resolve.
+      await makeGitDir(path.join(tmpdir, '.git'));
+      const sut = splitRealpathCalls;
+
+      // Act
+      const result = await sut(tmpdir, { bare: true });
+
+      // Assert — canonical came out true, so the adapter trusts the hand-off.
+      expect(result.adapter).toBe(0);
     });
   });
 });

@@ -1,5 +1,6 @@
 import type { CommandRunner } from '../../ports/command-runner.js';
 import type { Context } from '../../ports/context.js';
+import { getSpawnCwd } from './path-layout.js';
 
 /** Discriminated result from running a clean/smudge filter driver. */
 export type FilterDriverResult =
@@ -18,10 +19,10 @@ export const runFilterDriver = async (
   command: string,
   input: Uint8Array,
 ): Promise<FilterDriverResult> => {
-  const { gitDir, workDir } = ctx.layout;
+  const { gitDir } = ctx.layout;
   const result = await runner.run({
     command,
-    cwd: workDir,
+    cwd: getSpawnCwd(ctx.layout),
     env: { GIT_DIR: gitDir },
     stdin: input,
     ...(ctx.signal !== undefined ? { signal: ctx.signal } : {}),

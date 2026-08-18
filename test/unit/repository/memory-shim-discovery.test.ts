@@ -74,6 +74,27 @@ describe('openRepository (memory shim) — layout discovery', () => {
     });
   });
 
+  describe('Given a memory FS seeded with a bare layout wholly inside /repo', () => {
+    describe('When openRepository runs with the default cwd', () => {
+      it('Then ctx.layout resolves gitDir === /repo, no workDir, bare === true', async () => {
+        // Arrange — the memory half of the cross-adapter proof: cwd-is-gitdir
+        // discovery plus config-driven bareness, exactly like the node shim.
+        const files = {
+          '/repo/HEAD': encode('ref: refs/heads/main\n'),
+          '/repo/refs/heads/main': encode(`${SEED_OID}\n`),
+          '/repo/objects/info/packs': encode(''),
+          '/repo/config': encode('[core]\n\tbare = true\n'),
+        };
+
+        // Act
+        const sut = await openRepository({ files });
+
+        // Assert
+        expect(sut.ctx.layout).toStrictEqual({ gitDir: '/repo', bare: true });
+      });
+    });
+  });
+
   describe('Given a worktree gitfile pointing at an admin dir outside the sandbox root', () => {
     describe('When openRepository runs with cwd at the worktree path', () => {
       it('Then it throws NOT_A_REPOSITORY naming the worktree dir', async () => {

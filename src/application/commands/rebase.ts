@@ -45,10 +45,10 @@ import { createCommit } from '../primitives/create-commit.js';
 import { diffTrees } from '../primitives/diff-trees.js';
 import {
   assertNoPendingOperation,
-  assertNotBare,
   assertOperationalRepository,
   branchRefFromHead,
   readHeadRaw,
+  requireWorkTree,
 } from '../primitives/internal/repo-state.js';
 import { materialisePatchFiles } from '../primitives/materialise-patch-files.js';
 import { mergeBase } from '../primitives/merge-base.js';
@@ -450,7 +450,7 @@ const replayFrom = async (
 
 export const rebaseRun = async (ctx: Context, input: RebaseRunInput): Promise<RebaseResult> => {
   await assertOperationalRepository(ctx);
-  await assertNotBare(ctx, 'rebase');
+  requireWorkTree(ctx, 'rebase');
   await assertNoPendingOperation(ctx);
   const head = await readHeadRaw(ctx);
   const headCommit = head.kind === 'symbolic' ? await resolveHeadCommit(ctx, head.target) : head.id;
@@ -525,7 +525,7 @@ const rejectUnmergedIndex = (entries: ReadonlyArray<IndexEntry>): void => {
  */
 export const rebaseContinue = async (ctx: Context): Promise<RebaseResult> => {
   await assertOperationalRepository(ctx);
-  await assertNotBare(ctx, 'rebase --continue');
+  requireWorkTree(ctx, 'rebase --continue');
   const state = await readRebaseState(ctx);
   if (state === undefined) throw noOperationInProgress('rebase');
   if (isInteractiveState(state)) return rebaseContinueInteractive(ctx, state);
@@ -566,7 +566,7 @@ export const rebaseContinue = async (ctx: Context): Promise<RebaseResult> => {
 /** Drop the conflicted commit (hard-reset to the last good pick) and replay the rest. */
 export const rebaseSkip = async (ctx: Context): Promise<RebaseResult> => {
   await assertOperationalRepository(ctx);
-  await assertNotBare(ctx, 'rebase --skip');
+  requireWorkTree(ctx, 'rebase --skip');
   const state = await readRebaseState(ctx);
   if (state === undefined) throw noOperationInProgress('rebase');
   if (isInteractiveState(state)) return rebaseSkipInteractive(ctx, state);
@@ -592,7 +592,7 @@ export const rebaseSkip = async (ctx: Context): Promise<RebaseResult> => {
  */
 export const rebaseAbort = async (ctx: Context): Promise<RebaseAbortResult> => {
   await assertOperationalRepository(ctx);
-  await assertNotBare(ctx, 'rebase --abort');
+  requireWorkTree(ctx, 'rebase --abort');
   const state = await readRebaseState(ctx);
   if (state === undefined) throw noOperationInProgress('rebase');
   const branch = branchOf(state.headName);

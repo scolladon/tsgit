@@ -29,10 +29,10 @@ import { joinPath } from '../primitives/internal/join-working-tree-path.js';
 import { maybeBuildAttributeProvider } from '../primitives/internal/read-gitattributes.js';
 import {
   assertNoPendingOperation,
-  assertNotBare,
   assertOperationalRepository,
   type HeadState,
   readHeadRaw,
+  requireWorkTree,
 } from '../primitives/internal/repo-state.js';
 import { createLeadingPathScanner } from '../primitives/internal/symlinked-leading-path.js';
 import { stage0Entry } from '../primitives/internal/synthetic-index-entry.js';
@@ -119,10 +119,11 @@ const resolveBase = async (ctx: Context, head: HeadState): Promise<BaseState> =>
 
 const hashFileAt = async (
   ctx: Context,
+  workDir: string,
   path: FilePath,
   stat: FileStat,
 ): Promise<{ readonly id: ObjectId; readonly mode: ReturnType<typeof deriveWorkingMode> }> => {
-  const abs = joinPath(ctx.layout.workDir, path);
+  const abs = joinPath(workDir, path);
   const content = stat.isSymbolicLink
     ? new TextEncoder().encode(await ctx.fs.readlink(abs))
     : await ctx.fs.read(abs);
@@ -138,6 +139,7 @@ interface WorkingTreeProjection {
 /** Project the index's stage-0 entries onto their working-tree content (the W tree). */
 const projectWorkingTree = async (
   ctx: Context,
+  workDir: string,
   index: GitIndex,
 ): Promise<WorkingTreeProjection> => {
   const entries: IndexEntry[] = [];
@@ -161,8 +163,8 @@ const projectWorkingTree = async (
       continue;
     }
     dirty = true;
-    const stat = await ctx.fs.lstat(joinPath(ctx.layout.workDir, entry.path));
-    const { id, mode } = await hashFileAt(ctx, entry.path, stat);
+    const stat = await ctx.fs.lstat(joinPath(workDir, entry.path));
+    const { id, mode } = await hashFileAt(ctx, workDir, entry.path, stat);
     entries.push(stage0Entry(entry.path, id, mode));
   }
   return { entries, dirty };
@@ -174,14 +176,18 @@ interface UntrackedProjection {
 }
 
 /** Collect the untracked (non-ignored) working files as synthetic index entries. */
-const collectUntracked = async (ctx: Context, index: GitIndex): Promise<UntrackedProjection> => {
+const collectUntracked = async (
+  ctx: Context,
+  workDir: string,
+  index: GitIndex,
+): Promise<UntrackedProjection> => {
   const tracked = new Set(index.entries.map((e) => e.path));
   const ignore = await buildRepoIgnorePredicate(ctx);
   const paths: FilePath[] = [];
   const entries: IndexEntry[] = [];
   for await (const { path, stat } of walkWorkingTree(ctx, { ignore })) {
     if (tracked.has(path)) continue;
-    const { id, mode } = await hashFileAt(ctx, path, await stat());
+    const { id, mode } = await hashFileAt(ctx, workDir, path, await stat());
     entries.push(stage0Entry(path, id, mode));
     paths.push(path);
   }
@@ -193,7 +199,7 @@ export const stashPush = async (
   opts: StashPushInput = {},
 ): Promise<StashPushResult> => {
   await assertOperationalRepository(ctx);
-  await assertNotBare(ctx, 'stash');
+  const workDir = requireWorkTree(ctx, 'stash');
   await assertNoPendingOperation(ctx);
   const head = await readHeadRaw(ctx);
   const base = await resolveBase(ctx, head);
@@ -202,9 +208,9 @@ export const stashPush = async (
   try {
     const index = await readIndex(ctx);
     const iTree = await synthesizeTreeFromIndex(ctx, index.entries);
-    const working = await projectWorkingTree(ctx, index);
+    const working = await projectWorkingTree(ctx, workDir, index);
     const untracked = opts.includeUntracked
-      ? await collectUntracked(ctx, index)
+      ? await collectUntracked(ctx, workDir, index)
       : { paths: [], entries: [] };
 
     const stagedDirty = iTree !== base.bTree;
@@ -281,6 +287,7 @@ export interface StashListResult {
 /** List the stash stack, newest-first (`stash@{0}` first). */
 export const stashList = async (ctx: Context): Promise<StashListResult> => {
   await assertOperationalRepository(ctx);
+  requireWorkTree(ctx, 'stash list');
   return { entries: await readStashStack(ctx) };
 };
 
@@ -294,7 +301,7 @@ export const stashDrop = async (
   input: StashDropInput = {},
 ): Promise<StashDropResult> => {
   await assertOperationalRepository(ctx);
-  await assertNotBare(ctx, 'stash drop');
+  requireWorkTree(ctx, 'stash drop');
   return dropStashEntry(ctx, input.index ?? 0);
 };
 
@@ -364,12 +371,13 @@ const parseStashCommit = async (ctx: Context, w: ObjectId): Promise<StashParents
 /** Untracked paths whose restoration would overwrite an existing working file. */
 const untrackedOverwrites = async (
   ctx: Context,
+  workDir: string,
   uTree: ObjectId,
 ): Promise<ReadonlyArray<FilePath>> => {
   const flat = await flattenTree(ctx, uTree);
   const clobbered: FilePath[] = [];
   for (const path of flat.entries.keys()) {
-    if (await ctx.fs.exists(joinPath(ctx.layout.workDir, path))) clobbered.push(path);
+    if (await ctx.fs.exists(joinPath(workDir, path))) clobbered.push(path);
   }
   return clobbered;
 };
@@ -426,7 +434,7 @@ export const stashApply = async (
   input: StashApplyInput = {},
 ): Promise<StashApplyResult> => {
   await assertOperationalRepository(ctx);
-  await assertNotBare(ctx, 'stash apply');
+  const workDir = requireWorkTree(ctx, 'stash apply');
   await assertNoPendingOperation(ctx);
   const w = await resolveStashEntry(ctx, input.index ?? 0);
   const parsed = await parseStashCommit(ctx, w);
@@ -441,7 +449,7 @@ export const stashApply = async (
     const currentIndex = await readIndex(ctx);
     const cTree = await synthesizeTreeFromIndex(ctx, currentIndex.entries);
     if (uTree !== undefined) {
-      const clobbered = await untrackedOverwrites(ctx, uTree);
+      const clobbered = await untrackedOverwrites(ctx, workDir, uTree);
       if (clobbered.length > 0) throw stashApplyWouldOverwrite(clobbered);
     }
     const result = await applyMergeToWorktree(ctx, {
@@ -484,6 +492,10 @@ export const stashPop = async (
   ctx: Context,
   input: StashApplyInput = {},
 ): Promise<StashPopResult> => {
+  await assertOperationalRepository(ctx);
+  // Gated here, ahead of the `stashApply` delegation below, so a work-tree
+  // refusal names 'stash pop' rather than the delegate's own 'stash apply'.
+  requireWorkTree(ctx, 'stash pop');
   const applied = await stashApply(ctx, input);
   if (applied.kind === 'conflict') return applied;
   const dropped = await stashDrop(ctx, { index: input.index ?? 0 });

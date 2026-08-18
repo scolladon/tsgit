@@ -35,6 +35,13 @@ import {
 // ever exercised.
 // ---------------------------------------------------------------------------
 
+/**
+ * Every fixture in this file comes from `createMemoryContext()`, which always
+ * yields a work tree — the oracle mirrors production's `ctx.layout.workDir`
+ * reads without re-deriving the walk algorithm itself.
+ */
+const workDirOf = (ctx: Context): string => ctx.layout.workDir as string;
+
 interface WalkConfigOracle {
   readonly ctx: Context;
   readonly maxDepth: number;
@@ -126,13 +133,15 @@ const lazyStatOracle = (config: WalkConfigOracle, path: FilePath): (() => Promis
 const fetchStatOracle = async (config: WalkConfigOracle, path: FilePath): Promise<FileStat> => {
   const sampled = config.stats?.sampled(path);
   if (sampled !== undefined) return sampled;
-  const stat = await config.ctx.fs.lstat(joinPath(config.ctx.layout.workDir, path));
+  const stat = await config.ctx.fs.lstat(joinPath(workDirOf(config.ctx), path));
   config.stats?.record(path, stat);
   return stat;
 };
 
-const directoryPathOracle = (config: WalkConfigOracle, prefix: string): string =>
-  prefix === '' ? config.ctx.layout.workDir : joinPath(config.ctx.layout.workDir, prefix);
+const directoryPathOracle = (config: WalkConfigOracle, prefix: string): string => {
+  const workDir = workDirOf(config.ctx);
+  return prefix === '' ? workDir : joinPath(workDir, prefix);
+};
 
 const isEmbeddedGitMarkerOracle = (entry: DirEntry): boolean => {
   if (!isDotGitWalkEntry(entry.name)) return false;
@@ -219,10 +228,10 @@ function groupPhantomsByAbsoluteDir(
  */
 async function buildWorkingTreeShapeContext(shape: WorkingTreeShape): Promise<Context> {
   const ctx = createMemoryContext();
-  await writeDotGitMarker(ctx, ctx.layout.workDir, shape.rootDotGit);
+  await writeDotGitMarker(ctx, workDirOf(ctx), shape.rootDotGit);
   const phantoms: PhantomSite[] = [];
   await materializeWorkingTreeEntries(ctx, shape.entries, '', phantoms);
-  const phantomsByDir = groupPhantomsByAbsoluteDir(ctx.layout.workDir, phantoms);
+  const phantomsByDir = groupPhantomsByAbsoluteDir(workDirOf(ctx), phantoms);
   if (phantomsByDir.size === 0) return ctx;
 
   const baseReaddir = ctx.fs.readdir;

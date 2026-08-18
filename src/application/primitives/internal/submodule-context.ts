@@ -1,6 +1,7 @@
 import type { FilePath } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
 import { joinPath } from './join-working-tree-path.js';
+import { requireWorkTree } from './repo-state.js';
 
 /**
  * Build a child `Context` whose object store is a submodule's absorbed gitdir
@@ -14,7 +15,7 @@ import { joinPath } from './join-working-tree-path.js';
  */
 const buildChildContext = (ctx: Context, name: string, treeRelPath: FilePath): Context => {
   const gitDir = `${ctx.layout.gitDir}/modules/${name}`;
-  const workDir = joinPath(ctx.layout.workDir, treeRelPath);
+  const workDir = joinPath(requireWorkTree(ctx, 'deriveSubmoduleContext'), treeRelPath);
   const { promisor: _promisor, hooks: _hooks, ...rest } = ctx;
   return Object.freeze({
     ...rest,

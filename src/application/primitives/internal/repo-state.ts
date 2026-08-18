@@ -6,7 +6,7 @@ import {
   operationInProgress,
 } from '../../../domain/commands/error.js';
 import { TsgitError } from '../../../domain/error.js';
-import { bareRepository, notARepository } from '../../../domain/index.js';
+import { notARepository, workTreeConfigInvalid, workTreeRequired } from '../../../domain/index.js';
 import { type ObjectId, RefName } from '../../../domain/objects/index.js';
 import type { FilePath } from '../../../domain/objects/object-id.js';
 import { refNotFound } from '../../../domain/refs/error.js';
@@ -17,6 +17,7 @@ import {
   REBASE_HEAD,
   REVERT_HEAD,
 } from '../../../domain/refs/state-files.js';
+import { isRefsLinkText, isValidHeadContent } from '../../../domain/repository/head-ref.js';
 import {
   CHERRY_PICK,
   MERGE,
@@ -34,7 +35,6 @@ import {
   findLastInvalidMaxTreeDepth,
   type InvalidBooleanEntry,
   type InvalidCompressionEntry,
-  readConfig,
   type ValuelessEntry,
 } from '../config-read.js';
 
@@ -78,18 +78,39 @@ const assertDiscoveryBooleansValid = async (ctx: Context): Promise<void> => {
 };
 
 /**
- * Confirm `ctx` points at a real repository: `${gitDir}/HEAD` exists, then run
- * the discovery-tier boolean gate. Returns the repo root (workDir for
- * non-bare; gitDir for bare repos where gitDir IS the root).
+ * Confirm `ctx` points at a real repository: `${gitDir}/HEAD` exists AND its
+ * content parses as a head — git refuses a present-but-malformed gitdir with
+ * the same up-front `not a git repository` fatal it uses for an absent one,
+ * so an explicit `gitDir` naming a directory whose `HEAD` is garbage must
+ * not be half-operated on — then run the discovery-tier boolean gate.
+ * Returns the repo root (workDir for non-bare; gitDir for bare repos where
+ * gitDir IS the root).
  */
 export const assertRepository = async (ctx: Context): Promise<FilePath> => {
-  const headPath = `${ctx.layout.gitDir}/HEAD`;
-  if (!(await ctx.fs.exists(headPath))) {
-    throw notARepository(ctx.layout.workDir as FilePath);
+  if (!(await hasUsableHead(ctx))) {
+    throw notARepository((ctx.layout.workDir ?? ctx.layout.gitDir) as FilePath);
   }
   await assertDiscoveryBooleansValid(ctx);
-  const root = ctx.layout.bare ? ctx.layout.gitDir : ctx.layout.workDir;
+  const root = ctx.layout.workDir ?? ctx.layout.gitDir;
   return root as FilePath;
+};
+
+/**
+ * The SAME head predicate discovery applies (`validate_headref`): a symlinked
+ * `HEAD` is judged by its LINK TEXT — `refs/…` qualifies even when dangling —
+ * and a regular file by its content. Keeping the two tiers on one rule is
+ * what stops a directory from passing discovery and then refusing every
+ * command. The catch arms deliberately collapse EVERY read failure (absent,
+ * EACCES, EISDIR, EIO) into "no usable head": git's own `validate_headref`
+ * returns the same -1 for a failed `open`, so the refusal outcome matches
+ * regardless of the failure class.
+ */
+const hasUsableHead = async (ctx: Context): Promise<boolean> => {
+  const headPath = `${ctx.layout.gitDir}/HEAD`;
+  const linkText = await ctx.fs.readlink(headPath).catch(() => undefined);
+  if (linkText !== undefined) return isRefsLinkText(linkText);
+  const head = await ctx.fs.readUtf8(headPath).catch(() => undefined);
+  return head !== undefined && isValidHeadContent(head);
 };
 
 const CORE_STRING_KEYS: ReadonlyArray<string> = ['excludesfile', 'attributesfile'];
@@ -193,7 +214,7 @@ export const assertEagerConfigValid = async (ctx: Context): Promise<void> => {
 };
 
 /**
- * The operational entry point: confirm a real repository (HEAD exists) AND that
+ * The operational entry point: confirm a real repository (a usable HEAD) AND that
  * the `[core]` section passes full validation, then return the repo root.
  * Operational commands take this; the config porcelain stays on the bare
  * `assertRepository` so it survives a valueless or invalid `[core]` entry
@@ -205,20 +226,21 @@ export const assertOperationalRepository = async (ctx: Context): Promise<FilePat
   return root;
 };
 
-/** Read `core.bare` from `.git/config`. Defaults to false when missing. */
-export const isBare = async (ctx: Context): Promise<boolean> => {
-  const config = await readConfig(ctx);
-  return config.core?.bare ?? false;
-};
-
 /**
- * Throw `BARE_REPOSITORY` when the repo is bare, attaching `operation` so the
- * caller can surface "cannot <operation> on a bare repository".
+ * git's `setup_work_tree()`: refuse when the work-tree config is bogus, then
+ * when there is no work tree. Returns the work tree so callers stop reading
+ * it unguarded — the compiler enforces that every work-tree read downstream
+ * of this call is reached only once a work tree is proven to exist.
+ *
+ * Synchronous: unlike the config-driven `isBare`/`assertNotBare` this
+ * replaces, the layout is already resolved at open time, so no config read
+ * (and no `await`) is needed here.
  */
-export const assertNotBare = async (ctx: Context, operation: string): Promise<void> => {
-  if (await isBare(ctx)) {
-    throw bareRepository(operation);
-  }
+export const requireWorkTree = (ctx: Context, operation: string): string => {
+  if (ctx.layout.workTreeConfigBogus === true) throw workTreeConfigInvalid(ctx.layout.gitDir);
+  const workDir = ctx.layout.workDir;
+  if (workDir === undefined) throw workTreeRequired(operation);
+  return workDir;
 };
 
 /** Read and parse `.git/HEAD`. Missing → REF_NOT_FOUND. */

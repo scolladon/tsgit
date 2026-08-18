@@ -30,8 +30,8 @@ import { readIndex } from '../primitives/read-index.js';
 import { acquireIndexLock } from './internal/index-update.js';
 import {
   assertNoPendingOperation,
-  assertNotBare,
   assertOperationalRepository,
+  requireWorkTree,
 } from './internal/repo-state.js';
 import { renameInWorkingTree, validatePath } from './internal/working-tree.js';
 
@@ -96,7 +96,7 @@ export const mv = async (
   opts: MvOptions = {},
 ): Promise<MvResult> => {
   await assertOperationalRepository(ctx);
-  await assertNotBare(ctx, 'mv');
+  requireWorkTree(ctx, 'mv');
   await assertNoPendingOperation(ctx);
   const validatedSources = sources.map((source) => validatePath(source));
   const [firstSource] = validatedSources;
@@ -329,7 +329,8 @@ const refusal = (reason: MvSkipReason, source: FilePath, target: FilePath): Tsgi
 const stripTrailingSlash = (path: string): string =>
   path.endsWith('/') ? path.slice(0, -1) : path;
 
-const workPath = (ctx: Context, path: FilePath): string => joinPath(ctx.layout.workDir, path);
+const workPath = (ctx: Context, path: FilePath): string =>
+  joinPath(requireWorkTree(ctx, 'mv'), path);
 
 const lstatOrUndefined = async (
   ctx: Context,

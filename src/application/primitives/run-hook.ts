@@ -5,7 +5,7 @@ import type { HookRequest, HookResult } from '../../ports/hook-runner.js';
 import { readConfig } from './config-read.js';
 import { joinPath } from './internal/join-working-tree-path.js';
 import { assertNoValuelessConfig } from './internal/valueless-config-guard.js';
-import { commonDirOf } from './path-layout.js';
+import { commonDirOf, getSpawnCwd } from './path-layout.js';
 
 const HOOKS_SUBDIR = 'hooks';
 
@@ -40,7 +40,10 @@ export const resolveHooksDir = (
     return layout.homeDir === undefined ? fallback : `${layout.homeDir}/${hooksPath.slice(2)}`;
   }
   if (isAbsolutePath(hooksPath)) return hooksPath;
-  return joinPath(layout.workDir, hooksPath);
+  // A relative hooksPath resolves against the working-tree root when there
+  // is one; a bare repo (git's own bare hooks run with PWD=<bare.git>) has
+  // none, so gitDir is the faithful fallback.
+  return joinPath(layout.workDir ?? layout.gitDir, hooksPath);
 };
 
 /** Optional arguments and stdin a caller threads into a hook invocation. */
@@ -70,7 +73,7 @@ const invokeHook = async (
   const request: HookRequest = {
     name,
     hooksDir: resolveHooksDir(config.core?.hooksPath, ctx.layout),
-    workDir: ctx.layout.workDir,
+    workDir: getSpawnCwd(ctx.layout),
     gitDir: ctx.layout.gitDir,
     args: input.args ?? [],
     stdin: input.stdin ?? '',

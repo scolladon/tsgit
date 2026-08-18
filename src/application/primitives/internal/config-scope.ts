@@ -3,11 +3,11 @@ import {
   configScopeNotAvailable,
   configSystemPathUnresolved,
 } from '../../../domain/commands/error.js';
+import type { IniSection } from '../../../domain/config/config-ini.js';
+import { parseGitBoolean, parseIniSections } from '../../../domain/config/config-ini.js';
 import { TsgitError } from '../../../domain/error.js';
 import type { Context } from '../../../ports/context.js';
 import { commonGitDir } from '../path-layout.js';
-import type { IniSection } from './config-ini.js';
-import { parseGitBoolean, parseIniSections } from './config-ini.js';
 
 /**
  * Canonical read precedence: later scopes override earlier ones for a given

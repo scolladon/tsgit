@@ -78,7 +78,7 @@ type RebaseResult =
   to the original oid.
 - **Refusals.** A dirty index/working tree (`WORKING_TREE_DIRTY`), an operation
   already in progress (`OPERATION_IN_PROGRESS`), an unborn branch
-  (`NO_INITIAL_COMMIT`), a bare repository (`BARE_REPOSITORY`).
+  (`NO_INITIAL_COMMIT`), no work tree (`WORK_TREE_REQUIRED`).
 
 ## Interactive (`rebase -i`)
 
@@ -129,7 +129,7 @@ await repo.rebase.run({
 - `OPERATION_IN_PROGRESS` — another operation (merge / cherry-pick / revert /
   rebase) is already pending.
 - `NO_INITIAL_COMMIT` — `run` on an unborn branch.
-- `BARE_REPOSITORY` — `run`/`continue`/`skip`/`abort` in a bare repository.
+- `WORK_TREE_REQUIRED` — `run`/`continue`/`skip`/`abort` against a repository with no work tree (bare, or opened without one).
 - `NO_OPERATION_IN_PROGRESS` — `continue`/`skip`/`abort` with no rebase in progress.
 - `MERGE_HAS_CONFLICTS` — `continue` while the index still has unmerged entries.
 - `AMBIGUOUS_OID_PREFIX` — an abbreviated `upstream`/`onto` matched more than one object.

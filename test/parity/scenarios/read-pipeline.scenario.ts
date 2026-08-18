@@ -8,7 +8,7 @@
  *
  * Surfaces closed (per 19.5a):
  *   commands:   catFile, readFileAt
- *   primitives: readObject, readTree, readIndex, getRepoRoot, walkCommits,
+ *   primitives: readObject, readTree, readIndex, getRepoRoot, commonGitDir, walkCommits,
  *               walkCommitsByDate, walkTree, walkWorkingTree, catFileBatch
  */
 import { AUTHOR, FILES, MESSAGES } from '../fixtures.ts';
@@ -20,6 +20,7 @@ interface ReadPipelineResult {
   readonly readTreeEntryCount: number;
   readonly readIndexEntryCount: number;
   readonly repoRootResolved: boolean;
+  readonly commonGitDirEqualsGitDir: boolean;
   readonly walkCommitsCount: number;
   readonly walkCommitsByDateCount: number;
   readonly walkTreeCount: number;
@@ -39,6 +40,7 @@ export const readPipelineScenario: Scenario<ReadPipelineResult> = {
     readTreeEntryCount: 1,
     readIndexEntryCount: 1,
     repoRootResolved: true,
+    commonGitDirEqualsGitDir: true,
     walkCommitsCount: 1,
     walkCommitsByDateCount: 1,
     walkTreeCount: 1,
@@ -85,6 +87,9 @@ export const readPipelineScenario: Scenario<ReadPipelineResult> = {
       readTreeEntryCount: tree.entries.length,
       readIndexEntryCount: index.entries.length,
       repoRootResolved: typeof repoRoot === 'string' && repoRoot.length > 0,
+      // A normal repository is its own common dir on every adapter — a
+      // deterministic projection of an adapter-dependent absolute path.
+      commonGitDirEqualsGitDir: repo.primitives.commonGitDir() === repo.ctx.layout.gitDir,
       walkCommitsCount,
       walkCommitsByDateCount,
       walkTreeCount,

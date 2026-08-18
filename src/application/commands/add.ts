@@ -48,8 +48,8 @@ import { buildRepoIgnorePredicate } from './internal/build-ignore-evaluator.js';
 import { acquireIndexLock } from './internal/index-update.js';
 import {
   assertNoPendingOperation,
-  assertNotBare,
   assertOperationalRepository,
+  requireWorkTree,
 } from './internal/repo-state.js';
 import {
   assertNoSymlinkedLeadingPath,
@@ -95,7 +95,7 @@ export const add = async (
   opts: AddOptions = {},
 ): Promise<AddResult> => {
   await assertOperationalRepository(ctx);
-  await assertNotBare(ctx, 'add');
+  requireWorkTree(ctx, 'add');
   // Allow `add` during a conflicted operation — staging resolved files IS the
   // path forward for merge / cherry-pick / revert / rebase alike.
   await assertNoPendingOperation(ctx, { except: [MERGE, CHERRY_PICK, REVERT, REBASE] });
@@ -179,7 +179,7 @@ const lstatOrMissing = async (
   path: FilePath,
 ): Promise<Awaited<ReturnType<Context['fs']['lstat']>> | undefined> => {
   try {
-    return await ctx.fs.lstat(joinPath(ctx.layout.workDir, path));
+    return await ctx.fs.lstat(joinPath(requireWorkTree(ctx, 'add'), path));
   } catch (err) {
     if (err instanceof TsgitError && err.data.code === 'FILE_NOT_FOUND') return undefined;
     throw err;
@@ -415,7 +415,7 @@ const stageFromStat = async (
   // lstat remains the sole authority either way.
   // Promisor-remote guard (see assertValidPromisorRemoteConfig) — once the write path engages.
   await assertValidPromisorRemoteConfig(ctx);
-  const fresh = await ctx.fs.lstat(joinPath(ctx.layout.workDir, path));
+  const fresh = await ctx.fs.lstat(joinPath(requireWorkTree(ctx, 'add'), path));
   if (
     fresh.isSymbolicLink !== kind.isSymbolicLink ||
     fresh.isDirectory !== kind.isDirectory ||
@@ -492,10 +492,9 @@ const readContent = async (
   path: FilePath,
   stat: Awaited<ReturnType<Context['fs']['lstat']>>,
 ): Promise<Uint8Array> => {
+  const workDir = requireWorkTree(ctx, 'add');
   if (stat.isSymbolicLink) {
-    const bytes = new TextEncoder().encode(
-      await ctx.fs.readlink(joinPath(ctx.layout.workDir, path)),
-    );
+    const bytes = new TextEncoder().encode(await ctx.fs.readlink(joinPath(workDir, path)));
     // Defence against an FS adapter that mis-reports symlink target length:
     // lstat reports the target byte length as `stat.size`, but a hostile
     // adapter could return an arbitrarily long string from readlink.
@@ -511,5 +510,5 @@ const readContent = async (
   // layers on the wider `validateWorkingTreePath` — leading-colon and
   // `.git`-alias rejections meant for user-typed pathspec text) keeps
   // walked content from being rejected by a pathspec-only rule.
-  return ctx.fs.read(joinPath(ctx.layout.workDir, path));
+  return ctx.fs.read(joinPath(workDir, path));
 };

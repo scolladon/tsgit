@@ -117,9 +117,11 @@ describe.skipIf(!GIT_AVAILABLE)('config boolean refusal tier interop', () => {
 
     describe('When git status and tsgit status run', () => {
       it('Then both refuse with exit 128 / CONFIG_BAD_BOOLEAN_VALUE naming core.bare', async () => {
-        // Arrange & Act — armed in beforeEach
+        // Arrange & Act — armed in beforeEach. The refusal now fires at
+        // `openRepository` (Stage 2 of layout resolution), before any
+        // command runs — `withRepo` would never return.
         const g = tryRunGit(['-C', ours, 'status'], { env: runGitEnv() });
-        const caught = await withRepo(ours, (repo) => captureThrow(() => repo.status()));
+        const caught = await captureThrow(() => openRepository({ cwd: ours }));
 
         // Assert — git
         expect(g.ok).toBe(false);
@@ -132,17 +134,16 @@ describe.skipIf(!GIT_AVAILABLE)('config boolean refusal tier interop', () => {
       });
     });
 
-    describe('When git config --list and tsgit config porcelain run', () => {
-      it('Then both ALSO refuse — T1 kills the config porcelain too', async () => {
-        // Arrange & Act — armed in beforeEach
+    describe('When git config --list runs and tsgit opens the repository', () => {
+      it('Then both refuse — the open-time refusal precedes any config porcelain call', async () => {
+        // Arrange & Act — armed in beforeEach. Open-time refusal means a
+        // single `openRepository` throw subsumes both porcelain calls: there
+        // is no Repository handle to invoke `config.list()`/`config.get()` on.
         const g = tryRunGitWithExit(['-C', ours, 'config', '--list'], { env: runGitEnv() });
         const gGet = tryRunGitWithExit(['-C', ours, 'config', '--get', 'core.bare'], {
           env: runGitEnv(),
         });
-        const caughtList = await withRepo(ours, (repo) => captureThrow(() => repo.config.list()));
-        const caughtGet = await withRepo(ours, (repo) =>
-          captureThrow(() => repo.config.get({ key: 'core.bare' })),
-        );
+        const caught = await captureThrow(() => openRepository({ cwd: ours }));
 
         // Assert — git, pinned to the exact refusal (any other failure —
         // ownership, a different config fault — must not satisfy this row)
@@ -151,8 +152,7 @@ describe.skipIf(!GIT_AVAILABLE)('config boolean refusal tier interop', () => {
         expect(gGet.exitCode).toBe(128);
         expect(gGet.stderr).toContain("bad boolean config value 'maybe' for 'core.bare'");
         // Assert — tsgit
-        expect(asBadBoolean(caughtList).code).toBe('CONFIG_BAD_BOOLEAN_VALUE');
-        expect(asBadBoolean(caughtGet).code).toBe('CONFIG_BAD_BOOLEAN_VALUE');
+        expect(asBadBoolean(caught).code).toBe('CONFIG_BAD_BOOLEAN_VALUE');
       });
     });
   });
@@ -166,9 +166,10 @@ describe.skipIf(!GIT_AVAILABLE)('config boolean refusal tier interop', () => {
 
     describe('When git status and tsgit status run', () => {
       it('Then both name core.bare — the discovery pass precedes the default-config pass', async () => {
-        // Arrange & Act — armed in beforeEach
+        // Arrange & Act — armed in beforeEach. Open time precedes the first
+        // command either way, so the ordering guarantee survives the move.
         const g = tryRunGitWithExit(['-C', ours, 'status'], { env: runGitEnv() });
-        const caught = await withRepo(ours, (repo) => captureThrow(() => repo.status()));
+        const caught = await captureThrow(() => openRepository({ cwd: ours }));
 
         // Assert — git
         expect(g.exitCode).toBe(128);
@@ -282,14 +283,18 @@ describe.skipIf(!GIT_AVAILABLE)('config boolean refusal tier interop', () => {
         const g = tryRunGit(['-C', ours, 'add', 'nope.txt'], { env: runGitEnv() });
         const caught = await withRepo(ours, (repo) => captureThrow(() => repo.add(['nope.txt'])));
 
-        // Assert — git: refuses for the BARE reason, not a boolean-grammar reason
+        // Assert — git: refuses for the missing-work-tree reason, not a
+        // boolean-grammar reason
         expect(g.ok).toBe(false);
         expect(g.stderr).toContain('this operation must be run in a work tree');
         expect(g.stderr).not.toContain('bad boolean config value');
-        // Assert — tsgit: same class of refusal — BARE_REPOSITORY, not a boolean-grammar throw
+        // Assert — tsgit: same class of refusal — WORK_TREE_REQUIRED, not a
+        // boolean-grammar throw. `layout.bare` is fixed at open time from
+        // `core.bare = 2` (a valid boolean, true), so `add` refuses for
+        // missing work tree, matching git's own message exactly.
         expect(caught).toBeInstanceOf(TsgitError);
         const data = (caught as TsgitError).data;
-        expect(data.code).toBe('BARE_REPOSITORY');
+        expect(data.code).toBe('WORK_TREE_REQUIRED');
       });
     });
   });

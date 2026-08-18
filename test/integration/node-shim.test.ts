@@ -363,3 +363,93 @@ describe('Node shim — linked-worktree containment', () => {
     });
   });
 });
+
+describe('Node shim — bare-repo containment', () => {
+  describe('Given a bare-shaped gitDir, When openRepository opens it by cwd (BARE_DIR discovery)', () => {
+    it('Then the raw adapter root set is exactly [gitDir]', async () => {
+      // Arrange — a minimal valid git directory (HEAD/objects/refs) so
+      // BARE_DIR discovery recognises it; core.bare stays unset (absent is
+      // still truthy — bare). Paths are built from the REALPATHED tmpdir —
+      // openRepository realpaths cwd internally (macOS /var -> /private/var),
+      // so an assertion built off the raw form would mismatch the adapter's
+      // own realpath-rooted containment.
+      const realTmpdir = await realpath(tmpdir);
+      await mkdir(path.join(realTmpdir, 'objects'));
+      await mkdir(path.join(realTmpdir, 'refs'));
+      await writeFile(path.join(realTmpdir, 'HEAD'), 'ref: refs/heads/main\n');
+      const outsideDir = `${realTmpdir}-outside`;
+      await mkdir(outsideDir, { recursive: true });
+      await writeFile(path.join(outsideDir, 'secret.txt'), 'x\n');
+
+      // Act — `unsafeRawAdapters` bypasses the lexical facade validator,
+      // leaving the adapter's own realpath-rooted containment as the gate.
+      const sut = await openRepository({ cwd: tmpdir, unsafeRawAdapters: true });
+
+      try {
+        // Assert — resolved as bare, no work tree.
+        expect(sut.layout.bare).toBe(true);
+        expect(sut.layout.workDir).toBeUndefined();
+        // gitDir itself is reachable...
+        expect(await sut.ctx.fs.readUtf8(path.join(realTmpdir, 'HEAD'))).toBe(
+          'ref: refs/heads/main\n',
+        );
+        // ...but a sibling outside every layout root is refused — a bare
+        // repo's root set is exactly [gitDir], never a wider ancestor.
+        let caught: unknown;
+        try {
+          await sut.ctx.fs.readUtf8(path.join(outsideDir, 'secret.txt'));
+        } catch (err) {
+          caught = err;
+        }
+        expect((caught as { data?: { code?: string } })?.data?.code).toBe('PERMISSION_DENIED');
+      } finally {
+        await sut.dispose();
+        await rm(outsideDir, { recursive: true, force: true });
+      }
+    });
+  });
+});
+
+describe('Node shim — explicit gitDir + workDir containment', () => {
+  describe('Given explicit gitDir and workDir in disjoint subtrees, When openRepository opens both', () => {
+    it('Then both roots are reachable and a path between them (their common ancestor) is refused', async () => {
+      // Arrange — gitDir and workDir are SIBLINGS under tmpdir; a
+      // common-ancestor rooting would admit tmpdir itself (and everything
+      // under it), which is exactly the containment regression this pins.
+      // Built off the REALPATHED tmpdir for the same reason every other
+      // symlink-sensitive fixture in this file is (macOS /var -> /private/var).
+      const realTmpdir = await realpath(tmpdir);
+      const gitDir = path.join(realTmpdir, 'g.git');
+      const workDir = path.join(realTmpdir, 'w');
+      await mkdir(gitDir, { recursive: true });
+      await mkdir(workDir, { recursive: true });
+      await writeFile(path.join(gitDir, 'marker.txt'), 'g\n');
+      await writeFile(path.join(workDir, 'marker.txt'), 'w\n');
+      await writeFile(path.join(realTmpdir, 'between.txt'), 'x\n');
+
+      // Act
+      const sut = await openRepository({
+        cwd: tmpdir,
+        gitDir,
+        workDir,
+        unsafeRawAdapters: true,
+      });
+
+      try {
+        // Assert — both disjoint roots are reachable.
+        expect(await sut.ctx.fs.readUtf8(path.join(gitDir, 'marker.txt'))).toBe('g\n');
+        expect(await sut.ctx.fs.readUtf8(path.join(workDir, 'marker.txt'))).toBe('w\n');
+        // Assert — their common ancestor, which is neither root, is refused.
+        let caught: unknown;
+        try {
+          await sut.ctx.fs.readUtf8(path.join(realTmpdir, 'between.txt'));
+        } catch (err) {
+          caught = err;
+        }
+        expect((caught as { data?: { code?: string } })?.data?.code).toBe('PERMISSION_DENIED');
+      } finally {
+        await sut.dispose();
+      }
+    });
+  });
+});

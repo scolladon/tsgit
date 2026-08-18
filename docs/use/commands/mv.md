@@ -81,7 +81,7 @@ const { moved, skipped } = await repo.mv(['a.txt', 'ghost.txt'], 'dir', { skipEr
 - `MV_MULTIPLE_SOURCES_SAME_TARGET` — two sources resolve to the same destination path.
 - `MV_OVERLAPPING_SOURCES` — a source is a directory containing another source (`mv a a/b dir`).
 - `EMPTY_PATHSPEC` — no sources were given.
-- `BARE_REPOSITORY` — `mv` is not valid in a bare repository.
+- `WORK_TREE_REQUIRED` — the repository has no work tree (bare, or opened without one).
 
 The first four are per-source and, under `skipErrors`, are collected in
 `skipped` instead of thrown; the rest are structural and always thrown.

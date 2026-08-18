@@ -18,7 +18,7 @@ import { repositoryDisposed } from './domain/commands/error.js';
 import type { StatTreeDiff, TreeDiff } from './domain/diff/index.js';
 import type { CommandRunner } from './ports/command-runner.js';
 import type { Compressor } from './ports/compressor.js';
-import type { Context, RepositoryConfig } from './ports/context.js';
+import type { Context, RepositoryConfig, RepositoryLayout } from './ports/context.js';
 import type { EnvReader } from './ports/env-reader.js';
 import type { FileSystem } from './ports/file-system.js';
 import type { HashService } from './ports/hash-service.js';
@@ -76,6 +76,29 @@ type BindCtx<F> = F extends (ctx: Context, ...rest: infer A) => infer R ? (...ar
 export interface OpenRepositoryOptions {
   /** Working directory. Default: `process.cwd()` on Node, `'/'` on browser/memory. */
   readonly cwd?: string;
+  /**
+   * Explicit git directory — the argument equivalent of git's `--git-dir`.
+   * Relative values resolve against `cwd`. Supplying it skips discovery
+   * entirely.
+   */
+  readonly gitDir?: string;
+  /**
+   * Explicit working tree — the argument equivalent of git's `--work-tree`.
+   * Relative values resolve against `cwd`. Overrides `core.bare` and
+   * `core.worktree`.
+   */
+  readonly workDir?: string;
+  /**
+   * Force bareness. `true` behaves as `core.bare = true`; `false` as
+   * `core.bare = false`. Omit to take the answer from config + layout.
+   */
+  readonly bare?: boolean;
+  /**
+   * Absolute directories bounding the discovery walk — the argument
+   * equivalent of `GIT_CEILING_DIRECTORIES`. Ignored when `gitDir` is
+   * supplied (no walk happens).
+   */
+  readonly ceilingDirs?: ReadonlyArray<string>;
   /** Adapter overrides. Each is optional; missing slots fall back to runtime detection. */
   readonly fs?: FileSystem;
   readonly hash?: HashService;
@@ -125,7 +148,8 @@ export interface OpenRepositoryOptions {
  * @internal
  */
 export interface RepositoryLayoutInput {
-  readonly workDir: string;
+  /** Absolute path to the working tree. Absent when the repository has none. */
+  readonly workDir?: string;
   readonly gitDir: string;
   readonly bare: boolean;
   /**
@@ -134,6 +158,8 @@ export interface RepositoryLayoutInput {
    * Absent for a normal repo or the main worktree (equals `gitDir`).
    */
   readonly commonDir?: string;
+  /** `core.bare` and `core.worktree` are both set — git's `work_tree_config_is_bogus`. */
+  readonly workTreeConfigBogus?: boolean;
   readonly homeDir?: string;
 }
 
@@ -270,12 +296,13 @@ export interface Repository {
   /** Nested `repo.worktree.{list,add,move,remove}` namespace. */
   readonly worktree: commands.WorktreeNamespace;
 
-  // Tier-2 primitives (24) — bound under .primitives.* to keep the top-level
+  // Tier-2 primitives (25) — bound under .primitives.* to keep the top-level
   // surface focused on user-facing commands.
   readonly primitives: {
     readonly bisectMidpoint: BindCtx<typeof primitives.bisectMidpoint>;
     readonly catFileBatch: BindCtx<typeof primitives.catFileBatch>;
     readonly createCommit: BindCtx<typeof primitives.createCommit>;
+    readonly commonGitDir: BindCtx<typeof primitives.commonGitDir>;
     readonly diffTrees: BindCtx<typeof primitives.diffTrees>;
     readonly flattenTree: BindCtx<typeof primitives.flattenTree>;
     readonly getRepoRoot: BindCtx<typeof primitives.getRepoRoot>;
@@ -306,6 +333,13 @@ export interface Repository {
    * via the iteration-stability invariant (design §8.0 + ADR-150).
    */
   readonly snapshot: SnapshotFactory;
+
+  /**
+   * The resolved physical layout. Same object as `ctx.layout`; surfaced
+   * directly so callers do not reach through `ctx`. Deep-frozen — reading it
+   * never throws, mutating it does.
+   */
+  readonly layout: RepositoryLayout;
 
   /** The frozen Context backing every binding. Exposed for advanced use. */
   readonly ctx: Context;
@@ -426,7 +460,11 @@ export const openRepository = async (
     compressor: adapters.compressor,
     transport: adapters.transport,
     progress: opts.progress ?? noopProgress,
-    layout: fallback.layout,
+    // Deep-frozen here — the moment the layout becomes reachable both via
+    // ctx.layout and the facade's own `layout` field — so a caller cannot
+    // mutate the object every primitive reads. `deepFreeze` short-circuits
+    // on an already-frozen object, so this costs nothing on a re-freeze.
+    layout: deepFreeze(fallback.layout),
     cwd,
     runtime: fallback.runtime,
     hashConfig: fallback.hashConfig,
@@ -679,6 +717,10 @@ export const openRepository = async (
         guard();
         return primitives.flattenTree(ctx, treeIdOrObject);
       }) as Repository['primitives']['flattenTree'],
+      commonGitDir: (() => {
+        guard();
+        return primitives.commonGitDir(ctx);
+      }) as Repository['primitives']['commonGitDir'],
       getRepoRoot: (() => {
         guard();
         return primitives.getRepoRoot(ctx);
@@ -757,6 +799,7 @@ export const openRepository = async (
       }) as Repository['primitives']['writeTree'],
     }),
     ctx,
+    layout: ctx.layout,
     dispose,
   });
   return repo;

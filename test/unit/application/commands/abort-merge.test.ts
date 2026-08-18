@@ -13,6 +13,8 @@ import { readReflog } from '../../../../src/application/primitives/reflog-store.
 import { resolveRef } from '../../../../src/application/primitives/resolve-ref.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import type { AuthorIdentity, ObjectId, RefName } from '../../../../src/domain/objects/index.js';
+import type { Context } from '../../../../src/ports/context.js';
+import { asBareContext } from './fixtures.js';
 
 const author: AuthorIdentity = {
   name: 'Ada',
@@ -75,29 +77,32 @@ describe('mergeAbort', () => {
       it.each([
         {
           label: 'a bare repo',
-          arrange: async (ctx: ReturnType<typeof createMemoryContext>): Promise<void> => {
-            await init(ctx, { bare: true });
+          arrange: async (ctx: Context): Promise<Context> => {
+            await init(ctx);
+            return asBareContext(ctx);
           },
-          code: 'BARE_REPOSITORY',
+          code: 'WORK_TREE_REQUIRED',
           operation: 'merge --abort',
         },
         {
           label: 'no MERGE_HEAD on disk',
-          arrange: async (ctx: ReturnType<typeof createMemoryContext>): Promise<void> => {
+          arrange: async (ctx: Context): Promise<Context> => {
             await init(ctx);
             await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
             await add(ctx, ['a.txt']);
             await commit(ctx, { message: 'first', author });
+            return ctx;
           },
           code: 'NO_OPERATION_IN_PROGRESS',
           operation: 'merge',
         },
         {
           label: 'MERGE_HEAD present but ORIG_HEAD absent',
-          arrange: async (ctx: ReturnType<typeof createMemoryContext>): Promise<void> => {
+          arrange: async (ctx: Context): Promise<Context> => {
             await setupConflictingMerge(ctx);
             await mergeRun(ctx, { rev: 'feature', author });
             await ctx.fs.rm(`${ctx.layout.gitDir}/ORIG_HEAD`);
+            return ctx;
           },
           code: 'NO_OPERATION_IN_PROGRESS',
           operation: 'merge',
@@ -106,13 +111,12 @@ describe('mergeAbort', () => {
         'Then throws $code with operation=$operation ($label)',
         async ({ arrange, code, operation }) => {
           // Arrange
-          const ctx = createMemoryContext();
-          await arrange(ctx);
+          const arranged = await arrange(createMemoryContext());
 
           // Act
           let caught: unknown;
           try {
-            await mergeAbort(ctx);
+            await mergeAbort(arranged);
           } catch (err) {
             caught = err;
           }

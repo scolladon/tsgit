@@ -6,7 +6,7 @@
  * `bare` flag) must be exercised here — the integration suite does not feed
  * the mutation runner.
  */
-import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
@@ -200,6 +200,100 @@ describe('Node shim — findLayout bare flag', () => {
   });
 });
 
+describe('Node shim — explicit layout option validation ordering', () => {
+  describe('Given gitDir: "" (empty string)', () => {
+    describe('When openRepository runs', () => {
+      it('Then it throws INVALID_OPTION{option: "gitDir"} rather than resolving a layout at cwd', async () => {
+        // Arrange / Act
+        let caught: unknown;
+        try {
+          await openRepository({ cwd: tmpdir, gitDir: '' });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — validateOptions runs BEFORE resolveNodeLayout in this
+        // shim; an empty gitDir must never reach layout resolution.
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('INVALID_OPTION');
+        if (data.code === 'INVALID_OPTION') {
+          expect(data.option).toBe('gitDir');
+        }
+      });
+    });
+  });
+});
+
+describe('Node shim — bare option forwarding', () => {
+  describe('Given bare: true', () => {
+    describe('When openRepository runs', () => {
+      it('Then layout.bare is true and workDir is absent', async () => {
+        // Arrange & Act
+        const sut = await openRepository({ cwd: tmpdir, bare: true });
+
+        try {
+          // Assert
+          expect(sut.ctx.layout.bare).toBe(true);
+          expect(sut.ctx.layout.workDir).toBeUndefined();
+        } finally {
+          await sut.dispose();
+        }
+      });
+    });
+  });
+});
+
+describe('Node shim — gitDir option forwarding', () => {
+  describe('Given an explicit gitDir', () => {
+    describe('When openRepository runs', () => {
+      it('Then layout.gitDir reflects it, not the <cwd>/.git default', async () => {
+        // Arrange
+        const customGitDir = path.join(tmpdir, 'custom.git');
+
+        // Act
+        const sut = await openRepository({ cwd: tmpdir, gitDir: customGitDir });
+
+        try {
+          // Assert — not yet realpath-able (does not exist), so it stays literal.
+          expect(sut.ctx.layout.gitDir).toBe(customGitDir);
+        } finally {
+          await sut.dispose();
+        }
+      });
+    });
+  });
+});
+
+describe('Node shim — ceilingDirs option forwarding', () => {
+  describe('Given a discoverable repository above cwd, bounded by ceilingDirs', () => {
+    describe('When openRepository runs', () => {
+      it('Then discovery stops at the ceiling and falls back to the bootstrap layout', async () => {
+        // Arrange — a valid repo at tmpdir/.git, discoverable by a walk from
+        // tmpdir/a/b UNLESS ceilingDirs stops it at tmpdir/a first.
+        await makeGitDir(path.join(tmpdir, '.git'));
+        const inner = path.join(tmpdir, 'a', 'b');
+        await mkdir(inner, { recursive: true });
+        const resolvedInner = await realpath(inner);
+
+        // Act
+        const sut = await openRepository({
+          cwd: inner,
+          ceilingDirs: [path.join(tmpdir, 'a')],
+        });
+
+        try {
+          // Assert — the ceiling was honoured: tmpdir/.git was never reached,
+          // so the synthetic bootstrap layout (rooted at `inner`) wins instead.
+          expect(sut.ctx.layout.gitDir).toBe(path.join(resolvedInner, '.git'));
+        } finally {
+          await sut.dispose();
+        }
+      });
+    });
+  });
+});
+
 describe('Node shim — synthetic fallback layout', () => {
   describe('Given a cwd with no .git anywhere in its ancestry', () => {
     describe('When openRepository runs', () => {
@@ -303,7 +397,9 @@ describe('Node shim — worktreeFs raw adapter root', () => {
         // case-exact on every platform (incl. Windows, where tmpdir's 8.3
         // short form would otherwise diverge from realpath).
         const sut = await openRepository({ cwd: tmpdir, unsafeRawAdapters: true });
-        const resolvedWorkDir = sut.ctx.layout.workDir;
+        // A fresh `openRepository({ cwd: tmpdir })` over an empty dir always
+        // yields a work tree (the not-yet-a-repository fallback).
+        const resolvedWorkDir = sut.ctx.layout.workDir as string;
         await mkdir(path.join(resolvedWorkDir, 'inside'), { recursive: true });
         const worktreeFs = sut.ctx.worktreeFs;
         const rawFs = worktreeFs?.(path.join(resolvedWorkDir, 'wt'));
@@ -319,6 +415,63 @@ describe('Node shim — worktreeFs raw adapter root', () => {
           await sut.dispose();
         }
       });
+    });
+  });
+});
+
+describe('Node shim — worktreeFs raw adapter root (bare repository)', () => {
+  describe('Given a bare repository (no work tree) and unsafeRawAdapters', () => {
+    describe('When a path inside the caller-supplied worktree root is probed', () => {
+      it('Then the raw adapter is rooted at exactly the supplied paths, with no bogus extra root', async () => {
+        // Arrange — bare: layout.workDir is undefined, so makeWorktreeFs's
+        // roots array is `[...[], ...worktreePaths]` — exactly worktreePaths.
+        // The ArrayDeclaration mutant on the empty-branch literal would inject
+        // a bogus non-absolute root ("Stryker was here"), breaking containment.
+        const sut = await openRepository({ cwd: tmpdir, bare: true, unsafeRawAdapters: true });
+        const wtPath = path.join(tmpdir, 'wt');
+        await mkdir(path.join(wtPath, 'inside'), { recursive: true });
+        const worktreeFs = sut.ctx.worktreeFs;
+        const rawFs = worktreeFs?.(wtPath);
+
+        try {
+          // Act — probe an existing directory inside the supplied root.
+          const result = await rawFs?.exists(path.join(wtPath, 'inside'));
+
+          // Assert
+          expect(worktreeFs).toBeDefined();
+          expect(result).toBe(true);
+        } finally {
+          await sut.dispose();
+        }
+      });
+    });
+  });
+});
+
+describe('Given a directory whose HEAD is a dangling symlink into refs/', () => {
+  describe('When openRepository discovers it', () => {
+    it('Then the node probe reads the link text and the directory qualifies as a git directory', async () => {
+      // Arrange
+      const tmp = await mkdtemp(path.join(os.tmpdir(), 'tsgit-node-dangling-link-'));
+      try {
+        const dir = path.join(tmp, 'legacy.git');
+        await mkdir(path.join(dir, 'objects'), { recursive: true });
+        await mkdir(path.join(dir, 'refs'), { recursive: true });
+        await symlink('refs/heads/main', path.join(dir, 'HEAD'));
+
+        // Act
+        const repo = await openRepository({ cwd: dir });
+
+        try {
+          // Assert
+          expect(repo.ctx.layout.gitDir).toBe(await realpath(dir));
+          expect(repo.ctx.layout.bare).toBe(true);
+        } finally {
+          await repo.dispose();
+        }
+      } finally {
+        await rm(tmp, { recursive: true, force: true });
+      }
     });
   });
 });

@@ -12,6 +12,7 @@ import type { FilePath, ObjectId } from '../../../../src/domain/objects/index.js
 import type { Context } from '../../../../src/ports/context.js';
 import type { HttpTransport } from '../../../../src/ports/http-transport.js';
 import { buildSeededContext } from '../primitives/fixtures.js';
+import { asBareContext } from './fixtures.js';
 import { buildSubmoduleRemote } from './submodule-network-fixture.js';
 
 const ENCODER = new TextEncoder();
@@ -319,16 +320,16 @@ describe('Given a superproject and a submodule remote', () => {
   });
 
   describe('When the superproject is bare', () => {
-    it('Then add refuses with BARE_REPOSITORY naming the operation', async () => {
-      // Arrange — a bare repo (core.bare=true) with a HEAD
-      const base = await buildSeededContext();
-      await base.fs.writeUtf8(`${base.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
-      await base.fs.writeUtf8(`${base.layout.gitDir}/config`, '[core]\n\tbare = true\n');
+    it('Then add refuses with WORK_TREE_REQUIRED naming the operation', async () => {
+      // Arrange — a bare repo (no work tree) with a HEAD
+      const seeded = await buildSeededContext();
+      await seeded.fs.writeUtf8(`${seeded.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+      const base = asBareContext(seeded);
 
       // Act
       const error = await expectRefusal(
         submoduleAdd(base, { url: SUB_URL, path: 'libs/sub' }),
-        'BARE_REPOSITORY',
+        'WORK_TREE_REQUIRED',
       );
 
       // Assert

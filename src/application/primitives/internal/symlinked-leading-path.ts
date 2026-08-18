@@ -11,6 +11,7 @@ import { TsgitError } from '../../../domain/error.js';
 import type { FilePath } from '../../../domain/objects/object-id.js';
 import type { Context } from '../../../ports/context.js';
 import { joinPath } from './join-working-tree-path.js';
+import { requireWorkTree } from './repo-state.js';
 
 export interface LeadingPathScanner {
   /** True when any leading component of `path` (its directories, never the leaf) is a symlink. */
@@ -42,6 +43,7 @@ type PrefixShape = 'symlink' | 'plain' | 'missing';
  */
 export const createLeadingPathScanner = (ctx: Context): LeadingPathScanner => {
   const memo = new Map<string, PrefixShape>();
+  const workDir = requireWorkTree(ctx, 'createLeadingPathScanner');
 
   const classifyPrefix = async (prefix: string): Promise<PrefixShape> => {
     const cached = memo.get(prefix);
@@ -53,7 +55,7 @@ export const createLeadingPathScanner = (ctx: Context): LeadingPathScanner => {
 
   const lstatPrefix = async (prefix: string): Promise<PrefixShape> => {
     try {
-      const stat = await ctx.fs.lstat(joinPath(ctx.layout.workDir, prefix));
+      const stat = await ctx.fs.lstat(joinPath(workDir, prefix));
       return stat.isSymbolicLink ? 'symlink' : 'plain';
     } catch (err) {
       // A missing prefix is not a symlink. Never swallow anything else —
@@ -97,7 +99,7 @@ export const createLeadingPathScanner = (ctx: Context): LeadingPathScanner => {
         return;
       }
       if (shape === 'symlink') {
-        await ctx.fs.rm(joinPath(ctx.layout.workDir, prefix));
+        await ctx.fs.rm(joinPath(workDir, prefix));
         // The prefix is no longer a symlink (or exists at all, until a
         // deeper write recreates it as a real directory) — a stale 'symlink'
         // verdict must not survive to serve a later lookup of this same

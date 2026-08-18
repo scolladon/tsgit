@@ -80,22 +80,16 @@ describe('checkout', () => {
           expected: 'topic/sub',
         },
         {
-          label: 'a ref with no slash, the label is that ref verbatim',
-          refPath: 'legacy',
-          expected: 'legacy',
-        },
-        {
           label:
-            'a two-segment ref outside refs/heads/, the label is the segment after the single slash',
-          refPath: 'x/main',
+            'a ref outside refs/heads/, the label is the basename after the last slash — a valid symbolic HEAD always begins refs/, so no-slash targets cannot exist',
+          refPath: 'refs/x/main',
           expected: 'main',
         },
       ])('Then $label', async ({ refPath, expected }) => {
         // Arrange — point HEAD at a loose ref of the given shape. The label
-        // computation must strip only the refs/heads/ prefix and otherwise fall
-        // back to the basename after the last slash (pinning both the
-        // HEADS_PREFIX slice and the `lastIndexOf('/') === -1` guard against a
-        // `=== 1` mutation).
+        // computation must strip only the refs/heads/ prefix and otherwise
+        // fall back to the basename after the last slash; a valid symbolic
+        // HEAD always begins refs/, so the slice is total.
         const { ctx, commitId } = await seedWithBranches();
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/${refPath}`, `${commitId}\n`);
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `ref: ${refPath}\n`);
@@ -1071,15 +1065,14 @@ describe('checkout — mutation hardening', () => {
 
   describe('Given a bare repository', () => {
     describe('When checkout', () => {
-      it('Then throws BARE_REPOSITORY naming the checkout operation (L253 literal)', async () => {
-        // Arrange — a bare repo; assertNotBare(ctx, 'checkout') must throw with
-        // the operation string 'checkout'. A StringLiteral mutant emptying the
-        // 'checkout' argument would surface an empty operation in the message.
-        const ctx = createMemoryContext();
-        await init(ctx);
-        const cfgPath = `${ctx.layout.gitDir}/config`;
-        const cfg = await ctx.fs.readUtf8(cfgPath);
-        await ctx.fs.writeUtf8(cfgPath, `${cfg}\n[core]\n\tbare = true\n`);
+      it('Then throws WORK_TREE_REQUIRED naming the checkout operation (L253 literal)', async () => {
+        // Arrange — a bare repo; requireWorkTree(ctx, 'checkout') must throw
+        // with the operation string 'checkout'. A StringLiteral mutant
+        // emptying the 'checkout' argument would surface an empty operation
+        // in the message.
+        const ctx0 = createMemoryContext();
+        await init(ctx0);
+        const ctx = asBareContext(ctx0);
 
         // Act
         let caught: unknown;
@@ -1092,12 +1085,12 @@ describe('checkout — mutation hardening', () => {
         // Assert
         expect(caught).toBeInstanceOf(TsgitError);
         const data = (caught as TsgitError).data;
-        expect(data.code).toBe('BARE_REPOSITORY');
-        if (data.code === 'BARE_REPOSITORY') {
+        expect(data.code).toBe('WORK_TREE_REQUIRED');
+        if (data.code === 'WORK_TREE_REQUIRED') {
           expect(data.operation).toBe('checkout');
         }
         expect((caught as TsgitError).message).toBe(
-          'BARE_REPOSITORY: operation requires a working tree: checkout',
+          'WORK_TREE_REQUIRED: operation requires a working tree: checkout',
         );
       });
     });
@@ -1226,7 +1219,7 @@ describe('checkout — sparse checkout', () => {
   });
 });
 
-import { recordingProgress, withProgress } from './fixtures.js';
+import { asBareContext, recordingProgress, withProgress } from './fixtures.js';
 
 describe('checkout — progress reporting', () => {
   const seedWithBranch = async () => {

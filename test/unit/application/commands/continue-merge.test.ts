@@ -11,6 +11,7 @@ import { readObject } from '../../../../src/application/primitives/read-object.j
 import type { AuthorIdentity, ObjectId } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
 import type { HookResult, HookRunner } from '../../../../src/ports/hook-runner.js';
+import { asBareContext } from './fixtures.js';
 
 const author: AuthorIdentity = {
   name: 'Ada',
@@ -74,10 +75,11 @@ describe('mergeContinue', () => {
 
   describe('Given a bare repo', () => {
     describe('When mergeContinue runs', () => {
-      it('Then throws BARE_REPOSITORY with operation=merge --continue', async () => {
+      it('Then throws WORK_TREE_REQUIRED with operation=merge --continue', async () => {
         // Arrange
-        const ctx = createMemoryContext();
-        await init(ctx, { bare: true });
+        const ctx0 = createMemoryContext();
+        await init(ctx0);
+        const ctx = asBareContext(ctx0);
 
         // Act
         let caught: unknown;
@@ -89,7 +91,7 @@ describe('mergeContinue', () => {
 
         // Assert
         const data = (caught as { data?: { code?: string; operation?: string } })?.data;
-        expect(data?.code).toBe('BARE_REPOSITORY');
+        expect(data?.code).toBe('WORK_TREE_REQUIRED');
         expect(data?.operation).toBe('merge --continue');
       });
     });

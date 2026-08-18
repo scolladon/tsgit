@@ -4,7 +4,7 @@
  * cwd-walked layout) and forwards every `openRepository(opts)` call to the
  * core factory with the fallback pre-bound.
  */
-import { readFile, realpath, stat } from 'node:fs/promises';
+import { readFile, readlink, realpath, stat } from 'node:fs/promises';
 import * as nodePath from 'node:path';
 
 import { NodeCommandRunner } from './adapters/node/node-command-runner.js';
@@ -19,8 +19,13 @@ import { nativePolicy } from './adapters/node/path-policy.js';
 import { SHA1_CONFIG } from './domain/objects/hash-config.js';
 import { createLruCache } from './domain/storage/lru-cache.js';
 import type { LayoutProbe } from './ports/layout-probe.js';
-import { findLayout } from './repository/find-layout.js';
 import { layoutRootsOf } from './repository/layout-roots.js';
+import {
+  type ExplicitLayoutOptions,
+  resolveLayout,
+  syntheticFallbackLayout,
+} from './repository/resolve-layout.js';
+import { validateOptions } from './repository/validate-options.js';
 import {
   type OpenRepositoryOptions,
   openRepository as openRepositoryCore,
@@ -44,6 +49,8 @@ export interface OpenNodeRepositoryOptions extends OpenRepositoryOptions {
 }
 
 export const openRepository = async (opts: OpenNodeRepositoryOptions = {}): Promise<Repository> => {
+  // Stryker disable next-line CallExpression: equivalent — `openRepositoryCore` (below, forwarding the SAME unmodified `opts` fields, `cwd` aside) runs `validateOptions` again at `repository.ts`; removing this eager call cannot change any thrown error, only where it is thrown from — confirmed empirically (an invalid `gitDir` still throws the identical `INVALID_OPTION` shape via the core's re-check).
+  validateOptions(opts);
   const cwd = opts.cwd ?? process.cwd();
   // Resolve to the real path (follows symlinks). On macOS, /var/folders/...
   // symlinks to /private/var/folders/..., and the NodeFileSystem's containment
@@ -58,7 +65,11 @@ export const openRepository = async (opts: OpenNodeRepositoryOptions = {}): Prom
   // gitfile pointer — linked worktree, submodule, `--separate-git-dir`); the
   // bounded FS would reject paths outside its rootDir, preventing the walk
   // from reaching a repo whose root is an ancestor of the user's cwd.
-  const { layout, canonical: layoutCanonical } = await resolveNodeLayout(resolvedCwd);
+  const { layout, canonical: layoutCanonical } = await resolveNodeLayout(
+    resolvedCwd,
+    opts,
+    cwdCanonical,
+  );
   // The layout's roots are trustworthy as pre-resolved ONLY when every
   // realpath performed above — cwd's own AND the layout's own — actually
   // succeeded; a fallback that silently kept an un-resolved path must never
@@ -108,7 +119,11 @@ export const openRepository = async (opts: OpenNodeRepositoryOptions = {}): Prom
     // `worktreePaths` are caller-supplied and never realpathed here, so this
     // instance always resolves its own roots — no pre-resolved hand-off.
     makeWorktreeFs: (worktreePaths: ReadonlyArray<string>): NodeFileSystem =>
-      new NodeFileSystem([layout.workDir, ...worktreePaths], nativePolicy),
+      new NodeFileSystem(
+        // Stryker disable next-line ArrayDeclaration: equivalent — `worktreePaths` ALREADY carries the layout roots (workDir included), prepended by the facade's own `worktreeFs` wrapper (`repository.ts`, "the worktree paths followed by the layout roots") before this function ever runs; dropping/replacing this array's own `workDir` contribution cannot narrow or widen the resulting containment set — confirmed empirically (a bare-repo probe still resolves correctly with either branch mutated).
+        [...(layout.workDir !== undefined ? [layout.workDir] : []), ...worktreePaths],
+        nativePolicy,
+      ),
   };
   // Strip the node-only opts AND `cwd` (we override with the realpath-resolved
   // form) before forwarding so the core sees only its own option surface.
@@ -136,6 +151,9 @@ const nodeLayoutProbe: LayoutProbe = {
       : { isDirectory: s.isDirectory(), isFile: s.isFile(), size: s.size };
   },
   readUtf8: (p) => readFile(p, 'utf8').catch(() => undefined),
+  // EINVAL (not a symlink) and ENOENT both collapse to undefined per the
+  // port contract — the caller only cares whether usable link text exists.
+  readLink: (p) => readlink(p, 'utf8').catch(() => undefined),
 };
 
 /**
@@ -154,46 +172,130 @@ const canonicalize = async (p: string): Promise<{ path: string; canonical: boole
 };
 
 /**
- * Resolve the physical layout for `cwd`: walk up looking for a `.git` entry,
- * then realpath the discovered `gitDir`/`commonDir` — the node adapter
- * confines by realpath, so an unresolved admin path would spuriously reject
- * on a symlinked repo root (e.g. macOS's `/var` -> `/private/var`). `workDir`
- * needs no separate realpath: it is derived by walking up from the
- * already-realpathed `cwd`, and an ancestor of a realpath is itself real.
+ * Realpaths every entry of `ceilingDirs`, best-effort — a ceiling that does
+ * not (yet) exist falls back to its resolved-but-unresolved form via
+ * `canonicalize`'s own fallback, exactly like a not-yet-existing `gitDir`.
+ * `undefined` in, `undefined` out, so a caller that omitted the option never
+ * pays for the mapping.
+ */
+const canonicalizeCeilings = async (
+  ceilingDirs: ReadonlyArray<string> | undefined,
+): Promise<ReadonlyArray<string> | undefined> => {
+  if (ceilingDirs === undefined) return undefined;
+  const resolved = await Promise.all(ceilingDirs.map((dir) => canonicalize(dir)));
+  return resolved.map((entry) => entry.path);
+};
+
+/**
+ * Resolve the physical layout for `cwd`: `opts.gitDir`, when given, skips
+ * discovery entirely (Stage 1's explicit route); otherwise walk up looking
+ * for a `.git` entry or a cwd-is-gitdir match, bounded by `opts.ceilingDirs`
+ * (realpathed here so the walk's loop-head comparison stays physical, the
+ * same reason `cwd` itself is realpathed above). Either way, apply the
+ * config-driven work-tree resolution, then realpath the resolved
+ * `gitDir`/`commonDir`/`workDir` — the node adapter confines by realpath, so
+ * an unresolved admin or work-tree path would spuriously reject on a
+ * symlinked repo root (e.g. macOS's `/var` -> `/private/var`) or a
+ * symlinked `core.worktree` target (git resolves `core.worktree`
+ * physically; a lexical value here would silently diverge).
  *
- * Falls back to `{cwd}/.git` when nothing is found up to the filesystem
- * root — the `openRepository`/`init`/`clone` contract against a
- * not-yet-existing repository. That branch never realpaths its synthesised
- * `gitDir`, so it always reports `canonical: false`.
+ * Physically resolves a relative `core.worktree` join the way git's `chdir`
+ * does: symlinks followed, and the target must be a DIRECTORY — git cannot
+ * change directory into a regular file, so a file target is the same setup
+ * refusal as a missing one (measured: `fatal: cannot chdir to …`).
+ */
+const nodeLayoutCapabilities = {
+  realWorkTreePath: async (p: string): Promise<string | undefined> => {
+    try {
+      const real = await realpath(p);
+      return (await stat(real)).isDirectory() ? real : undefined;
+    } catch {
+      return undefined;
+    }
+  },
+};
+
+/**
+ * Falls back to a synthetic bootstrap layout at `{cwd}/.git` when discovery
+ * finds nothing up to the filesystem root AND no explicit `gitDir` was
+ * supplied — the `openRepository`/`init`/`clone` contract against a
+ * not-yet-existing repository. The fallback honours `opts.bare` /
+ * `opts.workDir` (argument tier) but reads NOTHING from disk: discovery
+ * already judged there is no repository here, and git never consults the
+ * config of a `.git` it rejected. That branch never realpaths its
+ * synthesised paths, so it always reports `canonical: false`.
  *
  * The returned `canonical` flag is the AND of every realpath THIS function
- * performed; `workDir`'s own canonicity depends only on the `cwd` it was
- * derived from, so the caller folds in its own `cwd`-realpath outcome
- * separately rather than this function re-deriving it.
+ * performed. A `workDir` that came out of discovery is an ancestor of (or
+ * equal to) the already-realpathed `cwd`, and an ancestor of a realpath is
+ * itself real — so those shapes skip the extra realpath entirely; only the
+ * genuinely lexical sources (`core.worktree`, an explicit `opts.workDir`)
+ * pay one.
  */
 const resolveNodeLayout = async (
   cwd: string,
+  opts: ExplicitLayoutOptions,
+  cwdCanonical: boolean,
 ): Promise<{ layout: RepositoryLayoutInput; canonical: boolean }> => {
-  const discovered = await findLayout(nodeLayoutProbe, cwd, nativePolicy);
-  if (discovered === undefined) {
+  const ceilingDirs = await canonicalizeCeilings(opts.ceilingDirs);
+  const explicit = {
+    ...(opts.workDir !== undefined ? { workDir: opts.workDir } : {}),
+    ...(opts.bare !== undefined ? { bare: opts.bare } : {}),
+  };
+  const resolved = await resolveLayout(
+    nodeLayoutProbe,
+    cwd,
+    nativePolicy,
+    {
+      ...(opts.gitDir !== undefined ? { gitDir: opts.gitDir } : {}),
+      ...explicit,
+      ...(ceilingDirs !== undefined ? { ceilingDirs } : {}),
+    },
+    nodeLayoutCapabilities,
+  );
+  if (resolved === undefined) {
+    const gitDir = nodePath.join(cwd, '.git');
     return {
-      layout: { workDir: cwd, gitDir: nodePath.join(cwd, '.git'), bare: false },
+      layout: syntheticFallbackLayout(gitDir, cwd, cwd, explicit, nativePolicy),
       canonical: false,
     };
   }
-  const gitDir = await canonicalize(discovered.gitDir);
-  if (discovered.commonDir === undefined) {
-    return { layout: { ...discovered, gitDir: gitDir.path }, canonical: gitDir.canonical };
-  }
-  const commonDir = await canonicalize(discovered.commonDir);
+  const gitDir = await canonicalize(resolved.gitDir);
+  const commonDir =
+    resolved.commonDir === undefined ? undefined : await canonicalize(resolved.commonDir);
+  const workDir =
+    resolved.workDir === undefined
+      ? undefined
+      : cwdCanonical && isDerivedFromCanonicalCwd(resolved.workDir, cwd)
+        ? { path: resolved.workDir, canonical: true }
+        : await canonicalize(resolved.workDir);
+  const canonical =
+    gitDir.canonical && (commonDir?.canonical ?? true) && (workDir?.canonical ?? true);
   return {
-    layout: { ...discovered, gitDir: gitDir.path, commonDir: commonDir.path },
-    canonical: gitDir.canonical && commonDir.canonical,
+    layout: {
+      ...resolved,
+      gitDir: gitDir.path,
+      ...(commonDir !== undefined ? { commonDir: commonDir.path } : {}),
+      ...(workDir !== undefined ? { workDir: workDir.path } : {}),
+    },
+    canonical,
   };
 };
 
+/**
+ * True when `workDir` fell out of discovery against `cwd` — equal to it, or
+ * a strict ancestor of it. Combined with the caller's proof that `cwd`'s own
+ * realpath SUCCEEDED, this is a zero-syscall proof of canonical form: an
+ * ancestor of a realpath is itself real, so re-realpathing such a `workDir`
+ * can never change it. Without that proof (a lexical cwd fallback) the
+ * ancestor may still traverse a symlink and must be realpathed normally.
+ */
+const isDerivedFromCanonicalCwd = (workDir: string, cwd: string): boolean =>
+  workDir === cwd || cwd.startsWith(`${workDir}${nativePolicy.sep}`);
+
 export type { AdapterSet } from './adapter-detect.js';
 export { detectRuntime, isBrowser, isNode } from './adapter-detect.js';
+export { TsgitError, type TsgitErrorData } from './domain/error.js';
 export { consoleProgress, noopProgress, type ProgressReporter } from './progress.js';
 export * from './public-types.js';
 export type { OpenRepositoryOptions, Repository } from './repository.js';

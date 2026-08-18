@@ -1,9 +1,9 @@
 import type { ConfigKey, ConfigScope } from '../../domain/commands/config-key.js';
 import { parseConfigKey } from '../../domain/commands/config-key.js';
 import { configMultipleValues } from '../../domain/commands/error.js';
+import { type IniSection, parseIniSections } from '../../domain/config/config-ini.js';
 import { TsgitError } from '../../domain/error.js';
 import type { Context } from '../../ports/context.js';
-import { type IniSection, parseIniSections } from './internal/config-ini.js';
 import { collectScopedValues, collectValues } from './internal/config-key.js';
 import { mergeConfigsByScope, resolveScopePath, SCOPE_ORDER } from './internal/config-scope.js';
 

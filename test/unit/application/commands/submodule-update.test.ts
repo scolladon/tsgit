@@ -20,6 +20,7 @@ import type { FilePath, ObjectId, RefName } from '../../../../src/domain/objects
 import type { Context } from '../../../../src/ports/context.js';
 import type { HttpTransport } from '../../../../src/ports/http-transport.js';
 import { buildSeededContext } from '../primitives/fixtures.js';
+import { asBareContext } from './fixtures.js';
 import { buildDivergentRemote, buildSubmoduleRemote } from './submodule-network-fixture.js';
 
 const ENCODER = new TextEncoder();
@@ -297,11 +298,11 @@ describe('Given a superproject pinning a registered submodule', () => {
 
 describe('Given a bare superproject', () => {
   describe('When update runs', () => {
-    it('Then it refuses with BARE_REPOSITORY naming the operation', async () => {
-      // Arrange — a bare repo (core.bare=true) with a HEAD
-      const base = await buildSeededContext();
-      await base.fs.writeUtf8(`${base.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
-      await base.fs.writeUtf8(`${base.layout.gitDir}/config`, '[core]\n\tbare = true\n');
+    it('Then it refuses with WORK_TREE_REQUIRED naming the operation', async () => {
+      // Arrange — a bare repo (no work tree) with a HEAD
+      const seeded = await buildSeededContext();
+      await seeded.fs.writeUtf8(`${seeded.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+      const base = asBareContext(seeded);
 
       // Act
       let caught: unknown;
@@ -314,7 +315,7 @@ describe('Given a bare superproject', () => {
       // Assert
       expect(caught).toBeInstanceOf(TsgitError);
       expect((caught as TsgitError).data).toMatchObject({
-        code: 'BARE_REPOSITORY',
+        code: 'WORK_TREE_REQUIRED',
         operation: 'submodule update',
       });
     });

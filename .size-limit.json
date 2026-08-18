@@ -364,5 +364,29 @@
     "path": "dist/esm/**/*.js",
     "limit": "335 kB",
     "gzip": true
+  },
+  {
+    "name": "Chunks: domain",
+    "path": "dist/esm/chunks/domain-*.js",
+    "limit": "68 kB",
+    "gzip": true
+  },
+  {
+    "name": "Chunks: primitives",
+    "path": "dist/esm/chunks/primitives-*.js",
+    "limit": "55 kB",
+    "gzip": true
+  },
+  {
+    "name": "Chunks: commands-internal",
+    "path": "dist/esm/chunks/commands-internal-*.js",
+    "limit": "43 kB",
+    "gzip": true
+  },
+  {
+    "name": "Chunks: repository",
+    "path": "dist/esm/chunks/repository-*.js",
+    "limit": "7 kB",
+    "gzip": true
   }
 ]

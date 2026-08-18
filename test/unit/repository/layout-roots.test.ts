@@ -18,6 +18,22 @@ describe('layoutRootsOf', () => {
     });
   });
 
+  describe('Given a bare repo with no workDir key at all', () => {
+    describe('When layoutRootsOf runs', () => {
+      it('Then the root set starts at gitDir, not an absent workDir', () => {
+        // Arrange — `workDir` omitted entirely (exactOptionalPropertyTypes),
+        // the shape `resolveLayout` produces for a bare repository.
+        const layout = { gitDir: '/bare.git', bare: true };
+
+        // Act
+        const result = layoutRootsOf(layout);
+
+        // Assert
+        expect(result).toStrictEqual(['/bare.git']);
+      });
+    });
+  });
+
   describe('Given the main worktree of a bare repo (workDir === gitDir, no commonDir)', () => {
     describe('When layoutRootsOf runs', () => {
       it('Then it collapses to the single shared root', () => {

@@ -36,9 +36,9 @@ import { applyMergeToWorktree } from '../primitives/apply-merge-to-worktree.js';
 import { createCommit } from '../primitives/create-commit.js';
 import {
   assertNoPendingOperation,
-  assertNotBare,
   assertOperationalRepository,
   readHeadRaw,
+  requireWorkTree,
 } from '../primitives/internal/repo-state.js';
 import { readIndex } from '../primitives/read-index.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
@@ -412,7 +412,7 @@ const runNoCommit = async (ctx: Context, todo: ReadonlyArray<ObjectId>): Promise
 
 export const revertRun = async (ctx: Context, input: RevertRunInput): Promise<RevertResult> => {
   await assertOperationalRepository(ctx);
-  await assertNotBare(ctx, REVERT);
+  requireWorkTree(ctx, REVERT);
   await assertNoPendingOperation(ctx);
   const head = await readHeadRaw(ctx);
   if (head.kind !== 'symbolic') {
@@ -491,7 +491,7 @@ const finaliseInProgressRevert = async (
  */
 export const revertContinue = async (ctx: Context): Promise<RevertResult> => {
   await assertOperationalRepository(ctx);
-  await assertNotBare(ctx, REVERT_CONTINUE);
+  requireWorkTree(ctx, REVERT_CONTINUE);
   const source = await readRevertHead(ctx);
   const todoOnDisk = await readSequencerTodo(ctx);
   if (source === undefined && (todoOnDisk === undefined || todoOnDisk.length === 0)) {
@@ -537,7 +537,7 @@ export interface RevertAbortResult {
  */
 export const revertSkip = async (ctx: Context): Promise<RevertResult> => {
   await assertOperationalRepository(ctx);
-  await assertNotBare(ctx, REVERT_SKIP);
+  requireWorkTree(ctx, REVERT_SKIP);
   const source = await readRevertHead(ctx);
   const todoOnDisk = await readSequencerTodo(ctx);
   if (source === undefined && (todoOnDisk === undefined || todoOnDisk.length === 0)) {
@@ -563,7 +563,7 @@ export const revertSkip = async (ctx: Context): Promise<RevertResult> => {
  */
 export const revertAbort = async (ctx: Context): Promise<RevertAbortResult> => {
   await assertOperationalRepository(ctx);
-  await assertNotBare(ctx, REVERT_ABORT);
+  requireWorkTree(ctx, REVERT_ABORT);
   const source = await readRevertHead(ctx);
   const seqHead = await readSequencerHead(ctx);
   if (source === undefined && seqHead === undefined) throw noOperationInProgress(REVERT);

@@ -30,6 +30,7 @@ import type {
   RefName,
 } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
+import { asBareContext } from './fixtures.js';
 
 const COMMITTER: AuthorIdentity = {
   name: 'Picker',
@@ -1096,8 +1097,7 @@ describe('cherryPick — observable surfaces', () => {
   const makeBare = async (): Promise<Context> => {
     const ctx = createMemoryContext();
     await init(ctx);
-    await ctx.fs.appendUtf8(`${ctx.layout.gitDir}/config`, '\n[core]\n\tbare = true\n');
-    return ctx;
+    return asBareContext(ctx);
   };
 
   describe('Given a clean single pick', () => {
@@ -1193,7 +1193,7 @@ describe('cherryPick — observable surfaces', () => {
       ['skip', (ctx: Context) => cherryPickSkip(ctx), 'cherry-pick --skip'],
       ['abort', (ctx: Context) => cherryPickAbort(ctx), 'cherry-pick --abort'],
     ])('When %s runs', (_verb, call, operation) => {
-      it(`Then it refuses with BARE_REPOSITORY for "${operation}"`, async () => {
+      it(`Then it refuses with WORK_TREE_REQUIRED for "${operation}"`, async () => {
         // Arrange
         const ctx = await makeBare();
 
@@ -1201,7 +1201,7 @@ describe('cherryPick — observable surfaces', () => {
         const data = await dataOf(() => call(ctx));
 
         // Assert
-        expect(data.code).toBe('BARE_REPOSITORY');
+        expect(data.code).toBe('WORK_TREE_REQUIRED');
         expect(data.operation).toBe(operation);
       });
     });

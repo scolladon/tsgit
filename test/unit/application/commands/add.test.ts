@@ -19,7 +19,7 @@ import type {
 } from '../../../../src/ports/command-runner.js';
 import { instrumentedContext, serializeIndexFixtureAsync } from '../primitives/fixtures.js';
 import { stubCommandRunner } from '../primitives/helpers/stub-command-runner.js';
-import { seedRepo } from './fixtures.js';
+import { asBareContext, seedRepo } from './fixtures.js';
 
 const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
 const dec = (b: Uint8Array): string => new TextDecoder().decode(b);
@@ -300,18 +300,17 @@ describe('add', () => {
     });
   });
 
-  describe('Given a bare repo (core.bare=true)', () => {
+  describe('Given a bare repo (no work tree)', () => {
     describe('When add', () => {
-      it('Then throws BARE_REPOSITORY with operation="add"', async () => {
+      it('Then throws WORK_TREE_REQUIRED with operation="add"', async () => {
         // Arrange
-        const ctx = await seedFreshRepo();
-        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n  bare = true\n');
+        const ctx = asBareContext(await seedFreshRepo());
 
         // Act
-        const err = await expectError(() => add(ctx, ['x']), 'BARE_REPOSITORY');
+        const err = await expectError(() => add(ctx, ['x']), 'WORK_TREE_REQUIRED');
 
         // Assert — pin the operation literal so a StringLiteral mutant on
-        // `assertNotBare(ctx, 'add')` would change the payload.
+        // `requireWorkTree(ctx, 'add')` would change the payload.
         expect((err.data as { operation: string }).operation).toBe('add');
       });
     });

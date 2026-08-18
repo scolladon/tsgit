@@ -11,6 +11,7 @@
  *   format:  git-index-tree-state
  */
 import { revparseUnresolved } from '../../domain/commands/error.js';
+import { bareRepository } from '../../domain/index.js';
 import { unexpectedObjectType } from '../../domain/objects/error.js';
 import type { ObjectId, RefName } from '../../domain/objects/index.js';
 import { resetMovingTo } from '../../domain/reflog/reflog-messages.js';
@@ -25,9 +26,9 @@ import { updateRef } from '../primitives/update-ref.js';
 import { acquireIndexLock } from './internal/index-update.js';
 import {
   assertNoPendingOperation,
-  assertNotBare,
   assertOperationalRepository,
   readHeadRaw,
+  requireWorkTree,
 } from './internal/repo-state.js';
 
 export type ResetMode = 'soft' | 'mixed' | 'hard';
@@ -61,7 +62,13 @@ export interface ResetResult {
  */
 export const reset = async (ctx: Context, opts: ResetOptions): Promise<ResetResult> => {
   await assertOperationalRepository(ctx);
-  if (opts.mode === 'hard') await assertNotBare(ctx, 'reset --hard');
+  if (opts.mode === 'hard') requireWorkTree(ctx, 'reset --hard');
+  // `is_bare_repository()`-keyed, not work-tree-keyed: a bare-flagged repo
+  // opened with an explicit work tree (`--work-tree` over `core.bare=true`)
+  // still refuses a mixed reset, matching git — `reset --hard` above is the
+  // work-tree question, this is the bareness question, and they disagree in
+  // that shape.
+  if (opts.mode === 'mixed' && ctx.layout.bare) throw bareRepository('reset --mixed');
   await assertNoPendingOperation(ctx);
   const id = await resolveTarget(ctx, opts.rev);
 

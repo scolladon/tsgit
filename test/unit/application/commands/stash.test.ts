@@ -28,6 +28,7 @@ import type {
 } from '../../../../src/ports/command-runner.js';
 import type { Context } from '../../../../src/ports/context.js';
 import { refuseReadOnSymlink } from '../primitives/fixtures.js';
+import { asBareContext } from './fixtures.js';
 
 const author: AuthorIdentity = {
   name: 'Ada',
@@ -850,8 +851,7 @@ describe('stash pop', () => {
 const makeBare = async (): Promise<Context> => {
   const ctx = createMemoryContext();
   await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
-  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n  bare = true\n');
-  return ctx;
+  return asBareContext(ctx);
 };
 
 const codeAndOp = async (p: Promise<unknown>): Promise<{ code?: string; operation?: string }> => {
@@ -866,38 +866,63 @@ const codeAndOp = async (p: Promise<unknown>): Promise<{ code?: string; operatio
 describe('stash on a bare repository', () => {
   describe('Given a bare repo', () => {
     describe('When push runs', () => {
-      it('Then it throws BARE_REPOSITORY with operation=stash', async () => {
+      it('Then it throws WORK_TREE_REQUIRED with operation=stash', async () => {
         // Arrange
         const ctx = await makeBare();
 
         // Act + Assert
         const data = await codeAndOp(stashPush(ctx, {}));
-        expect(data.code).toBe('BARE_REPOSITORY');
+        expect(data.code).toBe('WORK_TREE_REQUIRED');
         expect(data.operation).toBe('stash');
       });
     });
 
     describe('When apply runs', () => {
-      it('Then it throws BARE_REPOSITORY with operation=stash apply', async () => {
+      it('Then it throws WORK_TREE_REQUIRED with operation=stash apply', async () => {
         // Arrange
         const ctx = await makeBare();
 
         // Act + Assert
         const data = await codeAndOp(stashApply(ctx, {}));
-        expect(data.code).toBe('BARE_REPOSITORY');
+        expect(data.code).toBe('WORK_TREE_REQUIRED');
         expect(data.operation).toBe('stash apply');
       });
     });
 
     describe('When drop runs', () => {
-      it('Then it throws BARE_REPOSITORY with operation=stash drop', async () => {
+      it('Then it throws WORK_TREE_REQUIRED with operation=stash drop', async () => {
         // Arrange
         const ctx = await makeBare();
 
         // Act + Assert
         const data = await codeAndOp(stashDrop(ctx, {}));
-        expect(data.code).toBe('BARE_REPOSITORY');
+        expect(data.code).toBe('WORK_TREE_REQUIRED');
         expect(data.operation).toBe('stash drop');
+      });
+    });
+
+    describe('When list runs', () => {
+      it('Then it throws WORK_TREE_REQUIRED with operation=stash list', async () => {
+        // Arrange
+        const ctx = await makeBare();
+
+        // Act + Assert
+        const data = await codeAndOp(stashList(ctx));
+        expect(data.code).toBe('WORK_TREE_REQUIRED');
+        expect(data.operation).toBe('stash list');
+      });
+    });
+
+    describe('When pop runs', () => {
+      it('Then it throws WORK_TREE_REQUIRED with operation=stash pop (not stash apply)', async () => {
+        // Arrange — the gate sits in stashPop itself, ahead of the stashApply
+        // delegation, so the operation string names 'pop', not 'apply'.
+        const ctx = await makeBare();
+
+        // Act + Assert
+        const data = await codeAndOp(stashPop(ctx, {}));
+        expect(data.code).toBe('WORK_TREE_REQUIRED');
+        expect(data.operation).toBe('stash pop');
       });
     });
   });

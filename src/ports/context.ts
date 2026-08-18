@@ -19,8 +19,12 @@ import type { SshTransport } from './ssh-channel.js';
  * name for the facade-tier `RepositoryConfig` shape (auth/parallelism/etc.).
  */
 export interface RepositoryLayout {
-  /** Absolute path to the repository root (working tree). */
-  readonly workDir: string;
+  /**
+   * Absolute path to the working tree. Absent when the repository has none
+   * (bare, or a git dir opened without one) — git's `get_git_work_tree() ==
+   * NULL`.
+   */
+  readonly workDir?: string;
   /** Absolute path to the.git directory (usually `${workDir}/.git`, but may differ for bare repos or worktrees). */
   readonly gitDir: string;
   /**
@@ -28,11 +32,18 @@ export interface RepositoryLayout {
    * `config`, and shared refs/reflogs. Absent for a normal repo or the main
    * worktree (it equals `gitDir`); set only for a linked worktree, whose
    * `gitDir` is its own admin dir while shared state lives here. Resolve via
-   * `commonGitDir(ctx)` rather than reading this field directly.
+   * `commonGitDir(ctx)` (or `commonDirOf(layout)` when holding a bare
+   * layout) rather than reading this field directly — both are exported.
    */
   readonly commonDir?: string;
-  /** Whether this is a bare repository. */
+  /** git's `is_bare_repository()`: `core.bare` is not false AND there is no work tree. */
   readonly bare: boolean;
+  /**
+   * `core.bare` and `core.worktree` are both set — git's
+   * `work_tree_config_is_bogus`. Work-tree commands refuse with a distinct
+   * error code instead of the plain "no work tree" refusal.
+   */
+  readonly workTreeConfigBogus?: boolean;
   /**
    * Home directory for `~`-expansion in config-driven paths (e.g.
    * `core.excludesFile = ~/.config/git/ignore`). Populated by the node
@@ -106,7 +117,13 @@ export interface Context {
   readonly progress: ProgressReporter;
   /** Repository physical layout. Required — every primitive needs gitDir/workDir. */
   readonly layout: RepositoryLayout;
-  /** User-supplied working directory (may be a sub-path of layout.workDir). Defaults to layout.workDir when not set by the facade. */
+  /**
+   * User-supplied working directory (may be a sub-path of layout.workDir).
+   * Defaults to layout.workDir when not set by the facade, and to
+   * layout.gitDir when the repository has no work tree — matching git,
+   * whose `--show-prefix` is empty and `--is-inside-git-dir` is `true` in
+   * exactly that shape.
+   */
   readonly cwd: string;
   /** The runtime this context was built for — names the adapter set in refusal messages. */
   readonly runtime: 'node' | 'browser' | 'memory';
@@ -176,5 +193,5 @@ export interface CreateContextParts {
 
 /** Assemble a frozen Context from its constituent ports + layout. */
 export function createContext(parts: CreateContextParts): Context {
-  return Object.freeze({ ...parts, cwd: parts.cwd ?? parts.layout.workDir });
+  return Object.freeze({ ...parts, cwd: parts.cwd ?? parts.layout.workDir ?? parts.layout.gitDir });
 }

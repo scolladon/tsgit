@@ -10,6 +10,7 @@ import { TsgitError } from '../../../domain/error.js';
 import { FILE_MODE, type FileMode, type FilePath } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
 import { joinPath } from './join-working-tree-path.js';
+import { requireWorkTree } from './repo-state.js';
 import { createLeadingPathScanner, type LeadingPathScanner } from './symlinked-leading-path.js';
 
 const decoder = new TextDecoder();
@@ -76,7 +77,11 @@ export const writeWorkingTreeFile = async (
   scanner?: LeadingPathScanner,
 ): Promise<void> => {
   await resolveScanner(ctx, scanner).unlinkSymlinkedLeadingComponent(path);
-  await writeRegularFile(ctx, joinPath(ctx.layout.workDir, path), content);
+  await writeRegularFile(
+    ctx,
+    joinPath(requireWorkTree(ctx, 'writeWorkingTreeFile'), path),
+    content,
+  );
 };
 
 /**
@@ -100,7 +105,7 @@ export const writeWorkingTreeEntry = async (
 ): Promise<void> => {
   const activeScanner = resolveScanner(ctx, scanner);
   await activeScanner.unlinkSymlinkedLeadingComponent(path);
-  const fullPath = joinPath(ctx.layout.workDir, path);
+  const fullPath = joinPath(requireWorkTree(ctx, 'writeWorkingTreeFile'), path);
   if (mode === FILE_MODE.SYMLINK) {
     await rmIfExists(ctx, fullPath);
     await ctx.fs.symlink(decoder.decode(content), fullPath);
@@ -147,7 +152,11 @@ export const writeWorkingTreeFileStream = async (
   scanner?: LeadingPathScanner,
 ): Promise<void> => {
   await resolveScanner(ctx, scanner).unlinkSymlinkedLeadingComponent(path);
-  await writeRegularFileStream(ctx, joinPath(ctx.layout.workDir, path), source);
+  await writeRegularFileStream(
+    ctx,
+    joinPath(requireWorkTree(ctx, 'writeWorkingTreeFile'), path),
+    source,
+  );
 };
 
 /**
@@ -165,10 +174,15 @@ export const writeWorkingTreeEntryStream = async (
   scanner?: LeadingPathScanner,
 ): Promise<void> => {
   await resolveScanner(ctx, scanner).unlinkSymlinkedLeadingComponent(path);
-  await writeRegularFileStream(ctx, joinPath(ctx.layout.workDir, path), source, mode);
+  await writeRegularFileStream(
+    ctx,
+    joinPath(requireWorkTree(ctx, 'writeWorkingTreeFile'), path),
+    source,
+    mode,
+  );
 };
 
 export const removeWorkingTreeFile = async (ctx: Context, path: FilePath): Promise<void> => {
-  const fullPath = joinPath(ctx.layout.workDir, path);
+  const fullPath = joinPath(requireWorkTree(ctx, 'writeWorkingTreeFile'), path);
   await rmIfExists(ctx, fullPath);
 };

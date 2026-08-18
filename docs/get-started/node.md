@@ -23,9 +23,51 @@ import { openRepository } from '@scolladon/tsgit';
 const repo = await openRepository({ cwd: process.cwd() });
 ```
 
-`openRepository` walks up from `cwd` looking for a `.git` entry — a directory, or a gitfile pointer to one (a linked worktree, a submodule working directory, or a `--separate-git-dir` layout) — and binds every command to a frozen [Context](../understand/architecture.md#context). One open call, one validation pass — every subsequent call inherits the resolved layout and the configured adapters. See [`worktree`](../use/commands/worktree.md) for what changes when the resolved layout's `commonDir` differs from `gitDir`.
+`openRepository` walks up from `cwd` looking for a `.git` entry — a directory, or a gitfile pointer to one (a linked worktree, a submodule working directory, or a `--separate-git-dir` layout) — or, failing that, checks whether `cwd` itself **is** a git directory (a bare repository, or the admin dir of a linked worktree) — and binds every command to a frozen [Context](../understand/architecture.md#context). One open call, one validation pass — every subsequent call inherits the resolved layout and the configured adapters. See [`worktree`](../use/commands/worktree.md) for what changes when the resolved layout's `commonDir` differs from `gitDir`.
 
 If you pass `cwd` pointing at a path that doesn't exist yet, tsgit treats it as a future repository root (for example, the target of an upcoming `init` or `clone`).
+
+## Bare repositories and explicit layout
+
+`cd`-ing into a bare repository (or any ancestor of one) opens the same way a normal repository does — there's just no working tree behind it:
+
+```ts
+const bare = await openRepository({ cwd: '/srv/repo.git' });
+await bare.log({ limit: 10 });   // read commands work fine
+await bare.status();             // throws WORK_TREE_REQUIRED — there is no work tree
+```
+
+`gitDir`, `workDir`, `bare`, and `ceilingDirs` — the argument equivalents of git's `--git-dir`, `--work-tree`, and `GIT_CEILING_DIRECTORIES` — let a caller pin the layout instead of relying on discovery. None of them read an environment variable; every input is an explicit argument.
+
+```ts
+// Explicit gitDir with a work tree elsewhere
+const repo = await openRepository({
+  cwd: '/tmp/elsewhere',
+  gitDir: '/srv/repo.git',
+  workDir: '/home/alice/work',
+});
+
+// Bound the discovery walk instead of climbing to the filesystem root
+const bounded = await openRepository({ cwd: '/tmp/nested/deep', ceilingDirs: ['/tmp/nested'] });
+```
+
+Bootstrapping a fresh bare repository needs `gitDir` equal to `cwd` so the constructed layout has no work tree — `init({ bare: true })` then writes exactly what `git init --bare` writes, and both tsgit and real git can reopen the result:
+
+```ts
+const fresh = await openRepository({ cwd: '/tmp/new.git', gitDir: '/tmp/new.git', bare: true });
+await fresh.init({ bare: true });
+```
+
+`repo.layout` exposes the resolved layout as structured data — `gitDir`, `commonDir`, `workDir` (absent when the repository has none), and `bare`:
+
+```ts
+const { workDir, bare } = repo.layout;
+if (workDir === undefined) {
+  // every work-tree-requiring command (status, add, commit, …) throws WORK_TREE_REQUIRED
+}
+```
+
+See [errors](../use/errors.md) for the refusal codes a missing or misconfigured work tree can raise.
 
 ## Read
 

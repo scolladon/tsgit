@@ -168,4 +168,82 @@ describe('Context', () => {
       });
     });
   });
+
+  describe('Given an explicit parts.cwd', () => {
+    describe('When creating context', () => {
+      it('Then ctx.cwd is the explicit value, not layout.workDir', () => {
+        // Arrange
+        const options = {
+          fs: sentinelFs,
+          hash: sentinelHash,
+          compressor: sentinelCompressor,
+          transport: sentinelTransport,
+          progress: sentinelProgress,
+          layout: sentinelLayout,
+          runtime: sentinelRuntime,
+          hashConfig: sentinelHashConfig,
+          deltaCache: sentinelDeltaCache,
+          cwd: '/elsewhere',
+        };
+
+        // Act
+        const sut = createContext(options);
+
+        // Assert
+        expect(sut.cwd).toBe('/elsewhere');
+      });
+    });
+  });
+
+  describe('Given no parts.cwd and a layout with a workDir', () => {
+    describe('When creating context', () => {
+      it('Then ctx.cwd falls back to layout.workDir', () => {
+        // Arrange
+        const options = {
+          fs: sentinelFs,
+          hash: sentinelHash,
+          compressor: sentinelCompressor,
+          transport: sentinelTransport,
+          progress: sentinelProgress,
+          layout: sentinelLayout,
+          runtime: sentinelRuntime,
+          hashConfig: sentinelHashConfig,
+          deltaCache: sentinelDeltaCache,
+        };
+
+        // Act
+        const sut = createContext(options);
+
+        // Assert
+        expect(sut.cwd).toBe(sentinelLayout.workDir);
+      });
+    });
+  });
+
+  describe('Given no parts.cwd and a layout with no workDir (bare)', () => {
+    describe('When creating context', () => {
+      it('Then ctx.cwd falls back to layout.gitDir', () => {
+        // Arrange — matches git, whose `--show-prefix` is empty and
+        // `--is-inside-git-dir` is `true` in exactly this shape.
+        const bareLayout: RepositoryLayout = { gitDir: '/bare.git', bare: true };
+        const options = {
+          fs: sentinelFs,
+          hash: sentinelHash,
+          compressor: sentinelCompressor,
+          transport: sentinelTransport,
+          progress: sentinelProgress,
+          layout: bareLayout,
+          runtime: sentinelRuntime,
+          hashConfig: sentinelHashConfig,
+          deltaCache: sentinelDeltaCache,
+        };
+
+        // Act
+        const sut = createContext(options);
+
+        // Assert
+        expect(sut.cwd).toBe(bareLayout.gitDir);
+      });
+    });
+  });
 });

@@ -66,9 +66,9 @@ import { acquireIndexLock } from './internal/index-update.js';
 import { writeMergeHead, writeMergeMsg, writeOrigHead } from './internal/merge-state.js';
 import {
   assertNoPendingOperation,
-  assertNotBare,
   assertOperationalRepository,
   readHeadRaw,
+  requireWorkTree,
 } from './internal/repo-state.js';
 
 export type { IndexEntry } from '../../domain/git-index/index.js';
@@ -161,7 +161,7 @@ const computeMerge = async (
   internal: MergeInternalOptions,
 ): Promise<MergeResult> => {
   await assertOperationalRepository(ctx);
-  await assertNotBare(ctx, 'merge');
+  requireWorkTree(ctx, 'merge');
   await assertNoPendingOperation(ctx);
   const head = await readHeadRaw(ctx);
   if (head.kind !== 'symbolic') {

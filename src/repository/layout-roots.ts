@@ -17,7 +17,11 @@ import { isContainedIn } from './wrap-fs-validator.js';
  * unrelated subtree keeps all three.
  */
 export const layoutRootsOf = (layout: RepositoryLayoutInput): ReadonlyArray<string> => {
-  const candidates = [layout.workDir, layout.gitDir, layout.commonDir ?? layout.gitDir];
+  const candidates = [
+    ...(layout.workDir !== undefined ? [layout.workDir] : []),
+    layout.gitDir,
+    layout.commonDir ?? layout.gitDir,
+  ];
   const deduped: string[] = [];
   for (const candidate of candidates) {
     if (!deduped.includes(candidate)) deduped.push(candidate);

@@ -24,6 +24,7 @@ import {
   refuseReadOnSymlink,
   serializeIndexFixtureAsync,
 } from '../../application/primitives/fixtures.js';
+import { asBareContext } from './fixtures.js';
 
 const AUTHOR: AuthorIdentity = {
   name: 'Test',
@@ -944,8 +945,8 @@ describe('Given an index with a stage-1 conflict entry, When grep runs with defa
     // Arrange — use buildSeededContext to get an initialized repo, then plant a custom index
     const ctx = await buildSeededContext();
     await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
-    // Write the working-tree file so it exists
-    await ctx.fs.mkdir(ctx.layout.workDir);
+    // Write the working-tree file so it exists — buildSeededContext always yields a work tree.
+    await ctx.fs.mkdir(ctx.layout.workDir as string);
     await ctx.fs.writeUtf8(`${ctx.layout.workDir}/conflict.txt`, 'needle\n');
     const index: GitIndex = {
       version: 2,
@@ -968,7 +969,8 @@ describe('Given an index with a symlink-mode entry (120000), When grep runs with
     // Arrange
     const ctx = await buildSeededContext();
     await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
-    await ctx.fs.mkdir(ctx.layout.workDir);
+    // buildSeededContext always yields a work tree.
+    await ctx.fs.mkdir(ctx.layout.workDir as string);
     await ctx.fs.writeUtf8(`${ctx.layout.workDir}/link.txt`, 'needle\n');
     const index: GitIndex = {
       version: 2,
@@ -1146,5 +1148,52 @@ describe('Given a committed tree containing only a subtree directory entry, When
     // Assert — both text files found; no throw from the skipped tree entry
     const paths = result.paths.map((p) => p.path as string).sort();
     expect(paths).toEqual(['root.txt', 'sub/leaf.txt']);
+  });
+});
+
+/** A committed repo whose index holds a.txt with a matchable line. */
+const seedRepoForBareGate = async (): Promise<Context> => {
+  const ctx = createMemoryContext();
+  await init(ctx);
+  await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'hi\n');
+  await add(ctx, ['a.txt']);
+  await commit(ctx, { message: 'seed', author: AUTHOR, committer: AUTHOR });
+  return ctx;
+};
+
+describe('Given a repository with no work tree', () => {
+  describe('When grep targets the working tree by default', () => {
+    it('Then throws WORK_TREE_REQUIRED naming the grep operation', async () => {
+      // Arrange
+      const ctx = asBareContext(await seedRepoForBareGate());
+
+      // Act
+      let caught: unknown;
+      try {
+        await grep(ctx, { patterns: [{ fixed: 'hi' }] });
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      expect((caught as TsgitError).data).toMatchObject({
+        code: 'WORK_TREE_REQUIRED',
+        operation: 'grep',
+      });
+    });
+  });
+
+  describe('When grep targets the index instead', () => {
+    it('Then it resolves — the cached target never needs a work tree', async () => {
+      // Arrange
+      const ctx = asBareContext(await seedRepoForBareGate());
+
+      // Act
+      const result = await grep(ctx, { patterns: [{ fixed: 'hi' }], target: 'index' });
+
+      // Assert
+      expect(result.paths.map((p) => p.path as string)).toEqual(['a.txt']);
+    });
   });
 });

@@ -37,6 +37,7 @@ import {
   assertOperationalRepository,
   branchRefFromHead,
   readHeadRaw,
+  requireWorkTree,
 } from './internal/repo-state.js';
 
 export type ChangeKind = 'modified' | 'added' | 'deleted' | 'type-changed' | 'mode-changed';
@@ -126,6 +127,7 @@ interface GranularityTracker {
  */
 export const status = async (ctx: Context): Promise<StatusResult> => {
   await assertOperationalRepository(ctx);
+  requireWorkTree(ctx, 'status');
   // Promisor-remote guard (see assertValidPromisorRemoteConfig) — loaded up front.
   await assertValidPromisorRemoteConfig(ctx);
   const head = await readHeadRaw(ctx);
@@ -362,6 +364,8 @@ const buildUnmergedEntries = (
 
 /** The conflicted file's on-disk git mode, or `undefined` when it is absent. */
 const readWorktreeMode = async (ctx: Context, path: FilePath): Promise<FileMode | undefined> => {
-  const stat = await ctx.fs.lstat(joinPath(ctx.layout.workDir, path)).catch(() => undefined);
+  const stat = await ctx.fs
+    .lstat(joinPath(requireWorkTree(ctx, 'status'), path))
+    .catch(() => undefined);
   return stat === undefined ? undefined : deriveWorkingMode(stat);
 };

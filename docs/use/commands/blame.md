@@ -68,6 +68,11 @@ type BlameLine = CommittedBlameLine | UncommittedBlameLine;
   library emits none of git's fabricated `00000000` / `Not Committed Yet` /
   current-time / `Version of <p> from <p>` — reconstruct them from `committed:
   false` (see the example). Mutually exclusive with `rev` (`INVALID_OPTION`).
+  **In a bare repository, `worktree: true` blames HEAD instead of refusing** —
+  `blame` is keyed on `layout.bare` (git's `is_bare_repository()`), not general
+  work-tree presence, matching git's own bare-repo behaviour. A non-bare
+  repository with no resolved work tree (e.g. opened at `cd .git`) still refuses
+  `WORK_TREE_REQUIRED`, since that shape is not bare.
 - **Denormalized per line:** each `BlameLine` carries its blamed commit's
   author / committer / summary / boundary / previous inline; the renderer dedups
   per-commit headers (`--porcelain`) from the per-line fields
@@ -83,10 +88,12 @@ type BlameLine = CommittedBlameLine | UncommittedBlameLine;
   `end` past the last line is clamped. A start below 1, a start past the last
   line, an inverted range, or a non-integer bound refuses (`INVALID_OPTION`).
 - **Refusals:** a path absent from `rev` refuses (`PATH_NOT_IN_TREE`). In
-  `worktree` mode, an untracked path (in neither HEAD nor the index) refuses
-  `PATH_NOT_IN_TREE`, a tracked path missing from disk refuses
-  `WORKTREE_FILE_ABSENT`, an unborn HEAD refuses `REF_NOT_FOUND`, and a path
-  escaping the repository (`..`, absolute, `.git`) refuses `PATHSPEC_OUTSIDE_REPO`.
+  `worktree` mode against a non-bare repository with no work tree, `blame`
+  refuses `WORK_TREE_REQUIRED` before any path check. Otherwise: an untracked
+  path (in neither HEAD nor the index) refuses `PATH_NOT_IN_TREE`, a tracked
+  path missing from disk refuses `WORKTREE_FILE_ABSENT`, an unborn HEAD refuses
+  `REF_NOT_FOUND`, and a path escaping the repository (`..`, absolute, `.git`)
+  refuses `PATHSPEC_OUTSIDE_REPO`.
 
 ## Examples
 

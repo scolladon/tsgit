@@ -1,5 +1,6 @@
 import type { CommandRunner } from '../../ports/command-runner.js';
 import type { Context } from '../../ports/context.js';
+import { getSpawnCwd } from './path-layout.js';
 
 const EMPTY = new Uint8Array(0);
 
@@ -30,7 +31,7 @@ export const applyTextconv = async (
   try {
     const result = await runner.run({
       command: `${command} ${tmpPath}`,
-      cwd: ctx.layout.workDir,
+      cwd: getSpawnCwd(ctx.layout),
       env: { GIT_DIR: ctx.layout.gitDir },
       ...(ctx.signal !== undefined ? { signal: ctx.signal } : {}),
     });

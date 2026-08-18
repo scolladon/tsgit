@@ -124,3 +124,25 @@ describe('fileSystemLayoutProbe', () => {
     });
   });
 });
+
+describe('Given a symlink and a regular file behind the probe', () => {
+  describe('When readLink runs', () => {
+    it('Then the symlink yields its link text and the regular file collapses to undefined', async () => {
+      // Arrange
+      const fs = new MemoryFileSystem({ rootDir: '/repo' });
+      await fs.writeUtf8('/repo/plain.txt', 'x');
+      await fs.symlink('refs/heads/main', '/repo/HEAD');
+      const sut = fileSystemLayoutProbe(fs);
+
+      // Act
+      const linked = await sut.readLink?.('/repo/HEAD');
+      const plain = await sut.readLink?.('/repo/plain.txt');
+      const absent = await sut.readLink?.('/repo/missing');
+
+      // Assert
+      expect(linked).toBe('refs/heads/main');
+      expect(plain).toBeUndefined();
+      expect(absent).toBeUndefined();
+    });
+  });
+});

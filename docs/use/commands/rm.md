@@ -58,7 +58,7 @@ await repo.rm(['*.log']);
 ## Throws
 
 - `PATHSPEC_NO_MATCH` — a literal pattern matched nothing. (Glob no-match is a silent no-op.)
-- `BARE_REPOSITORY` — `rm` is not valid in a bare repository.
+- `WORK_TREE_REQUIRED` — the repository has no work tree (bare, or opened without one).
 - `RM_STAGED_CHANGES` / `RM_LOCAL_MODIFICATIONS` / `RM_STAGED_AND_LOCAL_CHANGES` — the safety valve refused (see above); each `data.paths` lists the refused paths.
 
 ## See also

@@ -1,12 +1,16 @@
 # `submodule`
 
 The `repo.submodule.*` namespace: inspect (`list`), clone/checkout (`add` /
-`update`), and register/sync/unregister submodules. `list` reads a tree-ish (so it
-works in bare repos and is deterministic for a ref); the local write verbs
-(`init` / `sync` / `deinit`) read the working-tree `.gitmodules` and mutate
-`.git/config` (and, for `deinit`, the submodule working tree); the network verbs
-(`add` / `update`) clone a submodule into `.git/modules/<name>` and materialise
-its working tree over smart-HTTP.
+`update`), and register/sync/unregister submodules. `list` reads a tree-ish (so
+it is deterministic for a ref); the local write verbs (`init` / `sync` /
+`deinit`) read the working-tree `.gitmodules` and mutate `.git/config` (and,
+for `deinit`, the submodule working tree); the network verbs (`add` /
+`update`) clone a submodule into `.git/modules/<name>` and materialise its
+working tree over smart-HTTP. **Every verb needs a work tree** — git's
+`git-submodule` refuses without one (`cannot be used without a working tree.`),
+and all six verbs (`list`, `init`, `sync`, `deinit`, `add`, `update`) throw
+`WORK_TREE_REQUIRED` when the repository has none (bare, or opened without
+one); `list`'s operation name is `'submodule status'`, git's own verb for it.
 
 ## `list`
 

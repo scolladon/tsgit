@@ -243,3 +243,15 @@ export const withProgress = (ctx: Context, reporter: ProgressReporter): Context 
   ...ctx,
   progress: reporter,
 });
+
+/**
+ * A Context with no work tree — `layout.bare === true`, `layout.workDir`
+ * absent. Bareness is fixed at Context construction now (not re-derived from
+ * config on every call), so a test that wants a work-tree gate to fire must
+ * shape the layout directly rather than writing `core.bare = true` into the
+ * in-memory config file (which no command re-reads for this purpose).
+ */
+export const asBareContext = (ctx: Context): Context => {
+  const { workDir: _workDir, ...bareLayout } = ctx.layout;
+  return { ...ctx, layout: { ...bareLayout, bare: true } };
+};

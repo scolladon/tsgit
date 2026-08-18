@@ -15,4 +15,15 @@ export const fileSystemLayoutProbe = (fs: FileSystem): LayoutProbe => ({
       : { isDirectory: stat.isDirectory, isFile: stat.isFile, size: stat.size };
   },
   readUtf8: (path) => fs.readUtf8(path).catch(() => undefined),
+  // Not-a-symlink, absence, and unsupported-operation (OPFS throws; partial
+  // test doubles may omit the method entirely) all collapse to undefined —
+  // the walk only cares whether usable link text exists, and the async
+  // wrapper folds a synchronous throw into the same documented contract.
+  readLink: async (path) => {
+    try {
+      return await fs.readlink(path);
+    } catch {
+      return undefined;
+    }
+  },
 });

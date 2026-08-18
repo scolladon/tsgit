@@ -52,7 +52,7 @@ console.log(result.added.length, result.modified.length, result.removed.length);
 - `INVALID_INDEX_ENTRY` — a path this call would stage fails git's own index-entry name rules. Aborts the whole call; nothing is staged.
 - `INVALID_OPTION { option: 'all' }` — `all: true` with a non-empty pathspec.
 - `WORKING_TREE_FILE_TOO_LARGE` — a file exceeds `MAX_WORKING_TREE_BLOB_BYTES` (256 MiB).
-- `BARE_REPOSITORY` — `add` is not valid in a bare repository.
+- `WORK_TREE_REQUIRED` — the repository has no work tree (bare, or opened without one).
 - `EMPTY_PATHSPEC` — `paths` is empty and `all` is not set.
 
 ## Entry name validation

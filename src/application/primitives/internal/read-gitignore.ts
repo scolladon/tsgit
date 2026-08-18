@@ -7,6 +7,7 @@ import { commonGitDir } from '../path-layout.js';
 import { MAX_GITIGNORE_BYTES } from '../types.js';
 import { joinPath } from './join-working-tree-path.js';
 import { expandUserPath, loadCappedUtf8 } from './read-capped-file.js';
+import { requireWorkTree } from './repo-state.js';
 
 /**
  * Load and parse the `.gitignore` file in a directory relative to the
@@ -17,7 +18,10 @@ export const readGitignore = async (
   ctx: Context,
   dir: FilePath | '',
 ): Promise<IgnoreRuleset | undefined> => {
-  const path = joinPath(ctx.layout.workDir, dir === '' ? '.gitignore' : `${dir}/.gitignore`);
+  const path = joinPath(
+    requireWorkTree(ctx, 'readGitignore'),
+    dir === '' ? '.gitignore' : `${dir}/.gitignore`,
+  );
   return loadAndParse(ctx, path);
 };
 

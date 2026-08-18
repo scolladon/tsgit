@@ -31,7 +31,7 @@ import { readBlob } from '../primitives/read-blob.js';
 import { readIndex } from '../primitives/read-index.js';
 import { resolveCommitIsh } from './internal/commit-ish.js';
 import { readCommitData } from './internal/history-rewrite.js';
-import { assertOperationalRepository } from './internal/repo-state.js';
+import { assertOperationalRepository, requireWorkTree } from './internal/repo-state.js';
 
 const LINK_ENCODER = new TextEncoder();
 
@@ -130,7 +130,15 @@ export const blame = async (
     if (opts.rev !== undefined) {
       throw invalidOption('worktree', 'cannot combine with a revision');
     }
-    await seedWorkingTree(board, filePath);
+    if (ctx.layout.bare) {
+      // git blames HEAD instead of refusing when there is no work tree to
+      // consult — blame is keyed on `is_bare_repository()`, not work-tree
+      // presence (unlike the worktree-less-non-bare shape below, which
+      // `requireWorkTree` still refuses).
+      await seed(board, await resolveCommitIsh(ctx, DEFAULT_REV), filePath, DEFAULT_REV);
+    } else {
+      await seedWorkingTree(board, requireWorkTree(ctx, 'blame'), filePath);
+    }
   } else {
     const rev = opts.rev ?? DEFAULT_REV;
     await seed(board, await resolveCommitIsh(ctx, rev), filePath, rev);
@@ -147,14 +155,14 @@ export const blame = async (
  * walk; lines that differ (or the whole file when the path is staged-new) finalize
  * as uncommitted. A path absent from both HEAD and the index is untracked → refuse.
  */
-const seedWorkingTree = async (sb: Scoreboard, path: FilePath): Promise<void> => {
+const seedWorkingTree = async (sb: Scoreboard, workDir: string, path: FilePath): Promise<void> => {
   // Worktree mode reads the file from disk, so the path is constrained to the
   // repository (rejects `..`, absolute paths, and `.git`) before any FS access —
   // committed-rev mode is unaffected (it resolves paths through the object tree).
   validateWorkingTreePath(path);
   const head = await resolveCommitIsh(sb.ctx, DEFAULT_REV);
   const data = await readCommitData(sb.ctx, head);
-  const workingBlob = await readWorkingFile(sb.ctx, path);
+  const workingBlob = await readWorkingFile(sb.ctx, workDir, path);
   const count = splitLines(workingBlob).length;
   // Stryker disable next-line ConditionalExpression: equivalent — count===0 only for an empty working file; without the guard the zero-count entry flows through splitAgainstParent/finalize and yields no lines, the same empty result (mirrors the committed-rev seed guard below)
   if (count === 0) return;
@@ -175,8 +183,12 @@ const seedWorkingTree = async (sb: Scoreboard, path: FilePath): Promise<void> =>
 };
 
 /** Read the working-tree file's bytes (symlink → its target); absent → refuse like git's `Cannot lstat`. */
-const readWorkingFile = async (ctx: Context, path: FilePath): Promise<Uint8Array> => {
-  const absPath = joinPath(ctx.layout.workDir, path);
+const readWorkingFile = async (
+  ctx: Context,
+  workDir: string,
+  path: FilePath,
+): Promise<Uint8Array> => {
+  const absPath = joinPath(workDir, path);
   const stat = await ctx.fs.lstat(absPath).catch(() => undefined);
   if (stat === undefined) throw worktreeFileAbsent(path);
   return stat.isSymbolicLink
