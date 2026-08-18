@@ -1329,7 +1329,7 @@
     "@stryker-mutator/typescript-checker": "10.0.0",
     "@stryker-mutator/vitest-runner": "10.0.0",
     "@types/node": "26.2.0",
-    "@vitest/coverage-v8": "4.1.10",
+    "@vitest/coverage-v8": "4.1.11",
     "cspell": "10.0.1",
     "dependency-cruiser": "18.2.0",
     "fast-check": "4.9.0",
@@ -1345,7 +1345,7 @@
     "size-limit": "13.0.3",
     "typedoc": "0.28.20",
     "typescript": "6.0.3",
-    "vitest": "4.1.10",
+    "vitest": "4.1.11",
     "wireit": "0.14.13",
     "wrangler": "4.124.0"
   }
