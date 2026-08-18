@@ -134,8 +134,8 @@ describe.skipIf(!GIT_AVAILABLE)('config boolean refusal tier interop', () => {
       });
     });
 
-    describe('When git config --list and tsgit config porcelain run', () => {
-      it('Then both ALSO refuse — T1 kills the config porcelain too', async () => {
+    describe('When git config --list runs and tsgit opens the repository', () => {
+      it('Then both refuse — the open-time refusal precedes any config porcelain call', async () => {
         // Arrange & Act — armed in beforeEach. Open-time refusal means a
         // single `openRepository` throw subsumes both porcelain calls: there
         // is no Repository handle to invoke `config.list()`/`config.get()` on.

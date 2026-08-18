@@ -19,6 +19,7 @@ import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import type { AuthorIdentity, ObjectId, Tree } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
 import { refuseReadOnSymlink } from '../primitives/fixtures.js';
+import { asBareContext } from './fixtures.js';
 
 const ident = (name: string, timestamp: number): AuthorIdentity => ({
   name,
@@ -803,6 +804,53 @@ describe('Given the worktree option combined with an explicit revision', () => {
           option: 'worktree',
           reason: 'cannot combine with a revision',
         },
+      });
+    });
+  });
+});
+
+describe('Given a bare repository holding a committed file', () => {
+  describe('When blaming the file with no options', () => {
+    it('Then it resolves against HEAD instead of refusing', async () => {
+      // Arrange
+      const seeded = await seed();
+      const c1 = await commitFile(seeded, 'c1', 'f.txt', 'line1\n');
+      const ctx = asBareContext(seeded);
+
+      // Act
+      const result = await blame(ctx, 'f.txt');
+
+      // Assert
+      const lines = committedLines(result);
+      expect(lines).toHaveLength(1);
+      expect(lines[0]?.commit).toBe(c1);
+    });
+  });
+});
+
+describe('Given a worktree-less repository that is NOT bare', () => {
+  describe('When blaming with the worktree option', () => {
+    it('Then throws WORK_TREE_REQUIRED naming the blame operation', async () => {
+      // Arrange — bare stays false so the HEAD-seeding bare branch cannot
+      // absorb the call; only the work-tree gate can be the cause.
+      const seeded = await seed();
+      await commitFile(seeded, 'c1', 'f.txt', 'line1\n');
+      const { workDir: _workDir, ...worktreeLess } = seeded.layout;
+      const ctx: Context = { ...seeded, layout: { ...worktreeLess, bare: false } };
+
+      // Act
+      let caught: unknown;
+      try {
+        await blame(ctx, 'f.txt', { worktree: true });
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      expect((caught as TsgitError).data).toMatchObject({
+        code: 'WORK_TREE_REQUIRED',
+        operation: 'blame',
       });
     });
   });

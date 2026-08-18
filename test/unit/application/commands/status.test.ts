@@ -29,6 +29,7 @@ import type {
   ObjectId,
 } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
+import { asBareContext } from './fixtures.js';
 
 const author: AuthorIdentity = {
   name: 'Ada',
@@ -1283,6 +1284,29 @@ describe('status — remote.promisor guard', () => {
 
         // Assert
         expect(result.clean).toBe(true);
+      });
+    });
+  });
+  describe('Given a repository with no work tree', () => {
+    describe('When status', () => {
+      it('Then throws WORK_TREE_REQUIRED naming the status operation', async () => {
+        // Arrange
+        const ctx = asBareContext(await seedClean());
+
+        // Act
+        let caught: unknown;
+        try {
+          await status(ctx);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data).toMatchObject({
+          code: 'WORK_TREE_REQUIRED',
+          operation: 'status',
+        });
       });
     });
   });

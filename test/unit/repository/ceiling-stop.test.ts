@@ -166,4 +166,34 @@ describe('longestStrictAncestor', () => {
       });
     });
   });
+  describe('Given the filesystem root itself as a ceiling entry', () => {
+    describe('When longestStrictAncestor runs', () => {
+      it('Then the root matches without doubling its trailing separator', () => {
+        // Arrange
+        const sut = longestStrictAncestor;
+
+        // Act
+        const result = sut(['/'], '/repo/deep', posixPolicy);
+
+        // Assert
+        expect(result).toBe('/');
+      });
+    });
+  });
+
+  describe('Given two strict ancestors supplied deepest-first', () => {
+    describe('When longestStrictAncestor runs', () => {
+      it('Then the deeper entry is retained over the shallower one seen later', () => {
+        // Arrange — the existing multi-entry rows are shallowest-first; this
+        // order exercises the keep-the-current-longest arm.
+        const sut = longestStrictAncestor;
+
+        // Act
+        const result = sut(['/a/b/c', '/a'], '/a/b/c/d/e', posixPolicy);
+
+        // Assert
+        expect(result).toBe('/a/b/c');
+      });
+    });
+  });
 });

@@ -874,6 +874,68 @@ describe('findLayout', () => {
     });
   });
 
+  describe('Given a HEAD file of exactly the size cap whose content is valid', () => {
+    describe('When findLayout runs', () => {
+      it('Then the level is still admitted — the cap bounds reads, the grammar decides', async () => {
+        // Arrange — a valid symbolic ref padded to exactly 65536 bytes with
+        // trailing newlines (still grammar-valid: the token after ref: is
+        // what is checked).
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await fs.mkdir('/repo/bare/objects');
+        await fs.mkdir('/repo/bare/refs');
+        const head = 'ref: refs/heads/main\n';
+        await fs.writeUtf8('/repo/bare/HEAD', `${head}${'\n'.repeat(65_536 - head.length)}`);
+
+        // Act
+        const result = await findLayout(fileSystemLayoutProbe(fs), '/repo/bare', posixPolicy);
+
+        // Assert
+        expect(result).toStrictEqual({ gitDir: '/repo/bare', route: 'BARE_DIR' });
+      });
+    });
+  });
+
+  describe('Given a HEAD file one byte over the size cap inside a valid repo', () => {
+    describe('When findLayout runs from the oversized level', () => {
+      it('Then the level is skipped without reading and the walk climbs to the enclosing repo', async () => {
+        // Arrange
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await makeGitDir(fs, '/repo/.git');
+        await fs.mkdir('/repo/bait/objects');
+        await fs.mkdir('/repo/bait/refs');
+        const head = 'ref: refs/heads/main\n';
+        await fs.writeUtf8('/repo/bait/HEAD', `${head}${'\n'.repeat(65_537 - head.length)}`);
+
+        // Act
+        const result = await findLayout(fileSystemLayoutProbe(fs), '/repo/bait', posixPolicy);
+
+        // Assert
+        expect(result).toStrictEqual({
+          gitDir: '/repo/.git',
+          route: 'DISCOVERED',
+          origin: '/repo',
+        });
+      });
+    });
+  });
+
+  describe('Given a valid gitdir placed under a name other than .git', () => {
+    describe('When findLayout runs from its parent', () => {
+      it('Then nothing is found — only the literal name .git is probed as a child entry', async () => {
+        // Arrange
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await makeGitDir(fs, '/repo/parent/other-name');
+        await fs.mkdir('/repo/parent');
+
+        // Act
+        const result = await findLayout(fileSystemLayoutProbe(fs), '/repo/parent', posixPolicy);
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
   describe('Given a commondir entry that is a directory rather than a regular file', () => {
     describe('When resolveCommonDir runs', () => {
       it('Then it is treated as absent and the gitDir is its own common dir', async () => {

@@ -584,4 +584,170 @@ describe('resolveLayout', () => {
       });
     });
   });
+  describe('§1c rows previously untested across routes', () => {
+    describe('Given route BARE_DIR with core.bare = true and an explicit workDir argument', () => {
+      describe('When resolveLayout runs', () => {
+        it('Then the argument wins silently: work tree present, bare false', async () => {
+          // Arrange
+          const fs = new MemoryFileSystem({ rootDir: '/repo' });
+          await makeGitDir(fs, '/repo/bare.git');
+          await fs.writeUtf8('/repo/bare.git/config', '[core]\n\tbare = true\n');
+          await fs.mkdir('/repo/wt');
+
+          // Act
+          const result = await resolveLayout(
+            fileSystemLayoutProbe(fs),
+            '/repo/bare.git',
+            posixPolicy,
+            { workDir: '/repo/wt' },
+          );
+
+          // Assert
+          expect(result).toStrictEqual({
+            gitDir: '/repo/bare.git',
+            workDir: '/repo/wt',
+            bare: false,
+          });
+        });
+      });
+    });
+
+    describe('Given route EXPLICIT with an absolute core.worktree in the config', () => {
+      describe('When resolveLayout runs', () => {
+        it('Then core.worktree is honoured on the explicit route too', async () => {
+          // Arrange
+          const fs = new MemoryFileSystem({ rootDir: '/repo' });
+          await makeGitDir(fs, '/repo/normal/.git');
+          await fs.writeUtf8('/repo/normal/.git/config', '[core]\n\tworktree = /repo/wt\n');
+          await fs.mkdir('/repo/elsewhere');
+
+          // Act
+          const result = await resolveLayout(
+            fileSystemLayoutProbe(fs),
+            '/repo/elsewhere',
+            posixPolicy,
+            { gitDir: '/repo/normal/.git' },
+          );
+
+          // Assert
+          expect(result).toStrictEqual({
+            gitDir: '/repo/normal/.git',
+            workDir: '/repo/wt',
+            bare: false,
+          });
+        });
+      });
+    });
+
+    describe('Given route EXPLICIT with a relative core.worktree in the config', () => {
+      describe('When resolveLayout runs without a physical-resolution capability', () => {
+        it('Then the value resolves lexically against the gitDir, not against cwd', async () => {
+          // Arrange — cwd-relative resolution would give /repo/elsewhere/wt2;
+          // gitDir-relative gives /repo/wt2.
+          const fs = new MemoryFileSystem({ rootDir: '/repo' });
+          await makeGitDir(fs, '/repo/normal/.git');
+          await fs.writeUtf8('/repo/normal/.git/config', '[core]\n\tworktree = ../../wt2\n');
+          await fs.mkdir('/repo/elsewhere');
+
+          // Act
+          const result = await resolveLayout(
+            fileSystemLayoutProbe(fs),
+            '/repo/elsewhere',
+            posixPolicy,
+            { gitDir: '/repo/normal/.git' },
+          );
+
+          // Assert
+          expect(result).toStrictEqual({
+            gitDir: '/repo/normal/.git',
+            workDir: '/repo/wt2',
+            bare: false,
+          });
+        });
+      });
+    });
+
+    describe('Given route EXPLICIT with core.bare = true alone', () => {
+      describe('When resolveLayout runs', () => {
+        it('Then no work tree is defaulted at cwd — the config beats the route default', async () => {
+          // Arrange
+          const fs = new MemoryFileSystem({ rootDir: '/repo' });
+          await makeGitDir(fs, '/repo/bare.git');
+          await fs.writeUtf8('/repo/bare.git/config', '[core]\n\tbare = true\n');
+          await fs.mkdir('/repo/elsewhere');
+
+          // Act
+          const result = await resolveLayout(
+            fileSystemLayoutProbe(fs),
+            '/repo/elsewhere',
+            posixPolicy,
+            { gitDir: '/repo/bare.git' },
+          );
+
+          // Assert
+          expect(result).toStrictEqual({ gitDir: '/repo/bare.git', bare: true });
+        });
+      });
+    });
+
+    describe('Given a .git-file route whose gitdir config sets core.worktree', () => {
+      describe('When resolveLayout runs', () => {
+        it('Then core.worktree is honoured on the gitfile route — every route honours it', async () => {
+          // Arrange — a separate-git-dir shape: the worktree holds a .git
+          // pointer file; the external gitdir's config redirects the work tree.
+          const fs = new MemoryFileSystem({ rootDir: '/repo' });
+          await makeGitDir(fs, '/repo/external.git');
+          await fs.writeUtf8('/repo/external.git/config', '[core]\n\tworktree = /repo/wt\n');
+          await fs.mkdir('/repo/separate');
+          await fs.writeUtf8('/repo/separate/.git', 'gitdir: /repo/external.git\n');
+
+          // Act
+          const result = await resolveLayout(
+            fileSystemLayoutProbe(fs),
+            '/repo/separate',
+            posixPolicy,
+          );
+
+          // Assert
+          expect(result).toStrictEqual({
+            gitDir: '/repo/external.git',
+            workDir: '/repo/wt',
+            bare: false,
+          });
+        });
+      });
+    });
+
+    describe('Given route EXPLICIT naming a linked-worktree admin dir with shared core.bare = true', () => {
+      describe('When resolveLayout runs', () => {
+        it('Then the linked-worktree bypass does NOT apply — the explicit route stays bare', async () => {
+          // Arrange — same fixture shape as the DISCOVERED-route bypass test,
+          // but entered via opts.gitDir: the bypass is scoped to DISCOVERED.
+          const fs = new MemoryFileSystem({ rootDir: '/repo' });
+          await makeGitDir(fs, '/repo/bare.git');
+          await fs.writeUtf8('/repo/bare.git/config', '[core]\n\tbare = true\n');
+          const admin = '/repo/bare.git/worktrees/wt';
+          await fs.mkdir(admin);
+          await fs.writeUtf8(`${admin}/HEAD`, 'ref: refs/heads/wt\n');
+          await fs.writeUtf8(`${admin}/commondir`, '../..\n');
+          await fs.mkdir('/repo/elsewhere');
+
+          // Act
+          const result = await resolveLayout(
+            fileSystemLayoutProbe(fs),
+            '/repo/elsewhere',
+            posixPolicy,
+            { gitDir: admin },
+          );
+
+          // Assert — bare, no workDir: core.bare wins on the explicit route.
+          expect(result).toStrictEqual({
+            gitDir: admin,
+            commonDir: '/repo/bare.git',
+            bare: true,
+          });
+        });
+      });
+    });
+  });
 });

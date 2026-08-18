@@ -194,6 +194,37 @@ describe('internal/repo-state', () => {
         });
       });
     });
+
+    describe('Given a Context with no work tree AND a bogus work-tree config', () => {
+      describe('When requireWorkTree', () => {
+        it('Then the bogus-config refusal wins — the guard order is pinned', () => {
+          // Arrange — both guards can fire; git reports the invalid-config
+          // fatal ahead of the plain work-tree one, so ours must too.
+          const ctx = createMemoryContext();
+          const { workDir: _workDir, ...bareLayout } = ctx.layout;
+          const bothCtx: Context = {
+            ...ctx,
+            layout: { ...bareLayout, bare: true, workTreeConfigBogus: true },
+          };
+
+          // Act
+          let caught: unknown;
+          try {
+            requireWorkTree(bothCtx, 'add');
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data;
+          expect(data.code).toBe('WORK_TREE_CONFIG_INVALID');
+          if (data.code === 'WORK_TREE_CONFIG_INVALID') {
+            expect(data.gitDir).toBe(ctx.layout.gitDir);
+          }
+        });
+      });
+    });
   });
 
   describe('readHeadRaw', () => {

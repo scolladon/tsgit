@@ -24,6 +24,7 @@ import type {
 } from '../../../../src/domain/objects/index.js';
 import { RefName } from '../../../../src/domain/objects/object-id.js';
 import type { Context } from '../../../../src/ports/context.js';
+import { asBareContext } from './fixtures.js';
 
 const ident = (timestamp: number): AuthorIdentity => ({
   name: 'A U Thor',
@@ -1432,6 +1433,48 @@ describe('Given no names and a deep history to walk', () => {
       // Assert — the empty freeze stops immediately; it never descends the chain.
       expect(error.data).toMatchObject({ code: 'NO_NAMES' });
       expect(reads()).toBe(2);
+    });
+  });
+});
+
+describe('Given a repository with no work tree', () => {
+  describe('When describe runs with the dirty option', () => {
+    it('Then throws WORK_TREE_REQUIRED naming the describe dirty operation', async () => {
+      // Arrange
+      const seeded = await seed();
+      await commitFile(seeded, 'c1');
+      const ctx = asBareContext(seeded);
+
+      // Act
+      let caught: unknown;
+      try {
+        await describeCmd(ctx, undefined, { dirty: true });
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      expect((caught as TsgitError).data).toMatchObject({
+        code: 'WORK_TREE_REQUIRED',
+        operation: 'describe --dirty',
+      });
+    });
+  });
+
+  describe('When describe runs with the broken option and the always fallback', () => {
+    it('Then it resolves and reports the tree dirty-broken instead of refusing', async () => {
+      // Arrange
+      const seeded = await seed();
+      await commitFile(seeded, 'c1');
+      const ctx = asBareContext(seeded);
+
+      // Act
+      const result = await describeCmd(ctx, undefined, { broken: true, always: true });
+
+      // Assert
+      expect(result.dirty).toBe(true);
+      expect(result.tag).toBeUndefined();
     });
   });
 });

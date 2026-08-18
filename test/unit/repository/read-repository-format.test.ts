@@ -103,6 +103,32 @@ describe('readRepositoryFormat', () => {
     });
   });
 
+  describe('Given extensions.worktreeConfig = true and a config.worktree overriding core.worktree', () => {
+    describe('When readRepositoryFormat runs', () => {
+      it('Then the config.worktree value wins over the local one', async () => {
+        // Arrange — the local file carries a DIFFERENT value, so this proves
+        // the override, not merely the read.
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await fs.writeUtf8(
+          '/repo/.git/config',
+          '[core]\n\tworktree = /local-wt\n[extensions]\n\tworktreeConfig = true\n',
+        );
+        await fs.writeUtf8('/repo/.git/config.worktree', '[core]\n\tworktree = /scoped-wt\n');
+
+        // Act
+        const result = await readRepositoryFormat(
+          fileSystemLayoutProbe(fs),
+          '/repo/.git',
+          '/repo/.git',
+          posixPolicy,
+        );
+
+        // Assert
+        expect(result.worktree).toBe('/scoped-wt');
+      });
+    });
+  });
+
   describe('Given extensions.worktreeConfig is NOT set and a config.worktree file exists anyway', () => {
     describe('When readRepositoryFormat runs', () => {
       it('Then config.worktree is ignored — the extension gate was not tripped', async () => {

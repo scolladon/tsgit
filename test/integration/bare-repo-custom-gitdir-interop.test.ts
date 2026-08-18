@@ -266,20 +266,27 @@ describe.skipIf(!GIT_AVAILABLE)('bare and work-tree-less layout interop', () => 
         git(bare, 'tag', 'loose-v1', 'main');
         const expectedLog = git(bare, 'log', '--format=%H').trim().split('\n');
         const expectedHead = git(bare, 'rev-parse', 'HEAD').trim();
+        // A fresh handle AFTER the git-side writes — the file's own discipline:
+        // per-Context caches are only invalidated by tsgit's own writeObject.
+        const fresh = await openRepository({ cwd: bare });
 
-        // Act
-        const log = await repo.log();
-        const revParsed = await repo.revParse('HEAD');
-        const catFile = await repo.catFile({ ids: [expectedHead] });
-        const branches = await repo.branch.list();
-        const tags = await repo.tag.list();
+        try {
+          // Act
+          const log = await fresh.log();
+          const revParsed = await fresh.revParse('HEAD');
+          const catFile = await fresh.catFile({ ids: [expectedHead] });
+          const branches = await fresh.branch.list();
+          const tags = await fresh.tag.list();
 
-        // Assert
-        expect(log.map((entry) => entry.id)).toEqual(expectedLog);
-        expect(revParsed).toBe(expectedHead);
-        expect(catFile.entries).toHaveLength(1);
-        expect(branches.branches.some((b) => b.name === 'refs/heads/loose-topic')).toBe(true);
-        expect(tags.tags.some((t) => t.name === 'refs/tags/loose-v1')).toBe(true);
+          // Assert
+          expect(log.map((entry) => entry.id)).toEqual(expectedLog);
+          expect(revParsed).toBe(expectedHead);
+          expect(catFile.entries).toHaveLength(1);
+          expect(branches.branches.some((b) => b.name === 'refs/heads/loose-topic')).toBe(true);
+          expect(tags.tags.some((t) => t.name === 'refs/tags/loose-v1')).toBe(true);
+        } finally {
+          await fresh.dispose();
+        }
       });
     });
 
@@ -464,31 +471,33 @@ describe.skipIf(!GIT_AVAILABLE)('bare and work-tree-less layout interop', () => 
       });
     });
 
-    describe('When core.worktree resolves to a path that does not exist', () => {
-      it('Then both tools ultimately fail on this shape (co-refusal)', async () => {
-        // Arrange — git's --show-toplevel physically changes directory and fails; tsgit's
-        // layout resolution stays lenient (lexical + a fallback realpath), so
-        // the failure instead surfaces the first time a work-tree command
-        // tries to actually read the (nonexistent) work tree.
+    describe('When a RELATIVE core.worktree resolves to a path that does not exist', () => {
+      it('Then both tools refuse at setup, and tsgit names the raw relative value', async () => {
+        // Arrange — git resolves a relative core.worktree by physically
+        // changing directory from the gitDir, so a missing target dies at
+        // setup on every command; tsgit mirrors that at openRepository.
         git(normal, 'config', 'core.worktree', '../missing-wt');
         const g = tryRunGitWithExit(['-C', normal, 'rev-parse', '--show-toplevel'], {
           env: runGitEnv(),
         });
 
         // Act
-        const repo = await openRepository({ cwd: normal });
         let caught: unknown;
         try {
-          await repo.status();
+          await openRepository({ cwd: normal });
         } catch (err) {
           caught = err;
-        } finally {
-          await repo.dispose();
         }
 
-        // Assert
+        // Assert — git names the relative value in its chdir fatal
         expect(g.exitCode).toBe(128);
-        expect(caught).toBeDefined();
+        expect(g.stderr).toContain("cannot chdir to '../missing-wt'");
+        // Assert — tsgit's structured refusal carries the same raw value
+        const data = (caught as { data?: { code?: string; value?: string; gitDir?: string } })
+          ?.data;
+        expect(data?.code).toBe('WORK_TREE_UNRESOLVABLE');
+        expect(data?.value).toBe('../missing-wt');
+        expect(data?.gitDir).toBe(await realpath(path.join(normal, '.git')));
       });
     });
   });
@@ -534,9 +543,10 @@ describe.skipIf(!GIT_AVAILABLE)('bare and work-tree-less layout interop', () => 
         // Assert — git
         expect(g.exitCode).toBe(128);
         expect(g.stderr).toContain('unable to set up work tree using invalid config');
-        // Assert — tsgit
+        // Assert — tsgit; the payload names the gitDir the bogus config lives in
         const data = (caught as { data?: { code?: string; gitDir?: string } })?.data;
         expect(data?.code).toBe('WORK_TREE_CONFIG_INVALID');
+        expect(data?.gitDir).toBe(await realpath(path.join(normal, '.git')));
       });
     });
 
@@ -582,57 +592,200 @@ describe.skipIf(!GIT_AVAILABLE)('bare and work-tree-less layout interop', () => 
 
     describe('Work-tree-requiring commands', () => {
       describe('When each of them runs', () => {
-        it.each<[string, () => Promise<unknown>, ReadonlyArray<string>]>([
-          ['status', () => repo.status(), ['status']],
-          ['add', () => repo.add(['x']), ['add', '.']],
-          ['checkout', () => repo.checkout({ rev: 'main' }), ['checkout', 'main']],
-          ['commit', () => repo.commit({ message: 'x', author: AUTHOR }), ['commit', '-m', 'x']],
-          ['merge', () => repo.merge.run({ rev: 'main' }), ['merge', 'main']],
-          ['rm', () => repo.rm(['a.txt']), ['rm', 'a.txt']],
-          ['mv', () => repo.mv(['a.txt'], 'b.txt'), ['mv', 'a.txt', 'b.txt']],
-          ['reset --hard', () => repo.reset({ mode: 'hard', rev: 'HEAD' }), ['reset', '--hard']],
+        it.each<[string, () => Promise<unknown>, ReadonlyArray<string>, number, string, string]>([
+          [
+            'status',
+            () => repo.status(),
+            ['status'],
+            128,
+            'this operation must be run in a work tree',
+            'status',
+          ],
+          [
+            'add',
+            () => repo.add(['x']),
+            ['add', '.'],
+            128,
+            'this operation must be run in a work tree',
+            'add',
+          ],
+          [
+            'checkout',
+            () => repo.checkout({ rev: 'main' }),
+            ['checkout', 'main'],
+            128,
+            'this operation must be run in a work tree',
+            'checkout',
+          ],
+          [
+            'commit',
+            () => repo.commit({ message: 'x', author: AUTHOR }),
+            ['commit', '-m', 'x'],
+            128,
+            'this operation must be run in a work tree',
+            'commit',
+          ],
+          [
+            'merge',
+            () => repo.merge.run({ rev: 'main' }),
+            ['merge', 'main'],
+            128,
+            'this operation must be run in a work tree',
+            'merge',
+          ],
+          [
+            'rm',
+            () => repo.rm(['a.txt']),
+            ['rm', 'a.txt'],
+            128,
+            'this operation must be run in a work tree',
+            'rm',
+          ],
+          [
+            'mv',
+            () => repo.mv(['a.txt'], 'b.txt'),
+            ['mv', 'a.txt', 'b.txt'],
+            128,
+            'this operation must be run in a work tree',
+            'mv',
+          ],
+          [
+            'reset --hard',
+            () => repo.reset({ mode: 'hard', rev: 'HEAD' }),
+            ['reset', '--hard'],
+            128,
+            'this operation must be run in a work tree',
+            'reset --hard',
+          ],
           [
             'grep (default target)',
             () => repo.grep({ patterns: [{ fixed: 'needle' }] }),
             ['grep', 'needle'],
+            128,
+            'this operation must be run in a work tree',
+            'grep',
           ],
-          ['stash push', () => repo.stash.push({}), ['stash', 'push']],
-          ['stash list', () => repo.stash.list(), ['stash', 'list']],
-          ['stash pop', () => repo.stash.pop({}), ['stash', 'pop']],
-          ['sparse-checkout list', () => repo.sparseCheckout.list(), ['sparse-checkout', 'list']],
+          [
+            'pull',
+            () => repo.pull({ remote: 'origin' }),
+            ['pull'],
+            128,
+            'this operation must be run in a work tree',
+            'pull',
+          ],
+          [
+            'stash push',
+            () => repo.stash.push({}),
+            ['stash', 'push'],
+            128,
+            'this operation must be run in a work tree',
+            'stash',
+          ],
+          [
+            'stash list',
+            () => repo.stash.list(),
+            ['stash', 'list'],
+            128,
+            'this operation must be run in a work tree',
+            'stash list',
+          ],
+          [
+            'stash pop',
+            () => repo.stash.pop({}),
+            ['stash', 'pop'],
+            128,
+            'this operation must be run in a work tree',
+            'stash pop',
+          ],
+          [
+            'sparse-checkout list',
+            () => repo.sparseCheckout.list(),
+            ['sparse-checkout', 'list'],
+            128,
+            'this operation must be run in a work tree',
+            'sparse-checkout',
+          ],
           [
             'cherry-pick',
             () => repo.cherryPick.run({ commits: ['main'] }),
             ['cherry-pick', 'main'],
+            128,
+            'this operation must be run in a work tree',
+            'cherry-pick',
           ],
-          ['revert', () => repo.revert.run({ commits: ['main'] }), ['revert', '--no-edit', 'main']],
-          ['rebase', () => repo.rebase.run({ upstream: 'main' }), ['rebase', 'main']],
-          ['submodule status', () => repo.submodule.list(), ['submodule', 'status']],
-          ['submodule init', () => repo.submodule.init(), ['submodule', 'init']],
-          ['submodule sync', () => repo.submodule.sync({}), ['submodule', 'sync']],
+          [
+            'revert',
+            () => repo.revert.run({ commits: ['main'] }),
+            ['revert', '--no-edit', 'main'],
+            128,
+            'this operation must be run in a work tree',
+            'revert',
+          ],
+          [
+            'rebase',
+            () => repo.rebase.run({ upstream: 'main' }),
+            ['rebase', 'main'],
+            128,
+            'this operation must be run in a work tree',
+            'rebase',
+          ],
+          [
+            'submodule status',
+            () => repo.submodule.list(),
+            ['submodule', 'status'],
+            1,
+            'cannot be used without a working tree',
+            'submodule status',
+          ],
+          [
+            'submodule init',
+            () => repo.submodule.init(),
+            ['submodule', 'init'],
+            1,
+            'cannot be used without a working tree',
+            'submodule init',
+          ],
+          [
+            'submodule sync',
+            () => repo.submodule.sync({}),
+            ['submodule', 'sync'],
+            1,
+            'cannot be used without a working tree',
+            'submodule sync',
+          ],
           [
             'submodule deinit',
             () => repo.submodule.deinit({ all: true }),
             ['submodule', 'deinit', '--all'],
+            1,
+            'cannot be used without a working tree',
+            'submodule deinit',
           ],
-        ])('Then %s refuses, matching git', async (_label, call, gitArgs) => {
-          // Arrange
-          const g = tryRunGitWithExit(['-C', bare, ...gitArgs], { env: runGitEnv() });
+        ])(
+          'Then %s refuses, matching git byte-for-byte',
+          async (_label, call, gitArgs, expectedExit, expectedStderr, expectedOperation) => {
+            // Arrange
+            const g = tryRunGitWithExit(['-C', bare, ...gitArgs], { env: runGitEnv() });
 
-          // Act
-          let caught: unknown;
-          try {
-            await call();
-          } catch (err) {
-            caught = err;
-          }
+            // Act
+            let caught: unknown;
+            try {
+              await call();
+            } catch (err) {
+              caught = err;
+            }
 
-          // Assert — git refuses (128 structural fatal, or 1 for submodule's shell wrapper)
-          expect(g.exitCode === 128 || g.exitCode === 1).toBe(true);
-          // Assert — tsgit refuses with a work-tree-shaped code
-          const code = (caught as { data?: { code?: string } })?.data?.code;
-          expect(code === 'WORK_TREE_REQUIRED' || code === 'WORK_TREE_CONFIG_INVALID').toBe(true);
-        });
+            // Assert — git's exit code AND refusal line, per row: a disjunctive
+            // exit check could not tell a work-tree refusal from any other
+            // failure of the invocation.
+            expect(g.exitCode).toBe(expectedExit);
+            expect(g.stderr).toContain(expectedStderr);
+            // Assert — tsgit's code and per-row operation payload.
+            const data = (caught as { data?: { code?: string; operation?: string } })?.data;
+            expect(data?.code).toBe('WORK_TREE_REQUIRED');
+            expect(data?.operation).toBe(expectedOperation);
+          },
+        );
       });
 
       describe('When describe({ dirty: true }) runs', () => {
@@ -650,7 +803,10 @@ describe.skipIf(!GIT_AVAILABLE)('bare and work-tree-less layout interop', () => 
 
           // Assert
           expect(g.exitCode).toBe(128);
-          expect((caught as { data?: { code?: string } })?.data?.code).toBe('WORK_TREE_REQUIRED');
+          expect(g.stderr).toContain('this operation must be run in a work tree');
+          const data = (caught as { data?: { code?: string; operation?: string } })?.data;
+          expect(data?.code).toBe('WORK_TREE_REQUIRED');
+          expect(data?.operation).toBe('describe --dirty');
         });
       });
     });
@@ -900,6 +1056,60 @@ describe.skipIf(!GIT_AVAILABLE)('bare and work-tree-less layout interop', () => 
               } finally {
                 await reopened.dispose();
               }
+
+              // Assert — tsgit FETCH from the bare target sees the commit too
+              // (the read direction of the server-side story).
+              const fetchTarget = path.join(root, 'fetcher');
+              await mkdir(fetchTarget, { recursive: true });
+              const fetcher = await openRepository({
+                cwd: fetchTarget,
+                allowInsecureHttp: true,
+                config: {
+                  allowInsecure: true,
+                  allowPrivateNetworks: true,
+                  dnsResolver: async () => ['127.0.0.1'],
+                },
+              });
+              try {
+                await fetcher.init();
+                await fetcher.remote.add({ name: 'origin', url: `${server.baseUrl}/target.git` });
+                await fetcher.fetch({ remote: 'origin' });
+                expect(await fetcher.revParse('refs/remotes/origin/main')).toBe(commitId);
+              } finally {
+                await fetcher.dispose();
+              }
+
+              // Assert — tsgit clone({ bare: true }) of the target produces a
+              // bare repo REAL GIT reads, byte-shaped like `git clone --bare`
+              // where pinned (bare=true, no index file); then `git clone` of
+              // that tsgit-written bare repo yields a working clone.
+              const bareClone = path.join(root, 'tsgit-bare-clone.git');
+              await mkdir(bareClone, { recursive: true });
+              const cloner = await openRepository({
+                cwd: bareClone,
+                gitDir: bareClone,
+                bare: true,
+                allowInsecureHttp: true,
+                config: {
+                  allowInsecure: true,
+                  allowPrivateNetworks: true,
+                  dnsResolver: async () => ['127.0.0.1'],
+                },
+              });
+              try {
+                await cloner.clone({ url: `${server.baseUrl}/target.git`, bare: true });
+              } finally {
+                await cloner.dispose();
+              }
+              expect(git(bareClone, 'rev-parse', '--is-bare-repository').trim()).toBe('true');
+              expect(git(bareClone, 'log', '--format=%H', 'main').trim().split('\n')[0]).toBe(
+                commitId,
+              );
+              await expect(readFile(path.join(bareClone, 'index'))).rejects.toThrow();
+              const workingClone = path.join(root, 'working-clone');
+              runGit(['clone', '-q', bareClone, workingClone]);
+              expect(git(workingClone, 'log', '--format=%H').trim().split('\n')[0]).toBe(commitId);
+              expect(await readFile(path.join(workingClone, 'a.txt'), 'utf8')).toBe('pushed\n');
             } finally {
               await server.close();
               await rm(root, { recursive: true, force: true });
@@ -1450,44 +1660,70 @@ describe.skipIf(!GIT_AVAILABLE)('bare and work-tree-less layout interop', () => 
     const isPathInside = (candidate: string, ancestor: string): boolean =>
       candidate === ancestor || candidate.startsWith(`${ancestor}${path.sep}`);
 
+    interface ReconstructionCase {
+      /** Directory git runs in (`-C`). */
+      readonly gitCwd: string;
+      /** Extra git args ahead of `rev-parse` (`--git-dir` / `--work-tree`). */
+      readonly gitExtra: ReadonlyArray<string>;
+      /** The tsgit open options for the same invocation. */
+      readonly open: {
+        readonly cwd: string;
+        readonly gitDir?: string;
+        readonly workDir?: string;
+      };
+    }
+
+    const revParseQuery = (c: ReconstructionCase, query: string) =>
+      tryRunGitWithExit(['-C', c.gitCwd, ...c.gitExtra, 'rev-parse', query], {
+        env: runGitEnv(),
+      });
+
     /** Reconstructs every rev-parse layout query from `repo.layout` + `repo.ctx.cwd` and asserts each against real git. */
-    const assertReconstructedQueriesMatchGit = async (
-      gitCwd: string,
-      tsgitCwd: string,
-    ): Promise<void> => {
-      const repo = await openRepository({ cwd: tsgitCwd });
+    const assertReconstructedQueriesMatchGit = async (c: ReconstructionCase): Promise<void> => {
+      const repo = await openRepository(c.open);
       try {
         const layout = repo.layout;
         const cwd = repo.ctx.cwd;
 
-        const [absGitDir, absCommonDir] = gitDirPair(gitCwd);
-        expect(layout.gitDir).toBe(absGitDir);
-        expect(layout.commonDir ?? layout.gitDir).toBe(absCommonDir);
+        const pathFormat = tryRunGitWithExit(
+          [
+            '-C',
+            c.gitCwd,
+            ...c.gitExtra,
+            'rev-parse',
+            '--path-format=absolute',
+            '--git-dir',
+            '--git-common-dir',
+          ],
+          { env: runGitEnv() },
+        );
+        const [expectedGitDir = '', expectedCommonDir = ''] = pathFormat.stdout.trim().split('\n');
+        expect(layout.gitDir).toBe(await realpath(expectedGitDir));
+        expect(layout.commonDir ?? layout.gitDir).toBe(await realpath(expectedCommonDir));
 
-        const absoluteGitDir = git(gitCwd, 'rev-parse', '--absolute-git-dir').trim();
+        const absoluteGitDir = revParseQuery(c, '--absolute-git-dir').stdout.trim();
         expect(layout.gitDir).toBe(absoluteGitDir);
 
-        expect(layout.bare).toBe(isBareAccordingToGit(gitCwd));
+        const isBare = revParseQuery(c, '--is-bare-repository').stdout.trim() === 'true';
+        expect(layout.bare).toBe(isBare);
 
-        const toplevel = tryRunGitWithExit(['-C', gitCwd, 'rev-parse', '--show-toplevel'], {
-          env: runGitEnv(),
-        });
+        const toplevel = revParseQuery(c, '--show-toplevel');
         if (layout.workDir === undefined) {
           expect(toplevel.exitCode).toBe(128);
         } else {
           expect(toplevel.exitCode).toBe(0);
-          expect(layout.workDir).toBe(toplevel.stdout.trim());
+          expect(await realpath(layout.workDir)).toBe(await realpath(toplevel.stdout.trim()));
         }
 
-        const insideWorkTree = git(gitCwd, 'rev-parse', '--is-inside-work-tree').trim() === 'true';
+        const insideWorkTree = revParseQuery(c, '--is-inside-work-tree').stdout.trim() === 'true';
         const oursInsideWorkTree =
           layout.workDir !== undefined && isPathInside(cwd, layout.workDir);
         expect(oursInsideWorkTree).toBe(insideWorkTree);
 
-        const insideGitDir = git(gitCwd, 'rev-parse', '--is-inside-git-dir').trim() === 'true';
+        const insideGitDir = revParseQuery(c, '--is-inside-git-dir').stdout.trim() === 'true';
         expect(isPathInside(cwd, layout.gitDir)).toBe(insideGitDir);
 
-        const prefix = git(gitCwd, 'rev-parse', '--show-prefix').trim();
+        const prefix = revParseQuery(c, '--show-prefix').stdout.trim();
         const oursPrefix =
           layout.workDir !== undefined &&
           isPathInside(cwd, layout.workDir) &&
@@ -1496,12 +1732,19 @@ describe.skipIf(!GIT_AVAILABLE)('bare and work-tree-less layout interop', () => 
             : '';
         expect(oursPrefix).toBe(prefix);
 
-        if (layout.workDir !== undefined && isPathInside(cwd, layout.workDir)) {
-          const cdup = git(gitCwd, 'rev-parse', '--show-cdup').trim();
-          const relBack = path.relative(cwd, layout.workDir);
-          const oursCdup = relBack.length === 0 ? '' : `${relBack}${path.sep}`;
-          expect(oursCdup).toBe(cdup);
-        }
+        // cdup is TOTAL: inside the work tree it is the relative climb (empty
+        // at the root); outside it, git prints the work tree's ABSOLUTE path;
+        // with no work tree the query prints nothing.
+        const cdup = revParseQuery(c, '--show-cdup');
+        const oursCdup =
+          layout.workDir === undefined
+            ? ''
+            : isPathInside(cwd, layout.workDir)
+              ? cwd === layout.workDir
+                ? ''
+                : `${path.relative(cwd, layout.workDir)}${path.sep}`
+              : await realpath(layout.workDir);
+        expect(oursCdup).toBe(cdup.stdout.trim());
       } finally {
         await repo.dispose();
       }
@@ -1511,7 +1754,11 @@ describe.skipIf(!GIT_AVAILABLE)('bare and work-tree-less layout interop', () => 
       it('Then every reconstructed query matches git', async () => {
         // Arrange / Act / Assert — the reconstruction table's nine queries
         // are asserted one by one inside the shared helper.
-        await assertReconstructedQueriesMatchGit(normal, normal);
+        await assertReconstructedQueriesMatchGit({
+          gitCwd: normal,
+          gitExtra: [],
+          open: { cwd: normal },
+        });
       });
     });
 
@@ -1521,14 +1768,78 @@ describe.skipIf(!GIT_AVAILABLE)('bare and work-tree-less layout interop', () => 
         const sub = path.join(normal, 'sub', 'deep');
 
         // Act / Assert
-        await assertReconstructedQueriesMatchGit(sub, sub);
+        await assertReconstructedQueriesMatchGit({ gitCwd: sub, gitExtra: [], open: { cwd: sub } });
       });
     });
 
     describe('When cwd is the gitDir of a bare repo', () => {
       it('Then every reconstructed query matches git', async () => {
         // Arrange / Act / Assert
-        await assertReconstructedQueriesMatchGit(bare, bare);
+        await assertReconstructedQueriesMatchGit({
+          gitCwd: bare,
+          gitExtra: [],
+          open: { cwd: bare },
+        });
+      });
+    });
+
+    describe('When cwd is INSIDE the gitDir of a normal repo', () => {
+      it('Then every reconstructed query matches git', async () => {
+        // Arrange
+        const inside = path.join(normal, '.git');
+
+        // Act / Assert
+        await assertReconstructedQueriesMatchGit({
+          gitCwd: inside,
+          gitExtra: [],
+          open: { cwd: inside },
+        });
+      });
+    });
+
+    describe('When cwd is a sub-directory of the bare gitDir', () => {
+      it('Then every reconstructed query matches git', async () => {
+        // Arrange
+        const inside = path.join(bare, 'refs');
+
+        // Act / Assert
+        await assertReconstructedQueriesMatchGit({
+          gitCwd: inside,
+          gitExtra: [],
+          open: { cwd: inside },
+        });
+      });
+    });
+
+    describe('When the gitDir is explicit and cwd is unrelated', () => {
+      it('Then every reconstructed query matches git — the work tree defaults to cwd', async () => {
+        // Arrange
+        const elsewhere = path.join(root, 'elsewhere-m1');
+        await mkdir(elsewhere, { recursive: true });
+
+        // Act / Assert
+        await assertReconstructedQueriesMatchGit({
+          gitCwd: elsewhere,
+          gitExtra: [`--git-dir=${path.join(normal, '.git')}`],
+          open: { cwd: elsewhere, gitDir: path.join(normal, '.git') },
+        });
+      });
+    });
+
+    describe('When gitDir and workDir are both explicit and cwd is outside the work tree', () => {
+      it('Then every reconstructed query matches git — including the ABSOLUTE cdup form', async () => {
+        // Arrange — the row the conditional reconstruction used to skip.
+        const elsewhere = path.join(root, 'elsewhere-m2');
+        const wt = path.join(root, 'wt-m2');
+        await mkdir(elsewhere, { recursive: true });
+        await mkdir(wt, { recursive: true });
+
+        // Act / Assert
+        await assertReconstructedQueriesMatchGit({
+          gitCwd: elsewhere,
+          gitExtra: [`--git-dir=${bare}`, `--work-tree=${wt}`],
+          open: { cwd: elsewhere, gitDir: bare, workDir: wt },
+        });
       });
     });
   });
