@@ -5,6 +5,7 @@ import {
   commitGraphPath,
   commonDirOf,
   commonGitDir,
+  getSpawnCwd,
   indexPath,
   lockSuffix,
   logsDir,
@@ -282,6 +283,38 @@ describe('path-layout', () => {
 
         // Assert
         expect(result).toBe('/g/objects/pack/multi-pack-index.d/multi-pack-index-deadbeef.midx');
+      });
+    });
+  });
+});
+
+describe('getSpawnCwd', () => {
+  describe('Given a layout with a work tree', () => {
+    describe('When getSpawnCwd runs', () => {
+      it('Then the work tree is the spawn cwd', () => {
+        // Arrange
+        const sut = getSpawnCwd;
+
+        // Act
+        const result = sut({ workDir: '/repo', gitDir: '/repo/.git', bare: false });
+
+        // Assert
+        expect(result).toBe('/repo');
+      });
+    });
+  });
+
+  describe('Given a bare layout with no work tree', () => {
+    describe('When getSpawnCwd runs', () => {
+      it('Then the gitDir is the spawn cwd — git runs bare hooks with PWD at the gitdir', () => {
+        // Arrange
+        const sut = getSpawnCwd;
+
+        // Act
+        const result = sut({ gitDir: '/srv/bare.git', bare: true });
+
+        // Assert
+        expect(result).toBe('/srv/bare.git');
       });
     });
   });
