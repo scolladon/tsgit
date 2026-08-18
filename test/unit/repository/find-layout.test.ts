@@ -123,6 +123,43 @@ describe('findLayout', () => {
     });
   });
 
+  describe('Given a .git directory whose HEAD holds garbage content, with a valid repo one level up', () => {
+    describe('When findLayout runs from inside it', () => {
+      it('Then skips it and walks up to the valid repo', async () => {
+        // Arrange
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await makeGitDir(fs, '/repo/.git');
+        await fs.mkdir('/repo/sub/.git/objects');
+        await fs.mkdir('/repo/sub/.git/refs');
+        await fs.writeUtf8('/repo/sub/.git/HEAD', 'garbage');
+
+        // Act
+        const result = await findLayout(fileSystemLayoutProbe(fs), '/repo/sub', posixPolicy);
+
+        // Assert
+        expect(result).toStrictEqual({ workDir: '/repo', gitDir: '/repo/.git', bare: false });
+      });
+    });
+  });
+
+  describe('Given a .git directory whose HEAD holds 64 lowercase hex characters', () => {
+    describe('When findLayout runs', () => {
+      it('Then it is a valid repo (SHA-256-width detached HEAD)', async () => {
+        // Arrange
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await fs.mkdir('/repo/.git/objects');
+        await fs.mkdir('/repo/.git/refs');
+        await fs.writeUtf8('/repo/.git/HEAD', 'a'.repeat(64));
+
+        // Act
+        const result = await findLayout(fileSystemLayoutProbe(fs), '/repo', posixPolicy);
+
+        // Assert
+        expect(result).toStrictEqual({ workDir: '/repo', gitDir: '/repo/.git', bare: false });
+      });
+    });
+  });
+
   describe('Given a .git file with an absolute pointer to an admin dir carrying a commondir', () => {
     describe('When findLayout runs', () => {
       it('Then returns the admin dir as gitDir and the resolved commonDir', async () => {

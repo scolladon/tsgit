@@ -1,6 +1,7 @@
 import type { PathPolicy } from '../adapters/node/path-policy.js';
 import type { FilePath } from '../domain/objects/object-id.js';
 import { notARepository } from '../domain/repository/error.js';
+import { isValidHeadContent } from '../domain/repository/head-ref.js';
 import { gitfileInvalidFormat, gitfileNoPath } from '../domain/worktree/error.js';
 import { parseCommondir, parseGitfilePointer } from '../domain/worktree/gitfile.js';
 import type { LayoutProbe } from '../ports/layout-probe.js';
@@ -69,10 +70,11 @@ export const layoutFromGitfile = async (
 };
 
 /**
- * A `.git` gitfile or `commondir` file larger than this is rejected before
- * parsing. Real pointer files are a path plus a short prefix (well under one
- * kilobyte); an oversized one in the walk path is hostile or corrupt, and
- * capping here keeps discovery from feeding megabytes into the parser.
+ * A `.git` gitfile, `commondir` file, or `HEAD` file larger than this is
+ * rejected before parsing. Real pointer files are a path plus a short prefix
+ * and a real `HEAD` is a refname or an object id (well under one kilobyte);
+ * an oversized one in the walk path is hostile or corrupt, and capping here
+ * keeps discovery from feeding megabytes into the parser.
  */
 const GITFILE_MAX_BYTES = 65536;
 
@@ -153,11 +155,17 @@ const resolveCommonDir = async (
 
 /**
  * Git's `is_git_directory`, narrowed: `HEAD` must be a regular file (via a
- * following `stat`, so a symlinked HEAD qualifies) but its content is never
- * parsed. Ref parsing is unavailable at discovery time; a directory with a
- * malformed `HEAD` is accepted here and rejected later by the primitives
- * tier with its own structured error, rather than by silently walking up
- * past it. A directory named `HEAD` is not a head and fails the check.
+ * following `stat`, so a symlinked HEAD qualifies when its target exists and
+ * reads back as valid content) and its content must parse as either a hex
+ * object id or a `ref:` symbolic ref — the same grammar `isValidHeadContent`
+ * checks. This is what stops a planted directory holding innocuous `HEAD`,
+ * `objects/`, `refs/` entries from shadowing an enclosing repository: real
+ * git climbs past it, and so must this. The one residual gap from real git:
+ * a `HEAD` symlink whose *link text* begins `refs/` but whose target does
+ * not exist is accepted by git and rejected here, because this probe only
+ * exposes a following `stat` plus `readUtf8`, never the raw link text. A
+ * directory named `HEAD` is not a head and fails the check; an oversized
+ * `HEAD` is rejected on its `stat`ed size, without being read.
  */
 const isGitDirectory = async (
   probe: LayoutProbe,
@@ -165,8 +173,12 @@ const isGitDirectory = async (
   commonDir: string,
   pathPolicy: PathPolicy,
 ): Promise<boolean> => {
-  const head = await probe.stat(pathPolicy.join(gitDir, 'HEAD'));
+  const headPath = pathPolicy.join(gitDir, 'HEAD');
+  const head = await probe.stat(headPath);
   if (head?.isFile !== true) return false;
+  if (head.size > GITFILE_MAX_BYTES) return false;
+  const content = await probe.readUtf8(headPath);
+  if (content === undefined || !isValidHeadContent(content)) return false;
   const objects = await probe.stat(pathPolicy.join(commonDir, 'objects'));
   if (objects?.isDirectory !== true) return false;
   const refs = await probe.stat(pathPolicy.join(commonDir, 'refs'));
