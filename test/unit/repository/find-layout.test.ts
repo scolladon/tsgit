@@ -1024,4 +1024,30 @@ describe('findLayout', () => {
       });
     });
   });
+
+  describe('Given a commondir that stats non-regular but whose readUtf8 would still return a pointer', () => {
+    describe('When resolveCommonDir runs', () => {
+      it('Then the non-regular check short-circuits before that read is ever attempted', async () => {
+        // Arrange — a hand-crafted probe that DECOUPLES stat from readUtf8,
+        // simulating the real hazard the guard defends against: a FIFO
+        // stats as non-regular but its content, if read, would still parse
+        // as a valid pointer. `MemoryFileSystem`'s own readUtf8 already
+        // fails closed for a directory (both branches return the same
+        // "absent" result there), so only a probe that can return SOMETHING
+        // from `readUtf8` proves the `stat.isFile !== true` check — not the
+        // later `raw === undefined` one — is what stops the read.
+        const probe: LayoutProbe = {
+          stat: async () => ({ isDirectory: false, isFile: false, size: 3 }),
+          readUtf8: async () => '/elsewhere\n',
+        };
+
+        // Act
+        const result = await resolveCommonDir(probe, '/repo/.git', posixPolicy);
+
+        // Assert — the non-regular entry is treated as absent; the pointer
+        // its readUtf8 stub would have supplied is never consulted.
+        expect(result).toBe('/repo/.git');
+      });
+    });
+  });
 });
