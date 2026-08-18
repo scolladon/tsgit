@@ -240,8 +240,12 @@ describe('status', () => {
   describe('Given a tracked file whose read throws during scan', () => {
     describe('When status', () => {
       it('Then it is reported as unstaged-modified', async () => {
-        // Arrange — a.txt is staged/committed clean. Wrap ctx.fs.read so reading
-        // a.txt throws: lstat still succeeds, so the comparison reaches the hash
+        // Arrange — a.txt is staged/committed clean. Wrap ctx.fs so reading
+        // a.txt throws AND its lstat reports an mtime the index cache cannot
+        // match: without the perturbation the entry can become
+        // stat-clean-trustworthy on a slow runner (the racy-clean guard is
+        // second-resolution) and the read — the very thing under test — is
+        // never attempted. The mismatch forces the comparison to the hash
         // step, whose catch must report the file as modified.
         const ctx = await seedClean();
         const workFile = `${ctx.layout.workDir}/a.txt`;
@@ -249,6 +253,12 @@ describe('status', () => {
           ...ctx,
           fs: {
             ...ctx.fs,
+            lstat: async (path: string) => {
+              const stat = await ctx.fs.lstat(path);
+              if (path !== workFile) return stat;
+              const { mtimeNs: _mtimeNs, ...rest } = stat;
+              return { ...rest, mtimeMs: stat.mtimeMs + 5_000 };
+            },
             read: async (path: string) => {
               if (path === workFile) throw new Error('simulated read failure');
               return ctx.fs.read(path);
