@@ -73,6 +73,44 @@ describe('internal/repo-state', () => {
       });
     });
 
+    describe('Given HEAD is a symlink whose link text begins refs/', () => {
+      describe('When called', () => {
+        it('Then it passes the gate even though the target is dangling — the link text decides', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await ctx.fs.symlink('refs/heads/main', `${ctx.layout.gitDir}/HEAD`);
+
+          // Act
+          const result = await assertRepository(ctx);
+
+          // Assert
+          expect(result).toBe(ctx.layout.workDir);
+        });
+      });
+    });
+
+    describe('Given HEAD is a symlink pointing outside refs/', () => {
+      describe('When called', () => {
+        it('Then throws NOT_A_REPOSITORY regardless of the target', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await ctx.fs.symlink('/nowhere/else', `${ctx.layout.gitDir}/HEAD`);
+
+          // Act
+          let caught: unknown;
+          try {
+            await assertRepository(ctx);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data).toMatchObject({ code: 'NOT_A_REPOSITORY' });
+        });
+      });
+    });
+
     describe('Given a T1 boolean key holds a value git refuses', () => {
       describe('When called', () => {
         it.each([

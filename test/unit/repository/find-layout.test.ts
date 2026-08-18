@@ -1126,6 +1126,30 @@ describe('findLayout', () => {
     });
   });
 
+  describe('Given a commondir with a trailing slash whose target is missing', () => {
+    describe('When findLayout runs from inside a real repo', () => {
+      it('Then slash noise never fabricates an intermediate — the candidate is a plain miss and the walk climbs', async () => {
+        // Arrange — 'shared/' splits into one real segment; empty segments
+        // from slash noise are dropped, so the missing target is a FINAL
+        // component (a miss), never a missing intermediate (a refusal).
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await makeGitDir(fs, '/repo/.git');
+        await makeGitDir(fs, '/repo/bait');
+        await fs.writeUtf8('/repo/bait/commondir', 'shared/\n');
+
+        // Act
+        const result = await findLayout(fileSystemLayoutProbe(fs), '/repo/bait', posixPolicy);
+
+        // Assert
+        expect(result).toStrictEqual({
+          gitDir: '/repo/.git',
+          route: 'DISCOVERED',
+          origin: '/repo',
+        });
+      });
+    });
+  });
+
   describe('Given a commondir whose dotted path traverses a missing component', () => {
     describe('When findLayout runs', () => {
       it('Then it refuses hard — lexical collapse must not skip the component git trips on', async () => {
