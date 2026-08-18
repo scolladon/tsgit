@@ -17,7 +17,7 @@ import { SHA1_CONFIG, SHA256_CONFIG } from './domain/objects/hash-config.js';
 import { createLruCache } from './domain/storage/lru-cache.js';
 import { fileSystemLayoutProbe } from './repository/file-system-layout-probe.js';
 import { portablePosixPolicy } from './repository/portable-posix-policy.js';
-import { finishLayout, resolveLayout } from './repository/resolve-layout.js';
+import { resolveLayout, syntheticFallbackLayout } from './repository/resolve-layout.js';
 import { validateOptions } from './repository/validate-options.js';
 import {
   type OpenRepositoryOptions,
@@ -65,22 +65,18 @@ export const openRepository = async (
     ...(opts.bare !== undefined ? { bare: opts.bare } : {}),
   };
   // The found-nothing fallback anchors at the fixed `/repo` root (this
-  // runtime's historical bootstrap contract) but still runs the shared
-  // work-tree resolution, so `opts.bare` / `opts.workDir` keep their
-  // argument-tier precedence instead of being silently discarded.
+  // runtime's historical bootstrap contract) and honours `opts.bare` /
+  // `opts.workDir` — but reads NOTHING from disk: discovery already judged
+  // there is no repository, so no config of a rejected `.git` participates.
+  // A relative `opts.workDir` resolves against the caller's `cwd`, the same
+  // base as on the discovery path.
   const layout =
     (await resolveLayout(probe, cwd, portablePosixPolicy, {
       ...(opts.gitDir !== undefined ? { gitDir: opts.gitDir } : {}),
       ...explicit,
       ...(opts.ceilingDirs !== undefined ? { ceilingDirs: opts.ceilingDirs } : {}),
     })) ??
-    (await finishLayout(
-      probe,
-      { route: 'EXPLICIT', gitDir: DEFAULT_GIT_DIR },
-      portablePosixPolicy,
-      DEFAULT_WORK_DIR,
-      explicit,
-    ));
+    syntheticFallbackLayout(DEFAULT_GIT_DIR, DEFAULT_WORK_DIR, cwd, explicit, portablePosixPolicy);
   const fallback = {
     fs,
     hash: new MemoryHashService(algorithm),

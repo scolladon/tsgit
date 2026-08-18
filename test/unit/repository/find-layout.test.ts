@@ -521,13 +521,37 @@ describe('findLayout', () => {
     });
   });
 
-  describe('Given a .git file whose target has an empty commondir file', () => {
+  describe('Given a .git file whose target has a NEWLINE-ONLY commondir file', () => {
+    describe('When findLayout runs', () => {
+      it('Then the stripped-empty pointer means the target is its own common dir and it resolves', async () => {
+        // Arrange — git accepts this shape (the pointer strips to empty and
+        // the gitdir serves as its own common dir); only a ZERO-BYTE
+        // commondir is the hard failed-to-read refusal.
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await makeGitDir(fs, '/repo/admin');
+        await fs.writeUtf8('/repo/admin/commondir', '\n');
+        await fs.writeUtf8('/repo/wt/.git', 'gitdir: /repo/admin\n');
+
+        // Act
+        const result = await findLayout(fileSystemLayoutProbe(fs), '/repo/wt', posixPolicy);
+
+        // Assert — commonDir equals the gitDir, so the key is omitted.
+        expect(result).toStrictEqual({
+          gitDir: '/repo/admin',
+          route: 'DISCOVERED',
+          origin: '/repo/wt',
+        });
+      });
+    });
+  });
+
+  describe('Given a .git file whose target has a ZERO-BYTE commondir file', () => {
     describe('When findLayout runs', () => {
       it('Then it throws GITFILE_INVALID_FORMAT naming the commondir path', async () => {
         // Arrange
         const fs = new MemoryFileSystem({ rootDir: '/repo' });
         await makeGitDir(fs, '/repo/admin');
-        await fs.writeUtf8('/repo/admin/commondir', '\n');
+        await fs.writeUtf8('/repo/admin/commondir', '');
         await fs.writeUtf8('/repo/wt/.git', 'gitdir: /repo/admin\n');
 
         // Act
@@ -832,19 +856,68 @@ describe('findLayout', () => {
       });
     });
   });
-  describe('Given a candidate directory with a valid HEAD, its own objects and refs, and an empty commondir file', () => {
+  describe('Given a candidate directory with a valid HEAD and a ZERO-BYTE commondir file', () => {
     describe('When findLayout runs', () => {
-      it('Then the unusable commondir is ignored and the directory is accepted on its own shared dirs', async () => {
+      it('Then the walk refuses hard — git dies on an unreadable commondir and never climbs', async () => {
         // Arrange
         const fs = new MemoryFileSystem({ rootDir: '/repo' });
         await makeGitDir(fs, '/repo/bare');
         await fs.writeUtf8('/repo/bare/commondir', '');
 
         // Act
+        let caught: unknown;
+        try {
+          await findLayout(fileSystemLayoutProbe(fs), '/repo/bare', posixPolicy);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data).toMatchObject({
+          code: 'GITFILE_INVALID_FORMAT',
+          path: '/repo/bare/commondir',
+        });
+      });
+    });
+  });
+
+  describe('Given a candidate directory with a valid HEAD and a NEWLINE-ONLY commondir file', () => {
+    describe('When findLayout runs', () => {
+      it('Then the stripped-empty pointer means the directory is its own common dir and it is accepted', async () => {
+        // Arrange
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await makeGitDir(fs, '/repo/bare');
+        await fs.writeUtf8('/repo/bare/commondir', '\n');
+
+        // Act
         const result = await findLayout(fileSystemLayoutProbe(fs), '/repo/bare', posixPolicy);
 
-        // Assert — commonDir falls back to the directory itself, so the key is omitted.
+        // Assert — commonDir equals the gitDir, so the key is omitted.
         expect(result).toStrictEqual({ gitDir: '/repo/bare', route: 'BARE_DIR' });
+      });
+    });
+  });
+
+  describe('Given a candidate whose commondir names a whitespace path that does not validate', () => {
+    describe('When findLayout runs from inside a real repo', () => {
+      it('Then the candidate simply fails its shared-dir check and the walk climbs to the enclosing repo', async () => {
+        // Arrange — git treats `"   \n"` as a path named `"   "`; the missing
+        // objects/refs there make the candidate a miss, never a refusal.
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await makeGitDir(fs, '/repo/.git');
+        await makeGitDir(fs, '/repo/bait');
+        await fs.writeUtf8('/repo/bait/commondir', '   \n');
+
+        // Act
+        const result = await findLayout(fileSystemLayoutProbe(fs), '/repo/bait', posixPolicy);
+
+        // Assert
+        expect(result).toStrictEqual({
+          gitDir: '/repo/.git',
+          route: 'DISCOVERED',
+          origin: '/repo',
+        });
       });
     });
   });

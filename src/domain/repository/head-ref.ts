@@ -25,8 +25,10 @@
 
 // A leading object id: git consumes the hex prefix and ignores the
 // remainder, so the shorter SHA-1 width is the only anchor needed — a
-// SHA-256 id passes through its own first 40 hex characters.
-const LEADING_OID_RE = /^[0-9a-f]{40}/;
+// SHA-256 id passes through its own first 40 hex characters. Both cases
+// qualify: git's hex table accepts A-F (an uppercase detached HEAD is a
+// git directory, measured), even though git itself always writes lowercase.
+const LEADING_OID_RE = /^[0-9a-fA-F]{40}/;
 
 // `ref:` + optional ASCII whitespace (C `isspace`, never Unicode) + `refs/`.
 // `refs/` contains no whitespace, so "the first whitespace-delimited token

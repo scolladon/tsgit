@@ -43,11 +43,16 @@ export const longestStrictAncestor = (
   pathPolicy: PathPolicy,
 ): string | undefined => {
   if (ceilings === undefined) return undefined;
-  let longest: string | undefined;
+  // Longest-wins is judged on the NORMALIZED form: an extended-length
+  // Windows prefix (`\\?\`) inflates the raw length by four characters, so a
+  // raw-length comparison could pick a shallower fence and let the walk
+  // visit directories the caller excluded.
+  let longest: { readonly ceiling: string; readonly keyLength: number } | undefined;
   for (const raw of ceilings) {
     const ceiling = pathPolicy.resolve(raw);
     if (!isStrictAncestor(ceiling, resolvedCwd, pathPolicy)) continue;
-    if (longest === undefined || ceiling.length > longest.length) longest = ceiling;
+    const keyLength = pathPolicy.normalizeForCompare(ceiling).length;
+    if (longest === undefined || keyLength > longest.keyLength) longest = { ceiling, keyLength };
   }
-  return longest;
+  return longest?.ceiling;
 };

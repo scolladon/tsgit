@@ -34,6 +34,7 @@ function arbHexChar(): fc.Arbitrary<string> {
     .oneof(
       fc.integer({ min: 48, max: 57 }), // 0-9
       fc.integer({ min: 97, max: 102 }), // a-f
+      fc.integer({ min: 65, max: 70 }), // A-F — git's hex table accepts both cases
     )
     .map((code) => String.fromCharCode(code));
 }
@@ -43,10 +44,10 @@ function arbHexOfLength(length: number): fc.Arbitrary<string> {
 }
 
 /**
- * A `{ length, hex }` pair, where `hex` is exactly `length` lowercase hex
- * digits. Biased toward the two accepted widths (40, 64) so the "iff" both
- * directions of the hash-width property get exercised on every run, while
- * still sampling other lengths to prove the rejection side.
+ * A `{ length, hex }` pair, where `hex` is exactly `length` hex digits of
+ * either case. Biased toward the 39/40 boundary (the leading-object-id rule
+ * turns exactly there) and the SHA-256 width, while still sampling other
+ * lengths to prove the rejection side.
  */
 export function arbHexWithLength(): fc.Arbitrary<{
   readonly length: number;
@@ -54,7 +55,7 @@ export function arbHexWithLength(): fc.Arbitrary<{
 }> {
   return fc
     .oneof(
-      { weight: 2, arbitrary: fc.constantFrom(40, 64) },
+      { weight: 2, arbitrary: fc.constantFrom(39, 40, 64) },
       { weight: 1, arbitrary: fc.integer({ min: 0, max: 80 }) },
     )
     .chain((length) => arbHexOfLength(length).map((hex) => ({ length, hex })));

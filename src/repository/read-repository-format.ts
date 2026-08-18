@@ -2,9 +2,7 @@ import type { PathPolicy } from '../adapters/node/path-policy.js';
 import { configBadBooleanValue, configMissingValue } from '../domain/commands/error.js';
 import type { ConfigToken } from '../domain/config/config-ini.js';
 import { parseGitBoolean, tokenizeConfig } from '../domain/config/config-ini.js';
-import { gitfileInvalidFormat } from '../domain/worktree/error.js';
 import type { LayoutProbe } from '../ports/layout-probe.js';
-import { GITFILE_MAX_BYTES } from './find-layout.js';
 
 /**
  * The repository-format keys read from a gitDir's config at open time —
@@ -78,13 +76,12 @@ const scanConfigFile = async (
   const stat = await probe.stat(path);
   // Absent stays lenient (the init/clone bootstrap state). A NON-REGULAR
   // entry is treated as absent, never read: `readUtf8` on a planted FIFO
-  // would block forever waiting for a writer — the size cap alone cannot
-  // stop that, a FIFO stats at size 0.
+  // would block forever waiting for a writer — and a FIFO stats at size 0,
+  // so no size test could catch it. There is deliberately NO size cap here:
+  // git reads a repository config unbounded (a ~70 KiB config with a
+  // thousand `[branch]` sections opens fine, measured), so the pointer-file
+  // cap does not transfer — a regular file always terminates the read.
   if (stat === undefined || stat.isFile !== true) return undefined;
-  // An OVERSIZED real config is a loud refusal, not silent emptiness — the
-  // same hostile-or-corrupt posture as the `commondir` cap. Treating it as
-  // empty would silently flip the repository's bareness.
-  if (stat.size > GITFILE_MAX_BYTES) throw gitfileInvalidFormat(path);
   const text = await probe.readUtf8(path);
   if (text === undefined) return undefined;
   const tokens = tokenizeConfig(text, path);
@@ -128,13 +125,12 @@ const isWorktreeConfigActive = (entry: ScannedEntry | undefined): boolean => {
  * three keys are extracted; everything else in the file is validated later,
  * on first command, by the existing two-tier eager gates.
  *
- * Throws `CONFIG_BAD_BOOLEAN_VALUE` for a malformed `core.bare`,
+ * Throws `CONFIG_BAD_BOOLEAN_VALUE` for a malformed `core.bare` and
  * `CONFIG_MISSING_VALUE` for a valueless `core.worktree` — git's setup-time
- * refusals, now surfacing at `openRepository` rather than the first command —
- * and the gitfile-format refusal for an oversized config file (the same cap
- * the `commondir` read enforces). An absent or non-regular config file
- * behaves as empty, never as a refusal: discovery must stay lenient so
- * `init`/`clone` can bootstrap into a gitDir that is not yet a repository.
+ * refusals, now surfacing at `openRepository` rather than the first command.
+ * An absent or non-regular config file behaves as empty, never as a refusal:
+ * discovery must stay lenient so `init`/`clone` can bootstrap into a gitDir
+ * that is not yet a repository.
  */
 export const readRepositoryFormat = async (
   probe: LayoutProbe,

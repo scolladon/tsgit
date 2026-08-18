@@ -85,7 +85,7 @@ export const findLayout = async (
     // stat, not lstat — a .git symlink to a real gitdir behaves as a directory.
     const stat = await probe.stat(candidate);
     if (stat?.isDirectory === true) {
-      const located = await candidateLocation(probe, candidate, pathPolicy);
+      const located = await layoutFor(probe, candidate, pathPolicy);
       if (located !== undefined) return { ...located, route: 'DISCOVERED', origin: current };
     } else if (stat?.isFile === true) {
       const located = await layoutFromGitfile(probe, current, candidate, pathPolicy, stat.size);
@@ -94,7 +94,8 @@ export const findLayout = async (
     // Reached when `current` holds no `.git` entry, or an invalid `.git`
     // directory (the candidate branch above fell through rather than
     // returning) — never after a `.git` file, which always returns or throws.
-    const bareLocated = await isCwdGitDirectory(probe, current, pathPolicy);
+    // The same validator asks whether `current` ITSELF is a git directory.
+    const bareLocated = await layoutFor(probe, current, pathPolicy);
     if (bareLocated !== undefined) return { ...bareLocated, route: 'BARE_DIR' };
     const parent = pathPolicy.dirname(current);
     if (parent === current) return undefined; // reached filesystem root
@@ -195,8 +196,17 @@ const layoutFor = async (
   gitDir: string,
   pathPolicy: PathPolicy,
 ): Promise<GitDirLocation | undefined> => {
-  const commonDir = await resolveCommonDir(probe, gitDir, pathPolicy);
+  // HEAD first, on EVERY route — git's `is_git_directory` validates the head
+  // before touching the common dir, so a garbage-`HEAD` directory (a planted
+  // tree, or three innocuous entries) is climbed past without its `commondir`
+  // ever being parsed. It doubles as the cheap gate: a level with no `HEAD`
+  // file is rejected on that single `stat`, before any read.
   if (!(await hasValidHead(probe, gitDir, pathPolicy))) return undefined;
+  // An unusable `commondir` past a valid `HEAD` is a HARD refusal, not a
+  // skip: measured, git dies (`fatal: failed to read <dir>/commondir` /
+  // `Invalid path`) and does NOT climb to an enclosing repository — on the
+  // walk routes exactly as on the gitfile/explicit ones.
+  const commonDir = await resolveCommonDir(probe, gitDir, pathPolicy);
   if (!(await sharedDirsValid(probe, commonDir, pathPolicy))) return undefined;
   return {
     gitDir,
@@ -206,46 +216,6 @@ const layoutFor = async (
     ...(commonDir !== gitDir ? { commonDir } : {}),
   };
 };
-
-/**
- * CANDIDATE-route validation — the walk's `.git`-directory branch and the
- * cwd-is-gitdir check. Ordering and error posture both differ from the
- * committed route, deliberately: `HEAD` is validated FIRST (the cheap
- * `stat` alone rejects a level with no `HEAD` file, so a miss level costs
- * exactly one extra `stat`), and a `commondir` file the parse cannot use is
- * IGNORED — the directory is judged on its own `objects`/`refs` instead of
- * being a hard stop. Both are measured git behaviour: a planted directory
- * with garbage `HEAD` and an empty `commondir` is climbed past (the parse is
- * never even reached here), and a valid-`HEAD` directory whose `commondir`
- * is unusable is still accepted when it carries its own shared dirs. A
- * throwing candidate would hand any hostile tree on the walk path a
- * denial-of-discovery, the opposite of the skip-and-climb contract.
- */
-const candidateLocation = async (
-  probe: LayoutProbe,
-  gitDir: string,
-  pathPolicy: PathPolicy,
-): Promise<GitDirLocation | undefined> => {
-  if (!(await hasValidHead(probe, gitDir, pathPolicy))) return undefined;
-  const commonDir = await resolveCommonDir(probe, gitDir, pathPolicy).catch(() => gitDir);
-  if (!(await sharedDirsValid(probe, commonDir, pathPolicy))) return undefined;
-  return {
-    gitDir,
-    ...(commonDir !== gitDir ? { commonDir } : {}),
-  };
-};
-
-/**
- * The per-level check for whether `current` itself is a git directory
- * (rather than merely holding a `.git` entry). `candidateLocation`'s own
- * `HEAD`-first ordering IS the cheap gate: a level with no `HEAD` file is
- * rejected on that single `stat`, before any read or shared-dir probe.
- */
-const isCwdGitDirectory = (
-  probe: LayoutProbe,
-  current: string,
-  pathPolicy: PathPolicy,
-): Promise<GitDirLocation | undefined> => candidateLocation(probe, current, pathPolicy);
 
 /**
  * Resolves `gitDir`'s `commondir` file. An absent file means `commonDir`
@@ -268,8 +238,14 @@ export const resolveCommonDir = async (
   if (stat.size > GITFILE_MAX_BYTES) throw gitfileInvalidFormat(commondirPath);
   const raw = await probe.readUtf8(commondirPath);
   if (raw === undefined) return gitDir;
+  // Three measured shapes: a ZERO-BYTE file is git's hard fatal (`failed to
+  // read <path>/commondir`); a newline-only file strips to empty and is
+  // accepted as "this gitDir is its own common dir"; anything else is a path
+  // verbatim (whitespace included — `"   \n"` names a directory called
+  // `"   "`, which then simply fails the shared-dir validation).
+  if (raw.length === 0) throw gitfileInvalidFormat(commondirPath);
   const value = parseCommondir(raw);
-  if (value.kind === 'empty') throw gitfileInvalidFormat(commondirPath);
+  if (value.kind === 'empty') return gitDir;
   return pathPolicy.isAbsolute(value.path)
     ? pathPolicy.resolve(value.path)
     : pathPolicy.resolve(pathPolicy.join(gitDir, value.path));

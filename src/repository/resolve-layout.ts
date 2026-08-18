@@ -147,6 +147,37 @@ interface LayoutOverrides {
 }
 
 /**
+ * The found-nothing bootstrap layout: discovery judged that NO repository
+ * exists, so nothing on disk is trusted — in particular, a config inside a
+ * `.git` entry that failed validation is never read (git reports
+ * `not a git repository` there; reading a rejected directory's config would
+ * hand a planted file control over bareness, the work tree, and thereby the
+ * containment root set). Only the caller's own arguments participate:
+ * `overrides.workDir` wins (resolved against `cwd`), `overrides.bare: true`
+ * yields a bare bootstrap, and the default is the historical non-bare shape
+ * at `defaultWorkDir`.
+ */
+export const syntheticFallbackLayout = (
+  gitDir: string,
+  defaultWorkDir: string,
+  cwd: string,
+  overrides: LayoutOverrides,
+  pathPolicy: PathPolicy,
+): RepositoryLayoutInput => {
+  const workDir =
+    overrides.workDir !== undefined
+      ? resolveAgainst(cwd, overrides.workDir, pathPolicy)
+      : overrides.bare === true
+        ? undefined
+        : defaultWorkDir;
+  return {
+    gitDir,
+    ...(workDir !== undefined ? { workDir } : {}),
+    bare: overrides.bare === true && workDir === undefined,
+  };
+};
+
+/**
  * Stages 2–4 of layout resolution, given a structural `WalkOutcome` (from the
  * walk, the explicit route, or a fixed-entry shim that has no walk at all):
  * read the repository-format config keys, decide the work tree by

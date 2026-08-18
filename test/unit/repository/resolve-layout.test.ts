@@ -3,7 +3,7 @@ import { MemoryFileSystem } from '../../../src/adapters/memory/memory-file-syste
 import { posixPolicy } from '../../../src/adapters/node/path-policy.js';
 import { TsgitError } from '../../../src/domain/error.js';
 import { fileSystemLayoutProbe } from '../../../src/repository/file-system-layout-probe.js';
-import { resolveLayout } from '../../../src/repository/resolve-layout.js';
+import { resolveLayout, syntheticFallbackLayout } from '../../../src/repository/resolve-layout.js';
 
 // `resolveLayout` composes the walk (`findLayout`) with the config-driven
 // work-tree precedence (Stage 3) and the bareness formula (Stage 4), plus
@@ -585,7 +585,7 @@ describe('resolveLayout', () => {
       });
     });
   });
-  describe('§1c rows previously untested across routes', () => {
+  describe('work-tree precedence rows across every route', () => {
     describe('Given route BARE_DIR with core.bare = true and an explicit workDir argument', () => {
       describe('When resolveLayout runs', () => {
         it('Then the argument wins silently: work tree present, bare false', async () => {
@@ -760,15 +760,23 @@ describe('resolveLayout', () => {
         await fs.writeUtf8('/repo/normal/.git/config', '[core]\n\tworktree = ../../wt\n');
 
         // Act
+        let seenJoin: string | undefined;
         const result = await resolveLayout(
           fileSystemLayoutProbe(fs),
           '/repo/normal',
           posixPolicy,
           {},
-          { realWorkTreePath: async () => '/repo/physical-wt' },
+          {
+            realWorkTreePath: async (joined) => {
+              seenJoin = joined;
+              return '/repo/physical-wt';
+            },
+          },
         );
 
-        // Assert
+        // Assert — the capability receives the GITDIR-relative join, and its
+        // physical answer becomes the work tree.
+        expect(seenJoin).toBe('/repo/wt');
         expect(result).toStrictEqual({
           gitDir: '/repo/normal/.git',
           workDir: '/repo/physical-wt',
@@ -832,6 +840,81 @@ describe('resolveLayout', () => {
 
         // Assert
         expect(result?.workDir).toBe('/repo/nope');
+      });
+    });
+  });
+  describe('syntheticFallbackLayout — the found-nothing bootstrap', () => {
+    describe('Given no overrides', () => {
+      describe('When the fallback layout is synthesised', () => {
+        it('Then it is the historical non-bare bootstrap shape', () => {
+          // Arrange
+          const sut = syntheticFallbackLayout;
+
+          // Act
+          const result = sut('/repo/.git', '/repo', '/repo', {}, posixPolicy);
+
+          // Assert
+          expect(result).toStrictEqual({ gitDir: '/repo/.git', workDir: '/repo', bare: false });
+        });
+      });
+    });
+
+    describe('Given a bare override', () => {
+      describe('When the fallback layout is synthesised', () => {
+        it('Then it is bare with no work tree', () => {
+          // Arrange
+          const sut = syntheticFallbackLayout;
+
+          // Act
+          const result = sut('/repo/.git', '/repo', '/repo', { bare: true }, posixPolicy);
+
+          // Assert
+          expect(result).toStrictEqual({ gitDir: '/repo/.git', bare: true });
+        });
+      });
+    });
+
+    describe('Given a relative workDir override and a cwd away from the anchor', () => {
+      describe('When the fallback layout is synthesised', () => {
+        it('Then the work tree resolves against the cwd, the same base as the discovery path', () => {
+          // Arrange
+          const sut = syntheticFallbackLayout;
+
+          // Act
+          const result = sut('/repo/.git', '/repo', '/repo/deep', { workDir: 'wt' }, posixPolicy);
+
+          // Assert
+          expect(result).toStrictEqual({
+            gitDir: '/repo/.git',
+            workDir: '/repo/deep/wt',
+            bare: false,
+          });
+        });
+      });
+    });
+
+    describe('Given both a workDir override and a bare override', () => {
+      describe('When the fallback layout is synthesised', () => {
+        it('Then the work tree wins and the layout is not bare — argument precedence', () => {
+          // Arrange
+          const sut = syntheticFallbackLayout;
+
+          // Act
+          const result = sut(
+            '/repo/.git',
+            '/repo',
+            '/repo',
+            { bare: true, workDir: '/elsewhere' },
+            posixPolicy,
+          );
+
+          // Assert
+          expect(result).toStrictEqual({
+            gitDir: '/repo/.git',
+            workDir: '/elsewhere',
+            bare: false,
+          });
+        });
       });
     });
   });

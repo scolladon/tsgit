@@ -267,6 +267,14 @@ The nested rows matter: the new branch is not "a last-resort fallback", it parti
 every level and can legitimately shadow an ancestor repository. That is git's behaviour and
 tsgit must reproduce it (see §9).
 
+`commondir` has three measured shapes, on every route: a ZERO-BYTE file is a hard fatal
+(`fatal: failed to read <dir>/commondir`) that never climbs; a NEWLINE-ONLY file strips to
+empty and is accepted with the gitdir as its own common dir; any other content is a path
+verbatim (whitespace included — `"   \n"` names a directory called `"   "`, which then
+simply fails the shared-dir validation and the walk climbs). `HEAD` is validated BEFORE
+the commondir parse on every route, so a garbage-`HEAD` planted directory never reaches
+the pointer parse at all.
+
 #### 1b. `is_git_directory(D)` — what makes a directory a git directory
 
 `HEAD` is validated at `D`; `objects/` and `refs/` at `commonDir(D)` (so a linked
@@ -281,6 +289,7 @@ worktree's admin dir, which has no `objects/` of its own, still qualifies). Meas
 | same but `HEAD` = `ref: refs/heads/../evil\n` | **git directory** — the refname is *not* format-checked |
 | same but `HEAD` = 40 hex chars | git directory (detached) |
 | same but `HEAD` = 64 hex chars | git directory (detached, SHA-256 width) |
+| same but `HEAD` = 40 UPPERCASE (or mixed-case) hex chars | **git directory** — git's hex table accepts both cases (measured) |
 | same but `HEAD` = `ref: main\n` (one level) | **not** a git directory |
 | same but `HEAD` = 40 non-hex chars | **not** a git directory |
 | same but `HEAD` empty | **not** a git directory |
@@ -887,7 +896,7 @@ git's per-command gate is `setup_work_tree()`, which refuses in two shapes (§1f
 | `core.bare` and `core.worktree` both set | `fatal: unable to set up work tree using invalid config` (128) | `WORK_TREE_CONFIG_INVALID { gitDir }` |
 | no work tree resolved | `fatal: this operation must be run in a work tree` (128) | `WORK_TREE_REQUIRED { operation }` |
 | `reset --mixed` while `is_bare_repository()` | `fatal: mixed reset is not allowed in a bare repository` (128) | `BARE_REPOSITORY { operation: 'reset --mixed' }` |
-| relative `core.worktree` whose physical resolution fails | `fatal: cannot chdir to '<value>': No such file or directory` (128), at setup, on every command | `WORK_TREE_UNRESOLVABLE { value, gitDir }` at `openRepository` on adapters with realpath; lexical (accepting) on sandboxed adapters, the established canonicalisation split |
+| relative `core.worktree` whose physical resolution fails — target missing OR a non-directory (git cannot `chdir` into a file; both measured) | `fatal: cannot chdir to '<value>': …` (128), at setup, on every command | `WORK_TREE_UNRESOLVABLE { value, gitDir }` at `openRepository` on adapters with realpath; lexical (accepting) on sandboxed adapters, the established canonicalisation split |
 | `submodule <verb>` with no work tree | `fatal: … cannot be used without a working tree.` (**exit 1**) | `WORK_TREE_REQUIRED { operation }` — the differing exit code is git's shell-wrapper artefact, not a distinct condition |
 
 Per ADR-249 the **conditions and their discriminants** are what must match; the message
@@ -1090,7 +1099,7 @@ therefore become the repository tsgit opens.
 | `core.worktree` | **new**: config from the discovered gitdir now names a *directory outside the gitdir*, which is then added to the containment root set — an attacker-chosen widening | Bounded, not eliminated: the widening is to exactly one named directory — which MAY be an ancestor, up to `/` (a planted `core.worktree = /` collapses the minimised root set to `[/]` and so vacates the FS-validator mitigation listed one row up; measured, and faithful — git honours it). It is what git does; a tighter clamp would be a divergence needing its own ADR. The gate that *should* stop this is ownership-based, i.e. `safe.directory` — deferred, and this design does not narrow the gap. |
 | planted special files (FIFO / device / directory named `config`, `commondir`, `HEAD`) | a FIFO stats at size 0, defeating a size cap, and a read on it blocks forever — denial of the whole discovery from any walk-path directory | every layout-time read is gated on `stat.isFile` before `readUtf8`; non-regular entries are treated as absent, never read |
 | unbounded walk | a deep hostile tree makes discovery `stat` its way to `/` | `ceilingDirs` is the caller-side bound and is the reason it is in scope here rather than deferred with the env variables. It costs 2 `stat`s per level (§2), so the walk is I/O-bounded, not compute-bounded; there is no amplification. |
-| oversized planted files | a huge `.git` gitfile or `commondir` | already capped at 64 KiB (`find-layout.ts:77`); the Stage-2 config read reuses the same cap |
+| oversized planted files | a huge `.git` gitfile or `commondir` | pointer files stay capped at 64 KiB; the Stage-2 CONFIG read is deliberately uncapped (git reads a repository config unbounded — a large legitimate config must open; measured) with the non-regular-file guard as its hostile-input gate |
 
 **Interaction with the deferred `safe.directory` gate.** git grew `safe.directory` for
 precisely this class: *following someone else's repository metadata is code execution*. tsgit
@@ -1258,9 +1267,10 @@ mechanically enforced rather than asserted by hand.
 
 The parity harness cannot express a bare layout without cross-driver surgery (measured
 during planning: every dist-bundle driver seeds a fixed non-bare scenario shape), so the
-cross-adapter proof is discharged in the unit tier instead: the memory-shim discovery
-suite pins the bare layout wholly inside `rootDir`, and the browser-shim unit suite pins
-the fixed-entry bare resolution — same read assertions, adapter-independent by
+cross-adapter proof is discharged in the unit tier instead: the bare layout wholly inside
+`rootDir` is pinned by the `find-layout` / `resolve-layout` unit suites driving
+`MemoryFileSystem` through the shared probe (route `BARE_DIR`), and the browser-shim unit
+suite pins the fixed-entry bare resolution — same read assertions, adapter-independent by
 construction since all three shims share `resolveLayout`/`finishLayout`. A parity-tier
 scenario remains open as a possible follow-up if the harness ever grows per-scenario
 layout shapes.

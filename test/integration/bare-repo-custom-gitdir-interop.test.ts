@@ -991,132 +991,136 @@ describe.skipIf(!GIT_AVAILABLE)('bare and work-tree-less layout interop', () => 
   });
 
   describe.skipIf(GIT_HTTP_BACKEND === undefined)(
-    'Given a bare repo that receives a push (scenario K, round-trip write then read)',
+    'Given a bare repo that receives a tsgit push over HTTP (scenario K, round-trip write then read)',
     () => {
-      describe('When tsgit pushes a commit into it over HTTP', () => {
-        it(
-          'Then tsgit pushing into it lands the commit, and both git and a fresh tsgit open see it',
-          async () => {
-            // Arrange — a receive-pack-enabled bare target served over a minimal
-            // local HTTP CGI bridge to git-http-backend (the only transport
-            // tsgit speaks), plus a separate non-bare source repo tsgit pushes
-            // from. The bare target is opened by tsgit BOTH as the push
-            // destination's remote AND, afterward, directly by cwd — proving a
-            // genuinely bare (no workDir) Context correctly drives the
-            // object-store write path.
-            const root = await mkRoot('k');
-            const serverRoot = path.join(root, 'server');
-            await mkdir(serverRoot, { recursive: true });
-            const bare = path.join(serverRoot, 'target.git');
-            runGit(['init', '-q', '--bare', '-b', 'main', bare]);
-            disableAutoMaintenance(bare);
-            runGit(['-C', bare, 'config', 'http.receivepack', 'true']);
+      let root: string;
+      let server: Awaited<ReturnType<typeof serveProjectRoot>>;
+      let bare: string;
+      let commitId: string;
+      const httpOpenOptions = {
+        allowInsecureHttp: true,
+        config: {
+          allowInsecure: true,
+          allowPrivateNetworks: true,
+          dnsResolver: async () => ['127.0.0.1'],
+        },
+      } as const;
 
-            const server = await serveProjectRoot(serverRoot);
-            const source = path.join(root, 'source');
-            await mkdir(source, { recursive: true });
+      beforeAll(async () => {
+        // A receive-pack-enabled bare target served over a minimal local HTTP
+        // CGI bridge to git-http-backend (the only transport tsgit speaks),
+        // plus a separate non-bare source repo tsgit pushes from. The push
+        // itself happens here — every sibling test reads its outcome.
+        root = await mkRoot('k');
+        const serverRoot = path.join(root, 'server');
+        await mkdir(serverRoot, { recursive: true });
+        bare = path.join(serverRoot, 'target.git');
+        runGit(['init', '-q', '--bare', '-b', 'main', bare]);
+        disableAutoMaintenance(bare);
+        runGit(['-C', bare, 'config', 'http.receivepack', 'true']);
+        server = await serveProjectRoot(serverRoot);
+        const source = path.join(root, 'source');
+        await mkdir(source, { recursive: true });
+        const pusher = await openRepository({ cwd: source, ...httpOpenOptions });
+        try {
+          await pusher.init();
+          await writeFile(path.join(source, 'a.txt'), 'pushed\n');
+          await pusher.add(['a.txt']);
+          const committed = await pusher.commit({ message: 'from tsgit', author: AUTHOR });
+          commitId = committed.id;
+          await pusher.remote.add({ name: 'origin', url: `${server.baseUrl}/target.git` });
+          await pusher.push({
+            remote: 'origin',
+            refspecs: ['refs/heads/main:refs/heads/main'],
+          });
+        } finally {
+          await pusher.dispose();
+        }
+      }, SETUP_TIMEOUT);
 
-            try {
-              const pusher = await openRepository({
-                cwd: source,
-                allowInsecureHttp: true,
-                config: {
-                  allowInsecure: true,
-                  allowPrivateNetworks: true,
-                  dnsResolver: async () => ['127.0.0.1'],
-                },
-              });
-              let commitId: string;
-              try {
-                // Act — tsgit pushes a fresh commit into the bare target over HTTP.
-                await pusher.init();
-                await writeFile(path.join(source, 'a.txt'), 'pushed\n');
-                await pusher.add(['a.txt']);
-                const committed = await pusher.commit({ message: 'from tsgit', author: AUTHOR });
-                commitId = committed.id;
-                await pusher.remote.add({ name: 'origin', url: `${server.baseUrl}/target.git` });
-                await pusher.push({
-                  remote: 'origin',
-                  refspecs: ['refs/heads/main:refs/heads/main'],
-                });
-              } finally {
-                await pusher.dispose();
-              }
+      afterAll(async () => {
+        await server?.close();
+        if (root !== undefined) await rm(root, { recursive: true, force: true });
+      });
 
-              // Assert — canonical git, reading the bare target directly, sees it.
-              expect(git(bare, 'log', '--format=%H', 'main').trim().split('\n')[0]).toBe(commitId);
+      describe('When canonical git reads the bare target directly', () => {
+        it('Then it sees the pushed commit at main', () => {
+          // Arrange / Act
+          const head = git(bare, 'log', '--format=%H', 'main').trim().split('\n')[0];
 
-              // Assert — a FRESH tsgit open directly on the (now genuinely bare,
-              // no-workDir) target reads the pushed commit back.
-              const reopened = await openRepository({ cwd: bare });
-              try {
-                expect(reopened.ctx.layout.bare).toBe(true);
-                expect(reopened.ctx.layout.workDir).toBeUndefined();
-                expect(await reopened.revParse('main')).toBe(commitId);
-              } finally {
-                await reopened.dispose();
-              }
+          // Assert
+          expect(head).toBe(commitId);
+        });
+      });
 
-              // Assert — tsgit FETCH from the bare target sees the commit too
-              // (the read direction of the server-side story).
-              const fetchTarget = path.join(root, 'fetcher');
-              await mkdir(fetchTarget, { recursive: true });
-              const fetcher = await openRepository({
-                cwd: fetchTarget,
-                allowInsecureHttp: true,
-                config: {
-                  allowInsecure: true,
-                  allowPrivateNetworks: true,
-                  dnsResolver: async () => ['127.0.0.1'],
-                },
-              });
-              try {
-                await fetcher.init();
-                await fetcher.remote.add({ name: 'origin', url: `${server.baseUrl}/target.git` });
-                await fetcher.fetch({ remote: 'origin' });
-                expect(await fetcher.revParse('refs/remotes/origin/main')).toBe(commitId);
-              } finally {
-                await fetcher.dispose();
-              }
+      describe('When a fresh tsgit open reads the now genuinely bare target', () => {
+        it('Then the layout is bare with no work tree and the commit resolves', async () => {
+          // Arrange
+          const reopened = await openRepository({ cwd: bare });
 
-              // Assert — tsgit clone({ bare: true }) of the target produces a
-              // bare repo REAL GIT reads, byte-shaped like `git clone --bare`
-              // where pinned (bare=true, no index file); then `git clone` of
-              // that tsgit-written bare repo yields a working clone.
-              const bareClone = path.join(root, 'tsgit-bare-clone.git');
-              await mkdir(bareClone, { recursive: true });
-              const cloner = await openRepository({
-                cwd: bareClone,
-                gitDir: bareClone,
-                bare: true,
-                allowInsecureHttp: true,
-                config: {
-                  allowInsecure: true,
-                  allowPrivateNetworks: true,
-                  dnsResolver: async () => ['127.0.0.1'],
-                },
-              });
-              try {
-                await cloner.clone({ url: `${server.baseUrl}/target.git`, bare: true });
-              } finally {
-                await cloner.dispose();
-              }
-              expect(git(bareClone, 'rev-parse', '--is-bare-repository').trim()).toBe('true');
-              expect(git(bareClone, 'log', '--format=%H', 'main').trim().split('\n')[0]).toBe(
-                commitId,
-              );
-              await expect(readFile(path.join(bareClone, 'index'))).rejects.toThrow();
-              const workingClone = path.join(root, 'working-clone');
-              runGit(['clone', '-q', bareClone, workingClone]);
-              expect(git(workingClone, 'log', '--format=%H').trim().split('\n')[0]).toBe(commitId);
-              expect(await readFile(path.join(workingClone, 'a.txt'), 'utf8')).toBe('pushed\n');
-            } finally {
-              await server.close();
-              await rm(root, { recursive: true, force: true });
-            }
-          },
-          SETUP_TIMEOUT,
-        );
+          try {
+            // Act / Assert
+            expect(reopened.ctx.layout.bare).toBe(true);
+            expect(reopened.ctx.layout.workDir).toBeUndefined();
+            expect(await reopened.revParse('main')).toBe(commitId);
+          } finally {
+            await reopened.dispose();
+          }
+        });
+      });
+
+      describe('When a second tsgit repo fetches from the bare target', () => {
+        it('Then the fetched remote ref resolves to the pushed commit', async () => {
+          // Arrange
+          const fetchTarget = path.join(root, 'fetcher');
+          await mkdir(fetchTarget, { recursive: true });
+          const fetcher = await openRepository({ cwd: fetchTarget, ...httpOpenOptions });
+
+          try {
+            // Act
+            await fetcher.init();
+            await fetcher.remote.add({ name: 'origin', url: `${server.baseUrl}/target.git` });
+            await fetcher.fetch({ remote: 'origin' });
+
+            // Assert
+            expect(await fetcher.revParse('refs/remotes/origin/main')).toBe(commitId);
+          } finally {
+            await fetcher.dispose();
+          }
+        });
+      });
+
+      describe('When tsgit clones the target bare and git clones the result', () => {
+        it('Then the tsgit-written bare repo is git-readable and yields a working clone', async () => {
+          // Arrange
+          const bareClone = path.join(root, 'tsgit-bare-clone.git');
+          await mkdir(bareClone, { recursive: true });
+          const cloner = await openRepository({
+            cwd: bareClone,
+            gitDir: bareClone,
+            bare: true,
+            ...httpOpenOptions,
+          });
+
+          // Act
+          try {
+            await cloner.clone({ url: `${server.baseUrl}/target.git`, bare: true });
+          } finally {
+            await cloner.dispose();
+          }
+
+          // Assert — git reads the tsgit-written bare repo…
+          expect(git(bareClone, 'rev-parse', '--is-bare-repository').trim()).toBe('true');
+          expect(git(bareClone, 'log', '--format=%H', 'main').trim().split('\n')[0]).toBe(commitId);
+          await expect(readFile(path.join(bareClone, 'index'))).rejects.toMatchObject({
+            code: 'ENOENT',
+          });
+          // …and a git clone of it produces a working tree with the content.
+          const workingClone = path.join(root, 'working-clone');
+          runGit(['clone', '-q', bareClone, workingClone]);
+          expect(git(workingClone, 'log', '--format=%H').trim().split('\n')[0]).toBe(commitId);
+          expect(await readFile(path.join(workingClone, 'a.txt'), 'utf8')).toBe('pushed\n');
+        });
       });
     },
   );
@@ -1673,10 +1677,17 @@ describe.skipIf(!GIT_AVAILABLE)('bare and work-tree-less layout interop', () => 
       };
     }
 
-    const revParseQuery = (c: ReconstructionCase, query: string) =>
-      tryRunGitWithExit(['-C', c.gitCwd, ...c.gitExtra, 'rev-parse', query], {
+    const revParseQuery = (c: ReconstructionCase, query: string) => {
+      const result = tryRunGitWithExit(['-C', c.gitCwd, ...c.gitExtra, 'rev-parse', query], {
         env: runGitEnv(),
       });
+      // Every query routed here must SUCCEED in git — without this, a failed
+      // invocation reads as `false`/`''` and silently satisfies the rows
+      // whose tsgit expectation is also negative. `--show-toplevel`, the one
+      // query that legitimately refuses, bypasses this helper.
+      expect(result.exitCode).toBe(0);
+      return result;
+    };
 
     /** Reconstructs every rev-parse layout query from `repo.layout` + `repo.ctx.cwd` and asserts each against real git. */
     const assertReconstructedQueriesMatchGit = async (c: ReconstructionCase): Promise<void> => {
@@ -1707,12 +1718,18 @@ describe.skipIf(!GIT_AVAILABLE)('bare and work-tree-less layout interop', () => 
         const isBare = revParseQuery(c, '--is-bare-repository').stdout.trim() === 'true';
         expect(layout.bare).toBe(isBare);
 
-        const toplevel = revParseQuery(c, '--show-toplevel');
+        const toplevel = tryRunGitWithExit(
+          ['-C', c.gitCwd, ...c.gitExtra, 'rev-parse', '--show-toplevel'],
+          { env: runGitEnv() },
+        );
         if (layout.workDir === undefined) {
           expect(toplevel.exitCode).toBe(128);
         } else {
           expect(toplevel.exitCode).toBe(0);
-          expect(await realpath(layout.workDir)).toBe(await realpath(toplevel.stdout.trim()));
+          // Fixtures are realpath'd at creation, so a direct compare also
+          // pins that tsgit hands back a CANONICAL workDir.
+          expect(layout.workDir).toBe(toplevel.stdout.trim());
+          expect(layout.workDir).toBe(await realpath(layout.workDir));
         }
 
         const insideWorkTree = revParseQuery(c, '--is-inside-work-tree').stdout.trim() === 'true';

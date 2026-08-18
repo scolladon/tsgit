@@ -237,33 +237,27 @@ describe('readRepositoryFormat', () => {
     });
   });
 
-  describe('Given a local config file larger than the size cap', () => {
+  describe('Given a local config file far larger than the pointer-file cap', () => {
     describe('When readRepositoryFormat runs', () => {
-      it('Then it refuses with the gitfile-format code naming the config path — never a silent bareness flip', async () => {
-        // Arrange
+      it('Then it reads the file anyway — git reads a repository config unbounded', async () => {
+        // Arrange — ~70 KiB of comment padding after a real core.bare entry:
+        // a repo with a thousand [branch] sections is legitimate and git
+        // opens it without complaint. Only NON-REGULAR entries are skipped.
         const fs = new MemoryFileSystem({ rootDir: '/repo' });
         const head = '[core]\n\tbare = true\n';
-        await fs.writeUtf8('/repo/.git/config', `${head}${'x'.repeat(70_000 - head.length)}`);
-        let caught: TsgitError | undefined;
+        const padding = `# ${'x'.repeat(120)}\n`.repeat(600);
+        await fs.writeUtf8('/repo/.git/config', `${head}${padding}`);
 
         // Act
-        try {
-          await readRepositoryFormat(
-            fileSystemLayoutProbe(fs),
-            '/repo/.git',
-            '/repo/.git',
-            posixPolicy,
-          );
-        } catch (err) {
-          if (err instanceof TsgitError) caught = err;
-        }
+        const result = await readRepositoryFormat(
+          fileSystemLayoutProbe(fs),
+          '/repo/.git',
+          '/repo/.git',
+          posixPolicy,
+        );
 
-        // Assert — the cap refuses BEFORE parsing, loudly: treating an
-        // oversized real config as empty would silently flip bareness.
-        expect(caught?.data).toMatchObject({
-          code: 'GITFILE_INVALID_FORMAT',
-          path: '/repo/.git/config',
-        });
+        // Assert
+        expect(result.bare).toBe(true);
       });
     });
   });

@@ -22,8 +22,8 @@ import type { LayoutProbe } from './ports/layout-probe.js';
 import { layoutRootsOf } from './repository/layout-roots.js';
 import {
   type ExplicitLayoutOptions,
-  finishLayout,
   resolveLayout,
+  syntheticFallbackLayout,
 } from './repository/resolve-layout.js';
 import { validateOptions } from './repository/validate-options.js';
 import {
@@ -194,14 +194,31 @@ const canonicalizeCeilings = async (
  * symlinked `core.worktree` target (git resolves `core.worktree`
  * physically; a lexical value here would silently diverge).
  *
- * Falls back to a synthetic explicit layout at `{cwd}/.git` when discovery
+ * Physically resolves a relative `core.worktree` join the way git's `chdir`
+ * does: symlinks followed, and the target must be a DIRECTORY — git cannot
+ * change directory into a regular file, so a file target is the same setup
+ * refusal as a missing one (measured: `fatal: cannot chdir to …`).
+ */
+const nodeLayoutCapabilities = {
+  realWorkTreePath: async (p: string): Promise<string | undefined> => {
+    try {
+      const real = await realpath(p);
+      return (await stat(real)).isDirectory() ? real : undefined;
+    } catch {
+      return undefined;
+    }
+  },
+};
+
+/**
+ * Falls back to a synthetic bootstrap layout at `{cwd}/.git` when discovery
  * finds nothing up to the filesystem root AND no explicit `gitDir` was
  * supplied — the `openRepository`/`init`/`clone` contract against a
- * not-yet-existing repository. The fallback still runs the shared work-tree
- * resolution so `opts.bare` / `opts.workDir` keep their argument-tier
- * precedence (a caller forcing `bare: true` into a fresh directory gets a
- * bare layout, not a silently discarded option). That branch never realpaths
- * its synthesised paths, so it always reports `canonical: false`.
+ * not-yet-existing repository. The fallback honours `opts.bare` /
+ * `opts.workDir` (argument tier) but reads NOTHING from disk: discovery
+ * already judged there is no repository here, and git never consults the
+ * config of a `.git` it rejected. That branch never realpaths its
+ * synthesised paths, so it always reports `canonical: false`.
  *
  * The returned `canonical` flag is the AND of every realpath THIS function
  * performed. A `workDir` that came out of discovery is an ancestor of (or
@@ -210,16 +227,6 @@ const canonicalizeCeilings = async (
  * genuinely lexical sources (`core.worktree`, an explicit `opts.workDir`)
  * pay one.
  */
-const nodeLayoutCapabilities = {
-  realWorkTreePath: async (p: string): Promise<string | undefined> => {
-    try {
-      return await realpath(p);
-    } catch {
-      return undefined;
-    }
-  },
-};
-
 const resolveNodeLayout = async (
   cwd: string,
   opts: ExplicitLayoutOptions,
@@ -242,15 +249,11 @@ const resolveNodeLayout = async (
     nodeLayoutCapabilities,
   );
   if (resolved === undefined) {
-    const fallback = await finishLayout(
-      nodeLayoutProbe,
-      { route: 'EXPLICIT', gitDir: nodePath.join(cwd, '.git') },
-      nativePolicy,
-      cwd,
-      explicit,
-      nodeLayoutCapabilities,
-    );
-    return { layout: fallback, canonical: false };
+    const gitDir = nodePath.join(cwd, '.git');
+    return {
+      layout: syntheticFallbackLayout(gitDir, cwd, cwd, explicit, nativePolicy),
+      canonical: false,
+    };
   }
   const gitDir = await canonicalize(resolved.gitDir);
   const commonDir =

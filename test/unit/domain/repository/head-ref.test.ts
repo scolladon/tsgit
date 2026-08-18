@@ -167,6 +167,51 @@ describe('isValidHeadContent', () => {
     });
   });
 
+  describe('Given content is 40 UPPERCASE hex characters', () => {
+    describe('When isValidHeadContent runs', () => {
+      it('Then it returns true because git accepts both cases in an object id', () => {
+        // Arrange
+        const sut = isValidHeadContent;
+
+        // Act
+        const result = sut('A'.repeat(40));
+
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a full object id preceded by leading garbage', () => {
+    describe('When isValidHeadContent runs', () => {
+      it('Then it returns false because the id must LEAD the content', () => {
+        // Arrange
+        const sut = isValidHeadContent;
+
+        // Act
+        const result = sut(`zz${'a'.repeat(40)}`);
+
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a symbolic ref preceded by leading garbage', () => {
+    describe('When isValidHeadContent runs', () => {
+      it('Then it returns false because the ref: prefix must LEAD the content', () => {
+        // Arrange
+        const sut = isValidHeadContent;
+
+        // Act
+        const result = sut('x ref: refs/heads/main');
+
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+  });
+
   describe('Given content is 39 lowercase hex characters', () => {
     describe('When isValidHeadContent runs', () => {
       it('Then it returns false because a full object id never materialises', () => {

@@ -1466,15 +1466,18 @@ describe('Given a repository with no work tree', () => {
     it('Then it resolves and reports the tree dirty-broken instead of refusing', async () => {
       // Arrange
       const seeded = await seed();
-      await commitFile(seeded, 'c1');
+      const committed = await commitFile(seeded, 'c1');
       const ctx = asBareContext(seeded);
 
       // Act
       const result = await describeCmd(ctx, undefined, { broken: true, always: true });
 
-      // Assert
+      // Assert — the always fallback names nothing and resolves the seeded
+      // commit itself, with the broken tree reported dirty.
       expect(result.dirty).toBe(true);
       expect(result.tag).toBeUndefined();
+      expect(result.name).toBe('');
+      expect(result.oid).toBe(committed);
     });
   });
 });
