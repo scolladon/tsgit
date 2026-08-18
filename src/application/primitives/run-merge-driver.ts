@@ -3,6 +3,7 @@ import type { ContentMergeResult, MergeLabels } from '../../domain/merge/index.j
 import type { FilePath } from '../../domain/objects/object-id.js';
 import type { CommandRunner } from '../../ports/command-runner.js';
 import type { Context } from '../../ports/context.js';
+import { getSpawnCwd } from './path-layout.js';
 
 const EMPTY = new Uint8Array(0);
 
@@ -39,7 +40,7 @@ export const runMergeDriver = async (
   runner: CommandRunner,
   input: MergeDriverInput,
 ): Promise<ContentMergeResult> => {
-  const { gitDir, workDir } = ctx.layout;
+  const { gitDir } = ctx.layout;
   const oPath = `${gitDir}/MERGE_DRIVER_O`;
   const aPath = `${gitDir}/MERGE_DRIVER_A`;
   const bPath = `${gitDir}/MERGE_DRIVER_B`;
@@ -61,10 +62,7 @@ export const runMergeDriver = async (
     });
     const { exitCode } = await runner.run({
       command,
-      // A spawned child needs SOME cwd; git's own bare hooks run with
-      // PWD=<bare.git>, so gitDir is the faithful fallback when there is no
-      // work tree.
-      cwd: workDir ?? gitDir,
+      cwd: getSpawnCwd(ctx.layout),
       env: { GIT_DIR: gitDir },
       ...(ctx.signal !== undefined ? { signal: ctx.signal } : {}),
     });

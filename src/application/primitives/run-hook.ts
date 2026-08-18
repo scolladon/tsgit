@@ -5,7 +5,7 @@ import type { HookRequest, HookResult } from '../../ports/hook-runner.js';
 import { readConfig } from './config-read.js';
 import { joinPath } from './internal/join-working-tree-path.js';
 import { assertNoValuelessConfig } from './internal/valueless-config-guard.js';
-import { commonDirOf } from './path-layout.js';
+import { commonDirOf, getSpawnCwd } from './path-layout.js';
 
 const HOOKS_SUBDIR = 'hooks';
 
@@ -73,10 +73,7 @@ const invokeHook = async (
   const request: HookRequest = {
     name,
     hooksDir: resolveHooksDir(config.core?.hooksPath, ctx.layout),
-    // A spawned hook needs SOME cwd; git's own bare hooks run with
-    // PWD=<bare.git>, so gitDir is the faithful fallback when there is no
-    // work tree.
-    workDir: ctx.layout.workDir ?? ctx.layout.gitDir,
+    workDir: getSpawnCwd(ctx.layout),
     gitDir: ctx.layout.gitDir,
     args: input.args ?? [],
     stdin: input.stdin ?? '',

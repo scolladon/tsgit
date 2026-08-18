@@ -1,5 +1,6 @@
 import type { CommandRunner } from '../../ports/command-runner.js';
 import type { Context } from '../../ports/context.js';
+import { getSpawnCwd } from './path-layout.js';
 
 const EMPTY = new Uint8Array(0);
 
@@ -30,10 +31,7 @@ export const applyTextconv = async (
   try {
     const result = await runner.run({
       command: `${command} ${tmpPath}`,
-      // A spawned child needs SOME cwd; git's own bare hooks run with
-      // PWD=<bare.git>, so gitDir is the faithful fallback when there is no
-      // work tree.
-      cwd: ctx.layout.workDir ?? ctx.layout.gitDir,
+      cwd: getSpawnCwd(ctx.layout),
       env: { GIT_DIR: ctx.layout.gitDir },
       ...(ctx.signal !== undefined ? { signal: ctx.signal } : {}),
     });

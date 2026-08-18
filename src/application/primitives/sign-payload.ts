@@ -2,6 +2,7 @@ import { TsgitError } from '../../domain/error.js';
 import type { CommandRunner } from '../../ports/command-runner.js';
 import type { Context } from '../../ports/context.js';
 import { sqQuote } from './internal/shell-quote.js';
+import { getSpawnCwd } from './path-layout.js';
 
 const DEFAULT_OPENPGP_PROGRAM = 'gpg';
 const DEFAULT_SSH_PROGRAM = 'ssh-keygen';
@@ -71,10 +72,7 @@ const signWithOpenpgp = async (
   const program = req.program ?? DEFAULT_OPENPGP_PROGRAM;
   const result = await runner.run({
     command: `${sqQuote(program)} --status-fd=2 -bsau ${sqQuote(req.selector)}`,
-    // A spawned child needs SOME cwd; git's own bare hooks run with
-    // PWD=<bare.git>, so gitDir is the faithful fallback when there is no
-    // work tree.
-    cwd: ctx.layout.workDir ?? ctx.layout.gitDir,
+    cwd: getSpawnCwd(ctx.layout),
     env: { GIT_DIR: ctx.layout.gitDir },
     stdin: payload,
     ...(ctx.signal !== undefined ? { signal: ctx.signal } : {}),
@@ -98,10 +96,7 @@ const signWithSsh = async (
   try {
     const result = await runner.run({
       command: `${sqQuote(program)} -Y sign -n git -f ${sqQuote(req.selector)} ${sqQuote(tmp)}`,
-      // A spawned child needs SOME cwd; git's own bare hooks run with
-      // PWD=<bare.git>, so gitDir is the faithful fallback when there is no
-      // work tree.
-      cwd: ctx.layout.workDir ?? ctx.layout.gitDir,
+      cwd: getSpawnCwd(ctx.layout),
       env: { GIT_DIR: ctx.layout.gitDir },
       ...(ctx.signal !== undefined ? { signal: ctx.signal } : {}),
     });

@@ -25,6 +25,15 @@ export const getRepoRoot = (ctx: Context): FilePath =>
  */
 export const commonDirOf = (layout: RepositoryLayout): string => layout.commonDir ?? layout.gitDir;
 
+/**
+ * Working directory for a spawned child process (hook, signer, textconv,
+ * merge/filter driver): the work tree when the repository has one, else the
+ * gitDir — git's own bare hooks run with `PWD=<bare.git>`. Same value as
+ * `getRepoRoot`, distinct in intent: this names the spawn contract, so call
+ * sites stop restating its why-comment.
+ */
+export const getSpawnCwd = (layout: RepositoryLayout): string => layout.workDir ?? layout.gitDir;
+
 export const commonGitDir = (ctx: Context): string => commonDirOf(ctx.layout);
 
 /**
