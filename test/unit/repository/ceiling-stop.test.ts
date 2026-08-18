@@ -211,4 +211,62 @@ describe('longestStrictAncestor', () => {
       });
     });
   });
+
+  describe('Given a ceiling equal to the filesystem root, with cwd also the root', () => {
+    describe('When longestStrictAncestor runs', () => {
+      it('Then it is still a no-op — equality short-circuits before the trailing-separator prefix check ever runs', () => {
+        // Arrange — the root ALREADY ends with the separator, so skipping the
+        // `cmpAncestor === cmpPath` early return would let the prefix check
+        // fall through to `''`/`'/'` — which DOES match itself, wrongly
+        // treating the root as a strict ancestor of itself.
+        const sut = longestStrictAncestor;
+
+        // Act
+        const result = sut(['/'], '/', posixPolicy);
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a ceiling whose name is a lexical prefix of a sibling directory (no shared separator)', () => {
+    describe('When longestStrictAncestor runs', () => {
+      it('Then it is ignored — the trailing-separator join stops a false prefix match', () => {
+        // Arrange — '/T' is not a strict ancestor of '/Txyz/normal': they
+        // share the characters '/T' but name different directories. Without
+        // appending the separator before the prefix test (i.e. testing
+        // `startsWith` on `cmpAncestor` instead of appending its own
+        // separator), the raw character prefix would match anyway.
+        const sut = longestStrictAncestor;
+
+        // Act
+        const result = sut(['/T'], '/Txyz/normal', posixPolicy);
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given two case-different ceilings naming the same directory on a case-insensitive policy', () => {
+    describe('When longestStrictAncestor runs', () => {
+      it('Then the first one seen wins the equal-length tie, not the last', () => {
+        // Arrange — both normalize to the identical (lower-cased) form, so
+        // their keyLengths are EQUAL. `>` keeps the first-seen entry on a
+        // tie; `>=` would let the second overwrite it.
+        const sut = longestStrictAncestor;
+
+        // Act
+        const result = sut(
+          ['C:\\Users\\Bob', 'c:\\users\\bob'],
+          'C:\\Users\\Bob\\proj',
+          windowsPolicy,
+        );
+
+        // Assert
+        expect(result).toBe('C:\\Users\\Bob');
+      });
+    });
+  });
 });
