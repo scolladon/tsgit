@@ -120,6 +120,7 @@ export const openRepository = async (opts: OpenNodeRepositoryOptions = {}): Prom
     // instance always resolves its own roots — no pre-resolved hand-off.
     makeWorktreeFs: (worktreePaths: ReadonlyArray<string>): NodeFileSystem =>
       new NodeFileSystem(
+        // Stryker disable next-line ArrayDeclaration: equivalent — `worktreePaths` ALREADY carries the layout roots (workDir included), prepended by the facade's own `worktreeFs` wrapper (`repository.ts`, "the worktree paths followed by the layout roots") before this function ever runs; dropping/replacing this array's own `workDir` contribution cannot narrow or widen the resulting containment set — confirmed empirically (a bare-repo probe still resolves correctly with either branch mutated).
         [...(layout.workDir !== undefined ? [layout.workDir] : []), ...worktreePaths],
         nativePolicy,
       ),
