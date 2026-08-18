@@ -270,8 +270,12 @@ export const resolveCommonDir = async (
     const step = await probe.stat(current);
     if (step?.isDirectory !== true) throw gitfileInvalidFormat(commondirPath);
   }
-  const last = segments[segments.length - 1] ?? '';
-  return pathPolicy.resolve(pathPolicy.join(current, last));
+  // Once every intermediate exists, the lexical resolve of the ORIGINAL
+  // pointer equals the stepwise result (this tier has no symlinks to make
+  // them diverge), and using it avoids a dead fallback for the impossible
+  // empty-segments case (an all-slash relative pointer cannot exist — it
+  // would be absolute).
+  return pathPolicy.resolve(pathPolicy.join(gitDir, value.path));
 };
 
 /**
