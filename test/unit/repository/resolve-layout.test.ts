@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { MemoryFileSystem } from '../../../src/adapters/memory/memory-file-system.js';
 import { posixPolicy } from '../../../src/adapters/node/path-policy.js';
+import { TsgitError } from '../../../src/domain/error.js';
 import { fileSystemLayoutProbe } from '../../../src/repository/file-system-layout-probe.js';
 import { resolveLayout } from '../../../src/repository/resolve-layout.js';
 
@@ -747,6 +748,90 @@ describe('resolveLayout', () => {
             bare: true,
           });
         });
+      });
+    });
+  });
+  describe('Given a relative core.worktree and a physical-resolution capability', () => {
+    describe('When the capability resolves the join to a real path', () => {
+      it('Then the physical path is the work tree', async () => {
+        // Arrange
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await makeGitDir(fs, '/repo/normal/.git');
+        await fs.writeUtf8('/repo/normal/.git/config', '[core]\n\tworktree = ../../wt\n');
+
+        // Act
+        const result = await resolveLayout(
+          fileSystemLayoutProbe(fs),
+          '/repo/normal',
+          posixPolicy,
+          {},
+          { realWorkTreePath: async () => '/repo/physical-wt' },
+        );
+
+        // Assert
+        expect(result).toStrictEqual({
+          gitDir: '/repo/normal/.git',
+          workDir: '/repo/physical-wt',
+          bare: false,
+        });
+      });
+    });
+
+    describe('When the capability cannot resolve the join', () => {
+      it('Then it refuses with WORK_TREE_UNRESOLVABLE naming the raw value and the gitDir', async () => {
+        // Arrange — git changes directory to resolve a relative core.worktree,
+        // so a missing target is a setup refusal, not a lexical fallback.
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await makeGitDir(fs, '/repo/normal/.git');
+        await fs.writeUtf8('/repo/normal/.git/config', '[core]\n\tworktree = ../missing\n');
+
+        // Act
+        let caught: unknown;
+        try {
+          await resolveLayout(
+            fileSystemLayoutProbe(fs),
+            '/repo/normal',
+            posixPolicy,
+            {},
+            { realWorkTreePath: async () => undefined },
+          );
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data).toStrictEqual({
+          code: 'WORK_TREE_UNRESOLVABLE',
+          value: '../missing',
+          gitDir: '/repo/normal/.git',
+        });
+      });
+    });
+
+    describe('When core.worktree is ABSOLUTE and missing', () => {
+      it('Then the capability is never consulted — git records the value verbatim', async () => {
+        // Arrange — the asymmetry the refusal is scoped to: only the relative
+        // form needs a physical walk from the gitDir.
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await makeGitDir(fs, '/repo/normal/.git');
+        await fs.writeUtf8('/repo/normal/.git/config', '[core]\n\tworktree = /repo/nope\n');
+
+        // Act
+        const result = await resolveLayout(
+          fileSystemLayoutProbe(fs),
+          '/repo/normal',
+          posixPolicy,
+          {},
+          {
+            realWorkTreePath: async () => {
+              throw new Error('must not be called for an absolute value');
+            },
+          },
+        );
+
+        // Assert
+        expect(result?.workDir).toBe('/repo/nope');
       });
     });
   });
