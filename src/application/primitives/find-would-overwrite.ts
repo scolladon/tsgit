@@ -76,6 +76,7 @@ export const changedPaths = (
 /** Whether an untracked path is present on disk (lstat — no follow). */
 const isUntrackedPresent = async (ctx: Context, path: FilePath): Promise<boolean> => {
   try {
+    // Stryker disable next-line StringLiteral: equivalent — the catch below swallows ANY exception (including this one) into `false` unconditionally, so the thrown error's `operation` text is never observed by any caller regardless of its content.
     await ctx.fs.lstat(joinPath(requireWorkTree(ctx, 'findWouldOverwrite'), path));
     return true;
   } catch {

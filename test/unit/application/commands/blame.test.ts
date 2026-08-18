@@ -563,6 +563,24 @@ describe('Given a worktree blame on a clean tree', () => {
   });
 });
 
+describe('Given a bare repository (no work tree)', () => {
+  describe('When blaming with the worktree option', () => {
+    it('Then it blames HEAD instead of refusing', async () => {
+      // Arrange
+      const seeded = await seed();
+      await commitFile(seeded, 'c1', 'f.txt', 'a\nb\n');
+      const ctx = asBareContext(seeded);
+
+      // Act
+      const result = await blame(ctx, 'f.txt', { worktree: true });
+
+      // Assert — identical to blaming HEAD directly; no work tree was consulted.
+      expect(result).toEqual(await blame(ctx, 'f.txt'));
+      expect(result.lines.every((l) => l.committed)).toBe(true);
+    });
+  });
+});
+
 describe('Given a tracked file modified in the worktree but not committed', () => {
   describe('When blaming the worktree', () => {
     it('Then the changed line blames the pseudo-commit and the rest their commits', async () => {
