@@ -25,6 +25,7 @@ interface HookInput {
   `CONFIG_MISSING_VALUE`.
 - Inherits `process.env` by default; pass `env` to override per call.
 - Returns the exit code so callers can decide whether non-zero is a failure (default policy in `commit` / `push` is to throw `HOOK_FAILED`; lower-level callers can be more permissive).
+- **Runs with `workDir ?? gitDir` as its working directory.** A hook fires the same way in a bare repository — the spawned process's cwd falls back to the gitDir, matching git's own bare-repo hooks (`PWD=<bare.git>`, `GIT_DIR=.`). This is not a work-tree gate: `runHook` never refuses for lack of a work tree.
 
 ## Lifecycle hooks the commands fire
 

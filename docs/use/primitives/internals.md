@@ -40,6 +40,9 @@ Alphabetical.
 ### `fetchPack`
 `fetch-pack.ts`. Smart-HTTP `git-upload-pack` exchange — discover refs, send `want`/`have`, receive pack. Used by [`clone`](../commands/clone.md), [`fetch`](../commands/fetch.md), [`fetchMissing`](../commands/fetch-missing.md).
 
+### `getSpawnCwd`
+`path-layout.ts`. Working directory for a spawned child process (hook, signer, textconv, merge/filter driver): the work tree when the repository has one, else the gitDir — git's own bare hooks run with `PWD=<bare.git>`. Same value as [`getRepoRoot`](get-repo-root.md), distinct in intent: names the spawn contract so call sites stop restating its why-comment. Used by [`runHook`](run-hook.md), `signPayload`, `applyTextconv`, `runFilterDriver`, `runMergeDriver`.
+
 ### `invalidateConfigCache`
 `config-read.ts`. Drop the in-memory `.git/config` cache. Use after an out-of-band edit.
 
@@ -48,6 +51,9 @@ Alphabetical.
 
 ### `loadSparseMatcher`
 `read-sparse-checkout.ts`. Compile `.git/info/sparse-checkout` to a `(path) => boolean` matcher. Used by [`sparseCheckout`](../commands/sparse-checkout.md), [`checkout`](../commands/checkout.md), [`reset`](../commands/reset.md).
+
+### `longestStrictAncestor`
+`src/repository/ceiling-stop.ts` (outside `application/primitives/` — layout resolution's own tier). **Fully internal.** The longest `ceilingDirs` entry that is a STRICT ancestor of the resolved cwd — the argument-array equivalent of `GIT_CEILING_DIRECTORIES`. Computed once, before the discovery walk starts, never per level. Because ancestry is strict, a ceiling equal to cwd (or equal to cwd *and* the resolved repo root) is a no-op rather than a refusal — the walk's first iteration always examines cwd. Entries are expected already resolved into the same coordinate system as cwd (the node shim realpaths both; sandboxed adapters compare lexically). Used by [`resolveLayout`](#resolvelayout).
 
 ### `materializeTree`
 `materialize-tree.ts`. Apply a tree to the working tree (writes, deletes, chmods, symlinks). Used by [`checkout`](../commands/checkout.md), [`reset`](../commands/reset.md) (`hard`), [`merge`](../commands/merge.md) clean path.
@@ -73,6 +79,9 @@ Alphabetical.
 ### `readReflog`
 `reflog-store.ts`. Read entries for one ref.
 
+### `readRepositoryFormat`
+`src/repository/read-repository-format.ts` (outside `application/primitives/` — layout resolution's own tier). **Fully internal.** Reads `core.bare` / `core.worktree` / `extensions.*` from `<commonDir>/config` — plus `<gitDir>/config.worktree` when `extensions.worktreeConfig` is on — through the same `LayoutProbe` the discovery walk uses; no `include.path`, no global/system scope. Runs *before* a `Context` exists, so `resolveLayout` can decide the work tree ahead of the first command. A malformed `core.bare` reports `'malformed'`; a valueless `core.worktree` reports `null` — the caller maps each to `CONFIG_BAD_BOOLEAN_VALUE` / `CONFIG_MISSING_VALUE`. Used by [`resolveLayout`](#resolvelayout).
+
 ### `readShallow`
 `shallow-file.ts`. Read `.git/shallow` boundaries. Parses git's strict grammar at the repository's oid width; throws `SHALLOW_FILE_MALFORMED` on malformed content or more than 500 000 entries.
 
@@ -81,6 +90,9 @@ Alphabetical.
 
 ### `reflogExists`
 `reflog-store.ts`. Predicate over `.git/logs/<ref>`.
+
+### `resolveLayout`
+`src/repository/resolve-layout.ts` (outside `application/primitives/` — layout resolution's own tier). **Fully internal.** The one layout-resolution algorithm every runtime shim shares: locates the gitDir structurally (an explicit `opts.gitDir`, or the discovery walk — which now also recognises `cwd` itself as a git directory, bare or not); reads the repository-format keys via [`readRepositoryFormat`](#readrepositoryformat); then decides the work tree by git's own precedence (`opts.workDir` beats `core.bare` beats `core.worktree` beats the route's own default) and derives `bare` as `core.bare is not false AND no work tree was resolved`. Returns the shape each shim (`index.node.ts`, `index.default.ts`, the browser's `resolveFixedEntryLayout`) finishes into a `RepositoryLayoutInput`.
 
 ### `resolveReflogIdentity`
 `reflog-identity.ts`. Resolve the identity for reflog entries (config + portable fallback).

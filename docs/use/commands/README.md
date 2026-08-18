@@ -57,6 +57,8 @@ a bound `this`.
 | [`whatchanged`](whatchanged.md) | Walk reachable commits (merges excluded) pairing each with its raw structured changes; returns structured data (no rendered line). |
 | [`worktree`](worktree.md) | Manage linked working trees over one object store (`list`/`add`/`move`/`remove`); returns structured per-worktree data. Nested-namespace surface (`repo.worktree.*`). |
 
+Commands that touch the working tree — `add`, `checkout`, `commit`, `merge`, `mv`, `rm`, `stash`, `sparseCheckout`, `cherryPick`, `revert`, `rebase`, `pull`, `submodule`'s local verbs, `reset({ mode: 'hard' })`, `grep`'s default (working-tree) target, `blame({ worktree: true })` outside a bare repository, `describe({ dirty: true })` — refuse with `WORK_TREE_REQUIRED` when the opened repository has none (bare, or a git directory opened without one). See [errors](../errors.md) for the full refusal matrix.
+
 ## Page shape
 
 Every page follows the same shape — in this order:

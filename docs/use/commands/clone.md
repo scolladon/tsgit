@@ -36,6 +36,8 @@ interface CloneResult {
 
 ## Behaviour
 
+`bare: true` writes the clone at `ctx.layout.gitDir` — same as [`init`](init.md), it does not relocate the layout the `Context` was opened with. To reopen the result (with tsgit or real git), open with `gitDir` equal to `cwd` before cloning, so the constructed layout already has no work tree: `openRepository({ cwd: d, gitDir: d, bare: true })` then `repo.clone({ url, bare: true })`.
+
 `clone` creates the `.git` skeleton, opens a session against the resolved transport (smart-HTTP, negotiating protocol v2 — `ls-refs` discovery + the `fetch` command — with a v1 fallback for servers that don't advertise `version 2`; or a single duplex channel over SSH, always v1), fetches the pack, and propagates remote refs (`refs/remotes/origin/*` + tracked branch + tags) — ref resolution, including the tracked branch's `HEAD` symref, works the same on both protocol versions. It does **not** materialise the working tree — follow up with `repo.checkout({ rev: result.head })`.
 
 A `filter` records `origin` as a *promisor remote* in `.git/config`. Objects omitted by the filter are fetched transparently on the first read — every command built on `readObject` works unchanged on a partial clone. Partial clone works over either protocol version: the server needs to advertise `filter` — as a v1 capability, or as a sub-feature of the v2 `fetch` command — or the clone throws `REMOTE_FILTER_UNSUPPORTED`.
@@ -65,7 +67,7 @@ await repo.clone({ url: 'https://github.com/owner/repo.git', depth: 1 });
 
 `clone` does **not** validate `[core]` config (`core.maxTreeDepth`, `core.loosecompression` / `core.compression`, …) on either the destination or the ambient repository the caller happens to be standing in — a deliberate divergence from a blanket "every operational command gates" rule, not an oversight. Canonical git's own refusal on an invalid `core.maxTreeDepth` is a **source-side** effect: the process serving a local-path clone reads its own config at startup and dies before it can serve anything. Git never reads the destination's config (an occupied destination fails with "already exists" first, before any config read) and never reads the ambient repository's. tsgit's `clone` is client-only and reaches its source through a transport, so it has no analogue for that source-side read; gating on the destination or ambient config here would refuse a clone git accepts.
 
-- `TARGET_DIRECTORY_NOT_EMPTY` — `.git/HEAD` already exists in `cwd`.
+- `TARGET_DIRECTORY_NOT_EMPTY` — `.git/HEAD` already exists at the target gitDir. `path` names the work tree, or the gitDir itself for a bare target with none.
 - `REMOTE_ADVERTISES_NO_REFS` — server returned an empty ref list (or `url === ''`).
 - `INVALID_URL` — malformed remote URL; HTTP: failed SSRF / DNS validation; SSH/scp: a control character, or the host/path begins with `-` (argv-injection guard).
 - `ADAPTER_UNAVAILABLE` — an `ssh://`/scp-like remote given to a runtime with no `SshTransport` wired (Browser, Memory).

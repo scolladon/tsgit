@@ -57,7 +57,7 @@ await repo.checkout({ rev: 'main', force: true });
 - `CHECKOUT_OVERWRITE_DIRTY` — switch without `force` against a dirty working tree.
 - `REF_NOT_FOUND` / `INVALID_REF` — `rev` does not resolve.
 - `PATHSPEC_NO_MATCH` — a literal path pattern matched nothing.
-- `BARE_REPOSITORY` — checkout is not valid in a bare repository.
+- `WORK_TREE_REQUIRED` — the repository has no work tree (bare, or opened without one).
 
 ## Smudge filter drivers (`filter=<name>`)
 

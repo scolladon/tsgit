@@ -32,7 +32,17 @@ interface InitResult {
 const repo = await openRepository({ cwd: '/tmp/new-repo' });
 await repo.init();
 await repo.init({ initialBranch: 'trunk' });
-await repo.init({ bare: true });
+```
+
+`bare: true` writes `bare = true` into `[core]` at `ctx.layout.gitDir` — it
+does not relocate the layout the `Context` was opened with. To get a
+repository `openRepository` (or real git) can reopen, open with `gitDir`
+equal to `cwd` so the constructed layout already has no work tree, byte-
+identical to `git init --bare`:
+
+```ts
+const bare = await openRepository({ cwd: '/tmp/new.git', gitDir: '/tmp/new.git', bare: true });
+await bare.init({ bare: true });
 ```
 
 ## Throws

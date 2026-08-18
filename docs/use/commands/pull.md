@@ -83,7 +83,7 @@ await repo.pull({ remote: 'upstream', ref: 'main' });
   the absent case (`NO_UPSTREAM_CONFIGURED`).
 - `REMOTE_NOT_CONFIGURED` — the resolved remote has no configured URL.
 - `REF_NOT_FOUND` — the remote does not advertise the requested branch.
-- `BARE_REPOSITORY` / `OPERATION_IN_PROGRESS` — refused before the fetch.
+- `WORK_TREE_REQUIRED` / `OPERATION_IN_PROGRESS` — refused before the fetch. `WORK_TREE_REQUIRED` fires when the repository has no work tree (bare, or opened without one).
 - `NON_FAST_FORWARD` — `fastForward: 'only'` and a true merge is required.
 
 ## See also

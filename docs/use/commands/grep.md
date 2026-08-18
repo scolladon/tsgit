@@ -60,6 +60,10 @@ interface GrepResult {
   index, stage 0) and reads their **working-tree** content, so unstaged
   modifications are visible; untracked and ignored files are not searched.
   `'index'` reads staged blob content; `{ treeish }` reads a committed tree.
+- **Work-tree requirement is target-dependent.** Only the default (working-tree)
+  target needs a work tree — it refuses `WORK_TREE_REQUIRED` when the repository
+  has none (bare, or opened without one). `'index'` and `{ treeish }` stay open in
+  a bare repository, matching git's `grep --cached` and `grep <pattern> HEAD`.
 - **Searchable content.** Only regular and executable file blobs are searched;
   **symlinks and gitlinks (submodules) are skipped** on every target — matching
   `git grep`. A tracked file absent from the working tree is silently skipped.
@@ -165,6 +169,7 @@ await repo.grep({ patterns: [/^\s*\/\//], invert: true });
   config fault, because git parses config at startup before it validates
   arguments.
 - `NOT_A_REPOSITORY` — outside a git repository.
+- `WORK_TREE_REQUIRED` — the default (working-tree) target against a repository with no work tree (bare, or opened without one). Not raised for `'index'` or `{ treeish }` targets.
 - `CONFIG_BAD_NUMERIC_VALUE` / `CONFIG_BAD_ZLIB_LEVEL` / `CONFIG_MISSING_VALUE` / `CONFIG_BAD_BOOLEAN_VALUE` — an invalid `[core]` entry, reached through the same eager operational gate every other operational command reads (see [`errors.md`](../errors.md)); includes an invalid `core.maxTreeDepth`.
 - `OBJECT_NOT_FOUND` / `REVPARSE_UNRESOLVED` — a `{ treeish }` target cannot be
   resolved.

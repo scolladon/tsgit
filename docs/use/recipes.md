@@ -24,6 +24,14 @@ await repo.checkout({ rev: result.head });
 
 The split is deliberate: callers who want a bare clone (`{ bare: true }`) or who want to inspect refs before materialisation never pay for the working-tree write.
 
+A bare clone needs the `Context` itself opened bare (`gitDir` equal to `cwd`) so the layout can be opened again afterwards — see [bare repositories & explicit layout](../get-started/node.md#bare-repositories-and-explicit-layout):
+
+```ts
+const bare = await openRepository({ cwd: '/srv/repo.git', gitDir: '/srv/repo.git', bare: true });
+await bare.clone({ url: 'https://github.com/owner/repo.git', bare: true });
+await bare.log({ limit: 10 });   // reads fine — no working tree, and reopens cleanly later
+```
+
 ## Partial clone
 
 Clone with a `filter` to omit blob content; reads transparently lazy-fetch missing objects from the recorded promisor remote.

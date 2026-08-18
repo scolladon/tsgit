@@ -52,6 +52,7 @@ for await (const entry of repo.primitives.walkWorkingTree()) {
 
 ## Throws
 
+- `WORK_TREE_REQUIRED` — the repository has no work tree (bare, or opened without one). Checked once, at the start of the walk — a direct `repo.primitives.walkWorkingTree()` call is gated the same way the commands built on it already are.
 - `TREE_DEPTH_EXCEEDED` — walk depth exceeds `maxDepth`.
 - `TREE_ENTRY_LIMIT_EXCEEDED` — yielded-entry count exceeds `maxEntries`.
 - `OPERATION_ABORTED` — the context's `AbortSignal` fired mid-walk.

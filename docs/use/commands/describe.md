@@ -64,10 +64,16 @@ interface DescribeResult {
   changes — staged (index-vs-HEAD), unstaged, **or unmerged** (a mid-merge index
   with conflicted paths is dirty; `git diff-index HEAD` over every `status`
   column); untracked files don't count. Incompatible with an explicit
-  commit-ish (`INVALID_OPTION`).
+  commit-ish (`INVALID_OPTION`). `dirty` needs a work tree to compare against and
+  refuses `WORK_TREE_REQUIRED { operation: 'describe --dirty' }` when the
+  repository has none. `broken` tolerates that same failure instead of
+  refusing — a bare repository (or one with no resolved work tree) reports
+  `dirty: true` rather than throwing, matching git's `<name>-broken` output.
 - **Refusals:** `NO_NAMES` (no tags at all), `NO_ANNOTATED_NAMES` (only lightweight
   tags in default mode), `NO_REACHABLE_NAMES` (tags exist but none reach the
-  target), `NO_EXACT_MATCH`. `always: true` returns the oid fallback instead.
+  target), `NO_EXACT_MATCH`, `WORK_TREE_REQUIRED` (`dirty: true` against a
+  repository with no work tree — not raised when `broken: true` is also set).
+  `always: true` returns the oid fallback instead.
 
 ## Examples
 
