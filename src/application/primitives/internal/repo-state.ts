@@ -17,7 +17,7 @@ import {
   REBASE_HEAD,
   REVERT_HEAD,
 } from '../../../domain/refs/state-files.js';
-import { isValidHeadContent } from '../../../domain/repository/head-ref.js';
+import { isRefsLinkText, isValidHeadContent } from '../../../domain/repository/head-ref.js';
 import {
   CHERRY_PICK,
   MERGE,
@@ -108,7 +108,7 @@ export const assertRepository = async (ctx: Context): Promise<FilePath> => {
 const hasUsableHead = async (ctx: Context): Promise<boolean> => {
   const headPath = `${ctx.layout.gitDir}/HEAD`;
   const linkText = await ctx.fs.readlink(headPath).catch(() => undefined);
-  if (linkText !== undefined) return linkText.startsWith('refs/');
+  if (linkText !== undefined) return isRefsLinkText(linkText);
   const head = await ctx.fs.readUtf8(headPath).catch(() => undefined);
   return head !== undefined && isValidHeadContent(head);
 };

@@ -37,3 +37,12 @@ const SYMBOLIC_REF_RE = /^ref:[ \t\n\v\f\r]*refs\//;
 
 export const isValidHeadContent = (content: string): boolean =>
   LEADING_OID_RE.test(content) || SYMBOLIC_REF_RE.test(content);
+
+/**
+ * Whether a `HEAD` symlink's LINK TEXT names a ref — git's `validate_headref`
+ * rule for symlinked heads. Windows link text carries backslashes
+ * (`refs\heads\main`), so separators are normalised before the prefix
+ * test; the text itself is never used as a path.
+ */
+export const isRefsLinkText = (linkText: string): boolean =>
+  linkText.replace(/\\/g, '/').startsWith('refs/');

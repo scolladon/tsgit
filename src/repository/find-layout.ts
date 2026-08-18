@@ -1,7 +1,7 @@
 import type { PathPolicy } from '../adapters/node/path-policy.js';
 import type { FilePath } from '../domain/objects/object-id.js';
 import { notARepository } from '../domain/repository/error.js';
-import { isValidHeadContent } from '../domain/repository/head-ref.js';
+import { isRefsLinkText, isValidHeadContent } from '../domain/repository/head-ref.js';
 import { gitfileInvalidFormat, gitfileNoPath } from '../domain/worktree/error.js';
 import { parseCommondir, parseGitfilePointer } from '../domain/worktree/gitfile.js';
 import type { LayoutProbe } from '../ports/layout-probe.js';
@@ -304,7 +304,7 @@ const hasValidHead = async (
   // Adapters without the capability (or a non-symlink `HEAD`, where
   // `readLink` collapses to undefined) fall through to the content check.
   const linkText = await probe.readLink?.(headPath);
-  if (linkText !== undefined) return linkText.startsWith('refs/');
+  if (linkText !== undefined) return isRefsLinkText(linkText);
   const head = await probe.stat(headPath);
   if (head?.isFile !== true) return false;
   // No size gate: git validates only the first 255 bytes of HEAD and never

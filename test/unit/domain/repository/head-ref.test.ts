@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isValidHeadContent } from '../../../../src/domain/repository/head-ref.js';
+import { isRefsLinkText, isValidHeadContent } from '../../../../src/domain/repository/head-ref.js';
 
 describe('isValidHeadContent', () => {
   describe('Given content is a symbolic ref with a space and a trailing newline', () => {
@@ -298,6 +298,55 @@ describe('isValidHeadContent', () => {
 
         // Assert
         expect(result).toBe(false);
+      });
+    });
+  });
+});
+
+describe('isRefsLinkText', () => {
+  describe('Given link text with forward slashes into refs/', () => {
+    describe('When isRefsLinkText runs', () => {
+      it('Then it qualifies', () => {
+        // Arrange
+        const sut = isRefsLinkText;
+
+        // Act
+        const result = sut('refs/heads/main');
+
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+  });
+
+  describe('Given Windows link text with backslashes into refs', () => {
+    describe('When isRefsLinkText runs', () => {
+      it('Then separators are normalised and it still qualifies', () => {
+        // Arrange
+        const sut = isRefsLinkText;
+
+        // Act
+        const result = sut('refs\\heads\\main');
+
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+  });
+
+  describe('Given link text pointing outside refs', () => {
+    describe('When isRefsLinkText runs', () => {
+      it('Then it does not qualify on either separator style', () => {
+        // Arrange
+        const sut = isRefsLinkText;
+
+        // Act
+        const posix = sut('/nowhere/else');
+        const windows = sut('C:\\nowhere\\else');
+
+        // Assert
+        expect(posix).toBe(false);
+        expect(windows).toBe(false);
       });
     });
   });
