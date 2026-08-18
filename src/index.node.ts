@@ -295,6 +295,7 @@ const isDerivedFromCanonicalCwd = (workDir: string, cwd: string): boolean =>
 
 export type { AdapterSet } from './adapter-detect.js';
 export { detectRuntime, isBrowser, isNode } from './adapter-detect.js';
+export { TsgitError, type TsgitErrorData } from './domain/error.js';
 export { consoleProgress, noopProgress, type ProgressReporter } from './progress.js';
 export * from './public-types.js';
 export type { OpenRepositoryOptions, Repository } from './repository.js';

@@ -17,6 +17,7 @@ export {
   type ZipOptions,
   zipArchive,
 } from './domain/archive/index.js';
+export { TsgitError, type TsgitErrorData } from './domain/error.js';
 export { createContext } from './ports/context.js';
 export { noopLogger, wrapLoggerSanitizer } from './ports/logger.js';
 export { consoleProgress, noopProgress, type ProgressReporter } from './progress.js';

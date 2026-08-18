@@ -11,6 +11,7 @@ The composable building blocks every Tier-1 command is built from. Same `Context
 | [`createCommit`](create-commit.md) | Create a commit object from tree + parents. |
 | [`diffTrees`](diff-trees.md) | Compare two tree iterables; returns a structured diff. |
 | [`flattenTree`](flatten-tree.md) | Eagerly flatten a tree into a `Map<FilePath, FlatTreeEntry>`; the bulk traversal path. |
+| [`commonGitDir`](common-git-dir.md) | The shared common git dir — `commonDir` when a linked worktree splits it, `gitDir` otherwise. |
 | [`getRepoRoot`](get-repo-root.md) | The repository's working-tree root (`FilePath`). |
 | [`hashBlob`](hash-blob.md) | Compute a blob OID for arbitrary bytes; `{ write: true }` persists the loose object. |
 | [`isIgnored`](is-ignored.md) | Per-path ignore lookup with rule provenance (kind, basedir, line, pattern). |

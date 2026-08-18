@@ -32,7 +32,8 @@ export interface RepositoryLayout {
    * `config`, and shared refs/reflogs. Absent for a normal repo or the main
    * worktree (it equals `gitDir`); set only for a linked worktree, whose
    * `gitDir` is its own admin dir while shared state lives here. Resolve via
-   * `commonGitDir(ctx)` rather than reading this field directly.
+   * `commonGitDir(ctx)` (or `commonDirOf(layout)` when holding a bare
+   * layout) rather than reading this field directly — both are exported.
    */
   readonly commonDir?: string;
   /** git's `is_bare_repository()`: `core.bare` is not false AND there is no work tree. */

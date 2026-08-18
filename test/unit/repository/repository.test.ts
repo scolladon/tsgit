@@ -310,6 +310,7 @@ describe('openRepository — Repository binding integrity', () => {
           [
             'bisectMidpoint',
             'catFileBatch',
+            'commonGitDir',
             'createCommit',
             'diffTrees',
             'flattenTree',

@@ -23,7 +23,11 @@ export const getRepoRoot = (ctx: Context): FilePath =>
  * `gitDir`; for a linked worktree it is the repository's common dir, while
  * per-worktree state (HEAD/index/…) stays under `gitDir`.
  */
-export const commonDirOf = (layout: RepositoryLayout): string => layout.commonDir ?? layout.gitDir;
+// Written as the explicit undefined test, not `??`: `commonDir` is never the
+// empty string, so a `??`→`||` mutant would be equivalent noise where this
+// form keeps every mutant killable.
+export const commonDirOf = (layout: RepositoryLayout): string =>
+  layout.commonDir === undefined ? layout.gitDir : layout.commonDir;
 
 /**
  * Working directory for a spawned child process (hook, signer, textconv,

@@ -55,7 +55,7 @@ export { materializeTree } from './materialize-tree.js';
 export { materializeWorktreeFromHead } from './materialize-worktree-from-head.js';
 export type { MergeBaseOptions } from './merge-base.js';
 export { mergeBase } from './merge-base.js';
-export { getRepoRoot, sparseCheckoutPath } from './path-layout.js';
+export { commonDirOf, commonGitDir, getRepoRoot, sparseCheckoutPath } from './path-layout.js';
 export { readBlob } from './read-blob.js';
 export { readHeadTree } from './read-head-tree.js';
 export { readIndex } from './read-index.js';
