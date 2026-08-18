@@ -1126,6 +1126,35 @@ describe('findLayout', () => {
     });
   });
 
+  describe('Given a commondir whose dotted path traverses a missing component', () => {
+    describe('When findLayout runs', () => {
+      it('Then it refuses hard — lexical collapse must not skip the component git trips on', async () => {
+        // Arrange — `missing/../../shared` collapses lexically to `../shared`,
+        // but git's component-wise walk dies at `missing` first.
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await makeGitDir(fs, '/repo/.git');
+        await makeGitDir(fs, '/repo/bait');
+        await fs.mkdir('/repo/shared');
+        await fs.writeUtf8('/repo/bait/commondir', 'missing/../../shared\n');
+
+        // Act
+        let caught: unknown;
+        try {
+          await findLayout(fileSystemLayoutProbe(fs), '/repo/bait', posixPolicy);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data).toMatchObject({
+          code: 'GITFILE_INVALID_FORMAT',
+          path: '/repo/bait/commondir',
+        });
+      });
+    });
+  });
+
   describe('Given a commondir whose target is missing only its FINAL component', () => {
     describe('When findLayout runs from inside a real repo', () => {
       it('Then the candidate is a plain miss and the walk climbs to the enclosing repo', async () => {
