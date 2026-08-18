@@ -1,6 +1,6 @@
 /**
  * Pure grammar check for `HEAD` file content: text in, verdict out, no I/O.
- * Content is valid iff its LEADING 40 characters are lowercase hex — git
+ * Content is valid iff its LEADING 40 characters are hex of either case — git
  * parses a detached HEAD by consuming exactly one object id's worth of hex
  * and ignoring everything after it, so `<40hex>\n`, a 64-hex SHA-256 id
  * (whose first 40 characters are themselves hex), and even `<40hex>garbage`

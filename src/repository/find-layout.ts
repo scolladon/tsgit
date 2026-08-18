@@ -45,9 +45,11 @@ interface GitDirLocation {
 /**
  * Walk up from `cwd` looking for a `.git` entry, and — at every level — ask
  * whether the level itself is a git directory. A `.git` **directory** is a
- * candidate: if it does not validate (missing `HEAD`/`objects`/`refs`) the
- * walk falls through to the cwd-is-gitdir check at the same level, then
- * continues upward. A `.git` **file** (a linked-worktree/submodule/
+ * candidate: if it does not validate (missing or malformed `HEAD`, missing
+ * `objects`/`refs`) the walk falls through to the cwd-is-gitdir check at the
+ * same level, then continues upward — though an unusable `commondir` past a
+ * valid `HEAD` is a hard stop even here, exactly as git dies on it. A
+ * `.git` **file** (a linked-worktree/submodule/
  * `--separate-git-dir` gitfile pointer) is a commitment: once found, it is
  * resolved and either returns a layout or throws — the walk never falls back
  * to an ancestor repository past an unusable gitfile. The cwd-is-gitdir check
@@ -186,17 +188,18 @@ export const resolvePointer = async (
 };
 
 /**
- * COMMITTED-route validation: resolves `commonDir` first — a `commondir`
- * file this route cannot use is a hard stop (`resolveCommonDir` throws), the
- * gitfile/explicit contract — then validates `HEAD` and the shared dirs,
- * returning `undefined` when the directory is simply not a git directory.
+ * Git's `is_git_directory`, shared by every walk and gitfile route: `HEAD`
+ * is validated first (a directory that is simply not a git directory returns
+ * `undefined` and the walk climbs), then the `commondir` pointer is resolved
+ * — an unusable one past a valid `HEAD` is a HARD refusal on every route,
+ * exactly as git dies there — then the shared dirs are checked.
  */
 const layoutFor = async (
   probe: LayoutProbe,
   gitDir: string,
   pathPolicy: PathPolicy,
 ): Promise<GitDirLocation | undefined> => {
-  // HEAD first, on EVERY route — git's `is_git_directory` validates the head
+  // HEAD first, on every walk/gitfile route — git's `is_git_directory` validates the head
   // before touching the common dir, so a garbage-`HEAD` directory (a planted
   // tree, or three innocuous entries) is climbed past without its `commondir`
   // ever being parsed. It doubles as the cheap gate: a level with no `HEAD`
@@ -263,8 +266,7 @@ export const resolveCommonDir = async (
  * `refs/` but whose target does not exist is accepted by git and rejected
  * here, because this probe only exposes a following `stat` plus `readUtf8`,
  * never the raw link text. A directory named `HEAD` is not a head and fails
- * the check; an oversized `HEAD` is rejected on its `stat`ed size, without
- * being read.
+ * the check.
  */
 const hasValidHead = async (
   probe: LayoutProbe,
@@ -274,7 +276,12 @@ const hasValidHead = async (
   const headPath = pathPolicy.join(gitDir, 'HEAD');
   const head = await probe.stat(headPath);
   if (head?.isFile !== true) return false;
-  if (head.size > GITFILE_MAX_BYTES) return false;
+  // No size gate: git validates only the first 255 bytes of HEAD and never
+  // consults its size, so an oversized-but-valid HEAD is still a git
+  // directory (measured) — rejecting on size would climb PAST a repository
+  // git resolves, the outward-escape class. Both grammar tests are anchored
+  // prefix matches, so the parse cost is bounded regardless of file size,
+  // and a regular file always terminates the read.
   const content = await probe.readUtf8(headPath);
   return content !== undefined && isValidHeadContent(content);
 };

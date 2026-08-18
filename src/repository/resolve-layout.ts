@@ -227,8 +227,12 @@ export const finishLayout = async (
  * is read as a gitfile pointer via the shared grammar, inheriting its
  * refusals; a missing or empty directory resolves LENIENTLY — no candidate
  * validation runs here, unlike the walk's `.git`-directory branch — because
- * `assertRepository` refuses at first command and that leniency is the only
- * way `init`/`clone` can bootstrap into an empty target.
+ * that leniency is the only way `init`/`clone` can bootstrap into an empty
+ * target. Refusals then surface at first command: `assertRepository` catches
+ * the truly-absent shape, while a present-but-malformed gitdir fails later,
+ * inside the primitives tier, with object-level errors rather than git's
+ * up-front `not a git repository` fatal — a documented refusal-shape
+ * divergence confined to the caller's own named directory.
  */
 const resolveExplicitOutcome = async (
   probe: LayoutProbe,

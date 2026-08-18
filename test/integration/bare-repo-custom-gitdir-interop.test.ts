@@ -403,9 +403,15 @@ describe.skipIf(!GIT_AVAILABLE)('bare and work-tree-less layout interop', () => 
     // Unconditional, regardless of how the test body exited — leftover
     // `core.worktree` from a failed row must never poison a later one.
     afterEach(() => {
-      tryRunGitWithExit(['-C', normal, 'config', '--unset', 'core.worktree'], {
-        env: runGitEnv(),
-      });
+      // `--file` rather than `-C`: with a broken core.worktree still set,
+      // repository setup itself fails and a `-C` unset silently no-ops,
+      // leaking the key into the next row.
+      tryRunGitWithExit(
+        ['config', '--file', path.join(normal, '.git', 'config'), '--unset', 'core.worktree'],
+        {
+          env: runGitEnv(),
+        },
+      );
     });
 
     describe('When core.worktree is an absolute path', () => {
@@ -498,6 +504,38 @@ describe.skipIf(!GIT_AVAILABLE)('bare and work-tree-less layout interop', () => 
         expect(data?.code).toBe('WORK_TREE_UNRESOLVABLE');
         expect(data?.value).toBe('../missing-wt');
         expect(data?.gitDir).toBe(await realpath(path.join(normal, '.git')));
+      });
+    });
+
+    describe('When a RELATIVE core.worktree resolves to a regular FILE', () => {
+      it('Then both tools refuse at setup — git cannot change directory into a file', async () => {
+        // Arrange
+        await writeFile(path.join(root, 'plain-target'), 'not a directory\n');
+        runGit([
+          'config',
+          '--file',
+          path.join(normal, '.git', 'config'),
+          'core.worktree',
+          '../plain-target',
+        ]);
+        const g = tryRunGitWithExit(['-C', normal, 'rev-parse', '--show-toplevel'], {
+          env: runGitEnv(),
+        });
+
+        // Act
+        let caught: unknown;
+        try {
+          await openRepository({ cwd: normal });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(g.exitCode).toBe(128);
+        expect(g.stderr).toContain("cannot chdir to '../plain-target'");
+        const data = (caught as { data?: { code?: string; value?: string } })?.data;
+        expect(data?.code).toBe('WORK_TREE_UNRESOLVABLE');
+        expect(data?.value).toBe('../plain-target');
       });
     });
   });
@@ -1708,6 +1746,7 @@ describe.skipIf(!GIT_AVAILABLE)('bare and work-tree-less layout interop', () => 
           ],
           { env: runGitEnv() },
         );
+        expect(pathFormat.exitCode).toBe(0);
         const [expectedGitDir = '', expectedCommonDir = ''] = pathFormat.stdout.trim().split('\n');
         expect(layout.gitDir).toBe(await realpath(expectedGitDir));
         expect(layout.commonDir ?? layout.gitDir).toBe(await realpath(expectedCommonDir));
@@ -1857,6 +1896,145 @@ describe.skipIf(!GIT_AVAILABLE)('bare and work-tree-less layout interop', () => 
           gitExtra: [`--git-dir=${bare}`, `--work-tree=${wt}`],
           open: { cwd: elsewhere, gitDir: bare, workDir: wt },
         });
+      });
+    });
+  });
+
+  describe('Given the measured discovery edge shapes, twinned against git (scenario R)', () => {
+    let root: string;
+
+    beforeAll(async () => {
+      root = await mkRoot('r');
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      if (root !== undefined) await rm(root, { recursive: true, force: true });
+    });
+
+    const plantBareShape = async (dir: string, head: string): Promise<void> => {
+      await mkdir(path.join(dir, 'objects'), { recursive: true });
+      await mkdir(path.join(dir, 'refs'), { recursive: true });
+      await writeFile(path.join(dir, 'HEAD'), head);
+    };
+
+    describe('When a valid-HEAD directory carries a ZERO-BYTE commondir', () => {
+      it('Then both tools refuse hard and neither climbs', async () => {
+        // Arrange
+        const dir = path.join(root, 'zero-commondir');
+        await plantBareShape(dir, 'ref: refs/heads/main\n');
+        await writeFile(path.join(dir, 'commondir'), '');
+        const g = tryRunGitWithExit(['-C', dir, 'rev-parse', '--git-dir'], { env: runGitEnv() });
+
+        // Act
+        let caught: unknown;
+        try {
+          await openRepository({ cwd: dir });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(g.exitCode).toBe(128);
+        expect(g.stderr).toContain('failed to read');
+        expect((caught as { data?: { code?: string } })?.data?.code).toBe('GITFILE_INVALID_FORMAT');
+      });
+    });
+
+    describe('When a valid-HEAD directory carries a NEWLINE-ONLY commondir', () => {
+      it('Then both tools accept the directory as its own common dir', async () => {
+        // Arrange
+        const dir = path.join(root, 'newline-commondir');
+        await plantBareShape(dir, 'ref: refs/heads/main\n');
+        await writeFile(path.join(dir, 'commondir'), '\n');
+        const expectedGitDir = git(dir, 'rev-parse', '--path-format=absolute', '--git-dir').trim();
+
+        // Act
+        const repo = await openRepository({ cwd: dir });
+
+        try {
+          // Assert
+          expect(repo.layout.gitDir).toBe(await realpath(expectedGitDir));
+          expect(repo.layout.commonDir).toBeUndefined();
+        } finally {
+          await repo.dispose();
+        }
+      });
+    });
+
+    describe('When a commondir names a whitespace path inside a real repo', () => {
+      it('Then both tools treat it as a verbatim path miss and climb to the enclosing repo', async () => {
+        // Arrange
+        const outer = path.join(root, 'outer');
+        buildNormalRepo(outer);
+        const bait = path.join(outer, 'bait');
+        await plantBareShape(bait, 'ref: refs/heads/main\n');
+        await writeFile(path.join(bait, 'commondir'), '   \n');
+        const expectedGitDir = git(bait, 'rev-parse', '--path-format=absolute', '--git-dir').trim();
+
+        // Act
+        const repo = await openRepository({ cwd: bait });
+
+        try {
+          // Assert — both resolve the OUTER repo.
+          expect(await realpath(expectedGitDir)).toBe(await realpath(path.join(outer, '.git')));
+          expect(repo.layout.gitDir).toBe(await realpath(expectedGitDir));
+        } finally {
+          await repo.dispose();
+        }
+      });
+    });
+
+    describe('When a detached HEAD uses UPPERCASE hex inside a real repo', () => {
+      it('Then both tools resolve the INNER planted directory, not the enclosing repo', async () => {
+        // Arrange
+        const outer = path.join(root, 'outer-upper');
+        buildNormalRepo(outer);
+        const inner = path.join(outer, 'inner');
+        await plantBareShape(inner, `${'A'.repeat(40)}\n`);
+        const expectedGitDir = git(
+          inner,
+          'rev-parse',
+          '--path-format=absolute',
+          '--git-dir',
+        ).trim();
+
+        // Act
+        const repo = await openRepository({ cwd: inner });
+
+        try {
+          // Assert
+          expect(await realpath(expectedGitDir)).toBe(await realpath(inner));
+          expect(repo.layout.gitDir).toBe(await realpath(expectedGitDir));
+        } finally {
+          await repo.dispose();
+        }
+      });
+    });
+
+    describe('When a HEAD is oversized but leads with a valid object id', () => {
+      it('Then both tools still treat the directory as a git directory', async () => {
+        // Arrange — git validates only the leading bytes of HEAD, never its size.
+        const outer = path.join(root, 'outer-bighead');
+        buildNormalRepo(outer);
+        const inner = path.join(outer, 'big');
+        await plantBareShape(inner, `${'a'.repeat(40)}\n${'x'.repeat(70_000)}`);
+        const expectedGitDir = git(
+          inner,
+          'rev-parse',
+          '--path-format=absolute',
+          '--git-dir',
+        ).trim();
+
+        // Act
+        const repo = await openRepository({ cwd: inner });
+
+        try {
+          // Assert
+          expect(await realpath(expectedGitDir)).toBe(await realpath(inner));
+          expect(repo.layout.gitDir).toBe(await realpath(expectedGitDir));
+        } finally {
+          await repo.dispose();
+        }
       });
     });
   });

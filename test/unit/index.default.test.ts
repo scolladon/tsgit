@@ -138,12 +138,12 @@ describe('Given a directory holding an INVALID .git with a hostile config', () =
     it("Then the rejected directory's config is never consulted — the layout stays the literal bootstrap", async () => {
       // Arrange — no HEAD/objects/refs, so discovery rejects the .git; the
       // planted config would flip bareness (or throw) if it were read.
-      const repo = await openRepository({
-        files: { '/repo/.git/config': new TextEncoder().encode('[core]\n\tbare = banana\n') },
-      });
+      const files = { '/repo/.git/config': new TextEncoder().encode('[core]\n\tbare = banana\n') };
+
+      // Act
+      const repo = await openRepository({ files });
 
       try {
-        // Act
         const result = repo.ctx.layout;
 
         // Assert

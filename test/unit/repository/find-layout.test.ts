@@ -947,17 +947,16 @@ describe('findLayout', () => {
     });
   });
 
-  describe('Given a HEAD file of exactly the size cap whose content is valid', () => {
+  describe('Given an OVERSIZED HEAD file whose leading content is valid', () => {
     describe('When findLayout runs', () => {
-      it('Then the level is still admitted — the cap bounds reads, the grammar decides', async () => {
-        // Arrange — a valid symbolic ref padded to exactly 65536 bytes with
-        // trailing newlines (still grammar-valid: the token after ref: is
-        // what is checked).
+      it('Then the level is admitted — git validates only the leading bytes and never the size', async () => {
+        // Arrange — a valid detached oid followed by ~70 KiB of filler: git
+        // resolves this directory (it reads only the first 255 bytes), so a
+        // size gate here would climb PAST a repository git sees.
         const fs = new MemoryFileSystem({ rootDir: '/repo' });
         await fs.mkdir('/repo/bare/objects');
         await fs.mkdir('/repo/bare/refs');
-        const head = 'ref: refs/heads/main\n';
-        await fs.writeUtf8('/repo/bare/HEAD', `${head}${'\n'.repeat(65_536 - head.length)}`);
+        await fs.writeUtf8('/repo/bare/HEAD', `${'a'.repeat(40)}\n${'x'.repeat(70_000)}`);
 
         // Act
         const result = await findLayout(fileSystemLayoutProbe(fs), '/repo/bare', posixPolicy);
@@ -968,16 +967,15 @@ describe('findLayout', () => {
     });
   });
 
-  describe('Given a HEAD file one byte over the size cap inside a valid repo', () => {
-    describe('When findLayout runs from the oversized level', () => {
-      it('Then the level is skipped without reading and the walk climbs to the enclosing repo', async () => {
+  describe('Given an OVERSIZED HEAD file whose leading content is garbage', () => {
+    describe('When findLayout runs from inside a valid repo', () => {
+      it('Then the level fails the grammar and the walk climbs to the enclosing repo', async () => {
         // Arrange
         const fs = new MemoryFileSystem({ rootDir: '/repo' });
         await makeGitDir(fs, '/repo/.git');
         await fs.mkdir('/repo/bait/objects');
         await fs.mkdir('/repo/bait/refs');
-        const head = 'ref: refs/heads/main\n';
-        await fs.writeUtf8('/repo/bait/HEAD', `${head}${'\n'.repeat(65_537 - head.length)}`);
+        await fs.writeUtf8('/repo/bait/HEAD', `garbage${'x'.repeat(70_000)}`);
 
         // Act
         const result = await findLayout(fileSystemLayoutProbe(fs), '/repo/bait', posixPolicy);

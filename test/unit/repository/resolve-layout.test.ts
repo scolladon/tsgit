@@ -759,8 +759,9 @@ describe('resolveLayout', () => {
         await makeGitDir(fs, '/repo/normal/.git');
         await fs.writeUtf8('/repo/normal/.git/config', '[core]\n\tworktree = ../../wt\n');
 
-        // Act
         let seenJoin: string | undefined;
+
+        // Act
         const result = await resolveLayout(
           fileSystemLayoutProbe(fs),
           '/repo/normal',

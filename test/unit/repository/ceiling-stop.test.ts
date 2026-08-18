@@ -196,4 +196,19 @@ describe('longestStrictAncestor', () => {
       });
     });
   });
+  describe('Given an extended-length ceiling and a deeper plain one on a Windows policy', () => {
+    describe('When longestStrictAncestor runs', () => {
+      it('Then longest-wins is judged on the normalized form — the deeper plain fence is chosen', () => {
+        // Arrange — raw lengths would pick the \\?\-prefixed SHALLOWER
+        // entry (8 chars vs 7) and let the walk visit the fenced directory.
+        const sut = longestStrictAncestor;
+
+        // Act
+        const result = sut(['\\\\?\\C:\\a', 'C:\\a\\bb'], 'C:\\a\\bb\\c', windowsPolicy);
+
+        // Assert
+        expect(result).toBe('C:\\a\\bb');
+      });
+    });
+  });
 });

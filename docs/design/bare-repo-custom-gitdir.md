@@ -272,8 +272,9 @@ tsgit must reproduce it (see §9).
 empty and is accepted with the gitdir as its own common dir; any other content is a path
 verbatim (whitespace included — `"   \n"` names a directory called `"   "`, which then
 simply fails the shared-dir validation and the walk climbs). `HEAD` is validated BEFORE
-the commondir parse on every route, so a garbage-`HEAD` planted directory never reaches
-the pointer parse at all.
+the commondir parse on every walk and gitfile route, so a garbage-`HEAD` planted
+directory never reaches the pointer parse there (the explicit-gitDir route resolves the
+pointer before any validation — both tools refuse either way, with differing codes).
 
 #### 1b. `is_git_directory(D)` — what makes a directory a git directory
 
@@ -290,6 +291,7 @@ worktree's admin dir, which has no `objects/` of its own, still qualifies). Meas
 | same but `HEAD` = 40 hex chars | git directory (detached) |
 | same but `HEAD` = 64 hex chars | git directory (detached, SHA-256 width) |
 | same but `HEAD` = 40 UPPERCASE (or mixed-case) hex chars | **git directory** — git's hex table accepts both cases (measured) |
+| same but `HEAD` = valid leading id + ~70 KB of filler | **git directory** — git validates only the first 255 bytes and never consults the size (measured); a size gate would climb past a repository git resolves |
 | same but `HEAD` = `ref: main\n` (one level) | **not** a git directory |
 | same but `HEAD` = 40 non-hex chars | **not** a git directory |
 | same but `HEAD` empty | **not** a git directory |
@@ -1322,3 +1324,11 @@ matches `@writes`-tagged modules against; `reports/api.json` regenerated (§10).
   are data (ADR-249); reconstruction lives in the interop test, never in the library.
 - **Cross-volume (Windows multi-drive) `gitDir`/`workDir` pairs** — the documented
   ADR-495 limitation; §8's root set fails closed there rather than widening.
+- **Two measured refusal-shape residuals** (verdicts agree with git; only the condition
+  or code differs, both confined to the caller's own directory): a `commondir` whose
+  path has a missing INTERMEDIATE component (git: `fatal: Invalid path`; tsgit: the
+  candidate misses its shared-dir check and the walk climbs to the legitimate enclosing
+  repo), and a present-but-malformed explicit `gitDir` (git: up-front
+  `not a git repository` on the first command; tsgit: the bootstrap leniency admits it
+  and the primitives tier fails with object-level errors — `init` still works, which is
+  the leniency's purpose).
