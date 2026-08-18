@@ -1,6 +1,4 @@
-import { TsgitError } from '../../domain/error.js';
-import type { Context } from '../../ports/context.js';
-import type { ConfigToken, IniSection } from './internal/config-ini.js';
+import type { ConfigToken, IniSection } from '../../domain/config/config-ini.js';
 import {
   GIT_C_INT_MAX,
   GIT_C_INT_MIN,
@@ -8,24 +6,27 @@ import {
   parseGitInt,
   parseIniSectionsFromTokens,
   tokenizeConfig,
-} from './internal/config-ini.js';
+} from '../../domain/config/config-ini.js';
+import { TsgitError } from '../../domain/error.js';
+import type { Context } from '../../ports/context.js';
 import { commonGitDir } from './path-layout.js';
 
-// Re-exported verbatim: these symbols physically live in `internal/config-ini.ts`
-// now (the pure tokenizer/parser layer, split out to break an import cycle —
-// see that file's header comment), but every external consumer still imports
-// them from here, so every symbol an existing caller depends on stays
-// reachable from this module. `HeaderPrefixScan`/`SectionHeaderParse` are
-// NOT in this list — no caller inside or outside this package imports them
-// by name (`scanHeaderPrefix`'s callers consume the returned shape
-// structurally), so they stay internal to `config-ini.ts`.
-export type { ConfigToken, IniSection } from './internal/config-ini.js';
+// Re-exported verbatim: these symbols physically live in
+// `src/domain/config/config-ini.ts` now (the pure tokenizer/parser layer,
+// split out to break an import cycle — see that file's header comment), but
+// every external consumer still imports them from here, so every symbol an
+// existing caller depends on stays reachable from this module.
+// `HeaderPrefixScan`/`SectionHeaderParse` are NOT in this list — no caller
+// inside or outside this package imports them by name (`scanHeaderPrefix`'s
+// callers consume the returned shape structurally), so they stay internal to
+// `config-ini.ts`.
+export type { ConfigToken, IniSection } from '../../domain/config/config-ini.js';
 export {
   parseIniSections,
   scanHeaderPrefix,
   skipGitSpace,
   tokenizeConfigLines,
-} from './internal/config-ini.js';
+} from '../../domain/config/config-ini.js';
 export { parseGitBoolean, parseGitInt, tokenizeConfig };
 
 /** `push.default` mode; `tracking` is a deprecated alias canonicalized to `upstream` at parse time. */

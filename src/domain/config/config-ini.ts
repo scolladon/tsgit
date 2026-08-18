@@ -8,7 +8,7 @@
  * cycle back, since `config-read.ts`'s own scope-aware `readConfig`
  * depends on that same scope-resolution machinery.
  */
-import { configParseError } from '../../../domain/commands/error.js';
+import { configParseError } from '../commands/error.js';
 
 /**
  * One `[section "subsection"]` block of a git-config-format INI file: the

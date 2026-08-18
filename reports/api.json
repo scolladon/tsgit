@@ -166147,37 +166147,37 @@
 		},
 		"2868": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/primitives/internal/config-ini.ts",
+			"packagePath": "src/domain/config/config-ini.ts",
 			"qualifiedName": "IniSection"
 		},
 		"2869": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/primitives/internal/config-ini.ts",
+			"packagePath": "src/domain/config/config-ini.ts",
 			"qualifiedName": "IniSection.section"
 		},
 		"2870": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/primitives/internal/config-ini.ts",
+			"packagePath": "src/domain/config/config-ini.ts",
 			"qualifiedName": "IniSection.subsection"
 		},
 		"2871": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/primitives/internal/config-ini.ts",
+			"packagePath": "src/domain/config/config-ini.ts",
 			"qualifiedName": "IniSection.entries"
 		},
 		"2872": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/primitives/internal/config-ini.ts",
+			"packagePath": "src/domain/config/config-ini.ts",
 			"qualifiedName": "__type"
 		},
 		"2873": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/primitives/internal/config-ini.ts",
+			"packagePath": "src/domain/config/config-ini.ts",
 			"qualifiedName": "__type.key"
 		},
 		"2874": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/primitives/internal/config-ini.ts",
+			"packagePath": "src/domain/config/config-ini.ts",
 			"qualifiedName": "__type.value"
 		},
 		"2875": {
@@ -166627,22 +166627,22 @@
 		},
 		"2964": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/primitives/internal/config-ini.ts",
+			"packagePath": "src/domain/config/config-ini.ts",
 			"qualifiedName": "parseIniSections"
 		},
 		"2965": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/primitives/internal/config-ini.ts",
+			"packagePath": "src/domain/config/config-ini.ts",
 			"qualifiedName": "parseIniSections"
 		},
 		"2966": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/primitives/internal/config-ini.ts",
+			"packagePath": "src/domain/config/config-ini.ts",
 			"qualifiedName": "text"
 		},
 		"2967": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/application/primitives/internal/config-ini.ts",
+			"packagePath": "src/domain/config/config-ini.ts",
 			"qualifiedName": "source"
 		},
 		"2968": {
