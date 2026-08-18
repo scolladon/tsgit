@@ -293,8 +293,11 @@ worktree's admin dir, which has no `objects/` of its own, still qualifies). Meas
 | `refs/` missing | not a git directory |
 
 Rule: `HEAD` is valid iff it is a symlink whose *link text* begins `refs/`, **or** its
-content parses as a hex object id of either width, **or** it begins `ref:` and the first
-whitespace-delimited token after the prefix begins `refs/`.
+LEADING characters parse as a full hex object id (git consumes the id and ignores the
+remainder — `<40hex>garbage` and `<40hex>\r\n` are both git directories, measured), **or**
+it begins `ref:` and, after ASCII whitespace only (C `isspace` — a no-break space does
+NOT qualify, measured: git climbs past `ref:\u00A0refs/…`), the next token begins
+`refs/`.
 
 tsgit today implements a **narrower** predicate — `HEAD` exists and is a regular file via a
 following `stat`, content never parsed (`find-layout.ts:162-174`, ADR-534). Two measured
@@ -601,6 +604,10 @@ One algorithm, structural first, config second — the ordering is git's and is 
 resolveLayout(probe, opts, cwd, policy, readRepoFormat) -> ResolvedLayout
   # ── Stage 1: locate the gitDir (structure only, no config) ───────────────
   if opts.gitDir is given:
+    # NB: branch on isAbsolute — an absolute value is used verbatim. A literal
+    # resolve(join(cwd, value)) nests absolute values under cwd on the portable
+    # policy, whose join has no later-absolute-wins semantics (implementation-
+    # verified; the node policy's multi-arg resolve masks the bug).
     entry   := policy.resolve(policy.join(cwd, opts.gitDir))       # relative → against cwd
     gitDir  := probe.stat(entry) is a file                         # §1c explicit-edge row 4
                  ? resolvePointer(probe, entry, dirname(entry), policy)   # gitfile grammar
@@ -880,6 +887,7 @@ git's per-command gate is `setup_work_tree()`, which refuses in two shapes (§1f
 | `core.bare` and `core.worktree` both set | `fatal: unable to set up work tree using invalid config` (128) | `WORK_TREE_CONFIG_INVALID { gitDir }` |
 | no work tree resolved | `fatal: this operation must be run in a work tree` (128) | `WORK_TREE_REQUIRED { operation }` |
 | `reset --mixed` while `is_bare_repository()` | `fatal: mixed reset is not allowed in a bare repository` (128) | `BARE_REPOSITORY { operation: 'reset --mixed' }` |
+| relative `core.worktree` whose physical resolution fails | `fatal: cannot chdir to '<value>': No such file or directory` (128), at setup, on every command | `WORK_TREE_UNRESOLVABLE { value, gitDir }` at `openRepository` on adapters with realpath; lexical (accepting) on sandboxed adapters, the established canonicalisation split |
 | `submodule <verb>` with no work tree | `fatal: … cannot be used without a working tree.` (**exit 1**) | `WORK_TREE_REQUIRED { operation }` — the differing exit code is git's shell-wrapper artefact, not a distinct condition |
 
 Per ADR-249 the **conditions and their discriminants** are what must match; the message
@@ -1079,7 +1087,8 @@ therefore become the repository tsgit opens.
 |---|---|---|
 | `hooks/` scripts | the biggest one: hooks live in the *discovered* common dir, and the node `HookRunner` spawns them inheriting the full `process.env`. A planted gitdir is arbitrary code execution on the next hook-firing command. | Pre-existing and unchanged in kind (a planted `.git/` directory or `.git` gitfile already did this — the linked-worktree design records it). What is new is the *shape* of the bait. `openRepository({ hooks: false })` remains the documented mitigation, already warned about on `OpenRepositoryOptions.hooks` (`src/repository.ts:94-99`). |
 | `config` — `merge.<d>.driver`, `core.excludesFile`, `core.attributesFile` | shell commands and file reads taken from the attacker's config | `command: false` (`src/repository.ts:102-110`) disables external drivers; the FS validator confines reads to the layout roots |
-| `core.worktree` | **new**: config from the discovered gitdir now names a *directory outside the gitdir*, which is then added to the containment root set — an attacker-chosen widening | Bounded, not eliminated: the widening is to exactly one named directory, never to an ancestor (§8). It is what git does; diverging would break every legitimate `core.worktree` repo. The gate that *should* stop this is ownership-based, i.e. `safe.directory` — deferred, and this design does not narrow the gap. |
+| `core.worktree` | **new**: config from the discovered gitdir now names a *directory outside the gitdir*, which is then added to the containment root set — an attacker-chosen widening | Bounded, not eliminated: the widening is to exactly one named directory — which MAY be an ancestor, up to `/` (a planted `core.worktree = /` collapses the minimised root set to `[/]` and so vacates the FS-validator mitigation listed one row up; measured, and faithful — git honours it). It is what git does; a tighter clamp would be a divergence needing its own ADR. The gate that *should* stop this is ownership-based, i.e. `safe.directory` — deferred, and this design does not narrow the gap. |
+| planted special files (FIFO / device / directory named `config`, `commondir`, `HEAD`) | a FIFO stats at size 0, defeating a size cap, and a read on it blocks forever — denial of the whole discovery from any walk-path directory | every layout-time read is gated on `stat.isFile` before `readUtf8`; non-regular entries are treated as absent, never read |
 | unbounded walk | a deep hostile tree makes discovery `stat` its way to `/` | `ceilingDirs` is the caller-side bound and is the reason it is in scope here rather than deferred with the env variables. It costs 2 `stat`s per level (§2), so the walk is I/O-bounded, not compute-bounded; there is no amplification. |
 | oversized planted files | a huge `.git` gitfile or `commondir` | already capped at 64 KiB (`find-layout.ts:77`); the Stage-2 config read reuses the same cap |
 
@@ -1247,10 +1256,14 @@ mechanically enforced rather than asserted by hand.
 
 ### Parity — `test/parity/`
 
-A memory-adapter bare layout wholly inside `rootDir` (`/repo.git` with `HEAD`/`objects`/
-`refs`) and a browser-adapter bare layout at the OPFS root, driven through the same read
-scenarios as node, proving the layout split is adapter-independent. Parity is cross-adapter
-only — it does not substitute for the interop assertions.
+The parity harness cannot express a bare layout without cross-driver surgery (measured
+during planning: every dist-bundle driver seeds a fixed non-bare scenario shape), so the
+cross-adapter proof is discharged in the unit tier instead: the memory-shim discovery
+suite pins the bare layout wholly inside `rootDir`, and the browser-shim unit suite pins
+the fixed-entry bare resolution — same read assertions, adapter-independent by
+construction since all three shims share `resolveLayout`/`finishLayout`. A parity-tier
+scenario remains open as a possible follow-up if the harness ever grows per-scenario
+layout shapes.
 
 ### Gates
 
