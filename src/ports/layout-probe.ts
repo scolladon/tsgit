@@ -26,4 +26,15 @@ export interface LayoutProbe {
    * containment-denial contract as `stat`.
    */
   readonly readUtf8: (path: string) => Promise<string | undefined>;
+  /**
+   * Reads a symlink's LINK TEXT without following it, resolving to
+   * `undefined` when `path` is not a symlink (or under the same absence /
+   * containment-denial contract as `stat`). OPTIONAL: git judges a `HEAD`
+   * symlink by its link text — even a dangling one — and only an adapter
+   * with a physical filesystem can answer that; sandboxed adapters (memory,
+   * browser) omit the capability and their walk keeps the following-`stat`
+   * behaviour, a divergence confined to symlinked `HEAD`s no sandboxed
+   * fixture can express anyway.
+   */
+  readonly readLink?: (path: string) => Promise<string | undefined>;
 }

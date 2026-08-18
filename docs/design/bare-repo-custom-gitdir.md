@@ -1324,11 +1324,15 @@ matches `@writes`-tagged modules against; `reports/api.json` regenerated (§10).
   are data (ADR-249); reconstruction lives in the interop test, never in the library.
 - **Cross-volume (Windows multi-drive) `gitDir`/`workDir` pairs** — the documented
   ADR-495 limitation; §8's root set fails closed there rather than widening.
-- **Two measured refusal-shape residuals** (verdicts agree with git; only the condition
-  or code differs, both confined to the caller's own directory): a `commondir` whose
-  path has a missing INTERMEDIATE component (git: `fatal: Invalid path`; tsgit: the
-  candidate misses its shared-dir check and the walk climbs to the legitimate enclosing
-  repo), and a present-but-malformed explicit `gitDir` (git: up-front
-  `not a git repository` on the first command; tsgit: the bootstrap leniency admits it
-  and the primitives tier fails with object-level errors — `init` still works, which is
-  the leniency's purpose).
+- **Refusal-shape residuals — CLOSED in this change** (were deferred, pulled back in at
+  the user's direction): a RELATIVE `commondir` pointer with a missing INTERMEDIATE
+  component now refuses hard on every route (git's `fatal: Invalid path`; an absolute
+  pointer keeps the lexical resolution — its parent may lie outside a sandboxed
+  adapter's containment root, where absence and denial are indistinguishable); a
+  present-but-malformed gitdir now refuses `NOT_A_REPOSITORY` at the first command
+  (`assertRepository` validates `HEAD` content, not just presence — `init` still
+  bootstraps, it never runs the gate); and a `HEAD` symlink is judged by its LINK TEXT
+  on adapters exposing the new optional `LayoutProbe.readLink` (node), dangling targets
+  included — closing ADR-659's residual there and narrowing the divergence to sandboxed
+  adapters, which cannot express symlinked `HEAD`s at all. The walk's miss-level cost
+  becomes one extra `stat` plus, on `readLink`-capable adapters, one `readlink`.

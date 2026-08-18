@@ -1050,4 +1050,101 @@ describe('findLayout', () => {
       });
     });
   });
+  describe('Given a probe exposing readLink and a dangling HEAD symlink whose text begins refs/', () => {
+    describe('When findLayout runs', () => {
+      it('Then the directory qualifies — git judges a symlinked HEAD by its link text, dangling included', async () => {
+        // Arrange — the target of the link does not exist, so the following
+        // stat sees nothing; only the link text makes this a git directory.
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await fs.mkdir('/repo/bare/objects');
+        await fs.mkdir('/repo/bare/refs');
+        const base = fileSystemLayoutProbe(fs);
+        const probe = {
+          ...base,
+          readLink: async (path: string) =>
+            path === '/repo/bare/HEAD' ? 'refs/heads/main' : undefined,
+        };
+
+        // Act
+        const result = await findLayout(probe, '/repo/bare', posixPolicy);
+
+        // Assert
+        expect(result).toStrictEqual({ gitDir: '/repo/bare', route: 'BARE_DIR' });
+      });
+    });
+  });
+
+  describe('Given a probe exposing readLink and a HEAD symlink pointing outside refs/', () => {
+    describe('When findLayout runs', () => {
+      it('Then the directory does not qualify even though the link target might exist', async () => {
+        // Arrange
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await fs.mkdir('/repo/bare/objects');
+        await fs.mkdir('/repo/bare/refs');
+        await fs.writeUtf8('/repo/bare/HEAD', 'ref: refs/heads/main\n');
+        const base = fileSystemLayoutProbe(fs);
+        const probe = {
+          ...base,
+          readLink: async (path: string) =>
+            path === '/repo/bare/HEAD' ? '/nowhere/else' : undefined,
+        };
+
+        // Act
+        const result = await findLayout(probe, '/repo/bare', posixPolicy);
+
+        // Assert — link text wins over the (valid) followed content.
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a commondir whose target path has a missing INTERMEDIATE component', () => {
+    describe('When findLayout runs', () => {
+      it('Then it refuses hard — git dies with Invalid path there and never climbs', async () => {
+        // Arrange — only the FINAL component may be absent (that shape is a
+        // candidate miss); a missing intermediate is a refusal.
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await makeGitDir(fs, '/repo/.git');
+        await makeGitDir(fs, '/repo/bait');
+        await fs.writeUtf8('/repo/bait/commondir', 'no/such/dir\n');
+
+        // Act
+        let caught: unknown;
+        try {
+          await findLayout(fileSystemLayoutProbe(fs), '/repo/bait', posixPolicy);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data).toMatchObject({
+          code: 'GITFILE_INVALID_FORMAT',
+          path: '/repo/bait/commondir',
+        });
+      });
+    });
+  });
+
+  describe('Given a commondir whose target is missing only its FINAL component', () => {
+    describe('When findLayout runs from inside a real repo', () => {
+      it('Then the candidate is a plain miss and the walk climbs to the enclosing repo', async () => {
+        // Arrange
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await makeGitDir(fs, '/repo/.git');
+        await makeGitDir(fs, '/repo/bait');
+        await fs.writeUtf8('/repo/bait/commondir', '../shared\n');
+
+        // Act
+        const result = await findLayout(fileSystemLayoutProbe(fs), '/repo/bait', posixPolicy);
+
+        // Assert
+        expect(result).toStrictEqual({
+          gitDir: '/repo/.git',
+          route: 'DISCOVERED',
+          origin: '/repo',
+        });
+      });
+    });
+  });
 });

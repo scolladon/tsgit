@@ -2011,6 +2011,82 @@ describe.skipIf(!GIT_AVAILABLE)('bare and work-tree-less layout interop', () => 
       });
     });
 
+    describe('When HEAD is a DANGLING symlink whose link text begins refs/', () => {
+      it('Then both tools treat the directory as a git directory — the link text decides', async () => {
+        // Arrange
+        const dir = path.join(root, 'dangling-head');
+        await mkdir(path.join(dir, 'objects'), { recursive: true });
+        await mkdir(path.join(dir, 'refs'), { recursive: true });
+        await symlink('refs/heads/does-not-exist', path.join(dir, 'HEAD'));
+        const g = tryRunGitWithExit(['-C', dir, 'rev-parse', '--git-dir'], { env: runGitEnv() });
+
+        // Act
+        const repo = await openRepository({ cwd: dir });
+
+        try {
+          // Assert
+          expect(g.exitCode).toBe(0);
+          expect(repo.layout.gitDir).toBe(await realpath(dir));
+        } finally {
+          await repo.dispose();
+        }
+      });
+    });
+
+    describe('When HEAD is a symlink pointing outside refs/', () => {
+      it('Then neither tool treats the directory as a git directory', async () => {
+        // Arrange
+        const outer = path.join(root, 'outer-bad-link');
+        buildNormalRepo(outer);
+        const inner = path.join(outer, 'bad-link');
+        await mkdir(path.join(inner, 'objects'), { recursive: true });
+        await mkdir(path.join(inner, 'refs'), { recursive: true });
+        await symlink('/nowhere/else', path.join(inner, 'HEAD'));
+        const expectedGitDir = git(
+          inner,
+          'rev-parse',
+          '--path-format=absolute',
+          '--git-dir',
+        ).trim();
+
+        // Act
+        const repo = await openRepository({ cwd: inner });
+
+        try {
+          // Assert — both climb to the enclosing repo.
+          expect(await realpath(expectedGitDir)).toBe(await realpath(path.join(outer, '.git')));
+          expect(repo.layout.gitDir).toBe(await realpath(expectedGitDir));
+        } finally {
+          await repo.dispose();
+        }
+      });
+    });
+
+    describe('When a commondir target has a missing INTERMEDIATE component', () => {
+      it('Then both tools refuse hard instead of climbing', async () => {
+        // Arrange
+        const outer = path.join(root, 'outer-bad-common');
+        buildNormalRepo(outer);
+        const inner = path.join(outer, 'bad-common');
+        await plantBareShape(inner, 'ref: refs/heads/main\n');
+        await writeFile(path.join(inner, 'commondir'), 'no/such/dir\n');
+        const g = tryRunGitWithExit(['-C', inner, 'rev-parse', '--git-dir'], { env: runGitEnv() });
+
+        // Act
+        let caught: unknown;
+        try {
+          await openRepository({ cwd: inner });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(g.exitCode).toBe(128);
+        expect(g.stderr).toContain('Invalid path');
+        expect((caught as { data?: { code?: string } })?.data?.code).toBe('GITFILE_INVALID_FORMAT');
+      });
+    });
+
     describe('When a HEAD is oversized but leads with a valid object id', () => {
       it('Then both tools still treat the directory as a git directory', async () => {
         // Arrange — git validates only the leading bytes of HEAD, never its size.
@@ -2048,6 +2124,36 @@ describe.skipIf(!GIT_AVAILABLE)('bare and work-tree-less layout interop', () => 
 
     afterAll(async () => {
       if (root !== undefined) await rm(root, { recursive: true, force: true });
+    });
+
+    describe('When the explicit gitDir names a directory whose HEAD is garbage', () => {
+      it('Then the first command refuses NOT_A_REPOSITORY up front, while init still bootstraps', async () => {
+        // Arrange — a present-but-malformed gitdir: git refuses every read
+        // command up front; only init may proceed (it rewrites the shape).
+        const malformed = path.join(root, 'malformed.git');
+        await mkdir(path.join(malformed, 'objects'), { recursive: true });
+        await mkdir(path.join(malformed, 'refs'), { recursive: true });
+        await writeFile(path.join(malformed, 'HEAD'), 'garbage\n');
+        const g = tryRunGitWithExit(['--git-dir', malformed, 'log'], { env: runGitEnv() });
+        const elsewhere = path.join(root, 'elsewhere-q2');
+        await mkdir(elsewhere, { recursive: true });
+
+        // Act
+        const repo = await openRepository({ cwd: elsewhere, gitDir: malformed });
+        let caught: unknown;
+        try {
+          await repo.log();
+        } catch (err) {
+          caught = err;
+        } finally {
+          await repo.dispose();
+        }
+
+        // Assert
+        expect(g.exitCode).toBe(128);
+        expect(g.stderr).toContain('not a git repository');
+        expect((caught as { data?: { code?: string } })?.data?.code).toBe('NOT_A_REPOSITORY');
+      });
     });
 
     describe('When gitDir names a directory that does not yet exist', () => {

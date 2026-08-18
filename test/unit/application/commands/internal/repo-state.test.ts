@@ -48,6 +48,31 @@ describe('internal/repo-state', () => {
       });
     });
 
+    describe('Given a HEAD whose content is not a valid head', () => {
+      describe('When called', () => {
+        it('Then throws NOT_A_REPOSITORY — git refuses a malformed gitdir up front', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx, 'garbage');
+
+          // Act
+          let caught: unknown;
+          try {
+            await assertRepository(ctx);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data).toMatchObject({
+            code: 'NOT_A_REPOSITORY',
+            path: ctx.layout.workDir,
+          });
+        });
+      });
+    });
+
     describe('Given a T1 boolean key holds a value git refuses', () => {
       describe('When called', () => {
         it.each([

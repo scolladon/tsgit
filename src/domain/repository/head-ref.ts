@@ -14,13 +14,12 @@
  * git climbs past must never qualify here, or a planted tree could shadow
  * an enclosing repository.
  *
- * One deliberate divergence from real git: git also accepts a `HEAD` that is
- * a *symlink* whose link text begins `refs/`, even when the symlink target
- * does not exist. This module only ever sees the string a caller already
- * read back (following any symlink), so a dangling `HEAD` symlink can never
- * reach it — the caller's read already failed and it never calls in. A
- * `HEAD` symlink to an existing, valid target still comes through here as
- * ordinary content and is accepted.
+ * Symlinked `HEAD`s never reach this module: git judges them by LINK TEXT
+ * (`refs/…` qualifies even when dangling), and the discovery walk mirrors
+ * that through the probe's optional `readLink` BEFORE reading any content.
+ * On adapters without the capability (memory, browser — sandboxes that
+ * cannot express symlinks anyway) the walk falls back to the followed
+ * content, which lands here as an ordinary string.
  */
 
 // A leading object id: git consumes the hex prefix and ignores the

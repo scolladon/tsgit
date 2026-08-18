@@ -4,7 +4,7 @@
  * cwd-walked layout) and forwards every `openRepository(opts)` call to the
  * core factory with the fallback pre-bound.
  */
-import { readFile, realpath, stat } from 'node:fs/promises';
+import { readFile, readlink, realpath, stat } from 'node:fs/promises';
 import * as nodePath from 'node:path';
 
 import { NodeCommandRunner } from './adapters/node/node-command-runner.js';
@@ -151,6 +151,9 @@ const nodeLayoutProbe: LayoutProbe = {
       : { isDirectory: s.isDirectory(), isFile: s.isFile(), size: s.size };
   },
   readUtf8: (p) => readFile(p, 'utf8').catch(() => undefined),
+  // EINVAL (not a symlink) and ENOENT both collapse to undefined per the
+  // port contract — the caller only cares whether usable link text exists.
+  readLink: (p) => readlink(p, 'utf8').catch(() => undefined),
 };
 
 /**

@@ -53,8 +53,10 @@ interface GitDirLocation {
  * `--separate-git-dir` gitfile pointer) is a commitment: once found, it is
  * resolved and either returns a layout or throws — the walk never falls back
  * to an ancestor repository past an unusable gitfile. The cwd-is-gitdir check
- * runs a cheap `HEAD`-file stat first so a level with neither a `.git` entry
- * nor a `HEAD` file costs exactly one extra `stat` over the pre-existing walk.
+ * probes `HEAD` first, so a level with neither a `.git` entry nor a `HEAD`
+ * costs one extra `stat` (plus, on adapters exposing `readLink`, one
+ * `readlink` — the price of judging a symlinked `HEAD` by its link text the
+ * way git does) over the pre-existing walk.
  *
  * Returns `undefined` when no usable git directory is found before reaching
  * the filesystem root — callers can choose to default to a fresh repo at
@@ -249,9 +251,20 @@ export const resolveCommonDir = async (
   if (raw.length === 0) throw gitfileInvalidFormat(commondirPath);
   const value = parseCommondir(raw);
   if (value.kind === 'empty') return gitDir;
-  return pathPolicy.isAbsolute(value.path)
-    ? pathPolicy.resolve(value.path)
-    : pathPolicy.resolve(pathPolicy.join(gitDir, value.path));
+  if (pathPolicy.isAbsolute(value.path)) return pathPolicy.resolve(value.path);
+  const target = pathPolicy.resolve(pathPolicy.join(gitDir, value.path));
+  // git resolves the pointer physically and dies (`fatal: Invalid path`)
+  // when an INTERMEDIATE component is missing — only the FINAL component may
+  // be absent (the target then simply fails the shared-dir validation and
+  // the candidate is a miss). Checked for RELATIVE pointers only: a relative
+  // target stays near the gitDir where every probe can see it, while an
+  // absolute one may lie outside a sandboxed adapter's containment root,
+  // where the probe's absence/denial collapse would turn an unverifiable
+  // parent into a false refusal. One extra `stat`, paid only by the rare
+  // directory that carries a relative `commondir` at all.
+  const parent = await probe.stat(pathPolicy.dirname(target));
+  if (parent?.isDirectory !== true) throw gitfileInvalidFormat(commondirPath);
+  return target;
 };
 
 /**
@@ -265,8 +278,8 @@ export const resolveCommonDir = async (
  * residual gap from real git: a `HEAD` symlink whose *link text* begins
  * `refs/` but whose target does not exist is accepted by git and rejected
  * here, because this probe only exposes a following `stat` plus `readUtf8`,
- * never the raw link text. A directory named `HEAD` is not a head and fails
- * the check.
+ * never the raw link text on adapters without `readLink`. A directory named
+ * `HEAD` is not a head and fails the check.
  */
 const hasValidHead = async (
   probe: LayoutProbe,
@@ -274,6 +287,13 @@ const hasValidHead = async (
   pathPolicy: PathPolicy,
 ): Promise<boolean> => {
   const headPath = pathPolicy.join(gitDir, 'HEAD');
+  // Link text FIRST, like git's `validate_headref` (an lstat): a `HEAD`
+  // symlink is judged by where it POINTS — `refs/…` qualifies even when the
+  // target does not exist, anything else disqualifies even when it does.
+  // Adapters without the capability (or a non-symlink `HEAD`, where
+  // `readLink` collapses to undefined) fall through to the content check.
+  const linkText = await probe.readLink?.(headPath);
+  if (linkText !== undefined) return linkText.startsWith('refs/');
   const head = await probe.stat(headPath);
   if (head?.isFile !== true) return false;
   // No size gate: git validates only the first 255 bytes of HEAD and never

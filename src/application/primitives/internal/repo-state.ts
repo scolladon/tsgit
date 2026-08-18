@@ -17,6 +17,7 @@ import {
   REBASE_HEAD,
   REVERT_HEAD,
 } from '../../../domain/refs/state-files.js';
+import { isValidHeadContent } from '../../../domain/repository/head-ref.js';
 import {
   CHERRY_PICK,
   MERGE,
@@ -77,13 +78,18 @@ const assertDiscoveryBooleansValid = async (ctx: Context): Promise<void> => {
 };
 
 /**
- * Confirm `ctx` points at a real repository: `${gitDir}/HEAD` exists, then run
- * the discovery-tier boolean gate. Returns the repo root (workDir for
- * non-bare; gitDir for bare repos where gitDir IS the root).
+ * Confirm `ctx` points at a real repository: `${gitDir}/HEAD` exists AND its
+ * content parses as a head — git refuses a present-but-malformed gitdir with
+ * the same up-front `not a git repository` fatal it uses for an absent one,
+ * so an explicit `gitDir` naming a directory whose `HEAD` is garbage must
+ * not be half-operated on — then run the discovery-tier boolean gate.
+ * Returns the repo root (workDir for non-bare; gitDir for bare repos where
+ * gitDir IS the root).
  */
 export const assertRepository = async (ctx: Context): Promise<FilePath> => {
   const headPath = `${ctx.layout.gitDir}/HEAD`;
-  if (!(await ctx.fs.exists(headPath))) {
+  const head = await ctx.fs.readUtf8(headPath).catch(() => undefined);
+  if (head === undefined || !isValidHeadContent(head)) {
     throw notARepository((ctx.layout.workDir ?? ctx.layout.gitDir) as FilePath);
   }
   await assertDiscoveryBooleansValid(ctx);

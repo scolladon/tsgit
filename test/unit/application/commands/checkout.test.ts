@@ -80,14 +80,9 @@ describe('checkout', () => {
           expected: 'topic/sub',
         },
         {
-          label: 'a ref with no slash, the label is that ref verbatim',
-          refPath: 'legacy',
-          expected: 'legacy',
-        },
-        {
           label:
-            'a two-segment ref outside refs/heads/, the label is the segment after the single slash',
-          refPath: 'x/main',
+            'a ref outside refs/heads/, the label is the basename after the last slash — a valid symbolic HEAD always begins refs/, so no-slash targets cannot exist',
+          refPath: 'refs/x/main',
           expected: 'main',
         },
       ])('Then $label', async ({ refPath, expected }) => {
