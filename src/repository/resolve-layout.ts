@@ -72,7 +72,7 @@ const isLinkedWorktreeAdmin = (outcome: WalkOutcome): boolean =>
  * `base` instead of using it directly. Branching on `isAbsolute` here works
  * identically under every `PathPolicy` implementation.
  */
-const resolveAgainst = (base: string, value: string, pathPolicy: PathPolicy): string =>
+export const resolveAgainst = (base: string, value: string, pathPolicy: PathPolicy): string =>
   pathPolicy.isAbsolute(value)
     ? pathPolicy.resolve(value)
     : pathPolicy.resolve(pathPolicy.join(base, value));

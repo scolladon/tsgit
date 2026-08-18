@@ -13,6 +13,7 @@ import { SHA1_CONFIG } from './domain/objects/hash-config.js';
 import { createLruCache } from './domain/storage/lru-cache.js';
 import { resolveFixedEntryLayout } from './repository/fixed-entry-layout.js';
 import { portablePosixPolicy } from './repository/portable-posix-policy.js';
+import { resolveAgainst } from './repository/resolve-layout.js';
 import { validateOptions } from './repository/validate-options.js';
 import {
   type OpenRepositoryOptions,
@@ -47,19 +48,13 @@ export interface OpenBrowserRepositoryOptions extends OpenRepositoryOptions {
  * fixed `/{gitDirName}` entry point itself. Relative values resolve against
  * the fixed work dir, the same "relative resolves against cwd" rule the
  * core option documents; the browser's cwd is always `ROOT_WORK_DIR`.
- * Branches on `isAbsolute` explicitly rather than a two-arg
- * `portablePosixPolicy.resolve` call — that policy's `resolve` does not
- * implement `node:path.resolve`'s "a later absolute argument wins"
- * semantics (see its own doc comment), so a two-arg call would silently
- * nest an absolute `gitDirOpt` under `ROOT_WORK_DIR` instead of using it
- * directly.
+ * `resolveAgainst` carries the absolute-wins rationale a bare two-arg
+ * policy `resolve` would get wrong.
  */
 const resolveGitDirEntry = (gitDirOpt: string | undefined, gitDirName: string): string =>
   gitDirOpt === undefined
     ? `${ROOT_WORK_DIR}${gitDirName}`
-    : portablePosixPolicy.isAbsolute(gitDirOpt)
-      ? portablePosixPolicy.resolve(gitDirOpt)
-      : portablePosixPolicy.resolve(portablePosixPolicy.join(ROOT_WORK_DIR, gitDirOpt));
+    : resolveAgainst(ROOT_WORK_DIR, gitDirOpt, portablePosixPolicy);
 
 export const openRepository = async (opts: OpenBrowserRepositoryOptions): Promise<Repository> => {
   validateOptions(opts);
