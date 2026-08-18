@@ -49,6 +49,7 @@ export interface OpenNodeRepositoryOptions extends OpenRepositoryOptions {
 }
 
 export const openRepository = async (opts: OpenNodeRepositoryOptions = {}): Promise<Repository> => {
+  // Stryker disable next-line CallExpression: equivalent — `openRepositoryCore` (below, forwarding the SAME unmodified `opts` fields, `cwd` aside) runs `validateOptions` again at `repository.ts`; removing this eager call cannot change any thrown error, only where it is thrown from — confirmed empirically (an invalid `gitDir` still throws the identical `INVALID_OPTION` shape via the core's re-check).
   validateOptions(opts);
   const cwd = opts.cwd ?? process.cwd();
   // Resolve to the real path (follows symlinks). On macOS, /var/folders/...
