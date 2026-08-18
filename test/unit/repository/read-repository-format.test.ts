@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { MemoryFileSystem } from '../../../src/adapters/memory/memory-file-system.js';
 import { posixPolicy } from '../../../src/adapters/node/path-policy.js';
 import { TsgitError } from '../../../src/domain/error.js';
+import type { LayoutProbe } from '../../../src/ports/layout-probe.js';
 import { fileSystemLayoutProbe } from '../../../src/repository/file-system-layout-probe.js';
 import { readRepositoryFormat } from '../../../src/repository/read-repository-format.js';
 
@@ -283,6 +284,128 @@ describe('readRepositoryFormat', () => {
           worktree: undefined,
           worktreeConfig: false,
         });
+      });
+    });
+  });
+
+  describe('Given a config that stats non-regular but whose readUtf8 would still return real content', () => {
+    describe('When readRepositoryFormat runs', () => {
+      it('Then the non-regular check short-circuits before that read is ever attempted', async () => {
+        // Arrange — a hand-crafted probe that DECOUPLES stat from readUtf8,
+        // simulating the real hazard the guard defends against: a FIFO stats
+        // as non-regular but its content, if read, would still parse as a
+        // real config. `MemoryFileSystem`'s own readUtf8 already fails
+        // closed for a directory (both the `stat`-guard branch and the later
+        // `text === undefined` branch return the same "absent" result
+        // there), so only a probe that can return SOMETHING from readUtf8
+        // proves the `stat` guard — not the later one — is what stops the
+        // read.
+        const probe: LayoutProbe = {
+          stat: async () => ({ isDirectory: false, isFile: false, size: 3 }),
+          readUtf8: async () => '[core]\n\tbare = true\n',
+        };
+
+        // Act
+        const result = await readRepositoryFormat(probe, '/repo/.git', '/repo/.git', posixPolicy);
+
+        // Assert — the non-regular entry is treated as absent; the config
+        // text its readUtf8 stub would have supplied is never consulted.
+        expect(result).toStrictEqual({
+          bare: undefined,
+          worktree: undefined,
+          worktreeConfig: false,
+        });
+      });
+    });
+  });
+
+  describe('Given core.bare set under a subsection', () => {
+    describe('When readRepositoryFormat runs', () => {
+      it('Then it is ignored — only a TOP-LEVEL core.bare counts', async () => {
+        // Arrange — `[core "custom"]` is a subsection; git's repository-format
+        // keys are read only from the unqualified `[core]` section.
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await fs.writeUtf8('/repo/.git/config', '[core "custom"]\n\tbare = true\n');
+
+        // Act
+        const result = await readRepositoryFormat(
+          fileSystemLayoutProbe(fs),
+          '/repo/.git',
+          '/repo/.git',
+          posixPolicy,
+        );
+
+        // Assert
+        expect(result.bare).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a bare = true entry under [extensions] rather than [core]', () => {
+    describe('When readRepositoryFormat runs', () => {
+      it('Then it is ignored — the section filter binds the key to its own section', async () => {
+        // Arrange — a same-named key in the WRONG section must never satisfy
+        // a `core.bare` lookup.
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await fs.writeUtf8('/repo/.git/config', '[extensions]\n\tbare = true\n');
+
+        // Act
+        const result = await readRepositoryFormat(
+          fileSystemLayoutProbe(fs),
+          '/repo/.git',
+          '/repo/.git',
+          posixPolicy,
+        );
+
+        // Assert
+        expect(result.bare).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a valueless core.bare in the local config', () => {
+    describe('When readRepositoryFormat runs', () => {
+      it("Then bare is true — git's internal NULL for a valueless boolean", async () => {
+        // Arrange
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await fs.writeUtf8('/repo/.git/config', '[core]\n\tbare\n');
+
+        // Act
+        const result = await readRepositoryFormat(
+          fileSystemLayoutProbe(fs),
+          '/repo/.git',
+          '/repo/.git',
+          posixPolicy,
+        );
+
+        // Assert
+        expect(result.bare).toBe(true);
+      });
+    });
+  });
+
+  describe('Given extensions.worktreeConfig set to a malformed boolean value', () => {
+    describe('When readRepositoryFormat runs', () => {
+      it('Then worktreeConfig is false — an invalid grammar is inert here, not a refusal', async () => {
+        // Arrange — `config.worktree` also carries a distinguishing bare
+        // value, so an accidentally-tripped gate is observable two ways.
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await fs.writeUtf8(
+          '/repo/.git/config',
+          '[core]\n\tbare = false\n[extensions]\n\tworktreeConfig = banana\n',
+        );
+        await fs.writeUtf8('/repo/.git/config.worktree', '[core]\n\tbare = true\n');
+
+        // Act
+        const result = await readRepositoryFormat(
+          fileSystemLayoutProbe(fs),
+          '/repo/.git',
+          '/repo/.git',
+          posixPolicy,
+        );
+
+        // Assert
+        expect(result).toStrictEqual({ bare: false, worktree: undefined, worktreeConfig: false });
       });
     });
   });

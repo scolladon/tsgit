@@ -41,6 +41,7 @@ const lastTopLevelEntry = (
   section: string,
   key: string,
 ): ScannedEntry | undefined => {
+  // Stryker disable next-line StringLiteral: equivalent — `lastTopLevelEntry` is only ever called with `section` = 'core' or 'extensions' (both non-empty), and the tokenizer emits `entry` tokens even for lines before any header, so a mutated initial value is compared only against those two literals — never observable regardless of its content.
   let currentSection = '';
   let currentSubsection: string | undefined;
   let found: ScannedEntry | undefined;
