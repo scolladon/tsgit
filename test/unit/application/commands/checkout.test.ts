@@ -87,10 +87,9 @@ describe('checkout', () => {
         },
       ])('Then $label', async ({ refPath, expected }) => {
         // Arrange — point HEAD at a loose ref of the given shape. The label
-        // computation must strip only the refs/heads/ prefix and otherwise fall
-        // back to the basename after the last slash (pinning both the
-        // HEADS_PREFIX slice and the `lastIndexOf('/') === -1` guard against a
-        // `=== 1` mutation).
+        // computation must strip only the refs/heads/ prefix and otherwise
+        // fall back to the basename after the last slash; a valid symbolic
+        // HEAD always begins refs/, so the slice is total.
         const { ctx, commitId } = await seedWithBranches();
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/${refPath}`, `${commitId}\n`);
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `ref: ${refPath}\n`);

@@ -2024,9 +2024,13 @@ describe.skipIf(!GIT_AVAILABLE)('bare and work-tree-less layout interop', () => 
         const repo = await openRepository({ cwd: dir });
 
         try {
-          // Assert
+          // Assert — discovery AND the command-tier gate agree: the same
+          // link-text rule admits the repository on both tiers, so a
+          // post-gate command runs instead of refusing NOT_A_REPOSITORY.
           expect(g.exitCode).toBe(0);
           expect(repo.layout.gitDir).toBe(await realpath(dir));
+          const branches = await repo.branch.list();
+          expect(branches.branches).toEqual([]);
         } finally {
           await repo.dispose();
         }
@@ -2127,9 +2131,10 @@ describe.skipIf(!GIT_AVAILABLE)('bare and work-tree-less layout interop', () => 
     });
 
     describe('When the explicit gitDir names a directory whose HEAD is garbage', () => {
-      it('Then the first command refuses NOT_A_REPOSITORY up front, while init still bootstraps', async () => {
+      it('Then the first command refuses NOT_A_REPOSITORY up front', async () => {
         // Arrange — a present-but-malformed gitdir: git refuses every read
-        // command up front; only init may proceed (it rewrites the shape).
+        // command up front (init never runs this gate, but neither tool
+        // repairs the malformed HEAD — the shape stays a dead end).
         const malformed = path.join(root, 'malformed.git');
         await mkdir(path.join(malformed, 'objects'), { recursive: true });
         await mkdir(path.join(malformed, 'refs'), { recursive: true });

@@ -2,8 +2,9 @@
 
 This page is the reference for how `openRepository` decides three things: **where the
 git directory is**, **whether there is a working tree**, and **whether the repository
-is bare**. Every rule here is pinned byte-for-byte against canonical git (2.55.0) by
-the cross-tool interop suite.
+is bare**. Every rule here is pinned against canonical git (2.55.0) by the cross-tool
+interop suite — tsgit ships the resolved data; the pins compare conditions and values,
+not rendered output.
 
 ## The three routes
 
@@ -16,9 +17,11 @@ git has three setup routes, and tsgit mirrors them exactly:
 | **bare** | the walk found that a directory *is itself* a git directory | `openRepository({ cwd })` inside `repo.git` (or inside a `.git`) |
 
 The walk climbs from `cwd` toward the filesystem root. At every level it checks the
-`.git` entry first, then whether the level itself qualifies as a git directory
-(`HEAD` with valid content — a `refs/…` symbolic target or a full hex object id —
-plus `objects/` and `refs/` at the common dir). A directory that qualifies can
+`.git` entry first, then whether the level itself qualifies as a git directory: a
+usable `HEAD` — a symlink is judged by its link text (`refs/…` qualifies even when
+dangling, on adapters with symlinks), a regular file by its content (`ref:` + a
+`refs/…` target, or a leading 40-hex object id of either case, trailing bytes
+ignored) — plus `objects/` and `refs/` at the common dir. A directory that qualifies can
 legitimately shadow an enclosing repository — that is git's behaviour too.
 `ceilingDirs` bounds the climb: the longest entry that is a *strict* ancestor of the
 resolved `cwd` is never examined or passed.
@@ -30,7 +33,7 @@ row — each row wins over everything below it:
 
 | # | Condition | Work tree |
 |---|---|---|
-| 1 | explicit `workDir` argument | that path, verbatim — it may not exist yet |
+| 1 | explicit `workDir` argument | that path (relative values resolve against `cwd`) — it may not exist yet |
 | 2 | `core.bare = true` (and no `workDir` argument) | **none**; if `core.worktree` is *also* set the configuration is bogus and work-tree commands refuse |
 | 3 | `core.worktree` set, absolute | that path |
 | 4 | `core.worktree` set, relative | resolved **physically against the git directory** — a missing or non-directory target refuses at open (`WORK_TREE_UNRESOLVABLE`) |
@@ -78,6 +81,8 @@ Work-tree-requiring commands refuse the way git does, as structured errors:
 | `core.bare` + `core.worktree` both set | `WORK_TREE_CONFIG_INVALID { gitDir }` |
 | relative `core.worktree` that cannot be physically resolved | `WORK_TREE_UNRESOLVABLE { value, gitDir }` |
 | `reset --mixed` in a bare repository | `BARE_REPOSITORY { operation }` — the one refusal git keys on bareness itself |
+| present-but-malformed git directory (garbage `HEAD`) | `NOT_A_REPOSITORY { path }`, at the first command |
+| unusable `commondir` pointer (zero-byte, or a relative path with a missing intermediate component) | `GITFILE_INVALID_FORMAT { path }`, at open |
 
 `describe --broken` reports `-broken` instead of refusing, bare `blame` blames HEAD,
 and `grep`'s index/tree targets stay open — matching git's own carve-outs.
@@ -85,7 +90,10 @@ and `grep`'s index/tree targets stay open — matching git's own carve-outs.
 ## Deliberate divergences
 
 All small, all documented in the design record: sandboxed adapters (memory, browser)
-resolve `core.worktree` lexically (no realpath exists there) and cannot see symlinked
-`HEAD`s; `ceilingDirs` *refuses* non-absolute entries where git silently ignores
-them; environment variables (`GIT_DIR`, `GIT_WORK_TREE`, `GIT_COMMON_DIR`,
-`GIT_CEILING_DIRECTORIES`) are never read — every input is an explicit argument.
+resolve `core.worktree` lexically (no realpath exists there); OPFS has no symlinks, so
+the browser keeps the content-only `HEAD` check; an ABSOLUTE `commondir` pointer skips
+the missing-intermediate refusal (its parent may be outside a sandbox's containment
+root — a relative pointer gets the full stepwise check); `ceilingDirs` *refuses*
+non-absolute entries where git silently ignores them; and environment variables
+(`GIT_DIR`, `GIT_WORK_TREE`, `GIT_COMMON_DIR`, `GIT_CEILING_DIRECTORIES`) are never
+read — every input is an explicit argument.

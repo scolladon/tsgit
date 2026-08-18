@@ -382,5 +382,11 @@
     "path": "dist/esm/chunks/commands-internal-*.js",
     "limit": "43 kB",
     "gzip": true
+  },
+  {
+    "name": "Chunks: repository",
+    "path": "dist/esm/chunks/repository-*.js",
+    "limit": "7 kB",
+    "gzip": true
   }
 ]

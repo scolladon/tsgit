@@ -87,14 +87,30 @@ const assertDiscoveryBooleansValid = async (ctx: Context): Promise<void> => {
  * gitDir IS the root).
  */
 export const assertRepository = async (ctx: Context): Promise<FilePath> => {
-  const headPath = `${ctx.layout.gitDir}/HEAD`;
-  const head = await ctx.fs.readUtf8(headPath).catch(() => undefined);
-  if (head === undefined || !isValidHeadContent(head)) {
+  if (!(await hasUsableHead(ctx))) {
     throw notARepository((ctx.layout.workDir ?? ctx.layout.gitDir) as FilePath);
   }
   await assertDiscoveryBooleansValid(ctx);
   const root = ctx.layout.workDir ?? ctx.layout.gitDir;
   return root as FilePath;
+};
+
+/**
+ * The SAME head predicate discovery applies (`validate_headref`): a symlinked
+ * `HEAD` is judged by its LINK TEXT — `refs/…` qualifies even when dangling —
+ * and a regular file by its content. Keeping the two tiers on one rule is
+ * what stops a directory from passing discovery and then refusing every
+ * command. The catch arms deliberately collapse EVERY read failure (absent,
+ * EACCES, EISDIR, EIO) into "no usable head": git's own `validate_headref`
+ * returns the same -1 for a failed `open`, so the refusal outcome matches
+ * regardless of the failure class.
+ */
+const hasUsableHead = async (ctx: Context): Promise<boolean> => {
+  const headPath = `${ctx.layout.gitDir}/HEAD`;
+  const linkText = await ctx.fs.readlink(headPath).catch(() => undefined);
+  if (linkText !== undefined) return linkText.startsWith('refs/');
+  const head = await ctx.fs.readUtf8(headPath).catch(() => undefined);
+  return head !== undefined && isValidHeadContent(head);
 };
 
 const CORE_STRING_KEYS: ReadonlyArray<string> = ['excludesfile', 'attributesfile'];
@@ -198,7 +214,7 @@ export const assertEagerConfigValid = async (ctx: Context): Promise<void> => {
 };
 
 /**
- * The operational entry point: confirm a real repository (HEAD exists) AND that
+ * The operational entry point: confirm a real repository (a usable HEAD) AND that
  * the `[core]` section passes full validation, then return the repo root.
  * Operational commands take this; the config porcelain stays on the bare
  * `assertRepository` so it survives a valueless or invalid `[core]` entry

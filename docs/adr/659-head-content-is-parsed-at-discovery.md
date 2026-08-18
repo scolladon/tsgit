@@ -4,6 +4,7 @@
 - **Date:** 2026-08-18
 - **Design:** docs/design/bare-repo-custom-gitdir.md (candidate D7)
 - **Refines:** docs/adr/534-is-git-directory-validation-both-branches.md
+- **Refined by:** docs/adr/665-layout-probe-gains-optional-readlink.md (closes the dangling-symlink residual)
 
 ## Context
 

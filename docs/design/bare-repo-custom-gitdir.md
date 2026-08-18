@@ -220,8 +220,10 @@ that root and nothing between them.
 
 R12. Existing repositories are byte-identical: for a normal repo opened by `cwd`, the
 layout, the containment root set, every resolved path and every command's behaviour are
-unchanged. The added per-level probing costs at most one extra `stat` per walk level on
-the miss path (§2).
+unchanged. The added per-level probing costs one extra `stat` per walk level on the miss
+path — plus, on adapters exposing the optional `readLink` (node, memory), one `readlink`,
+the price of judging a symlinked `HEAD` by its link text the way git's `lstat`-first
+`validate_headref` does (§2).
 
 R13. Sandboxed adapters (memory, browser) express the same layouts within their root; a
 `gitDir`/`workDir`/ceiling outside the sandbox fails cleanly under the `LayoutProbe`
@@ -315,9 +317,9 @@ following `stat`, content never parsed (`find-layout.ts:162-174`, ADR-534). Two 
 deltas that this feature makes materially more important, because *any* directory is now a
 candidate: (i) tsgit accepts `HEAD` = `"garbage"` where git climbs past, so a directory with
 three innocuous entries named `HEAD`, `objects/`, `refs/` would shadow an enclosing
-repository in tsgit but not in git; (ii) tsgit rejects a `HEAD` symlink whose target does
-not exist, where git accepts (git checks the *link text*, never following it, which the
-`LayoutProbe` port cannot express today). See D7.
+repository in tsgit but not in git; (ii) originally, tsgit rejected a `HEAD` symlink whose target does not exist, where git
+accepts by checking the *link text* — closed later via the optional `LayoutProbe.readLink`
+(ADR-665); OPFS, which has no symlinks, keeps the content fallback. See D7.
 
 Also pinned: `core.repositoryformatversion = 99` ⇒ `fatal: Expected git repo version <= 1,
 found 99`, exit 128, on every command — the existing `assertDiscoveryBooleansValid` tier is
@@ -690,14 +692,16 @@ walk(probe, cwd, policy, ceiling):
     current := parent
 ```
 
-**Cost (R12).** A level with no `.git` costs 1 `stat` today. It costs **2** after this
-change (`.git`, then `HEAD`), and only a level that actually holds a `HEAD` **file** goes
-on to `commondir` + `objects` + `refs`. A level that *does* hold a valid `.git`
-short-circuits before the new probe and is unchanged. Walk depth is bounded by the path
-depth (and by `ceilingDirs` when supplied), so the worst case is one extra `stat` per
-ancestor directory — the same asymmetry git pays. Ordering the cheap `HEAD` gate ahead of
-the full predicate is what keeps R12 true; inlining `isGitDirectory` directly would cost
-three extra `stat`s per level on every walk.
+**Cost (R12, revised by the residuals closure).** A level with no `.git` costs 1 `stat`
+today. After this change it costs `.git`-`stat` + `HEAD`-`readlink` + `HEAD`-`stat` on
+adapters exposing the optional `readLink` (2 syscalls extra; the `readlink` is what lets
+a symlinked `HEAD` be judged by link text, git's `lstat`-first order), and 2 `stat`s
+total on capability-less probes. Only a level whose `HEAD` exists as a regular file goes
+on to the content read and `commondir` + `objects` + `refs`. A level that holds a valid
+`.git` short-circuits before the bare-dir probe. Walk depth stays bounded by path depth
+(and `ceilingDirs`). git itself pays a single `lstat` where we pay `readlink`+`stat` —
+an accepted 2-vs-1 asymmetry; collapsing it needs an `lstat`-shaped probe capability,
+deliberately not taken now.
 
 **Ceiling stop.** `longestStrictAncestor` compares through the same `PathPolicy` the walk
 uses (drive-letter / UNC aware, ADR-495) and requires a **strict** ancestor: equality is a
@@ -1145,7 +1149,7 @@ directories that qualify as bait.
 | D4 | Scope of the work-tree gate sweep (§6) | (a) full sweep — repoint all 28 `assertNotBare` sites **and** add the 9 missing-or-conditional gate rows, in this PR; (b) repoint the existing 28 only, leave the ungated commands as-is; (c) gate at the facade (refuse every work-tree-touching command centrally on a static list) | **(a)** | (b) ships a library whose `status` and `stash list` operate on a work tree git says does not exist — the fabricated-work-tree defect, merely relocated; it also leaves the measured linked-worktree-of-bare inconsistency half-fixed (`add` corrected, `status` still ungated). (c) cannot express the conditional rows (`grep --cached`, `blame` in a bare repo, `describe --broken`, `reset --soft`, `diff --cached`), each of which is measured to *work* in git; a static list would refuse them all. The per-command gate is a one-line synchronous call at sites that already have a guard line. |
 | D5 | `ceilingDirs` semantics (§1h, §8) | (a) `ReadonlyArray<string>`, absolute-only (refuse otherwise), realpath'd on node / lexical elsewhere, strict-ancestor rule; (b) same but silently ignore non-absolute entries, as git does; (c) accept a colon-joined string and replicate the `:`-prefix symlink toggle | **(a)** | (b) matches git byte-for-byte but only because git is parsing a *string* it cannot validate; an array argument can, and a silently-ignored argument is a bug report waiting to happen — a refusal at `validateOptions` is strictly more informative and cannot break a faithful caller. (c) imports env-string artefacts (colon splitting, the empty-entry symlink toggle) into an API that has no environment; per-entry control, if ever wanted, belongs in a richer entry type, not in punctuation. |
 | D6 | Shape of the layout read surface (§7) | (a) `readonly layout: RepositoryLayout` on the facade (same frozen object as `ctx.layout`); (b) extend `revParse` with structural queries returning a union; (c) both | **(a)** | `revParse` is `(ctx, expression: string) => Promise<ObjectId>` with no options type — (b) forces a union return on every existing caller of a hot single-purpose resolver to expose data that is already synchronously available, and re-introduces the display-form question (`.` vs `.git` vs absolute) that ADR-249 says the caller owns. (c) is (b)'s cost with (a)'s benefit already paid. (a) also makes the reconstruction table testable without a Promise, and `ctx.layout` already carries the data so there is no second source of truth. |
-| D7 | `is_git_directory`'s `HEAD` predicate now that any directory is a candidate (§1b) | (a) parse `HEAD`'s **content** — hex oid of either width, or `ref:` + a token beginning `refs/` — keeping today's following-`stat` for the symlink case; (b) keep today's narrowed "HEAD is a regular file" check (ADR-534); (c) full `validate_headref`, adding `readLink` to the `LayoutProbe` port so a symlink's *link text* is checked without following it | **(a)** | Refines ADR-534, whose reasoning ("a malformed HEAD is rejected later by the primitives tier") held when the `.git` *name* was required — the bait had to be deliberate. Now a directory holding three entries named `HEAD`, `objects`, `refs` shadows an enclosing repository (§1a), so (b) is both a faithfulness gap and a threat-model widening (§9). (a) is a pure parse needing no ref store, closes the security-relevant half (`HEAD` = `"garbage"` no longer qualifies), and gets the SHA-256 width for free (§1b 64-hex row) — the hash-width genericity check for this feature. It leaves **one** measured delta: a `HEAD` symlink whose target does not yet exist is accepted by git and rejected by tsgit, which (c) would close at the cost of widening `LayoutProbe` (ADR-535 deliberately kept it to `stat` + `readUtf8`) for a shape no git tool creates. Cost of (a) on the walk: on a level that holds a `HEAD` file the probe reads it instead of only stat'ing it — bounded by the existing 64 KiB cap, and unreached on levels without one. |
+| D7 | `is_git_directory`'s `HEAD` predicate now that any directory is a candidate (§1b) | (a) parse `HEAD`'s **content** — hex oid of either width, or `ref:` + a token beginning `refs/` — keeping today's following-`stat` for the symlink case; (b) keep today's narrowed "HEAD is a regular file" check (ADR-534); (c) full `validate_headref`, adding `readLink` to the `LayoutProbe` port so a symlink's *link text* is checked without following it | **(a)** | Refines ADR-534, whose reasoning ("a malformed HEAD is rejected later by the primitives tier") held when the `.git` *name* was required — the bait had to be deliberate. Now a directory holding three entries named `HEAD`, `objects`, `refs` shadows an enclosing repository (§1a), so (b) is both a faithfulness gap and a threat-model widening (§9). (a) is a pure parse needing no ref store, closes the security-relevant half (`HEAD` = `"garbage"` no longer qualifies), and gets the SHA-256 width for free (§1b 64-hex row) — the hash-width genericity check for this feature. It left **one** measured delta — a dangling `HEAD` symlink accepted by git, rejected by tsgit — which the user later pulled back in: ADR-665 widens `LayoutProbe` with an optional `readLink` and the walk now judges link text first, exactly option (c)'s mechanism. Cost of (a) on the walk: on a level that holds a `HEAD` file the probe reads it instead of only stat'ing it — bounded by the existing 64 KiB cap, and unreached on levels without one. |
 | D8 | Relative `core.worktree` resolution (§1c) | (a) physical — resolve against the gitDir, then canonicalise (realpath on node, lexical elsewhere), matching git's chdir/getcwd; (b) lexical `resolve(join(gitDir, value))` everywhere; (c) resolve against `cwd` | **(a)** | (c) is measurably wrong: `core.worktree = ../wt` with gitDir `$T/normal/.git` fails in git (`cannot chdir to '../wt'`) precisely because `$T/wt` — the cwd-relative answer — is *not* what git computes. (b) diverges on symlinked work trees (`core.worktree = ../../wt-link` yields the realpath `$T/wt2`) and reintroduces the ADR-537 mismatch where the adapter compares realpaths. (a) is ADR-537's established split applied to one more path. |
 | D9 | Which config file(s) Stage 2 reads (§1e, §5) | (a) `<commonDir>/config` only; (b) `<commonDir>/config` **plus** `<gitDir>/config.worktree` when `extensions.worktreeConfig` is true; (c) reuse the command-tier `readConfig` pipeline once a provisional Context exists | **(b)** | Measured: with the extension on, git honours **both** `core.worktree` and `core.bare` from `config.worktree`, so (a) is a real divergence for a repo `git worktree` itself can produce. (b) costs one conditional second read of a file that usually does not exist. (c) is circular — the Context needs the layout the read is supposed to produce — and would couple `openRepository`'s failure modes to the per-Context config cache. Note (b) does **not** pull in the rest of `extensions.worktreeConfig` semantics (Out of scope). |
 | D10 | Whether `init`/`clone` with `bare: true` relocate their own gitDir (§8, R10) | (a) no — they keep writing at `ctx.layout.gitDir`; the caller opens with `gitDir`/`bare` to get a bare-shaped Context (today's contract, now reachable); (b) yes — `init({ bare: true })` writes at `workDir` and returns a layout with `gitDir === workDir`; (c) refuse `init({ bare: true })` when the Context's layout is not already bare | **(a)** | (b) makes a command silently rewrite the layout its Context was built with, which is the one thing every other command is forbidden to do, and leaves `repo.layout` stale on the handle that just ran it. (a) keeps the layout decision in exactly one place (`openRepository`) and already produces byte-identical output to `git init --bare` (§1i) once the Context is constructible. (c) is a refusal for a shape that (a) makes legal and useful — `init({bare:true})` into a fresh directory opened non-bare is how you bootstrap before anything exists. |
@@ -1165,7 +1169,7 @@ directories that qualify as bait.
 | a valid gitdir one level up from cwd | resolves to the ancestor |
 | a bare-shaped dir nested inside a work tree | shadows the enclosing repo |
 | cwd has an invalid `.git/` and is itself a valid gitdir | the `.git` branch skips, the cwd branch resolves |
-| a level with no `HEAD` | exactly one extra `stat` (the miss path, R12) — asserted through a counting probe |
+| a level with no `HEAD` | exactly one extra `stat` on a capability-less probe (the miss path, R12; `readLink`-capable adapters add one `readlink`) — asserted through a counting probe |
 | ceiling == strict ancestor / == cwd / below cwd / non-absolute | §1h rows |
 | walk reaches the root with a ceiling set | `undefined` |
 

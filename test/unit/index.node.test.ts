@@ -6,7 +6,7 @@
  * `bare` flag) must be exercised here — the integration suite does not feed
  * the mutation runner.
  */
-import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
@@ -444,6 +444,34 @@ describe('Node shim — worktreeFs raw adapter root (bare repository)', () => {
           await sut.dispose();
         }
       });
+    });
+  });
+});
+
+describe('Given a directory whose HEAD is a dangling symlink into refs/', () => {
+  describe('When openRepository discovers it', () => {
+    it('Then the node probe reads the link text and the directory qualifies as a git directory', async () => {
+      // Arrange
+      const tmp = await mkdtemp(path.join(os.tmpdir(), 'tsgit-node-dangling-link-'));
+      try {
+        const dir = path.join(tmp, 'legacy.git');
+        await mkdir(path.join(dir, 'objects'), { recursive: true });
+        await mkdir(path.join(dir, 'refs'), { recursive: true });
+        await symlink('refs/heads/main', path.join(dir, 'HEAD'));
+
+        // Act
+        const repo = await openRepository({ cwd: dir });
+
+        try {
+          // Assert
+          expect(repo.ctx.layout.gitDir).toBe(await realpath(dir));
+          expect(repo.ctx.layout.bare).toBe(true);
+        } finally {
+          await repo.dispose();
+        }
+      } finally {
+        await rm(tmp, { recursive: true, force: true });
+      }
     });
   });
 });

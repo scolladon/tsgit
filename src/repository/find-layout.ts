@@ -252,25 +252,32 @@ export const resolveCommonDir = async (
   const value = parseCommondir(raw);
   if (value.kind === 'empty') return gitDir;
   if (pathPolicy.isAbsolute(value.path)) return pathPolicy.resolve(value.path);
-  const target = pathPolicy.resolve(pathPolicy.join(gitDir, value.path));
-  // git resolves the pointer physically and dies (`fatal: Invalid path`)
-  // when an INTERMEDIATE component is missing — only the FINAL component may
-  // be absent (the target then simply fails the shared-dir validation and
-  // the candidate is a miss). Checked for RELATIVE pointers only: a relative
-  // target stays near the gitDir where every probe can see it, while an
-  // absolute one may lie outside a sandboxed adapter's containment root,
-  // where the probe's absence/denial collapse would turn an unverifiable
-  // parent into a false refusal. One extra `stat`, paid only by the rare
-  // directory that carries a relative `commondir` at all.
-  const parent = await probe.stat(pathPolicy.dirname(target));
-  if (parent?.isDirectory !== true) throw gitfileInvalidFormat(commondirPath);
-  return target;
+  // git resolves a RELATIVE pointer component by component (its physical
+  // realpath walk) and dies (`fatal: Invalid path`) on the first missing
+  // INTERMEDIATE — only the FINAL component may be absent (the target then
+  // simply fails the shared-dir validation and the candidate is a miss).
+  // Stepwise resolution here mirrors that: a lexical pre-collapse would let
+  // `missing/../../shared` skip straight past the missing component git
+  // trips on. Relative pointers only: an absolute target may lie outside a
+  // sandboxed adapter's containment root, where the probe's absence/denial
+  // collapse would turn an unverifiable parent into a false refusal. A few
+  // extra `stat`s, paid only by the rare directory carrying a relative
+  // `commondir` at all.
+  const segments = value.path.split('/').filter((segment) => segment.length > 0);
+  let current = gitDir;
+  for (const segment of segments.slice(0, -1)) {
+    current = pathPolicy.resolve(pathPolicy.join(current, segment));
+    const step = await probe.stat(current);
+    if (step?.isDirectory !== true) throw gitfileInvalidFormat(commondirPath);
+  }
+  const last = segments[segments.length - 1] ?? '';
+  return pathPolicy.resolve(pathPolicy.join(current, last));
 };
 
 /**
- * The `HEAD` half of git's `is_git_directory`, narrowed: `HEAD` must be a
- * regular file (via a following `stat`, so a symlinked HEAD qualifies when
- * its target exists and reads back as valid content) and its content must
+ * The `HEAD` half of git's `is_git_directory`: a symlink is judged by its
+ * LINK TEXT first (adapters exposing `readLink`); otherwise `HEAD` must be a
+ * regular file (via a following `stat`) and its content must
  * parse as either a hex object id or a `ref:` symbolic ref — the grammar
  * `isValidHeadContent` checks. This is what stops a planted directory
  * holding innocuous `HEAD`, `objects/`, `refs/` entries from shadowing an

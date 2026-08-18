@@ -75,8 +75,10 @@ const headCheckoutLabel = (
 ): string => {
   if (head.kind !== 'symbolic') return head.id.slice(0, 7);
   if (head.target.startsWith(HEADS_PREFIX)) return head.target.slice(HEADS_PREFIX.length);
-  const lastSlash = head.target.lastIndexOf('/');
-  return lastSlash === -1 ? head.target : head.target.slice(lastSlash + 1);
+  // A usable symbolic HEAD always begins `refs/` (the repository gate
+  // enforces the same grammar discovery does), so a slash is guaranteed and
+  // the basename slice is total.
+  return head.target.slice(head.target.lastIndexOf('/') + 1);
 };
 
 const switchBranch = async (ctx: Context, opts: CheckoutSwitchOptions): Promise<CheckoutResult> => {

@@ -730,7 +730,7 @@ describe('findLayout', () => {
 
   describe('Given a level with neither a .git entry nor a HEAD file', () => {
     describe('When findLayout climbs past it', () => {
-      it('Then costs exactly one extra stat over the pre-existing .git-only probe', async () => {
+      it('Then costs exactly one extra stat on a capability-less probe over the pre-existing .git-only probe', async () => {
         // Arrange — a counting probe stub over a two-level climb: the empty
         // leaf level, then a valid repo one level up. Every `stat` call is
         // tallied by path so the cost contract is asserted precisely rather
