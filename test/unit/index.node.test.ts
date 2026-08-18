@@ -200,6 +200,31 @@ describe('Node shim — findLayout bare flag', () => {
   });
 });
 
+describe('Node shim — explicit layout option validation ordering', () => {
+  describe('Given gitDir: "" (empty string)', () => {
+    describe('When openRepository runs', () => {
+      it('Then it throws INVALID_OPTION{option: "gitDir"} rather than resolving a layout at cwd', async () => {
+        // Arrange / Act
+        let caught: unknown;
+        try {
+          await openRepository({ cwd: tmpdir, gitDir: '' });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — validateOptions runs BEFORE resolveNodeLayout in this
+        // shim; an empty gitDir must never reach layout resolution.
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('INVALID_OPTION');
+        if (data.code === 'INVALID_OPTION') {
+          expect(data.option).toBe('gitDir');
+        }
+      });
+    });
+  });
+});
+
 describe('Node shim — synthetic fallback layout', () => {
   describe('Given a cwd with no .git anywhere in its ancestry', () => {
     describe('When openRepository runs', () => {

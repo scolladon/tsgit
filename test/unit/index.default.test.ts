@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { TsgitError } from '../../src/domain/error.js';
 import { openRepository } from '../../src/index.default.js';
 
 describe('memory shim — openRepository', () => {
@@ -27,6 +28,28 @@ describe('memory shim — openRepository', () => {
         expect(sut.ctx.layout.workDir).toBe('/repo');
         expect(sut.ctx.layout.gitDir).toBe('/repo/.git');
         expect(sut.ctx.layout.bare).toBe(false);
+      });
+    });
+  });
+
+  describe('Given gitDir: "" (empty string)', () => {
+    describe('When openRepository runs', () => {
+      it('Then it throws INVALID_OPTION{option: "gitDir"} rather than resolving a layout', async () => {
+        // Arrange / Act
+        let caught: unknown;
+        try {
+          await openRepository({ gitDir: '' });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — validateOptions runs BEFORE resolveLayout in this shim.
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('INVALID_OPTION');
+        if (data.code === 'INVALID_OPTION') {
+          expect(data.option).toBe('gitDir');
+        }
       });
     });
   });

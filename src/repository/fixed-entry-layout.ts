@@ -17,6 +17,8 @@ import { finishLayout } from './resolve-layout.js';
  * `core.bare` alone (read by the shared Stage 2/3 in `finishLayout`) is what
  * decides bareness, exactly as it does for the node/memory shims. `bare`, when
  * given, overrides `core.bare` outright — the argument-tier-wins rule.
+ * `explicitWorkDir`, when given, overrides every config-driven work-tree row
+ * the same way `opts.workDir` does on the node/memory shims.
  * Uses `portablePosixPolicy` rather than the Node-backed `posixPolicy` — see
  * that module's doc comment for why.
  */
@@ -25,6 +27,7 @@ export const resolveFixedEntryLayout = async (
   workDir: string,
   gitDir: string,
   bare?: boolean,
+  explicitWorkDir?: string,
 ): Promise<RepositoryLayoutInput> => {
   const probe = fileSystemLayoutProbe(fs);
   const entry = await probe.stat(gitDir);
@@ -33,5 +36,8 @@ export const resolveFixedEntryLayout = async (
       ? await layoutFromGitfile(probe, workDir, gitDir, portablePosixPolicy, entry.size)
       : { gitDir };
   const outcome: WalkOutcome = { ...located, route: 'DISCOVERED', origin: workDir };
-  return finishLayout(probe, outcome, portablePosixPolicy, bare);
+  return finishLayout(probe, outcome, portablePosixPolicy, workDir, {
+    ...(bare !== undefined ? { bare } : {}),
+    ...(explicitWorkDir !== undefined ? { workDir: explicitWorkDir } : {}),
+  });
 };

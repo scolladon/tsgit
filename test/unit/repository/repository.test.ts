@@ -96,6 +96,16 @@ describe('openRepository — construction', () => {
         expect(Object.isFrozen(sut.ctx)).toBe(true);
       });
     });
+    describe('When inspecting layout', () => {
+      it('Then repo.layout is the SAME object as ctx.layout, and is deep-frozen', async () => {
+        // Arrange / Act
+        const sut = await open();
+
+        // Assert — one source of truth, not a copy.
+        expect(sut.layout).toBe(sut.ctx.layout);
+        expect(Object.isFrozen(sut.layout)).toBe(true);
+      });
+    });
     describe('When inspecting the blame binding', () => {
       it('Then repo.blame is a bound function', async () => {
         // Arrange / Act
@@ -256,6 +266,7 @@ describe('openRepository — Repository binding integrity', () => {
             'fsck',
             'grep',
             'init',
+            'layout',
             'log',
             'merge',
             'mv',
@@ -346,7 +357,13 @@ describe('openRepository — Repository binding integrity', () => {
           'submodule',
           'worktree',
         ]);
-        const nonFunctionKeys = new Set(['ctx', 'primitives', 'snapshot', ...namespaceKeys]);
+        const nonFunctionKeys = new Set([
+          'ctx',
+          'layout',
+          'primitives',
+          'snapshot',
+          ...namespaceKeys,
+        ]);
 
         // Assert
         for (const key of Object.keys(sut)) {

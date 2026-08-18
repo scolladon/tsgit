@@ -1,8 +1,21 @@
 import type { PathPolicy } from '../adapters/node/path-policy.js';
 import type { LayoutProbe } from '../ports/layout-probe.js';
 import type { RepositoryLayoutInput } from '../repository.js';
-import { findLayout, type WalkOutcome } from './find-layout.js';
+import { findLayout, resolveCommonDir, resolvePointer, type WalkOutcome } from './find-layout.js';
 import { type RepositoryFormat, readRepositoryFormat } from './read-repository-format.js';
+
+/**
+ * Explicit layout arguments `resolveLayout` accepts on top of discovery —
+ * the argument-tier equivalents of `--git-dir` / `--work-tree` /
+ * `--is-bare-repository` (forced) / `GIT_CEILING_DIRECTORIES`. All optional;
+ * an empty object behaves exactly like discovery alone.
+ */
+export interface ExplicitLayoutOptions {
+  readonly gitDir?: string;
+  readonly workDir?: string;
+  readonly bare?: boolean;
+  readonly ceilingDirs?: ReadonlyArray<string>;
+}
 
 /**
  * The work tree a `finishLayout` call resolved, plus whether the work-tree
@@ -26,27 +39,57 @@ interface WorkTreeResolution {
  * shared config says about the main checkout. Measured: `--is-bare-repository`
  * is `false` from inside a linked worktree of a bare repo even though the
  * shared config's `core.bare` reads `true`.
+ *
+ * Scoped to the `DISCOVERED` route only — no measured row extends this
+ * bypass to an explicit gitDir naming a worktree admin dir directly, so the
+ * EXPLICIT route falls through to the plain `core.bare` precedence instead.
  */
 const isLinkedWorktreeAdmin = (outcome: WalkOutcome): boolean =>
   outcome.route === 'DISCOVERED' && outcome.commonDir !== undefined;
 
 /**
- * The work-tree precedence: `core.bare` true means no work tree (and marks
- * the config bogus when `core.worktree` is ALSO set) — UNLESS this gitDir is
- * a linked worktree's own admin dir, which always has one; an explicit
- * `core.worktree` wins next, absolute verbatim or resolved lexically against
- * `gitDir` when relative (the node shim realpaths the result afterward —
- * `core.worktree` resolution is physical, but this tier stays lexical so
- * sandboxed adapters, which have no realpath, resolve identically); otherwise
- * the route decides: the directory holding a discovered `.git` entry, or no
- * work tree for a bare-shaped gitDir found by cwd-is-gitdir discovery.
+ * Resolve `value` against `base`: absolute verbatim (normalized), relative
+ * joined onto `base`. Deliberately NOT `pathPolicy.resolve(base, value)` —
+ * `portablePosixPolicy` (the memory/browser shims) does not implement
+ * `node:path.resolve`'s "a later absolute argument wins" multi-arg
+ * semantics (its own doc comment scopes it to single-base joins only), so a
+ * two-arg `resolve` call would silently nest an absolute `value` under
+ * `base` instead of using it directly. Branching on `isAbsolute` here works
+ * identically under every `PathPolicy` implementation.
+ */
+const resolveAgainst = (base: string, value: string, pathPolicy: PathPolicy): string =>
+  pathPolicy.isAbsolute(value)
+    ? pathPolicy.resolve(value)
+    : pathPolicy.resolve(pathPolicy.join(base, value));
+
+/**
+ * The work-tree precedence: an explicit work-tree argument (`opts.workDir`,
+ * resolved against `cwd`) wins outright, even over `core.bare = true` —
+ * silently, no bogus-config warning (that warning is reserved for the
+ * `core.bare` + `core.worktree` combination). Absent that, `core.bare` true
+ * means no work tree (and marks the config bogus when `core.worktree` is
+ * ALSO set) — UNLESS this gitDir is a linked worktree's own admin dir, which
+ * always has one; an explicit `core.worktree` wins next, absolute verbatim
+ * or resolved lexically against `gitDir` when relative (the node shim
+ * realpaths the result afterward — `core.worktree` resolution is physical,
+ * but this tier stays lexical so sandboxed adapters, which have no realpath,
+ * resolve identically); otherwise the route decides: the directory holding a
+ * discovered `.git` entry, cwd itself for an explicit gitDir with nothing
+ * else set (the load-bearing surprise a `--git-dir` argument alone defaults
+ * a work tree that cwd-is-gitdir discovery of the SAME directory would not),
+ * or no work tree for a bare-shaped gitDir found by cwd-is-gitdir discovery.
  */
 const resolveWorkTree = (
   outcome: WalkOutcome,
   fmt: RepositoryFormat,
   bareCfg: boolean | undefined,
   pathPolicy: PathPolicy,
+  cwd: string,
+  explicitWorkDir?: string,
 ): WorkTreeResolution => {
+  if (explicitWorkDir !== undefined) {
+    return { workDir: resolveAgainst(cwd, explicitWorkDir, pathPolicy) };
+  }
   if (bareCfg === true && !isLinkedWorktreeAdmin(outcome)) {
     return fmt.worktree !== undefined ? { workTreeConfigBogus: true } : {};
   }
@@ -57,28 +100,44 @@ const resolveWorkTree = (
     return { workDir };
   }
   if (outcome.route === 'DISCOVERED') return { workDir: outcome.origin };
+  if (outcome.route === 'EXPLICIT') return { workDir: cwd };
   return {};
 };
 
+/** `bare` / `workDir` overrides `finishLayout` applies on top of config. */
+interface LayoutOverrides {
+  readonly bare?: boolean;
+  readonly workDir?: string;
+}
+
 /**
  * Stages 2–4 of layout resolution, given a structural `WalkOutcome` (from the
- * walk, or from a fixed-entry shim that has no walk at all): read the
- * repository-format config keys, decide the work tree by precedence, then
- * derive `bare`. `bareOverride`, when given, wins outright over
- * `core.bare` — the argument-tier-beats-config-tier rule every explicit
- * layout option follows (the browser shim's own `bare` option is the one
- * caller in this part; the core `openRepository` option is not yet).
+ * walk, the explicit route, or a fixed-entry shim that has no walk at all):
+ * read the repository-format config keys, decide the work tree by
+ * precedence, then derive `bare`. `overrides.bare`, when given, wins
+ * outright over `core.bare`, and `overrides.workDir` wins outright over
+ * every config-driven work-tree row — the argument-tier-beats-config-tier
+ * rule every explicit layout option follows. `cwd` is the base an explicit
+ * `overrides.workDir` (or an EXPLICIT-route default) resolves against.
  */
 export const finishLayout = async (
   probe: LayoutProbe,
   outcome: WalkOutcome,
   pathPolicy: PathPolicy,
-  bareOverride?: boolean,
+  cwd: string,
+  overrides: LayoutOverrides = {},
 ): Promise<RepositoryLayoutInput> => {
   const commonDir = outcome.commonDir ?? outcome.gitDir;
   const fmt = await readRepositoryFormat(probe, outcome.gitDir, commonDir, pathPolicy);
-  const bareCfg = bareOverride ?? fmt.bare;
-  const { workDir, workTreeConfigBogus } = resolveWorkTree(outcome, fmt, bareCfg, pathPolicy);
+  const bareCfg = overrides.bare ?? fmt.bare;
+  const { workDir, workTreeConfigBogus } = resolveWorkTree(
+    outcome,
+    fmt,
+    bareCfg,
+    pathPolicy,
+    cwd,
+    overrides.workDir,
+  );
   // `bareCfg` unset (neither an override nor `core.bare`) is TRUTHY here —
   // git's `is_bare_repository_cfg` defaults to -1, not 0.
   const bare = bareCfg !== false && workDir === undefined;
@@ -92,18 +151,60 @@ export const finishLayout = async (
 };
 
 /**
- * Resolve the full physical layout for `cwd` via discovery: walk up looking
- * for a `.git` entry or a cwd-is-gitdir match, then apply Stages 2–4.
- * `undefined` when the walk finds nothing — callers default to a fresh
- * (non-bare) repository at `cwd` for `init`/`clone` to bootstrap into, or
- * surface `NOT_A_REPOSITORY` at first command.
+ * Stage 1's explicit-gitDir route: `opts.gitDir` resolves against `cwd`
+ * (relative values join against it; an absolute value wins outright — the
+ * same "argument tier resolves against cwd but isn't required absolute"
+ * rule `validateOptions` leaves unenforced for this reason). A regular FILE
+ * is read as a gitfile pointer via the shared grammar, inheriting its
+ * refusals; a missing or empty directory resolves LENIENTLY — no candidate
+ * validation runs here, unlike the walk's `.git`-directory branch — because
+ * `assertRepository` refuses at first command and that leniency is the only
+ * way `init`/`clone` can bootstrap into an empty target.
+ */
+const resolveExplicitOutcome = async (
+  probe: LayoutProbe,
+  gitDirOpt: string,
+  cwd: string,
+  pathPolicy: PathPolicy,
+): Promise<WalkOutcome> => {
+  const entry = resolveAgainst(cwd, gitDirOpt, pathPolicy);
+  const stat = await probe.stat(entry);
+  const gitDir =
+    stat?.isFile === true
+      ? await resolvePointer(probe, entry, pathPolicy.dirname(entry), pathPolicy, stat.size)
+      : entry;
+  const commonDir = await resolveCommonDir(probe, gitDir, pathPolicy);
+  return {
+    route: 'EXPLICIT',
+    gitDir,
+    ...(commonDir !== gitDir ? { commonDir } : {}),
+  };
+};
+
+/**
+ * Resolve the full physical layout for `cwd`: `opts.gitDir`, when given,
+ * skips discovery entirely (Stage 1's explicit route); otherwise walk up
+ * looking for a `.git` entry or a cwd-is-gitdir match, bounded by
+ * `opts.ceilingDirs` (ignored on the explicit route — no walk happens).
+ * Either way, apply Stages 2–4. `undefined` only when discovery itself found
+ * nothing — callers default to a fresh (non-bare) repository at `cwd` for
+ * `init`/`clone` to bootstrap into, or surface `NOT_A_REPOSITORY` at first
+ * command. The explicit route never returns `undefined`: an unresolvable
+ * gitDir still produces a layout, leniently (see `resolveExplicitOutcome`).
  */
 export const resolveLayout = async (
   probe: LayoutProbe,
   cwd: string,
   pathPolicy: PathPolicy,
+  opts: ExplicitLayoutOptions = {},
 ): Promise<RepositoryLayoutInput | undefined> => {
-  const outcome = await findLayout(probe, cwd, pathPolicy);
+  const outcome =
+    opts.gitDir !== undefined
+      ? await resolveExplicitOutcome(probe, opts.gitDir, cwd, pathPolicy)
+      : await findLayout(probe, cwd, pathPolicy, opts.ceilingDirs);
   if (outcome === undefined) return undefined;
-  return finishLayout(probe, outcome, pathPolicy);
+  return finishLayout(probe, outcome, pathPolicy, cwd, {
+    ...(opts.bare !== undefined ? { bare: opts.bare } : {}),
+    ...(opts.workDir !== undefined ? { workDir: opts.workDir } : {}),
+  });
 };

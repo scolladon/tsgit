@@ -20,7 +20,7 @@ import { SHA1_CONFIG } from './domain/objects/hash-config.js';
 import { createLruCache } from './domain/storage/lru-cache.js';
 import type { LayoutProbe } from './ports/layout-probe.js';
 import { layoutRootsOf } from './repository/layout-roots.js';
-import { resolveLayout } from './repository/resolve-layout.js';
+import { type ExplicitLayoutOptions, resolveLayout } from './repository/resolve-layout.js';
 import { validateOptions } from './repository/validate-options.js';
 import {
   type OpenRepositoryOptions,
@@ -60,7 +60,7 @@ export const openRepository = async (opts: OpenNodeRepositoryOptions = {}): Prom
   // gitfile pointer — linked worktree, submodule, `--separate-git-dir`); the
   // bounded FS would reject paths outside its rootDir, preventing the walk
   // from reaching a repo whose root is an ancestor of the user's cwd.
-  const { layout, canonical: layoutCanonical } = await resolveNodeLayout(resolvedCwd);
+  const { layout, canonical: layoutCanonical } = await resolveNodeLayout(resolvedCwd, opts);
   // The layout's roots are trustworthy as pre-resolved ONLY when every
   // realpath performed above — cwd's own AND the layout's own — actually
   // succeeded; a fallback that silently kept an un-resolved path must never
@@ -159,26 +159,53 @@ const canonicalize = async (p: string): Promise<{ path: string; canonical: boole
 };
 
 /**
- * Resolve the physical layout for `cwd`: walk up looking for a `.git` entry
- * or a cwd-is-gitdir match, apply the config-driven work-tree resolution,
- * then realpath the resolved `gitDir`/`commonDir`/`workDir` — the node
- * adapter confines by realpath, so an unresolved admin or work-tree path
- * would spuriously reject on a symlinked repo root (e.g. macOS's `/var` ->
- * `/private/var`) or a symlinked `core.worktree` target (git resolves
- * `core.worktree` physically; a lexical value here would silently diverge).
+ * Realpaths every entry of `ceilingDirs`, best-effort — a ceiling that does
+ * not (yet) exist falls back to its resolved-but-unresolved form via
+ * `canonicalize`'s own fallback, exactly like a not-yet-existing `gitDir`.
+ * `undefined` in, `undefined` out, so a caller that omitted the option never
+ * pays for the mapping.
+ */
+const canonicalizeCeilings = async (
+  ceilingDirs: ReadonlyArray<string> | undefined,
+): Promise<ReadonlyArray<string> | undefined> => {
+  if (ceilingDirs === undefined) return undefined;
+  const resolved = await Promise.all(ceilingDirs.map((dir) => canonicalize(dir)));
+  return resolved.map((entry) => entry.path);
+};
+
+/**
+ * Resolve the physical layout for `cwd`: `opts.gitDir`, when given, skips
+ * discovery entirely (Stage 1's explicit route); otherwise walk up looking
+ * for a `.git` entry or a cwd-is-gitdir match, bounded by `opts.ceilingDirs`
+ * (realpathed here so the walk's loop-head comparison stays physical, the
+ * same reason `cwd` itself is realpathed above). Either way, apply the
+ * config-driven work-tree resolution, then realpath the resolved
+ * `gitDir`/`commonDir`/`workDir` — the node adapter confines by realpath, so
+ * an unresolved admin or work-tree path would spuriously reject on a
+ * symlinked repo root (e.g. macOS's `/var` -> `/private/var`) or a
+ * symlinked `core.worktree` target (git resolves `core.worktree`
+ * physically; a lexical value here would silently diverge).
  *
- * Falls back to `{cwd}/.git` when nothing is found up to the filesystem
- * root — the `openRepository`/`init`/`clone` contract against a
- * not-yet-existing repository. That branch never realpaths its synthesised
- * `gitDir`, so it always reports `canonical: false`.
+ * Falls back to `{cwd}/.git` when discovery finds nothing up to the
+ * filesystem root AND no explicit `gitDir` was supplied — the
+ * `openRepository`/`init`/`clone` contract against a not-yet-existing
+ * repository. That branch never realpaths its synthesised `gitDir`, so it
+ * always reports `canonical: false`.
  *
  * The returned `canonical` flag is the AND of every realpath THIS function
  * performed.
  */
 const resolveNodeLayout = async (
   cwd: string,
+  opts: ExplicitLayoutOptions,
 ): Promise<{ layout: RepositoryLayoutInput; canonical: boolean }> => {
-  const resolved = await resolveLayout(nodeLayoutProbe, cwd, nativePolicy);
+  const ceilingDirs = await canonicalizeCeilings(opts.ceilingDirs);
+  const resolved = await resolveLayout(nodeLayoutProbe, cwd, nativePolicy, {
+    ...(opts.gitDir !== undefined ? { gitDir: opts.gitDir } : {}),
+    ...(opts.workDir !== undefined ? { workDir: opts.workDir } : {}),
+    ...(opts.bare !== undefined ? { bare: opts.bare } : {}),
+    ...(ceilingDirs !== undefined ? { ceilingDirs } : {}),
+  });
   if (resolved === undefined) {
     return {
       layout: { workDir: cwd, gitDir: nodePath.join(cwd, '.git'), bare: false },

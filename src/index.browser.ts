@@ -12,6 +12,7 @@ import { BrowserHttpTransport } from './adapters/browser/browser-http-transport.
 import { SHA1_CONFIG } from './domain/objects/hash-config.js';
 import { createLruCache } from './domain/storage/lru-cache.js';
 import { resolveFixedEntryLayout } from './repository/fixed-entry-layout.js';
+import { portablePosixPolicy } from './repository/portable-posix-policy.js';
 import { validateOptions } from './repository/validate-options.js';
 import {
   type OpenRepositoryOptions,
@@ -39,19 +40,43 @@ export interface OpenBrowserRepositoryOptions extends OpenRepositoryOptions {
   readonly deltaCacheMaxEntries?: number;
 }
 
+/**
+ * The browser has no walk (OPFS's `/` root means `dirname('/') === '/'`
+ * terminates on the first iteration), so `opts.gitDir` cannot skip a
+ * discovery walk the way it does on node/memory — instead it OVERRIDES the
+ * fixed `/{gitDirName}` entry point itself. Relative values resolve against
+ * the fixed work dir, the same "relative resolves against cwd" rule the
+ * core option documents; the browser's cwd is always `ROOT_WORK_DIR`.
+ * Branches on `isAbsolute` explicitly rather than a two-arg
+ * `portablePosixPolicy.resolve` call — that policy's `resolve` does not
+ * implement `node:path.resolve`'s "a later absolute argument wins"
+ * semantics (see its own doc comment), so a two-arg call would silently
+ * nest an absolute `gitDirOpt` under `ROOT_WORK_DIR` instead of using it
+ * directly.
+ */
+const resolveGitDirEntry = (gitDirOpt: string | undefined, gitDirName: string): string =>
+  gitDirOpt === undefined
+    ? `${ROOT_WORK_DIR}${gitDirName}`
+    : portablePosixPolicy.isAbsolute(gitDirOpt)
+      ? portablePosixPolicy.resolve(gitDirOpt)
+      : portablePosixPolicy.resolve(portablePosixPolicy.join(ROOT_WORK_DIR, gitDirOpt));
+
 export const openRepository = async (opts: OpenBrowserRepositoryOptions): Promise<Repository> => {
   validateOptions(opts);
   const gitDirName = opts.gitDirName ?? DEFAULT_GIT_DIR_NAME;
   const fs = new BrowserFileSystem(opts.rootHandle);
   // A walk-up is meaningless in OPFS (`dirname('/') === '/'` terminates on
   // the first iteration), so — unlike the node/memory shims — the browser
-  // resolves its fixed `/{gitDirName}` entry pointer-aware via
-  // `resolveFixedEntryLayout` rather than calling `findLayout`.
+  // resolves its fixed `/{gitDirName}` entry (or `opts.gitDir`'s override of
+  // it) pointer-aware via `resolveFixedEntryLayout` rather than calling
+  // `findLayout`. `ceilingDirs` has no effect here (no walk to bound) and is
+  // therefore not threaded through — the core still validates it.
   const layout = await resolveFixedEntryLayout(
     fs,
     ROOT_WORK_DIR,
-    `${ROOT_WORK_DIR}${gitDirName}`,
+    resolveGitDirEntry(opts.gitDir, gitDirName),
     opts.bare,
+    opts.workDir,
   );
   const fallback = {
     fs,

@@ -56,8 +56,15 @@ export const openRepository = async (
   // `portablePosixPolicy`, not the node-backed `posixPolicy`: this entry is the
   // runtime-agnostic default condition, and a value import of the node policy
   // would drag `node:path` into runtimes that lack it. Safe subset: the core
-  // rejects a non-absolute `cwd` and the default is `/repo`.
-  const layout = (await resolveLayout(fileSystemLayoutProbe(fs), cwd, portablePosixPolicy)) ?? {
+  // rejects a non-absolute `cwd` and the default is `/repo`. No realpath
+  // step (unlike the node shim): the sandboxed adapter has no symlinks to
+  // resolve, so `gitDir`/`workDir`/`ceilingDirs` are forwarded lexically.
+  const layout = (await resolveLayout(fileSystemLayoutProbe(fs), cwd, portablePosixPolicy, {
+    ...(opts.gitDir !== undefined ? { gitDir: opts.gitDir } : {}),
+    ...(opts.workDir !== undefined ? { workDir: opts.workDir } : {}),
+    ...(opts.bare !== undefined ? { bare: opts.bare } : {}),
+    ...(opts.ceilingDirs !== undefined ? { ceilingDirs: opts.ceilingDirs } : {}),
+  })) ?? {
     workDir: DEFAULT_WORK_DIR,
     gitDir: DEFAULT_GIT_DIR,
     bare: false,

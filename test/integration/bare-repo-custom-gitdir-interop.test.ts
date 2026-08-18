@@ -14,12 +14,13 @@
  */
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import * as http from 'node:http';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
-import type { AuthorIdentity } from '../../src/domain/objects/index.js';
+import type { AuthorIdentity, ObjectId, RefName } from '../../src/domain/objects/index.js';
+import { FILE_MODE } from '../../src/domain/objects/index.js';
 import { openRepository } from '../../src/index.node.js';
 import type { Repository } from '../../src/repository.js';
 import {
@@ -1095,6 +1096,574 @@ describe.skipIf(!GIT_AVAILABLE)('bare and work-tree-less layout interop', () => 
         const data = (caught as { data?: { code?: string; key?: string } })?.data;
         expect(data?.code).toBe('CONFIG_MISSING_VALUE');
         expect(data?.key).toBe('core.worktree');
+      });
+    });
+  });
+
+  describe('Given an explicit gitDir opened from an unrelated cwd, no workDir (scenario D)', () => {
+    let root: string;
+    let normal: string;
+    let elsewhere: string;
+
+    beforeAll(async () => {
+      root = await mkRoot('d');
+      normal = path.join(root, 'normal');
+      buildNormalRepo(normal);
+      await writeFile(path.join(normal, 'a.txt'), 'x\n');
+      git(normal, 'add', 'a.txt');
+      commit(normal, 'c1');
+      elsewhere = path.join(root, 'elsewhere');
+      await mkdir(elsewhere, { recursive: true });
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      if (root !== undefined) await rm(root, { recursive: true, force: true });
+    });
+
+    describe('When openRepository opens with an explicit gitDir and cwd elsewhere', () => {
+      it('Then the work tree defaults to cwd and status matches git --git-dir status --porcelain', async () => {
+        // Arrange — git's work tree resolves to `elsewhere`, which never
+        // held `a.txt`, so the index-recorded file reads as worktree-deleted.
+        const gitDir = path.join(normal, '.git');
+        const expectedPorcelain = git(elsewhere, '--git-dir', gitDir, 'status', '--porcelain');
+
+        // Act
+        const repo = await openRepository({ cwd: elsewhere, gitDir });
+
+        try {
+          const status = await repo.status();
+
+          // Assert
+          expect(repo.layout.workDir).toBe(await realpath(elsewhere));
+          expect(repo.layout.bare).toBe(false);
+          expect(expectedPorcelain).toContain(' D a.txt');
+          const change = status.changes.find((c) => c.path === 'a.txt');
+          expect(change?.unstaged).toBe('deleted');
+          expect(change?.staged).toBeUndefined();
+        } finally {
+          await repo.dispose();
+        }
+      });
+    });
+  });
+
+  describe('Given an explicit gitDir and workDir opened against a bare repo (scenario E)', () => {
+    let root: string;
+    let bareForGit: string;
+    let wtForGit: string;
+    let bareForOurs: string;
+    let wtForOurs: string;
+
+    beforeAll(async () => {
+      root = await mkRoot('e');
+      const source = path.join(root, 'source');
+      buildNormalRepo(source);
+      await writeFile(path.join(source, 'a.txt'), 'x\n');
+      git(source, 'add', 'a.txt');
+      commit(source, 'c1');
+
+      bareForGit = path.join(root, 'bare-git.git');
+      runGit(['clone', '-q', '--bare', source, bareForGit]);
+      disableAutoMaintenance(bareForGit);
+      wtForGit = path.join(root, 'wt-git');
+      await mkdir(wtForGit, { recursive: true });
+
+      bareForOurs = path.join(root, 'bare-ours.git');
+      runGit(['clone', '-q', '--bare', source, bareForOurs]);
+      disableAutoMaintenance(bareForOurs);
+      wtForOurs = path.join(root, 'wt-ours');
+      await mkdir(wtForOurs, { recursive: true });
+
+      // Both bare clones' own on-disk timestamps land inside the same
+      // wall-clock second as this setup; let it pass before either tool
+      // builds an index against its (still-empty) work tree, so neither
+      // status read races the mtime-based stat cache.
+      await new Promise((resolve) => setTimeout(resolve, 1100));
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      if (root !== undefined) await rm(root, { recursive: true, force: true });
+    });
+
+    describe('When openRepository opens with explicit gitDir + workDir against the bare repo', () => {
+      it('Then bare is false and the status column matches git, byte for byte', async () => {
+        // Arrange — an explicit work tree overrides core.bare=true silently
+        // (no warning, no bogus flag — that combination is core.worktree +
+        // core.bare, not opts.workDir + core.bare).
+        const gitPorcelain = runGit([
+          '--git-dir',
+          bareForGit,
+          '--work-tree',
+          wtForGit,
+          'status',
+          '--porcelain',
+        ]).trim();
+
+        // Act
+        const repo = await openRepository({
+          cwd: root,
+          gitDir: bareForOurs,
+          workDir: wtForOurs,
+        });
+
+        try {
+          const result = await repo.status();
+
+          // Assert
+          expect(repo.layout.bare).toBe(false);
+          expect(repo.layout.workTreeConfigBogus).toBeUndefined();
+          expect(repo.layout.workDir).toBe(await realpath(wtForOurs));
+          expect(gitPorcelain).toBe('D  a.txt');
+          const change = result.changes.find((c) => c.path === 'a.txt');
+          expect(change?.staged).toBe('deleted');
+          expect(change?.unstaged).toBeUndefined();
+        } finally {
+          await repo.dispose();
+        }
+      });
+    });
+  });
+
+  describe('Given openRepository({cwd, gitDir, bare:true}) bootstrapping into an empty target (scenario J)', () => {
+    let root: string;
+    let d: string;
+
+    beforeAll(async () => {
+      root = await mkRoot('j');
+      d = path.join(root, 'target.git');
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      if (root !== undefined) await rm(root, { recursive: true, force: true });
+    });
+
+    describe('When repo.init({bare:true}) bootstraps and real git reads the result back', () => {
+      it('Then git reports a bare repo whose config matches the pinned init --bare shape', async () => {
+        // Arrange
+        const repo = await openRepository({ cwd: d, gitDir: d, bare: true });
+
+        try {
+          // Act — bootstrap, then seed one commit through primitives; there
+          // is no work tree to `add`/`commit` through.
+          await repo.init({ bare: true });
+          const blobId = await repo.primitives.writeObject({
+            type: 'blob',
+            id: '' as ObjectId,
+            content: new TextEncoder().encode('hello\n'),
+          });
+          const treeId = await repo.primitives.writeTree([
+            { name: 'a.txt', mode: FILE_MODE.REGULAR, id: blobId },
+          ]);
+          const commitId = await repo.primitives.writeObject({
+            type: 'commit',
+            id: '' as ObjectId,
+            data: {
+              tree: treeId,
+              parents: [],
+              author: AUTHOR,
+              committer: AUTHOR,
+              message: 'seed',
+              extraHeaders: [],
+            },
+          });
+          await repo.primitives.updateRef('refs/heads/main' as RefName, commitId, {
+            reflogMessage: 'seed',
+          });
+
+          // Assert — the resolved layout, and the pinned init --bare shape.
+          expect(repo.layout.gitDir).toBe(d);
+          expect(repo.layout.bare).toBe(true);
+          expect(repo.layout.workDir).toBeUndefined();
+          expect(isBareAccordingToGit(d)).toBe(true);
+          const config = await readFile(path.join(d, 'config'), 'utf8');
+          expect(config).toContain('bare = true');
+          expect(config).toContain('repositoryformatversion = 0');
+          expect(config).not.toContain('logallrefupdates');
+          expect(existsSync(path.join(d, 'index'))).toBe(false);
+          const gitLog = git(d, 'log', '--format=%H').trim();
+          expect(gitLog).toBe(commitId);
+        } finally {
+          await repo.dispose();
+        }
+      });
+
+      it('Then reopening by cwd alone resolves the same bare layout', async () => {
+        // Arrange + Act — `d` was already bootstrapped as a bare repo above;
+        // BARE_DIR discovery finds the same gitDir with no explicit gitDir
+        // argument this time.
+        const reopened = await openRepository({ cwd: d });
+
+        try {
+          // Assert
+          expect(reopened.layout.gitDir).toBe(d);
+          expect(reopened.layout.bare).toBe(true);
+        } finally {
+          await reopened.dispose();
+        }
+      });
+    });
+  });
+
+  describe('Given ceilingDirs bounding the discovery walk (scenario L)', () => {
+    let root: string;
+    let repoRoot: string;
+    let cwd: string;
+
+    beforeAll(async () => {
+      root = await mkRoot('l');
+      repoRoot = path.join(root, 'normal');
+      buildNormalRepo(repoRoot);
+      cwd = path.join(repoRoot, 'deep', 'deeper');
+      await mkdir(cwd, { recursive: true });
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      if (root !== undefined) await rm(root, { recursive: true, force: true });
+    });
+
+    const expectedGitDirFor = (dir: string): string => path.join(dir, '.git');
+
+    describe('When the walk runs with each ceiling row, passed explicitly to both tools', () => {
+      it.each([
+        { label: 'no ceiling', ceilings: (): ReadonlyArray<string> => [], found: true },
+        { label: 'a ceiling above the repo', ceilings: () => [root], found: true },
+        { label: 'a ceiling AT the repo root', ceilings: () => [repoRoot], found: false },
+        {
+          label: 'a ceiling at an intermediate ancestor',
+          ceilings: () => [path.join(repoRoot, 'deep')],
+          found: false,
+        },
+        { label: 'a ceiling equal to cwd (a no-op)', ceilings: () => [cwd], found: true },
+        {
+          label: 'a ceiling below cwd (irrelevant)',
+          ceilings: () => [path.join(cwd, 'further-down')],
+          found: true,
+        },
+        {
+          label: 'multiple entries — the longest strict ancestor wins',
+          ceilings: () => [root, path.join(repoRoot, 'deep')],
+          found: false,
+        },
+      ])('Then $label agrees between git and tsgit', async ({ ceilings, found }) => {
+        // Arrange
+        const ceilingList = ceilings();
+        const g = tryRunGitWithExit(['-C', cwd, 'rev-parse', '--show-toplevel'], {
+          env: { ...runGitEnv(), GIT_CEILING_DIRECTORIES: ceilingList.join(':') },
+        });
+
+        // Act
+        const repo = await openRepository({ cwd, ceilingDirs: ceilingList });
+
+        try {
+          // Assert
+          expect(g.exitCode === 0).toBe(found);
+          expect(repo.layout.gitDir === expectedGitDirFor(repoRoot)).toBe(found);
+        } finally {
+          await repo.dispose();
+        }
+      });
+    });
+
+    describe('When openRepository runs with cwd AND the ceiling both equal to the repo root', () => {
+      it('Then it is STILL found — the strict-ancestor rule makes it a no-op', async () => {
+        // Arrange
+        const g = tryRunGitWithExit(['-C', repoRoot, 'rev-parse', '--show-toplevel'], {
+          env: { ...runGitEnv(), GIT_CEILING_DIRECTORIES: repoRoot },
+        });
+
+        // Act
+        const repo = await openRepository({ cwd: repoRoot, ceilingDirs: [repoRoot] });
+
+        try {
+          // Assert
+          expect(g.exitCode).toBe(0);
+          expect(repo.layout.gitDir).toBe(expectedGitDirFor(repoRoot));
+        } finally {
+          await repo.dispose();
+        }
+      });
+    });
+
+    describe('Symlinked cwd whose real target holds the repo', () => {
+      let linkRoot: string;
+      let realRoot: string;
+      let linkedCwd: string;
+
+      beforeAll(async () => {
+        realRoot = path.join(root, 'real');
+        buildNormalRepo(realRoot);
+        await mkdir(path.join(realRoot, 'deep'), { recursive: true });
+        linkRoot = path.join(root, 'link');
+        await symlink(realRoot, linkRoot);
+        linkedCwd = path.join(linkRoot, 'deep');
+      }, SETUP_TIMEOUT);
+
+      describe('When openRepository runs with the ceiling passed explicitly to both tools', () => {
+        it.each([
+          { label: 'the symlink path itself', ceiling: (): string => linkRoot },
+          { label: 'the real (resolved) path', ceiling: (): string => realRoot },
+        ])(
+          'Then a ceiling of $label stops the walk — entries are realpathed, cwd compared physically',
+          async ({ ceiling }) => {
+            // Arrange
+            const ceilingValue = ceiling();
+            const g = tryRunGitWithExit(['-C', linkedCwd, 'rev-parse', '--show-toplevel'], {
+              env: { ...runGitEnv(), GIT_CEILING_DIRECTORIES: ceilingValue },
+            });
+
+            // Act
+            const repo = await openRepository({ cwd: linkedCwd, ceilingDirs: [ceilingValue] });
+
+            try {
+              // Assert — both refuse: the ceiling resolves to the SAME
+              // physical directory as an ancestor of the (realpathed) cwd.
+              expect(g.exitCode).toBe(128);
+              expect(repo.layout.gitDir).toBe(path.join(await realpath(linkedCwd), '.git'));
+            } finally {
+              await repo.dispose();
+            }
+          },
+        );
+      });
+    });
+  });
+
+  describe('Given the rev-parse layout queries, reconstructed from repo.layout + repo.ctx.cwd (scenario M)', () => {
+    let root: string;
+    let normal: string;
+    let bare: string;
+
+    beforeAll(async () => {
+      root = await mkRoot('m');
+      normal = path.join(root, 'normal');
+      buildNormalRepo(normal);
+      await mkdir(path.join(normal, 'sub', 'deep'), { recursive: true });
+      bare = path.join(root, 'bare.git');
+      runGit(['clone', '-q', '--bare', normal, bare]);
+      disableAutoMaintenance(bare);
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      if (root !== undefined) await rm(root, { recursive: true, force: true });
+    });
+
+    const isPathInside = (candidate: string, ancestor: string): boolean =>
+      candidate === ancestor || candidate.startsWith(`${ancestor}${path.sep}`);
+
+    /** Reconstructs every rev-parse layout query from `repo.layout` + `repo.ctx.cwd` and asserts each against real git. */
+    const assertReconstructedQueriesMatchGit = async (
+      gitCwd: string,
+      tsgitCwd: string,
+    ): Promise<void> => {
+      const repo = await openRepository({ cwd: tsgitCwd });
+      try {
+        const layout = repo.layout;
+        const cwd = repo.ctx.cwd;
+
+        const [absGitDir, absCommonDir] = gitDirPair(gitCwd);
+        expect(layout.gitDir).toBe(absGitDir);
+        expect(layout.commonDir ?? layout.gitDir).toBe(absCommonDir);
+
+        const absoluteGitDir = git(gitCwd, 'rev-parse', '--absolute-git-dir').trim();
+        expect(layout.gitDir).toBe(absoluteGitDir);
+
+        expect(layout.bare).toBe(isBareAccordingToGit(gitCwd));
+
+        const toplevel = tryRunGitWithExit(['-C', gitCwd, 'rev-parse', '--show-toplevel'], {
+          env: runGitEnv(),
+        });
+        if (layout.workDir === undefined) {
+          expect(toplevel.exitCode).toBe(128);
+        } else {
+          expect(toplevel.exitCode).toBe(0);
+          expect(layout.workDir).toBe(toplevel.stdout.trim());
+        }
+
+        const insideWorkTree = git(gitCwd, 'rev-parse', '--is-inside-work-tree').trim() === 'true';
+        const oursInsideWorkTree =
+          layout.workDir !== undefined && isPathInside(cwd, layout.workDir);
+        expect(oursInsideWorkTree).toBe(insideWorkTree);
+
+        const insideGitDir = git(gitCwd, 'rev-parse', '--is-inside-git-dir').trim() === 'true';
+        expect(isPathInside(cwd, layout.gitDir)).toBe(insideGitDir);
+
+        const prefix = git(gitCwd, 'rev-parse', '--show-prefix').trim();
+        const oursPrefix =
+          layout.workDir !== undefined &&
+          isPathInside(cwd, layout.workDir) &&
+          cwd !== layout.workDir
+            ? `${path.relative(layout.workDir, cwd)}${path.sep}`
+            : '';
+        expect(oursPrefix).toBe(prefix);
+
+        if (layout.workDir !== undefined && isPathInside(cwd, layout.workDir)) {
+          const cdup = git(gitCwd, 'rev-parse', '--show-cdup').trim();
+          const relBack = path.relative(cwd, layout.workDir);
+          const oursCdup = relBack.length === 0 ? '' : `${relBack}${path.sep}`;
+          expect(oursCdup).toBe(cdup);
+        }
+      } finally {
+        await repo.dispose();
+      }
+    };
+
+    describe('When cwd is the work-tree root of a normal repo', () => {
+      it('Then every reconstructed query matches git', async () => {
+        // Arrange / Act / Assert — the reconstruction table's nine queries
+        // are asserted one by one inside the shared helper.
+        await assertReconstructedQueriesMatchGit(normal, normal);
+      });
+    });
+
+    describe('When cwd is a nested sub-directory of a normal repo', () => {
+      it('Then every reconstructed query matches git', async () => {
+        // Arrange
+        const sub = path.join(normal, 'sub', 'deep');
+
+        // Act / Assert
+        await assertReconstructedQueriesMatchGit(sub, sub);
+      });
+    });
+
+    describe('When cwd is the gitDir of a bare repo', () => {
+      it('Then every reconstructed query matches git', async () => {
+        // Arrange / Act / Assert
+        await assertReconstructedQueriesMatchGit(bare, bare);
+      });
+    });
+  });
+
+  describe('Given explicit-gitDir edge cases (scenario Q)', () => {
+    let root: string;
+
+    beforeAll(async () => {
+      root = await mkRoot('q');
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      if (root !== undefined) await rm(root, { recursive: true, force: true });
+    });
+
+    describe('When gitDir names a directory that does not yet exist', () => {
+      it("Then tsgit resolves it, log refuses, and init succeeds — matching git's three rows", async () => {
+        // Arrange
+        const missing = path.join(root, 'missing-gitdir');
+        const gitLog = tryRunGitWithExit(['--git-dir', missing, 'log'], { env: runGitEnv() });
+
+        // Act
+        const repo = await openRepository({ cwd: root, gitDir: missing });
+        let logErr: unknown;
+        try {
+          await repo.log();
+        } catch (err) {
+          logErr = err;
+        }
+        const initResult = await repo.init({ bare: true });
+
+        try {
+          // Assert — git
+          expect(gitLog.exitCode).toBe(128);
+          // Assert — tsgit: resolves leniently, refuses only at first command
+          expect(repo.layout.gitDir).toBe(missing);
+          expect((logErr as { data?: { code?: string } })?.data?.code).toBe('NOT_A_REPOSITORY');
+          expect(initResult.bare).toBe(true);
+        } finally {
+          await repo.dispose();
+        }
+      });
+    });
+
+    describe('When gitDir names an existing empty directory', () => {
+      it('Then log refuses while init succeeds, matching git', async () => {
+        // Arrange
+        const emptyDir = path.join(root, 'empty-gitdir');
+        await mkdir(emptyDir, { recursive: true });
+        const gitLog = tryRunGitWithExit(['--git-dir', emptyDir, 'log'], { env: runGitEnv() });
+        const gitInit = tryRunGitWithExit(['--git-dir', emptyDir, 'init'], { env: runGitEnv() });
+        // git's own init above turned emptyDir into a real repo; rebuild a
+        // clean empty directory before tsgit's own probe runs against it.
+        await rm(emptyDir, { recursive: true, force: true });
+        await mkdir(emptyDir, { recursive: true });
+
+        // Act
+        const repo = await openRepository({ cwd: root, gitDir: emptyDir });
+        let logErr: unknown;
+        try {
+          await repo.log();
+        } catch (err) {
+          logErr = err;
+        }
+        const initResult = await repo.init();
+
+        try {
+          // Assert — git
+          expect(gitLog.exitCode).toBe(128);
+          expect(gitInit.exitCode).toBe(0);
+          // Assert — tsgit
+          expect((logErr as { data?: { code?: string } })?.data?.code).toBe('NOT_A_REPOSITORY');
+          expect(initResult.bare).toBe(false);
+        } finally {
+          await repo.dispose();
+        }
+      });
+    });
+
+    describe('When gitDir names a regular file with invalid gitfile content', () => {
+      it('Then openRepository co-refuses with the gitfile-format refusal', async () => {
+        // Arrange
+        const plainFile = path.join(root, 'plain-file');
+        await writeFile(plainFile, 'not a gitfile\n');
+        const g = tryRunGitWithExit(['--git-dir', plainFile, 'log'], { env: runGitEnv() });
+
+        // Act
+        let caught: unknown;
+        try {
+          await openRepository({ cwd: root, gitDir: plainFile });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — git
+        expect(g.exitCode).toBe(128);
+        expect(g.stderr).toContain('invalid gitfile format');
+        // Assert — tsgit
+        expect((caught as { data?: { code?: string } })?.data?.code).toBe('GITFILE_INVALID_FORMAT');
+      });
+    });
+
+    describe('When workDir is given alone, with no repository anywhere up the tree', () => {
+      it('Then both co-refuse — a work tree alone never conjures a repository', async () => {
+        // Arrange
+        const lonelyRoot = path.join(root, 'lonely');
+        const wt = path.join(root, 'lonely-wt');
+        await mkdir(lonelyRoot, { recursive: true });
+        await mkdir(wt, { recursive: true });
+        const g = tryRunGitWithExit(['-C', lonelyRoot, '--work-tree', wt, 'log'], {
+          env: { ...runGitEnv(), GIT_CEILING_DIRECTORIES: lonelyRoot },
+        });
+
+        // Act
+        const repo = await openRepository({
+          cwd: lonelyRoot,
+          workDir: wt,
+          ceilingDirs: [lonelyRoot],
+        });
+        let logErr: unknown;
+        try {
+          await repo.log();
+        } catch (err) {
+          logErr = err;
+        }
+
+        try {
+          // Assert — git
+          expect(g.exitCode).toBe(128);
+          expect(g.stderr).toContain('not a git repository');
+          // Assert — tsgit
+          expect((logErr as { data?: { code?: string } })?.data?.code).toBe('NOT_A_REPOSITORY');
+        } finally {
+          await repo.dispose();
+        }
       });
     });
   });

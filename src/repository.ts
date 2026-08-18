@@ -18,7 +18,7 @@ import { repositoryDisposed } from './domain/commands/error.js';
 import type { StatTreeDiff, TreeDiff } from './domain/diff/index.js';
 import type { CommandRunner } from './ports/command-runner.js';
 import type { Compressor } from './ports/compressor.js';
-import type { Context, RepositoryConfig } from './ports/context.js';
+import type { Context, RepositoryConfig, RepositoryLayout } from './ports/context.js';
 import type { EnvReader } from './ports/env-reader.js';
 import type { FileSystem } from './ports/file-system.js';
 import type { HashService } from './ports/hash-service.js';
@@ -76,6 +76,29 @@ type BindCtx<F> = F extends (ctx: Context, ...rest: infer A) => infer R ? (...ar
 export interface OpenRepositoryOptions {
   /** Working directory. Default: `process.cwd()` on Node, `'/'` on browser/memory. */
   readonly cwd?: string;
+  /**
+   * Explicit git directory — the argument equivalent of git's `--git-dir`.
+   * Relative values resolve against `cwd`. Supplying it skips discovery
+   * entirely.
+   */
+  readonly gitDir?: string;
+  /**
+   * Explicit working tree — the argument equivalent of git's `--work-tree`.
+   * Relative values resolve against `cwd`. Overrides `core.bare` and
+   * `core.worktree`.
+   */
+  readonly workDir?: string;
+  /**
+   * Force bareness. `true` behaves as `core.bare = true`; `false` as
+   * `core.bare = false`. Omit to take the answer from config + layout.
+   */
+  readonly bare?: boolean;
+  /**
+   * Absolute directories bounding the discovery walk — the argument
+   * equivalent of `GIT_CEILING_DIRECTORIES`. Ignored when `gitDir` is
+   * supplied (no walk happens).
+   */
+  readonly ceilingDirs?: ReadonlyArray<string>;
   /** Adapter overrides. Each is optional; missing slots fall back to runtime detection. */
   readonly fs?: FileSystem;
   readonly hash?: HashService;
@@ -310,6 +333,13 @@ export interface Repository {
    */
   readonly snapshot: SnapshotFactory;
 
+  /**
+   * The resolved physical layout. Same object as `ctx.layout`; surfaced
+   * directly so callers do not reach through `ctx`. Deep-frozen — reading it
+   * never throws, mutating it does.
+   */
+  readonly layout: RepositoryLayout;
+
   /** The frozen Context backing every binding. Exposed for advanced use. */
   readonly ctx: Context;
 
@@ -429,7 +459,11 @@ export const openRepository = async (
     compressor: adapters.compressor,
     transport: adapters.transport,
     progress: opts.progress ?? noopProgress,
-    layout: fallback.layout,
+    // Deep-frozen here — the moment the layout becomes reachable both via
+    // ctx.layout and the facade's own `layout` field — so a caller cannot
+    // mutate the object every primitive reads. `deepFreeze` short-circuits
+    // on an already-frozen object, so this costs nothing on a re-freeze.
+    layout: deepFreeze(fallback.layout),
     cwd,
     runtime: fallback.runtime,
     hashConfig: fallback.hashConfig,
@@ -760,6 +794,7 @@ export const openRepository = async (
       }) as Repository['primitives']['writeTree'],
     }),
     ctx,
+    layout: ctx.layout,
     dispose,
   });
   return repo;

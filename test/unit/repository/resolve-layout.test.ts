@@ -5,9 +5,8 @@ import { fileSystemLayoutProbe } from '../../../src/repository/file-system-layou
 import { resolveLayout } from '../../../src/repository/resolve-layout.js';
 
 // `resolveLayout` composes the walk (`findLayout`) with the config-driven
-// work-tree precedence (design's Stage 3) and the bareness formula (Stage 4).
-// This part implements only the discovery routes — DISCOVERED and BARE_DIR;
-// the EXPLICIT route (opts.gitDir) is Part 4.
+// work-tree precedence (Stage 3) and the bareness formula (Stage 4), plus
+// the EXPLICIT route (`opts.gitDir`), which skips the walk entirely.
 
 /** Marks `dir` as a valid git directory: `objects/`, `refs/`, and a `HEAD` file. */
 const makeGitDir = async (fs: MemoryFileSystem, dir: string): Promise<void> => {
@@ -323,6 +322,264 @@ describe('resolveLayout', () => {
           gitDir: '/repo/normal/.git',
           workDir: '/repo/normal',
           bare: false,
+        });
+      });
+    });
+  });
+
+  describe('The EXPLICIT route (opts.gitDir)', () => {
+    describe('Given an explicit gitDir with nothing else set', () => {
+      describe('When resolveLayout runs', () => {
+        it('Then the work tree defaults to cwd — the explicit-route surprise', async () => {
+          // Arrange
+          const fs = new MemoryFileSystem({ rootDir: '/repo' });
+          await makeGitDir(fs, '/repo/bare.git');
+
+          // Act
+          const result = await resolveLayout(
+            fileSystemLayoutProbe(fs),
+            '/repo/elsewhere',
+            posixPolicy,
+            {
+              gitDir: '/repo/bare.git',
+            },
+          );
+
+          // Assert
+          expect(result).toStrictEqual({
+            gitDir: '/repo/bare.git',
+            workDir: '/repo/elsewhere',
+            bare: false,
+          });
+        });
+      });
+    });
+
+    describe('Given a relative gitDir', () => {
+      describe('When resolveLayout runs', () => {
+        it('Then it resolves against cwd', async () => {
+          // Arrange
+          const fs = new MemoryFileSystem({ rootDir: '/repo' });
+          await makeGitDir(fs, '/repo/bare.git');
+
+          // Act
+          const result = await resolveLayout(fileSystemLayoutProbe(fs), '/repo', posixPolicy, {
+            gitDir: 'bare.git',
+          });
+
+          // Assert
+          expect(result?.gitDir).toBe('/repo/bare.git');
+        });
+      });
+    });
+
+    describe('Given an explicit gitDir AND an explicit workDir', () => {
+      describe('When resolveLayout runs', () => {
+        it('Then the explicit workDir wins, resolved against cwd', async () => {
+          // Arrange
+          const fs = new MemoryFileSystem({ rootDir: '/repo' });
+          await makeGitDir(fs, '/repo/bare.git');
+          await fs.writeUtf8('/repo/bare.git/config', '[core]\n\tbare = true\n');
+
+          // Act
+          const result = await resolveLayout(
+            fileSystemLayoutProbe(fs),
+            '/repo/elsewhere',
+            posixPolicy,
+            {
+              gitDir: '/repo/bare.git',
+              workDir: 'wt',
+            },
+          );
+
+          // Assert — an explicit work tree overrides core.bare=true silently,
+          // no bogus-config flag (that flag only fires via core.worktree).
+          expect(result).toStrictEqual({
+            gitDir: '/repo/bare.git',
+            workDir: '/repo/elsewhere/wt',
+            bare: false,
+          });
+        });
+      });
+    });
+
+    describe('Given opts.bare = true overriding an absent core.bare', () => {
+      describe('When resolveLayout runs', () => {
+        it('Then the argument tier wins outright and there is no work tree', async () => {
+          // Arrange
+          const fs = new MemoryFileSystem({ rootDir: '/repo' });
+          await makeGitDir(fs, '/repo/target');
+
+          // Act
+          const result = await resolveLayout(
+            fileSystemLayoutProbe(fs),
+            '/repo/target',
+            posixPolicy,
+            {
+              gitDir: '/repo/target',
+              bare: true,
+            },
+          );
+
+          // Assert
+          expect(result).toStrictEqual({ gitDir: '/repo/target', bare: true });
+        });
+      });
+    });
+
+    describe('Given opts.bare = false overriding core.bare = true', () => {
+      describe('When resolveLayout runs', () => {
+        it('Then the argument tier wins and a work tree defaults to cwd', async () => {
+          // Arrange
+          const fs = new MemoryFileSystem({ rootDir: '/repo' });
+          await makeGitDir(fs, '/repo/target');
+          await fs.writeUtf8('/repo/target/config', '[core]\n\tbare = true\n');
+
+          // Act
+          const result = await resolveLayout(
+            fileSystemLayoutProbe(fs),
+            '/repo/target',
+            posixPolicy,
+            {
+              gitDir: '/repo/target',
+              bare: false,
+            },
+          );
+
+          // Assert
+          expect(result).toStrictEqual({
+            gitDir: '/repo/target',
+            workDir: '/repo/target',
+            bare: false,
+          });
+        });
+      });
+    });
+
+    describe('Given a gitDir naming a directory that does not exist', () => {
+      describe('When resolveLayout runs', () => {
+        it('Then it still resolves, leniently, with a work tree at cwd (R1c-5) — assertRepository refuses later, not this stage', async () => {
+          // Arrange
+          const fs = new MemoryFileSystem({ rootDir: '/repo' });
+
+          // Act
+          const result = await resolveLayout(fileSystemLayoutProbe(fs), '/repo', posixPolicy, {
+            gitDir: '/repo/does-not-exist',
+          });
+
+          // Assert
+          expect(result).toStrictEqual({
+            gitDir: '/repo/does-not-exist',
+            workDir: '/repo',
+            bare: false,
+          });
+        });
+      });
+    });
+
+    describe('Given a gitDir naming an existing empty directory', () => {
+      describe('When resolveLayout runs', () => {
+        it('Then it still resolves, leniently, with a work tree at cwd', async () => {
+          // Arrange
+          const fs = new MemoryFileSystem({ rootDir: '/repo' });
+          await fs.mkdir('/repo/empty');
+
+          // Act
+          const result = await resolveLayout(fileSystemLayoutProbe(fs), '/repo', posixPolicy, {
+            gitDir: '/repo/empty',
+          });
+
+          // Assert
+          expect(result).toStrictEqual({ gitDir: '/repo/empty', workDir: '/repo', bare: false });
+        });
+      });
+    });
+
+    describe('Given a gitDir naming a regular file with a valid gitfile pointer', () => {
+      describe('When resolveLayout runs', () => {
+        it('Then it resolves through the gitfile grammar', async () => {
+          // Arrange
+          const fs = new MemoryFileSystem({ rootDir: '/repo' });
+          await makeGitDir(fs, '/repo/admin');
+          await fs.writeUtf8('/repo/pointer', 'gitdir: /repo/admin\n');
+
+          // Act
+          const result = await resolveLayout(fileSystemLayoutProbe(fs), '/repo', posixPolicy, {
+            gitDir: '/repo/pointer',
+          });
+
+          // Assert
+          expect(result?.gitDir).toBe('/repo/admin');
+        });
+      });
+    });
+
+    describe('Given a gitDir naming a regular file with malformed gitfile content', () => {
+      describe('When resolveLayout runs', () => {
+        it('Then it throws GITFILE_INVALID_FORMAT, inheriting the gitfile grammar refusal', async () => {
+          // Arrange
+          const fs = new MemoryFileSystem({ rootDir: '/repo' });
+          await fs.writeUtf8('/repo/pointer', 'not a gitfile\n');
+
+          // Act
+          let caught: unknown;
+          try {
+            await resolveLayout(fileSystemLayoutProbe(fs), '/repo', posixPolicy, {
+              gitDir: '/repo/pointer',
+            });
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect((caught as { data?: { code?: string } })?.data?.code).toBe(
+            'GITFILE_INVALID_FORMAT',
+          );
+        });
+      });
+    });
+
+    describe('Given opts.workDir alone, with no gitDir and no repository anywhere', () => {
+      describe('When resolveLayout runs', () => {
+        it('Then it still returns undefined — a work tree alone never conjures a repository', async () => {
+          // Arrange
+          const fs = new MemoryFileSystem({ rootDir: '/repo' });
+          await fs.mkdir('/repo/lonely');
+
+          // Act
+          const result = await resolveLayout(
+            fileSystemLayoutProbe(fs),
+            '/repo/lonely',
+            posixPolicy,
+            {
+              workDir: '/repo/wt',
+            },
+          );
+
+          // Assert
+          expect(result).toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given an explicit gitDir pointing at a linked-worktree admin dir with its own commondir', () => {
+      describe('When resolveLayout runs', () => {
+        it('Then commonDir splits from gitDir, exactly as the walk resolves it', async () => {
+          // Arrange
+          const fs = new MemoryFileSystem({ rootDir: '/repo' });
+          await fs.writeUtf8('/repo/bare.git/worktrees/wt/HEAD', 'ref: refs/heads/main\n');
+          await fs.writeUtf8('/repo/bare.git/worktrees/wt/commondir', '../..\n');
+          await fs.mkdir('/repo/bare.git/objects');
+          await fs.mkdir('/repo/bare.git/refs');
+
+          // Act
+          const result = await resolveLayout(fileSystemLayoutProbe(fs), '/repo', posixPolicy, {
+            gitDir: '/repo/bare.git/worktrees/wt',
+          });
+
+          // Assert
+          expect(result?.gitDir).toBe('/repo/bare.git/worktrees/wt');
+          expect(result?.commonDir).toBe('/repo/bare.git');
         });
       });
     });

@@ -89,6 +89,30 @@ describe('validateOptions — invalid option values', () => {
           option: 'dnsResolver',
           reasonContains: 'function',
         },
+        {
+          label: 'an empty-string gitDir',
+          fn: () => validateOptions({ gitDir: '' }),
+          option: 'gitDir',
+          reasonContains: 'must not be empty',
+        },
+        {
+          label: 'an empty-string workDir',
+          fn: () => validateOptions({ workDir: '' }),
+          option: 'workDir',
+          reasonContains: 'must not be empty',
+        },
+        {
+          label: 'a ceilingDirs entry that is an empty string',
+          fn: () => validateOptions({ ceilingDirs: [''] }),
+          option: 'ceilingDirs',
+          reasonContains: 'must not be empty',
+        },
+        {
+          label: 'a ceilingDirs entry that is relative',
+          fn: () => validateOptions({ ceilingDirs: ['/abs', 'relative/path'] }),
+          option: 'ceilingDirs',
+          reasonContains: 'must be absolute paths',
+        },
       ])('Then throws INVALID_OPTION for $label', ({ fn, option, reasonContains }) => {
         // Arrange + Assert
         expectInvalid(fn, option, reasonContains);
@@ -159,6 +183,38 @@ describe('validateOptions — valid option values', () => {
         {
           label: 'dnsResolver = an actual function',
           fn: () => validateOptions({ config: { dnsResolver: async () => [] } }),
+        },
+        {
+          label: 'a relative gitDir (resolves against cwd, not required absolute)',
+          fn: () => validateOptions({ gitDir: 'relative/bare.git' }),
+        },
+        {
+          label: 'an absolute gitDir',
+          fn: () => validateOptions({ gitDir: '/abs/bare.git' }),
+        },
+        {
+          label: 'a relative workDir (resolves against cwd, not required absolute)',
+          fn: () => validateOptions({ workDir: 'relative/wt' }),
+        },
+        {
+          label: 'an absolute workDir',
+          fn: () => validateOptions({ workDir: '/abs/wt' }),
+        },
+        {
+          label: 'ceilingDirs with only absolute, non-empty entries',
+          fn: () => validateOptions({ ceilingDirs: ['/abs/one', '/abs/two'] }),
+        },
+        {
+          label: 'an empty ceilingDirs array',
+          fn: () => validateOptions({ ceilingDirs: [] }),
+        },
+        {
+          label: 'bare true',
+          fn: () => validateOptions({ bare: true }),
+        },
+        {
+          label: 'bare false',
+          fn: () => validateOptions({ bare: false }),
         },
       ])('Then it does not throw for $label', ({ fn }) => {
         // Arrange + Act + Assert

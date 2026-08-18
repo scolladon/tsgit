@@ -5,6 +5,7 @@ import { isValidHeadContent } from '../domain/repository/head-ref.js';
 import { gitfileInvalidFormat, gitfileNoPath } from '../domain/worktree/error.js';
 import { parseCommondir, parseGitfilePointer } from '../domain/worktree/gitfile.js';
 import type { LayoutProbe } from '../ports/layout-probe.js';
+import { longestStrictAncestor } from './ceiling-stop.js';
 
 /**
  * The walk's raw structural finding: where the gitDir (and, if different, the
@@ -26,6 +27,11 @@ export type WalkOutcome =
     }
   | {
       readonly route: 'BARE_DIR';
+      readonly gitDir: string;
+      readonly commonDir?: string;
+    }
+  | {
+      readonly route: 'EXPLICIT';
       readonly gitDir: string;
       readonly commonDir?: string;
     };
@@ -59,14 +65,22 @@ interface GitDirLocation {
  * inject `posixPolicy` to keep the walk POSIX-rooted on any host. The
  * default was lifted out of this module to avoid the repository layer
  * reaching across the hexagonal boundary into an adapter.
+ *
+ * `ceilingDirs`, when given, bounds the climb: `longestStrictAncestor` is
+ * computed ONCE before the loop starts (never per level), and the loop head
+ * refuses to examine — or look past — that directory. Omitted entirely, the
+ * walk behaves exactly as before.
  */
 export const findLayout = async (
   probe: LayoutProbe,
   cwd: string,
   pathPolicy: PathPolicy,
+  ceilingDirs?: ReadonlyArray<string>,
 ): Promise<WalkOutcome | undefined> => {
   let current = pathPolicy.resolve(cwd);
+  const ceilStop = longestStrictAncestor(ceilingDirs, current, pathPolicy);
   while (true) {
+    if (current === ceilStop) return undefined;
     const candidate = pathPolicy.join(current, '.git');
     // stat, not lstat — a .git symlink to a real gitdir behaves as a directory.
     const stat = await probe.stat(candidate);
@@ -129,8 +143,12 @@ export const GITFILE_MAX_BYTES = 65536;
  * race-removed file; both map to the gitfile-format refusal because the
  * invariant that matters is the hard stop — discovery must never walk up
  * past a `.git` file it could not use.
+ *
+ * Exported so `resolve-layout.ts`'s explicit-gitDir route can route a
+ * gitDir argument that names a regular file through the same gitfile
+ * grammar rather than re-implementing it.
  */
-const resolvePointer = async (
+export const resolvePointer = async (
   probe: LayoutProbe,
   gitfilePath: string,
   baseDir: string,

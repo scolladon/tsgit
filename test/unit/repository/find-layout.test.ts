@@ -742,4 +742,94 @@ describe('findLayout', () => {
       });
     });
   });
+
+  describe('Given a ceilingDirs entry that is a strict ancestor of cwd, at the repo root', () => {
+    describe('When findLayout runs', () => {
+      it('Then it returns undefined — the walk never examines the repo root', async () => {
+        // Arrange
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await makeGitDir(fs, '/repo/normal/.git');
+        await fs.mkdir('/repo/normal/deep/deeper');
+
+        // Act
+        const result = await findLayout(
+          fileSystemLayoutProbe(fs),
+          '/repo/normal/deep/deeper',
+          posixPolicy,
+          ['/repo/normal'],
+        );
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a ceilingDirs entry above the repo root', () => {
+    describe('When findLayout runs', () => {
+      it('Then the repo is still found — an irrelevant ceiling is a no-op', async () => {
+        // Arrange
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await makeGitDir(fs, '/repo/normal/.git');
+        await fs.mkdir('/repo/normal/deep/deeper');
+
+        // Act
+        const result = await findLayout(
+          fileSystemLayoutProbe(fs),
+          '/repo/normal/deep/deeper',
+          posixPolicy,
+          ['/repo'],
+        );
+
+        // Assert
+        expect(result).toStrictEqual({
+          gitDir: '/repo/normal/.git',
+          route: 'DISCOVERED',
+          origin: '/repo/normal',
+        });
+      });
+    });
+  });
+
+  describe('Given a ceilingDirs entry equal to cwd itself', () => {
+    describe('When findLayout runs', () => {
+      it('Then the repo is still found — a strict-ancestor no-op wired into the loop head', async () => {
+        // Arrange
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await makeGitDir(fs, '/repo/normal/.git');
+        await fs.mkdir('/repo/normal/deep/deeper');
+
+        // Act
+        const result = await findLayout(
+          fileSystemLayoutProbe(fs),
+          '/repo/normal/deep/deeper',
+          posixPolicy,
+          ['/repo/normal/deep/deeper'],
+        );
+
+        // Assert
+        expect(result).toStrictEqual({
+          gitDir: '/repo/normal/.git',
+          route: 'DISCOVERED',
+          origin: '/repo/normal',
+        });
+      });
+    });
+  });
+
+  describe('Given no ceilingDirs argument at all', () => {
+    describe('When findLayout runs', () => {
+      it('Then it walks all the way to the root, exactly as before', async () => {
+        // Arrange
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await fs.mkdir('/repo/lonely');
+
+        // Act
+        const result = await findLayout(fileSystemLayoutProbe(fs), '/repo/lonely', posixPolicy);
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
 });
