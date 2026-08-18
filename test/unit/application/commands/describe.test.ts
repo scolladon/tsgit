@@ -1481,3 +1481,29 @@ describe('Given a repository with no work tree', () => {
     });
   });
 });
+
+describe('Given a work tree with a corrupt index', () => {
+  describe('When describe runs with the dirty option', () => {
+    it('Then it propagates the index error instead of re-labelling it as its own', async () => {
+      // Arrange — a corrupt (too-short) index makes `status` fail with
+      // INVALID_INDEX_HEADER, a TsgitError whose code is NOT
+      // WORK_TREE_REQUIRED; describe must let it propagate rather than
+      // re-throw its own `describe --dirty` refusal.
+      const ctx = await seed();
+      await commitFile(ctx, 'c1');
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/index`, 'corrupt');
+
+      // Act
+      let caught: unknown;
+      try {
+        await describeCmd(ctx, undefined, { dirty: true });
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      expect((caught as TsgitError).data.code).toBe('INVALID_INDEX_HEADER');
+    });
+  });
+});
