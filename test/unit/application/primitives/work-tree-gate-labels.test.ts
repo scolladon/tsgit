@@ -100,13 +100,18 @@ const bareCtxWithScanner = async (): Promise<{
   return { ctx: asBareContext(seeded), scanner };
 };
 
-const expectOperation = async (thunk: () => Promise<unknown>, operation: string): Promise<void> => {
+/** Runs `thunk`, capturing any rejection so it can be asserted by the caller. */
+const catchOperation = async (thunk: () => Promise<unknown>): Promise<unknown> => {
   let caught: unknown;
   try {
     await thunk();
   } catch (err) {
     caught = err;
   }
+  return caught;
+};
+
+const assertWorkTreeRequired = (caught: unknown, operation: string): void => {
   expect(caught).toBeInstanceOf(TsgitError);
   expect((caught as TsgitError).data).toMatchObject({
     code: 'WORK_TREE_REQUIRED',
@@ -118,200 +123,300 @@ describe('Work-tree-gate labels (defensive re-checks unreachable through a comma
   describe('Given a bare context', () => {
     describe('When applySparseCheckout runs', () => {
       it("Then throws WORK_TREE_REQUIRED tagged 'sparse-checkout'", async () => {
+        // Arrange
         const ctx = await bareCtx();
-        await expectOperation(
-          () => applySparseCheckout(ctx, { matcher: undefined }),
-          'sparse-checkout',
-        );
+
+        // Act
+        const caught = await catchOperation(() => applySparseCheckout(ctx, { matcher: undefined }));
+
+        // Assert
+        assertWorkTreeRequired(caught, 'sparse-checkout');
       });
     });
 
     describe('When materializeFile runs', () => {
       it("Then throws WORK_TREE_REQUIRED tagged 'workingTree'", async () => {
+        // Arrange
         const ctx = await bareCtx();
-        await expectOperation(
-          () => materializeFile(ctx, 'a.txt', new Uint8Array(), FILE_MODE.REGULAR),
-          'workingTree',
+
+        // Act
+        const caught = await catchOperation(() =>
+          materializeFile(ctx, 'a.txt', new Uint8Array(), FILE_MODE.REGULAR),
         );
+
+        // Assert
+        assertWorkTreeRequired(caught, 'workingTree');
       });
     });
 
     describe('When removeFile runs', () => {
       it("Then throws WORK_TREE_REQUIRED tagged 'workingTree'", async () => {
+        // Arrange
         const ctx = await bareCtx();
-        await expectOperation(() => removeFile(ctx, 'a.txt'), 'workingTree');
+
+        // Act
+        const caught = await catchOperation(() => removeFile(ctx, 'a.txt'));
+
+        // Assert
+        assertWorkTreeRequired(caught, 'workingTree');
       });
     });
 
     describe('When renameInWorkingTree runs', () => {
       it("Then throws WORK_TREE_REQUIRED tagged 'workingTree'", async () => {
+        // Arrange
         const ctx = await bareCtx();
-        await expectOperation(() => renameInWorkingTree(ctx, 'a.txt', 'b.txt'), 'workingTree');
+
+        // Act
+        const caught = await catchOperation(() => renameInWorkingTree(ctx, 'a.txt', 'b.txt'));
+
+        // Assert
+        assertWorkTreeRequired(caught, 'workingTree');
       });
     });
 
     describe('When submoduleInit runs', () => {
       it("Then throws WORK_TREE_REQUIRED tagged 'submodule init'", async () => {
+        // Arrange
         const ctx = await bareCtx();
-        await expectOperation(() => submoduleInit(ctx, {}), 'submodule init');
+
+        // Act
+        const caught = await catchOperation(() => submoduleInit(ctx, {}));
+
+        // Assert
+        assertWorkTreeRequired(caught, 'submodule init');
       });
     });
 
     describe('When submoduleSync runs', () => {
       it("Then throws WORK_TREE_REQUIRED tagged 'submodule sync'", async () => {
+        // Arrange
         const ctx = await bareCtx();
-        await expectOperation(() => submoduleSync(ctx, {}), 'submodule sync');
+
+        // Act
+        const caught = await catchOperation(() => submoduleSync(ctx, {}));
+
+        // Assert
+        assertWorkTreeRequired(caught, 'submodule sync');
       });
     });
 
     describe('When submoduleDeinit runs', () => {
       it("Then throws WORK_TREE_REQUIRED tagged 'submodule deinit'", async () => {
+        // Arrange
         const ctx = await bareCtx();
-        await expectOperation(() => submoduleDeinit(ctx, {}), 'submodule deinit');
+
+        // Act
+        const caught = await catchOperation(() => submoduleDeinit(ctx, {}));
+
+        // Assert
+        assertWorkTreeRequired(caught, 'submodule deinit');
       });
     });
 
     describe('When submoduleList runs', () => {
       it("Then throws WORK_TREE_REQUIRED tagged 'submodule status'", async () => {
+        // Arrange
         const ctx = await bareCtx();
-        await expectOperation(() => submoduleList(ctx, {}), 'submodule status');
+
+        // Act
+        const caught = await catchOperation(() => submoduleList(ctx, {}));
+
+        // Assert
+        assertWorkTreeRequired(caught, 'submodule status');
       });
     });
 
     describe('When compareWorkingTreeDelta runs', () => {
       it("Then throws WORK_TREE_REQUIRED tagged 'compareWorkingTreeEntry'", async () => {
+        // Arrange
         const ctx = await bareCtx();
-        await expectOperation(
-          () => compareWorkingTreeDelta(ctx, DUMMY_ENTRY),
-          'compareWorkingTreeEntry',
-        );
+
+        // Act
+        const caught = await catchOperation(() => compareWorkingTreeDelta(ctx, DUMMY_ENTRY));
+
+        // Assert
+        assertWorkTreeRequired(caught, 'compareWorkingTreeEntry');
       });
     });
 
     describe('When buildAttributeProvider runs', () => {
       it("Then throws WORK_TREE_REQUIRED tagged 'buildAttributeProvider'", async () => {
+        // Arrange
         const ctx = await bareCtx();
-        await expectOperation(() => buildAttributeProvider(ctx), 'buildAttributeProvider');
+
+        // Act
+        const caught = await catchOperation(() => buildAttributeProvider(ctx));
+
+        // Assert
+        assertWorkTreeRequired(caught, 'buildAttributeProvider');
       });
     });
 
     describe('When readGitignore runs', () => {
       it("Then throws WORK_TREE_REQUIRED tagged 'readGitignore'", async () => {
+        // Arrange
         const ctx = await bareCtx();
-        await expectOperation(() => readGitignore(ctx, ''), 'readGitignore');
+
+        // Act
+        const caught = await catchOperation(() => readGitignore(ctx, ''));
+
+        // Assert
+        assertWorkTreeRequired(caught, 'readGitignore');
       });
     });
 
     describe('When deriveSubmoduleCloneContext runs', () => {
       it("Then throws WORK_TREE_REQUIRED tagged 'deriveSubmoduleContext'", async () => {
+        // Arrange
         const ctx = await bareCtx();
-        await expectOperation(
-          async () => deriveSubmoduleCloneContext(ctx, 'sub', 'libs/sub' as FilePath),
-          'deriveSubmoduleContext',
+
+        // Act
+        const caught = await catchOperation(async () =>
+          deriveSubmoduleCloneContext(ctx, 'sub', 'libs/sub' as FilePath),
         );
+
+        // Assert
+        assertWorkTreeRequired(caught, 'deriveSubmoduleContext');
       });
     });
 
     describe('When writeWorkingTreeFile runs with a pre-built leading-path scanner', () => {
       it("Then throws WORK_TREE_REQUIRED tagged 'writeWorkingTreeFile'", async () => {
+        // Arrange
         const { ctx, scanner } = await bareCtxWithScanner();
-        await expectOperation(
-          () => writeWorkingTreeFile(ctx, 'a.txt' as FilePath, new Uint8Array(), scanner),
-          'writeWorkingTreeFile',
+
+        // Act
+        const caught = await catchOperation(() =>
+          writeWorkingTreeFile(ctx, 'a.txt' as FilePath, new Uint8Array(), scanner),
         );
+
+        // Assert
+        assertWorkTreeRequired(caught, 'writeWorkingTreeFile');
       });
     });
 
     describe('When writeWorkingTreeEntry runs with a pre-built leading-path scanner', () => {
       it("Then throws WORK_TREE_REQUIRED tagged 'writeWorkingTreeFile'", async () => {
+        // Arrange
         const { ctx, scanner } = await bareCtxWithScanner();
-        await expectOperation(
-          () =>
-            writeWorkingTreeEntry(
-              ctx,
-              'a.txt' as FilePath,
-              new Uint8Array(),
-              FILE_MODE.REGULAR,
-              scanner,
-            ),
-          'writeWorkingTreeFile',
+
+        // Act
+        const caught = await catchOperation(() =>
+          writeWorkingTreeEntry(
+            ctx,
+            'a.txt' as FilePath,
+            new Uint8Array(),
+            FILE_MODE.REGULAR,
+            scanner,
+          ),
         );
+
+        // Assert
+        assertWorkTreeRequired(caught, 'writeWorkingTreeFile');
       });
     });
 
     describe('When writeWorkingTreeFileStream runs with a pre-built leading-path scanner', () => {
       it("Then throws WORK_TREE_REQUIRED tagged 'writeWorkingTreeFile'", async () => {
+        // Arrange
         const { ctx, scanner } = await bareCtxWithScanner();
-        await expectOperation(
-          () => writeWorkingTreeFileStream(ctx, 'a.txt' as FilePath, emptySource(), scanner),
-          'writeWorkingTreeFile',
+
+        // Act
+        const caught = await catchOperation(() =>
+          writeWorkingTreeFileStream(ctx, 'a.txt' as FilePath, emptySource(), scanner),
         );
+
+        // Assert
+        assertWorkTreeRequired(caught, 'writeWorkingTreeFile');
       });
     });
 
     describe('When writeWorkingTreeEntryStream runs with a pre-built leading-path scanner', () => {
       it("Then throws WORK_TREE_REQUIRED tagged 'writeWorkingTreeFile'", async () => {
+        // Arrange
         const { ctx, scanner } = await bareCtxWithScanner();
-        await expectOperation(
-          () =>
-            writeWorkingTreeEntryStream(
-              ctx,
-              'a.txt' as FilePath,
-              emptySource(),
-              FILE_MODE.REGULAR,
-              scanner,
-            ),
-          'writeWorkingTreeFile',
+
+        // Act
+        const caught = await catchOperation(() =>
+          writeWorkingTreeEntryStream(
+            ctx,
+            'a.txt' as FilePath,
+            emptySource(),
+            FILE_MODE.REGULAR,
+            scanner,
+          ),
         );
+
+        // Assert
+        assertWorkTreeRequired(caught, 'writeWorkingTreeFile');
       });
     });
 
     describe('When removeWorkingTreeFile runs', () => {
       it("Then throws WORK_TREE_REQUIRED tagged 'writeWorkingTreeFile'", async () => {
+        // Arrange
         const ctx = await bareCtx();
-        await expectOperation(
-          () => removeWorkingTreeFile(ctx, 'a.txt' as FilePath),
-          'writeWorkingTreeFile',
-        );
+
+        // Act
+        const caught = await catchOperation(() => removeWorkingTreeFile(ctx, 'a.txt' as FilePath));
+
+        // Assert
+        assertWorkTreeRequired(caught, 'writeWorkingTreeFile');
       });
     });
 
     describe('When materializeTree runs', () => {
       it("Then throws WORK_TREE_REQUIRED tagged 'materializeTree'", async () => {
+        // Arrange
         const seeded = createMemoryContext();
         await init(seeded);
         const emptyTree = await writeTree(seeded, []);
         const ctx = asBareContext(seeded);
-        await expectOperation(
-          () => materializeTree(ctx, { targetTree: emptyTree, currentIndex: EMPTY_INDEX }),
-          'materializeTree',
+
+        // Act
+        const caught = await catchOperation(() =>
+          materializeTree(ctx, { targetTree: emptyTree, currentIndex: EMPTY_INDEX }),
         );
+
+        // Assert
+        assertWorkTreeRequired(caught, 'materializeTree');
       });
     });
 
     describe('When createWorkdirEntry runs', () => {
       it("Then throws WORK_TREE_REQUIRED tagged 'createWorkdirEntry'", async () => {
+        // Arrange
         const ctx = await bareCtx();
-        await expectOperation(
-          async () =>
-            createWorkdirEntry(ctx, {
-              source: 'workdir',
-              path: 'a.txt' as FilePath,
-              mode: FILE_MODE.REGULAR,
-              kind: 'file',
-              stat: { mode: FILE_MODE.REGULAR, size: 0, mtimeMs: 0 },
-            }),
-          'createWorkdirEntry',
+
+        // Act
+        const caught = await catchOperation(async () =>
+          createWorkdirEntry(ctx, {
+            source: 'workdir',
+            path: 'a.txt' as FilePath,
+            mode: FILE_MODE.REGULAR,
+            kind: 'file',
+            stat: { mode: FILE_MODE.REGULAR, size: 0, mtimeMs: 0 },
+          }),
         );
+
+        // Assert
+        assertWorkTreeRequired(caught, 'createWorkdirEntry');
       });
     });
 
     describe('When walkWorkingTree runs', () => {
       it("Then throws WORK_TREE_REQUIRED tagged 'walkWorkingTree'", async () => {
+        // Arrange
         const ctx = await bareCtx();
-        await expectOperation(async () => {
+
+        // Act
+        const caught = await catchOperation(async () => {
           for await (const _entry of walkWorkingTree(ctx)) break;
-        }, 'walkWorkingTree');
+        });
+
+        // Assert
+        assertWorkTreeRequired(caught, 'walkWorkingTree');
       });
     });
   });
