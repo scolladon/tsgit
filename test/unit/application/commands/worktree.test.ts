@@ -459,8 +459,8 @@ describe('worktreeMove', () => {
         // Arrange
         const { ctx } = await seedWithCommit();
 
-        // Act + Assert
-        await expectErrorData(() => worktreeMove(ctx, ctx.layout.workDir, 'x'), {
+        // Act + Assert — seedWithCommit always yields a work tree.
+        await expectErrorData(() => worktreeMove(ctx, ctx.layout.workDir as string, 'x'), {
           code: 'INVALID_OPTION',
           option: 'worktree move',
           reason: 'cannot operate on the main working tree',
@@ -584,8 +584,8 @@ describe('worktreeRemove', () => {
         // Arrange
         const { ctx } = await seedWithCommit();
 
-        // Act + Assert
-        await expectErrorData(() => worktreeRemove(ctx, ctx.layout.workDir), {
+        // Act + Assert — seedWithCommit always yields a work tree.
+        await expectErrorData(() => worktreeRemove(ctx, ctx.layout.workDir as string), {
           code: 'INVALID_OPTION',
           option: 'worktree remove',
           reason: 'cannot operate on the main working tree',

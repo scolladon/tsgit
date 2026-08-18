@@ -47,6 +47,7 @@ import {
   type ChangesetStats,
   computeChangeset,
 } from './compute-changeset.js';
+import { requireWorkTree } from './internal/repo-state.js';
 import { walkTree } from './walk-tree.js';
 
 export interface MaterializeTreeOpts {
@@ -245,7 +246,7 @@ export const materializeTree = async (
   const result = await applyChangeset(ctx, {
     changeset,
     force: opts.force ?? false,
-    workdir: ctx.layout.workDir,
+    workdir: requireWorkTree(ctx, 'materialize-tree'),
   });
 
   const inScope = mergeNewIndexEntries(

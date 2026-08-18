@@ -20,6 +20,7 @@ import {
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import type { FilePath, ObjectId } from '../../../../src/domain/objects/object-id.js';
 import type { Context } from '../../../../src/ports/context.js';
+import { asBareContext } from './fixtures.js';
 
 const encoder = new TextEncoder();
 
@@ -135,17 +136,17 @@ describe('sparseCheckout command', () => {
 
     describe('Given a bare repo', () => {
       describe('When sparseCheckout list', () => {
-        it('Then throws BARE_REPOSITORY for sparse-checkout', async () => {
+        it('Then throws WORK_TREE_REQUIRED for sparse-checkout', async () => {
           // Arrange
-          const ctx = createMemoryContext();
-          await init(ctx);
-          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tbare = true\n');
+          const ctx0 = createMemoryContext();
+          await init(ctx0);
+          const ctx = asBareContext(ctx0);
 
           // Act
           const err = await expectError(() => sparseCheckoutList(ctx));
 
           // Assert
-          expect(err.data).toEqual({ code: 'BARE_REPOSITORY', operation: 'sparse-checkout' });
+          expect(err.data).toEqual({ code: 'WORK_TREE_REQUIRED', operation: 'sparse-checkout' });
         });
       });
     });

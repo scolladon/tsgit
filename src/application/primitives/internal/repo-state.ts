@@ -6,7 +6,7 @@ import {
   operationInProgress,
 } from '../../../domain/commands/error.js';
 import { TsgitError } from '../../../domain/error.js';
-import { bareRepository, notARepository } from '../../../domain/index.js';
+import { notARepository, workTreeConfigInvalid, workTreeRequired } from '../../../domain/index.js';
 import { type ObjectId, RefName } from '../../../domain/objects/index.js';
 import type { FilePath } from '../../../domain/objects/object-id.js';
 import { refNotFound } from '../../../domain/refs/error.js';
@@ -34,7 +34,6 @@ import {
   findLastInvalidMaxTreeDepth,
   type InvalidBooleanEntry,
   type InvalidCompressionEntry,
-  readConfig,
   type ValuelessEntry,
 } from '../config-read.js';
 
@@ -85,10 +84,10 @@ const assertDiscoveryBooleansValid = async (ctx: Context): Promise<void> => {
 export const assertRepository = async (ctx: Context): Promise<FilePath> => {
   const headPath = `${ctx.layout.gitDir}/HEAD`;
   if (!(await ctx.fs.exists(headPath))) {
-    throw notARepository(ctx.layout.workDir as FilePath);
+    throw notARepository((ctx.layout.workDir ?? ctx.layout.gitDir) as FilePath);
   }
   await assertDiscoveryBooleansValid(ctx);
-  const root = ctx.layout.bare ? ctx.layout.gitDir : ctx.layout.workDir;
+  const root = ctx.layout.workDir ?? ctx.layout.gitDir;
   return root as FilePath;
 };
 
@@ -205,20 +204,21 @@ export const assertOperationalRepository = async (ctx: Context): Promise<FilePat
   return root;
 };
 
-/** Read `core.bare` from `.git/config`. Defaults to false when missing. */
-export const isBare = async (ctx: Context): Promise<boolean> => {
-  const config = await readConfig(ctx);
-  return config.core?.bare ?? false;
-};
-
 /**
- * Throw `BARE_REPOSITORY` when the repo is bare, attaching `operation` so the
- * caller can surface "cannot <operation> on a bare repository".
+ * git's `setup_work_tree()`: refuse when the work-tree config is bogus, then
+ * when there is no work tree. Returns the work tree so callers stop reading
+ * it unguarded — the compiler enforces that every work-tree read downstream
+ * of this call is reached only once a work tree is proven to exist.
+ *
+ * Synchronous: unlike the config-driven `isBare`/`assertNotBare` this
+ * replaces, the layout is already resolved at open time, so no config read
+ * (and no `await`) is needed here.
  */
-export const assertNotBare = async (ctx: Context, operation: string): Promise<void> => {
-  if (await isBare(ctx)) {
-    throw bareRepository(operation);
-  }
+export const requireWorkTree = (ctx: Context, operation: string): string => {
+  if (ctx.layout.workTreeConfigBogus === true) throw workTreeConfigInvalid(ctx.layout.gitDir);
+  const workDir = ctx.layout.workDir;
+  if (workDir === undefined) throw workTreeRequired(operation);
+  return workDir;
 };
 
 /** Read and parse `.git/HEAD`. Missing → REF_NOT_FOUND. */

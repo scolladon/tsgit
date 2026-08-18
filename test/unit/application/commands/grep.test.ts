@@ -944,8 +944,8 @@ describe('Given an index with a stage-1 conflict entry, When grep runs with defa
     // Arrange — use buildSeededContext to get an initialized repo, then plant a custom index
     const ctx = await buildSeededContext();
     await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
-    // Write the working-tree file so it exists
-    await ctx.fs.mkdir(ctx.layout.workDir);
+    // Write the working-tree file so it exists — buildSeededContext always yields a work tree.
+    await ctx.fs.mkdir(ctx.layout.workDir as string);
     await ctx.fs.writeUtf8(`${ctx.layout.workDir}/conflict.txt`, 'needle\n');
     const index: GitIndex = {
       version: 2,
@@ -968,7 +968,8 @@ describe('Given an index with a symlink-mode entry (120000), When grep runs with
     // Arrange
     const ctx = await buildSeededContext();
     await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
-    await ctx.fs.mkdir(ctx.layout.workDir);
+    // buildSeededContext always yields a work tree.
+    await ctx.fs.mkdir(ctx.layout.workDir as string);
     await ctx.fs.writeUtf8(`${ctx.layout.workDir}/link.txt`, 'needle\n');
     const index: GitIndex = {
       version: 2,

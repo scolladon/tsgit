@@ -146,6 +146,11 @@ describe('listWorktrees', () => {
           refs: [{ name: 'refs/heads/main' as RefName, id: OID_MAIN }],
         });
         await seedMainHead(ctx);
+        // A real non-bare repo's config always carries an explicit
+        // `core.bare = false` (git init writes it) — mainEntry's bareness
+        // check reads it directly rather than trusting the opened (linked
+        // worktree) Context's own already-resolved `layout.bare`.
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tbare = false\n');
         const adminGitDir = `${ctx.layout.workDir}/wts/self/.git`;
         const sut: Context = {
           ...ctx,
@@ -170,6 +175,48 @@ describe('listWorktrees', () => {
             branch: 'refs/heads/main',
             detached: false,
             bare: false,
+            main: true,
+          },
+        ]);
+      });
+    });
+  });
+
+  describe('Given a Context opened at a linked worktree of a bare main repo', () => {
+    describe('When listWorktrees runs', () => {
+      it('Then the main entry reports bare:true even though this worktree itself is not bare', async () => {
+        // Arrange — the linked worktree's OWN resolved `layout.bare` is
+        // false (a linked worktree always has a work tree, regardless of
+        // the shared config); the main entry must still reflect the shared
+        // `core.bare = true` it reads directly, not this Context's own
+        // (necessarily different) resolved bareness.
+        const ctx = await buildSeededContext({
+          refs: [{ name: 'refs/heads/main' as RefName, id: OID_MAIN }],
+        });
+        await seedMainHead(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tbare = true\n');
+        const adminGitDir = `${ctx.layout.workDir}/wts/self/.git`;
+        const sut: Context = {
+          ...ctx,
+          layout: {
+            ...ctx.layout,
+            workDir: '/repo/wts/self',
+            gitDir: adminGitDir,
+            commonDir: ctx.layout.gitDir,
+            bare: false,
+          },
+        };
+        await ctx.fs.writeUtf8(`${adminGitDir}/HEAD`, 'ref: refs/heads/main\n');
+
+        // Act
+        const result = await listWorktrees(sut);
+
+        // Assert
+        expect(result).toEqual([
+          {
+            path: ctx.layout.workDir,
+            detached: false,
+            bare: true,
             main: true,
           },
         ]);

@@ -40,7 +40,10 @@ export const resolveHooksDir = (
     return layout.homeDir === undefined ? fallback : `${layout.homeDir}/${hooksPath.slice(2)}`;
   }
   if (isAbsolutePath(hooksPath)) return hooksPath;
-  return joinPath(layout.workDir, hooksPath);
+  // A relative hooksPath resolves against the working-tree root when there
+  // is one; a bare repo (git's own bare hooks run with PWD=<bare.git>) has
+  // none, so gitDir is the faithful fallback.
+  return joinPath(layout.workDir ?? layout.gitDir, hooksPath);
 };
 
 /** Optional arguments and stdin a caller threads into a hook invocation. */
@@ -70,7 +73,10 @@ const invokeHook = async (
   const request: HookRequest = {
     name,
     hooksDir: resolveHooksDir(config.core?.hooksPath, ctx.layout),
-    workDir: ctx.layout.workDir,
+    // A spawned hook needs SOME cwd; git's own bare hooks run with
+    // PWD=<bare.git>, so gitDir is the faithful fallback when there is no
+    // work tree.
+    workDir: ctx.layout.workDir ?? ctx.layout.gitDir,
     gitDir: ctx.layout.gitDir,
     args: input.args ?? [],
     stdin: input.stdin ?? '',

@@ -6,7 +6,11 @@ import { MERGE, MERGE_ABORT } from '../../domain/sequencer/operation-labels.js';
 import type { Context } from '../../ports/context.js';
 import { updateRef } from '../primitives/update-ref.js';
 import { clearMergeState, readMergeHead, readOrigHead } from './internal/merge-state.js';
-import { assertNotBare, assertOperationalRepository, readHeadRaw } from './internal/repo-state.js';
+import {
+  assertOperationalRepository,
+  readHeadRaw,
+  requireWorkTree,
+} from './internal/repo-state.js';
 import { hardResetWorktreeToCommit } from './internal/reset-worktree.js';
 
 export interface MergeAbortResult {
@@ -30,7 +34,7 @@ export interface MergeAbortResult {
  */
 export const mergeAbort = async (ctx: Context): Promise<MergeAbortResult> => {
   await assertOperationalRepository(ctx);
-  await assertNotBare(ctx, MERGE_ABORT);
+  requireWorkTree(ctx, MERGE_ABORT);
   const mergeHead = await readMergeHead(ctx);
   // Load-bearing under the ADR-027 write order: `merge`'s conflict path
   // writes `ORIG_HEAD` *before* `MERGE_HEAD`. A crash between the two leaves

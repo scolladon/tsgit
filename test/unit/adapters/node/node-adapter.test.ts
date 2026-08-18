@@ -239,8 +239,8 @@ describe('createNodeContext', () => {
         // Act
         const sut = createNodeContext({ workDir: relative });
 
-        // Assert
-        expect(nodePath.isAbsolute(sut.layout.workDir)).toBe(true);
+        // Assert — an explicit `workDir` option always yields a work tree.
+        expect(nodePath.isAbsolute(sut.layout.workDir as string)).toBe(true);
       });
     });
   });

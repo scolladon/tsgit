@@ -8,12 +8,18 @@ import type { Context } from '../../ports/context.js';
 import type { DirEntry, FileStat } from '../../ports/file-system.js';
 import { joinPathSegment } from './internal/join-path-segment.js';
 import { joinPath } from './internal/join-working-tree-path.js';
+import { requireWorkTree } from './internal/repo-state.js';
 import { resolveMaxTreeDepth } from './internal/resolve-max-tree-depth.js';
 import type { WorkingTreeStatMap } from './internal/working-tree-stat-map.js';
 import type { WalkIgnorePredicate, WalkWorkingTreeEntry, WalkWorkingTreeOptions } from './types.js';
 
 interface WalkConfig {
   readonly ctx: Context;
+  /** Resolved once per walk via `requireWorkTree` — every caller of this
+   *  exported primitive is expected to have already proved a work tree
+   *  exists, but the primitive re-checks so it never dereferences an absent
+   *  `layout.workDir` under a misuse. */
+  readonly workDir: string;
   readonly maxDepth: number;
   readonly maxEntries: number;
   readonly ignore: WalkIgnorePredicate | undefined;
@@ -156,6 +162,7 @@ export async function* walkWorkingTree(
 ): AsyncIterable<WalkWorkingTreeEntry> {
   const config: WalkConfig = {
     ctx,
+    workDir: requireWorkTree(ctx, 'walk-working-tree'),
     maxDepth: options?.maxDepth ?? (await resolveMaxTreeDepth(ctx)),
     maxEntries: options?.maxEntries ?? MAX_FLAT_TREE_ENTRIES,
     ignore: options?.ignore,
@@ -201,13 +208,13 @@ const lazyStat = (config: WalkConfig, path: FilePath): (() => Promise<FileStat>)
 const fetchStat = async (config: WalkConfig, path: FilePath): Promise<FileStat> => {
   const sampled = config.stats?.sampled(path);
   if (sampled !== undefined) return sampled;
-  const stat = await config.ctx.fs.lstat(joinPath(config.ctx.layout.workDir, path));
+  const stat = await config.ctx.fs.lstat(joinPath(config.workDir, path));
   config.stats?.record(path, stat);
   return stat;
 };
 
 const directoryPath = (config: WalkConfig, prefix: string): string =>
-  prefix === '' ? config.ctx.layout.workDir : joinPath(config.ctx.layout.workDir, prefix);
+  prefix === '' ? config.workDir : joinPath(config.workDir, prefix);
 
 const isEmbeddedGitMarker = (entry: {
   readonly name: string;

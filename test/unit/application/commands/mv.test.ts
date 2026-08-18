@@ -5,7 +5,7 @@ import { mv } from '../../../../src/application/commands/mv.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import { fileNotFound, TsgitError } from '../../../../src/domain/index.js';
 import type { Context } from '../../../../src/ports/context.js';
-import { seedRepo } from './fixtures.js';
+import { asBareContext, seedRepo } from './fixtures.js';
 
 const seedAndStage = async (workingTree: Readonly<Record<string, string>>): Promise<Context> => {
   const ctx = createMemoryContext();
@@ -472,19 +472,19 @@ describe('mv', () => {
 
   describe('Given a bare repo', () => {
     describe('When mv', () => {
-      it('Then throws BARE_REPOSITORY tagged with operation "mv"', async () => {
+      it('Then throws WORK_TREE_REQUIRED tagged with operation "mv"', async () => {
         // Arrange
-        const ctx = createMemoryContext();
-        await seedRepo(ctx, {});
-        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n  bare = true\n');
+        const ctx0 = createMemoryContext();
+        await seedRepo(ctx0, {});
+        const ctx = asBareContext(ctx0);
 
         // Act
-        const err = await expectError(() => mv(ctx, ['a.txt'], 'b.txt'), 'BARE_REPOSITORY');
+        const err = await expectError(() => mv(ctx, ['a.txt'], 'b.txt'), 'WORK_TREE_REQUIRED');
 
         // Assert
-        if (err.data.code !== 'BARE_REPOSITORY') throw new Error('unexpected error shape');
+        if (err.data.code !== 'WORK_TREE_REQUIRED') throw new Error('unexpected error shape');
         expect(err.data.operation).toBe('mv');
-        expect(err.message).toBe('BARE_REPOSITORY: operation requires a working tree: mv');
+        expect(err.message).toBe('WORK_TREE_REQUIRED: operation requires a working tree: mv');
       });
     });
   });

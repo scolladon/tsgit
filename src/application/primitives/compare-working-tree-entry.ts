@@ -34,6 +34,7 @@ import type { FileStat } from '../../ports/file-system.js';
 import { type IndexMtime, isEntryStatClean } from './internal/is-entry-stat-clean.js';
 import { joinPath } from './internal/join-working-tree-path.js';
 import type { AttributeProvider } from './internal/read-gitattributes.js';
+import { requireWorkTree } from './internal/repo-state.js';
 import { serializeAndHash } from './internal/serialize-and-hash.js';
 import type { WorkingTreeStatMap } from './internal/working-tree-stat-map.js';
 import { resolveFilterDriver } from './resolve-filter-driver.js';
@@ -135,7 +136,7 @@ export const compareWorkingTreeDelta = async (
   indexMtime?: IndexMtime,
   stats?: WorkingTreeStatMap,
 ): Promise<WorkingTreeDelta> => {
-  const absPath = joinPath(ctx.layout.workDir, entry.path);
+  const absPath = joinPath(requireWorkTree(ctx, 'compare working tree entry'), entry.path);
   const sampled = stats?.sampled(entry.path);
   const stat = sampled ?? (await ctx.fs.lstat(absPath).catch(() => undefined));
   if (stat === undefined) return { status: 'absent' };

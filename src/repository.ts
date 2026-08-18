@@ -125,7 +125,8 @@ export interface OpenRepositoryOptions {
  * @internal
  */
 export interface RepositoryLayoutInput {
-  readonly workDir: string;
+  /** Absolute path to the working tree. Absent when the repository has none. */
+  readonly workDir?: string;
   readonly gitDir: string;
   readonly bare: boolean;
   /**
@@ -134,6 +135,8 @@ export interface RepositoryLayoutInput {
    * Absent for a normal repo or the main worktree (equals `gitDir`).
    */
   readonly commonDir?: string;
+  /** `core.bare` and `core.worktree` are both set — git's `work_tree_config_is_bogus`. */
+  readonly workTreeConfigBogus?: boolean;
   readonly homeDir?: string;
 }
 

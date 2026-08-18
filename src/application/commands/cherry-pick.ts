@@ -35,9 +35,9 @@ import { applyMergeToWorktree } from '../primitives/apply-merge-to-worktree.js';
 import { createCommit } from '../primitives/create-commit.js';
 import {
   assertNoPendingOperation,
-  assertNotBare,
   assertOperationalRepository,
   readHeadRaw,
+  requireWorkTree,
 } from '../primitives/internal/repo-state.js';
 import { readIndex } from '../primitives/read-index.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
@@ -428,7 +428,7 @@ export const cherryPickRun = async (
   input: CherryPickRunInput,
 ): Promise<CherryPickResult> => {
   await assertOperationalRepository(ctx);
-  await assertNotBare(ctx, CHERRY_PICK);
+  requireWorkTree(ctx, CHERRY_PICK);
   await assertNoPendingOperation(ctx);
   const head = await readHeadRaw(ctx);
   if (head.kind !== 'symbolic') {
@@ -533,7 +533,7 @@ export const cherryPickContinue = async (
   input: CherryPickContinueInput = {},
 ): Promise<CherryPickResult> => {
   await assertOperationalRepository(ctx);
-  await assertNotBare(ctx, CHERRY_PICK_CONTINUE);
+  requireWorkTree(ctx, CHERRY_PICK_CONTINUE);
   const source = await readCherryPickHead(ctx);
   const todoOnDisk = await readSequencerTodo(ctx);
   if (source === undefined && (todoOnDisk === undefined || todoOnDisk.length === 0)) {
@@ -586,7 +586,7 @@ export const cherryPickSkip = async (
   input: CherryPickContinueInput = {},
 ): Promise<CherryPickResult> => {
   await assertOperationalRepository(ctx);
-  await assertNotBare(ctx, CHERRY_PICK_SKIP);
+  requireWorkTree(ctx, CHERRY_PICK_SKIP);
   const source = await readCherryPickHead(ctx);
   const todoOnDisk = await readSequencerTodo(ctx);
   if (source === undefined && (todoOnDisk === undefined || todoOnDisk.length === 0)) {
@@ -620,7 +620,7 @@ export const cherryPickSkip = async (
  */
 export const cherryPickAbort = async (ctx: Context): Promise<CherryPickAbortResult> => {
   await assertOperationalRepository(ctx);
-  await assertNotBare(ctx, CHERRY_PICK_ABORT);
+  requireWorkTree(ctx, CHERRY_PICK_ABORT);
   const source = await readCherryPickHead(ctx);
   const seqHead = await readSequencerHead(ctx);
   if (source === undefined && seqHead === undefined) {

@@ -30,8 +30,8 @@ import {
 } from './internal/apply-sparse-checkout.js';
 import {
   assertNoPendingOperation,
-  assertNotBare,
   assertOperationalRepository,
+  requireWorkTree,
 } from './internal/repo-state.js';
 
 export interface SparseCheckoutListResult {
@@ -68,7 +68,7 @@ export interface SparseCheckoutDisableInput {
 /** Sparse checkout needs a worktree and a quiet repo — gate every verb. */
 const assertSparseReady = async (ctx: Context): Promise<void> => {
   await assertOperationalRepository(ctx);
-  await assertNotBare(ctx, 'sparse-checkout');
+  requireWorkTree(ctx, 'sparse-checkout');
   await assertNoPendingOperation(ctx);
 };
 

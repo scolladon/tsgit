@@ -5,19 +5,52 @@ import { isValidHeadContent } from '../domain/repository/head-ref.js';
 import { gitfileInvalidFormat, gitfileNoPath } from '../domain/worktree/error.js';
 import { parseCommondir, parseGitfilePointer } from '../domain/worktree/gitfile.js';
 import type { LayoutProbe } from '../ports/layout-probe.js';
-import type { RepositoryLayoutInput } from '../repository.js';
 
 /**
- * Walk up from `cwd` looking for a `.git` entry. A `.git` **directory** is a
+ * The walk's raw structural finding: where the gitDir (and, if different, the
+ * common dir) live, and which route found it — `'DISCOVERED'` (a `.git`
+ * entry) or `'BARE_DIR'` (cwd itself qualifies). Config-driven work-tree
+ * resolution turns this into a full layout — the walk itself never decides a
+ * work tree or bareness. A discriminated union (rather than an `origin?`
+ * flattened onto both routes) so a `DISCOVERED` outcome's `origin` — the
+ * directory holding the `.git` entry — is not-undefined by construction; the
+ * discriminant itself is why `route` carries literal types here rather than a
+ * named `WalkRoute` alias, which could not narrow the two arms apart.
+ */
+export type WalkOutcome =
+  | {
+      readonly route: 'DISCOVERED';
+      readonly gitDir: string;
+      readonly commonDir?: string;
+      readonly origin: string;
+    }
+  | {
+      readonly route: 'BARE_DIR';
+      readonly gitDir: string;
+      readonly commonDir?: string;
+    };
+
+/** A resolved gitDir location — the shared output of the `.git`-directory and cwd-is-gitdir checks. */
+interface GitDirLocation {
+  readonly gitDir: string;
+  readonly commonDir?: string;
+}
+
+/**
+ * Walk up from `cwd` looking for a `.git` entry, and — at every level — ask
+ * whether the level itself is a git directory. A `.git` **directory** is a
  * candidate: if it does not validate (missing `HEAD`/`objects`/`refs`) the
- * walk continues upward. A `.git` **file** (a linked-worktree/submodule/
+ * walk falls through to the cwd-is-gitdir check at the same level, then
+ * continues upward. A `.git` **file** (a linked-worktree/submodule/
  * `--separate-git-dir` gitfile pointer) is a commitment: once found, it is
  * resolved and either returns a layout or throws — the walk never falls back
- * to an ancestor repository past an unusable gitfile.
+ * to an ancestor repository past an unusable gitfile. The cwd-is-gitdir check
+ * runs a cheap `HEAD`-file stat first so a level with neither a `.git` entry
+ * nor a `HEAD` file costs exactly one extra `stat` over the pre-existing walk.
  *
- * Returns `undefined` when no usable `.git` is found before reaching the
- * filesystem root — callers can choose to default to a fresh repo at `cwd`
- * (init/clone paths) or surface NOT_A_REPOSITORY (most other commands).
+ * Returns `undefined` when no usable git directory is found before reaching
+ * the filesystem root — callers can choose to default to a fresh repo at
+ * `cwd` (init/clone paths) or surface NOT_A_REPOSITORY (most other commands).
  *
  * `pathPolicy` is required so the walk's `resolve` / `dirname` / `join`
  * semantics match the input form. Callers in production code source the
@@ -31,18 +64,24 @@ export const findLayout = async (
   probe: LayoutProbe,
   cwd: string,
   pathPolicy: PathPolicy,
-): Promise<RepositoryLayoutInput | undefined> => {
+): Promise<WalkOutcome | undefined> => {
   let current = pathPolicy.resolve(cwd);
   while (true) {
     const candidate = pathPolicy.join(current, '.git');
     // stat, not lstat — a .git symlink to a real gitdir behaves as a directory.
     const stat = await probe.stat(candidate);
     if (stat?.isDirectory === true) {
-      const layout = await layoutFor(probe, current, candidate, pathPolicy);
-      if (layout !== undefined) return layout;
+      const located = await layoutFor(probe, candidate, pathPolicy);
+      if (located !== undefined) return { ...located, route: 'DISCOVERED', origin: current };
     } else if (stat?.isFile === true) {
-      return layoutFromGitfile(probe, current, candidate, pathPolicy, stat.size);
+      const located = await layoutFromGitfile(probe, current, candidate, pathPolicy, stat.size);
+      return { ...located, route: 'DISCOVERED', origin: current };
     }
+    // Reached when `current` holds no `.git` entry, or an invalid `.git`
+    // directory (the candidate branch above fell through rather than
+    // returning) — never after a `.git` file, which always returns or throws.
+    const bareLocated = await isCwdGitDirectory(probe, current, pathPolicy);
+    if (bareLocated !== undefined) return { ...bareLocated, route: 'BARE_DIR' };
     const parent = pathPolicy.dirname(current);
     if (parent === current) return undefined; // reached filesystem root
     current = parent;
@@ -50,11 +89,14 @@ export const findLayout = async (
 };
 
 /**
- * Resolves a worktree's `.git` gitfile to its layout. Extracted so the
- * browser shim can reuse the exact same pointer-resolution logic instead of
- * re-implementing it. `gitfileSize` is the byte size the caller's own `stat`
- * of the gitfile reported — every caller has just stat'ed the entry to learn
- * it IS a file, so threading the size avoids a redundant probe.
+ * Resolves a worktree's `.git` gitfile to its git-directory location.
+ * Extracted so the browser shim can reuse the exact same pointer-resolution
+ * logic instead of re-implementing it. `gitfileSize` is the byte size the
+ * caller's own `stat` of the gitfile reported — every caller has just stat'ed
+ * the entry to learn it IS a file, so threading the size avoids a redundant
+ * probe. `workDir` is used only to name the directory in a thrown
+ * `NOT_A_REPOSITORY` — the caller decides how it participates in the
+ * eventual layout.
  */
 export const layoutFromGitfile = async (
   probe: LayoutProbe,
@@ -62,11 +104,11 @@ export const layoutFromGitfile = async (
   gitfilePath: string,
   pathPolicy: PathPolicy,
   gitfileSize: number,
-): Promise<RepositoryLayoutInput> => {
+): Promise<GitDirLocation> => {
   const gitDir = await resolvePointer(probe, gitfilePath, workDir, pathPolicy, gitfileSize);
-  const layout = await layoutFor(probe, workDir, gitDir, pathPolicy);
-  if (layout === undefined) throw notARepository(workDir as FilePath);
-  return layout;
+  const located = await layoutFor(probe, gitDir, pathPolicy);
+  if (located === undefined) throw notARepository(workDir as FilePath);
+  return located;
 };
 
 /**
@@ -76,7 +118,7 @@ export const layoutFromGitfile = async (
  * an oversized one in the walk path is hostile or corrupt, and capping here
  * keeps discovery from feeding megabytes into the parser.
  */
-const GITFILE_MAX_BYTES = 65536;
+export const GITFILE_MAX_BYTES = 65536;
 
 /**
  * Parses and resolves a gitfile's `gitdir:` pointer. The gitfile path was
@@ -107,22 +149,19 @@ const resolvePointer = async (
 };
 
 /**
- * Validates `gitDir` and resolves its `commonDir`, returning the layout when
- * valid or `undefined` when not — the directory branch's "candidate, not
- * commitment" contract (caller decides whether to walk up or throw).
+ * Validates `gitDir` and resolves its `commonDir`, returning the location
+ * when valid or `undefined` when not — the directory branch's "candidate,
+ * not commitment" contract (caller decides whether to walk up or throw).
  */
 const layoutFor = async (
   probe: LayoutProbe,
-  workDir: string,
   gitDir: string,
   pathPolicy: PathPolicy,
-): Promise<RepositoryLayoutInput | undefined> => {
+): Promise<GitDirLocation | undefined> => {
   const commonDir = await resolveCommonDir(probe, gitDir, pathPolicy);
   if (!(await isGitDirectory(probe, gitDir, commonDir, pathPolicy))) return undefined;
   return {
-    workDir,
     gitDir,
-    bare: false,
     // Omitted (not set to undefined) when equal to gitDir — exactOptionalPropertyTypes
     // forbids the explicit-undefined form, and omission keeps a normal repo's
     // layout byte-identical to today's.
@@ -131,11 +170,31 @@ const layoutFor = async (
 };
 
 /**
+ * The per-level check for whether `current` itself is a git directory
+ * (rather than merely holding a `.git` entry). A cheap `HEAD`-file `stat`
+ * gates the expensive `resolveCommonDir` + `objects`/`refs` probes
+ * `layoutFor` pays — a level with no `HEAD` file costs exactly this one
+ * extra `stat`, never the full validation. Reusing `layoutFor` here means the
+ * `HEAD` file is stat'ed twice on the rare level that passes the cheap gate
+ * (once here, once inside `isGitDirectory`), which is the accepted cost of
+ * not duplicating the validation logic.
+ */
+const isCwdGitDirectory = async (
+  probe: LayoutProbe,
+  current: string,
+  pathPolicy: PathPolicy,
+): Promise<GitDirLocation | undefined> => {
+  const headStat = await probe.stat(pathPolicy.join(current, 'HEAD'));
+  if (headStat?.isFile !== true) return undefined;
+  return layoutFor(probe, current, pathPolicy);
+};
+
+/**
  * Resolves `gitDir`'s `commondir` file. An absent file means `commonDir`
  * equals `gitDir` — this is what makes a submodule gitdir and a
  * `--separate-git-dir` gitdir valid without a commondir file of their own.
  */
-const resolveCommonDir = async (
+export const resolveCommonDir = async (
   probe: LayoutProbe,
   gitDir: string,
   pathPolicy: PathPolicy,

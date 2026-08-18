@@ -16,6 +16,7 @@ import type { Context } from '../../../ports/context.js';
 import { applyChangeset, isWorkingTreeDirty } from '../../primitives/apply-changeset.js';
 import type { Changeset, ChangesetEntry } from '../../primitives/compute-changeset.js';
 import { joinPath } from '../../primitives/internal/join-working-tree-path.js';
+import { requireWorkTree } from '../../primitives/internal/repo-state.js';
 import { readIndex } from '../../primitives/read-index.js';
 import { acquireIndexLock } from './index-update.js';
 
@@ -196,7 +197,7 @@ export const applySparseCheckout = async (
   ctx: Context,
   opts: ApplySparseCheckoutOpts,
 ): Promise<ApplySparseCheckoutResult> => {
-  const workdir = ctx.layout.workDir;
+  const workdir = requireWorkTree(ctx, 'sparse-checkout');
   const lock = await acquireIndexLock(ctx);
   try {
     const index = await readIndex(ctx);

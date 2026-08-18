@@ -9,11 +9,13 @@ import { computeLooseObjectPath } from '../../domain/storage/loose-path.js';
 import type { Context, RepositoryLayout } from '../../ports/context.js';
 
 /**
- * Repository working-tree root. Returns the workDir from the current context;
- * facade-tier code is responsible for discovery / realpath pinning
- * at construction time. Primitives consume the already-resolved path.
+ * Repository root. The working tree when the repository has one; the gitDir
+ * itself for a bare repository or a work-tree-less discovery. Facade-tier
+ * code is responsible for discovery / realpath pinning at construction time;
+ * primitives consume the already-resolved path.
  */
-export const getRepoRoot = (ctx: Context): FilePath => ctx.layout.workDir as FilePath;
+export const getRepoRoot = (ctx: Context): FilePath =>
+  (ctx.layout.workDir ?? ctx.layout.gitDir) as FilePath;
 
 /**
  * The shared (common) git dir: objects, `packed-refs`, `config`, shared refs and

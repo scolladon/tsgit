@@ -4,13 +4,12 @@ import { configGet, configList } from '../../../../../src/application/commands/c
 import {
   assertEagerConfigValid,
   assertNoPendingOperation,
-  assertNotBare,
   assertOperationalRepository,
   assertRepository,
   branchRefFromHead,
   currentBranchRef,
-  isBare,
   readHeadRaw,
+  requireWorkTree,
 } from '../../../../../src/application/commands/internal/repo-state.js';
 import type { HeadState } from '../../../../../src/application/primitives/internal/repo-state.js';
 import { ObjectId, RefName, TsgitError } from '../../../../../src/domain/index.js';
@@ -122,61 +121,34 @@ describe('internal/repo-state', () => {
     });
   });
 
-  describe('isBare', () => {
-    describe('Given a repo config', () => {
-      describe('When isBare', () => {
-        it.each([
-          { config: '[core]\n  bare = true\n', expected: true, label: 'core.bare=true is true' },
-          {
-            config: '[core]\n  bare = false\n',
-            expected: false,
-            label: 'core.bare=false is false',
-          },
-          { config: undefined, expected: false, label: 'a missing .git/config is false (default)' },
-          {
-            config: '[user]\n  name = Bob\n',
-            expected: false,
-            label: 'a config without [core] section is false (default)',
-          },
-        ])('Then $label', async ({ config, expected }) => {
+  describe('requireWorkTree', () => {
+    describe('Given a Context with a work tree', () => {
+      describe('When requireWorkTree', () => {
+        it('Then returns the work tree path', () => {
           // Arrange
           const ctx = createMemoryContext();
-          if (config !== undefined) await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, config);
 
           // Act
-          const result = await isBare(ctx);
+          const result = requireWorkTree(ctx, 'add');
 
           // Assert
-          expect(result).toBe(expected);
-        });
-      });
-    });
-  });
-
-  describe('assertNotBare', () => {
-    describe('Given a non-bare repo', () => {
-      describe('When assertNotBare', () => {
-        it('Then resolves', async () => {
-          // Arrange
-          const ctx = createMemoryContext();
-
-          // Act + Assert — must not throw.
-          await assertNotBare(ctx, 'add');
+          expect(result).toBe(ctx.layout.workDir);
         });
       });
     });
 
-    describe('Given a bare repo (core.bare=true)', () => {
-      describe('When assertNotBare', () => {
-        it('Then throws BARE_REPOSITORY with operation', async () => {
+    describe('Given a Context with no work tree', () => {
+      describe('When requireWorkTree', () => {
+        it('Then throws WORK_TREE_REQUIRED with the operation', () => {
           // Arrange
           const ctx = createMemoryContext();
-          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n  bare = true\n');
+          const { workDir: _workDir, ...bareLayout } = ctx.layout;
+          const bareCtx: Context = { ...ctx, layout: { ...bareLayout, bare: true } };
 
           // Act
           let caught: unknown;
           try {
-            await assertNotBare(ctx, 'add');
+            requireWorkTree(bareCtx, 'add');
           } catch (err) {
             caught = err;
           }
@@ -184,9 +156,40 @@ describe('internal/repo-state', () => {
           // Assert
           expect(caught).toBeInstanceOf(TsgitError);
           const data = (caught as TsgitError).data;
-          expect(data.code).toBe('BARE_REPOSITORY');
-          if (data.code === 'BARE_REPOSITORY') {
+          expect(data.code).toBe('WORK_TREE_REQUIRED');
+          if (data.code === 'WORK_TREE_REQUIRED') {
             expect(data.operation).toBe('add');
+          }
+        });
+      });
+    });
+
+    describe('Given a Context whose work-tree config is bogus, but a work tree is present', () => {
+      describe('When requireWorkTree', () => {
+        it('Then throws WORK_TREE_CONFIG_INVALID with the gitDir — never the missing-work-tree code', () => {
+          // Arrange — a Context that trips BOTH conditions must not be the only
+          // proof of either guard; this one keeps workDir present so only the
+          // bogus-config guard can be the cause of the throw.
+          const ctx = createMemoryContext();
+          const bogusCtx: Context = {
+            ...ctx,
+            layout: { ...ctx.layout, workTreeConfigBogus: true },
+          };
+
+          // Act
+          let caught: unknown;
+          try {
+            requireWorkTree(bogusCtx, 'add');
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data;
+          expect(data.code).toBe('WORK_TREE_CONFIG_INVALID');
+          if (data.code === 'WORK_TREE_CONFIG_INVALID') {
+            expect(data.gitDir).toBe(ctx.layout.gitDir);
           }
         });
       });

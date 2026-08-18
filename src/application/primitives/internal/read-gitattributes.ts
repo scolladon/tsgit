@@ -13,6 +13,7 @@ import { commonGitDir } from '../path-layout.js';
 import { MAX_GITATTRIBUTES_BYTES } from '../types.js';
 import { joinPath } from './join-working-tree-path.js';
 import { expandUserPath, loadCappedUtf8 } from './read-capped-file.js';
+import { requireWorkTree } from './repo-state.js';
 
 /** Load + parse one attributes file; `undefined` when absent, symlink, or a directory. */
 const loadAndParse = async (ctx: Context, path: string): Promise<ParsedAttributes | undefined> => {
@@ -23,7 +24,10 @@ const loadAndParse = async (ctx: Context, path: string): Promise<ParsedAttribute
 const readDir = (ctx: Context, dir: FilePath | ''): Promise<ParsedAttributes | undefined> =>
   loadAndParse(
     ctx,
-    joinPath(ctx.layout.workDir, dir === '' ? '.gitattributes' : `${dir}/.gitattributes`),
+    joinPath(
+      requireWorkTree(ctx, 'read gitattributes'),
+      dir === '' ? '.gitattributes' : `${dir}/.gitattributes`,
+    ),
   );
 
 const readInfo = (ctx: Context): Promise<ParsedAttributes | undefined> =>

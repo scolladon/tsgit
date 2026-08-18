@@ -66,9 +66,9 @@ import { writeObject } from '../primitives/write-object.js';
 import { checkout } from './checkout.js';
 import { clone } from './clone.js';
 import {
-  assertNotBare,
   assertOperationalRepository,
   currentBranchRef,
+  requireWorkTree,
 } from './internal/repo-state.js';
 import { mergeRun } from './merge.js';
 import { rebaseRun } from './rebase.js';
@@ -95,8 +95,11 @@ const isActionableRow = (row: GitmodulesRow): row is PathedRow =>
   row.path !== undefined && !isUnsafeSubmoduleName(row.path);
 
 /** Parse the working-tree `.gitmodules`; absent file ⇒ no submodules. */
-const readWorktreeGitmodules = async (ctx: Context): Promise<ReadonlyArray<GitmodulesRow>> => {
-  const path = joinPath(ctx.layout.workDir, GITMODULES_FILE);
+const readWorktreeGitmodules = async (
+  ctx: Context,
+  workDir: string,
+): Promise<ReadonlyArray<GitmodulesRow>> => {
+  const path = joinPath(workDir, GITMODULES_FILE);
   if (!(await ctx.fs.exists(path))) return [];
   const stat = await ctx.fs.stat(path);
   if (stat.size > MAX_GITMODULES_BYTES) {
@@ -147,12 +150,16 @@ const selectRows = (
  * falling back to the superproject's worktree path when no remote URL is set
  * (git's "own authoritative upstream").
  */
-const resolveBaseUrl = async (ctx: Context, config: ParsedConfig): Promise<string> => {
+const resolveBaseUrl = async (
+  ctx: Context,
+  workDir: string,
+  config: ParsedConfig,
+): Promise<string> => {
   const ref = await currentBranchRef(ctx);
   const branch = ref?.startsWith(HEADS_PREFIX) ? shortBranchName(ref) : undefined;
   const remoteName =
     (branch !== undefined ? config.branch?.get(branch)?.remote : undefined) ?? DEFAULT_REMOTE;
-  return config.remote?.get(remoteName)?.url ?? ctx.layout.workDir;
+  return config.remote?.get(remoteName)?.url ?? workDir;
 };
 
 /**
@@ -208,11 +215,12 @@ export const submoduleInit = async (
   opts: SubmoduleInitOptions = {},
 ): Promise<SubmoduleInitResult> => {
   await assertOperationalRepository(ctx);
-  const rows = await readWorktreeGitmodules(ctx);
+  const workDir = requireWorkTree(ctx, 'submodule init');
+  const rows = await readWorktreeGitmodules(ctx, workDir);
   const updateModes = validateUpdateModes(rows);
   const selected = selectRows(rows, opts.paths);
   const config = await readConfig(ctx);
-  const base = await resolveBaseUrl(ctx, config);
+  const base = await resolveBaseUrl(ctx, workDir, config);
   const entries: SubmoduleInitEntry[] = [];
   const ops: ConfigOperation[] = [];
   for (const row of selected) {
@@ -292,9 +300,10 @@ const syncLevel = async (
   visited: ReadonlySet<string>,
 ): Promise<SubmoduleSyncResult> => {
   await assertOperationalRepository(ctx);
-  const selected = selectRows(await readWorktreeGitmodules(ctx), opts.paths);
+  const workDir = requireWorkTree(ctx, 'submodule sync');
+  const selected = selectRows(await readWorktreeGitmodules(ctx, workDir), opts.paths);
   const config = await readConfig(ctx);
-  const base = await resolveBaseUrl(ctx, config);
+  const base = await resolveBaseUrl(ctx, workDir, config);
   const entries: SubmoduleSyncEntry[] = [];
   const ops: ConfigOperation[] = [];
   for (const row of selected) {
@@ -365,8 +374,8 @@ const assertSubmoduleClean = async (ctx: Context, name: string, path: FilePath):
 };
 
 /** Clear a submodule working-tree directory's contents, keeping the empty dir. */
-const clearWorktree = async (ctx: Context, path: FilePath): Promise<boolean> => {
-  const dir = joinPath(ctx.layout.workDir, path);
+const clearWorktree = async (ctx: Context, workDir: string, path: FilePath): Promise<boolean> => {
+  const dir = joinPath(workDir, path);
   if (!(await ctx.fs.exists(dir))) return false;
   if ((await ctx.fs.readdir(dir)).length === 0) return false;
   await ctx.fs.rmRecursive(dir);
@@ -386,6 +395,7 @@ export const submoduleDeinit = async (
   opts: SubmoduleDeinitOptions = {},
 ): Promise<SubmoduleDeinitResult> => {
   await assertOperationalRepository(ctx);
+  const workDir = requireWorkTree(ctx, 'submodule deinit');
   const hasPaths = opts.paths !== undefined && opts.paths.length > 0;
   if (opts.all === true && hasPaths) {
     throw invalidOption('submodule.deinit', 'pathspec and --all are incompatible');
@@ -393,7 +403,7 @@ export const submoduleDeinit = async (
   if (opts.all !== true && !hasPaths) {
     throw invalidOption('submodule.deinit', "use 'all: true' to deinitialise every submodule");
   }
-  const rows = await readWorktreeGitmodules(ctx);
+  const rows = await readWorktreeGitmodules(ctx, workDir);
   const selected = opts.all === true ? rows.filter(isActionableRow) : selectRows(rows, opts.paths);
   const config = await readConfig(ctx);
   const entries: SubmoduleDeinitEntry[] = [];
@@ -403,7 +413,7 @@ export const submoduleDeinit = async (
   for (const row of selected) {
     const path = row.path as FilePath;
     if (opts.force !== true) await assertSubmoduleClean(ctx, row.name, path);
-    const cleared = await clearWorktree(ctx, path);
+    const cleared = await clearWorktree(ctx, workDir, path);
     if (config.submodule?.has(row.name) === true) {
       await updateConfigOperations(ctx, [
         { kind: 'removeSection', section: 'submodule', subsection: row.name },
@@ -438,6 +448,7 @@ export const submoduleList = async (
   opts: SubmoduleListOptions = {},
 ): Promise<SubmoduleListResult> => {
   await assertOperationalRepository(ctx);
+  requireWorkTree(ctx, 'submodule status');
   // A subsectionless `[submodule] active` is inert in git — only the
   // per-instance `submodule.<name>.active` form can refuse.
   await assertValidBooleanConfigInSection(ctx, 'submodule', ['active'], {
@@ -514,12 +525,13 @@ const setSubmoduleOp = (subsection: string, key: string, value: string): ConfigO
  */
 const writeGitmodulesEntry = async (
   ctx: Context,
+  workDir: string,
   name: string,
   path: string,
   rawUrl: string,
   branch: string | undefined,
 ): Promise<Uint8Array> => {
-  const file = joinPath(ctx.layout.workDir, GITMODULES_FILE);
+  const file = joinPath(workDir, GITMODULES_FILE);
   const existing = (await ctx.fs.exists(file)) ? await ctx.fs.readUtf8(file) : '';
   const ordered = [setSubmoduleOp(name, 'path', path), setSubmoduleOp(name, 'url', rawUrl)];
   if (branch !== undefined) ordered.push(setSubmoduleOp(name, 'branch', branch));
@@ -535,6 +547,7 @@ const writeGitmodulesEntry = async (
  */
 const stageSubmodule = async (
   ctx: Context,
+  workDir: string,
   path: string,
   subHead: ObjectId,
   gitmodulesBytes: Uint8Array,
@@ -548,12 +561,12 @@ const stageSubmodule = async (
   try {
     const index = await readIndex(ctx);
     const entries = new Map<string, IndexEntry>(index.entries.map((e) => [e.path, e]));
-    const gitlinkStat = await ctx.fs.lstat(joinPath(ctx.layout.workDir, path));
+    const gitlinkStat = await ctx.fs.lstat(joinPath(workDir, path));
     entries.set(
       path,
       indexEntryFromStat(gitlinkStat, FILE_MODE.GITLINK, subHead, path as FilePath),
     );
-    const gitmodulesStat = await ctx.fs.lstat(joinPath(ctx.layout.workDir, GITMODULES_FILE));
+    const gitmodulesStat = await ctx.fs.lstat(joinPath(workDir, GITMODULES_FILE));
     entries.set(
       GITMODULES_FILE,
       indexEntryFromStat(
@@ -578,6 +591,7 @@ const stageSubmodule = async (
  */
 const cloneSubmoduleInto = async (
   ctx: Context,
+  workDir: string,
   child: Context,
   resolvedUrl: string,
   name: string,
@@ -587,10 +601,7 @@ const cloneSubmoduleInto = async (
   await updateConfigOperations(child, [
     { kind: 'set', section: 'core', key: 'worktree', value: submoduleCoreWorktree(name, path) },
   ]);
-  await ctx.fs.writeUtf8(
-    joinPath(ctx.layout.workDir, `${path}/.git`),
-    `${submoduleGitfile(name, path)}\n`,
-  );
+  await ctx.fs.writeUtf8(joinPath(workDir, `${path}/.git`), `${submoduleGitfile(name, path)}\n`);
 };
 
 /** The short branch name HEAD points at, or `''` when detached. */
@@ -631,7 +642,7 @@ export const submoduleAdd = async (
   opts: SubmoduleAddOptions,
 ): Promise<SubmoduleAddResult> => {
   await assertOperationalRepository(ctx);
-  await assertNotBare(ctx, 'submodule add');
+  const workDir = requireWorkTree(ctx, 'submodule add');
   const name = opts.name ?? opts.path;
   assertAddInputs(name, opts.path, opts.url);
   // Validate `branch` as a ref component — it is joined into `refs/heads/<branch>`
@@ -640,17 +651,24 @@ export const submoduleAdd = async (
   if (opts.branch !== undefined) validateRefName(`${HEADS_PREFIX}${opts.branch}`);
   await assertPathFree(ctx, opts.path);
   const config = await readConfig(ctx);
-  const base = await resolveBaseUrl(ctx, config);
+  const base = await resolveBaseUrl(ctx, workDir, config);
   const resolved = resolveSubmoduleUrl(base, opts.url);
   const child = deriveSubmoduleCloneContext(ctx, name, opts.path as FilePath);
-  await cloneSubmoduleInto(ctx, child, resolved, name, opts.path);
+  await cloneSubmoduleInto(ctx, workDir, child, resolved, name, opts.path);
   if (opts.branch !== undefined) await checkoutTrackingBranch(child, opts.branch);
   else await materializeWorktreeFromHead(child);
   const head = await getRefStore(child).resolveDirect(HEAD_REF);
   const branch = headBranchName(head);
   const subHead = await resolveRef(child, HEAD_REF);
-  const gitmodulesBytes = await writeGitmodulesEntry(ctx, name, opts.path, opts.url, opts.branch);
-  await stageSubmodule(ctx, opts.path, subHead, gitmodulesBytes);
+  const gitmodulesBytes = await writeGitmodulesEntry(
+    ctx,
+    workDir,
+    name,
+    opts.path,
+    opts.url,
+    opts.branch,
+  );
+  await stageSubmodule(ctx, workDir, opts.path, subHead, gitmodulesBytes);
   await updateConfigOperations(ctx, [
     setSubmoduleOp(name, 'url', resolved),
     setSubmoduleOp(name, 'active', 'true'),
@@ -754,8 +772,8 @@ export const submoduleUpdate = async (
   opts: SubmoduleUpdateOptions = {},
 ): Promise<SubmoduleUpdateResult> => {
   await assertOperationalRepository(ctx);
-  await assertNotBare(ctx, 'submodule update');
-  const rows = await readWorktreeGitmodules(ctx);
+  const workDir = requireWorkTree(ctx, 'submodule update');
+  const rows = await readWorktreeGitmodules(ctx, workDir);
   const selected = selectRows(rows, opts.paths);
   const updateModes = validateUpdateModes(rows);
   const index = await readIndex(ctx);
@@ -795,7 +813,7 @@ export const submoduleUpdate = async (
     const child = deriveSubmoduleCloneContext(ctx, row.name, row.path as FilePath);
     const cloned = !(await ctx.fs.exists(`${child.layout.gitDir}/HEAD`));
     if (cloned) {
-      await cloneSubmoduleInto(ctx, child, url, row.name, row.path);
+      await cloneSubmoduleInto(ctx, workDir, child, url, row.name, row.path);
       // Materialise the clone's checked-out branch so a rebase/merge reconcile
       // sees a clean working tree (clone fetches objects only) — git's clone
       // checkout. `checkout` mode re-materialises at the pin below.

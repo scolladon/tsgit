@@ -303,7 +303,9 @@ describe('Node shim — worktreeFs raw adapter root', () => {
         // case-exact on every platform (incl. Windows, where tmpdir's 8.3
         // short form would otherwise diverge from realpath).
         const sut = await openRepository({ cwd: tmpdir, unsafeRawAdapters: true });
-        const resolvedWorkDir = sut.ctx.layout.workDir;
+        // A fresh `openRepository({ cwd: tmpdir })` over an empty dir always
+        // yields a work tree (the not-yet-a-repository fallback).
+        const resolvedWorkDir = sut.ctx.layout.workDir as string;
         await mkdir(path.join(resolvedWorkDir, 'inside'), { recursive: true });
         const worktreeFs = sut.ctx.worktreeFs;
         const rawFs = worktreeFs?.(path.join(resolvedWorkDir, 'wt'));

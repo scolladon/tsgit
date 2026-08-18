@@ -1,37 +1,37 @@
 import type { FileSystem } from '../ports/file-system.js';
 import type { RepositoryLayoutInput } from '../repository.js';
 import { fileSystemLayoutProbe } from './file-system-layout-probe.js';
+import type { WalkOutcome } from './find-layout.js';
 import { layoutFromGitfile } from './find-layout.js';
 import { portablePosixPolicy } from './portable-posix-policy.js';
+import { finishLayout } from './resolve-layout.js';
 
 /**
  * Resolves a runtime's FIXED `gitDir` entry, pointer-aware — the no-walk
  * counterpart to `findLayout` for shims whose work dir is a constant root
  * (the browser's OPFS `/`). When the entry is a *file* (a linked worktree's
  * `.git` gitfile), it resolves through the same pointer + commondir grammar
- * `findLayout` uses; otherwise the literal layout is kept. `layoutFromGitfile`
- * always reports `bare: false`, so the caller-supplied `bare` is applied on
- * top of whichever branch resolved the layout — discovery never decides
- * bare-ness. Uses `portablePosixPolicy` rather than the Node-backed
- * `posixPolicy` — see that module's doc comment for why.
+ * `findLayout` uses; otherwise the literal entry is kept. Either way the
+ * structural finding is always treated as `route: 'DISCOVERED'` with `origin:
+ * workDir` — there is no walk here to ever produce a `BARE_DIR` route, so
+ * `core.bare` alone (read by the shared Stage 2/3 in `finishLayout`) is what
+ * decides bareness, exactly as it does for the node/memory shims. `bare`, when
+ * given, overrides `core.bare` outright — the argument-tier-wins rule.
+ * Uses `portablePosixPolicy` rather than the Node-backed `posixPolicy` — see
+ * that module's doc comment for why.
  */
 export const resolveFixedEntryLayout = async (
   fs: FileSystem,
   workDir: string,
   gitDir: string,
-  bare: boolean,
+  bare?: boolean,
 ): Promise<RepositoryLayoutInput> => {
   const probe = fileSystemLayoutProbe(fs);
   const entry = await probe.stat(gitDir);
-  if (entry?.isFile === true) {
-    const resolved = await layoutFromGitfile(
-      probe,
-      workDir,
-      gitDir,
-      portablePosixPolicy,
-      entry.size,
-    );
-    return { ...resolved, bare };
-  }
-  return { workDir, gitDir, bare };
+  const located =
+    entry?.isFile === true
+      ? await layoutFromGitfile(probe, workDir, gitDir, portablePosixPolicy, entry.size)
+      : { gitDir };
+  const outcome: WalkOutcome = { ...located, route: 'DISCOVERED', origin: workDir };
+  return finishLayout(probe, outcome, portablePosixPolicy, bare);
 };

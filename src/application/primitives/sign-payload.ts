@@ -71,7 +71,10 @@ const signWithOpenpgp = async (
   const program = req.program ?? DEFAULT_OPENPGP_PROGRAM;
   const result = await runner.run({
     command: `${sqQuote(program)} --status-fd=2 -bsau ${sqQuote(req.selector)}`,
-    cwd: ctx.layout.workDir,
+    // A spawned child needs SOME cwd; git's own bare hooks run with
+    // PWD=<bare.git>, so gitDir is the faithful fallback when there is no
+    // work tree.
+    cwd: ctx.layout.workDir ?? ctx.layout.gitDir,
     env: { GIT_DIR: ctx.layout.gitDir },
     stdin: payload,
     ...(ctx.signal !== undefined ? { signal: ctx.signal } : {}),
@@ -95,7 +98,10 @@ const signWithSsh = async (
   try {
     const result = await runner.run({
       command: `${sqQuote(program)} -Y sign -n git -f ${sqQuote(req.selector)} ${sqQuote(tmp)}`,
-      cwd: ctx.layout.workDir,
+      // A spawned child needs SOME cwd; git's own bare hooks run with
+      // PWD=<bare.git>, so gitDir is the faithful fallback when there is no
+      // work tree.
+      cwd: ctx.layout.workDir ?? ctx.layout.gitDir,
       env: { GIT_DIR: ctx.layout.gitDir },
       ...(ctx.signal !== undefined ? { signal: ctx.signal } : {}),
     });

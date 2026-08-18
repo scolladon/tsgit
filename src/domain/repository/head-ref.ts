@@ -18,9 +18,10 @@
 
 // Matches the sibling hash-width regexes elsewhere in the domain
 // (fsck's tag/commit validators, the bundle header parser): one named
-// pattern per accepted width.
-const SHA1_HEX_RE = /^[0-9a-f]{40}$/;
-const SHA256_HEX_RE = /^[0-9a-f]{64}$/;
+// pattern per accepted width. An optional single trailing newline is
+// tolerated — real git always writes a detached HEAD as `<hex>\n`.
+const SHA1_HEX_RE = /^[0-9a-f]{40}\n?$/;
+const SHA256_HEX_RE = /^[0-9a-f]{64}\n?$/;
 
 const REF_PREFIX = 'ref:';
 const REFS_NAMESPACE_PREFIX = 'refs/';

@@ -30,7 +30,10 @@ export const applyTextconv = async (
   try {
     const result = await runner.run({
       command: `${command} ${tmpPath}`,
-      cwd: ctx.layout.workDir,
+      // A spawned child needs SOME cwd; git's own bare hooks run with
+      // PWD=<bare.git>, so gitDir is the faithful fallback when there is no
+      // work tree.
+      cwd: ctx.layout.workDir ?? ctx.layout.gitDir,
       env: { GIT_DIR: ctx.layout.gitDir },
       ...(ctx.signal !== undefined ? { signal: ctx.signal } : {}),
     });

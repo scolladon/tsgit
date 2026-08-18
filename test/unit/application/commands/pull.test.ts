@@ -25,6 +25,7 @@ import {
   buildUploadPackResponseBody,
 } from '../../../fixtures/transport/builders.js';
 import { buildSyntheticPack } from '../primitives/pack-fixture.js';
+import { asBareContext } from './fixtures.js';
 
 const REMOTE_URL = 'https://remote.example/r.git';
 
@@ -439,14 +440,14 @@ describe('pull', () => {
     describe('When pull', () => {
       it('Then throws before issuing any fetch', async () => {
         // Arrange
-        const ctx = createMemoryContext();
-        await init(ctx);
-        await commitFile(ctx, 'a.txt', 'a', 'A');
-        await updateConfigEntries(ctx, [
-          { section: 'core', key: 'bare', value: 'true' },
+        const ctx0 = createMemoryContext();
+        await init(ctx0);
+        await commitFile(ctx0, 'a.txt', 'a', 'A');
+        await updateConfigEntries(ctx0, [
           { section: 'remote', subsection: 'origin', key: 'url', value: REMOTE_URL },
         ]);
-        const { transport, requests } = buildPullRemote([], await emptyPack(ctx));
+        const ctx = asBareContext(ctx0);
+        const { transport, requests } = buildPullRemote([], await emptyPack(ctx0));
 
         // Act
         let caught: unknown;
@@ -457,7 +458,7 @@ describe('pull', () => {
         }
 
         // Assert — the guard names the `pull` operation and fires before any fetch.
-        expect((caught as { data?: { code?: string } })?.data?.code).toBe('BARE_REPOSITORY');
+        expect((caught as { data?: { code?: string } })?.data?.code).toBe('WORK_TREE_REQUIRED');
         expect((caught as { data?: { operation?: string } })?.data?.operation).toBe('pull');
         expect(requests).toHaveLength(0);
       });

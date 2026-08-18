@@ -1071,15 +1071,14 @@ describe('checkout — mutation hardening', () => {
 
   describe('Given a bare repository', () => {
     describe('When checkout', () => {
-      it('Then throws BARE_REPOSITORY naming the checkout operation (L253 literal)', async () => {
-        // Arrange — a bare repo; assertNotBare(ctx, 'checkout') must throw with
-        // the operation string 'checkout'. A StringLiteral mutant emptying the
-        // 'checkout' argument would surface an empty operation in the message.
-        const ctx = createMemoryContext();
-        await init(ctx);
-        const cfgPath = `${ctx.layout.gitDir}/config`;
-        const cfg = await ctx.fs.readUtf8(cfgPath);
-        await ctx.fs.writeUtf8(cfgPath, `${cfg}\n[core]\n\tbare = true\n`);
+      it('Then throws WORK_TREE_REQUIRED naming the checkout operation (L253 literal)', async () => {
+        // Arrange — a bare repo; requireWorkTree(ctx, 'checkout') must throw
+        // with the operation string 'checkout'. A StringLiteral mutant
+        // emptying the 'checkout' argument would surface an empty operation
+        // in the message.
+        const ctx0 = createMemoryContext();
+        await init(ctx0);
+        const ctx = asBareContext(ctx0);
 
         // Act
         let caught: unknown;
@@ -1092,12 +1091,12 @@ describe('checkout — mutation hardening', () => {
         // Assert
         expect(caught).toBeInstanceOf(TsgitError);
         const data = (caught as TsgitError).data;
-        expect(data.code).toBe('BARE_REPOSITORY');
-        if (data.code === 'BARE_REPOSITORY') {
+        expect(data.code).toBe('WORK_TREE_REQUIRED');
+        if (data.code === 'WORK_TREE_REQUIRED') {
           expect(data.operation).toBe('checkout');
         }
         expect((caught as TsgitError).message).toBe(
-          'BARE_REPOSITORY: operation requires a working tree: checkout',
+          'WORK_TREE_REQUIRED: operation requires a working tree: checkout',
         );
       });
     });
@@ -1226,7 +1225,7 @@ describe('checkout — sparse checkout', () => {
   });
 });
 
-import { recordingProgress, withProgress } from './fixtures.js';
+import { asBareContext, recordingProgress, withProgress } from './fixtures.js';
 
 describe('checkout — progress reporting', () => {
   const seedWithBranch = async () => {

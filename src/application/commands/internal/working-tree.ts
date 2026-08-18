@@ -6,6 +6,7 @@ import type { FilePath } from '../../../domain/objects/object-id.js';
 import { validateWorkingTreePath } from '../../../domain/working-tree-path.js';
 import type { Context } from '../../../ports/context.js';
 import { joinPath } from '../../primitives/internal/join-working-tree-path.js';
+import { requireWorkTree } from '../../primitives/internal/repo-state.js';
 
 /**
  * Validate a working-tree path. Throws `PATHSPEC_OUTSIDE_REPO` for any policy
@@ -17,7 +18,13 @@ import { joinPath } from '../../primitives/internal/join-working-tree-path.js';
  */
 export const validatePath = validateWorkingTreePath;
 
-const repoPath = (ctx: Context, path: FilePath): string => joinPath(ctx.layout.workDir, path);
+/**
+ * Every caller (`checkout`, `mv`, `rm`) has already proved a work tree exists
+ * via its own top-level gate; this re-check is what lets the compiler — not a
+ * reviewer — confirm `ctx.layout.workDir` is safe to dereference here.
+ */
+const repoPath = (ctx: Context, path: FilePath): string =>
+  joinPath(requireWorkTree(ctx, 'materialize working tree'), path);
 
 /**
  * Materialize a blob into the working tree at `path` with the given mode.

@@ -76,7 +76,7 @@ const splitRealpathCalls = async (cwd: string): Promise<RealpathSplit> => {
 
 describe('Given a repository whose layout resolves and whose realpaths all succeed', () => {
   describe('When openRepository is followed by a first object-store read', () => {
-    it('Then the shim resolves cwd and gitDir, and the adapter re-resolves nothing', async () => {
+    it('Then the shim resolves cwd, gitDir and workDir, and the adapter re-resolves nothing', async () => {
       // Arrange
       const workDir = path.join(tmpdir, 'repo');
       await mkdir(workDir, { recursive: true });
@@ -87,7 +87,7 @@ describe('Given a repository whose layout resolves and whose realpaths all succe
       const result = await sut(workDir);
 
       // Assert
-      expect(result).toEqual({ shim: 2, adapter: 0 });
+      expect(result).toEqual({ shim: 3, adapter: 0 });
     });
   });
 });
@@ -144,8 +144,8 @@ describe('Given a not-yet-created directory inside an existing repository', () =
       // Act
       const result = await sut(path.join(workDir, 'not-created-yet'));
 
-      // Assert
-      expect(result.shim).toBe(2);
+      // Assert — cwd, gitDir and workDir, each realpathed once by the shim.
+      expect(result.shim).toBe(3);
       expect(result.adapter).toBeGreaterThan(0);
     });
   });
@@ -171,8 +171,9 @@ describe('Given a linked worktree whose gitDir and commonDir both resolve', () =
       // Act
       const result = await sut(linked);
 
-      // Assert — cwd, gitDir and commonDir, each realpathed once by the shim.
-      expect(result).toEqual({ shim: 3, adapter: 0 });
+      // Assert — cwd, gitDir, commonDir and workDir, each realpathed once by
+      // the shim.
+      expect(result).toEqual({ shim: 4, adapter: 0 });
     });
   });
 });

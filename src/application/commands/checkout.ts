@@ -23,9 +23,9 @@ import { writeSymbolicRef } from '../primitives/write-symbolic-ref.js';
 import { acquireIndexLock } from './internal/index-update.js';
 import {
   assertNoPendingOperation,
-  assertNotBare,
   assertOperationalRepository,
   readHeadRaw,
+  requireWorkTree,
 } from './internal/repo-state.js';
 import { enforceLiteralMustMatch, resolvePathspec } from './internal/resolve-pathspec.js';
 
@@ -307,7 +307,7 @@ const enumerateSourcePaths = async (
 
 export const checkout = async (ctx: Context, opts: CheckoutOptions): Promise<CheckoutResult> => {
   await assertOperationalRepository(ctx);
-  await assertNotBare(ctx, 'checkout');
+  requireWorkTree(ctx, 'checkout');
   await assertNoPendingOperation(ctx);
 
   const switchMode = isSwitch(opts);

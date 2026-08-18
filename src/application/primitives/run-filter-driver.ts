@@ -21,7 +21,10 @@ export const runFilterDriver = async (
   const { gitDir, workDir } = ctx.layout;
   const result = await runner.run({
     command,
-    cwd: workDir,
+    // A spawned child needs SOME cwd; git's own bare hooks run with
+    // PWD=<bare.git>, so gitDir is the faithful fallback when there is no
+    // work tree.
+    cwd: workDir ?? gitDir,
     env: { GIT_DIR: gitDir },
     stdin: input,
     ...(ctx.signal !== undefined ? { signal: ctx.signal } : {}),

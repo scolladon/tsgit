@@ -14,7 +14,7 @@ import type {
   CommandRunner,
 } from '../../../../src/ports/command-runner.js';
 import type { Context } from '../../../../src/ports/context.js';
-import { seedRepo } from './fixtures.js';
+import { asBareContext, seedRepo } from './fixtures.js';
 
 const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
 const dec = (b: Uint8Array): string => new TextDecoder().decode(b);
@@ -230,19 +230,19 @@ describe('rm', () => {
 
   describe('Given a bare repo', () => {
     describe('When rm', () => {
-      it('Then throws BARE_REPOSITORY tagged with operation "rm"', async () => {
-        // Arrange — fresh ctx with bare=true config seeded BEFORE any read.
-        const ctx = createMemoryContext();
-        await seedRepo(ctx, {});
-        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n  bare = true\n');
+      it('Then throws WORK_TREE_REQUIRED tagged with operation "rm"', async () => {
+        // Arrange — fresh ctx with no work tree, seeded BEFORE any read.
+        const ctx0 = createMemoryContext();
+        await seedRepo(ctx0, {});
+        const ctx = asBareContext(ctx0);
 
         // Act
-        const err = await expectError(() => rm(ctx, ['a.txt']), 'BARE_REPOSITORY');
+        const err = await expectError(() => rm(ctx, ['a.txt']), 'WORK_TREE_REQUIRED');
 
         // Assert — the operation label travels with the error (kills `'rm'` -> `''`).
-        if (err.data.code !== 'BARE_REPOSITORY') throw new Error('unexpected error shape');
+        if (err.data.code !== 'WORK_TREE_REQUIRED') throw new Error('unexpected error shape');
         expect(err.data.operation).toBe('rm');
-        expect(err.message).toBe('BARE_REPOSITORY: operation requires a working tree: rm');
+        expect(err.message).toBe('WORK_TREE_REQUIRED: operation requires a working tree: rm');
       });
     });
   });

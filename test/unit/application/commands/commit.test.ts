@@ -14,6 +14,7 @@ import { ObjectId as ObjectIdFactory } from '../../../../src/domain/objects/inde
 import type { Context } from '../../../../src/ports/context.js';
 import type { HookResult, HookRunner } from '../../../../src/ports/hook-runner.js';
 import { stubCommandRunner } from '../primitives/helpers/stub-command-runner.js';
+import { asBareContext } from './fixtures.js';
 
 const author: AuthorIdentity = {
   name: 'Ada',
@@ -267,20 +268,18 @@ describe('commit', () => {
 
   describe('Given a bare repo', () => {
     describe('When commit', () => {
-      it('Then throws BARE_REPOSITORY tagged with operation "commit"', async () => {
-        // Arrange — flip core.bare before any config read caches the empty config.
-        const ctx = await seed();
-        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n  bare = true\n');
-        __resetConfigCacheForTests();
+      it('Then throws WORK_TREE_REQUIRED tagged with operation "commit"', async () => {
+        // Arrange
+        const ctx = asBareContext(await seed());
 
         // Act
         const err = await expectError(
           () => commit(ctx, { message: 'x', author }),
-          'BARE_REPOSITORY',
+          'WORK_TREE_REQUIRED',
         );
 
-        // Assert — kills the StringLiteral mutant on assertNotBare(ctx, 'commit').
-        expect(err.data).toMatchObject({ code: 'BARE_REPOSITORY', operation: 'commit' });
+        // Assert — kills the StringLiteral mutant on requireWorkTree(ctx, 'commit').
+        expect(err.data).toMatchObject({ code: 'WORK_TREE_REQUIRED', operation: 'commit' });
       });
     });
   });

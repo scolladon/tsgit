@@ -300,6 +300,10 @@ function extractDetail(data: TsgitErrorData): string {
       return `not a git repository: ${basename(data.path)}`;
     case 'BARE_REPOSITORY':
       return `operation requires a working tree: ${data.operation}`;
+    case 'WORK_TREE_REQUIRED':
+      return `operation requires a working tree: ${data.operation}`;
+    case 'WORK_TREE_CONFIG_INVALID':
+      return `unable to set up work tree using invalid config: ${data.gitDir}`;
     case 'ALREADY_INITIALIZED':
       return `repository already exists: ${basename(data.path)}`;
     case 'WORKING_TREE_DIRTY':

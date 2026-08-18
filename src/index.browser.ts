@@ -12,6 +12,7 @@ import { BrowserHttpTransport } from './adapters/browser/browser-http-transport.
 import { SHA1_CONFIG } from './domain/objects/hash-config.js';
 import { createLruCache } from './domain/storage/lru-cache.js';
 import { resolveFixedEntryLayout } from './repository/fixed-entry-layout.js';
+import { validateOptions } from './repository/validate-options.js';
 import {
   type OpenRepositoryOptions,
   openRepository as openRepositoryCore,
@@ -39,6 +40,7 @@ export interface OpenBrowserRepositoryOptions extends OpenRepositoryOptions {
 }
 
 export const openRepository = async (opts: OpenBrowserRepositoryOptions): Promise<Repository> => {
+  validateOptions(opts);
   const gitDirName = opts.gitDirName ?? DEFAULT_GIT_DIR_NAME;
   const fs = new BrowserFileSystem(opts.rootHandle);
   // A walk-up is meaningless in OPFS (`dirname('/') === '/'` terminates on
@@ -49,7 +51,7 @@ export const openRepository = async (opts: OpenBrowserRepositoryOptions): Promis
     fs,
     ROOT_WORK_DIR,
     `${ROOT_WORK_DIR}${gitDirName}`,
-    opts.bare ?? false,
+    opts.bare,
   );
   const fallback = {
     fs,

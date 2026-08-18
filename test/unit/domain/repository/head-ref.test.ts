@@ -107,6 +107,36 @@ describe('isValidHeadContent', () => {
     });
   });
 
+  describe('Given content is 40 lowercase hex characters with a trailing newline', () => {
+    describe('When isValidHeadContent runs', () => {
+      it('Then it returns true — real git always writes a detached HEAD this way', () => {
+        // Arrange
+        const sut = isValidHeadContent;
+
+        // Act
+        const result = sut(`${'a'.repeat(40)}\n`);
+
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+  });
+
+  describe('Given content is 64 lowercase hex characters with a trailing newline', () => {
+    describe('When isValidHeadContent runs', () => {
+      it('Then it returns true', () => {
+        // Arrange
+        const sut = isValidHeadContent;
+
+        // Act
+        const result = sut(`${'a'.repeat(64)}\n`);
+
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+  });
+
   describe('Given content is ref: followed by a single-level name with no refs/ prefix', () => {
     describe('When isValidHeadContent runs', () => {
       it('Then it returns false', () => {

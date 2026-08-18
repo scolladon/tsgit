@@ -1375,7 +1375,7 @@ describe('merge.4b conflict persistence', () => {
   });
 });
 
-import { recordingProgress, withProgress } from './fixtures.js';
+import { asBareContext, recordingProgress, withProgress } from './fixtures.js';
 
 describe('merge — bounded blob reads', () => {
   describe('Given a conflicting merge', () => {
@@ -1532,11 +1532,11 @@ describe('merge — progress reporting', () => {
 describe('merge — guard rails', () => {
   describe('Given a bare repository', () => {
     describe('When merge runs', () => {
-      it('Then throws BARE_REPOSITORY with operation=merge', async () => {
+      it('Then throws WORK_TREE_REQUIRED with operation=merge', async () => {
         // Arrange
-        const ctx = createMemoryContext();
-        await init(ctx);
-        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n  bare = true\n');
+        const ctx0 = createMemoryContext();
+        await init(ctx0);
+        const ctx = asBareContext(ctx0);
 
         // Act
         let caught: unknown;
@@ -1548,7 +1548,7 @@ describe('merge — guard rails', () => {
 
         // Assert — `operation` carries the literal 'merge'.
         const data = (caught as { data?: { code?: string; operation?: string } })?.data;
-        expect(data?.code).toBe('BARE_REPOSITORY');
+        expect(data?.code).toBe('WORK_TREE_REQUIRED');
         expect(data?.operation).toBe('merge');
       });
     });

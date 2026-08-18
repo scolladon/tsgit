@@ -54,9 +54,9 @@ import {
 } from './internal/merge-state.js';
 import {
   assertNoPendingOperation,
-  assertNotBare,
   assertOperationalRepository,
   readHeadRaw,
+  requireWorkTree,
 } from './internal/repo-state.js';
 import { clearRevertHead, readRevertHead } from './internal/revert-state.js';
 import { resolveSignRequest, signOrThrow } from './internal/sign-request.js';
@@ -97,7 +97,7 @@ export interface CommitResult {
  */
 export const commit = async (ctx: Context, opts: CommitOptions): Promise<CommitResult> => {
   await assertOperationalRepository(ctx);
-  await assertNotBare(ctx, 'commit');
+  requireWorkTree(ctx, 'commit');
   // git refuses a malformed commit.gpgSign before hooks run, before the tree is
   // written, and before the nothing-to-commit check — mirror that ordering.
   await assertValidBooleanConfig(ctx, 'commit', undefined, ['gpgsign']);

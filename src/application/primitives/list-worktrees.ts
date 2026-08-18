@@ -8,6 +8,7 @@ import type { ObjectId, RefName } from '../../domain/objects/index.js';
 import type { FilePath } from '../../domain/objects/object-id.js';
 import { parseLooseRef } from '../../domain/refs/index.js';
 import type { Context } from '../../ports/context.js';
+import { readConfig } from './config-read.js';
 import { worktreeScopedFs } from './internal/worktree-context.js';
 import { commonGitDir } from './path-layout.js';
 import { getRefStore } from './ref-store.js';
@@ -64,6 +65,23 @@ const stripGitSuffix = (dir: string): string =>
   dir.endsWith(GIT_SUFFIX) ? dir.slice(0, -GIT_SUFFIX.length) : dir;
 
 /**
+ * Whether the MAIN checkout (the common dir, considered on its own) is bare.
+ * NOT `ctx.layout.bare` when `ctx` was opened from inside a linked worktree:
+ * a linked worktree always has its own work tree regardless of the shared
+ * `core.bare` (`resolve-layout.ts`'s linked-worktree-admin override), but
+ * `git worktree list`'s main entry still reports the shared config's verdict
+ * for the checkout it actually names — so this re-derives it from `core.bare`
+ * directly rather than reusing the current (possibly linked) Context's own
+ * resolved bareness. `core.bare` unset is truthy, matching `is_bare_repository_cfg`'s
+ * `-1` default (design's bareness formula).
+ */
+const isMainCheckoutBare = async (ctx: Context): Promise<boolean> => {
+  if (ctx.layout.commonDir === undefined) return ctx.layout.bare;
+  const config = await readConfig(ctx);
+  return config.core?.bare !== false;
+};
+
+/**
  * The primary worktree entry (the repository's own working tree). The path
  * is always derived from the common dir, never from `ctx.layout.workDir` —
  * the latter is the caller's opened path, which is a linked worktree's own
@@ -72,7 +90,7 @@ const stripGitSuffix = (dir: string): string =>
  */
 const mainEntry = async (ctx: Context): Promise<WorktreeEntry> => {
   const path = stripGitSuffix(commonGitDir(ctx)) as FilePath;
-  if (ctx.layout.bare) {
+  if (await isMainCheckoutBare(ctx)) {
     return { path, detached: false, bare: true, main: true };
   }
   const content = await ctx.fs.readUtf8(`${commonGitDir(ctx)}/HEAD`);

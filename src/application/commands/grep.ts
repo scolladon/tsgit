@@ -13,7 +13,7 @@ import type { Context } from '../../ports/context.js';
 import { readBlob, readIndex, walkTree } from '../primitives/index.js';
 import { boundedMap, MAX_CONCURRENT_OBJECT_LOADS } from '../primitives/internal/bounded-map.js';
 import { joinPath } from '../primitives/internal/join-working-tree-path.js';
-import { assertOperationalRepository } from './internal/repo-state.js';
+import { assertOperationalRepository, requireWorkTree } from './internal/repo-state.js';
 import { resolvePathspec } from './internal/resolve-pathspec.js';
 import { resolveTreeish } from './internal/resolve-rev.js';
 
@@ -66,13 +66,16 @@ interface Candidate {
 const isSearchableMode = (mode: string): boolean =>
   mode === FILE_MODE.REGULAR || mode === FILE_MODE.EXECUTABLE;
 
-const enumerateWorkingTree = async (ctx: Context): Promise<ReadonlyArray<Candidate>> => {
+const enumerateWorkingTree = async (
+  ctx: Context,
+  workDir: string,
+): Promise<ReadonlyArray<Candidate>> => {
   const index = await readIndex(ctx);
   const candidates: Candidate[] = [];
   for (const entry of index.entries) {
     if (entry.flags.stage !== 0) continue;
     if (!isSearchableMode(entry.mode)) continue;
-    const absPath = joinPath(ctx.layout.workDir, entry.path);
+    const absPath = joinPath(workDir, entry.path);
     const stat = await ctx.fs.lstat(absPath).catch(() => undefined);
     // A tracked path absent from the working tree, or whose working-tree entry is no
     // longer a regular file (replaced by a directory or symlink), is skipped — git grep
@@ -106,7 +109,10 @@ async function enumerateCandidates(
   const { target } = opts;
 
   if (target === undefined) {
-    return enumerateWorkingTree(ctx);
+    // Only the working-tree target needs one — `--cached` and a tree-ish
+    // target both stay open in a bare repo (git: `grep --cached <pat>` and
+    // `grep <pat> HEAD` both exit 0).
+    return enumerateWorkingTree(ctx, requireWorkTree(ctx, 'grep'));
   }
 
   if (target === 'index') {

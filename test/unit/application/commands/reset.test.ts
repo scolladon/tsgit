@@ -8,6 +8,7 @@ import { rm } from '../../../../src/application/commands/rm.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
 import type { AuthorIdentity, ObjectId, RefName } from '../../../../src/domain/objects/index.js';
+import { asBareContext } from './fixtures.js';
 
 const HEAD = 'HEAD' as RefName;
 
@@ -467,18 +468,14 @@ describe('reset', () => {
 
   describe('Given a mixed reset on a bare repo', () => {
     describe('When reset', () => {
-      it('Then does NOT throw BARE_REPOSITORY', async () => {
-        // Arrange — fresh ctx with bare=true seeded BEFORE the first readConfig
-        // call (readConfig is per-context cached; overwriting config after a read
-        // wouldn't update the cache, so a fresh ctx is the only way to exercise
-        // the bare-config branch).
-        const ctx = createMemoryContext();
-        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
-        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n  bare = true\n');
+      it('Then throws BARE_REPOSITORY with operation=reset --mixed', async () => {
+        // Arrange — mixed reset is keyed on `layout.bare` (is_bare_repository()),
+        // not work-tree presence, so this is BARE_REPOSITORY, not WORK_TREE_REQUIRED.
+        const ctx0 = createMemoryContext();
+        await ctx0.fs.writeUtf8(`${ctx0.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+        const ctx = asBareContext(ctx0);
 
-        // Act — mixed reset must skip the assertNotBare guard. The resolve step
-        // will fail later (no commits seeded), but the failure code must not be
-        // BARE_REPOSITORY — that would prove the bare guard fired for mixed.
+        // Act
         let caught: unknown;
         try {
           await reset(ctx, { mode: 'mixed', rev: 'HEAD' });
@@ -486,19 +483,48 @@ describe('reset', () => {
           caught = err;
         }
 
+        // Assert — pin both the code AND the operation string so a mutant that
+        // empties the 'reset --mixed' literal is killed.
+        const data = (caught as { data?: { code?: string; operation?: string } })?.data;
+        expect(data?.code).toBe('BARE_REPOSITORY');
+        expect(data?.operation).toBe('reset --mixed');
+      });
+    });
+  });
+
+  describe('Given a soft reset on a bare repo', () => {
+    describe('When reset', () => {
+      it('Then does NOT throw BARE_REPOSITORY or WORK_TREE_REQUIRED (soft stays ungated)', async () => {
+        // Arrange
+        const ctx0 = createMemoryContext();
+        await ctx0.fs.writeUtf8(`${ctx0.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+        const ctx = asBareContext(ctx0);
+
+        // Act — the resolve step fails later (no commits seeded), but the
+        // failure code must not be a work-tree/bareness refusal — that would
+        // prove a guard fired for soft, which git never does.
+        let caught: unknown;
+        try {
+          await reset(ctx, { mode: 'soft', rev: 'HEAD' });
+        } catch (err) {
+          caught = err;
+        }
+
         // Assert
-        expect((caught as { data?: { code?: string } })?.data?.code).not.toBe('BARE_REPOSITORY');
+        const code = (caught as { data?: { code?: string } })?.data?.code;
+        expect(code).not.toBe('BARE_REPOSITORY');
+        expect(code).not.toBe('WORK_TREE_REQUIRED');
       });
     });
   });
 
   describe('Given hard mode on a bare repo', () => {
     describe('When reset', () => {
-      it('Then throws BARE_REPOSITORY with operation=reset --hard', async () => {
-        // Arrange — fresh ctx with bare config seeded BEFORE any read.
-        const ctx = createMemoryContext();
-        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
-        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n  bare = true\n');
+      it('Then throws WORK_TREE_REQUIRED with operation=reset --hard', async () => {
+        // Arrange — fresh ctx with no work tree, seeded BEFORE any read.
+        const ctx0 = createMemoryContext();
+        await ctx0.fs.writeUtf8(`${ctx0.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+        const ctx = asBareContext(ctx0);
 
         // Act
         let caught: unknown;
@@ -511,7 +537,7 @@ describe('reset', () => {
         // Assert — pin both the code AND the operation string so a mutant that
         // empties the 'reset --hard' literal is killed.
         const data = (caught as { data?: { code?: string; operation?: string } })?.data;
-        expect(data?.code).toBe('BARE_REPOSITORY');
+        expect(data?.code).toBe('WORK_TREE_REQUIRED');
         expect(data?.operation).toBe('reset --hard');
       });
     });

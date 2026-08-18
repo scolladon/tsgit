@@ -239,4 +239,43 @@ describe('fixed-entry layout resolution (the browser shim path)', () => {
       });
     });
   });
+
+  describe('Given a /.git directory whose config says core.bare = true', () => {
+    describe('When resolveFixedEntryLayout runs with no bare override', () => {
+      it('Then the layout has no workDir key and bare is true', async () => {
+        // Arrange — the memory/node-equivalent Stage 2/3 wiring now runs for
+        // the browser shim too: config alone decides bareness.
+        const fs = stubFsOver({
+          '/.git': { kind: 'dir' },
+          '/.git/config': { kind: 'file', content: '[core]\n\tbare = true\n' },
+        });
+        const sut = resolveFixedEntryLayout;
+
+        // Act
+        const result = await sut(fs, '/', '/.git', undefined);
+
+        // Assert
+        expect(result).toStrictEqual({ gitDir: '/.git', bare: true });
+      });
+    });
+  });
+
+  describe('Given a /.git directory whose config sets an absolute core.worktree', () => {
+    describe('When resolveFixedEntryLayout runs', () => {
+      it('Then the resolved workDir is the configured value, not the fixed root', async () => {
+        // Arrange
+        const fs = stubFsOver({
+          '/.git': { kind: 'dir' },
+          '/.git/config': { kind: 'file', content: '[core]\n\tworktree = /custom-wt\n' },
+        });
+        const sut = resolveFixedEntryLayout;
+
+        // Act
+        const result = await sut(fs, '/', '/.git', undefined);
+
+        // Assert
+        expect(result).toStrictEqual({ gitDir: '/.git', workDir: '/custom-wt', bare: false });
+      });
+    });
+  });
 });

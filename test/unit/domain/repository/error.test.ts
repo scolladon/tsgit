@@ -7,6 +7,8 @@ import {
   bareRepository,
   notARepository,
   type RepositoryError,
+  workTreeConfigInvalid,
+  workTreeRequired,
 } from '../../../../src/domain/repository/error.js';
 
 describe('domain repository error', () => {
@@ -35,6 +37,30 @@ describe('domain repository error', () => {
       });
     });
 
+    describe('Given workTreeRequired("add")', () => {
+      describe('When checking data', () => {
+        it('Then code and operation preserved', () => {
+          // Arrange & Act
+          const result = workTreeRequired('add');
+
+          // Assert
+          expect(result.data).toEqual({ code: 'WORK_TREE_REQUIRED', operation: 'add' });
+        });
+      });
+    });
+
+    describe('Given workTreeConfigInvalid("/repo/.git")', () => {
+      describe('When checking data', () => {
+        it('Then code and gitDir preserved', () => {
+          // Arrange & Act
+          const result = workTreeConfigInvalid('/repo/.git');
+
+          // Assert
+          expect(result.data).toEqual({ code: 'WORK_TREE_CONFIG_INVALID', gitDir: '/repo/.git' });
+        });
+      });
+    });
+
     describe('Given alreadyInitialized("/repo/.git")', () => {
       describe('When checking data', () => {
         it('Then code and path preserved', () => {
@@ -59,6 +85,14 @@ describe('domain repository error', () => {
       [
         { code: 'BARE_REPOSITORY', operation: 'add' },
         'BARE_REPOSITORY: operation requires a working tree: add',
+      ],
+      [
+        { code: 'WORK_TREE_REQUIRED', operation: 'status' },
+        'WORK_TREE_REQUIRED: operation requires a working tree: status',
+      ],
+      [
+        { code: 'WORK_TREE_CONFIG_INVALID', gitDir: '/repo/.git' },
+        'WORK_TREE_CONFIG_INVALID: unable to set up work tree using invalid config: /repo/.git',
       ],
       [
         { code: 'ALREADY_INITIALIZED', path: '/foo/.git' as FilePath },

@@ -34,8 +34,8 @@ import { readIndex } from '../primitives/read-index.js';
 import { acquireIndexLock } from './internal/index-update.js';
 import {
   assertNoPendingOperation,
-  assertNotBare,
   assertOperationalRepository,
+  requireWorkTree,
 } from './internal/repo-state.js';
 import { enforceLiteralMustMatch, resolvePathspec } from './internal/resolve-pathspec.js';
 import { removeFile } from './internal/working-tree.js';
@@ -66,7 +66,7 @@ export const rm = async (
   opts: RmOptions = {},
 ): Promise<RmResult> => {
   await assertOperationalRepository(ctx);
-  await assertNotBare(ctx, 'rm');
+  requireWorkTree(ctx, 'rm');
   await assertNoPendingOperation(ctx);
   if (paths.length === 0) throw emptyPathspec();
   const { matcher, literalMustMatch } = resolvePathspec(paths);

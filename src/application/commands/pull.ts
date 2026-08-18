@@ -20,10 +20,10 @@ import { type FetchResult, fetch } from './fetch.js';
 import { defaultRemoteName } from './internal/default-remote.js';
 import {
   assertNoPendingOperation,
-  assertNotBare,
   assertOperationalRepository,
   branchRefFromHead,
   readHeadRaw,
+  requireWorkTree,
 } from './internal/repo-state.js';
 import { type MergeInternalOptions, type MergeResult, mergeRun } from './merge.js';
 
@@ -93,7 +93,7 @@ const resolveUpstream = async (
 
 export const pull = async (ctx: Context, opts: PullOptions = {}): Promise<PullResult> => {
   await assertOperationalRepository(ctx);
-  await assertNotBare(ctx, 'pull');
+  requireWorkTree(ctx, 'pull');
   await assertNoPendingOperation(ctx);
 
   const head = await readHeadRaw(ctx);

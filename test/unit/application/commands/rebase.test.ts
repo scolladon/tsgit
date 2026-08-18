@@ -31,6 +31,7 @@ import type {
   RefName,
 } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
+import { asBareContext } from './fixtures.js';
 
 const FEAT_AUTHOR: AuthorIdentity = {
   name: 'Feat',
@@ -586,18 +587,17 @@ describe('rebaseRun', () => {
       ['skip', (ctx: Context) => rebaseSkip(ctx), 'rebase --skip'],
       ['abort', (ctx: Context) => rebaseAbort(ctx), 'rebase --abort'],
     ])('When %s runs in a bare repository', (_verb, call, operation) => {
-      it(`Then it refuses with BARE_REPOSITORY for "${operation}"`, async () => {
-        // Arrange — a fresh repo so the bare config is the first one read (the
-        // config cache is keyed on Context identity).
-        const ctx = createMemoryContext();
-        await init(ctx);
-        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tbare = true\n');
+      it(`Then it refuses with WORK_TREE_REQUIRED for "${operation}"`, async () => {
+        // Arrange
+        const ctx0 = createMemoryContext();
+        await init(ctx0);
+        const ctx = asBareContext(ctx0);
 
         // Act
         const data = await dataOf(() => call(ctx));
 
         // Assert
-        expect(data.code).toBe('BARE_REPOSITORY');
+        expect(data.code).toBe('WORK_TREE_REQUIRED');
         expect(data.operation).toBe(operation);
       });
     });

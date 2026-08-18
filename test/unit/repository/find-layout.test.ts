@@ -11,6 +11,10 @@ import { findLayout } from '../../../src/repository/find-layout.js';
 // host. The production `findLayout` uses `nativePolicy` (host-matching)
 // when invoked without a policy argument — covered by the integration
 // tests in the cross-platform suite.
+//
+// `findLayout` returns the walk's structural finding — `{ gitDir, commonDir?,
+// route, origin? }` — not a full layout: config-driven work-tree resolution
+// (`resolve-layout.ts`) is a separate stage this file does not exercise.
 
 /** Marks `dir` as a valid git directory: `objects/`, `refs/`, and a `HEAD` file. */
 const makeGitDir = async (fs: MemoryFileSystem, dir: string): Promise<void> => {
@@ -22,7 +26,7 @@ const makeGitDir = async (fs: MemoryFileSystem, dir: string): Promise<void> => {
 describe('findLayout', () => {
   describe('Given cwd contains a valid .git directory', () => {
     describe('When findLayout runs', () => {
-      it('Then returns layout with cwd as workDir and no commonDir key', async () => {
+      it('Then returns DISCOVERED with origin as cwd and no commonDir key', async () => {
         // Arrange
         const fs = new MemoryFileSystem({ rootDir: '/repo' });
         await makeGitDir(fs, '/repo/.git');
@@ -31,7 +35,11 @@ describe('findLayout', () => {
         const result = await findLayout(fileSystemLayoutProbe(fs), '/repo', posixPolicy);
 
         // Assert
-        expect(result).toStrictEqual({ workDir: '/repo', gitDir: '/repo/.git', bare: false });
+        expect(result).toStrictEqual({
+          gitDir: '/repo/.git',
+          route: 'DISCOVERED',
+          origin: '/repo',
+        });
       });
     });
   });
@@ -48,7 +56,11 @@ describe('findLayout', () => {
         const result = await findLayout(fileSystemLayoutProbe(fs), '/repo/sub/dir', posixPolicy);
 
         // Assert
-        expect(result).toStrictEqual({ workDir: '/repo', gitDir: '/repo/.git', bare: false });
+        expect(result).toStrictEqual({
+          gitDir: '/repo/.git',
+          route: 'DISCOVERED',
+          origin: '/repo',
+        });
       });
     });
   });
@@ -82,7 +94,11 @@ describe('findLayout', () => {
         const result = await findLayout(fileSystemLayoutProbe(fs), '/repo/sub', posixPolicy);
 
         // Assert
-        expect(result).toStrictEqual({ workDir: '/repo', gitDir: '/repo/.git', bare: false });
+        expect(result).toStrictEqual({
+          gitDir: '/repo/.git',
+          route: 'DISCOVERED',
+          origin: '/repo',
+        });
       });
     });
   });
@@ -100,7 +116,11 @@ describe('findLayout', () => {
         const result = await findLayout(fileSystemLayoutProbe(fs), '/repo/sub', posixPolicy);
 
         // Assert
-        expect(result).toStrictEqual({ workDir: '/repo', gitDir: '/repo/.git', bare: false });
+        expect(result).toStrictEqual({
+          gitDir: '/repo/.git',
+          route: 'DISCOVERED',
+          origin: '/repo',
+        });
       });
     });
   });
@@ -118,7 +138,11 @@ describe('findLayout', () => {
         const result = await findLayout(fileSystemLayoutProbe(fs), '/repo/sub', posixPolicy);
 
         // Assert
-        expect(result).toStrictEqual({ workDir: '/repo', gitDir: '/repo/.git', bare: false });
+        expect(result).toStrictEqual({
+          gitDir: '/repo/.git',
+          route: 'DISCOVERED',
+          origin: '/repo',
+        });
       });
     });
   });
@@ -137,7 +161,11 @@ describe('findLayout', () => {
         const result = await findLayout(fileSystemLayoutProbe(fs), '/repo/sub', posixPolicy);
 
         // Assert
-        expect(result).toStrictEqual({ workDir: '/repo', gitDir: '/repo/.git', bare: false });
+        expect(result).toStrictEqual({
+          gitDir: '/repo/.git',
+          route: 'DISCOVERED',
+          origin: '/repo',
+        });
       });
     });
   });
@@ -155,7 +183,11 @@ describe('findLayout', () => {
         const result = await findLayout(fileSystemLayoutProbe(fs), '/repo', posixPolicy);
 
         // Assert
-        expect(result).toStrictEqual({ workDir: '/repo', gitDir: '/repo/.git', bare: false });
+        expect(result).toStrictEqual({
+          gitDir: '/repo/.git',
+          route: 'DISCOVERED',
+          origin: '/repo',
+        });
       });
     });
   });
@@ -175,10 +207,10 @@ describe('findLayout', () => {
 
         // Assert
         expect(result).toStrictEqual({
-          workDir: '/repo/wt',
           gitDir: '/repo/main/.git/worktrees/wt',
-          bare: false,
           commonDir: '/repo/main/.git',
+          route: 'DISCOVERED',
+          origin: '/repo/wt',
         });
       });
     });
@@ -217,9 +249,9 @@ describe('findLayout', () => {
 
         // Assert
         expect(result).toStrictEqual({
-          workDir: '/repo/wt',
           gitDir: '/repo/separate-dir',
-          bare: false,
+          route: 'DISCOVERED',
+          origin: '/repo/wt',
         });
       });
     });
@@ -240,10 +272,10 @@ describe('findLayout', () => {
 
         // Assert
         expect(result).toStrictEqual({
-          workDir: '/repo/wt',
           gitDir: '/repo/admin',
-          bare: false,
           commonDir: '/repo/common',
+          route: 'DISCOVERED',
+          origin: '/repo/wt',
         });
       });
     });
@@ -367,7 +399,11 @@ describe('findLayout', () => {
         const result = await findLayout(fileSystemLayoutProbe(fs), '/repo/inner', posixPolicy);
 
         // Assert
-        expect(result).toEqual({ workDir: '/repo', gitDir: '/repo/.git', bare: false });
+        expect(result).toEqual({
+          gitDir: '/repo/.git',
+          route: 'DISCOVERED',
+          origin: '/repo',
+        });
       });
     });
   });
@@ -557,11 +593,152 @@ describe('findLayout', () => {
 
         // Assert
         expect(result).toStrictEqual({
-          workDir: '/repo/wt',
           gitDir: '/repo/main/.git/worktrees/wt',
-          bare: false,
           commonDir: '/repo/main/.git',
+          route: 'DISCOVERED',
+          origin: '/repo/wt',
         });
+      });
+    });
+  });
+
+  describe('Given cwd is itself a valid git directory (no enclosing .git)', () => {
+    describe('When findLayout runs', () => {
+      it('Then returns BARE_DIR with gitDir === cwd and no origin key', async () => {
+        // Arrange — a `clone --bare`-shaped directory: HEAD/objects/refs at cwd,
+        // no `.git` entry anywhere.
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await makeGitDir(fs, '/repo/bare.git');
+
+        // Act
+        const result = await findLayout(fileSystemLayoutProbe(fs), '/repo/bare.git', posixPolicy);
+
+        // Assert
+        expect(result).toStrictEqual({ gitDir: '/repo/bare.git', route: 'BARE_DIR' });
+      });
+    });
+  });
+
+  describe('Given cwd is a sub-directory inside a cwd-is-gitdir repository', () => {
+    describe('When findLayout runs', () => {
+      it('Then walks up and returns the enclosing BARE_DIR match', async () => {
+        // Arrange
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await makeGitDir(fs, '/repo/bare.git');
+        await fs.mkdir('/repo/bare.git/refs/heads');
+
+        // Act
+        const result = await findLayout(
+          fileSystemLayoutProbe(fs),
+          '/repo/bare.git/refs/heads',
+          posixPolicy,
+        );
+
+        // Assert
+        expect(result).toStrictEqual({ gitDir: '/repo/bare.git', route: 'BARE_DIR' });
+      });
+    });
+  });
+
+  describe('Given cwd holds both a valid .git directory AND is itself a valid git directory', () => {
+    describe('When findLayout runs', () => {
+      it('Then the .git subdirectory wins over the cwd-is-gitdir match', async () => {
+        // Arrange — cwd itself qualifies (HEAD/objects/refs at the top level)
+        // AND also has a nested, independently valid `.git/`.
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await fs.writeUtf8('/repo/both/HEAD', 'ref: refs/heads/main\n');
+        await fs.mkdir('/repo/both/objects');
+        await fs.mkdir('/repo/both/refs');
+        await makeGitDir(fs, '/repo/both/.git');
+
+        // Act
+        const result = await findLayout(fileSystemLayoutProbe(fs), '/repo/both', posixPolicy);
+
+        // Assert
+        expect(result).toStrictEqual({
+          gitDir: '/repo/both/.git',
+          route: 'DISCOVERED',
+          origin: '/repo/both',
+        });
+      });
+    });
+  });
+
+  describe('Given a bare-shaped directory nested inside an enclosing repo work tree', () => {
+    describe('When findLayout runs from inside the nested bare-shaped directory', () => {
+      it('Then the nested cwd-is-gitdir match shadows the enclosing repository', async () => {
+        // Arrange — `$T/n` is a normal repo; `$T/n/nested` independently
+        // qualifies as a git directory in its own right (no `.git` entry of
+        // its own). git's own walk resolves to the INNER match here.
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await makeGitDir(fs, '/repo/n/.git');
+        await makeGitDir(fs, '/repo/n/nested');
+
+        // Act
+        const result = await findLayout(fileSystemLayoutProbe(fs), '/repo/n/nested', posixPolicy);
+
+        // Assert
+        expect(result).toStrictEqual({ gitDir: '/repo/n/nested', route: 'BARE_DIR' });
+      });
+    });
+  });
+
+  describe('Given cwd has an invalid .git/ AND is itself a valid git directory', () => {
+    describe('When findLayout runs', () => {
+      it('Then the .git branch skips and the cwd-is-gitdir branch resolves at the same level', async () => {
+        // Arrange — `.git` exists but is missing `refs/`, so it fails
+        // validation; cwd itself independently qualifies.
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await fs.writeUtf8('/repo/mixed/HEAD', 'ref: refs/heads/main\n');
+        await fs.mkdir('/repo/mixed/objects');
+        await fs.mkdir('/repo/mixed/refs');
+        await fs.mkdir('/repo/mixed/.git/objects');
+        await fs.writeUtf8('/repo/mixed/.git/HEAD', 'ref: refs/heads/main\n');
+
+        // Act
+        const result = await findLayout(fileSystemLayoutProbe(fs), '/repo/mixed', posixPolicy);
+
+        // Assert — the SAME level resolves via cwd-is-gitdir, not a climb.
+        expect(result).toStrictEqual({ gitDir: '/repo/mixed', route: 'BARE_DIR' });
+      });
+    });
+  });
+
+  describe('Given a level with neither a .git entry nor a HEAD file', () => {
+    describe('When findLayout climbs past it', () => {
+      it('Then costs exactly one extra stat over the pre-existing .git-only probe', async () => {
+        // Arrange — a counting probe stub over a two-level climb: the empty
+        // leaf level, then a valid repo one level up. Every `stat` call is
+        // tallied by path so the cost contract is asserted precisely rather
+        // than just "the walk still finds the repo".
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await makeGitDir(fs, '/repo/.git');
+        await fs.mkdir('/repo/empty');
+        const baseProbe = fileSystemLayoutProbe(fs);
+        const statCounts = new Map<string, number>();
+        const countingProbe: LayoutProbe = {
+          stat: async (path) => {
+            statCounts.set(path, (statCounts.get(path) ?? 0) + 1);
+            return baseProbe.stat(path);
+          },
+          readUtf8: (path) => baseProbe.readUtf8(path),
+        };
+
+        // Act
+        const result = await findLayout(countingProbe, '/repo/empty', posixPolicy);
+
+        // Assert
+        expect(result).toStrictEqual({
+          gitDir: '/repo/.git',
+          route: 'DISCOVERED',
+          origin: '/repo',
+        });
+        // The empty leaf level pays exactly two stats: `.git` (absent) and
+        // `HEAD` (absent) — never a third probe into commondir/objects/refs.
+        expect(statCounts.get('/repo/empty/.git')).toBe(1);
+        expect(statCounts.get('/repo/empty/HEAD')).toBe(1);
+        expect(statCounts.has('/repo/empty/objects')).toBe(false);
+        expect(statCounts.has('/repo/empty/refs')).toBe(false);
       });
     });
   });

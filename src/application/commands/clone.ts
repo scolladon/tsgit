@@ -80,7 +80,8 @@ export const clone = async (ctx: Context, opts: CloneOptions): Promise<CloneResu
   // analogue for the source-side read; a destination-side gate would refuse
   // where git succeeds.
   if (await ctx.fs.exists(`${ctx.layout.gitDir}/HEAD`)) {
-    throw targetDirectoryNotEmpty(ctx.layout.workDir as FilePath);
+    // A bare clone's target IS the gitDir — there is no work tree to name.
+    throw targetDirectoryNotEmpty((ctx.layout.workDir ?? ctx.layout.gitDir) as FilePath);
   }
   if (opts.url === '') throw remoteAdvertisesNoRefs();
   // Validate the filter spec up front — a bad `--filter` fails fast, before
