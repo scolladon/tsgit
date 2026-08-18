@@ -114,6 +114,76 @@ describe('memory shim — openRepository', () => {
     });
   });
 
+  describe('Given an explicit workDir', () => {
+    describe('When openRepository runs', () => {
+      it('Then layout.workDir reflects it, not the /repo default', async () => {
+        // Arrange & Act
+        const sut = await openRepository({ workDir: '/custom-wt' });
+
+        // Assert
+        expect(sut.ctx.layout.workDir).toBe('/custom-wt');
+      });
+    });
+  });
+
+  describe('Given bare: true', () => {
+    describe('When openRepository runs', () => {
+      it('Then layout.bare is true and workDir is absent', async () => {
+        // Arrange & Act
+        const sut = await openRepository({ bare: true });
+
+        // Assert
+        expect(sut.ctx.layout.bare).toBe(true);
+        expect(sut.ctx.layout.workDir).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given an explicit gitDir', () => {
+    describe('When openRepository runs', () => {
+      it('Then layout.gitDir reflects it, not the /repo/.git default', async () => {
+        // Arrange & Act
+        const sut = await openRepository({ gitDir: '/custom/.git' });
+
+        // Assert
+        expect(sut.ctx.layout.gitDir).toBe('/custom/.git');
+      });
+    });
+  });
+
+  describe('Given a discoverable repository above cwd', () => {
+    const gitDirFiles = {
+      '/repo/a/.git/HEAD': new TextEncoder().encode('ref: refs/heads/main\n'),
+      '/repo/a/.git/objects/.keep': new Uint8Array(0),
+      '/repo/a/.git/refs/.keep': new Uint8Array(0),
+    };
+
+    describe('When openRepository runs with no ceilingDirs', () => {
+      it('Then the walk climbs to it', async () => {
+        // Arrange & Act
+        const sut = await openRepository({ cwd: '/repo/a/b/c', files: gitDirFiles });
+
+        // Assert
+        expect(sut.ctx.layout.gitDir).toBe('/repo/a/.git');
+      });
+    });
+
+    describe('When openRepository runs with ceilingDirs bounding the walk below it', () => {
+      it('Then discovery stops at the ceiling and falls back to the bootstrap layout', async () => {
+        // Arrange & Act — the ceiling sits BETWEEN cwd and the discoverable
+        // repo, so the walk must never reach /repo/a/.git.
+        const sut = await openRepository({
+          cwd: '/repo/a/b/c',
+          files: gitDirFiles,
+          ceilingDirs: ['/repo/a/b'],
+        });
+
+        // Assert — the synthetic bootstrap layout wins instead.
+        expect(sut.ctx.layout.gitDir).toBe('/repo/.git');
+      });
+    });
+  });
+
   describe('Given a disposed repo', () => {
     describe('When any bound method is invoked', () => {
       it('Then it throws REPOSITORY_DISPOSED', async () => {
