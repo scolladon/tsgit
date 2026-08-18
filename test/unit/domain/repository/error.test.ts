@@ -9,6 +9,7 @@ import {
   type RepositoryError,
   workTreeConfigInvalid,
   workTreeRequired,
+  workTreeUnresolvable,
 } from '../../../../src/domain/repository/error.js';
 
 describe('domain repository error', () => {
@@ -72,6 +73,22 @@ describe('domain repository error', () => {
         });
       });
     });
+
+    describe('Given workTreeUnresolvable("../missing", "/repo/.git")', () => {
+      describe('When checking data', () => {
+        it('Then code, value and gitDir preserved', () => {
+          // Arrange & Act
+          const result = workTreeUnresolvable('../missing', '/repo/.git');
+
+          // Assert
+          expect(result.data).toEqual({
+            code: 'WORK_TREE_UNRESOLVABLE',
+            value: '../missing',
+            gitDir: '/repo/.git',
+          });
+        });
+      });
+    });
   });
 
   describe('extractDetail message formatting (exact match)', () => {
@@ -97,6 +114,10 @@ describe('domain repository error', () => {
       [
         { code: 'ALREADY_INITIALIZED', path: '/foo/.git' as FilePath },
         'ALREADY_INITIALIZED: repository already exists: .git',
+      ],
+      [
+        { code: 'WORK_TREE_UNRESOLVABLE', value: '../missing', gitDir: '/repo/.git' },
+        "WORK_TREE_UNRESOLVABLE: cannot resolve work tree '../missing' from .git",
       ],
     ];
 
