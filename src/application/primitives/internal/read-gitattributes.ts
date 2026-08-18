@@ -25,7 +25,7 @@ const readDir = (ctx: Context, dir: FilePath | ''): Promise<ParsedAttributes | u
   loadAndParse(
     ctx,
     joinPath(
-      requireWorkTree(ctx, 'read gitattributes'),
+      requireWorkTree(ctx, 'buildAttributeProvider'),
       dir === '' ? '.gitattributes' : `${dir}/.gitattributes`,
     ),
   );

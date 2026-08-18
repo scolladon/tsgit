@@ -61,8 +61,11 @@ interface RealpathSplit {
  * Opens `cwd`, forces the adapter's lazy root-set resolution with one read,
  * and reports how many realpaths each side performed.
  */
-const splitRealpathCalls = async (cwd: string): Promise<RealpathSplit> => {
-  const repo = await openRepository({ cwd });
+const splitRealpathCalls = async (
+  cwd: string,
+  extraOpts: { readonly workDir?: string } = {},
+): Promise<RealpathSplit> => {
+  const repo = await openRepository({ cwd, ...extraOpts });
   const shim = realpathSpy.mock.calls.length;
   try {
     // The read's own outcome is irrelevant — resolving the root set is what is
@@ -76,7 +79,7 @@ const splitRealpathCalls = async (cwd: string): Promise<RealpathSplit> => {
 
 describe('Given a repository whose layout resolves and whose realpaths all succeed', () => {
   describe('When openRepository is followed by a first object-store read', () => {
-    it('Then the shim resolves cwd, gitDir and workDir, and the adapter re-resolves nothing', async () => {
+    it('Then the shim resolves cwd and gitDir only — a discovered workDir is an ancestor of the realpathed cwd and needs no realpath of its own', async () => {
       // Arrange
       const workDir = path.join(tmpdir, 'repo');
       await mkdir(workDir, { recursive: true });
@@ -87,7 +90,7 @@ describe('Given a repository whose layout resolves and whose realpaths all succe
       const result = await sut(workDir);
 
       // Assert
-      expect(result).toEqual({ shim: 3, adapter: 0 });
+      expect(result).toEqual({ shim: 2, adapter: 0 });
     });
   });
 });
@@ -171,9 +174,31 @@ describe('Given a linked worktree whose gitDir and commonDir both resolve', () =
       // Act
       const result = await sut(linked);
 
-      // Assert — cwd, gitDir, commonDir and workDir, each realpathed once by
-      // the shim.
-      expect(result).toEqual({ shim: 4, adapter: 0 });
+      // Assert — cwd, gitDir and commonDir, each realpathed once by the shim;
+      // the linked worktree's own path IS the realpathed cwd, so it is skipped.
+      expect(result).toEqual({ shim: 3, adapter: 0 });
+    });
+  });
+});
+
+describe('Given an explicit workDir argument outside the discovery chain', () => {
+  describe('When openRepository resolves its roots', () => {
+    it('Then the shim pays one extra realpath for the lexical work-tree source', async () => {
+      // Arrange — an explicit workDir is not derived from the realpathed cwd,
+      // so the zero-syscall proof of canonical form does not apply and the shim
+      // must physically resolve it like any other lexical layout path.
+      const workDir = path.join(tmpdir, 'repo');
+      await mkdir(workDir, { recursive: true });
+      await makeGitDir(path.join(workDir, '.git'));
+      const elsewhere = path.join(tmpdir, 'elsewhere-wt');
+      await mkdir(elsewhere, { recursive: true });
+      const sut = splitRealpathCalls;
+
+      // Act
+      const result = await sut(workDir, { workDir: elsewhere });
+
+      // Assert — cwd, gitDir, and the explicit workDir.
+      expect(result).toEqual({ shim: 3, adapter: 0 });
     });
   });
 });

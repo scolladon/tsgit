@@ -75,7 +75,7 @@ const liveStat = async (ctx: Context, absPath: string): Promise<WorkdirStat> => 
  * expect. Methods bind to `ctx` + the row's `path` via the workdir root.
  */
 export const createWorkdirEntry = (ctx: Context, row: WorkdirEntryRow): WorkdirEntry => {
-  const absPath = joinPath(requireWorkTree(ctx, 'workdir entry'), row.path);
+  const absPath = joinPath(requireWorkTree(ctx, 'createWorkdirEntry'), row.path);
 
   const read = async (): Promise<Uint8Array> =>
     row.kind === 'symlink' ? readSymlinkBytes(ctx, absPath) : ctx.fs.read(absPath);

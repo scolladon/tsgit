@@ -6,6 +6,7 @@ export type RepositoryError =
   | { readonly code: 'BARE_REPOSITORY'; readonly operation: string }
   | { readonly code: 'WORK_TREE_REQUIRED'; readonly operation: string }
   | { readonly code: 'WORK_TREE_CONFIG_INVALID'; readonly gitDir: string }
+  | { readonly code: 'WORK_TREE_UNRESOLVABLE'; readonly value: string; readonly gitDir: string }
   | { readonly code: 'ALREADY_INITIALIZED'; readonly path: FilePath };
 
 export const notARepository = (path: FilePath): TsgitError =>
@@ -28,6 +29,17 @@ export const workTreeRequired = (operation: string): TsgitError =>
  */
 export const workTreeConfigInvalid = (gitDir: string): TsgitError =>
   new TsgitError({ code: 'WORK_TREE_CONFIG_INVALID', gitDir });
+
+/**
+ * A relative `core.worktree` whose physical resolution failed — git resolves
+ * the value by changing directory from the gitDir, so a target that does not
+ * exist refuses at setup (`fatal: cannot chdir to '<value>'`). `value` is the
+ * config's own relative text, exactly what git's message names; an ABSOLUTE
+ * `core.worktree` naming a missing directory is not this condition (git
+ * records it verbatim and only `setup_work_tree` refuses later).
+ */
+export const workTreeUnresolvable = (value: string, gitDir: string): TsgitError =>
+  new TsgitError({ code: 'WORK_TREE_UNRESOLVABLE', value, gitDir });
 
 export const alreadyInitialized = (path: FilePath): TsgitError =>
   new TsgitError({ code: 'ALREADY_INITIALIZED', path });

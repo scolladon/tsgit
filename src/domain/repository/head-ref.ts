@@ -1,11 +1,18 @@
 /**
  * Pure grammar check for `HEAD` file content: text in, verdict out, no I/O.
- * Content is valid iff it parses as a hex object id of width 40 or 64
- * (detached HEAD, SHA-1 or SHA-256), OR it begins `ref:` and the first
- * whitespace-delimited token after that prefix begins `refs/` (a symbolic
- * ref; the refname past the prefix is never format-checked here — `refs/
- * heads/../evil` is accepted, exactly as the referenced ref would be
- * validated, or not, when it is actually resolved).
+ * Content is valid iff its LEADING 40 characters are lowercase hex — git
+ * parses a detached HEAD by consuming exactly one object id's worth of hex
+ * and ignoring everything after it, so `<40hex>\n`, a 64-hex SHA-256 id
+ * (whose first 40 characters are themselves hex), and even `<40hex>garbage`
+ * all qualify — OR it begins `ref:` followed by optional ASCII whitespace
+ * and a token beginning `refs/` (a symbolic ref; the refname past the
+ * prefix is never format-checked here — `refs/heads/../evil` is accepted,
+ * exactly as the referenced ref would be validated, or not, when it is
+ * actually resolved). The whitespace class is deliberately ASCII-only
+ * (C `isspace`): Unicode spaces such as NBSP do NOT separate the prefix
+ * from the refname, so `ref: refs/...` is invalid — a directory real
+ * git climbs past must never qualify here, or a planted tree could shadow
+ * an enclosing repository.
  *
  * One deliberate divergence from real git: git also accepts a `HEAD` that is
  * a *symlink* whose link text begins `refs/`, even when the symlink target
@@ -16,25 +23,16 @@
  * ordinary content and is accepted.
  */
 
-// Matches the sibling hash-width regexes elsewhere in the domain
-// (fsck's tag/commit validators, the bundle header parser): one named
-// pattern per accepted width. An optional single trailing newline is
-// tolerated — real git always writes a detached HEAD as `<hex>\n`.
-const SHA1_HEX_RE = /^[0-9a-f]{40}\n?$/;
-const SHA256_HEX_RE = /^[0-9a-f]{64}\n?$/;
+// A leading object id: git consumes the hex prefix and ignores the
+// remainder, so the shorter SHA-1 width is the only anchor needed — a
+// SHA-256 id passes through its own first 40 hex characters.
+const LEADING_OID_RE = /^[0-9a-f]{40}/;
 
-const REF_PREFIX = 'ref:';
-const REFS_NAMESPACE_PREFIX = 'refs/';
-
-const isHexObjectId = (content: string): boolean =>
-  SHA1_HEX_RE.test(content) || SHA256_HEX_RE.test(content);
-
-const isSymbolicRef = (content: string): boolean => {
-  if (!content.startsWith(REF_PREFIX)) return false;
-  // split(/\s/) on any string yields at least one element, so index 0 always exists.
-  const token = content.slice(REF_PREFIX.length).trimStart().split(/\s/)[0] as string;
-  return token.startsWith(REFS_NAMESPACE_PREFIX);
-};
+// `ref:` + optional ASCII whitespace (C `isspace`, never Unicode) + `refs/`.
+// `refs/` contains no whitespace, so "the first whitespace-delimited token
+// begins refs/" and "the remainder after skipping whitespace begins refs/"
+// are the same predicate.
+const SYMBOLIC_REF_RE = /^ref:[ \t\n\v\f\r]*refs\//;
 
 export const isValidHeadContent = (content: string): boolean =>
-  isHexObjectId(content) || isSymbolicRef(content);
+  LEADING_OID_RE.test(content) || SYMBOLIC_REF_RE.test(content);

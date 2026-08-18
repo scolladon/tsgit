@@ -246,7 +246,7 @@ export const materializeTree = async (
   const result = await applyChangeset(ctx, {
     changeset,
     force: opts.force ?? false,
-    workdir: requireWorkTree(ctx, 'materialize-tree'),
+    workdir: requireWorkTree(ctx, 'materializeTree'),
   });
 
   const inScope = mergeNewIndexEntries(

@@ -19,7 +19,7 @@ export const readGitignore = async (
   dir: FilePath | '',
 ): Promise<IgnoreRuleset | undefined> => {
   const path = joinPath(
-    requireWorkTree(ctx, 'read gitignore'),
+    requireWorkTree(ctx, 'readGitignore'),
     dir === '' ? '.gitignore' : `${dir}/.gitignore`,
   );
   return loadAndParse(ctx, path);

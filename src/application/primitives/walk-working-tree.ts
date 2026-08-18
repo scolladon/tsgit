@@ -162,7 +162,7 @@ export async function* walkWorkingTree(
 ): AsyncIterable<WalkWorkingTreeEntry> {
   const config: WalkConfig = {
     ctx,
-    workDir: requireWorkTree(ctx, 'walk-working-tree'),
+    workDir: requireWorkTree(ctx, 'walkWorkingTree'),
     maxDepth: options?.maxDepth ?? (await resolveMaxTreeDepth(ctx)),
     maxEntries: options?.maxEntries ?? MAX_FLAT_TREE_ENTRIES,
     ignore: options?.ignore,

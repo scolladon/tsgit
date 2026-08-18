@@ -72,13 +72,19 @@ const stripGitSuffix = (dir: string): string =>
  * `git worktree list`'s main entry still reports the shared config's verdict
  * for the checkout it actually names — so this re-derives it from `core.bare`
  * directly rather than reusing the current (possibly linked) Context's own
- * resolved bareness. `core.bare` unset is truthy, matching `is_bare_repository_cfg`'s
- * `-1` default (design's bareness formula).
+ * resolved bareness. git's main-entry flag is
+ * `is_bare_repository_cfg == 1 || is_bare_repository()`: evaluated from a
+ * linked Context the second disjunct is always false (a linked worktree has
+ * a work tree by construction), and the cfg default of `-1` (key absent) is
+ * NOT `== 1` — so only an explicit `core.bare = true` marks the main entry
+ * bare. The layout formula's unset-is-truthy rule does not transfer here:
+ * its "no work tree" conjunct cannot be known about the MAIN checkout from
+ * a linked Context.
  */
 const isMainCheckoutBare = async (ctx: Context): Promise<boolean> => {
   if (ctx.layout.commonDir === undefined) return ctx.layout.bare;
   const config = await readConfig(ctx);
-  return config.core?.bare !== false;
+  return config.core?.bare === true;
 };
 
 /**

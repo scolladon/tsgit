@@ -20,7 +20,11 @@ import { SHA1_CONFIG } from './domain/objects/hash-config.js';
 import { createLruCache } from './domain/storage/lru-cache.js';
 import type { LayoutProbe } from './ports/layout-probe.js';
 import { layoutRootsOf } from './repository/layout-roots.js';
-import { type ExplicitLayoutOptions, resolveLayout } from './repository/resolve-layout.js';
+import {
+  type ExplicitLayoutOptions,
+  finishLayout,
+  resolveLayout,
+} from './repository/resolve-layout.js';
 import { validateOptions } from './repository/validate-options.js';
 import {
   type OpenRepositoryOptions,
@@ -60,7 +64,11 @@ export const openRepository = async (opts: OpenNodeRepositoryOptions = {}): Prom
   // gitfile pointer — linked worktree, submodule, `--separate-git-dir`); the
   // bounded FS would reject paths outside its rootDir, preventing the walk
   // from reaching a repo whose root is an ancestor of the user's cwd.
-  const { layout, canonical: layoutCanonical } = await resolveNodeLayout(resolvedCwd, opts);
+  const { layout, canonical: layoutCanonical } = await resolveNodeLayout(
+    resolvedCwd,
+    opts,
+    cwdCanonical,
+  );
   // The layout's roots are trustworthy as pre-resolved ONLY when every
   // realpath performed above — cwd's own AND the layout's own — actually
   // succeeded; a fallback that silently kept an un-resolved path must never
@@ -186,36 +194,73 @@ const canonicalizeCeilings = async (
  * symlinked `core.worktree` target (git resolves `core.worktree`
  * physically; a lexical value here would silently diverge).
  *
- * Falls back to `{cwd}/.git` when discovery finds nothing up to the
- * filesystem root AND no explicit `gitDir` was supplied — the
- * `openRepository`/`init`/`clone` contract against a not-yet-existing
- * repository. That branch never realpaths its synthesised `gitDir`, so it
- * always reports `canonical: false`.
+ * Falls back to a synthetic explicit layout at `{cwd}/.git` when discovery
+ * finds nothing up to the filesystem root AND no explicit `gitDir` was
+ * supplied — the `openRepository`/`init`/`clone` contract against a
+ * not-yet-existing repository. The fallback still runs the shared work-tree
+ * resolution so `opts.bare` / `opts.workDir` keep their argument-tier
+ * precedence (a caller forcing `bare: true` into a fresh directory gets a
+ * bare layout, not a silently discarded option). That branch never realpaths
+ * its synthesised paths, so it always reports `canonical: false`.
  *
  * The returned `canonical` flag is the AND of every realpath THIS function
- * performed.
+ * performed. A `workDir` that came out of discovery is an ancestor of (or
+ * equal to) the already-realpathed `cwd`, and an ancestor of a realpath is
+ * itself real — so those shapes skip the extra realpath entirely; only the
+ * genuinely lexical sources (`core.worktree`, an explicit `opts.workDir`)
+ * pay one.
  */
+const nodeLayoutCapabilities = {
+  realWorkTreePath: async (p: string): Promise<string | undefined> => {
+    try {
+      return await realpath(p);
+    } catch {
+      return undefined;
+    }
+  },
+};
+
 const resolveNodeLayout = async (
   cwd: string,
   opts: ExplicitLayoutOptions,
+  cwdCanonical: boolean,
 ): Promise<{ layout: RepositoryLayoutInput; canonical: boolean }> => {
   const ceilingDirs = await canonicalizeCeilings(opts.ceilingDirs);
-  const resolved = await resolveLayout(nodeLayoutProbe, cwd, nativePolicy, {
-    ...(opts.gitDir !== undefined ? { gitDir: opts.gitDir } : {}),
+  const explicit = {
     ...(opts.workDir !== undefined ? { workDir: opts.workDir } : {}),
     ...(opts.bare !== undefined ? { bare: opts.bare } : {}),
-    ...(ceilingDirs !== undefined ? { ceilingDirs } : {}),
-  });
+  };
+  const resolved = await resolveLayout(
+    nodeLayoutProbe,
+    cwd,
+    nativePolicy,
+    {
+      ...(opts.gitDir !== undefined ? { gitDir: opts.gitDir } : {}),
+      ...explicit,
+      ...(ceilingDirs !== undefined ? { ceilingDirs } : {}),
+    },
+    nodeLayoutCapabilities,
+  );
   if (resolved === undefined) {
-    return {
-      layout: { workDir: cwd, gitDir: nodePath.join(cwd, '.git'), bare: false },
-      canonical: false,
-    };
+    const fallback = await finishLayout(
+      nodeLayoutProbe,
+      { route: 'EXPLICIT', gitDir: nodePath.join(cwd, '.git') },
+      nativePolicy,
+      cwd,
+      explicit,
+      nodeLayoutCapabilities,
+    );
+    return { layout: fallback, canonical: false };
   }
   const gitDir = await canonicalize(resolved.gitDir);
   const commonDir =
     resolved.commonDir === undefined ? undefined : await canonicalize(resolved.commonDir);
-  const workDir = resolved.workDir === undefined ? undefined : await canonicalize(resolved.workDir);
+  const workDir =
+    resolved.workDir === undefined
+      ? undefined
+      : cwdCanonical && isDerivedFromCanonicalCwd(resolved.workDir, cwd)
+        ? { path: resolved.workDir, canonical: true }
+        : await canonicalize(resolved.workDir);
   const canonical =
     gitDir.canonical && (commonDir?.canonical ?? true) && (workDir?.canonical ?? true);
   return {
@@ -228,6 +273,17 @@ const resolveNodeLayout = async (
     canonical,
   };
 };
+
+/**
+ * True when `workDir` fell out of discovery against `cwd` — equal to it, or
+ * a strict ancestor of it. Combined with the caller's proof that `cwd`'s own
+ * realpath SUCCEEDED, this is a zero-syscall proof of canonical form: an
+ * ancestor of a realpath is itself real, so re-realpathing such a `workDir`
+ * can never change it. Without that proof (a lexical cwd fallback) the
+ * ancestor may still traverse a symlink and must be realpathed normally.
+ */
+const isDerivedFromCanonicalCwd = (workDir: string, cwd: string): boolean =>
+  workDir === cwd || cwd.startsWith(`${workDir}${nativePolicy.sep}`);
 
 export type { AdapterSet } from './adapter-detect.js';
 export { detectRuntime, isBrowser, isNode } from './adapter-detect.js';

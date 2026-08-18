@@ -17,7 +17,7 @@ import { SHA1_CONFIG, SHA256_CONFIG } from './domain/objects/hash-config.js';
 import { createLruCache } from './domain/storage/lru-cache.js';
 import { fileSystemLayoutProbe } from './repository/file-system-layout-probe.js';
 import { portablePosixPolicy } from './repository/portable-posix-policy.js';
-import { resolveLayout } from './repository/resolve-layout.js';
+import { finishLayout, resolveLayout } from './repository/resolve-layout.js';
 import { validateOptions } from './repository/validate-options.js';
 import {
   type OpenRepositoryOptions,
@@ -59,16 +59,28 @@ export const openRepository = async (
   // rejects a non-absolute `cwd` and the default is `/repo`. No realpath
   // step (unlike the node shim): the sandboxed adapter has no symlinks to
   // resolve, so `gitDir`/`workDir`/`ceilingDirs` are forwarded lexically.
-  const layout = (await resolveLayout(fileSystemLayoutProbe(fs), cwd, portablePosixPolicy, {
-    ...(opts.gitDir !== undefined ? { gitDir: opts.gitDir } : {}),
+  const probe = fileSystemLayoutProbe(fs);
+  const explicit = {
     ...(opts.workDir !== undefined ? { workDir: opts.workDir } : {}),
     ...(opts.bare !== undefined ? { bare: opts.bare } : {}),
-    ...(opts.ceilingDirs !== undefined ? { ceilingDirs: opts.ceilingDirs } : {}),
-  })) ?? {
-    workDir: DEFAULT_WORK_DIR,
-    gitDir: DEFAULT_GIT_DIR,
-    bare: false,
   };
+  // The found-nothing fallback anchors at the fixed `/repo` root (this
+  // runtime's historical bootstrap contract) but still runs the shared
+  // work-tree resolution, so `opts.bare` / `opts.workDir` keep their
+  // argument-tier precedence instead of being silently discarded.
+  const layout =
+    (await resolveLayout(probe, cwd, portablePosixPolicy, {
+      ...(opts.gitDir !== undefined ? { gitDir: opts.gitDir } : {}),
+      ...explicit,
+      ...(opts.ceilingDirs !== undefined ? { ceilingDirs: opts.ceilingDirs } : {}),
+    })) ??
+    (await finishLayout(
+      probe,
+      { route: 'EXPLICIT', gitDir: DEFAULT_GIT_DIR },
+      portablePosixPolicy,
+      DEFAULT_WORK_DIR,
+      explicit,
+    ));
   const fallback = {
     fs,
     hash: new MemoryHashService(algorithm),

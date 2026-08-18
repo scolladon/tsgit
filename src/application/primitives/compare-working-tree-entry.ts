@@ -136,7 +136,7 @@ export const compareWorkingTreeDelta = async (
   indexMtime?: IndexMtime,
   stats?: WorkingTreeStatMap,
 ): Promise<WorkingTreeDelta> => {
-  const absPath = joinPath(requireWorkTree(ctx, 'compare working tree entry'), entry.path);
+  const absPath = joinPath(requireWorkTree(ctx, 'compareWorkingTreeEntry'), entry.path);
   const sampled = stats?.sampled(entry.path);
   const stat = sampled ?? (await ctx.fs.lstat(absPath).catch(() => undefined));
   if (stat === undefined) return { status: 'absent' };

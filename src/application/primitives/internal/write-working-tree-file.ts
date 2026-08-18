@@ -77,7 +77,11 @@ export const writeWorkingTreeFile = async (
   scanner?: LeadingPathScanner,
 ): Promise<void> => {
   await resolveScanner(ctx, scanner).unlinkSymlinkedLeadingComponent(path);
-  await writeRegularFile(ctx, joinPath(requireWorkTree(ctx, 'write working tree'), path), content);
+  await writeRegularFile(
+    ctx,
+    joinPath(requireWorkTree(ctx, 'writeWorkingTreeFile'), path),
+    content,
+  );
 };
 
 /**
@@ -101,7 +105,7 @@ export const writeWorkingTreeEntry = async (
 ): Promise<void> => {
   const activeScanner = resolveScanner(ctx, scanner);
   await activeScanner.unlinkSymlinkedLeadingComponent(path);
-  const fullPath = joinPath(requireWorkTree(ctx, 'write working tree'), path);
+  const fullPath = joinPath(requireWorkTree(ctx, 'writeWorkingTreeFile'), path);
   if (mode === FILE_MODE.SYMLINK) {
     await rmIfExists(ctx, fullPath);
     await ctx.fs.symlink(decoder.decode(content), fullPath);
@@ -150,7 +154,7 @@ export const writeWorkingTreeFileStream = async (
   await resolveScanner(ctx, scanner).unlinkSymlinkedLeadingComponent(path);
   await writeRegularFileStream(
     ctx,
-    joinPath(requireWorkTree(ctx, 'write working tree'), path),
+    joinPath(requireWorkTree(ctx, 'writeWorkingTreeFile'), path),
     source,
   );
 };
@@ -172,13 +176,13 @@ export const writeWorkingTreeEntryStream = async (
   await resolveScanner(ctx, scanner).unlinkSymlinkedLeadingComponent(path);
   await writeRegularFileStream(
     ctx,
-    joinPath(requireWorkTree(ctx, 'write working tree'), path),
+    joinPath(requireWorkTree(ctx, 'writeWorkingTreeFile'), path),
     source,
     mode,
   );
 };
 
 export const removeWorkingTreeFile = async (ctx: Context, path: FilePath): Promise<void> => {
-  const fullPath = joinPath(requireWorkTree(ctx, 'write working tree'), path);
+  const fullPath = joinPath(requireWorkTree(ctx, 'writeWorkingTreeFile'), path);
   await rmIfExists(ctx, fullPath);
 };

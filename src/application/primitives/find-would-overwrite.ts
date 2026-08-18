@@ -76,7 +76,7 @@ export const changedPaths = (
 /** Whether an untracked path is present on disk (lstat — no follow). */
 const isUntrackedPresent = async (ctx: Context, path: FilePath): Promise<boolean> => {
   try {
-    await ctx.fs.lstat(joinPath(requireWorkTree(ctx, 'find would overwrite'), path));
+    await ctx.fs.lstat(joinPath(requireWorkTree(ctx, 'findWouldOverwrite'), path));
     return true;
   } catch {
     return false;

@@ -43,7 +43,7 @@ type PrefixShape = 'symlink' | 'plain' | 'missing';
  */
 export const createLeadingPathScanner = (ctx: Context): LeadingPathScanner => {
   const memo = new Map<string, PrefixShape>();
-  const workDir = requireWorkTree(ctx, 'symlinked leading path');
+  const workDir = requireWorkTree(ctx, 'createLeadingPathScanner');
 
   const classifyPrefix = async (prefix: string): Promise<PrefixShape> => {
     const cached = memo.get(prefix);

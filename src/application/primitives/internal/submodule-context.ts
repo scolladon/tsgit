@@ -15,7 +15,7 @@ import { requireWorkTree } from './repo-state.js';
  */
 const buildChildContext = (ctx: Context, name: string, treeRelPath: FilePath): Context => {
   const gitDir = `${ctx.layout.gitDir}/modules/${name}`;
-  const workDir = joinPath(requireWorkTree(ctx, 'submodule'), treeRelPath);
+  const workDir = joinPath(requireWorkTree(ctx, 'deriveSubmoduleContext'), treeRelPath);
   const { promisor: _promisor, hooks: _hooks, ...rest } = ctx;
   return Object.freeze({
     ...rest,

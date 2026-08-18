@@ -24,7 +24,7 @@ export const validatePath = validateWorkingTreePath;
  * reviewer — confirm `ctx.layout.workDir` is safe to dereference here.
  */
 const repoPath = (ctx: Context, path: FilePath): string =>
-  joinPath(requireWorkTree(ctx, 'materialize working tree'), path);
+  joinPath(requireWorkTree(ctx, 'workingTree'), path);
 
 /**
  * Materialize a blob into the working tree at `path` with the given mode.

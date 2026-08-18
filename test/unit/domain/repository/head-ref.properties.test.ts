@@ -56,14 +56,14 @@ describe('isValidHeadContent properties', () => {
 
   describe('Given an arbitrary-length hex string', () => {
     describe('When isValidHeadContent runs', () => {
-      it('Then it returns true iff the length is 40 or 64', () => {
+      it('Then it returns true iff a full 40-hex object id leads the content', () => {
         // Arrange
         const sut = isValidHeadContent;
 
         // Act & Assert
         fc.assert(
           fc.property(arbHexWithLength(), ({ length, hex }) => {
-            expect(sut(hex)).toBe(length === 40 || length === 64);
+            expect(sut(hex)).toBe(length >= 40);
           }),
           { numRuns: HASH_WIDTH_NUM_RUNS },
         );

@@ -1,4 +1,5 @@
 import type { PathPolicy } from '../adapters/node/path-policy.js';
+import { workTreeUnresolvable } from '../domain/repository/error.js';
 import type { LayoutProbe } from '../ports/layout-probe.js';
 import type { RepositoryLayoutInput } from '../repository.js';
 import { findLayout, resolveCommonDir, resolvePointer, type WalkOutcome } from './find-layout.js';
@@ -15,6 +16,20 @@ export interface ExplicitLayoutOptions {
   readonly workDir?: string;
   readonly bare?: boolean;
   readonly ceilingDirs?: ReadonlyArray<string>;
+}
+
+/**
+ * Adapter-supplied physical-path capabilities the resolution may lean on.
+ * `realWorkTreePath` physically resolves a RELATIVE `core.worktree` join
+ * (symlinks followed), returning `undefined` when the target does not exist —
+ * git resolves the relative form by actually changing directory there, so a
+ * missing target is a setup refusal, not a lexical fallback. Adapters with no
+ * physical notion of a path (memory, browser) omit the capability entirely
+ * and stay lexical — the same sandboxed-adapter split every other
+ * canonicalisation follows.
+ */
+export interface LayoutCapabilities {
+  readonly realWorkTreePath?: (path: string) => Promise<string | undefined>;
 }
 
 /**
@@ -79,14 +94,15 @@ const resolveAgainst = (base: string, value: string, pathPolicy: PathPolicy): st
  * a work tree that cwd-is-gitdir discovery of the SAME directory would not),
  * or no work tree for a bare-shaped gitDir found by cwd-is-gitdir discovery.
  */
-const resolveWorkTree = (
+const resolveWorkTree = async (
   outcome: WalkOutcome,
   fmt: RepositoryFormat,
   bareCfg: boolean | undefined,
   pathPolicy: PathPolicy,
   cwd: string,
-  explicitWorkDir?: string,
-): WorkTreeResolution => {
+  explicitWorkDir: string | undefined,
+  caps: LayoutCapabilities,
+): Promise<WorkTreeResolution> => {
   if (explicitWorkDir !== undefined) {
     return { workDir: resolveAgainst(cwd, explicitWorkDir, pathPolicy) };
   }
@@ -94,14 +110,34 @@ const resolveWorkTree = (
     return fmt.worktree !== undefined ? { workTreeConfigBogus: true } : {};
   }
   if (fmt.worktree !== undefined) {
-    const workDir = pathPolicy.isAbsolute(fmt.worktree)
-      ? pathPolicy.resolve(fmt.worktree)
-      : pathPolicy.resolve(pathPolicy.join(outcome.gitDir, fmt.worktree));
-    return { workDir };
+    return { workDir: await resolveConfigWorkTree(outcome.gitDir, fmt.worktree, pathPolicy, caps) };
   }
   if (outcome.route === 'DISCOVERED') return { workDir: outcome.origin };
   if (outcome.route === 'EXPLICIT') return { workDir: cwd };
   return {};
+};
+
+/**
+ * `core.worktree`'s two resolution shapes, mirroring git's setup: an ABSOLUTE
+ * value is recorded verbatim (a missing target refuses only later, when a
+ * work-tree command runs — the caller's post-hoc canonicalisation follows
+ * symlinks best-effort); a RELATIVE value is resolved PHYSICALLY from the
+ * gitDir, so on an adapter exposing `realWorkTreePath` a missing target is a
+ * setup refusal. Without the capability the join stays lexical — the
+ * sandboxed-adapter divergence documented on `LayoutCapabilities`.
+ */
+const resolveConfigWorkTree = async (
+  gitDir: string,
+  value: string,
+  pathPolicy: PathPolicy,
+  caps: LayoutCapabilities,
+): Promise<string> => {
+  if (pathPolicy.isAbsolute(value)) return pathPolicy.resolve(value);
+  const lexical = pathPolicy.resolve(pathPolicy.join(gitDir, value));
+  if (caps.realWorkTreePath === undefined) return lexical;
+  const physical = await caps.realWorkTreePath(lexical);
+  if (physical === undefined) throw workTreeUnresolvable(value, gitDir);
+  return physical;
 };
 
 /** `bare` / `workDir` overrides `finishLayout` applies on top of config. */
@@ -126,17 +162,19 @@ export const finishLayout = async (
   pathPolicy: PathPolicy,
   cwd: string,
   overrides: LayoutOverrides = {},
+  caps: LayoutCapabilities = {},
 ): Promise<RepositoryLayoutInput> => {
   const commonDir = outcome.commonDir ?? outcome.gitDir;
   const fmt = await readRepositoryFormat(probe, outcome.gitDir, commonDir, pathPolicy);
   const bareCfg = overrides.bare ?? fmt.bare;
-  const { workDir, workTreeConfigBogus } = resolveWorkTree(
+  const { workDir, workTreeConfigBogus } = await resolveWorkTree(
     outcome,
     fmt,
     bareCfg,
     pathPolicy,
     cwd,
     overrides.workDir,
+    caps,
   );
   // `bareCfg` unset (neither an override nor `core.bare`) is TRUTHY here —
   // git's `is_bare_repository_cfg` defaults to -1, not 0.
@@ -197,14 +235,22 @@ export const resolveLayout = async (
   cwd: string,
   pathPolicy: PathPolicy,
   opts: ExplicitLayoutOptions = {},
+  caps: LayoutCapabilities = {},
 ): Promise<RepositoryLayoutInput | undefined> => {
   const outcome =
     opts.gitDir !== undefined
       ? await resolveExplicitOutcome(probe, opts.gitDir, cwd, pathPolicy)
       : await findLayout(probe, cwd, pathPolicy, opts.ceilingDirs);
   if (outcome === undefined) return undefined;
-  return finishLayout(probe, outcome, pathPolicy, cwd, {
-    ...(opts.bare !== undefined ? { bare: opts.bare } : {}),
-    ...(opts.workDir !== undefined ? { workDir: opts.workDir } : {}),
-  });
+  return finishLayout(
+    probe,
+    outcome,
+    pathPolicy,
+    cwd,
+    {
+      ...(opts.bare !== undefined ? { bare: opts.bare } : {}),
+      ...(opts.workDir !== undefined ? { workDir: opts.workDir } : {}),
+    },
+    caps,
+  );
 };
