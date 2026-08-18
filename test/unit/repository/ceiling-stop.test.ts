@@ -233,7 +233,7 @@ describe('longestStrictAncestor', () => {
   describe('Given a ceiling whose name is a lexical prefix of a sibling directory (no shared separator)', () => {
     describe('When longestStrictAncestor runs', () => {
       it('Then it is ignored — the trailing-separator join stops a false prefix match', () => {
-        // Arrange — '/T' is not a strict ancestor of '/Txyz/normal': they
+        // Arrange — '/T' is not a strict ancestor of '/Team/normal': they
         // share the characters '/T' but name different directories. Without
         // appending the separator before the prefix test (i.e. testing
         // `startsWith` on `cmpAncestor` instead of appending its own
@@ -241,7 +241,7 @@ describe('longestStrictAncestor', () => {
         const sut = longestStrictAncestor;
 
         // Act
-        const result = sut(['/T'], '/Txyz/normal', posixPolicy);
+        const result = sut(['/T'], '/Team/normal', posixPolicy);
 
         // Assert
         expect(result).toBeUndefined();
