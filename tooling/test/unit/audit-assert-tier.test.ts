@@ -265,7 +265,7 @@ describe('analyzeCallSites + computeFindings', () => {
     describe('When analyzed and compared against an empty allowlist', () => {
       it('Then the caller is reported unguarded with module, verb and line', () => {
         // Arrange
-        const sut = analyze({
+        const callSites = analyze({
           [TARGET_MODULE]: PRIMITIVES_SOURCE,
           '/virtual/src/application/commands/stash.ts': [
             "import { assertRepository } from '../primitives/internal/repo-state.js';",
@@ -277,7 +277,7 @@ describe('analyzeCallSites + computeFindings', () => {
         });
 
         // Act
-        const result = computeFindings(sut, []);
+        const result = computeFindings(callSites, []);
 
         // Assert
         expect(result.unguarded).toEqual([
@@ -291,7 +291,7 @@ describe('analyzeCallSites + computeFindings', () => {
     describe('When analyzed and compared against a matching allowlist', () => {
       it('Then it is not reported unguarded', () => {
         // Arrange
-        const sut = analyze({
+        const callSites = analyze({
           [TARGET_MODULE]: PRIMITIVES_SOURCE,
           '/virtual/src/application/commands/stash.ts': [
             "import { assertRepository } from '../primitives/internal/repo-state.js';",
@@ -306,7 +306,7 @@ describe('analyzeCallSites + computeFindings', () => {
         ];
 
         // Act
-        const result = computeFindings(sut, allowlist);
+        const result = computeFindings(callSites, allowlist);
 
         // Assert
         expect(result.unguarded).toEqual([]);
@@ -337,7 +337,7 @@ describe('analyzeCallSites + computeFindings', () => {
     describe('When analyzed', () => {
       it('Then the call is attributed by binding, not by the local alias name', () => {
         // Arrange
-        const sut = analyze({
+        const callSites = analyze({
           [TARGET_MODULE]: PRIMITIVES_SOURCE,
           '/virtual/src/application/commands/config.ts': [
             "import { assertRepository as gentle } from '../primitives/internal/repo-state.js';",
@@ -349,7 +349,7 @@ describe('analyzeCallSites + computeFindings', () => {
         });
 
         // Act
-        const result = computeFindings(sut, []);
+        const result = computeFindings(callSites, []);
 
         // Assert
         expect(result.unguarded).toEqual([
@@ -363,7 +363,7 @@ describe('analyzeCallSites + computeFindings', () => {
     describe('When analyzed', () => {
       it('Then the call is attributed to the calling verb, not the shim', () => {
         // Arrange
-        const sut = analyze({
+        const callSites = analyze({
           [TARGET_MODULE]: PRIMITIVES_SOURCE,
           '/virtual/src/application/commands/internal/repo-state.ts':
             "export { assertRepository } from '../../primitives/internal/repo-state.js';\n",
@@ -377,7 +377,7 @@ describe('analyzeCallSites + computeFindings', () => {
         });
 
         // Act
-        const result = computeFindings(sut, []);
+        const result = computeFindings(callSites, []);
 
         // Assert
         expect(result.unguarded).toEqual([
@@ -391,7 +391,7 @@ describe('analyzeCallSites + computeFindings', () => {
     describe('When analyzed', () => {
       it('Then the call is reported as unattributable rather than skipped', () => {
         // Arrange
-        const sut = analyze({
+        const callSites = analyze({
           [TARGET_MODULE]: PRIMITIVES_SOURCE,
           '/virtual/src/application/commands/stash.ts': [
             "import { assertRepository } from '../primitives/internal/repo-state.js';",
@@ -401,7 +401,7 @@ describe('analyzeCallSites + computeFindings', () => {
         });
 
         // Act
-        const result = computeFindings(sut, []);
+        const result = computeFindings(callSites, []);
 
         // Assert
         expect(result.unattributable).toEqual([
@@ -415,7 +415,7 @@ describe('analyzeCallSites + computeFindings', () => {
     describe('When analyzed', () => {
       it('Then the call is reported as unattributable rather than skipped', () => {
         // Arrange
-        const sut = analyze({
+        const callSites = analyze({
           [TARGET_MODULE]: PRIMITIVES_SOURCE,
           '/virtual/src/application/commands/stash.ts': [
             "import { assertRepository } from '../primitives/internal/repo-state.js';",
@@ -428,7 +428,7 @@ describe('analyzeCallSites + computeFindings', () => {
         });
 
         // Act
-        const result = computeFindings(sut, []);
+        const result = computeFindings(callSites, []);
 
         // Assert
         expect(result.unattributable).toEqual([

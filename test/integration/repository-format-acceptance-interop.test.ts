@@ -686,7 +686,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         .map((line) => line.slice('worktree '.length));
 
     describe.skipIf(!RELATIVE_WORKTREES_AVAILABLE)(
-      'Given a linked worktree built with git worktree add --relative-paths',
+      'Given a linked worktree built with git worktree add --relative-paths, When tsgit and git both list worktrees',
       () => {
         it('Then tsgit worktree.list matches git worktree list, before and after relocating the whole tree', async () => {
           // Arrange — repo and its linked worktree as SIBLINGS under one
