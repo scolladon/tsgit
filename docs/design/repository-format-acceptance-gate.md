@@ -327,6 +327,25 @@ Measured, with the extension planted and the version varied:
 | `1` | accepted | refused (unknown) |
 | `2` / `99` | refused (version) | refused (version) |
 
+**"Accepted" at an absent version means accepted *and inert*, not accepted and honoured.**
+Measured separately, because the distinction decides whether the unbacked-extension refusal owes
+an absent-version arm: take a real `git init --object-format=sha256` repository with one commit
+(64-hex oid), then delete only the `repositoryformatversion` line from its config, leaving
+`[extensions] objectformat = sha256` in place. git falls back to SHA-1 and **can no longer read
+its own repository**:
+
+| command | result |
+|---|---|
+| `rev-parse HEAD` | `fatal: ambiguous argument 'HEAD': unknown revision or path not in the working tree`, exit 128 |
+| `log --oneline` | `fatal: your current branch appears to be broken`, exit 128 |
+| `cat-file -t HEAD` | `fatal: Not a valid object name HEAD`, exit 128 |
+
+So an extension is only *honoured* at version 1 — `extensions.worktreeConfig` excepted, which
+§1e measures as honoured at v0 too. A repository declaring `objectFormat` without version 1 is
+unreadable to git itself, so tsgit reading it as SHA-1 and failing to resolve is **faithful**,
+not a silent misread. The unbacked-extension refusal therefore correctly keys on
+`version === 1` alone and owes no absent-version arm.
+
 So the three predicates are literal and independent, and none of them may be reached by
 folding "absent" into `0`:
 
