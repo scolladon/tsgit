@@ -32,6 +32,7 @@ describe('readRepositoryFormat', () => {
           bare: undefined,
           worktree: undefined,
           worktreeConfig: false,
+          refusal: undefined,
         });
       });
     });
@@ -99,7 +100,12 @@ describe('readRepositoryFormat', () => {
         );
 
         // Assert
-        expect(result).toStrictEqual({ bare: true, worktree: undefined, worktreeConfig: true });
+        expect(result).toStrictEqual({
+          bare: true,
+          worktree: undefined,
+          worktreeConfig: true,
+          refusal: undefined,
+        });
       });
     });
   });
@@ -147,7 +153,12 @@ describe('readRepositoryFormat', () => {
         );
 
         // Assert
-        expect(result).toStrictEqual({ bare: false, worktree: undefined, worktreeConfig: false });
+        expect(result).toStrictEqual({
+          bare: false,
+          worktree: undefined,
+          worktreeConfig: false,
+          refusal: undefined,
+        });
       });
     });
   });
@@ -283,6 +294,7 @@ describe('readRepositoryFormat', () => {
           bare: undefined,
           worktree: undefined,
           worktreeConfig: false,
+          refusal: undefined,
         });
       });
     });
@@ -314,6 +326,7 @@ describe('readRepositoryFormat', () => {
           bare: undefined,
           worktree: undefined,
           worktreeConfig: false,
+          refusal: undefined,
         });
       });
     });
@@ -405,7 +418,473 @@ describe('readRepositoryFormat', () => {
         );
 
         // Assert
-        expect(result).toStrictEqual({ bare: false, worktree: undefined, worktreeConfig: false });
+        expect(result).toStrictEqual({
+          bare: false,
+          worktree: undefined,
+          worktreeConfig: false,
+          refusal: undefined,
+        });
+      });
+    });
+  });
+
+  // ───────────────────────────────────────────────────────────────────────
+  // core.repositoryformatversion — the version arm.
+  // ───────────────────────────────────────────────────────────────────────
+
+  /** Run `readRepositoryFormat` against a local `/repo/.git/config`, catching a throw. */
+  const catchFormat = async (fs: MemoryFileSystem): Promise<unknown> => {
+    try {
+      await readRepositoryFormat(
+        fileSystemLayoutProbe(fs),
+        '/repo/.git',
+        '/repo/.git',
+        posixPolicy,
+      );
+      return undefined;
+    } catch (err) {
+      return err;
+    }
+  };
+
+  interface BadNumericData {
+    readonly code: string;
+    readonly key: string;
+    readonly source: string;
+    readonly value: string;
+    readonly reason: string;
+  }
+
+  /** Assert `caught` is the eager numeric refusal, naming `core.repositoryformatversion`. */
+  const expectBadNumericVersion = (caught: unknown, value: string, reason: string): void => {
+    expect(caught).toBeInstanceOf(TsgitError);
+    expect((caught as TsgitError).data).toEqual({
+      code: 'CONFIG_BAD_NUMERIC_VALUE',
+      key: 'core.repositoryformatversion',
+      source: '/repo/.git/config',
+      value,
+      reason,
+    } satisfies BadNumericData);
+  };
+
+  describe('Given core.repositoryformatversion = 99 in the local config', () => {
+    describe('When readRepositoryFormat runs', () => {
+      it('Then it carries a version refusal and throws nothing', async () => {
+        // Arrange
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await fs.writeUtf8('/repo/.git/config', '[core]\n\trepositoryformatversion = 99\n');
+
+        // Act
+        const result = await readRepositoryFormat(
+          fileSystemLayoutProbe(fs),
+          '/repo/.git',
+          '/repo/.git',
+          posixPolicy,
+        );
+
+        // Assert
+        expect(result.refusal).toStrictEqual({ kind: 'version', version: 99 });
+      });
+    });
+  });
+
+  describe('Given an accepted core.repositoryformatversion literal', () => {
+    describe('When readRepositoryFormat runs', () => {
+      it.each([['0'], ['1'], ['-1'], ['+1'], [' 1 '], ['0x1']])(
+        'Then %j carries no refusal',
+        async (literal) => {
+          // Arrange
+          const fs = new MemoryFileSystem({ rootDir: '/repo' });
+          await fs.writeUtf8(
+            '/repo/.git/config',
+            `[core]\n\trepositoryformatversion = ${literal}\n`,
+          );
+
+          // Act
+          const result = await readRepositoryFormat(
+            fileSystemLayoutProbe(fs),
+            '/repo/.git',
+            '/repo/.git',
+            posixPolicy,
+          );
+
+          // Assert
+          expect(result.refusal).toBeUndefined();
+        },
+      );
+    });
+  });
+
+  describe('Given a refused core.repositoryformatversion literal', () => {
+    describe('When readRepositoryFormat runs', () => {
+      it.each([
+        ['2', 2],
+        ['3', 3],
+        ['99', 99],
+        ['0777', 511],
+        ['1k', 1024],
+      ])('Then %s carries a version refusal for the parsed value %i', async (literal, parsed) => {
+        // Arrange
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await fs.writeUtf8('/repo/.git/config', `[core]\n\trepositoryformatversion = ${literal}\n`);
+
+        // Act
+        const result = await readRepositoryFormat(
+          fileSystemLayoutProbe(fs),
+          '/repo/.git',
+          '/repo/.git',
+          posixPolicy,
+        );
+
+        // Assert
+        expect(result.refusal).toStrictEqual({ kind: 'version', version: parsed });
+      });
+    });
+  });
+
+  describe('Given core.repositoryformatversion = abc in the local config', () => {
+    describe('When readRepositoryFormat runs', () => {
+      it("Then it throws CONFIG_BAD_NUMERIC_VALUE with reason 'invalid unit'", async () => {
+        // Arrange
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await fs.writeUtf8('/repo/.git/config', '[core]\n\trepositoryformatversion = abc\n');
+
+        // Act
+        const caught = await catchFormat(fs);
+
+        // Assert
+        expectBadNumericVersion(caught, 'abc', 'invalid unit');
+      });
+    });
+  });
+
+  describe('Given core.repositoryformatversion set to the empty string', () => {
+    describe('When readRepositoryFormat runs', () => {
+      it("Then it throws CONFIG_BAD_NUMERIC_VALUE naming the empty value with reason 'invalid unit'", async () => {
+        // Arrange
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await fs.writeUtf8('/repo/.git/config', '[core]\n\trepositoryformatversion =\n');
+
+        // Act
+        const caught = await catchFormat(fs);
+
+        // Assert
+        expectBadNumericVersion(caught, '', 'invalid unit');
+      });
+    });
+  });
+
+  describe('Given core.repositoryformatversion = 1.0 in the local config', () => {
+    describe('When readRepositoryFormat runs', () => {
+      it("Then it throws CONFIG_BAD_NUMERIC_VALUE with reason 'invalid unit'", async () => {
+        // Arrange
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await fs.writeUtf8('/repo/.git/config', '[core]\n\trepositoryformatversion = 1.0\n');
+
+        // Act
+        const caught = await catchFormat(fs);
+
+        // Assert
+        expectBadNumericVersion(caught, '1.0', 'invalid unit');
+      });
+    });
+  });
+
+  describe('Given core.repositoryformatversion = 08 in the local config', () => {
+    describe('When readRepositoryFormat runs', () => {
+      it("Then it throws CONFIG_BAD_NUMERIC_VALUE with reason 'invalid unit'", async () => {
+        // Arrange — the octal run stops at the first non-octal digit; the
+        // trailing `8` is then read as an invalid unit suffix.
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await fs.writeUtf8('/repo/.git/config', '[core]\n\trepositoryformatversion = 08\n');
+
+        // Act
+        const caught = await catchFormat(fs);
+
+        // Assert
+        expectBadNumericVersion(caught, '08', 'invalid unit');
+      });
+    });
+  });
+
+  describe('Given a valueless core.repositoryformatversion in the local config', () => {
+    describe('When readRepositoryFormat runs', () => {
+      it("Then it throws CONFIG_BAD_NUMERIC_VALUE naming the empty value with reason 'invalid unit'", async () => {
+        // Arrange — no `=` at all: git's internal NULL, reported as value ''.
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await fs.writeUtf8('/repo/.git/config', '[core]\n\trepositoryformatversion\n');
+
+        // Act
+        const caught = await catchFormat(fs);
+
+        // Assert
+        expectBadNumericVersion(caught, '', 'invalid unit');
+      });
+    });
+  });
+
+  describe('Given core.repositoryformatversion = 9223372036854775808 (int64 max + 1)', () => {
+    describe('When readRepositoryFormat runs', () => {
+      it("Then it throws CONFIG_BAD_NUMERIC_VALUE with reason 'out of range'", async () => {
+        // Arrange
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await fs.writeUtf8(
+          '/repo/.git/config',
+          '[core]\n\trepositoryformatversion = 9223372036854775808\n',
+        );
+
+        // Act
+        const caught = await catchFormat(fs);
+
+        // Assert
+        expectBadNumericVersion(caught, '9223372036854775808', 'out of range');
+      });
+    });
+  });
+
+  describe('Given core.repositoryformatversion = -9223372036854775809 (int64 min - 1)', () => {
+    describe('When readRepositoryFormat runs', () => {
+      it("Then it throws CONFIG_BAD_NUMERIC_VALUE with reason 'out of range'", async () => {
+        // Arrange
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await fs.writeUtf8(
+          '/repo/.git/config',
+          '[core]\n\trepositoryformatversion = -9223372036854775809\n',
+        );
+
+        // Act
+        const caught = await catchFormat(fs);
+
+        // Assert
+        expectBadNumericVersion(caught, '-9223372036854775809', 'out of range');
+      });
+    });
+  });
+
+  describe('Given core.repositoryformatversion = 999999999999999999999999999999 (far out of range)', () => {
+    describe('When readRepositoryFormat runs', () => {
+      it("Then it throws CONFIG_BAD_NUMERIC_VALUE with reason 'out of range'", async () => {
+        // Arrange
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await fs.writeUtf8(
+          '/repo/.git/config',
+          '[core]\n\trepositoryformatversion = 999999999999999999999999999999\n',
+        );
+
+        // Act
+        const caught = await catchFormat(fs);
+
+        // Assert
+        expectBadNumericVersion(caught, '999999999999999999999999999999', 'out of range');
+      });
+    });
+  });
+
+  describe('Given core.repositoryformatversion = 0, then 99, then 0 (last-wins, accepted)', () => {
+    describe('When readRepositoryFormat runs', () => {
+      it('Then it carries no refusal — the effective value is the last well-formed one', async () => {
+        // Arrange
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await fs.writeUtf8(
+          '/repo/.git/config',
+          '[core]\n\trepositoryformatversion = 0\n\trepositoryformatversion = 99\n\trepositoryformatversion = 0\n',
+        );
+
+        // Act
+        const result = await readRepositoryFormat(
+          fileSystemLayoutProbe(fs),
+          '/repo/.git',
+          '/repo/.git',
+          posixPolicy,
+        );
+
+        // Assert
+        expect(result.refusal).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given core.repositoryformatversion = 0, then 0, then 99 (last-wins, refused)', () => {
+    describe('When readRepositoryFormat runs', () => {
+      it('Then it carries a version refusal for 99', async () => {
+        // Arrange
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await fs.writeUtf8(
+          '/repo/.git/config',
+          '[core]\n\trepositoryformatversion = 0\n\trepositoryformatversion = 0\n\trepositoryformatversion = 99\n',
+        );
+
+        // Act
+        const result = await readRepositoryFormat(
+          fileSystemLayoutProbe(fs),
+          '/repo/.git',
+          '/repo/.git',
+          posixPolicy,
+        );
+
+        // Assert
+        expect(result.refusal).toStrictEqual({ kind: 'version', version: 99 });
+      });
+    });
+  });
+
+  describe('Given core.repositoryformatversion = abc on an early line, then 0 later', () => {
+    describe('When readRepositoryFormat runs', () => {
+      it('Then it still throws — a later valid line does not rescue an earlier malformed one', async () => {
+        // Arrange
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await fs.writeUtf8(
+          '/repo/.git/config',
+          '[core]\n\trepositoryformatversion = abc\n\trepositoryformatversion = 0\n',
+        );
+
+        // Act
+        const caught = await catchFormat(fs);
+
+        // Assert
+        expectBadNumericVersion(caught, 'abc', 'invalid unit');
+      });
+    });
+  });
+
+  describe('Given core.repositoryformatversion = 0 first, then abc', () => {
+    describe('When readRepositoryFormat runs', () => {
+      it('Then it throws — every malformed occurrence fires, in file order', async () => {
+        // Arrange
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await fs.writeUtf8(
+          '/repo/.git/config',
+          '[core]\n\trepositoryformatversion = 0\n\trepositoryformatversion = abc\n',
+        );
+
+        // Act
+        const caught = await catchFormat(fs);
+
+        // Assert
+        expectBadNumericVersion(caught, 'abc', 'invalid unit');
+      });
+    });
+  });
+
+  describe('Given [CoRe] / RePoSiToRyFoRmAtVeRsIoN = 99 (mixed case)', () => {
+    describe('When readRepositoryFormat runs', () => {
+      it('Then it still refuses — section and key are case-insensitive', async () => {
+        // Arrange
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await fs.writeUtf8('/repo/.git/config', '[CoRe]\n\tRePoSiToRyFoRmAtVeRsIoN = 99\n');
+
+        // Act
+        const result = await readRepositoryFormat(
+          fileSystemLayoutProbe(fs),
+          '/repo/.git',
+          '/repo/.git',
+          posixPolicy,
+        );
+
+        // Assert
+        expect(result.refusal).toStrictEqual({ kind: 'version', version: 99 });
+      });
+    });
+  });
+
+  describe('Given [core "x"] repositoryformatversion = 99 (subsectioned)', () => {
+    describe('When readRepositoryFormat runs', () => {
+      it('Then it is ignored — a subsectioned core is not [core]', async () => {
+        // Arrange
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await fs.writeUtf8('/repo/.git/config', '[core "x"]\n\trepositoryformatversion = 99\n');
+
+        // Act
+        const result = await readRepositoryFormat(
+          fileSystemLayoutProbe(fs),
+          '/repo/.git',
+          '/repo/.git',
+          posixPolicy,
+        );
+
+        // Assert
+        expect(result.refusal).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a repositoryformatversion = 99 planted in config.worktree, with worktreeConfig active at v1', () => {
+    describe('When readRepositoryFormat runs', () => {
+      it('Then it is inert — the format keys read only <commonDir>/config, never the scoped file', async () => {
+        // Arrange
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await fs.writeUtf8(
+          '/repo/.git/config',
+          '[core]\n\trepositoryformatversion = 1\n[extensions]\n\tworktreeConfig = true\n',
+        );
+        await fs.writeUtf8(
+          '/repo/.git/config.worktree',
+          '[core]\n\trepositoryformatversion = 99\n',
+        );
+
+        // Act
+        const result = await readRepositoryFormat(
+          fileSystemLayoutProbe(fs),
+          '/repo/.git',
+          '/repo/.git',
+          posixPolicy,
+        );
+
+        // Assert
+        expect(result.refusal).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a core.bare planted in config.worktree alongside repositoryformatversion = 1 locally', () => {
+    describe('When readRepositoryFormat runs', () => {
+      it('Then core.bare from config.worktree still wins — the format-key scoping asymmetry is unaffected', async () => {
+        // Arrange — the mirror of the previous row: core.bare/core.worktree
+        // keep going through pickScoped even though the version does not.
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await fs.writeUtf8(
+          '/repo/.git/config',
+          '[core]\n\trepositoryformatversion = 1\n[extensions]\n\tworktreeConfig = true\n',
+        );
+        await fs.writeUtf8('/repo/.git/config.worktree', '[core]\n\tbare = true\n');
+
+        // Act
+        const result = await readRepositoryFormat(
+          fileSystemLayoutProbe(fs),
+          '/repo/.git',
+          '/repo/.git',
+          posixPolicy,
+        );
+
+        // Assert
+        expect(result.bare).toBe(true);
+        expect(result.refusal).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given core.repositoryformatversion = 99 AND core.bare = banana in the local config', () => {
+    describe('When readRepositoryFormat runs', () => {
+      it('Then it throws CONFIG_BAD_BOOLEAN_VALUE — the bad-boolean fatal wins; the version verdict is never returned', async () => {
+        // Arrange — the version verdict is carried, never thrown, so an
+        // eager throw elsewhere must win outright and pin the ordering.
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await fs.writeUtf8(
+          '/repo/.git/config',
+          '[core]\n\trepositoryformatversion = 99\n\tbare = banana\n',
+        );
+
+        // Act
+        const caught = await catchFormat(fs);
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data).toEqual({
+          code: 'CONFIG_BAD_BOOLEAN_VALUE',
+          key: 'core.bare',
+          source: '/repo/.git/config',
+          value: 'banana',
+        });
       });
     });
   });

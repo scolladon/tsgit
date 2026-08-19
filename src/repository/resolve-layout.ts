@@ -216,6 +216,7 @@ export const finishLayout = async (
     ...(workDir !== undefined ? { workDir } : {}),
     bare,
     ...(workTreeConfigBogus === true ? { workTreeConfigBogus: true as const } : {}),
+    ...(fmt.refusal !== undefined ? { formatRefusal: fmt.refusal } : {}),
   };
 };
 

@@ -18,7 +18,12 @@ import { repositoryDisposed } from './domain/commands/error.js';
 import type { StatTreeDiff, TreeDiff } from './domain/diff/index.js';
 import type { CommandRunner } from './ports/command-runner.js';
 import type { Compressor } from './ports/compressor.js';
-import type { Context, RepositoryConfig, RepositoryLayout } from './ports/context.js';
+import type {
+  Context,
+  RepositoryConfig,
+  RepositoryFormatRefusal,
+  RepositoryLayout,
+} from './ports/context.js';
 import type { EnvReader } from './ports/env-reader.js';
 import type { FileSystem } from './ports/file-system.js';
 import type { HashService } from './ports/hash-service.js';
@@ -160,6 +165,8 @@ export interface RepositoryLayoutInput {
   readonly commonDir?: string;
   /** `core.bare` and `core.worktree` are both set — git's `work_tree_config_is_bogus`. */
   readonly workTreeConfigBogus?: boolean;
+  /** The repository-format acceptance verdict — absent when accepted. */
+  readonly formatRefusal?: RepositoryFormatRefusal;
   readonly homeDir?: string;
 }
 

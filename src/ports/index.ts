@@ -7,6 +7,7 @@ export type {
   Context,
   CreateContextParts,
   RepositoryConfig,
+  RepositoryFormatRefusal,
   RepositoryLayout,
 } from './context.js';
 export { createContext } from './context.js';
