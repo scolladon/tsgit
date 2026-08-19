@@ -18186,14 +18186,14 @@
 					]
 				},
 				{
-					"id": 8802,
+					"id": 8813,
 					"name": "BasePackEntryHeader",
 					"variant": "declaration",
 					"kind": 256,
 					"flags": {},
 					"children": [
 						{
-							"id": 8805,
+							"id": 8816,
 							"name": "dataOffset",
 							"variant": "declaration",
 							"kind": 1024,
@@ -18206,7 +18206,7 @@
 							}
 						},
 						{
-							"id": 8804,
+							"id": 8815,
 							"name": "size",
 							"variant": "declaration",
 							"kind": 1024,
@@ -18219,7 +18219,7 @@
 							}
 						},
 						{
-							"id": 8803,
+							"id": 8814,
 							"name": "type",
 							"variant": "declaration",
 							"kind": 1024,
@@ -18253,22 +18253,22 @@
 						{
 							"title": "Properties",
 							"children": [
-								8805,
-								8804,
-								8803
+								8816,
+								8815,
+								8814
 							]
 						}
 					]
 				},
 				{
-					"id": 8602,
+					"id": 8613,
 					"name": "BitmapEntryHeader",
 					"variant": "declaration",
 					"kind": 256,
 					"flags": {},
 					"children": [
 						{
-							"id": 8605,
+							"id": 8616,
 							"name": "flags",
 							"variant": "declaration",
 							"kind": 1024,
@@ -18281,7 +18281,7 @@
 							}
 						},
 						{
-							"id": 8603,
+							"id": 8614,
 							"name": "position",
 							"variant": "declaration",
 							"kind": 1024,
@@ -18302,7 +18302,7 @@
 							}
 						},
 						{
-							"id": 8606,
+							"id": 8617,
 							"name": "stream",
 							"variant": "declaration",
 							"kind": 1024,
@@ -18311,13 +18311,13 @@
 							},
 							"type": {
 								"type": "reference",
-								"target": 8706,
+								"target": 8717,
 								"name": "EwahStream",
 								"package": "@scolladon/tsgit"
 							}
 						},
 						{
-							"id": 8604,
+							"id": 8615,
 							"name": "xorOffset",
 							"variant": "declaration",
 							"kind": 1024,
@@ -18334,10 +18334,10 @@
 						{
 							"title": "Properties",
 							"children": [
-								8605,
-								8603,
-								8606,
-								8604
+								8616,
+								8614,
+								8617,
+								8615
 							]
 						}
 					]
@@ -18619,14 +18619,14 @@
 					]
 				},
 				{
-					"id": 8627,
+					"id": 8638,
 					"name": "CopyInstruction",
 					"variant": "declaration",
 					"kind": 256,
 					"flags": {},
 					"children": [
 						{
-							"id": 8629,
+							"id": 8640,
 							"name": "offset",
 							"variant": "declaration",
 							"kind": 1024,
@@ -18639,7 +18639,7 @@
 							}
 						},
 						{
-							"id": 8630,
+							"id": 8641,
 							"name": "size",
 							"variant": "declaration",
 							"kind": 1024,
@@ -18652,7 +18652,7 @@
 							}
 						},
 						{
-							"id": 8628,
+							"id": 8639,
 							"name": "type",
 							"variant": "declaration",
 							"kind": 1024,
@@ -18669,22 +18669,22 @@
 						{
 							"title": "Properties",
 							"children": [
-								8629,
-								8630,
-								8628
+								8640,
+								8641,
+								8639
 							]
 						}
 					]
 				},
 				{
-					"id": 8632,
+					"id": 8643,
 					"name": "DeltaParsed",
 					"variant": "declaration",
 					"kind": 256,
 					"flags": {},
 					"children": [
 						{
-							"id": 8635,
+							"id": 8646,
 							"name": "instructions",
 							"variant": "declaration",
 							"kind": 1024,
@@ -18698,7 +18698,7 @@
 									"type": "array",
 									"elementType": {
 										"type": "reference",
-										"target": 8631,
+										"target": 8642,
 										"name": "DeltaInstruction",
 										"package": "@scolladon/tsgit"
 									}
@@ -18706,7 +18706,7 @@
 							}
 						},
 						{
-							"id": 8633,
+							"id": 8644,
 							"name": "sourceLength",
 							"variant": "declaration",
 							"kind": 1024,
@@ -18719,7 +18719,7 @@
 							}
 						},
 						{
-							"id": 8634,
+							"id": 8645,
 							"name": "targetLength",
 							"variant": "declaration",
 							"kind": 1024,
@@ -18736,9 +18736,9 @@
 						{
 							"title": "Properties",
 							"children": [
-								8635,
-								8633,
-								8634
+								8646,
+								8644,
+								8645
 							]
 						}
 					]
@@ -18790,14 +18790,14 @@
 					]
 				},
 				{
-					"id": 8706,
+					"id": 8717,
 					"name": "EwahStream",
 					"variant": "declaration",
 					"kind": 256,
 					"flags": {},
 					"children": [
 						{
-							"id": 8707,
+							"id": 8718,
 							"name": "bitSize",
 							"variant": "declaration",
 							"kind": 1024,
@@ -18842,7 +18842,7 @@
 							}
 						},
 						{
-							"id": 8710,
+							"id": 8721,
 							"name": "endOffset",
 							"variant": "declaration",
 							"kind": 1024,
@@ -18863,7 +18863,7 @@
 							}
 						},
 						{
-							"id": 8708,
+							"id": 8719,
 							"name": "wordCount",
 							"variant": "declaration",
 							"kind": 1024,
@@ -18876,7 +18876,7 @@
 							}
 						},
 						{
-							"id": 8709,
+							"id": 8720,
 							"name": "wordsOffset",
 							"variant": "declaration",
 							"kind": 1024,
@@ -18901,10 +18901,10 @@
 						{
 							"title": "Properties",
 							"children": [
-								8707,
-								8710,
-								8708,
-								8709
+								8718,
+								8721,
+								8719,
+								8720
 							]
 						}
 					]
@@ -19293,14 +19293,14 @@
 					]
 				},
 				{
-					"id": 8636,
+					"id": 8647,
 					"name": "InsertInstruction",
 					"variant": "declaration",
 					"kind": 256,
 					"flags": {},
 					"children": [
 						{
-							"id": 8638,
+							"id": 8649,
 							"name": "data",
 							"variant": "declaration",
 							"kind": 1024,
@@ -19319,7 +19319,7 @@
 							}
 						},
 						{
-							"id": 8637,
+							"id": 8648,
 							"name": "type",
 							"variant": "declaration",
 							"kind": 1024,
@@ -19336,8 +19336,8 @@
 						{
 							"title": "Properties",
 							"children": [
-								8638,
-								8637
+								8649,
+								8648
 							]
 						}
 					]
@@ -19414,14 +19414,14 @@
 					]
 				},
 				{
-					"id": 8731,
+					"id": 8742,
 					"name": "LruCache",
 					"variant": "declaration",
 					"kind": 256,
 					"flags": {},
 					"children": [
 						{
-							"id": 8749,
+							"id": 8760,
 							"name": "currentSize",
 							"variant": "declaration",
 							"kind": 1024,
@@ -19434,7 +19434,7 @@
 							}
 						},
 						{
-							"id": 8751,
+							"id": 8762,
 							"name": "entryCount",
 							"variant": "declaration",
 							"kind": 1024,
@@ -19447,7 +19447,7 @@
 							}
 						},
 						{
-							"id": 8750,
+							"id": 8761,
 							"name": "maxSize",
 							"variant": "declaration",
 							"kind": 1024,
@@ -19460,14 +19460,14 @@
 							}
 						},
 						{
-							"id": 8747,
+							"id": 8758,
 							"name": "clear",
 							"variant": "declaration",
 							"kind": 2048,
 							"flags": {},
 							"signatures": [
 								{
-									"id": 8748,
+									"id": 8759,
 									"name": "clear",
 									"variant": "signature",
 									"kind": 4096,
@@ -19480,15 +19480,48 @@
 							]
 						},
 						{
-							"id": 8744,
+							"id": 8755,
 							"name": "delete",
 							"variant": "declaration",
 							"kind": 2048,
 							"flags": {},
 							"signatures": [
 								{
-									"id": 8745,
+									"id": 8756,
 									"name": "delete",
+									"variant": "signature",
+									"kind": 4096,
+									"flags": {},
+									"parameters": [
+										{
+											"id": 8757,
+											"name": "key",
+											"variant": "param",
+											"kind": 32768,
+											"flags": {},
+											"type": {
+												"type": "intrinsic",
+												"name": "string"
+											}
+										}
+									],
+									"type": {
+										"type": "intrinsic",
+										"name": "boolean"
+									}
+								}
+							]
+						},
+						{
+							"id": 8744,
+							"name": "get",
+							"variant": "declaration",
+							"kind": 2048,
+							"flags": {},
+							"signatures": [
+								{
+									"id": 8745,
+									"name": "get",
 									"variant": "signature",
 									"kind": 4096,
 									"flags": {},
@@ -19506,44 +19539,11 @@
 										}
 									],
 									"type": {
-										"type": "intrinsic",
-										"name": "boolean"
-									}
-								}
-							]
-						},
-						{
-							"id": 8733,
-							"name": "get",
-							"variant": "declaration",
-							"kind": 2048,
-							"flags": {},
-							"signatures": [
-								{
-									"id": 8734,
-									"name": "get",
-									"variant": "signature",
-									"kind": 4096,
-									"flags": {},
-									"parameters": [
-										{
-											"id": 8735,
-											"name": "key",
-											"variant": "param",
-											"kind": 32768,
-											"flags": {},
-											"type": {
-												"type": "intrinsic",
-												"name": "string"
-											}
-										}
-									],
-									"type": {
 										"type": "union",
 										"types": [
 											{
 												"type": "reference",
-												"target": 8732,
+												"target": 8743,
 												"name": "V",
 												"package": "@scolladon/tsgit",
 												"qualifiedName": "LruCache.V",
@@ -19559,21 +19559,21 @@
 							]
 						},
 						{
-							"id": 8741,
+							"id": 8752,
 							"name": "has",
 							"variant": "declaration",
 							"kind": 2048,
 							"flags": {},
 							"signatures": [
 								{
-									"id": 8742,
+									"id": 8753,
 									"name": "has",
 									"variant": "signature",
 									"kind": 4096,
 									"flags": {},
 									"parameters": [
 										{
-											"id": 8743,
+											"id": 8754,
 											"name": "key",
 											"variant": "param",
 											"kind": 32768,
@@ -19592,21 +19592,21 @@
 							]
 						},
 						{
-							"id": 8736,
+							"id": 8747,
 							"name": "set",
 							"variant": "declaration",
 							"kind": 2048,
 							"flags": {},
 							"signatures": [
 								{
-									"id": 8737,
+									"id": 8748,
 									"name": "set",
 									"variant": "signature",
 									"kind": 4096,
 									"flags": {},
 									"parameters": [
 										{
-											"id": 8738,
+											"id": 8749,
 											"name": "key",
 											"variant": "param",
 											"kind": 32768,
@@ -19617,14 +19617,14 @@
 											}
 										},
 										{
-											"id": 8739,
+											"id": 8750,
 											"name": "value",
 											"variant": "param",
 											"kind": 32768,
 											"flags": {},
 											"type": {
 												"type": "reference",
-												"target": 8732,
+												"target": 8743,
 												"name": "V",
 												"package": "@scolladon/tsgit",
 												"qualifiedName": "LruCache.V",
@@ -19632,7 +19632,7 @@
 											}
 										},
 										{
-											"id": 8740,
+											"id": 8751,
 											"name": "byteSize",
 											"variant": "param",
 											"kind": 32768,
@@ -19655,25 +19655,25 @@
 						{
 							"title": "Properties",
 							"children": [
-								8749,
-								8751,
-								8750
+								8760,
+								8762,
+								8761
 							]
 						},
 						{
 							"title": "Methods",
 							"children": [
-								8747,
+								8758,
+								8755,
 								8744,
-								8733,
-								8741,
-								8736
+								8752,
+								8747
 							]
 						}
 					],
 					"typeParameters": [
 						{
-							"id": 8732,
+							"id": 8743,
 							"name": "V",
 							"variant": "typeParam",
 							"kind": 131072,
@@ -20215,14 +20215,14 @@
 					]
 				},
 				{
-					"id": 8757,
+					"id": 8768,
 					"name": "MidxEntry",
 					"variant": "declaration",
 					"kind": 256,
 					"flags": {},
 					"children": [
 						{
-							"id": 8759,
+							"id": 8770,
 							"name": "offset",
 							"variant": "declaration",
 							"kind": 1024,
@@ -20235,7 +20235,7 @@
 							}
 						},
 						{
-							"id": 8758,
+							"id": 8769,
 							"name": "packIndex",
 							"variant": "declaration",
 							"kind": 1024,
@@ -20252,21 +20252,21 @@
 						{
 							"title": "Properties",
 							"children": [
-								8759,
-								8758
+								8770,
+								8769
 							]
 						}
 					]
 				},
 				{
-					"id": 8760,
+					"id": 8771,
 					"name": "MultiPackIndex",
 					"variant": "declaration",
 					"kind": 256,
 					"flags": {},
 					"children": [
 						{
-							"id": 8773,
+							"id": 8784,
 							"name": "_bytes",
 							"variant": "declaration",
 							"kind": 1024,
@@ -20285,7 +20285,7 @@
 							}
 						},
 						{
-							"id": 8774,
+							"id": 8785,
 							"name": "_view",
 							"variant": "declaration",
 							"kind": 1024,
@@ -20304,7 +20304,7 @@
 							}
 						},
 						{
-							"id": 8763,
+							"id": 8774,
 							"name": "digestLength",
 							"variant": "declaration",
 							"kind": 1024,
@@ -20317,7 +20317,7 @@
 							}
 						},
 						{
-							"id": 8762,
+							"id": 8773,
 							"name": "hashVersion",
 							"variant": "declaration",
 							"kind": 1024,
@@ -20339,7 +20339,7 @@
 							}
 						},
 						{
-							"id": 8771,
+							"id": 8782,
 							"name": "largeOffsetCount",
 							"variant": "declaration",
 							"kind": 1024,
@@ -20352,7 +20352,7 @@
 							}
 						},
 						{
-							"id": 8770,
+							"id": 8781,
 							"name": "largeOffsetsOffset",
 							"variant": "declaration",
 							"kind": 1024,
@@ -20386,7 +20386,7 @@
 							}
 						},
 						{
-							"id": 8764,
+							"id": 8775,
 							"name": "numBaseFiles",
 							"variant": "declaration",
 							"kind": 1024,
@@ -20407,7 +20407,7 @@
 							}
 						},
 						{
-							"id": 8765,
+							"id": 8776,
 							"name": "objectCount",
 							"variant": "declaration",
 							"kind": 1024,
@@ -20420,7 +20420,7 @@
 							}
 						},
 						{
-							"id": 8769,
+							"id": 8780,
 							"name": "objectOffsetsOffset",
 							"variant": "declaration",
 							"kind": 1024,
@@ -20433,7 +20433,7 @@
 							}
 						},
 						{
-							"id": 8767,
+							"id": 8778,
 							"name": "oidFanoutOffset",
 							"variant": "declaration",
 							"kind": 1024,
@@ -20446,7 +20446,7 @@
 							}
 						},
 						{
-							"id": 8768,
+							"id": 8779,
 							"name": "oidLookupOffset",
 							"variant": "declaration",
 							"kind": 1024,
@@ -20459,7 +20459,7 @@
 							}
 						},
 						{
-							"id": 8766,
+							"id": 8777,
 							"name": "packNames",
 							"variant": "declaration",
 							"kind": 1024,
@@ -20495,7 +20495,7 @@
 							}
 						},
 						{
-							"id": 8772,
+							"id": 8783,
 							"name": "reverseIndexOffset",
 							"variant": "declaration",
 							"kind": 1024,
@@ -20537,7 +20537,7 @@
 							}
 						},
 						{
-							"id": 8761,
+							"id": 8772,
 							"name": "version",
 							"variant": "declaration",
 							"kind": 1024,
@@ -20563,33 +20563,33 @@
 						{
 							"title": "Properties",
 							"children": [
-								8773,
+								8784,
+								8785,
 								8774,
-								8763,
-								8762,
-								8771,
-								8770,
-								8764,
-								8765,
-								8769,
-								8767,
-								8768,
-								8766,
-								8772,
-								8761
+								8773,
+								8782,
+								8781,
+								8775,
+								8776,
+								8780,
+								8778,
+								8779,
+								8777,
+								8783,
+								8772
 							]
 						}
 					]
 				},
 				{
-					"id": 8807,
+					"id": 8818,
 					"name": "OfsPackEntryHeader",
 					"variant": "declaration",
 					"kind": 256,
 					"flags": {},
 					"children": [
 						{
-							"id": 8811,
+							"id": 8822,
 							"name": "baseDistance",
 							"variant": "declaration",
 							"kind": 1024,
@@ -20602,7 +20602,7 @@
 							}
 						},
 						{
-							"id": 8810,
+							"id": 8821,
 							"name": "dataOffset",
 							"variant": "declaration",
 							"kind": 1024,
@@ -20615,7 +20615,7 @@
 							}
 						},
 						{
-							"id": 8809,
+							"id": 8820,
 							"name": "size",
 							"variant": "declaration",
 							"kind": 1024,
@@ -20628,7 +20628,7 @@
 							}
 						},
 						{
-							"id": 8808,
+							"id": 8819,
 							"name": "type",
 							"variant": "declaration",
 							"kind": 1024,
@@ -20645,23 +20645,23 @@
 						{
 							"title": "Properties",
 							"children": [
-								8811,
-								8810,
-								8809,
-								8808
+								8822,
+								8821,
+								8820,
+								8819
 							]
 						}
 					]
 				},
 				{
-					"id": 8607,
+					"id": 8618,
 					"name": "PackBitmap",
 					"variant": "declaration",
 					"kind": 256,
 					"flags": {},
 					"children": [
 						{
-							"id": 8615,
+							"id": 8626,
 							"name": "_bytes",
 							"variant": "declaration",
 							"kind": 1024,
@@ -20680,7 +20680,7 @@
 							}
 						},
 						{
-							"id": 8616,
+							"id": 8627,
 							"name": "_view",
 							"variant": "declaration",
 							"kind": 1024,
@@ -20699,7 +20699,7 @@
 							}
 						},
 						{
-							"id": 8612,
+							"id": 8623,
 							"name": "checksum",
 							"variant": "declaration",
 							"kind": 1024,
@@ -20726,7 +20726,7 @@
 							}
 						},
 						{
-							"id": 8611,
+							"id": 8622,
 							"name": "digestLength",
 							"variant": "declaration",
 							"kind": 1024,
@@ -20739,7 +20739,7 @@
 							}
 						},
 						{
-							"id": 8614,
+							"id": 8625,
 							"name": "entriesOffset",
 							"variant": "declaration",
 							"kind": 1024,
@@ -20760,7 +20760,7 @@
 							}
 						},
 						{
-							"id": 8610,
+							"id": 8621,
 							"name": "entryCount",
 							"variant": "declaration",
 							"kind": 1024,
@@ -20773,7 +20773,7 @@
 							}
 						},
 						{
-							"id": 8609,
+							"id": 8620,
 							"name": "optionFlags",
 							"variant": "declaration",
 							"kind": 1024,
@@ -20786,7 +20786,7 @@
 							}
 						},
 						{
-							"id": 8613,
+							"id": 8624,
 							"name": "typeStreams",
 							"variant": "declaration",
 							"kind": 1024,
@@ -20809,25 +20809,25 @@
 									"elements": [
 										{
 											"type": "reference",
-											"target": 8706,
+											"target": 8717,
 											"name": "EwahStream",
 											"package": "@scolladon/tsgit"
 										},
 										{
 											"type": "reference",
-											"target": 8706,
+											"target": 8717,
 											"name": "EwahStream",
 											"package": "@scolladon/tsgit"
 										},
 										{
 											"type": "reference",
-											"target": 8706,
+											"target": 8717,
 											"name": "EwahStream",
 											"package": "@scolladon/tsgit"
 										},
 										{
 											"type": "reference",
-											"target": 8706,
+											"target": 8717,
 											"name": "EwahStream",
 											"package": "@scolladon/tsgit"
 										}
@@ -20836,7 +20836,7 @@
 							}
 						},
 						{
-							"id": 8608,
+							"id": 8619,
 							"name": "version",
 							"variant": "declaration",
 							"kind": 1024,
@@ -20853,15 +20853,15 @@
 						{
 							"title": "Properties",
 							"children": [
-								8615,
-								8616,
-								8612,
-								8611,
-								8614,
-								8610,
-								8609,
-								8613,
-								8608
+								8626,
+								8627,
+								8623,
+								8622,
+								8625,
+								8621,
+								8620,
+								8624,
+								8619
 							]
 						}
 					]
@@ -21012,14 +21012,14 @@
 					]
 				},
 				{
-					"id": 8888,
+					"id": 8899,
 					"name": "PackEntryMeta",
 					"variant": "declaration",
 					"kind": 256,
 					"flags": {},
 					"children": [
 						{
-							"id": 8889,
+							"id": 8900,
 							"name": "crc32",
 							"variant": "declaration",
 							"kind": 1024,
@@ -21032,7 +21032,7 @@
 							}
 						},
 						{
-							"id": 8890,
+							"id": 8901,
 							"name": "offset",
 							"variant": "declaration",
 							"kind": 1024,
@@ -21049,21 +21049,21 @@
 						{
 							"title": "Properties",
 							"children": [
-								8889,
-								8890
+								8900,
+								8901
 							]
 						}
 					]
 				},
 				{
-					"id": 8891,
+					"id": 8902,
 					"name": "PackfileResult",
 					"variant": "declaration",
 					"kind": 256,
 					"flags": {},
 					"children": [
 						{
-							"id": 8892,
+							"id": 8903,
 							"name": "data",
 							"variant": "declaration",
 							"kind": 1024,
@@ -21082,7 +21082,7 @@
 							}
 						},
 						{
-							"id": 8893,
+							"id": 8904,
 							"name": "entries",
 							"variant": "declaration",
 							"kind": 1024,
@@ -21096,7 +21096,7 @@
 									"type": "array",
 									"elementType": {
 										"type": "reference",
-										"target": 8888,
+										"target": 8899,
 										"name": "PackEntryMeta",
 										"package": "@scolladon/tsgit"
 									}
@@ -21108,21 +21108,21 @@
 						{
 							"title": "Properties",
 							"children": [
-								8892,
-								8893
+								8903,
+								8904
 							]
 						}
 					]
 				},
 				{
-					"id": 8814,
+					"id": 8825,
 					"name": "PackHeader",
 					"variant": "declaration",
 					"kind": 256,
 					"flags": {},
 					"children": [
 						{
-							"id": 8816,
+							"id": 8827,
 							"name": "objectCount",
 							"variant": "declaration",
 							"kind": 1024,
@@ -21135,7 +21135,7 @@
 							}
 						},
 						{
-							"id": 8815,
+							"id": 8826,
 							"name": "version",
 							"variant": "declaration",
 							"kind": 1024,
@@ -21152,21 +21152,21 @@
 						{
 							"title": "Properties",
 							"children": [
-								8816,
-								8815
+								8827,
+								8826
 							]
 						}
 					]
 				},
 				{
-					"id": 8852,
+					"id": 8863,
 					"name": "PackIndex",
 					"variant": "declaration",
 					"kind": 256,
 					"flags": {},
 					"children": [
 						{
-							"id": 8858,
+							"id": 8869,
 							"name": "_bytes",
 							"variant": "declaration",
 							"kind": 1024,
@@ -21185,7 +21185,7 @@
 							}
 						},
 						{
-							"id": 8859,
+							"id": 8870,
 							"name": "_view",
 							"variant": "declaration",
 							"kind": 1024,
@@ -21204,7 +21204,7 @@
 							}
 						},
 						{
-							"id": 8854,
+							"id": 8865,
 							"name": "crc32TableOffset",
 							"variant": "declaration",
 							"kind": 1024,
@@ -21217,7 +21217,7 @@
 							}
 						},
 						{
-							"id": 8856,
+							"id": 8867,
 							"name": "largeOffsetsTableOffset",
 							"variant": "declaration",
 							"kind": 1024,
@@ -21230,7 +21230,7 @@
 							}
 						},
 						{
-							"id": 8853,
+							"id": 8864,
 							"name": "objectCount",
 							"variant": "declaration",
 							"kind": 1024,
@@ -21243,7 +21243,7 @@
 							}
 						},
 						{
-							"id": 8855,
+							"id": 8866,
 							"name": "smallOffsetsTableOffset",
 							"variant": "declaration",
 							"kind": 1024,
@@ -21256,7 +21256,7 @@
 							}
 						},
 						{
-							"id": 8857,
+							"id": 8868,
 							"name": "trailerOffset",
 							"variant": "declaration",
 							"kind": 1024,
@@ -21273,26 +21273,26 @@
 						{
 							"title": "Properties",
 							"children": [
-								8858,
-								8859,
-								8854,
-								8856,
-								8853,
-								8855,
-								8857
+								8869,
+								8870,
+								8865,
+								8867,
+								8864,
+								8866,
+								8868
 							]
 						}
 					]
 				},
 				{
-					"id": 8894,
+					"id": 8905,
 					"name": "PackIndexWriterEntry",
 					"variant": "declaration",
 					"kind": 256,
 					"flags": {},
 					"children": [
 						{
-							"id": 8896,
+							"id": 8907,
 							"name": "crc32",
 							"variant": "declaration",
 							"kind": 1024,
@@ -21305,7 +21305,7 @@
 							}
 						},
 						{
-							"id": 8895,
+							"id": 8906,
 							"name": "id",
 							"variant": "declaration",
 							"kind": 1024,
@@ -21318,7 +21318,7 @@
 							}
 						},
 						{
-							"id": 8897,
+							"id": 8908,
 							"name": "offset",
 							"variant": "declaration",
 							"kind": 1024,
@@ -21335,22 +21335,22 @@
 						{
 							"title": "Properties",
 							"children": [
-								8896,
-								8895,
-								8897
+								8907,
+								8906,
+								8908
 							]
 						}
 					]
 				},
 				{
-					"id": 8910,
+					"id": 8921,
 					"name": "PackRevIndex",
 					"variant": "declaration",
 					"kind": 256,
 					"flags": {},
 					"children": [
 						{
-							"id": 8916,
+							"id": 8927,
 							"name": "_bytes",
 							"variant": "declaration",
 							"kind": 1024,
@@ -21369,7 +21369,7 @@
 							}
 						},
 						{
-							"id": 8917,
+							"id": 8928,
 							"name": "_view",
 							"variant": "declaration",
 							"kind": 1024,
@@ -21388,7 +21388,7 @@
 							}
 						},
 						{
-							"id": 8913,
+							"id": 8924,
 							"name": "digestLength",
 							"variant": "declaration",
 							"kind": 1024,
@@ -21401,7 +21401,7 @@
 							}
 						},
 						{
-							"id": 8912,
+							"id": 8923,
 							"name": "hashId",
 							"variant": "declaration",
 							"kind": 1024,
@@ -21423,7 +21423,7 @@
 							}
 						},
 						{
-							"id": 8914,
+							"id": 8925,
 							"name": "objectCount",
 							"variant": "declaration",
 							"kind": 1024,
@@ -21436,7 +21436,7 @@
 							}
 						},
 						{
-							"id": 8915,
+							"id": 8926,
 							"name": "packChecksum",
 							"variant": "declaration",
 							"kind": 1024,
@@ -21463,7 +21463,7 @@
 							}
 						},
 						{
-							"id": 8911,
+							"id": 8922,
 							"name": "version",
 							"variant": "declaration",
 							"kind": 1024,
@@ -21480,26 +21480,26 @@
 						{
 							"title": "Properties",
 							"children": [
-								8916,
-								8917,
-								8913,
-								8912,
-								8914,
-								8915,
-								8911
+								8927,
+								8928,
+								8924,
+								8923,
+								8925,
+								8926,
+								8922
 							]
 						}
 					]
 				},
 				{
-					"id": 8898,
+					"id": 8909,
 					"name": "PackWriterEntry",
 					"variant": "declaration",
 					"kind": 256,
 					"flags": {},
 					"children": [
 						{
-							"id": 8901,
+							"id": 8912,
 							"name": "compressedData",
 							"variant": "declaration",
 							"kind": 1024,
@@ -21518,7 +21518,7 @@
 							}
 						},
 						{
-							"id": 8899,
+							"id": 8910,
 							"name": "type",
 							"variant": "declaration",
 							"kind": 1024,
@@ -21527,13 +21527,13 @@
 							},
 							"type": {
 								"type": "reference",
-								"target": 8806,
+								"target": 8817,
 								"name": "BasePackEntryType",
 								"package": "@scolladon/tsgit"
 							}
 						},
 						{
-							"id": 8900,
+							"id": 8911,
 							"name": "uncompressedSize",
 							"variant": "declaration",
 							"kind": 1024,
@@ -21550,9 +21550,9 @@
 						{
 							"title": "Properties",
 							"children": [
-								8901,
-								8899,
-								8900
+								8912,
+								8910,
+								8911
 							]
 						}
 					]
@@ -21720,7 +21720,7 @@
 					]
 				},
 				{
-					"id": 8582,
+					"id": 8593,
 					"name": "ParsedSparseCheckout",
 					"variant": "declaration",
 					"kind": 256,
@@ -21735,7 +21735,7 @@
 					},
 					"children": [
 						{
-							"id": 8584,
+							"id": 8595,
 							"name": "degraded",
 							"variant": "declaration",
 							"kind": 1024,
@@ -21756,7 +21756,7 @@
 							}
 						},
 						{
-							"id": 8583,
+							"id": 8594,
 							"name": "spec",
 							"variant": "declaration",
 							"kind": 1024,
@@ -21765,7 +21765,7 @@
 							},
 							"type": {
 								"type": "reference",
-								"target": 8594,
+								"target": 8605,
 								"name": "SparseSpec",
 								"package": "@scolladon/tsgit"
 							}
@@ -21775,8 +21775,8 @@
 						{
 							"title": "Properties",
 							"children": [
-								8584,
-								8583
+								8595,
+								8594
 							]
 						}
 					]
@@ -22059,14 +22059,14 @@
 					]
 				},
 				{
-					"id": 8817,
+					"id": 8828,
 					"name": "RefPackEntryHeader",
 					"variant": "declaration",
 					"kind": 256,
 					"flags": {},
 					"children": [
 						{
-							"id": 8821,
+							"id": 8832,
 							"name": "baseId",
 							"variant": "declaration",
 							"kind": 1024,
@@ -22081,7 +22081,7 @@
 							}
 						},
 						{
-							"id": 8820,
+							"id": 8831,
 							"name": "dataOffset",
 							"variant": "declaration",
 							"kind": 1024,
@@ -22094,7 +22094,7 @@
 							}
 						},
 						{
-							"id": 8819,
+							"id": 8830,
 							"name": "size",
 							"variant": "declaration",
 							"kind": 1024,
@@ -22107,7 +22107,7 @@
 							}
 						},
 						{
-							"id": 8818,
+							"id": 8829,
 							"name": "type",
 							"variant": "declaration",
 							"kind": 1024,
@@ -22124,10 +22124,10 @@
 						{
 							"title": "Properties",
 							"children": [
-								8821,
-								8820,
-								8819,
-								8818
+								8832,
+								8831,
+								8830,
+								8829
 							]
 						}
 					]
@@ -22562,14 +22562,14 @@
 					]
 				},
 				{
-					"id": 8882,
+					"id": 8893,
 					"name": "SortedEntry",
 					"variant": "declaration",
 					"kind": 256,
 					"flags": {},
 					"children": [
 						{
-							"id": 8884,
+							"id": 8895,
 							"name": "entry",
 							"variant": "declaration",
 							"kind": 1024,
@@ -22578,13 +22578,13 @@
 							},
 							"type": {
 								"type": "reference",
-								"target": 8894,
+								"target": 8905,
 								"name": "PackIndexWriterEntry",
 								"package": "@scolladon/tsgit"
 							}
 						},
 						{
-							"id": 8883,
+							"id": 8894,
 							"name": "shaBytes",
 							"variant": "declaration",
 							"kind": 1024,
@@ -22607,14 +22607,14 @@
 						{
 							"title": "Properties",
 							"children": [
-								8884,
-								8883
+								8895,
+								8894
 							]
 						}
 					]
 				},
 				{
-					"id": 8590,
+					"id": 8601,
 					"name": "SparseRule",
 					"variant": "declaration",
 					"kind": 256,
@@ -22629,7 +22629,7 @@
 					},
 					"children": [
 						{
-							"id": 8593,
+							"id": 8604,
 							"name": "matcher",
 							"variant": "declaration",
 							"kind": 1024,
@@ -22664,7 +22664,7 @@
 							}
 						},
 						{
-							"id": 8592,
+							"id": 8603,
 							"name": "negated",
 							"variant": "declaration",
 							"kind": 1024,
@@ -22693,7 +22693,7 @@
 							}
 						},
 						{
-							"id": 8591,
+							"id": 8602,
 							"name": "source",
 							"variant": "declaration",
 							"kind": 1024,
@@ -22726,9 +22726,9 @@
 						{
 							"title": "Properties",
 							"children": [
-								8593,
-								8592,
-								8591
+								8604,
+								8603,
+								8602
 							]
 						}
 					]
@@ -25408,7 +25408,7 @@
 					}
 				},
 				{
-					"id": 8806,
+					"id": 8817,
 					"name": "BasePackEntryType",
 					"variant": "declaration",
 					"kind": 2097152,
@@ -25420,7 +25420,7 @@
 								"type": "query",
 								"queryType": {
 									"type": "reference",
-									"target": 8831,
+									"target": 8842,
 									"name": "PACK_ENTRY_TYPE.COMMIT",
 									"package": "@scolladon/tsgit",
 									"qualifiedName": "__object.COMMIT"
@@ -25430,7 +25430,7 @@
 								"type": "query",
 								"queryType": {
 									"type": "reference",
-									"target": 8832,
+									"target": 8843,
 									"name": "PACK_ENTRY_TYPE.TREE",
 									"package": "@scolladon/tsgit",
 									"qualifiedName": "__object.TREE"
@@ -25440,7 +25440,7 @@
 								"type": "query",
 								"queryType": {
 									"type": "reference",
-									"target": 8833,
+									"target": 8844,
 									"name": "PACK_ENTRY_TYPE.BLOB",
 									"package": "@scolladon/tsgit",
 									"qualifiedName": "__object.BLOB"
@@ -25450,7 +25450,7 @@
 								"type": "query",
 								"queryType": {
 									"type": "reference",
-									"target": 8834,
+									"target": 8845,
 									"name": "PACK_ENTRY_TYPE.TAG",
 									"package": "@scolladon/tsgit",
 									"qualifiedName": "__object.TAG"
@@ -25460,7 +25460,7 @@
 					}
 				},
 				{
-					"id": 8649,
+					"id": 8660,
 					"name": "BitmapCheck",
 					"variant": "declaration",
 					"kind": 2097152,
@@ -31654,7 +31654,7 @@
 					}
 				},
 				{
-					"id": 8631,
+					"id": 8642,
 					"name": "DeltaInstruction",
 					"variant": "declaration",
 					"kind": 2097152,
@@ -31664,13 +31664,13 @@
 						"types": [
 							{
 								"type": "reference",
-								"target": 8627,
+								"target": 8638,
 								"name": "CopyInstruction",
 								"package": "@scolladon/tsgit"
 							},
 							{
 								"type": "reference",
-								"target": 8636,
+								"target": 8647,
 								"name": "InsertInstruction",
 								"package": "@scolladon/tsgit"
 							}
@@ -32488,7 +32488,7 @@
 					}
 				},
 				{
-					"id": 8650,
+					"id": 8661,
 					"name": "MidxCheck",
 					"variant": "declaration",
 					"kind": 2097152,
@@ -32744,7 +32744,7 @@
 					}
 				},
 				{
-					"id": 8812,
+					"id": 8823,
 					"name": "PackEntryHeader",
 					"variant": "declaration",
 					"kind": 2097152,
@@ -32754,19 +32754,19 @@
 						"types": [
 							{
 								"type": "reference",
-								"target": 8802,
+								"target": 8813,
 								"name": "BasePackEntryHeader",
 								"package": "@scolladon/tsgit"
 							},
 							{
 								"type": "reference",
-								"target": 8807,
+								"target": 8818,
 								"name": "OfsPackEntryHeader",
 								"package": "@scolladon/tsgit"
 							},
 							{
 								"type": "reference",
-								"target": 8817,
+								"target": 8828,
 								"name": "RefPackEntryHeader",
 								"package": "@scolladon/tsgit"
 							}
@@ -32774,7 +32774,7 @@
 					}
 				},
 				{
-					"id": 8813,
+					"id": 8824,
 					"name": "PackEntryType",
 					"variant": "declaration",
 					"kind": 2097152,
@@ -32788,7 +32788,7 @@
 								"type": "query",
 								"queryType": {
 									"type": "reference",
-									"target": 8829,
+									"target": 8840,
 									"name": "PACK_ENTRY_TYPE",
 									"package": "@scolladon/tsgit"
 								}
@@ -32798,7 +32798,7 @@
 							"type": "query",
 							"queryType": {
 								"type": "reference",
-								"target": 8829,
+								"target": 8840,
 								"name": "PACK_ENTRY_TYPE",
 								"package": "@scolladon/tsgit"
 							}
@@ -35075,12 +35075,193 @@
 										}
 									]
 								}
+							},
+							{
+								"type": "reflection",
+								"declaration": {
+									"id": 8527,
+									"name": "__type",
+									"variant": "declaration",
+									"kind": 65536,
+									"flags": {},
+									"children": [
+										{
+											"id": 8528,
+											"name": "code",
+											"variant": "declaration",
+											"kind": 1024,
+											"flags": {
+												"isReadonly": true
+											},
+											"type": {
+												"type": "literal",
+												"value": "REPOSITORY_FORMAT_VERSION_UNSUPPORTED"
+											}
+										},
+										{
+											"id": 8529,
+											"name": "version",
+											"variant": "declaration",
+											"kind": 1024,
+											"flags": {
+												"isReadonly": true
+											},
+											"type": {
+												"type": "intrinsic",
+												"name": "number"
+											}
+										}
+									],
+									"groups": [
+										{
+											"title": "Properties",
+											"children": [
+												8528,
+												8529
+											]
+										}
+									]
+								}
+							},
+							{
+								"type": "reflection",
+								"declaration": {
+									"id": 8530,
+									"name": "__type",
+									"variant": "declaration",
+									"kind": 65536,
+									"flags": {},
+									"children": [
+										{
+											"id": 8531,
+											"name": "code",
+											"variant": "declaration",
+											"kind": 1024,
+											"flags": {
+												"isReadonly": true
+											},
+											"type": {
+												"type": "literal",
+												"value": "REPOSITORY_EXTENSIONS_UNSUPPORTED"
+											}
+										},
+										{
+											"id": 8533,
+											"name": "extensions",
+											"variant": "declaration",
+											"kind": 1024,
+											"flags": {
+												"isReadonly": true
+											},
+											"type": {
+												"type": "reference",
+												"target": {
+													"packageName": "typescript",
+													"packagePath": "lib/lib.es5.d.ts",
+													"qualifiedName": "ReadonlyArray"
+												},
+												"typeArguments": [
+													{
+														"type": "intrinsic",
+														"name": "string"
+													}
+												],
+												"name": "ReadonlyArray",
+												"package": "typescript"
+											}
+										},
+										{
+											"id": 8532,
+											"name": "version",
+											"variant": "declaration",
+											"kind": 1024,
+											"flags": {
+												"isReadonly": true
+											},
+											"type": {
+												"type": "intrinsic",
+												"name": "number"
+											}
+										}
+									],
+									"groups": [
+										{
+											"title": "Properties",
+											"children": [
+												8531,
+												8533,
+												8532
+											]
+										}
+									]
+								}
+							},
+							{
+								"type": "reflection",
+								"declaration": {
+									"id": 8534,
+									"name": "__type",
+									"variant": "declaration",
+									"kind": 65536,
+									"flags": {},
+									"children": [
+										{
+											"id": 8535,
+											"name": "code",
+											"variant": "declaration",
+											"kind": 1024,
+											"flags": {
+												"isReadonly": true
+											},
+											"type": {
+												"type": "literal",
+												"value": "REPOSITORY_EXTENSION_UNSUPPORTED"
+											}
+										},
+										{
+											"id": 8536,
+											"name": "extension",
+											"variant": "declaration",
+											"kind": 1024,
+											"flags": {
+												"isReadonly": true
+											},
+											"type": {
+												"type": "intrinsic",
+												"name": "string"
+											}
+										},
+										{
+											"id": 8537,
+											"name": "value",
+											"variant": "declaration",
+											"kind": 1024,
+											"flags": {
+												"isReadonly": true
+											},
+											"type": {
+												"type": "intrinsic",
+												"name": "string"
+											}
+										}
+									],
+									"groups": [
+										{
+											"title": "Properties",
+											"children": [
+												8535,
+												8536,
+												8537
+											]
+										}
+									]
+								}
 							}
 						]
 					}
 				},
 				{
-					"id": 8651,
+					"id": 8662,
 					"name": "RevIndexCheck",
 					"variant": "declaration",
 					"kind": 2097152,
@@ -35268,7 +35449,7 @@
 					}
 				},
 				{
-					"id": 8594,
+					"id": 8605,
 					"name": "SparseSpec",
 					"variant": "declaration",
 					"kind": 2097152,
@@ -35303,14 +35484,14 @@
 							{
 								"type": "reflection",
 								"declaration": {
-									"id": 8595,
+									"id": 8606,
 									"name": "__type",
 									"variant": "declaration",
 									"kind": 65536,
 									"flags": {},
 									"children": [
 										{
-											"id": 8596,
+											"id": 8607,
 											"name": "mode",
 											"variant": "declaration",
 											"kind": 1024,
@@ -35323,7 +35504,7 @@
 											}
 										},
 										{
-											"id": 8598,
+											"id": 8609,
 											"name": "parents",
 											"variant": "declaration",
 											"kind": 1024,
@@ -35356,7 +35537,7 @@
 											}
 										},
 										{
-											"id": 8597,
+											"id": 8608,
 											"name": "recursive",
 											"variant": "declaration",
 											"kind": 1024,
@@ -35393,9 +35574,9 @@
 										{
 											"title": "Properties",
 											"children": [
-												8596,
-												8598,
-												8597
+												8607,
+												8609,
+												8608
 											]
 										}
 									]
@@ -35404,14 +35585,14 @@
 							{
 								"type": "reflection",
 								"declaration": {
-									"id": 8599,
+									"id": 8610,
 									"name": "__type",
 									"variant": "declaration",
 									"kind": 65536,
 									"flags": {},
 									"children": [
 										{
-											"id": 8600,
+											"id": 8611,
 											"name": "mode",
 											"variant": "declaration",
 											"kind": 1024,
@@ -35424,7 +35605,7 @@
 											}
 										},
 										{
-											"id": 8601,
+											"id": 8612,
 											"name": "rules",
 											"variant": "declaration",
 											"kind": 1024,
@@ -35441,7 +35622,7 @@
 												"typeArguments": [
 													{
 														"type": "reference",
-														"target": 8590,
+														"target": 8601,
 														"name": "SparseRule",
 														"package": "@scolladon/tsgit"
 													}
@@ -35455,8 +35636,8 @@
 										{
 											"title": "Properties",
 											"children": [
-												8600,
-												8601
+												8611,
+												8612
 											]
 										}
 									]
@@ -35466,7 +35647,7 @@
 					}
 				},
 				{
-					"id": 8652,
+					"id": 8663,
 					"name": "StorageError",
 					"variant": "declaration",
 					"kind": 2097152,
@@ -35477,14 +35658,14 @@
 							{
 								"type": "reflection",
 								"declaration": {
-									"id": 8653,
+									"id": 8664,
 									"name": "__type",
 									"variant": "declaration",
 									"kind": 65536,
 									"flags": {},
 									"children": [
 										{
-											"id": 8654,
+											"id": 8665,
 											"name": "code",
 											"variant": "declaration",
 											"kind": 1024,
@@ -35497,7 +35678,7 @@
 											}
 										},
 										{
-											"id": 8655,
+											"id": 8666,
 											"name": "reason",
 											"variant": "declaration",
 											"kind": 1024,
@@ -35514,8 +35695,8 @@
 										{
 											"title": "Properties",
 											"children": [
-												8654,
-												8655
+												8665,
+												8666
 											]
 										}
 									]
@@ -35524,14 +35705,14 @@
 							{
 								"type": "reflection",
 								"declaration": {
-									"id": 8656,
+									"id": 8667,
 									"name": "__type",
 									"variant": "declaration",
 									"kind": 65536,
 									"flags": {},
 									"children": [
 										{
-											"id": 8657,
+											"id": 8668,
 											"name": "code",
 											"variant": "declaration",
 											"kind": 1024,
@@ -35544,7 +35725,7 @@
 											}
 										},
 										{
-											"id": 8658,
+											"id": 8669,
 											"name": "reason",
 											"variant": "declaration",
 											"kind": 1024,
@@ -35561,8 +35742,8 @@
 										{
 											"title": "Properties",
 											"children": [
-												8657,
-												8658
+												8668,
+												8669
 											]
 										}
 									]
@@ -35571,14 +35752,14 @@
 							{
 								"type": "reflection",
 								"declaration": {
-									"id": 8659,
+									"id": 8670,
 									"name": "__type",
 									"variant": "declaration",
 									"kind": 65536,
 									"flags": {},
 									"children": [
 										{
-											"id": 8660,
+											"id": 8671,
 											"name": "code",
 											"variant": "declaration",
 											"kind": 1024,
@@ -35591,7 +35772,7 @@
 											}
 										},
 										{
-											"id": 8661,
+											"id": 8672,
 											"name": "offset",
 											"variant": "declaration",
 											"kind": 1024,
@@ -35604,7 +35785,7 @@
 											}
 										},
 										{
-											"id": 8662,
+											"id": 8673,
 											"name": "reason",
 											"variant": "declaration",
 											"kind": 1024,
@@ -35621,9 +35802,9 @@
 										{
 											"title": "Properties",
 											"children": [
-												8660,
-												8661,
-												8662
+												8671,
+												8672,
+												8673
 											]
 										}
 									]
@@ -35632,14 +35813,14 @@
 							{
 								"type": "reflection",
 								"declaration": {
-									"id": 8663,
+									"id": 8674,
 									"name": "__type",
 									"variant": "declaration",
 									"kind": 65536,
 									"flags": {},
 									"children": [
 										{
-											"id": 8664,
+											"id": 8675,
 											"name": "code",
 											"variant": "declaration",
 											"kind": 1024,
@@ -35652,7 +35833,7 @@
 											}
 										},
 										{
-											"id": 8665,
+											"id": 8676,
 											"name": "reason",
 											"variant": "declaration",
 											"kind": 1024,
@@ -35669,8 +35850,8 @@
 										{
 											"title": "Properties",
 											"children": [
-												8664,
-												8665
+												8675,
+												8676
 											]
 										}
 									]
@@ -35679,14 +35860,14 @@
 							{
 								"type": "reflection",
 								"declaration": {
-									"id": 8666,
+									"id": 8677,
 									"name": "__type",
 									"variant": "declaration",
 									"kind": 65536,
 									"flags": {},
 									"children": [
 										{
-											"id": 8667,
+											"id": 8678,
 											"name": "code",
 											"variant": "declaration",
 											"kind": 1024,
@@ -35699,7 +35880,7 @@
 											}
 										},
 										{
-											"id": 8668,
+											"id": 8679,
 											"name": "depth",
 											"variant": "declaration",
 											"kind": 1024,
@@ -35716,8 +35897,8 @@
 										{
 											"title": "Properties",
 											"children": [
-												8667,
-												8668
+												8678,
+												8679
 											]
 										}
 									]
@@ -35726,14 +35907,14 @@
 							{
 								"type": "reflection",
 								"declaration": {
-									"id": 8669,
+									"id": 8680,
 									"name": "__type",
 									"variant": "declaration",
 									"kind": 65536,
 									"flags": {},
 									"children": [
 										{
-											"id": 8672,
+											"id": 8683,
 											"name": "check",
 											"variant": "declaration",
 											"kind": 1024,
@@ -35742,13 +35923,13 @@
 											},
 											"type": {
 												"type": "reference",
-												"target": 8650,
+												"target": 8661,
 												"name": "MidxCheck",
 												"package": "@scolladon/tsgit"
 											}
 										},
 										{
-											"id": 8670,
+											"id": 8681,
 											"name": "code",
 											"variant": "declaration",
 											"kind": 1024,
@@ -35761,7 +35942,7 @@
 											}
 										},
 										{
-											"id": 8671,
+											"id": 8682,
 											"name": "reason",
 											"variant": "declaration",
 											"kind": 1024,
@@ -35778,9 +35959,9 @@
 										{
 											"title": "Properties",
 											"children": [
-												8672,
-												8670,
-												8671
+												8683,
+												8681,
+												8682
 											]
 										}
 									]
@@ -35789,14 +35970,14 @@
 							{
 								"type": "reflection",
 								"declaration": {
-									"id": 8673,
+									"id": 8684,
 									"name": "__type",
 									"variant": "declaration",
 									"kind": 65536,
 									"flags": {},
 									"children": [
 										{
-											"id": 8676,
+											"id": 8687,
 											"name": "check",
 											"variant": "declaration",
 											"kind": 1024,
@@ -35805,13 +35986,13 @@
 											},
 											"type": {
 												"type": "reference",
-												"target": 8651,
+												"target": 8662,
 												"name": "RevIndexCheck",
 												"package": "@scolladon/tsgit"
 											}
 										},
 										{
-											"id": 8674,
+											"id": 8685,
 											"name": "code",
 											"variant": "declaration",
 											"kind": 1024,
@@ -35824,7 +36005,7 @@
 											}
 										},
 										{
-											"id": 8675,
+											"id": 8686,
 											"name": "reason",
 											"variant": "declaration",
 											"kind": 1024,
@@ -35841,9 +36022,9 @@
 										{
 											"title": "Properties",
 											"children": [
-												8676,
-												8674,
-												8675
+												8687,
+												8685,
+												8686
 											]
 										}
 									]
@@ -35852,14 +36033,14 @@
 							{
 								"type": "reflection",
 								"declaration": {
-									"id": 8677,
+									"id": 8688,
 									"name": "__type",
 									"variant": "declaration",
 									"kind": 65536,
 									"flags": {},
 									"children": [
 										{
-											"id": 8680,
+											"id": 8691,
 											"name": "check",
 											"variant": "declaration",
 											"kind": 1024,
@@ -35868,13 +36049,13 @@
 											},
 											"type": {
 												"type": "reference",
-												"target": 8649,
+												"target": 8660,
 												"name": "BitmapCheck",
 												"package": "@scolladon/tsgit"
 											}
 										},
 										{
-											"id": 8678,
+											"id": 8689,
 											"name": "code",
 											"variant": "declaration",
 											"kind": 1024,
@@ -35887,7 +36068,7 @@
 											}
 										},
 										{
-											"id": 8679,
+											"id": 8690,
 											"name": "reason",
 											"variant": "declaration",
 											"kind": 1024,
@@ -35904,9 +36085,9 @@
 										{
 											"title": "Properties",
 											"children": [
-												8680,
-												8678,
-												8679
+												8691,
+												8689,
+												8690
 											]
 										}
 									]
@@ -36353,7 +36534,7 @@
 					"defaultValue": "65516"
 				},
 				{
-					"id": 8580,
+					"id": 8591,
 					"name": "MAX_SPARSE_PATTERN_BYTES",
 					"variant": "declaration",
 					"kind": 32,
@@ -36375,7 +36556,7 @@
 					"defaultValue": "256"
 				},
 				{
-					"id": 8581,
+					"id": 8592,
 					"name": "MAX_SPARSE_PATTERNS",
 					"variant": "declaration",
 					"kind": 32,
@@ -36505,7 +36686,7 @@
 					}
 				},
 				{
-					"id": 8829,
+					"id": 8840,
 					"name": "PACK_ENTRY_TYPE",
 					"variant": "declaration",
 					"kind": 32,
@@ -36515,14 +36696,14 @@
 					"type": {
 						"type": "reflection",
 						"declaration": {
-							"id": 8830,
+							"id": 8841,
 							"name": "__type",
 							"variant": "declaration",
 							"kind": 65536,
 							"flags": {},
 							"children": [
 								{
-									"id": 8833,
+									"id": 8844,
 									"name": "BLOB",
 									"variant": "declaration",
 									"kind": 1024,
@@ -36536,7 +36717,7 @@
 									"defaultValue": "3"
 								},
 								{
-									"id": 8831,
+									"id": 8842,
 									"name": "COMMIT",
 									"variant": "declaration",
 									"kind": 1024,
@@ -36550,7 +36731,7 @@
 									"defaultValue": "1"
 								},
 								{
-									"id": 8835,
+									"id": 8846,
 									"name": "OFS_DELTA",
 									"variant": "declaration",
 									"kind": 1024,
@@ -36564,7 +36745,7 @@
 									"defaultValue": "6"
 								},
 								{
-									"id": 8836,
+									"id": 8847,
 									"name": "REF_DELTA",
 									"variant": "declaration",
 									"kind": 1024,
@@ -36578,7 +36759,7 @@
 									"defaultValue": "7"
 								},
 								{
-									"id": 8834,
+									"id": 8845,
 									"name": "TAG",
 									"variant": "declaration",
 									"kind": 1024,
@@ -36592,7 +36773,7 @@
 									"defaultValue": "4"
 								},
 								{
-									"id": 8832,
+									"id": 8843,
 									"name": "TREE",
 									"variant": "declaration",
 									"kind": 1024,
@@ -36610,12 +36791,12 @@
 								{
 									"title": "Properties",
 									"children": [
-										8833,
-										8831,
-										8835,
-										8836,
-										8834,
-										8832
+										8844,
+										8842,
+										8846,
+										8847,
+										8845,
+										8843
 									]
 								}
 							]
@@ -36638,7 +36819,7 @@
 					"defaultValue": "'push-cert'"
 				},
 				{
-					"id": 8923,
+					"id": 8934,
 					"name": "REASON_REV_INDEX_CORRUPT",
 					"variant": "declaration",
 					"kind": 32,
@@ -36652,7 +36833,7 @@
 					"defaultValue": "..."
 				},
 				{
-					"id": 8924,
+					"id": 8935,
 					"name": "REASON_REV_INDEX_TOO_SMALL",
 					"variant": "declaration",
 					"kind": 32,
@@ -36762,7 +36943,7 @@
 					"defaultValue": "..."
 				},
 				{
-					"id": 8925,
+					"id": 8936,
 					"name": "REV_HEADER_SIZE",
 					"variant": "declaration",
 					"kind": 32,
@@ -36897,21 +37078,21 @@
 					]
 				},
 				{
-					"id": 8527,
+					"id": 8538,
 					"name": "alreadyInitialized",
 					"variant": "declaration",
 					"kind": 64,
 					"flags": {},
 					"signatures": [
 						{
-							"id": 8528,
+							"id": 8539,
 							"name": "alreadyInitialized",
 							"variant": "signature",
 							"kind": 4096,
 							"flags": {},
 							"parameters": [
 								{
-									"id": 8529,
+									"id": 8540,
 									"name": "path",
 									"variant": "param",
 									"kind": 32768,
@@ -36934,21 +37115,21 @@
 					]
 				},
 				{
-					"id": 8639,
+					"id": 8650,
 					"name": "applyDelta",
 					"variant": "declaration",
 					"kind": 64,
 					"flags": {},
 					"signatures": [
 						{
-							"id": 8640,
+							"id": 8651,
 							"name": "applyDelta",
 							"variant": "signature",
 							"kind": 4096,
 							"flags": {},
 							"parameters": [
 								{
-									"id": 8641,
+									"id": 8652,
 									"name": "base",
 									"variant": "param",
 									"kind": 32768,
@@ -36965,7 +37146,7 @@
 									}
 								},
 								{
-									"id": 8642,
+									"id": 8653,
 									"name": "delta",
 									"variant": "param",
 									"kind": 32768,
@@ -37018,21 +37199,21 @@
 					]
 				},
 				{
-					"id": 8530,
+					"id": 8541,
 					"name": "bareRepository",
 					"variant": "declaration",
 					"kind": 64,
 					"flags": {},
 					"signatures": [
 						{
-							"id": 8531,
+							"id": 8542,
 							"name": "bareRepository",
 							"variant": "signature",
 							"kind": 4096,
 							"flags": {},
 							"parameters": [
 								{
-									"id": 8532,
+									"id": 8543,
 									"name": "operation",
 									"variant": "param",
 									"kind": 32768,
@@ -37053,14 +37234,14 @@
 					]
 				},
 				{
-					"id": 8617,
+					"id": 8628,
 					"name": "bitmapEntryHeaders",
 					"variant": "declaration",
 					"kind": 64,
 					"flags": {},
 					"signatures": [
 						{
-							"id": 8618,
+							"id": 8629,
 							"name": "bitmapEntryHeaders",
 							"variant": "signature",
 							"kind": 4096,
@@ -37139,14 +37320,14 @@
 							},
 							"parameters": [
 								{
-									"id": 8619,
+									"id": 8630,
 									"name": "bitmap",
 									"variant": "param",
 									"kind": 32768,
 									"flags": {},
 									"type": {
 										"type": "reference",
-										"target": 8607,
+										"target": 8618,
 										"name": "PackBitmap",
 										"package": "@scolladon/tsgit"
 									}
@@ -37159,7 +37340,7 @@
 									"type": "array",
 									"elementType": {
 										"type": "reference",
-										"target": 8602,
+										"target": 8613,
 										"name": "BitmapEntryHeader",
 										"package": "@scolladon/tsgit"
 									}
@@ -37289,14 +37470,14 @@
 					]
 				},
 				{
-					"id": 8542,
+					"id": 8553,
 					"name": "buildConeSpec",
 					"variant": "declaration",
 					"kind": 64,
 					"flags": {},
 					"signatures": [
 						{
-							"id": 8543,
+							"id": 8554,
 							"name": "buildConeSpec",
 							"variant": "signature",
 							"kind": 4096,
@@ -37343,7 +37524,7 @@
 							},
 							"parameters": [
 								{
-									"id": 8544,
+									"id": 8555,
 									"name": "dirs",
 									"variant": "param",
 									"kind": 32768,
@@ -37364,14 +37545,14 @@
 							"type": {
 								"type": "reflection",
 								"declaration": {
-									"id": 8545,
+									"id": 8556,
 									"name": "__type",
 									"variant": "declaration",
 									"kind": 65536,
 									"flags": {},
 									"children": [
 										{
-											"id": 8546,
+											"id": 8557,
 											"name": "mode",
 											"variant": "declaration",
 											"kind": 1024,
@@ -37384,7 +37565,7 @@
 											}
 										},
 										{
-											"id": 8548,
+											"id": 8559,
 											"name": "parents",
 											"variant": "declaration",
 											"kind": 1024,
@@ -37417,7 +37598,7 @@
 											}
 										},
 										{
-											"id": 8547,
+											"id": 8558,
 											"name": "recursive",
 											"variant": "declaration",
 											"kind": 1024,
@@ -37454,9 +37635,9 @@
 										{
 											"title": "Properties",
 											"children": [
-												8546,
-												8548,
-												8547
+												8557,
+												8559,
+												8558
 											]
 										}
 									]
@@ -37676,14 +37857,14 @@
 					]
 				},
 				{
-					"id": 8577,
+					"id": 8588,
 					"name": "buildSparseMatcher",
 					"variant": "declaration",
 					"kind": 64,
 					"flags": {},
 					"signatures": [
 						{
-							"id": 8578,
+							"id": 8589,
 							"name": "buildSparseMatcher",
 							"variant": "signature",
 							"kind": 4096,
@@ -37698,14 +37879,14 @@
 							},
 							"parameters": [
 								{
-									"id": 8579,
+									"id": 8590,
 									"name": "spec",
 									"variant": "param",
 									"kind": 32768,
 									"flags": {},
 									"type": {
 										"type": "reference",
-										"target": 8594,
+										"target": 8605,
 										"name": "SparseSpec",
 										"package": "@scolladon/tsgit"
 									}
@@ -37881,14 +38062,14 @@
 					]
 				},
 				{
-					"id": 8570,
+					"id": 8581,
 					"name": "compileSparseRule",
 					"variant": "declaration",
 					"kind": 64,
 					"flags": {},
 					"signatures": [
 						{
-							"id": 8571,
+							"id": 8582,
 							"name": "compileSparseRule",
 							"variant": "signature",
 							"kind": 4096,
@@ -37935,7 +38116,7 @@
 							},
 							"parameters": [
 								{
-									"id": 8572,
+									"id": 8583,
 									"name": "tokenized",
 									"variant": "param",
 									"kind": 32768,
@@ -37948,7 +38129,7 @@
 									}
 								},
 								{
-									"id": 8573,
+									"id": 8584,
 									"name": "source",
 									"variant": "param",
 									"kind": 32768,
@@ -37961,7 +38142,7 @@
 							],
 							"type": {
 								"type": "reference",
-								"target": 8590,
+								"target": 8601,
 								"name": "SparseRule",
 								"package": "@scolladon/tsgit"
 							}
@@ -38004,21 +38185,21 @@
 					]
 				},
 				{
-					"id": 8728,
+					"id": 8739,
 					"name": "computeLooseObjectPath",
 					"variant": "declaration",
 					"kind": 64,
 					"flags": {},
 					"signatures": [
 						{
-							"id": 8729,
+							"id": 8740,
 							"name": "computeLooseObjectPath",
 							"variant": "signature",
 							"kind": 4096,
 							"flags": {},
 							"parameters": [
 								{
-									"id": 8730,
+									"id": 8741,
 									"name": "id",
 									"variant": "param",
 									"kind": 32768,
@@ -38039,14 +38220,14 @@
 					]
 				},
 				{
-					"id": 8549,
+					"id": 8560,
 					"name": "coneMatcher",
 					"variant": "declaration",
 					"kind": 64,
 					"flags": {},
 					"signatures": [
 						{
-							"id": 8550,
+							"id": 8561,
 							"name": "coneMatcher",
 							"variant": "signature",
 							"kind": 4096,
@@ -38077,7 +38258,7 @@
 							},
 							"parameters": [
 								{
-									"id": 8551,
+									"id": 8562,
 									"name": "spec",
 									"variant": "param",
 									"kind": 32768,
@@ -38085,14 +38266,14 @@
 									"type": {
 										"type": "reflection",
 										"declaration": {
-											"id": 8552,
+											"id": 8563,
 											"name": "__type",
 											"variant": "declaration",
 											"kind": 65536,
 											"flags": {},
 											"children": [
 												{
-													"id": 8553,
+													"id": 8564,
 													"name": "mode",
 													"variant": "declaration",
 													"kind": 1024,
@@ -38105,7 +38286,7 @@
 													}
 												},
 												{
-													"id": 8555,
+													"id": 8566,
 													"name": "parents",
 													"variant": "declaration",
 													"kind": 1024,
@@ -38138,7 +38319,7 @@
 													}
 												},
 												{
-													"id": 8554,
+													"id": 8565,
 													"name": "recursive",
 													"variant": "declaration",
 													"kind": 1024,
@@ -38175,9 +38356,9 @@
 												{
 													"title": "Properties",
 													"children": [
-														8553,
-														8555,
-														8554
+														8564,
+														8566,
+														8565
 													]
 												}
 											]
@@ -38525,21 +38706,21 @@
 					]
 				},
 				{
-					"id": 8624,
+					"id": 8635,
 					"name": "crc32",
 					"variant": "declaration",
 					"kind": 64,
 					"flags": {},
 					"signatures": [
 						{
-							"id": 8625,
+							"id": 8636,
 							"name": "crc32",
 							"variant": "signature",
 							"kind": 4096,
 							"flags": {},
 							"parameters": [
 								{
-									"id": 8626,
+									"id": 8637,
 									"name": "data",
 									"variant": "param",
 									"kind": 32768,
@@ -38564,21 +38745,21 @@
 					]
 				},
 				{
-					"id": 8752,
+					"id": 8763,
 					"name": "createLruCache",
 					"variant": "declaration",
 					"kind": 64,
 					"flags": {},
 					"signatures": [
 						{
-							"id": 8753,
+							"id": 8764,
 							"name": "createLruCache",
 							"variant": "signature",
 							"kind": 4096,
 							"flags": {},
 							"typeParameters": [
 								{
-									"id": 8754,
+									"id": 8765,
 									"name": "V",
 									"variant": "typeParam",
 									"kind": 131072,
@@ -38587,7 +38768,7 @@
 							],
 							"parameters": [
 								{
-									"id": 8755,
+									"id": 8766,
 									"name": "maxSizeBytes",
 									"variant": "param",
 									"kind": 32768,
@@ -38598,7 +38779,7 @@
 									}
 								},
 								{
-									"id": 8756,
+									"id": 8767,
 									"name": "maxEntries",
 									"variant": "param",
 									"kind": 32768,
@@ -38612,11 +38793,11 @@
 							],
 							"type": {
 								"type": "reference",
-								"target": 8731,
+								"target": 8742,
 								"typeArguments": [
 									{
 										"type": "reference",
-										"target": 8754,
+										"target": 8765,
 										"name": "V",
 										"package": "@scolladon/tsgit",
 										"refersToTypeParameter": true
@@ -39103,21 +39284,21 @@
 					]
 				},
 				{
-					"id": 8822,
+					"id": 8833,
 					"name": "encodeOfsDistance",
 					"variant": "declaration",
 					"kind": 64,
 					"flags": {},
 					"signatures": [
 						{
-							"id": 8823,
+							"id": 8834,
 							"name": "encodeOfsDistance",
 							"variant": "signature",
 							"kind": 4096,
 							"flags": {},
 							"parameters": [
 								{
-									"id": 8824,
+									"id": 8835,
 									"name": "distance",
 									"variant": "param",
 									"kind": 32768,
@@ -39142,34 +39323,34 @@
 					]
 				},
 				{
-					"id": 8825,
+					"id": 8836,
 					"name": "encodePackEntryHeader",
 					"variant": "declaration",
 					"kind": 64,
 					"flags": {},
 					"signatures": [
 						{
-							"id": 8826,
+							"id": 8837,
 							"name": "encodePackEntryHeader",
 							"variant": "signature",
 							"kind": 4096,
 							"flags": {},
 							"parameters": [
 								{
-									"id": 8827,
+									"id": 8838,
 									"name": "type",
 									"variant": "param",
 									"kind": 32768,
 									"flags": {},
 									"type": {
 										"type": "reference",
-										"target": 8813,
+										"target": 8824,
 										"name": "PackEntryType",
 										"package": "@scolladon/tsgit"
 									}
 								},
 								{
-									"id": 8828,
+									"id": 8839,
 									"name": "size",
 									"variant": "param",
 									"kind": 32768,
@@ -39383,28 +39564,28 @@
 					]
 				},
 				{
-					"id": 8860,
+					"id": 8871,
 					"name": "entryOffsets",
 					"variant": "declaration",
 					"kind": 64,
 					"flags": {},
 					"signatures": [
 						{
-							"id": 8861,
+							"id": 8872,
 							"name": "entryOffsets",
 							"variant": "signature",
 							"kind": 4096,
 							"flags": {},
 							"parameters": [
 								{
-									"id": 8862,
+									"id": 8873,
 									"name": "index",
 									"variant": "param",
 									"kind": 32768,
 									"flags": {},
 									"type": {
 										"type": "reference",
-										"target": 8852,
+										"target": 8863,
 										"name": "PackIndex",
 										"package": "@scolladon/tsgit"
 									}
@@ -39495,34 +39676,34 @@
 					]
 				},
 				{
-					"id": 8863,
+					"id": 8874,
 					"name": "findByPrefix",
 					"variant": "declaration",
 					"kind": 64,
 					"flags": {},
 					"signatures": [
 						{
-							"id": 8864,
+							"id": 8875,
 							"name": "findByPrefix",
 							"variant": "signature",
 							"kind": 4096,
 							"flags": {},
 							"parameters": [
 								{
-									"id": 8865,
+									"id": 8876,
 									"name": "index",
 									"variant": "param",
 									"kind": 32768,
 									"flags": {},
 									"type": {
 										"type": "reference",
-										"target": 8852,
+										"target": 8863,
 										"name": "PackIndex",
 										"package": "@scolladon/tsgit"
 									}
 								},
 								{
-									"id": 8866,
+									"id": 8877,
 									"name": "prefix",
 									"variant": "param",
 									"kind": 32768,
@@ -39550,14 +39731,14 @@
 					]
 				},
 				{
-					"id": 8711,
+					"id": 8722,
 					"name": "foldEwahStream",
 					"variant": "declaration",
 					"kind": 64,
 					"flags": {},
 					"signatures": [
 						{
-							"id": 8712,
+							"id": 8723,
 							"name": "foldEwahStream",
 							"variant": "signature",
 							"kind": 4096,
@@ -39572,7 +39753,7 @@
 							},
 							"parameters": [
 								{
-									"id": 8713,
+									"id": 8724,
 									"name": "bytes",
 									"variant": "param",
 									"kind": 32768,
@@ -39589,7 +39770,7 @@
 									}
 								},
 								{
-									"id": 8714,
+									"id": 8725,
 									"name": "view",
 									"variant": "param",
 									"kind": 32768,
@@ -39606,20 +39787,20 @@
 									}
 								},
 								{
-									"id": 8715,
+									"id": 8726,
 									"name": "stream",
 									"variant": "param",
 									"kind": 32768,
 									"flags": {},
 									"type": {
 										"type": "reference",
-										"target": 8706,
+										"target": 8717,
 										"name": "EwahStream",
 										"package": "@scolladon/tsgit"
 									}
 								},
 								{
-									"id": 8716,
+									"id": 8727,
 									"name": "into",
 									"variant": "param",
 									"kind": 32768,
@@ -39636,7 +39817,7 @@
 									}
 								},
 								{
-									"id": 8717,
+									"id": 8728,
 									"name": "op",
 									"variant": "param",
 									"kind": 32768,
@@ -39868,21 +40049,21 @@
 					]
 				},
 				{
-					"id": 8681,
+					"id": 8692,
 					"name": "invalidDelta",
 					"variant": "declaration",
 					"kind": 64,
 					"flags": {},
 					"signatures": [
 						{
-							"id": 8682,
+							"id": 8693,
 							"name": "invalidDelta",
 							"variant": "signature",
 							"kind": 4096,
 							"flags": {},
 							"parameters": [
 								{
-									"id": 8683,
+									"id": 8694,
 									"name": "reason",
 									"variant": "param",
 									"kind": 32768,
@@ -40019,34 +40200,34 @@
 					]
 				},
 				{
-					"id": 8684,
+					"id": 8695,
 					"name": "invalidMultiPackIndex",
 					"variant": "declaration",
 					"kind": 64,
 					"flags": {},
 					"signatures": [
 						{
-							"id": 8685,
+							"id": 8696,
 							"name": "invalidMultiPackIndex",
 							"variant": "signature",
 							"kind": 4096,
 							"flags": {},
 							"parameters": [
 								{
-									"id": 8686,
+									"id": 8697,
 									"name": "check",
 									"variant": "param",
 									"kind": 32768,
 									"flags": {},
 									"type": {
 										"type": "reference",
-										"target": 8650,
+										"target": 8661,
 										"name": "MidxCheck",
 										"package": "@scolladon/tsgit"
 									}
 								},
 								{
-									"id": 8687,
+									"id": 8698,
 									"name": "reason",
 									"variant": "param",
 									"kind": 32768,
@@ -40067,34 +40248,34 @@
 					]
 				},
 				{
-					"id": 8688,
+					"id": 8699,
 					"name": "invalidPackBitmap",
 					"variant": "declaration",
 					"kind": 64,
 					"flags": {},
 					"signatures": [
 						{
-							"id": 8689,
+							"id": 8700,
 							"name": "invalidPackBitmap",
 							"variant": "signature",
 							"kind": 4096,
 							"flags": {},
 							"parameters": [
 								{
-									"id": 8690,
+									"id": 8701,
 									"name": "check",
 									"variant": "param",
 									"kind": 32768,
 									"flags": {},
 									"type": {
 										"type": "reference",
-										"target": 8649,
+										"target": 8660,
 										"name": "BitmapCheck",
 										"package": "@scolladon/tsgit"
 									}
 								},
 								{
-									"id": 8691,
+									"id": 8702,
 									"name": "reason",
 									"variant": "param",
 									"kind": 32768,
@@ -40150,21 +40331,21 @@
 					]
 				},
 				{
-					"id": 8692,
+					"id": 8703,
 					"name": "invalidPackEntry",
 					"variant": "declaration",
 					"kind": 64,
 					"flags": {},
 					"signatures": [
 						{
-							"id": 8693,
+							"id": 8704,
 							"name": "invalidPackEntry",
 							"variant": "signature",
 							"kind": 4096,
 							"flags": {},
 							"parameters": [
 								{
-									"id": 8694,
+									"id": 8705,
 									"name": "offset",
 									"variant": "param",
 									"kind": 32768,
@@ -40175,7 +40356,7 @@
 									}
 								},
 								{
-									"id": 8695,
+									"id": 8706,
 									"name": "reason",
 									"variant": "param",
 									"kind": 32768,
@@ -40196,21 +40377,21 @@
 					]
 				},
 				{
-					"id": 8696,
+					"id": 8707,
 					"name": "invalidPackHeader",
 					"variant": "declaration",
 					"kind": 64,
 					"flags": {},
 					"signatures": [
 						{
-							"id": 8697,
+							"id": 8708,
 							"name": "invalidPackHeader",
 							"variant": "signature",
 							"kind": 4096,
 							"flags": {},
 							"parameters": [
 								{
-									"id": 8698,
+									"id": 8709,
 									"name": "reason",
 									"variant": "param",
 									"kind": 32768,
@@ -40231,21 +40412,21 @@
 					]
 				},
 				{
-					"id": 8699,
+					"id": 8710,
 					"name": "invalidPackIndex",
 					"variant": "declaration",
 					"kind": 64,
 					"flags": {},
 					"signatures": [
 						{
-							"id": 8700,
+							"id": 8711,
 							"name": "invalidPackIndex",
 							"variant": "signature",
 							"kind": 4096,
 							"flags": {},
 							"parameters": [
 								{
-									"id": 8701,
+									"id": 8712,
 									"name": "reason",
 									"variant": "param",
 									"kind": 32768,
@@ -40266,34 +40447,34 @@
 					]
 				},
 				{
-					"id": 8702,
+					"id": 8713,
 					"name": "invalidPackRevIndex",
 					"variant": "declaration",
 					"kind": 64,
 					"flags": {},
 					"signatures": [
 						{
-							"id": 8703,
+							"id": 8714,
 							"name": "invalidPackRevIndex",
 							"variant": "signature",
 							"kind": 4096,
 							"flags": {},
 							"parameters": [
 								{
-									"id": 8704,
+									"id": 8715,
 									"name": "check",
 									"variant": "param",
 									"kind": 32768,
 									"flags": {},
 									"type": {
 										"type": "reference",
-										"target": 8651,
+										"target": 8662,
 										"name": "RevIndexCheck",
 										"package": "@scolladon/tsgit"
 									}
 								},
 								{
-									"id": 8705,
+									"id": 8716,
 									"name": "reason",
 									"variant": "param",
 									"kind": 32768,
@@ -40643,14 +40824,14 @@
 					]
 				},
 				{
-					"id": 8775,
+					"id": 8786,
 					"name": "lookupMidxPosition",
 					"variant": "declaration",
 					"kind": 64,
 					"flags": {},
 					"signatures": [
 						{
-							"id": 8776,
+							"id": 8787,
 							"name": "lookupMidxPosition",
 							"variant": "signature",
 							"kind": 4096,
@@ -40689,20 +40870,20 @@
 							},
 							"parameters": [
 								{
-									"id": 8777,
+									"id": 8788,
 									"name": "midx",
 									"variant": "param",
 									"kind": 32768,
 									"flags": {},
 									"type": {
 										"type": "reference",
-										"target": 8760,
+										"target": 8771,
 										"name": "MultiPackIndex",
 										"package": "@scolladon/tsgit"
 									}
 								},
 								{
-									"id": 8778,
+									"id": 8789,
 									"name": "id",
 									"variant": "param",
 									"kind": 32768,
@@ -40732,14 +40913,14 @@
 					]
 				},
 				{
-					"id": 8779,
+					"id": 8790,
 					"name": "lookupMultiPackIndex",
 					"variant": "declaration",
 					"kind": 64,
 					"flags": {},
 					"signatures": [
 						{
-							"id": 8780,
+							"id": 8791,
 							"name": "lookupMultiPackIndex",
 							"variant": "signature",
 							"kind": 4096,
@@ -40770,20 +40951,20 @@
 							},
 							"parameters": [
 								{
-									"id": 8781,
+									"id": 8792,
 									"name": "midx",
 									"variant": "param",
 									"kind": 32768,
 									"flags": {},
 									"type": {
 										"type": "reference",
-										"target": 8760,
+										"target": 8771,
 										"name": "MultiPackIndex",
 										"package": "@scolladon/tsgit"
 									}
 								},
 								{
-									"id": 8782,
+									"id": 8793,
 									"name": "id",
 									"variant": "param",
 									"kind": 32768,
@@ -40801,7 +40982,7 @@
 								"types": [
 									{
 										"type": "reference",
-										"target": 8757,
+										"target": 8768,
 										"name": "MidxEntry",
 										"package": "@scolladon/tsgit"
 									},
@@ -40815,34 +40996,34 @@
 					]
 				},
 				{
-					"id": 8867,
+					"id": 8878,
 					"name": "lookupPackIndex",
 					"variant": "declaration",
 					"kind": 64,
 					"flags": {},
 					"signatures": [
 						{
-							"id": 8868,
+							"id": 8879,
 							"name": "lookupPackIndex",
 							"variant": "signature",
 							"kind": 4096,
 							"flags": {},
 							"parameters": [
 								{
-									"id": 8869,
+									"id": 8880,
 									"name": "index",
 									"variant": "param",
 									"kind": 32768,
 									"flags": {},
 									"type": {
 										"type": "reference",
-										"target": 8852,
+										"target": 8863,
 										"name": "PackIndex",
 										"package": "@scolladon/tsgit"
 									}
 								},
 								{
-									"id": 8870,
+									"id": 8881,
 									"name": "id",
 									"variant": "param",
 									"kind": 32768,
@@ -40872,14 +41053,14 @@
 					]
 				},
 				{
-					"id": 8871,
+					"id": 8882,
 					"name": "lookupPackIndexPosition",
 					"variant": "declaration",
 					"kind": 64,
 					"flags": {},
 					"signatures": [
 						{
-							"id": 8872,
+							"id": 8883,
 							"name": "lookupPackIndexPosition",
 							"variant": "signature",
 							"kind": 4096,
@@ -40910,20 +41091,20 @@
 							},
 							"parameters": [
 								{
-									"id": 8873,
+									"id": 8884,
 									"name": "index",
 									"variant": "param",
 									"kind": 32768,
 									"flags": {},
 									"type": {
 										"type": "reference",
-										"target": 8852,
+										"target": 8863,
 										"name": "PackIndex",
 										"package": "@scolladon/tsgit"
 									}
 								},
 								{
-									"id": 8874,
+									"id": 8885,
 									"name": "id",
 									"variant": "param",
 									"kind": 32768,
@@ -41377,14 +41558,14 @@
 					]
 				},
 				{
-					"id": 8718,
+					"id": 8729,
 					"name": "maxSetBitPosition",
 					"variant": "declaration",
 					"kind": 64,
 					"flags": {},
 					"signatures": [
 						{
-							"id": 8719,
+							"id": 8730,
 							"name": "maxSetBitPosition",
 							"variant": "signature",
 							"kind": 4096,
@@ -41423,7 +41604,7 @@
 							},
 							"parameters": [
 								{
-									"id": 8720,
+									"id": 8731,
 									"name": "bytes",
 									"variant": "param",
 									"kind": 32768,
@@ -41440,7 +41621,7 @@
 									}
 								},
 								{
-									"id": 8721,
+									"id": 8732,
 									"name": "view",
 									"variant": "param",
 									"kind": 32768,
@@ -41457,14 +41638,14 @@
 									}
 								},
 								{
-									"id": 8722,
+									"id": 8733,
 									"name": "stream",
 									"variant": "param",
 									"kind": 32768,
 									"flags": {},
 									"type": {
 										"type": "reference",
-										"target": 8706,
+										"target": 8717,
 										"name": "EwahStream",
 										"package": "@scolladon/tsgit"
 									}
@@ -41878,14 +42059,14 @@
 					]
 				},
 				{
-					"id": 8783,
+					"id": 8794,
 					"name": "midxEntryAt",
 					"variant": "declaration",
 					"kind": 64,
 					"flags": {},
 					"signatures": [
 						{
-							"id": 8784,
+							"id": 8795,
 							"name": "midxEntryAt",
 							"variant": "signature",
 							"kind": 4096,
@@ -41932,20 +42113,20 @@
 							},
 							"parameters": [
 								{
-									"id": 8785,
+									"id": 8796,
 									"name": "midx",
 									"variant": "param",
 									"kind": 32768,
 									"flags": {},
 									"type": {
 										"type": "reference",
-										"target": 8760,
+										"target": 8771,
 										"name": "MultiPackIndex",
 										"package": "@scolladon/tsgit"
 									}
 								},
 								{
-									"id": 8786,
+									"id": 8797,
 									"name": "index",
 									"variant": "param",
 									"kind": 32768,
@@ -41958,7 +42139,7 @@
 							],
 							"type": {
 								"type": "reference",
-								"target": 8757,
+								"target": 8768,
 								"name": "MidxEntry",
 								"package": "@scolladon/tsgit"
 							}
@@ -41966,14 +42147,14 @@
 					]
 				},
 				{
-					"id": 8787,
+					"id": 8798,
 					"name": "midxOidAt",
 					"variant": "declaration",
 					"kind": 64,
 					"flags": {},
 					"signatures": [
 						{
-							"id": 8788,
+							"id": 8799,
 							"name": "midxOidAt",
 							"variant": "signature",
 							"kind": 4096,
@@ -41996,20 +42177,20 @@
 							},
 							"parameters": [
 								{
-									"id": 8789,
+									"id": 8800,
 									"name": "midx",
 									"variant": "param",
 									"kind": 32768,
 									"flags": {},
 									"type": {
 										"type": "reference",
-										"target": 8760,
+										"target": 8771,
 										"name": "MultiPackIndex",
 										"package": "@scolladon/tsgit"
 									}
 								},
 								{
-									"id": 8790,
+									"id": 8801,
 									"name": "index",
 									"variant": "param",
 									"kind": 32768,
@@ -42030,14 +42211,14 @@
 					]
 				},
 				{
-					"id": 8791,
+					"id": 8802,
 					"name": "midxReverseIndexAt",
 					"variant": "declaration",
 					"kind": 64,
 					"flags": {},
 					"signatures": [
 						{
-							"id": 8792,
+							"id": 8803,
 							"name": "midxReverseIndexAt",
 							"variant": "signature",
 							"kind": 4096,
@@ -42108,20 +42289,20 @@
 							},
 							"parameters": [
 								{
-									"id": 8793,
+									"id": 8804,
 									"name": "midx",
 									"variant": "param",
 									"kind": 32768,
 									"flags": {},
 									"type": {
 										"type": "reference",
-										"target": 8760,
+										"target": 8771,
 										"name": "MultiPackIndex",
 										"package": "@scolladon/tsgit"
 									}
 								},
 								{
-									"id": 8794,
+									"id": 8805,
 									"name": "position",
 									"variant": "param",
 									"kind": 32768,
@@ -42140,14 +42321,14 @@
 					]
 				},
 				{
-					"id": 8795,
+					"id": 8806,
 					"name": "midxReverseIndexPositions",
 					"variant": "declaration",
 					"kind": 64,
 					"flags": {},
 					"signatures": [
 						{
-							"id": 8796,
+							"id": 8807,
 							"name": "midxReverseIndexPositions",
 							"variant": "signature",
 							"kind": 4096,
@@ -42186,14 +42367,14 @@
 							},
 							"parameters": [
 								{
-									"id": 8797,
+									"id": 8808,
 									"name": "midx",
 									"variant": "param",
 									"kind": 32768,
 									"flags": {},
 									"type": {
 										"type": "reference",
-										"target": 8760,
+										"target": 8771,
 										"name": "MultiPackIndex",
 										"package": "@scolladon/tsgit"
 									}
@@ -42802,14 +42983,14 @@
 					]
 				},
 				{
-					"id": 8574,
+					"id": 8585,
 					"name": "nonConeMatcher",
 					"variant": "declaration",
 					"kind": 64,
 					"flags": {},
 					"signatures": [
 						{
-							"id": 8575,
+							"id": 8586,
 							"name": "nonConeMatcher",
 							"variant": "signature",
 							"kind": 4096,
@@ -42824,7 +43005,7 @@
 							},
 							"parameters": [
 								{
-									"id": 8576,
+									"id": 8587,
 									"name": "rules",
 									"variant": "param",
 									"kind": 32768,
@@ -42836,7 +43017,7 @@
 											"type": "array",
 											"elementType": {
 												"type": "reference",
-												"target": 8590,
+												"target": 8601,
 												"name": "SparseRule",
 												"package": "@scolladon/tsgit"
 											}
@@ -43026,21 +43207,21 @@
 					]
 				},
 				{
-					"id": 8533,
+					"id": 8544,
 					"name": "notARepository",
 					"variant": "declaration",
 					"kind": 64,
 					"flags": {},
 					"signatures": [
 						{
-							"id": 8534,
+							"id": 8545,
 							"name": "notARepository",
 							"variant": "signature",
 							"kind": 4096,
 							"flags": {},
 							"parameters": [
 								{
-									"id": 8535,
+									"id": 8546,
 									"name": "path",
 									"variant": "param",
 									"kind": 32768,
@@ -43122,14 +43303,14 @@
 					]
 				},
 				{
-					"id": 8875,
+					"id": 8886,
 					"name": "objectIdAt",
 					"variant": "declaration",
 					"kind": 64,
 					"flags": {},
 					"signatures": [
 						{
-							"id": 8876,
+							"id": 8887,
 							"name": "objectIdAt",
 							"variant": "signature",
 							"kind": 4096,
@@ -43192,20 +43373,20 @@
 							},
 							"parameters": [
 								{
-									"id": 8877,
+									"id": 8888,
 									"name": "index",
 									"variant": "param",
 									"kind": 32768,
 									"flags": {},
 									"type": {
 										"type": "reference",
-										"target": 8852,
+										"target": 8863,
 										"name": "PackIndex",
 										"package": "@scolladon/tsgit"
 									}
 								},
 								{
-									"id": 8878,
+									"id": 8889,
 									"name": "position",
 									"variant": "param",
 									"kind": 32768,
@@ -43278,14 +43459,14 @@
 					]
 				},
 				{
-					"id": 8837,
+					"id": 8848,
 					"name": "packEntryTypeToObjectType",
 					"variant": "declaration",
 					"kind": 64,
 					"flags": {},
 					"signatures": [
 						{
-							"id": 8838,
+							"id": 8849,
 							"name": "packEntryTypeToObjectType",
 							"variant": "signature",
 							"kind": 4096,
@@ -43300,14 +43481,14 @@
 							},
 							"parameters": [
 								{
-									"id": 8839,
+									"id": 8850,
 									"name": "type",
 									"variant": "param",
 									"kind": 32768,
 									"flags": {},
 									"type": {
 										"type": "reference",
-										"target": 8806,
+										"target": 8817,
 										"name": "BasePackEntryType",
 										"package": "@scolladon/tsgit"
 									}
@@ -43521,14 +43702,14 @@
 					]
 				},
 				{
-					"id": 8556,
+					"id": 8567,
 					"name": "parseCone",
 					"variant": "declaration",
 					"kind": 64,
 					"flags": {},
 					"signatures": [
 						{
-							"id": 8557,
+							"id": 8568,
 							"name": "parseCone",
 							"variant": "signature",
 							"kind": 4096,
@@ -43551,7 +43732,7 @@
 							},
 							"parameters": [
 								{
-									"id": 8558,
+									"id": 8569,
 									"name": "text",
 									"variant": "param",
 									"kind": 32768,
@@ -43568,14 +43749,14 @@
 									{
 										"type": "reflection",
 										"declaration": {
-											"id": 8559,
+											"id": 8570,
 											"name": "__type",
 											"variant": "declaration",
 											"kind": 65536,
 											"flags": {},
 											"children": [
 												{
-													"id": 8560,
+													"id": 8571,
 													"name": "mode",
 													"variant": "declaration",
 													"kind": 1024,
@@ -43588,7 +43769,7 @@
 													}
 												},
 												{
-													"id": 8562,
+													"id": 8573,
 													"name": "parents",
 													"variant": "declaration",
 													"kind": 1024,
@@ -43621,7 +43802,7 @@
 													}
 												},
 												{
-													"id": 8561,
+													"id": 8572,
 													"name": "recursive",
 													"variant": "declaration",
 													"kind": 1024,
@@ -43658,9 +43839,9 @@
 												{
 													"title": "Properties",
 													"children": [
-														8560,
-														8562,
-														8561
+														8571,
+														8573,
+														8572
 													]
 												}
 											]
@@ -43743,21 +43924,21 @@
 					]
 				},
 				{
-					"id": 8643,
+					"id": 8654,
 					"name": "parseDelta",
 					"variant": "declaration",
 					"kind": 64,
 					"flags": {},
 					"signatures": [
 						{
-							"id": 8644,
+							"id": 8655,
 							"name": "parseDelta",
 							"variant": "signature",
 							"kind": 4096,
 							"flags": {},
 							"parameters": [
 								{
-									"id": 8645,
+									"id": 8656,
 									"name": "delta",
 									"variant": "param",
 									"kind": 32768,
@@ -43776,7 +43957,7 @@
 							],
 							"type": {
 								"type": "reference",
-								"target": 8632,
+								"target": 8643,
 								"name": "DeltaParsed",
 								"package": "@scolladon/tsgit"
 							}
@@ -43915,14 +44096,14 @@
 					]
 				},
 				{
-					"id": 8798,
+					"id": 8809,
 					"name": "parseMultiPackIndex",
 					"variant": "declaration",
 					"kind": 64,
 					"flags": {},
 					"signatures": [
 						{
-							"id": 8799,
+							"id": 8810,
 							"name": "parseMultiPackIndex",
 							"variant": "signature",
 							"kind": 4096,
@@ -43953,7 +44134,7 @@
 							},
 							"parameters": [
 								{
-									"id": 8800,
+									"id": 8811,
 									"name": "bytes",
 									"variant": "param",
 									"kind": 32768,
@@ -43970,7 +44151,7 @@
 									}
 								},
 								{
-									"id": 8801,
+									"id": 8812,
 									"name": "digestLength",
 									"variant": "param",
 									"kind": 32768,
@@ -43983,7 +44164,7 @@
 							],
 							"type": {
 								"type": "reference",
-								"target": 8760,
+								"target": 8771,
 								"name": "MultiPackIndex",
 								"package": "@scolladon/tsgit"
 							}
@@ -44050,14 +44231,14 @@
 					]
 				},
 				{
-					"id": 8620,
+					"id": 8631,
 					"name": "parsePackBitmap",
 					"variant": "declaration",
 					"kind": 64,
 					"flags": {},
 					"signatures": [
 						{
-							"id": 8621,
+							"id": 8632,
 							"name": "parsePackBitmap",
 							"variant": "signature",
 							"kind": 4096,
@@ -44112,7 +44293,7 @@
 							},
 							"parameters": [
 								{
-									"id": 8622,
+									"id": 8633,
 									"name": "bytes",
 									"variant": "param",
 									"kind": 32768,
@@ -44129,7 +44310,7 @@
 									}
 								},
 								{
-									"id": 8623,
+									"id": 8634,
 									"name": "digestLength",
 									"variant": "param",
 									"kind": 32768,
@@ -44142,7 +44323,7 @@
 							],
 							"type": {
 								"type": "reference",
-								"target": 8607,
+								"target": 8618,
 								"name": "PackBitmap",
 								"package": "@scolladon/tsgit"
 							}
@@ -44185,21 +44366,21 @@
 					]
 				},
 				{
-					"id": 8840,
+					"id": 8851,
 					"name": "parsePackEntryHeader",
 					"variant": "declaration",
 					"kind": 64,
 					"flags": {},
 					"signatures": [
 						{
-							"id": 8841,
+							"id": 8852,
 							"name": "parsePackEntryHeader",
 							"variant": "signature",
 							"kind": 4096,
 							"flags": {},
 							"parameters": [
 								{
-									"id": 8842,
+									"id": 8853,
 									"name": "bytes",
 									"variant": "param",
 									"kind": 32768,
@@ -44216,7 +44397,7 @@
 									}
 								},
 								{
-									"id": 8843,
+									"id": 8854,
 									"name": "offset",
 									"variant": "param",
 									"kind": 32768,
@@ -44227,7 +44408,7 @@
 									}
 								},
 								{
-									"id": 8844,
+									"id": 8855,
 									"name": "hash",
 									"variant": "param",
 									"kind": 32768,
@@ -44242,7 +44423,7 @@
 							],
 							"type": {
 								"type": "reference",
-								"target": 8812,
+								"target": 8823,
 								"name": "PackEntryHeader",
 								"package": "@scolladon/tsgit"
 							}
@@ -44250,21 +44431,21 @@
 					]
 				},
 				{
-					"id": 8845,
+					"id": 8856,
 					"name": "parsePackHeader",
 					"variant": "declaration",
 					"kind": 64,
 					"flags": {},
 					"signatures": [
 						{
-							"id": 8846,
+							"id": 8857,
 							"name": "parsePackHeader",
 							"variant": "signature",
 							"kind": 4096,
 							"flags": {},
 							"parameters": [
 								{
-									"id": 8847,
+									"id": 8858,
 									"name": "bytes",
 									"variant": "param",
 									"kind": 32768,
@@ -44283,7 +44464,7 @@
 							],
 							"type": {
 								"type": "reference",
-								"target": 8814,
+								"target": 8825,
 								"name": "PackHeader",
 								"package": "@scolladon/tsgit"
 							}
@@ -44291,21 +44472,21 @@
 					]
 				},
 				{
-					"id": 8879,
+					"id": 8890,
 					"name": "parsePackIndex",
 					"variant": "declaration",
 					"kind": 64,
 					"flags": {},
 					"signatures": [
 						{
-							"id": 8880,
+							"id": 8891,
 							"name": "parsePackIndex",
 							"variant": "signature",
 							"kind": 4096,
 							"flags": {},
 							"parameters": [
 								{
-									"id": 8881,
+									"id": 8892,
 									"name": "bytes",
 									"variant": "param",
 									"kind": 32768,
@@ -44324,7 +44505,7 @@
 							],
 							"type": {
 								"type": "reference",
-								"target": 8852,
+								"target": 8863,
 								"name": "PackIndex",
 								"package": "@scolladon/tsgit"
 							}
@@ -44332,14 +44513,14 @@
 					]
 				},
 				{
-					"id": 8918,
+					"id": 8929,
 					"name": "parsePackRevIndex",
 					"variant": "declaration",
 					"kind": 64,
 					"flags": {},
 					"signatures": [
 						{
-							"id": 8919,
+							"id": 8930,
 							"name": "parsePackRevIndex",
 							"variant": "signature",
 							"kind": 4096,
@@ -44386,7 +44567,7 @@
 							},
 							"parameters": [
 								{
-									"id": 8920,
+									"id": 8931,
 									"name": "bytes",
 									"variant": "param",
 									"kind": 32768,
@@ -44403,7 +44584,7 @@
 									}
 								},
 								{
-									"id": 8921,
+									"id": 8932,
 									"name": "digestLength",
 									"variant": "param",
 									"kind": 32768,
@@ -44414,7 +44595,7 @@
 									}
 								},
 								{
-									"id": 8922,
+									"id": 8933,
 									"name": "objectCount",
 									"variant": "param",
 									"kind": 32768,
@@ -44427,7 +44608,7 @@
 							],
 							"type": {
 								"type": "reference",
-								"target": 8910,
+								"target": 8921,
 								"name": "PackRevIndex",
 								"package": "@scolladon/tsgit"
 							}
@@ -44764,14 +44945,14 @@
 					]
 				},
 				{
-					"id": 8585,
+					"id": 8596,
 					"name": "parseSparseCheckout",
 					"variant": "declaration",
 					"kind": 64,
 					"flags": {},
 					"signatures": [
 						{
-							"id": 8586,
+							"id": 8597,
 							"name": "parseSparseCheckout",
 							"variant": "signature",
 							"kind": 4096,
@@ -44810,7 +44991,7 @@
 							},
 							"parameters": [
 								{
-									"id": 8587,
+									"id": 8598,
 									"name": "text",
 									"variant": "param",
 									"kind": 32768,
@@ -44821,7 +45002,7 @@
 									}
 								},
 								{
-									"id": 8588,
+									"id": 8599,
 									"name": "coneRequested",
 									"variant": "param",
 									"kind": 32768,
@@ -44834,7 +45015,7 @@
 							],
 							"type": {
 								"type": "reference",
-								"target": 8582,
+								"target": 8593,
 								"name": "ParsedSparseCheckout",
 								"package": "@scolladon/tsgit"
 							}
@@ -45501,14 +45682,14 @@
 					]
 				},
 				{
-					"id": 8646,
+					"id": 8657,
 					"name": "readDeltaTargetSize",
 					"variant": "declaration",
 					"kind": 64,
 					"flags": {},
 					"signatures": [
 						{
-							"id": 8647,
+							"id": 8658,
 							"name": "readDeltaTargetSize",
 							"variant": "signature",
 							"kind": 4096,
@@ -45555,7 +45736,7 @@
 							},
 							"parameters": [
 								{
-									"id": 8648,
+									"id": 8659,
 									"name": "delta",
 									"variant": "param",
 									"kind": 32768,
@@ -45580,14 +45761,14 @@
 					]
 				},
 				{
-					"id": 8723,
+					"id": 8734,
 					"name": "readEwahStream",
 					"variant": "declaration",
 					"kind": 64,
 					"flags": {},
 					"signatures": [
 						{
-							"id": 8724,
+							"id": 8735,
 							"name": "readEwahStream",
 							"variant": "signature",
 							"kind": 4096,
@@ -45618,7 +45799,7 @@
 							},
 							"parameters": [
 								{
-									"id": 8725,
+									"id": 8736,
 									"name": "bytes",
 									"variant": "param",
 									"kind": 32768,
@@ -45635,7 +45816,7 @@
 									}
 								},
 								{
-									"id": 8726,
+									"id": 8737,
 									"name": "view",
 									"variant": "param",
 									"kind": 32768,
@@ -45652,7 +45833,7 @@
 									}
 								},
 								{
-									"id": 8727,
+									"id": 8738,
 									"name": "at",
 									"variant": "param",
 									"kind": 32768,
@@ -45665,7 +45846,7 @@
 							],
 							"type": {
 								"type": "reference",
-								"target": 8706,
+								"target": 8717,
 								"name": "EwahStream",
 								"package": "@scolladon/tsgit"
 							}
@@ -46267,14 +46448,14 @@
 					]
 				},
 				{
-					"id": 8926,
+					"id": 8937,
 					"name": "revIndexPositionAt",
 					"variant": "declaration",
 					"kind": 64,
 					"flags": {},
 					"signatures": [
 						{
-							"id": 8927,
+							"id": 8938,
 							"name": "revIndexPositionAt",
 							"variant": "signature",
 							"kind": 4096,
@@ -46305,20 +46486,20 @@
 							},
 							"parameters": [
 								{
-									"id": 8928,
+									"id": 8939,
 									"name": "rev",
 									"variant": "param",
 									"kind": 32768,
 									"flags": {},
 									"type": {
 										"type": "reference",
-										"target": 8910,
+										"target": 8921,
 										"name": "PackRevIndex",
 										"package": "@scolladon/tsgit"
 									}
 								},
 								{
-									"id": 8929,
+									"id": 8940,
 									"name": "p",
 									"variant": "param",
 									"kind": 32768,
@@ -46600,14 +46781,14 @@
 					]
 				},
 				{
-					"id": 8563,
+					"id": 8574,
 					"name": "serializeCone",
 					"variant": "declaration",
 					"kind": 64,
 					"flags": {},
 					"signatures": [
 						{
-							"id": 8564,
+							"id": 8575,
 							"name": "serializeCone",
 							"variant": "signature",
 							"kind": 4096,
@@ -46646,7 +46827,7 @@
 							},
 							"parameters": [
 								{
-									"id": 8565,
+									"id": 8576,
 									"name": "spec",
 									"variant": "param",
 									"kind": 32768,
@@ -46654,14 +46835,14 @@
 									"type": {
 										"type": "reflection",
 										"declaration": {
-											"id": 8566,
+											"id": 8577,
 											"name": "__type",
 											"variant": "declaration",
 											"kind": 65536,
 											"flags": {},
 											"children": [
 												{
-													"id": 8567,
+													"id": 8578,
 													"name": "mode",
 													"variant": "declaration",
 													"kind": 1024,
@@ -46674,7 +46855,7 @@
 													}
 												},
 												{
-													"id": 8569,
+													"id": 8580,
 													"name": "parents",
 													"variant": "declaration",
 													"kind": 1024,
@@ -46707,7 +46888,7 @@
 													}
 												},
 												{
-													"id": 8568,
+													"id": 8579,
 													"name": "recursive",
 													"variant": "declaration",
 													"kind": 1024,
@@ -46744,9 +46925,9 @@
 												{
 													"title": "Properties",
 													"children": [
-														8567,
-														8569,
-														8568
+														8578,
+														8580,
+														8579
 													]
 												}
 											]
@@ -46832,21 +47013,21 @@
 					]
 				},
 				{
-					"id": 8902,
+					"id": 8913,
 					"name": "serializePackfile",
 					"variant": "declaration",
 					"kind": 64,
 					"flags": {},
 					"signatures": [
 						{
-							"id": 8903,
+							"id": 8914,
 							"name": "serializePackfile",
 							"variant": "signature",
 							"kind": 4096,
 							"flags": {},
 							"parameters": [
 								{
-									"id": 8904,
+									"id": 8915,
 									"name": "entries",
 									"variant": "param",
 									"kind": 32768,
@@ -46858,7 +47039,7 @@
 											"type": "array",
 											"elementType": {
 												"type": "reference",
-												"target": 8898,
+												"target": 8909,
 												"name": "PackWriterEntry",
 												"package": "@scolladon/tsgit"
 											}
@@ -46868,7 +47049,7 @@
 							],
 							"type": {
 								"type": "reference",
-								"target": 8891,
+								"target": 8902,
 								"name": "PackfileResult",
 								"package": "@scolladon/tsgit"
 							}
@@ -46876,21 +47057,21 @@
 					]
 				},
 				{
-					"id": 8848,
+					"id": 8859,
 					"name": "serializePackHeader",
 					"variant": "declaration",
 					"kind": 64,
 					"flags": {},
 					"signatures": [
 						{
-							"id": 8849,
+							"id": 8860,
 							"name": "serializePackHeader",
 							"variant": "signature",
 							"kind": 4096,
 							"flags": {},
 							"parameters": [
 								{
-									"id": 8850,
+									"id": 8861,
 									"name": "version",
 									"variant": "param",
 									"kind": 32768,
@@ -46901,7 +47082,7 @@
 									}
 								},
 								{
-									"id": 8851,
+									"id": 8862,
 									"name": "objectCount",
 									"variant": "param",
 									"kind": 32768,
@@ -46926,21 +47107,21 @@
 					]
 				},
 				{
-					"id": 8905,
+					"id": 8916,
 					"name": "serializePackIndex",
 					"variant": "declaration",
 					"kind": 64,
 					"flags": {},
 					"signatures": [
 						{
-							"id": 8906,
+							"id": 8917,
 							"name": "serializePackIndex",
 							"variant": "signature",
 							"kind": 4096,
 							"flags": {},
 							"parameters": [
 								{
-									"id": 8907,
+									"id": 8918,
 									"name": "entries",
 									"variant": "param",
 									"kind": 32768,
@@ -46952,7 +47133,7 @@
 											"type": "array",
 											"elementType": {
 												"type": "reference",
-												"target": 8894,
+												"target": 8905,
 												"name": "PackIndexWriterEntry",
 												"package": "@scolladon/tsgit"
 											}
@@ -46960,7 +47141,7 @@
 									}
 								},
 								{
-									"id": 8908,
+									"id": 8919,
 									"name": "packChecksum",
 									"variant": "param",
 									"kind": 32768,
@@ -46977,7 +47158,7 @@
 									}
 								},
 								{
-									"id": 8909,
+									"id": 8920,
 									"name": "presorted",
 									"variant": "param",
 									"kind": 32768,
@@ -46991,7 +47172,7 @@
 											"type": "array",
 											"elementType": {
 												"type": "reference",
-												"target": 8882,
+												"target": 8893,
 												"name": "SortedEntry",
 												"package": "@scolladon/tsgit"
 											}
@@ -47013,14 +47194,14 @@
 					]
 				},
 				{
-					"id": 8930,
+					"id": 8941,
 					"name": "serializePackRevIndex",
 					"variant": "declaration",
 					"kind": 64,
 					"flags": {},
 					"signatures": [
 						{
-							"id": 8931,
+							"id": 8942,
 							"name": "serializePackRevIndex",
 							"variant": "signature",
 							"kind": 4096,
@@ -47083,7 +47264,7 @@
 							},
 							"parameters": [
 								{
-									"id": 8932,
+									"id": 8943,
 									"name": "entries",
 									"variant": "param",
 									"kind": 32768,
@@ -47095,7 +47276,7 @@
 											"type": "array",
 											"elementType": {
 												"type": "reference",
-												"target": 8894,
+												"target": 8905,
 												"name": "PackIndexWriterEntry",
 												"package": "@scolladon/tsgit"
 											}
@@ -47103,7 +47284,7 @@
 									}
 								},
 								{
-									"id": 8933,
+									"id": 8944,
 									"name": "packChecksum",
 									"variant": "param",
 									"kind": 32768,
@@ -47120,7 +47301,7 @@
 									}
 								},
 								{
-									"id": 8934,
+									"id": 8945,
 									"name": "presorted",
 									"variant": "param",
 									"kind": 32768,
@@ -47134,7 +47315,7 @@
 											"type": "array",
 											"elementType": {
 												"type": "reference",
-												"target": 8882,
+												"target": 8893,
 												"name": "SortedEntry",
 												"package": "@scolladon/tsgit"
 											}
@@ -47365,14 +47546,14 @@
 					]
 				},
 				{
-					"id": 8885,
+					"id": 8896,
 					"name": "sortPackIndexEntries",
 					"variant": "declaration",
 					"kind": 64,
 					"flags": {},
 					"signatures": [
 						{
-							"id": 8886,
+							"id": 8897,
 							"name": "sortPackIndexEntries",
 							"variant": "signature",
 							"kind": 4096,
@@ -47419,7 +47600,7 @@
 							},
 							"parameters": [
 								{
-									"id": 8887,
+									"id": 8898,
 									"name": "entries",
 									"variant": "param",
 									"kind": 32768,
@@ -47431,7 +47612,7 @@
 											"type": "array",
 											"elementType": {
 												"type": "reference",
-												"target": 8894,
+												"target": 8905,
 												"name": "PackIndexWriterEntry",
 												"package": "@scolladon/tsgit"
 											}
@@ -47446,7 +47627,7 @@
 									"type": "array",
 									"elementType": {
 										"type": "reference",
-										"target": 8882,
+										"target": 8893,
 										"name": "SortedEntry",
 										"package": "@scolladon/tsgit"
 									}
@@ -48138,14 +48319,14 @@
 					]
 				},
 				{
-					"id": 8536,
+					"id": 8547,
 					"name": "workTreeConfigInvalid",
 					"variant": "declaration",
 					"kind": 64,
 					"flags": {},
 					"signatures": [
 						{
-							"id": 8537,
+							"id": 8548,
 							"name": "workTreeConfigInvalid",
 							"variant": "signature",
 							"kind": 4096,
@@ -48184,7 +48365,7 @@
 							},
 							"parameters": [
 								{
-									"id": 8538,
+									"id": 8549,
 									"name": "gitDir",
 									"variant": "param",
 									"kind": 32768,
@@ -48205,14 +48386,14 @@
 					]
 				},
 				{
-					"id": 8539,
+					"id": 8550,
 					"name": "workTreeRequired",
 					"variant": "declaration",
 					"kind": 64,
 					"flags": {},
 					"signatures": [
 						{
-							"id": 8540,
+							"id": 8551,
 							"name": "workTreeRequired",
 							"variant": "signature",
 							"kind": 4096,
@@ -48267,7 +48448,7 @@
 							},
 							"parameters": [
 								{
-									"id": 8541,
+									"id": 8552,
 									"name": "operation",
 									"variant": "param",
 									"kind": 32768,
@@ -49535,7 +49716,7 @@
 					"target": 3778
 				},
 				{
-					"id": 8589,
+					"id": 8600,
 					"name": "SparseMatcher",
 					"variant": "reference",
 					"kind": 4194304,
@@ -49726,50 +49907,50 @@
 						8265,
 						8269,
 						8273,
-						8802,
-						8602,
+						8813,
+						8613,
 						7877,
 						7886,
-						8627,
-						8632,
+						8638,
+						8643,
 						8486,
-						8706,
+						8717,
 						7801,
 						7819,
-						8636,
+						8647,
 						8421,
-						8731,
+						8742,
 						8333,
 						7903,
 						7860,
-						8757,
-						8760,
-						8807,
-						8607,
+						8768,
+						8771,
+						8818,
+						8618,
 						8490,
 						8494,
-						8888,
-						8891,
-						8814,
-						8852,
-						8894,
-						8910,
-						8898,
+						8899,
+						8902,
+						8825,
+						8863,
+						8905,
+						8921,
+						8909,
 						8277,
 						7165,
-						8582,
+						8593,
 						8474,
 						8211,
 						8216,
 						8220,
-						8817,
+						8828,
 						8224,
 						8228,
 						8280,
 						8256,
 						8232,
-						8882,
-						8590,
+						8893,
+						8601,
 						8498,
 						7135,
 						7830,
@@ -49791,13 +49972,13 @@
 						8268,
 						7032,
 						7068,
-						8806,
-						8649,
+						8817,
+						8660,
 						7172,
 						7885,
 						7955,
 						7894,
-						8631,
+						8642,
 						652,
 						8195,
 						7826,
@@ -49807,23 +49988,23 @@
 						7843,
 						7918,
 						7919,
-						8650,
+						8661,
 						8166,
 						634,
-						8812,
-						8813,
+						8823,
+						8824,
 						8200,
 						8033,
 						8385,
 						644,
 						8428,
 						8507,
-						8651,
+						8662,
 						8350,
 						8354,
 						8279,
-						8594,
-						8652,
+						8605,
+						8663,
 						8358
 					]
 				},
@@ -49839,16 +50020,16 @@
 						8194,
 						7945,
 						8199,
-						8580,
-						8581,
+						8591,
+						8592,
 						626,
-						8829,
+						8840,
 						8029,
-						8923,
-						8924,
+						8934,
+						8935,
 						639,
 						8210,
-						8925,
+						8936,
 						7675,
 						7876
 					]
@@ -49857,37 +50038,37 @@
 					"title": "Functions",
 					"children": [
 						7856,
-						8527,
-						8639,
+						8538,
+						8650,
 						7525,
-						8530,
-						8617,
+						8541,
+						8628,
 						7527,
 						7531,
 						7534,
-						8542,
+						8553,
 						8296,
 						8322,
 						8240,
 						8243,
 						8246,
-						8577,
+						8588,
 						8300,
 						8325,
 						7537,
 						7540,
-						8570,
+						8581,
 						7100,
-						8728,
-						8549,
+						8739,
+						8560,
 						7543,
 						7548,
 						7554,
 						7558,
 						7562,
 						7564,
-						8624,
-						8752,
+						8635,
+						8763,
 						8179,
 						7103,
 						7760,
@@ -49898,32 +50079,32 @@
 						8108,
 						8110,
 						8328,
-						8822,
-						8825,
+						8833,
+						8836,
 						8185,
 						8188,
 						8191,
-						8860,
+						8871,
 						7109,
 						7112,
-						8863,
-						8711,
+						8874,
+						8722,
 						8022,
 						8163,
 						7115,
 						7118,
 						8112,
-						8681,
+						8692,
 						8115,
 						7850,
 						7853,
-						8684,
-						8688,
-						8453,
-						8692,
-						8696,
+						8695,
 						8699,
-						8702,
+						8453,
+						8703,
+						8707,
+						8710,
+						8713,
 						8119,
 						8456,
 						8122,
@@ -49933,24 +50114,24 @@
 						7572,
 						8480,
 						8501,
-						8775,
-						8779,
-						8867,
-						8871,
+						8786,
+						8790,
+						8878,
+						8882,
 						7788,
 						7793,
 						7805,
 						7810,
 						7575,
-						8718,
+						8729,
 						7949,
 						7579,
 						7864,
 						7962,
-						8783,
-						8787,
-						8791,
-						8795,
+						8794,
+						8798,
+						8802,
+						8806,
 						8131,
 						8133,
 						7583,
@@ -49963,40 +50144,40 @@
 						7611,
 						8025,
 						7122,
-						8574,
+						8585,
 						7615,
 						7620,
 						7623,
 						7125,
-						8533,
+						8544,
 						7625,
 						7627,
-						8875,
+						8886,
 						7630,
-						8837,
+						8848,
 						8303,
 						8381,
 						8030,
-						8556,
+						8567,
 						7169,
-						8643,
+						8654,
 						7827,
 						8459,
 						8337,
-						8798,
+						8809,
 						8175,
-						8620,
+						8631,
 						8468,
-						8840,
-						8845,
-						8879,
-						8918,
+						8851,
+						8856,
+						8890,
+						8929,
 						8249,
 						8409,
 						8412,
 						8308,
 						8252,
-						8585,
+						8596,
 						8311,
 						8340,
 						8343,
@@ -50009,8 +50190,8 @@
 						8140,
 						8143,
 						7642,
-						8646,
-						8723,
+						8657,
+						8734,
 						8347,
 						8483,
 						8400,
@@ -50022,25 +50203,25 @@
 						7656,
 						7868,
 						7872,
-						8926,
+						8937,
 						7659,
 						7663,
 						7666,
 						7669,
 						7672,
 						8415,
-						8563,
+						8574,
 						8462,
 						8471,
-						8902,
-						8848,
-						8905,
-						8930,
+						8913,
+						8859,
+						8916,
+						8941,
 						8418,
 						8465,
 						8424,
 						8148,
-						8885,
+						8896,
 						8355,
 						7679,
 						7682,
@@ -50056,8 +50237,8 @@
 						8160,
 						8504,
 						7694,
-						8536,
-						8539,
+						8547,
+						8550,
 						7838,
 						7158
 					]
@@ -50187,7 +50368,7 @@
 						7745,
 						7720,
 						8017,
-						8589,
+						8600,
 						7732,
 						7780,
 						7778,
@@ -67723,7 +67904,7 @@
 									"type": "array",
 									"elementType": {
 										"type": "reference",
-										"target": 8888,
+										"target": 8899,
 										"name": "PackEntryMeta",
 										"package": "@scolladon/tsgit"
 									}
@@ -73946,7 +74127,7 @@
 							},
 							"type": {
 								"type": "reference",
-								"target": 8731,
+								"target": 8742,
 								"typeArguments": [
 									{
 										"type": "reference",
@@ -74763,7 +74944,7 @@
 							},
 							"type": {
 								"type": "reference",
-								"target": 8731,
+								"target": 8742,
 								"typeArguments": [
 									{
 										"type": "reference",
@@ -117735,7 +117916,7 @@
 							},
 							{
 								"type": "reference",
-								"target": 8652,
+								"target": 8663,
 								"name": "StorageError",
 								"package": "@scolladon/tsgit"
 							},
@@ -195146,752 +195327,752 @@
 		"8527": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/repository/error.ts",
-			"qualifiedName": "alreadyInitialized"
+			"qualifiedName": "__type"
 		},
 		"8528": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/repository/error.ts",
-			"qualifiedName": "alreadyInitialized"
+			"qualifiedName": "__type.code"
 		},
 		"8529": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/repository/error.ts",
-			"qualifiedName": "path"
+			"qualifiedName": "__type.version"
 		},
 		"8530": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/repository/error.ts",
-			"qualifiedName": "bareRepository"
+			"qualifiedName": "__type"
 		},
 		"8531": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/repository/error.ts",
-			"qualifiedName": "bareRepository"
+			"qualifiedName": "__type.code"
 		},
 		"8532": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/repository/error.ts",
-			"qualifiedName": "operation"
+			"qualifiedName": "__type.version"
 		},
 		"8533": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/repository/error.ts",
-			"qualifiedName": "notARepository"
+			"qualifiedName": "__type.extensions"
 		},
 		"8534": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/repository/error.ts",
-			"qualifiedName": "notARepository"
+			"qualifiedName": "__type"
 		},
 		"8535": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/repository/error.ts",
-			"qualifiedName": "path"
+			"qualifiedName": "__type.code"
 		},
 		"8536": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/repository/error.ts",
-			"qualifiedName": "workTreeConfigInvalid"
+			"qualifiedName": "__type.extension"
 		},
 		"8537": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/repository/error.ts",
-			"qualifiedName": "workTreeConfigInvalid"
+			"qualifiedName": "__type.value"
 		},
 		"8538": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/repository/error.ts",
-			"qualifiedName": "gitDir"
+			"qualifiedName": "alreadyInitialized"
 		},
 		"8539": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/repository/error.ts",
-			"qualifiedName": "workTreeRequired"
+			"qualifiedName": "alreadyInitialized"
 		},
 		"8540": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/repository/error.ts",
-			"qualifiedName": "workTreeRequired"
+			"qualifiedName": "path"
 		},
 		"8541": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/repository/error.ts",
-			"qualifiedName": "operation"
+			"qualifiedName": "bareRepository"
 		},
 		"8542": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/sparse/cone.ts",
-			"qualifiedName": "buildConeSpec"
+			"packagePath": "src/domain/repository/error.ts",
+			"qualifiedName": "bareRepository"
 		},
 		"8543": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/domain/repository/error.ts",
+			"qualifiedName": "operation"
+		},
+		"8544": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/domain/repository/error.ts",
+			"qualifiedName": "notARepository"
+		},
+		"8545": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/domain/repository/error.ts",
+			"qualifiedName": "notARepository"
+		},
+		"8546": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/domain/repository/error.ts",
+			"qualifiedName": "path"
+		},
+		"8547": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/domain/repository/error.ts",
+			"qualifiedName": "workTreeConfigInvalid"
+		},
+		"8548": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/domain/repository/error.ts",
+			"qualifiedName": "workTreeConfigInvalid"
+		},
+		"8549": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/domain/repository/error.ts",
+			"qualifiedName": "gitDir"
+		},
+		"8550": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/domain/repository/error.ts",
+			"qualifiedName": "workTreeRequired"
+		},
+		"8551": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/domain/repository/error.ts",
+			"qualifiedName": "workTreeRequired"
+		},
+		"8552": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/domain/repository/error.ts",
+			"qualifiedName": "operation"
+		},
+		"8553": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/sparse/cone.ts",
 			"qualifiedName": "buildConeSpec"
 		},
-		"8544": {
+		"8554": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/domain/sparse/cone.ts",
+			"qualifiedName": "buildConeSpec"
+		},
+		"8555": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/sparse/cone.ts",
 			"qualifiedName": "dirs"
 		},
-		"8545": {
-			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/sparse/sparse-pattern.ts",
-			"qualifiedName": "__type"
-		},
-		"8546": {
-			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/sparse/sparse-pattern.ts",
-			"qualifiedName": "__type.mode"
-		},
-		"8547": {
-			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/sparse/sparse-pattern.ts",
-			"qualifiedName": "__type.recursive"
-		},
-		"8548": {
-			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/sparse/sparse-pattern.ts",
-			"qualifiedName": "__type.parents"
-		},
-		"8549": {
-			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/sparse/cone.ts",
-			"qualifiedName": "coneMatcher"
-		},
-		"8550": {
-			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/sparse/cone.ts",
-			"qualifiedName": "coneMatcher"
-		},
-		"8551": {
-			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/sparse/cone.ts",
-			"qualifiedName": "spec"
-		},
-		"8552": {
-			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/sparse/sparse-pattern.ts",
-			"qualifiedName": "__type"
-		},
-		"8553": {
-			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/sparse/sparse-pattern.ts",
-			"qualifiedName": "__type.mode"
-		},
-		"8554": {
-			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/sparse/sparse-pattern.ts",
-			"qualifiedName": "__type.recursive"
-		},
-		"8555": {
-			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/sparse/sparse-pattern.ts",
-			"qualifiedName": "__type.parents"
-		},
 		"8556": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/sparse/cone.ts",
-			"qualifiedName": "parseCone"
+			"packagePath": "src/domain/sparse/sparse-pattern.ts",
+			"qualifiedName": "__type"
 		},
 		"8557": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/sparse/cone.ts",
-			"qualifiedName": "parseCone"
+			"packagePath": "src/domain/sparse/sparse-pattern.ts",
+			"qualifiedName": "__type.mode"
 		},
 		"8558": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/sparse/cone.ts",
-			"qualifiedName": "text"
+			"packagePath": "src/domain/sparse/sparse-pattern.ts",
+			"qualifiedName": "__type.recursive"
 		},
 		"8559": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/sparse/sparse-pattern.ts",
-			"qualifiedName": "__type"
+			"qualifiedName": "__type.parents"
 		},
 		"8560": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/domain/sparse/cone.ts",
+			"qualifiedName": "coneMatcher"
+		},
+		"8561": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/domain/sparse/cone.ts",
+			"qualifiedName": "coneMatcher"
+		},
+		"8562": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/domain/sparse/cone.ts",
+			"qualifiedName": "spec"
+		},
+		"8563": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/domain/sparse/sparse-pattern.ts",
+			"qualifiedName": "__type"
+		},
+		"8564": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/sparse/sparse-pattern.ts",
 			"qualifiedName": "__type.mode"
 		},
-		"8561": {
+		"8565": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/sparse/sparse-pattern.ts",
 			"qualifiedName": "__type.recursive"
-		},
-		"8562": {
-			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/sparse/sparse-pattern.ts",
-			"qualifiedName": "__type.parents"
-		},
-		"8563": {
-			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/sparse/cone.ts",
-			"qualifiedName": "serializeCone"
-		},
-		"8564": {
-			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/sparse/cone.ts",
-			"qualifiedName": "serializeCone"
-		},
-		"8565": {
-			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/sparse/cone.ts",
-			"qualifiedName": "spec"
 		},
 		"8566": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/sparse/sparse-pattern.ts",
-			"qualifiedName": "__type"
+			"qualifiedName": "__type.parents"
 		},
 		"8567": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/domain/sparse/cone.ts",
+			"qualifiedName": "parseCone"
+		},
+		"8568": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/domain/sparse/cone.ts",
+			"qualifiedName": "parseCone"
+		},
+		"8569": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/domain/sparse/cone.ts",
+			"qualifiedName": "text"
+		},
+		"8570": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/domain/sparse/sparse-pattern.ts",
+			"qualifiedName": "__type"
+		},
+		"8571": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/sparse/sparse-pattern.ts",
 			"qualifiedName": "__type.mode"
 		},
-		"8568": {
+		"8572": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/sparse/sparse-pattern.ts",
 			"qualifiedName": "__type.recursive"
 		},
-		"8569": {
+		"8573": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/sparse/sparse-pattern.ts",
 			"qualifiedName": "__type.parents"
 		},
-		"8570": {
+		"8574": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/domain/sparse/cone.ts",
+			"qualifiedName": "serializeCone"
+		},
+		"8575": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/domain/sparse/cone.ts",
+			"qualifiedName": "serializeCone"
+		},
+		"8576": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/domain/sparse/cone.ts",
+			"qualifiedName": "spec"
+		},
+		"8577": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/domain/sparse/sparse-pattern.ts",
+			"qualifiedName": "__type"
+		},
+		"8578": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/domain/sparse/sparse-pattern.ts",
+			"qualifiedName": "__type.mode"
+		},
+		"8579": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/domain/sparse/sparse-pattern.ts",
+			"qualifiedName": "__type.recursive"
+		},
+		"8580": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/domain/sparse/sparse-pattern.ts",
+			"qualifiedName": "__type.parents"
+		},
+		"8581": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/sparse/non-cone.ts",
 			"qualifiedName": "compileSparseRule"
 		},
-		"8571": {
+		"8582": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/sparse/non-cone.ts",
 			"qualifiedName": "compileSparseRule"
 		},
-		"8572": {
+		"8583": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/sparse/non-cone.ts",
 			"qualifiedName": "tokenized"
 		},
-		"8573": {
+		"8584": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/sparse/non-cone.ts",
 			"qualifiedName": "source"
 		},
-		"8574": {
+		"8585": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/sparse/non-cone.ts",
 			"qualifiedName": "nonConeMatcher"
 		},
-		"8575": {
+		"8586": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/sparse/non-cone.ts",
 			"qualifiedName": "nonConeMatcher"
 		},
-		"8576": {
+		"8587": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/sparse/non-cone.ts",
 			"qualifiedName": "rules"
 		},
-		"8577": {
+		"8588": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/sparse/parse-sparse-checkout.ts",
 			"qualifiedName": "buildSparseMatcher"
 		},
-		"8578": {
+		"8589": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/sparse/parse-sparse-checkout.ts",
 			"qualifiedName": "buildSparseMatcher"
 		},
-		"8579": {
+		"8590": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/sparse/parse-sparse-checkout.ts",
 			"qualifiedName": "spec"
 		},
-		"8580": {
+		"8591": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/sparse/parse-sparse-checkout.ts",
 			"qualifiedName": "MAX_SPARSE_PATTERN_BYTES"
 		},
-		"8581": {
+		"8592": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/sparse/parse-sparse-checkout.ts",
 			"qualifiedName": "MAX_SPARSE_PATTERNS"
 		},
-		"8582": {
+		"8593": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/sparse/parse-sparse-checkout.ts",
 			"qualifiedName": "ParsedSparseCheckout"
 		},
-		"8583": {
+		"8594": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/sparse/parse-sparse-checkout.ts",
 			"qualifiedName": "ParsedSparseCheckout.spec"
 		},
-		"8584": {
+		"8595": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/sparse/parse-sparse-checkout.ts",
 			"qualifiedName": "ParsedSparseCheckout.degraded"
 		},
-		"8585": {
+		"8596": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/sparse/parse-sparse-checkout.ts",
 			"qualifiedName": "parseSparseCheckout"
 		},
-		"8586": {
+		"8597": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/sparse/parse-sparse-checkout.ts",
 			"qualifiedName": "parseSparseCheckout"
 		},
-		"8587": {
+		"8598": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/sparse/parse-sparse-checkout.ts",
 			"qualifiedName": "text"
 		},
-		"8588": {
+		"8599": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/sparse/parse-sparse-checkout.ts",
 			"qualifiedName": "coneRequested"
 		},
-		"8589": {
+		"8600": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/sparse/index.ts",
 			"qualifiedName": "SparseMatcher"
 		},
-		"8590": {
+		"8601": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/sparse/sparse-pattern.ts",
 			"qualifiedName": "SparseRule"
 		},
-		"8591": {
+		"8602": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/sparse/sparse-pattern.ts",
 			"qualifiedName": "SparseRule.source"
 		},
-		"8592": {
+		"8603": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/sparse/sparse-pattern.ts",
 			"qualifiedName": "SparseRule.negated"
 		},
-		"8593": {
+		"8604": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/sparse/sparse-pattern.ts",
 			"qualifiedName": "SparseRule.matcher"
 		},
-		"8594": {
+		"8605": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/sparse/sparse-pattern.ts",
 			"qualifiedName": "SparseSpec"
 		},
-		"8595": {
+		"8606": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/sparse/sparse-pattern.ts",
 			"qualifiedName": "__type"
 		},
-		"8596": {
+		"8607": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/sparse/sparse-pattern.ts",
 			"qualifiedName": "__type.mode"
 		},
-		"8597": {
+		"8608": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/sparse/sparse-pattern.ts",
 			"qualifiedName": "__type.recursive"
 		},
-		"8598": {
+		"8609": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/sparse/sparse-pattern.ts",
 			"qualifiedName": "__type.parents"
 		},
-		"8599": {
+		"8610": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/sparse/sparse-pattern.ts",
 			"qualifiedName": "__type"
 		},
-		"8600": {
+		"8611": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/sparse/sparse-pattern.ts",
 			"qualifiedName": "__type.mode"
 		},
-		"8601": {
+		"8612": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/sparse/sparse-pattern.ts",
 			"qualifiedName": "__type.rules"
 		},
-		"8602": {
+		"8613": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/bitmap.ts",
 			"qualifiedName": "BitmapEntryHeader"
 		},
-		"8603": {
+		"8614": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/bitmap.ts",
 			"qualifiedName": "BitmapEntryHeader.position"
 		},
-		"8604": {
+		"8615": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/bitmap.ts",
 			"qualifiedName": "BitmapEntryHeader.xorOffset"
 		},
-		"8605": {
+		"8616": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/bitmap.ts",
 			"qualifiedName": "BitmapEntryHeader.flags"
 		},
-		"8606": {
+		"8617": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/bitmap.ts",
 			"qualifiedName": "BitmapEntryHeader.stream"
 		},
-		"8607": {
+		"8618": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/bitmap.ts",
 			"qualifiedName": "PackBitmap"
 		},
-		"8608": {
+		"8619": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/bitmap.ts",
 			"qualifiedName": "PackBitmap.version"
 		},
-		"8609": {
+		"8620": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/bitmap.ts",
 			"qualifiedName": "PackBitmap.optionFlags"
 		},
-		"8610": {
+		"8621": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/bitmap.ts",
 			"qualifiedName": "PackBitmap.entryCount"
 		},
-		"8611": {
+		"8622": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/bitmap.ts",
 			"qualifiedName": "PackBitmap.digestLength"
 		},
-		"8612": {
+		"8623": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/bitmap.ts",
 			"qualifiedName": "PackBitmap.checksum"
 		},
-		"8613": {
+		"8624": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/bitmap.ts",
 			"qualifiedName": "PackBitmap.typeStreams"
 		},
-		"8614": {
+		"8625": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/bitmap.ts",
 			"qualifiedName": "PackBitmap.entriesOffset"
 		},
-		"8615": {
+		"8626": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/bitmap.ts",
 			"qualifiedName": "PackBitmap._bytes"
 		},
-		"8616": {
+		"8627": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/bitmap.ts",
 			"qualifiedName": "PackBitmap._view"
 		},
-		"8617": {
+		"8628": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/bitmap.ts",
 			"qualifiedName": "bitmapEntryHeaders"
 		},
-		"8618": {
+		"8629": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/bitmap.ts",
 			"qualifiedName": "bitmapEntryHeaders"
 		},
-		"8619": {
+		"8630": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/bitmap.ts",
 			"qualifiedName": "bitmap"
 		},
-		"8620": {
+		"8631": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/bitmap.ts",
 			"qualifiedName": "parsePackBitmap"
 		},
-		"8621": {
+		"8632": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/bitmap.ts",
 			"qualifiedName": "parsePackBitmap"
 		},
-		"8622": {
+		"8633": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/bitmap.ts",
 			"qualifiedName": "bytes"
 		},
-		"8623": {
+		"8634": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/bitmap.ts",
 			"qualifiedName": "digestLength"
 		},
-		"8624": {
+		"8635": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/crc32.ts",
 			"qualifiedName": "crc32"
 		},
-		"8625": {
+		"8636": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/crc32.ts",
 			"qualifiedName": "crc32"
 		},
-		"8626": {
+		"8637": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/crc32.ts",
 			"qualifiedName": "data"
 		},
-		"8627": {
+		"8638": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/delta.ts",
 			"qualifiedName": "CopyInstruction"
 		},
-		"8628": {
+		"8639": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/delta.ts",
 			"qualifiedName": "CopyInstruction.type"
 		},
-		"8629": {
+		"8640": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/delta.ts",
 			"qualifiedName": "CopyInstruction.offset"
 		},
-		"8630": {
+		"8641": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/delta.ts",
 			"qualifiedName": "CopyInstruction.size"
 		},
-		"8631": {
+		"8642": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/delta.ts",
 			"qualifiedName": "DeltaInstruction"
 		},
-		"8632": {
+		"8643": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/delta.ts",
 			"qualifiedName": "DeltaParsed"
 		},
-		"8633": {
+		"8644": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/delta.ts",
 			"qualifiedName": "DeltaParsed.sourceLength"
 		},
-		"8634": {
+		"8645": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/delta.ts",
 			"qualifiedName": "DeltaParsed.targetLength"
 		},
-		"8635": {
+		"8646": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/delta.ts",
 			"qualifiedName": "DeltaParsed.instructions"
 		},
-		"8636": {
+		"8647": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/delta.ts",
 			"qualifiedName": "InsertInstruction"
 		},
-		"8637": {
+		"8648": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/delta.ts",
 			"qualifiedName": "InsertInstruction.type"
 		},
-		"8638": {
+		"8649": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/delta.ts",
 			"qualifiedName": "InsertInstruction.data"
 		},
-		"8639": {
+		"8650": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/delta.ts",
 			"qualifiedName": "applyDelta"
 		},
-		"8640": {
+		"8651": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/delta.ts",
 			"qualifiedName": "applyDelta"
 		},
-		"8641": {
+		"8652": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/delta.ts",
 			"qualifiedName": "base"
 		},
-		"8642": {
-			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/delta.ts",
-			"qualifiedName": "delta"
-		},
-		"8643": {
-			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/delta.ts",
-			"qualifiedName": "parseDelta"
-		},
-		"8644": {
-			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/delta.ts",
-			"qualifiedName": "parseDelta"
-		},
-		"8645": {
-			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/delta.ts",
-			"qualifiedName": "delta"
-		},
-		"8646": {
-			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/delta.ts",
-			"qualifiedName": "readDeltaTargetSize"
-		},
-		"8647": {
-			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/delta.ts",
-			"qualifiedName": "readDeltaTargetSize"
-		},
-		"8648": {
-			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/delta.ts",
-			"qualifiedName": "delta"
-		},
-		"8649": {
-			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/error.ts",
-			"qualifiedName": "BitmapCheck"
-		},
-		"8650": {
-			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/error.ts",
-			"qualifiedName": "MidxCheck"
-		},
-		"8651": {
-			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/error.ts",
-			"qualifiedName": "RevIndexCheck"
-		},
-		"8652": {
-			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/error.ts",
-			"qualifiedName": "StorageError"
-		},
 		"8653": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/error.ts",
-			"qualifiedName": "__type"
+			"packagePath": "src/domain/storage/delta.ts",
+			"qualifiedName": "delta"
 		},
 		"8654": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/error.ts",
-			"qualifiedName": "__type.code"
+			"packagePath": "src/domain/storage/delta.ts",
+			"qualifiedName": "parseDelta"
 		},
 		"8655": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/error.ts",
-			"qualifiedName": "__type.reason"
+			"packagePath": "src/domain/storage/delta.ts",
+			"qualifiedName": "parseDelta"
 		},
 		"8656": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/error.ts",
-			"qualifiedName": "__type"
+			"packagePath": "src/domain/storage/delta.ts",
+			"qualifiedName": "delta"
 		},
 		"8657": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/error.ts",
-			"qualifiedName": "__type.code"
+			"packagePath": "src/domain/storage/delta.ts",
+			"qualifiedName": "readDeltaTargetSize"
 		},
 		"8658": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/error.ts",
-			"qualifiedName": "__type.reason"
+			"packagePath": "src/domain/storage/delta.ts",
+			"qualifiedName": "readDeltaTargetSize"
 		},
 		"8659": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/error.ts",
-			"qualifiedName": "__type"
+			"packagePath": "src/domain/storage/delta.ts",
+			"qualifiedName": "delta"
 		},
 		"8660": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/error.ts",
-			"qualifiedName": "__type.code"
+			"qualifiedName": "BitmapCheck"
 		},
 		"8661": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/error.ts",
-			"qualifiedName": "__type.offset"
+			"qualifiedName": "MidxCheck"
 		},
 		"8662": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/error.ts",
-			"qualifiedName": "__type.reason"
+			"qualifiedName": "RevIndexCheck"
 		},
 		"8663": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/error.ts",
-			"qualifiedName": "__type"
+			"qualifiedName": "StorageError"
 		},
 		"8664": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/error.ts",
-			"qualifiedName": "__type.code"
+			"qualifiedName": "__type"
 		},
 		"8665": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/error.ts",
-			"qualifiedName": "__type.reason"
+			"qualifiedName": "__type.code"
 		},
 		"8666": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/error.ts",
-			"qualifiedName": "__type"
+			"qualifiedName": "__type.reason"
 		},
 		"8667": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/error.ts",
-			"qualifiedName": "__type.code"
+			"qualifiedName": "__type"
 		},
 		"8668": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/error.ts",
-			"qualifiedName": "__type.depth"
+			"qualifiedName": "__type.code"
 		},
 		"8669": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/error.ts",
-			"qualifiedName": "__type"
+			"qualifiedName": "__type.reason"
 		},
 		"8670": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/error.ts",
-			"qualifiedName": "__type.code"
+			"qualifiedName": "__type"
 		},
 		"8671": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/error.ts",
-			"qualifiedName": "__type.reason"
+			"qualifiedName": "__type.code"
 		},
 		"8672": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/error.ts",
-			"qualifiedName": "__type.check"
+			"qualifiedName": "__type.offset"
 		},
 		"8673": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/error.ts",
-			"qualifiedName": "__type"
+			"qualifiedName": "__type.reason"
 		},
 		"8674": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/error.ts",
-			"qualifiedName": "__type.code"
+			"qualifiedName": "__type"
 		},
 		"8675": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/error.ts",
-			"qualifiedName": "__type.reason"
+			"qualifiedName": "__type.code"
 		},
 		"8676": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/error.ts",
-			"qualifiedName": "__type.check"
+			"qualifiedName": "__type.reason"
 		},
 		"8677": {
 			"packageName": "@scolladon/tsgit",
@@ -195906,97 +196087,97 @@
 		"8679": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/error.ts",
-			"qualifiedName": "__type.reason"
+			"qualifiedName": "__type.depth"
 		},
 		"8680": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/error.ts",
-			"qualifiedName": "__type.check"
+			"qualifiedName": "__type"
 		},
 		"8681": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/error.ts",
-			"qualifiedName": "invalidDelta"
+			"qualifiedName": "__type.code"
 		},
 		"8682": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/error.ts",
-			"qualifiedName": "invalidDelta"
+			"qualifiedName": "__type.reason"
 		},
 		"8683": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/error.ts",
-			"qualifiedName": "reason"
+			"qualifiedName": "__type.check"
 		},
 		"8684": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/error.ts",
-			"qualifiedName": "invalidMultiPackIndex"
+			"qualifiedName": "__type"
 		},
 		"8685": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/error.ts",
-			"qualifiedName": "invalidMultiPackIndex"
+			"qualifiedName": "__type.code"
 		},
 		"8686": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/error.ts",
-			"qualifiedName": "check"
+			"qualifiedName": "__type.reason"
 		},
 		"8687": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/error.ts",
-			"qualifiedName": "reason"
+			"qualifiedName": "__type.check"
 		},
 		"8688": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/error.ts",
-			"qualifiedName": "invalidPackBitmap"
+			"qualifiedName": "__type"
 		},
 		"8689": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/error.ts",
-			"qualifiedName": "invalidPackBitmap"
+			"qualifiedName": "__type.code"
 		},
 		"8690": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/error.ts",
-			"qualifiedName": "check"
+			"qualifiedName": "__type.reason"
 		},
 		"8691": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/error.ts",
-			"qualifiedName": "reason"
+			"qualifiedName": "__type.check"
 		},
 		"8692": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/error.ts",
-			"qualifiedName": "invalidPackEntry"
+			"qualifiedName": "invalidDelta"
 		},
 		"8693": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/error.ts",
-			"qualifiedName": "invalidPackEntry"
+			"qualifiedName": "invalidDelta"
 		},
 		"8694": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/error.ts",
-			"qualifiedName": "offset"
+			"qualifiedName": "reason"
 		},
 		"8695": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/error.ts",
-			"qualifiedName": "reason"
+			"qualifiedName": "invalidMultiPackIndex"
 		},
 		"8696": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/error.ts",
-			"qualifiedName": "invalidPackHeader"
+			"qualifiedName": "invalidMultiPackIndex"
 		},
 		"8697": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/error.ts",
-			"qualifiedName": "invalidPackHeader"
+			"qualifiedName": "check"
 		},
 		"8698": {
 			"packageName": "@scolladon/tsgit",
@@ -196006,237 +196187,237 @@
 		"8699": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/error.ts",
-			"qualifiedName": "invalidPackIndex"
+			"qualifiedName": "invalidPackBitmap"
 		},
 		"8700": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/error.ts",
-			"qualifiedName": "invalidPackIndex"
+			"qualifiedName": "invalidPackBitmap"
 		},
 		"8701": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/error.ts",
-			"qualifiedName": "reason"
+			"qualifiedName": "check"
 		},
 		"8702": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/error.ts",
-			"qualifiedName": "invalidPackRevIndex"
+			"qualifiedName": "reason"
 		},
 		"8703": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/error.ts",
-			"qualifiedName": "invalidPackRevIndex"
+			"qualifiedName": "invalidPackEntry"
 		},
 		"8704": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/error.ts",
-			"qualifiedName": "check"
+			"qualifiedName": "invalidPackEntry"
 		},
 		"8705": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/error.ts",
-			"qualifiedName": "reason"
+			"qualifiedName": "offset"
 		},
 		"8706": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/ewah.ts",
-			"qualifiedName": "EwahStream"
+			"packagePath": "src/domain/storage/error.ts",
+			"qualifiedName": "reason"
 		},
 		"8707": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/ewah.ts",
-			"qualifiedName": "EwahStream.bitSize"
+			"packagePath": "src/domain/storage/error.ts",
+			"qualifiedName": "invalidPackHeader"
 		},
 		"8708": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/ewah.ts",
-			"qualifiedName": "EwahStream.wordCount"
+			"packagePath": "src/domain/storage/error.ts",
+			"qualifiedName": "invalidPackHeader"
 		},
 		"8709": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/ewah.ts",
-			"qualifiedName": "EwahStream.wordsOffset"
+			"packagePath": "src/domain/storage/error.ts",
+			"qualifiedName": "reason"
 		},
 		"8710": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/ewah.ts",
-			"qualifiedName": "EwahStream.endOffset"
+			"packagePath": "src/domain/storage/error.ts",
+			"qualifiedName": "invalidPackIndex"
 		},
 		"8711": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/ewah.ts",
-			"qualifiedName": "foldEwahStream"
+			"packagePath": "src/domain/storage/error.ts",
+			"qualifiedName": "invalidPackIndex"
 		},
 		"8712": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/ewah.ts",
-			"qualifiedName": "foldEwahStream"
+			"packagePath": "src/domain/storage/error.ts",
+			"qualifiedName": "reason"
 		},
 		"8713": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/ewah.ts",
-			"qualifiedName": "bytes"
+			"packagePath": "src/domain/storage/error.ts",
+			"qualifiedName": "invalidPackRevIndex"
 		},
 		"8714": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/ewah.ts",
-			"qualifiedName": "view"
+			"packagePath": "src/domain/storage/error.ts",
+			"qualifiedName": "invalidPackRevIndex"
 		},
 		"8715": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/ewah.ts",
-			"qualifiedName": "stream"
+			"packagePath": "src/domain/storage/error.ts",
+			"qualifiedName": "check"
 		},
 		"8716": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/ewah.ts",
-			"qualifiedName": "into"
+			"packagePath": "src/domain/storage/error.ts",
+			"qualifiedName": "reason"
 		},
 		"8717": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/ewah.ts",
-			"qualifiedName": "op"
+			"qualifiedName": "EwahStream"
 		},
 		"8718": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/ewah.ts",
-			"qualifiedName": "maxSetBitPosition"
+			"qualifiedName": "EwahStream.bitSize"
 		},
 		"8719": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/ewah.ts",
-			"qualifiedName": "maxSetBitPosition"
+			"qualifiedName": "EwahStream.wordCount"
 		},
 		"8720": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/ewah.ts",
-			"qualifiedName": "bytes"
+			"qualifiedName": "EwahStream.wordsOffset"
 		},
 		"8721": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/ewah.ts",
-			"qualifiedName": "view"
+			"qualifiedName": "EwahStream.endOffset"
 		},
 		"8722": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/ewah.ts",
-			"qualifiedName": "stream"
+			"qualifiedName": "foldEwahStream"
 		},
 		"8723": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/ewah.ts",
-			"qualifiedName": "readEwahStream"
+			"qualifiedName": "foldEwahStream"
 		},
 		"8724": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/ewah.ts",
-			"qualifiedName": "readEwahStream"
+			"qualifiedName": "bytes"
 		},
 		"8725": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/ewah.ts",
-			"qualifiedName": "bytes"
+			"qualifiedName": "view"
 		},
 		"8726": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/ewah.ts",
-			"qualifiedName": "view"
+			"qualifiedName": "stream"
 		},
 		"8727": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/ewah.ts",
-			"qualifiedName": "at"
+			"qualifiedName": "into"
 		},
 		"8728": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/loose-path.ts",
-			"qualifiedName": "computeLooseObjectPath"
+			"packagePath": "src/domain/storage/ewah.ts",
+			"qualifiedName": "op"
 		},
 		"8729": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/domain/storage/ewah.ts",
+			"qualifiedName": "maxSetBitPosition"
+		},
+		"8730": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/domain/storage/ewah.ts",
+			"qualifiedName": "maxSetBitPosition"
+		},
+		"8731": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/domain/storage/ewah.ts",
+			"qualifiedName": "bytes"
+		},
+		"8732": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/domain/storage/ewah.ts",
+			"qualifiedName": "view"
+		},
+		"8733": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/domain/storage/ewah.ts",
+			"qualifiedName": "stream"
+		},
+		"8734": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/domain/storage/ewah.ts",
+			"qualifiedName": "readEwahStream"
+		},
+		"8735": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/domain/storage/ewah.ts",
+			"qualifiedName": "readEwahStream"
+		},
+		"8736": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/domain/storage/ewah.ts",
+			"qualifiedName": "bytes"
+		},
+		"8737": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/domain/storage/ewah.ts",
+			"qualifiedName": "view"
+		},
+		"8738": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/domain/storage/ewah.ts",
+			"qualifiedName": "at"
+		},
+		"8739": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/loose-path.ts",
 			"qualifiedName": "computeLooseObjectPath"
 		},
-		"8730": {
+		"8740": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/domain/storage/loose-path.ts",
+			"qualifiedName": "computeLooseObjectPath"
+		},
+		"8741": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/loose-path.ts",
 			"qualifiedName": "id"
 		},
-		"8731": {
+		"8742": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/lru-cache.ts",
 			"qualifiedName": "LruCache"
 		},
-		"8732": {
+		"8743": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/lru-cache.ts",
 			"qualifiedName": "LruCache.V"
 		},
-		"8733": {
-			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/lru-cache.ts",
-			"qualifiedName": "LruCache.get"
-		},
-		"8734": {
-			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/lru-cache.ts",
-			"qualifiedName": "LruCache.get"
-		},
-		"8735": {
-			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/lru-cache.ts",
-			"qualifiedName": "key"
-		},
-		"8736": {
-			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/lru-cache.ts",
-			"qualifiedName": "LruCache.set"
-		},
-		"8737": {
-			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/lru-cache.ts",
-			"qualifiedName": "LruCache.set"
-		},
-		"8738": {
-			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/lru-cache.ts",
-			"qualifiedName": "key"
-		},
-		"8739": {
-			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/lru-cache.ts",
-			"qualifiedName": "value"
-		},
-		"8740": {
-			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/lru-cache.ts",
-			"qualifiedName": "byteSize"
-		},
-		"8741": {
-			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/lru-cache.ts",
-			"qualifiedName": "LruCache.has"
-		},
-		"8742": {
-			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/lru-cache.ts",
-			"qualifiedName": "LruCache.has"
-		},
-		"8743": {
-			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/lru-cache.ts",
-			"qualifiedName": "key"
-		},
 		"8744": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/lru-cache.ts",
-			"qualifiedName": "LruCache.delete"
+			"qualifiedName": "LruCache.get"
 		},
 		"8745": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/lru-cache.ts",
-			"qualifiedName": "LruCache.delete"
+			"qualifiedName": "LruCache.get"
 		},
 		"8746": {
 			"packageName": "@scolladon/tsgit",
@@ -196246,632 +196427,632 @@
 		"8747": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/lru-cache.ts",
-			"qualifiedName": "LruCache.clear"
+			"qualifiedName": "LruCache.set"
 		},
 		"8748": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/lru-cache.ts",
-			"qualifiedName": "LruCache.clear"
+			"qualifiedName": "LruCache.set"
 		},
 		"8749": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/lru-cache.ts",
-			"qualifiedName": "LruCache.currentSize"
+			"qualifiedName": "key"
 		},
 		"8750": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/lru-cache.ts",
-			"qualifiedName": "LruCache.maxSize"
+			"qualifiedName": "value"
 		},
 		"8751": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/lru-cache.ts",
-			"qualifiedName": "LruCache.entryCount"
+			"qualifiedName": "byteSize"
 		},
 		"8752": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/lru-cache.ts",
-			"qualifiedName": "createLruCache"
+			"qualifiedName": "LruCache.has"
 		},
 		"8753": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/lru-cache.ts",
-			"qualifiedName": "createLruCache"
+			"qualifiedName": "LruCache.has"
 		},
 		"8754": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/lru-cache.ts",
-			"qualifiedName": "V"
+			"qualifiedName": "key"
 		},
 		"8755": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/lru-cache.ts",
-			"qualifiedName": "maxSizeBytes"
+			"qualifiedName": "LruCache.delete"
 		},
 		"8756": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/lru-cache.ts",
-			"qualifiedName": "maxEntries"
+			"qualifiedName": "LruCache.delete"
 		},
 		"8757": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/midx.ts",
-			"qualifiedName": "MidxEntry"
+			"packagePath": "src/domain/storage/lru-cache.ts",
+			"qualifiedName": "key"
 		},
 		"8758": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/midx.ts",
-			"qualifiedName": "MidxEntry.packIndex"
+			"packagePath": "src/domain/storage/lru-cache.ts",
+			"qualifiedName": "LruCache.clear"
 		},
 		"8759": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/midx.ts",
-			"qualifiedName": "MidxEntry.offset"
+			"packagePath": "src/domain/storage/lru-cache.ts",
+			"qualifiedName": "LruCache.clear"
 		},
 		"8760": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/midx.ts",
-			"qualifiedName": "MultiPackIndex"
+			"packagePath": "src/domain/storage/lru-cache.ts",
+			"qualifiedName": "LruCache.currentSize"
 		},
 		"8761": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/midx.ts",
-			"qualifiedName": "MultiPackIndex.version"
+			"packagePath": "src/domain/storage/lru-cache.ts",
+			"qualifiedName": "LruCache.maxSize"
 		},
 		"8762": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/midx.ts",
-			"qualifiedName": "MultiPackIndex.hashVersion"
+			"packagePath": "src/domain/storage/lru-cache.ts",
+			"qualifiedName": "LruCache.entryCount"
 		},
 		"8763": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/midx.ts",
-			"qualifiedName": "MultiPackIndex.digestLength"
+			"packagePath": "src/domain/storage/lru-cache.ts",
+			"qualifiedName": "createLruCache"
 		},
 		"8764": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/midx.ts",
-			"qualifiedName": "MultiPackIndex.numBaseFiles"
+			"packagePath": "src/domain/storage/lru-cache.ts",
+			"qualifiedName": "createLruCache"
 		},
 		"8765": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/midx.ts",
-			"qualifiedName": "MultiPackIndex.objectCount"
+			"packagePath": "src/domain/storage/lru-cache.ts",
+			"qualifiedName": "V"
 		},
 		"8766": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/midx.ts",
-			"qualifiedName": "MultiPackIndex.packNames"
+			"packagePath": "src/domain/storage/lru-cache.ts",
+			"qualifiedName": "maxSizeBytes"
 		},
 		"8767": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/midx.ts",
-			"qualifiedName": "MultiPackIndex.oidFanoutOffset"
+			"packagePath": "src/domain/storage/lru-cache.ts",
+			"qualifiedName": "maxEntries"
 		},
 		"8768": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/midx.ts",
-			"qualifiedName": "MultiPackIndex.oidLookupOffset"
+			"qualifiedName": "MidxEntry"
 		},
 		"8769": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/midx.ts",
-			"qualifiedName": "MultiPackIndex.objectOffsetsOffset"
+			"qualifiedName": "MidxEntry.packIndex"
 		},
 		"8770": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/midx.ts",
-			"qualifiedName": "MultiPackIndex.largeOffsetsOffset"
+			"qualifiedName": "MidxEntry.offset"
 		},
 		"8771": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/midx.ts",
-			"qualifiedName": "MultiPackIndex.largeOffsetCount"
+			"qualifiedName": "MultiPackIndex"
 		},
 		"8772": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/midx.ts",
-			"qualifiedName": "MultiPackIndex.reverseIndexOffset"
+			"qualifiedName": "MultiPackIndex.version"
 		},
 		"8773": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/midx.ts",
-			"qualifiedName": "MultiPackIndex._bytes"
+			"qualifiedName": "MultiPackIndex.hashVersion"
 		},
 		"8774": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/midx.ts",
-			"qualifiedName": "MultiPackIndex._view"
+			"qualifiedName": "MultiPackIndex.digestLength"
 		},
 		"8775": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/midx.ts",
-			"qualifiedName": "lookupMidxPosition"
+			"qualifiedName": "MultiPackIndex.numBaseFiles"
 		},
 		"8776": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/midx.ts",
-			"qualifiedName": "lookupMidxPosition"
+			"qualifiedName": "MultiPackIndex.objectCount"
 		},
 		"8777": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/midx.ts",
-			"qualifiedName": "midx"
+			"qualifiedName": "MultiPackIndex.packNames"
 		},
 		"8778": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/midx.ts",
-			"qualifiedName": "id"
+			"qualifiedName": "MultiPackIndex.oidFanoutOffset"
 		},
 		"8779": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/midx.ts",
-			"qualifiedName": "lookupMultiPackIndex"
+			"qualifiedName": "MultiPackIndex.oidLookupOffset"
 		},
 		"8780": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/midx.ts",
-			"qualifiedName": "lookupMultiPackIndex"
+			"qualifiedName": "MultiPackIndex.objectOffsetsOffset"
 		},
 		"8781": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/midx.ts",
-			"qualifiedName": "midx"
+			"qualifiedName": "MultiPackIndex.largeOffsetsOffset"
 		},
 		"8782": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/midx.ts",
-			"qualifiedName": "id"
+			"qualifiedName": "MultiPackIndex.largeOffsetCount"
 		},
 		"8783": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/midx.ts",
-			"qualifiedName": "midxEntryAt"
+			"qualifiedName": "MultiPackIndex.reverseIndexOffset"
 		},
 		"8784": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/midx.ts",
-			"qualifiedName": "midxEntryAt"
+			"qualifiedName": "MultiPackIndex._bytes"
 		},
 		"8785": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/midx.ts",
-			"qualifiedName": "midx"
+			"qualifiedName": "MultiPackIndex._view"
 		},
 		"8786": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/midx.ts",
-			"qualifiedName": "index"
+			"qualifiedName": "lookupMidxPosition"
 		},
 		"8787": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/midx.ts",
-			"qualifiedName": "midxOidAt"
+			"qualifiedName": "lookupMidxPosition"
 		},
 		"8788": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/midx.ts",
-			"qualifiedName": "midxOidAt"
+			"qualifiedName": "midx"
 		},
 		"8789": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/midx.ts",
-			"qualifiedName": "midx"
+			"qualifiedName": "id"
 		},
 		"8790": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/midx.ts",
-			"qualifiedName": "index"
+			"qualifiedName": "lookupMultiPackIndex"
 		},
 		"8791": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/midx.ts",
-			"qualifiedName": "midxReverseIndexAt"
+			"qualifiedName": "lookupMultiPackIndex"
 		},
 		"8792": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/midx.ts",
-			"qualifiedName": "midxReverseIndexAt"
+			"qualifiedName": "midx"
 		},
 		"8793": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/midx.ts",
-			"qualifiedName": "midx"
+			"qualifiedName": "id"
 		},
 		"8794": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/midx.ts",
-			"qualifiedName": "position"
+			"qualifiedName": "midxEntryAt"
 		},
 		"8795": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/midx.ts",
-			"qualifiedName": "midxReverseIndexPositions"
+			"qualifiedName": "midxEntryAt"
 		},
 		"8796": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/midx.ts",
-			"qualifiedName": "midxReverseIndexPositions"
+			"qualifiedName": "midx"
 		},
 		"8797": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/midx.ts",
-			"qualifiedName": "midx"
+			"qualifiedName": "index"
 		},
 		"8798": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/midx.ts",
-			"qualifiedName": "parseMultiPackIndex"
+			"qualifiedName": "midxOidAt"
 		},
 		"8799": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/midx.ts",
-			"qualifiedName": "parseMultiPackIndex"
+			"qualifiedName": "midxOidAt"
 		},
 		"8800": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/midx.ts",
-			"qualifiedName": "bytes"
+			"qualifiedName": "midx"
 		},
 		"8801": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/midx.ts",
-			"qualifiedName": "digestLength"
+			"qualifiedName": "index"
 		},
 		"8802": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/pack-entry.ts",
-			"qualifiedName": "BasePackEntryHeader"
+			"packagePath": "src/domain/storage/midx.ts",
+			"qualifiedName": "midxReverseIndexAt"
 		},
 		"8803": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/pack-entry.ts",
-			"qualifiedName": "BasePackEntryHeader.type"
+			"packagePath": "src/domain/storage/midx.ts",
+			"qualifiedName": "midxReverseIndexAt"
 		},
 		"8804": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/pack-entry.ts",
-			"qualifiedName": "BasePackEntryHeader.size"
+			"packagePath": "src/domain/storage/midx.ts",
+			"qualifiedName": "midx"
 		},
 		"8805": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/pack-entry.ts",
-			"qualifiedName": "BasePackEntryHeader.dataOffset"
+			"packagePath": "src/domain/storage/midx.ts",
+			"qualifiedName": "position"
 		},
 		"8806": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/pack-entry.ts",
-			"qualifiedName": "BasePackEntryType"
+			"packagePath": "src/domain/storage/midx.ts",
+			"qualifiedName": "midxReverseIndexPositions"
 		},
 		"8807": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/pack-entry.ts",
-			"qualifiedName": "OfsPackEntryHeader"
+			"packagePath": "src/domain/storage/midx.ts",
+			"qualifiedName": "midxReverseIndexPositions"
 		},
 		"8808": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/pack-entry.ts",
-			"qualifiedName": "OfsPackEntryHeader.type"
+			"packagePath": "src/domain/storage/midx.ts",
+			"qualifiedName": "midx"
 		},
 		"8809": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/pack-entry.ts",
-			"qualifiedName": "OfsPackEntryHeader.size"
+			"packagePath": "src/domain/storage/midx.ts",
+			"qualifiedName": "parseMultiPackIndex"
 		},
 		"8810": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/pack-entry.ts",
-			"qualifiedName": "OfsPackEntryHeader.dataOffset"
+			"packagePath": "src/domain/storage/midx.ts",
+			"qualifiedName": "parseMultiPackIndex"
 		},
 		"8811": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/pack-entry.ts",
-			"qualifiedName": "OfsPackEntryHeader.baseDistance"
+			"packagePath": "src/domain/storage/midx.ts",
+			"qualifiedName": "bytes"
 		},
 		"8812": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/pack-entry.ts",
-			"qualifiedName": "PackEntryHeader"
+			"packagePath": "src/domain/storage/midx.ts",
+			"qualifiedName": "digestLength"
 		},
 		"8813": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/pack-entry.ts",
-			"qualifiedName": "PackEntryType"
+			"qualifiedName": "BasePackEntryHeader"
 		},
 		"8814": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/pack-entry.ts",
-			"qualifiedName": "PackHeader"
+			"qualifiedName": "BasePackEntryHeader.type"
 		},
 		"8815": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/pack-entry.ts",
-			"qualifiedName": "PackHeader.version"
+			"qualifiedName": "BasePackEntryHeader.size"
 		},
 		"8816": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/pack-entry.ts",
-			"qualifiedName": "PackHeader.objectCount"
+			"qualifiedName": "BasePackEntryHeader.dataOffset"
 		},
 		"8817": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/pack-entry.ts",
-			"qualifiedName": "RefPackEntryHeader"
+			"qualifiedName": "BasePackEntryType"
 		},
 		"8818": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/pack-entry.ts",
-			"qualifiedName": "RefPackEntryHeader.type"
+			"qualifiedName": "OfsPackEntryHeader"
 		},
 		"8819": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/pack-entry.ts",
-			"qualifiedName": "RefPackEntryHeader.size"
+			"qualifiedName": "OfsPackEntryHeader.type"
 		},
 		"8820": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/pack-entry.ts",
-			"qualifiedName": "RefPackEntryHeader.dataOffset"
+			"qualifiedName": "OfsPackEntryHeader.size"
 		},
 		"8821": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/pack-entry.ts",
-			"qualifiedName": "RefPackEntryHeader.baseId"
+			"qualifiedName": "OfsPackEntryHeader.dataOffset"
 		},
 		"8822": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/pack-entry.ts",
-			"qualifiedName": "encodeOfsDistance"
+			"qualifiedName": "OfsPackEntryHeader.baseDistance"
 		},
 		"8823": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/pack-entry.ts",
-			"qualifiedName": "encodeOfsDistance"
+			"qualifiedName": "PackEntryHeader"
 		},
 		"8824": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/pack-entry.ts",
-			"qualifiedName": "distance"
+			"qualifiedName": "PackEntryType"
 		},
 		"8825": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/pack-entry.ts",
-			"qualifiedName": "encodePackEntryHeader"
+			"qualifiedName": "PackHeader"
 		},
 		"8826": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/pack-entry.ts",
-			"qualifiedName": "encodePackEntryHeader"
+			"qualifiedName": "PackHeader.version"
 		},
 		"8827": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/pack-entry.ts",
-			"qualifiedName": "type"
+			"qualifiedName": "PackHeader.objectCount"
 		},
 		"8828": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/pack-entry.ts",
-			"qualifiedName": "size"
+			"qualifiedName": "RefPackEntryHeader"
 		},
 		"8829": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/pack-entry.ts",
-			"qualifiedName": "PACK_ENTRY_TYPE"
+			"qualifiedName": "RefPackEntryHeader.type"
 		},
 		"8830": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/pack-entry.ts",
-			"qualifiedName": "__object"
+			"qualifiedName": "RefPackEntryHeader.size"
 		},
 		"8831": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/pack-entry.ts",
-			"qualifiedName": "__object.COMMIT"
+			"qualifiedName": "RefPackEntryHeader.dataOffset"
 		},
 		"8832": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/pack-entry.ts",
-			"qualifiedName": "__object.TREE"
+			"qualifiedName": "RefPackEntryHeader.baseId"
 		},
 		"8833": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/pack-entry.ts",
-			"qualifiedName": "__object.BLOB"
+			"qualifiedName": "encodeOfsDistance"
 		},
 		"8834": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/pack-entry.ts",
-			"qualifiedName": "__object.TAG"
+			"qualifiedName": "encodeOfsDistance"
 		},
 		"8835": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/pack-entry.ts",
-			"qualifiedName": "__object.OFS_DELTA"
+			"qualifiedName": "distance"
 		},
 		"8836": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/pack-entry.ts",
-			"qualifiedName": "__object.REF_DELTA"
+			"qualifiedName": "encodePackEntryHeader"
 		},
 		"8837": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/pack-entry.ts",
-			"qualifiedName": "packEntryTypeToObjectType"
+			"qualifiedName": "encodePackEntryHeader"
 		},
 		"8838": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/pack-entry.ts",
-			"qualifiedName": "packEntryTypeToObjectType"
+			"qualifiedName": "type"
 		},
 		"8839": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/pack-entry.ts",
-			"qualifiedName": "type"
+			"qualifiedName": "size"
 		},
 		"8840": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/pack-entry.ts",
-			"qualifiedName": "parsePackEntryHeader"
+			"qualifiedName": "PACK_ENTRY_TYPE"
 		},
 		"8841": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/pack-entry.ts",
-			"qualifiedName": "parsePackEntryHeader"
+			"qualifiedName": "__object"
 		},
 		"8842": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/pack-entry.ts",
-			"qualifiedName": "bytes"
+			"qualifiedName": "__object.COMMIT"
 		},
 		"8843": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/pack-entry.ts",
-			"qualifiedName": "offset"
+			"qualifiedName": "__object.TREE"
 		},
 		"8844": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/pack-entry.ts",
-			"qualifiedName": "hash"
+			"qualifiedName": "__object.BLOB"
 		},
 		"8845": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/pack-entry.ts",
-			"qualifiedName": "parsePackHeader"
+			"qualifiedName": "__object.TAG"
 		},
 		"8846": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/pack-entry.ts",
-			"qualifiedName": "parsePackHeader"
+			"qualifiedName": "__object.OFS_DELTA"
 		},
 		"8847": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/pack-entry.ts",
-			"qualifiedName": "bytes"
+			"qualifiedName": "__object.REF_DELTA"
 		},
 		"8848": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/pack-entry.ts",
-			"qualifiedName": "serializePackHeader"
+			"qualifiedName": "packEntryTypeToObjectType"
 		},
 		"8849": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/pack-entry.ts",
-			"qualifiedName": "serializePackHeader"
+			"qualifiedName": "packEntryTypeToObjectType"
 		},
 		"8850": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/pack-entry.ts",
-			"qualifiedName": "version"
+			"qualifiedName": "type"
 		},
 		"8851": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/pack-entry.ts",
-			"qualifiedName": "objectCount"
+			"qualifiedName": "parsePackEntryHeader"
 		},
 		"8852": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/pack-index.ts",
-			"qualifiedName": "PackIndex"
+			"packagePath": "src/domain/storage/pack-entry.ts",
+			"qualifiedName": "parsePackEntryHeader"
 		},
 		"8853": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/pack-index.ts",
-			"qualifiedName": "PackIndex.objectCount"
+			"packagePath": "src/domain/storage/pack-entry.ts",
+			"qualifiedName": "bytes"
 		},
 		"8854": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/pack-index.ts",
-			"qualifiedName": "PackIndex.crc32TableOffset"
+			"packagePath": "src/domain/storage/pack-entry.ts",
+			"qualifiedName": "offset"
 		},
 		"8855": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/pack-index.ts",
-			"qualifiedName": "PackIndex.smallOffsetsTableOffset"
+			"packagePath": "src/domain/storage/pack-entry.ts",
+			"qualifiedName": "hash"
 		},
 		"8856": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/pack-index.ts",
-			"qualifiedName": "PackIndex.largeOffsetsTableOffset"
+			"packagePath": "src/domain/storage/pack-entry.ts",
+			"qualifiedName": "parsePackHeader"
 		},
 		"8857": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/pack-index.ts",
-			"qualifiedName": "PackIndex.trailerOffset"
+			"packagePath": "src/domain/storage/pack-entry.ts",
+			"qualifiedName": "parsePackHeader"
 		},
 		"8858": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/pack-index.ts",
-			"qualifiedName": "PackIndex._bytes"
+			"packagePath": "src/domain/storage/pack-entry.ts",
+			"qualifiedName": "bytes"
 		},
 		"8859": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/pack-index.ts",
-			"qualifiedName": "PackIndex._view"
+			"packagePath": "src/domain/storage/pack-entry.ts",
+			"qualifiedName": "serializePackHeader"
 		},
 		"8860": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/pack-index.ts",
-			"qualifiedName": "entryOffsets"
+			"packagePath": "src/domain/storage/pack-entry.ts",
+			"qualifiedName": "serializePackHeader"
 		},
 		"8861": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/pack-index.ts",
-			"qualifiedName": "entryOffsets"
+			"packagePath": "src/domain/storage/pack-entry.ts",
+			"qualifiedName": "version"
 		},
 		"8862": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/pack-index.ts",
-			"qualifiedName": "index"
+			"packagePath": "src/domain/storage/pack-entry.ts",
+			"qualifiedName": "objectCount"
 		},
 		"8863": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/pack-index.ts",
-			"qualifiedName": "findByPrefix"
+			"qualifiedName": "PackIndex"
 		},
 		"8864": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/pack-index.ts",
-			"qualifiedName": "findByPrefix"
+			"qualifiedName": "PackIndex.objectCount"
 		},
 		"8865": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/pack-index.ts",
-			"qualifiedName": "index"
+			"qualifiedName": "PackIndex.crc32TableOffset"
 		},
 		"8866": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/pack-index.ts",
-			"qualifiedName": "prefix"
+			"qualifiedName": "PackIndex.smallOffsetsTableOffset"
 		},
 		"8867": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/pack-index.ts",
-			"qualifiedName": "lookupPackIndex"
+			"qualifiedName": "PackIndex.largeOffsetsTableOffset"
 		},
 		"8868": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/pack-index.ts",
-			"qualifiedName": "lookupPackIndex"
+			"qualifiedName": "PackIndex.trailerOffset"
 		},
 		"8869": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/pack-index.ts",
-			"qualifiedName": "index"
+			"qualifiedName": "PackIndex._bytes"
 		},
 		"8870": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/pack-index.ts",
-			"qualifiedName": "id"
+			"qualifiedName": "PackIndex._view"
 		},
 		"8871": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/pack-index.ts",
-			"qualifiedName": "lookupPackIndexPosition"
+			"qualifiedName": "entryOffsets"
 		},
 		"8872": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/pack-index.ts",
-			"qualifiedName": "lookupPackIndexPosition"
+			"qualifiedName": "entryOffsets"
 		},
 		"8873": {
 			"packageName": "@scolladon/tsgit",
@@ -196881,304 +197062,359 @@
 		"8874": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/pack-index.ts",
-			"qualifiedName": "id"
+			"qualifiedName": "findByPrefix"
 		},
 		"8875": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/pack-index.ts",
-			"qualifiedName": "objectIdAt"
+			"qualifiedName": "findByPrefix"
 		},
 		"8876": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/pack-index.ts",
-			"qualifiedName": "objectIdAt"
+			"qualifiedName": "index"
 		},
 		"8877": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/pack-index.ts",
-			"qualifiedName": "index"
+			"qualifiedName": "prefix"
 		},
 		"8878": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/pack-index.ts",
-			"qualifiedName": "position"
+			"qualifiedName": "lookupPackIndex"
 		},
 		"8879": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/pack-index.ts",
-			"qualifiedName": "parsePackIndex"
+			"qualifiedName": "lookupPackIndex"
 		},
 		"8880": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/pack-index.ts",
-			"qualifiedName": "parsePackIndex"
+			"qualifiedName": "index"
 		},
 		"8881": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/pack-index.ts",
-			"qualifiedName": "bytes"
+			"qualifiedName": "id"
 		},
 		"8882": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/domain/storage/pack-index.ts",
+			"qualifiedName": "lookupPackIndexPosition"
+		},
+		"8883": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/domain/storage/pack-index.ts",
+			"qualifiedName": "lookupPackIndexPosition"
+		},
+		"8884": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/domain/storage/pack-index.ts",
+			"qualifiedName": "index"
+		},
+		"8885": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/domain/storage/pack-index.ts",
+			"qualifiedName": "id"
+		},
+		"8886": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/domain/storage/pack-index.ts",
+			"qualifiedName": "objectIdAt"
+		},
+		"8887": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/domain/storage/pack-index.ts",
+			"qualifiedName": "objectIdAt"
+		},
+		"8888": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/domain/storage/pack-index.ts",
+			"qualifiedName": "index"
+		},
+		"8889": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/domain/storage/pack-index.ts",
+			"qualifiedName": "position"
+		},
+		"8890": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/domain/storage/pack-index.ts",
+			"qualifiedName": "parsePackIndex"
+		},
+		"8891": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/domain/storage/pack-index.ts",
+			"qualifiedName": "parsePackIndex"
+		},
+		"8892": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/domain/storage/pack-index.ts",
+			"qualifiedName": "bytes"
+		},
+		"8893": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/pack-order.ts",
 			"qualifiedName": "SortedEntry"
 		},
-		"8883": {
+		"8894": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/pack-order.ts",
 			"qualifiedName": "SortedEntry.shaBytes"
 		},
-		"8884": {
+		"8895": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/pack-order.ts",
 			"qualifiedName": "SortedEntry.entry"
 		},
-		"8885": {
-			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/pack-order.ts",
-			"qualifiedName": "sortPackIndexEntries"
-		},
-		"8886": {
-			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/pack-order.ts",
-			"qualifiedName": "sortPackIndexEntries"
-		},
-		"8887": {
-			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/pack-order.ts",
-			"qualifiedName": "entries"
-		},
-		"8888": {
-			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/pack-writer.ts",
-			"qualifiedName": "PackEntryMeta"
-		},
-		"8889": {
-			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/pack-writer.ts",
-			"qualifiedName": "PackEntryMeta.crc32"
-		},
-		"8890": {
-			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/pack-writer.ts",
-			"qualifiedName": "PackEntryMeta.offset"
-		},
-		"8891": {
-			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/pack-writer.ts",
-			"qualifiedName": "PackfileResult"
-		},
-		"8892": {
-			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/pack-writer.ts",
-			"qualifiedName": "PackfileResult.data"
-		},
-		"8893": {
-			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/pack-writer.ts",
-			"qualifiedName": "PackfileResult.entries"
-		},
-		"8894": {
-			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/pack-writer.ts",
-			"qualifiedName": "PackIndexWriterEntry"
-		},
-		"8895": {
-			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/pack-writer.ts",
-			"qualifiedName": "PackIndexWriterEntry.id"
-		},
 		"8896": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/pack-writer.ts",
-			"qualifiedName": "PackIndexWriterEntry.crc32"
+			"packagePath": "src/domain/storage/pack-order.ts",
+			"qualifiedName": "sortPackIndexEntries"
 		},
 		"8897": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/pack-writer.ts",
-			"qualifiedName": "PackIndexWriterEntry.offset"
+			"packagePath": "src/domain/storage/pack-order.ts",
+			"qualifiedName": "sortPackIndexEntries"
 		},
 		"8898": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/pack-writer.ts",
-			"qualifiedName": "PackWriterEntry"
+			"packagePath": "src/domain/storage/pack-order.ts",
+			"qualifiedName": "entries"
 		},
 		"8899": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/pack-writer.ts",
-			"qualifiedName": "PackWriterEntry.type"
+			"qualifiedName": "PackEntryMeta"
 		},
 		"8900": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/pack-writer.ts",
-			"qualifiedName": "PackWriterEntry.uncompressedSize"
+			"qualifiedName": "PackEntryMeta.crc32"
 		},
 		"8901": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/pack-writer.ts",
-			"qualifiedName": "PackWriterEntry.compressedData"
+			"qualifiedName": "PackEntryMeta.offset"
 		},
 		"8902": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/pack-writer.ts",
-			"qualifiedName": "serializePackfile"
+			"qualifiedName": "PackfileResult"
 		},
 		"8903": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/pack-writer.ts",
-			"qualifiedName": "serializePackfile"
+			"qualifiedName": "PackfileResult.data"
 		},
 		"8904": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/pack-writer.ts",
-			"qualifiedName": "entries"
+			"qualifiedName": "PackfileResult.entries"
 		},
 		"8905": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/pack-writer.ts",
-			"qualifiedName": "serializePackIndex"
+			"qualifiedName": "PackIndexWriterEntry"
 		},
 		"8906": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/pack-writer.ts",
-			"qualifiedName": "serializePackIndex"
+			"qualifiedName": "PackIndexWriterEntry.id"
 		},
 		"8907": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/pack-writer.ts",
-			"qualifiedName": "entries"
+			"qualifiedName": "PackIndexWriterEntry.crc32"
 		},
 		"8908": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/pack-writer.ts",
-			"qualifiedName": "packChecksum"
+			"qualifiedName": "PackIndexWriterEntry.offset"
 		},
 		"8909": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/pack-writer.ts",
-			"qualifiedName": "presorted"
+			"qualifiedName": "PackWriterEntry"
 		},
 		"8910": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/rev-index.ts",
-			"qualifiedName": "PackRevIndex"
+			"packagePath": "src/domain/storage/pack-writer.ts",
+			"qualifiedName": "PackWriterEntry.type"
 		},
 		"8911": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/rev-index.ts",
-			"qualifiedName": "PackRevIndex.version"
+			"packagePath": "src/domain/storage/pack-writer.ts",
+			"qualifiedName": "PackWriterEntry.uncompressedSize"
 		},
 		"8912": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/rev-index.ts",
-			"qualifiedName": "PackRevIndex.hashId"
+			"packagePath": "src/domain/storage/pack-writer.ts",
+			"qualifiedName": "PackWriterEntry.compressedData"
 		},
 		"8913": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/rev-index.ts",
-			"qualifiedName": "PackRevIndex.digestLength"
+			"packagePath": "src/domain/storage/pack-writer.ts",
+			"qualifiedName": "serializePackfile"
 		},
 		"8914": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/rev-index.ts",
-			"qualifiedName": "PackRevIndex.objectCount"
+			"packagePath": "src/domain/storage/pack-writer.ts",
+			"qualifiedName": "serializePackfile"
 		},
 		"8915": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/rev-index.ts",
-			"qualifiedName": "PackRevIndex.packChecksum"
+			"packagePath": "src/domain/storage/pack-writer.ts",
+			"qualifiedName": "entries"
 		},
 		"8916": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/rev-index.ts",
-			"qualifiedName": "PackRevIndex._bytes"
+			"packagePath": "src/domain/storage/pack-writer.ts",
+			"qualifiedName": "serializePackIndex"
 		},
 		"8917": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/rev-index.ts",
-			"qualifiedName": "PackRevIndex._view"
+			"packagePath": "src/domain/storage/pack-writer.ts",
+			"qualifiedName": "serializePackIndex"
 		},
 		"8918": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/rev-index.ts",
-			"qualifiedName": "parsePackRevIndex"
+			"packagePath": "src/domain/storage/pack-writer.ts",
+			"qualifiedName": "entries"
 		},
 		"8919": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/rev-index.ts",
-			"qualifiedName": "parsePackRevIndex"
+			"packagePath": "src/domain/storage/pack-writer.ts",
+			"qualifiedName": "packChecksum"
 		},
 		"8920": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/storage/rev-index.ts",
-			"qualifiedName": "bytes"
+			"packagePath": "src/domain/storage/pack-writer.ts",
+			"qualifiedName": "presorted"
 		},
 		"8921": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/rev-index.ts",
-			"qualifiedName": "digestLength"
+			"qualifiedName": "PackRevIndex"
 		},
 		"8922": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/rev-index.ts",
-			"qualifiedName": "objectCount"
+			"qualifiedName": "PackRevIndex.version"
 		},
 		"8923": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/rev-index.ts",
-			"qualifiedName": "REASON_REV_INDEX_CORRUPT"
+			"qualifiedName": "PackRevIndex.hashId"
 		},
 		"8924": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/rev-index.ts",
-			"qualifiedName": "REASON_REV_INDEX_TOO_SMALL"
+			"qualifiedName": "PackRevIndex.digestLength"
 		},
 		"8925": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/rev-index.ts",
-			"qualifiedName": "REV_HEADER_SIZE"
+			"qualifiedName": "PackRevIndex.objectCount"
 		},
 		"8926": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/rev-index.ts",
-			"qualifiedName": "revIndexPositionAt"
+			"qualifiedName": "PackRevIndex.packChecksum"
 		},
 		"8927": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/rev-index.ts",
-			"qualifiedName": "revIndexPositionAt"
+			"qualifiedName": "PackRevIndex._bytes"
 		},
 		"8928": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/rev-index.ts",
-			"qualifiedName": "rev"
+			"qualifiedName": "PackRevIndex._view"
 		},
 		"8929": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/rev-index.ts",
-			"qualifiedName": "p"
+			"qualifiedName": "parsePackRevIndex"
 		},
 		"8930": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/rev-index.ts",
-			"qualifiedName": "serializePackRevIndex"
+			"qualifiedName": "parsePackRevIndex"
 		},
 		"8931": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/rev-index.ts",
-			"qualifiedName": "serializePackRevIndex"
+			"qualifiedName": "bytes"
 		},
 		"8932": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/rev-index.ts",
-			"qualifiedName": "entries"
+			"qualifiedName": "digestLength"
 		},
 		"8933": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/rev-index.ts",
-			"qualifiedName": "packChecksum"
+			"qualifiedName": "objectCount"
 		},
 		"8934": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/domain/storage/rev-index.ts",
+			"qualifiedName": "REASON_REV_INDEX_CORRUPT"
+		},
+		"8935": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/domain/storage/rev-index.ts",
+			"qualifiedName": "REASON_REV_INDEX_TOO_SMALL"
+		},
+		"8936": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/domain/storage/rev-index.ts",
+			"qualifiedName": "REV_HEADER_SIZE"
+		},
+		"8937": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/domain/storage/rev-index.ts",
+			"qualifiedName": "revIndexPositionAt"
+		},
+		"8938": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/domain/storage/rev-index.ts",
+			"qualifiedName": "revIndexPositionAt"
+		},
+		"8939": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/domain/storage/rev-index.ts",
+			"qualifiedName": "rev"
+		},
+		"8940": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/domain/storage/rev-index.ts",
+			"qualifiedName": "p"
+		},
+		"8941": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/domain/storage/rev-index.ts",
+			"qualifiedName": "serializePackRevIndex"
+		},
+		"8942": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/domain/storage/rev-index.ts",
+			"qualifiedName": "serializePackRevIndex"
+		},
+		"8943": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/domain/storage/rev-index.ts",
+			"qualifiedName": "entries"
+		},
+		"8944": {
+			"packageName": "@scolladon/tsgit",
+			"packagePath": "src/domain/storage/rev-index.ts",
+			"qualifiedName": "packChecksum"
+		},
+		"8945": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/storage/rev-index.ts",
 			"qualifiedName": "presorted"

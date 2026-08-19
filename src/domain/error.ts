@@ -308,6 +308,12 @@ function extractDetail(data: TsgitErrorData): string {
       return `cannot resolve work tree '${data.value}' from ${basename(data.gitDir)}`;
     case 'ALREADY_INITIALIZED':
       return `repository already exists: ${basename(data.path)}`;
+    case 'REPOSITORY_FORMAT_VERSION_UNSUPPORTED':
+      return `unsupported repository format version: ${data.version}`;
+    case 'REPOSITORY_EXTENSIONS_UNSUPPORTED':
+      return `unsupported repository extensions at format version ${data.version}: ${data.extensions.length} (first: ${data.extensions[0]})`;
+    case 'REPOSITORY_EXTENSION_UNSUPPORTED':
+      return `repository extension not supported: ${data.extension} = ${data.value}`;
     case 'WORKING_TREE_DIRTY':
       return `working tree has uncommitted changes: ${data.localChanges.length + data.untracked.length} files`;
     case 'PATHSPEC_NO_MATCH':

@@ -85,6 +85,9 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'WORK_TREE_CONFIG_INVALID':
     case 'WORK_TREE_UNRESOLVABLE':
     case 'ALREADY_INITIALIZED':
+    case 'REPOSITORY_FORMAT_VERSION_UNSUPPORTED':
+    case 'REPOSITORY_EXTENSIONS_UNSUPPORTED':
+    case 'REPOSITORY_EXTENSION_UNSUPPORTED':
     case 'WORKING_TREE_DIRTY':
     case 'PATHSPEC_NO_MATCH':
     case 'PATHSPEC_OUTSIDE_REPO':
