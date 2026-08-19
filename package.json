@@ -708,6 +708,7 @@
     "check:parity-fixtures": "wireit",
     "check:browser-surface": "wireit",
     "check:write-surfaces": "wireit",
+    "check:assert-tier": "wireit",
     "check:mutation-budgets": "wireit",
     "verify:tarball": "wireit",
     "check:tarball": "wireit",
@@ -1187,6 +1188,16 @@
         "reports/write-surface-coverage.json"
       ]
     },
+    "check:assert-tier": {
+      "command": "node --experimental-strip-types tooling/audit-assert-tier.ts",
+      "files": [
+        "src/**/*.ts",
+        "tooling/audit-assert-tier.ts",
+        "tooling/audit-assert-tier/**/*.ts",
+        "tooling/audit-assert-tier.allowlist.json"
+      ],
+      "output": []
+    },
     "check:mutation-budgets": {
       "command": "node --experimental-strip-types tooling/check-mutation-budgets.ts",
       "files": [
@@ -1293,6 +1304,7 @@
         "check:parity-fixtures",
         "check:browser-surface",
         "check:write-surfaces",
+        "check:assert-tier",
         "test:coverage",
         "test:integration",
         "test:parity",

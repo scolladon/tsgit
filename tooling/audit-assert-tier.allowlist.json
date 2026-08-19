@@ -1,0 +1,29 @@
+{
+  "callers": [
+    {
+      "module": "src/application/commands/config.ts",
+      "verb": "configGet",
+      "reason": "git's `config --get` exits 1 (not-found), not 128, on a rejected repository; pinned by the tier co-truth sweep."
+    },
+    {
+      "module": "src/application/commands/config.ts",
+      "verb": "configGetAll",
+      "reason": "same porcelain row as configGet; pinned by the tier co-truth sweep."
+    },
+    {
+      "module": "src/application/commands/config.ts",
+      "verb": "configGetRegexp",
+      "reason": "git's `config --get-regexp` exits 1 on a rejected repository; pinned by the tier co-truth sweep."
+    },
+    {
+      "module": "src/application/commands/config.ts",
+      "verb": "configList",
+      "reason": "git's `config --list` exits 0 with the repository scope dropped; pinned by the tier co-truth sweep."
+    },
+    {
+      "module": "src/application/primitives/internal/repo-state.ts",
+      "verb": "assertAcceptedRepository",
+      "reason": "the tier chain itself — assertAcceptedRepository is defined as assertRepository plus the acceptance gates."
+    }
+  ]
+}
