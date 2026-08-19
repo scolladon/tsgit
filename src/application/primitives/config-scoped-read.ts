@@ -1,6 +1,6 @@
 import type { ConfigKey, ConfigScope } from '../../domain/commands/config-key.js';
 import { parseConfigKey } from '../../domain/commands/config-key.js';
-import { configMultipleValues } from '../../domain/commands/error.js';
+import { configMultipleValues, configScopeNotAvailable } from '../../domain/commands/error.js';
 import { type IniSection, parseIniSections } from '../../domain/config/config-ini.js';
 import { TsgitError } from '../../domain/error.js';
 import type { Context } from '../../ports/context.js';
@@ -62,7 +62,18 @@ const readSingleScopeUncached = async (
   }
 };
 
+/**
+ * True when the repository the acceptance tier rejected has no readable
+ * repository-local config scope. Named as a standalone predicate (rather than
+ * inlined) so the ownership gate's sibling refusal (`untrusted` / `implicitBare`)
+ * can add its own disjunct here without restructuring `readSingleScope`.
+ */
+const repositoryScopeIsDropped = (ctx: Context): boolean => ctx.layout.formatRefusal !== undefined;
+
 const readSingleScope = (ctx: Context, scope: ConfigScope): Promise<ReadonlyArray<IniSection>> => {
+  if (repositoryScopeIsDropped(ctx) && (scope === 'local' || scope === 'worktree')) {
+    throw configScopeNotAvailable(scope, 'repository-not-accepted');
+  }
   const bucket = getSectionsCacheBucket(ctx);
   const cached = bucket.get(scope);
   if (cached !== undefined) return cached;

@@ -29031,6 +29031,10 @@
 													{
 														"type": "literal",
 														"value": "worktree-extension-unset"
+													},
+													{
+														"type": "literal",
+														"value": "repository-not-accepted"
 													}
 												]
 											}
@@ -38575,6 +38579,10 @@
 											{
 												"type": "literal",
 												"value": "worktree-extension-unset"
+											},
+											{
+												"type": "literal",
+												"value": "repository-not-accepted"
 											}
 										]
 									}

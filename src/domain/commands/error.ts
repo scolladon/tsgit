@@ -184,7 +184,7 @@ export type CommandError =
   | {
       readonly code: 'CONFIG_SCOPE_NOT_AVAILABLE';
       readonly scope: ConfigScope;
-      readonly reason: 'browser-adapter' | 'worktree-extension-unset';
+      readonly reason: 'browser-adapter' | 'worktree-extension-unset' | 'repository-not-accepted';
     }
   | { readonly code: 'CONFIG_SYSTEM_PATH_UNRESOLVED' }
   | {
@@ -643,7 +643,7 @@ export const configSectionNotFound = (name: string, scope: ConfigScope): TsgitEr
 
 export const configScopeNotAvailable = (
   scope: ConfigScope,
-  reason: 'browser-adapter' | 'worktree-extension-unset',
+  reason: 'browser-adapter' | 'worktree-extension-unset' | 'repository-not-accepted',
 ): TsgitError => new TsgitError({ code: 'CONFIG_SCOPE_NOT_AVAILABLE', scope, reason });
 
 export const configSystemPathUnresolved = (): TsgitError =>

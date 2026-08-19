@@ -1076,6 +1076,20 @@ describe('domain commands error — config factory data', () => {
         });
       });
     });
+
+    describe('When called with reason="repository-not-accepted"', () => {
+      it('Then data round-trips with the repository-not-accepted reason', () => {
+        // Arrange + Act
+        const result = configScopeNotAvailable('local', 'repository-not-accepted');
+
+        // Assert
+        expect(result.data).toEqual({
+          code: 'CONFIG_SCOPE_NOT_AVAILABLE',
+          scope: 'local',
+          reason: 'repository-not-accepted',
+        });
+      });
+    });
   });
 
   describe('Given the configSystemPathUnresolved helper', () => {
@@ -1483,6 +1497,10 @@ describe('domain commands error — extractDetail message formatting', () => {
         reason: 'worktree-extension-unset',
       },
       'CONFIG_SCOPE_NOT_AVAILABLE: config scope not available: worktree (worktree-extension-unset)',
+    ],
+    [
+      { code: 'CONFIG_SCOPE_NOT_AVAILABLE', scope: 'local', reason: 'repository-not-accepted' },
+      'CONFIG_SCOPE_NOT_AVAILABLE: config scope not available: local (repository-not-accepted)',
     ],
     [
       { code: 'CONFIG_SYSTEM_PATH_UNRESOLVED' },

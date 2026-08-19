@@ -1081,6 +1081,310 @@ describe.skipIf(!GIT_AVAILABLE)(
     });
 
     // ─────────────────────────────────────────────────────────────────────
+    // Row 8 (surviving side) — the four config READ verbs demote the
+    // repository to absent rather than refuse: `config --list` exits 0 with
+    // the repository scope dropped, a repo-scoped key is "not found",
+    // `--global --list` is untouched, and `--local --list` refuses.
+    // ─────────────────────────────────────────────────────────────────────
+
+    describe.each(FORMAT_FIXTURES)('Given $given', ({ slug, arm }) => {
+      describe('When config --list runs', () => {
+        it('Then git exits 0 and tsgit drops the repository scope', async () => {
+          // Arrange — the base fixture sets user.name/user.email in LOCAL scope,
+          // so their absence below is the guard's doing, not mere absence.
+          const dir = await copyRow(`${slug}-list`);
+          arm(dir);
+
+          // Act
+          const list = tryRunGitWithExit(['-C', dir, 'config', '--list']);
+          const repo = await openRow(dir);
+          try {
+            const result = await repo.config.list();
+
+            // Assert — git
+            expect(list.exitCode).toBe(0);
+            // Assert — tsgit
+            expect(result.entries.some((entry) => entry.scope === 'local')).toBe(false);
+          } finally {
+            await repo.dispose();
+          }
+        });
+      });
+
+      describe('When a repository-scoped key is read', () => {
+        it('Then it is "not found" in both tools', async () => {
+          // Arrange
+          const dir = await copyRow(`${slug}-getmiss`);
+          arm(dir);
+
+          // Act
+          const getName = tryRunGitWithExit(['-C', dir, 'config', 'user.name']);
+          const getRegexp = tryRunGitWithExit(['-C', dir, 'config', '--get-regexp', '^user\\.']);
+          const repo = await openRow(dir);
+          try {
+            const name = await repo.config.get({ key: 'user.name' });
+            const regexp = await repo.config.getRegexp({ keyPattern: /^user\./ });
+
+            // Assert — git
+            expect(getName.exitCode).toBe(1);
+            expect(getRegexp.exitCode).toBe(1);
+            // Assert — tsgit
+            expect(name).toEqual({ key: 'user.name', value: undefined });
+            expect(regexp.entries).toEqual([]);
+          } finally {
+            await repo.dispose();
+          }
+        });
+      });
+
+      describe('When config --local --list runs', () => {
+        it('Then it refuses in both tools', async () => {
+          // Arrange
+          const dir = await copyRow(`${slug}-local-list`);
+          arm(dir);
+
+          // Act
+          const g = tryRunGitWithExit(['-C', dir, 'config', '--local', '--list']);
+          const repo = await openRow(dir);
+          try {
+            let caught: unknown;
+            try {
+              await repo.config.list({ scope: 'local' });
+            } catch (err) {
+              caught = err;
+            }
+
+            // Assert — git
+            expect(g.exitCode).toBe(128);
+            expect(g.stderr).toContain('fatal: --local can only be used inside a git repository');
+            // Assert — tsgit
+            expect(caught).toBeInstanceOf(TsgitError);
+            expect((caught as TsgitError).data).toEqual({
+              code: 'CONFIG_SCOPE_NOT_AVAILABLE',
+              scope: 'local',
+              reason: 'repository-not-accepted',
+            });
+          } finally {
+            await repo.dispose();
+          }
+        });
+      });
+
+      describe('When config --global --list runs', () => {
+        it('Then it stays reachable in git — non-repository scopes are untouched', async () => {
+          // Arrange — a real ~/.gitconfig this time (the suite's shared ISOLATED_HOME has
+          // none, and `--global --list` itself refuses when the target file is absent —
+          // an artefact of that isolation, not of the format gate under test here).
+          const dir = await copyRow(`${slug}-global-list`);
+          arm(dir);
+          const home = await mkdtemp(path.join(os.tmpdir(), 'tsgit-format-global-home-'));
+          rowDirs.push(home);
+          writeFileSync(path.join(home, '.gitconfig'), '[user]\n\tname = Global User\n');
+          const env = { ...runGitEnv(), HOME: home, XDG_CONFIG_HOME: path.join(home, '.config') };
+
+          // Act
+          const g = tryRunGitWithExit(['-C', dir, 'config', '--global', '--list'], { env });
+
+          // Assert
+          expect(g.exitCode).toBe(0);
+          expect(g.stdout).toContain('user.name=Global User');
+        });
+      });
+    });
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Row 9 — precedence co-truth, both tiers per row: the discovery-tier
+    // boolean gate and a syntax error BEAT the format verdict everywhere,
+    // including on `config --list`; the eager `[core]` gate LOSES to the
+    // format verdict on the operational verb and never fires on the
+    // porcelain at all. compatObjectFormat proves the tier is per-condition:
+    // at v1 it dies universally, at v99 the version wins and it survives.
+    // ─────────────────────────────────────────────────────────────────────
+
+    const PRECEDENCE_BEATS_VERSION: ReadonlyArray<{
+      readonly given: string;
+      readonly slug: string;
+      readonly suffix: string;
+      readonly refusalData: Record<string, unknown>;
+    }> = [
+      {
+        given: 'v99 + core.bare = banana',
+        slug: 'v99-bare-banana',
+        suffix: '[core]\n\trepositoryformatversion = 99\n\tbare = banana\n',
+        refusalData: { code: 'CONFIG_BAD_BOOLEAN_VALUE', key: 'core.bare', value: 'banana' },
+      },
+      {
+        given: 'v99 + extensions.worktreeConfig = banana',
+        slug: 'v99-wtconfig-banana',
+        suffix: '[core]\n\trepositoryformatversion = 99\n[extensions]\n\tworktreeConfig = banana\n',
+        refusalData: {
+          code: 'CONFIG_BAD_BOOLEAN_VALUE',
+          key: 'extensions.worktreeconfig',
+          value: 'banana',
+        },
+      },
+      {
+        given: 'v99 + a syntactically broken config line',
+        slug: 'v99-syntax-broken',
+        suffix: '[core]\n\trepositoryformatversion = 99\n\tfoo = "unterminated\n',
+        refusalData: { code: 'CONFIG_PARSE_ERROR' },
+      },
+    ];
+
+    describe.each(PRECEDENCE_BEATS_VERSION)('Given $given', ({ slug, suffix, refusalData }) => {
+      describe('When config --list runs', () => {
+        it('Then the discovery-tier refusal beats the version in both tools', async () => {
+          // Arrange — the refusal may fire as early as `openRepository` (bad `core.bare`,
+          // a syntax error — both read while resolving the layout itself) or as late as
+          // `config.list` (`extensions.worktreeConfig` — checked only per-command); either
+          // way it must beat the version, so both layers are wrapped in one try.
+          const dir = await copyRow(slug);
+          armRaw(dir, suffix);
+
+          // Act
+          const list = tryRunGitWithExit(['-C', dir, 'config', '--list']);
+          let repo: Repository | undefined;
+          let caught: unknown;
+          try {
+            repo = await openRow(dir);
+            await repo.config.list();
+          } catch (err) {
+            caught = err;
+          } finally {
+            await repo?.dispose();
+          }
+
+          // Assert — git: refuses (not the version fatal)
+          expect(list.exitCode).toBe(128);
+          expect(list.stderr).not.toContain('Expected git repo version');
+          // Assert — tsgit: the discovery-tier code, not REPOSITORY_FORMAT_VERSION_UNSUPPORTED
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data).toMatchObject(refusalData);
+        });
+      });
+    });
+
+    const PRECEDENCE_LOSES_TO_VERSION: ReadonlyArray<{
+      readonly given: string;
+      readonly slug: string;
+      readonly suffix: string;
+    }> = [
+      {
+        given: 'v99 + core.sparseCheckout = banana',
+        slug: 'v99-sparse-banana',
+        suffix: '[core]\n\trepositoryformatversion = 99\n\tsparseCheckout = banana\n',
+      },
+      {
+        given: 'v99 + core.maxTreeDepth = abc',
+        slug: 'v99-maxdepth-abc',
+        suffix: '[core]\n\trepositoryformatversion = 99\n\tmaxTreeDepth = abc\n',
+      },
+      {
+        given: 'v99 + a valueless core.excludesFile',
+        slug: 'v99-excludes-valueless',
+        suffix: '[core]\n\trepositoryformatversion = 99\n\texcludesFile\n',
+      },
+    ];
+
+    describe.each(PRECEDENCE_LOSES_TO_VERSION)('Given $given', ({ slug, suffix }) => {
+      describe('When status runs and config --list runs', () => {
+        it('Then the version wins on the operational verb and never fires on the porcelain', async () => {
+          // Arrange
+          const dir = await copyRow(`${slug}-op`);
+          armRaw(dir, suffix);
+
+          // Act
+          const status = tryRunGitWithExit(['-C', dir, 'status', '--porcelain']);
+          const list = tryRunGitWithExit(['-C', dir, 'config', '--list']);
+          const repo = await openRow(dir);
+          try {
+            let caughtSet: unknown;
+            try {
+              await repo.config.set({ key: 'user.name', value: 'Ada' });
+            } catch (err) {
+              caughtSet = err;
+            }
+            const listResult = await repo.config.list();
+
+            // Assert — git: the operational verb dies on the VERSION fatal, config --list survives
+            expect(status.exitCode).toBe(128);
+            expect(status.stderr).toContain(expectedVersionStderr(99));
+            expect(list.exitCode).toBe(0);
+            // Assert — tsgit: a mover sees the version refusal (not the eager-core one);
+            // the porcelain read never reaches the eager gate at all.
+            expect(caughtSet).toBeInstanceOf(TsgitError);
+            expect((caughtSet as TsgitError).data).toMatchObject({
+              code: 'REPOSITORY_FORMAT_VERSION_UNSUPPORTED',
+              version: 99,
+            });
+            expect(listResult.entries.some((entry) => entry.scope === 'local')).toBe(false);
+          } finally {
+            await repo.dispose();
+          }
+        });
+      });
+    });
+
+    describe('Given extensions.compatObjectFormat at version 1 (co-truth: dies universally)', () => {
+      describe('When config --list is attempted in both tools', () => {
+        it('Then git refuses and tsgit cannot even open the repository', async () => {
+          // Arrange
+          const dir = await copyRow('compat-v1-config-list');
+          armRaw(
+            dir,
+            '[core]\n\trepositoryformatversion = 1\n[extensions]\n\tcompatObjectFormat = sha1\n',
+          );
+
+          // Act
+          const list = tryRunGitWithExit(['-C', dir, 'config', '--list']);
+          let caught: unknown;
+          try {
+            await openRow(dir);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert — git
+          expect(list.exitCode).toBe(128);
+          // Assert — tsgit: no repository, no config surface reachable at all
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data).toMatchObject({
+            code: 'REPOSITORY_EXTENSION_UNSUPPORTED',
+            extension: 'compatobjectformat',
+          });
+        });
+      });
+    });
+
+    describe('Given extensions.compatObjectFormat at version 99 (co-truth: the version wins, it survives)', () => {
+      describe('When config --list runs in both tools', () => {
+        it('Then both exit 0 and tsgit drops the repository scope', async () => {
+          // Arrange
+          const dir = await copyRow('compat-v99-config-list');
+          armRaw(
+            dir,
+            '[core]\n\trepositoryformatversion = 99\n[extensions]\n\tcompatObjectFormat = sha1\n',
+          );
+
+          // Act
+          const list = tryRunGitWithExit(['-C', dir, 'config', '--list']);
+          const repo = await openRow(dir);
+          try {
+            const result = await repo.config.list();
+
+            // Assert — git
+            expect(list.exitCode).toBe(0);
+            // Assert — tsgit
+            expect(repo.ctx.layout.formatRefusal).toStrictEqual({ kind: 'version', version: 99 });
+            expect(result.entries.some((entry) => entry.scope === 'local')).toBe(false);
+          } finally {
+            await repo.dispose();
+          }
+        });
+      });
+    });
+
+    // ─────────────────────────────────────────────────────────────────────
     // Row 10 — route coverage: the carried format verdict is the SAME
     // regardless of how the repository is opened.
     // ─────────────────────────────────────────────────────────────────────

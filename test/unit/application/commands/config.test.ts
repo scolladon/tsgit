@@ -32,6 +32,12 @@ const rejectedCtx = (
   return { ...ctx, layout: { ...ctx.layout, formatRefusal } };
 };
 
+/** Same rejection, applied to an ALREADY-populated context — proves the repository scope is dropped, not merely absent. */
+const withFormatRefusal = (
+  ctx: Context,
+  formatRefusal: RepositoryFormatRefusal = { kind: 'version', version: 99 },
+): Context => ({ ...ctx, layout: { ...ctx.layout, formatRefusal } });
+
 describe('configGet', () => {
   describe('Given user.name=Ada in local, When configGet({ key: user.name }) runs', () => {
     it('Then it returns { key, value: Ada, scope: local }', async () => {
@@ -623,6 +629,58 @@ describe('the format-acceptance tier', () => {
 
         // Assert
         expect(caught).toBeUndefined();
+      });
+    });
+
+    describe('When configList runs after a local key was set before rejection', () => {
+      it('Then the repository scope is dropped from the returned entries', async () => {
+        // Arrange
+        const ctx = repoCtx();
+        await configSet(ctx, { key: 'user.name', value: 'Ada' });
+        const rejected = withFormatRefusal(ctx);
+
+        // Act
+        const result = await configList(rejected);
+
+        // Assert
+        expect(result.entries.some((entry) => entry.scope === 'local')).toBe(false);
+      });
+    });
+
+    describe('When configGet runs for a key that was set in local before rejection', () => {
+      it('Then it returns { value: undefined } — the repository scope is gone', async () => {
+        // Arrange
+        const ctx = repoCtx();
+        await configSet(ctx, { key: 'user.name', value: 'Ada' });
+        const rejected = withFormatRefusal(ctx);
+
+        // Act
+        const result = await configGet(rejected, { key: 'user.name' });
+
+        // Assert
+        expect(result).toEqual({ key: 'user.name', value: undefined });
+      });
+    });
+
+    describe('When configGet runs with an explicit scope of local', () => {
+      it('Then it raises CONFIG_SCOPE_NOT_AVAILABLE with reason repository-not-accepted', async () => {
+        // Arrange
+        const ctx = rejectedCtx();
+        let caught: TsgitError | undefined;
+
+        // Act
+        try {
+          await configGet(ctx, { key: 'user.name', scope: 'local' });
+        } catch (err) {
+          caught = err as TsgitError;
+        }
+
+        // Assert
+        expect(caught?.data).toEqual({
+          code: 'CONFIG_SCOPE_NOT_AVAILABLE',
+          scope: 'local',
+          reason: 'repository-not-accepted',
+        });
       });
     });
   });
