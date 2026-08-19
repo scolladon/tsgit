@@ -8,6 +8,11 @@ import type { LayoutProbe } from '../ports/layout-probe.js';
  * containment-denial contract rather than a swallowed error.
  */
 export const fileSystemLayoutProbe = (fs: FileSystem): LayoutProbe => ({
+  // No `isOwnedByCaller`: every `FileSystem` reachable here is a sandboxed
+  // adapter (memory, browser) that hardcodes `uid: 0` for every entry. A
+  // predicate derived from that constant would declare every sandboxed
+  // repository foreign-owned for any non-root caller — the omission is what
+  // keeps a sandbox trusted.
   stat: async (path) => {
     const stat = await fs.stat(path).catch(() => undefined);
     return stat === undefined

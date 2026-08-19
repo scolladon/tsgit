@@ -37,4 +37,12 @@ export interface LayoutProbe {
    * fixture can express anyway.
    */
   readonly readLink?: (path: string) => Promise<string | undefined>;
+  /**
+   * Whether `path` is owned by the caller. OPTIONAL: only an adapter over a
+   * real multi-user filesystem can answer. Adapters that omit it declare that
+   * foreign ownership cannot exist in their world (memory, browser, and any
+   * platform whose owner model this adapter does not implement), and the trust
+   * gate reads the omission as "trusted".
+   */
+  readonly isOwnedByCaller?: (path: string) => Promise<boolean>;
 }

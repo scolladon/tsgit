@@ -15,6 +15,7 @@ import { NodeHashService } from './adapters/node/node-hash-service.js';
 import { NodeHookRunner } from './adapters/node/node-hook-runner.js';
 import { NodeHttpTransport } from './adapters/node/node-http-transport.js';
 import { NodeSshTransport } from './adapters/node/node-ssh-transport.js';
+import { ownedByCallerPredicate } from './adapters/node/owner-predicate.js';
 import { nativePolicy } from './adapters/node/path-policy.js';
 import { SHA1_CONFIG } from './domain/objects/hash-config.js';
 import { createLruCache } from './domain/storage/lru-cache.js';
@@ -154,6 +155,10 @@ const nodeLayoutProbe: LayoutProbe = {
   // EINVAL (not a symlink) and ENOENT both collapse to undefined per the
   // port contract — the caller only cares whether usable link text exists.
   readLink: (p) => readlink(p, 'utf8').catch(() => undefined),
+  isOwnedByCaller: ownedByCallerPredicate({
+    callerUid: () => process.getuid?.(),
+    ownerUid: async (p) => (await stat(p).catch(() => undefined))?.uid,
+  }),
 };
 
 /**
