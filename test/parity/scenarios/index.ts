@@ -37,6 +37,7 @@ import { showScenario } from './show.scenario.ts';
 import { sparseCheckoutScenario } from './sparse-checkout.scenario.ts';
 import { stashScenario } from './stash.scenario.ts';
 import { submodulesEmptyScenario } from './submodules-empty.scenario.ts';
+import { trustDefaultsScenario } from './trust-defaults.scenario.ts';
 import type { Scenario } from './types.ts';
 import { whatchangedScenario } from './whatchanged.scenario.ts';
 import { worktreeScenario } from './worktree.scenario.ts';
@@ -86,4 +87,5 @@ export const SCENARIOS: ReadonlyArray<Scenario<unknown>> = [
   midxReadScenario,
   midxReadDegradedScenario,
   packObjectsScenario,
+  trustDefaultsScenario,
 ];
