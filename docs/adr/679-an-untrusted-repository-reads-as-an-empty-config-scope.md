@@ -60,7 +60,20 @@ open (Stage 2 is skipped, ADR-678) and not at command time. `merge.<d>.driver`,
   them.
 - The exact set of verbs that survive on an untrusted or format-rejected repository becomes a
   documented contract, enumerated on the `openRepository` docs page.
-- `readConfig` gains one layout-dependent early return; its memoisation is unchanged.
+- **Where the guard sits, corrected by measurement before merge.** An earlier draft said
+  "`readConfig` gains one layout-dependent early return". That placement does not work.
+  `assertDiscoveryBooleansValid` runs *ahead* of the acceptance refusals (the accepted tier chains
+  through the bare one) and reaches config through `findFirstInvalidBoolean` →
+  `readConfigEntry().tokens` — **never** through `readConfig`. A guard on `readConfig` would
+  therefore leave the shadowing behaviour broken. The guard belongs at `loadConfigEntry`
+  (`src/application/primitives/config-read.ts`) plus the per-scope reader in
+  `config-scoped-read.ts`. Memoisation is unchanged.
+- **The guard does not cover the config writers, and that is why ADR-682's allowlist guard is
+  load-bearing.** The five writers read through `readConfigText`
+  (`src/application/primitives/update-config-sections.ts`), entirely outside this guard. Nothing
+  here stops `repo.config.set()` writing into a rejected repository's config file — only **tier
+  membership** does. So ADR-698's mechanical allowlist is a condition of this design's security
+  argument, not hygiene: remove it and the hole reopens silently.
 - **Where the refusal attaches is NOT settled here.** Nine `config` sites (writers included) and
   six `remote` sites currently sit on the ungated bare `assertRepository`, so dropping the config
   scope alone would leave `repo.config.set()` writing into an untrusted repository's config file.
