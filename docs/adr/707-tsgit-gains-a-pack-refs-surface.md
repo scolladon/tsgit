@@ -18,7 +18,7 @@ where git would eventually reclaim it. A long-lived repository would only ever g
    the permanent leak by having `gc` / cons: a deliberate divergence — tsgit removing files git
    would not, at a moment git never would.
 2. **Never clean; document the leak** — pros: strictly faithful to git's write path / cons: an
-   unbounded, unreclaimable leak with no command in tsgit able to fix it.
+   unbounded leak that nothing can reclaim, with no command in tsgit able to fix it.
 3. **Add a `packRefs` surface** and let cleanup live there, as git does.
 
 ## Decision

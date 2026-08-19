@@ -6,8 +6,8 @@
 
 ## Context
 
-ADR-680 makes tsgit write reftables, which raises the `@writes` contract question: byte-identity
-against git, or equivalence?
+ADR-680 makes tsgit write reftable tables, which raises the `@writes` contract question:
+byte-identity against git, or equivalence?
 
 Measured. Given identical logical content and update indices, **git's writer is a pure
 function** — two from-scratch builds produced byte-identical tables. But the log section's
