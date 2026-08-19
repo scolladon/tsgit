@@ -6,7 +6,14 @@
 
 ## Context
 
-tsgit neither reads nor sends the `object-format` capability on protocol v0. Today that is
+> **Naming, corrected before merge.** This ADR uses git's own vocabulary, in which the pre-v2
+> wire protocol is "v0". **tsgit does not use that name.** The codebase types the legacy protocol
+> as **v1** — `export type FetchWireVersion = 1 | 2`
+> (`src/application/commands/internal/fetch-negotiation.ts`). Everywhere below, read "v0" as
+> tsgit's `FetchWireVersion === 1`. Implementation and tests must use the repository's own
+> vocabulary, not git's; the ADR filename is left unchanged because other documents cite it.
+
+tsgit neither reads nor sends the `object-format` capability on the legacy protocol. Today that is
 inert, because tsgit is SHA-1 only. Under ADR-681 it becomes a hole: a v0 SHA-256 peer would be
 silently accepted, and the mismatch refusal of ADR-695 would never fire on that path.
 
