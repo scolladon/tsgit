@@ -113,6 +113,31 @@ describe('validateOptions — invalid option values', () => {
           option: 'ceilingDirs',
           reasonContains: 'must be absolute paths',
         },
+        {
+          label: "trust = 'nope'",
+          fn: () => validateOptions({ trust: 'nope' as unknown as TrustLiteral }),
+          option: 'trust',
+          reasonContains: "'ownership' or 'always'",
+        },
+        {
+          label: "bareRepositories = 'nope'",
+          fn: () =>
+            validateOptions({ bareRepositories: 'nope' as unknown as BareRepositoriesLiteral }),
+          option: 'bareRepositories',
+          reasonContains: "'all' or 'explicit'",
+        },
+        {
+          label: 'a trustedDirectories entry that is an empty string',
+          fn: () => validateOptions({ trustedDirectories: [''] }),
+          option: 'trustedDirectories',
+          reasonContains: 'must not be empty',
+        },
+        {
+          label: 'a trustedDirectories entry that is relative',
+          fn: () => validateOptions({ trustedDirectories: ['/abs', 'relative/path'] }),
+          option: 'trustedDirectories',
+          reasonContains: "must be '*' or an absolute path",
+        },
       ])('Then throws INVALID_OPTION for $label', ({ fn, option, reasonContains }) => {
         // Arrange + Assert
         expectInvalid(fn, option, reasonContains);
@@ -216,6 +241,34 @@ describe('validateOptions — valid option values', () => {
           label: 'bare false',
           fn: () => validateOptions({ bare: false }),
         },
+        {
+          label: "trust = 'ownership'",
+          fn: () => validateOptions({ trust: 'ownership' }),
+        },
+        {
+          label: "trust = 'always'",
+          fn: () => validateOptions({ trust: 'always' }),
+        },
+        {
+          label: "bareRepositories = 'all'",
+          fn: () => validateOptions({ bareRepositories: 'all' }),
+        },
+        {
+          label: "bareRepositories = 'explicit'",
+          fn: () => validateOptions({ bareRepositories: 'explicit' }),
+        },
+        {
+          label: "trustedDirectories = ['*']",
+          fn: () => validateOptions({ trustedDirectories: ['*'] }),
+        },
+        {
+          label: 'trustedDirectories with only absolute entries',
+          fn: () => validateOptions({ trustedDirectories: ['/abs/one', '/abs/two'] }),
+        },
+        {
+          label: 'an empty trustedDirectories array',
+          fn: () => validateOptions({ trustedDirectories: [] }),
+        },
       ])('Then it does not throw for $label', ({ fn }) => {
         // Arrange + Act + Assert
         expect(fn).not.toThrow();
@@ -226,3 +279,5 @@ describe('validateOptions — valid option values', () => {
 
 // Re-exported only inside the test file for the unsafe-cast scenario.
 type RepositoryConfigDnsResolver = (host: string) => Promise<ReadonlyArray<string>>;
+type TrustLiteral = 'ownership' | 'always';
+type BareRepositoriesLiteral = 'all' | 'explicit';

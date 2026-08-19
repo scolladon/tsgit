@@ -65,3 +65,18 @@ export function arbHexWithLength(): fc.Arbitrary<{
 export function arbPrintableAsciiChar(): fc.Arbitrary<string> {
   return fc.integer({ min: 0x20, max: 0x7e }).map((code) => String.fromCharCode(code));
 }
+
+/** An arbitrary printable-ASCII string, no NUL byte — a path-shaped fuzz input. */
+export function arbPrintableAsciiString(): fc.Arbitrary<string> {
+  return fc.string({ unit: arbPrintableAsciiChar(), maxLength: 24 });
+}
+
+/** An arbitrary list of printable-ASCII strings — an allowlist `entries` array. */
+export function arbAllowlistEntries(): fc.Arbitrary<ReadonlyArray<string>> {
+  return fc.array(arbPrintableAsciiString(), { maxLength: 5 });
+}
+
+/** Same alphabet as `arbPrintableAsciiString`, filtered to exclude a trailing slash. */
+export function arbPathWithoutTrailingSlash(): fc.Arbitrary<string> {
+  return arbPrintableAsciiString().filter((value) => !value.endsWith('/'));
+}

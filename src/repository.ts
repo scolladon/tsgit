@@ -143,6 +143,35 @@ export interface OpenRepositoryOptions {
    * `config.auth` credentials with no SSRF guard.
    */
   readonly unsafeRawAdapters?: boolean;
+  /**
+   * Trust policy for repositories reached by discovery. Defaults to `'ownership'`:
+   * a repository whose metadata is owned by another user is refused, the way
+   * git's `safe.directory` refuses it. Ignored on the explicit-`gitDir` route,
+   * which is never gated.
+   *
+   * WARNING: `'always'` disables the ownership check entirely. Following another
+   * user's repository metadata is code execution — its `hooks/` are spawned with
+   * your environment and its config names shell commands and file reads.
+   */
+  readonly trust?: 'ownership' | 'always';
+  /**
+   * Absolute directories trusted regardless of ownership. The single entry `'*'`
+   * trusts every repository. A trailing `/*` trusts every path strictly below the
+   * prefix, at any depth. Entries are physically resolved on Node and compared
+   * lexically on sandboxed adapters; matching is case-sensitive.
+   *
+   * WARNING: an over-wide entry (`'*'`, or a `/*` prefix near the filesystem root)
+   * re-opens exactly what `trust` closes.
+   */
+  readonly trustedDirectories?: ReadonlyArray<string>;
+  /**
+   * `'explicit'` refuses a repository whose gitdir was reached by walking into it
+   * under a name other than `.git` — an "implicit" repository directory, the shape
+   * a planted `evil.git` inside your own checkout takes. Whether the repository is
+   * bare plays no part in the condition. Defaults to `'all'`. An explicit `gitDir`
+   * argument is always accepted, and `trustedDirectories` does not lift this refusal.
+   */
+  readonly bareRepositories?: 'all' | 'explicit';
 }
 
 /**

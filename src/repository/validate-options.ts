@@ -13,6 +13,9 @@ interface ValidatableOptions {
   readonly workDir?: string;
   readonly bare?: boolean;
   readonly ceilingDirs?: ReadonlyArray<string>;
+  readonly trust?: 'ownership' | 'always';
+  readonly trustedDirectories?: ReadonlyArray<string>;
+  readonly bareRepositories?: 'all' | 'explicit';
 }
 
 const PARALLELISM_MIN = 1;
@@ -37,6 +40,9 @@ export const validateOptions = (opts: ValidatableOptions): void => {
   validateGitDir(opts.gitDir);
   validateWorkDir(opts.workDir);
   validateCeilingDirs(opts.ceilingDirs);
+  validateTrust(opts.trust);
+  validateTrustedDirectories(opts.trustedDirectories);
+  validateBareRepositories(opts.bareRepositories);
   const config = opts.config;
   if (config === undefined) return;
   validateParallelism(config.parallelism);
@@ -71,6 +77,32 @@ const validateCeilingDirs = (value: ReadonlyArray<string> | undefined): void => 
     if (entry.length === 0) throw invalidOption('ceilingDirs', 'entries must not be empty');
     if (!isAbsolutePath(entry)) {
       throw invalidOption('ceilingDirs', 'entries must be absolute paths');
+    }
+  }
+};
+
+const validateTrust = (value: 'ownership' | 'always' | undefined): void => {
+  if (value === undefined) return;
+  if (value !== 'ownership' && value !== 'always') {
+    throw invalidOption('trust', "must be 'ownership' or 'always'");
+  }
+};
+
+const validateBareRepositories = (value: 'all' | 'explicit' | undefined): void => {
+  if (value === undefined) return;
+  if (value !== 'all' && value !== 'explicit') {
+    throw invalidOption('bareRepositories', "must be 'all' or 'explicit'");
+  }
+};
+
+const validateTrustedDirectories = (value: ReadonlyArray<string> | undefined): void => {
+  if (value === undefined) return;
+  for (const entry of value) {
+    if (entry.length === 0) {
+      throw invalidOption('trustedDirectories', 'entries must not be empty');
+    }
+    if (entry !== '*' && !isAbsolutePath(entry)) {
+      throw invalidOption('trustedDirectories', "entries must be '*' or an absolute path");
     }
   }
 };
