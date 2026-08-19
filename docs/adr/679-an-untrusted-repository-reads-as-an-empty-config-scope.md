@@ -32,8 +32,21 @@ and config writes refuse with `fatal: not in a git directory`, leaving the file 
 choice in ADR-666 to keep git's config-porcelain tier for the sibling format gate.**
 
 The two acceptance gates now express one rule: *a repository the acceptance tier rejects has no
-readable config scope, and gentle-setup verbs survive on the scopes that remain.* One mechanism
-serves both.
+readable config scope; the `config` read verbs survive on the scopes that remain, and everything
+else refuses.* One mechanism serves both.
+
+**Correction, measured after ratification and before merge.** The surviving set is narrower than
+an earlier draft of ADR-666 stated: **`config` read verbs only** — `config --list`,
+`config <key>`, `config --get-regexp`, `config --list --show-origin`. Re-measured independently
+on git 2.55.0, **every `remote` verb refuses with exit 128** (`remote`, `-v`, `get-url`,
+`show -n`, `add`, `rename`, `remove`), as do all `config` writers and `config --local --list`,
+in both the ownership and the repository-format cases. The repository config file is
+byte-unchanged after every refused write.
+
+A third measured row strengthens the mechanism: `safe.bareRepository = explicit` produces the
+**identical** empty-config-scope posture. The `readConfig` guard therefore keys on `untrusted`
+**or** `implicitBare`, and — because that path needs no alien owner — the whole mechanism can be
+co-pinned against real git on every platform, with no skip.
 
 The security payload is that the untrusted repository's config file is **never parsed** — not at
 open (Stage 2 is skipped, ADR-678) and not at command time. `merge.<d>.driver`,
@@ -48,3 +61,8 @@ open (Stage 2 is skipped, ADR-678) and not at command time. `merge.<d>.driver`,
 - The exact set of verbs that survive on an untrusted or format-rejected repository becomes a
   documented contract, enumerated on the `openRepository` docs page.
 - `readConfig` gains one layout-dependent early return; its memoisation is unchanged.
+- **Where the refusal attaches is NOT settled here.** Nine `config` sites (writers included) and
+  six `remote` sites currently sit on the ungated bare `assertRepository`, so dropping the config
+  scope alone would leave `repo.config.set()` writing into an untrusted repository's config file.
+  The attach point binds this gate and the format gate identically and is decided once, for both,
+  in a separate ADR.

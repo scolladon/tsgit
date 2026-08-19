@@ -24,7 +24,7 @@ never a porcelain measurement, and the measurement contradicts it.
    a measured divergence on data ADR-249 treats as binding.
 2. **First command**, beside `assertDiscoveryBooleansValid` — pros: no new tier / cons: same
    divergence one call later, plus a second enumeration site.
-3. **Split** — the operational tier refuses; `config` and `remote` survive with the repository
+3. **Split** — the operational tier refuses; the surviving verbs carry on with the repository
    scope dropped — pros: reproduces the measured rows byte-for-byte / cons: a second tier to
    maintain.
 
@@ -32,20 +32,40 @@ never a porcelain measurement, and the measurement contradicts it.
 
 **Option 3 — ratified by the user, against the design's recommendation.**
 
-Repository-format refusals fire on the operational tier. The `config` and `remote` read verbs
-survive with the repository config scope dropped, exactly as git's do.
+Repository-format refusals fire on the operational tier. The **`config` read verbs** survive
+with the repository config scope dropped, exactly as git's do.
+
+**Correction, measured after ratification and before merge.** An earlier draft of this decision
+named "the `config` and `remote` read verbs" as the surviving pair. That is wrong about `remote`.
+Re-measured independently, twice, on git 2.55.0 in an isolated `mktemp` with `GIT_*` scrubbed:
+
+| verb | exit | note |
+|---|---|---|
+| `config --list`, `config <key>`, `config --get-regexp`, `config --list --show-origin` | 0 (or 1 when no other scope holds the key) | **survive**; two `warning:` lines, repository scope absent |
+| `config --local --list` | 128 | `fatal: --local can only be used inside a git repository` |
+| `config <key> <value>`, `--add`, `--unset` | 128 | **refuse**; repository config file byte-unchanged |
+| `remote`, `remote -v`, `remote get-url`, `remote show -n`, `remote add`, `remote rename`, `remote remove` | 128 | **all refuse**; config file byte-unchanged |
+
+The surviving set is therefore **four `config` read verbs**, not fifteen verbs.
 
 The design rejected option 3 on the grounds that "the sibling trust gate would have to
 replicate the split". That objection is void: ADR-679 builds precisely that mechanism for the
 ownership gate regardless, so this reuses one shared tier rather than doubling it. Both
 acceptance gates therefore express one rule — *a repository the acceptance tier rejects has no
-readable config scope, and gentle-setup verbs survive on the scopes that remain.*
+readable config scope; the `config` read verbs survive on the scopes that remain, and everything
+else refuses.*
 
 ## Consequences
 
 - The operational tier's exact membership (which verbs skip it) becomes load-bearing and must
   be enumerated on the `openRepository` docs page, not inferred from which assert a command
   happens to call.
+- **Where the refusal attaches is a consequence that is NOT settled by this ADR.** tsgit today
+  puts nine `config` sites (writers included) and six `remote` sites on the ungated bare
+  `assertRepository`. A mechanism that merely drops the config scope there would let
+  `repo.config.set()` write into a rejected repository's config file where git refuses with the
+  file byte-unchanged. The attach point binds this gate and the ownership gate identically and
+  is decided once, for both, in a separate ADR.
 - Interop pins the porcelain rows as co-truth rather than as an asserted divergence.
 - Refusal timing diverges from ADR-664's open-time choice for *layout* config. That ADR is
   refined, not superseded: layout keys still refuse at open; format keys refuse at the tier
