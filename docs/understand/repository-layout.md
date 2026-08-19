@@ -65,11 +65,14 @@ outright, in both directions.
 
 `repo.layout` (the same deep-frozen object as `repo.ctx.layout`) carries the
 resolved `gitDir`, optional `commonDir` (linked worktrees), optional `workDir`
-(absent = no working tree), `bare`, and `workTreeConfigBogus`. Every
-`git rev-parse` layout query — `--git-dir`, `--git-common-dir`,
-`--is-bare-repository`, `--show-toplevel`, `--show-prefix`, `--show-cdup`,
-`--is-inside-work-tree`, `--is-inside-git-dir` — is reconstructible from these
-fields plus your own cwd; tsgit ships the data, never a rendered form.
+(absent = no working tree), `bare`, `workTreeConfigBogus`, and optional
+`formatRefusal` — the repository-acceptance verdict
+(`core.repositoryformatversion` / `extensions.*`), absent when the repository is
+accepted; see Refusals for how it is enforced. Every `git rev-parse` layout query —
+`--git-dir`, `--git-common-dir`, `--is-bare-repository`, `--show-toplevel`,
+`--show-prefix`, `--show-cdup`, `--is-inside-work-tree`, `--is-inside-git-dir` — is
+reconstructible from these fields plus your own cwd; tsgit ships the data, never a
+rendered form.
 
 ## Refusals
 
@@ -86,6 +89,27 @@ Work-tree-requiring commands refuse the way git does, as structured errors:
 
 `describe --broken` reports `-broken` instead of refusing, bare `blame` blames HEAD,
 and `grep`'s index/tree targets stay open — matching git's own carve-outs.
+
+### The repository-acceptance tiers
+
+`formatRefusal` above is *carried*, not enforced, until a command actually asks for
+it. Every command sits on one of three chained tiers, each a strict superset of the
+gate before it:
+
+| Tier | Adds on top of the previous tier | Verbs on this tier |
+|---|---|---|
+| `assertRepository` | a usable HEAD, then the discovery-tier boolean gate (`core.bare`, `extensions.worktreeConfig`) | the four surviving `config` read verbs — `config <key>`, `config --get-all`, `config --get-regexp`, `config --list` |
+| `assertAcceptedRepository` | the format-acceptance verdict (`REPOSITORY_FORMAT_VERSION_UNSUPPORTED` / `REPOSITORY_EXTENSIONS_UNSUPPORTED`) | every `remote` verb and every `config` write verb |
+| `assertOperationalRepository` | eager `[core]` validation | every other command |
+
+The four survivors are an enumerated, measured set — never inferred from "read-only".
+`remote` is NOT among them: canonical git refuses `remote`, `remote -v`,
+`remote get-url` and `remote show -n` on a rejected repository exactly as it refuses
+the writers, so every `remote` verb sits on `assertAcceptedRepository` too. Ordering
+is fixed within a rejected repository: the discovery-tier boolean gate always wins
+over the format verdict (a repository failing both `core.bare` and
+`core.repositoryformatversion` reports the boolean refusal), and the format verdict
+always wins over eager `[core]` validation.
 
 ## Deliberate divergences
 

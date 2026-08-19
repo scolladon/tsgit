@@ -21,6 +21,13 @@ const seed = async (ctx: Context, content?: string): Promise<void> => {
   }
 };
 
+/** A repository the format-acceptance gate rejects — every `remote` verb moved onto it. */
+const rejectedCtx = async (content?: string): Promise<Context> => {
+  const ctx = createMemoryContext();
+  await seed(ctx, content);
+  return { ...ctx, layout: { ...ctx.layout, formatRefusal: { kind: 'version', version: 99 } } };
+};
+
 describe('application/commands/remote', () => {
   beforeEach(() => {
     __resetConfigCacheForTests();
@@ -1089,6 +1096,136 @@ describe('application/commands/remote', () => {
 
           // Assert
           expect((caught as TsgitError).data.code).toBe('REMOTE_NAME_INVALID');
+        });
+      });
+    });
+  });
+
+  describe('the format-acceptance tier', () => {
+    describe('Given a repository the format-acceptance gate rejects', () => {
+      describe('When remoteList runs', () => {
+        it('Then it throws the carried format refusal', async () => {
+          // Arrange
+          const ctx = await rejectedCtx();
+
+          // Act
+          let caught: unknown;
+          try {
+            await remoteList(ctx);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect((caught as TsgitError | undefined)?.data).toMatchObject({
+            code: 'REPOSITORY_FORMAT_VERSION_UNSUPPORTED',
+            version: 99,
+          });
+        });
+      });
+
+      describe('When remoteAdd runs', () => {
+        it('Then it throws the carried format refusal', async () => {
+          // Arrange
+          const ctx = await rejectedCtx();
+
+          // Act
+          let caught: unknown;
+          try {
+            await remoteAdd(ctx, { name: 'origin', url: 'https://example.com/repo.git' });
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect((caught as TsgitError | undefined)?.data).toMatchObject({
+            code: 'REPOSITORY_FORMAT_VERSION_UNSUPPORTED',
+            version: 99,
+          });
+        });
+      });
+
+      describe('When remoteRemove runs', () => {
+        it('Then it throws the carried format refusal', async () => {
+          // Arrange
+          const ctx = await rejectedCtx('[remote "origin"]\n\turl = u\n');
+
+          // Act
+          let caught: unknown;
+          try {
+            await remoteRemove(ctx, { name: 'origin' });
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect((caught as TsgitError | undefined)?.data).toMatchObject({
+            code: 'REPOSITORY_FORMAT_VERSION_UNSUPPORTED',
+            version: 99,
+          });
+        });
+      });
+
+      describe('When remoteRename runs', () => {
+        it('Then it throws the carried format refusal', async () => {
+          // Arrange
+          const ctx = await rejectedCtx('[remote "origin"]\n\turl = u\n');
+
+          // Act
+          let caught: unknown;
+          try {
+            await remoteRename(ctx, { from: 'origin', to: 'upstream' });
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect((caught as TsgitError | undefined)?.data).toMatchObject({
+            code: 'REPOSITORY_FORMAT_VERSION_UNSUPPORTED',
+            version: 99,
+          });
+        });
+      });
+
+      describe('When remoteSetUrl runs', () => {
+        it('Then it throws the carried format refusal', async () => {
+          // Arrange
+          const ctx = await rejectedCtx('[remote "origin"]\n\turl = u\n');
+
+          // Act
+          let caught: unknown;
+          try {
+            await remoteSetUrl(ctx, { name: 'origin', url: 'https://example.com/other.git' });
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect((caught as TsgitError | undefined)?.data).toMatchObject({
+            code: 'REPOSITORY_FORMAT_VERSION_UNSUPPORTED',
+            version: 99,
+          });
+        });
+      });
+
+      describe('When remoteShow runs', () => {
+        it('Then it throws the carried format refusal', async () => {
+          // Arrange
+          const ctx = await rejectedCtx('[remote "origin"]\n\turl = u\n');
+
+          // Act
+          let caught: unknown;
+          try {
+            await remoteShow(ctx, { name: 'origin' });
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect((caught as TsgitError | undefined)?.data).toMatchObject({
+            code: 'REPOSITORY_FORMAT_VERSION_UNSUPPORTED',
+            version: 99,
+          });
         });
       });
     });

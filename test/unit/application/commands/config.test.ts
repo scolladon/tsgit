@@ -13,6 +13,7 @@ import {
   configUnsetAll,
 } from '../../../../src/application/commands/config.js';
 import type { TsgitError } from '../../../../src/domain/error.js';
+import type { Context, RepositoryFormatRefusal } from '../../../../src/ports/context.js';
 
 const u8 = (s: string): Uint8Array => new TextEncoder().encode(s);
 
@@ -21,6 +22,14 @@ const repoCtx = () => {
     files: { '/repo/.git/HEAD': u8('ref: refs/heads/main\n') },
   });
   return ctx;
+};
+
+/** A repo context carrying a format-acceptance refusal — the eleven movers refuse it, the four survivors do not. */
+const rejectedCtx = (
+  formatRefusal: RepositoryFormatRefusal = { kind: 'version', version: 99 },
+): Context => {
+  const ctx = repoCtx();
+  return { ...ctx, layout: { ...ctx.layout, formatRefusal } };
 };
 
 describe('configGet', () => {
@@ -434,6 +443,187 @@ describe('configRemoveSection', () => {
 
       // Assert
       expect(result).toEqual({ name: 'remote.origin', scope: 'local' });
+    });
+  });
+});
+
+describe('the format-acceptance tier', () => {
+  describe('Given a repository the format-acceptance gate rejects', () => {
+    describe('When configSet runs', () => {
+      it('Then it throws the carried format refusal (a mover)', async () => {
+        // Arrange
+        const ctx = rejectedCtx();
+
+        // Act
+        let caught: unknown;
+        try {
+          await configSet(ctx, { key: 'user.name', value: 'Ada' });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as TsgitError | undefined)?.data).toMatchObject({
+          code: 'REPOSITORY_FORMAT_VERSION_UNSUPPORTED',
+          version: 99,
+        });
+      });
+    });
+
+    describe('When configUnset runs', () => {
+      it('Then it throws the carried format refusal (a mover)', async () => {
+        // Arrange
+        const ctx = rejectedCtx();
+
+        // Act
+        let caught: unknown;
+        try {
+          await configUnset(ctx, { key: 'user.name' });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as TsgitError | undefined)?.data).toMatchObject({
+          code: 'REPOSITORY_FORMAT_VERSION_UNSUPPORTED',
+          version: 99,
+        });
+      });
+    });
+
+    describe('When configUnsetAll runs', () => {
+      it('Then it throws the carried format refusal (a mover)', async () => {
+        // Arrange
+        const ctx = rejectedCtx();
+
+        // Act
+        let caught: unknown;
+        try {
+          await configUnsetAll(ctx, { key: 'user.name' });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as TsgitError | undefined)?.data).toMatchObject({
+          code: 'REPOSITORY_FORMAT_VERSION_UNSUPPORTED',
+          version: 99,
+        });
+      });
+    });
+
+    describe('When configRenameSection runs', () => {
+      it('Then it throws the carried format refusal (a mover)', async () => {
+        // Arrange
+        const ctx = rejectedCtx();
+
+        // Act
+        let caught: unknown;
+        try {
+          await configRenameSection(ctx, { oldName: 'remote.origin', newName: 'remote.upstream' });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as TsgitError | undefined)?.data).toMatchObject({
+          code: 'REPOSITORY_FORMAT_VERSION_UNSUPPORTED',
+          version: 99,
+        });
+      });
+    });
+
+    describe('When configRemoveSection runs', () => {
+      it('Then it throws the carried format refusal (a mover)', async () => {
+        // Arrange
+        const ctx = rejectedCtx();
+
+        // Act
+        let caught: unknown;
+        try {
+          await configRemoveSection(ctx, { name: 'remote.origin' });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as TsgitError | undefined)?.data).toMatchObject({
+          code: 'REPOSITORY_FORMAT_VERSION_UNSUPPORTED',
+          version: 99,
+        });
+      });
+    });
+
+    describe('When configGet runs', () => {
+      it('Then it does not throw the format refusal (a survivor)', async () => {
+        // Arrange
+        const ctx = rejectedCtx();
+
+        // Act
+        let caught: unknown;
+        try {
+          await configGet(ctx, { key: 'user.name' });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeUndefined();
+      });
+    });
+
+    describe('When configGetAll runs', () => {
+      it('Then it does not throw the format refusal (a survivor)', async () => {
+        // Arrange
+        const ctx = rejectedCtx();
+
+        // Act
+        let caught: unknown;
+        try {
+          await configGetAll(ctx, { key: 'user.name' });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeUndefined();
+      });
+    });
+
+    describe('When configGetRegexp runs', () => {
+      it('Then it does not throw the format refusal (a survivor)', async () => {
+        // Arrange
+        const ctx = rejectedCtx();
+
+        // Act
+        let caught: unknown;
+        try {
+          await configGetRegexp(ctx, { keyPattern: /.*/ });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeUndefined();
+      });
+    });
+
+    describe('When configList runs', () => {
+      it('Then it does not throw the format refusal (a survivor)', async () => {
+        // Arrange
+        const ctx = rejectedCtx();
+
+        // Act
+        let caught: unknown;
+        try {
+          await configList(ctx);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeUndefined();
+      });
     });
   });
 });

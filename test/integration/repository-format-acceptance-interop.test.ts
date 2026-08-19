@@ -18,10 +18,12 @@
  *   interopSurface: config, init, status
  */
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { cp, mkdtemp, rm } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, rm } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { createNodeContext } from '../../src/adapters/node/index.js';
+import { init } from '../../src/application/commands/init.js';
 import { TsgitError } from '../../src/domain/error.js';
 import { openRepository } from '../../src/index.node.js';
 import type { Repository } from '../../src/repository.js';
@@ -913,5 +915,349 @@ describe.skipIf(!GIT_AVAILABLE)(
         });
       },
     );
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Row 8 (refusing side) — every mover verb refuses in BOTH tools on
+    // BOTH the v99 and the v1+unknown-extension fixtures; each config
+    // writer's config file is byte-unchanged afterwards.
+    // ─────────────────────────────────────────────────────────────────────
+
+    const FORMAT_FIXTURES: ReadonlyArray<{
+      readonly given: string;
+      readonly slug: string;
+      readonly arm: (dir: string) => void;
+      readonly refusalData: Record<string, unknown>;
+    }> = [
+      {
+        given: 'repositoryformatversion = 99',
+        slug: 'v99-mover',
+        arm: (dir) => armVersion(dir, '99'),
+        refusalData: { code: 'REPOSITORY_FORMAT_VERSION_UNSUPPORTED', version: 99 },
+      },
+      {
+        given: 'repositoryformatversion = 1 with an unknown extension',
+        slug: 'ext-unknown-mover',
+        arm: (dir) =>
+          armRaw(dir, '[core]\n\trepositoryformatversion = 1\n[extensions]\n\tbogus = 1\n'),
+        refusalData: {
+          code: 'REPOSITORY_EXTENSIONS_UNSUPPORTED',
+          version: 1,
+          extensions: ['bogus'],
+        },
+      },
+    ];
+
+    const CONFIG_WRITER_CASES: ReadonlyArray<{
+      readonly name: string;
+      readonly gitArgs: ReadonlyArray<string>;
+      readonly run: (repo: Repository) => Promise<unknown>;
+    }> = [
+      {
+        name: 'configSet',
+        gitArgs: ['config', 'user.name', 'Ada'],
+        run: (repo) => repo.config.set({ key: 'user.name', value: 'Ada' }),
+      },
+      {
+        name: 'configUnset',
+        gitArgs: ['config', '--unset', 'user.name'],
+        run: (repo) => repo.config.unset({ key: 'user.name' }),
+      },
+      {
+        name: 'configUnsetAll',
+        gitArgs: ['config', '--unset-all', 'user.name'],
+        run: (repo) => repo.config.unsetAll({ key: 'user.name' }),
+      },
+      {
+        name: 'configRenameSection',
+        gitArgs: ['config', '--rename-section', 'remote.origin', 'remote.upstream'],
+        run: (repo) =>
+          repo.config.renameSection({ oldName: 'remote.origin', newName: 'remote.upstream' }),
+      },
+      {
+        name: 'configRemoveSection',
+        gitArgs: ['config', '--remove-section', 'remote.origin'],
+        run: (repo) => repo.config.removeSection({ name: 'remote.origin' }),
+      },
+    ];
+
+    const REMOTE_VERB_CASES: ReadonlyArray<{
+      readonly name: string;
+      readonly gitArgs: ReadonlyArray<string>;
+      readonly run: (repo: Repository) => Promise<unknown>;
+    }> = [
+      { name: 'remoteList', gitArgs: ['remote', '-v'], run: (repo) => repo.remote.list() },
+      {
+        name: 'remoteAdd',
+        gitArgs: ['remote', 'add', 'origin', 'https://example.com/repo.git'],
+        run: (repo) => repo.remote.add({ name: 'origin', url: 'https://example.com/repo.git' }),
+      },
+      {
+        name: 'remoteRemove',
+        gitArgs: ['remote', 'remove', 'origin'],
+        run: (repo) => repo.remote.remove({ name: 'origin' }),
+      },
+      {
+        name: 'remoteRename',
+        gitArgs: ['remote', 'rename', 'origin', 'upstream'],
+        run: (repo) => repo.remote.rename({ from: 'origin', to: 'upstream' }),
+      },
+      {
+        name: 'remoteSetUrl',
+        gitArgs: ['remote', 'set-url', 'origin', 'https://example.com/other.git'],
+        run: (repo) => repo.remote.setUrl({ name: 'origin', url: 'https://example.com/other.git' }),
+      },
+      {
+        name: 'remoteShow',
+        gitArgs: ['remote', 'show', '-n', 'origin'],
+        run: (repo) => repo.remote.show({ name: 'origin' }),
+      },
+    ];
+
+    describe.each(FORMAT_FIXTURES)('Given $given', ({ slug, arm, refusalData }) => {
+      describe('When each config writer runs', () => {
+        it.each(CONFIG_WRITER_CASES)(
+          'Then $name refuses in both tools, config byte-unchanged',
+          async ({ name, gitArgs, run }) => {
+            // Arrange
+            const dir = await copyRow(`${slug}-${name}`);
+            arm(dir);
+            const before = readFileSync(configPath(dir));
+
+            // Act
+            const g = tryRunGitWithExit(['-C', dir, ...gitArgs]);
+            const repo = await openRow(dir);
+            try {
+              let caught: unknown;
+              try {
+                await run(repo);
+              } catch (err) {
+                caught = err;
+              }
+
+              // Assert — git
+              expect(g.exitCode).toBe(128);
+              expect(readFileSync(configPath(dir))).toEqual(before);
+              // Assert — tsgit
+              expect(caught).toBeInstanceOf(TsgitError);
+              expect((caught as TsgitError).data).toMatchObject(refusalData);
+              expect(readFileSync(configPath(dir))).toEqual(before);
+            } finally {
+              await repo.dispose();
+            }
+          },
+        );
+      });
+
+      describe('When each remote verb runs', () => {
+        it.each(REMOTE_VERB_CASES)(
+          'Then $name refuses in both tools',
+          async ({ name, gitArgs, run }) => {
+            // Arrange
+            const dir = await copyRow(`${slug}-${name}`);
+            arm(dir);
+
+            // Act
+            const g = tryRunGitWithExit(['-C', dir, ...gitArgs]);
+            const repo = await openRow(dir);
+            try {
+              let caught: unknown;
+              try {
+                await run(repo);
+              } catch (err) {
+                caught = err;
+              }
+
+              // Assert — git
+              expect(g.exitCode).toBe(128);
+              // Assert — tsgit
+              expect(caught).toBeInstanceOf(TsgitError);
+              expect((caught as TsgitError).data).toMatchObject(refusalData);
+            } finally {
+              await repo.dispose();
+            }
+          },
+        );
+      });
+    });
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Row 10 — route coverage: the carried format verdict is the SAME
+    // regardless of how the repository is opened.
+    // ─────────────────────────────────────────────────────────────────────
+
+    describe('Given repositoryformatversion = 99 opened through five different discovery routes', () => {
+      describe('When openRepository runs each route', () => {
+        it('Then a subdirectory cwd still resolves the refusal', async () => {
+          // Arrange
+          const dir = await copyRow('v99-route-subdir');
+          armVersion(dir, '99');
+          const sub = path.join(dir, 'nested', 'deep');
+          await mkdir(sub, { recursive: true });
+
+          // Act
+          const repo = await openRow(sub);
+          try {
+            // Assert
+            expect(repo.ctx.layout.formatRefusal).toStrictEqual({ kind: 'version', version: 99 });
+          } finally {
+            await repo.dispose();
+          }
+        });
+
+        it('Then an explicit gitDir with cwd elsewhere still resolves the refusal', async () => {
+          // Arrange
+          const dir = await copyRow('v99-route-gitdir');
+          armVersion(dir, '99');
+          const elsewhere = await mkdtemp(path.join(os.tmpdir(), 'tsgit-format-elsewhere-'));
+          rowDirs.push(elsewhere);
+
+          // Act
+          const repo = await openRepository({ cwd: elsewhere, gitDir: path.join(dir, '.git') });
+          try {
+            // Assert
+            expect(repo.ctx.layout.formatRefusal).toStrictEqual({ kind: 'version', version: 99 });
+          } finally {
+            await repo.dispose();
+          }
+        });
+
+        it('Then cwd-is-gitdir into a bare-shaped v99 gitdir still resolves the refusal', async () => {
+          // Arrange
+          const root = await mkdtemp(path.join(os.tmpdir(), 'tsgit-format-bare-'));
+          rowDirs.push(root);
+          const bareDir = path.join(root, 'repo.git');
+          runGit(['init', '-q', '--bare', '-b', 'main', bareDir]);
+          const bareConfig = readFileSync(path.join(bareDir, 'config'), 'utf8');
+          writeFileSync(
+            path.join(bareDir, 'config'),
+            `${bareConfig}[core]\n\trepositoryformatversion = 99\n`,
+          );
+
+          // Act
+          const repo = await openRow(bareDir);
+          try {
+            // Assert
+            expect(repo.ctx.layout.formatRefusal).toStrictEqual({ kind: 'version', version: 99 });
+          } finally {
+            await repo.dispose();
+          }
+        });
+
+        it('Then a linked worktree and its main checkout both resolve the SAME refusal from the shared common config', async () => {
+          // Arrange
+          const dir = await copyRow('v99-route-worktree');
+          const worktreeRoot = await mkdtemp(path.join(os.tmpdir(), 'tsgit-format-wt-'));
+          rowDirs.push(worktreeRoot);
+          const wtPath = path.join(worktreeRoot, 'wt');
+          runGit(['-C', dir, 'branch', 'side']);
+          runGit(['-C', dir, 'worktree', 'add', '-q', wtPath, 'side']);
+          armVersion(dir, '99');
+
+          // Act
+          const mainRepo = await openRow(dir);
+          const wtRepo = await openRow(wtPath);
+          try {
+            // Assert
+            expect(mainRepo.ctx.layout.formatRefusal).toStrictEqual({
+              kind: 'version',
+              version: 99,
+            });
+            expect(wtRepo.ctx.layout.formatRefusal).toStrictEqual({ kind: 'version', version: 99 });
+          } finally {
+            await mainRepo.dispose();
+            await wtRepo.dispose();
+          }
+        });
+
+        it('Then a v99 repo nested inside a good outer repo refuses from the inner cwd — discovery does not climb past it', async () => {
+          // Arrange
+          const outerRoot = await mkdtemp(path.join(os.tmpdir(), 'tsgit-format-nested-'));
+          rowDirs.push(outerRoot);
+          runGit(['init', '-q', '-b', 'main', outerRoot]);
+          const innerDir = path.join(outerRoot, 'inner');
+          await mkdir(innerDir, { recursive: true });
+          runGit(['init', '-q', '-b', 'main', innerDir]);
+          const innerConfig = readFileSync(path.join(innerDir, '.git', 'config'), 'utf8');
+          writeFileSync(
+            path.join(innerDir, '.git', 'config'),
+            `${innerConfig}[core]\n\trepositoryformatversion = 99\n`,
+          );
+
+          // Act
+          const repo = await openRow(innerDir);
+          try {
+            // Assert
+            // Platform note: `os.tmpdir()` resolves through a symlink on
+            // macOS (`/var` -> `/private/var`), so the gitDir is compared by
+            // suffix rather than exact equality — the point being proven is
+            // WHICH repo was read (inner, not outer), not the tmpdir prefix.
+            expect(repo.ctx.layout.gitDir.endsWith(path.join('inner', '.git'))).toBe(true);
+            expect(repo.ctx.layout.formatRefusal).toStrictEqual({ kind: 'version', version: 99 });
+          } finally {
+            await repo.dispose();
+          }
+        });
+      });
+    });
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Row 11 — bootstrap: re-init against a v99 repository refuses in BOTH
+    // tools with the config byte-unchanged (tsgit via ALREADY_INITIALIZED —
+    // it has no re-init at all — git via the format gate: different codes,
+    // same observable refusal); a tsgit-created repository is v0 with no
+    // [extensions] and opens fine in real git.
+    // ─────────────────────────────────────────────────────────────────────
+
+    describe('Given repositoryformatversion = 99', () => {
+      describe('When git init and tsgit init are both attempted against the existing repository', () => {
+        it('Then both refuse with the config file byte-unchanged', async () => {
+          // Arrange
+          const dir = await copyRow('v99-reinit');
+          armVersion(dir, '99');
+          const before = readFileSync(configPath(dir));
+
+          // Act
+          const g = tryRunGitWithExit(['-C', dir, 'init', '-q']);
+          const ctx = createNodeContext({ workDir: dir });
+          let caught: unknown;
+          try {
+            await init(ctx);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert — git
+          expect(g.exitCode).toBe(128);
+          expect(readFileSync(configPath(dir))).toEqual(before);
+          // Assert — tsgit
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data).toMatchObject({ code: 'ALREADY_INITIALIZED' });
+          expect(readFileSync(configPath(dir))).toEqual(before);
+        });
+      });
+    });
+
+    describe('Given a fresh directory', () => {
+      describe('When tsgit init runs and git reads the result back', () => {
+        it('Then the config is v0 with no [extensions] section, and git opens it (exit 0)', async () => {
+          // Arrange
+          const root = await mkdtemp(path.join(os.tmpdir(), 'tsgit-format-bootstrap-'));
+          rowDirs.push(root);
+          const dir = path.join(root, 'repo');
+          await mkdir(dir, { recursive: true });
+          const ctx = createNodeContext({ workDir: dir });
+
+          // Act
+          await init(ctx);
+          const configText = readFileSync(configPath(dir), 'utf8');
+          const g = tryRunGitWithExit(['-C', dir, 'status', '--porcelain']);
+
+          // Assert
+          expect(configText).toMatch(/repositoryformatversion\s*=\s*0/);
+          expect(configText).not.toContain('[extensions]');
+          expect(g.exitCode).toBe(0);
+        });
+      });
+    });
   },
 );

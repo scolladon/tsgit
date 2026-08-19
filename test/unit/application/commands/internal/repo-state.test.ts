@@ -11,9 +11,12 @@ import {
   readHeadRaw,
   requireWorkTree,
 } from '../../../../../src/application/commands/internal/repo-state.js';
-import type { HeadState } from '../../../../../src/application/primitives/internal/repo-state.js';
+import {
+  assertAcceptedRepository,
+  type HeadState,
+} from '../../../../../src/application/primitives/internal/repo-state.js';
 import { ObjectId, RefName, TsgitError } from '../../../../../src/domain/index.js';
-import type { Context } from '../../../../../src/ports/context.js';
+import type { Context, RepositoryFormatRefusal } from '../../../../../src/ports/context.js';
 
 const seedRepo = async (ctx: Context, head = 'ref: refs/heads/main\n'): Promise<void> => {
   await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, head);
@@ -22,6 +25,17 @@ const seedRepo = async (ctx: Context, head = 'ref: refs/heads/main\n'): Promise<
 const seedConfig = async (ctx: Context, config: string): Promise<void> => {
   await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, config);
 };
+
+/**
+ * Derive a context carrying a format-acceptance verdict. Seed HEAD/config
+ * through the ORIGINAL ctx before deriving, then assert only against the
+ * derived one — a spread `Context` gets its own entry in the Context-keyed
+ * config caches.
+ */
+const withFormatRefusal = (ctx: Context, formatRefusal: RepositoryFormatRefusal): Context => ({
+  ...ctx,
+  layout: { ...ctx.layout, formatRefusal },
+});
 
 interface MissingValueData {
   readonly code: string;
@@ -1400,7 +1414,172 @@ describe('internal/repo-state', () => {
       });
     });
   });
+
+  describe('assertAcceptedRepository', () => {
+    describe('Given a layout carrying a version refusal', () => {
+      describe('When assertAcceptedRepository is called', () => {
+        it('Then it throws REPOSITORY_FORMAT_VERSION_UNSUPPORTED carrying the parsed version', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx);
+          const rejected = withFormatRefusal(ctx, { kind: 'version', version: 99 });
+
+          // Act
+          let caught: unknown;
+          try {
+            await assertAcceptedRepository(rejected);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data as FormatVersionData;
+          expect(data.code).toBe('REPOSITORY_FORMAT_VERSION_UNSUPPORTED');
+          expect(data.version).toBe(99);
+        });
+      });
+
+      describe('When bare assertRepository is called', () => {
+        it('Then it does not throw REPOSITORY_FORMAT_VERSION_UNSUPPORTED — the four survivors stay clear', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx);
+          const rejected = withFormatRefusal(ctx, { kind: 'version', version: 99 });
+
+          // Act + Assert — must not throw
+          await assertRepository(rejected);
+        });
+      });
+    });
+
+    describe('Given a layout carrying an extensions refusal', () => {
+      describe('When assertAcceptedRepository is called', () => {
+        it('Then it throws REPOSITORY_EXTENSIONS_UNSUPPORTED carrying the version and extensions', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx);
+          const rejected = withFormatRefusal(ctx, {
+            kind: 'extensions',
+            version: 1,
+            extensions: ['bogus'],
+          });
+
+          // Act
+          let caught: unknown;
+          try {
+            await assertAcceptedRepository(rejected);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data as FormatExtensionsData;
+          expect(data.code).toBe('REPOSITORY_EXTENSIONS_UNSUPPORTED');
+          expect(data.version).toBe(1);
+          expect(data.extensions).toEqual(['bogus']);
+        });
+      });
+
+      describe('When bare assertRepository is called', () => {
+        it('Then it does not throw REPOSITORY_EXTENSIONS_UNSUPPORTED — the four survivors stay clear', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx);
+          const rejected = withFormatRefusal(ctx, {
+            kind: 'extensions',
+            version: 1,
+            extensions: ['bogus'],
+          });
+
+          // Act + Assert — must not throw
+          await assertRepository(rejected);
+        });
+      });
+    });
+
+    describe('Given a layout carrying no format refusal', () => {
+      describe('When assertAcceptedRepository is called', () => {
+        it('Then it returns the repo root (no throw)', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx);
+
+          // Act
+          const result = await assertAcceptedRepository(ctx);
+
+          // Assert
+          expect(result).toBe(ctx.layout.workDir);
+        });
+      });
+    });
+
+    describe('Given a layout carrying a version refusal plus core.sparseCheckout = banana', () => {
+      describe('When assertOperationalRepository is called', () => {
+        it('Then it throws REPOSITORY_FORMAT_VERSION_UNSUPPORTED — the format arm runs before the eager config gate', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx);
+          await seedConfig(ctx, '[core]\n\tsparseCheckout = banana\n');
+          const rejected = withFormatRefusal(ctx, { kind: 'version', version: 99 });
+
+          // Act
+          let caught: unknown;
+          try {
+            await assertOperationalRepository(rejected);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data as FormatVersionData;
+          expect(data.code).toBe('REPOSITORY_FORMAT_VERSION_UNSUPPORTED');
+          expect(data.version).toBe(99);
+        });
+      });
+    });
+
+    describe('Given a layout carrying a version refusal plus core.bare = banana', () => {
+      describe('When assertAcceptedRepository is called', () => {
+        it('Then it throws CONFIG_BAD_BOOLEAN_VALUE — the discovery-tier refusal beats the format arm', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx);
+          await seedConfig(ctx, '[core]\n\tbare = banana\n');
+          const rejected = withFormatRefusal(ctx, { kind: 'version', version: 99 });
+
+          // Act
+          let caught: unknown;
+          try {
+            await assertAcceptedRepository(rejected);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data as BadBooleanData;
+          expect(data.code).toBe('CONFIG_BAD_BOOLEAN_VALUE');
+          expect(data.key).toBe('core.bare');
+          expect(data.value).toBe('banana');
+        });
+      });
+    });
+  });
 });
+
+interface FormatVersionData {
+  readonly code: string;
+  readonly version: number;
+}
+
+interface FormatExtensionsData {
+  readonly code: string;
+  readonly version: number;
+  readonly extensions: ReadonlyArray<string>;
+}
 
 interface BadNumericData {
   readonly code: string;
