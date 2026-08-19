@@ -227,8 +227,9 @@ const throwFormatRefusal = (refusal: RepositoryFormatRefusal): never => {
  * all. Every verb except the four surviving `config` read verbs takes this or
  * `assertOperationalRepository`.
  *
- * <insertion point — the ownership gate's `implicitBare` and `untrusted` arms
- *  land ABOVE the format arm; their relative order is that design's, not this one's>
+ * Insertion point: the ownership gate's `implicitBare` and `untrusted` arms land
+ * ABOVE the format arm, and their relative order is that gate's to decide rather
+ * than this one's.
  */
 export const assertAcceptedRepository = async (ctx: Context): Promise<FilePath> => {
   const root = await assertRepository(ctx);
