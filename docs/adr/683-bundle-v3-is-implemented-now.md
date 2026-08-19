@@ -32,7 +32,16 @@ deferral, and no backlog follow-up is created.
 
 - `parse-bundle-header.ts`'s `/^[0-9a-f]{40}$/` is one of the width-implicit sites ADR-694's
   sweep must generalise; the v3 work and the width sweep meet here.
-- v2 stays the written format for SHA-1 repositories, matching git — v3 is emitted only when the
-  repository's object format requires it. Read support accepts both regardless.
+- **Correction, measured after ratification and before merge.** This ADR's premise that "v3 is
+  emitted only when the object format requires it" is **incomplete**. Measured on git 2.55.0,
+  there are **three** independent v3 triggers:
+  1. the repository's object format is SHA-256 (and `--version=2` is then refused outright:
+     `fatal: cannot write bundle version 2 with algorithm sha256`, exit 128);
+  2. a `@filter` capability is present — this forces v3 **even on a SHA-1 repository** (ADR-702);
+  3. an explicit `--version=3`, which git accepts on a SHA-1 repository, writing
+     `@object-format=sha1` (ADR-701).
+
+  So v2 remains the *default* for an unfiltered SHA-1 repository, not the invariant format for
+  one. Read support accepts both versions regardless.
 - The bundle interop rows gain a SHA-256 twin: tsgit-created v3 bundle verified by real git, and
   a git-created v3 bundle read by tsgit.
