@@ -17,7 +17,7 @@
  *   unique:         core.repositoryformatversion's accept/refuse split (a named ceiling, not membership; the parsed integer, not the literal) matches canonical git (git 2.55.0), reconstructed from tsgit's structured fields alone
  *   interopSurface: config, init, status
  */
-import { readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { cp, mkdtemp, rm } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -26,6 +26,22 @@ import { TsgitError } from '../../src/domain/error.js';
 import { openRepository } from '../../src/index.node.js';
 import type { Repository } from '../../src/repository.js';
 import { GIT_AVAILABLE, git, runGit, runGitEnv, tryRunGitWithExit } from './interop-helpers.js';
+
+/** Probes one `git init` capability once, in a throwaway `mktemp` dir, never touching a fixture. */
+const probeInitCapability = (...args: ReadonlyArray<string>): boolean => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'tsgit-format-caps-'));
+  try {
+    return tryRunGitWithExit(['init', '-q', ...args, dir]).exitCode === 0;
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+};
+
+// Computed once at module load (mirroring `GIT_AVAILABLE`'s own pattern) rather
+// than inside `beforeAll`: `it.skipIf`/`describe.skipIf` read their condition at
+// collection time, before any `beforeAll` has run.
+const SHA256_AVAILABLE = GIT_AVAILABLE && probeInitCapability('--object-format=sha256');
+const REFTABLE_AVAILABLE = GIT_AVAILABLE && probeInitCapability('--ref-format=reftable');
 
 const SETUP_TIMEOUT = 60_000;
 
@@ -56,6 +72,20 @@ const configPath = (dir: string): string => path.join(dir, '.git', 'config');
 /** git's exact stderr for a refused version, reconstructed from tsgit's structured fields. */
 const expectedVersionStderr = (version: number): string =>
   `fatal: Expected git repo version <= 1, found ${version}`;
+
+/** git's exact stderr for N unknown extensions at v1 — singular/plural, `\t`-indented, file order. */
+const expectedUnknownStderr = (names: ReadonlyArray<string>): string => {
+  const label = names.length === 1 ? 'extension' : 'extensions';
+  const lines = names.map((name) => `\t${name}`).join('\n');
+  return `fatal: unknown repository ${label} found:\n${lines}\n`;
+};
+
+/** git's exact stderr for N v1-only extensions at v0 — singular/plural, `\t`-indented, file order. */
+const expectedV1OnlyStderr = (names: ReadonlyArray<string>): string => {
+  const label = names.length === 1 ? 'extension' : 'extensions';
+  const lines = names.map((name) => `\t${name}`).join('\n');
+  return `fatal: repo version is 0, but v1-only ${label} found:\n${lines}\n`;
+};
 
 describe.skipIf(!GIT_AVAILABLE)(
   'core.repositoryformatversion acceptance gate — cross-tool interop',
@@ -105,6 +135,17 @@ describe.skipIf(!GIT_AVAILABLE)(
         configPath(dir),
         baseConfigText.replace(/^\s*repositoryformatversion\s*=.*\n/im, ''),
       );
+    };
+
+    /** Append arbitrary raw config text after the init-written base — for combined version+extensions fixtures. */
+    const armRaw = (dir: string, suffix: string): void => {
+      writeFileSync(configPath(dir), `${baseConfigText}${suffix}`);
+    };
+
+    /** Same as `armRaw`, but first strips the init-written repositoryformatversion line — the key absent. */
+    const armRawVersionAbsent = (dir: string, suffix: string): void => {
+      const withoutVersion = baseConfigText.replace(/^\s*repositoryformatversion\s*=.*\n/im, '');
+      writeFileSync(configPath(dir), `${withoutVersion}${suffix}`);
     };
 
     const openRow = async (dir: string): Promise<Repository> => openRepository({ cwd: dir });
@@ -369,5 +410,508 @@ describe.skipIf(!GIT_AVAILABLE)(
         });
       });
     });
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Row 5 — the unknown-extension shapes: singular, plural (file order),
+    // and subsectioned.
+    // ─────────────────────────────────────────────────────────────────────
+
+    describe('Given repositoryformatversion = 1 with one unknown extension', () => {
+      describe('When git status and openRepository run', () => {
+        it('Then both refuse, reconstructing the singular unknown-extension header', async () => {
+          // Arrange
+          const dir = await copyRow('ext-unknown-one');
+          armRaw(dir, '[core]\n\trepositoryformatversion = 1\n[extensions]\n\tbogus = 1\n');
+
+          // Act
+          const g = tryRunGitWithExit(['-C', dir, 'status', '--porcelain']);
+          const repo = await openRow(dir);
+          try {
+            // Assert — git
+            expect(g.exitCode).toBe(128);
+            expect(g.stderr).toContain(expectedUnknownStderr(['bogus']));
+            // Assert — tsgit
+            expect(repo.ctx.layout.formatRefusal).toStrictEqual({
+              kind: 'extensions',
+              version: 1,
+              extensions: ['bogus'],
+            });
+          } finally {
+            await repo.dispose();
+          }
+        });
+      });
+    });
+
+    describe('Given repositoryformatversion = 1 with three unknown extensions in file order', () => {
+      describe('When git status and openRepository run', () => {
+        it('Then both refuse, reconstructing the plural header in config-file order, never sorted', async () => {
+          // Arrange
+          const dir = await copyRow('ext-unknown-three');
+          armRaw(
+            dir,
+            '[core]\n\trepositoryformatversion = 1\n[extensions]\n\tzzz = 1\n\taaa = 1\n\tmmm = 1\n',
+          );
+
+          // Act
+          const g = tryRunGitWithExit(['-C', dir, 'status', '--porcelain']);
+          const repo = await openRow(dir);
+          try {
+            // Assert — git
+            expect(g.exitCode).toBe(128);
+            expect(g.stderr).toContain(expectedUnknownStderr(['zzz', 'aaa', 'mmm']));
+            // Assert — tsgit
+            expect(repo.ctx.layout.formatRefusal).toStrictEqual({
+              kind: 'extensions',
+              version: 1,
+              extensions: ['zzz', 'aaa', 'mmm'],
+            });
+          } finally {
+            await repo.dispose();
+          }
+        });
+      });
+    });
+
+    describe('Given repositoryformatversion = 1 with a subsectioned unknown extension', () => {
+      describe('When git status and openRepository run', () => {
+        it('Then both refuse, naming the subsection verbatim and the key lower-cased', async () => {
+          // Arrange
+          const dir = await copyRow('ext-unknown-sub');
+          armRaw(dir, '[core]\n\trepositoryformatversion = 1\n[extensions "X"]\n\tbogus = 1\n');
+
+          // Act
+          const g = tryRunGitWithExit(['-C', dir, 'status', '--porcelain']);
+          const repo = await openRow(dir);
+          try {
+            // Assert — git
+            expect(g.exitCode).toBe(128);
+            expect(g.stderr).toContain(expectedUnknownStderr(['X.bogus']));
+            // Assert — tsgit
+            expect(repo.ctx.layout.formatRefusal).toStrictEqual({
+              kind: 'extensions',
+              version: 1,
+              extensions: ['X.bogus'],
+            });
+          } finally {
+            await repo.dispose();
+          }
+        });
+      });
+    });
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Row 6 — the version-conditioned split: a v1-only name refuses at v0,
+    // an unknown name is silently ignored at v0.
+    // ─────────────────────────────────────────────────────────────────────
+
+    describe('Given repositoryformatversion = 0 with the v1-only extension objectFormat', () => {
+      describe('When git status and openRepository run', () => {
+        it('Then both refuse — the v1-only arm fires', async () => {
+          // Arrange
+          const dir = await copyRow('v0-v1only');
+          armRaw(
+            dir,
+            '[core]\n\trepositoryformatversion = 0\n[extensions]\n\tobjectFormat = sha1\n',
+          );
+
+          // Act
+          const g = tryRunGitWithExit(['-C', dir, 'status', '--porcelain']);
+          const repo = await openRow(dir);
+          try {
+            // Assert — git
+            expect(g.exitCode).toBe(128);
+            expect(g.stderr).toContain(expectedV1OnlyStderr(['objectformat']));
+            // Assert — tsgit
+            expect(repo.ctx.layout.formatRefusal).toStrictEqual({
+              kind: 'extensions',
+              version: 0,
+              extensions: ['objectformat'],
+            });
+          } finally {
+            await repo.dispose();
+          }
+        });
+      });
+    });
+
+    describe('Given repositoryformatversion = 0 with an unknown extension', () => {
+      describe('When git status and openRepository run', () => {
+        it('Then both accept — v0 silently ignores unknown names', async () => {
+          // Arrange
+          const dir = await copyRow('v0-unknown');
+          armRaw(dir, '[core]\n\trepositoryformatversion = 0\n[extensions]\n\tbogus = 1\n');
+
+          // Act
+          const g = tryRunGitWithExit(['-C', dir, 'status', '--porcelain']);
+          const repo = await openRow(dir);
+          try {
+            // Assert
+            expect(g.exitCode).toBe(0);
+            expect(repo.ctx.layout.formatRefusal).toBeUndefined();
+          } finally {
+            await repo.dispose();
+          }
+        });
+      });
+    });
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Row 7 — the nine-name acceptance sweep: the regression detector for
+    // the registry constant against a future git. Six names are backed and
+    // fully operate in both tools; `objectFormat`/`refStorage` are backed by
+    // real git but tsgit has not yet implemented them here (TRANSIENT —
+    // each sibling PR removes one row when its support lands);
+    // `compatObjectFormat` is refused by real git itself on this build (no
+    // Rust support) and is a PERMANENT co-refusal.
+    // ─────────────────────────────────────────────────────────────────────
+
+    describe("Given each of git's nine known extensions planted alone at version 1", () => {
+      describe('When git status and openRepository run', () => {
+        it.each([
+          ['noop', 'true', 'accept'],
+          ['noop-v1', 'true', 'accept'],
+          ['worktreeConfig', 'true', 'accept'],
+          ['preciousObjects', 'true', 'accept'],
+          ['partialClone', 'origin', 'accept'],
+          ['relativeWorktrees', 'true', 'accept'],
+          ['objectFormat', 'sha1', 'accept'],
+          ['refStorage', 'files', 'accept'],
+          ['compatObjectFormat', 'sha256', 'compatRefused'],
+        ] as const)(
+          'Then extensions.%s is planted and both tools report on it',
+          async (name, value, gitOutcome) => {
+            // Arrange
+            const dir = await copyRow(`ext-${name.toLowerCase()}`);
+            armRaw(
+              dir,
+              `[core]\n\trepositoryformatversion = 1\n[extensions]\n\t${name} = ${value}\n`,
+            );
+
+            // Act
+            const g = tryRunGitWithExit(['-C', dir, 'status', '--porcelain']);
+
+            // Assert — git
+            if (gitOutcome === 'accept') {
+              expect(g.exitCode).toBe(0);
+            } else {
+              expect(g.exitCode).toBe(128);
+              expect(g.stderr).toContain(
+                'fatal: compatibility hash algorithm support requires Rust',
+              );
+            }
+
+            // Assert — tsgit: the six implemented names carry no refusal;
+            // objectFormat/refStorage/compatObjectFormat are all still in
+            // tsgit's unbacked-extension refuse set today, so all three throw.
+            const unbacked = new Set(['objectFormat', 'refStorage', 'compatObjectFormat']);
+            if (unbacked.has(name)) {
+              let caught: unknown;
+              try {
+                await openRow(dir);
+              } catch (err) {
+                caught = err;
+              }
+              expect(caught).toBeInstanceOf(TsgitError);
+              expect((caught as TsgitError).data).toMatchObject({
+                code: 'REPOSITORY_EXTENSION_UNSUPPORTED',
+                extension: name.toLowerCase(),
+              });
+            } else {
+              const repo = await openRow(dir);
+              try {
+                expect(repo.ctx.layout.formatRefusal).toBeUndefined();
+              } finally {
+                await repo.dispose();
+              }
+            }
+          },
+        );
+      });
+    });
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Row 13 — compatObjectFormat's version matrix as co-truth: the
+    // predicate is narrow (only version === 1 reaches the refusal), the
+    // tier is wide (config --list dies too, unlike the plain version arm).
+    // ─────────────────────────────────────────────────────────────────────
+
+    describe('Given extensions.compatObjectFormat with the version key absent', () => {
+      describe('When git status and openRepository run', () => {
+        it('Then both operate the repository', async () => {
+          // Arrange
+          const dir = await copyRow('compat-absent');
+          armRawVersionAbsent(dir, '[extensions]\n\tcompatObjectFormat = sha1\n');
+
+          // Act
+          const g = tryRunGitWithExit(['-C', dir, 'status', '--porcelain']);
+          const repo = await openRow(dir);
+          try {
+            // Assert
+            expect(g.exitCode).toBe(0);
+            expect(repo.ctx.layout.formatRefusal).toBeUndefined();
+          } finally {
+            await repo.dispose();
+          }
+        });
+      });
+    });
+
+    describe('Given extensions.compatObjectFormat with repositoryformatversion = -1', () => {
+      describe('When git status and openRepository run', () => {
+        it('Then both operate the repository', async () => {
+          // Arrange
+          const dir = await copyRow('compat-neg1');
+          armRaw(
+            dir,
+            '[core]\n\trepositoryformatversion = -1\n[extensions]\n\tcompatObjectFormat = sha1\n',
+          );
+
+          // Act
+          const g = tryRunGitWithExit(['-C', dir, 'status', '--porcelain']);
+          const repo = await openRow(dir);
+          try {
+            // Assert
+            expect(g.exitCode).toBe(0);
+            expect(repo.ctx.layout.formatRefusal).toBeUndefined();
+          } finally {
+            await repo.dispose();
+          }
+        });
+      });
+    });
+
+    describe('Given extensions.compatObjectFormat with repositoryformatversion = 0', () => {
+      describe('When git status, git config --list, and openRepository run', () => {
+        it('Then both take the v1-only arm, and the config porcelain survives in git', async () => {
+          // Arrange
+          const dir = await copyRow('compat-v0');
+          armRaw(
+            dir,
+            '[core]\n\trepositoryformatversion = 0\n[extensions]\n\tcompatObjectFormat = sha1\n',
+          );
+
+          // Act
+          const status = tryRunGitWithExit(['-C', dir, 'status', '--porcelain']);
+          const list = tryRunGitWithExit(['-C', dir, 'config', '--list']);
+          const repo = await openRow(dir);
+          try {
+            // Assert — git
+            expect(status.exitCode).toBe(128);
+            expect(status.stderr).toContain(expectedV1OnlyStderr(['compatobjectformat']));
+            expect(list.exitCode).toBe(0);
+            // Assert — tsgit
+            expect(repo.ctx.layout.formatRefusal).toStrictEqual({
+              kind: 'extensions',
+              version: 0,
+              extensions: ['compatobjectformat'],
+            });
+          } finally {
+            await repo.dispose();
+          }
+        });
+      });
+    });
+
+    describe('Given extensions.compatObjectFormat with repositoryformatversion = 1', () => {
+      describe('When git status, git config --list, and openRepository run', () => {
+        it('Then both refuse on every verb, and tsgit throws REPOSITORY_EXTENSION_UNSUPPORTED at open', async () => {
+          // Arrange
+          const dir = await copyRow('compat-v1');
+          armRaw(
+            dir,
+            '[core]\n\trepositoryformatversion = 1\n[extensions]\n\tcompatObjectFormat = sha1\n',
+          );
+
+          // Act
+          const status = tryRunGitWithExit(['-C', dir, 'status', '--porcelain']);
+          const list = tryRunGitWithExit(['-C', dir, 'config', '--list']);
+          let caught: unknown;
+          try {
+            await openRow(dir);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert — git
+          expect(status.exitCode).toBe(128);
+          expect(status.stderr).toContain(
+            'fatal: compatibility hash algorithm support requires Rust',
+          );
+          expect(list.exitCode).toBe(128);
+          expect(list.stderr).toContain(
+            'fatal: compatibility hash algorithm support requires Rust',
+          );
+          // Assert — tsgit
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data).toEqual({
+            code: 'REPOSITORY_EXTENSION_UNSUPPORTED',
+            extension: 'compatobjectformat',
+            value: 'sha1',
+          });
+        });
+      });
+    });
+
+    describe('Given extensions.compatObjectFormat with repositoryformatversion = 2 or 99', () => {
+      describe('When git status, git config --list, and openRepository run', () => {
+        it.each([[2], [99]])(
+          'Then both take the version arm for %i, and the config porcelain survives in git',
+          async (version) => {
+            // Arrange
+            const dir = await copyRow(`compat-v${version}`);
+            armRaw(
+              dir,
+              `[core]\n\trepositoryformatversion = ${version}\n[extensions]\n\tcompatObjectFormat = sha1\n`,
+            );
+
+            // Act
+            const status = tryRunGitWithExit(['-C', dir, 'status', '--porcelain']);
+            const list = tryRunGitWithExit(['-C', dir, 'config', '--list']);
+            const repo = await openRow(dir);
+            try {
+              // Assert — git
+              expect(status.exitCode).toBe(128);
+              expect(status.stderr).toContain(expectedVersionStderr(version));
+              expect(list.exitCode).toBe(0);
+              // Assert — tsgit
+              expect(repo.ctx.layout.formatRefusal).toStrictEqual({ kind: 'version', version });
+            } finally {
+              await repo.dispose();
+            }
+          },
+        );
+      });
+    });
+
+    describe('Given a valueless extensions.compatObjectFormat at version 1', () => {
+      describe('When git status and openRepository are attempted', () => {
+        it('Then git reports missing value + bad config line, and tsgit throws CONFIG_MISSING_VALUE', async () => {
+          // Arrange
+          const dir = await copyRow('compat-valueless');
+          armRaw(
+            dir,
+            '[core]\n\trepositoryformatversion = 1\n[extensions]\n\tcompatObjectFormat\n',
+          );
+
+          // Act
+          const status = tryRunGitWithExit(['-C', dir, 'status', '--porcelain']);
+          let caught: unknown;
+          try {
+            await openRow(dir);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert — git
+          expect(status.exitCode).toBe(128);
+          expect(status.stderr).toContain(
+            "error: missing value for 'extensions.compatobjectformat'",
+          );
+          expect(status.stderr).toContain('fatal: bad config line');
+          // Assert — tsgit
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data as { code: string; key: string };
+          expect(data.code).toBe('CONFIG_MISSING_VALUE');
+          expect(data.key).toBe('extensions.compatobjectformat');
+        });
+      });
+    });
+
+    describe('Given a subsectioned extensions.compatObjectFormat at version 1', () => {
+      describe('When git status and openRepository run', () => {
+        it('Then both take the unknown-extension arm, naming the subsection verbatim', async () => {
+          // Arrange
+          const dir = await copyRow('compat-subsectioned');
+          armRaw(
+            dir,
+            '[core]\n\trepositoryformatversion = 1\n[extensions "x"]\n\tcompatObjectFormat = sha1\n',
+          );
+
+          // Act
+          const g = tryRunGitWithExit(['-C', dir, 'status', '--porcelain']);
+          const repo = await openRow(dir);
+          try {
+            // Assert — git
+            expect(g.exitCode).toBe(128);
+            expect(g.stderr).toContain(expectedUnknownStderr(['x.compatobjectformat']));
+            // Assert — tsgit
+            expect(repo.ctx.layout.formatRefusal).toStrictEqual({
+              kind: 'extensions',
+              version: 1,
+              extensions: ['x.compatobjectformat'],
+            });
+          } finally {
+            await repo.dispose();
+          }
+        });
+      });
+    });
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Row 14 — the backed extensions, cross-referenced from the sibling
+    // suites: this suite asserts the gate's verdict only.
+    // Capability-probed — neither git build feature is guaranteed present.
+    // ─────────────────────────────────────────────────────────────────────
+
+    describe.skipIf(!SHA256_AVAILABLE)(
+      'Given a real git init --object-format=sha256 repository',
+      () => {
+        describe('When openRepository runs', () => {
+          it('Then tsgit refuses at the gate — TRANSIENT until SHA-256 support lands', async () => {
+            // Arrange
+            const root = await mkdtemp(path.join(os.tmpdir(), 'tsgit-format-sha256-'));
+            rowDirs.push(root);
+            const dir = path.join(root, 'repo');
+            runGit(['init', '-q', '--object-format=sha256', dir]);
+
+            // Act
+            let caught: unknown;
+            try {
+              await openRow(dir);
+            } catch (err) {
+              caught = err;
+            }
+
+            // Assert
+            expect(caught).toBeInstanceOf(TsgitError);
+            expect((caught as TsgitError).data).toMatchObject({
+              code: 'REPOSITORY_EXTENSION_UNSUPPORTED',
+              extension: 'objectformat',
+            });
+          });
+        });
+      },
+    );
+
+    describe.skipIf(!REFTABLE_AVAILABLE)(
+      'Given a real git init --ref-format=reftable repository',
+      () => {
+        describe('When openRepository runs', () => {
+          it('Then tsgit refuses at the gate — TRANSIENT until reftable support lands', async () => {
+            // Arrange
+            const root = await mkdtemp(path.join(os.tmpdir(), 'tsgit-format-reftable-'));
+            rowDirs.push(root);
+            const dir = path.join(root, 'repo');
+            runGit(['init', '-q', '--ref-format=reftable', dir]);
+
+            // Act
+            let caught: unknown;
+            try {
+              await openRow(dir);
+            } catch (err) {
+              caught = err;
+            }
+
+            // Assert
+            expect(caught).toBeInstanceOf(TsgitError);
+            expect((caught as TsgitError).data).toMatchObject({
+              code: 'REPOSITORY_EXTENSION_UNSUPPORTED',
+              extension: 'refstorage',
+            });
+          });
+        });
+      },
+    );
   },
 );

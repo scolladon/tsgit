@@ -6,6 +6,7 @@ import {
 } from '../domain/commands/error.js';
 import type { ConfigToken } from '../domain/config/config-ini.js';
 import { parseGitBoolean, parseGitInt, tokenizeConfig } from '../domain/config/config-ini.js';
+import { repositoryExtensionUnsupported } from '../domain/repository/error.js';
 import type { RepositoryFormatRefusal } from '../ports/context.js';
 import type { LayoutProbe } from '../ports/layout-probe.js';
 
@@ -74,6 +75,164 @@ const lastTopLevelEntry = (
     found = { value: token.value, line: token.startLine + 1 };
   }
   return found;
+};
+
+/**
+ * One `[extensions]` entry: the reported name (`subsection === undefined ?
+ * key : `${subsection}.${key}``, key ALWAYS lower-cased, subsection ALWAYS
+ * verbatim), the bare lower-cased key alone (registry lookups use this and
+ * only when `subsection` is `undefined`), the raw subsection, the raw
+ * value, and the entry's 1-based line.
+ */
+export interface ExtensionEntry {
+  readonly name: string;
+  readonly key: string;
+  readonly subsection: string | undefined;
+  readonly value: string | null;
+  readonly line: number;
+}
+
+/**
+ * Every `[extensions]` entry in `tokens`, subsectioned ones included, in
+ * file order, duplicates preserved. `lastTopLevelEntry` cannot serve here:
+ * it skips subsections and keeps only the last match for one key. Exported
+ * for the property-test sibling — `__resetSectionsCacheForTests` in
+ * `config-scoped-read.ts` is the live precedent for a test-only `src` export.
+ */
+export const enumerateExtensionEntries = (
+  tokens: ReadonlyArray<ConfigToken>,
+): ReadonlyArray<ExtensionEntry> => {
+  const entries: ExtensionEntry[] = [];
+  let currentSection = '';
+  let currentSubsection: string | undefined;
+  for (const token of tokens) {
+    if (token.kind === 'header') {
+      currentSection = token.section.toLowerCase();
+      currentSubsection = token.subsection;
+      continue;
+    }
+    if (token.kind !== 'entry') continue;
+    if (currentSection !== EXTENSIONS_SECTION) continue;
+    const key = token.key.toLowerCase();
+    const subsection = currentSubsection;
+    const name = subsection === undefined ? key : `${subsection}.${key}`;
+    entries.push({ name, key, subsection, value: token.value, line: token.startLine + 1 });
+  }
+  return entries;
+};
+
+const lowerCasedSet = (names: ReadonlyArray<string>): ReadonlySet<string> =>
+  new Set(names.map((name) => name.toLowerCase()));
+
+// git 2.55.0 knows exactly these nine. This describes GIT, not tsgit's
+// capabilities — it neither shrinks when tsgit lacks a name nor grows when
+// tsgit gains one; only a new git release moves it.
+const GIT_KNOWN_EXTENSIONS = lowerCasedSet([
+  'noop',
+  'noop-v1',
+  'worktreeConfig',
+  'preciousObjects',
+  'partialClone',
+  'relativeWorktrees',
+  'objectFormat',
+  'compatObjectFormat',
+  'refStorage',
+]);
+
+// The five names git refuses at version 0.
+const GIT_V1_ONLY_EXTENSIONS = lowerCasedSet([
+  'noop-v1',
+  'objectFormat',
+  'compatObjectFormat',
+  'refStorage',
+  'relativeWorktrees',
+]);
+
+/**
+ * Extension names git accepts that tsgit accepts at the gate but cannot yet
+ * act on. Each is refused precisely at open rather than misread. DELETE an
+ * entry — one array element, nothing else — the moment its support lands;
+ * the entry IS the promise that nothing reads the repository wrong.
+ */
+const UNBACKED_EXTENSIONS: ReadonlyArray<string> = [
+  'compatobjectformat',
+  'objectformat',
+  'refstorage',
+];
+
+// A subsectioned spelling of a known name is not known — membership is
+// keyed on the bare key only when `subsection` is `undefined`.
+const isUnknownExtension = (entry: ExtensionEntry): boolean =>
+  entry.subsection !== undefined || !GIT_KNOWN_EXTENSIONS.has(entry.key);
+
+const isV1OnlyExtension = (entry: ExtensionEntry): boolean =>
+  entry.subsection === undefined && GIT_V1_ONLY_EXTENSIONS.has(entry.key);
+
+const namesWhere = (
+  entries: ReadonlyArray<ExtensionEntry>,
+  predicate: (entry: ExtensionEntry) => boolean,
+): ReadonlyArray<string> => entries.filter(predicate).map((entry) => entry.name);
+
+/**
+ * The extensions arm — version-selected, independent of the version-ceiling
+ * arm: `version === 0` refuses v1-only names, `version >= 1` refuses
+ * unknown names (in practice `=== 1` here, since a caller only reaches this
+ * once the version arm has already returned `undefined` for `version <=
+ * MAX_REPOSITORY_FORMAT_VERSION`). A negative version refuses neither.
+ */
+const extensionsRefusal = (
+  version: number,
+  entries: ReadonlyArray<ExtensionEntry>,
+): RepositoryFormatRefusal | undefined => {
+  if (version === 0) {
+    const names = namesWhere(entries, isV1OnlyExtension);
+    return names.length > 0 ? { kind: 'extensions', version, extensions: names } : undefined;
+  }
+  if (version >= 1) {
+    const names = namesWhere(entries, isUnknownExtension);
+    return names.length > 0 ? { kind: 'extensions', version, extensions: names } : undefined;
+  }
+  return undefined;
+};
+
+/** The carried verdict — the version ceiling wins outright over the extension arms. */
+const formatRefusal = (
+  version: number | undefined,
+  entries: ReadonlyArray<ExtensionEntry>,
+): RepositoryFormatRefusal | undefined => {
+  if (version === undefined) return undefined;
+  return versionRefusal(version) ?? extensionsRefusal(version, entries);
+};
+
+/**
+ * The refuse-set arm: a top-level, accepted `extensions.*` entry tsgit
+ * cannot yet act on is refused precisely at open. Only reached once the
+ * carried verdict has accepted the repository. Immediately before throwing
+ * the refuse-set error, a malformed `extensions.worktreeConfig` in the same
+ * file wins instead — that discovery-tier gate does not otherwise run until
+ * first command, so this restores its precedence for this arm alone.
+ */
+const assertExtensionBacked = (
+  version: number | undefined,
+  entries: ReadonlyArray<ExtensionEntry>,
+  worktreeConfigEntry: ScannedEntry | undefined,
+  source: string,
+): void => {
+  if (version !== 1) return;
+  const unbacked = entries.find(
+    (entry) => entry.subsection === undefined && UNBACKED_EXTENSIONS.includes(entry.key),
+  );
+  if (unbacked === undefined) return;
+  if (worktreeConfigEntry !== undefined && worktreeConfigEntry.value !== null) {
+    const parsed = parseGitBoolean(worktreeConfigEntry.value);
+    if (!parsed.ok) {
+      throw configBadBooleanValue('extensions.worktreeconfig', source, worktreeConfigEntry.value);
+    }
+  }
+  if (unbacked.value === null) {
+    throw configMissingValue(`extensions.${unbacked.key}`, source, unbacked.line);
+  }
+  throw repositoryExtensionUnsupported(unbacked.name, unbacked.value);
 };
 
 /**
@@ -227,12 +386,14 @@ export const readRepositoryFormat = async (
   const scoped = worktreeConfig ? await scanConfigFile(probe, scopedPath) : undefined;
   const bare = pickScoped(local?.bare, localPath, scoped?.bare, scopedPath);
   const worktree = pickScoped(local?.worktree, localPath, scoped?.worktree, scopedPath);
-  return {
-    bare: resolveBare(bare.entry, bare.source),
-    worktree: resolveWorktree(worktree.entry, worktree.source),
-    worktreeConfig,
-    refusal: versionRefusal(version),
-  };
+  const resolvedBare = resolveBare(bare.entry, bare.source);
+  const resolvedWorktree = resolveWorktree(worktree.entry, worktree.source);
+  const extensions = enumerateExtensionEntries(local?.tokens ?? []);
+  const refusal = formatRefusal(version, extensions);
+  if (refusal === undefined) {
+    assertExtensionBacked(version, extensions, local?.worktreeConfig, localPath);
+  }
+  return { bare: resolvedBare, worktree: resolvedWorktree, worktreeConfig, refusal };
 };
 
 /** A key's winning entry with the file it came from — scoped (`config.worktree`) wins when present. */
