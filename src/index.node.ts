@@ -192,6 +192,26 @@ const canonicalizeCeilings = async (
 };
 
 /**
+ * Realpaths every entry of `trustedDirectories`, best-effort — the same
+ * `canonicalize` fallback `canonicalizeCeilings` uses, so an entry with a
+ * missing intermediate component correctly fails to match rather than
+ * silently matching a lexical prefix. The literal `'*'` is skipped
+ * entirely: it must never be realpathed into `<cwd>/*`, which would turn
+ * "trust everything" into "trust nothing".
+ */
+const canonicalizeTrustedDirectories = async (
+  trustedDirectories: ReadonlyArray<string> | undefined,
+): Promise<ReadonlyArray<string> | undefined> => {
+  if (trustedDirectories === undefined) return undefined;
+  const resolved = await Promise.all(
+    trustedDirectories.map(async (entry) =>
+      entry === '*' ? entry : (await canonicalize(entry)).path,
+    ),
+  );
+  return resolved;
+};
+
+/**
  * Resolve the physical layout for `cwd`: `opts.gitDir`, when given, skips
  * discovery entirely (Stage 1's explicit route); otherwise walk up looking
  * for a `.git` entry or a cwd-is-gitdir match, bounded by `opts.ceilingDirs`
@@ -237,12 +257,33 @@ const nodeLayoutCapabilities = {
  * genuinely lexical sources (`core.worktree`, an explicit `opts.workDir`)
  * pay one.
  */
+/**
+ * Assembles the `ExplicitLayoutOptions` object `resolveLayout` receives,
+ * folding in each optional field only when the caller actually set it —
+ * `exactOptionalPropertyTypes` forbids the explicit-undefined form. Extracted
+ * from `resolveNodeLayout` to keep that function's own branching count low.
+ */
+const buildLayoutOptions = (
+  opts: ExplicitLayoutOptions,
+  explicit: Pick<ExplicitLayoutOptions, 'workDir' | 'bare'>,
+  ceilingDirs: ReadonlyArray<string> | undefined,
+  trustedDirectories: ReadonlyArray<string> | undefined,
+): ExplicitLayoutOptions => ({
+  ...(opts.gitDir !== undefined ? { gitDir: opts.gitDir } : {}),
+  ...explicit,
+  ...(ceilingDirs !== undefined ? { ceilingDirs } : {}),
+  ...(opts.trust !== undefined ? { trust: opts.trust } : {}),
+  ...(trustedDirectories !== undefined ? { trustedDirectories } : {}),
+  ...(opts.bareRepositories !== undefined ? { bareRepositories: opts.bareRepositories } : {}),
+});
+
 const resolveNodeLayout = async (
   cwd: string,
   opts: ExplicitLayoutOptions,
   cwdCanonical: boolean,
 ): Promise<{ layout: RepositoryLayoutInput; canonical: boolean }> => {
   const ceilingDirs = await canonicalizeCeilings(opts.ceilingDirs);
+  const trustedDirectories = await canonicalizeTrustedDirectories(opts.trustedDirectories);
   const explicit = {
     ...(opts.workDir !== undefined ? { workDir: opts.workDir } : {}),
     ...(opts.bare !== undefined ? { bare: opts.bare } : {}),
@@ -251,11 +292,7 @@ const resolveNodeLayout = async (
     nodeLayoutProbe,
     cwd,
     nativePolicy,
-    {
-      ...(opts.gitDir !== undefined ? { gitDir: opts.gitDir } : {}),
-      ...explicit,
-      ...(ceilingDirs !== undefined ? { ceilingDirs } : {}),
-    },
+    buildLayoutOptions(opts, explicit, ceilingDirs, trustedDirectories),
     nodeLayoutCapabilities,
   );
   if (resolved === undefined) {

@@ -36,6 +36,10 @@ export const resolveFixedEntryLayout = async (
       ? await layoutFromGitfile(probe, workDir, gitDir, portablePosixPolicy, entry.size)
       : { gitDir };
   const outcome: WalkOutcome = { ...located, route: 'DISCOVERED', origin: workDir };
+  // No trust options threaded here: this shim always produces `route:
+  // 'DISCOVERED'` (there is no walk, so `BARE_DIR` is unreachable) and
+  // `fileSystemLayoutProbe` omits `isOwnedByCaller`, so both gates are inert
+  // by construction — a parameter here could only ever be ignored.
   return finishLayout(probe, outcome, portablePosixPolicy, workDir, {
     ...(bare !== undefined ? { bare } : {}),
     ...(explicitWorkDir !== undefined ? { workDir: explicitWorkDir } : {}),

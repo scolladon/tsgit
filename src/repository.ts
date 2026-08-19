@@ -194,6 +194,12 @@ export interface RepositoryLayoutInput {
   readonly commonDir?: string;
   /** `core.bare` and `core.worktree` are both set — git's `work_tree_config_is_bogus`. */
   readonly workTreeConfigBogus?: boolean;
+  /** Discovery reached a repository whose metadata the caller does not own. Present only when true. */
+  readonly untrusted?: true;
+  /** Discovery walked into a gitdir under a name other than `.git`, with `bareRepositories: 'explicit'` set. Present only when true. */
+  readonly implicitBare?: true;
+  /** The first checked path the ownership predicate reported unowned. Present only when one was found. */
+  readonly foreignPath?: string;
   /** The repository-format acceptance verdict — absent when accepted. */
   readonly formatRefusal?: RepositoryFormatRefusal;
   readonly homeDir?: string;

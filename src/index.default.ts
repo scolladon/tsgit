@@ -65,6 +65,13 @@ export const openRepository = async (
     ...(opts.workDir !== undefined ? { workDir: opts.workDir } : {}),
     ...(opts.bare !== undefined ? { bare: opts.bare } : {}),
   };
+  // Lexical, not physical: no realpath exists in this sandbox, so
+  // `trustedDirectories` entries are compared exactly as given — the same
+  // divergence `ceilingDirs` already follows here. The literal `'*'` is
+  // never touched, matching the node shim's skip.
+  const trustedDirectories = opts.trustedDirectories?.map((entry) =>
+    entry === '*' ? entry : portablePosixPolicy.resolve(entry),
+  );
   // The found-nothing fallback anchors at the fixed `/repo` root (this
   // runtime's historical bootstrap contract) and honours `opts.bare` /
   // `opts.workDir` — but reads NOTHING from disk: discovery already judged
@@ -76,6 +83,9 @@ export const openRepository = async (
       ...(opts.gitDir !== undefined ? { gitDir: opts.gitDir } : {}),
       ...explicit,
       ...(opts.ceilingDirs !== undefined ? { ceilingDirs: opts.ceilingDirs } : {}),
+      ...(opts.trust !== undefined ? { trust: opts.trust } : {}),
+      ...(trustedDirectories !== undefined ? { trustedDirectories } : {}),
+      ...(opts.bareRepositories !== undefined ? { bareRepositories: opts.bareRepositories } : {}),
     })) ??
     syntheticFallbackLayout(DEFAULT_GIT_DIR, DEFAULT_WORK_DIR, cwd, explicit, portablePosixPolicy);
   const fallback = {
