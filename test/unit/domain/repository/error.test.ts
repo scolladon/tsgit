@@ -5,6 +5,8 @@ import type { FilePath } from '../../../../src/domain/objects/object-id.js';
 import {
   alreadyInitialized,
   bareRepository,
+  dubiousOwnership,
+  implicitBareRepository,
   notARepository,
   type RepositoryError,
   repositoryExtensionsUnsupported,
@@ -155,6 +157,49 @@ describe('domain repository error', () => {
         });
       });
     });
+
+    describe('Given dubiousOwnership("/srv/repo") with no foreignPath', () => {
+      describe('When checking data', () => {
+        it('Then code and path preserved, with no foreignPath key', () => {
+          // Arrange & Act
+          const result = dubiousOwnership('/srv/repo' as FilePath);
+
+          // Assert
+          expect(result.data).toEqual({ code: 'DUBIOUS_OWNERSHIP', path: '/srv/repo' });
+        });
+      });
+    });
+
+    describe('Given dubiousOwnership("/srv/repo", "/srv/repo/.git")', () => {
+      describe('When checking data', () => {
+        it('Then code, path and foreignPath preserved', () => {
+          // Arrange & Act
+          const result = dubiousOwnership('/srv/repo' as FilePath, '/srv/repo/.git' as FilePath);
+
+          // Assert
+          expect(result.data).toEqual({
+            code: 'DUBIOUS_OWNERSHIP',
+            path: '/srv/repo',
+            foreignPath: '/srv/repo/.git',
+          });
+        });
+      });
+    });
+
+    describe('Given implicitBareRepository("/srv/evil.git")', () => {
+      describe('When checking data', () => {
+        it('Then code and gitDir preserved', () => {
+          // Arrange & Act
+          const result = implicitBareRepository('/srv/evil.git');
+
+          // Assert
+          expect(result.data).toEqual({
+            code: 'IMPLICIT_BARE_REPOSITORY',
+            gitDir: '/srv/evil.git',
+          });
+        });
+      });
+    });
   });
 
   describe('extractDetail message formatting (exact match)', () => {
@@ -204,6 +249,22 @@ describe('domain repository error', () => {
           value: 'sha1',
         },
         'REPOSITORY_EXTENSION_UNSUPPORTED: repository extension not supported: compatobjectformat = sha1',
+      ],
+      [
+        { code: 'DUBIOUS_OWNERSHIP', path: '/srv/repo' as FilePath },
+        'DUBIOUS_OWNERSHIP: dubious ownership in repository at repo',
+      ],
+      [
+        {
+          code: 'DUBIOUS_OWNERSHIP',
+          path: '/srv/repo' as FilePath,
+          foreignPath: '/srv/repo/.git' as FilePath,
+        },
+        'DUBIOUS_OWNERSHIP: dubious ownership in repository at repo (first foreign path: .git)',
+      ],
+      [
+        { code: 'IMPLICIT_BARE_REPOSITORY', gitDir: '/srv/evil.git' },
+        'IMPLICIT_BARE_REPOSITORY: cannot use implicit git directory: evil.git',
       ],
     ];
 

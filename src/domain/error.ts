@@ -298,6 +298,12 @@ function extractDetail(data: TsgitErrorData): string {
       return `bad shallow file at line ${data.lineNumber}: ${data.reason}`;
     case 'NOT_A_REPOSITORY':
       return `not a git repository: ${basename(data.path)}`;
+    case 'DUBIOUS_OWNERSHIP':
+      return data.foreignPath === undefined
+        ? `dubious ownership in repository at ${basename(data.path)}`
+        : `dubious ownership in repository at ${basename(data.path)} (first foreign path: ${basename(data.foreignPath)})`;
+    case 'IMPLICIT_BARE_REPOSITORY':
+      return `cannot use implicit git directory: ${basename(data.gitDir)}`;
     case 'BARE_REPOSITORY':
       return `operation requires a working tree: ${data.operation}`;
     case 'WORK_TREE_REQUIRED':
