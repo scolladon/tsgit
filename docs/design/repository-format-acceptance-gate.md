@@ -7,8 +7,11 @@
 > accepted name rather than misreading it. tsgit today opens a version-99 repository, reports
 > a SHA-256 repository as corrupt rather than unsupported, and opens a `compatObjectFormat`
 > repository git refuses outright.
-> Status: ratified — [ADR-666] (tier), [ADR-667] (accepted set), [ADR-668] (error codes),
-> paired with [ADR-679] (the shared acceptance tier).
+> Status: ratified — [ADR-666] (the tier split), [ADR-667] (the accepted set), [ADR-668] (the
+> two gate codes), [ADR-682] (the third tier the refusals attach to, and the mechanical guard
+> that makes it safe), [ADR-685] (the one point-of-use code); paired with [ADR-679] (the shared
+> dropped-scope rule). Every candidate this design raised is settled. One new candidate — DN-3,
+> the guard's granularity — is open.
 
 ## Context
 
@@ -42,7 +45,7 @@ It already owns the machinery this feature needs: `scanConfigFile` (absent/non-r
 true), and it already **throws at open time** — `configBadBooleanValue` for a malformed
 `core.bare`, `configMissingValue` for a valueless `core.worktree` ([ADR-664]).
 
-The command tier is two asserts in
+The command tier is, today, two asserts in
 `src/application/primitives/internal/repo-state.ts`:
 
 ```ts
@@ -61,9 +64,20 @@ export const assertOperationalRepository = async (ctx: Context): Promise<FilePat
 ```
 
 `assertRepository` is taken by fifteen call sites — all nine `config` verbs (`config.ts`) and
-all six `remote` verbs (`remote.ts`); every other command takes
-`assertOperationalRepository` ([ADR-639]). §1f measures that **neither** of those two
-memberships is the acceptance tier's: the surviving set is narrower than both.
+all six `remote` verbs (`remote.ts`); every other command takes `assertOperationalRepository`
+(45 modules, [ADR-639]). §1f measures that **neither** of those two memberships is the
+acceptance tier's: the surviving set is exactly four, narrower than both. [ADR-682] resolves
+that mismatch by adding a **third** tier between them, so the shape this design targets is:
+
+```
+assertRepository            = HEAD usable + discovery booleans     <- 4 surviving config reads
+assertAcceptedRepository    = assertRepository + acceptance gates   <- 11 movers
+assertOperationalRepository = assertAcceptedRepository + eager [core] <- 45 operational modules
+```
+
+Two import routes reach the assert today and both matter to §2's guard: `remote.ts` imports it
+straight from `src/application/primitives/internal/repo-state.js`, while `config.ts` imports it
+through the deprecated re-export shim `src/application/commands/internal/repo-state.ts`.
 
 The integer grammar is already in the domain: `parseGitInt`
 (`src/domain/config/config-ini.ts:750`) implements git's `strtoimax` base-0 grammar —
@@ -107,9 +121,14 @@ defect: tsgit *operates* a repository git refuses outright.
   the offending extension names. No rendered `fatal:` line, no `warning:` line, no
   singular/plural selection (derivable from the list length); the interop test reconstructs
   git's bytes from the fields.
-- **The acceptance tier** ([ADR-666], paired with [ADR-679]): a repository the acceptance
-  tier rejects has no readable config scope, and gentle-setup verbs survive on the scopes
-  that remain. The format gate and the ownership gate express **one rule** on **one tier**.
+- **The acceptance tier** ([ADR-666], attached by [ADR-682], paired with [ADR-679]): a
+  repository the acceptance tier rejects has no readable config scope, and gentle-setup verbs
+  survive on the scopes that remain. The format gate and the ownership gate express **one
+  rule** on **one tier** — `assertAcceptedRepository`, carrying all four acceptance refusals
+  (format version, unsupported extension, dubious ownership, implicit bare repository).
+- **The guard is part of this change** ([ADR-682]): the third tier fails *open*, so the
+  weaker `assertRepository` is fenced mechanically by an allowlist check, not by convention.
+  A guard described but not specified is not a guard; §2a specifies it.
 - **No divergence at the gate** ([ADR-667]): every extension git knows is accepted. Where
   tsgit cannot yet act on an accepted extension it refuses *precisely, at the point of use* —
   never by silently reading the repository wrong, and never by refusing to open a repository
@@ -117,10 +136,17 @@ defect: tsgit *operates* a repository git refuses outright.
 - Existing decisions this must not contradict: [ADR-639] (the eager `[core]` tier the config
   porcelain skips), [ADR-658] (the layout read surface is a facade field), [ADR-661] (the
   layout read includes `config.worktree`), [ADR-664] (layout-config refusals surface at open
-  time), [ADR-678] (an untrusted repository still exposes its structural layout).
-- Two subsystems that back accepted extensions are designed **separately, in this same PR**:
-  `docs/design/sha256-object-format.md` and `docs/design/reftable-ref-storage.md`. This
-  design references them and designs neither.
+  time), [ADR-678] (an untrusted repository still exposes its structural layout), [ADR-682]
+  (the third tier and its guard), [ADR-685] (the one generic point-of-use code), [ADR-696]
+  (extension **enum-value** refusals reuse the config error family, not this gate's codes).
+- The scope that backs the accepted extensions is now ratified in full, and it is **larger
+  than "designed separately"**: `objectFormat` is implemented to full write parity including
+  `init --object-format` ([ADR-681]), `refStorage` is a complete read + write + compaction
+  reftable backend on all three adapters ([ADR-680]), and bundle v3 ships with the
+  `@object-format` capability ([ADR-683]). Those subsystems are specified in
+  `docs/design/sha256-object-format.md` and `docs/design/reftable-ref-storage.md`; this design
+  references them and designs neither. What that expansion changes here is §3 and §5: of git's
+  nine extensions, exactly **one** is accepted-but-unbacked.
 - Branded types, no `any`, functions < 20 lines, no suppression directives, 100 % coverage on
   touched code inside the coverage scope (`src/repository/` and `src/application/` are
   outside it; `src/domain/` is inside).
@@ -176,13 +202,21 @@ the config byte-unchanged (§1g).
 `bootstrapRepository` writes `repositoryformatversion = 0` and no `[extensions]`, so no
 tsgit-created repository can trip its own gate.
 
-**R13.** Every accepted extension is **backed**: implemented, inert, honoured by
-construction, delivered by a sibling design in this PR, or refused precisely at the point of
-use. No accepted name may leave tsgit reading the repository wrong (§3).
+**R13.** Every accepted extension is **backed**: implemented (in this design or a sibling
+one in this PR), inert, honoured by construction, or refused precisely at the point of use.
+After the ratified scope expansion exactly one of the nine — `compatObjectFormat` — takes the
+last arm, and git refuses it too. No accepted name may leave tsgit reading the repository
+wrong (§3).
 
 **R14.** Every pinned row in §1 is backed by an interop assertion that reconstructs git's
 exact stderr bytes and exit code from the structured fields, and every §1f porcelain row is
 asserted as **co-truth** (both tools agreeing), not as a divergence.
+
+**R15.** The acceptance-free tier is reachable only on purpose. Bare `assertRepository` is
+callable from an explicit allowlist of exactly the four surviving verbs (plus the tier chain's
+own link), enforced **mechanically** as a blocking check in `validate` — not by convention, and
+not by review ([ADR-682], §2a). Adding a fifth requires an allowlist edit whose stated reason
+names a pinned interop row.
 
 ## Design
 
@@ -245,7 +279,9 @@ Probed by planting `[extensions] <name> = <value>` at version 1 and reading the 
 Nine names are accepted; **every** other name probed (`reftable`, `sparseIndex`,
 `commitGraph`, `midx`, `objectFormatV2`, `fsmonitor`, `promisor`, `grafts`, `bogus`,
 `alsoBogus`, `zzz`, `aaa`, `mmm`) was rejected as unknown. These nine are exactly the names
-tsgit accepts too ([ADR-667]); the "tsgit today" column is the gap §3 closes.
+tsgit accepts too ([ADR-667]). The "tsgit today" column is the **pre-change** measurement —
+the gap §3 closes — and it is preserved verbatim as the evidence base; §3 records what each
+name is backed by after the ratified scope expansion.
 
 | extension | at v1 | at v0 | value grammar | tsgit today |
 |---|---|---|---|---|
@@ -412,8 +448,10 @@ own first consequence anticipates exactly this — the membership "must be enume
 `openRepository` docs page, not inferred from which assert a command happens to call" — and
 this is that enumeration. The ownership gate was probed side by side against the same
 fixtures (`GIT_TEST_ASSUME_DIFFERENT_OWNER` for trust, `repositoryformatversion = 99` here)
-and the two surviving sets are **identical**, which is what lets one tier serve both gates
-and why the attachment question (DN-1) is decided once for both.
+and the two surviving sets are **identical**, which is what let one tier serve both gates and
+why the attachment question was decided once for both — [ADR-682], which turns this four-verb
+measurement into `assertRepository`'s membership and everything else into
+`assertAcceptedRepository`'s.
 
 Contrast with the gate tsgit already implements — `core.bare = banana`:
 
@@ -622,40 +660,55 @@ Second, **cost and totality**: a frozen field is a
 synchronous read with no I/O on every command, and it is total on every route by
 construction, whereas a re-derivation is an invariant to maintain at each site.
 
-Two consumers, and they are deliberately at different depths. The **content** of the
-acceptance check is fixed; **which assert carries it** is not, because tsgit's existing
-membership does not match the measured surviving set and the mismatch binds both acceptance
-gates identically (§1f, DN-1):
+Two consumers, and they are deliberately at different depths. [ADR-682] settles which assert
+carries the acceptance refusals: a **third** tier named for what it asserts, with
+`assertRepository` keeping its current meaning and `assertOperationalRepository` chaining
+through the new one.
 
 ```
-<the gentle assert>                          # the four surviving config read verbs
+assertRepository(ctx)                        # the four surviving config read verbs
   hasUsableHead                    → NOT_A_REPOSITORY
   assertDiscoveryBooleansValid     → CONFIG_BAD_BOOLEAN_VALUE      (§1d step 3, real config content)
 
-<the acceptance assert>                      # every other verb, incl. remote and the config writers
-  <the gentle assert>
+assertAcceptedRepository(ctx)                # every other verb, incl. remote and the config writers
+  assertRepository
   ctx.layout.implicitBare          → IMPLICIT_BARE_REPOSITORY      (the ownership design's §1h)
-  ctx.layout.untrusted             → DUBIOUS_OWNERSHIP             (ADR-679)
+  ctx.layout.untrusted             → DUBIOUS_OWNERSHIP             (ADR-679, ADR-684)
   ctx.layout.formatRefusal         → REPOSITORY_FORMAT_VERSION_UNSUPPORTED
                                    | REPOSITORY_EXTENSIONS_UNSUPPORTED   (§1d step 4)
 
 assertOperationalRepository(ctx)
-  <the acceptance assert>
+  assertAcceptedRepository
   assertEagerConfigValid           → the [core] gate               (§1d step 6)
 ```
 
-The ordering inside those two boxes is measured and settled; what DN-1 decides is which of
-today's asserts plays each role, and therefore which call sites move. The rest of this
-document is written against DN-1(a) — the acceptance refusals land in `assertRepository`, so
-every verb is gated by default and the four measured survivors opt out under an explicitly
-named gentle assert — because on that shape `remote` and the five `config` writers need **no
-edit at all** (they already call `assertRepository`) and §1f's `remote` and write rows fall
-out for free. Nothing else in this design depends on which alternative wins: the verdict, its
-payload, its ordering and the dropped scope are identical under all three. Both acceptance
-gates must land **one** gentle assert, under whichever name DN-1 settles.
+The ordering inside those boxes is measured and settled. The ordering of the three refusals
+*within* `assertAcceptedRepository` is inherited rather than decided here: the format arm is
+this design's (§1d step 4), and `implicitBare`/`untrusted` are the ownership design's, whose
+own §1 pins their relative order. The dropped-scope discussion below states the one
+structural consequence the two gates already have on each other.
+
+**The call sites that move**, verified with `find_referencing_symbols` against
+`assertRepository` rather than inferred:
+
+| module | stays on `assertRepository` | moves to `assertAcceptedRepository` |
+|---|---|---|
+| `src/application/commands/config.ts` | `configGet` (`:47`), `configGetAll` (`:67`), `configGetRegexp` (`:94`), `configList` (`:123`) | `configSet` (`:153`), `configUnset` (`:182`), `configUnsetAll` (`:217`), `configRenameSection` (`:244`), `configRemoveSection` (`:269`) |
+| `src/application/commands/remote.ts` | — | `remoteList` (`:118`), `remoteAdd` (`:133`), `remoteRemove` (`:173`), `remoteRename` (`:236`), `remoteSetUrl` (`:306`), `remoteShow` (`:329`) |
+| `src/application/primitives/internal/repo-state.ts` | — | `assertOperationalRepository` (`:223`) re-points its inner call |
+
+Line numbers are the `await assertRepository(ctx);` statements at this design's baseline.
+`config.ts` ends up needing **both** asserts,
+so it imports both directly from `../primitives/internal/repo-state.js` and stops routing this
+symbol through the deprecated `commands/internal/repo-state.ts` shim; the shim itself is left
+alone (other symbols still flow through it) and, being a re-export rather than a call, is not
+a guard subject.
+
+Eleven sites move, four stay, and the split is now visible in the two command modules rather
+than implied by which assert a verb happened to inherit.
 
 **The dropped config scope.** The four survivors must see an empty repository scope (§1f).
-The guard belongs in `config-scoped-read.ts`'s per-scope reader: when
+The check belongs in `config-scoped-read.ts`'s per-scope reader: when
 `ctx.layout.formatRefusal !== undefined`, the `local` and `worktree` scopes contribute
 nothing to a merged read, and an **explicitly-named** `local`/`worktree` scope refuses with
 the existing `CONFIG_SCOPE_NOT_AVAILABLE { scope, reason }` — one new `reason` literal,
@@ -664,7 +717,7 @@ repository`.
 
 It must **not** be a blanket early return in `readConfig` (`config-read.ts:169`), and this is
 where the two gates' shared rule needs one honest distinction. [ADR-679] puts the ownership
-guard there, and correctly: an untrusted repository's config file is never parsed at all, so
+check there, and correctly: an untrusted repository's config file is never parsed at all, so
 `assertDiscoveryBooleansValid` finds nothing and `core.bare = banana` measurably stops
 refusing. The format verdict is **derived from that very file**, and §1d measures the
 opposite outcome for it — on a v99 repository `core.bare = banana` and
@@ -680,6 +733,109 @@ is structurally absent **and the step-5 throw never fires either** — both outp
 the scan that was skipped. Ownership shadowing the whole of this design is therefore something
 neither gate has to sequence against the other.
 
+#### 2a. The allowlist guard — the mitigation [ADR-682] requires
+
+The third tier **fails open**: a future command that reaches for `assertRepository` — the most
+natural-sounding name of the three — would silently operate on a rejected or untrusted
+repository. [ADR-682] makes the guard part of this change, not a follow-up, and names it as
+the precondition for the three-tier shape being safe to ship. Specification:
+
+**Where it lives.** A new audit in the existing allowlist-audit family — the mechanism
+`check:write-surfaces` and `check:browser-surface` already use — rather than a new mechanism:
+
+| artefact | path |
+|---|---|
+| the audit | `tooling/audit-assert-tier.ts` |
+| the allowlist | `tooling/audit-assert-tier.allowlist.json` |
+| the wireit target | `check:assert-tier`, listed in `validate`'s dependencies beside `check:write-surfaces` |
+| its own test | `tooling/test/unit/audit-assert-tier.test.ts` |
+
+`check:architecture` (dependency-cruiser over `src/`) was the first candidate and is
+**structurally insufficient**: dependency-cruiser rules are module-granular, and the four
+survivors and five writers share one module (`src/application/commands/config.ts`), so no
+`from`/`to` path rule can separate them. Making it work would require splitting that module —
+a **published subpath** (`./commands/config`) — which is DN-3's alternative (c), not this
+design's default. The wireit `files` list mirrors the sibling audits: `src/**/*.ts`,
+`tooling/audit-assert-tier.ts`, `tooling/audit-assert-tier.allowlist.json`, plus
+`tooling/audit-assert-tier/**/*.ts` if the audit splits into helpers the way
+`audit-write-surfaces` does. It declares no `output`, like `check:architecture` — it is a
+verdict, not a report.
+
+**What it asserts.** Over `src/**/*.ts` only (tests, tooling and docs are out of its scan),
+using the TypeScript compiler API — already a tooling dependency, used by
+`tooling/dts-value-exports.ts` and `tooling/truthful-dts.ts`:
+
+1. Resolve, per module, the **local binding** of the primitives module's `assertRepository`
+   export — reached directly or through any re-export barrel, and under any local alias
+   (`import { assertRepository as gentle }`). Binding resolution, not import-path matching, is
+   what makes the deprecated shim and a future alias both harmless.
+2. Collect every `CallExpression` on that binding, and attribute each to its **enclosing
+   exported declaration** — the nearest ancestor `VariableStatement`/`FunctionDeclaration`
+   carrying an `export` modifier — yielding a `{ module, verb, line }` triple.
+3. Fail on any triple whose `{ module, verb }` is not in the allowlist (**an unguarded
+   caller**), and fail on any allowlist entry with no matching triple (**a stale entry** — the
+   `allowlistRot` / "remove the stale entry" posture both sibling audits already take).
+4. Fail on a call site it cannot attribute to an exported declaration, rather than skipping
+   it: an unattributable call is the exact shape a bypass would take.
+
+**The allowlist**, shipped with exactly five entries — the four measured survivors plus the
+one internal chain link:
+
+```json
+{
+  "callers": [
+    { "module": "src/application/commands/config.ts", "verb": "configGet",
+      "reason": "git's `config --get` exits 1 (not-found), not 128, on a rejected repository; pinned by the tier co-truth sweep." },
+    { "module": "src/application/commands/config.ts", "verb": "configGetAll",
+      "reason": "same porcelain row as configGet; pinned by the tier co-truth sweep." },
+    { "module": "src/application/commands/config.ts", "verb": "configGetRegexp",
+      "reason": "git's `config --get-regexp` exits 1 on a rejected repository; pinned by the tier co-truth sweep." },
+    { "module": "src/application/commands/config.ts", "verb": "configList",
+      "reason": "git's `config --list` exits 0 with the repository scope dropped; pinned by the tier co-truth sweep." },
+    { "module": "src/application/primitives/internal/repo-state.ts", "verb": "assertAcceptedRepository",
+      "reason": "the tier chain itself — assertAcceptedRepository is defined as assertRepository plus the acceptance gates." }
+  ]
+}
+```
+
+`reason` is a required non-empty string, validated by the loader the way
+`audit-write-surfaces`'s loader validates its entries; a malformed allowlist is an audit
+failure, not a silent empty set.
+
+**What it says when it fails.** One line per finding, then a non-zero exit — blocking from day
+one, with no warn-only phase, because [ADR-682] names the guard as the precondition for the
+tier being safe:
+
+```
+audit-assert-tier: src/application/commands/stash.ts:41 `stashList` calls bare
+  `assertRepository`. That tier skips the acceptance gates (repository format, unsupported
+  extension, dubious ownership, implicit bare) — a rejected or untrusted repository would be
+  operated on. Use `assertAcceptedRepository` (or `assertOperationalRepository`), or, if
+  canonical git really does let this verb survive a rejected repository, add it to
+  tooling/audit-assert-tier.allowlist.json with the measurement that proves it.
+```
+
+and for the stale arm:
+
+```
+audit-assert-tier: allowlist entry `src/application/commands/config.ts` / `configReadAll`
+  matches no call site. Remove the stale entry or restore the caller.
+```
+
+**How a legitimate fifth verb is added.** Three deliberate, reviewable steps, in order: pin
+the survival against real git (a §1f-shaped row: the verb exits 0 on a v99 fixture *and* on a
+v1-unknown-extension fixture, in both tools); add the interop row to the tier co-truth sweep
+(Test strategy, row 8); then add the `{ module, verb, reason }` entry whose `reason` names
+that row. The allowlist edit is the visible act; the interop row is what stops the reason
+being a claim. Editing source alone cannot widen the surviving set — which is the whole
+difference between this and a convention.
+
+**Deliberately not guarded.** `assertAcceptedRepository` itself has no allowlist. A verb that
+takes it instead of `assertOperationalRepository` misses only the eager `[core]` gate, which
+§1d measures as a *different* tier with no attacker-relevant content, and which [ADR-639]
+already governs. Widening the guard there would fence a boundary no measurement makes
+load-bearing.
+
 ### 3. The accepted set — how tsgit backs each of git's nine
 
 [ADR-667] settles *what* is accepted: all nine names of §1b, and nothing else. There is no
@@ -687,16 +843,22 @@ allowlist and no divergence at the gate. What remains is a statement of **how ea
 name is backed**, because acceptance without backing is the misread this design exists to
 close (R13).
 
+The scope expansion ratified across [ADR-680], [ADR-681], [ADR-683] and [ADR-685] settles this
+table down to one plain sentence: **of git's nine extensions, eight are backed and exactly one
+— `compatObjectFormat` — is accepted-but-unbacked, and git itself refuses that one on this
+build.** So the accepted set is not a promissory note anywhere except at the single name where
+git makes the same refusal.
+
 | extension | how tsgit backs it |
 |---|---|
 | `worktreeConfig` | **Implemented.** `readRepositoryFormat` honours it at every version (§1e). |
 | `partialClone` | **Implemented.** Promisor plumbing across `fetch-pack.ts`, `read-object.ts`, `has-object.ts`, `clone.ts`. |
 | `noop`, `noop-v1` | **Inert.** They assert nothing about on-disk layout; git never parses their value. Accepting them cannot cause a misread. |
 | `preciousObjects` | **Honoured by construction** — see below. |
-| `relativeWorktrees` | **Backed by one pointer resolution** — see below. |
-| `objectFormat` | **Backed by the sibling design** `docs/design/sha256-object-format.md`, landing in this PR. Not designed here. |
-| `refStorage` | **Backed by the sibling design** `docs/design/reftable-ref-storage.md`, landing in this PR. Not designed here. |
-| `compatObjectFormat` | **Refused at the point of use**, which §1i measures to be *every* use — see below. |
+| `relativeWorktrees` | **Backed by one pointer resolution** — see below (§1h). |
+| `objectFormat` | **Implemented** ([ADR-681]): read, write and create, full write parity including `init --object-format` and bundle v3 ([ADR-683]). Specified in `docs/design/sha256-object-format.md`; not designed here. |
+| `refStorage` | **Implemented** ([ADR-680]): a complete reftable backend — stack parsing, tombstones, symbolic refs, peeled tags, reflogs, the `tables.list` lock protocol, writing and compaction — on all three adapters. Specified in `docs/design/reftable-ref-storage.md`; not designed here. |
+| `compatObjectFormat` | **The one unbacked name.** Refused at the point of use with `REPOSITORY_EXTENSION_UNSUPPORTED { extension, value }` ([ADR-685]), which §1i measures to be *every* use — see below. |
 
 **`preciousObjects` — honoured by construction.** The extension is an on-disk promise that
 objects are never deleted; git enforces it by refusing `gc`, `repack` and `prune`. tsgit has
@@ -735,8 +897,18 @@ command dies, `config --list` and `rev-parse --git-dir` included. A refusal that
 config porcelain is [ADR-664]'s class, so it is thrown from `readRepositoryFormat` at open
 (§2), after the verdict it depends on. That satisfies [ADR-667]'s standing rule exactly — it
 never reads the repository wrong, and it never refuses to open a repository git opens,
-because git opens no such repository. The code that refusal carries is the one genuinely open
-question this revision surfaces: **DN-2** in §Decisions.
+because git opens no such repository.
+
+The code it carries is settled by [ADR-685]: the generic
+`REPOSITORY_EXTENSION_UNSUPPORTED { extension, value }`, shared with the sibling SHA-256
+design and specified there once for both. This design **consumes** it and does not re-specify
+its shape. Two things follow that are this design's to state. First, the family's **current
+membership is exactly one** — `compatObjectFormat` — which is the measurement of §1b/§3, not a
+property of the code; the code stays general precisely so a future extension git adds and
+tsgit has not yet implemented joins by name, with no new code and no new ADR. Second, the
+distinction from [ADR-668]'s two gate codes is **tier, not severity**: the gate codes refuse a
+repository git also refuses to open, while this refuses an operation on a repository git's
+format gate accepts (§1d step 5 versus step 4).
 
 The five names git treats as v1-only (`noop-v1`, `objectFormat`, `compatObjectFormat`,
 `refStorage`, `relativeWorktrees`) are refused by git at v0 regardless of what tsgit
@@ -756,8 +928,18 @@ git renders four refusals across the acceptance surface, plus one at §1i's earl
   The **parsed** integer is carried, never the literal — `1k` reconstructs as `found 1024`.
   Names are the lower-cased key with the subsection preserved verbatim, joined by `.`.
   Singular versus plural is derivable from list length ([ADR-249]).
-- **One point-of-use code** for `compatObjectFormat` (§1i, §3). A separate family from the
-  two above, per [ADR-668]'s consequence; its shape is DN-2.
+- **One point-of-use code**, `REPOSITORY_EXTENSION_UNSUPPORTED { extension, value }`
+  ([ADR-685]) — a separate family from the two above, per [ADR-668]'s consequence. Raised at
+  the point of use, never at the acceptance gate, which accepts every name git knows
+  ([ADR-667]). `extension` is the lower-cased key with the subsection preserved, matching the
+  gate codes' convention; `value` carries what the config declared, because git's refusal is
+  presence-triggered and value-independent (§1i), so a caller never has to re-open the config
+  to answer "declared as what?". Exactly one name reaches it today, and the `docs/use/errors.md`
+  row says so while the code stays general.
+- **Extension *value*-grammar refusals are a fourth family and not this gate's**
+  ([ADR-696]): `CONFIG_INVALID_ENUM_VALUE` for `objectFormat`/`refStorage`, and
+  `CONFIG_MISSING_VALUE` for the valueless arm. The acceptance gate never parses an
+  extension's value.
 - **One new `reason` literal** on the existing `CONFIG_SCOPE_NOT_AVAILABLE { scope, reason }`
   for an explicitly-named `local`/`worktree` scope on a rejected repository (§2), shared with
   the ownership gate.
@@ -777,9 +959,11 @@ already read at Stage 2 — so it introduces no new trust surface. What it chang
 - **Closes the SHA-256 misdiagnosis by supporting it.** Today a SHA-256 repository is read as
   SHA-1 and reported as `OBJECT_HASH_MISMATCH` (Context) — *unsupported* reported as
   *corrupt*, and, anywhere a stored oid were trusted without re-verification, two hash spaces
-  mixed under one 40-hex assumption. [ADR-667] closes it by **building the support**
-  (`docs/design/sha256-object-format.md`), not by refusing. The acceptance gate's part is to
-  stop pretending the name is unknown.
+  mixed under one 40-hex assumption. [ADR-667] closes it by **building the support**, not by
+  refusing, and [ADR-681] takes that to full read/write/create parity
+  (`docs/design/sha256-object-format.md`). The acceptance gate's part is to stop pretending the
+  name is unknown; the residual hash-space risk is owned by that design's width-correctness
+  work ([ADR-694]), not by this gate.
 - **Closes the reftable misdiagnosis by supporting it.** Measured, a real
   `--ref-format=reftable` repository does not present as an empty-but-valid ref set today: it
   throws `INVALID_REF { reason: 'ref name component must not start with .' }` from
@@ -788,7 +972,9 @@ already read at Stage 2 — so it introduces no new trust surface. What it chang
   stub is what stops a write path reconciling against an empty view of a populated
   repository — an accident of git's on-disk layout, not a guarantee tsgit designed, and it
   covers only the verbs that resolve `HEAD` first. [ADR-667] closes the class by building the
-  backend (`docs/design/reftable-ref-storage.md`).
+  backend, and [ADR-680] makes that a *complete* backend — read, write and compaction, all
+  three adapters (`docs/design/reftable-ref-storage.md`) — so the tripwire stops being the only
+  thing standing between tsgit and a reconciled-against-empty write.
 - **Closes an over-permissive hole.** tsgit today opens and operates a v1
   `compatObjectFormat` repository that git refuses on every command (§1i). Refusing at open
   (§3) removes a repository shape tsgit was reading with an object-id model git declines to
@@ -807,16 +993,26 @@ already read at Stage 2 — so it introduces no new trust surface. What it chang
   rendered string (§4). The enumeration runs over an already-tokenised file;
   `scanConfigFile`'s deliberate absence of a size cap is unchanged and still bounded by the
   fact that a regular file always terminates.
-- **Reach is the security property, and DN-1 is what decides whether it is derived or
-  maintained.** The verdict itself is safe by construction: a frozen layout field populated on
-  every discovery route by one Stage-2 call, read synchronously with no I/O. What is not safe
-  by construction is the *membership* — fifteen verbs share one assert today and only four may
-  survive. Under DN-1(a) reach is derived: a verb escapes only by being named in the opt-out,
-  a visible reviewable edit, and a newly added command is gated by default. Under DN-1(b) or
-  (c) reach is maintained: a new command that picks the wrong assert survives silently on a
-  rejected repository, and only the exhaustive per-verb interop sweep (Test strategy, row 8)
-  would catch it. That asymmetry is the security argument behind DN-1's recommendation, and
-  it is identical for the ownership gate.
+- **Reach is the security property, and the allowlist guard is what carries it.** The verdict
+  itself is safe by construction: a frozen layout field populated on every discovery route by
+  one Stage-2 call, read synchronously with no I/O. What is *not* safe by construction is the
+  **membership** — fifteen verbs shared one assert, and only four may survive. [ADR-682]'s
+  third tier is explicit at every call site but **fails open**: `assertRepository` keeps its
+  short, natural name, so a future command that reaches for it inherits none of the four
+  acceptance gates and would operate on a rejected or untrusted repository. Left to
+  convention, that reach would be *maintained* rather than *derived*, and only the exhaustive
+  per-verb interop sweep (Test strategy, row 8) would catch a regression — and only for verbs
+  the sweep already knows about, which by definition excludes the new one. §2a's guard is what
+  converts it back to derived: an unguarded caller is a **build failure**, and the only way to
+  become a survivor is an allowlist edit whose `reason` names a pinned interop row. This is not
+  a nicety of the option — [ADR-682] records that without the guard, inverting the default
+  (option 1) would have been the correct choice instead. The same guard covers the ownership
+  gate, since all four refusals ride the one tier.
+- **The unbacked set is now a single name, and that shrinks the residual.** After [ADR-680],
+  [ADR-681] and [ADR-683], the only accepted-but-unbacked extension is `compatObjectFormat`
+  (§3) — and it is unbacked in *git* too. Every other accepted name is either implemented,
+  inert, or honoured by construction, so acceptance no longer opens a window between "the gate
+  said yes" and "the reader understands the on-disk shape".
 - **What remains open.** `compatObjectFormat` is refused rather than supported, which is
   faithful only for as long as git itself refuses it on the reference build. If a future git
   gains the Rust-backed support, the refusal becomes a divergence and must be revisited; the
@@ -862,24 +1058,29 @@ would be the natural refactor and would be wrong for the format arm.
 
 ## Decisions
 
-All three of the design's original candidates are settled. Two new candidates are open.
+Every candidate this design raised — the three original and the two it surfaced on revision —
+is settled, each by its own ADR. One new candidate is open, and it is a question the ratified
+mitigation creates rather than one the measurements left behind.
 
 | # | Decision | Ratified choice |
 |---|---|---|
-| D1 | **Where the refusal is raised.** git's format gate is a third tier (§1f): every repository-needing verb dies, while four `config` read verbs demote the repository to absent and survive. | **The split** ([ADR-666]). The operational surface refuses; the four surviving `config` read verbs keep git's porcelain behaviour with the repository config scope dropped. §2 places it: one carried verdict on the layout, one check on the acceptance assert, one scope guard in the config scope reader — the same tier the ownership gate builds ([ADR-679]). The design's original objection to the split — that the sibling trust gate would have to replicate it — was void, and the two gates now share one mechanism. §1f's porcelain rows are **co-truth**, not an asserted divergence. What the ADR ratifies is the split; *which existing assert carries it* is DN-1, below. |
-| D2 | **The accepted-extensions set at v1.** | **Mirror git's nine** ([ADR-667]), with scope expanded so acceptance is not a lie. No divergence at the gate, no allowlist. §3 records how each name is backed: two implemented, two inert, one honoured by construction, one backed by a pointer resolution measured here (§1h), two delivered by sibling designs in this PR, one refused precisely at the point of use (§1i). The standing rule — refuse at the point of use, never misread, never refuse to open what git opens — binds every future name. |
-| D3 | **Error-code shape.** | **Two codes** ([ADR-668]): `REPOSITORY_FORMAT_VERSION_UNSUPPORTED { version }` and `REPOSITORY_EXTENSIONS_UNSUPPORTED { version, extensions }`. Every payload total, every reconstruction branch-free on a sentinel, matching the [ADR-654] precedent of two work-tree refusal codes for two distinct conditions. Point-of-use refusals are a separate family and do not reuse these codes. |
+| D1 | **Where the refusal is raised.** git's format gate is its own tier (§1f): every repository-needing verb dies, while four `config` read verbs demote the repository to absent and survive. | **The split** ([ADR-666]). The operational surface refuses; the four surviving `config` read verbs keep git's porcelain behaviour with the repository config scope dropped. §2 places it: one carried verdict on the layout, one check on `assertAcceptedRepository`, one scope check in the config scope reader — the same tier the ownership gate builds ([ADR-679]). The design's original objection to the split — that the sibling trust gate would have to replicate it — was void, and the two gates now share one mechanism. §1f's porcelain rows are **co-truth**, not an asserted divergence. |
+| D2 | **The accepted-extensions set at v1.** | **Mirror git's nine** ([ADR-667]), with scope expanded so acceptance is not a lie. No divergence at the gate, no allowlist. §3 records how each name is backed after the expansion: four implemented (`worktreeConfig`, `partialClone`, `objectFormat` per [ADR-681], `refStorage` per [ADR-680]), two inert, one honoured by construction, one backed by the pointer resolution measured here (§1h), and exactly **one** — `compatObjectFormat` — refused precisely at the point of use (§1i). The standing rule — refuse at the point of use, never misread, never refuse to open what git opens — binds every future name. |
+| D3 | **Error-code shape for the gate.** | **Two codes** ([ADR-668]): `REPOSITORY_FORMAT_VERSION_UNSUPPORTED { version }` and `REPOSITORY_EXTENSIONS_UNSUPPORTED { version, extensions }`. Every payload total, every reconstruction branch-free on a sentinel, matching the [ADR-654] precedent of two work-tree refusal codes for two distinct conditions. Point-of-use refusals (D5) are a separate family and do not reuse these codes; extension **value**-grammar refusals are a third family and reuse the config codes ([ADR-696]). |
+| D4 | **Which assert carries the acceptance refusals.** [ADR-666] ratified the split without saying where it attaches, and tsgit's existing membership matched neither side: fifteen verbs shared bare `assertRepository` while §1f measures exactly four survivors. | **A third tier** ([ADR-682]) — **ratified by the user against this design's recommendation of inverting the default.** `assertRepository` keeps its meaning and its four survivors; the new `assertAcceptedRepository` = `assertRepository` + the four acceptance gates and takes the eleven movers; `assertOperationalRepository` = `assertAcceptedRepository` + the eager `[core]` gate and keeps its 45 modules. §2 enumerates the movers, verified against the symbol rather than inferred. The tier is explicit at every call site and names git's real three tiers — its cost is that it **fails open**, which is why D4 ships with the guard below rather than without it. |
+| D5 | **The point-of-use refusal family's shape.** | **One generic code** ([ADR-685]): `REPOSITORY_EXTENSION_UNSUPPORTED { extension, value }`, raised at the point of use and never at the gate. Settled once for this design and the sibling SHA-256 design, which raised it independently; this design consumes it and does not re-specify it. Current membership is exactly one name (`compatObjectFormat`), which is a fact about how much the surrounding scope implements, not about the code — so the code stays general and a future unbacked name joins by name, with no new code and no new ADR. |
+| D6 | **The fails-open mitigation D4 requires.** A future command reaching for bare `assertRepository` would silently operate on a rejected or untrusted repository. | **A mechanical allowlist guard, in this change** ([ADR-682]) — specified in §2a: `tooling/audit-assert-tier.ts` + `tooling/audit-assert-tier.allowlist.json`, wired as `check:assert-tier` in `validate`, blocking from day one, in the same allowlist-audit family as `check:write-surfaces` and `check:browser-surface`. It resolves the local binding of `assertRepository` across `src/`, attributes every call to its enclosing exported verb, and fails on an unguarded caller, a stale entry, or an unattributable call. `check:architecture` (dependency-cruiser) cannot host it: its rules are module-granular and the survivors and writers share `config.ts`. What is left genuinely open inside D6 is the guard's *granularity* — DN-3. |
 
 ### New and unsettled
 
-**DN-1 is shared with the ownership design** — it binds the two acceptance gates identically
-and is raised in both documents so it is decided once, for both. DN-2 belongs to this design
-alone.
+One candidate, and it is new: it exists only because [ADR-682] chose the fails-open tier and
+required a guard. Nothing in §1's matrix bears on it — it is an internal-structure question
+about how the guard is expressed, with no observable difference to any caller and no
+git-faithfulness content.
 
 | # | Choice | Alternatives (≤3) | Recommendation | Why |
 |---|---|---|---|---|
-| DN-1 | **Which assert carries the acceptance refusals.** [ADR-666] ratifies the split; it does not say where it attaches, and tsgit's existing membership does not match the measured surviving set. Fifteen call sites sit on the ungated bare `assertRepository` — all nine `config` verbs (`config.ts:47…269`) and all six `remote` verbs (`remote.ts:118…329`) — while §1f measures exactly **four** survivors (`configGet`, `configGetAll`, `configGetRegexp`, `configList`). Attaching the refusals to `assertRepository` as it stands today would leave the five `config` writers and every `remote` verb surviving, so `repo.config.set()` would write into a v99 repository's config where git refuses with the file byte-unchanged. | **(a) Invert the default** — the refusals go into `assertRepository`; the four measured survivors opt out via an explicitly-named gentle assert (**~4 call sites** touched). **(b) A third tier** — a new `assertAcceptedRepository` between the two existing asserts, taken by the eleven offenders and by `assertOperationalRepository` (**~11 sites**). **(c) Move the offenders up** — repoint the five `config` writers and six `remote` verbs at `assertOperationalRepository` (**~11 sites**, plus an unmeasured behaviour change: those verbs would newly run the eager `[core]` gate, which §1d measures as a *different* tier from the acceptance refusals). | **(a)** | (a) is refuse-by-default: a verb can only escape the acceptance gate by being named in the opt-out, which is a visible, reviewable edit, whereas under (b) and (c) a *new* command that forgets to pick the right assert silently survives on a rejected repository. It is also the smallest diff and the only one with no collateral — (c) additionally changes what eleven verbs do on a *good* repository with a malformed `[core]` key, which nothing has measured and which is out of both designs' scope. The cost of (a) is that `assertRepository`'s name no longer reads as "the gentle one"; that is a rename, not a behaviour. **Whichever alternative wins applies to both acceptance gates** — the ownership design raises the same candidate against the same fifteen sites, and landing them differently would create two tiers where [ADR-666] and [ADR-679] ratified one. |
-| DN-2 | **The point-of-use refusal family's shape.** [ADR-667] creates this family and [ADR-668] forbids it reusing the acceptance codes, but neither fixes its shape — and the measurements shrink it to exactly one member. `objectFormat` and `refStorage` are backed by sibling designs, `relativeWorktrees` by a pointer resolution (§1h), `preciousObjects` by construction; the sole remaining member is `compatObjectFormat`, whose point of use §1i measures to be **every** command on an otherwise-accepted v1 repository — §1d's step 5, thrown at open because it kills the config porcelain. | **(a) One generic code**, `REPOSITORY_EXTENSION_UNSUPPORTED { extension: string; value: string \| null }`, thrown from `readRepositoryFormat`; the family's future members join by name without a new code. **(b) One specific code** for the one condition, e.g. `COMPAT_OBJECT_FORMAT_UNSUPPORTED { value }`; a future member gets its own code. **(c) Reuse `REPOSITORY_EXTENSIONS_UNSUPPORTED { version, extensions }` at the earlier tier**, distinguishing the tiers by where they are thrown rather than by code. | **(a)** | (a) is the shape [ADR-667]'s standing rule describes: a name is accepted at the gate and refused at its point of use, and the payload names which name. It carries the value because git's refusal is presence-triggered and value-independent (§1i), so a caller that wants to know *what* was declared can read it without a second lookup. (b) reads better for the one member but makes the standing rule invisible in the type — the next unbacked name needs a fresh code and a fresh docs row, and reviewers have no family to add to. (c) is excluded by [ADR-668]'s consequence, and independently wrong: the two conditions sit on **different measured tiers** (§1d step 5 versus step 4), and a caller that switched on one code would be unable to tell a repository the `config` porcelain can still read from one it cannot. The open sub-question inside (a) is whether `value` is worth carrying at all, given it is never load-bearing for the verdict; the recommendation carries it because the alternative is a caller re-opening the config file to answer "declared as what?". |
+| DN-3 | **The allowlist guard's granularity, and therefore its home.** [ADR-682] words the mitigation at **verb** granularity — "no module calls bare `assertRepository` unless it appears on an explicit allowlist of exactly those four verbs" — but the repo's architecture-tier check (`check:architecture`, dependency-cruiser) is **module**-granular, and the four survivors share `src/application/commands/config.ts` with the five writers. So verb granularity and the existing architecture harness cannot both be had without moving source. | **(a) A verb-granular audit script** — `tooling/audit-assert-tier.ts` + its allowlist JSON + `check:assert-tier` in `validate`, using the TypeScript compiler API already used by `tooling/dts-value-exports.ts` and `tooling/truthful-dts.ts`; §2a as written. **(b) A verb-granular source-scanning *test*** — `tooling/test/unit/assert-tier-consistency.test.ts` with the allowlist inline, following the `tooling/test/unit/hot-paths-consistency.test.ts` precedent; no wireit target, no report, runs inside `test:unit`. **(c) A module-granular dependency-cruiser rule** — move bare `assertRepository` into its own module (`src/application/primitives/internal/assert-repository.ts`), barrel-ise `commands/config.ts` into internal read-verb and write-verb modules, and express the allowlist as the `from.pathNot` list of one `forbidden` rule in `.dependency-cruiser.cjs`. | **(a)** | (a) is the only option that is simultaneously verb-granular (what [ADR-682] actually says), blocking in `validate` under the architecture-check family, and free of source churn in the modules it audits. It also matches the two existing allowlist audits exactly — same file shape, same `reason` field, same stale-entry posture — so there is nothing new for a reviewer to learn. (b) is cheaper by one wireit entry and one report, but it lands a shipping-safety precondition in the *test* tier: a skipped or filtered test suite silently disarms the guard, and `test:unit` is the tier most often scoped down during iteration. (c) is the most architecturally honest — the invariant becomes a property of the module graph rather than of a scanner — but it buys that by splitting a **published subpath** (`./commands/config`) into internal modules and by dropping to module granularity, so a fifth verb added to the read module would slip through the very rule that exists to catch it; it also trades a small guard for a real refactor inside a security change, which is the collateral [ADR-682] rejected option 3 for. If the user prefers (c), the module split should be its own commit ahead of the gate, not folded into it. |
 
 ## Test strategy
 
@@ -918,12 +1119,40 @@ CLAUDE.md mandates). New Given/When/Then groups, one per §1 family:
   verdict is carried; a v99 repository carries a verdict and throws nothing at open.
 
 The tier side lands against `repo-state.ts` (existing tests under
-`test/unit/application/primitives/internal/`): `assertRepository` throws each of the two
-codes off a frozen layout field, the gentle assert does not, `assertOperationalRepository`
-throws the format code **before** `assertEagerConfigValid`'s (§1d's step-4-beats-step-5 row),
-and `assertDiscoveryBooleansValid`'s refusal beats both. Plus the config scope reader: a
-merged read drops `local`/`worktree` on a rejected layout while keeping `global`/`system`,
-and an explicit `local` scope raises `CONFIG_SCOPE_NOT_AVAILABLE`.
+`test/unit/application/primitives/internal/`), and now covers three asserts rather than two:
+`assertAcceptedRepository` throws each of the two gate codes off a frozen layout field;
+`assertRepository` throws **neither** on the same layout (the survivors' arm — one test per
+code, so a mutant that drops one guard cannot hide behind the other);
+`assertOperationalRepository` throws the format code **before** `assertEagerConfigValid`'s
+(§1d's step-4-beats-step-5 row); and `assertDiscoveryBooleansValid`'s refusal beats all of
+them. Plus the config scope reader: a merged read drops `local`/`worktree` on a rejected
+layout while keeping `global`/`system`, and an explicit `local` scope raises
+`CONFIG_SCOPE_NOT_AVAILABLE`.
+
+**The allowlist guard needs its own test**, and it is not covered by any of the above — the
+guard is tooling, not `src/`. `tooling/test/unit/audit-assert-tier.test.ts`, modelled on
+`tooling/test/unit/audit-write-surfaces.test.ts` and driven off in-memory source strings
+rather than the real tree so the fixtures are readable and the invariants are isolated:
+
+- a module calling the bare assert from a **non-allowlisted** exported verb is reported, with
+  the module, the verb and the line in the finding;
+- the same call from an **allowlisted** verb is not reported;
+- an allowlist entry matching **no** call site is reported as stale;
+- an aliased import (`import { assertRepository as gentle }`) is still attributed — binding
+  resolution, not name matching;
+- a call reached through the deprecated `commands/internal/repo-state.ts` **re-export shim** is
+  attributed to the calling verb, not to the shim (this is the arm that would silently pass
+  under an import-path guard, and `config.ts` is a live instance of it today);
+- a call that cannot be attributed to an exported declaration **fails** rather than being
+  skipped;
+- a malformed allowlist (missing `reason`, empty `reason`, not an array) raises the loader's
+  error rather than degrading to an empty allowlist — the fail-open-on-bad-input arm;
+- the shipped `tooling/audit-assert-tier.allowlist.json` has exactly the five documented
+  entries, so shipping a sixth is a diff a reviewer sees in this test too.
+
+One integration-shaped assertion belongs with it: the audit run over the **real** `src/` tree
+exits 0. That is the arm that fails the day someone adds a fifth caller, and it is the reason
+the audit is a `validate` dependency rather than advisory.
 
 `list-worktrees.ts` gains its own group for §1h: a relative `<admin>/gitdir` resolves to the
 same entry an absolute one produces, `prunable` is computed from the resolved path, and a
@@ -952,8 +1181,10 @@ git's exact stderr bytes reconstructed from tsgit's structured fields):
 7. **The nine-name acceptance sweep**: each of git's nine planted at v1, asserting both tools
    accept — the regression detector for the §1b registry constant against a future git.
 8. **Tier co-truth** (§1f), and it must cover the refusing side as thoroughly as the
-   surviving one, because the surviving set is four verbs out of fifteen that share an assert
-   today (DN-1). Surviving: `config --list` and `--list --show-origin` exit 0 with an empty
+   surviving one, because the surviving set is four verbs out of the fifteen that shared one
+   assert before [ADR-682] split them. This sweep is also the evidence an allowlist entry
+   points at: a verb may only join `tooling/audit-assert-tier.allowlist.json` once it has a
+   row here (§2a). Surviving: `config --list` and `--list --show-origin` exit 0 with an empty
    repository scope in both tools, `config core.bare` / `config remote.origin.url` /
    `config --get-regexp ^remote` "not found" in both, and a `config --global --list` row
    proving the scopes that remain are untouched. Refusing: `config --local --list`, each of
@@ -961,7 +1192,8 @@ git's exact stderr bytes reconstructed from tsgit's structured fields):
    afterwards), and each of the six `remote` verbs — `remote`, `remote -v`,
    `remote get-url`, `remote show -n`, `remote add`, `remote set-url` — refusing in both
    tools. A row-per-verb sweep, not a spot check: a verb that silently survives is precisely
-   the failure DN-1 exists to prevent, and only an exhaustive sweep detects it.
+   the failure the allowlist guard exists to prevent — the sweep catches it for the fifteen
+   verbs that exist today, and §2a's guard catches it for the sixteenth.
 9. **Precedence co-truth** (§1d), both tiers per row: `core.bare = banana`,
    `extensions.worktreeConfig = banana` and a broken config line each beat the version on
    `config --list` *and* on an operational verb; `core.sparseCheckout = banana`,
@@ -1008,26 +1240,44 @@ the rendered detail in `src/domain/error.ts`, one new `reason` literal on
 `docs/use/errors.md` → *Repository state* (Code / Payload / Raised when, matching the depth of
 the neighbouring `WORK_TREE_CONFIG_INVALID` and `CONFIG_BAD_BOOLEAN_VALUE` rows), the new
 `RepositoryLayout` field on the `openRepository` docs page **together with the enumerated
-surviving-verb set** ([ADR-666]'s first consequence), and a regenerated `reports/api.json`
-committed at pre-PR. `src/domain/repository/` is inside the coverage scope, so the new
-factories and their rendering arms need 100 % line/branch coverage and a zero-survivor
-mutation result.
+surviving-verb set** ([ADR-666]'s first consequence, now a documented **three-tier** contract
+per [ADR-682]: which verbs sit on `assertRepository`, which on `assertAcceptedRepository`,
+which on `assertOperationalRepository`), and a regenerated `reports/api.json` committed at
+pre-PR. `src/domain/repository/` is inside the coverage scope, so the new factories and their
+rendering arms need 100 % line/branch coverage and a zero-survivor mutation result.
+
+Two gates are new to the *harness* rather than to the public surface, and both belong to §2a:
+the `check:assert-tier` wireit target added to `validate`'s dependency list, and
+`tooling/audit-assert-tier.allowlist.json` committed with its five entries. The audit's own
+sources are inside `tooling/`, which sits outside the 100 %-coverage scope but inside
+`tooling/test/unit`'s reach — the same posture `audit-write-surfaces` and
+`audit-browser-surface` already have.
 
 ## Out of scope
 
 - **The ownership/trust (`safe.directory`) gate** — a sibling design in this PR
   (`docs/design/ownership-trust-gate.md`), whose own predicate, allowlist grammar and probe
-  capability are not designed or probed here. What the two designs **do** share is now large
-  and named: one acceptance tier, one gentle assert, one dropped-scope rule, one
-  `CONFIG_SCOPE_NOT_AVAILABLE` reason literal, one enumerated surviving-verb set on the docs
-  page, and one open decision (DN-1) that must be answered the same way for both. §2 states
-  the one place the two gates must **not** share an implementation point.
+  capability are not designed or probed here — including the ordering of `implicitBare` and
+  `untrusted` relative to each other inside `assertAcceptedRepository`, and the surviving set
+  for the implicit-bare refusal, both of which that design measures. What the two designs
+  **do** share is now large and named: one acceptance tier (`assertAcceptedRepository`,
+  [ADR-682]), one allowlist guard over the tier below it (§2a covers both gates, since all
+  four refusals ride the one assert), one dropped-scope rule, one
+  `CONFIG_SCOPE_NOT_AVAILABLE` reason literal, and one enumerated surviving-verb set on the
+  docs page. §2 states the one place the two gates must **not** share an implementation
+  point.
 - **SHA-256 object format** — designed separately in this PR
-  (`docs/design/sha256-object-format.md`). This design accepts `objectFormat` and references
-  that work; it specifies none of it.
+  (`docs/design/sha256-object-format.md`), ratified as full read/write/create parity
+  ([ADR-681]) with bundle v3 ([ADR-683]) and a repository-aware oid predicate ([ADR-694]).
+  This design accepts `objectFormat`, records it as **implemented** in §3, and specifies none
+  of it.
 - **Reftable ref storage** — designed separately in this PR
-  (`docs/design/reftable-ref-storage.md`). This design accepts `refStorage` and references
-  that work; it specifies none of it.
+  (`docs/design/reftable-ref-storage.md`), ratified as a complete backend including writing
+  and compaction on all three adapters ([ADR-680]). This design accepts `refStorage`, records
+  it as **implemented** in §3, and specifies none of it.
+- **Bundle v3** — the `@object-format` capability header ([ADR-683]) belongs to the SHA-256
+  design. Named here only because it is part of what makes §3's "eight of nine are backed"
+  true; nothing about it is designed or edited here.
 - **Implementing `compatObjectFormat`** — git itself refuses it on the reference build (§1i),
   so there is nothing to be faithful to. It is refused at the point of use; implementing it
   is separate work that would be triggered by a future git gaining the support.
@@ -1050,9 +1300,17 @@ mutation result.
   (`repo-state.ts:63`). Now that all nine names are accepted, the value refusals git measures
   for `preciousObjects`, `relativeWorktrees`, `partialClone`, `objectFormat` and `refStorage`
   (§1b) become reachable conditions; each belongs to the subsystem that consumes the value —
-  the sibling designs for `objectFormat` and `refStorage`, and separate work for the
-  remaining boolean and string grammars — not to the acceptance gate, which never parses an
-  extension's value.
+  and for the two enums that subsystem has now settled its codes: `CONFIG_INVALID_ENUM_VALUE`
+  plus `CONFIG_MISSING_VALUE` for `objectFormat` and `refStorage` ([ADR-696]), owned by the
+  SHA-256 and reftable designs. The remaining boolean and string grammars are separate work.
+  None of it belongs to the acceptance gate, which never parses an extension's value.
+- **Guarding `assertAcceptedRepository` itself** — §2a states why: a verb that takes it in
+  place of `assertOperationalRepository` misses only the eager `[core]` gate, a measured
+  *different* tier with no attacker-relevant content ([ADR-639]). The guard fences bare
+  `assertRepository` alone, which is what [ADR-682] requires.
+- **Retiring the deprecated `commands/internal/repo-state.ts` shim** — §2 drops `config.ts`'s
+  use of it for this one symbol; the shim's other re-exports and their callers are untouched,
+  and the guard is call-site based specifically so the shim's existence changes nothing.
 
 [ADR-226]: ../adr/226-git-faithfulness-prime-directive.md
 [ADR-249]: ../adr/249-describe-structured-data-only.md
@@ -1066,3 +1324,11 @@ mutation result.
 [ADR-668]: ../adr/668-two-repository-format-refusal-codes.md
 [ADR-678]: ../adr/678-an-untrusted-repository-still-exposes-its-structural-layout.md
 [ADR-679]: ../adr/679-an-untrusted-repository-reads-as-an-empty-config-scope.md
+[ADR-680]: ../adr/680-reftable-ships-as-a-complete-backend.md
+[ADR-681]: ../adr/681-sha256-reaches-full-write-parity.md
+[ADR-682]: ../adr/682-acceptance-refusals-attach-to-a-third-tier.md
+[ADR-683]: ../adr/683-bundle-v3-is-implemented-now.md
+[ADR-684]: ../adr/684-dubious-ownership-carries-an-optional-foreign-path.md
+[ADR-685]: ../adr/685-one-generic-point-of-use-refusal-code.md
+[ADR-694]: ../adr/694-width-correctness-comes-from-a-repository-aware-oid-predicate.md
+[ADR-696]: ../adr/696-extension-enum-values-reuse-the-config-error-family.md
