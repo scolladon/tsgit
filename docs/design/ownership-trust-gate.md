@@ -6,9 +6,15 @@
 > trust configuration faithful in EFFECT to `safe.directory` while diverging in LOCATION,
 > a `safe.bareRepository` equivalent, and place the gate so that no attacker-supplied
 > config value acts before trust is established. Pin the whole matrix against canonical git.
-> Status: **accepted** — all eleven load-bearing choices are settled in ADRs 669–679
-> (§Decisions) and folded into §§2–10 as the design. §1's pinned matrix is unchanged
-> evidence, extended with the rows this revision measured.
+> Status: **accepted** — thirteen load-bearing choices are settled: the eleven of ADRs
+> 669–679, plus DN-1 ([ADR-682](../adr/682-acceptance-refusals-attach-to-a-third-tier.md) —
+> a third acceptance tier, ratified **against** this design's recommendation) and DN-2
+> ([ADR-684](../adr/684-dubious-ownership-carries-an-optional-foreign-path.md) —
+> `foreignPath`). §Decisions records each; §§2–10 are the design. §1's pinned matrix is
+> unchanged evidence, extended with the rows this revision measured (§1d's
+> `extensions.refStorage` pair). **Two new candidates are open**, both consequences of
+> ADR-684 rather than reopenings of it: **DN-3**, the ADR-676 check *order* it made
+> observable, and **DN-4**, how the foreign path travels from open time to the throw site.
 
 ## Context
 
@@ -64,12 +70,22 @@ config acts**: it extracts `core.bare`, `core.worktree` and `extensions.worktree
   config is read. `PathPolicy` already exposes `basename`
   (`src/adapters/node/path-policy.ts`, `src/repository/portable-posix-policy.ts:41`), the
   remaining term §1h needs.
-- **Two-tier acceptance** — `assertRepository` (`repo-state.ts:89`) runs on every command
-  including the `config` porcelain; `assertOperationalRepository` (`:223`) adds the
-  narrower `[core]` tier. `init`/`clone` run neither, which is what lets them bootstrap.
-  Exactly two commands sit on the bare tier today — `config` (nine call sites) and `remote`
-  (six) — and §1b measures git sparing only four of those fifteen. That gap is the subject
-  of DN-1.
+- **Two-tier acceptance today; three after this change.** `assertRepository`
+  (`repo-state.ts:89`) runs on every command including the `config` porcelain;
+  `assertOperationalRepository` (`:223`) adds the narrower `[core]` tier. `init`/`clone` run
+  neither, which is what lets them bootstrap. Exactly two commands sit on the bare tier
+  today — `config` (nine call sites) and `remote` (six) — and §1b measures git sparing only
+  four of those fifteen.
+  [ADR-682](../adr/682-acceptance-refusals-attach-to-a-third-tier.md) closes that gap by
+  inserting a third tier, `assertAcceptedRepository`, between the two (§2).
+- **The write path does not read config through `readConfig`.** `configSet` and its four
+  siblings reach the file through `readConfigText`
+  (`src/application/primitives/update-config-sections.ts:222`), a raw text read that exists
+  to preserve the file's formatting; `readConfig`
+  (`src/application/primitives/config-read.ts:169`) is the *parsed* read. The two paths are
+  disjoint, which is why the ADR-679 guard on `readConfig` cannot by itself keep a write off
+  an untrusted repository, and why §2's security argument has to separate what is structural
+  from what is guarded.
 - **Documented mitigations today** — `hooks: false` (`src/repository.ts:115-123`),
   `command: false` (`:124-134`), `ceilingDirs` (`:96-101`); recorded as the available
   posture in [bare-repo-custom-gitdir](bare-repo-custom-gitdir.md) §9, which this design
@@ -129,13 +145,26 @@ the full `process.env` of the calling process — including any secrets it holds
   (the `core.repositoryformatversion` / `extensions.*` gate) lands **first**;
   [ADR-666](../adr/666-repository-format-refusals-keep-gits-config-porcelain-tier.md) puts
   its refusals on the **same tier** this design builds for the ownership refusal
-  ([ADR-679](../adr/679-an-untrusted-repository-reads-as-an-empty-config-scope.md)), so the
-  two gates share one mechanism rather than each maintaining its own (§2).
+  ([ADR-679](../adr/679-an-untrusted-repository-reads-as-an-empty-config-scope.md)), and
+  [ADR-682](../adr/682-acceptance-refusals-attach-to-a-third-tier.md) names that tier
+  `assertAcceptedRepository` for both, so the two gates share one mechanism rather than each
+  maintaining its own (§2). ADR-682's required mitigation — the architecture-tier guard on
+  the weaker tier — is **specified in that sibling design**, once, for both gates; this
+  design references it and states only what it means for the security argument here (§2).
   `docs/design/sha256-object-format.md` and `docs/design/reftable-ref-storage.md` are the
   two subsystems [ADR-667](../adr/667-tsgit-accepts-every-extension-git-knows.md) pulled
-  into this PR when it ratified accepting every `extensions.*` git knows. All three are
-  designed separately; this design neither creates nor edits any of them, and nothing in
-  the trust gate depends on their content.
+  into this PR when it ratified accepting every `extensions.*` git knows, and their scope is
+  now itself ratified and larger than "make acceptance honest":
+  [ADR-681](../adr/681-sha256-reaches-full-write-parity.md) takes SHA-256 to full **write**
+  parity, [ADR-683](../adr/683-bundle-v3-is-implemented-now.md) adds bundle v3, and
+  [ADR-680](../adr/680-reftable-ships-as-a-complete-backend.md) ships reftable as a complete
+  read + write + compaction backend on all three adapters. All are designed separately; this
+  design neither creates nor edits any of them. Only one of them touches the trust gate's
+  reasoning at all, and only to confirm it: under
+  [ADR-687](../adr/687-the-ref-backend-reaches-context-through-the-layout.md) the ref backend
+  is selected from a Stage-2 config read, so `extensions.refStorage` joins `core.bare` and
+  `core.worktree` as a config-derived value that must not act before trust is established
+  (§1d measures git agreeing; §2 and §9 state why the placement already covers it).
 
 ## Requirements
 
@@ -170,7 +199,9 @@ the containment root set, cannot fabricate a work tree, and cannot change the FS
 allowlist — the protection holds even before any command is issued.
 
 R5. The refusal surfaces at the tier git's does
-([ADR-679](../adr/679-an-untrusted-repository-reads-as-an-empty-config-scope.md)). Measured
+([ADR-679](../adr/679-an-untrusted-repository-reads-as-an-empty-config-scope.md)), which
+[ADR-682](../adr/682-acceptance-refusals-attach-to-a-third-tier.md) makes a **third named
+assert**, `assertAcceptedRepository`, sitting between the existing two. Measured
 (§1b): `init` still bootstraps in an alien-owned directory, existing repository or fresh;
 config **writes** refuse and leave the file byte-unchanged; config **reads** succeed and
 expose an **entirely empty repository scope** — a planted local key is invisible and a
@@ -179,11 +210,13 @@ form, read and write alike** (measured). The surviving set is therefore exactly 
 the config **read** verbs, and that set is a documented contract (R15), not an accident of
 which assert a command happens to call.
 
-R5b. A refused repository's config is **never parsed** — not at open (Stage 2, R4) and not by
-`readConfig` at command time, whichever of the two verdicts refused it. Every config-derived
-gate downstream therefore becomes a no-op by construction rather than by an explicit
-precedence rule, which is what reproduces both §1d ordering pins and what keeps
-`merge.<d>.driver`, `core.excludesFile` and `core.attributesFile` unread.
+R5b. A refused repository's config is **never parsed** — not at open (Stage 2, R4) and not at
+command time by *either* read path (the `readConfig` cache entry that the token finders share,
+and the scoped reader the config porcelain uses — §2), whichever of the two verdicts refused
+it. Every config-derived gate downstream therefore becomes a no-op by construction rather than
+by an explicit precedence rule, which is what reproduces all three §1d ordering pins and what
+keeps `merge.<d>.driver`, `core.excludesFile`, `core.attributesFile` and
+`extensions.refStorage` unread.
 
 R6. The allowlist is **caller-supplied only**. No value read from any file inside the
 repository — `<commonDir>/config`, `<gitDir>/config.worktree`, `include.path` targets —
@@ -219,8 +252,16 @@ so the path can only come from the caller's own argument.
 
 R11. Public-surface additions are additive: `OpenRepositoryOptions` gains exactly three
 trust fields, `RepositoryLayout` gains two verdict flags, `RepositoryError` gains two codes
-(§10). No existing field changes type, and nothing is added for the test harness'
-convenience ([ADR-677](../adr/677-no-deny-by-default-trust-mode.md)).
+— `DUBIOUS_OWNERSHIP { path, foreignPath? }` and `IMPLICIT_BARE_REPOSITORY { gitDir }`
+(§10, [ADR-684](../adr/684-dubious-ownership-carries-an-optional-foreign-path.md)). No
+existing field changes type, and nothing is added for the test harness' convenience
+([ADR-677](../adr/677-no-deny-by-default-trust-mode.md)).
+
+R11b. `foreignPath` is **diagnostic, never faithfulness-bearing**: `path` keeps naming the
+single repository path git names (§1c), so the interop reconstruction of git's four-line
+fatal reads `path` alone and not one measured row moves (ADR-684). When more than one checked
+path is foreign, `foreignPath` names the **first in the deduplicated check order** of §3 —
+one path, not a set — and it is omitted when it would repeat `path`.
 
 R12. Cost is bounded and stated: **one to three extra `stat` calls per `openRepository`**
 — one per distinct path in R2b's deduplicated union, and the union collapses by shape
@@ -240,9 +281,17 @@ predicate of Test strategy and never run vacuously (ADR-677).
 
 R15. The set of verbs that survive on an untrusted repository is a **documented contract**
 — enumerated on the `openRepository` docs page, asserted verb-by-verb in the unit tier, and
-identical to the set the sibling format gate publishes, because ADR-666 and ADR-679 put both
-gates on one tier. Membership is load-bearing: a verb silently moving between tiers is a
-faithfulness regression with no other alarm.
+identical to the set the sibling format gate publishes, because ADR-666, ADR-679 and ADR-682
+put both gates on one tier. Membership is load-bearing: a verb silently moving between tiers
+is a faithfulness regression with no other alarm.
+
+R16. Because ADR-682's tier **fails open** — a module that calls bare `assertRepository`
+operates on a refused repository and nothing complains — the weaker tier is held by a
+**mechanical guard, not a convention**: no module may call `assertRepository` unless it is on
+an explicit allowlist of exactly the four surviving config read verbs, enforced at the
+architecture tier and failing the build otherwise. The guard's mechanism is specified once,
+in the sibling format-gate design, and shared; what this design owes is the honest statement
+of which of its own claims are structural and which rest on that guard (§2, §9).
 
 ## Design
 
@@ -390,6 +439,20 @@ A third pin shows the ordering is not merely about *messages* but about *effect*
 `core.worktree` does not move the gate's subject. git decides trust on the **discovery**
 layout and only then honours the config — exactly the property that closes the root-set
 collapse of Observed exposure #2.
+
+A fourth pin, **measured in this revision**, because ADR-680 and ADR-687 add a third
+config-derived value with teeth — the ref-storage backend:
+
+| fixture | without ADO | with ADO |
+|---|---|---|
+| `extensions.refStorage = reftable` planted in a files-backend repo (`repositoryformatversion = 1`) | `fatal: your current branch appears to be broken`, 128 — the planted value **acted**: refs were sought in a reftable stack that is not there | **dubious-ownership fatal**, 128 |
+| a real `git init --ref-format=reftable` repo with one commit | `log` exit 0; `rev-parse --show-ref-format` ⇒ `reftable`; `config --list` includes `extensions.refstorage=reftable` | `log` **and** `rev-parse --show-ref-format` both give the dubious-ownership fatal, 128; `config --list` exits **0** printing **zero** repository-scope keys — `extensions.refStorage` among them |
+
+Same shape as the two rows above, and the same conclusion: the backend selector is a
+Stage-2 config read, and the trust verdict shadows it. The second row is the sharper one —
+even a *legitimately* reftable-backed repository does not get its backend read under ADO,
+which is what makes "the empty scope is the mechanism" hold for `extensions.*` and not only
+for `[core]`.
 
 And discovery failure still precedes everything: with no repository at all
 (`$T/no-repo`) or an invalid `.git` directory (`$T/bogus/.git` empty), ADO changes nothing —
@@ -566,7 +629,7 @@ key invisible, `--local --list` refusing with its own fatal, writes refusing wit
 `not in a git directory` and leaving the file untouched. So the mechanism
 [ADR-679](../adr/679-an-untrusted-repository-reads-as-an-empty-config-scope.md) ratifies for
 ownership is the *same* mechanism this refusal needs — which has two consequences the design
-takes up in §2: the `readConfig` guard keys on **either** verdict, not on `untrusted` alone,
+takes up in §2: the config-scope guard keys on **either** verdict, not on `untrusted` alone,
 and the whole empty-scope contract becomes provable against real git **with no alien owner
 at all** (Test strategy, group A).
 
@@ -626,7 +689,9 @@ finishLayout(probe, outcome, pathPolicy, cwd, overrides, caps):
                && outcome.route === 'BARE_DIR'                 # §1h — bareness plays no part
                && pathPolicy.basename(outcome.gitDir) !== '.git'
                && bareRepositories === 'explicit'
-  trusted := !gated || await isTrusted(probe, outcome, commonDir, trustOpts, pathPolicy)
+  verdict := gated ? await trustVerdict(probe, outcome, commonDir, trustOpts, pathPolicy)
+                   : TRUSTED                                   # §1c — the explicit route
+  trusted := verdict is TRUSTED
   accepted := trusted && !implicitBare                         # §1h: same posture, measured
 
   # ── Stage 2, now conditional ────────────────────────────────────────────
@@ -635,8 +700,9 @@ finishLayout(probe, outcome, pathPolicy, cwd, overrides, caps):
                                                                #   worktree: undefined,
                                                                #   worktreeConfig: false }
   … Stages 3 and 4 unchanged …
-  return { …layout, ...(trusted ? {} : { untrusted: true }),
+  return { …layout, ...(trusted ? {} : { untrusted: true, ...verdict.foreignPathField }),
                     ...(implicitBare ? { implicitBare: true } : {}) }
+                    # the foreign-path field is DN-4's; ADR-678's flags are unchanged
 ```
 
 Both verdicts are computed **above** the Stage-2 read and neither needs it: §1h's predicate
@@ -694,55 +760,114 @@ them as one mechanism, not two rules:
 
 1. **The repository config scope reads as empty when the layout carries either verdict** —
    `layout.untrusted` **or** `layout.implicitBare`, which §1h measures as producing the same
-   five config rows as ADO does. One guard in `readConfig`
-   (`src/application/primitives/config-read.ts:168`) returns the empty parse rather than
-   reading `<commonDir>/config`. This single change reproduces every measured
-   config row: a planted local key is invisible, `core.bare = banana` never refuses, the
-   sibling format gate never sees `repositoryformatversion = 99`. **No explicit precedence
-   rule is needed** for §1d's two ordering pins — the downstream gates have nothing to read,
-   which is exactly why git appears to check ownership "first". It is also the safer
-   behaviour on its own terms: the attacker's file is not parsed at all.
+   five config rows as ADO does. The attacker's file is not parsed at all. **No explicit
+   precedence rule is needed** for §1d's three ordering pins — the downstream gates have
+   nothing to read, which is exactly why git appears to check ownership "first".
 2. **Every verb outside the measured surviving set refuses**, with the two flags read
-   synchronously off the frozen layout:
+   synchronously off the frozen layout, on the tier
+   [ADR-682](../adr/682-acceptance-refusals-attach-to-a-third-tier.md) ratified.
+
+**Where the empty scope is enforced — two sites, not one.** The measured rows split across
+tsgit's two config read paths, and a single guard reaches only one of them:
+
+| site | what it guards | measured rows it reproduces |
+|---|---|---|
+| `loadConfigEntry` (`config-read.ts:220`), the per-`Context` cache entry both `readConfig`'s `parsed` **and** every token finder consume | returns the same `{ parsed: {}, tokens: [], source }` the absent-file branch already returns at `:223`, **without** the `ctx.fs.readUtf8` | `core.bare = banana` stops refusing; the eager `[core]` gate finds nothing; the sibling format gate never sees `repositoryformatversion = 99` |
+| `config-scoped-read.ts`'s per-scope reader — the path the four surviving porcelain verbs actually take (`getConfigValue`, `getAllConfigValues`, `readConfigSections`) | the `local` and `worktree` scopes contribute nothing to a merged read; an **explicitly named** `local`/`worktree` scope refuses with the existing `CONFIG_SCOPE_NOT_AVAILABLE { scope, reason }` | a planted local key reports absent; `config --list` omits the repository scope; `config --local --list` refuses with its own *different* fatal |
+
+The guard is keyed on the verdict, not on the reader: `layout.untrusted || layout.implicitBare`.
+The second site is the one the sibling format gate also guards, with one shared new `reason`
+literal — the design that lands first specifies it, and this design consumes it rather than
+adding a second.
+
+Placing the first guard at `loadConfigEntry` rather than on `readConfig`'s public wrapper is
+not tidiness, and it is **ADR-682 that makes it load-bearing**: under the ratified tier shape
+`assertDiscoveryBooleansValid` runs *before* the two refusals (it is inside the bare tier the
+accepted tier calls first), and it reaches the file through `findFirstInvalidBoolean` →
+`readConfigEntry().tokens`, never through `readConfig`. A `readConfig`-only guard would leave
+that path reading the attacker's file and would refuse `CONFIG_BAD_BOOLEAN_VALUE` where §1d
+measures the dubious-ownership fatal. One guard at the cache entry closes the parsed read and
+every finder in the same place, which is what keeps the ordering a *consequence* rather than a
+rule under a tier order that no longer puts the refusals first.
+
+**The three tiers (ADR-682).**
 
 ```
-assertRepository(ctx):                       # the gated default (DN-1(a))
+assertRepository(ctx):                          # UNCHANGED — the 4 surviving config reads
   hasUsableHead                          → NOT_A_REPOSITORY   (§1d: discovery failure first)
-  ctx.layout.implicitBare                → IMPLICIT_BARE_REPOSITORY   (§1h precedes ownership)
-  ctx.layout.untrusted                   → DUBIOUS_OWNERSHIP
-  [the sibling repository-format gate]   → (ADR-666 puts it on this same tier; a no-op when
-                                            refused, because the scope is already empty)
   assertDiscoveryBooleansValid           → (no-op when refused: the scope is empty)
 
-assertRepositoryForConfigRead(ctx):          # the four measured survivors opt out
-  hasUsableHead                          → NOT_A_REPOSITORY
-  assertDiscoveryBooleansValid           → (no-op when refused: the scope is empty)
+assertAcceptedRepository(ctx):                  # NEW — the 11 movers
+  assertRepository(ctx)
+  ctx.layout.implicitBare                → IMPLICIT_BARE_REPOSITORY   (§1h precedes ownership)
+  ctx.layout.untrusted                   → DUBIOUS_OWNERSHIP { path, foreignPath? }
+  [the sibling repository-format gate]   → (ADR-666 + ADR-682 put it on this same tier;
+                                            structurally absent when untrusted, because the
+                                            scan that would produce it never ran)
+
+assertOperationalRepository(ctx):               # the 45 operational modules
+  assertAcceptedRepository(ctx)
+  assertEagerConfigValid                 → (no-op when refused: the scope is empty)
 ```
 
-Four orderings, each measured rather than chosen. Discovery failure comes first: §1d pins
-`fatal: not a git repository` surviving ADO unchanged, so a missing or unusable `HEAD` still
-reports `NOT_A_REPOSITORY` on an untrusted layout. `implicitBare` precedes `untrusted`, the
-one explicit ordering §1h measures between the two. Both precede everything config-derived —
-the sibling format gate, `assertDiscoveryBooleansValid`, and `assertEagerConfigValid`'s
-`[core]` validation one tier up — which needs no rule, because by then the scope is empty.
-And both refusals are synchronous reads of frozen fields: no I/O, no per-command cost (R12).
+**The call sites, verified with `find_referencing_symbols` against `assertRepository` rather
+than inherited from the ADR's prose:**
 
-**The surviving set is narrower than tsgit's existing bare tier, and that gap is the one
-thing this section cannot settle from an ADR.** Measured (§1b), exactly four verbs survive:
-`repo.config.get`, `.getAll`, `.getRegexp` and `.list`, each returning an empty repository
-scope. tsgit today puts fifteen call sites on the bare `assertRepository` — all nine
-`config` verbs (`src/application/commands/config.ts:47…269`) and all six `remote` verbs
-(`src/application/commands/remote.ts:118…329`) — so wiring the refusals into
-`assertOperationalRepository` as it stands would leave **five config writers and every
-`remote` verb surviving on an untrusted repository**, which is both unfaithful and, for the
-writers, a hole: `repo.config.set()` would write into the attacker's config file where git
-refuses with the file byte-unchanged. Attaching the refusals therefore requires repointing
-call sites, and the shape of that repointing is a live decision — **DN-1** in §Decisions.
-The rest of this document assumes DN-1's recommendation: the acceptance refusals live in
-`assertRepository`, so every verb is gated by default, and the four measured survivors are
-the ones that opt out under an explicitly-named assert. On that shape `remote` and the five
-config writers need no edit at all — they already call `assertRepository` — and the write
-side needs no separate rule.
+| module | stays on `assertRepository` | moves to `assertAcceptedRepository` |
+|---|---|---|
+| `src/application/commands/config.ts` | `configGet` (`:47`), `configGetAll` (`:67`), `configGetRegexp` (`:94`), `configList` (`:123`) | `configSet` (`:153`), `configUnset` (`:182`), `configUnsetAll` (`:217`), `configRenameSection` (`:244`), `configRemoveSection` (`:269`) |
+| `src/application/commands/remote.ts` | — | `remoteList` (`:118`), `remoteAdd` (`:133`), `remoteRemove` (`:173`), `remoteRename` (`:236`), `remoteSetUrl` (`:306`), `remoteShow` (`:329`) |
+| `src/application/primitives/internal/repo-state.ts` | — | `assertOperationalRepository` (`:223`) re-points its inner call |
+
+Eleven move, four stay. `config.ts` ends up needing **both** asserts and imports them
+directly from `../primitives/internal/repo-state.js`, leaving the deprecated
+`commands/internal/repo-state.ts` re-export shim untouched for its other symbols.
+
+Orderings, each measured rather than chosen. Discovery failure comes first: §1d pins
+`fatal: not a git repository` surviving ADO unchanged, so a missing or unusable `HEAD` still
+reports `NOT_A_REPOSITORY` on an untrusted layout — and it still does under the ratified tier
+shape, because the accepted tier chains through the bare one. `implicitBare` precedes
+`untrusted`, the one explicit ordering §1h measures between the two. Everything
+config-derived — `assertDiscoveryBooleansValid` below them, the sibling format gate beside
+them, `assertEagerConfigValid`'s `[core]` validation one tier up, and the ADR-687 ref-backend
+selection downstream of all three — needs no rule against them, because by then the scope is
+empty. Both refusals are synchronous reads of frozen fields: no I/O, no per-command cost (R12).
+
+**What is structural and what is guarded.** Under the ratified tier the reach of this gate is
+no longer one property; it is two, and a security section that blurs them is not auditable.
+
+*Structural — holds for every verb, present or future, whatever assert it calls, because the
+data is gone:*
+
+- Stage 2 is skipped, so no config-derived value reaches layout resolution: `core.worktree`
+  never widens the containment root set, `core.bare` never flips bareness, and
+  `extensions.refStorage` never selects a ref backend (§1d's fourth pin).
+- The config scope reads empty at both sites above, so `merge.<d>.driver`,
+  `core.excludesFile` and `core.attributesFile` are unreadable **by data**, not by verb
+  membership. A verb that skipped every assert could still not read them.
+
+*Guarded — holds because a call site names the right assert, and a mechanical check makes a
+wrong name fail the build:*
+
+- **Which verbs refuse** — R15's surviving-verb contract in its entirety.
+- **The write side specifically**, and this is the sharp edge: the five config writers do
+  **not** read through `readConfig`. `updateConfigEntries` and its siblings reach the file
+  through `readConfigText` (`update-config-sections.ts:222`), a raw text read that exists to
+  preserve formatting and is deliberately outside the parsed-read guard. So the ADR-679
+  mechanism does not stop `repo.config.set()` on an untrusted repository; **only tier
+  membership does**. Left on the bare tier, `configSet` would read the attacker's config text
+  and write a modified copy back, where §1b measures git refusing with the file
+  byte-unchanged. This is the one place where "fails open" has a concrete victim, and it is
+  why ADR-682's guard is a condition of the option rather than hygiene.
+
+The guard itself — an architecture-tier check that no module calls bare `assertRepository`
+unless it is one of exactly four allowlisted verbs — is **specified once, in
+`docs/design/repository-format-acceptance-gate.md` §2a**, and shared. This design does not
+restate its mechanism; it records the dependency: two of the claims above are true *because
+that check exists and is green*, and if it were dropped, ADR-682's own consequences say
+option 1 (invert the default) would be the correct choice instead. Under option 1 the same
+two claims would have been structural. That is the honest cost of the ratified shape, and
+the reason R16 exists.
 
 ### 3. The ownership predicate as a port capability
 
@@ -793,24 +918,48 @@ a documented answer — *trusted* — rather than an unhandled case.
 the gate asks about a set:
 
 ```
-isTrusted(probe, outcome, commonDir, trustOpts, pathPolicy):
-  if trustOpts.trust === 'always'                  → true
+trustVerdict(probe, outcome, commonDir, trustOpts, pathPolicy):
+  # returns TRUSTED, or UNTRUSTED carrying the first foreign path (ADR-684)
+  if trustOpts.trust === 'always'                  → TRUSTED
   repoPath := outcome.route === 'DISCOVERED' ? outcome.origin : outcome.gitDir    # §5
   # repoPath and the entries are canonicalised per §5 (realpath on node, lexical in sandboxes)
   if isAllowlisted(repoPath, trustOpts.trustedDirectories)
-                                                   → true    # keys on ONE path (§1e)
-  if probe.isOwnedByCaller === undefined           → true    # capability omitted (ADR-669)
-  checked := dedupe([outcome.gitDir, commonDir, repoPath])   # the ADR-676 superset
-  → every path in `checked` is owned
+                                                   → TRUSTED  # keys on ONE path (§1e)
+  if probe.isOwnedByCaller === undefined           → TRUSTED  # capability omitted (ADR-669)
+  checked := dedupe([outcome.gitDir, commonDir, repoPath])    # the ADR-676 superset,
+                                                              # in this order — see DN-3
+  firstForeign := the first entry of `checked` the capability reports unowned
+  → firstForeign === none ? TRUSTED : UNTRUSTED(firstForeign)
 ```
+
+The verdict is a value, not a boolean, because ADR-684 gives the refusal a second field. The
+refusal is thrown at the acceptance tier, per command, off the **frozen** layout — R12 forbids
+re-running the predicate there — so the first foreign path has to survive from `finishLayout`
+to the throw site alongside `untrusted`. ADR-678 ratified the flag; how the path travels
+beside it is not covered by any ADR and is **DN-4** in §Decisions. The rest of this document
+assumes DN-4's recommendation: one further present-only-when-present layout field, in the same
+idiom as the two flags, from which the acceptance tier builds
+`DUBIOUS_OWNERSHIP { path, foreignPath? }` — the §5 repository path plus the first foreign
+entry, `foreignPath` omitted when the two coincide (§6).
 
 Three properties, each measured or ratified, and each easy to blur together:
 
 - **What is *checked* is a set; what is *named* and what is *matched* stay one path.**
   [ADR-676](../adr/676-the-ownership-predicate-checks-the-superset.md) widens the ownership
-  question only. `DUBIOUS_OWNERSHIP` still carries the single §1c repository path, and
-  `trustedDirectories` still keys on that same one path — both measured, neither changed by
-  the widening.
+  question only. `DUBIOUS_OWNERSHIP`'s `path` still carries the single §1c repository path,
+  and `trustedDirectories` still keys on that same one path — both measured, neither changed
+  by the widening, and neither changed by ADR-684 either: `foreignPath` is a second field, not
+  a different `path`.
+- **The check order became observable, and nothing has chosen it.**
+  [ADR-684](../adr/684-dubious-ownership-carries-an-optional-foreign-path.md) settles the
+  multi-foreign case as "the first in the deduplicated check order", which turns an ordering
+  ADR-676 never had to think about into part of the payload. Written as above —
+  `[gitDir, commonDir, repoPath]` — the ordinary all-alien refusal reports
+  `foreignPath = <repo>/.git`, i.e. the field is populated on the *common* case and names the
+  gitdir, while the case ADR-684 was written for (repository path owned, `gitDir` alien) looks
+  identical from outside. That is **DN-3**, and it is a genuine choice, not a detail: the set,
+  the short-circuit and the `stat` count are order-independent, so only the reported path
+  moves.
 - **The allowlist short-circuits the ownership check entirely**, which is why widening cannot
   break a measured row. §1e row 2 pins it: with the work tree allowlisted, git admits a
   `.git` file pointing at a gitdir elsewhere *under ADO* — that is, with every candidate path
@@ -918,8 +1067,8 @@ repoPath = outcome.route === 'DISCOVERED' ? outcome.origin : outcome.gitDir
 ```
 
 This is the asymmetry §3 spells out and the one place it is easiest to get wrong: the
-ownership predicate runs over `dedupe([gitDir, commonDir, repoPath])`, while the allowlist
-matches `repoPath` alone. Widening the matcher to the same set would silently break §1e's
+ownership predicate runs over the deduplicated set of `gitDir`, `commonDir` and `repoPath`
+(whose order is DN-3), while the allowlist matches `repoPath` alone. Widening the matcher to the same set would silently break §1e's
 measured rows — allowlisting `$T/normal/.git` must **refuse** and allowlisting the common dir
 of a linked worktree must **refuse** — so the two must not be unified for symmetry's sake.
 
@@ -959,8 +1108,24 @@ and rendered by one `case` arm each in `extractDetail`
 
 | code | payload | condition | git's fatal (reconstructed in the interop test) |
 |---|---|---|---|
-| `DUBIOUS_OWNERSHIP` | `{ path }` — the §5 discovery repository path | discovery route, capability present, a gated path not owned, not allowlisted | the 4-line block of §1a |
+| `DUBIOUS_OWNERSHIP` | `{ path, foreignPath? }` — `path` is the §5 discovery repository path; `foreignPath` is the first foreign member of §3's checked set, omitted when it equals `path` (ADR-684) | discovery route, capability present, a gated path not owned, not allowlisted | the 4-line block of §1a, reconstructed from **`path` alone** |
 | `IMPLICIT_BARE_REPOSITORY` | `{ gitDir }` | `route === 'BARE_DIR' && basename(gitDir) !== '.git' && bareRepositories === 'explicit'` (§1h) | the 1-line fatal of §1h |
+
+**`foreignPath` is diagnostic and interop-neutral, by construction.**
+[ADR-684](../adr/684-dubious-ownership-carries-an-optional-foreign-path.md) adds it because
+ADR-676 made it routine for a refusal to name a directory the caller **owns** — repository
+path owned, `gitDir` alien — leaving `{ path }` pointing at the one path that is fine. Three
+properties it must have, each of which is a test row:
+
+- **`path` never moves.** Every §1c/§1e named-path row and the interop reconstruction of
+  git's four-line fatal read `path` and nothing else. A change that made the refusal name the
+  failing directory instead would be measurably wrong (ADR-684 option 3).
+- **It names one path, never a set.** When several checked paths are foreign it is the first
+  in §3's deduplicated check order — the order itself being DN-3 — and `docs/use/errors.md`
+  must say so in the row, so a caller does not read a single value as "the only one".
+- **It is absent, not equal, when it would repeat `path`.** The optional field carries
+  information exactly when there is information: a present `foreignPath` always names a
+  directory *other* than the one the message is about.
 
 Distinct codes rather than one code with a `reason` discriminant
 ([ADR-674](../adr/674-two-trust-refusal-codes.md)): git has two conditions, two messages and
@@ -1004,9 +1169,9 @@ The write path must not regress, and §1b measures git's own answer:
 | `init` into an existing alien-owned repository | succeeds (re-uses the existing repository) | succeeds — `init` never calls `assertRepository` |
 | `clone` into a fresh directory | n/a (destination is created by the caller's uid) | unchanged |
 | `clone` **from** an alien local path | refuses | n/a — tsgit has no local-path transport |
-| a config **write** verb (`config user.name x`) | refuses, `fatal: not in a git directory`, file byte-unchanged | refuses — `repo.config.set` / `.unset` / `.unsetAll` / `.renameSection` / `.removeSection` are gated, which under DN-1's recommendation needs no edit because they already call `assertRepository` |
+| a config **write** verb (`config user.name x`) | refuses, `fatal: not in a git directory`, file byte-unchanged | refuses — `repo.config.set` / `.unset` / `.unsetAll` / `.renameSection` / `.removeSection` move onto `assertAcceptedRepository` (ADR-682, §2). Tier membership is the **only** thing that refuses them: their read goes through `readConfigText`, outside the parsed-read guard |
 | a config **read** verb | exit 0, repository scope empty, planted key invisible | empty repository scope (ADR-679) — the file is not parsed at all, which is a strict improvement on git's own posture |
-| a `remote` verb, read or write | refuses, 128, config file byte-unchanged (measured, §1b) | refuses — `repo.remote.*` is gated like any other command; it is **not** a surviving gentle-setup verb |
+| a `remote` verb, read or write | refuses, 128, config file byte-unchanged (measured, §1b) | refuses — all six `repo.remote.*` verbs move onto `assertAcceptedRepository`; `remote` is **not** a surviving gentle-setup verb |
 | any other read/write command on an alien repository | refuses | refuses |
 
 Read path and write path therefore agree on the same predicate and the same tier, and the
@@ -1050,6 +1215,7 @@ recorded this exposure as deferred; it does not restate it.
 | `merge.<d>.driver` — a shell command from the repository's own config | command execution through a merge on attacker-supplied content | the config file is **never parsed** — not at open (Stage 2 skipped, R4) and not at command time (R5b, ADR-679) — and no operational command runs |
 | `core.excludesFile` / `core.attributesFile` — attacker-named file reads | reads outside the caller's intent, bounded only by the FS validator | same. git reaches the same *observable* (an empty repository scope, §1b); whether it declines to read the file or discards what it read is not observable from outside, and not-reading is the stricter of the two |
 | **`core.worktree` widening the containment root set, up to `/`** | a single planted line collapses the FS validator's allowlist to `[/]` (Observed exposure #2), vacating the mitigation the row above depends on | **structurally impossible when untrusted**: Stage 2 is skipped, so `core.worktree` never reaches `resolveWorkTree` and the root set contains only paths discovery produced. This is the one row the gate closes *before* any command, not merely at refusal time |
+| **`extensions.refStorage` selecting the ref backend** — new in this PR: with [ADR-680](../adr/680-reftable-ships-as-a-complete-backend.md) the reftable backend is real, and [ADR-687](../adr/687-the-ref-backend-reaches-context-through-the-layout.md) resolves it from the Stage-2 config read | a planted value steers every ref read and write into a different parser and a different on-disk protocol, chosen by the attacker's file. Measured on git: with the key planted, `git log` dies `your current branch appears to be broken` — the planted value **acted** (§1d) | **already covered, and this is the confirmation §2 owed**: the backend selector is a Stage-2 consumer, and §2's placement is *above* Stage 2, so an untrusted repository resolves with the structural default and never reads the key. §1d's second new row pins git agreeing, on a genuinely reftable-backed repository: under ADO `rev-parse --show-ref-format` refuses and `config --list` prints zero repository-scope keys. No new ordering rule, no new guard — the placement that was right for `core.worktree` is right for every later Stage-2 consumer, which is exactly the property a "check before the first config byte" rule buys |
 | a repository directory planted inside a tree the caller clones (`node_modules/x/evil.git/`, an extracted archive), shadowing the real repository from any subdirectory | git added `safe.bareRepository` for exactly this; tsgit's `BARE_DIR` route made it reachable in #277 | `bareRepositories: 'explicit'` (§1h) — an opt-in the ownership gate does **not** subsume, because a repository planted inside your own clone **is owned by you** and so passes the ownership check. Its measured predicate (any gitdir basename other than `.git`) is precisely the "this was not put here by a normal checkout" heuristic |
 
 **What the gate does NOT close**
@@ -1057,6 +1223,8 @@ recorded this exposure as deferred; it does not restate it.
 | residual | why it stays |
 |---|---|
 | An attacker who can write inside a repository you **own** — a malicious clone you ran yourself, a shared checkout, a compromised dependency writing into `.git/` | the gate is an *ownership* gate, not a content gate. `hooks: false` + `command: false` remain the mitigations, and remain documented |
+| **A future verb placed on the bare `assertRepository` tier** — it would operate on a refused repository, and if it writes, into the attacker's file ([ADR-682](../adr/682-acceptance-refusals-attach-to-a-third-tier.md) fails open) | reduced from "silent" to "reviewable" by the architecture-tier allowlist guard ADR-682 requires (§2, R16; mechanism in the sibling design). What remains is a reviewer approving an allowlist edit — a visible act on a five-line file, not an omission. Under the recommended-but-not-ratified option 1 this row would not exist, which is the price the ratified shape pays for naming git's three tiers explicitly |
+| **A caller reading `repo.layout` on a refused repository and taking a config-derived field at face value** — `bare` reads structural, and with ADR-687 so does the ref backend, whatever `extensions.refStorage` says | by design, and the same rule ADR-678 already ratified for `core.bare` / `core.worktree`: an untrusted layout carries **only what discovery produced**. The verdict flags travel in the same object precisely so the fields can be read in their light; the docs page states that a layout carrying `untrusted` or `implicitBare` must be read as structural |
 | Same-uid attackers (another process running as you) | outside any uid-based model |
 | Callers passing `trust: 'always'`, `trustedDirectories: ['*']`, or a `/*` prefix that is too wide | the escape hatch is the feature; the option JSDoc must carry the same WARNING register as `hooks` / `command` / `unsafeRawAdapters` |
 | The explicit-`gitDir` route (§1c, faithful) — a caller who forwards an attacker-chosen path as `opts.gitDir` | faithful to git, and materially safer here: tsgit reads no environment, so there is no `GIT_DIR` an attacker can inject; the path must come from the caller's own code |
@@ -1078,7 +1246,9 @@ recorded this exposure as deferred; it does not restate it.
   with mismatched user ids, shared checkouts, network mounts — must pass `trustedDirectories`.
   This is exactly the friction `safe.directory` is famous for, and it is the price of the
   first four rows above.
-- One new public option group, two new error codes, one new layout flag pair.
+- One new public option group, two new error codes, one new layout flag pair (plus the
+  diagnostic path field DN-4 places), eleven repointed call sites, and one shared
+  architecture-tier audit whose green run is load-bearing for two of §2's claims.
 
 ### 10. Public surface
 
@@ -1092,56 +1262,72 @@ WARNING-register JSDoc matching `hooks` / `command` / `unsafeRawAdapters`:
 | `bareRepositories` | `'all' \| 'explicit'` | **`'all'`** (ADR-675) | `'explicit'` refuses the implicit-gitdir shape of §6's boxed predicate |
 
 **Two error codes** on `RepositoryError`, each with a factory beside the others and one arm
-in `extractDetail` (ADR-674): `DUBIOUS_OWNERSHIP { path }` and
+in `extractDetail` (ADR-674): `DUBIOUS_OWNERSHIP { path, foreignPath? }` (ADR-684) and
 `IMPLICIT_BARE_REPOSITORY { gitDir }`. The second carries §6's predicate verbatim in its
-JSDoc, because its name does not describe it.
+JSDoc, because its name does not describe it; the first carries §6's three `foreignPath`
+properties, because an optional field that is *usually* present and names a path other than
+the one in the message is exactly the shape a caller misreads.
 
 **Two layout flags** on `RepositoryLayout` / `RepositoryLayoutInput` (ADR-678):
 `untrusted?: true` and `implicitBare?: true`, following the existing
-`workTreeConfigBogus?: true` present-only-when-true idiom (`src/repository.ts:161-162`).
+`workTreeConfigBogus?: true` present-only-when-true idiom (`src/repository.ts:161-162`) —
+plus, under DN-4's recommendation, one further present-only-when-present field in the same
+idiom carrying the first foreign path from `finishLayout` to the throw site (§3).
 Additive; `repo.layout` (ADR-658) exposes them. Flags rather than a `route` field: `route` is
 a resolution-time discriminant with no meaning to a consumer, while these two are verdicts a
 consumer acts on, and the idiom for "a layout-level verdict the acceptance tier reads
 synchronously" is already established one line above them. An untrusted layout carries only
-what discovery produced — no `core.bare`, no `core.worktree` — so a caller reading it reads
-paths the attacker's config never touched.
+what discovery produced — no `core.bare`, no `core.worktree`, and no ADR-687 ref backend — so
+a caller reading it reads paths and defaults the attacker's config never touched, which the
+docs page must state alongside the flags rather than leave to be inferred.
 
-**The surviving-verb contract (R15).** On an untrusted repository, exactly these succeed:
+**The surviving-verb contract (R15), and the tier that produces it (ADR-682).** On an
+untrusted repository, exactly these succeed:
 
-| surface | behaviour on an untrusted repository |
-|---|---|
-| `openRepository` | resolves; `repo.layout.untrusted === true` |
-| `init`, `clone` | bootstrap normally — they run no acceptance tier (§7) |
-| `repo.config.get`, `.getAll`, `.getRegexp`, `.list` | succeed with an **empty repository scope**; a planted local key reports absent |
-| everything else — including all five `repo.config` write verbs and all six `repo.remote` verbs | refuses with `IMPLICIT_BARE_REPOSITORY`, else `DUBIOUS_OWNERSHIP` |
+| surface | tier | behaviour on an untrusted repository |
+|---|---|---|
+| `openRepository` | none | resolves; `repo.layout.untrusted === true` |
+| `init`, `clone` | none | bootstrap normally — they run no acceptance tier (§7) |
+| `repo.config.get`, `.getAll`, `.getRegexp`, `.list` | `assertRepository` | succeed with an **empty repository scope**; a planted local key reports absent |
+| all five `repo.config` write verbs; all six `repo.remote` verbs | `assertAcceptedRepository` | refuse with `IMPLICIT_BARE_REPOSITORY`, else `DUBIOUS_OWNERSHIP` |
+| everything else | `assertOperationalRepository` (chains through the accepted tier) | same refusals |
 
 That table is the contract, not a summary of one: it goes on the `openRepository` docs page
 verbatim, and the unit tier asserts it verb by verb. It is also identical to the set the
-sibling format gate publishes, because ADR-666 and ADR-679 put both gates on one tier.
+sibling format gate publishes, because ADR-666, ADR-679 and ADR-682 put both gates on one
+tier. The tier column is published too — ADR-682 makes the three-tier shape itself a
+documented contract, and the four names in the second row are the same four the architecture
+guard allowlists (R16).
 
 Supporting changes:
 
 - `LayoutProbe` gains an optional `isOwnedByCaller` (ADR-669); like the port itself
   (ADR-535) it stays out of the public barrel.
-- `readConfig` (`src/application/primitives/config-read.ts:168`) gains one layout-dependent
-  early return (ADR-679); its memoisation is unchanged.
-- Call sites move per DN-1's resolution; under the recommendation that is the four config
-  **read** verbs opting out, and nothing else.
+- The config-scope guard lands at the two sites §2 names — `loadConfigEntry`
+  (`src/application/primitives/config-read.ts:220`) and `config-scoped-read.ts`'s per-scope
+  reader (ADR-679) — keyed on either verdict; memoisation is unchanged, and the
+  `CONFIG_SCOPE_NOT_AVAILABLE` `reason` literal is shared with the sibling gate rather than
+  duplicated.
+- `assertAcceptedRepository` is added to `src/application/primitives/internal/repo-state.ts`
+  and eleven call sites repoint to it (§2's table); `assertOperationalRepository` chains
+  through it. The four survivors are unchanged, and are the guard's allowlist.
 - `reports/api.json` regenerated and committed at pre-PR — a pre-push gate, and a
   cached-green `validate` can precede a red prepush.
-- Docs: `docs/use/errors.md` (two codes, the second carrying §6's predicate),
+- Docs: `docs/use/errors.md` (two codes — the first carrying the `foreignPath` row with its
+  first-in-check-order rule stated explicitly, the second carrying §6's predicate),
   `docs/understand/security.md` (a `## Repository trust` section — the file's
   `## What tsgit does NOT do` closing section needs the residuals of §9, ADR-670's Windows
   gap among them), `docs/understand/repository-layout.md` and `docs/get-started/node.md`
   (the option table, the surviving-verb table, and the shared-repository recipe). ADR-672's
   default-on is a breaking behavioural change and belongs in the release notes too.
 
-## Decisions (settled — ADRs 669–679)
+## Decisions (settled — ADRs 669–679, 682, 684)
 
-All eleven decision candidates are resolved. "ratified" = the user made the call;
-"adopted-as-recommended" = the designer's recommendation stood with no user judgment needed.
-**One landed against the recommendation** (D9), and that row says so, because a design that
-hides where it was overruled is a design nobody can audit.
+All thirteen decision candidates are resolved — the eleven of the first pass, plus the two
+this design surfaced when they were resolved (DN-1, DN-2). "ratified" = the user made the
+call; "adopted-as-recommended" = the designer's recommendation stood with no user judgment
+needed. **Two landed against the recommendation** (D9 and D12), and those rows say so,
+because a design that hides where it was overruled is a design nobody can audit.
 
 | # | Choice | Settled choice | vs recommendation | ADR | What changed in this doc |
 |---|---|---|---|---|---|
@@ -1152,20 +1338,27 @@ hides where it was overruled is a design nobody can audit.
 | D5 | Allowlist grammar | Exact + trailing-slash-insensitive + `*` + `/*` any-depth prefix, absolute-only, realpath'd on node / lexical in sandboxes | as recommended | [673](../adr/673-the-allowlist-models-gits-grammar-minus-its-string-surface.md) | §5 opens by naming the grammar as ADR-673's; R7 names the three string-surface artefacts that are deliberately absent, inline, so the absence reads as a decision |
 | D6 | Error taxonomy | Two codes; the second **named `IMPLICIT_BARE_REPOSITORY`** despite the predicate having nothing to do with bareness | **ratified** by the user | [674](../adr/674-two-trust-refusal-codes.md) | §6 gains the boxed predicate statement and the three-place obligation (JSDoc, `docs/use/errors.md`, here) the ADR attaches to keeping git's name. §10 repeats the obligation on the code row |
 | D7 | `safe.bareRepository` | Model it **now**, as `bareRepositories?: 'all' \| 'explicit'` | **ratified** by the user | [675](../adr/675-safe-bare-repository-is-modelled-now.md) | R9, §4 and §10 state it as shipping surface; Test strategy promotes it to the **anchor** of the interop suite, since it is the one part provable end-to-end against real git |
-| D8 | Which path(s) the predicate checks | The **superset**: deduplicated union of `gitDir`, `commonDir` and the discovery repository path | as recommended | [676](../adr/676-the-ownership-predicate-checks-the-superset.md) | The largest structural addition. §3 gains the `isTrusted` composition, the allowlist short-circuit, and the dedup arithmetic table (1/2/3 `stat`s by shape); §5 spells out the check-set / named-path / allowlist-key asymmetry; R2b is new; §9 gains the over-refusal residual; R12's count is now derived rather than asserted |
+| D8 | Which path(s) the predicate checks | The **superset**: deduplicated union of `gitDir`, `commonDir` and the discovery repository path | as recommended | [676](../adr/676-the-ownership-predicate-checks-the-superset.md) | The largest structural addition. §3 gains the `trustVerdict` composition, the allowlist short-circuit, and the dedup arithmetic table (1/2/3 `stat`s by shape); §5 spells out the check-set / named-path / allowlist-key asymmetry; R2b is new; §9 gains the over-refusal residual; R12's count is now derived rather than asserted |
 | D9 | How the interop suite obtains an alien owner on both sides | **No deny-by-default `trust` mode.** Skip-predicate-gated co-refusal; `GIT_TEST_ASSUME_DIFFERENT_OWNER` still pins git's own bytes; the ownership truth table moves to the unit tier over the ADR-669 stub | **against** the recommendation of shipping `trust: 'allowlist'` | [677](../adr/677-no-deny-by-default-trust-mode.md) | Test strategy is rebuilt: the unit tier carries the full truth table, the interop groups are re-cut into always-on and gated halves, and the skip predicate is written out with what it probes, what makes it skip and what it logs. §4 states that no third `trust` value ships; §9 gains the uid-coverage residual; §1j consequence 2 becomes the justification for the predicate rather than a pointer to an open question |
 | D10 | What an untrusted `repo.layout` exposes | Structural layout plus `untrusted: true`; `core.bare` / `core.worktree` not applied | as recommended | [678](../adr/678-an-untrusted-repository-still-exposes-its-structural-layout.md) | §10 states both flags and the discovery-only content as the ratified contract; §2's consequences paragraph is unchanged because this is what it already described |
-| D11 | Which tier throws | An untrusted repository reads as an **empty config scope**, and the refusals sit on a tier the config read verbs skip | as recommended, and reinforced by the user's ADR-666 choice for the sibling gate | [679](../adr/679-an-untrusted-repository-reads-as-an-empty-config-scope.md) | §2's two ordering pins are restated as a *consequence* of the shared mechanism, and §1d's interlock sentence with them; the sibling format gate now shares this tier rather than sequencing against it. Resolving it is also what surfaced **DN-1** below |
+| D11 | Which tier throws | An untrusted repository reads as an **empty config scope**, and the refusals sit on a tier the config read verbs skip | as recommended, and reinforced by the user's ADR-666 choice for the sibling gate | [679](../adr/679-an-untrusted-repository-reads-as-an-empty-config-scope.md) | §2's two ordering pins are restated as a *consequence* of the shared mechanism, and §1d's interlock sentence with them; the sibling format gate now shares this tier rather than sequencing against it. Resolving it is also what surfaced **D12** |
+
+| D12 | **Where the acceptance refusals attach** (raised as DN-1) | **A third tier.** `assertRepository` keeps its meaning and its four surviving config read verbs; `assertAcceptedRepository` = `assertRepository` + the four acceptance refusals takes the eleven movers; `assertOperationalRepository` = `assertAcceptedRepository` + eager `[core]` | **against** the recommendation of inverting the default (option (a)) | [682](../adr/682-acceptance-refusals-attach-to-a-third-tier.md) | §2 is rebuilt around the three-tier box and the verified call-site table; the ordering paragraph now explains why discovery-first still holds when the accepted tier *chains through* the bare one; the config-scope guard moves from `readConfig` to `loadConfigEntry` **because** `assertDiscoveryBooleansValid` now runs ahead of the refusals and reaches the file through the token finders; and §2 gains the structural-vs-guarded split, since the ratified shape fails open and the write path (`readConfigText`) sits outside the parsed-read guard. R16 and §9's new residual row carry the guard dependency; §7 and §10 name the tier per verb |
+| D13 | **Whether `DUBIOUS_OWNERSHIP` surfaces which path failed** (raised as DN-2) | `{ path, foreignPath? }`. `path` stays the repository path git names; `foreignPath` names the first foreign member of §3's checked set, in deduplicated check order, omitted when it equals `path` | as recommended | [684](../adr/684-dubious-ownership-carries-an-optional-foreign-path.md) | §3's composition returns a verdict value rather than a boolean; §6 gains the payload row and the three properties `foreignPath` must have; R11b, §10 and the `docs/use/errors.md` obligation state the first-in-order rule so a single value is not read as a set. Two things the ADR does not settle fall out of it and are open below: the **order** it names (DN-3) and how the path reaches the throw site off a frozen layout (DN-4) |
 
 ### New and unsettled — surfaced by this revision
 
-Two load-bearing choices no ADR covers. Both are consequences of ratified decisions rather
-than reopenings of them.
+Two load-bearing choices no ADR covers. Both are consequences of
+[ADR-684](../adr/684-dubious-ownership-carries-an-optional-foreign-path.md) meeting decisions
+ratified before it, not reopenings of anything: ADR-684 fixed the *rule* ("the first in the
+deduplicated check order") and the *payload*, and in doing so made an ordering observable that
+no ADR chose and required a value to travel where ADR-678 put only flags. Neither changes a
+measured row, and neither is a reason to revisit ADR-676, ADR-678 or ADR-684.
 
 | # | Choice | Alternatives (≤3) | Recommendation | Why |
 |---|---|---|---|---|
-| DN-1 | **Where the acceptance refusals attach**, now that the measured surviving set (four config read verbs) is narrower than tsgit's existing bare-`assertRepository` membership (fifteen call sites: nine `config`, six `remote`) | (a) **Invert the default** — the refusals go into `assertRepository`, and the four measured survivors move to an explicitly-named opt-out assert (`assertRepositoryForConfigRead`-shaped); **4** call sites change; (b) **a third tier** — `assertAcceptedRepository` = `assertRepository` + the refusals; the five config writers and six `remote` sites repoint to it, the four readers keep the bare one, `assertOperationalRepository` composes on top; **11** call sites change; (c) **move the offenders to `assertOperationalRepository`** — the same 11 sites, which then additionally gain `assertEagerConfigValid`'s `[core]` validation | **(a)** | This is not tidy-up: measured (§1b), every `remote` verb and every config **write** verb refuses under ADO, yet all fifteen sit on the tier ADR-679 keeps ungated. Left as-is, `repo.config.set()` would **write into the attacker's config file** where git refuses with the file byte-unchanged. (c) is the smallest conceptual change but silently alters `[core]` validation for `remote` and the config writers — behaviour outside this feature and unmeasured, so it would be a divergence adopted by accident. (b) is exactly the "third assert whose only job is to be skipped" shape ADR-679 already declined, and it leaves the *unsafe* default in place: a command added next year that calls `assertRepository` survives on an untrusted repository and nothing complains. (a) inverts that — a new verb is gated unless its author writes the opt-out name, and writing it is a statement they have checked the measurement. It is also the smallest diff, and it puts the exception exactly where the evidence is: on the four verbs git is measured to spare. Whatever lands binds the sibling format design identically (ADR-666 shares the tier), so it should be decided once for both docs |
-| DN-2 | **Whether `DUBIOUS_OWNERSHIP` surfaces which path failed**, now that ADR-676 checks a set but names one path | (a) payload stays `{ path }` — exactly the path git names, nothing more; (b) payload gains an optional `foreignPath` naming the member of §3's checked set that failed, while `path` keeps naming the repository path; (c) `path` names the failing path instead | **(b)** | ADR-676 makes it routine for the refusal to name a directory the caller **owns** — repository path owned, `gitDir` alien — and `{ path }` alone then points at the one path that is fine, with no way for the caller to learn which path to fix or allowlist. That is a diagnostic regression created by the combination of two ratified decisions, which is why no ADR covers it. (c) is measurably wrong: it breaks §1c/§1e's named-path rows and the interop reconstruction of git's four-line fatal. (b) is additive and interop-neutral — the reconstruction reads `path` alone, so not one interop row changes — and it is structured data, not rendering (ADR-249). Cost is one optional field, one `api.json` regeneration, one `docs/use/errors.md` row. If the user prefers the strictly-measured payload, (a) is coherent, but then the diagnostic gap should be stated in `docs/use/errors.md` so a caller reading a refusal about a directory they own is not left guessing |
+| DN-3 | **The order of §3's deduplicated checked set**, now that ADR-684 makes its first element part of a public payload. As written the order is `[gitDir, commonDir, repoPath]`, inherited from ADR-676 where nothing observed it | (a) **keep `[gitDir, commonDir, repoPath]`** — `foreignPath` is populated on nearly every real refusal (an all-alien repository fails at `gitDir` first) and names `<repo>/.git`; (b) **reorder to `[repoPath, gitDir, commonDir]`** — `foreignPath` is *absent* exactly when the repository path itself is foreign (the ordinary case, where `path` already says everything) and *present* exactly when it is not (the ADR-676-created confusion ADR-684 exists for); (c) keep (a)'s order but suppress `foreignPath` unless `path` is itself owned | **(b)** | All three report a true foreign path, so faithfulness is untouched and no interop row moves — the choice is entirely about whether the field means "here is something you did not already know". Under (a) it is populated on the common case and points at the gitdir *inside* the directory the message already names, which is noise, and the genuinely surprising case is indistinguishable from it. (b) gets the diagnostic ADR-684 asked for with **no extra rule**: ADR-684's "first in the deduplicated check order" and "omitted when it equals `path`" are kept verbatim, and the useful behaviour falls out of the order alone. (c) reaches the same observable by adding a conditional that has to be stated in the docs, tested in isolation and defended against a mutant — a guard where an array literal would do. Cost of (b) is one line in §3 and re-labelling the dedup table's rows; the set, the allowlist short-circuit and the 1/2/3 `stat` counts are order-independent, and the checked set is unchanged, so ADR-676 is untouched |
+| DN-4 | **How the first foreign path reaches the throw site.** The verdict is computed once in `finishLayout`; `DUBIOUS_OWNERSHIP` is built per command at `assertAcceptedRepository` off the **frozen** layout, and R12 forbids re-running the predicate there. ADR-678 ratified `untrusted?: true` as a flag, so today nothing carries a path | (a) **one further optional `RepositoryLayout` field** beside the two flags, present only when a foreign path was found, in the established `workTreeConfigBogus?: true` idiom; (b) **widen `untrusted` itself** from `true` to the foreign path (`untrusted?: FilePath`), so one field carries verdict and detail; (c) **keep it off the layout** and recompute the failing path at throw time | **(a)** | (c) is out on measurement, not taste: recomputing means `stat` calls per command, which contradicts R12's "zero per command" and the "verdict computed once per `openRepository`" contract §9 records as tsgit's TOCTOU posture. (b) is the smaller type but breaks the present-only-when-**true** idiom the layout's neighbouring flags established, silently changes `untrusted`'s type for any consumer already reading it as a boolean, and conflates "was it refused" with "which path failed" — two questions with different lifetimes. (a) is additive, keeps ADR-678's ratified flag exactly as ratified, costs one `api.json` regeneration, and has a side benefit worth naming: a consumer inspecting `repo.layout` of a refused repository sees the failing path without having to provoke an error. Its cost is that a third optional field appears on a public type for a diagnostic, which is why it is a decision and not a detail |
 
 ## Test strategy
 
@@ -1267,6 +1460,12 @@ Dedicated rows, each triggering exactly one guard:
 - untrusted + planted `core.bare = banana` ⇒ resolves without throwing, because Stage 2
   never ran (the §1d ordering, expressed in tsgit's own terms — and the ADR-664 interaction
   of §2).
+- untrusted + planted `extensions.refStorage` ⇒ the layout's ref backend is the **structural
+  default**, and the counting stub shows Stage 2 did not run (§1d's fourth pin in tsgit's
+  terms). The row belongs here rather than in the reftable design: what it asserts is that
+  the trust gate sits above the selector, not anything about the selector itself. If the
+  sibling reftable work lands its field under a different name, this row follows the name and
+  keeps the assertion.
 - `trust: 'always'` and `trustedDirectories: ['*']` each ⇒ trusted, tested separately so
   neither hides the other.
 - The §1h basename pair as an isolated two-row test: identical layouts differing only in
@@ -1280,35 +1479,57 @@ Dedicated rows, each triggering exactly one guard:
 - The discovery-repository-path formula of §5, one row per §1c shape, asserting the `path`
   the refusal carries — including `$T/separate-work`-shaped gitfile discovery (origin, not the
   pointed-at gitdir) and linked-worktree discovery (worktree dir, not the common dir).
+- **`foreignPath`, three rows, isolated** (ADR-684, and they are the DN-3/DN-4 observables):
+  exactly one checked path foreign and it is *not* the repository path ⇒ `foreignPath` names
+  it and `path` still names the repository path; the repository path itself foreign ⇒
+  `foreignPath` **absent**, asserted as absent rather than as equal to `path`; **two** checked
+  paths foreign ⇒ `foreignPath` names whichever the settled order puts first, asserted against
+  a fixture where the two candidates are distinguishable, so a reordering mutant dies. The
+  last row is the one that pins DN-3 once it is decided, and it must be written so its
+  expectation reads off the documented order rather than off the implementation's array.
 
 ### Unit — the acceptance tier (`test/unit/application/primitives/internal/repo-state.test.ts`)
 
 A Context whose layout carries (i) neither flag, (ii) `untrusted`, (iii) `implicitBare`,
-(iv) **both** — asserting the payload (`path`, `gitDir`), never the class alone, and proving
-the §1h ordering in case (iv) by asserting `IMPLICIT_BARE_REPOSITORY` specifically. Plus:
+(iv) **both** — asserting the payload (`path`, `foreignPath`, `gitDir`), never the class
+alone, and proving the §1h ordering in case (iv) by asserting `IMPLICIT_BARE_REPOSITORY`
+specifically. `assertAcceptedRepository` is the subject of all four; `assertRepository` gets
+the same four fixtures asserting it **does not** refuse, which is the tier split stated as
+behaviour, and `assertOperationalRepository` gets one row proving it chains through and still
+refuses. Plus:
 
-- a missing `HEAD` **and** `untrusted` ⇒ `NOT_A_REPOSITORY` (§1d's discovery-first row);
+- a missing `HEAD` **and** `untrusted` ⇒ `NOT_A_REPOSITORY` (§1d's discovery-first row) —
+  and, under ADR-682's chaining, this now also proves the inner bare tier runs first;
 - `init` on an untrusted layout succeeding (R5, §7);
-- **`readConfig` on a refused layout returns the empty parse and `<commonDir>/config` is not
-  read at all** — a counting `fs` stub asserts zero reads. This is R5b, and it is the
-  security half of ADR-679, not merely its faithfulness half. Two rows, `untrusted` and
+- **a refused layout is not read from disk at all** — a counting `fs` stub asserts zero reads
+  of `<commonDir>/config` across *both* read paths: `readConfig` (the parsed read) **and**
+  `findFirstInvalidBoolean` (the token finder that `assertDiscoveryBooleansValid` uses). The
+  second is not redundant: they share a cache entry today, so a guard placed one level too
+  high passes the first assertion and fails the second. This is R5b, and it is the security
+  half of ADR-679, not merely its faithfulness half. Each is run for `untrusted` and
   `implicitBare` **separately**, because §1h measures both and one guard covering both is
   exactly the shape where a single test hides a missing disjunct;
-- `untrusted` **plus** a planted `core.bare = banana` ⇒ `assertDiscoveryBooleansValid` does
-  **not** refuse (§1b's composite row);
-- `untrusted` plus a planted local key ⇒ the config read verbs report it **absent** (§1b's
-  planted-key row), while a config **write** verb refuses and the file is untouched.
+- **the tier-order regression test ADR-682 makes necessary**: `untrusted` **plus** a planted
+  `core.bare = banana`, called through `assertAcceptedRepository` ⇒ `DUBIOUS_OWNERSHIP`, not
+  `CONFIG_BAD_BOOLEAN_VALUE`. Under the ratified shape a config-derived check runs *ahead* of
+  the refusal, so this row is what proves the empty scope — not an assert ordering — is
+  carrying §1d. Paired with the bare-tier row (§1b's composite): the same fixture through
+  `assertRepository` ⇒ does not refuse at all;
+- `untrusted` plus a planted local key ⇒ the four config read verbs report it **absent**
+  (§1b's planted-key row), an explicitly named `local` scope refuses
+  `CONFIG_SCOPE_NOT_AVAILABLE` (§1b's `--local --list` row), and a config **write** verb
+  refuses with the file byte-unchanged — the last asserted on the file's bytes, because the
+  writer's read path is outside the parsed-read guard and only the tier stops it (§2).
 
 **The surviving-verb contract, asserted verb by verb (R15).** §10's table is a contract, so
 it is tested as one rather than sampled: the four survivors — `repo.config.get`, `.getAll`,
 `.getRegexp`, `.list` — each succeed with an empty repository scope, and every non-survivor
 refuses. The five config **writers** and all six `repo.remote` verbs get their own explicit
-rows, because they are the ones tsgit currently leaves on the ungated tier (§2, DN-1) and a
-regression there is silent: the writers would write into the attacker's file, and `remote`
-would answer from it. A representative operational command (`log`) covers the rest.
-Whichever way DN-1 resolves, these rows are unchanged — they assert behaviour, not tier
-membership, which is exactly why the contract belongs in the docs page and the test rather
-than in the shape of the call graph.
+rows, because they are the eleven ADR-682 repoints and a regression there is silent: the
+writers would write into the attacker's file, and `remote` would answer from it. A
+representative operational command (`log`) covers the rest. These rows assert **behaviour,
+not tier membership** — which is what keeps them meaningful if a verb is ever moved, and why
+tier membership itself is the guard's job (R16) rather than a test's.
 
 ### Interop — `test/integration/ownership-trust-gate-interop.test.ts` (new)
 
@@ -1369,8 +1590,8 @@ the CI log carries it even when the warning scrolls away.
 | group | gate | scenarios |
 |---|---|---|
 | **A — the anchor: `bareRepositories`, both sides, always on** | `skipIf(!GIT_AVAILABLE)` | ADR-675 makes this the one part of the feature provable end-to-end against real git, on every platform, with no forcing and no escape hatch — so it carries the suite. **The predicate**, co-refusing with `git -c safe.bareRepository=explicit`: refuse on `cd bare.git`, `cd bare.git/refs`, `cd nb3.git` (non-bare, other name) and `cd wrap/.git-other`; **must not** refuse on `cd wrap/.git` (byte-identical to `.git-other`), `cd normal/.git`, `cd config-bare` (bare via `core.bare`), or any explicit-`gitDir` invocation; unchanged verdicts when `core.bare` is flipped on the `.git`-named and non-`.git`-named pair — the byte-identical rename pair is what pins the predicate rather than a plausible reading of it. **And the whole ADR-679 mechanism**, on the same fixtures, because §1h measures this refusal producing the identical empty-scope posture: with `user.name` planted locally, `git config user.name` and `repo.config.get` both report it absent; `git config --list` and `repo.config.list()` both omit the repository scope; a write refuses on both sides and leaves the value byte-unchanged; `remote` refuses on both sides. This is the group that makes the empty-config-scope contract a co-truth rather than a tsgit-side assertion. |
-| **B — git's own bytes, always on wherever the hatch exists** | `skipIf(!GIT_ASSUME_DIFFERENT_OWNER)` | Everything about git's side that needs no tsgit-side alien owner. The §1a refusal: exit 128, empty stdout, the four-line stderr byte-for-byte, single-quoted path on line 1 and unquoted on line 4 — asserted against tsgit's reconstruction of the same bytes from a synthesised `DUBIOUS_OWNERSHIP { path }`, which is how ADR-249 keeps the rendering out of the library and still pinned. The §1c named-path table, one row per route. The §1e value grammar as a **git-side golden table**, each row asserted against `isAllowlisted`'s verdict on the same inputs (§5), so the matcher and git agree row-for-row by construction rather than by eyeball. §1h's ordering rows (the bareRepository fatal precedes the ownership one; `safe.directory=*` does not lift it). §1g: a `safe.directory` written into the repository's **own** config admits neither tool (R6). What this group cannot do is refuse on tsgit's side for an ownership reason — that is group C, and no assertion here may be phrased as though it had. |
-| **C — the uid read itself, gated** | `skipIf(!ALIEN_OWNER_AVAILABLE)` | `chown` a fixture repository to another uid, then: unmodified `git` refuses and unmodified `openRepository(…).log()` refuses with `DUBIOUS_OWNERSHIP { path }` naming the same path; `trustedDirectories: [path]` admits both; `git init` and `repo.init()` both succeed on it (§7); and the ADR-676 superset row — `chown` the gitdir alone, leave the work tree owned, and assert tsgit refuses (git's verdict here is *not* asserted, since ADR-676 accepted that it may differ and §9 records it). This is the only group that proves the predicate reads a real uid. It is **expected to skip** on developer machines and on any CI job without root, and the warning above is what makes that expectation visible rather than silent. |
+| **B — git's own bytes, always on wherever the hatch exists** | `skipIf(!GIT_ASSUME_DIFFERENT_OWNER)` | Everything about git's side that needs no tsgit-side alien owner. The §1a refusal: exit 128, empty stdout, the four-line stderr byte-for-byte, single-quoted path on line 1 and unquoted on line 4 — asserted against tsgit's reconstruction of the same bytes from a synthesised `DUBIOUS_OWNERSHIP`, reading **`path` alone** — the reconstruction never touches `foreignPath`, which is what makes ADR-684 interop-neutral, and one row synthesises a payload *with* a `foreignPath` to prove the bytes do not move. This is how ADR-249 keeps the rendering out of the library and still pinned. The §1c named-path table, one row per route. The §1e value grammar as a **git-side golden table**, each row asserted against `isAllowlisted`'s verdict on the same inputs (§5), so the matcher and git agree row-for-row by construction rather than by eyeball. §1h's ordering rows (the bareRepository fatal precedes the ownership one; `safe.directory=*` does not lift it). §1g: a `safe.directory` written into the repository's **own** config admits neither tool (R6). What this group cannot do is refuse on tsgit's side for an ownership reason — that is group C, and no assertion here may be phrased as though it had. |
+| **C — the uid read itself, gated** | `skipIf(!ALIEN_OWNER_AVAILABLE)` | `chown` a fixture repository to another uid, then: unmodified `git` refuses and unmodified `openRepository(…).log()` refuses with `DUBIOUS_OWNERSHIP { path }` naming the same path; `trustedDirectories: [path]` admits both; `git init` and `repo.init()` both succeed on it (§7); and the ADR-676 superset row — `chown` the gitdir alone, leave the work tree owned, and assert tsgit refuses with `path` naming the work tree and **`foreignPath` naming the gitdir** (git's verdict here is *not* asserted, since ADR-676 accepted that it may differ and §9 records it). That last row is the only place ADR-684's field is exercised against a real alien owner rather than a stub, and it is also the exact shape ADR-684 was written for — which is worth stating, because it means the field's *usefulness*, unlike its semantics, is only demonstrated where group C runs. This is the only group that proves the predicate reads a real uid. It is **expected to skip** on developer machines and on any CI job without root, and the warning above is what makes that expectation visible rather than silent. |
 
 The shape of this suite is a direct consequence of ADR-677, and the doc states the residual
 plainly rather than letting a green run imply otherwise: **groups A and B prove everything
@@ -1389,26 +1610,48 @@ shims share `finishLayout`.
 
 Coverage per R14. App mutation budget on the new `domain/repository/` matcher, the touched
 `repository/resolve-layout.ts`, `repository/validate-options.ts`, `ports/layout-probe.ts`,
-`application/primitives/config-read.ts`, `application/primitives/internal/repo-state.ts`,
-and whichever command files DN-1 repoints (under its recommendation, `commands/config.ts`
-only). `test-pyramid-budgets.json` updated for the new interop file;
-`check:write-surfaces` clean (`interopSurface: trust`); `reports/api.json` regenerated and
-committed.
+`application/primitives/config-read.ts`, `application/primitives/config-scoped-read.ts`,
+`application/primitives/internal/repo-state.ts`, and both command files ADR-682 repoints
+(`commands/config.ts` and `commands/remote.ts`). `test-pyramid-budgets.json` updated for the
+new interop file; `check:write-surfaces` clean (`interopSurface: trust`); `reports/api.json`
+regenerated and committed.
+
+**And `check:architecture` green, which is a gate this design depends on but does not own.**
+ADR-682's allowlist guard is specified and built in the sibling format-gate design; here it is
+a *precondition*, because §2's guarded claims and §9's fails-open residual are only true while
+it runs. Two consequences for this change: the four allowlisted verbs must be exactly the four
+of §10's contract table, and a PR that repoints a twelfth call site must fail the build rather
+than a review.
 
 ## Out of scope
 
 - **The `core.repositoryformatversion` / `extensions.*` acceptance gate** —
   `docs/design/repository-format-acceptance-gate.md`, in this PR but separately designed.
-  Shared surface: ADR-666 puts its refusals on the tier ADR-679 builds here, so the two gates
-  express one rule and §1d's ordering pin is satisfied by that shared mechanism rather than
-  by either gate sequencing against the other. **DN-1 binds both** and should be resolved
-  once. Nothing else is shared, and this design neither creates nor edits that doc.
+  Shared surface, now three things rather than one: ADR-666 puts its refusals on the tier
+  ADR-679 builds here; ADR-682 names that tier `assertAcceptedRepository` for both, so the
+  eleven call sites move once, not twice; and the `CONFIG_SCOPE_NOT_AVAILABLE` `reason`
+  literal the scoped-read guard needs is declared once and consumed by both. §1d's ordering
+  pins are satisfied by the shared mechanism rather than by either gate sequencing against
+  the other. This design neither creates nor edits that doc.
+- **ADR-682's architecture-tier allowlist guard** — required by this change, specified in the
+  sibling design (§2a there), consumed here. R16 and §2 state what it means for the security
+  argument; the mechanism, its artefacts and its own tests belong to the doc that owns it, and
+  duplicating the specification would create two descriptions of one audit.
 - **SHA-256 object format** (`docs/design/sha256-object-format.md`) and **reftable ref
-  storage** (`docs/design/reftable-ref-storage.md`) — in this PR but separately designed, and
-  new: ADR-667 pulled them in when it ratified accepting every `extensions.*` git knows,
-  rather than accepting names tsgit would then misread. Neither interacts with the trust
-  gate: both sit at the point of use, downstream of acceptance, and an untrusted repository
-  never reaches them.
+  storage** (`docs/design/reftable-ref-storage.md`) — in this PR but separately designed.
+  ADR-667 pulled them in when it ratified accepting every `extensions.*` git knows, rather
+  than accepting names tsgit would then misread, and their scope is now ratified well past
+  that floor: full SHA-256 **write** parity
+  ([ADR-681](../adr/681-sha256-reaches-full-write-parity.md)) with bundle v3
+  ([ADR-683](../adr/683-bundle-v3-is-implemented-now.md)), and a complete reftable
+  read + write + compaction backend on all three adapters
+  ([ADR-680](../adr/680-reftable-ships-as-a-complete-backend.md)).
+  Neither interacts with the trust gate in either direction: both sit at the point of use,
+  downstream of acceptance, and an untrusted repository never reaches them. The one contact
+  point is confirmatory only —
+  [ADR-687](../adr/687-the-ref-backend-reaches-context-through-the-layout.md) resolves the
+  ref backend from the Stage-2 config read, which §2's placement already precedes and §1d now
+  measures git precluding too.
 - **Reading `safe.directory` / `safe.bareRepository` from any config file** — global and
   system are unreachable by the FS port by design, and repository-local is the attacker's
   file (§1g). The whole point of §4's divergence.
