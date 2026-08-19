@@ -18,7 +18,7 @@
  *   interopSurface: config, init, status
  */
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { cp, mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, rename, rm } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -44,6 +44,42 @@ const probeInitCapability = (...args: ReadonlyArray<string>): boolean => {
 // collection time, before any `beforeAll` has run.
 const SHA256_AVAILABLE = GIT_AVAILABLE && probeInitCapability('--object-format=sha256');
 const REFTABLE_AVAILABLE = GIT_AVAILABLE && probeInitCapability('--ref-format=reftable');
+
+/**
+ * `git worktree add --relative-paths` capability, probed once in a
+ * throwaway repo (needs an actual commit + worktree add, unlike the
+ * `git init` flags `probeInitCapability` checks).
+ */
+const probeRelativeWorktreesCapability = (): boolean => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'tsgit-relwt-caps-'));
+  try {
+    if (tryRunGitWithExit(['init', '-q', '-b', 'main', dir]).exitCode !== 0) return false;
+    if (tryRunGitWithExit(['-C', dir, 'config', 'user.name', 'A U Thor']).exitCode !== 0)
+      return false;
+    if (
+      tryRunGitWithExit(['-C', dir, 'config', 'user.email', 'author@example.com']).exitCode !== 0
+    ) {
+      return false;
+    }
+    if (tryRunGitWithExit(['-C', dir, 'config', 'commit.gpgsign', 'false']).exitCode !== 0)
+      return false;
+    writeFileSync(path.join(dir, 'file.txt'), 'hello\n');
+    if (tryRunGitWithExit(['-C', dir, 'add', '-A']).exitCode !== 0) return false;
+    const commit = tryRunGitWithExit(['-C', dir, 'commit', '-q', '--no-gpg-sign', '-m', 'c0'], {
+      env: runGitEnv(),
+    });
+    if (commit.exitCode !== 0) return false;
+    const wtDir = path.join(dir, 'wt');
+    return (
+      tryRunGitWithExit(['-C', dir, 'worktree', 'add', '-q', '--relative-paths', wtDir])
+        .exitCode === 0
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+};
+
+const RELATIVE_WORKTREES_AVAILABLE = GIT_AVAILABLE && probeRelativeWorktreesCapability();
 
 const SETUP_TIMEOUT = 60_000;
 
@@ -631,6 +667,95 @@ describe.skipIf(!GIT_AVAILABLE)(
         );
       });
     });
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Row 12 — a relative admin gitdir pointer (`git worktree add
+    // --relative-paths`): tsgit's worktree.list matches git's, both before
+    // and after relocating the whole tree (repo + linked worktree move
+    // together) — the portability property the extension exists for. The
+    // fixture repository is repositoryformatversion = 1 with
+    // extensions.relativeWorktrees = true, so this doubles as a live
+    // acceptance-gate row: the gate must accept it.
+    // ─────────────────────────────────────────────────────────────────────
+
+    /** The `worktree <path>` lines from `git worktree list --porcelain`. */
+    const parseWorktreePaths = (porcelain: string): ReadonlyArray<string> =>
+      porcelain
+        .split('\n')
+        .filter((line) => line.startsWith('worktree '))
+        .map((line) => line.slice('worktree '.length));
+
+    describe.skipIf(!RELATIVE_WORKTREES_AVAILABLE)(
+      'Given a linked worktree built with git worktree add --relative-paths',
+      () => {
+        it('Then tsgit worktree.list matches git worktree list, before and after relocating the whole tree', async () => {
+          // Arrange — repo and its linked worktree as SIBLINGS under one
+          // parent, so relocating the parent moves both together without
+          // changing their relative geometry to each other.
+          const parent = await mkdtemp(path.join(os.tmpdir(), 'tsgit-relwt-'));
+          rowDirs.push(parent);
+          const repoDir = path.join(parent, 'repo');
+          runGit(['init', '-q', '-b', 'main', repoDir]);
+          runGit(['-C', repoDir, 'config', 'user.name', 'A U Thor']);
+          runGit(['-C', repoDir, 'config', 'user.email', 'author@example.com']);
+          runGit(['-C', repoDir, 'config', 'commit.gpgsign', 'false']);
+          writeFileSync(path.join(repoDir, 'file.txt'), 'hello\n');
+          runGit(['-C', repoDir, 'add', '-A']);
+          runGit(['-C', repoDir, 'commit', '-q', '--no-gpg-sign', '-m', 'c0'], { env: datedEnv() });
+          const wtDir = path.join(parent, 'wt');
+          runGit(['-C', repoDir, 'worktree', 'add', '-q', '--relative-paths', wtDir, '-b', 'side']);
+
+          // Assert — the fixture is itself a live acceptance-gate row: v1 +
+          // extensions.relativeWorktrees = true, and a relative admin gitdir
+          // pointer (never an absolute one — the write side is unchanged).
+          const configText = readFileSync(configPath(repoDir), 'utf8');
+          expect(configText).toMatch(/repositoryformatversion\s*=\s*1/);
+          expect(configText).toMatch(/relativeWorktrees\s*=\s*true/);
+          const gitdirPointer = readFileSync(
+            path.join(repoDir, '.git', 'worktrees', 'wt', 'gitdir'),
+            'utf8',
+          );
+          expect(gitdirPointer.startsWith('../')).toBe(true);
+
+          // Act + Assert — before relocation: same paths, same (empty)
+          // prunable verdicts in both tools.
+          const gitBeforePorcelain = git(repoDir, 'worktree', 'list', '--porcelain');
+          const repoBefore = await openRow(repoDir);
+          try {
+            const tsgitBefore = await repoBefore.worktree.list();
+            expect(tsgitBefore.entries.map((entry) => entry.path).sort()).toEqual(
+              [...parseWorktreePaths(gitBeforePorcelain)].sort(),
+            );
+            expect(gitBeforePorcelain).not.toContain('prunable');
+            expect(tsgitBefore.entries.every((entry) => entry.prunable === undefined)).toBe(true);
+          } finally {
+            await repoBefore.dispose();
+          }
+
+          // Act + Assert — after relocating the WHOLE tree: the relative
+          // pointers still resolve, with no absolute path baked in anywhere.
+          const relocatedParent = `${parent}-relocated`;
+          rowDirs.push(relocatedParent);
+          await rename(parent, relocatedParent);
+          const relocatedRepoDir = path.join(relocatedParent, 'repo');
+          const gitAfterPorcelain = git(relocatedRepoDir, 'worktree', 'list', '--porcelain');
+          const repoAfter = await openRow(relocatedRepoDir);
+          try {
+            const tsgitAfter = await repoAfter.worktree.list();
+            const afterPaths = parseWorktreePaths(gitAfterPorcelain);
+            expect(tsgitAfter.entries.map((entry) => entry.path).sort()).toEqual(
+              [...afterPaths].sort(),
+            );
+            expect(gitAfterPorcelain).not.toContain('prunable');
+            expect(tsgitAfter.entries.every((entry) => entry.prunable === undefined)).toBe(true);
+            // Sanity: the relocation actually happened (paths moved).
+            expect(afterPaths.every((p) => p.includes('-relocated'))).toBe(true);
+          } finally {
+            await repoAfter.dispose();
+          }
+        });
+      },
+    );
 
     // ─────────────────────────────────────────────────────────────────────
     // Row 13 — compatObjectFormat's version matrix as co-truth: the

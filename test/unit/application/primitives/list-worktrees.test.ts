@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { listWorktrees } from '../../../../src/application/primitives/list-worktrees.js';
+import { TsgitError } from '../../../../src/domain/error.js';
 import type { ObjectId, RefName } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
 import { buildSeededContext } from './fixtures.js';
@@ -319,6 +320,109 @@ describe('listWorktrees', () => {
 
         // Assert
         expect(result[1]?.prunable).toBeDefined();
+      });
+    });
+  });
+
+  describe('Given a linked worktree whose admin gitdir pointer is relative', () => {
+    describe('When listWorktrees runs', () => {
+      it('Then the entry path matches the one an absolute pointer produces', async () => {
+        // Arrange — the admin dir sits 3 levels below the repo root
+        // (`.git/worktrees/rel`), so `../../../wts/rel/.git` is the correctly
+        // computed relative pointer back up to the worktree's real location —
+        // the same shape `git worktree add --relative-paths` writes.
+        const ctx = await buildSeededContext({
+          refs: [{ name: 'refs/heads/main' as RefName, id: OID_MAIN }],
+        });
+        await seedMainHead(ctx);
+        const admin = `${ctx.layout.gitDir}/worktrees/rel`;
+        await ctx.fs.writeUtf8(`${admin}/HEAD`, `${OID_WT}\n`);
+        await ctx.fs.writeUtf8(`${admin}/gitdir`, '../../../wts/rel/.git\n');
+
+        // Act
+        const result = await listWorktrees(ctx);
+
+        // Assert — the reported path is the resolved absolute location, the
+        // same value an absolute pointer at that location would produce.
+        expect(result[1]?.path).toBe('/repo/wts/rel');
+      });
+    });
+  });
+
+  describe('Given a linked worktree whose relative admin gitdir pointer targets an existing directory', () => {
+    describe('When listWorktrees runs', () => {
+      it('Then it is NOT prunable — the exists probe checks the RESOLVED path, not the raw pointer', async () => {
+        // Arrange — a separate consumer of the same pointer value from the
+        // path-reporting test above: the exists probe that decides
+        // `prunable` must ALSO see the resolved path.
+        const ctx = await buildSeededContext({
+          refs: [{ name: 'refs/heads/main' as RefName, id: OID_MAIN }],
+        });
+        await seedMainHead(ctx);
+        const admin = `${ctx.layout.gitDir}/worktrees/rel`;
+        await ctx.fs.writeUtf8(`${admin}/HEAD`, `${OID_WT}\n`);
+        await ctx.fs.writeUtf8(`${admin}/gitdir`, '../../../wts/rel/.git\n');
+        // The worktree directory the pointer resolves to actually exists.
+        await ctx.fs.writeUtf8('/repo/wts/rel/.git', 'gitdir: x\n');
+
+        // Act
+        const result = await listWorktrees(ctx);
+
+        // Assert
+        expect(result[1]?.prunable).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a relative admin gitdir pointer that still escapes the repository after resolution', () => {
+    describe('When listWorktrees runs', () => {
+      it('Then it continues to refuse, checking the RESOLVED path rather than the raw pointer', async () => {
+        // Arrange — enough `..` segments to walk past the repo root
+        // entirely; resolving must not become a containment bypass.
+        const ctx = await buildSeededContext({
+          refs: [{ name: 'refs/heads/main' as RefName, id: OID_MAIN }],
+        });
+        await seedMainHead(ctx);
+        const admin = `${ctx.layout.gitDir}/worktrees/escaped`;
+        await ctx.fs.writeUtf8(`${admin}/HEAD`, `${OID_WT}\n`);
+        await ctx.fs.writeUtf8(`${admin}/gitdir`, '../../../../etc/evil/.git\n');
+
+        // Act
+        let caught: unknown;
+        try {
+          await listWorktrees(ctx);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — the containment refusal names the RESOLVED path
+        // ('/etc/evil/.git'), not the raw '../../../../etc/evil/.git'
+        // pointer — proof the escape is checked post-resolution, not skipped.
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as { code: string; path: string };
+        expect(data.code).toBe('PERMISSION_DENIED');
+        expect(data.path).toBe('/etc/evil/.git');
+      });
+    });
+  });
+
+  describe('Given a linked worktree whose admin gitdir pointer is absolute', () => {
+    describe('When listWorktrees runs', () => {
+      it('Then the entry is unchanged — resolving an absolute pointer is a no-op', async () => {
+        // Arrange — the idempotence arm: an absolute pointer must resolve to
+        // itself, so this regresses to today's behaviour unchanged.
+        const ctx = await buildSeededContext({
+          refs: [{ name: 'refs/heads/main' as RefName, id: OID_MAIN }],
+        });
+        await seedMainHead(ctx);
+        await seedAdmin(ctx, { id: 'abs', path: '/repo/wts/abs', head: OID_WT });
+
+        // Act
+        const result = await listWorktrees(ctx);
+
+        // Assert
+        expect(result[1]?.path).toBe('/repo/wts/abs');
+        expect(result[1]?.prunable).toBeUndefined();
       });
     });
   });
