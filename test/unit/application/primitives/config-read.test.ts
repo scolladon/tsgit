@@ -42,6 +42,32 @@ const rejectedCtx = (
   formatRefusal: RepositoryFormatRefusal = { kind: 'version', version: 99 },
 ): Context => ({ ...ctx, layout: { ...ctx.layout, formatRefusal } });
 
+/** A context carrying an ownership-trust-gate refusal — the repository config scope is dropped. */
+const untrustedCtx = (ctx: Context): Context => ({
+  ...ctx,
+  layout: { ...ctx.layout, untrusted: true },
+});
+
+/** A context carrying an implicit-bare trust-gate refusal — the repository config scope is dropped. */
+const implicitBareCtx = (ctx: Context): Context => ({
+  ...ctx,
+  layout: { ...ctx.layout, implicitBare: true },
+});
+
+/**
+ * Wraps `ctx.fs.readUtf8` to record every path it is called with, so a guard
+ * that returns before any I/O can be asserted directly: "zero reads" rather
+ * than "the result happens to look the same as an empty file".
+ */
+const withReadCounter = (ctx: Context): { readonly ctx: Context; readonly reads: string[] } => {
+  const reads: string[] = [];
+  const readUtf8 = async (path: string): Promise<string> => {
+    reads.push(path);
+    return ctx.fs.readUtf8(path);
+  };
+  return { ctx: { ...ctx, fs: { ...ctx.fs, readUtf8 } }, reads };
+};
+
 describe('primitives/config-read', () => {
   beforeEach(() => {
     __resetConfigCacheForTests();
@@ -3347,6 +3373,74 @@ describe('readConfigSections / getConfigValue / getAllConfigValues', () => {
         // Assert
         expect(result).toHaveLength(1);
         expect(result[0]?.scope).toBe('local');
+      });
+    });
+  });
+
+  describe('Given a planted [core] bare value and a layout carrying untrusted', () => {
+    describe('When readConfig runs', () => {
+      it('Then it resolves empty and never reads the config file', async () => {
+        // Arrange
+        const base = untrustedCtx(createMemoryContext());
+        await seed(base, '[core]\n\tbare = true\n');
+        const { ctx, reads } = withReadCounter(base);
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result).toEqual({});
+        expect(reads).toEqual([]);
+      });
+    });
+
+    describe('When findFirstInvalidBoolean runs on core.bare', () => {
+      it('Then it resolves undefined and never reads the config file', async () => {
+        // Arrange — a malformed value would refuse if the file were read at all.
+        const base = untrustedCtx(createMemoryContext());
+        await seed(base, '[core]\n\tbare = banana\n');
+        const { ctx, reads } = withReadCounter(base);
+
+        // Act
+        const result = await findFirstInvalidBoolean(ctx, 'core', undefined, ['bare']);
+
+        // Assert
+        expect(result).toBeUndefined();
+        expect(reads).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a planted [core] bare value and a layout carrying implicitBare', () => {
+    describe('When readConfig runs', () => {
+      it('Then it resolves empty and never reads the config file', async () => {
+        // Arrange
+        const base = implicitBareCtx(createMemoryContext());
+        await seed(base, '[core]\n\tbare = true\n');
+        const { ctx, reads } = withReadCounter(base);
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result).toEqual({});
+        expect(reads).toEqual([]);
+      });
+    });
+
+    describe('When findFirstInvalidBoolean runs on core.bare', () => {
+      it('Then it resolves undefined and never reads the config file', async () => {
+        // Arrange — a malformed value would refuse if the file were read at all.
+        const base = implicitBareCtx(createMemoryContext());
+        await seed(base, '[core]\n\tbare = banana\n');
+        const { ctx, reads } = withReadCounter(base);
+
+        // Act
+        const result = await findFirstInvalidBoolean(ctx, 'core', undefined, ['bare']);
+
+        // Assert
+        expect(result).toBeUndefined();
+        expect(reads).toEqual([]);
       });
     });
   });

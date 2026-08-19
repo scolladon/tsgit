@@ -2,6 +2,26 @@ import { describe, expect, it } from 'vitest';
 
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
 import {
+  configGet,
+  configGetAll,
+  configGetRegexp,
+  configList,
+  configRemoveSection,
+  configRenameSection,
+  configSet,
+  configUnset,
+  configUnsetAll,
+} from '../../../../../src/application/commands/config.js';
+import { log } from '../../../../../src/application/commands/log.js';
+import {
+  remoteAdd,
+  remoteList,
+  remoteRemove,
+  remoteRename,
+  remoteSetUrl,
+  remoteShow,
+} from '../../../../../src/application/commands/remote.js';
+import {
   assertAcceptedRepository,
   assertOperationalRepository,
   assertRepository,
@@ -12,6 +32,17 @@ import type { Context } from '../../../../../src/ports/context.js';
 const seedRepo = async (ctx: Context, head = 'ref: refs/heads/main\n'): Promise<void> => {
   await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, head);
 };
+
+const configPathOf = (ctx: Context): string => `${ctx.layout.gitDir}/config`;
+
+const seedConfig = async (ctx: Context, content: string): Promise<void> => {
+  await ctx.fs.writeUtf8(configPathOf(ctx), content);
+};
+
+const asUntrusted = (ctx: Context): Context => ({
+  ...ctx,
+  layout: { ...ctx.layout, untrusted: true },
+});
 
 const catchError = async (thunk: () => Promise<unknown>): Promise<TsgitError> => {
   try {
@@ -305,6 +336,315 @@ describe('assertAcceptedRepository trust gate', () => {
         // Assert
         expect(caught).toBeInstanceOf(TsgitError);
         expect(caught.data.code).toBe('NOT_A_REPOSITORY');
+      });
+    });
+  });
+
+  describe('Given untrusted with a malformed core.bare value', () => {
+    describe('When assertAcceptedRepository runs', () => {
+      it('Then it throws DUBIOUS_OWNERSHIP, not CONFIG_BAD_BOOLEAN_VALUE — the empty scope shadows the eager gate', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx);
+        await seedConfig(ctx, '[core]\n\tbare = banana\n');
+        const untrusted = asUntrusted(ctx);
+
+        // Act
+        const caught = await catchError(() => assertAcceptedRepository(untrusted));
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect(caught.data.code).toBe('DUBIOUS_OWNERSHIP');
+      });
+    });
+
+    describe('When assertRepository runs on the same fixture', () => {
+      it('Then it does not refuse at all', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx);
+        await seedConfig(ctx, '[core]\n\tbare = banana\n');
+        const untrusted = asUntrusted(ctx);
+
+        // Act
+        const result = await assertRepository(untrusted);
+
+        // Assert
+        expect(result).toBe(ctx.layout.workDir);
+      });
+    });
+  });
+});
+
+describe('The surviving-verb contract on a refused repository', () => {
+  describe('Given an untrusted layout with a planted local user.name', () => {
+    describe('When configGet reads the planted key', () => {
+      it('Then it succeeds and reports the key absent', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx);
+        await seedConfig(ctx, '[user]\n\tname = ada\n');
+        const untrusted = asUntrusted(ctx);
+
+        // Act
+        const result = await configGet(untrusted, { key: 'user.name' });
+
+        // Assert
+        expect(result).toEqual({ key: 'user.name', value: undefined });
+      });
+    });
+
+    describe('When configGetAll reads the planted key', () => {
+      it('Then it succeeds and reports no values', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx);
+        await seedConfig(ctx, '[user]\n\tname = ada\n');
+        const untrusted = asUntrusted(ctx);
+
+        // Act
+        const result = await configGetAll(untrusted, { key: 'user.name' });
+
+        // Assert
+        expect(result.values).toEqual([]);
+      });
+    });
+
+    describe('When configGetRegexp matches the planted key', () => {
+      it('Then it succeeds and reports no entries', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx);
+        await seedConfig(ctx, '[user]\n\tname = ada\n');
+        const untrusted = asUntrusted(ctx);
+
+        // Act
+        const result = await configGetRegexp(untrusted, { keyPattern: /user\.name/ });
+
+        // Assert
+        expect(result.entries).toEqual([]);
+      });
+    });
+
+    describe('When configList lists every scope', () => {
+      it('Then it succeeds and the repository scope is absent from the listing', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx);
+        await seedConfig(ctx, '[user]\n\tname = ada\n');
+        const untrusted = asUntrusted(ctx);
+
+        // Act
+        const result = await configList(untrusted);
+
+        // Assert
+        expect(result.entries).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given an untrusted layout with a planted local user.name', () => {
+    describe('When configSet writes the same key', () => {
+      it('Then it refuses and the config file bytes are unchanged', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx);
+        await seedConfig(ctx, '[user]\n\tname = ada\n');
+        const before = await ctx.fs.readUtf8(configPathOf(ctx));
+        const untrusted = asUntrusted(ctx);
+
+        // Act
+        const caught = await catchError(() =>
+          configSet(untrusted, { key: 'user.name', value: 'grace' }),
+        );
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const after = await ctx.fs.readUtf8(configPathOf(ctx));
+        expect(after).toBe(before);
+      });
+    });
+
+    describe('When configUnset removes the same key', () => {
+      it('Then it refuses and the config file bytes are unchanged', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx);
+        await seedConfig(ctx, '[user]\n\tname = ada\n');
+        const before = await ctx.fs.readUtf8(configPathOf(ctx));
+        const untrusted = asUntrusted(ctx);
+
+        // Act
+        const caught = await catchError(() => configUnset(untrusted, { key: 'user.name' }));
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const after = await ctx.fs.readUtf8(configPathOf(ctx));
+        expect(after).toBe(before);
+      });
+    });
+
+    describe('When configUnsetAll removes every match of the same key', () => {
+      it('Then it refuses and the config file bytes are unchanged', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx);
+        await seedConfig(ctx, '[user]\n\tname = ada\n');
+        const before = await ctx.fs.readUtf8(configPathOf(ctx));
+        const untrusted = asUntrusted(ctx);
+
+        // Act
+        const caught = await catchError(() => configUnsetAll(untrusted, { key: 'user.name' }));
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const after = await ctx.fs.readUtf8(configPathOf(ctx));
+        expect(after).toBe(before);
+      });
+    });
+
+    describe('When configRenameSection renames the [user] section', () => {
+      it('Then it refuses and the config file bytes are unchanged', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx);
+        await seedConfig(ctx, '[user]\n\tname = ada\n');
+        const before = await ctx.fs.readUtf8(configPathOf(ctx));
+        const untrusted = asUntrusted(ctx);
+
+        // Act
+        const caught = await catchError(() =>
+          configRenameSection(untrusted, { oldName: 'user', newName: 'author' }),
+        );
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const after = await ctx.fs.readUtf8(configPathOf(ctx));
+        expect(after).toBe(before);
+      });
+    });
+
+    describe('When configRemoveSection removes the [user] section', () => {
+      it('Then it refuses and the config file bytes are unchanged', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx);
+        await seedConfig(ctx, '[user]\n\tname = ada\n');
+        const before = await ctx.fs.readUtf8(configPathOf(ctx));
+        const untrusted = asUntrusted(ctx);
+
+        // Act
+        const caught = await catchError(() => configRemoveSection(untrusted, { name: 'user' }));
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const after = await ctx.fs.readUtf8(configPathOf(ctx));
+        expect(after).toBe(before);
+      });
+    });
+  });
+
+  describe('Given an untrusted layout', () => {
+    describe('When each of the six repo.remote verbs runs', () => {
+      it('Then remoteList refuses', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx);
+        const untrusted = asUntrusted(ctx);
+
+        // Act
+        const caught = await catchError(() => remoteList(untrusted));
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+      });
+
+      it('Then remoteAdd refuses', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx);
+        const untrusted = asUntrusted(ctx);
+
+        // Act
+        const caught = await catchError(() =>
+          remoteAdd(untrusted, { name: 'origin', url: 'https://example.com/repo.git' }),
+        );
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+      });
+
+      it('Then remoteRemove refuses', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx);
+        const untrusted = asUntrusted(ctx);
+
+        // Act
+        const caught = await catchError(() => remoteRemove(untrusted, { name: 'origin' }));
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+      });
+
+      it('Then remoteRename refuses', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx);
+        const untrusted = asUntrusted(ctx);
+
+        // Act
+        const caught = await catchError(() =>
+          remoteRename(untrusted, { from: 'origin', to: 'upstream' }),
+        );
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+      });
+
+      it('Then remoteSetUrl refuses', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx);
+        const untrusted = asUntrusted(ctx);
+
+        // Act
+        const caught = await catchError(() =>
+          remoteSetUrl(untrusted, { name: 'origin', url: 'https://example.com/repo.git' }),
+        );
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+      });
+
+      it('Then remoteShow refuses', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx);
+        const untrusted = asUntrusted(ctx);
+
+        // Act
+        const caught = await catchError(() => remoteShow(untrusted, { name: 'origin' }));
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+      });
+    });
+  });
+
+  describe('Given an untrusted layout, as a representative operational command', () => {
+    describe('When log runs', () => {
+      it('Then it refuses', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx);
+        const untrusted = asUntrusted(ctx);
+
+        // Act
+        const caught = await catchError(() => log(untrusted));
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
       });
     });
   });

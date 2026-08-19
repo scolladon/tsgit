@@ -6,6 +6,7 @@ import { TsgitError } from '../../domain/error.js';
 import type { Context } from '../../ports/context.js';
 import { collectScopedValues, collectValues } from './internal/config-key.js';
 import { mergeConfigsByScope, resolveScopePath, SCOPE_ORDER } from './internal/config-scope.js';
+import { layoutFailsTrustGate } from './internal/layout-verdict.js';
 
 // Per-scope sections cache, single-flight by Context identity. Lives apart from
 // `readConfig`'s ParsedConfig cache (in `config-read.ts`) because the porcelain
@@ -64,11 +65,14 @@ const readSingleScopeUncached = async (
 
 /**
  * True when the repository the acceptance tier rejected has no readable
- * repository-local config scope. Named as a standalone predicate (rather than
- * inlined) so the ownership gate's sibling refusal (`untrusted` / `implicitBare`)
- * can add its own disjunct here without restructuring `readSingleScope`.
+ * repository-local config scope: a repository-format refusal
+ * (`formatRefusal`), or an ownership-trust-gate refusal (`untrusted` /
+ * `implicitBare`, `layoutFailsTrustGate`). Named as a standalone predicate
+ * (rather than inlined) so both refusal classes share the one guard in
+ * `readSingleScope` instead of stacking a second branch.
  */
-const repositoryScopeIsDropped = (ctx: Context): boolean => ctx.layout.formatRefusal !== undefined;
+const repositoryScopeIsDropped = (ctx: Context): boolean =>
+  ctx.layout.formatRefusal !== undefined || layoutFailsTrustGate(ctx.layout);
 
 const readSingleScope = (ctx: Context, scope: ConfigScope): Promise<ReadonlyArray<IniSection>> => {
   if (repositoryScopeIsDropped(ctx) && (scope === 'local' || scope === 'worktree')) {
