@@ -51486,7 +51486,23 @@
 									},
 									{
 										"kind": "text",
-										"text": " credentials with no SSRF guard."
+										"text": " credentials with no SSRF guard.\n\nDoes NOT bypass the ownership-trust gate below ("
+									},
+									{
+										"kind": "code",
+										"text": "`trust`"
+									},
+									{
+										"kind": "text",
+										"text": " /\n"
+									},
+									{
+										"kind": "code",
+										"text": "`trustedDirectories`"
+									},
+									{
+										"kind": "text",
+										"text": "): that verdict is computed upstream of adapter\ncomposition, at layout resolution, so this option cannot reach it."
 									}
 								]
 							},
@@ -59099,7 +59115,23 @@
 									},
 									{
 										"kind": "text",
-										"text": " credentials with no SSRF guard."
+										"text": " credentials with no SSRF guard.\n\nDoes NOT bypass the ownership-trust gate below ("
+									},
+									{
+										"kind": "code",
+										"text": "`trust`"
+									},
+									{
+										"kind": "text",
+										"text": " /\n"
+									},
+									{
+										"kind": "code",
+										"text": "`trustedDirectories`"
+									},
+									{
+										"kind": "text",
+										"text": "): that verdict is computed upstream of adapter\ncomposition, at layout resolution, so this option cannot reach it."
 									}
 								]
 							},
@@ -89566,7 +89598,23 @@
 									},
 									{
 										"kind": "text",
-										"text": " credentials with no SSRF guard."
+										"text": " credentials with no SSRF guard.\n\nDoes NOT bypass the ownership-trust gate below ("
+									},
+									{
+										"kind": "code",
+										"text": "`trust`"
+									},
+									{
+										"kind": "text",
+										"text": " /\n"
+									},
+									{
+										"kind": "code",
+										"text": "`trustedDirectories`"
+									},
+									{
+										"kind": "text",
+										"text": "): that verdict is computed upstream of adapter\ncomposition, at layout resolution, so this option cannot reach it."
 									}
 								]
 							},
@@ -148080,7 +148128,23 @@
 									},
 									{
 										"kind": "text",
-										"text": " credentials with no SSRF guard."
+										"text": " credentials with no SSRF guard.\n\nDoes NOT bypass the ownership-trust gate below ("
+									},
+									{
+										"kind": "code",
+										"text": "`trust`"
+									},
+									{
+										"kind": "text",
+										"text": " /\n"
+									},
+									{
+										"kind": "code",
+										"text": "`trustedDirectories`"
+									},
+									{
+										"kind": "text",
+										"text": "): that verdict is computed upstream of adapter\ncomposition, at layout resolution, so this option cannot reach it."
 									}
 								]
 							},

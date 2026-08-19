@@ -141,6 +141,10 @@ export interface OpenRepositoryOptions {
    * Opt OUT of adapter validator wrapping for `fs` and `transport`. NEVER set
    * with adapters whose code you do not control; a raw transport receives
    * `config.auth` credentials with no SSRF guard.
+   *
+   * Does NOT bypass the ownership-trust gate below (`trust` /
+   * `trustedDirectories`): that verdict is computed upstream of adapter
+   * composition, at layout resolution, so this option cannot reach it.
    */
   readonly unsafeRawAdapters?: boolean;
   /**

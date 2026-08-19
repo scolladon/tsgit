@@ -141,12 +141,33 @@ Caller-supplied `signal: AbortSignal` is composed via `AbortSignal.any` so exter
 
 ## Adapter wrapping (opt-out is dangerous)
 
-`openRepository` wraps the caller-supplied `fs` and `transport` with validators on construction. Set `unsafeRawAdapters: true` to skip the wrapping — **never set this with adapters whose code you do not control**. A raw transport receives `config.auth` credentials with no SSRF guard.
+`openRepository` wraps the caller-supplied `fs` and `transport` with validators on construction. Set `unsafeRawAdapters: true` to skip the wrapping — **never set this with adapters whose code you do not control**. A raw transport receives `config.auth` credentials with no SSRF guard. This does not touch the ownership-trust gate described in [Repository trust](#repository-trust) below — that verdict is already resolved by the time adapter wrapping decides anything.
+
+## Repository trust
+
+`openRepository` computes an ownership-trust verdict while resolving a discovered repository's layout; the first command that requires an accepted repository enforces it, refusing before it ever reads the repository's config — see [the options](../get-started/node.md#bare-repositories-and-explicit-layout) (`trust`, `trustedDirectories`, `bareRepositories`), [the verdict fields](repository-layout.md#reading-the-result) (`untrusted`, `implicitBare`, `foreignPath`), and [the refusal codes](../use/errors.md#repository-state) (`DUBIOUS_OWNERSHIP`, `IMPLICIT_BARE_REPOSITORY`). Refused, the repository's local config is never parsed, which closes:
+
+- `hooks/` in the discovered common dir, otherwise spawned with the caller's full environment;
+- `merge.<driver>.driver`, otherwise a shell command executed on the caller's behalf;
+- `core.excludesFile` / `core.attributesFile`, otherwise attacker-named file reads;
+- and the row that closes **before any command runs**: `core.worktree` widening the containment root set up to `/` is structurally impossible when the repository is refused, because the config that would carry it is never read.
+
+The gate is **on by default** (`trust: 'ownership'`), and the explicit-`gitDir` route is never gated — a narrower blast radius than git's own `safe.directory`, which gates every route equally.
+
+`unsafeRawAdapters: true` does **not** bypass this gate: that option opts out of the FS/transport *validators* (see [Adapter wrapping](#adapter-wrapping-opt-out-is-dangerous) above), while the trust verdict is computed upstream of adapter composition, at layout resolution. The two are independent axes.
 
 ## What tsgit does NOT do
 
 - **GPG signing** of commits or tags — roadmap (Phase 25.2).
 - **SSH-variant argv (PuTTY / plink / tortoiseplink)** — only OpenSSH-style flags are built; a documented faithfulness deferral ([ADR-441](../adr/441-openssh-only-argv-variant-detection-deferred.md)).
 - **Smart-HTTP/SSH protocol v2** — roadmap (Phase 25.3). v0/v1 only in v1, over both HTTP and SSH.
+- **Repository trust answers "who owns this," not "is this safe."** An attacker who can write inside a repository you own passes the gate outright — `hooks: false` and `command: false` remain the content-side mitigations, not this gate. A same-uid attacker is out of scope for the same reason: they can already touch anything you own.
+- **Caller opt-outs re-open what the gate closes.** `trust: 'always'`, `trustedDirectories: ['*']`, or an over-wide `/*` prefix all trust unconditionally; the explicit-`gitDir` route is never gated at all.
+- **Pointer redirection is resolved before the gate runs.** An alien `.git` file or `commondir` pointer chooses which directory discovery lands on; the gate then judges the resolved target, never the path the caller named.
+- **Windows is a named gap, not an invented behaviour.** `process.getuid` is absent there, so the ownership capability is omitted and every repository is trusted — a gap awaiting a Windows-hosted measurement.
+- **Sandboxed adapters** (Memory, Browser) have no filesystem ownership to check.
+- **Permission bits** are not part of an ownership predicate.
+- **TOCTOU**: the verdict is computed once per `openRepository` call, mirroring git's one check per process — an ownership change after open is not re-checked.
+- **Deliberate over-refusal.** tsgit may refuse a shape git permits: a repository path you own whose gitdir or common dir is owned by someone else, with `trustedDirectories` as the escape hatch.
 
 These omissions are documented to set expectations, not as a recommendation against using tsgit in security-sensitive contexts. For the curtain-up checklist before deploying tsgit in such contexts, also see `SECURITY.md` and the operator playbook in `RUNBOOK.md`.
