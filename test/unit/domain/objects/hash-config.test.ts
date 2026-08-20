@@ -44,4 +44,48 @@ describe('hash-config', () => {
       });
     });
   });
+
+  describe('Given SHA1_CONFIG', () => {
+    describe('When reading algorithm', () => {
+      it("Then returns 'sha1'", () => {
+        // Arrange & Act
+        const result = SHA1_CONFIG;
+
+        // Assert
+        expect(result.algorithm).toBe('sha1');
+      });
+    });
+  });
+
+  describe('Given SHA256_CONFIG', () => {
+    describe('When reading algorithm', () => {
+      it("Then returns 'sha256'", () => {
+        // Arrange & Act
+        const result = SHA256_CONFIG;
+
+        // Assert
+        expect(result.algorithm).toBe('sha256');
+      });
+    });
+  });
+
+  describe('Given the frozen hash configs', () => {
+    describe('When comparing hexLength to digestLength', () => {
+      it('Then SHA1_CONFIG hexLength is exactly twice digestLength', () => {
+        // Arrange & Act
+        const result = SHA1_CONFIG;
+
+        // Assert
+        expect(result.hexLength).toBe(result.digestLength * 2);
+      });
+
+      it('Then SHA256_CONFIG hexLength is exactly twice digestLength', () => {
+        // Arrange & Act
+        const result = SHA256_CONFIG;
+
+        // Assert
+        expect(result.hexLength).toBe(result.digestLength * 2);
+      });
+    });
+  });
 });

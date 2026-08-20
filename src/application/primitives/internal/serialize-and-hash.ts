@@ -1,4 +1,10 @@
-import { type GitObject, type ObjectId, serializeObject } from '../../../domain/objects/index.js';
+import {
+  type GitObject,
+  invalidObjectId,
+  isOid,
+  type ObjectId,
+  serializeObject,
+} from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
 
 /**
@@ -10,6 +16,12 @@ import type { Context } from '../../../ports/context.js';
  * (the pure / writeable blob hasher) so both call sites produce
  * byte-identical OIDs for identical input.
  *
+ * The returned hex is checked against `ctx.hashConfig` with `isOid` (a
+ * single `RegExp.test` — this is a hot path) before being trusted as an
+ * `ObjectId`, rather than cast unchecked: a hash service whose output width
+ * disagrees with the repository's declared algorithm must fail loudly here,
+ * the only place a written id's width is checked against the declared width.
+ *
  * @internal — not re-exported from `primitives/index.ts`.
  */
 export const serializeAndHash = async (
@@ -17,6 +29,9 @@ export const serializeAndHash = async (
   object: GitObject,
 ): Promise<{ readonly bytes: Uint8Array; readonly id: ObjectId }> => {
   const bytes = serializeObject(object, ctx.hashConfig);
-  const id = (await ctx.hash.hashHex(bytes)) as ObjectId;
-  return { bytes, id };
+  const hex = await ctx.hash.hashHex(bytes);
+  if (!isOid(hex, ctx.hashConfig)) {
+    throw invalidObjectId(hex);
+  }
+  return { bytes, id: hex as ObjectId };
 };

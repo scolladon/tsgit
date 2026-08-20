@@ -197,7 +197,11 @@ describe('readIndex', () => {
         const ctx = await buildSeededContext();
         const wrapped = {
           ...ctx,
-          hashConfig: { digestLength: 32 as const, hexLength: 64 as const },
+          hashConfig: {
+            algorithm: 'sha256' as const,
+            digestLength: 32 as const,
+            hexLength: 64 as const,
+          },
         };
         await ctx.fs.write('/repo/.git/index', new Uint8Array(25));
 

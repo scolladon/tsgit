@@ -43,7 +43,7 @@ const EMPTY_TREE_OID_SHA256: ObjectId = ObjectIdFactory.from(
 );
 
 function emptyTreeOid(hash: HashConfig): ObjectId {
-  return hash.digestLength === 32 ? EMPTY_TREE_OID_SHA256 : EMPTY_TREE_OID;
+  return hash.algorithm === 'sha256' ? EMPTY_TREE_OID_SHA256 : EMPTY_TREE_OID;
 }
 
 export async function resolveObjectBytes(
