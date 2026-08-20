@@ -1534,7 +1534,7 @@ PACK…
 | `@` alone | `error: unknown capability ''`, exit 1 |
 | `@object-format=sha512` | `error: unrecognized bundle hash algorithm: sha512`, exit 1 |
 | `@filter=bogus` | `fatal: invalid filter-spec 'bogus'`, exit **128** — the only fatal in the table |
-| v3 with **no** capability block | `error: unrecognized header: <first ref line> (80)`, exit 1 — the parenthesised number is the line's byte length |
+| v3 with **no** capability block | `error: unrecognized header: <first ref line> (<len>)`, exit 1 — the parenthesised number is THAT line's byte length, computed per fixture (a 64-hex oid + space + `refs/heads/master` measures 82); never hardcode it |
 | v3 with `@object-format` **after** the first ref line | the same `unrecognized header` on that ref line |
 | v2 magic **plus** a capability line | `error: unrecognized header: @object-format=sha256 (21)`, exit 1 |
 | **v2 magic with 64-hex oids** | `error: unrecognized header: <ref line> (80)`, exit 1 |
@@ -1542,13 +1542,13 @@ PACK…
 
 **`BUNDLE_BAD_HEADER`'s `reason` widens from two values to four.** Note the actual current type is
 `{ code: 'BUNDLE_BAD_HEADER'; path: string; reason: string }`
-(`src/domain/commands/error.ts:243`) — `string`, not a union; only the factory's comment at `:769`
+(`src/domain/commands/error.ts:256`) — `string`, not a union; only the factory's comment at `:825`
 claims two values. Introduce and export
 `type BundleBadHeaderReason = 'not-a-bundle' | 'malformed-header' | 'unknown-capability' | 'unknown-hash-algorithm'`
 and type the field with it. Each reason carries the fields its git line needs (ADR-249 — fields
 only, no rendered string): the offending line and its byte length for `malformed-header`, the
 capability text for `unknown-capability`, the algorithm value for `unknown-hash-algorithm`.
-**The renderer must widen too**: `src/domain/error.ts:531` returns one line
+**The renderer must widen too**: `src/domain/error.ts:551` returns one line
 (`'<path>' does not look like a v2 or v3 bundle file`) for **every** reason today, where git has
 three distinct lines. Branch on `reason` — that is what the discriminator is for.
 Narrowing `string` to a union is an `api.json` change.
