@@ -189,15 +189,52 @@ const probeAlienOwnerAvailable = (): AlienOwnerProbeResult => {
 const ALIEN_OWNER_PROBE = probeAlienOwnerAvailable();
 const ALIEN_OWNER_AVAILABLE = ALIEN_OWNER_PROBE.available;
 
-if (!ALIEN_OWNER_AVAILABLE) {
-  console.warn(
-    '[ownership-trust-gate-interop] group C SKIPPED — no alien-owned fixture is creatable here\n' +
-      `  (reason: ${ALIEN_OWNER_PROBE.reason}).\n` +
-      '  NOT covered by this run: that the node adapter compares a real stat.uid to a real\n' +
-      '  process uid. Its semantics ARE covered by the unit truth table in\n' +
-      '  test/unit/repository/resolve-layout-trust.test.ts.',
-  );
-}
+const COVERAGE_GAPS: ReadonlyArray<string> = [
+  GIT_AVAILABLE
+    ? undefined
+    : 'groups A and B SKIPPED — no usable `git` on PATH. NOT covered: every co-assertion against canonical git in this file.',
+  !GIT_AVAILABLE || GIT_ASSUME_DIFFERENT_OWNER
+    ? undefined
+    : "group B SKIPPED — this git does not honour GIT_TEST_ASSUME_DIFFERENT_OWNER. NOT covered: git's own dubious-ownership bytes and exit code, and the safe.directory value-grammar co-assertion against isAllowlisted.",
+  ALIEN_OWNER_AVAILABLE
+    ? undefined
+    : `group C SKIPPED — no alien-owned fixture is creatable here (reason: ${ALIEN_OWNER_PROBE.reason}). NOT covered: that the node adapter compares a real stat.uid to a real process uid. Its semantics ARE covered by the unit truth table in test/unit/repository/resolve-layout-trust.test.ts.`,
+].filter((gap): gap is string => gap !== undefined);
+
+// Emitted at module scope for CI log capture. Note this repo's vitest filters
+// console output from passing tests as well, so the reporter-visible half of
+// the contract is carried by the gated groups' TITLES, each of which names the
+// capability it depends on.
+for (const gap of COVERAGE_GAPS) console.warn(`[ownership-trust-gate-interop] ${gap}`);
+
+/**
+ * Coverage reporting, always on.
+ *
+ * A group that is absent looks identical to a group that passed. This test
+ * cannot make a skip loud in the default reporter — console output is
+ * filtered — but it does guarantee the skip is a DECISION: every probe
+ * resolved to a boolean rather than throwing, which is the difference between
+ * a group that is reported as skipped and one that silently never registers.
+ */
+describe('environment capabilities for this suite', () => {
+  describe('Given the probes this suite gates its groups on', () => {
+    describe('When the suite starts', () => {
+      it('Then every probe resolved to a decision, so a skip is reported rather than absent', () => {
+        // Arrange
+        const sut = COVERAGE_GAPS;
+
+        // Act
+        const result = [GIT_AVAILABLE, GIT_ASSUME_DIFFERENT_OWNER, ALIEN_OWNER_AVAILABLE];
+
+        // Assert
+        expect(result.every((probe) => typeof probe === 'boolean')).toBe(true);
+        // Each gap must say what it leaves uncovered — an unexplained skip is
+        // the thing this suite refuses to ship.
+        for (const gap of sut) expect(gap).toContain('NOT covered');
+      });
+    });
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Group A — the anchor: bareRepositories, both sides, always on.
@@ -832,6 +869,91 @@ describe.skipIf(!ALIEN_OWNER_AVAILABLE)(
           expect(data?.code).toBe('DUBIOUS_OWNERSHIP');
           expect(data?.path).toBe(supersetDir);
           expect(data?.foreignPath).toBe(path.join(supersetDir, '.git'));
+        });
+      });
+    });
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Group D — the trust OPTIONS through the real entry point, always on.
+//
+// The allowlist matcher and the verdict are proven in the unit tier, but the
+// path an option actually takes — `openRepository` -> validate -> canonicalise
+// -> gate — is only exercised where an alien owner exists, which is the one
+// group that skips by default. These rows need no alien owner: they assert the
+// options are accepted, plumbed, and inert on a repository the caller owns.
+// ---------------------------------------------------------------------------
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'the trust options through openRepository (group D, always on) — GIT_AVAILABLE',
+  () => {
+    let root: string;
+    let repoDir: string;
+
+    beforeAll(async () => {
+      root = await mkRoot('trust-options');
+      repoDir = path.join(root, 'owned');
+      buildNormalRepo(repoDir);
+      await writeFile(path.join(repoDir, 'a.txt'), 'one\n');
+      commit(repoDir, 'c1');
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      await rm(root, { recursive: true, force: true });
+    });
+
+    describe("Given a repository the caller owns and trustedDirectories: ['*']", () => {
+      describe('When it is opened', () => {
+        it("Then the '*' entry is accepted and never realpathed into a cwd-relative path", async () => {
+          // Arrange — the shim SKIPS canonicalising the bare '*', and the skip
+          // is load-bearing: realpathing it would produce `<cwd>/*` and turn
+          // "trust everything" into "trust nothing". Nothing executed that
+          // skip before this row.
+          const sut = openRepository;
+
+          // Act
+          const result = await sut({ cwd: repoDir, trustedDirectories: ['*'] });
+
+          // Assert
+          expect(result.layout.untrusted).toBeUndefined();
+          await result.log({ limit: 1 });
+        });
+      });
+    });
+
+    describe("Given a repository the caller owns and trust: 'always'", () => {
+      describe('When it is opened', () => {
+        it('Then the option is accepted and the repository stays usable', async () => {
+          // Arrange
+          const sut = openRepository;
+
+          // Act
+          const result = await sut({ cwd: repoDir, trust: 'always' });
+
+          // Assert
+          expect(result.layout.untrusted).toBeUndefined();
+          await result.log({ limit: 1 });
+        });
+      });
+    });
+
+    describe('Given a repository the caller owns and an absolute /* prefix entry', () => {
+      describe('When it is opened', () => {
+        it('Then the prefix is canonicalised rather than left with its star unresolved', async () => {
+          // Arrange — the entry's star is a grammar token, not a path
+          // component; realpathing the whole entry fails and leaves the prefix
+          // unresolved, which on a symlinked root stops matching entirely.
+          const sut = openRepository;
+
+          // Act
+          const result = await sut({
+            cwd: repoDir,
+            trustedDirectories: [`${path.dirname(repoDir)}/*`],
+          });
+
+          // Assert
+          expect(result.layout.untrusted).toBeUndefined();
         });
       });
     });

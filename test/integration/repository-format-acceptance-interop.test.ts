@@ -138,6 +138,11 @@ describe.skipIf(!GIT_AVAILABLE)(
       git(baseDir, 'config', 'user.name', 'A U Thor');
       git(baseDir, 'config', 'user.email', 'author@example.com');
       git(baseDir, 'config', 'commit.gpgsign', 'false');
+      // A real remote, so the `--rename-section` / `--remove-section` rows are
+      // not self-fulfilling: without it git exits 128 on a HEALTHY repository
+      // too ("no such section"), and those rows would hold with the format
+      // gate deleted.
+      git(baseDir, 'remote', 'add', 'origin', 'https://example.com/repo.git');
       writeFileSync(path.join(baseDir, 'file.txt'), 'hello\n');
       git(baseDir, 'add', '-A');
       runGit(['-C', baseDir, 'commit', '-q', '--no-gpg-sign', '-m', 'c0'], { env: datedEnv() });
