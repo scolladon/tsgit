@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { SHA1_CONFIG, SHA256_CONFIG } from '../../../../src/domain/objects/hash-config.js';
+import {
+  configFor,
+  SHA1_CONFIG,
+  SHA256_CONFIG,
+} from '../../../../src/domain/objects/hash-config.js';
 
 describe('hash-config', () => {
   describe('Given SHA1_CONFIG', () => {
@@ -85,6 +89,28 @@ describe('hash-config', () => {
 
         // Assert
         expect(result.hexLength).toBe(result.digestLength * 2);
+      });
+    });
+  });
+
+  describe('Given configFor', () => {
+    describe("When called with 'sha1'", () => {
+      it('Then returns SHA1_CONFIG', () => {
+        // Arrange / Act
+        const result = configFor('sha1');
+
+        // Assert
+        expect(result).toBe(SHA1_CONFIG);
+      });
+    });
+
+    describe("When called with 'sha256'", () => {
+      it('Then returns SHA256_CONFIG', () => {
+        // Arrange / Act
+        const result = configFor('sha256');
+
+        // Assert
+        expect(result).toBe(SHA256_CONFIG);
       });
     });
   });

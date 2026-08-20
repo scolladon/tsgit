@@ -50,7 +50,11 @@ describe('resolveLayout', () => {
           );
 
           // Assert
-          expect(result).toStrictEqual({ gitDir: '/repo/bare.git', bare: true });
+          expect(result).toStrictEqual({
+            gitDir: '/repo/bare.git',
+            bare: true,
+            objectFormat: 'sha1',
+          });
         });
       });
     });
@@ -79,6 +83,7 @@ describe('resolveLayout', () => {
             gitDir: '/repo/bare.git',
             bare: true,
             workTreeConfigBogus: true,
+            objectFormat: 'sha1',
           });
         });
       });
@@ -104,6 +109,7 @@ describe('resolveLayout', () => {
             gitDir: '/repo/normal/.git',
             workDir: '/repo/custom-wt',
             bare: false,
+            objectFormat: 'sha1',
           });
         });
       });
@@ -130,6 +136,7 @@ describe('resolveLayout', () => {
             gitDir: '/repo/normal/.git',
             workDir: '/repo/other-wt',
             bare: false,
+            objectFormat: 'sha1',
           });
         });
       });
@@ -154,6 +161,7 @@ describe('resolveLayout', () => {
             gitDir: '/repo/normal/.git',
             workDir: '/repo/normal',
             bare: false,
+            objectFormat: 'sha1',
           });
         });
       });
@@ -174,7 +182,67 @@ describe('resolveLayout', () => {
           );
 
           // Assert
-          expect(result).toStrictEqual({ gitDir: '/repo/bare.git', bare: true });
+          expect(result).toStrictEqual({
+            gitDir: '/repo/bare.git',
+            bare: true,
+            objectFormat: 'sha1',
+          });
+        });
+      });
+    });
+  });
+
+  describe('The objectFormat channel', () => {
+    describe('Given extensions.objectFormat = sha256 in the repository config', () => {
+      describe('When resolveLayout runs', () => {
+        it('Then the returned layout carries objectFormat: sha256', async () => {
+          // Arrange — no core.repositoryformatversion: isolates the value-grammar
+          // layer this part reads from the UNCONDITIONAL point-of-use refusal
+          // `assertExtensionBacked` still raises for a present `objectformat` key
+          // at version 1 (`UNBACKED_EXTENSIONS` — out of this part's scope; its
+          // removal is Part 13's job). Same isolation the interop suite uses.
+          const fs = new MemoryFileSystem({ rootDir: '/repo' });
+          await makeGitDir(fs, '/repo/sha256/.git');
+          await fs.writeUtf8('/repo/sha256/.git/config', '[extensions]\n\tobjectformat = sha256\n');
+
+          // Act
+          const result = await resolveLayout(
+            fileSystemLayoutProbe(fs),
+            '/repo/sha256',
+            posixPolicy,
+          );
+
+          // Assert
+          expect(result).toStrictEqual({
+            gitDir: '/repo/sha256/.git',
+            workDir: '/repo/sha256',
+            bare: false,
+            objectFormat: 'sha256',
+          });
+        });
+      });
+    });
+
+    describe('Given no extensions.objectFormat in the repository config (the sha1 default)', () => {
+      describe('When resolveLayout runs', () => {
+        it("Then the returned layout carries objectFormat: 'sha1' — unconditionally, not omitted", async () => {
+          // Arrange
+          const fs = new MemoryFileSystem({ rootDir: '/repo' });
+          await makeGitDir(fs, '/repo/sha1/.git');
+
+          // Act
+          const result = await resolveLayout(fileSystemLayoutProbe(fs), '/repo/sha1', posixPolicy);
+
+          // Assert — an OPENED repository's format is always resolvable (unlike
+          // the bootstrap path, which never sets this field at all); the
+          // resolveAlgorithm contradiction check depends on this being present
+          // even for the undeclared (sha1) case.
+          expect(result).toStrictEqual({
+            gitDir: '/repo/sha1/.git',
+            workDir: '/repo/sha1',
+            bare: false,
+            objectFormat: 'sha1',
+          });
         });
       });
     });
@@ -206,6 +274,7 @@ describe('resolveLayout', () => {
           commonDir: '/repo/bare.git',
           workDir: '/repo/wt',
           bare: false,
+          objectFormat: 'sha1',
         });
       });
     });
@@ -251,7 +320,11 @@ describe('resolveLayout', () => {
           );
 
           // Assert
-          expect(result).toStrictEqual({ gitDir: '/repo/dotgit', bare: false });
+          expect(result).toStrictEqual({
+            gitDir: '/repo/dotgit',
+            bare: false,
+            objectFormat: 'sha1',
+          });
         });
       });
     });
@@ -323,6 +396,7 @@ describe('resolveLayout', () => {
           gitDir: '/repo/normal/.git',
           workDir: '/repo/normal',
           bare: false,
+          objectFormat: 'sha1',
         });
       });
     });
@@ -351,6 +425,7 @@ describe('resolveLayout', () => {
             gitDir: '/repo/bare.git',
             workDir: '/repo/elsewhere',
             bare: false,
+            objectFormat: 'sha1',
           });
         });
       });
@@ -399,6 +474,7 @@ describe('resolveLayout', () => {
             gitDir: '/repo/bare.git',
             workDir: '/repo/elsewhere/wt',
             bare: false,
+            objectFormat: 'sha1',
           });
         });
       });
@@ -423,7 +499,11 @@ describe('resolveLayout', () => {
           );
 
           // Assert
-          expect(result).toStrictEqual({ gitDir: '/repo/target', bare: true });
+          expect(result).toStrictEqual({
+            gitDir: '/repo/target',
+            bare: true,
+            objectFormat: 'sha1',
+          });
         });
       });
     });
@@ -452,6 +532,7 @@ describe('resolveLayout', () => {
             gitDir: '/repo/target',
             workDir: '/repo/target',
             bare: false,
+            objectFormat: 'sha1',
           });
         });
       });
@@ -473,6 +554,7 @@ describe('resolveLayout', () => {
             gitDir: '/repo/does-not-exist',
             workDir: '/repo',
             bare: false,
+            objectFormat: 'sha1',
           });
         });
       });
@@ -491,7 +573,12 @@ describe('resolveLayout', () => {
           });
 
           // Assert
-          expect(result).toStrictEqual({ gitDir: '/repo/empty', workDir: '/repo', bare: false });
+          expect(result).toStrictEqual({
+            gitDir: '/repo/empty',
+            workDir: '/repo',
+            bare: false,
+            objectFormat: 'sha1',
+          });
         });
       });
     });
@@ -608,6 +695,7 @@ describe('resolveLayout', () => {
             gitDir: '/repo/bare.git',
             workDir: '/repo/wt',
             bare: false,
+            objectFormat: 'sha1',
           });
         });
       });
@@ -635,6 +723,7 @@ describe('resolveLayout', () => {
             gitDir: '/repo/normal/.git',
             workDir: '/repo/wt',
             bare: false,
+            objectFormat: 'sha1',
           });
         });
       });
@@ -663,6 +752,7 @@ describe('resolveLayout', () => {
             gitDir: '/repo/normal/.git',
             workDir: '/repo/wt2',
             bare: false,
+            objectFormat: 'sha1',
           });
         });
       });
@@ -686,7 +776,11 @@ describe('resolveLayout', () => {
           );
 
           // Assert
-          expect(result).toStrictEqual({ gitDir: '/repo/bare.git', bare: true });
+          expect(result).toStrictEqual({
+            gitDir: '/repo/bare.git',
+            bare: true,
+            objectFormat: 'sha1',
+          });
         });
       });
     });
@@ -714,6 +808,7 @@ describe('resolveLayout', () => {
             gitDir: '/repo/external.git',
             workDir: '/repo/wt',
             bare: false,
+            objectFormat: 'sha1',
           });
         });
       });
@@ -746,6 +841,7 @@ describe('resolveLayout', () => {
             gitDir: admin,
             commonDir: '/repo/bare.git',
             bare: true,
+            objectFormat: 'sha1',
           });
         });
       });
@@ -782,6 +878,7 @@ describe('resolveLayout', () => {
           gitDir: '/repo/normal/.git',
           workDir: '/repo/physical-wt',
           bare: false,
+          objectFormat: 'sha1',
         });
       });
     });
@@ -854,7 +951,10 @@ describe('resolveLayout', () => {
           // Act
           const result = sut('/repo/.git', '/repo', '/repo', {}, posixPolicy);
 
-          // Assert
+          // Assert — no objectFormat: the bootstrap path reads nothing from
+          // disk, so the format is genuinely unknown, not defaulted to sha1
+          // (unlike `finishLayout`, which always resolves a definite answer
+          // for an ALREADY-EXISTING repository).
           expect(result).toStrictEqual({ gitDir: '/repo/.git', workDir: '/repo', bare: false });
         });
       });
@@ -945,6 +1045,7 @@ describe('resolveLayout', () => {
             workDir: '/repo/normal',
             bare: false,
             formatRefusal: { kind: 'version', version: 99 },
+            objectFormat: 'sha1',
           });
         });
       });

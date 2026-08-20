@@ -16,6 +16,10 @@ export class BrowserHashService implements HashService {
     this.digestLength = algorithm === 'sha1' ? 20 : 32;
   }
 
+  withAlgorithm(algorithm: 'sha1' | 'sha256'): HashService {
+    return new BrowserHashService(algorithm);
+  }
+
   async hash(data: Uint8Array): Promise<Uint8Array> {
     return new Uint8Array(await crypto.subtle.digest(this.algoName, data as BufferSource));
   }

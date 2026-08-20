@@ -15,3 +15,7 @@ export const SHA256_CONFIG: HashConfig = Object.freeze({
   digestLength: 32,
   hexLength: 64,
 });
+
+/** The canonical `HashConfig` for `algorithm` — the shared lookup every entry uses in place of a repeated ternary. */
+export const configFor = (algorithm: 'sha1' | 'sha256'): HashConfig =>
+  algorithm === 'sha256' ? SHA256_CONFIG : SHA1_CONFIG;

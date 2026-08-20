@@ -49,6 +49,7 @@ import {
   notesRefOutside,
   nothingToCommit,
   noUpstreamConfigured,
+  objectFormatConflict,
   operationInProgress,
   pathspecBeyondSymlink,
   pathspecNoMatch,
@@ -804,6 +805,20 @@ describe('domain commands error — factory data', () => {
     });
   });
 
+  describe('Given a requested, declared, and source', () => {
+    describe('When objectFormatConflict', () => {
+      it('Then data carries all three verbatim', () => {
+        // Arrange + Assert
+        expect(objectFormatConflict('sha256', 'sha1', 'option').data).toEqual({
+          code: 'OBJECT_FORMAT_CONFLICT',
+          requested: 'sha256',
+          declared: 'sha1',
+          source: 'option',
+        });
+      });
+    });
+  });
+
   describe('Given a hook, exit code, and stderr', () => {
     describe('When hookFailed', () => {
       it('Then data carries every field verbatim', () => {
@@ -1424,6 +1439,14 @@ describe('domain commands error — extractDetail message formatting', () => {
     [
       { code: 'ADAPTER_UNAVAILABLE', runtime: 'memory', reason: 'k' },
       'ADAPTER_UNAVAILABLE: adapter unavailable for runtime memory: k',
+    ],
+    [
+      { code: 'OBJECT_FORMAT_CONFLICT', requested: 'sha256', declared: 'sha1', source: 'option' },
+      'OBJECT_FORMAT_CONFLICT: object format conflict: option requested sha256 but sha1 was declared',
+    ],
+    [
+      { code: 'OBJECT_FORMAT_CONFLICT', requested: 'sha1', declared: 'sha256', source: 'hash' },
+      'OBJECT_FORMAT_CONFLICT: object format conflict: hash requested sha1 but sha256 was declared',
     ],
     [
       {

@@ -16,6 +16,7 @@ import {
 import { disposeAdapters } from './dispose-adapters.js';
 import { repositoryDisposed } from './domain/commands/error.js';
 import type { StatTreeDiff, TreeDiff } from './domain/diff/index.js';
+import { configFor } from './domain/objects/hash-config.js';
 import type { CommandRunner } from './ports/command-runner.js';
 import type { Compressor } from './ports/compressor.js';
 import type {
@@ -38,6 +39,7 @@ import { composeAdapters } from './repository/compose-adapters.js';
 import { deepFreeze } from './repository/deep-freeze.js';
 import { defaultCwd } from './repository/default-cwd.js';
 import { layoutRootsOf } from './repository/layout-roots.js';
+import { resolveAlgorithm } from './repository/resolve-algorithm.js';
 import { validateOptions } from './repository/validate-options.js';
 import { wrapFsValidator } from './repository/wrap-fs-validator.js';
 import { wrapTransportValidator } from './repository/wrap-transport-validator.js';
@@ -104,6 +106,16 @@ export interface OpenRepositoryOptions {
    * supplied (no walk happens).
    */
   readonly ceilingDirs?: ReadonlyArray<string>;
+  /**
+   * Hash algorithm for this repository's objects. Default: detected from the
+   * repository's own `extensions.objectFormat` when one is declared, else
+   * `'sha1'`. Set this explicitly when creating a repository (`init`,
+   * `clone`) — a repository being created has no declared format to detect.
+   * Disagreeing with the repository's declared format, or with a
+   * caller-supplied `hash` adapter's own algorithm, throws
+   * `OBJECT_FORMAT_CONFLICT`.
+   */
+  readonly algorithm?: 'sha1' | 'sha256';
   /** Adapter overrides. Each is optional; missing slots fall back to runtime detection. */
   readonly fs?: FileSystem;
   readonly hash?: HashService;
@@ -207,6 +219,12 @@ export interface RepositoryLayoutInput {
   /** The repository-format acceptance verdict — absent when accepted. */
   readonly formatRefusal?: RepositoryFormatRefusal;
   readonly homeDir?: string;
+  /**
+   * The repository's declared `extensions.objectFormat`. Absent means sha1
+   * (git's default when the key is unset). Populated by `finishLayout` —
+   * see `RepositoryLayout.objectFormat` (`ports/context.ts`).
+   */
+  readonly objectFormat?: 'sha1' | 'sha256';
 }
 
 /**
@@ -498,11 +516,31 @@ export const openRepository = async (
     opts.signal !== undefined
       ? AbortSignal.any([controller.signal, opts.signal])
       : controller.signal;
+  // Reconcile the two algorithm channels — the caller's `algorithm` option
+  // and the repository's own declared `extensions.objectFormat` — plus a
+  // caller-supplied `hash` override's algorithm; a genuine disagreement
+  // throws `OBJECT_FORMAT_CONFLICT` (see `resolveAlgorithm`). `adapters.hash`
+  // is `opts.hash ?? fallback.hash`: when the caller supplied no override and
+  // the resolved algorithm differs from the fallback's own default (the
+  // layout declared something the entry point's construction-time option
+  // didn't anticipate), swap in a matching service via `withAlgorithm` — a
+  // caller-supplied override is never re-instantiated.
+  const resolvedAlgorithm = resolveAlgorithm({
+    ...(opts.algorithm !== undefined ? { option: opts.algorithm } : {}),
+    ...(fallback.layout.objectFormat !== undefined
+      ? { declared: fallback.layout.objectFormat }
+      : {}),
+    ...(opts.hash?.algorithm !== undefined ? { service: opts.hash.algorithm } : {}),
+  });
+  const hash =
+    adapters.hash.algorithm === resolvedAlgorithm
+      ? adapters.hash
+      : (adapters.hash.withAlgorithm?.(resolvedAlgorithm) ?? adapters.hash);
   // Build ctx incrementally so optional fields (config, logger) are absent
   // when undefined — required by `exactOptionalPropertyTypes: true`.
   const baseCtx = {
     fs: adapters.fs,
-    hash: adapters.hash,
+    hash,
     compressor: adapters.compressor,
     transport: adapters.transport,
     progress: opts.progress ?? noopProgress,
@@ -513,7 +551,7 @@ export const openRepository = async (
     layout: deepFreeze(fallback.layout),
     cwd,
     runtime: fallback.runtime,
-    hashConfig: fallback.hashConfig,
+    hashConfig: configFor(resolvedAlgorithm),
     deltaCache: fallback.deltaCache,
     signal,
     worktreeFs,

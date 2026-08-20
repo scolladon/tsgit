@@ -14,6 +14,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { NodeSshTransport } from '../../src/adapters/node/node-ssh-transport.js';
 import { TsgitError } from '../../src/domain/index.js';
+import { SHA1_CONFIG, SHA256_CONFIG } from '../../src/domain/objects/hash-config.js';
 import { openRepository } from '../../src/index.node.js';
 
 let tmpdir: string;
@@ -73,6 +74,42 @@ describe('Node shim — allowInsecureHttp default', () => {
             'NETWORK_ERROR',
           );
           expect((thrown as { data: { reason: string } }).data.reason).toContain('HTTPS required');
+        } finally {
+          await sut.dispose();
+        }
+      });
+    });
+  });
+});
+
+describe('Node shim — algorithm option', () => {
+  describe('Given no algorithm option, on a fresh (not-yet-existing) repository', () => {
+    describe('When openRepository runs', () => {
+      it('Then ctx.hash.algorithm is sha1 and ctx.hashConfig is SHA1_CONFIG', async () => {
+        // Arrange / Act
+        const sut = await openRepository({ cwd: tmpdir });
+
+        try {
+          // Assert
+          expect(sut.ctx.hash.algorithm).toBe('sha1');
+          expect(sut.ctx.hashConfig).toBe(SHA1_CONFIG);
+        } finally {
+          await sut.dispose();
+        }
+      });
+    });
+  });
+
+  describe("Given algorithm: 'sha256', on a fresh (not-yet-existing) repository", () => {
+    describe('When openRepository runs', () => {
+      it('Then ctx.hash.algorithm is sha256 and ctx.hashConfig is SHA256_CONFIG', async () => {
+        // Arrange / Act
+        const sut = await openRepository({ cwd: tmpdir, algorithm: 'sha256' });
+
+        try {
+          // Assert
+          expect(sut.ctx.hash.algorithm).toBe('sha256');
+          expect(sut.ctx.hashConfig).toBe(SHA256_CONFIG);
         } finally {
           await sut.dispose();
         }

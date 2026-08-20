@@ -62,6 +62,13 @@ const repo = await openRepository({ rootHandle });
 
 `getDirectory()` returns the OPFS root for the page's origin. Each origin gets its own sandbox; nothing escapes it.
 
+An existing repository's hash algorithm (SHA-1 or SHA-256) is detected automatically from its own `extensions.objectFormat` — pass `algorithm` only when there is no repository yet to detect a format from (`init` into a fresh OPFS root):
+
+```ts
+const repo = await openRepository({ rootHandle, algorithm: 'sha256' });
+await repo.init();
+```
+
 ## Clone a remote
 
 ```ts
@@ -105,6 +112,8 @@ const repo = await openRepository({ rootHandle, gitDir: 'repo.git', workDir: 'wo
 ```
 
 `ceilingDirs` exists on the option type (inherited from the core `OpenRepositoryOptions`) but has no effect here — with no walk to bound, there's nothing for a ceiling to stop.
+
+`algorithm` disagreeing with a repository's own declared `extensions.objectFormat` — or with a caller-supplied `hash` adapter's algorithm — throws `OBJECT_FORMAT_CONFLICT`. See [errors](../use/errors.md#repository-state).
 
 ## Repository trust
 

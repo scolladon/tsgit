@@ -19,4 +19,9 @@ export interface HashService {
   readonly algorithm: 'sha1' | 'sha256';
   /** Digest length in bytes (20 for SHA-1, 32 for SHA-256). */
   readonly digestLength: 20 | 32;
+  /**
+   * Return a service for a different algorithm. Optional: a caller-supplied
+   * service need not be re-instantiable.
+   */
+  readonly withAlgorithm?: (algorithm: 'sha1' | 'sha256') => HashService;
 }

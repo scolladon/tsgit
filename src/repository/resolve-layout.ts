@@ -282,6 +282,16 @@ export const finishLayout = async (
     ...(implicitBare ? { implicitBare: true as const } : {}),
     ...(verdict.trusted ? {} : { untrusted: true as const, foreignPath: verdict.foreignPath }),
     ...(fmt.refusal !== undefined ? { formatRefusal: fmt.refusal } : {}),
+    // Unlike every other optional field above, this one is UNCONDITIONAL:
+    // an opened repository's object format is always resolvable (sha1 is
+    // the answer when the key is absent, exactly like `bare`), so a caller
+    // omitting `objectFormat` here would read as "unknown" rather than "sha1"
+    // — collapsing the very distinction `resolveAlgorithm`'s contradiction
+    // check depends on to catch a mismatch against an UNDECLARED (sha1)
+    // repository, the overwhelmingly common shape. `syntheticFallbackLayout`
+    // (the found-nothing bootstrap path `init`/`clone` take) is the one
+    // legitimate "unknown" case, and it never sets this field at all.
+    objectFormat: fmt.objectFormat,
   };
 };
 

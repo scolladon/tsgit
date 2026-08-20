@@ -84,5 +84,21 @@ export function hashServiceContractTests(createSut: () => Promise<HashService>):
         expect((err as TsgitError).data.code).toBe('HASH_FAILED');
       }
     });
+
+    it("Given withAlgorithm('sha256'), When reading the returned service, Then digestLength is 32", async () => {
+      const sut = await createSut();
+      if (sut.withAlgorithm === undefined) return; // a caller-supplied HashService need not implement it
+      const other = sut.withAlgorithm('sha256');
+      expect(other.algorithm).toBe('sha256');
+      expect(other.digestLength).toBe(32);
+    });
+
+    it("Given withAlgorithm('sha1'), When reading the returned service, Then digestLength is 20", async () => {
+      const sut = await createSut();
+      if (sut.withAlgorithm === undefined) return;
+      const other = sut.withAlgorithm('sha1');
+      expect(other.algorithm).toBe('sha1');
+      expect(other.digestLength).toBe(20);
+    });
   });
 }

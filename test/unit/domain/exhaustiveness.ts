@@ -129,6 +129,7 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'INVALID_OPTION':
     case 'REPOSITORY_DISPOSED':
     case 'ADAPTER_UNAVAILABLE':
+    case 'OBJECT_FORMAT_CONFLICT':
     case 'TOO_MANY_ADVERTISED_REFS':
     case 'OBJECT_TOO_LARGE':
     case 'WORKING_TREE_FILE_TOO_LARGE':

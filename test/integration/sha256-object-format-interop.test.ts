@@ -24,6 +24,7 @@ import { NodeHashService } from '../../src/adapters/node/node-hash-service.js';
 import { nativePolicy } from '../../src/adapters/node/path-policy.js';
 import { add } from '../../src/application/commands/add.js';
 import { archive } from '../../src/application/commands/archive.js';
+import { catFile } from '../../src/application/commands/cat-file.js';
 import { checkout } from '../../src/application/commands/checkout.js';
 import { commit } from '../../src/application/commands/commit.js';
 import { log } from '../../src/application/commands/log.js';
@@ -32,7 +33,7 @@ import { revParse } from '../../src/application/commands/rev-parse.js';
 import { tarArchive } from '../../src/domain/archive/tar.js';
 import { TsgitError } from '../../src/domain/error.js';
 import type { AuthorIdentity } from '../../src/domain/objects/index.js';
-import { SHA256_CONFIG } from '../../src/domain/objects/index.js';
+import { openRepository } from '../../src/index.node.js';
 import type { Context } from '../../src/ports/context.js';
 import { fileSystemLayoutProbe } from '../../src/repository/file-system-layout-probe.js';
 import { readRepositoryFormat } from '../../src/repository/read-repository-format.js';
@@ -69,16 +70,18 @@ async function collectBytes(chunks: AsyncIterable<Uint8Array>): Promise<Uint8Arr
   return out;
 }
 
-/** A Node-backed `Context` rooted at `dir`, rehashing at SHA-256 — the width
- *  `createNodeContext` does not yet expose as a public option (that threads
- *  through `HashConfig.algorithm` in a later part); overriding `hash` and
- *  `hashConfig` here is the same technique other interop suites use to
- *  exercise a Context field the public entry points don't surface yet. */
-const sha256Context = (dir: string): Context => ({
-  ...createNodeContext({ workDir: dir }),
-  hash: new NodeHashService('sha256'),
-  hashConfig: SHA256_CONFIG,
-});
+/**
+ * A Node-backed `Context` rooted at `dir`, rehashing at SHA-256 via the
+ * `algorithm` option `createNodeContext` now exposes. Deliberately NOT the
+ * full async `openRepository` — a real `git init --object-format=sha256`
+ * repository's `extensions.objectFormat` config entry unconditionally trips
+ * `assertExtensionBacked`'s point-of-use refusal (`UNBACKED_EXTENSIONS` — out
+ * of this part's scope; its removal is Part 13's job), so `openRepository`
+ * cannot open one yet. The sync factory builds a `Context` lexically, without
+ * reading the repository's config at all, so it bypasses that gate.
+ */
+const sha256Context = (dir: string): Context =>
+  createNodeContext({ workDir: dir, algorithm: 'sha256' });
 
 describe.skipIf(!GIT_AVAILABLE)('sha256 object format — .git/index interop', () => {
   let baseDir: string;
@@ -344,6 +347,84 @@ describe.skipIf(!GIT_AVAILABLE)('sha256 object format — .git/index interop', (
       } finally {
         await rm(oursDir, { recursive: true, force: true });
         await rm(theirsDir, { recursive: true, force: true });
+      }
+    });
+  });
+
+  describe('Given a SHA-256 repository git itself packed, When tsgit catFile reads HEAD and HEAD^{tree}', () => {
+    it("Then both entries resolve with git's exact 64-hex oids and object types", async () => {
+      // Arrange
+      const env = runGitEnv();
+      const expectedHead = runGit(['-C', baseDir, 'rev-parse', 'HEAD'], { env }).trim();
+      const expectedTree = runGit(['-C', baseDir, 'rev-parse', 'HEAD^{tree}'], { env }).trim();
+      expect(expectedHead).toMatch(/^[0-9a-f]{64}$/);
+      expect(expectedTree).toMatch(/^[0-9a-f]{64}$/);
+
+      // Act
+      const result = await catFile(sha256Context(baseDir), {
+        ids: [expectedHead, expectedTree],
+      });
+
+      // Assert
+      expect(result.entries).toEqual([
+        expect.objectContaining({ ok: true, id: expectedHead, type: 'commit' }),
+        expect.objectContaining({ ok: true, id: expectedTree, type: 'tree' }),
+      ]);
+    });
+  });
+
+  describe('Given a SHA-256 repository, When tsgit revParse resolves HEAD and HEAD^{tree}', () => {
+    it("Then both resolve to git's exact 64-hex oids", async () => {
+      // Arrange
+      const env = runGitEnv();
+      const expectedHead = runGit(['-C', baseDir, 'rev-parse', 'HEAD'], { env }).trim();
+      const expectedTree = runGit(['-C', baseDir, 'rev-parse', 'HEAD^{tree}'], { env }).trim();
+
+      // Act
+      const ours = await revParse(sha256Context(baseDir), 'HEAD');
+      const oursTree = await revParse(sha256Context(baseDir), 'HEAD^{tree}');
+
+      // Assert
+      expect(ours).toBe(expectedHead);
+      expect(oursTree).toBe(expectedTree);
+    });
+  });
+
+  describe("Given today's live desync — a caller-supplied sha256 hash service on a plain SHA-1 repository, opened through the real public Node entry point", () => {
+    it('Then openRepository refuses with OBJECT_FORMAT_CONFLICT instead of silently pairing ctx.hash=sha256 with ctx.hashConfig=SHA1_CONFIG', async () => {
+      // Arrange — a plain (SHA-1) repository, built the same way the
+      // adjacent 64-hex-refusal test above builds one; before this part,
+      // `openRepository({ hash: new NodeHashService('sha256') })` on the
+      // Node entry silently paired ctx.hash.algorithm === 'sha256' with
+      // ctx.hashConfig === SHA1_CONFIG and nothing refused it.
+      const dir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-sha1-desync-'));
+      const env = runGitEnv();
+      let caught: unknown;
+      try {
+        runGit(['init', '-q', '-b', 'main', dir], { env });
+        runGit(['-C', dir, 'config', 'user.name', 'Ada'], { env });
+        runGit(['-C', dir, 'config', 'user.email', 'ada@example.com'], { env });
+        await writeFile(path.join(dir, 'f.txt'), 'f\n');
+        runGit(['-C', dir, 'add', 'f.txt'], { env });
+        runGit(['-C', dir, 'commit', '-q', '-m', 'f'], { env });
+
+        // Act
+        try {
+          await openRepository({ cwd: dir, hash: new NodeHashService('sha256') });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data).toEqual({
+          code: 'OBJECT_FORMAT_CONFLICT',
+          requested: 'sha256',
+          declared: 'sha1',
+          source: 'hash',
+        });
+      } finally {
+        await rm(dir, { recursive: true, force: true });
       }
     });
   });

@@ -78,6 +78,15 @@ export interface RepositoryLayout {
    * expansion treat the source as missing.
    */
   readonly homeDir?: string;
+  /**
+   * The repository's declared `extensions.objectFormat`. Absent means sha1
+   * (git's default when the key is unset) — the same convention every other
+   * optional field on this interface follows. Populated by `finishLayout`
+   * at open time; the option channel (`OpenRepositoryOptions.algorithm`)
+   * and this declared channel are reconciled in `openRepository`, which
+   * refuses a contradiction between the two.
+   */
+  readonly objectFormat?: 'sha1' | 'sha256';
 }
 
 /**

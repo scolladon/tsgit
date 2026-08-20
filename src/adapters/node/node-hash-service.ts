@@ -18,6 +18,8 @@ export class NodeHashService implements HashService {
     this.digestLength = DIGEST_LENGTH[algorithm];
   }
 
+  withAlgorithm = (algorithm: Algorithm): HashService => new NodeHashService(algorithm);
+
   hash = async (data: Uint8Array): Promise<Uint8Array> => {
     return new Uint8Array(createHash(this.algorithm).update(data).digest());
   };

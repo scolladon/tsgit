@@ -9,7 +9,7 @@ import { BrowserCompressor } from './adapters/browser/browser-compressor.js';
 import { BrowserFileSystem } from './adapters/browser/browser-file-system.js';
 import { BrowserHashService } from './adapters/browser/browser-hash-service.js';
 import { BrowserHttpTransport } from './adapters/browser/browser-http-transport.js';
-import { SHA1_CONFIG } from './domain/objects/hash-config.js';
+import { configFor } from './domain/objects/hash-config.js';
 import { createLruCache } from './domain/storage/lru-cache.js';
 import { resolveFixedEntryLayout } from './repository/fixed-entry-layout.js';
 import { portablePosixPolicy } from './repository/portable-posix-policy.js';
@@ -74,14 +74,15 @@ export const openRepository = async (opts: OpenBrowserRepositoryOptions): Promis
     opts.bare,
     opts.workDir,
   );
+  const algorithm = opts.algorithm ?? 'sha1';
   const fallback = {
     fs,
-    hash: new BrowserHashService(),
+    hash: new BrowserHashService(algorithm),
     compressor: new BrowserCompressor(),
     transport: new BrowserHttpTransport(),
     runtime: 'browser' as const,
     layout,
-    hashConfig: SHA1_CONFIG,
+    hashConfig: configFor(algorithm),
     deltaCache: createLruCache<Uint8Array>(
       opts.deltaCacheMaxBytes ?? DEFAULT_DELTA_CACHE_BYTES,
       opts.deltaCacheMaxEntries ?? DEFAULT_DELTA_CACHE_ENTRIES,

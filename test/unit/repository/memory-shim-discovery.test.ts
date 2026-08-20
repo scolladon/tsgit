@@ -53,6 +53,7 @@ describe('openRepository (memory shim) — layout discovery', () => {
           workDir: '/repo',
           gitDir: '/repo/.git',
           bare: false,
+          objectFormat: 'sha1',
         });
       });
     });
@@ -90,7 +91,11 @@ describe('openRepository (memory shim) — layout discovery', () => {
         const sut = await openRepository({ files });
 
         // Assert
-        expect(sut.ctx.layout).toStrictEqual({ gitDir: '/repo', bare: true });
+        expect(sut.ctx.layout).toStrictEqual({
+          gitDir: '/repo',
+          bare: true,
+          objectFormat: 'sha1',
+        });
       });
     });
   });

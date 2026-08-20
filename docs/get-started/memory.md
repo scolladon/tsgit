@@ -32,6 +32,13 @@ The `files` map seeds the working tree before `init`. Keys are absolute POSIX pa
 
 `openRepository({ cwd, files })` discovers the layout the same way the Node adapter does: it walks up from `cwd` (default `/repo`) for a `.git` entry — or checks whether `cwd` itself is a git directory — and resolves gitfile pointers, so a `files` map that seeds a worktree-shaped tree (e.g. a `.git` file at `/repo/wt/.git` pointing at an admin dir under `/repo/.git/worktrees/wt`) opens correctly from `cwd: '/repo/wt'` — as long as every resolved path stays inside `rootDir`.
 
+An existing seeded repository's hash algorithm is detected the same way, from its own `extensions.objectFormat` — pass `algorithm: 'sha256'` only when seeding a fresh (not-yet-initialized) repository, since there is no config yet to detect a format from:
+
+```ts
+const repo = await openRepository({ algorithm: 'sha256' });
+await repo.init();
+```
+
 ## Bare repositories and explicit layout
 
 The memory adapter honours the same `gitDir` / `workDir` / `bare` / `ceilingDirs` options as Node, forwarded lexically (no realpath step — the sandboxed filesystem has no symlinks to resolve). A `gitDir` / `workDir` / ceiling entry that resolves outside `rootDir` reads as absent rather than escaping the sandbox.
@@ -43,6 +50,8 @@ await bare.init({ bare: true });
 
 const bounded = await openRepository({ cwd: '/repo/nested/deep', ceilingDirs: ['/repo/nested'] });
 ```
+
+`algorithm` disagreeing with a repository's own declared `extensions.objectFormat` — or with a caller-supplied `hash` adapter's algorithm — throws `OBJECT_FORMAT_CONFLICT`. See [errors](../use/errors.md#repository-state).
 
 ## Repository trust
 

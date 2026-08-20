@@ -77,7 +77,11 @@ Every command and primitive takes a `Context` — a frozen record that carries:
   worktrees, submodule working directories, `--separate-git-dir`) and differs
   from `gitDir` only in those layouts; see [`worktree`](../use/commands/worktree.md)
 - The progress reporter and `AbortSignal`
-- The hash configuration (SHA-1 today; SHA-256 reserved for v4)
+- The hash configuration (SHA-1 or SHA-256 — detected from the repository's
+  own `extensions.objectFormat` when one is declared, else the caller's
+  `algorithm` option, else SHA-1; a genuine disagreement between the two
+  channels, or with a caller-supplied `hash` adapter's own algorithm, throws
+  `OBJECT_FORMAT_CONFLICT`)
 - The delta cache (LRU, configurable)
 - The promisor remote (partial-clone lazy-fetch)
 - Optionally the hook runner, config logger, and (Node only) an SSH transport

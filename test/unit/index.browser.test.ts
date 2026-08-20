@@ -229,7 +229,12 @@ describe('fixed-entry layout resolution (the browser shim path)', () => {
         const result = await sut(fs, '/', '/.git', false);
 
         // Assert
-        expect(result).toEqual({ workDir: '/', gitDir: '/admin', bare: false });
+        expect(result).toEqual({
+          workDir: '/',
+          gitDir: '/admin',
+          bare: false,
+          objectFormat: 'sha1',
+        });
       });
     });
   });
@@ -256,6 +261,7 @@ describe('fixed-entry layout resolution (the browser shim path)', () => {
           gitDir: '/admin',
           commonDir: '/common',
           bare: false,
+          objectFormat: 'sha1',
         });
       });
     });
@@ -298,7 +304,12 @@ describe('fixed-entry layout resolution (the browser shim path)', () => {
         const result = await sut(fs, '/', '/.git', undefined, '/custom-wt');
 
         // Assert
-        expect(result).toStrictEqual({ gitDir: '/.git', workDir: '/custom-wt', bare: false });
+        expect(result).toStrictEqual({
+          gitDir: '/.git',
+          workDir: '/custom-wt',
+          bare: false,
+          objectFormat: 'sha1',
+        });
       });
     });
   });
@@ -314,7 +325,12 @@ describe('fixed-entry layout resolution (the browser shim path)', () => {
         const result = await sut(fs, '/', '/.git', false);
 
         // Assert
-        expect(result).toEqual({ workDir: '/', gitDir: '/.git', bare: false });
+        expect(result).toEqual({
+          workDir: '/',
+          gitDir: '/.git',
+          bare: false,
+          objectFormat: 'sha1',
+        });
       });
     });
   });
@@ -334,7 +350,7 @@ describe('fixed-entry layout resolution (the browser shim path)', () => {
         const result = await sut(fs, '/', '/.git', undefined);
 
         // Assert
-        expect(result).toStrictEqual({ gitDir: '/.git', bare: true });
+        expect(result).toStrictEqual({ gitDir: '/.git', bare: true, objectFormat: 'sha1' });
       });
     });
   });
@@ -353,7 +369,12 @@ describe('fixed-entry layout resolution (the browser shim path)', () => {
         const result = await sut(fs, '/', '/.git', undefined);
 
         // Assert
-        expect(result).toStrictEqual({ gitDir: '/.git', workDir: '/custom-wt', bare: false });
+        expect(result).toStrictEqual({
+          gitDir: '/.git',
+          workDir: '/custom-wt',
+          bare: false,
+          objectFormat: 'sha1',
+        });
       });
     });
   });

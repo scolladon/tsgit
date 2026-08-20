@@ -17,7 +17,7 @@ import { NodeHttpTransport } from './adapters/node/node-http-transport.js';
 import { NodeSshTransport } from './adapters/node/node-ssh-transport.js';
 import { ownedByCallerPredicate } from './adapters/node/owner-predicate.js';
 import { nativePolicy } from './adapters/node/path-policy.js';
-import { SHA1_CONFIG } from './domain/objects/hash-config.js';
+import { configFor } from './domain/objects/hash-config.js';
 import { createLruCache } from './domain/storage/lru-cache.js';
 import type { LayoutProbe } from './ports/layout-probe.js';
 import { canonicalizeTrustedDirectories } from './repository/canonicalize-trusted-directories.js';
@@ -92,7 +92,8 @@ export const openRepository = async (opts: OpenNodeRepositoryOptions = {}): Prom
   // `undefined` for the 3rd (`fsOps`) argument takes the constructor's own
   // `realFsOps` default; this module never imports it directly.
   const fs = new NodeFileSystem(roots, nativePolicy, undefined, canonical);
-  const hash = new NodeHashService();
+  const algorithm = opts.algorithm ?? 'sha1';
+  const hash = new NodeHashService(algorithm);
   const compressor = new NodeCompressor();
   const transport = new NodeHttpTransport({
     allowInsecureHttp: opts.allowInsecureHttp ?? false,
@@ -108,7 +109,7 @@ export const openRepository = async (opts: OpenNodeRepositoryOptions = {}): Prom
     ssh: new NodeSshTransport(),
     runtime: 'node' as const,
     layout,
-    hashConfig: SHA1_CONFIG,
+    hashConfig: configFor(algorithm),
     deltaCache: createLruCache<Uint8Array>(
       opts.deltaCacheMaxBytes ?? DEFAULT_DELTA_CACHE_BYTES,
       opts.deltaCacheMaxEntries ?? DEFAULT_DELTA_CACHE_ENTRIES,

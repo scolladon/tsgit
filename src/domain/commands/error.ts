@@ -82,6 +82,12 @@ export type CommandError =
       readonly reason: string;
     }
   | {
+      readonly code: 'OBJECT_FORMAT_CONFLICT';
+      readonly requested: 'sha1' | 'sha256';
+      readonly declared: 'sha1' | 'sha256';
+      readonly source: 'option' | 'hash';
+    }
+  | {
       readonly code: 'WORKING_TREE_FILE_TOO_LARGE';
       readonly path: FilePath;
       readonly size: number;
@@ -468,6 +474,22 @@ export const adapterUnavailable = (
     runtime,
     reason: sanitizeForDisplay(reason),
   });
+
+/**
+ * Two of the object-algorithm channels (the `algorithm` option, the
+ * repository's declared `extensions.objectFormat`, a caller-supplied `hash`
+ * service's own algorithm) disagree. `source` names which channel
+ * `requested` came from; `declared` is the other side of the disagreement —
+ * not necessarily the repository's declared format (a `hash` vs `algorithm`
+ * conflict names the option's value there). An option/config conflict, not
+ * a repository property — raised outside the repository-format acceptance
+ * tier, never from an `assert*` function.
+ */
+export const objectFormatConflict = (
+  requested: 'sha1' | 'sha256',
+  declared: 'sha1' | 'sha256',
+  source: 'option' | 'hash',
+): TsgitError => new TsgitError({ code: 'OBJECT_FORMAT_CONFLICT', requested, declared, source });
 
 export const workingTreeFileTooLarge = (path: FilePath, size: number, limit: number): TsgitError =>
   new TsgitError({ code: 'WORKING_TREE_FILE_TOO_LARGE', path, size, limit });
