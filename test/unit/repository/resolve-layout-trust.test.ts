@@ -512,6 +512,29 @@ describe('resolveLayout — the ownership-trust gate', () => {
       });
     });
 
+    describe('Given a DISCOVERED route via a gitfile pointing at a non-.git-named directory', () => {
+      describe("When resolveLayout runs with bareRepositories: 'explicit'", () => {
+        it('Then implicitBare is absent — the heuristic is scoped to the BARE_DIR route alone', async () => {
+          // Arrange — a `.git` FILE (not directory) resolves to an arbitrary
+          // gitdir location, so the DISCOVERED route can carry a basename
+          // that is not `.git` too, isolating the `route === 'BARE_DIR'`
+          // conjunct: every other basename/exemption row in this file uses
+          // the BARE_DIR route exclusively.
+          const fs = new MemoryFileSystem({ rootDir: '/repo' });
+          await makeGitDir(fs, '/repo/storage');
+          await fs.writeUtf8('/repo/wrap/.git', 'gitdir: /repo/storage\n');
+
+          // Act
+          const result = await resolveLayout(fileSystemLayoutProbe(fs), '/repo/wrap', posixPolicy, {
+            bareRepositories: 'explicit',
+          });
+
+          // Assert
+          expect(result?.implicitBare).toBeUndefined();
+        });
+      });
+    });
+
     describe('Given the non-.git fixture with its repository path allowlisted', () => {
       describe("When resolveLayout runs with bareRepositories: 'explicit'", () => {
         it('Then implicitBare is still set — the allowlist does not lift it', async () => {

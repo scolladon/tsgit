@@ -545,6 +545,34 @@ describe('readRepositoryFormat', () => {
     });
   });
 
+  describe('Given a NEGATIVE version paired with an UNKNOWN extension name', () => {
+    describe('When readRepositoryFormat runs', () => {
+      it('Then it carries no refusal — a negative version refuses neither arm', async () => {
+        // Arrange — every other extension-arm fixture pairs an unknown name
+        // with `version === 0` or `version >= 1`; only a negative version
+        // exercises the `>= 1` guard's false branch with a non-empty entries
+        // array, so a mutant forcing that guard `true` survives every other
+        // row here.
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await fs.writeUtf8(
+          '/repo/.git/config',
+          '[core]\n\trepositoryformatversion = -1\n[extensions]\n\tbogus = 1\n',
+        );
+
+        // Act
+        const result = await readRepositoryFormat(
+          fileSystemLayoutProbe(fs),
+          '/repo/.git',
+          '/repo/.git',
+          posixPolicy,
+        );
+
+        // Assert
+        expect(result.refusal).toBeUndefined();
+      });
+    });
+  });
+
   describe('Given a SUBSECTIONED v1-only extension at version 0', () => {
     describe('When readRepositoryFormat runs', () => {
       it('Then it is accepted — a subsectioned name is not the v1-only name', async () => {
@@ -1383,6 +1411,43 @@ describe('readRepositoryFormat', () => {
             key: 'extensions.worktreeconfig',
             source: '/repo/.git/config',
             value: 'banana',
+          });
+        });
+      });
+    });
+
+    describe('Given extensions.compatObjectFormat and a WELL-FORMED extensions.worktreeConfig at version 1', () => {
+      describe('When readRepositoryFormat runs', () => {
+        it('Then the refuse-set throw wins — a valid worktreeConfig boolean never blocks it', async () => {
+          // Arrange — the sibling row above proves the malformed-boolean
+          // fatal wins; this row proves the INVERSE: a well-formed boolean
+          // must fall through to the refuse-set throw rather than being
+          // (wrongly) treated as malformed.
+          const fs = new MemoryFileSystem({ rootDir: '/repo' });
+          await fs.writeUtf8(
+            '/repo/.git/config',
+            '[core]\n\trepositoryformatversion = 1\n[extensions]\n\tcompatObjectFormat = sha1\n\tworktreeConfig = true\n',
+          );
+
+          // Act
+          let caught: unknown;
+          try {
+            await readRepositoryFormat(
+              fileSystemLayoutProbe(fs),
+              '/repo/.git',
+              '/repo/.git',
+              posixPolicy,
+            );
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data).toEqual({
+            code: 'REPOSITORY_EXTENSION_UNSUPPORTED',
+            extension: 'compatobjectformat',
+            value: 'sha1',
           });
         });
       });
