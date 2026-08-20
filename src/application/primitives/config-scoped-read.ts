@@ -1,11 +1,12 @@
 import type { ConfigKey, ConfigScope } from '../../domain/commands/config-key.js';
 import { parseConfigKey } from '../../domain/commands/config-key.js';
-import { configMultipleValues } from '../../domain/commands/error.js';
+import { configMultipleValues, configScopeNotAvailable } from '../../domain/commands/error.js';
 import { type IniSection, parseIniSections } from '../../domain/config/config-ini.js';
 import { TsgitError } from '../../domain/error.js';
 import type { Context } from '../../ports/context.js';
 import { collectScopedValues, collectValues } from './internal/config-key.js';
 import { mergeConfigsByScope, resolveScopePath, SCOPE_ORDER } from './internal/config-scope.js';
+import { layoutFailsAcceptance } from './internal/layout-verdict.js';
 
 // Per-scope sections cache, single-flight by Context identity. Lives apart from
 // `readConfig`'s ParsedConfig cache (in `config-read.ts`) because the porcelain
@@ -63,6 +64,9 @@ const readSingleScopeUncached = async (
 };
 
 const readSingleScope = (ctx: Context, scope: ConfigScope): Promise<ReadonlyArray<IniSection>> => {
+  if (layoutFailsAcceptance(ctx.layout) && (scope === 'local' || scope === 'worktree')) {
+    throw configScopeNotAvailable(scope, 'repository-not-accepted');
+  }
   const bucket = getSectionsCacheBucket(ctx);
   const cached = bucket.get(scope);
   if (cached !== undefined) return cached;

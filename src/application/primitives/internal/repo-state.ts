@@ -17,6 +17,12 @@ import {
   REBASE_HEAD,
   REVERT_HEAD,
 } from '../../../domain/refs/state-files.js';
+import {
+  dubiousOwnership,
+  implicitBareRepository,
+  repositoryExtensionsUnsupported,
+  repositoryFormatVersionUnsupported,
+} from '../../../domain/repository/error.js';
 import { isRefsLinkText, isValidHeadContent } from '../../../domain/repository/head-ref.js';
 import {
   CHERRY_PICK,
@@ -25,7 +31,7 @@ import {
   REBASE,
   REVERT,
 } from '../../../domain/sequencer/operation-labels.js';
-import type { Context } from '../../../ports/context.js';
+import type { Context, RepositoryFormatRefusal } from '../../../ports/context.js';
 import {
   findFirstInvalidBoolean,
   findFirstInvalidBooleanInSection,
@@ -213,15 +219,55 @@ export const assertEagerConfigValid = async (ctx: Context): Promise<void> => {
   if (selected !== undefined) throwEagerCandidate(selected);
 };
 
+const throwFormatRefusal = (refusal: RepositoryFormatRefusal): never => {
+  if (refusal.kind === 'version') throw repositoryFormatVersionUnsupported(refusal.version);
+  throw repositoryExtensionsUnsupported(refusal.version, refusal.extensions);
+};
+
 /**
- * The operational entry point: confirm a real repository (a usable HEAD) AND that
+ * The ownership gate: `implicitBare` refuses ahead of `untrusted` — the one
+ * measured ordering between the two — and `trustedDirectories` does not lift
+ * the implicit-bare refusal. `foreignPath` is passed only when it is present
+ * AND differs from `path`, so a reported value always names a directory
+ * OTHER than the one `path` already names. Both reads are synchronous: the
+ * layout is frozen at open time, so this is no I/O and no per-command cost.
+ */
+const assertTrusted = (ctx: Context, path: FilePath): void => {
+  if (ctx.layout.implicitBare === true) throw implicitBareRepository(ctx.layout.gitDir);
+  if (ctx.layout.untrusted === true) {
+    const { foreignPath } = ctx.layout;
+    const foreign =
+      foreignPath !== undefined && foreignPath !== path ? (foreignPath as FilePath) : undefined;
+    throw dubiousOwnership(path, foreign);
+  }
+};
+
+/**
+ * The acceptance tier: a repository the gates below reject is not operated on at
+ * all. Every verb except the four surviving `config` read verbs takes this or
+ * `assertOperationalRepository`.
+ *
+ * Insertion point: the ownership gate's `implicitBare` and `untrusted` arms land
+ * ABOVE the format arm, and their relative order is that gate's to decide rather
+ * than this one's.
+ */
+export const assertAcceptedRepository = async (ctx: Context): Promise<FilePath> => {
+  const root = await assertRepository(ctx);
+  assertTrusted(ctx, root);
+  const refusal = ctx.layout.formatRefusal;
+  if (refusal !== undefined) throwFormatRefusal(refusal);
+  return root;
+};
+
+/**
+ * The operational entry point: confirm the repository is accepted AND that
  * the `[core]` section passes full validation, then return the repo root.
  * Operational commands take this; the config porcelain stays on the bare
  * `assertRepository` so it survives a valueless or invalid `[core]` entry
  * (git's split).
  */
 export const assertOperationalRepository = async (ctx: Context): Promise<FilePath> => {
-  const root = await assertRepository(ctx);
+  const root = await assertAcceptedRepository(ctx);
   await assertEagerConfigValid(ctx);
   return root;
 };

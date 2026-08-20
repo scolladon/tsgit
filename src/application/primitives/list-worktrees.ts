@@ -7,6 +7,7 @@
 import type { ObjectId, RefName } from '../../domain/objects/index.js';
 import type { FilePath } from '../../domain/objects/object-id.js';
 import { parseLooseRef } from '../../domain/refs/index.js';
+import { resolveWorktreePath } from '../../domain/worktree/resolve-path.js';
 import type { Context } from '../../ports/context.js';
 import { readConfig } from './config-read.js';
 import { worktreeScopedFs } from './internal/worktree-context.js';
@@ -115,7 +116,15 @@ const readLocked = async (
 
 /** Build the entry for one linked worktree from its admin dir. */
 const linkedEntry = async (ctx: Context, id: string, adminDir: string): Promise<WorktreeEntry> => {
-  const gitdirPointer = (await ctx.fs.readUtf8(`${adminDir}/gitdir`)).trim();
+  // Resolved ONCE against adminDir (git-faithful for `--relative-paths`
+  // pointers) and reused for BOTH consumers below: an absolute pointer
+  // resolves to itself, so this is a no-op for today's default writer.
+  // Resolving REMOVES the escape rather than tolerating it — the resolved
+  // value is still subject to the same worktree-scoped fs containment.
+  const gitdirPointer = resolveWorktreePath(
+    adminDir,
+    (await ctx.fs.readUtf8(`${adminDir}/gitdir`)).trim(),
+  );
   const path = stripGitSuffix(gitdirPointer) as FilePath;
   const resolved = await resolveHead(ctx, await ctx.fs.readUtf8(`${adminDir}/HEAD`));
   const locked = await readLocked(ctx, adminDir);

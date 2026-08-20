@@ -463,3 +463,114 @@ describe('mergeConfigsByScope', () => {
     });
   });
 });
+
+describe('the repository config on a refused repository', () => {
+  describe('Given a layout the ownership-trust gate refused', () => {
+    describe('When isWorktreeScopeActive runs', () => {
+      it('Then it reports inactive without reading the config file', async () => {
+        // Arrange — this is the third reader of the repository config, and the
+        // only one not reached through loadConfigEntry or readSingleScope. The
+        // invariant it has to hold up is that a refused repository's config is
+        // never PARSED, so the assertion is on the read, not just the verdict.
+        const base = createMemoryContext();
+        await base.fs.writeUtf8(
+          `${base.layout.gitDir}/config`,
+          '[extensions]\n\tworktreeConfig = true\n',
+        );
+        let reads = 0;
+        const ctx = {
+          ...base,
+          fs: {
+            ...base.fs,
+            readUtf8: async (path: string) => {
+              reads += 1;
+              return base.fs.readUtf8(path);
+            },
+          },
+          layout: { ...base.layout, untrusted: true as const },
+        };
+        const sut = isWorktreeScopeActive;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result).toBe(false);
+        expect(reads).toBe(0);
+      });
+    });
+  });
+
+  describe('Given a layout refused for an unsupported repository format', () => {
+    describe('When isWorktreeScopeActive runs', () => {
+      it('Then it reports inactive without reading the config file', async () => {
+        // Arrange — the trust half of this guard is pinned by the sibling
+        // above; this is the format half. Production reaches the guard only
+        // through resolveScopePath, which already short-circuits on the same
+        // verdict, so nothing but this row holds the defence-in-depth check
+        // in place. The planted extension makes both oracles discriminating:
+        // an unguarded read parses `worktreeConfig = true` and returns true.
+        const base = createMemoryContext();
+        await base.fs.writeUtf8(
+          `${base.layout.gitDir}/config`,
+          '[extensions]\n\tworktreeConfig = true\n',
+        );
+        let reads = 0;
+        const ctx = {
+          ...base,
+          fs: {
+            ...base.fs,
+            readUtf8: async (path: string) => {
+              reads += 1;
+              return base.fs.readUtf8(path);
+            },
+          },
+          layout: {
+            ...base.layout,
+            formatRefusal: { kind: 'version' as const, version: 99 },
+          },
+        };
+        const sut = isWorktreeScopeActive;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result).toBe(false);
+        expect(reads).toBe(0);
+      });
+    });
+
+    describe('When resolveScopePath asks for the worktree scope', () => {
+      it("Then the reason is 'repository-not-accepted', not 'worktree-extension-unset'", async () => {
+        // Arrange — two different facts share one unavailable scope; reporting
+        // a refused repository as an unset extension sends the caller looking
+        // for a config key that was never read.
+        const base = createMemoryContext();
+        const ctx = {
+          ...base,
+          layout: {
+            ...base.layout,
+            formatRefusal: { kind: 'version' as const, version: 99 },
+          },
+        };
+        const sut = resolveScopePath;
+
+        // Act
+        let caught: TsgitError | undefined;
+        try {
+          await sut(ctx, 'worktree');
+        } catch (err) {
+          caught = err as TsgitError;
+        }
+
+        // Assert
+        expect(caught?.data).toStrictEqual({
+          code: 'CONFIG_SCOPE_NOT_AVAILABLE',
+          scope: 'worktree',
+          reason: 'repository-not-accepted',
+        });
+      });
+    });
+  });
+});

@@ -44,6 +44,12 @@ await bare.init({ bare: true });
 const bounded = await openRepository({ cwd: '/repo/nested/deep', ceilingDirs: ['/repo/nested'] });
 ```
 
+## Repository trust
+
+`trust` and `trustedDirectories` exist on the option type but are inert here: the ownership-trust gate is an **optional** adapter capability ([Node get-started](node.md#bare-repositories-and-explicit-layout)), and the memory adapter doesn't implement it — its filesystem is an in-process `Map` with no owner model, so no foreign-owned repository can exist. Every repository the memory adapter opens is trusted regardless of what `trust` is set to.
+
+`bareRepositories: 'explicit'` is **not** inert — unlike the browser's fixed entry, the memory adapter runs the same discovery walk as Node, so the walk-reached-a-gitdir-under-another-name condition that option keys on is real here too. See [Repository trust](../understand/security.md#repository-trust) for what the gate closes on adapters that do implement the ownership half.
+
 ## Exercise the API
 
 ```ts

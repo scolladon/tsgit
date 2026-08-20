@@ -80,11 +80,16 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'PACK_TOO_LARGE':
     case 'SHALLOW_FILE_MALFORMED':
     case 'NOT_A_REPOSITORY':
+    case 'DUBIOUS_OWNERSHIP':
+    case 'IMPLICIT_BARE_REPOSITORY':
     case 'BARE_REPOSITORY':
     case 'WORK_TREE_REQUIRED':
     case 'WORK_TREE_CONFIG_INVALID':
     case 'WORK_TREE_UNRESOLVABLE':
     case 'ALREADY_INITIALIZED':
+    case 'REPOSITORY_FORMAT_VERSION_UNSUPPORTED':
+    case 'REPOSITORY_EXTENSIONS_UNSUPPORTED':
+    case 'REPOSITORY_EXTENSION_UNSUPPORTED':
     case 'WORKING_TREE_DIRTY':
     case 'PATHSPEC_NO_MATCH':
     case 'PATHSPEC_OUTSIDE_REPO':

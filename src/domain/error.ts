@@ -298,6 +298,12 @@ function extractDetail(data: TsgitErrorData): string {
       return `bad shallow file at line ${data.lineNumber}: ${data.reason}`;
     case 'NOT_A_REPOSITORY':
       return `not a git repository: ${basename(data.path)}`;
+    case 'DUBIOUS_OWNERSHIP':
+      return data.foreignPath === undefined
+        ? `dubious ownership in repository at ${basename(data.path)}`
+        : `dubious ownership in repository at ${basename(data.path)} (first foreign path: ${basename(data.foreignPath)})`;
+    case 'IMPLICIT_BARE_REPOSITORY':
+      return `cannot use implicit git directory: ${basename(data.gitDir)}`;
     case 'BARE_REPOSITORY':
       return `operation requires a working tree: ${data.operation}`;
     case 'WORK_TREE_REQUIRED':
@@ -308,6 +314,12 @@ function extractDetail(data: TsgitErrorData): string {
       return `cannot resolve work tree '${data.value}' from ${basename(data.gitDir)}`;
     case 'ALREADY_INITIALIZED':
       return `repository already exists: ${basename(data.path)}`;
+    case 'REPOSITORY_FORMAT_VERSION_UNSUPPORTED':
+      return `unsupported repository format version: ${data.version}`;
+    case 'REPOSITORY_EXTENSIONS_UNSUPPORTED':
+      return `unsupported repository extensions at format version ${data.version}: ${data.extensions.length} (first: ${data.extensions[0]})`;
+    case 'REPOSITORY_EXTENSION_UNSUPPORTED':
+      return `repository extension not supported: ${data.extension} = ${data.value}`;
     case 'WORKING_TREE_DIRTY':
       return `working tree has uncommitted changes: ${data.localChanges.length + data.untracked.length} files`;
     case 'PATHSPEC_NO_MATCH':

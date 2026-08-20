@@ -7,13 +7,15 @@ import type {
 } from '../../domain/bundle/index.js';
 import { TsgitError } from '../../domain/error.js';
 import { parseHeader, serializeObject } from '../../domain/objects/index.js';
-import type { ObjectId } from '../../domain/objects/object-id.js';
+import type { FilePath, ObjectId } from '../../domain/objects/object-id.js';
+import { notARepository } from '../../domain/repository/error.js';
 import type { Context } from '../../ports/context.js';
 import {
   type ExternalBaseResolver,
   verifyPackTrailer,
   walkPackEntries,
 } from '../primitives/fetch-pack.js';
+import { layoutFailsAcceptance } from '../primitives/internal/layout-verdict.js';
 import { readObject } from '../primitives/read-object.js';
 import { readBundle } from './internal/read-bundle.js';
 
@@ -31,10 +33,30 @@ export interface BundleVerifyResult {
   readonly recordsCompleteHistory: boolean;
 }
 
+/**
+ * Verifying a bundle resolves its prerequisites against the repository, so a
+ * repository the acceptance tier rejected is not one this verb can use.
+ *
+ * git demotes such a repository to *absent* here rather than raising its
+ * ownership fatal — measured on 2.55.0 with the owner check forced to fail:
+ * `bundle verify` exits 1 with `need a repository to verify a bundle`, byte
+ * for byte what it prints outside any repository at all, while `status` on
+ * the same fixture exits 128 with the dubious-ownership fatal and
+ * `bundle list-heads` still exits 0 (it reads only the bundle). The
+ * repository-absent refusal is therefore the faithful shape, which is why
+ * this verb cannot simply take the acceptance tier: that tier raises the
+ * ownership and format families, and git raises neither of them here.
+ */
+const assertUsableForBundleVerify = (ctx: Context): void => {
+  if (!layoutFailsAcceptance(ctx.layout)) return;
+  throw notARepository((ctx.layout.workDir ?? ctx.layout.gitDir) as FilePath);
+};
+
 export const bundleVerify = async (
   ctx: Context,
   input: BundleVerifyInput,
 ): Promise<BundleVerifyResult> => {
+  assertUsableForBundleVerify(ctx);
   const { header, packBytes } = await readBundle(ctx, input.path);
   const missingPrerequisites = await findMissingPrerequisites(ctx, header.prerequisites);
   if (missingPrerequisites.length > 0) {

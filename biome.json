@@ -28,7 +28,10 @@
       "tooling/audit-test-pyramid.ts",
       "tooling/dts-entries.ts",
       "tooling/dts-value-exports.ts",
-      "tooling/truthful-dts.ts"
+      "tooling/truthful-dts.ts",
+      "tooling/audit-assert-tier.ts",
+      "tooling/audit-assert-tier/**/*.ts",
+      "tooling/test/unit/audit-assert-tier.test.ts"
     ]
   },
   "formatter": {

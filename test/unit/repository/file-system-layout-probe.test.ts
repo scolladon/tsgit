@@ -125,6 +125,22 @@ describe('fileSystemLayoutProbe', () => {
   });
 });
 
+describe('Given a FileSystem-backed layout probe', () => {
+  describe('When its capability set is inspected', () => {
+    it('Then isOwnedByCaller is undefined', () => {
+      // Arrange
+      const fs = new MemoryFileSystem({ rootDir: '/repo' });
+      const sut = fileSystemLayoutProbe(fs);
+
+      // Assert — a FileSystem sourced from a sandboxed adapter (memory,
+      // browser) hardcodes uid 0, so this shim must never claim ownership
+      // capability: doing so would declare every sandboxed repository
+      // foreign-owned for any non-root caller.
+      expect(sut.isOwnedByCaller).toBeUndefined();
+    });
+  });
+});
+
 describe('Given a symlink and a regular file behind the probe', () => {
   describe('When readLink runs', () => {
     it('Then the symlink yields its link text and the regular file collapses to undefined', async () => {

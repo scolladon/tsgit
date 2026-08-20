@@ -15,10 +15,12 @@ import { NodeHashService } from './adapters/node/node-hash-service.js';
 import { NodeHookRunner } from './adapters/node/node-hook-runner.js';
 import { NodeHttpTransport } from './adapters/node/node-http-transport.js';
 import { NodeSshTransport } from './adapters/node/node-ssh-transport.js';
+import { ownedByCallerPredicate } from './adapters/node/owner-predicate.js';
 import { nativePolicy } from './adapters/node/path-policy.js';
 import { SHA1_CONFIG } from './domain/objects/hash-config.js';
 import { createLruCache } from './domain/storage/lru-cache.js';
 import type { LayoutProbe } from './ports/layout-probe.js';
+import { canonicalizeTrustedDirectories } from './repository/canonicalize-trusted-directories.js';
 import { layoutRootsOf } from './repository/layout-roots.js';
 import {
   type ExplicitLayoutOptions,
@@ -154,6 +156,11 @@ const nodeLayoutProbe: LayoutProbe = {
   // EINVAL (not a symlink) and ENOENT both collapse to undefined per the
   // port contract — the caller only cares whether usable link text exists.
   readLink: (p) => readlink(p, 'utf8').catch(() => undefined),
+  isOwnedByCaller: ownedByCallerPredicate({
+    // Effective uid, matching the port contract and git's own `geteuid()`.
+    callerUid: () => process.geteuid?.() ?? process.getuid?.(),
+    ownerUid: async (p) => (await stat(p).catch(() => undefined))?.uid,
+  }),
 };
 
 /**
@@ -185,6 +192,15 @@ const canonicalizeCeilings = async (
   const resolved = await Promise.all(ceilingDirs.map((dir) => canonicalize(dir)));
   return resolved.map((entry) => entry.path);
 };
+
+/**
+ * Realpaths every entry of `trustedDirectories`, best-effort — the same
+ * `canonicalize` fallback `canonicalizeCeilings` uses, so an entry with a
+ * missing intermediate component correctly fails to match rather than
+ * silently matching a lexical prefix. The literal `'*'` is skipped
+ * entirely: it must never be realpathed into `<cwd>/*`, which would turn
+ * "trust everything" into "trust nothing".
+ */
 
 /**
  * Resolve the physical layout for `cwd`: `opts.gitDir`, when given, skips
@@ -232,12 +248,36 @@ const nodeLayoutCapabilities = {
  * genuinely lexical sources (`core.worktree`, an explicit `opts.workDir`)
  * pay one.
  */
+/**
+ * Assembles the `ExplicitLayoutOptions` object `resolveLayout` receives,
+ * folding in each optional field only when the caller actually set it —
+ * `exactOptionalPropertyTypes` forbids the explicit-undefined form. Extracted
+ * from `resolveNodeLayout` to keep that function's own branching count low.
+ */
+const buildLayoutOptions = (
+  opts: ExplicitLayoutOptions,
+  explicit: Pick<ExplicitLayoutOptions, 'workDir' | 'bare'>,
+  ceilingDirs: ReadonlyArray<string> | undefined,
+  trustedDirectories: ReadonlyArray<string> | undefined,
+): ExplicitLayoutOptions => ({
+  ...(opts.gitDir !== undefined ? { gitDir: opts.gitDir } : {}),
+  ...explicit,
+  ...(ceilingDirs !== undefined ? { ceilingDirs } : {}),
+  ...(opts.trust !== undefined ? { trust: opts.trust } : {}),
+  ...(trustedDirectories !== undefined ? { trustedDirectories } : {}),
+  ...(opts.bareRepositories !== undefined ? { bareRepositories: opts.bareRepositories } : {}),
+});
+
 const resolveNodeLayout = async (
   cwd: string,
   opts: ExplicitLayoutOptions,
   cwdCanonical: boolean,
 ): Promise<{ layout: RepositoryLayoutInput; canonical: boolean }> => {
   const ceilingDirs = await canonicalizeCeilings(opts.ceilingDirs);
+  const trustedDirectories = await canonicalizeTrustedDirectories(
+    opts.trustedDirectories,
+    async (path) => (await canonicalize(path)).path,
+  );
   const explicit = {
     ...(opts.workDir !== undefined ? { workDir: opts.workDir } : {}),
     ...(opts.bare !== undefined ? { bare: opts.bare } : {}),
@@ -246,11 +286,7 @@ const resolveNodeLayout = async (
     nodeLayoutProbe,
     cwd,
     nativePolicy,
-    {
-      ...(opts.gitDir !== undefined ? { gitDir: opts.gitDir } : {}),
-      ...explicit,
-      ...(ceilingDirs !== undefined ? { ceilingDirs } : {}),
-    },
+    buildLayoutOptions(opts, explicit, ceilingDirs, trustedDirectories),
     nodeLayoutCapabilities,
   );
   if (resolved === undefined) {

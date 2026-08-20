@@ -13,7 +13,7 @@ import { type ObjectId, type RefName, ZERO_OID } from '../../domain/objects/obje
 import type { Context } from '../../ports/context.js';
 import { readConfig } from '../primitives/config-read.js';
 import { enumerateRefs } from '../primitives/enumerate-refs.js';
-import { assertRepository } from '../primitives/internal/repo-state.js';
+import { assertAcceptedRepository } from '../primitives/internal/repo-state.js';
 import { getRefStore } from '../primitives/ref-store.js';
 import { type ConfigOperation, updateConfigOperations } from '../primitives/update-config.js';
 import { updateRef } from '../primitives/update-ref.js';
@@ -115,7 +115,7 @@ const toRemoteInfo = (
 });
 
 export const remoteList = async (ctx: Context): Promise<RemoteListResult> => {
-  await assertRepository(ctx);
+  await assertAcceptedRepository(ctx);
   const config = await readConfig(ctx);
   if (config.remote === undefined) return { remotes: [] };
   const remotes: RemoteInfo[] = [];
@@ -130,7 +130,7 @@ export const remoteList = async (ctx: Context): Promise<RemoteListResult> => {
 };
 
 export const remoteAdd = async (ctx: Context, input: RemoteAddInput): Promise<RemoteAddResult> => {
-  await assertRepository(ctx);
+  await assertAcceptedRepository(ctx);
   validateRemoteName(input.name);
   assertUrlSafe(input.url);
   const config = await readConfig(ctx);
@@ -170,7 +170,7 @@ export const remoteRemove = async (
   ctx: Context,
   input: RemoteRemoveInput,
 ): Promise<RemoteRemoveResult> => {
-  await assertRepository(ctx);
+  await assertAcceptedRepository(ctx);
   validateRemoteName(input.name);
   const config = await readConfig(ctx);
   if (config.remote?.has(input.name) !== true) throw remoteNotConfigured(input.name);
@@ -233,7 +233,7 @@ export const remoteRename = async (
   ctx: Context,
   input: RemoteRenameInput,
 ): Promise<RemoteRenameResult> => {
-  await assertRepository(ctx);
+  await assertAcceptedRepository(ctx);
   validateRemoteName(input.from);
   validateRemoteName(input.to);
   if (input.from === input.to) {
@@ -303,7 +303,7 @@ export const remoteSetUrl = async (
   ctx: Context,
   input: RemoteSetUrlInput,
 ): Promise<RemoteSetUrlResult> => {
-  await assertRepository(ctx);
+  await assertAcceptedRepository(ctx);
   validateRemoteName(input.name);
   assertUrlSafe(input.url);
   const config = await readConfig(ctx);
@@ -326,7 +326,7 @@ export const remoteShow = async (
   ctx: Context,
   input: RemoteShowInput,
 ): Promise<RemoteShowResult> => {
-  await assertRepository(ctx);
+  await assertAcceptedRepository(ctx);
   validateRemoteName(input.name);
   const config = await readConfig(ctx);
   const entry = config.remote?.get(input.name);

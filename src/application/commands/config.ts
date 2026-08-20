@@ -19,6 +19,7 @@ import {
   readConfigSections,
 } from '../primitives/config-scoped-read.js';
 import { qualifyKey } from '../primitives/internal/config-key.js';
+import { assertAcceptedRepository, assertRepository } from '../primitives/internal/repo-state.js';
 import {
   removeConfigSection,
   renameConfigSection,
@@ -26,7 +27,6 @@ import {
   unsetAllConfigEntries,
   unsetConfigEntry,
 } from '../primitives/update-config.js';
-import { assertRepository } from './internal/repo-state.js';
 
 export type { ConfigKey, ConfigScope } from '../../domain/commands/config-key.js';
 
@@ -150,7 +150,7 @@ export interface ConfigSetResult {
 }
 
 export const configSet = async (ctx: Context, input: ConfigSetInput): Promise<ConfigSetResult> => {
-  await assertRepository(ctx);
+  await assertAcceptedRepository(ctx);
   const targetScope: ConfigScope = input.scope ?? 'local';
   const existing = await getAllConfigValues({ ctx, key: input.key, scope: targetScope });
   if (existing.values.length > 1) {
@@ -179,7 +179,7 @@ export const configUnset = async (
   ctx: Context,
   input: ConfigUnsetInput,
 ): Promise<ConfigUnsetResult> => {
-  await assertRepository(ctx);
+  await assertAcceptedRepository(ctx);
   const targetScope: ConfigScope = input.scope ?? 'local';
   const existing = await getAllConfigValues({ ctx, key: input.key, scope: targetScope });
   if (existing.values.length === 0) {
@@ -214,7 +214,7 @@ export const configUnsetAll = async (
   ctx: Context,
   input: ConfigUnsetAllInput,
 ): Promise<ConfigUnsetAllResult> => {
-  await assertRepository(ctx);
+  await assertAcceptedRepository(ctx);
   const targetScope: ConfigScope = input.scope ?? 'local';
   const existing = await getAllConfigValues({ ctx, key: input.key, scope: targetScope });
   // Stryker disable next-line ConditionalExpression,BlockStatement: equivalent — dropping this early return (or forcing the guard false) falls through to `unsetAllConfigEntries`, which is itself a no-op when the key has no matches (it returns before any write or cache invalidation), and `removed: existing.values.length` is 0 either way, so the returned envelope and on-disk state are identical.
@@ -241,7 +241,7 @@ export const configRenameSection = async (
   ctx: Context,
   input: ConfigRenameSectionInput,
 ): Promise<ConfigRenameSectionResult> => {
-  await assertRepository(ctx);
+  await assertAcceptedRepository(ctx);
   const targetScope: ConfigScope = input.scope ?? 'local';
   await renameConfigSection({
     ctx,
@@ -266,7 +266,7 @@ export const configRemoveSection = async (
   ctx: Context,
   input: ConfigRemoveSectionInput,
 ): Promise<ConfigRemoveSectionResult> => {
-  await assertRepository(ctx);
+  await assertAcceptedRepository(ctx);
   const targetScope: ConfigScope = input.scope ?? 'local';
   await removeConfigSection({ ctx, sectionName: input.name, scope: targetScope });
   return { name: input.name, scope: targetScope };

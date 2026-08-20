@@ -1,6 +1,7 @@
 import type { FilePath } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
 import { joinPath } from './join-working-tree-path.js';
+import { inheritedAcceptanceVerdicts } from './layout-verdict.js';
 import { requireWorkTree } from './repo-state.js';
 
 /**
@@ -25,6 +26,7 @@ const buildChildContext = (ctx: Context, name: string, treeRelPath: FilePath): C
       bare: false,
       // Stryker disable next-line ConditionalExpression,BooleanLiteral,EqualityOperator,ObjectLiteral: equivalent — when `homeDir` is undefined the always-true mutant yields `{ homeDir: undefined }`, indistinguishable from the `{}` branch on `layout.homeDir`; the conditional only exists to satisfy `exactOptionalPropertyTypes`. The killable always-`{}` half is covered by the homeDir-propagation tests.
       ...(ctx.layout.homeDir !== undefined ? { homeDir: ctx.layout.homeDir } : {}),
+      ...inheritedAcceptanceVerdicts(ctx.layout),
     }),
     cwd: workDir,
   });

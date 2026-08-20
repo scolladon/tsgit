@@ -51,6 +51,42 @@ const repo = await openRepository({
 const bounded = await openRepository({ cwd: '/tmp/nested/deep', ceilingDirs: ['/tmp/nested'] });
 ```
 
+`trust`, `trustedDirectories`, and `bareRepositories` gate a repository reached by discovery, the way git's `safe.directory` gates one:
+
+| Option | Default | Purpose |
+|---|---|---|
+| `trust` | `'ownership'` | Refuse a discovered repository whose metadata isn't owned by the caller. `'always'` disables the check. |
+| `trustedDirectories` | none | Absolute directories trusted regardless of ownership. The single entry `'*'` trusts every repository; a trailing `/*` trusts every path strictly below the prefix. |
+| `bareRepositories` | `'all'` | `'explicit'` refuses a gitdir that discovery reached under a name other than `.git`. |
+
+```ts
+// Trust one shared repository regardless of who owns its files
+const shared = await openRepository({
+  cwd: '/srv/shared-repo',
+  trustedDirectories: ['/srv/shared-repo'],
+});
+```
+
+That is the recipe for a CI container or a network mount whose checkout uid
+doesn't match the process uid: pass `trustedDirectories: ['/srv/checkout']`
+for that one path rather than disabling `trust` altogether.
+
+Turning the ownership-trust gate on by default is a **breaking behavioural
+change** for discovery-route callers that previously opened a foreign-owned
+repository silently. Refused, every surface follows one fixed contract:
+
+| surface | behaviour on a refused repository |
+|---|---|
+| `openRepository` | resolves; `repo.layout.untrusted === true` |
+| `init`, `clone` | bootstrap normally — they run no acceptance tier |
+| `repo.config.get`, `.getAll`, `.getRegexp`, `.list` | succeed with an **empty repository scope**; a planted local key reports absent |
+| all five `repo.config` write verbs; all six `repo.remote` verbs | refuse with `IMPLICIT_BARE_REPOSITORY`, else `DUBIOUS_OWNERSHIP` |
+| everything else | the same refusals |
+
+See [errors](../use/errors.md#repository-state) for the full `DUBIOUS_OWNERSHIP` /
+`IMPLICIT_BARE_REPOSITORY` payloads, and [Repository trust](../understand/security.md#repository-trust)
+for what the gate closes.
+
 Bootstrapping a fresh bare repository needs `gitDir` equal to `cwd` so the constructed layout has no work tree — `init({ bare: true })` then writes exactly what `git init --bare` writes, and both tsgit and real git can reopen the result:
 
 ```ts

@@ -4,6 +4,13 @@ import type { LayoutProbe } from '../ports/layout-probe.js';
 import type { RepositoryLayoutInput } from '../repository.js';
 import { findLayout, resolveCommonDir, resolvePointer, type WalkOutcome } from './find-layout.js';
 import { type RepositoryFormat, readRepositoryFormat } from './read-repository-format.js';
+import {
+  evaluateTrust,
+  isImplicitBare,
+  TRUSTED,
+  type TrustOptions,
+  type TrustVerdict,
+} from './trust-verdict.js';
 
 /**
  * Explicit layout arguments `resolveLayout` accepts on top of discovery —
@@ -16,6 +23,9 @@ export interface ExplicitLayoutOptions {
   readonly workDir?: string;
   readonly bare?: boolean;
   readonly ceilingDirs?: ReadonlyArray<string>;
+  readonly trust?: 'ownership' | 'always';
+  readonly trustedDirectories?: ReadonlyArray<string>;
+  readonly bareRepositories?: 'all' | 'explicit';
 }
 
 /**
@@ -140,11 +150,54 @@ const resolveConfigWorkTree = async (
   return physical;
 };
 
-/** `bare` / `workDir` overrides `finishLayout` applies on top of config. */
+/** `bare` / `workDir` overrides `finishLayout` applies on top of config, plus the trust policy gating Stage 2. */
 interface LayoutOverrides {
   readonly bare?: boolean;
   readonly workDir?: string;
+  readonly trustOptions?: TrustOptions;
 }
+
+/**
+ * The empty repository-format shape `finishLayout` substitutes when the
+ * trust gate refuses discovery — skipping the config read entirely rather
+ * than reading a file the caller was told not to trust. A module constant,
+ * not an inline literal, is what makes the skip legible at the call site.
+ */
+const EMPTY_FORMAT: RepositoryFormat = {
+  bare: undefined,
+  worktree: undefined,
+  worktreeConfig: false,
+  refusal: undefined,
+};
+
+/** `finishLayout`'s trust-gate outcome: the ownership verdict, the implicit-bare refusal, and whether Stage 2 may run. */
+interface TrustGate {
+  readonly verdict: TrustVerdict;
+  readonly implicitBare: boolean;
+  readonly accepted: boolean;
+}
+
+/**
+ * The ownership-trust gate, evaluated ABOVE the first config byte the open
+ * sequence reads (`readRepositoryFormat`, in `finishLayout` below). The
+ * explicit-gitDir route is never gated — `evaluateTrust` is skipped
+ * outright, matching git's measured behaviour. `accepted` folds the
+ * ownership verdict and the implicit-bare refusal into one flag that
+ * neither trust escape hatch (`trust: 'always'`, `trustedDirectories`)
+ * lifts.
+ */
+const resolveTrustGate = async (
+  probe: LayoutProbe,
+  outcome: WalkOutcome,
+  commonDir: string,
+  pathPolicy: PathPolicy,
+  trustOptions: TrustOptions,
+): Promise<TrustGate> => {
+  const gated = outcome.route !== 'EXPLICIT';
+  const implicitBare = isImplicitBare(outcome, pathPolicy, trustOptions.bareRepositories);
+  const verdict = gated ? await evaluateTrust(probe, outcome, commonDir, trustOptions) : TRUSTED;
+  return { verdict, implicitBare, accepted: verdict.trusted && !implicitBare };
+};
 
 /**
  * The found-nothing bootstrap layout: discovery judged that NO repository
@@ -196,7 +249,16 @@ export const finishLayout = async (
   caps: LayoutCapabilities = {},
 ): Promise<RepositoryLayoutInput> => {
   const commonDir = outcome.commonDir ?? outcome.gitDir;
-  const fmt = await readRepositoryFormat(probe, outcome.gitDir, commonDir, pathPolicy);
+  const { verdict, implicitBare, accepted } = await resolveTrustGate(
+    probe,
+    outcome,
+    commonDir,
+    pathPolicy,
+    overrides.trustOptions ?? {},
+  );
+  const fmt = accepted
+    ? await readRepositoryFormat(probe, outcome.gitDir, commonDir, pathPolicy)
+    : EMPTY_FORMAT;
   const bareCfg = overrides.bare ?? fmt.bare;
   const { workDir, workTreeConfigBogus } = await resolveWorkTree(
     outcome,
@@ -216,6 +278,9 @@ export const finishLayout = async (
     ...(workDir !== undefined ? { workDir } : {}),
     bare,
     ...(workTreeConfigBogus === true ? { workTreeConfigBogus: true as const } : {}),
+    ...(implicitBare ? { implicitBare: true as const } : {}),
+    ...(verdict.trusted ? {} : { untrusted: true as const, foreignPath: verdict.foreignPath }),
+    ...(fmt.refusal !== undefined ? { formatRefusal: fmt.refusal } : {}),
   };
 };
 
@@ -285,6 +350,13 @@ export const resolveLayout = async (
     {
       ...(opts.bare !== undefined ? { bare: opts.bare } : {}),
       ...(opts.workDir !== undefined ? { workDir: opts.workDir } : {}),
+      trustOptions: {
+        ...(opts.trust !== undefined ? { trust: opts.trust } : {}),
+        ...(opts.trustedDirectories !== undefined
+          ? { trustedDirectories: opts.trustedDirectories }
+          : {}),
+        ...(opts.bareRepositories !== undefined ? { bareRepositories: opts.bareRepositories } : {}),
+      },
     },
     caps,
   );

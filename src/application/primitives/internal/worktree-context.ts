@@ -1,6 +1,7 @@
 import type { Context } from '../../../ports/context.js';
 import type { FileSystem } from '../../../ports/file-system.js';
 import { commonGitDir } from '../path-layout.js';
+import { inheritedAcceptanceVerdicts } from './layout-verdict.js';
 
 /**
  * The filesystem to use for worktree-directory I/O: the facade's worktree-fs
@@ -44,6 +45,7 @@ export const deriveWorktreeContext = (
       commonDir: common,
       bare: false,
       ...(ctx.layout.homeDir !== undefined ? { homeDir: ctx.layout.homeDir } : {}),
+      ...inheritedAcceptanceVerdicts(ctx.layout),
     }),
     cwd: absWorktreePath,
   });

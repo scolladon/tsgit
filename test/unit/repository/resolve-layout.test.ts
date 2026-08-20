@@ -919,4 +919,56 @@ describe('resolveLayout', () => {
       });
     });
   });
+
+  describe('The version arm — core.repositoryformatversion carried onto the layout', () => {
+    describe('Given a repository whose local config sets repositoryformatversion = 99', () => {
+      describe('When resolveLayout runs', () => {
+        it('Then the finished layout carries formatRefusal', async () => {
+          // Arrange
+          const fs = new MemoryFileSystem({ rootDir: '/repo' });
+          await makeGitDir(fs, '/repo/normal/.git');
+          await fs.writeUtf8(
+            '/repo/normal/.git/config',
+            '[core]\n\trepositoryformatversion = 99\n',
+          );
+
+          // Act
+          const result = await resolveLayout(
+            fileSystemLayoutProbe(fs),
+            '/repo/normal',
+            posixPolicy,
+          );
+
+          // Assert
+          expect(result).toStrictEqual({
+            gitDir: '/repo/normal/.git',
+            workDir: '/repo/normal',
+            bare: false,
+            formatRefusal: { kind: 'version', version: 99 },
+          });
+        });
+      });
+    });
+
+    describe('Given a repository whose local config sets repositoryformatversion = 0', () => {
+      describe('When resolveLayout runs', () => {
+        it('Then the finished layout carries no formatRefusal key at all', async () => {
+          // Arrange
+          const fs = new MemoryFileSystem({ rootDir: '/repo' });
+          await makeGitDir(fs, '/repo/normal/.git');
+          await fs.writeUtf8('/repo/normal/.git/config', '[core]\n\trepositoryformatversion = 0\n');
+
+          // Act
+          const result = await resolveLayout(
+            fileSystemLayoutProbe(fs),
+            '/repo/normal',
+            posixPolicy,
+          );
+
+          // Assert — proves the conditional spread, not just an undefined read.
+          expect('formatRefusal' in (result as object)).toBe(false);
+        });
+      });
+    });
+  });
 });

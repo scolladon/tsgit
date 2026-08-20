@@ -9,6 +9,7 @@ import {
 } from '../../domain/config/config-ini.js';
 import { TsgitError } from '../../domain/error.js';
 import type { Context } from '../../ports/context.js';
+import { layoutFailsTrustGate } from './internal/layout-verdict.js';
 import { commonGitDir } from './path-layout.js';
 
 // Re-exported verbatim: these symbols physically live in
@@ -216,9 +217,17 @@ export const invalidateConfigCache = (ctx: Context): void => {
  * means widening the containment root set, which is a security decision, not
  * a config one. The scope-aware porcelain reader (`readConfigSections`) is
  * unaffected and still serves the `config` command.
+ *
+ * A layout the ownership-trust gate refuses (`layoutFailsTrustGate` —
+ * `untrusted` or `implicitBare`) short-circuits BEFORE the read: the file is
+ * never opened, so every consumer of this cache entry — `readConfig`'s
+ * `parsed` projection AND the eager-gate token finders below — observes the
+ * same empty scope `assertTrusted` is about to refuse on, rather than racing
+ * a malformed value in the attacker's file ahead of that refusal.
  */
 const loadConfigEntry = async (ctx: Context): Promise<ConfigCacheEntry> => {
   const path = `${commonGitDir(ctx)}/config`;
+  if (layoutFailsTrustGate(ctx.layout)) return { parsed: {}, tokens: [], source: path };
   const raw = await readRawConfig(ctx, path);
   if (raw === undefined) return { parsed: {}, tokens: [], source: path };
   const tokens = tokenizeConfig(raw, path);

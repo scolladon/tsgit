@@ -65,11 +65,24 @@ outright, in both directions.
 
 `repo.layout` (the same deep-frozen object as `repo.ctx.layout`) carries the
 resolved `gitDir`, optional `commonDir` (linked worktrees), optional `workDir`
-(absent = no working tree), `bare`, and `workTreeConfigBogus`. Every
-`git rev-parse` layout query — `--git-dir`, `--git-common-dir`,
-`--is-bare-repository`, `--show-toplevel`, `--show-prefix`, `--show-cdup`,
-`--is-inside-work-tree`, `--is-inside-git-dir` — is reconstructible from these
-fields plus your own cwd; tsgit ships the data, never a rendered form.
+(absent = no working tree), `bare`, `workTreeConfigBogus`, optional `untrusted`
+and `implicitBare` (present only when `true` — the ownership-trust gate's
+verdict, see Refusals below), optional `foreignPath` (the first checked path
+the ownership predicate reported unowned, present only when one was found),
+and optional `formatRefusal` — the repository-acceptance verdict
+(`core.repositoryformatversion` / `extensions.*`), absent when the repository is
+accepted; see Refusals for how it is enforced. Every `git rev-parse` layout query —
+`--git-dir`, `--git-common-dir`, `--is-bare-repository`, `--show-toplevel`,
+`--show-prefix`, `--show-cdup`, `--is-inside-work-tree`, `--is-inside-git-dir` — is
+reconstructible from these fields plus your own cwd; tsgit ships the data, never a
+rendered form.
+
+A layout carrying `untrusted` or `implicitBare` must be read as **structural**:
+it holds only what discovery produced before any config was read. `bare` is
+the structural default computed from directory shape alone — no `core.bare`
+or `core.worktree` value participated, because a refused repository's config
+is never parsed. See [Repository trust](security.md#repository-trust) for
+what that closes.
 
 ## Refusals
 
@@ -83,9 +96,32 @@ Work-tree-requiring commands refuse the way git does, as structured errors:
 | `reset --mixed` in a bare repository | `BARE_REPOSITORY { operation }` — the one refusal git keys on bareness itself |
 | present-but-malformed git directory (garbage `HEAD`) | `NOT_A_REPOSITORY { path }`, at the first command |
 | unusable `commondir` pointer (zero-byte, or a relative path with a missing intermediate component) | `GITFILE_INVALID_FORMAT { path }`, at open |
+| repository metadata not owned by the caller (`trust: 'ownership'`, the default) | `DUBIOUS_OWNERSHIP { path, foreignPath? }` — see [errors](../use/errors.md#repository-state) |
+| gitdir reached by the cwd-is-a-gitdir route under a name other than `.git` (`bareRepositories: 'explicit'`) | `IMPLICIT_BARE_REPOSITORY { gitDir }` — see [errors](../use/errors.md#repository-state) |
 
 `describe --broken` reports `-broken` instead of refusing, bare `blame` blames HEAD,
 and `grep`'s index/tree targets stay open — matching git's own carve-outs.
+
+### The repository-acceptance tiers
+
+`formatRefusal` above is *carried*, not enforced, until a command actually asks for
+it. Every command sits on one of three chained tiers, each a strict superset of the
+gate before it:
+
+| Tier | Adds on top of the previous tier | Verbs on this tier |
+|---|---|---|
+| `assertRepository` | a usable HEAD, then the discovery-tier boolean gate (`core.bare`, `extensions.worktreeConfig`) | the four surviving `config` read verbs — `config <key>`, `config --get-all`, `config --get-regexp`, `config --list` |
+| `assertAcceptedRepository` | the format-acceptance verdict (`REPOSITORY_FORMAT_VERSION_UNSUPPORTED` / `REPOSITORY_EXTENSIONS_UNSUPPORTED`) | every `remote` verb and every `config` write verb |
+| `assertOperationalRepository` | eager `[core]` validation | every other command |
+
+The four survivors are an enumerated, measured set — never inferred from "read-only".
+`remote` is NOT among them: canonical git refuses `remote`, `remote -v`,
+`remote get-url` and `remote show -n` on a rejected repository exactly as it refuses
+the writers, so every `remote` verb sits on `assertAcceptedRepository` too. Ordering
+is fixed within a rejected repository: the discovery-tier boolean gate always wins
+over the format verdict (a repository failing both `core.bare` and
+`core.repositoryformatversion` reports the boolean refusal), and the format verdict
+always wins over eager `[core]` validation.
 
 ## Deliberate divergences
 
@@ -96,4 +132,10 @@ the missing-intermediate refusal (its parent may be outside a sandbox's containm
 root — a relative pointer gets the full stepwise check); `ceilingDirs` *refuses*
 non-absolute entries where git silently ignores them; and environment variables
 (`GIT_DIR`, `GIT_WORK_TREE`, `GIT_COMMON_DIR`, `GIT_CEILING_DIRECTORIES`) are never
-read — every input is an explicit argument.
+read — every input is an explicit argument. Trust configuration follows the
+same rule: it comes from `openRepository` arguments only, never from any
+config file — global and system config are unreachable by the FS port by
+design, and repository-local config is the attacker's own file, so a
+repository cannot allowlist itself into being trusted. A non-absolute
+`trustedDirectories` entry is **refused** where git's `safe.directory`
+silently warns and ignores it. The ownership check itself is **POSIX-only**.

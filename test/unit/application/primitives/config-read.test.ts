@@ -30,10 +30,42 @@ import {
 import { qualifyKey } from '../../../../src/application/primitives/internal/config-key.js';
 import { parseConfigKey } from '../../../../src/domain/commands/config-key.js';
 import { TsgitError } from '../../../../src/domain/error.js';
-import type { Context } from '../../../../src/ports/context.js';
+import type { Context, RepositoryFormatRefusal } from '../../../../src/ports/context.js';
 
 const seed = async (ctx: Context, content: string): Promise<void> => {
   await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, content);
+};
+
+/** A context carrying a format-acceptance refusal — the repository config scope is dropped. */
+const rejectedCtx = (
+  ctx: Context,
+  formatRefusal: RepositoryFormatRefusal = { kind: 'version', version: 99 },
+): Context => ({ ...ctx, layout: { ...ctx.layout, formatRefusal } });
+
+/** A context carrying an ownership-trust-gate refusal — the repository config scope is dropped. */
+const untrustedCtx = (ctx: Context): Context => ({
+  ...ctx,
+  layout: { ...ctx.layout, untrusted: true },
+});
+
+/** A context carrying an implicit-bare trust-gate refusal — the repository config scope is dropped. */
+const implicitBareCtx = (ctx: Context): Context => ({
+  ...ctx,
+  layout: { ...ctx.layout, implicitBare: true },
+});
+
+/**
+ * Wraps `ctx.fs.readUtf8` to record every path it is called with, so a guard
+ * that returns before any I/O can be asserted directly: "zero reads" rather
+ * than "the result happens to look the same as an empty file".
+ */
+const withReadCounter = (ctx: Context): { readonly ctx: Context; readonly reads: string[] } => {
+  const reads: string[] = [];
+  const readUtf8 = async (path: string): Promise<string> => {
+    reads.push(path);
+    return ctx.fs.readUtf8(path);
+  };
+  return { ctx: { ...ctx, fs: { ...ctx.fs, readUtf8 } }, reads };
 };
 
 describe('primitives/config-read', () => {
@@ -3232,6 +3264,184 @@ describe('readConfigSections / getConfigValue / getAllConfigValues', () => {
 
       // Assert
       expect(result).toEqual({ key: 'user.name', value: undefined });
+    });
+  });
+
+  describe('Given a layout carrying a format refusal', () => {
+    describe('When readConfigSections runs with no scope', () => {
+      it('Then local and worktree contribute nothing to the merge', async () => {
+        // Arrange — worktree scope is genuinely active (extensions.worktreeConfig = true) so
+        // its exclusion below is provably the guard's doing, not pre-existing inactivity.
+        const ctx = createMemoryContext();
+        await seed(ctx, '[extensions]\n\tworktreeConfig = true\n[user]\n\tname = ada\n');
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config.worktree`,
+          '[user]\n\temail = wt@example.com\n',
+        );
+
+        // Act
+        const result = await readConfigSections({ ctx: rejectedCtx(ctx) });
+
+        // Assert
+        const scopes = result.map(({ scope }) => scope);
+        expect(scopes).not.toContain('local');
+        expect(scopes).not.toContain('worktree');
+      });
+    });
+
+    describe('When readConfigSections runs with an explicit scope of global or system', () => {
+      it.each(['global', 'system'] as const)(
+        'Then scope %s is untouched by the guard — it still resolves without the new reason',
+        async (scope) => {
+          // Arrange — the guard names only 'local'/'worktree'; the memory adapter's global/
+          // system paths fall outside its rootDir, so a genuinely-scoped guard never fires
+          // here and the read resolves to empty rather than raising the new reason.
+          const ctx = rejectedCtx(createMemoryContext());
+          let caught: TsgitError | undefined;
+
+          // Act
+          let result: unknown;
+          try {
+            result = await readConfigSections({ ctx, scope });
+          } catch (err) {
+            caught = err as TsgitError;
+          }
+
+          // Assert
+          expect(caught).toBeUndefined();
+          expect(result).toEqual([]);
+        },
+      );
+    });
+
+    describe('When readConfigSections runs with scope local', () => {
+      it('Then it raises CONFIG_SCOPE_NOT_AVAILABLE naming the scope and the reason', async () => {
+        // Arrange
+        const ctx = rejectedCtx(createMemoryContext());
+        let caught: TsgitError | undefined;
+
+        // Act
+        try {
+          await readConfigSections({ ctx, scope: 'local' });
+        } catch (err) {
+          caught = err as TsgitError;
+        }
+
+        // Assert
+        expect(caught?.data).toEqual({
+          code: 'CONFIG_SCOPE_NOT_AVAILABLE',
+          scope: 'local',
+          reason: 'repository-not-accepted',
+        });
+      });
+    });
+
+    describe('When readConfigSections runs with scope worktree', () => {
+      it('Then it raises CONFIG_SCOPE_NOT_AVAILABLE naming the scope and the reason', async () => {
+        // Arrange — worktreeConfig is not even active locally; the guard must still fire
+        // FIRST, ahead of the scope's own activity check, and report the rejection reason.
+        const ctx = rejectedCtx(createMemoryContext());
+        let caught: TsgitError | undefined;
+
+        // Act
+        try {
+          await readConfigSections({ ctx, scope: 'worktree' });
+        } catch (err) {
+          caught = err as TsgitError;
+        }
+
+        // Assert
+        expect(caught?.data).toEqual({
+          code: 'CONFIG_SCOPE_NOT_AVAILABLE',
+          scope: 'worktree',
+          reason: 'repository-not-accepted',
+        });
+      });
+    });
+  });
+
+  describe('Given a layout with no format refusal', () => {
+    describe('When readConfigSections runs with scope local', () => {
+      it('Then local still reads its sections (a mutant that drops the predicate must die)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[user]\n\tname = ada\n');
+
+        // Act
+        const result = await readConfigSections({ ctx, scope: 'local' });
+
+        // Assert
+        expect(result).toHaveLength(1);
+        expect(result[0]?.scope).toBe('local');
+      });
+    });
+  });
+
+  describe('Given a planted [core] bare value and a layout carrying untrusted', () => {
+    describe('When readConfig runs', () => {
+      it('Then it resolves empty and never reads the config file', async () => {
+        // Arrange
+        const base = untrustedCtx(createMemoryContext());
+        await seed(base, '[core]\n\tbare = true\n');
+        const { ctx, reads } = withReadCounter(base);
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result).toEqual({});
+        expect(reads).toEqual([]);
+      });
+    });
+
+    describe('When findFirstInvalidBoolean runs on core.bare', () => {
+      it('Then it resolves undefined and never reads the config file', async () => {
+        // Arrange — a malformed value would refuse if the file were read at all.
+        const base = untrustedCtx(createMemoryContext());
+        await seed(base, '[core]\n\tbare = banana\n');
+        const { ctx, reads } = withReadCounter(base);
+
+        // Act
+        const result = await findFirstInvalidBoolean(ctx, 'core', undefined, ['bare']);
+
+        // Assert
+        expect(result).toBeUndefined();
+        expect(reads).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a planted [core] bare value and a layout carrying implicitBare', () => {
+    describe('When readConfig runs', () => {
+      it('Then it resolves empty and never reads the config file', async () => {
+        // Arrange
+        const base = implicitBareCtx(createMemoryContext());
+        await seed(base, '[core]\n\tbare = true\n');
+        const { ctx, reads } = withReadCounter(base);
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result).toEqual({});
+        expect(reads).toEqual([]);
+      });
+    });
+
+    describe('When findFirstInvalidBoolean runs on core.bare', () => {
+      it('Then it resolves undefined and never reads the config file', async () => {
+        // Arrange — a malformed value would refuse if the file were read at all.
+        const base = implicitBareCtx(createMemoryContext());
+        await seed(base, '[core]\n\tbare = banana\n');
+        const { ctx, reads } = withReadCounter(base);
+
+        // Act
+        const result = await findFirstInvalidBoolean(ctx, 'core', undefined, ['bare']);
+
+        // Assert
+        expect(result).toBeUndefined();
+        expect(reads).toEqual([]);
+      });
     });
   });
 });

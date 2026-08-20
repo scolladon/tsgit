@@ -14,6 +14,20 @@ import type { PromisorRemote } from './promisor.js';
 import type { SshTransport } from './ssh-channel.js';
 
 /**
+ * The repository-format acceptance verdict — git's `core.repositoryformatversion`
+ * / `extensions.*` gate. Absent means accepted. `version` is always the
+ * PARSED integer (`1k` carries `1024`, `0777` carries `511`), never the
+ * config literal. `kind: 'extensions'` is not yet populated by any reader.
+ */
+export type RepositoryFormatRefusal =
+  | { readonly kind: 'version'; readonly version: number }
+  | {
+      readonly kind: 'extensions';
+      readonly version: number;
+      readonly extensions: ReadonlyArray<string>;
+    };
+
+/**
  * Repository physical layout — where the working tree and.git directory live.
  * Renamed in from the previous `RepositoryConfig` (port-tier) to free that
  * name for the facade-tier `RepositoryConfig` shape (auth/parallelism/etc.).
@@ -44,6 +58,18 @@ export interface RepositoryLayout {
    * error code instead of the plain "no work tree" refusal.
    */
   readonly workTreeConfigBogus?: boolean;
+  /** Discovery reached a repository whose metadata the caller does not own. Present only when true. */
+  readonly untrusted?: true;
+  /** Discovery walked into a gitdir under a name other than `.git`, with `bareRepositories: 'explicit'` set. Present only when true. */
+  readonly implicitBare?: true;
+  /** The first checked path the ownership predicate reported unowned. Present only when one was found. */
+  readonly foreignPath?: string;
+  /**
+   * The repository-format acceptance verdict — absent when accepted. Frozen
+   * at open time so the command tier can read it synchronously; see
+   * `RepositoryFormatRefusal`.
+   */
+  readonly formatRefusal?: RepositoryFormatRefusal;
   /**
    * Home directory for `~`-expansion in config-driven paths (e.g.
    * `core.excludesFile = ~/.config/git/ignore`). Populated by the node

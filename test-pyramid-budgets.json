@@ -102,6 +102,7 @@
         "createPromiseMemo",
         "withHandleLedger",
         "createRefStore",
+        "ownedByCallerPredicate",
         "acquireIndexLock",
         "createWorkdirEntry",
         "createIndexEntry",
