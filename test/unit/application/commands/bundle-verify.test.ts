@@ -911,6 +911,39 @@ describe('bundleVerify', () => {
     });
   });
 
+  describe('Given a cross-format bundle and a hash service that cannot switch algorithms', () => {
+    describe('When bundleVerify is called', () => {
+      it("Then it refuses rather than silently framing the pack at the repository's width", async () => {
+        // Arrange — `withAlgorithm` is optional on the port precisely so a
+        // caller-supplied service may omit it. Without it the bundle's own
+        // width is unreachable, and no bundle path may fall back to the
+        // surrounding repository's width.
+        const sha256Ctx = await buildSha256SingleCommitRepo();
+        const created = await bundleCreate(sha256Ctx, { all: true });
+        const base = await initRepo();
+        const { withAlgorithm: _omitted, ...hashWithoutSwitch } = base.hash;
+        const sha1Ctx: Context = { ...base, hash: hashWithoutSwitch };
+        await sha1Ctx.fs.write(BUNDLE_PATH, created.bytes);
+        const sut = bundleVerify;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(sha1Ctx, { path: BUNDLE_PATH });
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('UNSUPPORTED_OPERATION');
+        if (data.code !== 'UNSUPPORTED_OPERATION') expect.unreachable();
+        expect(data.reason).toContain('sha256');
+      });
+    });
+  });
+
   // ── filter capability exposure ────────────────────────────────────────────
 
   describe('Given a v3 bundle whose header declares a @filter capability', () => {

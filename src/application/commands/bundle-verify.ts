@@ -6,7 +6,7 @@ import type {
   ParsedBundleHeader,
 } from '../../domain/bundle/index.js';
 import { bundlePrerequisiteAlgorithmMismatch } from '../../domain/commands/error.js';
-import { TsgitError } from '../../domain/error.js';
+import { TsgitError, unsupportedOperation } from '../../domain/error.js';
 import { configFor } from '../../domain/objects/hash-config.js';
 import { parseHeader, serializeObject } from '../../domain/objects/index.js';
 import type { FilePath, ObjectId } from '../../domain/objects/object-id.js';
@@ -106,16 +106,25 @@ const assertPrerequisiteAlgorithmMatches = (ctx: Context, header: ParsedBundleHe
  * declared algorithm rather than the surrounding repository's. Resolving a
  * prerequisite's external base object is a genuine repository read and
  * deliberately stays keyed on the original `ctx.hashConfig` — only the pack
- * framing moves. Returns `ctx` unchanged when the algorithms already agree,
- * or when the hash service cannot switch algorithms at all — the latter
- * lets pack verification proceed at the repository's own width rather than
- * building an internally-inconsistent context (digest length from one
- * algorithm, entry-header width from another).
+ * framing moves.
+ *
+ * `withAlgorithm` is optional on the port so a caller-supplied `HashService`
+ * need not be re-instantiable. When it is absent the bundle's own width is
+ * unreachable, and there is no safe fallback: no bundle path may take its
+ * width from the surrounding repository, and proceeding at the repository's
+ * width misparses the pack (measured: a 32-byte-oid pack read at 20 bytes
+ * fails as `INVALID_PACK_HEADER`, a confusing error in place of a clear
+ * refusal). Refuse instead, as `clone` does in the same situation.
  */
 const contextForBundleAlgorithm = (ctx: Context, algorithm: BundleHashAlgorithm): Context => {
   if (algorithm === ctx.hashConfig.algorithm) return ctx;
   const hash = ctx.hash.withAlgorithm?.(algorithm);
-  if (hash === undefined) return ctx;
+  if (hash === undefined) {
+    throw unsupportedOperation(
+      'bundle verify',
+      `the supplied hash service cannot switch to the bundle's declared algorithm ${algorithm}`,
+    );
+  }
   return { ...ctx, hash, hashConfig: configFor(algorithm) };
 };
 

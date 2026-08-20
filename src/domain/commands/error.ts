@@ -5,14 +5,12 @@ import type { ReceivePackResponse as ReportStatus } from '../protocol/receive-pa
 import type { PendingOperation } from '../sequencer/operation-labels.js';
 import type { ConfigScope } from './config-key.js';
 
-/** Discriminator for `BUNDLE_BAD_HEADER` — one member per distinct git refusal line. */
-export type BundleBadHeaderReason =
-  | 'not-a-bundle'
-  | 'malformed-header'
-  | 'unknown-capability'
-  | 'unknown-hash-algorithm';
-
-/** Per-reason fields `BUNDLE_BAD_HEADER` carries — exactly what each git line needs. */
+/**
+ * Per-reason fields `BUNDLE_BAD_HEADER` carries — exactly what each git line
+ * needs. The `reason` literals are the discriminator; they live inline here
+ * rather than in a separate alias so a member can never gain a reason without
+ * declaring the fields that reason's git line requires.
+ */
 export type BundleBadHeaderDetails =
   | { readonly reason: 'not-a-bundle' }
   | { readonly reason: 'malformed-header'; readonly line: string; readonly length: number }
