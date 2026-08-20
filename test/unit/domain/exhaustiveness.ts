@@ -192,6 +192,7 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'CANNOT_DESCRIBE':
     case 'RELATIVE_URL_UNRESOLVABLE':
     case 'SUBMODULE_HAS_MODIFICATIONS':
+    case 'SUBMODULE_OBJECT_FORMAT_MISMATCH':
     case 'SUBMODULE_PATH_EXISTS':
     case 'WORKTREE_PATH_EXISTS':
     case 'BRANCH_CHECKED_OUT':

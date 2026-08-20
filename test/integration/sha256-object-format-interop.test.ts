@@ -12,8 +12,10 @@
  *   bucket: cross-tool-interop
  *   unique: SHA-256 index entry framing survives tsgit add and reads back identically to git's own add
  */
+
 import { spawnSync } from 'node:child_process';
-import { cp, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { cp, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
@@ -29,14 +31,17 @@ import { checkout } from '../../src/application/commands/checkout.js';
 import { clone } from '../../src/application/commands/clone.js';
 import { commit } from '../../src/application/commands/commit.js';
 import { fetch as fetchCommand } from '../../src/application/commands/fetch.js';
+import { fsck } from '../../src/application/commands/fsck.js';
 import { init } from '../../src/application/commands/init.js';
 import { log } from '../../src/application/commands/log.js';
 import { packObjects } from '../../src/application/commands/pack-objects.js';
 import { push } from '../../src/application/commands/push.js';
 import { revParse } from '../../src/application/commands/rev-parse.js';
+import { submoduleAdd } from '../../src/application/commands/submodule.js';
 import { tarArchive } from '../../src/domain/archive/tar.js';
 import { TsgitError } from '../../src/domain/error.js';
 import type { AuthorIdentity } from '../../src/domain/objects/index.js';
+import { parsePackIndex } from '../../src/domain/storage/pack-index.js';
 import { openRepository } from '../../src/index.node.js';
 import type { Context } from '../../src/ports/context.js';
 import type { HttpTransport } from '../../src/ports/http-transport.js';
@@ -618,6 +623,336 @@ describe.skipIf(!GIT_AVAILABLE)('sha256 object format — .git/index interop', (
   });
 });
 
+describe.skipIf(!GIT_AVAILABLE)(
+  'sha256 object format — per-format read symmetry (git writes, tsgit reads)',
+  () => {
+    let dir: string;
+    let expectedLog: ReadonlyArray<string>;
+    let revBytes: Uint8Array;
+    let midxBytes: Uint8Array;
+    let commitGraphBytes: Uint8Array;
+    let idxBytes: Uint8Array;
+
+    beforeAll(async () => {
+      dir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-sha256-dual-format-'));
+      const env = runGitEnv();
+      runGit(['init', '-q', '-b', 'main', '--object-format=sha256', dir], { env });
+      runGit(['-C', dir, 'config', 'user.name', 'Ada'], { env });
+      runGit(['-C', dir, 'config', 'user.email', 'ada@example.com'], { env });
+      disableAutoMaintenance(dir);
+      for (let i = 0; i < 3; i += 1) {
+        await writeFile(path.join(dir, `f${i}.txt`), `${i}\n`);
+        runGit(['-C', dir, 'add', `f${i}.txt`], { env });
+        runGit(['-C', dir, 'commit', '-q', '-m', `c${i}`], { env });
+      }
+      // Coalesce into a SINGLE pack carrying a reverse index and a bitmap —
+      // `.rev`, `.bitmap` and `multi-pack-index` all need exactly one pack to
+      // keep the fixture's discovery (readdir + filename filter) unambiguous.
+      runGit(['-C', dir, '-c', 'pack.writeReverseIndex=true', 'repack', '-a', '-d', '-b', '-q'], {
+        env,
+      });
+      runGit(['-C', dir, 'multi-pack-index', 'write'], { env });
+      runGit(['-C', dir, 'commit-graph', 'write', '--reachable'], { env });
+      runGit(['-C', dir, 'pack-refs', '--all'], { env });
+      expectedLog = runGit(['-C', dir, 'log', '--format=%H'], { env }).trim().split('\n');
+
+      const packDir = path.join(dir, '.git', 'objects', 'pack');
+      const packFiles = await readdir(packDir);
+      const revFile = packFiles.find((f) => f.endsWith('.rev'));
+      const idxFile = packFiles.find((f) => f.endsWith('.idx'));
+      if (revFile === undefined || idxFile === undefined) {
+        throw new Error('expected a .rev and .idx sibling after repack -b');
+      }
+      revBytes = await readFile(path.join(packDir, revFile));
+      idxBytes = await readFile(path.join(packDir, idxFile));
+      midxBytes = await readFile(path.join(packDir, 'multi-pack-index'));
+      commitGraphBytes = await readFile(path.join(dir, '.git', 'objects', 'info', 'commit-graph'));
+    }, 60_000);
+
+    afterAll(async () => {
+      await rm(dir, { recursive: true, force: true });
+    });
+
+    describe('Given the .rev file git wrote for a SHA-256 pack', () => {
+      it('Then its hash id is 2', () => {
+        // Arrange
+        const view = new DataView(revBytes.buffer, revBytes.byteOffset, revBytes.byteLength);
+
+        // Act
+        const hashId = view.getUint32(8);
+
+        // Assert
+        expect(hashId).toBe(2);
+      });
+    });
+
+    describe('Given the multi-pack-index git wrote', () => {
+      it('Then its hash-version byte is 02', () => {
+        // Act & Assert
+        expect(midxBytes[5]).toBe(2);
+      });
+    });
+
+    describe('Given the commit-graph git wrote', () => {
+      it('Then its hash-version byte is 02', () => {
+        // Act & Assert
+        expect(commitGraphBytes[5]).toBe(2);
+      });
+    });
+
+    describe('Given the pack .idx v2 trailer git wrote', () => {
+      it("Then tsgit's own pack-index reader frames it at 64 bytes (two 32-byte SHA-256 checksums)", () => {
+        // Arrange & Act
+        const parsed = parsePackIndex(idxBytes, 32);
+
+        // Assert
+        expect(idxBytes.length - parsed.trailerOffset).toBe(64);
+      });
+    });
+
+    describe('Given git packed the refs, removing the loose refs/heads/main file', () => {
+      it("Then tsgit's revParse still resolves main by reading only packed-refs", async () => {
+        // Arrange
+        const looseRefExists = existsSync(path.join(dir, '.git', 'refs', 'heads', 'main'));
+
+        // Act
+        const ours = await revParse(sha256Context(dir), 'main');
+
+        // Assert
+        expect(looseRefExists).toBe(false);
+        expect(ours).toBe(expectedLog[0]);
+      });
+    });
+
+    describe('Given the pack + .rev + multi-pack-index + commit-graph git wrote', () => {
+      it("Then tsgit log walks it and reproduces git log's exact oid sequence", async () => {
+        // Act
+        const entries = await log(sha256Context(dir));
+
+        // Assert
+        expect(entries.map((entry) => entry.id)).toEqual(expectedLog);
+      });
+    });
+
+    describe('Given the pack .bitmap git wrote', () => {
+      it('Then tsgit fsck reads it cleanly, matching git fsck exit 0', async () => {
+        // Arrange
+        const theirs = tryRunGitWithExit(['-C', dir, 'fsck'], { env: runGitEnv() });
+
+        // Act
+        const ours = await fsck(sha256Context(dir), {});
+
+        // Assert
+        expect(theirs.exitCode).toBe(0);
+        expect(ours.exitCode).toBe(0);
+      });
+    });
+  },
+);
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'sha256 object format — SHA-1 invariance (R6, same battery on a plain SHA-1 repository)',
+  () => {
+    let dir: string;
+    let expectedLog: ReadonlyArray<string>;
+    let revBytes: Uint8Array;
+    let idxBytes: Uint8Array;
+
+    beforeAll(async () => {
+      dir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-sha1-dual-format-'));
+      const env = runGitEnv();
+      runGit(['init', '-q', '-b', 'main', dir], { env });
+      runGit(['-C', dir, 'config', 'user.name', 'Ada'], { env });
+      runGit(['-C', dir, 'config', 'user.email', 'ada@example.com'], { env });
+      disableAutoMaintenance(dir);
+      for (let i = 0; i < 3; i += 1) {
+        await writeFile(path.join(dir, `f${i}.txt`), `${i}\n`);
+        runGit(['-C', dir, 'add', `f${i}.txt`], { env });
+        runGit(['-C', dir, 'commit', '-q', '-m', `c${i}`], { env });
+      }
+      runGit(['-C', dir, '-c', 'pack.writeReverseIndex=true', 'repack', '-a', '-d', '-q'], {
+        env,
+      });
+      runGit(['-C', dir, 'pack-refs', '--all'], { env });
+      expectedLog = runGit(['-C', dir, 'log', '--format=%H'], { env }).trim().split('\n');
+
+      const packDir = path.join(dir, '.git', 'objects', 'pack');
+      const packFiles = await readdir(packDir);
+      const revFile = packFiles.find((f) => f.endsWith('.rev'));
+      const idxFile = packFiles.find((f) => f.endsWith('.idx'));
+      if (revFile === undefined || idxFile === undefined) {
+        throw new Error('expected a .rev and .idx sibling after repack');
+      }
+      revBytes = await readFile(path.join(packDir, revFile));
+      idxBytes = await readFile(path.join(packDir, idxFile));
+    }, 60_000);
+
+    afterAll(async () => {
+      await rm(dir, { recursive: true, force: true });
+    });
+
+    describe('Given the .rev file git wrote for a SHA-1 pack', () => {
+      it('Then its hash id is still 1', () => {
+        // Arrange
+        const view = new DataView(revBytes.buffer, revBytes.byteOffset, revBytes.byteLength);
+
+        // Act
+        const hashId = view.getUint32(8);
+
+        // Assert
+        expect(hashId).toBe(1);
+      });
+    });
+
+    describe('Given the pack .idx v2 trailer git wrote', () => {
+      it("Then tsgit's own pack-index reader still frames it at 40 bytes (two 20-byte SHA-1 checksums)", () => {
+        // Arrange & Act
+        const parsed = parsePackIndex(idxBytes, 20);
+
+        // Assert
+        expect(idxBytes.length - parsed.trailerOffset).toBe(40);
+      });
+    });
+
+    describe('Given every commit tsgit reads back from this repository', () => {
+      it("Then every oid is still 40 hex characters, matching git log's own sequence", async () => {
+        // Act
+        const entries = await log(createNodeContext({ workDir: dir }));
+
+        // Assert
+        expect(entries.map((entry) => entry.id)).toEqual(expectedLog);
+        for (const entry of entries) {
+          expect(entry.id).toMatch(/^[0-9a-f]{40}$/);
+        }
+      });
+    });
+
+    describe('Given a new working-tree file, staged once by tsgit add and once by git add (each on its own copy)', () => {
+      it("Then git ls-files --stage reads back tsgit's index with the full 40-hex oid at the unchanged 62-byte fixed entry header, matching git's own add exactly", async () => {
+        // Arrange — two independent copies of the same base repo, one for
+        // each side, so the destructive `add` on one cannot affect the other.
+        const oursDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-sha1-index-ours-'));
+        const theirsDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-sha1-index-theirs-'));
+        await cp(dir, oursDir, { recursive: true });
+        await cp(dir, theirsDir, { recursive: true });
+        await writeFile(path.join(oursDir, 'a.txt'), 'hello\n');
+        await writeFile(path.join(theirsDir, 'a.txt'), 'hello\n');
+
+        try {
+          // Act
+          await add(createNodeContext({ workDir: oursDir }), ['a.txt']);
+          runGit(['-C', theirsDir, 'add', 'a.txt'], { env: runGitEnv() });
+          const ours = lsStage(oursDir);
+          const theirs = lsStage(theirsDir);
+
+          // Assert — the 62-byte fixed header (40 stat bytes + 20-byte oid +
+          // 2-byte flags) is exactly what puts the name at this offset; a
+          // regressed header size would misplace it and corrupt git's own read.
+          expect(ours).toMatch(/^100644 [0-9a-f]{40} 0\ta\.txt$/m);
+          expect(ours).toBe(theirs);
+        } finally {
+          await rm(oursDir, { recursive: true, force: true });
+          await rm(theirsDir, { recursive: true, force: true });
+        }
+      });
+    });
+  },
+);
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'sha256 object format — R13 cross-format meeting points inside one working tree',
+  () => {
+    describe('Given a linked worktree of a SHA-256 repository', () => {
+      it("Then git reports sha256 from inside it, and tsgit's own add there writes a 32-byte-oid index — the format is inherited from the common dir, no worktree-specific branch needed", async () => {
+        // Arrange
+        const dir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-sha256-lwt-base-'));
+        const wtParent = await mkdtemp(path.join(os.tmpdir(), 'tsgit-sha256-lwt-wt-parent-'));
+        const wtDir = path.join(wtParent, 'wt');
+        const env = runGitEnv();
+        try {
+          runGit(['init', '-q', '-b', 'main', '--object-format=sha256', dir], { env });
+          runGit(['-C', dir, 'config', 'user.name', 'Ada'], { env });
+          runGit(['-C', dir, 'config', 'user.email', 'ada@example.com'], { env });
+          await writeFile(path.join(dir, 'base.txt'), 'base\n');
+          runGit(['-C', dir, 'add', 'base.txt'], { env });
+          runGit(['-C', dir, 'commit', '-q', '-m', 'base'], { env });
+          runGit(['-C', dir, 'worktree', 'add', wtDir, '-b', 'wt'], { env });
+
+          // Act — the real discovery path (not the `sha256Context` bypass):
+          // `openRepository` must follow the worktree's `.git` gitfile and
+          // read the format from the COMMON dir's config, with no per-worktree
+          // config of its own.
+          const shown = tryRunGitWithExit(['-C', wtDir, 'rev-parse', '--show-object-format']);
+          await writeFile(path.join(wtDir, 'wt.txt'), 'wt\n');
+          const repo = await openRepository({ cwd: wtDir });
+          try {
+            await repo.add(['wt.txt']);
+          } finally {
+            await repo.dispose();
+          }
+          const staged = runGit(['-C', wtDir, 'ls-files', '--stage']);
+          const adminDir = path.join(dir, '.git', 'worktrees', path.basename(wtDir));
+
+          // Assert
+          expect(shown.exitCode).toBe(0);
+          expect(shown.stdout.trim()).toBe('sha256');
+          expect(staged).toMatch(/^100644 [0-9a-f]{64} 0\twt\.txt$/m);
+          // The admin dir holds no config of its own, so the format read
+          // needs no worktree-specific branch — inherited from the common dir.
+          expect(existsSync(path.join(adminDir, 'config'))).toBe(false);
+        } finally {
+          await rm(dir, { recursive: true, force: true });
+          await rm(wtParent, { recursive: true, force: true });
+        }
+      });
+    });
+  },
+);
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'sha256 object format — compatObjectFormat (git itself refuses it at the point of use)',
+  () => {
+    describe('Given a SHA-256 repository with extensions.compatObjectFormat = sha1 planted', () => {
+      it("Then git refuses with 'compatibility hash algorithm support requires Rust' (exit 128), and tsgit's openRepository refuses with REPOSITORY_EXTENSION_UNSUPPORTED naming compatobjectformat", async () => {
+        // Arrange
+        const dir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-sha256-compat-'));
+        const env = runGitEnv();
+        try {
+          runGit(['init', '-q', '-b', 'main', '--object-format=sha256', dir], { env });
+          runGit(['-C', dir, 'config', 'user.name', 'Ada'], { env });
+          runGit(['-C', dir, 'config', 'user.email', 'ada@example.com'], { env });
+          await writeFile(path.join(dir, 'f.txt'), 'f\n');
+          runGit(['-C', dir, 'add', 'f.txt'], { env });
+          runGit(['-C', dir, 'commit', '-q', '-m', 'f'], { env });
+          runGit(['-C', dir, 'config', 'extensions.compatObjectFormat', 'sha1'], { env });
+
+          // Act
+          const theirs = tryRunGitWithExit(['-C', dir, 'log'], { env });
+          let caught: unknown;
+          try {
+            await openRepository({ cwd: dir });
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert — git
+          expect(theirs.exitCode).toBe(128);
+          expect(theirs.stderr).toContain('compatibility hash algorithm support requires Rust');
+          // Assert — tsgit
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data).toEqual({
+            code: 'REPOSITORY_EXTENSION_UNSUPPORTED',
+            extension: 'compatobjectformat',
+            value: 'sha1',
+          });
+        } finally {
+          await rm(dir, { recursive: true, force: true });
+        }
+      });
+    });
+  },
+);
+
 describe.skipIf(!GIT_AVAILABLE)('sha256 object format — init', () => {
   describe('Given a fresh directory', () => {
     describe('When tsgit init runs with objectFormat sha256', () => {
@@ -1062,3 +1397,92 @@ describe.skipIf(TRANSPORT_SKIP)('sha256 object format — transport negotiation 
     }, 60_000);
   });
 });
+
+const TRANSPORT_AUTHOR_ENV: NodeJS.ProcessEnv = {
+  GIT_AUTHOR_NAME: TRANSPORT_AUTHOR.name,
+  GIT_AUTHOR_EMAIL: TRANSPORT_AUTHOR.email,
+  GIT_COMMITTER_NAME: TRANSPORT_AUTHOR.name,
+  GIT_COMMITTER_EMAIL: TRANSPORT_AUTHOR.email,
+};
+
+/** A local, non-bare superproject with one empty commit, ready for `submoduleAdd`. */
+const initLocalSuper = async (slug: string, algorithm: 'sha1' | 'sha256'): Promise<string> => {
+  const dir = await initLocalTransportRepo(slug, algorithm);
+  runGit(['-C', dir, 'commit', '-q', '--allow-empty', '-m', 'super seed'], {
+    env: { ...runGitEnv(), ...TRANSPORT_AUTHOR_ENV },
+  });
+  return dir;
+};
+
+describe.skipIf(TRANSPORT_SKIP)(
+  'sha256 object format — submodule add refuses across formats (R13)',
+  () => {
+    describe('Given a SHA-1 superproject adding a SHA-256 submodule remote', () => {
+      it("Then it refuses SUBMODULE_OBJECT_FORMAT_MISMATCH (local 'sha1', remote 'sha256'), leaving the partial .git/modules/sub state behind — the clone has already happened", async () => {
+        // Arrange
+        const source = await createBareTransportSource('submodule-sha1-super', 'sha256');
+        const server = await startGitHttpBackend({ projectRoot: source.parentDir });
+        const superDir = await initLocalSuper('submodule-sha1-super', 'sha1');
+        try {
+          const url = `http://127.0.0.1:${server.port}/${source.bareName}`;
+          const ctx = localTransportContext(superDir, 'sha1');
+
+          // Act
+          let caught: unknown;
+          try {
+            await submoduleAdd(ctx, { url, path: 'sub' });
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data).toEqual({
+            code: 'SUBMODULE_OBJECT_FORMAT_MISMATCH',
+            local: 'sha1',
+            remote: 'sha256',
+          });
+          expect(existsSync(path.join(superDir, '.git', 'modules', 'sub'))).toBe(true);
+        } finally {
+          await server.close();
+          await rm(source.parentDir, { recursive: true, force: true });
+          await rm(superDir, { recursive: true, force: true });
+        }
+      }, 60_000);
+    });
+
+    describe('Given a SHA-256 superproject adding a SHA-1 submodule remote', () => {
+      it("Then it refuses SUBMODULE_OBJECT_FORMAT_MISMATCH (local 'sha256', remote 'sha1'), leaving the partial .git/modules/sub state behind — the mirrored direction", async () => {
+        // Arrange
+        const source = await createBareTransportSource('submodule-sha256-super', 'sha1');
+        const server = await startGitHttpBackend({ projectRoot: source.parentDir });
+        const superDir = await initLocalSuper('submodule-sha256-super', 'sha256');
+        try {
+          const url = `http://127.0.0.1:${server.port}/${source.bareName}`;
+          const ctx = localTransportContext(superDir, 'sha256');
+
+          // Act
+          let caught: unknown;
+          try {
+            await submoduleAdd(ctx, { url, path: 'sub' });
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data).toEqual({
+            code: 'SUBMODULE_OBJECT_FORMAT_MISMATCH',
+            local: 'sha256',
+            remote: 'sha1',
+          });
+          expect(existsSync(path.join(superDir, '.git', 'modules', 'sub'))).toBe(true);
+        } finally {
+          await server.close();
+          await rm(source.parentDir, { recursive: true, force: true });
+          await rm(superDir, { recursive: true, force: true });
+        }
+      }, 60_000);
+    });
+  },
+);

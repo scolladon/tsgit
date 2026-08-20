@@ -27,6 +27,7 @@ interface ParityWindow {
   readonly __tsgit: {
     readonly openRepository: (opts: {
       rootHandle: FileSystemDirectoryHandle;
+      algorithm?: 'sha1' | 'sha256';
     }) => Promise<Repository>;
   };
 }
@@ -76,7 +77,7 @@ test.describe('parity', () => {
 
         // Act
         const sut = await readyPage.evaluate(
-          async ({ name, inputs }) => {
+          async ({ name, inputs, openOptions }) => {
             const w = window as unknown as ParityWindow;
             const registry = w.__tsgitParity;
             if (registry === undefined) throw new Error('__tsgitParity not initialized');
@@ -103,14 +104,14 @@ test.describe('parity', () => {
               await writable.write(encoder.encode(file.content));
               await writable.close();
             }
-            const repo = await w.__tsgit.openRepository({ rootHandle });
+            const repo = await w.__tsgit.openRepository({ rootHandle, ...openOptions });
             try {
               return await target.run(repo, inputs);
             } finally {
               await repo.dispose();
             }
           },
-          { name: scenario.name, inputs: scenario.inputs },
+          { name: scenario.name, inputs: scenario.inputs, openOptions: scenario.openOptions },
         );
 
         // Assert

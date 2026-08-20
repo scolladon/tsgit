@@ -40,7 +40,7 @@ for (const scenario of supported) {
       await t.step('Then the result matches the scenario expected golden', async () => {
         // Arrange
         await stageFiles(tmpDir, scenario.inputs);
-        const sut = await openRepository({ cwd: tmpDir });
+        const sut = await openRepository({ cwd: tmpDir, ...scenario.openOptions });
 
         // Act
         const result = await scenario.run(sut, scenario.inputs);

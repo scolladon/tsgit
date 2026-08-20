@@ -1070,9 +1070,12 @@ describe('readRepositoryFormat', () => {
 
   // ───────────────────────────────────────────────────────────────────────
   // The two extension arms — git's nine known names × {absent, v0, v1},
-  // plus an unknown name in the same three states. The three
-  // UNBACKED_EXTENSIONS members are excluded at v1 (they throw, asserted
-  // separately below) rather than folded into this sweep's oracle.
+  // plus an unknown name in the same three states. The two remaining
+  // UNBACKED_EXTENSIONS members (compatObjectFormat, refStorage) are
+  // excluded at v1 (they throw, asserted separately below) rather than
+  // folded into this sweep's oracle. `objectFormat` left that set (its own
+  // dedicated test below covers its v1 row) but keeps its undefined/v0 rows
+  // here for parity with the sibling sweeps.
   // ───────────────────────────────────────────────────────────────────────
 
   describe('The two extension arms', () => {
@@ -1364,7 +1367,6 @@ describe('readRepositoryFormat', () => {
       describe('When readRepositoryFormat runs', () => {
         it.each([
           ['compatObjectFormat', 'sha1'],
-          ['objectFormat', 'sha256'],
           ['refStorage', 'reftable'],
         ])(
           'Then extensions.%s throws REPOSITORY_EXTENSION_UNSUPPORTED naming the value %s',
@@ -1398,6 +1400,31 @@ describe('readRepositoryFormat', () => {
             });
           },
         );
+      });
+    });
+
+    describe('Given a repository declaring extensions.objectFormat = sha256 at version 1', () => {
+      describe('When readRepositoryFormat runs', () => {
+        it('Then it succeeds — objectFormat left the unbacked-extension refuse set', async () => {
+          // Arrange
+          const fs = new MemoryFileSystem({ rootDir: '/repo' });
+          await fs.writeUtf8(
+            '/repo/.git/config',
+            '[core]\n\trepositoryformatversion = 1\n[extensions]\n\tobjectFormat = sha256\n',
+          );
+
+          // Act
+          const result = await readRepositoryFormat(
+            fileSystemLayoutProbe(fs),
+            '/repo/.git',
+            '/repo/.git',
+            posixPolicy,
+          );
+
+          // Assert
+          expect(result.refusal).toBeUndefined();
+          expect(result.objectFormat).toBe('sha256');
+        });
       });
     });
 
@@ -1539,10 +1566,11 @@ describe('readRepositoryFormat', () => {
   // ───────────────────────────────────────────────────────────────────────
   // extensions.objectFormat — the value grammar (measured against git
   // 2.55.0). Deliberately planted with NO core.repositoryformatversion, so
-  // the acceptance gate's separate refuse-set machinery (UNBACKED_EXTENSIONS,
-  // which still includes 'objectformat' until its point-of-use support
-  // lands) never enters the picture — these rows exercise the value-grammar
-  // layer in isolation, exactly like `core.bare` / `core.worktree` above.
+  // the version-ceiling arm of the acceptance gate never enters the picture
+  // — these rows exercise the value-grammar layer in isolation, exactly like
+  // `core.bare` / `core.worktree` above. `objectFormat` no longer sits in
+  // UNBACKED_EXTENSIONS, so this isolation is no longer load-bearing for the
+  // refuse-set arm either — kept anyway for parity with the sibling sweeps.
   // ───────────────────────────────────────────────────────────────────────
 
   describe('extensions.objectFormat — the value grammar', () => {

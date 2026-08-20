@@ -36,7 +36,10 @@ describe.each(supported)('Given the $name scenario', (scenario) => {
   describe('When the Workers driver runs it', () => {
     it('Then the result matches the scenario expected golden', async () => {
       // Arrange
-      const sut = await openRepository({ files: stageFiles(scenario.inputs) });
+      const sut = await openRepository({
+        files: stageFiles(scenario.inputs),
+        ...scenario.openOptions,
+      });
 
       // Act
       const result = await scenario.run(sut, scenario.inputs);

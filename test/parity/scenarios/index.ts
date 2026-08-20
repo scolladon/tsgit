@@ -31,6 +31,7 @@ import { remoteCrudScenario } from './remote-crud.scenario.ts';
 import { resetRmReflogScenario } from './reset-rm-reflog.scenario.ts';
 import { revListScenario } from './rev-list.scenario.ts';
 import { revertScenario } from './revert.scenario.ts';
+import { sha256ObjectFormatScenario } from './sha256-object-format.scenario.ts';
 import { shallowWalkScenario } from './shallow-walk.scenario.ts';
 import { shortlogScenario } from './shortlog.scenario.ts';
 import { showScenario } from './show.scenario.ts';
@@ -88,4 +89,5 @@ export const SCENARIOS: ReadonlyArray<Scenario<unknown>> = [
   midxReadDegradedScenario,
   packObjectsScenario,
   trustDefaultsScenario,
+  sha256ObjectFormatScenario,
 ];

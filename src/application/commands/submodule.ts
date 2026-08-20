@@ -29,7 +29,11 @@ import { validateRefName } from '../../domain/refs/index.js';
 import { HEADS_PREFIX } from '../../domain/refs/ref-prefixes.js';
 import { shortBranchName } from '../../domain/refs/short-branch-name.js';
 import { DEFAULT_REMOTE } from '../../domain/remote.js';
-import { submoduleHasModifications, submodulePathExists } from '../../domain/submodule/error.js';
+import {
+  submoduleHasModifications,
+  submoduleObjectFormatMismatch,
+  submodulePathExists,
+} from '../../domain/submodule/error.js';
 import { submoduleCoreWorktree, submoduleGitfile } from '../../domain/submodule/gitlink-path.js';
 import { isUnsafeSubmoduleName } from '../../domain/submodule/name.js';
 import { resolveSubmoduleUrl } from '../../domain/submodule/relative-url.js';
@@ -65,7 +69,7 @@ import {
 import { walkSubmodules } from '../primitives/walk-submodules.js';
 import { writeObject } from '../primitives/write-object.js';
 import { checkout } from './checkout.js';
-import { clone } from './clone.js';
+import { type CloneResult, clone } from './clone.js';
 import {
   assertOperationalRepository,
   currentBranchRef,
@@ -590,6 +594,28 @@ const stageSubmodule = async (
  * Shared by `add` and `update`'s clone-if-missing step; the caller then
  * materialises / checks out the worktree.
  */
+/**
+ * git refuses a submodule whose object format differs from the
+ * superproject's — a cross-width gitlink oid cannot be represented in the
+ * superproject's own tree (`error: cannot add a submodule of a different
+ * hash algorithm`). `clone` always ADOPTS the peer's algorithm for the
+ * child's own on-disk repository (its own doc comment), so by the time this
+ * runs the absorbed gitdir already holds the submodule's true width. The
+ * check reads that width off `fetchedRefs`' oid STRINGS — never through an
+ * object/pack read — because `child`'s Context still carries the
+ * SUPERPROJECT's inherited `hashConfig` here (Context is immutable, and
+ * `clone`'s internally-adopted context never escapes it); a width-sensitive
+ * read through `child` at this point would misparse a genuinely mismatched
+ * pack instead of refusing cleanly. `clone` itself already guarantees at
+ * least one fetched ref whenever it succeeds (`remoteAdvertisesNoRefs`).
+ */
+const assertSameObjectFormat = (ctx: Context, cloned: CloneResult): void => {
+  const remoteOid = cloned.fetchedRefs[0]?.id;
+  if (remoteOid === undefined || remoteOid.length === ctx.hashConfig.hexLength) return;
+  const remote = remoteOid.length === 64 ? 'sha256' : 'sha1';
+  throw submoduleObjectFormatMismatch(ctx.hashConfig.algorithm, remote);
+};
+
 const cloneSubmoduleInto = async (
   ctx: Context,
   workDir: string,
@@ -598,7 +624,8 @@ const cloneSubmoduleInto = async (
   name: string,
   path: string,
 ): Promise<void> => {
-  await clone(child, { url: resolvedUrl });
+  const cloned = await clone(child, { url: resolvedUrl });
+  assertSameObjectFormat(ctx, cloned);
   await updateConfigOperations(child, [
     { kind: 'set', section: 'core', key: 'worktree', value: submoduleCoreWorktree(name, path) },
   ]);

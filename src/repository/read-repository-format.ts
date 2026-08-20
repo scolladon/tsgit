@@ -194,11 +194,7 @@ const GIT_V1_ONLY_EXTENSIONS = lowerCasedSet([
  * entry — one array element, nothing else — the moment its support lands;
  * the entry IS the promise that nothing reads the repository wrong.
  */
-const UNBACKED_EXTENSIONS: ReadonlyArray<string> = [
-  'compatobjectformat',
-  'objectformat',
-  'refstorage',
-];
+const UNBACKED_EXTENSIONS: ReadonlyArray<string> = ['compatobjectformat', 'refstorage'];
 
 // A subsectioned spelling of a known name is not known — membership is
 // keyed on the bare key only when `subsection` is `undefined`.
