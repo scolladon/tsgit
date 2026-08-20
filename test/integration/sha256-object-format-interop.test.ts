@@ -20,6 +20,8 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import { NodeHashService } from '../../src/adapters/node/node-hash-service.js';
 import { add } from '../../src/application/commands/add.js';
+import { log } from '../../src/application/commands/log.js';
+import { packObjects } from '../../src/application/commands/pack-objects.js';
 import { SHA256_CONFIG } from '../../src/domain/objects/index.js';
 import type { Context } from '../../src/ports/context.js';
 import {
@@ -28,6 +30,7 @@ import {
   lsStage,
   runGit,
   runGitEnv,
+  tryRunGitWithExit,
 } from './interop-helpers.js';
 
 /** A Node-backed `Context` rooted at `dir`, rehashing at SHA-256 — the width
@@ -92,6 +95,47 @@ describe.skipIf(!GIT_AVAILABLE)('sha256 object format — .git/index interop', (
           await rm(theirsDir, { recursive: true, force: true });
         }
       });
+    });
+  });
+
+  describe('Given a SHA-256 repository, When tsgit packObjects writes a fresh .pack + .idx into it', () => {
+    it("Then git verify-pack -v accepts tsgit's own .idx (exit 0)", async () => {
+      // Arrange — a copy of the base repo, so packObjects' write cannot
+      // disturb the shared fixture other tests in this file read from.
+      const dir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-sha256-packobjects-'));
+      await cp(baseDir, dir, { recursive: true });
+
+      try {
+        // Act
+        const written = await packObjects(sha256Context(dir), { wants: ['HEAD'] });
+        const idxPath = path.join(dir, '.git', 'objects', 'pack', `pack-${written.packId}.idx`);
+        const verifyResult = tryRunGitWithExit(['-C', dir, 'verify-pack', '-v', idxPath]);
+
+        // Assert — a plain (repo-less) verify-pack cannot infer a SHA-256
+        // pack's 32-byte oid stride, so `-C dir` is load-bearing: it lets
+        // git discover the repo's own `extensions.objectFormat=sha256`.
+        expect(verifyResult.exitCode).toBe(0);
+        expect(written.objectCount).toBeGreaterThan(0);
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    });
+  });
+
+  describe('Given a SHA-256 repository git itself packed, When tsgit log walks it', () => {
+    it("Then the returned commit ids match git log's own listing", async () => {
+      // Arrange — baseDir's sole commit lives entirely inside the pack
+      // `repack -adq` wrote in the shared beforeAll; reading it back proves
+      // tsgit's pack-index parsing round-trips a git-produced SHA-256 pack.
+      const expectedHead = runGit(['-C', baseDir, 'rev-parse', 'HEAD'], {
+        env: runGitEnv(),
+      }).trim();
+
+      // Act
+      const entries = await log(sha256Context(baseDir));
+
+      // Assert
+      expect(entries.map((entry) => entry.id)).toEqual([expectedHead]);
     });
   });
 });

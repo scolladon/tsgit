@@ -22,11 +22,12 @@ function makeEntry(type: 1 | 2 | 3 | 4, data: Uint8Array): PackWriterEntry {
 
 function arbUniqueIndexEntries(
   maxLen: number,
+  hexLength: 40 | 64 = 40,
 ): fc.Arbitrary<Array<{ id: string; offset: number; crc32: number }>> {
   return fc
     .array(
       fc.tuple(
-        arbObjectId(40),
+        arbObjectId(hexLength),
         fc.integer({ min: 0, max: 2 ** 30 }),
         fc.integer({ min: 0, max: 0xffffffff }),
       ),
@@ -430,6 +431,77 @@ describe('pack-writer', () => {
         });
       });
     });
+
+    describe('Given a 32-byte pack checksum', () => {
+      describe('When serializePackIndex writes the index', () => {
+        it('Then the length is 8 + 1024 + n*32 + n*4 + n*4 + 32 — one checksum; the second (idx-over-idx) trailer is appended by the caller, not here', () => {
+          // Arrange
+          const entries = [
+            { id: 'aa' + '00'.repeat(31), crc32: 0, offset: 12 },
+            { id: 'bb' + '00'.repeat(31), crc32: 0, offset: 100 },
+            { id: 'cc' + '00'.repeat(31), crc32: 0, offset: 200 },
+          ];
+          const packChecksum = new Uint8Array(32);
+          const n = entries.length;
+
+          // Act
+          const result = serializePackIndex(entries, packChecksum);
+
+          // Assert
+          expect(result.length).toBe(8 + 1024 + n * 32 + n * 4 + n * 4 + 32);
+        });
+      });
+    });
+
+    describe('Given a 32-byte pack checksum and entries serialized then parsed at digestLength 32', () => {
+      describe('When looking up each entry', () => {
+        it('Then lookupPackIndex resolves every offset', () => {
+          // Arrange
+          const entries = [
+            { id: 'aa' + '00'.repeat(31), crc32: 0, offset: 12 },
+            { id: 'bb' + '00'.repeat(31), crc32: 0, offset: 100 },
+            { id: 'cc' + '00'.repeat(31), crc32: 0, offset: 200 },
+          ];
+          const packChecksum = new Uint8Array(32);
+
+          // Act
+          const serialized = serializePackIndex(entries, packChecksum);
+          const withTrailer = new Uint8Array(serialized.length + 32);
+          withTrailer.set(serialized);
+          const idx = parsePackIndex(withTrailer, 32);
+
+          // Assert
+          for (const entry of entries) {
+            expect(lookupPackIndex(idx, entry.id as ObjectId)).toBe(entry.offset);
+          }
+        });
+      });
+    });
+
+    describe('Given a 24-byte pack checksum', () => {
+      describe('When serializePackIndex writes the index', () => {
+        it('Then throws INVALID_PACK_INDEX naming 20 and 32 as the accepted widths', () => {
+          // Arrange
+          const entries = [{ id: 'aa' + '00'.repeat(19), crc32: 0, offset: 12 }];
+          const packChecksum = new Uint8Array(24);
+
+          // Act & Assert
+          try {
+            serializePackIndex(entries, packChecksum);
+            // Assert
+            expect.fail('Should have thrown');
+          } catch (e) {
+            const err = e as TsgitError;
+            expect(err.data).toEqual(
+              expect.objectContaining({
+                code: 'INVALID_PACK_INDEX',
+                reason: expect.stringContaining('20 or 32'),
+              }),
+            );
+          }
+        });
+      });
+    });
   });
 
   describe('property-based tests', () => {
@@ -454,21 +526,29 @@ describe('pack-writer', () => {
         });
       });
       describe('When serializing index then parsing', () => {
-        it('Then lookupPackIndex finds every entry', () => {
+        it('Then lookupPackIndex finds every entry, at both SHA-1 and SHA-256 width', () => {
           // Arrange + Assert
           fc.assert(
-            fc.property(arbUniqueIndexEntries(8), (entries) => {
-              fc.pre(entries.length > 0);
-              const packChecksum = new Uint8Array(20);
-              const serialized = serializePackIndex(entries, packChecksum);
-              const withTrailer = new Uint8Array(serialized.length + 20);
-              withTrailer.set(serialized);
-              const idx = parsePackIndex(withTrailer);
+            fc.property(
+              fc.constantFrom<20 | 32>(20, 32).chain((digestLength) =>
+                arbUniqueIndexEntries(8, digestLength === 32 ? 64 : 40).map((entries) => ({
+                  digestLength,
+                  entries,
+                })),
+              ),
+              ({ digestLength, entries }) => {
+                fc.pre(entries.length > 0);
+                const packChecksum = new Uint8Array(digestLength);
+                const serialized = serializePackIndex(entries, packChecksum);
+                const withTrailer = new Uint8Array(serialized.length + digestLength);
+                withTrailer.set(serialized);
+                const idx = parsePackIndex(withTrailer, digestLength);
 
-              for (const entry of entries) {
-                expect(lookupPackIndex(idx, entry.id as ObjectId)).toBe(entry.offset);
-              }
-            }),
+                for (const entry of entries) {
+                  expect(lookupPackIndex(idx, entry.id as ObjectId)).toBe(entry.offset);
+                }
+              },
+            ),
           );
         });
       });

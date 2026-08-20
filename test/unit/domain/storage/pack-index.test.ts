@@ -1,6 +1,7 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import type { TsgitError } from '../../../../src/domain/error.js';
+import { hexToBytes } from '../../../../src/domain/objects/encoding.js';
 import type { ObjectId } from '../../../../src/domain/objects/object-id.js';
 import {
   allObjectIds,
@@ -12,6 +13,56 @@ import {
   parsePackIndex,
 } from '../../../../src/domain/storage/pack-index.js';
 import { arbObjectId, buildTestIndex, type TestIndexEntry } from './arbitraries.js';
+
+/**
+ * Captured from real `git init --object-format=sha256`, `printf 'hello\n' >
+ * a.txt && git add a.txt && git commit -m base && git repack -adq` (git
+ * 2.55.0): 3 objects (1 blob, 1 tree, 1 commit), 32-byte oid stride, 64-byte
+ * trailer (pack checksum + idx checksum). Arithmetic check: 8 + 1024 +
+ * 3*32 + 3*4 + 3*4 + 64 = 1216 bytes, the fixture's exact length.
+ */
+const SHA256_IDX_HEX =
+  'ff744f63000000020000000000000000000000000000000000000000000000000000000000' +
+  '00000000000000000000000000000000000000000000000000000000000000000000000000' +
+  '00000000000000000000000000000000000000000000000000000000000000000000000000' +
+  '00000000000000000000000000000000000000000000000000000000000000000000000000' +
+  '00000000000000000000000000000000000000000000000000000000000000000000000000' +
+  '00000100000001000000010000000100000001000000010000000100000001000000010000' +
+  '00010000000100000002000000020000000200000002000000020000000200000002000000' +
+  '02000000020000000200000002000000020000000200000002000000020000000200000002' +
+  '00000002000000020000000200000002000000020000000200000002000000020000000200' +
+  '00000200000002000000020000000200000002000000020000000200000002000000020000' +
+  '00020000000200000002000000020000000200000002000000020000000200000002000000' +
+  '02000000020000000200000002000000020000000200000002000000020000000200000002' +
+  '00000002000000020000000200000002000000020000000200000002000000020000000200' +
+  '00000200000002000000020000000200000002000000020000000200000002000000020000' +
+  '00020000000200000002000000020000000200000002000000020000000200000002000000' +
+  '02000000020000000200000002000000020000000200000002000000020000000200000002' +
+  '00000002000000020000000200000002000000020000000200000002000000020000000200' +
+  '00000200000002000000020000000200000002000000020000000200000002000000020000' +
+  '00020000000200000002000000020000000200000002000000020000000200000002000000' +
+  '02000000020000000200000002000000020000000200000002000000020000000200000002' +
+  '00000002000000020000000200000002000000020000000200000002000000020000000200' +
+  '00000200000002000000020000000200000002000000020000000200000002000000020000' +
+  '00020000000200000002000000020000000200000002000000020000000200000002000000' +
+  '02000000020000000200000002000000020000000200000002000000020000000300000003' +
+  '00000003000000030000000300000003000000030000000300000003000000030000000300' +
+  '00000300000003000000030000000300000003000000030000000300000003000000030000' +
+  '00030000000300000003000000030000000300000003000000030000000300000003000000' +
+  '0300000003000000030000000300000003000000030000000300000003000000032cf8d83d' +
+  '9ee29543b34a87727421fdecb7e3f3a183d337639025de576db9ebb4371aac45c3ba401d13' +
+  'c2ce98c9537b4e53c6049b950bf8a33cbc400712d9f4fada53442fc09b8dcfef048ce91a04' +
+  'f41bdc06d3478540bfa913b39d0b2978a60252941500582b1b889eed1c6900000087000000' +
+  '960000000c654b102f28c5803f2256fa3589f4e536b4540b587f61e0e31aafad1a5c13513a' +
+  'd29671e1867f5e19a41be1ce607be9bcde10b56bdc045208060cc32a96f49d84';
+
+/** `git verify-pack -v`'s listing for the fixture above, sorted ascending —
+ *  the order the index itself stores its sha table in. */
+const SHA256_IDX_OIDS = [
+  '2cf8d83d9ee29543b34a87727421fdecb7e3f3a183d337639025de576db9ebb4', // blob 'hello\n'
+  '371aac45c3ba401d13c2ce98c9537b4e53c6049b950bf8a33cbc400712d9f4fa', // tree
+  'da53442fc09b8dcfef048ce91a04f41bdc06d3478540bfa913b39d0b2978a602', // commit
+] as const;
 
 // Property test skipped: entryOffsets is a thin loop whose only invariant is
 // result.length === index.objectCount. A property oracle would tautologically
@@ -882,6 +933,133 @@ describe('pack-index', () => {
           expect(result[0]).toBe('aa' + '00'.repeat(19));
           expect(result[1]).toBe('bb' + '00'.repeat(19));
           expect(result[2]).toBe('cc' + '00'.repeat(19));
+        });
+      });
+    });
+  });
+
+  describe('parsePackIndex — SHA-256 (digestLength 32)', () => {
+    describe('Given a git-produced SHA-256 .idx with 3 objects', () => {
+      describe('When parsing at digestLength 32', () => {
+        it("Then objectCount and every oid match git verify-pack's listing", () => {
+          // Arrange
+          const bytes = hexToBytes(SHA256_IDX_HEX);
+
+          // Act
+          const result = parsePackIndex(bytes, 32);
+
+          // Assert
+          expect(result.objectCount).toBe(3);
+          expect(result.digestLength).toBe(32);
+          expect(allObjectIds(result)).toEqual(SHA256_IDX_OIDS);
+        });
+      });
+    });
+
+    describe('Given the same git-produced fixture', () => {
+      describe("When looking up each of git verify-pack's oids", () => {
+        it('Then lookupPackIndex resolves every one to an offset', () => {
+          // Arrange
+          const index = parsePackIndex(hexToBytes(SHA256_IDX_HEX), 32);
+
+          // Act & Assert
+          for (const id of SHA256_IDX_OIDS) {
+            expect(lookupPackIndex(index, id as ObjectId)).not.toBeUndefined();
+          }
+        });
+      });
+    });
+  });
+
+  describe('parsePackIndex — digestLength default', () => {
+    describe('Given a SHA-1 .idx v2 and no explicit digestLength argument', () => {
+      describe('When parsing', () => {
+        it('Then digestLength defaults to 20', () => {
+          // Arrange
+          const bytes = buildTestIndex([]);
+
+          // Act
+          const result = parsePackIndex(bytes);
+
+          // Assert
+          expect(result.digestLength).toBe(20);
+        });
+      });
+    });
+  });
+
+  describe('findByPrefix — SHA-256 (digestLength 32)', () => {
+    const sha256Index = parsePackIndex(hexToBytes(SHA256_IDX_HEX), 32);
+    const [fullOid] = SHA256_IDX_OIDS;
+
+    describe('Given a 63-char prefix of a known SHA-256 oid', () => {
+      describe('When searching', () => {
+        it('Then it resolves to that oid', () => {
+          // Arrange
+          const prefix = fullOid.slice(0, 63);
+
+          // Act
+          const result = findByPrefix(sha256Index, prefix);
+
+          // Assert
+          expect(result).toEqual([fullOid]);
+        });
+      });
+    });
+
+    describe('Given the full 64-char SHA-256 oid as prefix', () => {
+      describe('When searching', () => {
+        it('Then it resolves to that oid', () => {
+          // Act
+          const result = findByPrefix(sha256Index, fullOid);
+
+          // Assert
+          expect(result).toEqual([fullOid]);
+        });
+      });
+    });
+
+    describe('Given a 65-char prefix (one longer than a full SHA-256 oid)', () => {
+      describe('When searching', () => {
+        it('Then throws INVALID_PACK_INDEX with the 64-char cap in .data', () => {
+          // Arrange
+          const prefix = `${fullOid}0`;
+
+          // Act & Assert
+          try {
+            findByPrefix(sha256Index, prefix);
+            // Assert
+            expect.fail('Should have thrown');
+          } catch (e) {
+            const err = e as TsgitError;
+            expect(err.data).toEqual(
+              expect.objectContaining({
+                code: 'INVALID_PACK_INDEX',
+                reason: expect.stringContaining('maximum 64 hex chars'),
+              }),
+            );
+          }
+        });
+      });
+    });
+
+    describe('Given a prefix shorter than 4 hex chars', () => {
+      describe('When searching', () => {
+        it('Then throws INVALID_PACK_INDEX for the too-short guard', () => {
+          // Act & Assert
+          try {
+            findByPrefix(sha256Index, 'abc');
+            // Assert
+            expect.fail('Should have thrown');
+          } catch (e) {
+            const err = e as TsgitError;
+            expect(err.data).toEqual(
+              expect.objectContaining({
+                code: 'INVALID_PACK_INDEX',
+                reason: expect.stringContaining('too short'),
+              }),
+            );
+          }
         });
       });
     });

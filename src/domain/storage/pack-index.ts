@@ -7,10 +7,11 @@ const IDX_VERSION = 2;
 const IDX_HEADER_SIZE = 8;
 const IDX_FANOUT_SIZE = 1024;
 const IDX_SHA_TABLE_OFFSET = 1032;
-const IDX_SHA_LENGTH = 20;
 
 export interface PackIndex {
   readonly objectCount: number;
+  /** Oid byte width this index was framed at — 20 for SHA-1, 32 for SHA-256. */
+  readonly digestLength: 20 | 32;
   readonly crc32TableOffset: number;
   readonly smallOffsetsTableOffset: number;
   readonly largeOffsetsTableOffset: number;
@@ -19,7 +20,28 @@ export interface PackIndex {
   readonly _view: DataView;
 }
 
-export function parsePackIndex(bytes: Uint8Array): PackIndex {
+/**
+ * `.idx` trailer size: pack checksum + idx checksum, each `digestLength`
+ * bytes. The SAME arithmetic also gives a full oid's hex-character length
+ * (two hex digits per byte) — `findByPrefix` reuses this helper for that,
+ * rather than restating `2 * digestLength` a third time.
+ */
+function idxTrailerSize(digestLength: number): number {
+  return 2 * digestLength;
+}
+
+/**
+ * Byte offset of the sha-table slot at `position`, for an index whose oids
+ * are `digestLength` bytes wide. Shared by a single-slot read
+ * (`compareShaAtIndex`, `objectIdAt`, `position` = `i`) and the table's own
+ * end boundary (`parsePackIndex`'s `crc32TableOffset`, `position` =
+ * `objectCount`) — one stride, no restated literal.
+ */
+function shaSlotOffset(position: number, digestLength: number): number {
+  return IDX_SHA_TABLE_OFFSET + position * digestLength;
+}
+
+export function parsePackIndex(bytes: Uint8Array, digestLength: 20 | 32 = 20): PackIndex {
   const minSize = IDX_HEADER_SIZE + IDX_FANOUT_SIZE;
   if (bytes.length < minSize) {
     throw invalidPackIndex('truncated: file too short for header and fanout');
@@ -43,13 +65,12 @@ export function parsePackIndex(bytes: Uint8Array): PackIndex {
 
   const objectCount = view.getUint32(IDX_HEADER_SIZE + 255 * 4);
 
-  const crc32TableOffset = IDX_SHA_TABLE_OFFSET + objectCount * IDX_SHA_LENGTH;
+  const crc32TableOffset = shaSlotOffset(objectCount, digestLength);
   const smallOffsetsTableOffset = crc32TableOffset + objectCount * 4;
   const largeOffsetsTableOffset = smallOffsetsTableOffset + objectCount * 4;
-  const trailerOffset = bytes.length - 40;
+  const trailerOffset = bytes.length - idxTrailerSize(digestLength);
 
-  const minExpectedSize =
-    IDX_SHA_TABLE_OFFSET + objectCount * IDX_SHA_LENGTH + objectCount * 4 + objectCount * 4 + 40;
+  const minExpectedSize = largeOffsetsTableOffset + idxTrailerSize(digestLength);
   if (bytes.length < minExpectedSize) {
     throw invalidPackIndex(
       `truncated: expected at least ${minExpectedSize} bytes for ${objectCount} objects, got ${bytes.length}`,
@@ -58,6 +79,7 @@ export function parsePackIndex(bytes: Uint8Array): PackIndex {
 
   return {
     objectCount,
+    digestLength,
     crc32TableOffset,
     smallOffsetsTableOffset,
     largeOffsetsTableOffset,
@@ -83,9 +105,9 @@ function readFanout(index: PackIndex, byte: number): number {
 }
 
 function compareShaAtIndex(index: PackIndex, i: number, targetBytes: Uint8Array): number {
-  const base = IDX_SHA_TABLE_OFFSET + i * IDX_SHA_LENGTH;
+  const base = shaSlotOffset(i, index.digestLength);
   const bytes = index._bytes;
-  for (let k = 0; k < IDX_SHA_LENGTH; k += 1) {
+  for (let k = 0; k < index.digestLength; k += 1) {
     const diff = bytes[base + k]! - targetBytes[k]!;
     if (diff !== 0) return diff;
   }
@@ -172,25 +194,26 @@ export function lookupPackIndexPosition(index: PackIndex, id: ObjectId): number 
  * decoded the position.
  */
 export function objectIdAt(index: PackIndex, position: number): ObjectId {
-  const offset = IDX_SHA_TABLE_OFFSET + position * IDX_SHA_LENGTH;
-  return bytesToHex(index._bytes.subarray(offset, offset + IDX_SHA_LENGTH)) as ObjectId;
+  const offset = shaSlotOffset(position, index.digestLength);
+  return bytesToHex(index._bytes.subarray(offset, offset + index.digestLength)) as ObjectId;
 }
 
 const HEX_RE = /^[0-9a-f]+$/;
 
 export function findByPrefix(index: PackIndex, prefix: string): ReadonlyArray<ObjectId> {
+  const hexLength = idxTrailerSize(index.digestLength);
   if (prefix.length < 4) {
     throw invalidPackIndex(`prefix too short: minimum 4 hex chars, got ${prefix.length}`);
   }
-  if (prefix.length > 40) {
-    throw invalidPackIndex(`prefix too long: maximum 40 hex chars, got ${prefix.length}`);
+  if (prefix.length > hexLength) {
+    throw invalidPackIndex(`prefix too long: maximum ${hexLength} hex chars, got ${prefix.length}`);
   }
   if (!HEX_RE.test(prefix)) {
     throw invalidPackIndex('prefix contains non-hex characters');
   }
 
-  const lowerHex = prefix.padEnd(40, '0');
-  const upperHex = prefix.padEnd(40, 'f');
+  const lowerHex = prefix.padEnd(hexLength, '0');
+  const upperHex = prefix.padEnd(hexLength, 'f');
   const lowerBytes = hexToBytes(lowerHex);
   const upperBytes = hexToBytes(upperHex);
 

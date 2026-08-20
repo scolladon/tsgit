@@ -62,17 +62,14 @@ export function serializePackfile(entries: ReadonlyArray<PackWriterEntry>): Pack
   return { data: concatAll(chunks), entries: metas };
 }
 
-const IDX_SHA_LENGTH = 20;
-
 export function serializePackIndex(
   entries: ReadonlyArray<PackIndexWriterEntry>,
   packChecksum: Uint8Array,
   presorted?: ReadonlyArray<SortedEntry>,
 ): Uint8Array {
-  if (packChecksum.length !== IDX_SHA_LENGTH) {
-    throw invalidPackIndex(
-      `packChecksum must be ${IDX_SHA_LENGTH} bytes, got ${packChecksum.length}`,
-    );
+  const digestLength = packChecksum.length;
+  if (digestLength !== 20 && digestLength !== 32) {
+    throw invalidPackIndex(`packChecksum must be 20 or 32 bytes, got ${digestLength}`);
   }
 
   // `presorted` MUST be `sortPackIndexEntries(entries)` — a caller writing the
@@ -88,11 +85,11 @@ export function serializePackIndex(
 
   const headerSize = 8;
   const fanoutSize = 1024;
-  const shaTableSize = n * IDX_SHA_LENGTH;
+  const shaTableSize = n * digestLength;
   const crcTableSize = n * 4;
   const offsetTableSize = n * 4;
   const largeOffsetTableSize = largeCount * 8;
-  const checksumSize = IDX_SHA_LENGTH;
+  const checksumSize = digestLength;
 
   const totalSize =
     headerSize +
@@ -131,7 +128,7 @@ export function serializePackIndex(
   // SHA table — reuse pre-computed bytes
   const shaStart = fanoutOffset + fanoutSize;
   for (let i = 0; i < n; i++) {
-    bytes.set(withBytes[i]!.shaBytes, shaStart + i * IDX_SHA_LENGTH);
+    bytes.set(withBytes[i]!.shaBytes, shaStart + i * digestLength);
   }
 
   // CRC-32 table
