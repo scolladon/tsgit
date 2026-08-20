@@ -1225,7 +1225,8 @@ there is the minimal change that reaches both legs plus the ls-refs request buil
 - **`UNSUPPORTED_OBJECT_FORMAT` widens in place** (ADR-695). Today
   `{ code: 'UNSUPPORTED_OBJECT_FORMAT'; format: string }`
   (`src/domain/protocol/error.ts:35`, factory `:102-103`), rendered
-  `unsupported object format: ${data.format}` (`src/domain/error.ts:419`). Add `local: string`;
+  `unsupported object format: ${data.format}` (in `src/domain/error.ts`'s renderer switch —
+  locate the `case 'UNSUPPORTED_OBJECT_FORMAT':` by content; this file gains cases every part). Add `local: string`;
   `format` keeps meaning **the peer's**. The reconstruction needs two fields —
   `mismatched algorithms: client <local>; server <format>`.
   **Its `docs/use/errors.md:180` row is FALSIFIED by this change** and must be rewritten in this
