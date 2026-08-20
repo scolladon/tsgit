@@ -44,7 +44,7 @@ counting carried lines would make the total depend on how the fix is factored.
 | C9 | bundle | **6** | `src/domain/bundle/types.ts:4` · `src/domain/bundle/parse-bundle-header.ts:14,16,38,46,59` |
 | C10 | wire protocol | **4** | `src/domain/protocol/v2/sections.ts:51` · `src/domain/protocol/v2/capabilities.ts:67` · `src/domain/protocol/capabilities.ts:6` (`CLIENT_CAPABILITIES_FETCH`) · `:17` (`CLIENT_CAPABILITIES_PUSH`) |
 | C11 | repository creation | **2** | `src/application/commands/internal/bootstrap.ts:8,28` |
-| C12 | runtime wiring pins | **8** | `src/index.node.ts:93,109` · `src/index.browser.ts:79,84` · `src/adapters/node/node-adapter.ts:55,73` · `src/adapters/browser/browser-adapter.ts:34,44` |
+| C12 | runtime wiring pins | **8** | `src/index.node.ts:95,111` · `src/index.browser.ts:79,84` · `src/adapters/node/node-adapter.ts:55,73` · `src/adapters/browser/browser-adapter.ts:34,44` |
 
 **Authoritative total: 55 width-sweep sites.**
 
@@ -70,7 +70,7 @@ implementation (they are edits, not sweep sites):
    see `src/domain/commands/error.ts:243`. The two-value claim lives only in the factory's
    comment at `:769`. Widening it to a four-member union is a **type narrowing** on a shipped
    payload, so it is an `api.json` change.
-4. **`SHA256_CONFIG` is already public** — exported as a value from `src/domain/objects/index.ts:38`
+4. **`SHA256_CONFIG` is already public** — exported as a value from `src/domain/objects/index.ts:39`
    and already present in `reports/api.json`. The design's "not in the public surface" note is stale.
 5. **This repository calls the legacy protocol `v1`, not `v0`** (`FetchWireVersion = 1 | 2`).
    Everywhere ADR-697 and the design say "protocol v0", the code says v1. Use the repo's naming
@@ -110,7 +110,7 @@ config-free dual one. `resolve-oid-prefix.ts` is therefore **in** the sweep, not
 
 - **New error code:** add to the union in the owning `error.ts` (`src/domain/commands/error.ts`
   or `src/domain/protocol/error.ts`), add a `case` to the renderer switch in
-  `src/domain/error.ts` (the `const _exhaustive: never = data;` at `:561` is what fails the
+  `src/domain/error.ts` (the `const _exhaustive: never = data;` at `:573` is what fails the
   build if you miss one), add a row to `docs/use/errors.md` under the right `###` group
   (alphabetical within the group; groups at `:36` Adapters & I/O, `:50` Objects/storage/packs,
   `:70` Refs/reflog/revparse, `:95` Index/worktree, `:117` Diff & merge, `:127` Commits &
@@ -131,7 +131,7 @@ config-free dual one. `resolve-oid-prefix.ts` is therefore **in** the sweep, not
 
 **This is a live data-integrity bug on the current release**, reachable today with no new
 option: `openRepository({ algorithm: 'sha256' })` on the memory entry (`src/index.default.ts:42`,
-a documented public option that already wires `SHA256_CONFIG` at `:88`) then `add` writes a
+a documented public option that already wires `SHA256_CONFIG` at `:98`) then `add` writes a
 corrupt `.git/index`, and `status` then reports the entry oid as a silently **truncated 40-hex**
 id with no error. Land it first, alone, so it is independently reviewable and can be cherry-picked
 onto a release branch on its own.
@@ -913,7 +913,7 @@ this part:
 1. Union member in `src/domain/commands/error.ts` beside `CONFIG_BAD_BOOLEAN_LITERAL` (`:165`)
    and `CONFIG_BAD_BOOLEAN_VALUE` (`:159`); factory beside `configBadBooleanValue` (`:587`).
 2. Renderer `case` in `src/domain/error.ts` — the switch ends with
-   `const _exhaustive: never = data;` at `:561`, so a missed case fails `check:types`.
+   `const _exhaustive: never = data;` at `:573`, so a missed case fails `check:types`.
    Render shape follows `CONFIG_BAD_BOOLEAN_LITERAL`'s neighbour convention; the interop test
    reconstructs git's two lines from the fields (ADR-249 — the library emits no rendered line).
 3. `docs/use/errors.md` — a new row under **`### Repository state`** (`:191`), alphabetical:
