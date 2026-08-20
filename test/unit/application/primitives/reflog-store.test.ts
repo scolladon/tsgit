@@ -42,8 +42,8 @@ const entry = (overrides: Partial<ReflogEntry> = {}): ReflogEntry => ({
 // fixed framing is the empty-message length (`<meta>\n`) plus the one TAB a
 // non-empty message adds.
 const lineOfSize = (bytes: number): string => {
-  const framing = serializeReflogLine(entry({ message: '' })).length + 1;
-  return serializeReflogLine(entry({ message: 'x'.repeat(bytes - framing) }));
+  const framing = serializeReflogLine(entry({ message: '' }), 40).length + 1;
+  return serializeReflogLine(entry({ message: 'x'.repeat(bytes - framing) }), 40);
 };
 
 /** The linked worktree's own (admin) gitdir under the common dir's `worktrees/`. */
@@ -69,7 +69,7 @@ describe('reflog-store', () => {
 
           // Assert
           const raw = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/logs/HEAD`);
-          expect(raw).toBe(serializeReflogLine(reflogEntry));
+          expect(raw).toBe(serializeReflogLine(reflogEntry, 40));
         });
       });
     });

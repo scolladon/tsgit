@@ -1,5 +1,5 @@
 import { TsgitError } from '../../../../domain/error.js';
-import type { FsckObjectType } from '../../../../domain/fsck/index.js';
+import type { FsckObjectType, ValidateObjectInput } from '../../../../domain/fsck/index.js';
 import { validateObject } from '../../../../domain/fsck/index.js';
 import type { ObjectId } from '../../../../domain/objects/index.js';
 import { parseHeader } from '../../../../domain/objects/index.js';
@@ -116,6 +116,33 @@ interface ContentValidationResult {
   readonly exitBit: number;
 }
 
+/**
+ * Build the kind-specific `validateObject` input. Only `tree` needs the
+ * repository's own oid byte width — a raw tree's binary shas carry no width
+ * marker of their own, so the caller's `ctx.hashConfig.digestLength` is the
+ * only source of truth; only `blob` optionally carries the special-file name
+ * used by `.gitmodules`/`.gitattributes` content checks.
+ */
+function buildValidateObjectInput(
+  ctx: Context,
+  kind: FsckObjectType,
+  rawBody: Uint8Array,
+  strict: boolean,
+  fileName: string | undefined,
+): ValidateObjectInput {
+  switch (kind) {
+    case 'tree':
+      return { kind, rawBody, strict, digestLength: ctx.hashConfig.digestLength };
+    case 'blob':
+      return fileName !== undefined
+        ? { kind, rawBody, strict, fileName }
+        : { kind, rawBody, strict };
+    case 'commit':
+    case 'tag':
+      return { kind, rawBody, strict };
+  }
+}
+
 /** Validate one object's content and hash, accumulating findings and exit bit. */
 async function validateOneObject(
   ctx: Context,
@@ -142,10 +169,9 @@ async function validateOneObject(
 
   // For blobs, pass filename when the blob appears under a special name
   // (.gitmodules / .gitattributes) so content checks fire (gitmodulesUrl, …).
-  // Stryker disable next-line ConditionalExpression: equivalent — blobFilenames only maps blob ids; non-blob ids return undefined → fileName stays undefined → same dispatch path.
   const fileName = kind === 'blob' ? blobFilenames.get(id) : undefined;
   const catalogueFindings = validateObject(
-    fileName !== undefined ? { rawBody, kind, strict, fileName } : { rawBody, kind, strict },
+    buildValidateObjectInput(ctx, kind, rawBody, strict, fileName),
   );
   for (const { msgId, severity } of catalogueFindings) {
     findings.push({ type: 'bad-object', id, objectType: kind, msgId, severity });

@@ -13,7 +13,10 @@ import { MAX_REFLOG_BYTES } from './types.js';
 
 /** Append one entry to `ref`'s reflog, creating the file and parents as needed. */
 export async function appendReflog(ctx: Context, ref: RefName, entry: ReflogEntry): Promise<void> {
-  await ctx.fs.appendUtf8(reflogPath(perWorktreeRefDir(ctx, ref), ref), serializeReflogLine(entry));
+  await ctx.fs.appendUtf8(
+    reflogPath(perWorktreeRefDir(ctx, ref), ref),
+    serializeReflogLine(entry, ctx.hashConfig.hexLength),
+  );
 }
 
 /** Read `ref`'s reflog, oldest-first. Returns `[]` when the file is absent. */
@@ -24,7 +27,7 @@ export async function readReflog(ctx: Context, ref: RefName): Promise<ReadonlyAr
   if (stat.size > MAX_REFLOG_BYTES) {
     throw invalidReflogEntry(`reflog file exceeds ${MAX_REFLOG_BYTES} bytes`);
   }
-  return parseReflog(await ctx.fs.readUtf8(path));
+  return parseReflog(await ctx.fs.readUtf8(path), ctx.hashConfig.hexLength);
 }
 
 /** Whether `ref` has a reflog file at all. */
@@ -38,7 +41,9 @@ export async function writeReflog(
   ref: RefName,
   entries: ReadonlyArray<ReflogEntry>,
 ): Promise<void> {
-  const text = entries.map(serializeReflogLine).join('');
+  const text = entries
+    .map((entry) => serializeReflogLine(entry, ctx.hashConfig.hexLength))
+    .join('');
   await ctx.fs.writeUtf8(reflogPath(perWorktreeRefDir(ctx, ref), ref), text);
 }
 

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { MSG_EXTRA_HEADER_ENTRY } from '../../../../src/domain/fsck/msg-ids.js';
 import { resolveSeverity } from '../../../../src/domain/fsck/severity.js';
-import type { FsckObjectType } from '../../../../src/domain/fsck/types.js';
+import type { ValidateObjectInput } from '../../../../src/domain/fsck/validate-object.js';
 import { validateObject } from '../../../../src/domain/fsck/validate-object.js';
 import { encode } from '../../../../src/domain/objects/encoding.js';
 
@@ -106,7 +106,12 @@ describe('Given tree with zero-padded filemode', () => {
       const rawBytes = buildTree(buildTreeEntry('0100644', 'file.txt', BLOB_SHA));
 
       // Act
-      const result = validateObject({ kind: 'tree', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'tree',
+        rawBody: rawBytes,
+        strict: false,
+        digestLength: 20,
+      });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'zeroPaddedFilemode', severity: 'warning' });
@@ -119,7 +124,12 @@ describe('Given tree with zero-padded filemode', () => {
       const rawBytes = buildTree(buildTreeEntry('0100644', 'file.txt', BLOB_SHA));
 
       // Act
-      const result = validateObject({ kind: 'tree', rawBody: rawBytes, strict: true });
+      const result = validateObject({
+        kind: 'tree',
+        rawBody: rawBytes,
+        strict: true,
+        digestLength: 20,
+      });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'zeroPaddedFilemode', severity: 'error' });
@@ -141,7 +151,12 @@ describe('Given tree with entries in wrong sort order', () => {
       );
 
       // Act
-      const result = validateObject({ kind: 'tree', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'tree',
+        rawBody: rawBytes,
+        strict: false,
+        digestLength: 20,
+      });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'treeNotSorted', severity: 'error' });
@@ -157,7 +172,12 @@ describe('Given tree with entries in wrong sort order', () => {
       );
 
       // Act
-      const result = validateObject({ kind: 'tree', rawBody: rawBytes, strict: true });
+      const result = validateObject({
+        kind: 'tree',
+        rawBody: rawBytes,
+        strict: true,
+        digestLength: 20,
+      });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'treeNotSorted', severity: 'error' });
@@ -271,17 +291,28 @@ describe('Given tag without tagger entry', () => {
 
 describe('Given a valid object', () => {
   describe('When validateObject runs', () => {
-    it.each<{ kind: FsckObjectType; build: () => Uint8Array }>([
-      { kind: 'commit', build: () => VALID_COMMIT },
-      { kind: 'tag', build: () => VALID_TAG },
-      { kind: 'tree', build: () => buildTree(buildTreeEntry('100644', 'file.txt', BLOB_SHA)) },
-      { kind: 'blob', build: () => encode('hello world\n') },
-    ])('Then returns empty findings for a valid $kind object', ({ kind, build }) => {
+    it.each<{ label: string; build: () => ValidateObjectInput }>([
+      { label: 'commit', build: () => ({ kind: 'commit', rawBody: VALID_COMMIT, strict: false }) },
+      { label: 'tag', build: () => ({ kind: 'tag', rawBody: VALID_TAG, strict: false }) },
+      {
+        label: 'tree',
+        build: () => ({
+          kind: 'tree',
+          rawBody: buildTree(buildTreeEntry('100644', 'file.txt', BLOB_SHA)),
+          strict: false,
+          digestLength: 20,
+        }),
+      },
+      {
+        label: 'blob',
+        build: () => ({ kind: 'blob', rawBody: encode('hello world\n'), strict: false }),
+      },
+    ])('Then returns empty findings for a valid $label object', ({ build }) => {
       // Arrange
-      const rawBody = build();
+      const input = build();
 
       // Act
-      const result = validateObject({ kind, rawBody, strict: false });
+      const result = validateObject(input);
 
       // Assert
       expect(result).toHaveLength(0);
@@ -301,7 +332,12 @@ describe('Given tree with empty entry name', () => {
       const rawBytes = buildTree(buildTreeEntry('100644', '', BLOB_SHA));
 
       // Act
-      const result = validateObject({ kind: 'tree', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'tree',
+        rawBody: rawBytes,
+        strict: false,
+        digestLength: 20,
+      });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'emptyName', severity: 'warning' });
@@ -314,7 +350,12 @@ describe('Given tree with empty entry name', () => {
       const rawBytes = buildTree(buildTreeEntry('100644', '', BLOB_SHA));
 
       // Act
-      const result = validateObject({ kind: 'tree', rawBody: rawBytes, strict: true });
+      const result = validateObject({
+        kind: 'tree',
+        rawBody: rawBytes,
+        strict: true,
+        digestLength: 20,
+      });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'emptyName', severity: 'error' });
@@ -333,7 +374,12 @@ describe('Given tree with entry named "."', () => {
       const rawBytes = buildTree(buildTreeEntry('100644', '.', BLOB_SHA));
 
       // Act
-      const result = validateObject({ kind: 'tree', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'tree',
+        rawBody: rawBytes,
+        strict: false,
+        digestLength: 20,
+      });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'hasDot', severity: 'warning' });
@@ -346,7 +392,12 @@ describe('Given tree with entry named "."', () => {
       const rawBytes = buildTree(buildTreeEntry('100644', '.', BLOB_SHA));
 
       // Act
-      const result = validateObject({ kind: 'tree', rawBody: rawBytes, strict: true });
+      const result = validateObject({
+        kind: 'tree',
+        rawBody: rawBytes,
+        strict: true,
+        digestLength: 20,
+      });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'hasDot', severity: 'error' });
@@ -365,7 +416,12 @@ describe('Given tree with entry named ".."', () => {
       const rawBytes = buildTree(buildTreeEntry('100644', '..', BLOB_SHA));
 
       // Act
-      const result = validateObject({ kind: 'tree', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'tree',
+        rawBody: rawBytes,
+        strict: false,
+        digestLength: 20,
+      });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'hasDotdot', severity: 'warning' });
@@ -378,7 +434,12 @@ describe('Given tree with entry named ".."', () => {
       const rawBytes = buildTree(buildTreeEntry('100644', '..', BLOB_SHA));
 
       // Act
-      const result = validateObject({ kind: 'tree', rawBody: rawBytes, strict: true });
+      const result = validateObject({
+        kind: 'tree',
+        rawBody: rawBytes,
+        strict: true,
+        digestLength: 20,
+      });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'hasDotdot', severity: 'error' });
@@ -397,7 +458,12 @@ describe('Given tree with entry named ".git"', () => {
       const rawBytes = buildTree(buildTreeEntry('100644', '.git', BLOB_SHA));
 
       // Act
-      const result = validateObject({ kind: 'tree', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'tree',
+        rawBody: rawBytes,
+        strict: false,
+        digestLength: 20,
+      });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'hasDotgit', severity: 'warning' });
@@ -410,7 +476,12 @@ describe('Given tree with entry named ".git"', () => {
       const rawBytes = buildTree(buildTreeEntry('100644', '.git', BLOB_SHA));
 
       // Act
-      const result = validateObject({ kind: 'tree', rawBody: rawBytes, strict: true });
+      const result = validateObject({
+        kind: 'tree',
+        rawBody: rawBytes,
+        strict: true,
+        digestLength: 20,
+      });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'hasDotgit', severity: 'error' });
@@ -429,7 +500,12 @@ describe('Given tree with entry name containing "/"', () => {
       const rawBytes = buildTree(buildTreeEntry('100644', 'foo/bar', BLOB_SHA));
 
       // Act
-      const result = validateObject({ kind: 'tree', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'tree',
+        rawBody: rawBytes,
+        strict: false,
+        digestLength: 20,
+      });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'fullPathname', severity: 'warning' });
@@ -442,7 +518,12 @@ describe('Given tree with entry name containing "/"', () => {
       const rawBytes = buildTree(buildTreeEntry('100644', 'foo/bar', BLOB_SHA));
 
       // Act
-      const result = validateObject({ kind: 'tree', rawBody: rawBytes, strict: true });
+      const result = validateObject({
+        kind: 'tree',
+        rawBody: rawBytes,
+        strict: true,
+        digestLength: 20,
+      });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'fullPathname', severity: 'error' });
@@ -461,7 +542,12 @@ describe('Given tree with null SHA1 entry', () => {
       const rawBytes = buildTree(buildTreeEntry('100644', 'file', NULL_SHA));
 
       // Act
-      const result = validateObject({ kind: 'tree', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'tree',
+        rawBody: rawBytes,
+        strict: false,
+        digestLength: 20,
+      });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'nullSha1', severity: 'warning' });
@@ -474,7 +560,12 @@ describe('Given tree with null SHA1 entry', () => {
       const rawBytes = buildTree(buildTreeEntry('100644', 'file', NULL_SHA));
 
       // Act
-      const result = validateObject({ kind: 'tree', rawBody: rawBytes, strict: true });
+      const result = validateObject({
+        kind: 'tree',
+        rawBody: rawBytes,
+        strict: true,
+        digestLength: 20,
+      });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'nullSha1', severity: 'error' });
@@ -494,7 +585,12 @@ describe('Given tree with entry name exceeding 4096 bytes', () => {
       const rawBytes = buildTree(buildTreeEntry('100644', longName, BLOB_SHA));
 
       // Act
-      const result = validateObject({ kind: 'tree', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'tree',
+        rawBody: rawBytes,
+        strict: false,
+        digestLength: 20,
+      });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'largePathname', severity: 'warning' });
@@ -508,7 +604,12 @@ describe('Given tree with entry name exceeding 4096 bytes', () => {
       const rawBytes = buildTree(buildTreeEntry('100644', longName, BLOB_SHA));
 
       // Act
-      const result = validateObject({ kind: 'tree', rawBody: rawBytes, strict: true });
+      const result = validateObject({
+        kind: 'tree',
+        rawBody: rawBytes,
+        strict: true,
+        digestLength: 20,
+      });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'largePathname', severity: 'error' });
@@ -563,7 +664,12 @@ describe('Given tree with unknown file mode', () => {
       const rawBytes = buildTree(buildTreeEntry('100666', 'file', BLOB_SHA));
 
       // Act
-      const result = validateObject({ kind: 'tree', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'tree',
+        rawBody: rawBytes,
+        strict: false,
+        digestLength: 20,
+      });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'badFilemode', severity: 'info' });
@@ -576,7 +682,12 @@ describe('Given tree with unknown file mode', () => {
       const rawBytes = buildTree(buildTreeEntry('100666', 'file', BLOB_SHA));
 
       // Act
-      const result = validateObject({ kind: 'tree', rawBody: rawBytes, strict: true });
+      const result = validateObject({
+        kind: 'tree',
+        rawBody: rawBytes,
+        strict: true,
+        digestLength: 20,
+      });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'badFilemode', severity: 'info' });
@@ -598,7 +709,12 @@ describe('Given tree with duplicate entry names', () => {
       );
 
       // Act
-      const result = validateObject({ kind: 'tree', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'tree',
+        rawBody: rawBytes,
+        strict: false,
+        digestLength: 20,
+      });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'duplicateEntries', severity: 'error' });
@@ -721,7 +837,7 @@ describe('Given tree bytes that are malformed or truncated', () => {
       const rawBody = build();
 
       // Act
-      const result = validateObject({ kind: 'tree', rawBody, strict: false });
+      const result = validateObject({ kind: 'tree', rawBody, strict: false, digestLength: 20 });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'badTree', severity: 'error' });
@@ -740,7 +856,12 @@ describe('Given tree where .gitmodules is a symlink', () => {
       const rawBytes = buildTree(buildTreeEntry('120000', '.gitmodules', BLOB_SHA));
 
       // Act
-      const result = validateObject({ kind: 'tree', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'tree',
+        rawBody: rawBytes,
+        strict: false,
+        digestLength: 20,
+      });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'gitmodulesSymlink', severity: 'error' });
@@ -759,7 +880,12 @@ describe('Given tree where .gitattributes is a symlink', () => {
       const rawBytes = buildTree(buildTreeEntry('120000', '.gitattributes', BLOB_SHA));
 
       // Act
-      const result = validateObject({ kind: 'tree', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'tree',
+        rawBody: rawBytes,
+        strict: false,
+        digestLength: 20,
+      });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'gitattributesSymlink', severity: 'info' });
@@ -778,7 +904,12 @@ describe('Given tree where .gitignore is a symlink', () => {
       const rawBytes = buildTree(buildTreeEntry('120000', '.gitignore', BLOB_SHA));
 
       // Act
-      const result = validateObject({ kind: 'tree', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'tree',
+        rawBody: rawBytes,
+        strict: false,
+        digestLength: 20,
+      });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'gitignoreSymlink', severity: 'info' });
@@ -797,7 +928,12 @@ describe('Given tree where .mailmap is a symlink', () => {
       const rawBytes = buildTree(buildTreeEntry('120000', '.mailmap', BLOB_SHA));
 
       // Act
-      const result = validateObject({ kind: 'tree', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'tree',
+        rawBody: rawBytes,
+        strict: false,
+        digestLength: 20,
+      });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'mailmapSymlink', severity: 'info' });
@@ -816,7 +952,12 @@ describe('Given tree where .gitmodules is a directory (non-blob)', () => {
       const rawBytes = buildTree(buildTreeEntry('40000', '.gitmodules', BLOB_SHA));
 
       // Act
-      const result = validateObject({ kind: 'tree', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'tree',
+        rawBody: rawBytes,
+        strict: false,
+        digestLength: 20,
+      });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'gitmodulesBlob', severity: 'error' });
@@ -835,7 +976,12 @@ describe('Given tree where .gitattributes is a directory (non-blob)', () => {
       const rawBytes = buildTree(buildTreeEntry('40000', '.gitattributes', BLOB_SHA));
 
       // Act
-      const result = validateObject({ kind: 'tree', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'tree',
+        rawBody: rawBytes,
+        strict: false,
+        digestLength: 20,
+      });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'gitattributesBlob', severity: 'error' });
@@ -1718,7 +1864,12 @@ describe('Given an INFO severity id (badFilemode) with strict mode', () => {
       const rawBytes = buildTree(buildTreeEntry('100666', 'file', BLOB_SHA));
 
       // Act
-      const result = validateObject({ kind: 'tree', rawBody: rawBytes, strict: true });
+      const result = validateObject({
+        kind: 'tree',
+        rawBody: rawBytes,
+        strict: true,
+        digestLength: 20,
+      });
 
       // Assert
       const finding = result.find((f) => f.msgId === 'badFilemode');
@@ -1961,7 +2112,12 @@ describe('Given a correctly-sorted tree exercising the directory sort-key', () =
       );
 
       // Act
-      const result = validateObject({ kind: 'tree', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'tree',
+        rawBody: rawBytes,
+        strict: false,
+        digestLength: 20,
+      });
 
       // Assert
       expect(result.filter((f) => f.msgId === 'treeNotSorted')).toHaveLength(0);
@@ -1990,7 +2146,12 @@ describe('Given tree with directory entry (040000) before file where dir sort ke
       );
 
       // Act
-      const result = validateObject({ kind: 'tree', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'tree',
+        rawBody: rawBytes,
+        strict: false,
+        digestLength: 20,
+      });
 
       // Assert — dir sort key 'a/' > 'a!' triggers treeNotSorted
       expect(result).toContainEqual({ msgId: 'treeNotSorted', severity: 'error' });
@@ -2010,7 +2171,12 @@ describe('Given tree where .gitmodules is an executable file (mode 100755)', () 
       const rawBytes = buildTree(buildTreeEntry('100755', '.gitmodules', BLOB_SHA));
 
       // Act
-      const result = validateObject({ kind: 'tree', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'tree',
+        rawBody: rawBytes,
+        strict: false,
+        digestLength: 20,
+      });
 
       // Assert — 100755 is a regular file; must NOT emit gitmodulesBlob
       expect(result.map((f) => f.msgId)).not.toContain('gitmodulesBlob');
@@ -2030,7 +2196,12 @@ describe('Given tree with a symlink entry NOT named .mailmap', () => {
       const rawBytes = buildTree(buildTreeEntry('120000', 'other-link', BLOB_SHA));
 
       // Act
-      const result = validateObject({ kind: 'tree', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'tree',
+        rawBody: rawBytes,
+        strict: false,
+        digestLength: 20,
+      });
 
       // Assert — mailmapSymlink must only fire for '.mailmap' specifically
       expect(result.map((f) => f.msgId)).not.toContain('mailmapSymlink');
@@ -2050,7 +2221,12 @@ describe('Given tree with .gitmodules as a regular file (mode 100644)', () => {
       const rawBytes = buildTree(buildTreeEntry('100644', '.gitmodules', BLOB_SHA));
 
       // Act
-      const result = validateObject({ kind: 'tree', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'tree',
+        rawBody: rawBytes,
+        strict: false,
+        digestLength: 20,
+      });
 
       // Assert
       expect(result.filter((f) => f.msgId === 'gitmodulesBlob')).toHaveLength(0);
@@ -2071,7 +2247,12 @@ describe('Given tree with .gitattributes as a regular file (mode 100644)', () =>
       const rawBytes = buildTree(buildTreeEntry('100644', '.gitattributes', BLOB_SHA));
 
       // Act
-      const result = validateObject({ kind: 'tree', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'tree',
+        rawBody: rawBytes,
+        strict: false,
+        digestLength: 20,
+      });
 
       // Assert
       expect(result.filter((f) => f.msgId === 'gitattributesBlob')).toHaveLength(0);
@@ -2532,7 +2713,12 @@ describe('Given tree with directory "a" (mode 40000) before file "a-" (mode 1006
       );
 
       // Act
-      const result = validateObject({ kind: 'tree', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'tree',
+        rawBody: rawBytes,
+        strict: false,
+        digestLength: 20,
+      });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'treeNotSorted', severity: 'error' });
@@ -2556,7 +2742,12 @@ describe('Given tree with entry name of exactly 4096 ASCII bytes (at the boundar
       const rawBytes = buildTree(buildTreeEntry('100644', exactName, BLOB_SHA));
 
       // Act
-      const result = validateObject({ kind: 'tree', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'tree',
+        rawBody: rawBytes,
+        strict: false,
+        digestLength: 20,
+      });
 
       // Assert
       expect(result.filter((f) => f.msgId === 'largePathname')).toHaveLength(0);
@@ -2579,7 +2770,12 @@ describe('Given tree with .gitignore as a regular file (mode 100644)', () => {
       const rawBytes = buildTree(buildTreeEntry('100644', '.gitignore', BLOB_SHA));
 
       // Act
-      const result = validateObject({ kind: 'tree', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'tree',
+        rawBody: rawBytes,
+        strict: false,
+        digestLength: 20,
+      });
 
       // Assert
       expect(result.filter((f) => f.msgId === 'gitignoreSymlink')).toHaveLength(0);
@@ -2602,7 +2798,12 @@ describe('Given tree with .mailmap as a regular file (mode 100644)', () => {
       const rawBytes = buildTree(buildTreeEntry('100644', '.mailmap', BLOB_SHA));
 
       // Act
-      const result = validateObject({ kind: 'tree', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'tree',
+        rawBody: rawBytes,
+        strict: false,
+        digestLength: 20,
+      });
 
       // Assert
       expect(result.filter((f) => f.msgId === 'mailmapSymlink')).toHaveLength(0);
@@ -2626,7 +2827,12 @@ describe('Given tree with zero-padded mode "0100644" (normalises to valid mode "
       const rawBytes = buildTree(buildTreeEntry('0100644', 'file', BLOB_SHA));
 
       // Act
-      const result = validateObject({ kind: 'tree', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'tree',
+        rawBody: rawBytes,
+        strict: false,
+        digestLength: 20,
+      });
 
       // Assert — zeroPaddedFilemode is expected; badFilemode must NOT appear
       expect(result).toContainEqual({ msgId: 'zeroPaddedFilemode', severity: 'warning' });
@@ -2653,7 +2859,12 @@ describe('Given tree with two entries sharing the same name (duplicate)', () => 
       );
 
       // Act
-      const result = validateObject({ kind: 'tree', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'tree',
+        rawBody: rawBytes,
+        strict: false,
+        digestLength: 20,
+      });
 
       // Assert — duplicate is flagged, but equal sort key is not a sort violation
       expect(result).toContainEqual({ msgId: 'duplicateEntries', severity: 'error' });
@@ -3122,10 +3333,65 @@ describe('Given tree entry with canonical directory mode "40000"', () => {
       const rawBytes = buildTree(buildTreeEntry('40000', 'subdir', BLOB_SHA));
 
       // Act
-      const result = validateObject({ kind: 'tree', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'tree',
+        rawBody: rawBytes,
+        strict: false,
+        digestLength: 20,
+      });
 
       // Assert
       expect(result.filter((f) => f.msgId === 'badFilemode')).toHaveLength(0);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// tree — SHA-256 (32-byte) oid framing (digestLength threaded from the caller,
+// not read off the file's own bytes — see validate-tree.ts).
+// ---------------------------------------------------------------------------
+
+describe('Given a SHA-256 tree with three entries', () => {
+  describe('When validateTree frames it at digestLength 32', () => {
+    it('Then all three entries are reported valid', () => {
+      // Arrange — three sorted entries, each with a distinct 32-byte (64-hex) sha
+      const rawBytes = buildTree(
+        buildTreeEntry('100644', 'a.txt', sha('a1'.repeat(32))),
+        buildTreeEntry('100644', 'b.txt', sha('b2'.repeat(32))),
+        buildTreeEntry('100644', 'c.txt', sha('c3'.repeat(32))),
+      );
+
+      // Act
+      const result = validateObject({
+        kind: 'tree',
+        rawBody: rawBytes,
+        strict: false,
+        digestLength: 32,
+      });
+
+      // Assert
+      expect(result).toEqual([]);
+    });
+  });
+});
+
+describe('Given a SHA-256 tree entry truncated to a 20-byte (SHA-1-width) oid', () => {
+  describe('When validateTree frames it at digestLength 32', () => {
+    it('Then emits badTree at error severity', () => {
+      // Arrange — the entry's oid is only 20 bytes; framed at the repository's
+      // actual 32-byte width, the sha runs past the end of the raw buffer.
+      const rawBytes = buildTreeEntry('100644', 'a.txt', BLOB_SHA);
+
+      // Act
+      const result = validateObject({
+        kind: 'tree',
+        rawBody: rawBytes,
+        strict: false,
+        digestLength: 32,
+      });
+
+      // Assert
+      expect(result).toEqual([{ msgId: 'badTree', severity: 'error' }]);
     });
   });
 });

@@ -114,8 +114,7 @@ const DEFAULT_PREFIX = '';
 // ---------------------------------------------------------------------------
 
 const PAX_GLOBAL_NAME = 'pax_global_header';
-/** "52 comment=" (11) + 40-hex oid + "\n" (1) = 52 bytes, self-inclusive. */
-const PAX_RECORD_SIZE = 52;
+const PAX_COMMENT_KEY = 'comment';
 const PAX_MODE = 0o0666;
 
 // ---------------------------------------------------------------------------
@@ -363,12 +362,35 @@ function paddingNeeded(byteLen: number): number {
 // PAX global header builders
 // ---------------------------------------------------------------------------
 
-function buildPaxHeader(mtime: number, uname: string, gname: string): Uint8Array {
+/** The PAX record's `key=value\n` payload, without its self-inclusive length prefix. */
+function paxCommentPayload(oid: string): string {
+  return `${PAX_COMMENT_KEY}=${oid}\n`;
+}
+
+/**
+ * PAX extended-header records declare their own length INCLUDING the decimal
+ * digits of that length — a self-referential quantity. Solved by fixed-point
+ * iteration: `size = payload.length + digits(size) + 1` (the `+1` is the
+ * space between the length and the payload). The digit count only grows when
+ * `size` crosses a power of ten, so each iteration either lands on the fixed
+ * point or grows `size` toward it; both SHA-1 (40-hex) and SHA-256 (64-hex)
+ * oids settle in two iterations.
+ */
+function paxRecordSize(payload: string): number {
+  let size = payload.length + 1;
+  for (;;) {
+    const candidate = payload.length + String(size).length + 1;
+    if (candidate === size) return candidate;
+    size = candidate;
+  }
+}
+
+function buildPaxHeader(oid: string, mtime: number, uname: string, gname: string): Uint8Array {
   const { nameBytes, prefixBytes } = splitPath(PAX_GLOBAL_NAME);
   return buildHeader({
     nameBytes,
     mode: PAX_MODE,
-    size: PAX_RECORD_SIZE,
+    size: paxRecordSize(paxCommentPayload(oid)),
     mtime,
     typeflag: TYPEFLAG_PAX_GLOBAL,
     linknameBytes: new Uint8Array(0),
@@ -380,7 +402,8 @@ function buildPaxHeader(mtime: number, uname: string, gname: string): Uint8Array
 
 function buildPaxData(oid: string): Uint8Array {
   const buf = new Uint8Array(BLOCK_SIZE);
-  const record = `${PAX_RECORD_SIZE} comment=${oid}\n`;
+  const payload = paxCommentPayload(oid);
+  const record = `${paxRecordSize(payload)} ${payload}`;
   // Stryker disable next-line EqualityOperator: equivalent — i<=record.length writes record.charCodeAt(record.length)=NaN→0 to buf[record.length], already 0x00 (zero-init) — byte-identical
   for (let i = 0; i < record.length; i++) {
     buf[i] = record.charCodeAt(i);
@@ -475,7 +498,7 @@ export async function* tarArchive(
 
   // Pax global header — present iff result.commit is defined
   if (result.commit !== undefined) {
-    yield buildPaxHeader(mtime, uname, gname);
+    yield buildPaxHeader(result.commit, mtime, uname, gname);
     byteCount += BLOCK_SIZE;
     yield buildPaxData(result.commit);
     byteCount += BLOCK_SIZE;
