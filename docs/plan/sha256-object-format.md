@@ -989,27 +989,27 @@ both tiers** — any implementation that pretends otherwise is wrong.
 **Three structural facts, already true — verify, do not re-derive:**
 
 1. **The three async entry points already resolve layout before constructing adapters.**
-   `src/index.node.ts` resolves at `:68` (`resolveNodeLayout` → `resolveLayout` → `finishLayout` →
+   `src/index.node.ts` resolves at `:70` (`resolveNodeLayout` → `resolveLayout` → `finishLayout` →
    `readRepositoryFormat`, opening and tokenising `<commonDir>/config`) and constructs
-   `new NodeHashService()` at `:93`. `src/index.browser.ts` resolves at `:70`
+   `new NodeHashService()` at `:95`. `src/index.browser.ts` resolves at `:70`
    (`resolveFixedEntryLayout`) and constructs at `:79`. `src/index.default.ts` resolves at `:74-80`
-   and constructs at `:83`. **Detection needs no reordering on any of them.**
+   and constructs at `:93`. **Detection needs no reordering on any of them.**
 2. **The two sync factories structurally cannot detect.** `createNodeContext`
    (`src/adapters/node/node-adapter.ts:48`) and `createBrowserContext`
    (`src/adapters/browser/browser-adapter.ts:26`) return `Context`, not a promise, and build their
    layouts purely lexically (`buildLayout(...)` at `node-adapter.ts:60`; an object literal at
    `browser-adapter.ts:38-42`). Neither touches disk. Making them detect means making them
    `async` — a breaking signature change on a public surface. They take the explicit option.
-3. **`syntheticFallbackLayout` (`src/repository/resolve-layout.ts:160-178`) reads nothing from
+3. **`syntheticFallbackLayout` (`src/repository/resolve-layout.ts:214-242`) reads nothing from
    disk** by design — the found-nothing bootstrap path `init` and `clone` take. A repository being
    *created* can never have its format detected; it can only be told.
 
 **The channel out of `finishLayout`.** Today `fmt` dies there:
-`src/repository/resolve-layout.ts:190-220` consumes `readRepositoryFormat`'s result and folds
+`src/repository/resolve-layout.ts:244-300` consumes `readRepositoryFormat`'s result and folds
 every field into `bare` / `workDir` / `workTreeConfigBogus`; the returned
 `RepositoryLayoutInput` has no slot for anything else. Add `objectFormat?: 'sha1' | 'sha256'` to
 `RepositoryLayoutInput` and, per ADR-658, as an **additive optional field** on
-`RepositoryLayout` (`src/ports/context.ts:21-55`, beside `commonDir` at `:38`). Public type ⇒
+`RepositoryLayout` (`src/ports/context.ts:35-70`, beside `commonDir` at `:52`). Public type ⇒
 `api.json`.
 
 **The four wiring pins to convert (C12, 8 sites).** Each constructs the hash service with no
@@ -1017,13 +1017,13 @@ argument (taking the `= 'sha1'` default) and pairs it with a literal `SHA1_CONFI
 
 | entry | hash construction | hashConfig pin | import |
 |---|---|---|---|
-| `src/index.node.ts` | `:93` `new NodeHashService()` | `:109` `hashConfig: SHA1_CONFIG` | `:19` |
+| `src/index.node.ts` | `:95` `new NodeHashService()` | `:111` `hashConfig: SHA1_CONFIG` | `:20` |
 | `src/index.browser.ts` | `:79` `new BrowserHashService()` | `:84` | `:12` |
 | `src/adapters/node/node-adapter.ts` | `:55` `new NodeHashService()` | `:73` | `:3` |
 | `src/adapters/browser/browser-adapter.ts` | `:34` `new BrowserHashService()` | `:44` | `:2` |
 
 **The precedent to copy** is already in the repository, twice —
-`src/index.default.ts:50, 83, 88` and `src/adapters/memory/memory-adapter.ts:51, 52, 64`:
+`src/index.default.ts:50, 93, 98` and `src/adapters/memory/memory-adapter.ts:51, 52, 64`:
 
 ```ts
 const algorithm = opts.algorithm ?? 'sha1';
@@ -1038,7 +1038,7 @@ and all three really compute SHA-256 (`node-hash-service.ts:16,22` `createHash(t
 
 **Option surface.** Promote `algorithm?: 'sha1' | 'sha256'` from the memory-only
 `OpenMemoryRepositoryOptions` (`src/index.default.ts:41-42`) to the **core**
-`OpenRepositoryOptions` (`src/repository.ts:76`), and add it to `NodeAdapterOptions`
+`OpenRepositoryOptions` (`src/repository.ts:76` — verified exact), and add it to `NodeAdapterOptions`
 (`src/adapters/node/node-adapter.ts:19-46`) and `BrowserAdapterOptions`
 (`src/adapters/browser/browser-adapter.ts:14-21`). `MemoryAdapterOptions` already has it
 (`memory-adapter.ts:18`). All public ⇒ `api.json`.
@@ -1046,15 +1046,15 @@ and all three really compute SHA-256 (`node-hash-service.ts:16,22` `createHash(t
 **The contradiction refusal — the load-bearing half.** Without it, (c) re-opens the
 `ctx.hash` / `ctx.hashConfig` desync that exists **today**: `openRepository({ hash: new
 NodeHashService('sha256') })` on the Node entry yields `ctx.hash.algorithm === 'sha256'` paired
-with `ctx.hashConfig === SHA1_CONFIG`, and nothing refuses it (`src/repository.ts:470`
+with `ctx.hashConfig === SHA1_CONFIG`, and nothing refuses it (`src/repository.ts:516`
 `hashConfig: fallback.hashConfig` is the only consumer; `hash` goes through `composeAdapters`
 (`src/repository/compose-adapters.ts:53`) whose `AdapterFallback` does not even carry
-`hashConfig`; `createContext` (`src/ports/context.ts:194-197`) is a bare spread + freeze with
+`hashConfig`; `createContext` (`src/ports/context.ts:221-232`) is a bare spread + freeze with
 zero validation). `serialize-and-hash.ts:19-20` uses both in consecutive lines.
 
 Reconcile at **one** place — `createContext` is the wrong place (it is a frozen spread with no
 error vocabulary); do it in `src/repository.ts` where `fallback` and `opts` are both in hand,
-just before `baseCtx` is built (`:457-472`). Refuse when any two of these disagree:
+just before `baseCtx` is built (`:503-518`). Refuse when any two of these disagree:
 `opts.algorithm`, `layout.objectFormat`, `opts.hash?.algorithm`, `fallback.hashConfig.algorithm`.
 New code (name it for the condition, not the key — e.g. `OBJECT_FORMAT_CONFLICT` carrying
 `{ requested, declared, source }`). It is an **option/config conflict**, not a repository
