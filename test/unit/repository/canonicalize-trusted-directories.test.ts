@@ -4,15 +4,37 @@ import {
   type PathResolver,
 } from '../../../src/repository/canonicalize-trusted-directories.js';
 
+const WORKING_DIR = '/work';
+
 /**
- * A resolver standing in for `realpath` on a tree where `/tmp` is a symlink to
- * `/private/tmp` — the everyday macOS shape, and the one that makes the
- * difference between a lexical and a physical comparison observable. An entry
- * naming a path that does not resolve is handed back unchanged, exactly as the
- * shim's own best-effort resolver does.
+ * A resolver standing in for the node shim's `canonicalize` on a tree where
+ * `/tmp` is a symlink to `/private/tmp` — the everyday macOS shape, and the
+ * one that makes the difference between a lexical and a physical comparison
+ * observable.
+ *
+ * It models three properties of the real thing, and the last two are what
+ * make the grammar guards load-bearing rather than decorative:
+ *
+ * - a path it cannot resolve comes back unchanged, the shim's documented
+ *   fallback (so does the empty string, which is what a bare `/*` prefix
+ *   slices down to);
+ * - an ABSOLUTE path still carrying the grammar's star names no directory, so
+ *   resolving a `<prefix>/*` entry whole is a silent no-op that would leave
+ *   the prefix lexical while the repository path it is compared against is
+ *   physical;
+ * - a RELATIVE name resolves against the working directory — which is exactly
+ *   how a bare `*` becomes `<cwd>/*` and silently turns "trust everything"
+ *   into "trust nothing".
+ *
+ * A resolver that merely rewrote `/tmp` would satisfy every assertion below
+ * while the two guards did nothing, so its fidelity here is the test.
  */
-const symlinkedTmp: PathResolver = async (path) =>
-  path.startsWith('/tmp/') || path === '/tmp' ? path.replace('/tmp', '/private/tmp') : path;
+const symlinkedTmp: PathResolver = async (path) => {
+  if (path === '') return path;
+  if (!path.startsWith('/')) return `${WORKING_DIR}/${path}`;
+  if (path.includes('*')) return path;
+  return path.startsWith('/tmp/') || path === '/tmp' ? path.replace('/tmp', '/private/tmp') : path;
+};
 
 describe('canonicalizeTrustedDirectories', () => {
   describe('Given the wildcard entry', () => {
