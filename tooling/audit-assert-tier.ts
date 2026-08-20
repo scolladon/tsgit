@@ -132,12 +132,28 @@ export const runAudit = async (flags: AuditFlags): Promise<AssertTierFindings> =
         .replaceAll(path.sep, '/')
         .match(/^src\/application\/commands\/[^/]+\.ts$/) !== null,
   );
-  const ungated = findUngatedVerbs(program, commandFiles, flags.root).filter(
-    (verb) =>
-      !allowlist.ungated.some((entry) => entry.module === verb.module && entry.verb === verb.verb),
+  const reported = findUngatedVerbs(program, commandFiles, flags.root);
+  const sameVerb = (
+    a: { readonly module: string; readonly verb: string },
+    b: { readonly module: string; readonly verb: string },
+  ): boolean => a.module === b.module && a.verb === b.verb;
+  const ungated = reported.filter(
+    (verb) => !allowlist.ungated.some((entry) => sameVerb(entry, verb)),
+  );
+  // An `ungated` exemption that no longer applies — its verb gated, or the
+  // module went away — must surface, exactly as a stale `callers` entry does.
+  // Otherwise it rots in place and silently pre-exempts a future verb that
+  // happens to reuse the name.
+  const staleUngated = allowlist.ungated.filter(
+    (entry) => !reported.some((verb) => sameVerb(entry, verb)),
   );
 
-  return { ...computeFindings(callSites, allowlist.callers), ungated };
+  const callerFindings = computeFindings(callSites, allowlist.callers);
+  return {
+    ...callerFindings,
+    stale: [...callerFindings.stale, ...staleUngated],
+    ungated,
+  };
 };
 
 const formatFindings = (findings: AssertTierFindings, allowlistRelPath: string): string => {

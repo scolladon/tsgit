@@ -83,6 +83,14 @@ export const isWorktreeScopeActive = async (ctx: Context): Promise<boolean> => {
 export const resolveScopePath = async (ctx: Context, scope: ConfigScope): Promise<string> => {
   if (scope === 'local') return `${commonGitDir(ctx)}/config`;
   if (scope === 'worktree') {
+    // A refused repository and an unset extension both make the worktree scope
+    // unavailable, but they are different facts and the payload must say
+    // which: reporting a refused repository as "extension unset" would send a
+    // caller looking for a config key that was never read. The sibling reader
+    // in `config-scoped-read.ts` already distinguishes them.
+    if (layoutFailsTrustGate(ctx.layout) || ctx.layout.formatRefusal !== undefined) {
+      throw configScopeNotAvailable('worktree', 'repository-not-accepted');
+    }
     if (!(await isWorktreeScopeActive(ctx))) {
       throw configScopeNotAvailable('worktree', 'worktree-extension-unset');
     }

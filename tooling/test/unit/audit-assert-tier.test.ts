@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import * as url from 'node:url';
@@ -460,7 +461,7 @@ describe('analyzeCallSites + computeFindings', () => {
 describe('the shipped allowlist', () => {
   describe('Given tooling/audit-assert-tier.allowlist.json', () => {
     describe('When parsed', () => {
-      it('Then every entry names a real module and carries a measurement', async () => {
+      it('Then every entry names a module that exists and carries a measurement', async () => {
         // Arrange
         const raw = await readFile(SHIPPED_ALLOWLIST, 'utf8');
 
@@ -473,7 +474,7 @@ describe('the shipped allowlist', () => {
         expect(result.callers.length).toBeGreaterThan(0);
         expect(result.ungated.length).toBeGreaterThan(0);
         for (const entry of [...result.callers, ...result.ungated]) {
-          expect(entry.module.startsWith('src/')).toBe(true);
+          expect(existsSync(path.join(REPO_ROOT_REAL, entry.module))).toBe(true);
           expect(entry.verb.length).toBeGreaterThan(0);
           expect(entry.reason.trim().length).toBeGreaterThan(20);
         }
@@ -485,7 +486,6 @@ describe('the shipped allowlist', () => {
           'assertAcceptedRepository',
         ]);
         expect(result.ungated.map((entry) => entry.verb)).toEqual([
-          'bundleVerify',
           'bundleListHeads',
           'clone',
           'init',
@@ -676,6 +676,67 @@ describe('findUngatedVerbs', () => {
 
         // Assert
         expect(result).toEqual([]);
+      });
+    });
+  });
+});
+
+describe('findUngatedVerbs — what does NOT count as a gate', () => {
+  describe('Given a barrel-exported verb whose only call is requireWorkTree', () => {
+    describe('When scanned', () => {
+      it('Then it is reported — requireWorkTree establishes no repository', () => {
+        // Arrange — it only tests `workTreeConfigBogus` and `workDir`, so a
+        // verb whose sole "gate" is this reaches no acceptance tier at all.
+        const files = {
+          [BARREL]: "export { worktreeOnly } from './worktree-only.js';\n",
+          '/virtual/src/application/commands/worktree-only.ts': [
+            "import { requireWorkTree } from '../primitives/internal/repo-state.js';",
+            'type Context = { readonly root?: string };',
+            'export const worktreeOnly = async (ctx: Context): Promise<void> => {',
+            '  requireWorkTree(ctx, "worktreeOnly");',
+            '};',
+            '',
+          ].join('\n'),
+        };
+
+        // Act
+        const result = ungated(files);
+
+        // Assert
+        expect(result).toEqual([
+          { module: 'src/application/commands/worktree-only.ts', verb: 'worktreeOnly', line: 3 },
+        ]);
+      });
+    });
+  });
+
+  describe('Given a barrel-exported verb that only MENTIONS a gating symbol', () => {
+    describe('When scanned', () => {
+      it('Then it is reported — a mention in dead code is not a call', () => {
+        // Arrange — a mention test would accept this as gated, so a
+        // source-only edit could widen the surviving set with the allowlist
+        // untouched.
+        const files = {
+          [BARREL]: "export { pretendGated } from './pretend.js';\n",
+          '/virtual/src/application/commands/pretend.ts': [
+            "import { assertOperationalRepository } from '../primitives/internal/repo-state.js';",
+            'type Context = { readonly root?: string };',
+            'export const pretendGated = async (ctx: Context): Promise<void> => {',
+            '  const never = false;',
+            '  if (never) void assertOperationalRepository;',
+            '  await Promise.resolve(ctx);',
+            '};',
+            '',
+          ].join('\n'),
+        };
+
+        // Act
+        const result = ungated(files);
+
+        // Assert
+        expect(result).toEqual([
+          { module: 'src/application/commands/pretend.ts', verb: 'pretendGated', line: 3 },
+        ]);
       });
     });
   });

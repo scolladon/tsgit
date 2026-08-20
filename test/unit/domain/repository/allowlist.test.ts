@@ -98,6 +98,13 @@ describe('isAllowlisted', () => {
           verdict: true,
         },
         {
+          label:
+            'a /* prefix against a sibling sharing the prefix — the boundary separator is load-bearing',
+          entries: ['/srv/*'],
+          path: '/srv-other/repo',
+          verdict: false,
+        },
+        {
           label: "the root prefix '/*' — every absolute path is strictly below the root",
           entries: ['/*'],
           path: '/srv/repo',

@@ -25,15 +25,27 @@ import * as ts from 'typescript';
  * already narrowed to the barrel-exported command surface.
  */
 
-/** Symbols that establish, or transitively establish, an accepted repository. */
+/**
+ * Symbols that consult the acceptance verdict.
+ *
+ * The three tiers, plus the one verb-local guard that reads the same verdict
+ * and deliberately raises a different family (a bundle needs a repository, and
+ * git reports an unusable one as ABSENT rather than refusing on ownership).
+ * Naming it here rather than exempting the verb in the allowlist is what lets
+ * the audit WITNESS that guard: delete the call and this pass fires.
+ *
+ * Deliberately NOT here: `requireWorkTree` reaches no tier at all — it only
+ * tests `workTreeConfigBogus` and `workDir`, so listing it would exempt a verb
+ * that established nothing. `assertNotBare` is not a symbol in this codebase.
+ * `assertSparseReady` is module-local and already reached by the transitive
+ * walk below, so a global entry would also exempt any same-named helper
+ * elsewhere.
+ */
 const GATING_SYMBOLS: ReadonlyArray<string> = [
   'assertRepository',
   'assertAcceptedRepository',
   'assertOperationalRepository',
-  // Chaining helpers: each reaches one of the three above.
-  'assertSparseReady',
-  'requireWorkTree',
-  'assertNotBare',
+  'assertUsableForBundleVerify',
 ];
 
 export interface UngatedVerbFinding {
@@ -48,11 +60,25 @@ const takesContext = (node: ts.ArrowFunction | ts.FunctionExpression | ts.Functi
   return first.type.getText().includes('Context');
 };
 
-/** Every identifier mentioned anywhere inside `body`. */
-const identifiersIn = (body: ts.Node): ReadonlySet<string> => {
+/**
+ * Every name CALLED inside `body` — `f(x)` and `ns.f(x)`, never a bare
+ * mention.
+ *
+ * A mention test would accept `if (false) void assertOperationalRepository;`
+ * as a gate, so a source-only edit could widen the surviving set without the
+ * allowlist changing. That is the same distinction `analyze-call-sites.ts`
+ * draws with its callee-position check, and this pass has to draw it too.
+ * Counting calls also means a conditionally-gated verb is not mistaken for an
+ * unconditionally-gated one just because the name appears.
+ */
+const calledNamesIn = (body: ts.Node): ReadonlySet<string> => {
   const names = new Set<string>();
   const visit = (node: ts.Node): void => {
-    if (ts.isIdentifier(node)) names.add(node.text);
+    if (ts.isCallExpression(node)) {
+      const callee = node.expression;
+      if (ts.isIdentifier(callee)) names.add(callee.text);
+      else if (ts.isPropertyAccessExpression(callee)) names.add(callee.name.text);
+    }
     ts.forEachChild(node, visit);
   };
   visit(body);
@@ -71,7 +97,7 @@ const reachesGate = (
   localFunctions: ReadonlyMap<string, ts.Node>,
   seen: Set<string>,
 ): boolean => {
-  const names = identifiersIn(body);
+  const names = calledNamesIn(body);
   for (const name of names) {
     if (GATING_SYMBOLS.includes(name)) return true;
   }

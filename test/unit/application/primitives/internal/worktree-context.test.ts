@@ -117,3 +117,55 @@ describe('deriveWorktreeContext', () => {
     });
   });
 });
+
+describe('deriveWorktreeContext — the acceptance verdicts', () => {
+  describe('Given a parent layout the acceptance tier refused', () => {
+    describe('When the child context is derived', () => {
+      it('Then all four verdict fields survive the derivation', async () => {
+        // Arrange — the verdicts are properties of the REPOSITORY, not of the
+        // entry point. A child that dropped them would read as accepted and
+        // re-open the config of a repository the gate refused, which is the
+        // fail-open shape the tier audit exists to fence.
+        const base = createMemoryContext();
+        const parent = {
+          ...base,
+          layout: {
+            ...base.layout,
+            untrusted: true as const,
+            implicitBare: true as const,
+            foreignPath: '/foreign/gitdir',
+            formatRefusal: { kind: 'version' as const, version: 99 },
+          },
+        };
+
+        // Act
+        const result = deriveWorktreeContext(parent, 'wt', '/abs/wt');
+
+        // Assert
+        expect(result.layout.untrusted).toBe(true);
+        expect(result.layout.implicitBare).toBe(true);
+        expect(result.layout.foreignPath).toBe('/foreign/gitdir');
+        expect(result.layout.formatRefusal).toStrictEqual({ kind: 'version', version: 99 });
+      });
+    });
+  });
+
+  describe('Given a parent layout the acceptance tier accepted', () => {
+    describe('When the child context is derived', () => {
+      it('Then no verdict key is present at all, not merely undefined', async () => {
+        // Arrange — present-only-when-present: an `undefined`-valued key would
+        // read as a verdict that was computed and came back empty.
+        const parent = createMemoryContext();
+
+        // Act
+        const result = deriveWorktreeContext(parent, 'wt', '/abs/wt');
+
+        // Assert
+        expect('untrusted' in result.layout).toBe(false);
+        expect('implicitBare' in result.layout).toBe(false);
+        expect('foreignPath' in result.layout).toBe(false);
+        expect('formatRefusal' in result.layout).toBe(false);
+      });
+    });
+  });
+});

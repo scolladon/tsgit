@@ -108,10 +108,18 @@ export const evaluateTrust = async (
 // cwd-is-a-gitdir route with a basename that is not `.git`. Measured on 2.55.0
 // with `safe.bareRepository=explicit`: git ACCEPTS `main/.git/modules/sub` and
 // `main/.git/worktrees/wt`, and refuses a planted `evil.git`.
-const ADMIN_EXEMPT_SEGMENTS: ReadonlyArray<string> = ['/.git/modules/', '/.git/worktrees/'];
+const ADMIN_EXEMPT_DIRS: ReadonlyArray<string> = ['modules', 'worktrees'];
 
-const isAdminExempt = (gitDir: string): boolean =>
-  ADMIN_EXEMPT_SEGMENTS.some((segment) => gitDir.includes(segment));
+// Built from the policy's separator rather than a hard-coded '/': the basename
+// rule beside this one already goes through `pathPolicy`, and under a Windows
+// policy a POSIX-only segment never matches, so the exemption would silently
+// stop firing and tsgit would refuse legitimate submodule and linked-worktree
+// admin dirs on the one platform where this gate still runs without an
+// ownership capability.
+const isAdminExempt = (gitDir: string, pathPolicy: PathPolicy): boolean => {
+  const { sep } = pathPolicy;
+  return ADMIN_EXEMPT_DIRS.some((dir) => gitDir.includes(`${sep}.git${sep}${dir}${sep}`));
+};
 
 export const isImplicitBare = (
   outcome: WalkOutcome,
@@ -120,5 +128,5 @@ export const isImplicitBare = (
 ): boolean =>
   outcome.route === 'BARE_DIR' &&
   pathPolicy.basename(outcome.gitDir) !== '.git' &&
-  !isAdminExempt(outcome.gitDir) &&
+  !isAdminExempt(outcome.gitDir, pathPolicy) &&
   bareRepositories === 'explicit';

@@ -813,3 +813,100 @@ describe('bundleVerify', () => {
     });
   });
 });
+
+describe('bundleVerify on a repository the acceptance tier rejected', () => {
+  const refused = (ctx: Context, verdict: Partial<Context['layout']>): Context => ({
+    ...ctx,
+    layout: { ...ctx.layout, ...verdict },
+  });
+
+  describe('Given a layout refused for dubious ownership alone', () => {
+    describe('When bundleVerify runs', () => {
+      it('Then it refuses as repository-ABSENT, never touching the bundle', async () => {
+        // Arrange — git demotes such a repository to absent for this verb
+        // (exit 1, `need a repository to verify a bundle`) rather than raising
+        // its ownership fatal, so the family here is deliberately not the
+        // acceptance tier's.
+        const ctx = await initRepo();
+        const sut = bundleVerify;
+
+        // Act
+        let caught: TsgitError | undefined;
+        try {
+          await sut(refused(ctx, { untrusted: true }), { path: '/nonexistent.bundle' });
+        } catch (err) {
+          caught = err as TsgitError;
+        }
+
+        // Assert
+        expect(caught?.data.code).toBe('NOT_A_REPOSITORY');
+      });
+    });
+  });
+
+  describe('Given a layout refused for an implicit bare repository alone', () => {
+    describe('When bundleVerify runs', () => {
+      it('Then it refuses as repository-ABSENT', async () => {
+        // Arrange
+        const ctx = await initRepo();
+        const sut = bundleVerify;
+
+        // Act
+        let caught: TsgitError | undefined;
+        try {
+          await sut(refused(ctx, { implicitBare: true }), { path: '/nonexistent.bundle' });
+        } catch (err) {
+          caught = err as TsgitError;
+        }
+
+        // Assert
+        expect(caught?.data.code).toBe('NOT_A_REPOSITORY');
+      });
+    });
+  });
+
+  describe('Given a layout refused for an unsupported repository format alone', () => {
+    describe('When bundleVerify runs', () => {
+      it('Then it refuses as repository-ABSENT', async () => {
+        // Arrange — the third disjunct of the guard, isolated from the two
+        // trust ones so each condition is proven on its own.
+        const ctx = await initRepo();
+        const sut = bundleVerify;
+
+        // Act
+        let caught: TsgitError | undefined;
+        try {
+          await sut(refused(ctx, { formatRefusal: { kind: 'version', version: 99 } }), {
+            path: '/nonexistent.bundle',
+          });
+        } catch (err) {
+          caught = err as TsgitError;
+        }
+
+        // Assert
+        expect(caught?.data.code).toBe('NOT_A_REPOSITORY');
+      });
+    });
+  });
+
+  describe('Given an accepted layout', () => {
+    describe('When bundleVerify runs against a missing bundle file', () => {
+      it('Then the guard does not fire — it refuses on the bundle, not the repository', async () => {
+        // Arrange — proves the guard is conditional rather than unconditional.
+        const ctx = await initRepo();
+        const sut = bundleVerify;
+
+        // Act
+        let caught: TsgitError | undefined;
+        try {
+          await sut(ctx, { path: '/nonexistent.bundle' });
+        } catch (err) {
+          caught = err as TsgitError;
+        }
+
+        // Assert
+        expect(caught?.data.code).not.toBe('NOT_A_REPOSITORY');
+      });
+    });
+  });
+});

@@ -192,7 +192,7 @@ const ALIEN_OWNER_AVAILABLE = ALIEN_OWNER_PROBE.available;
 const COVERAGE_GAPS: ReadonlyArray<string> = [
   GIT_AVAILABLE
     ? undefined
-    : 'groups A and B SKIPPED — no usable `git` on PATH. NOT covered: every co-assertion against canonical git in this file.',
+    : 'groups A, B and D SKIPPED — no usable `git` on PATH. NOT covered: every co-assertion against canonical git in this file, and the executing coverage of the trust-option path in group D.',
   !GIT_AVAILABLE || GIT_ASSUME_DIFFERENT_OWNER
     ? undefined
     : "group B SKIPPED — this git does not honour GIT_TEST_ASSUME_DIFFERENT_OWNER. NOT covered: git's own dubious-ownership bytes and exit code, and the safe.directory value-grammar co-assertion against isAllowlisted.",
@@ -219,18 +219,30 @@ for (const gap of COVERAGE_GAPS) console.warn(`[ownership-trust-gate-interop] ${
 describe('environment capabilities for this suite', () => {
   describe('Given the probes this suite gates its groups on', () => {
     describe('When the suite starts', () => {
-      it('Then every probe resolved to a decision, so a skip is reported rather than absent', () => {
-        // Arrange
-        const sut = COVERAGE_GAPS;
+      it('Then every false probe has a gap naming its groups and what is uncovered', () => {
+        // Arrange — the invariant that can actually fail: a gated group added
+        // (or a probe flipped) without a matching gap entry.
+        const expectations: ReadonlyArray<readonly [boolean, ReadonlyArray<string>]> = [
+          [GIT_AVAILABLE, ['A', 'B', 'D']],
+          [GIT_ASSUME_DIFFERENT_OWNER, ['B']],
+          [ALIEN_OWNER_AVAILABLE, ['C']],
+        ];
 
         // Act
-        const result = [GIT_AVAILABLE, GIT_ASSUME_DIFFERENT_OWNER, ALIEN_OWNER_AVAILABLE];
+        const result = expectations
+          .filter(([available]) => !available)
+          .map(([, groups]) => groups.map((group) => `group ${group}`));
 
         // Assert
-        expect(result.every((probe) => typeof probe === 'boolean')).toBe(true);
-        // Each gap must say what it leaves uncovered — an unexplained skip is
-        // the thing this suite refuses to ship.
-        for (const gap of sut) expect(gap).toContain('NOT covered');
+        for (const groups of result) {
+          const gap = COVERAGE_GAPS.find((entry) =>
+            groups.every((group) => entry.includes(group) || entry.includes(group.toLowerCase())),
+          );
+          expect(gap, `no COVERAGE_GAPS entry names ${groups.join(', ')}`).toBeDefined();
+          expect(gap).toContain('NOT covered');
+        }
+        // A probe that is unavailable but unreported is the failure this guards.
+        expect(COVERAGE_GAPS.length).toBe(result.length);
       });
     });
   });
@@ -241,7 +253,7 @@ describe('environment capabilities for this suite', () => {
 // ---------------------------------------------------------------------------
 
 describe.skipIf(!GIT_AVAILABLE)(
-  'the bareRepositories predicate against canonical git (group A, the anchor)',
+  'the bareRepositories predicate against canonical git (group A, the anchor) — GIT_AVAILABLE',
   () => {
     let root: string;
     let source: string;
@@ -876,17 +888,25 @@ describe.skipIf(!ALIEN_OWNER_AVAILABLE)(
 );
 
 // ---------------------------------------------------------------------------
-// Group D — the trust OPTIONS through the real entry point, always on.
+// Group D — EXECUTING COVERAGE for the trust options, always on.
 //
-// The allowlist matcher and the verdict are proven in the unit tier, but the
-// path an option actually takes — `openRepository` -> validate -> canonicalise
-// -> gate — is only exercised where an alien owner exists, which is the one
-// group that skips by default. These rows need no alien owner: they assert the
-// options are accepted, plumbed, and inert on a repository the caller owns.
+// Read the limit before trusting these rows: on a repository the caller OWNS
+// the verdict is TRUSTED whatever the options say, so none of these
+// assertions can fail on the option being silently dropped. They are not
+// behavioural proofs and must not be retitled as if they were.
+//
+// What they DO buy: the option path — validate -> canonicalise -> gate — is
+// executed rather than merely compiled, which is otherwise only reached in
+// group C, and group C skips without an alien owner.
+//
+// The behavioural proofs live where they can actually fail:
+//   - the matcher grammar: test/unit/domain/repository/allowlist.test.ts
+//   - the canonicalisation rule: test/unit/repository/canonicalize-trusted-directories.test.ts
+//   - the verdict itself: test/unit/repository/resolve-layout-trust.test.ts
 // ---------------------------------------------------------------------------
 
 describe.skipIf(!GIT_AVAILABLE)(
-  'the trust options through openRepository (group D, always on) — GIT_AVAILABLE',
+  'the trust options through openRepository (group D, executing coverage only) — GIT_AVAILABLE',
   () => {
     let root: string;
     let repoDir: string;
@@ -905,11 +925,10 @@ describe.skipIf(!GIT_AVAILABLE)(
 
     describe("Given a repository the caller owns and trustedDirectories: ['*']", () => {
       describe('When it is opened', () => {
-        it("Then the '*' entry is accepted and never realpathed into a cwd-relative path", async () => {
-          // Arrange — the shim SKIPS canonicalising the bare '*', and the skip
-          // is load-bearing: realpathing it would produce `<cwd>/*` and turn
-          // "trust everything" into "trust nothing". Nothing executed that
-          // skip before this row.
+        it("Then the open succeeds with '*' accepted — executing coverage, not a proof", async () => {
+          // Arrange — executes the shim's '*' skip. Whether the skip is
+          // CORRECT is proven in the canonicalisation unit test; this row only
+          // proves the path runs and the option is accepted.
           const sut = openRepository;
 
           // Act
@@ -924,7 +943,7 @@ describe.skipIf(!GIT_AVAILABLE)(
 
     describe("Given a repository the caller owns and trust: 'always'", () => {
       describe('When it is opened', () => {
-        it('Then the option is accepted and the repository stays usable', async () => {
+        it('Then the open succeeds with the option accepted — executing coverage, not a proof', async () => {
           // Arrange
           const sut = openRepository;
 
@@ -940,10 +959,10 @@ describe.skipIf(!GIT_AVAILABLE)(
 
     describe('Given a repository the caller owns and an absolute /* prefix entry', () => {
       describe('When it is opened', () => {
-        it('Then the prefix is canonicalised rather than left with its star unresolved', async () => {
-          // Arrange — the entry's star is a grammar token, not a path
-          // component; realpathing the whole entry fails and leaves the prefix
-          // unresolved, which on a symlinked root stops matching entirely.
+        it('Then the open succeeds with a /* entry accepted — executing coverage, not a proof', async () => {
+          // Arrange — executes the shim's `/*` prefix branch. Its correctness
+          // is proven in the canonicalisation unit test, which can fail; this
+          // row cannot.
           const sut = openRepository;
 
           // Act

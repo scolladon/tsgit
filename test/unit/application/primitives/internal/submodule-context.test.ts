@@ -135,3 +135,54 @@ describe('Given a superproject Context and a not-yet-cloned submodule', () => {
     });
   });
 });
+
+describe('deriveSubmoduleContext — the acceptance verdicts', () => {
+  describe('Given a superproject layout the acceptance tier refused', () => {
+    describe('When the submodule context is derived', () => {
+      it('Then all four verdict fields survive the derivation', async () => {
+        // Arrange — a submodule of a refused superproject must not read as
+        // accepted; it shares the superproject's common dir, so it is the very
+        // config the gate declined to open.
+        const base = createMemoryContext();
+        await seedHead(base, 'libs/a');
+        const parent = {
+          ...base,
+          layout: {
+            ...base.layout,
+            untrusted: true as const,
+            implicitBare: true as const,
+            foreignPath: '/foreign/gitdir',
+            formatRefusal: { kind: 'version' as const, version: 99 },
+          },
+        };
+
+        // Act
+        const result = await deriveSubmoduleContext(parent, 'libs/a', 'libs/a' as FilePath);
+
+        // Assert
+        expect(result?.layout.untrusted).toBe(true);
+        expect(result?.layout.implicitBare).toBe(true);
+        expect(result?.layout.foreignPath).toBe('/foreign/gitdir');
+        expect(result?.layout.formatRefusal).toStrictEqual({ kind: 'version', version: 99 });
+      });
+    });
+  });
+
+  describe('Given a superproject layout the acceptance tier accepted', () => {
+    describe('When the submodule context is derived', () => {
+      it('Then no verdict key is present at all, not merely undefined', async () => {
+        // Arrange
+        const parent = createMemoryContext();
+        await seedHead(parent, 'libs/a');
+
+        // Act
+        const result = await deriveSubmoduleContext(parent, 'libs/a', 'libs/a' as FilePath);
+
+        // Assert
+        expect(result).toBeDefined();
+        expect('untrusted' in (result?.layout ?? {})).toBe(false);
+        expect('formatRefusal' in (result?.layout ?? {})).toBe(false);
+      });
+    });
+  });
+});

@@ -20,6 +20,7 @@ import { nativePolicy } from './adapters/node/path-policy.js';
 import { SHA1_CONFIG } from './domain/objects/hash-config.js';
 import { createLruCache } from './domain/storage/lru-cache.js';
 import type { LayoutProbe } from './ports/layout-probe.js';
+import { canonicalizeTrustedDirectories } from './repository/canonicalize-trusted-directories.js';
 import { layoutRootsOf } from './repository/layout-roots.js';
 import {
   type ExplicitLayoutOptions,
@@ -200,27 +201,6 @@ const canonicalizeCeilings = async (
  * entirely: it must never be realpathed into `<cwd>/*`, which would turn
  * "trust everything" into "trust nothing".
  */
-const canonicalizeTrustedDirectories = async (
-  trustedDirectories: ReadonlyArray<string> | undefined,
-): Promise<ReadonlyArray<string> | undefined> => {
-  if (trustedDirectories === undefined) return undefined;
-  const resolved = await Promise.all(
-    trustedDirectories.map(async (entry) => {
-      if (entry === '*') return entry;
-      // A `/*` entry's star is a grammar token, not a path component: realpath
-      // would fail on it and hand back the entry unresolved, so the prefix
-      // would never be canonicalised and a symlinked root (macOS `/tmp` ->
-      // `/private/tmp`) would silently stop matching the realpath'd
-      // repository path. Resolve the prefix and re-attach the token.
-      if (entry.endsWith('/*')) {
-        const prefix = entry.slice(0, -2);
-        return `${(await canonicalize(prefix)).path}/*`;
-      }
-      return (await canonicalize(entry)).path;
-    }),
-  );
-  return resolved;
-};
 
 /**
  * Resolve the physical layout for `cwd`: `opts.gitDir`, when given, skips
@@ -294,7 +274,10 @@ const resolveNodeLayout = async (
   cwdCanonical: boolean,
 ): Promise<{ layout: RepositoryLayoutInput; canonical: boolean }> => {
   const ceilingDirs = await canonicalizeCeilings(opts.ceilingDirs);
-  const trustedDirectories = await canonicalizeTrustedDirectories(opts.trustedDirectories);
+  const trustedDirectories = await canonicalizeTrustedDirectories(
+    opts.trustedDirectories,
+    async (path) => (await canonicalize(path)).path,
+  );
   const explicit = {
     ...(opts.workDir !== undefined ? { workDir: opts.workDir } : {}),
     ...(opts.bare !== undefined ? { bare: opts.bare } : {}),
