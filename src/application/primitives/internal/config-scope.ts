@@ -8,7 +8,7 @@ import { parseGitBoolean, parseIniSections } from '../../../domain/config/config
 import { TsgitError } from '../../../domain/error.js';
 import type { Context } from '../../../ports/context.js';
 import { commonGitDir } from '../path-layout.js';
-import { layoutFailsTrustGate } from './layout-verdict.js';
+import { layoutFailsAcceptance } from './layout-verdict.js';
 
 /**
  * Canonical read precedence: later scopes override earlier ones for a given
@@ -55,7 +55,7 @@ export const isWorktreeScopeActive = async (ctx: Context): Promise<boolean> => {
   // behind the acceptance tier today, so this keys on the same predicate as
   // the other two rather than resting the "a refused repository's config is
   // never parsed" invariant on caller discipline at one site.
-  if (layoutFailsTrustGate(ctx.layout) || ctx.layout.formatRefusal !== undefined) return false;
+  if (layoutFailsAcceptance(ctx.layout)) return false;
   const path = `${commonGitDir(ctx)}/config`;
   const text = await safeReadUtf8(ctx, path);
   if (text === undefined) return false;
@@ -88,7 +88,7 @@ export const resolveScopePath = async (ctx: Context, scope: ConfigScope): Promis
     // which: reporting a refused repository as "extension unset" would send a
     // caller looking for a config key that was never read. The sibling reader
     // in `config-scoped-read.ts` already distinguishes them.
-    if (layoutFailsTrustGate(ctx.layout) || ctx.layout.formatRefusal !== undefined) {
+    if (layoutFailsAcceptance(ctx.layout)) {
       throw configScopeNotAvailable('worktree', 'repository-not-accepted');
     }
     if (!(await isWorktreeScopeActive(ctx))) {

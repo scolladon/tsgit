@@ -15,7 +15,7 @@ import {
   verifyPackTrailer,
   walkPackEntries,
 } from '../primitives/fetch-pack.js';
-import { layoutFailsTrustGate } from '../primitives/internal/layout-verdict.js';
+import { layoutFailsAcceptance } from '../primitives/internal/layout-verdict.js';
 import { readObject } from '../primitives/read-object.js';
 import { readBundle } from './internal/read-bundle.js';
 
@@ -48,7 +48,7 @@ export interface BundleVerifyResult {
  * ownership and format families, and git raises neither of them here.
  */
 const assertUsableForBundleVerify = (ctx: Context): void => {
-  if (!layoutFailsTrustGate(ctx.layout) && ctx.layout.formatRefusal === undefined) return;
+  if (!layoutFailsAcceptance(ctx.layout)) return;
   throw notARepository((ctx.layout.workDir ?? ctx.layout.gitDir) as FilePath);
 };
 
