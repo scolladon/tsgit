@@ -19,7 +19,9 @@ import * as path from 'node:path';
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
+import { NodeFileSystem } from '../../src/adapters/node/node-file-system.js';
 import { NodeHashService } from '../../src/adapters/node/node-hash-service.js';
+import { nativePolicy } from '../../src/adapters/node/path-policy.js';
 import { add } from '../../src/application/commands/add.js';
 import { archive } from '../../src/application/commands/archive.js';
 import { checkout } from '../../src/application/commands/checkout.js';
@@ -32,6 +34,8 @@ import { TsgitError } from '../../src/domain/error.js';
 import type { AuthorIdentity } from '../../src/domain/objects/index.js';
 import { SHA256_CONFIG } from '../../src/domain/objects/index.js';
 import type { Context } from '../../src/ports/context.js';
+import { fileSystemLayoutProbe } from '../../src/repository/file-system-layout-probe.js';
+import { readRepositoryFormat } from '../../src/repository/read-repository-format.js';
 import {
   disableAutoMaintenance,
   GIT_AVAILABLE,
@@ -341,6 +345,179 @@ describe.skipIf(!GIT_AVAILABLE)('sha256 object format — .git/index interop', (
         await rm(oursDir, { recursive: true, force: true });
         await rm(theirsDir, { recursive: true, force: true });
       }
+    });
+  });
+
+  describe('Given extensions.objectFormat set to each row of the measured value grammar', () => {
+    /** `readRepositoryFormat` against a REAL disk-backed repo at `dir`. */
+    const readObjectFormat = (dir: string) => {
+      const gitDir = path.join(dir, '.git');
+      return readRepositoryFormat(
+        fileSystemLayoutProbe(new NodeFileSystem(dir)),
+        gitDir,
+        gitDir,
+        nativePolicy,
+      );
+    };
+
+    /**
+     * Replaces `git init --object-format=sha256`'s single
+     * `\tobjectformat = sha256` config line with `replacement` (verbatim,
+     * tab included) — `''` plants nothing (used for the padded/last-wins
+     * rows, which supply their own full replacement block).
+     */
+    const plantObjectFormatLine = async (dir: string, replacement: string): Promise<string> => {
+      const configPath = path.join(dir, '.git', 'config');
+      const text = await readFile(configPath, 'utf8');
+      const updated = text.replace(/\n\tobjectformat[^\n]*\n/, `\n${replacement}\n`);
+      await writeFile(configPath, updated);
+      return configPath;
+    };
+
+    /** A fresh `git init --object-format=sha256` repo, cleaned up by the caller. */
+    const initSha256Repo = async (prefix: string): Promise<string> => {
+      const dir = await mkdtemp(path.join(os.tmpdir(), prefix));
+      runGit(['init', '-q', '-b', 'main', '--object-format=sha256', dir], { env: runGitEnv() });
+      return dir;
+    };
+
+    /**
+     * Drops `core.repositoryformatversion` from `dir`'s config entirely,
+     * leaving `extensions.objectFormat` as the only relevant key. Isolates
+     * the value-grammar layer this part adds from the UNCONDITIONAL
+     * point-of-use refusal `assertExtensionBacked` still raises for
+     * `objectformat` at version 1 (`UNBACKED_EXTENSIONS` — out of THIS
+     * part's scope; its removal is the last step of the whole change, once
+     * the algorithm is actually wired through). The same isolation the unit
+     * tests use, here reproduced on a real, git-initialized repo. Called
+     * only AFTER git's own verdict on the untouched (version 1) file has
+     * already been captured.
+     */
+    const stripRepositoryFormatVersion = async (dir: string): Promise<void> => {
+      const configPath = path.join(dir, '.git', 'config');
+      const text = await readFile(configPath, 'utf8');
+      const updated = text.replace(/\n\trepositoryformatversion = \d+\n/, '\n');
+      await writeFile(configPath, updated);
+    };
+
+    describe('When the value is git-legal', () => {
+      it.each([
+        ['\tobjectformat = sha1', 'sha1'],
+        ['\tobjectformat = sha256', 'sha256'],
+        ['\tobjectformat =   sha256  ', 'sha256'],
+        ['\tobjectformat = sha256\n\tobjectformat = sha1', 'sha1'],
+        ['\tobjectformat = sha1\n\tobjectformat = sha256', 'sha256'],
+      ] as const)(
+        'Then git rev-parse --show-object-format and tsgit readRepositoryFormat agree on the grammar verdict: %j -> %s',
+        async (line, expected) => {
+          // Arrange
+          const dir = await initSha256Repo('tsgit-objectformat-accept-');
+          try {
+            await plantObjectFormatLine(dir, line);
+
+            // Act — git's verdict, on the real (version 1) file
+            const theirs = tryRunGitWithExit(['-C', dir, 'rev-parse', '--show-object-format'], {
+              env: runGitEnv(),
+            });
+
+            // Assert — git
+            expect(theirs.exitCode).toBe(0);
+            expect(theirs.stdout.trim()).toBe(expected);
+
+            // Act — tsgit's verdict, with the unrelated refuse-set isolated
+            await stripRepositoryFormatVersion(dir);
+            const ours = await readObjectFormat(dir);
+
+            // Assert — tsgit
+            expect(ours.objectFormat).toBe(expected);
+          } finally {
+            await rm(dir, { recursive: true, force: true });
+          }
+        },
+      );
+    });
+
+    describe('When the value is outside the case-sensitive grammar', () => {
+      it.each([
+        ['\tobjectformat = SHA256', 'SHA256'],
+        ['\tobjectformat = Sha256', 'Sha256'],
+        ['\tobjectformat = sha-256', 'sha-256'],
+        ['\tobjectformat = sha256x', 'sha256x'],
+        ['\tobjectformat =', ''],
+      ] as const)(
+        "Then both refuse: git with \"invalid value for 'extensions.objectformat': '%s'\", tsgit with CONFIG_INVALID_ENUM_VALUE",
+        async (line, value) => {
+          // Arrange
+          const dir = await initSha256Repo('tsgit-objectformat-refuse-');
+          try {
+            const configPath = await plantObjectFormatLine(dir, line);
+
+            // Act
+            const theirs = tryRunGitWithExit(['-C', dir, 'rev-parse', '--show-object-format'], {
+              env: runGitEnv(),
+            });
+            let caught: unknown;
+            try {
+              await readObjectFormat(dir);
+            } catch (err) {
+              caught = err;
+            }
+
+            // Assert — git
+            expect(theirs.exitCode).toBe(128);
+            expect(theirs.stderr).toContain(
+              `invalid value for 'extensions.objectformat': '${value}'`,
+            );
+            expect(theirs.stderr).toContain('fatal: bad config line');
+            // Assert — tsgit
+            expect(caught).toBeInstanceOf(TsgitError);
+            expect((caught as TsgitError).data).toEqual({
+              code: 'CONFIG_INVALID_ENUM_VALUE',
+              key: 'extensions.objectformat',
+              source: configPath,
+              value,
+            });
+          } finally {
+            await rm(dir, { recursive: true, force: true });
+          }
+        },
+      );
+    });
+
+    describe('When the value is valueless (no "=" at all)', () => {
+      it('Then both refuse: git with "missing value for \'extensions.objectformat\'", tsgit with CONFIG_MISSING_VALUE', async () => {
+        // Arrange
+        const dir = await initSha256Repo('tsgit-objectformat-valueless-');
+        try {
+          const configPath = await plantObjectFormatLine(dir, '\tobjectformat');
+
+          // Act
+          const theirs = tryRunGitWithExit(['-C', dir, 'rev-parse', '--show-object-format'], {
+            env: runGitEnv(),
+          });
+          let caught: unknown;
+          try {
+            await readObjectFormat(dir);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert — git
+          expect(theirs.exitCode).toBe(128);
+          expect(theirs.stderr).toContain("missing value for 'extensions.objectformat'");
+          expect(theirs.stderr).toContain('fatal: bad config line');
+          // Assert — tsgit
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data).toEqual({
+            code: 'CONFIG_MISSING_VALUE',
+            key: 'extensions.objectformat',
+            source: configPath,
+            line: 2,
+          });
+        } finally {
+          await rm(dir, { recursive: true, force: true });
+        }
+      });
     });
   });
 });

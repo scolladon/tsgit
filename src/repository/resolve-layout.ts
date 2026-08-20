@@ -167,6 +167,7 @@ const EMPTY_FORMAT: RepositoryFormat = {
   bare: undefined,
   worktree: undefined,
   worktreeConfig: false,
+  objectFormat: 'sha1',
   refusal: undefined,
 };
 

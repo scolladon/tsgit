@@ -167,6 +167,12 @@ export type CommandError =
       readonly source: string;
       readonly value: string;
     }
+  | {
+      readonly code: 'CONFIG_INVALID_ENUM_VALUE';
+      readonly key: string;
+      readonly source: string;
+      readonly value: string;
+    }
   | { readonly code: 'CONFIG_BAD_ZLIB_LEVEL'; readonly level: number }
   | {
       readonly code: 'CONFIG_MULTIPLE_VALUES';
@@ -600,6 +606,24 @@ export const configBadBooleanValue = (key: string, source: string, value: string
 export const configBadBooleanLiteral = (key: string, source: string, value: string): TsgitError =>
   new TsgitError({
     code: 'CONFIG_BAD_BOOLEAN_LITERAL',
+    key: sanitizeForDisplay(key),
+    source,
+    value: sanitizeForDisplay(value),
+  });
+
+/**
+ * A string-typed config key restricted to a fixed, case-sensitive set of
+ * literals (e.g. `extensions.objectFormat`'s `sha1`/`sha256`; `extensions.refStorage`
+ * shares the identical grammar) holds a value outside that set. `key` is the
+ * fully-qualified, lower-cased config key, `source` is the file path, `value`
+ * is the raw post-tokenizer string — case preserved, since the grammar is
+ * case-sensitive on the VALUE even though the key itself is lower-cased for
+ * the message. A valueless entry is `CONFIG_MISSING_VALUE` instead, never
+ * this code.
+ */
+export const configInvalidEnumValue = (key: string, source: string, value: string): TsgitError =>
+  new TsgitError({
+    code: 'CONFIG_INVALID_ENUM_VALUE',
     key: sanitizeForDisplay(key),
     source,
     value: sanitizeForDisplay(value),

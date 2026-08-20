@@ -998,6 +998,25 @@ describe('domain error — AdapterError', () => {
       });
     });
 
+    describe('Given CONFIG_INVALID_ENUM_VALUE', () => {
+      describe('When reading message', () => {
+        it("Then equals the \"invalid value for 'key': 'value' in file F\" format", () => {
+          // Arrange & Act
+          const result = new TsgitErrorClass({
+            code: 'CONFIG_INVALID_ENUM_VALUE',
+            key: 'extensions.objectformat',
+            source: '/repo/.git/config',
+            value: 'SHA256',
+          });
+
+          // Assert
+          expect(result.message).toBe(
+            "CONFIG_INVALID_ENUM_VALUE: invalid value for 'extensions.objectformat': 'SHA256' in file /repo/.git/config",
+          );
+        });
+      });
+    });
+
     describe('Given CONFIG_INVALID_FILE', () => {
       describe('When reading message', () => {
         it('Then names the invalid section and the config file', () => {
