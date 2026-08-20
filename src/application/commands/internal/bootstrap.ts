@@ -5,7 +5,7 @@ import type { Context } from '../../../ports/context.js';
 interface BootstrapOptions {
   readonly initialBranch: string;
   readonly bare: boolean;
-  readonly hash?: 'sha1';
+  readonly objectFormat?: 'sha1' | 'sha256';
 }
 
 interface BootstrapResult {
@@ -24,8 +24,31 @@ const INFO_EXCLUDE = `# git ls-files --others --exclude-from=.git/info/exclude
 
 const DESCRIPTION = "Unnamed repository; edit this file 'description' to name the repository.\n";
 
-const renderConfig = (bare: boolean): string =>
-  `[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = ${bare ? 'true' : 'false'}\n`;
+const extensionsBlock = (): string => '[extensions]\n\tobjectformat = sha256\n';
+
+// git's own `--object-format=sha256` init emits three extra `[core]` keys
+// alongside the format bump — measured byte-for-byte against git 2.55.0.
+// The sha1/default path stays exactly as it was before this option existed
+// (no regression to the legacy three-line block).
+const CORE_EXTRAS_SHA256 =
+  '\n\tlogallrefupdates = true\n\tignorecase = true\n\tprecomposeunicode = true';
+
+const coreBlock = (bare: boolean, objectFormat?: 'sha1' | 'sha256'): string => {
+  const isSha256 = objectFormat === 'sha256';
+  const version = isSha256 ? 1 : 0;
+  const extras = isSha256 ? CORE_EXTRAS_SHA256 : '';
+  return `[core]\n\trepositoryformatversion = ${version}\n\tfilemode = true\n\tbare = ${bare ? 'true' : 'false'}${extras}\n`;
+};
+
+/**
+ * `[extensions]` precedes `[core]` — measured against `git init
+ * --object-format=sha256` byte-for-byte; a writer that swaps the order is
+ * semantically identical but byte-different, so the order is load-bearing.
+ */
+const renderConfig = (bare: boolean, objectFormat?: 'sha1' | 'sha256'): string =>
+  objectFormat === 'sha256'
+    ? `${extensionsBlock()}${coreBlock(bare, objectFormat)}`
+    : coreBlock(bare, objectFormat);
 
 /**
  * Create a fresh `.git` layout at `ctx.layout.gitDir`. Used by `init` and `clone`.
@@ -46,7 +69,7 @@ export const bootstrapRepository = async (
   try {
     await ctx.fs.mkdir(gitDir);
     await ctx.fs.writeUtf8(`${gitDir}/HEAD`, `ref: refs/heads/${branch}\n`);
-    await ctx.fs.writeUtf8(`${gitDir}/config`, renderConfig(opts.bare));
+    await ctx.fs.writeUtf8(`${gitDir}/config`, renderConfig(opts.bare, opts.objectFormat));
     await ctx.fs.mkdir(`${gitDir}/refs/heads`);
     await ctx.fs.mkdir(`${gitDir}/refs/tags`);
     await ctx.fs.mkdir(`${gitDir}/objects/info`);

@@ -29,6 +29,7 @@ import { checkout } from '../../src/application/commands/checkout.js';
 import { clone } from '../../src/application/commands/clone.js';
 import { commit } from '../../src/application/commands/commit.js';
 import { fetch as fetchCommand } from '../../src/application/commands/fetch.js';
+import { init } from '../../src/application/commands/init.js';
 import { log } from '../../src/application/commands/log.js';
 import { packObjects } from '../../src/application/commands/pack-objects.js';
 import { push } from '../../src/application/commands/push.js';
@@ -617,6 +618,65 @@ describe.skipIf(!GIT_AVAILABLE)('sha256 object format — .git/index interop', (
   });
 });
 
+describe.skipIf(!GIT_AVAILABLE)('sha256 object format — init', () => {
+  describe('Given a fresh directory', () => {
+    describe('When tsgit init runs with objectFormat sha256', () => {
+      it('Then real git reads the repository as sha256 and git log sees a tsgit-written commit', async () => {
+        // Arrange
+        const dir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-sha256-init-'));
+        try {
+          const ctx = createNodeContext({ workDir: dir, algorithm: 'sha256' });
+
+          // Act
+          await init(ctx, { objectFormat: 'sha256' });
+          await writeFile(path.join(dir, 'init.txt'), 'init\n');
+          await add(ctx, ['init.txt']);
+          await commit(ctx, { message: 'tsgit sha256 init', author: AUTHOR });
+
+          // Assert — real git reads the repository tsgit created from scratch.
+          const config = await readFile(path.join(dir, '.git', 'config'), 'utf8');
+          expect(config.indexOf('[extensions]')).toBe(0);
+          expect(config.indexOf('[extensions]')).toBeLessThan(config.indexOf('[core]'));
+          const shown = tryRunGitWithExit(['-C', dir, 'rev-parse', '--show-object-format']);
+          expect(shown.exitCode).toBe(0);
+          expect(shown.stdout.trim()).toBe('sha256');
+          const logResult = tryRunGitWithExit(['-C', dir, 'log', '--format=%s']);
+          expect(logResult.exitCode).toBe(0);
+          expect(logResult.stdout).toContain('tsgit sha256 init');
+        } finally {
+          await rm(dir, { recursive: true, force: true });
+        }
+      });
+    });
+  });
+
+  describe('Given a fresh directory', () => {
+    describe('When tsgit init runs with no objectFormat', () => {
+      it('Then .git/config is byte-identical to the pre-existing default and real git agrees the format is sha1', async () => {
+        // Arrange
+        const dir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-sha1-init-'));
+        try {
+          const ctx = createNodeContext({ workDir: dir });
+
+          // Act
+          await init(ctx);
+
+          // Assert — no regression to the sha1 default path this PR must not touch.
+          const config = await readFile(path.join(dir, '.git', 'config'), 'utf8');
+          expect(config).toBe(
+            '[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n',
+          );
+          const shown = tryRunGitWithExit(['-C', dir, 'rev-parse', '--show-object-format']);
+          expect(shown.exitCode).toBe(0);
+          expect(shown.stdout.trim()).toBe('sha1');
+        } finally {
+          await rm(dir, { recursive: true, force: true });
+        }
+      });
+    });
+  });
+});
+
 // Stryker sets `STRYKER_MUTANT_ID` for every mutant run. The spawned
 // `git-http-backend` CGI does not work reliably across the sandbox boundary;
 // mutation kills for the negotiation logic live in the unit tests instead.
@@ -786,6 +846,63 @@ describe.skipIf(TRANSPORT_SKIP)('sha256 object format — transport negotiation 
       }, 60_000);
     },
   );
+
+  describe('Given a sha1-default local repository (unconfigured) cloning a sha256 bare peer', () => {
+    it("Then it adopts sha256 — the destination's config declares [extensions] before [core], every fetched ref is 64 hex, and real git reads the result", async () => {
+      // Arrange — git's clone has no --object-format flag; the LOCAL context
+      // is left at its library default (sha1, unconfigured) so the only way
+      // it can end up sha256 is by learning it from the peer's advertisement.
+      const source = await createBareTransportSource('clone-adopt', 'sha256');
+      const server = await startGitHttpBackend({ projectRoot: source.parentDir });
+      const cloneDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-transport-clone-adopt-'));
+      try {
+        const url = `http://127.0.0.1:${server.port}/${source.bareName}`;
+        const ctx = createNodeContext({ workDir: cloneDir, allowInsecureHttp: true });
+
+        // Act
+        const result = await clone(ctx, { url });
+
+        // Assert — adopted format, on-disk block ordering, real git agrees.
+        const config = await readFile(path.join(cloneDir, '.git', 'config'), 'utf8');
+        expect(config.indexOf('[extensions]')).toBe(0);
+        expect(config.indexOf('[extensions]')).toBeLessThan(config.indexOf('[core]'));
+        expect(result.fetchedRefs.every((r) => r.id.length === 64)).toBe(true);
+        const shown = tryRunGitWithExit(['-C', cloneDir, 'rev-parse', '--show-object-format']);
+        expect(shown.exitCode).toBe(0);
+        expect(shown.stdout.trim()).toBe('sha256');
+        const fsckResult = tryRunGitWithExit(['-C', cloneDir, 'fsck']);
+        expect(fsckResult.exitCode).toBe(0);
+      } finally {
+        await server.close();
+        await rm(source.parentDir, { recursive: true, force: true });
+        await rm(cloneDir, { recursive: true, force: true });
+      }
+    }, 60_000);
+  });
+
+  describe('Given depth: 1 against a sha256 bare peer', () => {
+    it('Then .git/shallow carries a 64-hex boundary line', async () => {
+      // Arrange
+      const source = await createBareTransportSource('clone-adopt-shallow', 'sha256');
+      const server = await startGitHttpBackend({ projectRoot: source.parentDir });
+      const cloneDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-transport-clone-shallow-'));
+      try {
+        const url = `http://127.0.0.1:${server.port}/${source.bareName}`;
+        const ctx = createNodeContext({ workDir: cloneDir, allowInsecureHttp: true });
+
+        // Act
+        await clone(ctx, { url, depth: 1 });
+
+        // Assert
+        const shallow = (await readFile(path.join(cloneDir, '.git', 'shallow'), 'utf8')).trim();
+        expect(shallow).toMatch(/^[0-9a-f]{64}$/);
+      } finally {
+        await server.close();
+        await rm(source.parentDir, { recursive: true, force: true });
+        await rm(cloneDir, { recursive: true, force: true });
+      }
+    }, 60_000);
+  });
 
   describe('Given a sha256 local repository with a new commit and an EMPTY sha256 bare receiver', () => {
     it('Then tsgit push succeeds over its v1-only wire and the receiver observes the new commit', async () => {

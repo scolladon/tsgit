@@ -1,4 +1,5 @@
 import { remoteAdvertisesNoRefs, targetDirectoryNotEmpty } from '../../domain/index.js';
+import { configFor } from '../../domain/objects/hash-config.js';
 import type { ObjectId, RefName } from '../../domain/objects/index.js';
 import { zeroOid } from '../../domain/objects/index.js';
 import type { FilePath } from '../../domain/objects/object-id.js';
@@ -7,6 +8,7 @@ import {
   formatObjectFilter,
   parseObjectFilter,
   remoteFilterUnsupported,
+  unsupportedObjectFormat,
 } from '../../domain/protocol/index.js';
 import { cloneFrom } from '../../domain/reflog/reflog-messages.js';
 import { isSafeRefName } from '../../domain/refs/ref-validation.js';
@@ -18,7 +20,6 @@ import { updateConfigEntries } from '../primitives/update-config.js';
 import { bootstrapRepository } from './internal/bootstrap.js';
 import { negotiateDiscovery, negotiatePackBytes } from './internal/fetch-negotiation.js';
 import { type GitServiceSession, openGitSession } from './internal/git-service-session.js';
-import { assertPeerAlgorithm } from './internal/object-format-guard.js';
 import { anonymizeRemoteUrl } from './internal/remote-url.js';
 import {
   advertisesFilter,
@@ -92,19 +93,15 @@ export const clone = async (ctx: Context, opts: CloneOptions): Promise<CloneResu
     opts.filter !== undefined ? formatObjectFilter(parseObjectFilter(opts.filter)) : undefined;
   ctx.progress.start(CLONE_DISCOVER_OP);
   try {
-    const bootstrap = await bootstrapRepository(ctx, {
-      initialBranch: opts.initialBranch ?? 'main',
-      bare: opts.bare ?? false,
-    });
-    try {
-      return await fetchAndPropagate(ctx, opts, bootstrap.gitDir, filterSpec);
-    } catch (err) {
-      // Bootstrap rolls itself back on its own error path; we mirror the
-      // semantics for failures past that point so callers always get a clean
-      // workspace on any clone failure.
-      await ctx.fs.rmRecursive(ctx.layout.gitDir).catch(() => undefined);
-      throw err;
-    }
+    return await fetchAndPropagate(ctx, opts, filterSpec);
+  } catch (err) {
+    // Bootstrap (now run mid-negotiation, once the peer's format is known)
+    // rolls itself back on its own error path; this mirrors the semantics
+    // for failures past that point so callers always get a clean workspace
+    // on any clone failure. Harmless before bootstrap ever runs too —
+    // rmRecursive on a path that was never created is a no-op.
+    await ctx.fs.rmRecursive(ctx.layout.gitDir).catch(() => undefined);
+    throw err;
   } finally {
     ctx.progress.end(CLONE_DISCOVER_OP);
   }
@@ -113,30 +110,56 @@ export const clone = async (ctx: Context, opts: CloneOptions): Promise<CloneResu
 const fetchAndPropagate = async (
   ctx: Context,
   opts: CloneOptions,
-  gitDir: FilePath,
   filterSpec: string | undefined,
 ): Promise<CloneResult> => {
   const session = openGitSession(ctx, opts.url, 'git-upload-pack');
   try {
-    return await negotiateAndWritePack(ctx, opts, gitDir, filterSpec, session);
+    return await negotiateAndWritePack(ctx, opts, filterSpec, session);
   } finally {
     await session.close();
   }
 };
 
+const isSupportedObjectFormat = (value: string): value is 'sha1' | 'sha256' =>
+  value === 'sha1' || value === 'sha256';
+
+/**
+ * Adopt the peer's declared object-format for this clone. git has no `clone
+ * --object-format` to negotiate one — the destination format is whatever the
+ * source advertises — so this is the one call site that ADOPTS rather than
+ * refuses (`fetch`/`push` keep refusing via `assertPeerAlgorithm`).
+ *
+ * Derived exactly once, immediately after discovery. Every subsequent call in
+ * this module MUST thread the returned context, never the one `clone` was
+ * invoked with: `readConfig` and the pack registry memoize per-`Context`
+ * identity, so mixing the two after this point reproduces the known
+ * spread-context `OBJECT_NOT_FOUND` hazard.
+ */
+const adoptPeerAlgorithm = (ctx: Context, peer: string): Context => {
+  const local = ctx.hash.algorithm;
+  const adopted =
+    peer === local
+      ? ctx.hash
+      : isSupportedObjectFormat(peer)
+        ? ctx.hash.withAlgorithm?.(peer)
+        : undefined;
+  if (adopted === undefined) throw unsupportedObjectFormat(peer, local);
+  return Object.freeze({ ...ctx, hash: adopted, hashConfig: configFor(adopted.algorithm) });
+};
+
 const negotiateAndWritePack = async (
   ctx: Context,
   opts: CloneOptions,
-  gitDir: FilePath,
   filterSpec: string | undefined,
   session: GitServiceSession,
 ): Promise<CloneResult> => {
   const discovery = await negotiateDiscovery(session, ctx);
-  // Clone REFUSES a cross-format peer here; git has no `clone --object-format`
-  // to negotiate one — it ADOPTS the source's algorithm instead, which is a
-  // deliberately deferred, separate change (this call site is the one that
-  // will switch from refusing to adopting).
-  assertPeerAlgorithm(ctx.hashConfig.algorithm, discovery.objectFormat, 'fetch');
+  const cloneCtx = adoptPeerAlgorithm(ctx, discovery.objectFormat);
+  const bootstrap = await bootstrapRepository(cloneCtx, {
+    initialBranch: opts.initialBranch ?? 'main',
+    bare: opts.bare ?? false,
+    objectFormat: cloneCtx.hash.algorithm,
+  });
   const advertisement = discovery.advertisement;
   if (advertisement.refs.length === 0) throw remoteAdvertisesNoRefs();
   // A filtered clone needs the server to advertise the `filter` capability;
@@ -146,11 +169,11 @@ const negotiateAndWritePack = async (
   }
   const capabilities = selectFetchCapabilities(
     advertisement.capabilities,
-    ctx.hashConfig.algorithm,
+    cloneCtx.hashConfig.algorithm,
   );
   const wants = uniqueRefOids(advertisement.refs);
   const packResult = await fetchPack(
-    ctx,
+    cloneCtx,
     (c, req) => negotiatePackBytes(c, session, discovery.version, req),
     {
       wants,
@@ -168,16 +191,16 @@ const negotiateAndWritePack = async (
     // Clone never sees `unshallow` (the local repo is empty until now), but
     // updateShallow handles a populated `unshallow` correctly — pass the
     // packResult array verbatim instead of dropping it.
-    await updateShallow(ctx, {
+    await updateShallow(cloneCtx, {
       shallow: packResult.shallow,
       unshallow: packResult.unshallow,
     });
   }
   const reflogUrl = anonymizeRemoteUrl(opts.url);
-  const fetchedRefs = await writeFetchedRefs(ctx, advertisement, reflogUrl);
-  const head = await applyRemoteHead(ctx, advertisement, reflogUrl);
-  await writeCloneConfig(ctx, opts.url, headTrackedBranch(advertisement), filterSpec);
-  return { path: gitDir, head, fetchedRefs };
+  const fetchedRefs = await writeFetchedRefs(cloneCtx, advertisement, reflogUrl);
+  const head = await applyRemoteHead(cloneCtx, advertisement, reflogUrl);
+  await writeCloneConfig(cloneCtx, opts.url, headTrackedBranch(advertisement), filterSpec);
+  return { path: bootstrap.gitDir, head, fetchedRefs };
 };
 
 /**

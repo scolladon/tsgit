@@ -32,6 +32,10 @@ interface CloneResult {
 | `depth` | `number` | (full clone) | Shallow clone depth. Persists boundaries to `.git/shallow`. |
 | `filter` | `string` | (full clone) | Partial-clone filter: `'blob:none'`, `'blob:limit=<size>'`, or `'tree:<depth>'`. |
 
+> There is **no `objectFormat` option** — real git's `clone` has no
+> `--object-format` flag either. The destination's hash algorithm is learned
+> from the source, not requested by the caller; see Behaviour below.
+
 > SSRF policy is **not** a clone option. Configure it once on `openRepository({ config: { dnsResolver, allowInsecure, allowPrivateNetworks } })`; the transport wrapper enforces it on every request (see [security](../../understand/security.md)). The default fail-closed resolver rejects every host until `dnsResolver` is supplied.
 
 ## Behaviour
@@ -39,6 +43,8 @@ interface CloneResult {
 `bare: true` writes the clone at `ctx.layout.gitDir` — same as [`init`](init.md), it does not relocate the layout the `Context` was opened with. To reopen the result (with tsgit or real git), open with `gitDir` equal to `cwd` before cloning, so the constructed layout already has no work tree: `openRepository({ cwd: d, gitDir: d, bare: true })` then `repo.clone({ url, bare: true })`.
 
 `clone` creates the `.git` skeleton, opens a session against the resolved transport (smart-HTTP, negotiating protocol v2 — `ls-refs` discovery + the `fetch` command — with a v1 fallback for servers that don't advertise `version 2`; or a single duplex channel over SSH, always v1), fetches the pack, and propagates remote refs (`refs/remotes/origin/*` + tracked branch + tags) — ref resolution, including the tracked branch's `HEAD` symref, works the same on both protocol versions. It does **not** materialise the working tree — follow up with `repo.checkout({ rev: result.head })`.
+
+The destination's object-format (sha1 or sha256) is **adopted from the source**, not requested: discovery happens first, and the `.git` skeleton is written only once the peer's algorithm is known, matching real git's clone (which has no `--object-format` of its own). A source declaring sha256 produces a sha256 destination — `.git/config` carries `[extensions]`/`objectformat = sha256` — even when the caller's own `Context` defaults to sha1. The one refusal left on this path is a caller-supplied `HashService` that cannot be re-instantiated for another algorithm (no `withAlgorithm`): that throws `UNSUPPORTED_OBJECT_FORMAT` rather than silently cloning at the wrong width.
 
 A `filter` records `origin` as a *promisor remote* in `.git/config`. Objects omitted by the filter are fetched transparently on the first read — every command built on `readObject` works unchanged on a partial clone. Partial clone works over either protocol version: the server needs to advertise `filter` — as a v1 capability, or as a sub-feature of the v2 `fetch` command — or the clone throws `REMOTE_FILTER_UNSUPPORTED`.
 
@@ -71,6 +77,7 @@ await repo.clone({ url: 'https://github.com/owner/repo.git', depth: 1 });
 - `REMOTE_ADVERTISES_NO_REFS` — server returned an empty ref list (or `url === ''`).
 - `INVALID_URL` — malformed remote URL; HTTP: failed SSRF / DNS validation; SSH/scp: a control character, or the host/path begins with `-` (argv-injection guard).
 - `ADAPTER_UNAVAILABLE` — an `ssh://`/scp-like remote given to a runtime with no `SshTransport` wired (Browser, Memory).
+- `UNSUPPORTED_OBJECT_FORMAT` — the peer advertised a hash algorithm the local `HashService` cannot adopt (no `withAlgorithm`), or a format outside `sha1`/`sha256`.
 - `REMOTE_FILTER_UNSUPPORTED` — server's capabilities lack `filter` for a partial clone.
 - `NETWORK_ERROR` — transport failure (HTTP reason: `'connection-reset' | 'dns' | 'tls' | 'http-status' | 'aborted' | 'timeout'`; SSH: the `ssh` child's exit code).
 

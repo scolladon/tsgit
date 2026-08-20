@@ -6,6 +6,8 @@ import { bootstrapRepository } from './internal/bootstrap.js';
 export interface InitOptions {
   readonly initialBranch?: string;
   readonly bare?: boolean;
+  /** git has no equivalent default: absent means sha1, mirroring `git init` with no `--object-format`. */
+  readonly objectFormat?: 'sha1' | 'sha256';
 }
 
 export interface InitResult {
@@ -29,6 +31,10 @@ export const init = async (ctx: Context, opts: InitOptions = {}): Promise<InitRe
   if (await ctx.fs.exists(`${ctx.layout.gitDir}/HEAD`)) {
     throw alreadyInitialized(ctx.layout.gitDir as FilePath);
   }
-  const result = await bootstrapRepository(ctx, { initialBranch, bare });
+  const result = await bootstrapRepository(ctx, {
+    initialBranch,
+    bare,
+    ...(opts.objectFormat !== undefined ? { objectFormat: opts.objectFormat } : {}),
+  });
   return { path: result.gitDir, initialBranch: result.initialBranch, bare: result.bare };
 };
