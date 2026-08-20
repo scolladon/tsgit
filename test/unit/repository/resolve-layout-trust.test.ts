@@ -388,6 +388,48 @@ describe('resolveLayout — the ownership-trust gate', () => {
       });
     });
 
+    describe('Given a submodule gitdir and a linked-worktree admin dir, both BARE_DIR', () => {
+      describe("When resolveLayout runs with bareRepositories: 'explicit'", () => {
+        it('Then neither carries implicitBare — git exempts both admin locations', async () => {
+          // Arrange — both reach the cwd-is-a-gitdir route with a basename
+          // that is not `.git`, so the basename rule alone would refuse them.
+          // Measured on git 2.55.0 with safe.bareRepository=explicit: git
+          // ACCEPTS `main/.git/modules/sub` and `main/.git/worktrees/wt`, and
+          // refuses a planted `evil.git`. They WERE put there by a normal
+          // checkout, which is what the heuristic looks for the absence of.
+          const fs = new MemoryFileSystem({ rootDir: '/repo' });
+          await makeGitDir(fs, '/repo/main/.git/modules/sub');
+          await makeGitDir(fs, '/repo/main/.git/worktrees/wt');
+          await makeGitDir(fs, '/repo/wrap2/evil.git');
+
+          // Act
+          const submodule = await resolveLayout(
+            fileSystemLayoutProbe(fs),
+            '/repo/main/.git/modules/sub',
+            posixPolicy,
+            { bareRepositories: 'explicit' },
+          );
+          const linkedWorktree = await resolveLayout(
+            fileSystemLayoutProbe(fs),
+            '/repo/main/.git/worktrees/wt',
+            posixPolicy,
+            { bareRepositories: 'explicit' },
+          );
+          const planted = await resolveLayout(
+            fileSystemLayoutProbe(fs),
+            '/repo/wrap2/evil.git',
+            posixPolicy,
+            { bareRepositories: 'explicit' },
+          );
+
+          // Assert
+          expect(submodule?.implicitBare).toBeUndefined();
+          expect(linkedWorktree?.implicitBare).toBeUndefined();
+          expect(planted?.implicitBare).toBe(true);
+        });
+      });
+    });
+
     describe('Given the same basename pair with core.bare flipped on each', () => {
       describe("When resolveLayout runs with bareRepositories: 'explicit'", () => {
         it('Then neither verdict changes', async () => {

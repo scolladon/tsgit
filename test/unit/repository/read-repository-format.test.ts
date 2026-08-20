@@ -519,6 +519,59 @@ describe('readRepositoryFormat', () => {
     });
   });
 
+  describe('Given a refused version paired with an UNKNOWN extension name', () => {
+    describe('When readRepositoryFormat runs', () => {
+      it('Then the version arm wins — the two arms are ordered, not interchangeable', async () => {
+        // Arrange — every other high-version fixture pairs with a name git
+        // KNOWS, for which the extension arm returns nothing either way, so
+        // swapping the two arms would survive them all.
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await fs.writeUtf8(
+          '/repo/.git/config',
+          '[core]\n\trepositoryformatversion = 99\n[extensions]\n\tbogus = 1\n',
+        );
+
+        // Act
+        const result = await readRepositoryFormat(
+          fileSystemLayoutProbe(fs),
+          '/repo/.git',
+          '/repo/.git',
+          posixPolicy,
+        );
+
+        // Assert
+        expect(result.refusal).toStrictEqual({ kind: 'version', version: 99 });
+      });
+    });
+  });
+
+  describe('Given a SUBSECTIONED v1-only extension at version 0', () => {
+    describe('When readRepositoryFormat runs', () => {
+      it('Then it is accepted — a subsectioned name is not the v1-only name', async () => {
+        // Arrange — measured: git accepts `[extensions "x"] objectFormat` at
+        // version 0, so refusing it would be a faithfulness break. Without
+        // this row the `subsection === undefined` conjunct is never exercised
+        // on its own and dropping it changes no observed result.
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await fs.writeUtf8(
+          '/repo/.git/config',
+          '[core]\n\trepositoryformatversion = 0\n[extensions "x"]\n\tobjectFormat = sha1\n',
+        );
+
+        // Act
+        const result = await readRepositoryFormat(
+          fileSystemLayoutProbe(fs),
+          '/repo/.git',
+          '/repo/.git',
+          posixPolicy,
+        );
+
+        // Assert
+        expect(result.refusal).toBeUndefined();
+      });
+    });
+  });
+
   describe('Given a refused core.repositoryformatversion literal', () => {
     describe('When readRepositoryFormat runs', () => {
       it.each([

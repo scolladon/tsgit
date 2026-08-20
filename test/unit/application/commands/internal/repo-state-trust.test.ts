@@ -87,7 +87,7 @@ describe('assertAcceptedRepository trust gate', () => {
 
         // Assert
         expect(caught).toBeInstanceOf(TsgitError);
-        expect(caught.data).toEqual({ code: 'DUBIOUS_OWNERSHIP', path: ctx.layout.workDir });
+        expect(caught.data).toStrictEqual({ code: 'DUBIOUS_OWNERSHIP', path: ctx.layout.workDir });
       });
     });
 
@@ -277,7 +277,7 @@ describe('assertAcceptedRepository trust gate', () => {
 
         // Assert
         expect(caught).toBeInstanceOf(TsgitError);
-        expect(caught.data).toEqual({ code: 'DUBIOUS_OWNERSHIP', path: ctx.layout.workDir });
+        expect(caught.data).toStrictEqual({ code: 'DUBIOUS_OWNERSHIP', path: ctx.layout.workDir });
       });
     });
   });
@@ -295,7 +295,7 @@ describe('assertAcceptedRepository trust gate', () => {
 
         // Assert
         expect(caught).toBeInstanceOf(TsgitError);
-        expect(caught.data).toEqual({ code: 'DUBIOUS_OWNERSHIP', path: ctx.layout.workDir });
+        expect(caught.data).toStrictEqual({ code: 'DUBIOUS_OWNERSHIP', path: ctx.layout.workDir });
       });
     });
   });
@@ -317,7 +317,7 @@ describe('assertAcceptedRepository trust gate', () => {
 
         // Assert
         expect(caught).toBeInstanceOf(TsgitError);
-        expect(caught.data).toEqual({ code: 'DUBIOUS_OWNERSHIP', path: ctx.layout.gitDir });
+        expect(caught.data).toStrictEqual({ code: 'DUBIOUS_OWNERSHIP', path: ctx.layout.gitDir });
       });
     });
   });
@@ -460,6 +460,7 @@ describe('The surviving-verb contract on a refused repository', () => {
 
         // Assert
         expect(caught).toBeInstanceOf(TsgitError);
+        expect(caught.data.code).toBe('DUBIOUS_OWNERSHIP');
         const after = await ctx.fs.readUtf8(configPathOf(ctx));
         expect(after).toBe(before);
       });
@@ -479,6 +480,7 @@ describe('The surviving-verb contract on a refused repository', () => {
 
         // Assert
         expect(caught).toBeInstanceOf(TsgitError);
+        expect(caught.data.code).toBe('DUBIOUS_OWNERSHIP');
         const after = await ctx.fs.readUtf8(configPathOf(ctx));
         expect(after).toBe(before);
       });
@@ -498,6 +500,7 @@ describe('The surviving-verb contract on a refused repository', () => {
 
         // Assert
         expect(caught).toBeInstanceOf(TsgitError);
+        expect(caught.data.code).toBe('DUBIOUS_OWNERSHIP');
         const after = await ctx.fs.readUtf8(configPathOf(ctx));
         expect(after).toBe(before);
       });
@@ -519,6 +522,7 @@ describe('The surviving-verb contract on a refused repository', () => {
 
         // Assert
         expect(caught).toBeInstanceOf(TsgitError);
+        expect(caught.data.code).toBe('DUBIOUS_OWNERSHIP');
         const after = await ctx.fs.readUtf8(configPathOf(ctx));
         expect(after).toBe(before);
       });
@@ -538,6 +542,7 @@ describe('The surviving-verb contract on a refused repository', () => {
 
         // Assert
         expect(caught).toBeInstanceOf(TsgitError);
+        expect(caught.data.code).toBe('DUBIOUS_OWNERSHIP');
         const after = await ctx.fs.readUtf8(configPathOf(ctx));
         expect(after).toBe(before);
       });
@@ -557,6 +562,7 @@ describe('The surviving-verb contract on a refused repository', () => {
 
         // Assert
         expect(caught).toBeInstanceOf(TsgitError);
+        expect(caught.data.code).toBe('DUBIOUS_OWNERSHIP');
       });
 
       it('Then remoteAdd refuses', async () => {
@@ -572,6 +578,7 @@ describe('The surviving-verb contract on a refused repository', () => {
 
         // Assert
         expect(caught).toBeInstanceOf(TsgitError);
+        expect(caught.data.code).toBe('DUBIOUS_OWNERSHIP');
       });
 
       it('Then remoteRemove refuses', async () => {
@@ -585,6 +592,7 @@ describe('The surviving-verb contract on a refused repository', () => {
 
         // Assert
         expect(caught).toBeInstanceOf(TsgitError);
+        expect(caught.data.code).toBe('DUBIOUS_OWNERSHIP');
       });
 
       it('Then remoteRename refuses', async () => {
@@ -600,6 +608,7 @@ describe('The surviving-verb contract on a refused repository', () => {
 
         // Assert
         expect(caught).toBeInstanceOf(TsgitError);
+        expect(caught.data.code).toBe('DUBIOUS_OWNERSHIP');
       });
 
       it('Then remoteSetUrl refuses', async () => {
@@ -615,6 +624,7 @@ describe('The surviving-verb contract on a refused repository', () => {
 
         // Assert
         expect(caught).toBeInstanceOf(TsgitError);
+        expect(caught.data.code).toBe('DUBIOUS_OWNERSHIP');
       });
 
       it('Then remoteShow refuses', async () => {
@@ -628,6 +638,7 @@ describe('The surviving-verb contract on a refused repository', () => {
 
         // Assert
         expect(caught).toBeInstanceOf(TsgitError);
+        expect(caught.data.code).toBe('DUBIOUS_OWNERSHIP');
       });
     });
   });
@@ -645,6 +656,7 @@ describe('The surviving-verb contract on a refused repository', () => {
 
         // Assert
         expect(caught).toBeInstanceOf(TsgitError);
+        expect(caught.data.code).toBe('DUBIOUS_OWNERSHIP');
       });
     });
   });

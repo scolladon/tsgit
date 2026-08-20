@@ -165,7 +165,7 @@ describe('domain repository error', () => {
           const result = dubiousOwnership('/srv/repo' as FilePath);
 
           // Assert
-          expect(result.data).toEqual({ code: 'DUBIOUS_OWNERSHIP', path: '/srv/repo' });
+          expect(result.data).toStrictEqual({ code: 'DUBIOUS_OWNERSHIP', path: '/srv/repo' });
         });
       });
     });
