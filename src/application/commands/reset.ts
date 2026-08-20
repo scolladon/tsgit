@@ -13,7 +13,7 @@
 import { revparseUnresolved } from '../../domain/commands/error.js';
 import { bareRepository } from '../../domain/index.js';
 import { unexpectedObjectType } from '../../domain/objects/error.js';
-import type { ObjectId, RefName } from '../../domain/objects/index.js';
+import { isOid, type ObjectId, type RefName } from '../../domain/objects/index.js';
 import { resetMovingTo } from '../../domain/reflog/reflog-messages.js';
 import type { Context } from '../../ports/context.js';
 import { buildIndexFromTree } from '../primitives/build-index-from-tree.js';
@@ -172,7 +172,7 @@ const hardResetFromCommit = async (ctx: Context, commitId: ObjectId): Promise<vo
 };
 
 const resolveTarget = async (ctx: Context, target: string): Promise<ObjectId> => {
-  if (/^[0-9a-f]{40}$/.test(target)) return target as ObjectId;
+  if (isOid(target, ctx.hashConfig)) return target as ObjectId;
   // equivalent-mutant: the `target === 'HEAD'` short-circuit is an
   // optimisation — the else branch's first candidate is also `'HEAD' as
   // RefName`, which `resolveRef` resolves to the same commit. Removing or

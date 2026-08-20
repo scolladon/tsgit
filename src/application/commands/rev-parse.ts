@@ -2,6 +2,7 @@ import { revparseUnresolved } from '../../domain/commands/error.js';
 import { applyGraft } from '../../domain/commit/graft.js';
 import { objectNotFound } from '../../domain/objects/error.js';
 import {
+  isOid,
   type ObjectId,
   ObjectId as ObjectIdFactory,
   type RefName,
@@ -56,7 +57,7 @@ const evaluate = async (ctx: Context, expr: RevExpression, raw: string): Promise
 };
 
 const resolveBase = async (ctx: Context, base: string): Promise<ObjectId> => {
-  if (/^[0-9a-f]{40}$/.test(base)) return ObjectIdFactory.from(base);
+  if (isOid(base, ctx.hashConfig)) return ObjectIdFactory.from(base);
   // Try as a ref name; the verbatim candidate also covers the HEAD literal,
   // which resolveRef accepts directly.
   for (const candidate of refCandidates(base)) {

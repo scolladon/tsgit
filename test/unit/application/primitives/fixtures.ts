@@ -150,13 +150,15 @@ export interface BuildSeededContextParts {
   readonly packedRefs?: ReadonlyArray<PackedRefEntry>;
   readonly index?: GitIndex;
   readonly signal?: AbortSignal;
+  /** Repository hash algorithm; defaults to `createMemoryContext`'s own default (sha1). */
+  readonly algorithm?: 'sha1' | 'sha256';
 }
 
 export async function buildSeededContext(parts: BuildSeededContextParts = {}): Promise<Context> {
-  const ctx =
-    parts.signal === undefined
-      ? createMemoryContext()
-      : createMemoryContext({ signal: parts.signal });
+  const ctx = createMemoryContext({
+    ...(parts.signal !== undefined ? { signal: parts.signal } : {}),
+    ...(parts.algorithm !== undefined ? { algorithm: parts.algorithm } : {}),
+  });
   const { gitDir } = ctx.layout;
 
   // Seed objects

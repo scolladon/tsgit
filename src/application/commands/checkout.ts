@@ -2,6 +2,7 @@ import { branchNotFound, invalidOption } from '../../domain/commands/error.js';
 import {
   FILE_MODE,
   type FilePath,
+  isOid,
   type ObjectId,
   type RefName,
 } from '../../domain/objects/index.js';
@@ -60,7 +61,7 @@ const isPaths = (opts: CheckoutOptions): opts is CheckoutPathsOptions =>
   'paths' in opts && opts.paths !== undefined;
 
 const resolveSwitchOid = async (ctx: Context, rev: string): Promise<ObjectId> => {
-  if (/^[0-9a-f]{40}$/.test(rev)) return rev as ObjectId;
+  if (isOid(rev, ctx.hashConfig)) return rev as ObjectId;
   return resolveRef(ctx, rev as RefName);
 };
 
@@ -82,7 +83,7 @@ const headCheckoutLabel = (
 };
 
 const switchBranch = async (ctx: Context, opts: CheckoutSwitchOptions): Promise<CheckoutResult> => {
-  const detached = opts.detach === true || /^[0-9a-f]{40}$/.test(opts.rev);
+  const detached = opts.detach === true || isOid(opts.rev, ctx.hashConfig);
   const priorHead = await readHeadRaw(ctx);
   const oldOid = await resolveRef(ctx, 'HEAD' as RefName);
   let branchRef: RefName | undefined;

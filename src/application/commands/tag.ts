@@ -13,7 +13,7 @@ import type {
   Tag,
   TagData,
 } from '../../domain/objects/index.js';
-import { serializeTagContent, stripspace, zeroOid } from '../../domain/objects/index.js';
+import { isOid, serializeTagContent, stripspace, zeroOid } from '../../domain/objects/index.js';
 import { validateRefName } from '../../domain/refs/index.js';
 import type { Context } from '../../ports/context.js';
 import type { ParsedConfig } from '../primitives/config-read.js';
@@ -91,7 +91,7 @@ export const tagCreate = async (ctx: Context, input: TagCreateInput): Promise<Ta
   await assertValidBooleanConfig(ctx, 'tag', undefined, ['gpgsign']);
   const name = validateRefName(`${TAGS_PREFIX}${input.name}`);
   const target = input.target !== undefined ? input.target : await currentHeadId(ctx);
-  const targetId = /^[0-9a-f]{40}$/.test(target)
+  const targetId = isOid(target, ctx.hashConfig)
     ? (target as ObjectId)
     : await resolveRef(ctx, target as RefName);
   const id = wantsAnnotatedTag(input) ? await createAnnotatedTag(ctx, input, targetId) : targetId;

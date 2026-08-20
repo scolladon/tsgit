@@ -26,6 +26,15 @@ const seedWithBranches = async () => {
   return { ctx, commitId: c.id };
 };
 
+const seedSha256WithCommit = async () => {
+  const ctx = createMemoryContext({ algorithm: 'sha256' });
+  await init(ctx);
+  await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
+  await add(ctx, ['a.txt']);
+  const c = await commit(ctx, { message: 'first', author });
+  return { ctx, commitId: c.id };
+};
+
 describe('checkout', () => {
   describe('Given an existing branch', () => {
     describe('When checkout', () => {
@@ -60,6 +69,43 @@ describe('checkout', () => {
         expect(result.id).toBe(commitId);
         const head = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/HEAD`);
         expect(head).toBe(`${commitId}\n`);
+      });
+    });
+  });
+
+  describe('Given a SHA-256 repository and a raw 64-hex oid', () => {
+    describe('When checkout', () => {
+      it('Then HEAD becomes detached at that oid, not treated as a branch name', async () => {
+        // Arrange
+        const { ctx, commitId } = await seedSha256WithCommit();
+        expect(commitId).toHaveLength(64);
+
+        // Act
+        const result = await checkout(ctx, { rev: commitId });
+
+        // Assert
+        expect(result.detached).toBe(true);
+        expect(result.id).toBe(commitId);
+        const head = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/HEAD`);
+        expect(head).toBe(`${commitId}\n`);
+      });
+    });
+  });
+
+  describe('Given a SHA-256 repository and an explicit detach request', () => {
+    describe('When checkout is given a raw 64-hex oid as rev', () => {
+      it('Then the oid resolves verbatim, without a ref lookup', async () => {
+        // Arrange — `detach: true` bypasses the `opts.detach === true || isOid(...)`
+        // short-circuit's regex operand entirely, isolating the oid fast path
+        // inside `resolveSwitchOid` from the `detached` computation above it.
+        const { ctx, commitId } = await seedSha256WithCommit();
+
+        // Act
+        const result = await checkout(ctx, { rev: commitId, detach: true });
+
+        // Assert
+        expect(result.detached).toBe(true);
+        expect(result.id).toBe(commitId);
       });
     });
   });

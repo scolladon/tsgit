@@ -1,13 +1,12 @@
 import { unexpectedObjectType } from '../../domain/objects/error.js';
-import type { ObjectId, RefName, Tree } from '../../domain/objects/index.js';
+import { isOid, type ObjectId, type RefName, type Tree } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import { peelChain } from './internal/peel-chain.js';
 import { readObject } from './read-object.js';
 import { resolveRef } from './resolve-ref.js';
-import { looksLikeObjectId } from './validators.js';
 
 export async function readTree(ctx: Context, ref: RefName | ObjectId): Promise<Tree> {
-  const startId: ObjectId = looksLikeObjectId(ref as string)
+  const startId: ObjectId = isOid(ref as string, ctx.hashConfig)
     ? (ref as ObjectId)
     : await resolveRef(ctx, ref as RefName);
   const { id, result } = await peelChain(ctx, startId, readObject, (object) => {

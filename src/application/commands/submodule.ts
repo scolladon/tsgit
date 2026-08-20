@@ -18,6 +18,8 @@ import type { IndexEntry } from '../../domain/git-index/index.js';
 import {
   FILE_MODE,
   type FilePath,
+  type HashConfig,
+  isOid,
   ObjectId,
   type RefName,
   zeroOid,
@@ -60,7 +62,6 @@ import {
   type ConfigOperation,
   updateConfigOperations,
 } from '../primitives/update-config.js';
-import { looksLikeObjectId } from '../primitives/validators.js';
 import { walkSubmodules } from '../primitives/walk-submodules.js';
 import { writeObject } from '../primitives/write-object.js';
 import { checkout } from './checkout.js';
@@ -440,8 +441,8 @@ export interface SubmoduleListResult {
   readonly entries: ReadonlyArray<SubmoduleEntry>;
 }
 
-const coerceRef = (ref: string): RefName | ObjectId =>
-  looksLikeObjectId(ref) ? ObjectId.from(ref) : validateRefName(ref);
+const coerceRef = (ref: string, config: HashConfig): RefName | ObjectId =>
+  isOid(ref, config) ? ObjectId.from(ref) : validateRefName(ref);
 
 export const submoduleList = async (
   ctx: Context,
@@ -454,7 +455,7 @@ export const submoduleList = async (
   await assertValidBooleanConfigInSection(ctx, 'submodule', ['active'], {
     requireSubsection: true,
   });
-  const ref = coerceRef(opts.ref ?? 'HEAD');
+  const ref = coerceRef(opts.ref ?? 'HEAD', ctx.hashConfig);
   const recursive = opts.recursive === true;
   const entries: SubmoduleEntry[] = [];
   for await (const entry of walkSubmodules(ctx, {

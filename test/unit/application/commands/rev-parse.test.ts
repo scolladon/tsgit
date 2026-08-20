@@ -157,6 +157,23 @@ describe('revParse', () => {
     });
   });
 
+  describe('Given a SHA-256 repository and a full 64-hex oid', () => {
+    describe('When revParse', () => {
+      it('Then returns it directly (no lookup)', async () => {
+        // Arrange
+        const ctx = createMemoryContext({ algorithm: 'sha256' });
+        await seedRepo(ctx, {});
+        const oid = 'a'.repeat(64);
+
+        // Act
+        const result = await revParse(ctx, oid);
+
+        // Assert
+        expect(result).toBe(oid);
+      });
+    });
+  });
+
   describe('Given a 40-hex oid that also names a branch ref', () => {
     describe('When revParse', () => {
       it('Then returns the literal oid, not the ref target', async () => {

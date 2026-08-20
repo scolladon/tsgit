@@ -250,6 +250,26 @@ describe('branch', () => {
     });
   });
 
+  describe('Given a SHA-256 repository and an explicit startPoint (64-hex oid)', () => {
+    describe('When branch create', () => {
+      it('Then the new ref points at that oid, taken verbatim', async () => {
+        // Arrange
+        const ctx = createMemoryContext({ algorithm: 'sha256' });
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
+        await add(ctx, ['a.txt']);
+        const { id: commitId } = await commit(ctx, { message: 'first', author });
+        expect(commitId).toHaveLength(64);
+
+        // Act
+        const result = await branchCreate(ctx, { name: 'pin', startPoint: commitId });
+
+        // Assert
+        expect(result.id).toBe(commitId);
+      });
+    });
+  });
+
   describe('Given an explicit startPoint as a branch name', () => {
     describe('When branch create', () => {
       it('Then resolves and pins to that branch tip', async () => {

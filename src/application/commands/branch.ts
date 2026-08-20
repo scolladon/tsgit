@@ -7,7 +7,7 @@
 import { TsgitError } from '../../domain/error.js';
 import { branchExists, branchNotFound, cannotDeleteCheckedOutBranch } from '../../domain/index.js';
 import type { ObjectId, RefName } from '../../domain/objects/index.js';
-import { zeroOid } from '../../domain/objects/index.js';
+import { isOid, zeroOid } from '../../domain/objects/index.js';
 import { branchCreatedFrom, branchRenamed } from '../../domain/reflog/reflog-messages.js';
 import { validateRefName } from '../../domain/refs/index.js';
 import { HEADS_PREFIX } from '../../domain/refs/ref-prefixes.js';
@@ -175,7 +175,7 @@ export const branchRename = async (
 };
 
 const resolveBranchTarget = async (ctx: Context, startPoint: string): Promise<ObjectId> => {
-  if (/^[0-9a-f]{40}$/.test(startPoint)) return startPoint as ObjectId;
+  if (isOid(startPoint, ctx.hashConfig)) return startPoint as ObjectId;
   const candidates: ReadonlyArray<RefName | 'HEAD'> =
     startPoint === 'HEAD'
       ? ['HEAD']

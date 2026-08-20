@@ -9,6 +9,7 @@
  * (`expect(err.data.reason).toBe(REASON_X)`), which kills StringLiteral mutants
  * on the declaration site.
  */
+import { type HashConfig, isOid } from '../../domain/objects/index.js';
 import {
   MAX_COMMIT_MESSAGE_BYTES,
   MAX_INDEX_BYTES,
@@ -57,9 +58,12 @@ export const REASON_SKIP_TARGET_PARENTLESS =
 
 /** Last-gate parent check before commit serialisation: `ObjectId` is a branded
  *  string, so a single bad cast upstream would otherwise flow a non-oid (or
- *  `undefined`) verbatim into a `parent <x>` header. */
-export function isMalformedParentOid(parent: string | undefined): boolean {
-  return parent === undefined || !looksLikeObjectId(parent);
+ *  `undefined`) verbatim into a `parent <x>` header. Checked against the
+ *  repository's own `config`, not the config-free `looksLikeObjectId` — a
+ *  foreign-width oid (e.g. 40 hex in a SHA-256 repo) is well-formed hex but
+ *  not a resolvable link here. */
+export function isMalformedParentOid(parent: string | undefined, config: HashConfig): boolean {
+  return parent === undefined || !isOid(parent, config);
 }
 
 export function messageContainsNul(message: string): boolean {
@@ -242,8 +246,7 @@ const OBJECT_ID_SHA256_RE = /^[0-9a-f]{64}$/;
  * *prefix* of a full oid there (verified against real git: `rev-parse
  * --verify` on a 40-hex string resolves in a SHA-256 repository). Never use
  * this where the repository's actual hash config is known — use the
- * repository-aware `isOid(value, hashConfig)` instead. Used by readTree to
- * decide whether its `RefName | ObjectId` argument is already an id.
+ * repository-aware `isOid(value, hashConfig)` instead.
  */
 export function looksLikeObjectId(value: string): boolean {
   return OBJECT_ID_SHA1_RE.test(value) || OBJECT_ID_SHA256_RE.test(value);

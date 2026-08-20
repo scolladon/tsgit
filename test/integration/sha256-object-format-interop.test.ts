@@ -13,7 +13,7 @@
  *   unique: SHA-256 index entry framing survives tsgit add and reads back identically to git's own add
  */
 import { spawnSync } from 'node:child_process';
-import { cp, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
@@ -22,10 +22,13 @@ import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import { NodeHashService } from '../../src/adapters/node/node-hash-service.js';
 import { add } from '../../src/application/commands/add.js';
 import { archive } from '../../src/application/commands/archive.js';
+import { checkout } from '../../src/application/commands/checkout.js';
 import { commit } from '../../src/application/commands/commit.js';
 import { log } from '../../src/application/commands/log.js';
 import { packObjects } from '../../src/application/commands/pack-objects.js';
+import { revParse } from '../../src/application/commands/rev-parse.js';
 import { tarArchive } from '../../src/domain/archive/tar.js';
+import { TsgitError } from '../../src/domain/error.js';
 import type { AuthorIdentity } from '../../src/domain/objects/index.js';
 import { SHA256_CONFIG } from '../../src/domain/objects/index.js';
 import type { Context } from '../../src/ports/context.js';
@@ -252,6 +255,92 @@ describe.skipIf(!GIT_AVAILABLE)('sha256 object format — .git/index interop', (
       expect(tarList.status).toBe(0);
       expect(commitId.status).toBe(0);
       expect(commitId.stdout.trim()).toBe(expectedHead);
+    });
+  });
+
+  describe('Given a SHA-256 repository, When a 40-hex prefix of HEAD is resolved', () => {
+    it("Then both tsgit revParse and git rev-parse --verify resolve it to HEAD's full 64-hex oid", async () => {
+      // Arrange — measured against real git: a 40-hex prefix of a SHA-256 oid
+      // resolves to the full 64-hex oid; it is a prefix, not an algorithm signal.
+      const env = runGitEnv();
+      const fullHead = runGit(['-C', baseDir, 'rev-parse', 'HEAD'], { env }).trim();
+      const prefix40 = fullHead.slice(0, 40);
+
+      // Act
+      const ours = await revParse(sha256Context(baseDir), prefix40);
+      const theirs = runGit(['-C', baseDir, 'rev-parse', '--verify', prefix40], { env }).trim();
+
+      // Assert
+      expect(ours).toBe(fullHead);
+      expect(theirs).toBe(fullHead);
+    });
+  });
+
+  describe('Given a SHA-1 repository, When a full 64-hex string is resolved', () => {
+    it('Then both tsgit revParse and git rev-parse --verify refuse it — a 64-hex oid never exists in a SHA-1 repo', async () => {
+      // Arrange — a plain SHA-1 repository; the 64-hex string is well-formed
+      // hex but the wrong width for this repo's own oid, never a valid prefix
+      // (SHA-1 prefixes bottom out at 40 hex chars).
+      const dir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-sha1-64hex-'));
+      const env = runGitEnv();
+      try {
+        runGit(['init', '-q', '-b', 'main', dir], { env });
+        runGit(['-C', dir, 'config', 'user.name', 'Ada'], { env });
+        runGit(['-C', dir, 'config', 'user.email', 'ada@example.com'], { env });
+        await writeFile(path.join(dir, 'f.txt'), 'f\n');
+        runGit(['-C', dir, 'add', 'f.txt'], { env });
+        runGit(['-C', dir, 'commit', '-q', '-m', 'f'], { env });
+        const fake64 = 'a'.repeat(64);
+
+        // Act
+        const theirs = tryRunGitWithExit(['-C', dir, 'rev-parse', '--verify', fake64], { env });
+        let caught: TsgitError | undefined;
+        try {
+          await revParse(createNodeContext({ workDir: dir }), fake64);
+        } catch (err) {
+          caught = err as TsgitError;
+        }
+
+        // Assert — git's own refusal, pinned to the verb actually run
+        // (`rev-parse --verify`): the message is command-specific, not a
+        // fixed string every verb shares.
+        expect(theirs.exitCode).toBe(128);
+        expect(theirs.stderr).toContain('fatal: Needed a single revision');
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect(caught?.data.code).toBe('OBJECT_NOT_FOUND');
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    });
+  });
+
+  describe('Given a SHA-256 repository, When tsgit checkout is given the raw 64-hex HEAD oid', () => {
+    it("Then it detaches HEAD at that oid, matching git's own checkout on the same oid", async () => {
+      // Arrange — two independent copies, one for each side.
+      const oursDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-sha256-checkout-ours-'));
+      const theirsDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-sha256-checkout-theirs-'));
+      await cp(baseDir, oursDir, { recursive: true });
+      await cp(baseDir, theirsDir, { recursive: true });
+      const env = runGitEnv();
+      const fullHead = runGit(['-C', baseDir, 'rev-parse', 'HEAD'], { env }).trim();
+
+      try {
+        // Act — git resolves a raw oid to the object itself, never attempting
+        // it as a branch name; tsgit's checkout must match.
+        const result = await checkout(sha256Context(oursDir), { rev: fullHead });
+        runGit(['-C', theirsDir, 'checkout', '-q', fullHead], { env });
+
+        // Assert — both sides' on-disk HEAD hold the raw detached oid.
+        const oursHead = await readFile(path.join(oursDir, '.git', 'HEAD'), 'utf8');
+        const theirsHead = await readFile(path.join(theirsDir, '.git', 'HEAD'), 'utf8');
+        expect(result.detached).toBe(true);
+        expect(result.id).toBe(fullHead);
+        expect(oursHead.trim()).toBe(fullHead);
+        expect(theirsHead.trim()).toBe(fullHead);
+      } finally {
+        await rm(oursDir, { recursive: true, force: true });
+        await rm(theirsDir, { recursive: true, force: true });
+      }
     });
   });
 });
