@@ -189,9 +189,17 @@ const decodeHeaderLines = (
   };
 };
 
+/**
+ * Diagnostic cap on the header prefix read when no blank-line terminator is
+ * found. Bundle bytes are untrusted, so the reported `line` is bounded rather
+ * than echoed whole. The bound is OBSERVABLE — a first line longer than this
+ * is reported truncated, and `length` measures the truncated text — so it is
+ * pinned by its own test rather than assumed unreachable.
+ */
+const HEADER_DIAGNOSTIC_CAP = 64;
+
 const throwMissingBlankLine = (bytes: Uint8Array, path: string): never => {
-  // Stryker disable next-line MethodExpression: equivalent — the prefix feeds only the exact startsWith(MAGIC_V2/V3) checks, all reading ≤15 leading bytes; min vs max differ only in trailing bytes (length>64), which change neither decision
-  const prefix = bytes.subarray(0, Math.min(bytes.length, 64));
+  const prefix = bytes.subarray(0, Math.min(bytes.length, HEADER_DIAGNOSTIC_CAP));
   const headerText = new TextDecoder().decode(prefix);
   if (!headerText.startsWith(MAGIC_V2) && !headerText.startsWith(MAGIC_V3)) {
     throw bundleBadHeader(path, { reason: 'not-a-bundle' });

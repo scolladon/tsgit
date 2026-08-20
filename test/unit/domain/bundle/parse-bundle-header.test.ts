@@ -491,4 +491,34 @@ describe('parseBundleHeader', () => {
       expect(result.refs).toEqual([]);
     });
   });
+
+  describe('Given a header with no blank line whose first line exceeds the 64-byte diagnostic cap, When parsed', () => {
+    it('Then the reported line and length are capped, not the whole untrusted first line', () => {
+      // Arrange — bundle bytes are untrusted, so the diagnostic reads a bounded
+      // prefix. The bound is observable: this first line is 76 bytes, and only
+      // its first 64 may reach the payload.
+      const firstLine = `${'# v2 git bundle'}${'X'.repeat(61)}`;
+      const bytes = encode(`${firstLine}\ntrailing junk\n`);
+      const sut = parseBundleHeader;
+
+      // Act
+      let caught: unknown;
+      try {
+        sut(bytes, 'long-first-line.bundle');
+      } catch (error) {
+        caught = error;
+      }
+
+      // Assert
+      expect(firstLine.length).toBe(76);
+      expect(caught).toBeInstanceOf(TsgitError);
+      const data = (caught as TsgitError).data;
+      expect(data.code).toBe('BUNDLE_BAD_HEADER');
+      if (data.code !== 'BUNDLE_BAD_HEADER') expect.unreachable();
+      expect(data.reason).toBe('malformed-header');
+      if (data.reason !== 'malformed-header') expect.unreachable();
+      expect(data.line).toBe(firstLine.slice(0, 64));
+      expect(data.length).toBe(64);
+    });
+  });
 });
