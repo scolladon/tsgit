@@ -30,13 +30,18 @@ export const discoverReceivePackRefs = async (session: GitServiceSession): Promi
  * emits non-delta packs so we never advertise
  * `thin-pack`; it is absent from `CLIENT_CAPABILITIES_PUSH` already, so the
  * intersect step naturally drops it from any server-side advertisement.
+ *
+ * `object-format=<objectFormat>` is appended the same unconditional way as
+ * AGENT: it is OUR OWN algorithm, sent verbatim regardless of what the
+ * server advertised.
  */
 export const selectPushCapabilities = (
   advertised: ReadonlyArray<string>,
+  objectFormat: 'sha1' | 'sha256',
   signing = false,
 ): ReadonlyArray<string> => {
   const base = CLIENT_CAPABILITIES_PUSH.filter((c) => c !== AGENT);
   const clientWants = signing ? [...base, PUSH_CERT] : base;
   const intersected = negotiateProtocolCapabilities(advertised, clientWants);
-  return [...intersected, AGENT];
+  return [...intersected, AGENT, `object-format=${objectFormat}`];
 };

@@ -32,7 +32,24 @@ export type ProtocolError =
       readonly count: number;
       readonly limit: number;
     }
-  | { readonly code: 'UNSUPPORTED_OBJECT_FORMAT'; readonly format: string };
+  | {
+      readonly code: 'UNSUPPORTED_OBJECT_FORMAT';
+      /** The peer's advertised value. */
+      readonly format: string;
+      /**
+       * This repository's own algorithm. Present only when the peer's value
+       * IS a recognised algorithm that simply differs from ours (a pairing
+       * mismatch); absent when the peer advertised a value outside the
+       * closed sha1/sha256 set (a hostile or malformed advertisement, which
+       * has no "local" side to compare against).
+       */
+      readonly local?: string;
+    }
+  | {
+      readonly code: 'PUSH_OBJECT_FORMAT_UNSUPPORTED';
+      readonly local: string;
+      readonly remote: string;
+    };
 
 export const invalidPktLength = (value: string): TsgitError =>
   new TsgitError({ code: 'INVALID_PKT_LENGTH', value });
@@ -99,5 +116,10 @@ export const v2CommandUnsupported = (command: string): TsgitError =>
 export const tooManySectionEntries = (section: string, count: number, limit: number): TsgitError =>
   new TsgitError({ code: 'TOO_MANY_SECTION_ENTRIES', section, count, limit });
 
-export const unsupportedObjectFormat = (format: string): TsgitError =>
-  new TsgitError({ code: 'UNSUPPORTED_OBJECT_FORMAT', format });
+export const unsupportedObjectFormat = (format: string, local?: string): TsgitError =>
+  local === undefined
+    ? new TsgitError({ code: 'UNSUPPORTED_OBJECT_FORMAT', format })
+    : new TsgitError({ code: 'UNSUPPORTED_OBJECT_FORMAT', format, local });
+
+export const pushObjectFormatUnsupported = (local: string, remote: string): TsgitError =>
+  new TsgitError({ code: 'PUSH_OBJECT_FORMAT_UNSUPPORTED', local, remote });

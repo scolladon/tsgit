@@ -16,6 +16,7 @@ export interface LsRefsRequestOptions {
   readonly symrefs?: boolean;
   readonly peel?: boolean;
   readonly refPrefixes?: ReadonlyArray<string>;
+  readonly objectFormat: 'sha1' | 'sha256';
 }
 
 const refPrefixLine = (prefix: string): Uint8Array => TEXT_ENCODER.encode(`ref-prefix ${prefix}\n`);
@@ -25,7 +26,7 @@ export const buildLsRefsRequest = (options: LsRefsRequestOptions): Uint8Array =>
   if (options.symrefs === true) payloads.push(TEXT_ENCODER.encode('symrefs\n'));
   if (options.peel === true) payloads.push(TEXT_ENCODER.encode('peel\n'));
   for (const prefix of options.refPrefixes ?? []) payloads.push(refPrefixLine(prefix));
-  return encodeCommandRequest('ls-refs', [], payloads);
+  return encodeCommandRequest('ls-refs', [], payloads, options.objectFormat);
 };
 
 const stripTrailingNewline = (value: string): string =>

@@ -26,17 +26,22 @@ import { add } from '../../src/application/commands/add.js';
 import { archive } from '../../src/application/commands/archive.js';
 import { catFile } from '../../src/application/commands/cat-file.js';
 import { checkout } from '../../src/application/commands/checkout.js';
+import { clone } from '../../src/application/commands/clone.js';
 import { commit } from '../../src/application/commands/commit.js';
+import { fetch as fetchCommand } from '../../src/application/commands/fetch.js';
 import { log } from '../../src/application/commands/log.js';
 import { packObjects } from '../../src/application/commands/pack-objects.js';
+import { push } from '../../src/application/commands/push.js';
 import { revParse } from '../../src/application/commands/rev-parse.js';
 import { tarArchive } from '../../src/domain/archive/tar.js';
 import { TsgitError } from '../../src/domain/error.js';
 import type { AuthorIdentity } from '../../src/domain/objects/index.js';
 import { openRepository } from '../../src/index.node.js';
 import type { Context } from '../../src/ports/context.js';
+import type { HttpTransport } from '../../src/ports/http-transport.js';
 import { fileSystemLayoutProbe } from '../../src/repository/file-system-layout-probe.js';
 import { readRepositoryFormat } from '../../src/repository/read-repository-format.js';
+import { findGitHttpBackend, startGitHttpBackend } from '../bench/support/http-backend-server.js';
 import {
   disableAutoMaintenance,
   GIT_AVAILABLE,
@@ -609,5 +614,334 @@ describe.skipIf(!GIT_AVAILABLE)('sha256 object format — .git/index interop', (
         }
       });
     });
+  });
+});
+
+// Stryker sets `STRYKER_MUTANT_ID` for every mutant run. The spawned
+// `git-http-backend` CGI does not work reliably across the sandbox boundary;
+// mutation kills for the negotiation logic live in the unit tests instead.
+const RUNNING_UNDER_STRYKER = process.cwd().includes('.stryker-tmp');
+const GIT_HTTP_BACKEND = findGitHttpBackend();
+const TRANSPORT_SKIP = RUNNING_UNDER_STRYKER || !GIT_AVAILABLE || GIT_HTTP_BACKEND === undefined;
+
+const TRANSPORT_AUTHOR: AuthorIdentity = {
+  name: 'Ada',
+  email: 'ada@example.com',
+  timestamp: 1_700_000_100,
+  timezoneOffset: '+0000',
+};
+
+interface TransportSource {
+  readonly parentDir: string;
+  readonly bareDir: string;
+  readonly bareName: string;
+  readonly headOid: string;
+}
+
+const gitInitArgs = (
+  algorithm: 'sha1' | 'sha256',
+  dir: string,
+  bare: boolean,
+): ReadonlyArray<string> => [
+  'init',
+  '-q',
+  '-b',
+  'main',
+  ...(bare ? ['--bare'] : []),
+  ...(algorithm === 'sha256' ? ['--object-format=sha256'] : []),
+  dir,
+];
+
+/**
+ * A real, bare git repository — served over HTTP by `startGitHttpBackend`
+ * (via its parent dir) — holding one commit at `refs/heads/main`, of the
+ * given hash algorithm. Seeding happens entirely on local disk (no HTTP
+ * round trip), so the sync `runGit` helper is safe here.
+ */
+const createBareTransportSource = async (
+  slug: string,
+  algorithm: 'sha1' | 'sha256',
+): Promise<TransportSource> => {
+  const env = runGitEnv();
+  const parentDir = await mkdtemp(path.join(os.tmpdir(), `tsgit-transport-src-${slug}-`));
+  const bareName = 'source.git';
+  const bareDir = path.join(parentDir, bareName);
+  runGit(gitInitArgs(algorithm, bareDir, true), { env });
+  // git-http-backend refuses receive-pack (a WRITE service) unless the repo
+  // opts in explicitly — GIT_HTTP_EXPORT_ALL only covers the read-only ones.
+  runGit(['-C', bareDir, 'config', 'http.receivepack', 'true'], { env });
+  const seedDir = await mkdtemp(path.join(os.tmpdir(), `tsgit-transport-seed-${slug}-`));
+  runGit(gitInitArgs(algorithm, seedDir, false), { env });
+  runGit(['-C', seedDir, 'config', 'user.name', TRANSPORT_AUTHOR.name], { env });
+  runGit(['-C', seedDir, 'config', 'user.email', TRANSPORT_AUTHOR.email], { env });
+  await writeFile(path.join(seedDir, 'f.txt'), `${slug}\n`);
+  runGit(['-C', seedDir, 'add', 'f.txt'], { env });
+  runGit(['-C', seedDir, '-c', 'commit.gpgsign=false', 'commit', '-q', '-m', slug], { env });
+  runGit(['-C', seedDir, 'remote', 'add', 'origin', bareDir], { env });
+  runGit(['-C', seedDir, 'push', '-q', 'origin', 'main'], { env });
+  const headOid = runGit(['-C', seedDir, 'rev-parse', 'HEAD'], { env }).trim();
+  await rm(seedDir, { recursive: true, force: true });
+  return { parentDir, bareDir, bareName, headOid };
+};
+
+interface TransportReceiver {
+  readonly parentDir: string;
+  readonly bareDir: string;
+  readonly bareName: string;
+}
+
+/**
+ * An EMPTY real, bare git receiver (no seeded commit) — used by the push
+ * tests, distinct from `createBareTransportSource`: a receiver already
+ * holding `refs/heads/main` would make the push a non-fast-forward against
+ * unrelated history rather than exercising the object-format guard.
+ */
+const createBareTransportReceiver = async (
+  slug: string,
+  algorithm: 'sha1' | 'sha256',
+): Promise<TransportReceiver> => {
+  const env = runGitEnv();
+  const parentDir = await mkdtemp(path.join(os.tmpdir(), `tsgit-transport-recv-${slug}-`));
+  const bareName = 'receiver.git';
+  const bareDir = path.join(parentDir, bareName);
+  runGit(gitInitArgs(algorithm, bareDir, true), { env });
+  runGit(['-C', bareDir, 'config', 'http.receivepack', 'true'], { env });
+  return { parentDir, bareDir, bareName };
+};
+
+/** A real (non-bare) local git repository of the given algorithm, no remote configured yet. */
+const initLocalTransportRepo = async (
+  slug: string,
+  algorithm: 'sha1' | 'sha256',
+): Promise<string> => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), `tsgit-transport-local-${slug}-`));
+  runGit(gitInitArgs(algorithm, dir, false), { env: runGitEnv() });
+  return dir;
+};
+
+const localTransportContext = (dir: string, algorithm: 'sha1' | 'sha256'): Context =>
+  algorithm === 'sha256'
+    ? createNodeContext({ workDir: dir, algorithm: 'sha256', allowInsecureHttp: true })
+    : createNodeContext({ workDir: dir, allowInsecureHttp: true });
+
+/** Wraps `inner` to record every POSTed request body — the raw wire bytes tsgit sent. */
+const recordingTransport = (
+  inner: HttpTransport,
+): { readonly transport: HttpTransport; readonly bodies: Uint8Array[] } => {
+  const bodies: Uint8Array[] = [];
+  return {
+    bodies,
+    transport: {
+      request: async (req) => {
+        if (req.method === 'POST' && req.body !== undefined) bodies.push(req.body);
+        return inner.request(req);
+      },
+    },
+  };
+};
+
+const anyRequestContains = (bodies: ReadonlyArray<Uint8Array>, needle: string): boolean => {
+  const decoder = new TextDecoder();
+  return bodies.some((body) => decoder.decode(body).includes(needle));
+};
+
+describe.skipIf(TRANSPORT_SKIP)('sha256 object format — transport negotiation and refusal', () => {
+  describe.each([
+    { legLabel: 'protocol v2', forwardGitProtocol: true },
+    { legLabel: 'the v1 fallback', forwardGitProtocol: false },
+  ])(
+    'Given a sha256 local repository cloning a sha256 bare peer, over $legLabel',
+    ({ forwardGitProtocol }) => {
+      it("Then it succeeds, and the client's own request carries object-format=sha256 (its real algorithm, matching the real peer's own)", async () => {
+        // Arrange — the peer is a REAL git repository, served by a REAL
+        // git-http-backend; the request bytes are captured off the real wire.
+        const source = await createBareTransportSource('clone-same-fmt', 'sha256');
+        const server = await startGitHttpBackend({
+          projectRoot: source.parentDir,
+          forwardGitProtocol,
+        });
+        const cloneDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-transport-clonedst-'));
+        try {
+          const url = `http://127.0.0.1:${server.port}/${source.bareName}`;
+          const baseCtx = createNodeContext({
+            workDir: cloneDir,
+            algorithm: 'sha256',
+            allowInsecureHttp: true,
+          });
+          const recorded = recordingTransport(baseCtx.transport);
+          const ctx = { ...baseCtx, transport: recorded.transport };
+
+          // Act
+          const result = await clone(ctx, { url });
+
+          // Assert — the clone reaches the real peer's head, and our own
+          // request echoed our own real algorithm.
+          expect(result.fetchedRefs.some((r) => r.id === source.headOid)).toBe(true);
+          expect(anyRequestContains(recorded.bodies, 'object-format=sha256')).toBe(true);
+        } finally {
+          await server.close();
+          await rm(source.parentDir, { recursive: true, force: true });
+          await rm(cloneDir, { recursive: true, force: true });
+        }
+      }, 60_000);
+    },
+  );
+
+  describe('Given a sha256 local repository with a new commit and an EMPTY sha256 bare receiver', () => {
+    it('Then tsgit push succeeds over its v1-only wire and the receiver observes the new commit', async () => {
+      // Arrange
+      const receiver = await createBareTransportReceiver('push-same-fmt', 'sha256');
+      const server = await startGitHttpBackend({ projectRoot: receiver.parentDir });
+      const localDir = await initLocalTransportRepo('push-same-fmt', 'sha256');
+      try {
+        const url = `http://127.0.0.1:${server.port}/${receiver.bareName}`;
+        // remote add BEFORE any command reads config — readConfig is cached
+        // per-Context, so a later write would be invisible to `push`.
+        runGit(['-C', localDir, 'remote', 'add', 'origin', url], { env: runGitEnv() });
+        const ctx = localTransportContext(localDir, 'sha256');
+        await writeFile(path.join(localDir, 'g.txt'), 'push\n');
+        await add(ctx, ['g.txt']);
+        await commit(ctx, { message: 'push commit', author: TRANSPORT_AUTHOR });
+
+        // Act
+        const result = await push(ctx, { remote: 'origin', refspecs: ['refs/heads/main'] });
+
+        // Assert
+        expect(result.pushedRefs[0]?.status).toBe('ok');
+        const receiverHead = runGit(['-C', receiver.bareDir, 'rev-parse', 'refs/heads/main'], {
+          env: runGitEnv(),
+        }).trim();
+        expect(receiverHead).toBe(result.pushedRefs[0]?.newId);
+      } finally {
+        await server.close();
+        await rm(receiver.parentDir, { recursive: true, force: true });
+        await rm(localDir, { recursive: true, force: true });
+      }
+    }, 60_000);
+  });
+
+  describe.each([
+    { legLabel: 'protocol v2', forwardGitProtocol: true },
+    { legLabel: 'the v1 fallback', forwardGitProtocol: false },
+  ])(
+    'Given a sha1 local repository fetching from a sha256 bare peer, over $legLabel',
+    ({ forwardGitProtocol }) => {
+      it("Then it refuses with UNSUPPORTED_OBJECT_FORMAT, format 'sha256' local 'sha1'", async () => {
+        // Arrange
+        const source = await createBareTransportSource('fetch-sha1-from-sha256', 'sha256');
+        const server = await startGitHttpBackend({
+          projectRoot: source.parentDir,
+          forwardGitProtocol,
+        });
+        const localDir = await initLocalTransportRepo('fetch-sha1-from-sha256', 'sha1');
+        try {
+          const url = `http://127.0.0.1:${server.port}/${source.bareName}`;
+          runGit(['-C', localDir, 'remote', 'add', 'origin', url], { env: runGitEnv() });
+          const ctx = localTransportContext(localDir, 'sha1');
+
+          // Act
+          let caught: unknown;
+          try {
+            await fetchCommand(ctx, { remote: 'origin' });
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data).toEqual({
+            code: 'UNSUPPORTED_OBJECT_FORMAT',
+            format: 'sha256',
+            local: 'sha1',
+          });
+        } finally {
+          await server.close();
+          await rm(source.parentDir, { recursive: true, force: true });
+          await rm(localDir, { recursive: true, force: true });
+        }
+      }, 60_000);
+    },
+  );
+
+  describe.each([
+    { legLabel: 'protocol v2', forwardGitProtocol: true },
+    { legLabel: 'the v1 fallback', forwardGitProtocol: false },
+  ])(
+    'Given a sha256 local repository fetching from a sha1 bare peer, over $legLabel',
+    ({ forwardGitProtocol }) => {
+      it("Then it refuses with UNSUPPORTED_OBJECT_FORMAT, format 'sha1' local 'sha256'", async () => {
+        // Arrange — the mirrored direction: local and peer swapped.
+        const source = await createBareTransportSource('fetch-sha256-from-sha1', 'sha1');
+        const server = await startGitHttpBackend({
+          projectRoot: source.parentDir,
+          forwardGitProtocol,
+        });
+        const localDir = await initLocalTransportRepo('fetch-sha256-from-sha1', 'sha256');
+        try {
+          const url = `http://127.0.0.1:${server.port}/${source.bareName}`;
+          runGit(['-C', localDir, 'remote', 'add', 'origin', url], { env: runGitEnv() });
+          const ctx = localTransportContext(localDir, 'sha256');
+
+          // Act
+          let caught: unknown;
+          try {
+            await fetchCommand(ctx, { remote: 'origin' });
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data).toEqual({
+            code: 'UNSUPPORTED_OBJECT_FORMAT',
+            format: 'sha1',
+            local: 'sha256',
+          });
+        } finally {
+          await server.close();
+          await rm(source.parentDir, { recursive: true, force: true });
+          await rm(localDir, { recursive: true, force: true });
+        }
+      }, 60_000);
+    },
+  );
+
+  describe('Given a sha256 local repository with a new commit and an EMPTY sha1 bare receiver', () => {
+    it("Then tsgit push refuses with PUSH_OBJECT_FORMAT_UNSUPPORTED, local 'sha256' remote 'sha1' — the v1-only wire is the only leg push has, proving the refusal is reachable at all", async () => {
+      // Arrange
+      const receiver = await createBareTransportReceiver('push-mismatch', 'sha1');
+      const server = await startGitHttpBackend({ projectRoot: receiver.parentDir });
+      const localDir = await initLocalTransportRepo('push-mismatch', 'sha256');
+      try {
+        const url = `http://127.0.0.1:${server.port}/${receiver.bareName}`;
+        // remote add BEFORE any command reads config — readConfig is cached
+        // per-Context, so a later write would be invisible to `push`.
+        runGit(['-C', localDir, 'remote', 'add', 'origin', url], { env: runGitEnv() });
+        const ctx = localTransportContext(localDir, 'sha256');
+        await writeFile(path.join(localDir, 'g.txt'), 'push\n');
+        await add(ctx, ['g.txt']);
+        await commit(ctx, { message: 'push commit', author: TRANSPORT_AUTHOR });
+
+        // Act
+        let caught: unknown;
+        try {
+          await push(ctx, { remote: 'origin', refspecs: ['refs/heads/main'] });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data).toEqual({
+          code: 'PUSH_OBJECT_FORMAT_UNSUPPORTED',
+          local: 'sha256',
+          remote: 'sha1',
+        });
+      } finally {
+        await server.close();
+        await rm(receiver.parentDir, { recursive: true, force: true });
+        await rm(localDir, { recursive: true, force: true });
+      }
+    }, 60_000);
   });
 });

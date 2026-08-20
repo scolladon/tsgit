@@ -188,6 +188,41 @@ const buildCloneRemoteV2 = (
 };
 
 describe('clone', () => {
+  describe('Given a sha1 local repository cloning from a v1 peer advertising object-format=sha256', () => {
+    describe('When clone', () => {
+      it("Then it refuses with UNSUPPORTED_OBJECT_FORMAT, format 'sha256' local 'sha1'", async () => {
+        // Arrange — clone REFUSES a cross-format peer in this part; adoption
+        // (matching git's clone, which has no --object-format flag) is
+        // deliberately deferred to a later part.
+        const ctx = createMemoryContext();
+        const { packBytes, blobId } = await buildPackFromSingleBlob(ctx, 'cloned blob\n');
+        const transport = buildCloneRemote({
+          capabilities: ['side-band-64k', 'ofs-delta', 'object-format=sha256'],
+          refs: [{ name: 'refs/heads/main', id: blobId }],
+          head: 'refs/heads/main',
+          packBytes,
+        });
+        const networkCtx = withTransport(ctx, transport);
+
+        // Act
+        let caught: unknown;
+        try {
+          await clone(networkCtx, { url: REMOTE_URL });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data).toEqual({
+          code: 'UNSUPPORTED_OBJECT_FORMAT',
+          format: 'sha256',
+          local: 'sha1',
+        });
+      });
+    });
+  });
+
   describe('Given depth: 1 and a server emitting a shallow block', () => {
     describe('When clone', () => {
       it('Then writes.git/shallow with the boundary oid', async () => {

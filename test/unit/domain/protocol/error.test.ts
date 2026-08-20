@@ -16,6 +16,7 @@ import {
   pktLengthReserved,
   pktTooLarge,
   pktTruncated,
+  pushObjectFormatUnsupported,
   sidebandFatal,
   tooManyAdvertisedRefs,
   tooManySectionEntries,
@@ -272,12 +273,44 @@ describe('domain protocol error', () => {
 
     describe("Given unsupportedObjectFormat('sha256')", () => {
       describe('When checking data', () => {
-        it('Then code and format are preserved', () => {
+        it('Then code and format are preserved, with no local field', () => {
           // Arrange & Act
           const result = unsupportedObjectFormat('sha256');
 
           // Assert
           expect(result.data).toEqual({ code: 'UNSUPPORTED_OBJECT_FORMAT', format: 'sha256' });
+        });
+      });
+    });
+
+    describe("Given unsupportedObjectFormat('sha256', 'sha1')", () => {
+      describe('When checking data', () => {
+        it('Then code, format (the peer), and local are preserved', () => {
+          // Arrange & Act
+          const result = unsupportedObjectFormat('sha256', 'sha1');
+
+          // Assert
+          expect(result.data).toEqual({
+            code: 'UNSUPPORTED_OBJECT_FORMAT',
+            format: 'sha256',
+            local: 'sha1',
+          });
+        });
+      });
+    });
+
+    describe("Given pushObjectFormatUnsupported('sha256', 'sha1')", () => {
+      describe('When checking data', () => {
+        it('Then code, local, and remote are preserved', () => {
+          // Arrange & Act
+          const result = pushObjectFormatUnsupported('sha256', 'sha1');
+
+          // Assert
+          expect(result.data).toEqual({
+            code: 'PUSH_OBJECT_FORMAT_UNSUPPORTED',
+            local: 'sha256',
+            remote: 'sha1',
+          });
         });
       });
     });
@@ -372,6 +405,14 @@ describe('domain protocol error', () => {
       [
         { code: 'UNSUPPORTED_OBJECT_FORMAT', format: 'sha256' },
         'UNSUPPORTED_OBJECT_FORMAT: unsupported object format: sha256',
+      ],
+      [
+        { code: 'UNSUPPORTED_OBJECT_FORMAT', format: 'sha256', local: 'sha1' },
+        'UNSUPPORTED_OBJECT_FORMAT: mismatched algorithms: client sha1; server sha256',
+      ],
+      [
+        { code: 'PUSH_OBJECT_FORMAT_UNSUPPORTED', local: 'sha256', remote: 'sha1' },
+        "PUSH_OBJECT_FORMAT_UNSUPPORTED: the receiving end does not support this repository's hash algorithm: local sha256, remote sha1",
       ],
     ];
 

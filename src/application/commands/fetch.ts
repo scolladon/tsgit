@@ -44,6 +44,7 @@ import { walkCommits } from '../primitives/walk-commits.js';
 import { assertValidRemoteName, defaultRemoteName } from './internal/default-remote.js';
 import { negotiateDiscovery, negotiatePackBytes } from './internal/fetch-negotiation.js';
 import { type GitServiceSession, openGitSession } from './internal/git-service-session.js';
+import { assertPeerAlgorithm } from './internal/object-format-guard.js';
 import {
   assertOperationalRepository,
   branchRefFromHead,
@@ -128,7 +129,8 @@ const negotiateAndApply = async (
   filter: string | undefined,
   session: GitServiceSession,
 ): Promise<FetchResult> => {
-  const discovery = await negotiateDiscovery(session);
+  const discovery = await negotiateDiscovery(session, ctx);
+  assertPeerAlgorithm(ctx.hashConfig.algorithm, discovery.objectFormat, 'fetch');
   const advertisement = discovery.advertisement;
   if (advertisement.refs.length === 0) throw remoteAdvertisesNoRefs();
   // A partial repo's fetch must re-apply its filter; the server must still
@@ -137,7 +139,10 @@ const negotiateAndApply = async (
     throw remoteFilterUnsupported();
   }
 
-  const capabilities = selectFetchCapabilities(advertisement.capabilities);
+  const capabilities = selectFetchCapabilities(
+    advertisement.capabilities,
+    ctx.hashConfig.algorithm,
+  );
   const wants = uniqueRefOids(advertisement.refs);
 
   // A partial repo's wanted objects may be legitimately promised-absent (the

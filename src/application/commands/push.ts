@@ -37,6 +37,7 @@ import {
   parseSideBand,
   type RefStatus,
   type RefUpdate,
+  readObjectFormat,
 } from '../../domain/protocol/index.js';
 import { PUSH_UPDATE } from '../../domain/reflog/reflog-messages.js';
 import { HEADS_PREFIX } from '../../domain/refs/ref-prefixes.js';
@@ -60,6 +61,7 @@ import { walkCommits } from '../primitives/walk-commits.js';
 import { resolveCurrentIdentity } from './internal/current-identity.js';
 import { assertValidRemoteName, resolvePushRemote } from './internal/default-remote.js';
 import { type GitServiceSession, openGitSession } from './internal/git-service-session.js';
+import { assertPeerAlgorithm } from './internal/object-format-guard.js';
 import {
   finalizePushRefspecs,
   type PushRefspecPlan,
@@ -337,6 +339,7 @@ const sendUpdates = async (
   opts: PushOptions,
   url: string,
 ): Promise<ReadonlyArray<PushedRef>> => {
+  assertPeerAlgorithm(ctx.hashConfig.algorithm, readObjectFormat(adv.capabilities), 'push');
   const mode = await resolveSignedPushMode(ctx, opts);
   const nonce = parsePushCertNonce(adv.capabilities);
   const intent = resolveSigningIntent(mode, nonce, remoteName);
@@ -348,7 +351,11 @@ const sendUpdates = async (
   const haves = adv.refs.map((r) => r.id);
   const oids = await collectObjects(ctx, wants, haves);
   const pack = await buildPack(ctx, { oids });
-  const capabilities = selectPushCapabilities(adv.capabilities, intent.signing);
+  const capabilities = selectPushCapabilities(
+    adv.capabilities,
+    ctx.hashConfig.algorithm,
+    intent.signing,
+  );
   const requestBody = intent.signing
     ? await buildSignedRequestBody(ctx, capabilities, movers, pack.bytes, url, intent.nonce)
     : buildReceivePackRequest({

@@ -3,6 +3,7 @@ import type { PktLine } from '../pkt-line.js';
 
 const VERSION_LINE = 'version 2';
 const DEFAULT_OBJECT_FORMAT = 'sha1';
+const SUPPORTED_OBJECT_FORMATS: ReadonlySet<string> = new Set(['sha1', 'sha256']);
 const KNOWN_COMMANDS = new Set(['ls-refs', 'fetch']);
 
 export type V2Capabilities = {
@@ -64,7 +65,10 @@ const applyCapabilityLine = (state: CapabilityState, line: string): void => {
   }
   if (name === 'object-format') {
     state.objectFormat = value ?? '';
-    if (state.objectFormat !== DEFAULT_OBJECT_FORMAT)
+    // An unrecognised advertised value is a hard refusal, never a silent
+    // fallback to sha1 — a fallback would let a hostile server downgrade
+    // the client's verification to an algorithm it never actually uses.
+    if (!SUPPORTED_OBJECT_FORMATS.has(state.objectFormat))
       throw unsupportedObjectFormat(state.objectFormat);
     return;
   }

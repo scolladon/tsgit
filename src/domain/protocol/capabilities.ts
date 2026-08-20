@@ -44,6 +44,20 @@ export const parseCapabilities = (tail: string): ReadonlyArray<string> => {
   return dedupeByKey(tokens);
 };
 
+const OBJECT_FORMAT_PREFIX = 'object-format=';
+const DEFAULT_OBJECT_FORMAT = 'sha1';
+
+/**
+ * v1 has no dedicated capability parser — `object-format=<algo>` survives on
+ * the raw token array (`Advertisement.capabilities`) like every other v1
+ * capability. An absent token means sha1 by protocol spec (the class-B
+ * default), mirroring v2's `DEFAULT_OBJECT_FORMAT`.
+ */
+export const readObjectFormat = (caps: ReadonlyArray<string>): string => {
+  const token = caps.find((c) => c.startsWith(OBJECT_FORMAT_PREFIX));
+  return token === undefined ? DEFAULT_OBJECT_FORMAT : token.slice(OBJECT_FORMAT_PREFIX.length);
+};
+
 export const formatCapabilities = (caps: ReadonlyArray<string>): string => caps.join(' ');
 
 export const negotiateCapabilities = (

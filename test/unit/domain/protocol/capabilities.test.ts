@@ -8,6 +8,7 @@ import {
   negotiateCapabilities,
   PUSH_CERT,
   parseCapabilities,
+  readObjectFormat,
 } from '../../../../src/domain/protocol/capabilities.js';
 
 describe('parseCapabilities', () => {
@@ -149,6 +150,38 @@ describe('negotiateCapabilities', () => {
 
         // Assert
         expect(result).toEqual(expected);
+      });
+    });
+  });
+});
+
+describe('readObjectFormat', () => {
+  describe('Given a token list containing object-format=sha256', () => {
+    describe('When readObjectFormat runs', () => {
+      it('Then it returns sha256', () => {
+        // Arrange
+        const caps = ['report-status', 'object-format=sha256', 'ofs-delta'];
+
+        // Act
+        const result = readObjectFormat(caps);
+
+        // Assert
+        expect(result).toBe('sha256');
+      });
+    });
+  });
+
+  describe('Given a token list with no object-format token', () => {
+    describe('When readObjectFormat runs', () => {
+      it('Then it returns sha1', () => {
+        // Arrange
+        const caps = ['report-status', 'ofs-delta'];
+
+        // Act
+        const result = readObjectFormat(caps);
+
+        // Assert
+        expect(result).toBe('sha1');
       });
     });
   });

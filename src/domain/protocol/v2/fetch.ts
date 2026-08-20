@@ -49,6 +49,7 @@ export interface V2FetchRequestOptions {
   readonly haves: ReadonlyArray<ObjectId>;
   readonly args?: ReadonlyArray<string>;
   readonly done?: boolean;
+  readonly objectFormat: 'sha1' | 'sha256';
 }
 
 export interface WantedRef {
@@ -73,7 +74,7 @@ const DONE_LINE = TEXT_ENCODER.encode('done\n');
 export const buildV2FetchRequest = (options: V2FetchRequestOptions): Uint8Array => {
   const payloads: Uint8Array[] = [...options.wants.map(wantLine), ...options.haves.map(haveLine)];
   if (options.done === true) payloads.push(DONE_LINE);
-  return encodeCommandRequest('fetch', options.args ?? [], payloads);
+  return encodeCommandRequest('fetch', options.args ?? [], payloads, options.objectFormat);
 };
 
 interface AcknowledgmentsResult {

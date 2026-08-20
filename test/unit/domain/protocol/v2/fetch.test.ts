@@ -65,6 +65,7 @@ describe('buildV2FetchRequest', () => {
           haves: [OID3],
           args: ['ofs-delta', 'include-tag'],
           done: true,
+          objectFormat: 'sha1',
         });
         const lines = await decodeAll(bytes);
 
@@ -92,7 +93,7 @@ describe('buildV2FetchRequest', () => {
     describe('When buildV2FetchRequest builds the request', () => {
       it('Then it emits only the command header, delim, want lines, and flush', async () => {
         // Arrange & Act
-        const bytes = buildV2FetchRequest({ wants: [OID1], haves: [] });
+        const bytes = buildV2FetchRequest({ wants: [OID1], haves: [], objectFormat: 'sha1' });
         const lines = await decodeAll(bytes);
 
         // Assert

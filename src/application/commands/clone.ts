@@ -18,6 +18,7 @@ import { updateConfigEntries } from '../primitives/update-config.js';
 import { bootstrapRepository } from './internal/bootstrap.js';
 import { negotiateDiscovery, negotiatePackBytes } from './internal/fetch-negotiation.js';
 import { type GitServiceSession, openGitSession } from './internal/git-service-session.js';
+import { assertPeerAlgorithm } from './internal/object-format-guard.js';
 import { anonymizeRemoteUrl } from './internal/remote-url.js';
 import {
   advertisesFilter,
@@ -130,7 +131,12 @@ const negotiateAndWritePack = async (
   filterSpec: string | undefined,
   session: GitServiceSession,
 ): Promise<CloneResult> => {
-  const discovery = await negotiateDiscovery(session);
+  const discovery = await negotiateDiscovery(session, ctx);
+  // Clone REFUSES a cross-format peer here; git has no `clone --object-format`
+  // to negotiate one — it ADOPTS the source's algorithm instead, which is a
+  // deliberately deferred, separate change (this call site is the one that
+  // will switch from refusing to adopting).
+  assertPeerAlgorithm(ctx.hashConfig.algorithm, discovery.objectFormat, 'fetch');
   const advertisement = discovery.advertisement;
   if (advertisement.refs.length === 0) throw remoteAdvertisesNoRefs();
   // A filtered clone needs the server to advertise the `filter` capability;
@@ -138,7 +144,10 @@ const negotiateAndWritePack = async (
   if (filterSpec !== undefined && !advertisesFilter(advertisement.capabilities)) {
     throw remoteFilterUnsupported();
   }
-  const capabilities = selectFetchCapabilities(advertisement.capabilities);
+  const capabilities = selectFetchCapabilities(
+    advertisement.capabilities,
+    ctx.hashConfig.algorithm,
+  );
   const wants = uniqueRefOids(advertisement.refs);
   const packResult = await fetchPack(
     ctx,

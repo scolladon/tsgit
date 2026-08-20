@@ -99,8 +99,11 @@ const fetchMissingInternal = async (
 
   const session = openGitSession(ctx, url, 'git-upload-pack');
   try {
-    const discovery = await negotiateDiscovery(session);
-    const capabilities = selectFetchCapabilities(discovery.advertisement.capabilities);
+    const discovery = await negotiateDiscovery(session, ctx);
+    const capabilities = selectFetchCapabilities(
+      discovery.advertisement.capabilities,
+      ctx.hashConfig.algorithm,
+    );
     try {
       // No `filter`: a lazy-fetch requests exact oids.
       await fetchPack(ctx, (c, req) => negotiatePackBytes(c, session, discovery.version, req), {

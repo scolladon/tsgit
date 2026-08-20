@@ -80,7 +80,9 @@ async function collect(source: AsyncIterable<PktLine>): Promise<PktLine[]> {
 const decodeAll = (bytes: Uint8Array): Promise<PktLine[]> =>
   collect(decodePktStream(asyncBytes([bytes]), { v2: true }));
 
-describe('Given an arbitrary command name, arg list, and payload set', () => {
+const objectFormatArb = (): fc.Arbitrary<'sha1' | 'sha256'> => fc.constantFrom('sha1', 'sha256');
+
+describe('Given an arbitrary command name, arg list, payload set, and object format', () => {
   describe('When encodeCommandRequest is built and decoded', () => {
     it('Then the decoded frames reproduce command-header ∘ delim ∘ args ∘ flush', async () => {
       // Arrange & Act & Assert
@@ -89,8 +91,9 @@ describe('Given an arbitrary command name, arg list, and payload set', () => {
           commandArb(),
           argsArb(),
           payloadsArb(),
-          async (command, args, payloads) => {
-            const bytes = encodeCommandRequest(command, args, payloads);
+          objectFormatArb(),
+          async (command, args, payloads, objectFormat) => {
+            const bytes = encodeCommandRequest(command, args, payloads, objectFormat);
             const lines = await decodeAll(bytes);
 
             expect(lines[0]).toEqual({
@@ -100,7 +103,7 @@ describe('Given an arbitrary command name, arg list, and payload set', () => {
             expect(lines[1]).toEqual({ kind: 'data', payload: ENCODER.encode(`${AGENT}\n`) });
             expect(lines[2]).toEqual({
               kind: 'data',
-              payload: ENCODER.encode('object-format=sha1\n'),
+              payload: ENCODER.encode(`object-format=${objectFormat}\n`),
             });
             expect(lines[3]).toEqual({ kind: 'delim' });
 

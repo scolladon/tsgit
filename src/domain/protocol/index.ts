@@ -6,6 +6,7 @@ export {
   negotiateCapabilities,
   PUSH_CERT,
   parseCapabilities,
+  readObjectFormat,
 } from './capabilities.js';
 export type { ProtocolError } from './error.js';
 export {
@@ -23,6 +24,7 @@ export {
   pktLengthReserved,
   pktTooLarge,
   pktTruncated,
+  pushObjectFormatUnsupported,
   remoteFilterUnsupported,
   sidebandFatal,
   unexpectedV2Section,

@@ -26,6 +26,7 @@ import {
   parseUploadPackResponse,
   parseV2Capabilities,
   parseV2FetchResponse,
+  readObjectFormat,
   supportsV2Fetch,
   v2CommandUnsupported,
 } from '../../../domain/protocol/index.js';
@@ -44,6 +45,8 @@ export type FetchWireVersion = 1 | 2;
 export interface DiscoveryResult {
   readonly version: FetchWireVersion;
   readonly advertisement: Advertisement;
+  /** The peer's declared hash algorithm, read from whichever leg answered (v1 capability token or v2 capability line). */
+  readonly objectFormat: string;
 }
 
 const VERSION_2_LINE = 'version 2';
@@ -115,7 +118,10 @@ const withV2FilterCapability = (
     ? { ...advertisement, capabilities: [...advertisement.capabilities, 'filter'] }
     : advertisement;
 
-export const negotiateDiscovery = async (session: GitServiceSession): Promise<DiscoveryResult> => {
+export const negotiateDiscovery = async (
+  session: GitServiceSession,
+  ctx: Context,
+): Promise<DiscoveryResult> => {
   const pktStream = await session.advertisement();
   const iter = pktStream[Symbol.asyncIterator]();
   const peeked = await iter.next();
@@ -124,7 +130,11 @@ export const negotiateDiscovery = async (session: GitServiceSession): Promise<Di
     const advertisement = await parseAdvertisedRefs(withPushback(iter, first), 'git-upload-pack', {
       servicePrologue: false,
     });
-    return { version: 1, advertisement };
+    return {
+      version: 1,
+      advertisement,
+      objectFormat: readObjectFormat(advertisement.capabilities),
+    };
   }
 
   const capabilities = await parseV2Capabilities(withPushback(iter, first));
@@ -132,10 +142,12 @@ export const negotiateDiscovery = async (session: GitServiceSession): Promise<Di
   // `peel` and `ref-prefix` are omitted deliberately: tsgit always wants the
   // full advertised ref set, so filtering/peeling server-side buys nothing —
   // the resulting on-disk state is identical to requesting them.
-  const responsePkts = await session.exchange(buildLsRefsRequest({ symrefs: true }));
+  const responsePkts = await session.exchange(
+    buildLsRefsRequest({ symrefs: true, objectFormat: ctx.hashConfig.algorithm }),
+  );
   const lsRefsAdvertisement = await parseLsRefsResponse(responsePkts);
   const advertisement = withV2FilterCapability(lsRefsAdvertisement, capabilities.fetchFeatures);
-  return { version: 2, advertisement };
+  return { version: 2, advertisement, objectFormat: capabilities.objectFormat };
 };
 
 /** Pack-byte negotiation only ever calls `session.exchange` — narrowing to this one member keeps test stubs a one-liner and the dependency honest (ISP). */
@@ -161,6 +173,7 @@ const negotiateV2PackBytes = async (
     haves: input.haves,
     args: v2Args(input),
     done: true,
+    objectFormat: ctx.hashConfig.algorithm,
   });
   const pktSource = await session.exchange(requestBody);
   const parsed = await parseV2FetchResponse(pktSource, {

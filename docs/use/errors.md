@@ -165,6 +165,7 @@ Codes are grouped by domain. Within each group, alphabetical.
 | `PKT_LENGTH_RESERVED` | `value` | pkt-line length in the reserved range. |
 | `PKT_TOO_LARGE` | `bytes, limit` | pkt-line payload exceeds the cap. |
 | `PKT_TRUNCATED` | — | Stream ended mid pkt-line. |
+| `PUSH_OBJECT_FORMAT_UNSUPPORTED` | `local, remote` | `push` discovered the receiving end's hash algorithm (v1 — push has no v2 wire form) differs from this repository's own. |
 | `PUSH_REJECTED` | `name, reason` | Server returned `ng` for at least one ref. |
 | `REFSPEC_INVALID` | `value, reason` | Refspec syntactically invalid. |
 | `REMOTE_ADVERTISES_NO_REFS` | — | Server returned an empty ref list. |
@@ -177,7 +178,7 @@ Codes are grouped by domain. Within each group, alphabetical.
 | `TOO_MANY_SECTION_ENTRIES` | `section, count, limit` | A v2 `fetch` response section (`acknowledgments`, `shallow-info`, `wanted-refs`) produced more lines than the safety cap. |
 | `UNEXPECTED_V2_SECTION` | `section` | A v2 `fetch` response section header names something other than `acknowledgments`, `shallow-info`, `wanted-refs`, or `packfile`. |
 | `UNKNOWN_ACK_STATUS` | `status` | want/have negotiation returned an unrecognised ack. |
-| `UNSUPPORTED_OBJECT_FORMAT` | `format` | v2 capability advertisement's `object-format` is not `sha1` — tsgit only supports sha1 repositories. |
+| `UNSUPPORTED_OBJECT_FORMAT` | `format, local?` | `fetch`/`clone` discovered a peer whose declared hash algorithm (v1 advertisement token or v2 capability line) differs from this repository's own (`local` set), or the peer advertised a value outside the closed `sha1`/`sha256` set (`local` absent). |
 | `UNSUPPORTED_SCHEME` | `scheme` | URL scheme not in the allowed list. |
 | `V2_COMMAND_UNSUPPORTED` | `command` | The server's v2 capability advertisement doesn't support a command tsgit needs — e.g. its first line isn't exactly `version 2`, or it doesn't list the `fetch` command. |
 

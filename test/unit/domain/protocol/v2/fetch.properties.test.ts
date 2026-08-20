@@ -89,7 +89,7 @@ describe('Given arbitrary wants, haves, args, and done', () => {
           argsArb(),
           doneArb(),
           async (wants, haves, args, done) => {
-            const bytes = buildV2FetchRequest({ wants, haves, args, done });
+            const bytes = buildV2FetchRequest({ wants, haves, args, done, objectFormat: 'sha1' });
             const lines = await decodeAll(bytes);
 
             expect(lines[0]).toEqual({ kind: 'data', payload: bytesOf('command=fetch\n') });

@@ -431,7 +431,11 @@ function extractDetail(data: TsgitErrorData): string {
     case 'TOO_MANY_SECTION_ENTRIES':
       return `v2 section "${data.section}" entries (${data.count}) exceed limit ${data.limit}`;
     case 'UNSUPPORTED_OBJECT_FORMAT':
-      return `unsupported object format: ${data.format}`;
+      return data.local === undefined
+        ? `unsupported object format: ${data.format}`
+        : `mismatched algorithms: client ${data.local}; server ${data.format}`;
+    case 'PUSH_OBJECT_FORMAT_UNSUPPORTED':
+      return `the receiving end does not support this repository's hash algorithm: local ${data.local}, remote ${data.remote}`;
     case 'SNAPSHOT_REQUIRED':
       return `snapshot required: ${data.reason}`;
     case 'WORKDIR_RACE':

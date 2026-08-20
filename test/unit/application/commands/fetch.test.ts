@@ -351,6 +351,74 @@ describe('fetch', () => {
         });
       });
     });
+
+    describe('Given a sha1 local repository and a v1 peer advertising object-format=sha256', () => {
+      describe('When fetch negotiates', () => {
+        it("Then throws UNSUPPORTED_OBJECT_FORMAT with format 'sha256' and local 'sha1'", async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx, {});
+          await writeOriginConfig(ctx);
+          const { packBytes, blobId } = await buildOneBlobPack(ctx, 'noop\n');
+          const { transport } = fakeRemote({
+            url: 'https://example.com/r.git',
+            advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+            advertisedCaps: ['side-band-64k', 'ofs-delta', 'object-format=sha256'],
+            packBytes,
+          });
+
+          // Act
+          let caught: unknown;
+          try {
+            await fetch({ ...ctx, transport }, { remote: 'origin' });
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data).toEqual({
+            code: 'UNSUPPORTED_OBJECT_FORMAT',
+            format: 'sha256',
+            local: 'sha1',
+          });
+        });
+      });
+    });
+
+    describe('Given a sha256 local repository and a v1 peer advertising object-format=sha1', () => {
+      describe('When fetch negotiates', () => {
+        it("Then throws UNSUPPORTED_OBJECT_FORMAT with format 'sha1' and local 'sha256'", async () => {
+          // Arrange — the mirrored direction: local and peer swapped.
+          const ctx = createMemoryContext({ algorithm: 'sha256' });
+          await seedRepo(ctx, {});
+          await writeOriginConfig(ctx);
+          const { packBytes, blobId } = await buildOneBlobPack(ctx, 'noop\n');
+          const { transport } = fakeRemote({
+            url: 'https://example.com/r.git',
+            advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+            advertisedCaps: ['side-band-64k', 'ofs-delta', 'object-format=sha1'],
+            packBytes,
+          });
+
+          // Act
+          let caught: unknown;
+          try {
+            await fetch({ ...ctx, transport }, { remote: 'origin' });
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data).toEqual({
+            code: 'UNSUPPORTED_OBJECT_FORMAT',
+            format: 'sha1',
+            local: 'sha256',
+          });
+        });
+      });
+    });
   });
 
   describe('happy path', () => {

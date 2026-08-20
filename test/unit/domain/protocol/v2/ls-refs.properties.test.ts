@@ -127,7 +127,7 @@ describe('Given arbitrary ls-refs request options', () => {
           fc.boolean(),
           fc.array(fc.stringMatching(/^[a-zA-Z0-9/_-]{1,12}$/), { minLength: 0, maxLength: 4 }),
           async (symrefs, peel, refPrefixes) => {
-            const bytes = buildLsRefsRequest({ symrefs, peel, refPrefixes });
+            const bytes = buildLsRefsRequest({ symrefs, peel, refPrefixes, objectFormat: 'sha1' });
             const lines = await decodeAll(bytes);
 
             const expectedBody: string[] = [];

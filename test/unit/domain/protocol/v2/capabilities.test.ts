@@ -55,6 +55,21 @@ describe('parseV2Capabilities', () => {
     });
   });
 
+  describe('Given a version-2 advertisement declaring object-format=sha256', () => {
+    describe('When parseV2Capabilities runs', () => {
+      it('Then objectFormat is sha256 and it does not throw', async () => {
+        // Arrange
+        const advertisement = ['version 2\n', 'ls-refs\n', 'fetch\n', 'object-format=sha256\n'];
+
+        // Act
+        const caps = await parseV2Capabilities(streamOf(advertisement));
+
+        // Assert
+        expect(caps.objectFormat).toBe('sha256');
+      });
+    });
+  });
+
   describe('Given a version-2 advertisement missing the fetch command', () => {
     describe('When supportsV2Fetch is checked', () => {
       it('Then it returns false', async () => {
@@ -175,8 +190,8 @@ describe('parseV2Capabilities', () => {
           label: 'it throws V2_COMMAND_UNSUPPORTED for an empty stream',
         },
         {
-          advertisement: ['version 2\n', 'ls-refs\n', 'fetch\n', 'object-format=sha256\n'],
-          data: { code: 'UNSUPPORTED_OBJECT_FORMAT', format: 'sha256' },
+          advertisement: ['version 2\n', 'ls-refs\n', 'fetch\n', 'object-format=sha512\n'],
+          data: { code: 'UNSUPPORTED_OBJECT_FORMAT', format: 'sha512' },
           label: 'it throws UNSUPPORTED_OBJECT_FORMAT carrying the offending format',
         },
         {
