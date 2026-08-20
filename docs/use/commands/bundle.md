@@ -146,6 +146,17 @@ do not.
 - **`verify` is a read-only query.** It does not import objects into the
   repository. Use `missingPrerequisites` to decide whether the bundle can be
   applied.
+- **`verify` on a repository the acceptance tier rejects.** `verify` resolves
+  the bundle's prerequisites against the repository's object store, so a
+  repository ownership or the format gate rejected is not usable for that —
+  but git does not raise its ownership or format fatal here (measured on
+  2.55.0 with the owner check forced to fail): it demotes the repository to
+  *absent*, printing the same `need a repository to verify a bundle` it
+  prints outside any repository at all, while `status` on the same fixture
+  raises the dubious-ownership fatal. tsgit matches: `verify` raises
+  `NOT_A_REPOSITORY`, never `DUBIOUS_OWNERSHIP` / `IMPLICIT_BARE_REPOSITORY` /
+  a format code. `listHeads` is unaffected either way — it never touches the
+  repository.
 - **Ref deduplication in `create`.** When multiple inputs resolve to the same
   ref name (e.g. a named `{ tip }` and `--branches` both resolve to the same
   ref), the first occurrence is kept and later duplicates are dropped. The
@@ -204,6 +215,7 @@ const filtered = await repo.bundle.listHeads({
 ### `create`
 
 - `NOT_A_REPOSITORY` — outside a git repository.
+- `DUBIOUS_OWNERSHIP` / `IMPLICIT_BARE_REPOSITORY` / `REPOSITORY_FORMAT_VERSION_UNSUPPORTED` / `REPOSITORY_EXTENSIONS_UNSUPPORTED` — the repository the acceptance tier rejects (see [`errors.md`](../errors.md#repository-state)). `create` takes the full operational tier like any other write, so these raise ahead of any `[core]` validation — unlike `verify` below, which demotes to `NOT_A_REPOSITORY` instead.
 - `CONFIG_BAD_NUMERIC_VALUE` / `CONFIG_BAD_ZLIB_LEVEL` / `CONFIG_MISSING_VALUE` / `CONFIG_BAD_BOOLEAN_VALUE` — an invalid `[core]` entry, reached through the same eager operational gate every other operational command reads (see [`errors.md`](../errors.md)); includes an invalid `core.maxTreeDepth`. `verify` and `listHeads` do not read this gate — they operate on the bundle file, not the ambient repository's config.
 - `BUNDLE_EMPTY` `reason: 'no-refs'` — no rev arg resolves to a named ref
   (no `--all`/`--branches`/`--tags` and no `{ tip }` DWIMs to a ref).
@@ -215,6 +227,7 @@ const filtered = await repo.bundle.listHeads({
 
 ### `verify` and `listHeads`
 
+- `NOT_A_REPOSITORY` — (`verify` only) the ambient repository is absent, **or** the acceptance tier rejects it (ownership, implicit-bare, or an unsupported format/version) — git demotes the latter case to the same repository-absent refusal rather than raising its own ownership or format fatal, and tsgit matches (see Behaviour above). `listHeads` never touches the ambient repository, so it never raises this.
 - `BUNDLE_READ_FAILED` — the file cannot be opened or read (missing or unreadable).
 - `BUNDLE_BAD_HEADER` — the file does not look like a v2 or v3 bundle (not a
   bundle file, or a directory path).

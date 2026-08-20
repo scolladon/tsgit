@@ -106,6 +106,15 @@ const repo = await openRepository({ rootHandle, gitDir: 'repo.git', workDir: 'wo
 
 `ceilingDirs` exists on the option type (inherited from the core `OpenRepositoryOptions`) but has no effect here — with no walk to bound, there's nothing for a ceiling to stop.
 
+## Repository trust
+
+`trust`, `trustedDirectories`, and `bareRepositories` all exist on the option type but are inert here — every repository the browser opens is trusted, unconditionally:
+
+- The ownership-trust gate is an **optional** adapter capability ([Node get-started](node.md#bare-repositories-and-explicit-layout)), and the browser adapter doesn't implement it — OPFS is sandboxed per origin, so no foreign-owned repository can exist inside it.
+- `bareRepositories: 'explicit'` refuses a gitdir *the discovery walk* reached under a name other than `.git`. The browser has no walk (see above) — the fixed entry always resolves on the same route a normal discovery would use, never the walk-only bare route the refusal keys on — so the condition can never fire, regardless of the option.
+
+See [Repository trust](../understand/security.md#repository-trust) for what the gate closes on adapters that do implement it.
+
 ## What works in the browser
 
 - Every command and primitive that doesn't depend on Node-only APIs

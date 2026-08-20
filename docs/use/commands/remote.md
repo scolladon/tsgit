@@ -58,6 +58,7 @@ Each method returns a concrete result — no discriminator to narrow on at the c
 - **Ordering on multi-step methods.** `remove` and `rename` delete or move tracking refs FIRST, then rewrite config. Mid-flight failures are recoverable by re-running the method (ADR-177, ADR-178).
 - **Packed refs.** Tracking refs are deleted via `updateRef`, which rejects packed-only refs with `UNSUPPORTED_OPERATION`. Run `git pack-refs --unpack` and retry.
 - **Reflog.** `remove` deletes per-ref reflog files via the standard `updateRef` delete path. `rename` writes a `remote: renamed <from> to <to>` entry on each moved ref.
+- **A repository the acceptance tier rejects.** Every `remote` verb refuses — reads included. This is narrower than `config`'s surviving four read verbs: canonical git refuses `remote`, `remote -v`, `remote get-url` and `remote show -n` on a rejected repository exactly as it refuses the writers (measured on 2.55.0, ownership and format rejections alike), so `list` and `show` sit on the same tier as `add` / `remove` / `rename` / `setUrl`. See [Repository layout](../../understand/repository-layout.md#the-repository-acceptance-tiers).
 
 ## Examples
 
@@ -90,6 +91,7 @@ for (const [ref, oid] of remote.trackingRefs) console.log(ref, oid);
 ## Throws
 
 - `NOT_A_REPOSITORY` — `.git/HEAD` is absent.
+- `DUBIOUS_OWNERSHIP` / `IMPLICIT_BARE_REPOSITORY` / `REPOSITORY_FORMAT_VERSION_UNSUPPORTED` / `REPOSITORY_EXTENSIONS_UNSUPPORTED` — the repository the acceptance tier rejects; every `remote` verb refuses, including `list` and `show` (see [`errors.md`](../errors.md#repository-state)).
 - `REMOTE_NOT_CONFIGURED` — `remove` / `rename` / `setUrl` / `show` targeting an unknown remote.
 - `REMOTE_EXISTS` — `add` against a configured name; `rename` whose `to` is already configured.
 - `REMOTE_NAME_INVALID` — empty name or any of `\n` / `\r` / `\0` / `"` / `\\` / `]`.
