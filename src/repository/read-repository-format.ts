@@ -50,29 +50,64 @@ interface ScannedEntry {
  * `[section] key`, case-insensitively on both — git's scalar-value
  * resolution is last-occurrence-wins within one file.
  */
+/** One `[section "subsection"] key = value` entry, with its header resolved. */
+interface SectionedEntry {
+  /** Lower-cased section name. */
+  readonly section: string;
+  /** Subsection verbatim, or `undefined` for a top-level `[section]`. */
+  readonly subsection: string | undefined;
+  /** Lower-cased key. */
+  readonly key: string;
+  readonly value: string | null;
+  /** 1-based, matching git's config line numbers and `ScannedEntry.line`. */
+  readonly line: number;
+}
+
+/**
+ * Walks the token stream once, pairing every `entry` with the header in force.
+ *
+ * The three readers below want different slices of the same walk — last
+ * top-level value, every `[extensions]` entry including subsectioned ones, and
+ * a streaming pass over `[core]`. Written out three times, the header-tracking
+ * preamble is identical and the FILTERS are what differ, which is precisely
+ * where a later edit to one copy silently misses the others: one of them
+ * deliberately keeps subsectioned entries and two deliberately drop them.
+ * Expressing each as its own filter over one generator makes that difference
+ * the visible part.
+ */
+function* sectionedEntries(tokens: ReadonlyArray<ConfigToken>): Generator<SectionedEntry> {
+  // Stryker disable next-line StringLiteral: equivalent — the tokenizer emits `entry` tokens even for lines before any header, and every consumer compares this against a non-empty section literal ('core' or 'extensions'), so a mutated initial value is never observable.
+  let section = '';
+  let subsection: string | undefined;
+  for (const token of tokens) {
+    if (token.kind === 'header') {
+      section = token.section.toLowerCase();
+      subsection = token.subsection;
+      continue;
+    }
+    if (token.kind !== 'entry') continue;
+    yield {
+      section,
+      subsection,
+      key: token.key.toLowerCase(),
+      value: token.value,
+      // `startLine` is the 0-based index into the tokenizer's line split;
+      // git's config line numbers are 1-based.
+      line: token.startLine + 1,
+    };
+  }
+}
+
 const lastTopLevelEntry = (
   tokens: ReadonlyArray<ConfigToken>,
   section: string,
   key: string,
 ): ScannedEntry | undefined => {
-  // Stryker disable next-line StringLiteral: equivalent — `lastTopLevelEntry` is only ever called with `section` = 'core' or 'extensions' (both non-empty), and the tokenizer emits `entry` tokens even for lines before any header, so a mutated initial value is compared only against those two literals — never observable regardless of its content.
-  let currentSection = '';
-  let currentSubsection: string | undefined;
   let found: ScannedEntry | undefined;
-  for (const token of tokens) {
-    if (token.kind === 'header') {
-      currentSection = token.section.toLowerCase();
-      currentSubsection = token.subsection;
-      continue;
-    }
-    if (token.kind !== 'entry') continue;
-    if (currentSubsection !== undefined) continue;
-    if (currentSection !== section) continue;
-    if (token.key.toLowerCase() !== key) continue;
-    // `startLine` is the 0-based array index into the tokenizer's line
-    // split; git's config line numbers (and `configMissingValue`'s `line`
-    // field) are 1-based.
-    found = { value: token.value, line: token.startLine + 1 };
+  for (const entry of sectionedEntries(tokens)) {
+    if (entry.subsection !== undefined) continue;
+    if (entry.section !== section || entry.key !== key) continue;
+    found = { value: entry.value, line: entry.line };
   }
   return found;
 };
@@ -101,25 +136,18 @@ export interface ExtensionEntry {
  */
 export const enumerateExtensionEntries = (
   tokens: ReadonlyArray<ConfigToken>,
-): ReadonlyArray<ExtensionEntry> => {
-  const entries: ExtensionEntry[] = [];
-  let currentSection = '';
-  let currentSubsection: string | undefined;
-  for (const token of tokens) {
-    if (token.kind === 'header') {
-      currentSection = token.section.toLowerCase();
-      currentSubsection = token.subsection;
-      continue;
-    }
-    if (token.kind !== 'entry') continue;
-    if (currentSection !== EXTENSIONS_SECTION) continue;
-    const key = token.key.toLowerCase();
-    const subsection = currentSubsection;
-    const name = subsection === undefined ? key : `${subsection}.${key}`;
-    entries.push({ name, key, subsection, value: token.value, line: token.startLine + 1 });
-  }
-  return entries;
-};
+): ReadonlyArray<ExtensionEntry> =>
+  [...sectionedEntries(tokens)]
+    .filter((entry) => entry.section === EXTENSIONS_SECTION)
+    // Subsectioned entries are KEPT here, unlike the two `[core]` readers: git
+    // reports `[extensions "X"] bogus` as the offending name `X.bogus`.
+    .map(({ key, subsection, value, line }) => ({
+      name: subsection === undefined ? key : `${subsection}.${key}`,
+      key,
+      subsection,
+      value,
+      line,
+    }));
 
 const lowerCasedSet = (names: ReadonlyArray<string>): ReadonlySet<string> =>
   new Set(names.map((name) => name.toLowerCase()));
@@ -292,19 +320,10 @@ const resolveFormatVersion = (
   tokens: ReadonlyArray<ConfigToken>,
   source: string,
 ): number | undefined => {
-  let currentSection = '';
-  let currentSubsection: string | undefined;
   let version: number | undefined;
-  for (const token of tokens) {
-    if (token.kind === 'header') {
-      currentSection = token.section.toLowerCase();
-      currentSubsection = token.subsection;
-      continue;
-    }
-    if (token.kind !== 'entry') continue;
-    if (currentSubsection !== undefined) continue;
-    if (currentSection !== CORE_SECTION) continue;
-    if (token.key.toLowerCase() !== VERSION_KEY) continue;
+  for (const token of sectionedEntries(tokens)) {
+    if (token.subsection !== undefined) continue;
+    if (token.section !== CORE_SECTION || token.key !== VERSION_KEY) continue;
     const parsed = parseGitInt(token.value);
     // A valueless entry is git's internal NULL, reported by git as value ''.
     if (!parsed.ok) {
