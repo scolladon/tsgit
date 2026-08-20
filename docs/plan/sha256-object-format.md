@@ -1354,19 +1354,19 @@ re-init rows are already covered by an earlier refusal — assert that, do not a
 **`clone` — it adopts, and this is the one place the design leaves a hole.** git has **no**
 `clone --object-format` in 2.55.0 (`error: unknown option 'object-format=…'`); the algorithm is
 learned from the wire advertisement **before** the destination config is written. tsgit's
-`clone` today calls `bootstrapRepository` at `src/application/commands/clone.ts:94` — **before**
-the session opens at `:118` and before `negotiateDiscovery` at `:133`. A `clone` that keeps that
+`clone` today calls `bootstrapRepository` at `src/application/commands/clone.ts:95` — **before**
+the session opens at `:119` and before `negotiateDiscovery` at `:134`. A `clone` that keeps that
 order writes a sha1 repository and then fills it with sha256 objects.
 
 **Decision (the design does not specify a mechanism; this plan does):**
 
 1. **Move `bootstrapRepository` after discovery.** In `negotiateAndWritePack`
-   (`clone.ts:126-132`), immediately after `const discovery = await negotiateDiscovery(session)`
-   at `:133`, read the peer's advertised `object-format` (Part 9 made it reachable on `DiscoveryResult`), then
-   bootstrap with that format. The outer `catch` at `clone.ts:97-105` already does
+   (`clone.ts:127-133`), immediately after `const discovery = await negotiateDiscovery(session, ctx)`
+   at `:134` (Part 9's `assertPeerAlgorithm` call sits at `:139` — **replace it** with adoption), read the peer's advertised `object-format` (Part 9 made it reachable on `DiscoveryResult`), then
+   bootstrap with that format. The outer `catch` ending at `clone.ts:105` already does
    `rmRecursive(ctx.layout.gitDir)` on any failure past bootstrap, and git also creates the target
    then cleans up on failure, so the observable end state is unchanged. The
-   `targetDirectoryNotEmpty` guard at `:83-86` stays where it is, before anything else.
+   `targetDirectoryNotEmpty` guard at `:85` stays where it is, before anything else.
    **The ordering risk was checked, not assumed:** `openGitSession`
    (`src/application/commands/internal/git-service-session.ts:69-76`) reads only `parseRemoteUrl(url)`,
    `ctx.ssh` and `ctx.config?.auth` — the caller-supplied `RepositoryConfig`, never the
@@ -1388,7 +1388,7 @@ order writes a sha1 repository and then fills it with sha256 objects.
 3. **When `withAlgorithm` is absent** (a caller-supplied `HashService`), refuse with the widened
    `UNSUPPORTED_OBJECT_FORMAT { format, local }` from Part 9 — the peer's format is one this
    client cannot work with. Do not silently continue at the wrong width.
-4. **Persist the format.** `writeCloneConfig` (`clone.ts:184-217`) already writes
+4. **Persist the format.** `writeCloneConfig` (called at `clone.ts:179`) already writes
    `extensions.*` and `repositoryformatversion` through `updateConfigEntries(ctx, entries)`
    (`src/application/primitives/update-config.ts:421`, `ConfigEntry { section, subsection?, key,
    value }`) — it does exactly that for partial clone at `:210-214`. Bootstrap having already
