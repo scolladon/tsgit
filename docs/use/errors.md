@@ -51,6 +51,8 @@ Codes are grouped by domain. Within each group, alphabetical.
 
 | Code | Payload | Raised when |
 |---|---|---|
+| `BUNDLE_BAD_HEADER` | `path, reason ('not-a-bundle' \| 'malformed-header' \| 'unknown-capability' \| 'unknown-hash-algorithm'), …` | A bundle's header text does not conform to the v2/v3 grammar. `not-a-bundle` carries no extra fields (the magic line names neither v2 nor v3); `malformed-header` carries `line, length` (a content line that doesn't fit the prerequisite/ref shape, including any line read before a v3 header's algorithm is known); `unknown-capability` carries `capability` — the whole `name[=value]` text verbatim, including a valueless `@object-format` (a different key, not a missing value); `unknown-hash-algorithm` carries `algorithm` — an `@object-format` value outside `sha1`/`sha256`. |
+| `BUNDLE_UNSUPPORTED_VERSION` | `path?, version` | A bundle version outside the supported set — v2 and v3 are both accepted, so this fires only for an explicit `bundle create` request for a version tsgit does not produce (e.g. 1 or 4, or 2 where the selected algorithm requires 3). `path` is present for a read-side refusal, absent for a write-side one. |
 | `COMPRESS_FAILED` | `reason` | Adapter-level compression error. |
 | `DECOMPRESS_FAILED` | `reason` | Adapter-level decompression error. |
 | `DELTA_CHAIN_TOO_DEEP` | `depth, limit` | Resolving a packed object exceeded the recursion cap. |

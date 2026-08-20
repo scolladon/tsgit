@@ -1605,6 +1605,34 @@ describe('domain commands error — extractDetail message formatting', () => {
       "BUNDLE_BAD_HEADER: '/bad.bundle' does not look like a v2 or v3 bundle file",
     ],
     [
+      {
+        code: 'BUNDLE_BAD_HEADER',
+        path: '/bad.bundle',
+        reason: 'malformed-header',
+        line: '@object-format=sha512',
+        length: 22,
+      },
+      'BUNDLE_BAD_HEADER: unrecognized header: @object-format=sha512 (22)',
+    ],
+    [
+      {
+        code: 'BUNDLE_BAD_HEADER',
+        path: '/bad.bundle',
+        reason: 'unknown-capability',
+        capability: 'bogus=1',
+      },
+      "BUNDLE_BAD_HEADER: unknown capability 'bogus=1'",
+    ],
+    [
+      {
+        code: 'BUNDLE_BAD_HEADER',
+        path: '/bad.bundle',
+        reason: 'unknown-hash-algorithm',
+        algorithm: 'sha512',
+      },
+      'BUNDLE_BAD_HEADER: unrecognized bundle hash algorithm: sha512',
+    ],
+    [
       { code: 'BUNDLE_UNSUPPORTED_VERSION', version: 3, path: '/v3.bundle' },
       "BUNDLE_UNSUPPORTED_VERSION: unsupported bundle version 3 in '/v3.bundle'",
     ],
@@ -1662,21 +1690,74 @@ describe('domain commands error — extractDetail message formatting', () => {
   });
 
   describe('Given the bundleBadHeader error helper', () => {
-    describe('When called with path /bad.bundle', () => {
-      it.each([['not-a-bundle'], ['malformed-header']] as const)(
-        'Then data carries reason=%s',
-        (reason) => {
-          // Arrange + Act
-          const result = bundleBadHeader('/bad.bundle', reason);
+    describe('When called with path /bad.bundle and a reason carrying no extra fields', () => {
+      it.each([['not-a-bundle']] as const)('Then data carries reason=%s', (reason) => {
+        // Arrange + Act
+        const result = bundleBadHeader('/bad.bundle', { reason });
 
-          // Assert
-          expect(result.data).toEqual({
-            code: 'BUNDLE_BAD_HEADER',
-            path: '/bad.bundle',
-            reason,
-          });
-        },
-      );
+        // Assert
+        expect(result.data).toEqual({
+          code: 'BUNDLE_BAD_HEADER',
+          path: '/bad.bundle',
+          reason,
+        });
+      });
+    });
+
+    describe('When called with reason malformed-header', () => {
+      it('Then data carries the offending line and its byte length', () => {
+        // Arrange + Act
+        const result = bundleBadHeader('/bad.bundle', {
+          reason: 'malformed-header',
+          line: '@bogus',
+          length: 6,
+        });
+
+        // Assert
+        expect(result.data).toEqual({
+          code: 'BUNDLE_BAD_HEADER',
+          path: '/bad.bundle',
+          reason: 'malformed-header',
+          line: '@bogus',
+          length: 6,
+        });
+      });
+    });
+
+    describe('When called with reason unknown-capability', () => {
+      it('Then data carries the capability text verbatim', () => {
+        // Arrange + Act
+        const result = bundleBadHeader('/bad.bundle', {
+          reason: 'unknown-capability',
+          capability: 'bogus=1',
+        });
+
+        // Assert
+        expect(result.data).toEqual({
+          code: 'BUNDLE_BAD_HEADER',
+          path: '/bad.bundle',
+          reason: 'unknown-capability',
+          capability: 'bogus=1',
+        });
+      });
+    });
+
+    describe('When called with reason unknown-hash-algorithm', () => {
+      it('Then data carries the algorithm value', () => {
+        // Arrange + Act
+        const result = bundleBadHeader('/bad.bundle', {
+          reason: 'unknown-hash-algorithm',
+          algorithm: 'sha512',
+        });
+
+        // Assert
+        expect(result.data).toEqual({
+          code: 'BUNDLE_BAD_HEADER',
+          path: '/bad.bundle',
+          reason: 'unknown-hash-algorithm',
+          algorithm: 'sha512',
+        });
+      });
     });
   });
 

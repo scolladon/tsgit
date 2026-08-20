@@ -1,7 +1,7 @@
-import { bundleUnsupportedSerializeVersion } from '../commands/error.js';
-import type { BundlePrerequisite, BundleRef, BundleVersion } from './types.js';
+import type { BundleHashAlgorithm, BundlePrerequisite, BundleRef, BundleVersion } from './types.js';
 
 const MAGIC_V2 = '# v2 git bundle\n';
+const MAGIC_V3 = '# v3 git bundle\n';
 
 const sortByOidAscending = (
   prerequisites: ReadonlyArray<BundlePrerequisite>,
@@ -13,23 +13,27 @@ const encodePrerequisite = (prereq: BundlePrerequisite): string =>
 
 const encodeRef = (ref: BundleRef): string => `${ref.oid} ${ref.name}\n`;
 
+const encodeMagic = (version: BundleVersion, hashAlgorithm: BundleHashAlgorithm): string =>
+  version === 3 ? `${MAGIC_V3}@object-format=${hashAlgorithm}\n` : MAGIC_V2;
+
 /**
  * Serialises a bundle header to UTF-8 bytes.
  *
- * Emits: magic line, prerequisite lines sorted by oid ascending (the sort is
- * applied here so callers cannot forget), ref lines in the given order, and a
- * single blank terminating line. Emits v2; refuses any other requested version.
+ * Emits: magic line (plus, for v3, the `@object-format` capability — always,
+ * including `sha1`), prerequisite lines sorted by oid ascending (the sort is
+ * applied here so callers cannot forget), ref lines in the given order, and
+ * a single blank terminating line. Version and algorithm selection is the
+ * caller's decision — this function only encodes what it is given.
  */
 export const serializeBundleHeader = (input: {
   readonly version: BundleVersion;
+  readonly hashAlgorithm: BundleHashAlgorithm;
   readonly prerequisites: ReadonlyArray<BundlePrerequisite>;
   readonly refs: ReadonlyArray<BundleRef>;
 }): Uint8Array => {
-  if (input.version !== 2) throw bundleUnsupportedSerializeVersion(input.version);
-
   const sorted = sortByOidAscending(input.prerequisites);
 
-  const parts: string[] = [MAGIC_V2];
+  const parts: string[] = [encodeMagic(input.version, input.hashAlgorithm)];
   for (const prereq of sorted) {
     parts.push(encodePrerequisite(prereq));
   }

@@ -5,6 +5,20 @@ import type { ReceivePackResponse as ReportStatus } from '../protocol/receive-pa
 import type { PendingOperation } from '../sequencer/operation-labels.js';
 import type { ConfigScope } from './config-key.js';
 
+/** Discriminator for `BUNDLE_BAD_HEADER` — one member per distinct git refusal line. */
+export type BundleBadHeaderReason =
+  | 'not-a-bundle'
+  | 'malformed-header'
+  | 'unknown-capability'
+  | 'unknown-hash-algorithm';
+
+/** Per-reason fields `BUNDLE_BAD_HEADER` carries — exactly what each git line needs. */
+export type BundleBadHeaderDetails =
+  | { readonly reason: 'not-a-bundle' }
+  | { readonly reason: 'malformed-header'; readonly line: string; readonly length: number }
+  | { readonly reason: 'unknown-capability'; readonly capability: string }
+  | { readonly reason: 'unknown-hash-algorithm'; readonly algorithm: string };
+
 export type CommandError =
   | {
       readonly code: 'WORKING_TREE_DIRTY';
@@ -253,7 +267,7 @@ export type CommandError =
   | { readonly code: 'CANNOT_DESCRIBE'; readonly oid: ObjectId }
   | { readonly code: 'BUNDLE_EMPTY'; readonly reason: 'no-refs' | 'no-objects' }
   | { readonly code: 'BUNDLE_READ_FAILED'; readonly path: string }
-  | { readonly code: 'BUNDLE_BAD_HEADER'; readonly path: string; readonly reason: string }
+  | ({ readonly code: 'BUNDLE_BAD_HEADER'; readonly path: string } & BundleBadHeaderDetails)
   | {
       readonly code: 'BUNDLE_UNSUPPORTED_VERSION';
       readonly path?: string;
@@ -818,15 +832,20 @@ export const bundleReadFailed = (path: string): TsgitError =>
   new TsgitError({ code: 'BUNDLE_READ_FAILED', path: sanitizeForDisplay(path) });
 
 // `bundle verify`/`bundle list-heads` header-parse failure: the file opened but
-// its content does not conform to the bundle header grammar.
-// git: `error: '<path>' does not look like a v2 or v3 bundle file`.
-// `reason` is a short discriminator tag (`'not-a-bundle' | 'malformed-header'`).
-export const bundleBadHeader = (path: string, reason: string): TsgitError =>
-  new TsgitError({ code: 'BUNDLE_BAD_HEADER', path: sanitizeForDisplay(path), reason });
+// its content does not conform to the bundle header grammar — a magic line
+// that names neither v2 nor v3, a content line that doesn't fit the
+// prerequisite/ref shape (or arrives before a v3 header's algorithm is
+// known), or a capability line naming neither a recognised capability nor a
+// supported hash algorithm. `details` carries the fields the matching git
+// line needs (`error: unrecognized header: <line> (<len>)`,
+// `error: unknown capability '<text>'`, or
+// `error: unrecognized bundle hash algorithm: <value>`).
+export const bundleBadHeader = (path: string, details: BundleBadHeaderDetails): TsgitError =>
+  new TsgitError({ code: 'BUNDLE_BAD_HEADER', path: sanitizeForDisplay(path), ...details });
 
 // `bundle verify`/`bundle list-heads` version refusal: the magic line indicates
-// a bundle version tsgit does not support (currently v3 only).
-// git 2.54.0 reads v3-sha1; tsgit refuses (sanctioned divergence).
+// a bundle version outside the supported set (v2 and v3 are both accepted;
+// nothing else has a magic line to recognise in the first place).
 export const bundleUnsupportedVersion = (path: string, version: number): TsgitError =>
   new TsgitError({
     code: 'BUNDLE_UNSUPPORTED_VERSION',
@@ -834,8 +853,9 @@ export const bundleUnsupportedVersion = (path: string, version: number): TsgitEr
     version,
   });
 
-// `bundle create` version refusal: the caller requested a version that
-// `serializeBundleHeader` does not support (only v2 is supported for writing).
+// `bundle create` version refusal: the caller explicitly requested a version
+// `serializeBundleHeader` cannot honour — either outside {2, 3}, or 2 while
+// the selected algorithm requires 3.
 export const bundleUnsupportedSerializeVersion = (version: number): TsgitError =>
   new TsgitError({ code: 'BUNDLE_UNSUPPORTED_VERSION', version });
 

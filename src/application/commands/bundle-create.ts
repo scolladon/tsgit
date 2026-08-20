@@ -261,7 +261,12 @@ export const bundleCreate = async (
   if (closure.objects.length === 0) throw bundleEmpty('no-objects');
   const prerequisites = await makePrerequisites(ctx, closure.boundary);
   const pack = await buildPack(ctx, { oids: closure.objects });
-  const header = serializeBundleHeader({ version: VERSION, prerequisites, refs: acc.refs });
+  const header = serializeBundleHeader({
+    version: VERSION,
+    hashAlgorithm: 'sha1',
+    prerequisites,
+    refs: acc.refs,
+  });
   const bytes = concat(header, pack.bytes);
   return {
     version: VERSION,

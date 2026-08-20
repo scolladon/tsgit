@@ -154,6 +154,7 @@ const buildThinBundle = async (ctx: Context, prereqOid: ObjectId): Promise<Uint8
 
   const headerBytes = serializeBundleHeader({
     version: 2,
+    hashAlgorithm: 'sha1',
     prerequisites: [{ oid: prereqOid, comment: 'test prereq' }],
     refs: [{ oid: targetId as ObjectId, name: 'refs/heads/main' as RefName }],
   });
@@ -470,10 +471,12 @@ describe('bundleVerify', () => {
 
   // ── read-failure: v3 bundle file ──────────────────────────────────────────
 
-  describe("Given a path containing a '# v3 git bundle' magic line", () => {
+  describe("Given a path containing a '# v3 git bundle' magic line and no pack bytes", () => {
     describe('When bundleVerify is called', () => {
-      it('Then throws BUNDLE_UNSUPPORTED_VERSION with version 3', async () => {
-        // Arrange
+      it('Then the header parses (v3 is no longer refused) and the empty pack fails its own validation', async () => {
+        // Arrange — the header alone is well-formed; this fixture carries no
+        // pack bytes at all, which is an independent pack-validation failure,
+        // not a version refusal.
         const ctx = createMemoryContext();
         const V3_PATH = '/repo/v3.bundle';
         await ctx.fs.write(
@@ -492,9 +495,7 @@ describe('bundleVerify', () => {
         // Assert
         expect(thrown).toBeInstanceOf(TsgitError);
         const tsErr = thrown as TsgitError;
-        expect(tsErr.data.code).toBe('BUNDLE_UNSUPPORTED_VERSION');
-        expect((tsErr.data as { version: number }).version).toBe(3);
-        expect((tsErr.data as { path: string }).path).toBe(V3_PATH);
+        expect(tsErr.data.code).toBe('INVALID_PACK_HEADER');
       });
     });
   });
@@ -635,6 +636,7 @@ describe('bundleVerify', () => {
 
         const headerBytes = serializeBundleHeader({
           version: 2,
+          hashAlgorithm: 'sha1',
           prerequisites: [{ oid: prereqOid, comment: 'prereq' }],
           refs: [{ oid: ids[0] as ObjectId, name: 'refs/heads/main' as RefName }],
         });
@@ -696,6 +698,7 @@ describe('bundleVerify', () => {
 
         const headerBytes = serializeBundleHeader({
           version: 2,
+          hashAlgorithm: 'sha1',
           prerequisites: [{ oid: prereqOid, comment: 'prereq' }],
           refs: [{ oid: ids[0] as ObjectId, name: 'refs/heads/main' as RefName }],
         });
@@ -766,6 +769,7 @@ describe('bundleVerify', () => {
       }));
       const headerBytes = serializeBundleHeader({
         version: 2,
+        hashAlgorithm: 'sha1',
         prerequisites: [{ oid: prereqOid, comment: 'prereq' }],
         refs,
       });

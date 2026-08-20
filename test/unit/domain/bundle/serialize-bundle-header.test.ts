@@ -2,13 +2,13 @@ import { describe, expect, it } from 'vitest';
 
 import { serializeBundleHeader } from '../../../../src/domain/bundle/serialize-bundle-header.js';
 import type { BundlePrerequisite, BundleRef } from '../../../../src/domain/bundle/types.js';
-import { TsgitError } from '../../../../src/domain/error.js';
 import { ObjectId, RefName } from '../../../../src/domain/objects/object-id.js';
 
 const OID_A = ObjectId.from('a'.repeat(40));
 const OID_B = ObjectId.from('b'.repeat(40));
 const OID_C = ObjectId.from('c'.repeat(40));
 const OID_D = ObjectId.from('d'.repeat(40));
+const OID_SHA256_A = ObjectId.from('a'.repeat(64));
 
 const REF_MAIN = RefName.from('refs/heads/main');
 const REF_FEATURE = RefName.from('refs/heads/feature');
@@ -21,7 +21,12 @@ describe('serializeBundleHeader', () => {
       const refs: ReadonlyArray<BundleRef> = [{ oid: OID_B, name: REF_MAIN }];
 
       // Act
-      const result = serializeBundleHeader({ version: 2, prerequisites: [], refs });
+      const result = serializeBundleHeader({
+        version: 2,
+        hashAlgorithm: 'sha1',
+        prerequisites: [],
+        refs,
+      });
 
       // Assert
       const expected = new TextEncoder().encode(`# v2 git bundle\n${OID_B} refs/heads/main\n\n`);
@@ -39,7 +44,12 @@ describe('serializeBundleHeader', () => {
       const refs: ReadonlyArray<BundleRef> = [{ oid: OID_D, name: REF_MAIN }];
 
       // Act
-      const result = serializeBundleHeader({ version: 2, prerequisites, refs });
+      const result = serializeBundleHeader({
+        version: 2,
+        hashAlgorithm: 'sha1',
+        prerequisites,
+        refs,
+      });
 
       // Assert
       const expected = new TextEncoder().encode(
@@ -65,7 +75,12 @@ describe('serializeBundleHeader', () => {
       ];
 
       // Act
-      const result = serializeBundleHeader({ version: 2, prerequisites: [], refs });
+      const result = serializeBundleHeader({
+        version: 2,
+        hashAlgorithm: 'sha1',
+        prerequisites: [],
+        refs,
+      });
 
       // Assert
       const text = new TextDecoder().decode(result);
@@ -84,7 +99,12 @@ describe('serializeBundleHeader', () => {
       const refs: ReadonlyArray<BundleRef> = [{ oid: OID_B, name: REF_HEAD }];
 
       // Act
-      const result = serializeBundleHeader({ version: 2, prerequisites: [], refs });
+      const result = serializeBundleHeader({
+        version: 2,
+        hashAlgorithm: 'sha1',
+        prerequisites: [],
+        refs,
+      });
 
       // Assert
       const text = new TextDecoder().decode(result);
@@ -105,7 +125,12 @@ describe('serializeBundleHeader', () => {
       ];
 
       // Act
-      const result = serializeBundleHeader({ version: 2, prerequisites, refs });
+      const result = serializeBundleHeader({
+        version: 2,
+        hashAlgorithm: 'sha1',
+        prerequisites,
+        refs,
+      });
 
       // Assert
       const text = new TextDecoder().decode(result);
@@ -115,23 +140,45 @@ describe('serializeBundleHeader', () => {
     });
   });
 
-  describe('Given version 3 (unsupported), When serialized', () => {
-    it('Then throws BUNDLE_UNSUPPORTED_VERSION with version 3', () => {
+  describe('Given version 3 with algorithm sha256, When serialized', () => {
+    it('Then emits the v3 magic and the object-format=sha256 capability before the ref line', () => {
       // Arrange
-      let thrown: unknown;
+      const refs: ReadonlyArray<BundleRef> = [{ oid: OID_SHA256_A, name: REF_MAIN }];
 
       // Act
-      try {
-        serializeBundleHeader({ version: 3, prerequisites: [], refs: [] });
-      } catch (err) {
-        thrown = err;
-      }
+      const result = serializeBundleHeader({
+        version: 3,
+        hashAlgorithm: 'sha256',
+        prerequisites: [],
+        refs,
+      });
 
       // Assert
-      expect(thrown).toBeInstanceOf(TsgitError);
-      const tsErr = thrown as TsgitError;
-      expect(tsErr.data.code).toBe('BUNDLE_UNSUPPORTED_VERSION');
-      expect((tsErr.data as { version: number }).version).toBe(3);
+      const expected = new TextEncoder().encode(
+        `# v3 git bundle\n@object-format=sha256\n${OID_SHA256_A} refs/heads/main\n\n`,
+      );
+      expect(result).toEqual(expected);
+    });
+  });
+
+  describe('Given version 3 with algorithm sha1, When serialized', () => {
+    it('Then emits the v3 magic and the object-format=sha1 capability before the ref line', () => {
+      // Arrange
+      const refs: ReadonlyArray<BundleRef> = [{ oid: OID_A, name: REF_MAIN }];
+
+      // Act
+      const result = serializeBundleHeader({
+        version: 3,
+        hashAlgorithm: 'sha1',
+        prerequisites: [],
+        refs,
+      });
+
+      // Assert
+      const expected = new TextEncoder().encode(
+        `# v3 git bundle\n@object-format=sha1\n${OID_A} refs/heads/main\n\n`,
+      );
+      expect(result).toEqual(expected);
     });
   });
 });

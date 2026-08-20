@@ -174,6 +174,19 @@ export const workdirRace = (
 export const orderInvariantViolation = (previous: string, current: string): TsgitError =>
   new TsgitError({ code: 'ORDER_INVARIANT_VIOLATION', previous, current });
 
+function renderBundleBadHeader(data: Extract<CommandError, { code: 'BUNDLE_BAD_HEADER' }>): string {
+  switch (data.reason) {
+    case 'not-a-bundle':
+      return `'${data.path}' does not look like a v2 or v3 bundle file`;
+    case 'malformed-header':
+      return `unrecognized header: ${data.line} (${data.length})`;
+    case 'unknown-capability':
+      return `unknown capability '${data.capability}'`;
+    case 'unknown-hash-algorithm':
+      return `unrecognized bundle hash algorithm: ${data.algorithm}`;
+  }
+}
+
 function extractDetail(data: TsgitErrorData): string {
   switch (data.code) {
     case 'INVALID_OBJECT_ID':
@@ -548,7 +561,7 @@ function extractDetail(data: TsgitErrorData): string {
     case 'BUNDLE_READ_FAILED':
       return `could not open '${data.path}'`;
     case 'BUNDLE_BAD_HEADER':
-      return `'${data.path}' does not look like a v2 or v3 bundle file`;
+      return renderBundleBadHeader(data);
     case 'BUNDLE_UNSUPPORTED_VERSION':
       return data.path !== undefined
         ? `unsupported bundle version ${data.version} in '${data.path}'`

@@ -1,7 +1,8 @@
 import type { ObjectId, RefName } from '../objects/object-id.js';
+import type { ObjectFilter } from '../protocol/object-filter.js';
 
 export type BundleVersion = 2 | 3;
-export type BundleHashAlgorithm = 'sha1';
+export type BundleHashAlgorithm = 'sha1' | 'sha256';
 
 export interface BundleRef {
   readonly oid: ObjectId;
@@ -18,5 +19,6 @@ export interface ParsedBundleHeader {
   readonly hashAlgorithm: BundleHashAlgorithm;
   readonly prerequisites: ReadonlyArray<BundlePrerequisite>;
   readonly refs: ReadonlyArray<BundleRef>;
+  readonly filter?: ObjectFilter;
   readonly packOffset: number;
 }
