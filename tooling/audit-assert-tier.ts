@@ -46,7 +46,8 @@ import * as ts from 'typescript';
 
 import { analyzeCallSites } from './audit-assert-tier/analyze-call-sites.ts';
 import { type AssertTierFindings, computeFindings } from './audit-assert-tier/compute-findings.ts';
-import { type AllowEntry, parseAllowlist } from './audit-assert-tier/load-allowlist.ts';
+import { findUngatedVerbs } from './audit-assert-tier/find-ungated-verbs.ts';
+import { parseAllowlist } from './audit-assert-tier/load-allowlist.ts';
 
 const SCRIPT_DIR = path.dirname(url.fileURLToPath(import.meta.url));
 const DEFAULT_ROOT = path.resolve(SCRIPT_DIR, '..');
@@ -119,9 +120,24 @@ export const runAudit = async (flags: AuditFlags): Promise<AssertTierFindings> =
   });
 
   const raw = await readFile(flags.allowlist, 'utf8');
-  const allowlist: ReadonlyArray<AllowEntry> = parseAllowlist(raw);
+  const allowlist = parseAllowlist(raw);
 
-  return computeFindings(callSites, allowlist);
+  // The public command surface only: `internal/` helpers and the primitives
+  // below them compose freely under a tier their caller established, so a
+  // gate-less helper is normal rather than a bypass.
+  const commandFiles = filePaths.filter(
+    (file) =>
+      path
+        .relative(flags.root, file)
+        .replaceAll(path.sep, '/')
+        .match(/^src\/application\/commands\/[^/]+\.ts$/) !== null,
+  );
+  const ungated = findUngatedVerbs(program, commandFiles, flags.root).filter(
+    (verb) =>
+      !allowlist.ungated.some((entry) => entry.module === verb.module && entry.verb === verb.verb),
+  );
+
+  return { ...computeFindings(callSites, allowlist.callers), ungated };
 };
 
 const formatFindings = (findings: AssertTierFindings, allowlistRelPath: string): string => {
@@ -134,6 +150,15 @@ const formatFindings = (findings: AssertTierFindings, allowlistRelPath: string):
         '`assertAcceptedRepository` (or `assertOperationalRepository`), or, if canonical git really ' +
         'does let this verb survive a rejected repository, add it to ' +
         `${allowlistRelPath} with the measurement that proves it.`,
+    );
+  }
+  for (const f of findings.ungated) {
+    lines.push(
+      `audit-assert-tier: ${f.module}:${f.line} \`${f.verb}\` is an exported command verb taking ` +
+        'a Context that reaches no acceptance tier at all — weaker than calling the bare tier, ' +
+        'since it inherits no repository check either. Call `assertAcceptedRepository` (or ' +
+        '`assertOperationalRepository`), or, if canonical git lets this verb run on a rejected ' +
+        `repository, add it to ${allowlistRelPath}'s \`ungated\` list with the measurement.`,
     );
   }
   for (const f of findings.unattributable) {
@@ -153,7 +178,10 @@ const formatFindings = (findings: AssertTierFindings, allowlistRelPath: string):
 };
 
 const totalFindings = (findings: AssertTierFindings): number =>
-  findings.unguarded.length + findings.unattributable.length + findings.stale.length;
+  findings.unguarded.length +
+  findings.unattributable.length +
+  findings.stale.length +
+  findings.ungated.length;
 
 const describeError = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 

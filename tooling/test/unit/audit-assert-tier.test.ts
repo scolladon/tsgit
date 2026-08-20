@@ -6,6 +6,7 @@ import * as ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 import { analyzeCallSites, type CallSite } from '../../audit-assert-tier/analyze-call-sites.ts';
 import { computeFindings } from '../../audit-assert-tier/compute-findings.ts';
+import { findUngatedVerbs } from '../../audit-assert-tier/find-ungated-verbs.ts';
 import {
   type AllowEntry,
   AllowlistError,
@@ -68,6 +69,16 @@ const buildProgram = (
   return { program, filePaths };
 };
 
+const BARREL = '/virtual/src/application/commands/index.ts';
+
+const ungated = (files: Readonly<Record<string, string>>) => {
+  const { program, filePaths } = buildProgram(files);
+  const commandFiles = filePaths.filter((f) =>
+    /^\/virtual\/src\/application\/commands\/[^/]+\.ts$/.test(f),
+  );
+  return findUngatedVerbs(program, commandFiles, REPO_ROOT);
+};
+
 const analyze = (files: Readonly<Record<string, string>>): readonly CallSite[] => {
   const { program, filePaths } = buildProgram(files);
   return analyzeCallSites(program, filePaths, REPO_ROOT, {
@@ -93,13 +104,13 @@ describe('parseAllowlist', () => {
     describe('When parsed', () => {
       it('Then returns an empty list', () => {
         // Arrange
-        const sutContent = '{ "callers": [] }';
+        const sutContent = '{ "callers": [], "ungated": [] }';
 
         // Act
         const result = parseAllowlist(sutContent);
 
         // Assert
-        expect(result).toEqual([]);
+        expect(result).toEqual({ callers: [], ungated: [] });
       });
     });
   });
@@ -109,6 +120,7 @@ describe('parseAllowlist', () => {
       it('Then returns the entry as an AllowEntry', () => {
         // Arrange
         const sutContent = JSON.stringify({
+          ungated: [],
           callers: [
             { module: 'src/application/commands/config.ts', verb: 'configGet', reason: 'because' },
           ],
@@ -118,9 +130,10 @@ describe('parseAllowlist', () => {
         const result = parseAllowlist(sutContent);
 
         // Assert
-        expect(result).toEqual([
+        expect(result.callers).toEqual([
           { module: 'src/application/commands/config.ts', verb: 'configGet', reason: 'because' },
         ]);
+        expect(result.ungated).toEqual([]);
       });
     });
   });
@@ -177,7 +190,7 @@ describe('parseAllowlist', () => {
     describe('When parsed', () => {
       it('Then throws AllowlistError with reason=entry-not-an-object', () => {
         // Arrange
-        const sutContent = '{ "callers": ["plain-string"] }';
+        const sutContent = '{ "ungated": [], "callers": ["plain-string"] }';
 
         // Act + Assert
         expectAllowlistError(() => parseAllowlist(sutContent), 'entry-not-an-object');
@@ -190,6 +203,7 @@ describe('parseAllowlist', () => {
       it('Then throws AllowlistError with reason=missing-field', () => {
         // Arrange
         const sutContent = JSON.stringify({
+          ungated: [],
           callers: [{ verb: 'configGet', reason: 'because' }],
         });
 
@@ -204,6 +218,7 @@ describe('parseAllowlist', () => {
       it('Then throws AllowlistError with reason=missing-field', () => {
         // Arrange
         const sutContent = JSON.stringify({
+          ungated: [],
           callers: [{ module: 'src/application/commands/config.ts', reason: 'because' }],
         });
 
@@ -218,6 +233,7 @@ describe('parseAllowlist', () => {
       it('Then throws AllowlistError with reason=missing-field', () => {
         // Arrange
         const sutContent = JSON.stringify({
+          ungated: [],
           callers: [{ module: 'src/application/commands/config.ts', verb: 'configGet' }],
         });
 
@@ -232,6 +248,7 @@ describe('parseAllowlist', () => {
       it('Then throws AllowlistError with reason=wrong-field-type', () => {
         // Arrange
         const sutContent = JSON.stringify({
+          ungated: [],
           callers: [
             { module: 'src/application/commands/config.ts', verb: 'configGet', reason: 42 },
           ],
@@ -248,6 +265,7 @@ describe('parseAllowlist', () => {
       it('Then throws AllowlistError with reason=empty-string', () => {
         // Arrange
         const sutContent = JSON.stringify({
+          ungated: [],
           callers: [
             { module: 'src/application/commands/config.ts', verb: 'configGet', reason: '   ' },
           ],
@@ -442,44 +460,35 @@ describe('analyzeCallSites + computeFindings', () => {
 describe('the shipped allowlist', () => {
   describe('Given tooling/audit-assert-tier.allowlist.json', () => {
     describe('When parsed', () => {
-      it('Then it has exactly the five documented entries', async () => {
+      it('Then every entry names a real module and carries a measurement', async () => {
         // Arrange
         const raw = await readFile(SHIPPED_ALLOWLIST, 'utf8');
 
         // Act
         const result = parseAllowlist(raw);
 
-        // Assert
-        expect(result).toEqual([
-          {
-            module: 'src/application/commands/config.ts',
-            verb: 'configGet',
-            reason:
-              "git's `config --get` exits 1 (not-found), not 128, on a rejected repository; pinned by the tier co-truth sweep.",
-          },
-          {
-            module: 'src/application/commands/config.ts',
-            verb: 'configGetAll',
-            reason: 'same porcelain row as configGet; pinned by the tier co-truth sweep.',
-          },
-          {
-            module: 'src/application/commands/config.ts',
-            verb: 'configGetRegexp',
-            reason:
-              "git's `config --get-regexp` exits 1 on a rejected repository; pinned by the tier co-truth sweep.",
-          },
-          {
-            module: 'src/application/commands/config.ts',
-            verb: 'configList',
-            reason:
-              "git's `config --list` exits 0 with the repository scope dropped; pinned by the tier co-truth sweep.",
-          },
-          {
-            module: 'src/application/primitives/internal/repo-state.ts',
-            verb: 'assertAcceptedRepository',
-            reason:
-              'the tier chain itself — assertAcceptedRepository is defined as assertRepository plus the acceptance gates.',
-          },
+        // Assert — the allowlist's whole value is that each exemption is
+        // reviewable, so the contract is "named, and justified", not a
+        // frozen census that churns every time a verb is legitimately added.
+        expect(result.callers.length).toBeGreaterThan(0);
+        expect(result.ungated.length).toBeGreaterThan(0);
+        for (const entry of [...result.callers, ...result.ungated]) {
+          expect(entry.module.startsWith('src/')).toBe(true);
+          expect(entry.verb.length).toBeGreaterThan(0);
+          expect(entry.reason.trim().length).toBeGreaterThan(20);
+        }
+        expect(result.callers.map((entry) => entry.verb)).toEqual([
+          'configGet',
+          'configGetAll',
+          'configGetRegexp',
+          'configList',
+          'assertAcceptedRepository',
+        ]);
+        expect(result.ungated.map((entry) => entry.verb)).toEqual([
+          'bundleVerify',
+          'bundleListHeads',
+          'clone',
+          'init',
         ]);
       });
     });
@@ -500,6 +509,173 @@ describe('runAudit', () => {
         expect(result.unguarded).toEqual([]);
         expect(result.unattributable).toEqual([]);
         expect(result.stale).toEqual([]);
+      });
+    });
+  });
+});
+
+describe('analyzeCallSites — reference shapes beyond a bare identifier', () => {
+  describe('Given a namespace-import call to the bare assert', () => {
+    describe('When analyzed', () => {
+      it('Then the call is detected and attributed to its verb', () => {
+        // Arrange
+        const files = {
+          [TARGET_MODULE]: PRIMITIVES_SOURCE,
+          '/virtual/src/application/commands/ns.ts': [
+            "import * as repoState from '../primitives/internal/repo-state.js';",
+            'export const nsVerb = async (ctx: unknown): Promise<void> => {',
+            '  await repoState.assertRepository(ctx);',
+            '};',
+            '',
+          ].join('\n'),
+        };
+
+        // Act
+        const result = analyze(files);
+
+        // Assert — a bare-identifier-only matcher reports nothing here.
+        expect(result).toEqual([
+          { module: 'src/application/commands/ns.ts', verb: 'nsVerb', line: 3 },
+        ]);
+      });
+    });
+  });
+
+  describe('Given the bare assert aliased into a variable rather than called', () => {
+    describe('When analyzed', () => {
+      it('Then the reference is reported as unattributable rather than dropped', () => {
+        // Arrange
+        const files = {
+          [TARGET_MODULE]: PRIMITIVES_SOURCE,
+          '/virtual/src/application/commands/indirect.ts': [
+            "import { assertRepository } from '../primitives/internal/repo-state.js';",
+            'export const indirectVerb = async (ctx: unknown): Promise<void> => {',
+            '  const gate = assertRepository;',
+            '  await gate(ctx);',
+            '};',
+            '',
+          ].join('\n'),
+        };
+
+        // Act
+        const callSites = analyze(files);
+        const result = computeFindings(callSites, []);
+
+        // Assert
+        expect(result.unattributable).toEqual([
+          { module: 'src/application/commands/indirect.ts', line: 3 },
+        ]);
+      });
+    });
+  });
+});
+
+describe('findUngatedVerbs', () => {
+  describe('Given a barrel-exported verb that reaches no tier', () => {
+    describe('When scanned', () => {
+      it('Then it is reported with its module, verb and line', () => {
+        // Arrange
+        const files = {
+          [BARREL]: "export { loose } from './loose.js';\n",
+          '/virtual/src/application/commands/loose.ts': [
+            'type Context = { readonly root?: string };',
+            'export const loose = async (ctx: Context): Promise<void> => {',
+            '  await Promise.resolve(ctx);',
+            '};',
+            '',
+          ].join('\n'),
+        };
+
+        // Act
+        const result = ungated(files);
+
+        // Assert
+        expect(result).toEqual([
+          { module: 'src/application/commands/loose.ts', verb: 'loose', line: 2 },
+        ]);
+      });
+    });
+  });
+
+  describe('Given a barrel-exported verb that gates only through a local helper', () => {
+    describe('When scanned', () => {
+      it('Then it is not reported — delegation counts as reaching the tier', () => {
+        // Arrange
+        const files = {
+          [BARREL]: "export { delegating } from './delegating.js';\n",
+          '/virtual/src/application/commands/delegating.ts': [
+            "import { assertOperationalRepository } from '../primitives/internal/repo-state.js';",
+            'type Context = { readonly root?: string };',
+            'const gate = async (ctx: Context): Promise<void> => {',
+            '  await assertOperationalRepository(ctx);',
+            '};',
+            'export const delegating = async (ctx: Context): Promise<void> => {',
+            '  await gate(ctx);',
+            '};',
+            '',
+          ].join('\n'),
+        };
+
+        // Act
+        const result = ungated(files);
+
+        // Assert
+        expect(result).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given an exported helper that is not in the command barrel', () => {
+    describe('When scanned', () => {
+      it('Then it is not reported — only the public command surface is bound', () => {
+        // Arrange
+        const files = {
+          [BARREL]: "export { realVerb } from './helpers.js';\n",
+          '/virtual/src/application/commands/helpers.ts': [
+            "import { assertOperationalRepository } from '../primitives/internal/repo-state.js';",
+            'type Context = { readonly root?: string };',
+            'export const exportedHelper = async (ctx: Context): Promise<void> => {',
+            '  await Promise.resolve(ctx);',
+            '};',
+            'export const realVerb = async (ctx: Context): Promise<void> => {',
+            '  await assertOperationalRepository(ctx);',
+            '};',
+            '',
+          ].join('\n'),
+        };
+
+        // Act
+        const result = ungated(files);
+
+        // Assert
+        expect(result).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a barrel-exported verb whose overload signature carries no body', () => {
+    describe('When scanned', () => {
+      it('Then the implementation decides, so it is not reported twice or falsely', () => {
+        // Arrange
+        const files = {
+          [BARREL]: "export { over } from './over.js';\n",
+          '/virtual/src/application/commands/over.ts': [
+            "import { assertOperationalRepository } from '../primitives/internal/repo-state.js';",
+            'type Context = { readonly root?: string };',
+            'export function over(ctx: Context, a: string): Promise<void>;',
+            'export function over(ctx: Context, a: number): Promise<void>;',
+            'export async function over(ctx: Context, _a: unknown): Promise<void> {',
+            '  await assertOperationalRepository(ctx);',
+            '}',
+            '',
+          ].join('\n'),
+        };
+
+        // Act
+        const result = ungated(files);
+
+        // Assert
+        expect(result).toEqual([]);
       });
     });
   });

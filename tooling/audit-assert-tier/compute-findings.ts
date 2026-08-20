@@ -22,10 +22,17 @@ export interface UnattributableFinding {
   readonly line: number;
 }
 
+export interface UngatedFinding {
+  readonly module: string;
+  readonly verb: string;
+  readonly line: number;
+}
+
 export interface AssertTierFindings {
   readonly unguarded: readonly UnguardedFinding[];
   readonly unattributable: readonly UnattributableFinding[];
   readonly stale: readonly AllowEntry[];
+  readonly ungated: readonly UngatedFinding[];
 }
 
 /** Module paths are repo-relative POSIX paths and verbs are JS identifiers —
@@ -35,7 +42,7 @@ const allowKey = (module: string, verb: string): string => `${module}::${verb}`;
 export const computeFindings = (
   callSites: readonly CallSite[],
   allowlist: readonly AllowEntry[],
-): AssertTierFindings => {
+): Omit<AssertTierFindings, 'ungated'> => {
   const allowed = new Set(allowlist.map((entry) => allowKey(entry.module, entry.verb)));
   const matched = new Set<string>();
 

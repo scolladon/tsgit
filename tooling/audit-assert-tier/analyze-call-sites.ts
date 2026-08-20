@@ -39,7 +39,14 @@ const enclosingExportedVerb = (node: ts.Node): string | undefined => {
   let current = node.parent as ts.Node | undefined;
   while (current !== undefined && !ts.isSourceFile(current)) {
     if (ts.isVariableStatement(current) && hasExportModifier(current)) {
-      const [declaration] = current.declarationList.declarations;
+      // The CONTAINING declarator, not the first: `export const a = …, b = …`
+      // would otherwise attribute a call inside `b` to `a`, which matters
+      // because `a` may be allowlisted while `b` is not.
+      const declaration =
+        current.declarationList.declarations.find(
+          (candidate) =>
+            node.getStart() >= candidate.getStart() && node.getEnd() <= candidate.getEnd(),
+        ) ?? current.declarationList.declarations[0];
       return declaration !== undefined && ts.isIdentifier(declaration.name)
         ? declaration.name.text
         : undefined;
@@ -95,14 +102,56 @@ const callSitesInFile = (
 ): readonly CallSite[] => {
   const moduleName = path.relative(repoRoot, sourceFile.fileName).replaceAll(path.sep, '/');
   const found: CallSite[] = [];
-  const visit = (node: ts.Node): void => {
-    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {
-      const symbol = checker.getSymbolAtLocation(node.expression);
-      if (symbol !== undefined && resolveFinalSymbol(checker, symbol) === targetSymbol) {
-        const { line } = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
-        found.push({ module: moduleName, verb: enclosingExportedVerb(node), line: line + 1 });
-      }
+  // A reference is in callee position when it IS the callee of a call — not
+  // merely nested somewhere inside one.
+  const isCallee = (ref: ts.Node): boolean =>
+    ref.parent !== undefined && ts.isCallExpression(ref.parent) && ref.parent.expression === ref;
+
+  // An import/export specifier mentions the symbol without using it, and the
+  // symbol's own declaration is a definition rather than a reference — the
+  // target export declares itself, so without this the audit reports the very
+  // line it is auditing.
+  const isModuleBinding = (ref: ts.Node): boolean => {
+    const parent = ref.parent;
+    if (parent === undefined) return false;
+    if (
+      ts.isImportSpecifier(parent) ||
+      ts.isExportSpecifier(parent) ||
+      ts.isImportClause(parent) ||
+      ts.isNamespaceImport(parent)
+    ) {
+      return true;
     }
+    return (
+      (ts.isVariableDeclaration(parent) || ts.isFunctionDeclaration(parent)) && parent.name === ref
+    );
+  };
+
+  const consider = (ref: ts.Node): void => {
+    const symbol = checker.getSymbolAtLocation(ref);
+    if (symbol === undefined || resolveFinalSymbol(checker, symbol) !== targetSymbol) return;
+    if (isModuleBinding(ref)) return;
+    const { line } = sourceFile.getLineAndCharacterOfPosition(ref.getStart(sourceFile));
+    // A reference that is not a callee — aliased into a variable, passed as a
+    // callback — cannot be attributed to a verb, so it is reported rather than
+    // silently dropped. Bare-identifier matching alone would miss both this
+    // and a namespace-import call (`repoState.assertRepository(ctx)`), which is
+    // an idiomatic shape in this codebase.
+    found.push({
+      module: moduleName,
+      verb: isCallee(ref) ? enclosingExportedVerb(ref) : undefined,
+      line: line + 1,
+    });
+  };
+
+  const visit = (node: ts.Node): void => {
+    if (ts.isPropertyAccessExpression(node)) {
+      consider(node);
+      // Walk the object side only; visiting `.name` would double-count.
+      visit(node.expression);
+      return;
+    }
+    if (ts.isIdentifier(node)) consider(node);
     ts.forEachChild(node, visit);
   };
   visit(sourceFile);

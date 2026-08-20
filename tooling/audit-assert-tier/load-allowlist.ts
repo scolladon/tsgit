@@ -2,9 +2,11 @@
  * Schema validator + loader for `audit-assert-tier.allowlist.json`.
  *
  * Structure:
- *   { "callers": [
- *       { "module": "<repo-relative path>", "verb": "<exported name>", "reason": "<why>" }
- *   ] }
+ *   { "callers": [ { "module", "verb", "reason" } ],
+ *     "ungated": [ { "module", "verb", "reason" } ] }
+ *
+ * `callers` exempts a verb that calls the bare tier; `ungated` exempts a verb
+ * that calls no tier at all. Both carry the measurement that justifies them.
  *
  * Any malformation throws `AllowlistError` — a malformed allowlist is an
  * audit failure, never a silent empty set. Matching entries against the
@@ -16,6 +18,7 @@ export type AllowlistErrorReason =
   | 'invalid-json'
   | 'not-an-object'
   | 'missing-callers-array'
+  | 'missing-ungated-array'
   | 'entry-not-an-object'
   | 'missing-field'
   | 'wrong-field-type'
@@ -68,7 +71,12 @@ const validateEntry = (raw: unknown, index: number): AllowEntry => {
   };
 };
 
-export const parseAllowlist = (rawContent: string): ReadonlyArray<AllowEntry> => {
+export interface Allowlist {
+  readonly callers: ReadonlyArray<AllowEntry>;
+  readonly ungated: ReadonlyArray<AllowEntry>;
+}
+
+export const parseAllowlist = (rawContent: string): Allowlist => {
   let parsed: unknown;
   try {
     parsed = JSON.parse(rawContent);
@@ -81,5 +89,11 @@ export const parseAllowlist = (rawContent: string): ReadonlyArray<AllowEntry> =>
   if (!('callers' in parsed) || !Array.isArray(parsed.callers)) {
     throw new AllowlistError('missing-callers-array');
   }
-  return parsed.callers.map((entry, idx) => validateEntry(entry, idx));
+  if (!('ungated' in parsed) || !Array.isArray(parsed.ungated)) {
+    throw new AllowlistError('missing-ungated-array');
+  }
+  return {
+    callers: parsed.callers.map((entry, idx) => validateEntry(entry, idx)),
+    ungated: parsed.ungated.map((entry, idx) => validateEntry(entry, idx)),
+  };
 };

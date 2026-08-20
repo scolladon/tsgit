@@ -25,5 +25,27 @@
       "verb": "assertAcceptedRepository",
       "reason": "the tier chain itself — assertAcceptedRepository is defined as assertRepository plus the acceptance gates."
     }
+  ],
+  "ungated": [
+    {
+      "module": "src/application/commands/bundle-verify.ts",
+      "verb": "bundleVerify",
+      "reason": "gates on the layout verdict but raises the repository-ABSENT refusal, not the tier's ownership/format families; measured on git 2.55.0 with the owner check forced to fail, `bundle verify` exits 1 with `need a repository to verify a bundle` \u2014 byte-identical to running it outside any repository \u2014 while `status` on the same fixture exits 128 with the ownership fatal."
+    },
+    {
+      "module": "src/application/commands/bundle-list-heads.ts",
+      "verb": "bundleListHeads",
+      "reason": "reads only the bundle file; measured — git's `bundle list-heads` exits 0 on a repository whose owner check is forced to fail."
+    },
+    {
+      "module": "src/application/commands/clone.ts",
+      "verb": "clone",
+      "reason": "bootstrap: the destination is not yet a repository, and an existing HEAD is refused earlier; measured — git's `clone` needs no accepted destination."
+    },
+    {
+      "module": "src/application/commands/init.ts",
+      "verb": "init",
+      "reason": "bootstrap: measured — git's `init` exits 0 inside a repository whose owner check is forced to fail, reinitialising it."
+    }
   ]
 }
