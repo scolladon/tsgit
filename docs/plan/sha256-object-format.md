@@ -1685,9 +1685,9 @@ interop reconstruction must not assume the message names the real cause.
 the rule above; supplied, it is honoured, and the v2-where-v3-is-required combination refuses.
 This is a **format** selector — it changes the bytes on disk, exactly as `objectFormat` does — so
 ADR-249 does not exclude it. `bundleUnsupportedSerializeVersion(version)`
-(`src/domain/commands/error.ts:784`) already fits the refusal; note it emits the **same**
+(`src/domain/commands/error.ts:859`) already fits the refusal; note it emits the **same**
 `BUNDLE_UNSUPPORTED_VERSION` code as the read-side refusal and is told apart only by `path` being
-absent (`src/domain/error.ts:533-536`) — a sentinel-shaped distinction. Do not change that shape
+absent (`src/domain/error.ts:565-568`) — a sentinel-shaped distinction. Do not change that shape
 here; do assert both arms in tests so the distinction stays alive.
 `BundleCreateResult.version` (`:34`) already reports the chosen version, so callers see what they
 got with no new field. Public option ⇒ `api.json`.
@@ -1700,9 +1700,9 @@ git says `error: unrecognized argument: --version=3`. That is a probe artefact, 
 maps `OBJECT_NOT_FOUND` into `missingPrerequisites`:
 
 ```ts
-const missingPrerequisites = await findMissingPrerequisites(ctx, header.prerequisites);  // :39
+const missingPrerequisites = await findMissingPrerequisites(ctx, header.prerequisites);  // :61
 const isMissingObject = async (ctx, oid) => { try { await readObject(ctx, oid); return false; }
-  catch (err) { if (err instanceof TsgitError && err.data.code === 'OBJECT_NOT_FOUND') return true; throw err; } };  // :96-104
+  catch (err) { if (err instanceof TsgitError && err.data.code === 'OBJECT_NOT_FOUND') return true; throw err; } };  // :118 (findMissingPrerequisites at :107)
 ```
 
 git draws **two** conditions tsgit currently cannot tell apart:
@@ -1726,15 +1726,15 @@ prerequisite loop, never on the header read — otherwise `bundleListHeads` (whi
 a repository entirely) would break.
 
 **R15 — no bundle path takes its width from the surrounding repository.** In
-`bundle-verify.ts`, `verifyPackTrailer(packBytes, ctx)` (`:43`) and
-`walkPackEntries(ctx, packBytes, resolver)` (`:46`) currently frame against `ctx.hashConfig`.
+`bundle-verify.ts`, `verifyPackTrailer(packBytes, ctx)` (`:65`) and
+`walkPackEntries(ctx, packBytes, resolver)` (`:68`) currently frame against `ctx.hashConfig`.
 They move to the **bundle's** declared algorithm. Only the prerequisite *lookup* stays a
-repository operation. `resolveExternalBase` (`:63-73`) calls
+repository operation. `resolveExternalBase` (`:85`) calls
 `serializeObject(obj, ctx.hashConfig)` — that one is a repository read and correctly stays.
 `bundleListHeads` (`src/application/commands/bundle-list-heads.ts`) already threads
-`header.version` at `:22`; `bundleVerify` already threads `header.hashAlgorithm` at `:55`. Those
+`header.version` at `:22`; `bundleVerify` (declared at `:55`) already threads `header.hashAlgorithm` into its result builder at `:75`. Those
 fields simply stop being single-valued — that is the whole public-surface change on the read side.
-Expose the parsed `@filter` on `BundleVerifyResult` (`:24-32`) alongside them.
+Expose the parsed `@filter` on `BundleVerifyResult` (`:26`) alongside them.
 
 **Out of scope, do not add:** tsgit has **no** `unbundle` and no clone- or fetch-from-bundle path
 (`clone.ts` and `fetch.ts` never mention bundles). Adding one is a new command.
@@ -1746,7 +1746,7 @@ algorithm; R15 keeps the two tools agreeing on every well-formed bundle.
 **Interop rows to append** to `test/integration/bundle-interop.test.ts` — **beside its existing
 v2 rows, not duplicated into a new file.** Its shared `beforeAll` is at `:151-267` with timeout
 `60_000`; the natural extension point for the algorithm pin is the existing
-`hashAlgorithm`-field describe at `:973`. A second SHA-256 fixture repo joins the existing pair in
+`hashAlgorithm`-field describe at `:974`. A second SHA-256 fixture repo joins the existing pair in
 that same `beforeAll` (do not add a second `beforeAll`). Rows:
 
 - a **tsgit-written v3 bundle** from a SHA-256 repository passes `git bundle verify` and
@@ -1766,8 +1766,8 @@ that same `beforeAll` (do not add a second `beforeAll`). Rows:
   exit-128 row.
 
 **Docs:** `docs/use/commands/bundle.md` (245 lines; `## Actions` `:83` with `### create` `:85`,
-`### verify` `:107`, `### listHeads` `:122`; `## Behaviour` `:133`; `## Throws` `:202` with
-`### create` `:204` and `### verify and listHeads` `:216`). Add the `version` option under
+`### verify` `:107`, `### listHeads` `:122`; `## Behaviour` `:133`; `## Throws` `:213` with
+`### create` `:215` and `### verify and listHeads` `:228`). Add the `version` option under
 `### create`, the version-selection rule under `## Behaviour`, the widened `hashAlgorithm` /
 `version` result fields, the exposed filter, and the new refusals under `## Throws`.
 
