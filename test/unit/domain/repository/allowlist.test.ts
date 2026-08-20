@@ -97,6 +97,37 @@ describe('isAllowlisted', () => {
           path: '/',
           verdict: true,
         },
+        {
+          label: "the root prefix '/*' — every absolute path is strictly below the root",
+          entries: ['/*'],
+          path: '/srv/repo',
+          verdict: true,
+        },
+        {
+          label: "the root prefix '/*' against a single-segment path",
+          entries: ['/*'],
+          path: '/a',
+          verdict: true,
+        },
+        {
+          label: "the root prefix '/*' must not match the root itself — strictly below",
+          entries: ['/*'],
+          path: '/',
+          verdict: false,
+        },
+        {
+          label: 'a doubled separator before the star',
+          entries: ['/srv//*'],
+          path: '/srv/repo',
+          verdict: true,
+        },
+        {
+          label:
+            'the root entry against an empty path — the trailing-slash strip stops at length 1',
+          entries: ['/'],
+          path: '',
+          verdict: false,
+        },
       ])('Then it returns $verdict for $label', ({ entries, path, verdict }) => {
         // Arrange
         const sut = isAllowlisted;

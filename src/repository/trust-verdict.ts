@@ -101,6 +101,18 @@ export const evaluateTrust = async (
  * `core.bare` changes neither. Computed independently of the allowlist and
  * of `trust` — neither escape hatch lifts this refusal.
  */
+// git exempts two admin locations from the implicit-bare heuristic: a
+// submodule gitdir under `.git/modules/` and a linked-worktree admin dir under
+// `.git/worktrees/`. Both WERE put there by a normal checkout, which is what
+// the heuristic is trying to detect the absence of, and both reach the
+// cwd-is-a-gitdir route with a basename that is not `.git`. Measured on 2.55.0
+// with `safe.bareRepository=explicit`: git ACCEPTS `main/.git/modules/sub` and
+// `main/.git/worktrees/wt`, and refuses a planted `evil.git`.
+const ADMIN_EXEMPT_SEGMENTS: ReadonlyArray<string> = ['/.git/modules/', '/.git/worktrees/'];
+
+const isAdminExempt = (gitDir: string): boolean =>
+  ADMIN_EXEMPT_SEGMENTS.some((segment) => gitDir.includes(segment));
+
 export const isImplicitBare = (
   outcome: WalkOutcome,
   pathPolicy: PathPolicy,
@@ -108,4 +120,5 @@ export const isImplicitBare = (
 ): boolean =>
   outcome.route === 'BARE_DIR' &&
   pathPolicy.basename(outcome.gitDir) !== '.git' &&
+  !isAdminExempt(outcome.gitDir) &&
   bareRepositories === 'explicit';

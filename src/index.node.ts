@@ -156,7 +156,8 @@ const nodeLayoutProbe: LayoutProbe = {
   // port contract — the caller only cares whether usable link text exists.
   readLink: (p) => readlink(p, 'utf8').catch(() => undefined),
   isOwnedByCaller: ownedByCallerPredicate({
-    callerUid: () => process.getuid?.(),
+    // Effective uid, matching the port contract and git's own `geteuid()`.
+    callerUid: () => process.geteuid?.() ?? process.getuid?.(),
     ownerUid: async (p) => (await stat(p).catch(() => undefined))?.uid,
   }),
 };
@@ -204,9 +205,19 @@ const canonicalizeTrustedDirectories = async (
 ): Promise<ReadonlyArray<string> | undefined> => {
   if (trustedDirectories === undefined) return undefined;
   const resolved = await Promise.all(
-    trustedDirectories.map(async (entry) =>
-      entry === '*' ? entry : (await canonicalize(entry)).path,
-    ),
+    trustedDirectories.map(async (entry) => {
+      if (entry === '*') return entry;
+      // A `/*` entry's star is a grammar token, not a path component: realpath
+      // would fail on it and hand back the entry unresolved, so the prefix
+      // would never be canonicalised and a symlinked root (macOS `/tmp` ->
+      // `/private/tmp`) would silently stop matching the realpath'd
+      // repository path. Resolve the prefix and re-attach the token.
+      if (entry.endsWith('/*')) {
+        const prefix = entry.slice(0, -2);
+        return `${(await canonicalize(prefix)).path}/*`;
+      }
+      return (await canonicalize(entry)).path;
+    }),
   );
   return resolved;
 };

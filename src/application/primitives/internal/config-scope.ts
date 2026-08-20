@@ -8,6 +8,7 @@ import { parseGitBoolean, parseIniSections } from '../../../domain/config/config
 import { TsgitError } from '../../../domain/error.js';
 import type { Context } from '../../../ports/context.js';
 import { commonGitDir } from '../path-layout.js';
+import { layoutFailsTrustGate } from './layout-verdict.js';
 
 /**
  * Canonical read precedence: later scopes override earlier ones for a given
@@ -49,6 +50,12 @@ const callAdapterPath = (scope: ConfigScope, fn: () => string): string => {
  * `${gitDir}/config.worktree`.
  */
 export const isWorktreeScopeActive = async (ctx: Context): Promise<boolean> => {
+  // The third reader of the repository config file, and the only one not
+  // reached through `loadConfigEntry` or `readSingleScope`. Every caller sits
+  // behind the acceptance tier today, so this keys on the same predicate as
+  // the other two rather than resting the "a refused repository's config is
+  // never parsed" invariant on caller discipline at one site.
+  if (layoutFailsTrustGate(ctx.layout) || ctx.layout.formatRefusal !== undefined) return false;
   const path = `${commonGitDir(ctx)}/config`;
   const text = await safeReadUtf8(ctx, path);
   if (text === undefined) return false;
