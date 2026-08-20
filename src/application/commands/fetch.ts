@@ -19,7 +19,7 @@
 import { TsgitError } from '../../domain/error.js';
 import { remoteAdvertisesNoRefs, remoteNotConfigured } from '../../domain/index.js';
 import type { ObjectId, RefName } from '../../domain/objects/index.js';
-import { ZERO_OID } from '../../domain/objects/index.js';
+import { zeroOid } from '../../domain/objects/index.js';
 import type { AdvertisedRef, Advertisement } from '../../domain/protocol/index.js';
 import {
   formatObjectFilter,
@@ -453,7 +453,7 @@ const deleteUnadvertised = async (
     // ref happens to live at the same path as a directory entry on a
     // case-folding filesystem (unlikely but possible).
     try {
-      await updateRef(ctx, refName, ZERO_OID, { delete: true });
+      await updateRef(ctx, refName, zeroOid(ctx.hashConfig), { delete: true });
     } catch (err) {
       if (isPackedRefDeleteError(err)) {
         // Skip packed-only refs rather than crashing the whole fetch.

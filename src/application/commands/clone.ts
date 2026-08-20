@@ -1,6 +1,6 @@
 import { remoteAdvertisesNoRefs, targetDirectoryNotEmpty } from '../../domain/index.js';
 import type { ObjectId, RefName } from '../../domain/objects/index.js';
-import { ZERO_OID } from '../../domain/objects/index.js';
+import { zeroOid } from '../../domain/objects/index.js';
 import type { FilePath } from '../../domain/objects/object-id.js';
 import type { Advertisement } from '../../domain/protocol/index.js';
 import {
@@ -266,7 +266,7 @@ const writeRef = async (
 ): Promise<void> => {
   const refPath = `${ctx.layout.gitDir}/${name}`;
   await ctx.fs.writeUtf8(refPath, `${id}\n`);
-  await recordRefUpdate(ctx, name, ZERO_OID, id, cloneFrom(reflogUrl));
+  await recordRefUpdate(ctx, name, zeroOid(ctx.hashConfig), id, cloneFrom(reflogUrl));
 };
 
 const headTrackedBranch = (ad: Advertisement): string | undefined => {
@@ -308,5 +308,11 @@ const logClonedHead = async (
   reflogUrl: string,
 ): Promise<void> => {
   if (headOid === undefined) return;
-  await recordRefUpdate(ctx, 'HEAD' as RefName, ZERO_OID, headOid, cloneFrom(reflogUrl));
+  await recordRefUpdate(
+    ctx,
+    'HEAD' as RefName,
+    zeroOid(ctx.hashConfig),
+    headOid,
+    cloneFrom(reflogUrl),
+  );
 };

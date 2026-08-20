@@ -13,7 +13,7 @@ import type {
   Tag,
   TagData,
 } from '../../domain/objects/index.js';
-import { serializeTagContent, stripspace, ZERO_OID } from '../../domain/objects/index.js';
+import { serializeTagContent, stripspace, zeroOid } from '../../domain/objects/index.js';
 import { validateRefName } from '../../domain/refs/index.js';
 import type { Context } from '../../ports/context.js';
 import type { ParsedConfig } from '../primitives/config-read.js';
@@ -214,7 +214,7 @@ export const tagDelete = async (ctx: Context, input: TagDeleteInput): Promise<Ta
   if (!(await ctx.fs.exists(`${perWorktreeRefDir(ctx, name)}/${name}`))) {
     throw tagNotFound(name);
   }
-  await updateRef(ctx, name, ZERO_OID, { delete: true });
+  await updateRef(ctx, name, zeroOid(ctx.hashConfig), { delete: true });
   return { name };
 };
 

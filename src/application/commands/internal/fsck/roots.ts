@@ -2,7 +2,7 @@ import { TsgitError } from '../../../../domain/error.js';
 import type { CacheTreeEntry, GitIndex } from '../../../../domain/git-index/index-entry.js';
 import { parseCacheTree } from '../../../../domain/git-index/index-parser.js';
 import type { ObjectId } from '../../../../domain/objects/index.js';
-import { ZERO_OID } from '../../../../domain/objects/index.js';
+import { zeroOid } from '../../../../domain/objects/index.js';
 import type { Context } from '../../../../ports/context.js';
 import { enumerateRefs } from '../../../primitives/enumerate-refs.js';
 import { readIndex } from '../../../primitives/read-index.js';
@@ -102,16 +102,17 @@ async function addRefRoots(
 
 async function addReflogRoots(ctx: Context, roots: Set<ObjectId>): Promise<void> {
   const reflogNames = await listReflogs(ctx);
+  const zero = zeroOid(ctx.hashConfig);
   await Promise.all(
     reflogNames.map(async (ref) => {
       try {
         const entries = await readReflog(ctx, ref);
         for (const entry of entries) {
-          // ZERO_OID is the "no object" sentinel git writes for creation events
-          // (first reflog entry of any ref). It is not a real object reference
-          // and must never be treated as a reachability root.
-          if (entry.oldId !== ZERO_OID) roots.add(entry.oldId);
-          if (entry.newId !== ZERO_OID) roots.add(entry.newId);
+          // The zero oid is the "no object" sentinel git writes for creation
+          // events (first reflog entry of any ref). It is not a real object
+          // reference and must never be treated as a reachability root.
+          if (entry.oldId !== zero) roots.add(entry.oldId);
+          if (entry.newId !== zero) roots.add(entry.newId);
         }
       } catch {
         // Unreadable reflog — tolerated

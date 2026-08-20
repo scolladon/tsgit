@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
 import { resolveRef } from '../../../../src/application/primitives/resolve-ref.js';
 import { updateRef } from '../../../../src/application/primitives/update-ref.js';
@@ -10,6 +11,8 @@ import { buildSeededContext } from './fixtures.js';
 const ID_A = 'a'.repeat(40) as ObjectId;
 const ID_B = 'b'.repeat(40) as ObjectId;
 const ZERO = '0'.repeat(40) as ObjectId;
+const ID_A_SHA256 = 'a'.repeat(64) as ObjectId;
+const ZERO_SHA256 = '0'.repeat(64) as ObjectId;
 const MAIN = 'refs/heads/main' as RefName;
 const HEAD = 'HEAD' as RefName;
 const REASON = 'commit: test';
@@ -220,6 +223,26 @@ describe('updateRef', () => {
           expect(result[0]?.oldId).toBe(ZERO);
           expect(result[0]?.newId).toBe(ID_A);
           expect(result[0]?.message).toBe('commit (initial): seed');
+        });
+      });
+    });
+
+    describe('Given a fresh branch write in a SHA-256 repository', () => {
+      describe('When updateRef is called', () => {
+        it('Then the raw reflog line bytes start with the 64-zero oldId', async () => {
+          // Arrange — reads the raw `.git/logs/<ref>` bytes rather than going
+          // through `readReflog`/`parseReflogLine`, which is a separate,
+          // not-yet-width-aware cluster (`reflog-format.ts`'s `OID_LENGTH`).
+          // This proves the WRITE side (`recordRefUpdate` → `updateRef`'s
+          // zero-oid fallback) actually emits 64 zeros on disk.
+          const ctx = createMemoryContext({ algorithm: 'sha256' });
+
+          // Act
+          await updateRef(ctx, MAIN, ID_A_SHA256, { reflogMessage: 'commit (initial): seed' });
+          const line = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/logs/${MAIN}`);
+
+          // Assert
+          expect(line.startsWith(`${ZERO_SHA256} ${ID_A_SHA256} `)).toBe(true);
         });
       });
     });

@@ -9,7 +9,7 @@
  */
 import { invalidOption, remoteExists, remoteNotConfigured } from '../../domain/commands/error.js';
 import { unsupportedOperation } from '../../domain/error.js';
-import { type ObjectId, type RefName, ZERO_OID } from '../../domain/objects/object-id.js';
+import { type ObjectId, type RefName, zeroOid } from '../../domain/objects/object-id.js';
 import type { Context } from '../../ports/context.js';
 import { readConfig } from '../primitives/config-read.js';
 import { enumerateRefs } from '../primitives/enumerate-refs.js';
@@ -179,7 +179,7 @@ export const remoteRemove = async (
   // Delete tracking refs first — recoverable if we crash before the
   // config rewrite. `updateRef` cleans the reflog file too.
   for (const ref of trackingRefs) {
-    await updateRef(ctx, ref, ZERO_OID, { delete: true });
+    await updateRef(ctx, ref, zeroOid(ctx.hashConfig), { delete: true });
   }
   // Rewrite config: drop the [remote "<name>"] section AND clear every
   // paired branch.<X>.remote / branch.<X>.merge key.
@@ -226,7 +226,7 @@ const moveTrackingRef = async (
     );
   }
   await updateRef(ctx, target, direct.id, { expected: 'absent', reflogMessage });
-  await updateRef(ctx, source, ZERO_OID, { delete: true });
+  await updateRef(ctx, source, zeroOid(ctx.hashConfig), { delete: true });
 };
 
 export const remoteRename = async (

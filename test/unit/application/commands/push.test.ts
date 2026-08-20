@@ -45,6 +45,7 @@ import { recordingProgress, seedRepo, withProgress } from './fixtures.js';
 
 const ENCODER = new TextEncoder();
 const ZERO_OID = '0'.repeat(40);
+const ZERO_OID_SHA256 = '0'.repeat(64);
 
 interface RemoteRef {
   readonly name: string;
@@ -1005,6 +1006,33 @@ describe('push — delete refspec', () => {
         // The pkt-line update is `<oldId> 0000...0000 refs/heads/feature\0<caps>`
         const decoded = new TextDecoder().decode(body);
         expect(decoded).toContain(`${feature.id} ${ZERO_OID} refs/heads/feature`);
+      });
+    });
+  });
+
+  describe('Given `:refs/heads/feature` and the ref is advertised (SHA-256 repository)', () => {
+    describe('When push runs', () => {
+      it('Then the request body carries the 64-zero-oid newId', async () => {
+        // Arrange
+        const ctx = createMemoryContext({ algorithm: 'sha256' });
+        const feature = await seedCommit(ctx, [], 'feature');
+        await seedRepo(ctx, { refs: { 'refs/heads/feature': feature.id } });
+        await writeOriginConfig(ctx);
+        const { transport, requestBodies } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/feature', id: feature.id }],
+          reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/feature', status: 'ok' }] },
+        });
+
+        // Act
+        const result = await push({ ...ctx, transport }, { refspecs: [':refs/heads/feature'] });
+
+        // Assert
+        expect(result.pushedRefs[0]?.status).toBe('ok');
+        const body = requestBodies[0];
+        expect(body).toBeDefined();
+        const decoded = new TextDecoder().decode(body);
+        expect(decoded).toContain(`${feature.id} ${ZERO_OID_SHA256} refs/heads/feature`);
       });
     });
   });

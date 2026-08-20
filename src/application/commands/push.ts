@@ -23,7 +23,7 @@ import {
   signedPushUnsupported,
 } from '../../domain/commands/error.js';
 import { remoteNotConfigured } from '../../domain/index.js';
-import { ObjectId, type RefName } from '../../domain/objects/index.js';
+import { type ObjectId, type RefName, zeroOid } from '../../domain/objects/index.js';
 import {
   type AdvertisedRef,
   type Advertisement,
@@ -112,7 +112,6 @@ interface ResolvedRefspec {
 
 const PUSH_ENUMERATE_OBJECTS_OP = 'push:enumerate-objects';
 const PUSH_UPLOAD_OP = 'push:upload';
-const ZERO_OID = ObjectId.from('0'.repeat(40));
 const SIDE_BAND_CAPS: ReadonlySet<string> = new Set(['side-band-64k', 'side-band']);
 
 // Real git validates `push.default` AND `push.gpgSign` in the same config
@@ -256,12 +255,13 @@ const resolveOneRefspec = async (
   remoteName: string,
   opts: PushOptions,
 ): Promise<ResolvedRefspec> => {
-  const remoteOid = remoteByName.get(parsed.dst) ?? ZERO_OID;
+  const zero = zeroOid(ctx.hashConfig);
+  const remoteOid = remoteByName.get(parsed.dst) ?? zero;
   if (parsed.isDelete) {
-    if (remoteOid === ZERO_OID) {
+    if (remoteOid === zero) {
       throw invalidOption('refspecs', `delete target ${parsed.dst} is not advertised`);
     }
-    return { parsed, localOid: ZERO_OID, remoteOid };
+    return { parsed, localOid: zero, remoteOid };
   }
   const localOid = await resolveRef(ctx, parsed.src as RefName);
   await enforceLeaseAndFastForward(ctx, parsed, localOid, remoteOid, remoteName, opts);
@@ -285,7 +285,7 @@ const enforceLeaseAndFastForward = async (
     return;
   }
   if (parsed.force === 'force' || opts.force === true) return;
-  if (remoteOid === ZERO_OID) return; // creating a new ref
+  if (remoteOid === zeroOid(ctx.hashConfig)) return; // creating a new ref
   if (!(await isAncestor(ctx, remoteOid, localOid))) {
     throw nonFastForward(parsed.dst as RefName, localOid, remoteOid);
   }
@@ -341,10 +341,10 @@ const sendUpdates = async (
   const nonce = parsePushCertNonce(adv.capabilities);
   const intent = resolveSigningIntent(mode, nonce, remoteName);
   const wants = movers.filter((m) => !m.parsed.isDelete).map((m) => m.localOid);
-  // ZERO_OID-advertised refs (ref-creation sentinels) are kept verbatim in
+  // Zero-oid-advertised refs (ref-creation sentinels) are kept verbatim in
   // `haves`: they only ever land in `walkCommits`'s `until` set, which does
   // pure membership checks and can never match a real commit oid — so an
-  // explicit `id !== ZERO_OID` filter would be a provable no-op.
+  // explicit `id !== zeroOid(ctx.hashConfig)` filter would be a provable no-op.
   const haves = adv.refs.map((r) => r.id);
   const oids = await collectObjects(ctx, wants, haves);
   const pack = await buildPack(ctx, { oids });

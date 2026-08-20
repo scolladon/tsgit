@@ -20,7 +20,7 @@ import {
   type FilePath,
   ObjectId,
   type RefName,
-  ZERO_OID,
+  zeroOid,
 } from '../../domain/objects/index.js';
 import { branchCreatedFrom } from '../../domain/reflog/reflog-messages.js';
 import { validateRefName } from '../../domain/refs/index.js';
@@ -621,7 +621,13 @@ const checkoutTrackingBranch = async (child: Context, branch: string): Promise<v
   const oid = await resolveRef(child, `refs/remotes/origin/${branch}` as RefName);
   const ref = `${HEADS_PREFIX}${branch}` as RefName;
   await child.fs.writeUtf8(`${child.layout.gitDir}/${ref}`, `${oid}\n`);
-  await recordRefUpdate(child, ref, ZERO_OID, oid, branchCreatedFrom(`origin/${branch}`));
+  await recordRefUpdate(
+    child,
+    ref,
+    zeroOid(child.hashConfig),
+    oid,
+    branchCreatedFrom(`origin/${branch}`),
+  );
   await updateConfigOperations(child, [
     { kind: 'set', section: 'branch', subsection: branch, key: 'remote', value: 'origin' },
     { kind: 'set', section: 'branch', subsection: branch, key: 'merge', value: ref },
