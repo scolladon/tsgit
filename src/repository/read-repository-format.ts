@@ -399,7 +399,9 @@ const resolveEnum = <T extends string>(
 ): T => {
   if (entry === undefined) return fallback;
   if (entry.value === null) throw configMissingValue(key, source, entry.line);
-  if (!isAllowedValue(entry.value, allowed)) throw configInvalidEnumValue(key, source, entry.value);
+  if (!isAllowedValue(entry.value, allowed)) {
+    throw configInvalidEnumValue(key, source, entry.value, entry.line);
+  }
   return entry.value;
 };
 

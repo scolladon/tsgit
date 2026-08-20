@@ -468,15 +468,24 @@ describe.skipIf(!GIT_AVAILABLE)('sha256 object format — .git/index interop', (
             expect(theirs.stderr).toContain(
               `invalid value for 'extensions.objectformat': '${value}'`,
             );
-            expect(theirs.stderr).toContain('fatal: bad config line');
             // Assert — tsgit
             expect(caught).toBeInstanceOf(TsgitError);
-            expect((caught as TsgitError).data).toEqual({
+            const data = (caught as TsgitError).data;
+            expect(data).toEqual({
               code: 'CONFIG_INVALID_ENUM_VALUE',
               key: 'extensions.objectformat',
               source: configPath,
               value,
+              line: expect.any(Number),
             });
+            // Both of git's lines are reconstructed from the structured fields —
+            // the library emits no rendered text, so the line number has to be
+            // carried in the payload for this to be expressible at all.
+            if (data.code !== 'CONFIG_INVALID_ENUM_VALUE') expect.unreachable();
+            expect(theirs.stderr).toContain(
+              `error: invalid value for '${data.key}': '${data.value}'`,
+            );
+            expect(theirs.stderr).toContain(`fatal: bad config line ${data.line} in file`);
           } finally {
             await rm(dir, { recursive: true, force: true });
           }

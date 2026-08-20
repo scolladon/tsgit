@@ -172,6 +172,7 @@ export type CommandError =
       readonly key: string;
       readonly source: string;
       readonly value: string;
+      readonly line: number;
     }
   | { readonly code: 'CONFIG_BAD_ZLIB_LEVEL'; readonly level: number }
   | {
@@ -619,14 +620,22 @@ export const configBadBooleanLiteral = (key: string, source: string, value: stri
  * is the raw post-tokenizer string — case preserved, since the grammar is
  * case-sensitive on the VALUE even though the key itself is lower-cased for
  * the message. A valueless entry is `CONFIG_MISSING_VALUE` instead, never
- * this code.
+ * this code. `line` is the entry's 1-based config-file line — git names it in
+ * the second line of its refusal (`fatal: bad config line <N> in file <F>`),
+ * so a caller cannot reconstruct that line without it.
  */
-export const configInvalidEnumValue = (key: string, source: string, value: string): TsgitError =>
+export const configInvalidEnumValue = (
+  key: string,
+  source: string,
+  value: string,
+  line: number,
+): TsgitError =>
   new TsgitError({
     code: 'CONFIG_INVALID_ENUM_VALUE',
     key: sanitizeForDisplay(key),
     source,
     value: sanitizeForDisplay(value),
+    line,
   });
 
 /**

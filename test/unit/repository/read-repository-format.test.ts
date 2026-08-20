@@ -1639,6 +1639,7 @@ describe('readRepositoryFormat', () => {
             key: 'extensions.objectformat',
             source: '/repo/.git/config',
             value: 'SHA256',
+            line: 2,
           });
         });
       });
@@ -1657,6 +1658,7 @@ describe('readRepositoryFormat', () => {
             key: 'extensions.objectformat',
             source: '/repo/.git/config',
             value: 'Sha256',
+            line: 2,
           });
         });
       });
@@ -1675,6 +1677,7 @@ describe('readRepositoryFormat', () => {
             key: 'extensions.objectformat',
             source: '/repo/.git/config',
             value: 'sha-256',
+            line: 2,
           });
         });
       });
@@ -1693,6 +1696,7 @@ describe('readRepositoryFormat', () => {
             key: 'extensions.objectformat',
             source: '/repo/.git/config',
             value: 'sha256x',
+            line: 2,
           });
         });
       });
@@ -1711,6 +1715,7 @@ describe('readRepositoryFormat', () => {
             key: 'extensions.objectformat',
             source: '/repo/.git/config',
             value: '',
+            line: 2,
           });
         });
       });
