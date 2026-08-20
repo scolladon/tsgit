@@ -231,6 +231,26 @@ describe('object-resolver', () => {
     });
   });
 
+  describe('Given a SHA-1 repo and the SHA-1 empty-tree oid', () => {
+    describe('When resolveObject is called', () => {
+      it('Then returns a zero-entry tree', async () => {
+        // Arrange — the literal, not the imported constant: asserting against
+        // the same constant the implementation selects would let a selection
+        // bug agree with itself.
+        const ctx = createMemoryContext();
+        const registry = createPackRegistry(ctx);
+        const emptyTreeOidSha1 = '4b825dc642cb6eb9a060e54bf8d69288fbee4904' as ObjectId;
+        const sut = resolveObject;
+
+        // Act
+        const result = await sut(ctx, registry, emptyTreeOidSha1, true, undefined);
+
+        // Assert
+        expect(result).toEqual({ type: 'tree', id: emptyTreeOidSha1, entries: [] });
+      });
+    });
+  });
+
   describe('Given a SHA-256 repo and the SHA-1 empty-tree oid', () => {
     describe('When resolveObject is called', () => {
       it('Then throws OBJECT_NOT_FOUND (not intercepted under a mismatched hash config)', async () => {
