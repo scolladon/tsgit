@@ -1,6 +1,7 @@
 import type { Context } from '../../../ports/context.js';
 import type { FileSystem } from '../../../ports/file-system.js';
 import { commonGitDir } from '../path-layout.js';
+import { inheritedAcceptanceVerdicts } from './layout-verdict.js';
 
 /**
  * The filesystem to use for worktree-directory I/O: the facade's worktree-fs
@@ -44,17 +45,7 @@ export const deriveWorktreeContext = (
       commonDir: common,
       bare: false,
       ...(ctx.layout.homeDir !== undefined ? { homeDir: ctx.layout.homeDir } : {}),
-      // The acceptance verdicts are properties of the REPOSITORY, not of the
-      // entry point, so they must survive layout derivation: a child that
-      // dropped them would read as accepted and re-open the config of a
-      // repository the gate refused. Every caller sits behind the acceptance
-      // tier today, so this is defence in depth rather than a live fix.
-      ...(ctx.layout.untrusted !== undefined ? { untrusted: ctx.layout.untrusted } : {}),
-      ...(ctx.layout.implicitBare !== undefined ? { implicitBare: ctx.layout.implicitBare } : {}),
-      ...(ctx.layout.foreignPath !== undefined ? { foreignPath: ctx.layout.foreignPath } : {}),
-      ...(ctx.layout.formatRefusal !== undefined
-        ? { formatRefusal: ctx.layout.formatRefusal }
-        : {}),
+      ...inheritedAcceptanceVerdicts(ctx.layout),
     }),
     cwd: absWorktreePath,
   });

@@ -1,6 +1,7 @@
 import type { FilePath } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
 import { joinPath } from './join-working-tree-path.js';
+import { inheritedAcceptanceVerdicts } from './layout-verdict.js';
 import { requireWorkTree } from './repo-state.js';
 
 /**
@@ -25,17 +26,7 @@ const buildChildContext = (ctx: Context, name: string, treeRelPath: FilePath): C
       bare: false,
       // Stryker disable next-line ConditionalExpression,BooleanLiteral,EqualityOperator,ObjectLiteral: equivalent — when `homeDir` is undefined the always-true mutant yields `{ homeDir: undefined }`, indistinguishable from the `{}` branch on `layout.homeDir`; the conditional only exists to satisfy `exactOptionalPropertyTypes`. The killable always-`{}` half is covered by the homeDir-propagation tests.
       ...(ctx.layout.homeDir !== undefined ? { homeDir: ctx.layout.homeDir } : {}),
-      // The acceptance verdicts are properties of the REPOSITORY, not of the
-      // entry point, so they must survive layout derivation: a child that
-      // dropped them would read as accepted and re-open the config of a
-      // repository the gate refused. Every caller sits behind the acceptance
-      // tier today, so this is defence in depth rather than a live fix.
-      ...(ctx.layout.untrusted !== undefined ? { untrusted: ctx.layout.untrusted } : {}),
-      ...(ctx.layout.implicitBare !== undefined ? { implicitBare: ctx.layout.implicitBare } : {}),
-      ...(ctx.layout.foreignPath !== undefined ? { foreignPath: ctx.layout.foreignPath } : {}),
-      ...(ctx.layout.formatRefusal !== undefined
-        ? { formatRefusal: ctx.layout.formatRefusal }
-        : {}),
+      ...inheritedAcceptanceVerdicts(ctx.layout),
     }),
     cwd: workDir,
   });

@@ -31,3 +31,22 @@ export const layoutFailsTrustGate = (layout: RepositoryLayout): boolean =>
  */
 export const layoutFailsAcceptance = (layout: RepositoryLayout): boolean =>
   layoutFailsTrustGate(layout) || layout.formatRefusal !== undefined;
+
+/**
+ * The acceptance verdicts a derived child `Context` must inherit from its
+ * parent's `RepositoryLayout` — `untrusted`, `implicitBare`, `foreignPath`,
+ * `formatRefusal`. These are properties of the REPOSITORY, not of the entry
+ * point, so they must survive layout derivation: a derived context that
+ * dropped them would read as accepted and re-open the config of a
+ * repository the gate refused. Every caller sits behind the acceptance tier
+ * today, so honouring this at derivation time is defence in depth rather
+ * than a live fix.
+ */
+export const inheritedAcceptanceVerdicts = (
+  layout: RepositoryLayout,
+): Pick<RepositoryLayout, 'untrusted' | 'implicitBare' | 'foreignPath' | 'formatRefusal'> => ({
+  ...(layout.untrusted !== undefined ? { untrusted: layout.untrusted } : {}),
+  ...(layout.implicitBare !== undefined ? { implicitBare: layout.implicitBare } : {}),
+  ...(layout.foreignPath !== undefined ? { foreignPath: layout.foreignPath } : {}),
+  ...(layout.formatRefusal !== undefined ? { formatRefusal: layout.formatRefusal } : {}),
+});
