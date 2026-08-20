@@ -197,7 +197,7 @@ describe('createNodeContext', () => {
 
       it('Then ctx.hashConfig is SHA1_CONFIG', () => {
         // Arrange / Act
-        const sut = createNodeContext({ workDir: '/tmp/tsgit-ports-hashconfig' });
+        const sut = createNodeContext({ workDir: '/tmp/tsgit-ports-hash-config' });
 
         // Assert — the default (no algorithm option) still yields sha1 (R6).
         expect(sut.hashConfig).toBe(SHA1_CONFIG);

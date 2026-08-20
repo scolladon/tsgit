@@ -1080,6 +1080,26 @@ describe('domain error — AdapterError', () => {
         });
       });
     });
+
+    describe('Given SUBMODULE_OBJECT_FORMAT_MISMATCH', () => {
+      describe('When reading message', () => {
+        it('Then names both algorithms, so a caller can tell which side is which', () => {
+          // Arrange & Act
+          const result = new TsgitErrorClass({
+            code: 'SUBMODULE_OBJECT_FORMAT_MISMATCH',
+            local: 'sha1',
+            remote: 'sha256',
+          });
+
+          // Assert — the superproject's algorithm is `local`, the submodule
+          // source's is `remote`; a message naming only one would leave the
+          // caller unable to say which end to change.
+          expect(result.message).toBe(
+            'SUBMODULE_OBJECT_FORMAT_MISMATCH: cannot add a submodule of a different hash algorithm: local sha1, remote sha256',
+          );
+        });
+      });
+    });
   });
 
   describe('extractDetail message formatting — worktree refusals', () => {

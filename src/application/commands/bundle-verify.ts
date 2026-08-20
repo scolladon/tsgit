@@ -112,7 +112,7 @@ const assertPrerequisiteAlgorithmMatches = (ctx: Context, header: ParsedBundleHe
  * need not be re-instantiable. When it is absent the bundle's own width is
  * unreachable, and there is no safe fallback: no bundle path may take its
  * width from the surrounding repository, and proceeding at the repository's
- * width misparses the pack (measured: a 32-byte-oid pack read at 20 bytes
+ * width reads the pack wrongly (measured: a 32-byte-oid pack read at 20 bytes
  * fails as `INVALID_PACK_HEADER`, a confusing error in place of a clear
  * refusal). Refuse instead, as `clone` does in the same situation.
  */

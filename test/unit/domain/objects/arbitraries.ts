@@ -63,7 +63,7 @@ function arbHexDigit(): fc.Arbitrary<string> {
 }
 
 // An arbitrary-length lower-case hex string (length is NOT tied to any
-// HashConfig width) — used to probe isOid's length/hexLength equivalence
+// HashConfig width) — used to probe the length/hexLength equivalence of isOid
 // across the whole grammar, not just the two frozen widths.
 export function arbHexString(maxLength = 200): fc.Arbitrary<string> {
   return fc.array(arbHexDigit(), { maxLength }).map((chars) => chars.join(''));

@@ -152,7 +152,7 @@ describe.skipIf(!GIT_AVAILABLE)('sha256 object format — .git/index interop', (
     it("Then git verify-pack -v accepts tsgit's own .idx (exit 0)", async () => {
       // Arrange — a copy of the base repo, so packObjects' write cannot
       // disturb the shared fixture other tests in this file read from.
-      const dir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-sha256-packobjects-'));
+      const dir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-sha256-pack-objects-'));
       await cp(baseDir, dir, { recursive: true });
 
       try {
@@ -1155,7 +1155,7 @@ describe.skipIf(TRANSPORT_SKIP)('sha256 object format — transport negotiation 
           projectRoot: source.parentDir,
           forwardGitProtocol,
         });
-        const cloneDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-transport-clonedst-'));
+        const cloneDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-transport-clone-dst-'));
         try {
           const url = `http://127.0.0.1:${server.port}/${source.bareName}`;
           const baseCtx = createNodeContext({
