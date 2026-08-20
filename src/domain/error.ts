@@ -568,6 +568,8 @@ function extractDetail(data: TsgitErrorData): string {
         : `unsupported bundle version ${data.version} for serialization`;
     case 'BUNDLE_PREREQUISITE_NOT_COMMIT':
       return `boundary object ${data.oid} is not a commit (got ${data.objectType})`;
+    case 'BUNDLE_PREREQUISITE_ALGORITHM_MISMATCH':
+      return `missing mapping of ${data.oid} to ${data.localAlgorithm}`;
     case 'NOTES_ALREADY_EXIST':
       return `Cannot add notes. Found existing notes for object ${data.object}. Use '-f' to overwrite existing notes`;
     case 'NOTES_OBJECT_HAS_NONE':

@@ -62,6 +62,16 @@ const initRepo = async (): Promise<Context> => {
   return ctx;
 };
 
+/** A SHA-256 repository with one commit on main — for cross-format fixtures. */
+const buildSha256SingleCommitRepo = async (): Promise<Context> => {
+  const ctx = createMemoryContext({ algorithm: 'sha256' });
+  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+  const tree = await writeTree(ctx, []);
+  const commit = await makeCommitObj(ctx, tree, [], 'sha256 commit', 1);
+  await setRef(ctx, 'refs/heads/main', commit);
+  return ctx;
+};
+
 interface SingleCommitRepo {
   readonly ctx: Context;
   readonly commit1: ObjectId;
@@ -813,6 +823,120 @@ describe('bundleVerify', () => {
         // Assert — base is read twice: once by the prereq check, once by the memoized
         // resolver (second REF_DELTA entry hits cache — no extra read)
         expect(baseReadCount).toBe(2);
+      });
+    });
+  });
+
+  // ── cross-format prerequisite refusal ─────────────────────────────────────
+
+  describe('Given a SHA-256 bundle whose prerequisite is verified against a SHA-1 repository', () => {
+    describe('When bundleVerify is called', () => {
+      it("Then it throws the cross-format refusal with oid, bundleAlgorithm 'sha256' and localAlgorithm 'sha1'", async () => {
+        // Arrange — hand-built v3/sha256 header; the pack bytes are irrelevant
+        // because the guard fires before any pack read is attempted.
+        const ctx = await initRepo(); // sha1 repository
+        const prereqOid = 'a'.repeat(64);
+        const refOid = 'b'.repeat(64);
+        const headerText =
+          `# v3 git bundle\n@object-format=sha256\n` +
+          `-${prereqOid} boundary commit\n${refOid} refs/heads/main\n\n`;
+        await ctx.fs.write(BUNDLE_PATH, enc.encode(headerText));
+
+        // Act
+        let thrown: unknown;
+        try {
+          await bundleVerify(ctx, { path: BUNDLE_PATH });
+        } catch (err) {
+          thrown = err;
+        }
+
+        // Assert
+        expect(thrown).toBeInstanceOf(TsgitError);
+        const data = (thrown as TsgitError).data as {
+          code: string;
+          oid: string;
+          bundleAlgorithm: string;
+          localAlgorithm: string;
+        };
+        expect(data.code).toBe('BUNDLE_PREREQUISITE_ALGORITHM_MISMATCH');
+        expect(data.oid).toBe(prereqOid);
+        expect(data.bundleAlgorithm).toBe('sha256');
+        expect(data.localAlgorithm).toBe('sha1');
+      });
+    });
+  });
+
+  describe('Given a same-format bundle whose prerequisite commit is absent from the target repo', () => {
+    describe('When bundleVerify is called', () => {
+      it('Then the prerequisite is still reported in missingPrerequisites — the narrowing guard does not swallow the absent-prerequisite path', async () => {
+        // Arrange
+        const { ctx: sourceCtx, commit1 } = await buildTwoCommitRepo();
+        const createResult = await bundleCreate(sourceCtx, {
+          revs: [{ range: ['refs/heads/main~1', 'refs/heads/main'] }],
+        });
+        const emptyCtx = await initRepo();
+        await emptyCtx.fs.write(BUNDLE_PATH, createResult.bytes);
+
+        // Act
+        const result = await bundleVerify(emptyCtx, { path: BUNDLE_PATH });
+
+        // Assert — exit-1 shape (missing, not thrown) survives the new guard
+        expect(result.prerequisitesPresent).toBe(false);
+        expect(result.missingPrerequisites).toContain(commit1);
+      });
+    });
+  });
+
+  describe('Given a SHA-256 bundle with no prerequisites, verified from within a SHA-1 repository', () => {
+    describe('When bundleVerify is called', () => {
+      it("Then it verifies successfully — the guard does not fire on a complete bundle, and the pack is framed at the bundle's own algorithm rather than the repository's", async () => {
+        // Arrange — a complete (0-prerequisite) SHA-256 bundle, verified from a
+        // SHA-1 repository. Framing the pack trailer/entries at the repository's
+        // 20-byte width instead of the bundle's own 32-byte width would fail the
+        // trailer digest check, so a successful verify is itself the proof.
+        const sha256Ctx = await buildSha256SingleCommitRepo();
+        const created = await bundleCreate(sha256Ctx, { all: true });
+        const sha1Ctx = await initRepo();
+        await sha1Ctx.fs.write(BUNDLE_PATH, created.bytes);
+
+        // Act
+        const result = await bundleVerify(sha1Ctx, { path: BUNDLE_PATH });
+
+        // Assert
+        expect(result.recordsCompleteHistory).toBe(true);
+        expect(result.prerequisitesPresent).toBe(true);
+        expect(result.hashAlgorithm).toBe('sha256');
+        expect(result.refs[0]?.oid).toMatch(/^[0-9a-f]{64}$/);
+      });
+    });
+  });
+
+  // ── filter capability exposure ────────────────────────────────────────────
+
+  describe('Given a v3 bundle whose header declares a @filter capability', () => {
+    describe('When bundleVerify is called', () => {
+      it('Then the result exposes filter alongside version and hashAlgorithm', async () => {
+        // Arrange — reuse a real pack from bundleCreate, but hand-write the v3
+        // header text so it carries @filter (bundleCreate has no --filter yet).
+        const { ctx } = await buildSingleCommitRepo();
+        const created = await bundleCreate(ctx, { all: true });
+        const originalHeader = parseBundleHeader(created.bytes, '<fixture>');
+        const packBytes = created.bytes.subarray(originalHeader.packOffset);
+        const refLines = originalHeader.refs.map((r) => `${r.oid} ${r.name}\n`).join('');
+        const headerText = `# v3 git bundle\n@object-format=sha1\n@filter=blob:none\n${refLines}\n`;
+        const headerEncoded = enc.encode(headerText);
+        const bundleBytes = new Uint8Array(headerEncoded.length + packBytes.length);
+        bundleBytes.set(headerEncoded, 0);
+        bundleBytes.set(packBytes, headerEncoded.length);
+        await ctx.fs.write(BUNDLE_PATH, bundleBytes);
+
+        // Act
+        const result = await bundleVerify(ctx, { path: BUNDLE_PATH });
+
+        // Assert
+        expect(result.version).toBe(3);
+        expect(result.hashAlgorithm).toBe('sha1');
+        expect(result.filter).toEqual({ kind: 'blob-none' });
       });
     });
   });

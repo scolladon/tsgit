@@ -191,6 +191,35 @@ describe('bundleListHeads', () => {
     });
   });
 
+  // ── cross-format width ────────────────────────────────────────────────────
+
+  describe('Given a v3 SHA-256 bundle', () => {
+    describe('When bundleListHeads is called from within a SHA-1 repository', () => {
+      it('Then it lists refs with 64-hex oids regardless of the repository algorithm', async () => {
+        // Arrange
+        const sha256Ctx = createMemoryContext({ algorithm: 'sha256' });
+        await sha256Ctx.fs.writeUtf8(`${sha256Ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+        const tree = await writeTree(sha256Ctx, []);
+        const commit = await makeCommitObj(sha256Ctx, tree, [], 'sha256 commit', 1);
+        await setRef(sha256Ctx, 'refs/heads/main', commit);
+        const created = await bundleCreate(sha256Ctx, { all: true });
+
+        const sha1Ctx = await initRepo();
+        await sha1Ctx.fs.write(BUNDLE_PATH, created.bytes);
+
+        // Act
+        const result = await bundleListHeads(sha1Ctx, { path: BUNDLE_PATH });
+
+        // Assert
+        expect(result.version).toBe(3);
+        expect(result.refs.length).toBeGreaterThan(0);
+        for (const ref of result.refs) {
+          expect(ref.oid as string).toMatch(/^[0-9a-f]{64}$/);
+        }
+      });
+    });
+  });
+
   // ── missing path ──────────────────────────────────────────────────────────
 
   describe('Given a path that does not exist', () => {

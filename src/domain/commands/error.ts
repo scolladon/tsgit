@@ -278,6 +278,12 @@ export type CommandError =
       readonly oid: ObjectId;
       readonly objectType: string;
     }
+  | {
+      readonly code: 'BUNDLE_PREREQUISITE_ALGORITHM_MISMATCH';
+      readonly oid: ObjectId;
+      readonly bundleAlgorithm: 'sha1' | 'sha256';
+      readonly localAlgorithm: 'sha1' | 'sha256';
+    }
   | { readonly code: 'NOTES_ALREADY_EXIST'; readonly object: ObjectId }
   | { readonly code: 'NOTES_OBJECT_HAS_NONE'; readonly object: ObjectId }
   | { readonly code: 'NOTES_REF_OUTSIDE'; readonly ref: string }
@@ -864,6 +870,23 @@ export const bundleUnsupportedSerializeVersion = (version: number): TsgitError =
 // come from `peel(ctx, oid, 'commit')`); this error surfaces store corruption.
 export const bundlePrerequisiteNotCommit = (oid: ObjectId, objectType: string): TsgitError =>
   new TsgitError({ code: 'BUNDLE_PREREQUISITE_NOT_COMMIT', oid, objectType });
+
+// `bundle verify` cross-format refusal: a prerequisite oid is declared under an
+// algorithm the verifying repository does not itself use — git can never map
+// such an oid to a local object, so it refuses `fatal: missing mapping of <oid>
+// to <local-algo>`, exit 128, distinct from (and raised BEFORE) the plain
+// absent-prerequisite check, which keeps its own exit-1 shape.
+export const bundlePrerequisiteAlgorithmMismatch = (
+  oid: ObjectId,
+  bundleAlgorithm: 'sha1' | 'sha256',
+  localAlgorithm: 'sha1' | 'sha256',
+): TsgitError =>
+  new TsgitError({
+    code: 'BUNDLE_PREREQUISITE_ALGORITHM_MISMATCH',
+    oid,
+    bundleAlgorithm,
+    localAlgorithm,
+  });
 
 // `notes add` refusal when a note already exists and `force` was not set.
 // git: `error: Cannot add notes. Found existing notes for object <oid>.`

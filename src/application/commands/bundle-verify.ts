@@ -5,9 +5,12 @@ import type {
   BundleVersion,
   ParsedBundleHeader,
 } from '../../domain/bundle/index.js';
+import { bundlePrerequisiteAlgorithmMismatch } from '../../domain/commands/error.js';
 import { TsgitError } from '../../domain/error.js';
+import { configFor } from '../../domain/objects/hash-config.js';
 import { parseHeader, serializeObject } from '../../domain/objects/index.js';
 import type { FilePath, ObjectId } from '../../domain/objects/object-id.js';
+import type { ObjectFilter } from '../../domain/protocol/object-filter.js';
 import { notARepository } from '../../domain/repository/error.js';
 import type { Context } from '../../ports/context.js';
 import {
@@ -31,6 +34,7 @@ export interface BundleVerifyResult {
   readonly missingPrerequisites: ReadonlyArray<ObjectId>;
   readonly prerequisitesPresent: boolean;
   readonly recordsCompleteHistory: boolean;
+  readonly filter?: ObjectFilter;
 }
 
 /**
@@ -58,15 +62,61 @@ export const bundleVerify = async (
 ): Promise<BundleVerifyResult> => {
   assertUsableForBundleVerify(ctx);
   const { header, packBytes } = await readBundle(ctx, input.path);
+  assertPrerequisiteAlgorithmMatches(ctx, header);
   const missingPrerequisites = await findMissingPrerequisites(ctx, header.prerequisites);
   if (missingPrerequisites.length > 0) {
     return buildResult(header, missingPrerequisites);
   }
-  await verifyPackTrailer(packBytes, ctx);
-  // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — a 0-prerequisite (complete) bundle's pack is self-contained, so no REF_DELTA ever reaches the external resolver; always building it (mutant) only allocates a Map+closure walkPackEntries never invokes — identical outcome for every git-produced bundle.
+  // The pack itself is framed at the bundle's OWN declared algorithm — never
+  // the surrounding repository's — so a cross-format complete bundle (no
+  // prerequisites, hence never refused above) still verifies correctly.
+  const packCtx = contextForBundleAlgorithm(ctx, header.hashAlgorithm);
+  await verifyPackTrailer(packBytes, packCtx);
+  // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — a 0-prerequisite (complete) bundle's pack is self-contained, so no REF_DELTA ever reaches the external resolver; always building it (mutant) only allocates a Map+closure walkPackEntries never invokes — identical outcome for every git-produced bundle, regardless of which algorithm frames the parse.
   const resolver = header.prerequisites.length > 0 ? buildExternalBaseResolver(ctx) : undefined;
-  await walkPackEntries(ctx, packBytes, resolver);
+  await walkPackEntries(packCtx, packBytes, resolver);
   return buildResult(header, []);
+};
+
+/**
+ * Cross-format refusal, raised BEFORE the prerequisite-presence lookup: once
+ * `findMissingPrerequisites` runs, the distinction between "the repository
+ * lacks this commit" (exit 1) and "this oid was never in the repository's
+ * algorithm to begin with" (exit 128) is lost — both look like
+ * OBJECT_NOT_FOUND. Fires only when prerequisites exist: a cross-format
+ * *complete* bundle (no prerequisites) verifies `is okay` in both
+ * directions (measured on git 2.55.0), so the guard cannot sit on the
+ * header read — `bundleListHeads`, which runs outside a repository
+ * entirely, would then need it too.
+ */
+const assertPrerequisiteAlgorithmMatches = (ctx: Context, header: ParsedBundleHeader): void => {
+  const first = header.prerequisites[0];
+  if (first === undefined) return;
+  if (header.hashAlgorithm === ctx.hashConfig.algorithm) return;
+  throw bundlePrerequisiteAlgorithmMismatch(
+    first.oid,
+    header.hashAlgorithm,
+    ctx.hashConfig.algorithm,
+  );
+};
+
+/**
+ * A `Context` reframed onto `algorithm` for the pack-structural reads
+ * (trailer digest, entry-header oid width) that must match the BUNDLE's own
+ * declared algorithm rather than the surrounding repository's. Resolving a
+ * prerequisite's external base object is a genuine repository read and
+ * deliberately stays keyed on the original `ctx.hashConfig` — only the pack
+ * framing moves. Returns `ctx` unchanged when the algorithms already agree,
+ * or when the hash service cannot switch algorithms at all — the latter
+ * lets pack verification proceed at the repository's own width rather than
+ * building an internally-inconsistent context (digest length from one
+ * algorithm, entry-header width from another).
+ */
+const contextForBundleAlgorithm = (ctx: Context, algorithm: BundleHashAlgorithm): Context => {
+  if (algorithm === ctx.hashConfig.algorithm) return ctx;
+  const hash = ctx.hash.withAlgorithm?.(algorithm);
+  if (hash === undefined) return ctx;
+  return { ...ctx, hash, hashConfig: configFor(algorithm) };
 };
 
 const buildResult = (
@@ -80,6 +130,7 @@ const buildResult = (
   missingPrerequisites,
   prerequisitesPresent: missingPrerequisites.length === 0,
   recordsCompleteHistory: header.prerequisites.length === 0,
+  ...(header.filter !== undefined ? { filter: header.filter } : {}),
 });
 
 const resolveExternalBase = async (ctx: Context, baseOid: ObjectId) => {
