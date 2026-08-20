@@ -123,7 +123,7 @@ async function stubRegistry(
   const filler = await buildSyntheticPack(ctx, [
     { kind: 'base', type: 'blob', content: ENC.encode('filler') },
   ]);
-  const fillerIndex = parsePackIndex(filler.idxBytes);
+  const fillerIndex = parsePackIndex(filler.idxBytes, 20);
   const lookup = async (id: ObjectId): Promise<PackLookupHit | undefined> => {
     const match = hits.find((h) => h.id === id);
     if (match === undefined) return undefined;
@@ -1509,7 +1509,7 @@ describe('object-resolver', () => {
           const filler = await buildSyntheticPack(ctx, [
             { kind: 'base', type: 'blob', content: ENC.encode('filler') },
           ]);
-          const fillerIndex = parsePackIndex(filler.idxBytes);
+          const fillerIndex = parsePackIndex(filler.idxBytes, 20);
           const pack: RegisteredPack = {
             name: 'stub-corrupt-slice',
             index: async () => fillerIndex,
@@ -1583,7 +1583,7 @@ describe('object-resolver', () => {
           const filler = await buildSyntheticPack(ctx, [
             { kind: 'base', type: 'blob', content: ENC.encode('filler') },
           ]);
-          const fillerIndex = parsePackIndex(filler.idxBytes);
+          const fillerIndex = parsePackIndex(filler.idxBytes, 20);
           const pack: RegisteredPack = {
             name: 'stub-zero-slice',
             index: async () => fillerIndex,
@@ -1653,7 +1653,7 @@ describe('object-resolver', () => {
           const filler = await buildSyntheticPack(ctx, [
             { kind: 'base', type: 'blob', content: ENC.encode('filler') },
           ]);
-          const fillerIndex = parsePackIndex(filler.idxBytes);
+          const fillerIndex = parsePackIndex(filler.idxBytes, 20);
           const pack: RegisteredPack = {
             name: 'stub-corrupt-exceeds',
             index: async () => fillerIndex,

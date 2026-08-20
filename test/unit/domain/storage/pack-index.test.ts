@@ -145,7 +145,7 @@ describe('pack-index', () => {
           const bytes = buildTestIndex(entries);
 
           // Act
-          const result = parsePackIndex(bytes);
+          const result = parsePackIndex(bytes, 20);
 
           // Assert
           expect(result.objectCount).toBe(expectedCount);
@@ -183,7 +183,7 @@ describe('pack-index', () => {
         ])('Then throws INVALID_PACK_INDEX for $label', ({ bytes, reasonContains }) => {
           // Arrange + Act & Assert
           try {
-            parsePackIndex(bytes);
+            parsePackIndex(bytes, 20);
             // Assert
             expect.fail('Should have thrown');
           } catch (e) {
@@ -234,7 +234,7 @@ describe('pack-index', () => {
           },
         ])('Then returns $expected for $label', ({ entries, lookupId, expected }) => {
           // Arrange
-          const idx = parsePackIndex(buildTestIndex(entries));
+          const idx = parsePackIndex(buildTestIndex(entries), 20);
 
           // Act
           const result = lookupPackIndex(idx, lookupId as ObjectId);
@@ -251,7 +251,7 @@ describe('pack-index', () => {
             makeEntry('bb' + '00'.repeat(19), 200),
             makeEntry('cc' + '00'.repeat(19), 300),
           ];
-          const idx = parsePackIndex(buildTestIndex(entries));
+          const idx = parsePackIndex(buildTestIndex(entries), 20);
 
           // Act
           const result = lookupPackIndex(idx, ('dd' + '00'.repeat(19)) as ObjectId);
@@ -282,7 +282,7 @@ describe('pack-index', () => {
           },
         ])('Then returns 1 match for $label', ({ prefix, expected }) => {
           // Arrange
-          const idx = parsePackIndex(buildTestIndex(entries));
+          const idx = parsePackIndex(buildTestIndex(entries), 20);
 
           // Act
           const result = findByPrefix(idx, prefix);
@@ -313,7 +313,7 @@ describe('pack-index', () => {
           'Then returns $expectedLength match(es) for $label',
           ({ prefix, entries: rowEntries, expectedLength }) => {
             // Arrange
-            const idx = parsePackIndex(buildTestIndex(rowEntries));
+            const idx = parsePackIndex(buildTestIndex(rowEntries), 20);
 
             // Act
             const result = findByPrefix(idx, prefix);
@@ -349,7 +349,7 @@ describe('pack-index', () => {
           },
         ])('Then throws INVALID_PACK_INDEX for $label', ({ prefix, reasonContains }) => {
           // Arrange
-          const idx = parsePackIndex(buildTestIndex(entries));
+          const idx = parsePackIndex(buildTestIndex(entries), 20);
 
           // Act & Assert
           try {
@@ -375,7 +375,7 @@ describe('pack-index', () => {
       describe('When entryOffsets is called', () => {
         it('Then returns an empty array', () => {
           // Arrange
-          const index = parsePackIndex(buildTestIndex([]));
+          const index = parsePackIndex(buildTestIndex([]), 20);
 
           // Act
           const result = entryOffsets(index);
@@ -396,7 +396,7 @@ describe('pack-index', () => {
             makeEntry('bb' + '00'.repeat(19), 200),
             makeEntry('cc' + '00'.repeat(19), 300),
           ];
-          const index = parsePackIndex(buildTestIndex(entries));
+          const index = parsePackIndex(buildTestIndex(entries), 20);
 
           // Act
           const result = entryOffsets(index);
@@ -417,7 +417,7 @@ describe('pack-index', () => {
           const entries: TestIndexEntry[] = [
             { id: '00'.repeat(20) as ObjectId, offset: 0x200000000, crc32: 0 },
           ];
-          const index = parsePackIndex(buildTestIndex(entries));
+          const index = parsePackIndex(buildTestIndex(entries), 20);
 
           // Act
           const result = entryOffsets(index);
@@ -456,7 +456,7 @@ describe('pack-index', () => {
 
           // Act & Assert
           try {
-            parsePackIndex(bytes);
+            parsePackIndex(bytes, 20);
             // Assert
             expect.fail('Should have thrown');
           } catch (e) {
@@ -492,7 +492,7 @@ describe('pack-index', () => {
           },
         ])('Then reads correct 64-bit offsets for $label', ({ entries }) => {
           // Arrange
-          const idx = parsePackIndex(buildTestIndex(entries));
+          const idx = parsePackIndex(buildTestIndex(entries), 20);
 
           // Act & Assert
           for (const entry of entries) {
@@ -510,7 +510,7 @@ describe('pack-index', () => {
           // Arrange — build index with 1 entry that has MSB set in small offset,
           // but largeIdx points to non-existent large offset entry
           const entries: TestIndexEntry[] = [makeEntry('aa' + '00'.repeat(19), 42)];
-          const idx = parsePackIndex(buildTestIndex(entries));
+          const idx = parsePackIndex(buildTestIndex(entries), 20);
           // Corrupt the small offset table to have MSB set with a huge largeIdx
           const offsetStart = idx.smallOffsetsTableOffset;
           idx._view.setUint32(offsetStart, 0x80000000 | 999);
@@ -538,7 +538,7 @@ describe('pack-index', () => {
         it('Then throws INVALID_PACK_INDEX', () => {
           // Arrange — build index with a large offset, then corrupt the high word
           const entries: TestIndexEntry[] = [makeEntry('aa' + '00'.repeat(19), 0x80000001)];
-          const idx = parsePackIndex(buildTestIndex(entries));
+          const idx = parsePackIndex(buildTestIndex(entries), 20);
           // Find the large offset table and set high word to exceed safe range
           const largeOffset = idx.largeOffsetsTableOffset;
           idx._view.setUint32(largeOffset, 0x200000);
@@ -574,7 +574,7 @@ describe('pack-index', () => {
             makeEntry('aa33' + '00'.repeat(18), 40),
             makeEntry('aaff' + '00'.repeat(18), 50),
           ];
-          const idx = parsePackIndex(buildTestIndex(entries));
+          const idx = parsePackIndex(buildTestIndex(entries), 20);
 
           // Act — looking up the last one forces multiple cmp < 0 iterations
           const result = lookupPackIndex(idx, ('aaff' + '00'.repeat(18)) as ObjectId);
@@ -597,7 +597,7 @@ describe('pack-index', () => {
             makeEntry('aa22' + '00'.repeat(18), 30),
             makeEntry('aaff' + '00'.repeat(18), 40),
           ];
-          const idx = parsePackIndex(buildTestIndex(entries));
+          const idx = parsePackIndex(buildTestIndex(entries), 20);
 
           // Act
           const result = findByPrefix(idx, 'aaff');
@@ -619,7 +619,7 @@ describe('pack-index', () => {
             makeEntry('00aa' + '00'.repeat(18), 100),
             makeEntry('00bb' + '00'.repeat(18), 200),
           ];
-          const idx = parsePackIndex(buildTestIndex(entries));
+          const idx = parsePackIndex(buildTestIndex(entries), 20);
 
           // Act
           const result = findByPrefix(idx, '00aa');
@@ -645,7 +645,7 @@ describe('pack-index', () => {
 
           // Act & Assert
           try {
-            parsePackIndex(bytes);
+            parsePackIndex(bytes, 20);
             // Assert
             expect.fail('Should have thrown');
           } catch (e) {
@@ -674,7 +674,7 @@ describe('pack-index', () => {
 
           // Act & Assert
           try {
-            parsePackIndex(bytes);
+            parsePackIndex(bytes, 20);
             // Assert
             expect.fail('Should have thrown');
           } catch (e) {
@@ -697,7 +697,7 @@ describe('pack-index', () => {
 
           // Act & Assert
           try {
-            parsePackIndex(bytes);
+            parsePackIndex(bytes, 20);
             // Assert
             expect.fail('Should have thrown');
           } catch (e) {
@@ -732,7 +732,7 @@ describe('pack-index', () => {
           // `largeOffset - 8` mutant computes 1060 > 1068 = false and would
           // wrongly proceed).
           const entries: TestIndexEntry[] = [makeEntry(id, 0x80000001)];
-          const idx = parsePackIndex(buildTestIndex(entries));
+          const idx = parsePackIndex(buildTestIndex(entries), 20);
           idx._view.setUint32(idx.smallOffsetsTableOffset, 0x80000000 | 1);
 
           // Act & Assert
@@ -760,7 +760,7 @@ describe('pack-index', () => {
           // guard must be a strict `high > 0x1fffff`: a `>=` mutant would reject
           // this valid offset.
           const entries: TestIndexEntry[] = [makeEntry('cc' + '00'.repeat(19), 0x80000001)];
-          const idx = parsePackIndex(buildTestIndex(entries));
+          const idx = parsePackIndex(buildTestIndex(entries), 20);
           idx._view.setUint32(idx.largeOffsetsTableOffset, 0x1fffff);
           idx._view.setUint32(idx.largeOffsetsTableOffset + 4, 7);
 
@@ -789,7 +789,7 @@ describe('pack-index', () => {
             makeEntry('22' + '00'.repeat(19), 20),
             makeEntry('33' + '00'.repeat(19), 30),
           ];
-          const idx = parsePackIndex(buildTestIndex(entries));
+          const idx = parsePackIndex(buildTestIndex(entries), 20);
 
           // Act
           const result = lookupPackIndex(idx, ('33' + '00'.repeat(19)) as ObjectId);
@@ -809,7 +809,7 @@ describe('pack-index', () => {
           fc.assert(
             fc.property(arbUniqueEntries(10), (entries) => {
               fc.pre(entries.length > 0);
-              const idx = parsePackIndex(buildTestIndex(entries));
+              const idx = parsePackIndex(buildTestIndex(entries), 20);
               for (const entry of entries) {
                 expect(lookupPackIndex(idx, entry.id)).toBe(entry.offset);
               }
@@ -827,7 +827,7 @@ describe('pack-index', () => {
             fc.property(arbObjectId(40), arbObjectId(40), (indexId, lookupId) => {
               fc.pre(indexId !== lookupId);
               const entries: TestIndexEntry[] = [{ id: indexId, offset: 42, crc32: 0 }];
-              const idx = parsePackIndex(buildTestIndex(entries));
+              const idx = parsePackIndex(buildTestIndex(entries), 20);
 
               const result = lookupPackIndex(idx, lookupId);
 
@@ -854,7 +854,7 @@ describe('pack-index', () => {
           { lookupId: 'cc' + '00'.repeat(19), expected: 2, label: 'the last id' },
         ])('Then $label reports its own index position', ({ lookupId, expected }) => {
           // Arrange
-          const index = parsePackIndex(buildTestIndex(positionEntries));
+          const index = parsePackIndex(buildTestIndex(positionEntries), 20);
           const sut = lookupPackIndexPosition;
 
           // Act
@@ -868,7 +868,7 @@ describe('pack-index', () => {
       describe('When an id the index does not carry is looked up', () => {
         it('Then it returns undefined', () => {
           // Arrange
-          const index = parsePackIndex(buildTestIndex(positionEntries));
+          const index = parsePackIndex(buildTestIndex(positionEntries), 20);
           const sut = lookupPackIndexPosition;
 
           // Act
@@ -882,7 +882,7 @@ describe('pack-index', () => {
       describe('When every position is resolved back to an oid', () => {
         it('Then objectIdAt inverts the position lookup for every entry', () => {
           // Arrange
-          const index = parsePackIndex(buildTestIndex(positionEntries));
+          const index = parsePackIndex(buildTestIndex(positionEntries), 20);
           const sut = objectIdAt;
 
           // Act
@@ -902,7 +902,7 @@ describe('pack-index', () => {
       describe('When allObjectIds is called', () => {
         it('Then returns an empty array', () => {
           // Arrange
-          const index = parsePackIndex(buildTestIndex([]));
+          const index = parsePackIndex(buildTestIndex([]), 20);
 
           // Act
           const result = allObjectIds(index);
@@ -922,7 +922,7 @@ describe('pack-index', () => {
             makeEntry('bb' + '00'.repeat(19), 200),
             makeEntry('cc' + '00'.repeat(19), 300),
           ];
-          const index = parsePackIndex(buildTestIndex(entries));
+          const index = parsePackIndex(buildTestIndex(entries), 20);
 
           // Act
           const result = allObjectIds(index);
@@ -979,7 +979,7 @@ describe('pack-index', () => {
           const bytes = buildTestIndex([]);
 
           // Act
-          const result = parsePackIndex(bytes);
+          const result = parsePackIndex(bytes, 20);
 
           // Assert
           expect(result.digestLength).toBe(20);

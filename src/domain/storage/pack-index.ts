@@ -41,7 +41,7 @@ function shaSlotOffset(position: number, digestLength: number): number {
   return IDX_SHA_TABLE_OFFSET + position * digestLength;
 }
 
-export function parsePackIndex(bytes: Uint8Array, digestLength: 20 | 32 = 20): PackIndex {
+export function parsePackIndex(bytes: Uint8Array, digestLength: 20 | 32): PackIndex {
   const minSize = IDX_HEADER_SIZE + IDX_FANOUT_SIZE;
   if (bytes.length < minSize) {
     throw invalidPackIndex('truncated: file too short for header and fanout');

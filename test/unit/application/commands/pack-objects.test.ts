@@ -52,7 +52,7 @@ const idxIdsOf = async (
   packId: ObjectId,
 ): Promise<ReadonlySet<string>> => {
   const bytes = await ctx.fs.read(`${dir}/pack-${packId}.idx`);
-  return new Set(allObjectIds(parsePackIndex(bytes)));
+  return new Set(allObjectIds(parsePackIndex(bytes, 20)));
 };
 
 interface SeededRepo {
@@ -209,7 +209,7 @@ describe('packObjects', () => {
 
         const expected = await revList(ctx, { wants: ['HEAD'], objects: true });
         expect(result.objectCount).toBe(expected.count);
-        expect(new Set(allObjectIds(parsePackIndex(idxBytes)))).toEqual(
+        expect(new Set(allObjectIds(parsePackIndex(idxBytes, 20)))).toEqual(
           new Set(expected.entries.map((entry) => entry.id)),
         );
       });

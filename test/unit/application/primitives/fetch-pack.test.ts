@@ -299,7 +299,7 @@ describe('fetchPack', () => {
           const writtenPack = await ctx.fs.read(result.packPath);
           expect(writtenPack).toEqual(packBytes);
           const writtenIdx = await ctx.fs.read(result.idxPath);
-          const parsedIdx = parsePackIndex(writtenIdx);
+          const parsedIdx = parsePackIndex(writtenIdx, 20);
           expect(parsedIdx.objectCount).toBe(1);
           expect(lookupPackIndex(parsedIdx, blobId)).toBeGreaterThanOrEqual(12);
           const parsedHeader = parsePackHeader(writtenPack);
@@ -481,7 +481,7 @@ describe('fetchPack', () => {
           // Assert
           expect(result.objectCount).toBe(2);
           const idxBytes = await ctx.fs.read(result.idxPath);
-          const idx = parsePackIndex(idxBytes);
+          const idx = parsePackIndex(idxBytes, 20);
           expect(idx.objectCount).toBe(2);
           expect(lookupPackIndex(idx, built.ids[0] as ObjectId)).toBeGreaterThanOrEqual(12);
           expect(lookupPackIndex(idx, built.ids[1] as ObjectId)).toBeGreaterThanOrEqual(12);
@@ -515,7 +515,7 @@ describe('fetchPack', () => {
 
           // Assert
           expect(result.objectCount).toBe(2);
-          const idx = parsePackIndex(await ctx.fs.read(result.idxPath));
+          const idx = parsePackIndex(await ctx.fs.read(result.idxPath), 20);
           expect(idx.objectCount).toBe(2);
           expect(lookupPackIndex(idx, built.ids[1] as ObjectId)).toBeGreaterThanOrEqual(12);
         });
@@ -549,7 +549,7 @@ describe('fetchPack', () => {
 
           // Assert
           expect(result.objectCount).toBe(2);
-          const idx = parsePackIndex(await ctx.fs.read(result.idxPath));
+          const idx = parsePackIndex(await ctx.fs.read(result.idxPath), 20);
           expect(lookupPackIndex(idx, normal.ids[0] as ObjectId)).toBeGreaterThanOrEqual(12);
           expect(lookupPackIndex(idx, normal.ids[1] as ObjectId)).toBeGreaterThanOrEqual(12);
         });
@@ -1265,7 +1265,7 @@ describe('fetchPack', () => {
           });
 
           // Assert
-          const idx = parsePackIndex(await ctx.fs.read(result.idxPath));
+          const idx = parsePackIndex(await ctx.fs.read(result.idxPath), 20);
           expect(idx.objectCount).toBe(1);
           expect(lookupPackIndex(idx, built.ids[0] as ObjectId)).toBeGreaterThanOrEqual(12);
         });

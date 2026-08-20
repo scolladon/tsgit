@@ -249,7 +249,7 @@ describe('pack-writer', () => {
           const serialized = serializePackIndex(entries, packChecksum);
           const withTrailer = new Uint8Array(serialized.length + 20);
           withTrailer.set(serialized);
-          const idx = parsePackIndex(withTrailer);
+          const idx = parsePackIndex(withTrailer, 20);
 
           // Assert
           for (const entry of entries) {
@@ -329,7 +329,7 @@ describe('pack-writer', () => {
           const serialized = serializePackIndex(entries, packChecksum);
           const withTrailer = new Uint8Array(serialized.length + 20);
           withTrailer.set(serialized);
-          const idx = parsePackIndex(withTrailer);
+          const idx = parsePackIndex(withTrailer, 20);
 
           // Assert — first 4 SHA bytes intact: lookup succeeds with the exact id
           expect(lookupPackIndex(idx, id as ObjectId)).toBe(12);
@@ -359,7 +359,7 @@ describe('pack-writer', () => {
           const serialized = serializePackIndex(entries, packChecksum);
           const withTrailer = new Uint8Array(serialized.length + 20);
           withTrailer.set(serialized);
-          const idx = parsePackIndex(withTrailer);
+          const idx = parsePackIndex(withTrailer, 20);
 
           // Assert — lookup works regardless of input order
           expect(lookupPackIndex(idx, ('aa' + '00'.repeat(19)) as ObjectId)).toBe(100);
@@ -426,7 +426,7 @@ describe('pack-writer', () => {
           withTrailer.set(serialized);
 
           // Assert
-          const idx = parsePackIndex(withTrailer);
+          const idx = parsePackIndex(withTrailer, 20);
           expect(idx.objectCount).toBe(0);
         });
       });
