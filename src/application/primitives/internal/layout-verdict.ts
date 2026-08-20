@@ -4,30 +4,36 @@ import type { RepositoryLayout } from '../../../ports/context.js';
  * True when repository-layout discovery refused this repository under the
  * ownership-trust gate (`assertTrusted` in `repo-state.ts`) — an untrusted
  * owner (`DUBIOUS_OWNERSHIP`) or an implicit bare repository refused under
- * `bareRepositories: 'explicit'` (`IMPLICIT_BARE_REPOSITORY`). Both refusals
- * leave the repository's local config file unread in exactly the same way,
- * so every config-read site that must not observe a refused repository's
- * `config` (`loadConfigEntry` in `config-read.ts`, `readSingleScope`'s
- * repository-scope guard in `config-scoped-read.ts`) keys on this one
- * predicate rather than re-deriving the question.
+ * `bareRepositories: 'explicit'` (`IMPLICIT_BARE_REPOSITORY`).
+ *
+ * `loadConfigEntry` in `config-read.ts` is the only site keying on this half
+ * alone; every other refusal-aware site takes `layoutFailsAcceptance` below,
+ * which states why that one is deliberately narrower. Being down to a single
+ * caller does not make this guard redundant — see there before removing it.
  */
 export const layoutFailsTrustGate = (layout: RepositoryLayout): boolean =>
   layout.untrusted === true || layout.implicitBare === true;
 
 /**
- * True when repository-layout discovery refused this repository under
- * either acceptance-tier refusal family: the ownership-trust gate
- * (`layoutFailsTrustGate` — `untrusted` / `implicitBare`) OR the
- * repository-format refusal (`formatRefusal` —
- * `core.repositoryformatversion` / an unknown `extensions.*`). This is the
- * layout-level mirror of what `assertAcceptedRepository` refuses on: it
- * folds the trust gate together with the format refusal into the single
- * question "is this repository accepted at all". Both refusal classes leave
- * the repository's local config file unread in exactly the same way, so
- * every config-read site that must not observe a refused repository's
- * `config` or object state — and there is no reason a future site would be
- * exempt — keys on this one predicate rather than re-deriving the
- * disjunction.
+ * True when either acceptance-tier refusal family rejected this repository:
+ * the ownership-trust gate above, or a repository-format refusal
+ * (`core.repositoryformatversion` / an unknown `extensions.*`). The
+ * layout-level mirror of what `assertAcceptedRepository` refuses on.
+ *
+ * Refusal-aware sites key on this rather than re-deriving the disjunction:
+ * `readSingleScope` (`config-scoped-read.ts`), `isWorktreeScopeActive` and
+ * `resolveScopePath` (`config-scope.ts`), `assertUsableForBundleVerify`
+ * (`bundle-verify.ts`).
+ *
+ * `loadConfigEntry` (`config-read.ts`) is the one deliberate exemption, and
+ * it is not an oversight to correct. Widening it would drop the read that
+ * the format refusal was itself derived from — both key on
+ * `<commonDir>/config` — and it would buy nothing:
+ * `assertAcceptedRepository` raises the format refusal before any
+ * operational verb reads config, and the `config` porcelain that stays on
+ * the bare tier reads through the scoped reader, which is on this predicate.
+ * Ownership, by contrast, is decidable with no I/O at open time, so guarding
+ * on it there is free.
  */
 export const layoutFailsAcceptance = (layout: RepositoryLayout): boolean =>
   layoutFailsTrustGate(layout) || layout.formatRefusal !== undefined;
