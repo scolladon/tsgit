@@ -448,7 +448,7 @@ A **local shadow** of the domain constant: wrong width *and* duplicated. **Delet
 widen it.
 
 **Shape.** `ZERO_OID` and `EMPTY_TREE_OID` are public exports (`src/domain/objects/object-id.ts`
-is re-exported wholesale by `export * from './object-id.js'` at `src/domain/objects/index.ts:41`,
+is re-exported wholesale by `export * from './object-id.js'` at `src/domain/objects/index.ts:43`,
 and both are in `reports/api.json`). **Do not remove them** — a removal breaks consumers.
 Keep them as the SHA-1 constants with a doc comment saying so, and add
 `zeroOid(config: HashConfig): ObjectId` and `emptyTreeOid(config: HashConfig): ObjectId` beside
