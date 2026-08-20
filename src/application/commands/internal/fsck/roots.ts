@@ -191,11 +191,11 @@ async function readIndexIfIntact(ctx: Context): Promise<GitIndex | undefined> {
 
 /** The index's cache-tree, or `undefined` when it carries no `TREE`
  *  extension or that extension's payload does not decode. */
-function cacheTreeOf(index: GitIndex): CacheTreeEntry | undefined {
+function cacheTreeOf(ctx: Context, index: GitIndex): CacheTreeEntry | undefined {
   const extension = index.extensions.find((ext) => ext.signature === CACHE_TREE_SIGNATURE);
   if (extension === undefined) return undefined;
   try {
-    return parseCacheTree(extension.data);
+    return parseCacheTree(extension.data, ctx.hashConfig.digestLength);
   } catch (err) {
     if (!isToleratedIndexFault(err)) throw err;
     return undefined;
@@ -227,7 +227,7 @@ async function addIndexRoots(
     if (entry.flags.stage !== 0) continue;
     roots.add(entry.id);
   }
-  const cacheTree = cacheTreeOf(index);
+  const cacheTree = cacheTreeOf(ctx, index);
   if (cacheTree === undefined) return false;
   return walkCacheTree(ctx, cacheTree, roots, universe);
 }

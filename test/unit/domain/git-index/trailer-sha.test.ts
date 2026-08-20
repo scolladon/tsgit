@@ -30,7 +30,7 @@ describe('parseIndex trailerSha', () => {
         const bytes = buildMinimalIndex(TRAILER_BYTES);
 
         // Act
-        const result = parseIndex(bytes);
+        const result = parseIndex(bytes, 20);
 
         // Assert
         expect(result.trailerSha).toEqual(TRAILER_BYTES);
@@ -41,7 +41,7 @@ describe('parseIndex trailerSha', () => {
         const bytes = buildMinimalIndex(TRAILER_BYTES);
 
         // Act
-        const result = parseIndex(bytes);
+        const result = parseIndex(bytes, 20);
 
         // Assert
         expect(result.trailerSha).toEqual(bytes.slice(bytes.length - 20));
@@ -59,8 +59,8 @@ describe('parseIndex trailerSha', () => {
         const indexB = buildMinimalIndex(trailerB);
 
         // Act
-        const resultA = parseIndex(indexA);
-        const resultB = parseIndex(indexB);
+        const resultA = parseIndex(indexA, 20);
+        const resultB = parseIndex(indexB, 20);
 
         // Assert
         expect(resultA.trailerSha).toEqual(trailerA);
@@ -77,7 +77,7 @@ describe('parseIndex trailerSha', () => {
         const bytes = buildMinimalIndex(TRAILER_BYTES);
 
         // Act
-        const result = parseIndex(bytes);
+        const result = parseIndex(bytes, 20);
         bytes.set(new Uint8Array(20).fill(0xff), bytes.length - 20);
 
         // Assert

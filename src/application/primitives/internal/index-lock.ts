@@ -119,12 +119,15 @@ const makeLock = (ctx: Context, lockPath: string, indexFile: string): IndexLock 
     },
     commit: async (entries) => {
       if (committed || released) return;
-      const body = serializeIndex({
-        version: 2,
-        entries: [...entries],
-        extensions: [],
-        trailerSha: new Uint8Array(0),
-      });
+      const body = serializeIndex(
+        {
+          version: 2,
+          entries: [...entries],
+          extensions: [],
+          trailerSha: new Uint8Array(0),
+        },
+        ctx.hashConfig.digestLength,
+      );
       const checksum = await ctx.hash.hash(body);
       const bytes = new Uint8Array(body.length + checksum.length);
       bytes.set(body, 0);

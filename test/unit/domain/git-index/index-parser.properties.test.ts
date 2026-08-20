@@ -35,7 +35,7 @@ describe('index parser properties', () => {
         // Arrange + Act + Assert
         fc.assert(
           fc.property(arbGitIndexV2(), (index) => {
-            const result = parseIndex(withChecksum(serializeIndex(index)));
+            const result = parseIndex(withChecksum(serializeIndex(index, 20)), 20);
             expect(result).toEqual(expectedRoundTrip(index));
           }),
           { numRuns: 200 },
@@ -50,7 +50,7 @@ describe('index parser properties', () => {
         // Arrange + Act + Assert
         fc.assert(
           fc.property(arbGitIndexV3(), (index) => {
-            const result = parseIndex(withChecksum(serializeIndex(index)));
+            const result = parseIndex(withChecksum(serializeIndex(index, 20)), 20);
             expect(result).toEqual(expectedRoundTrip(index));
           }),
           { numRuns: 200 },
@@ -65,7 +65,7 @@ describe('index parser properties', () => {
         // Arrange + Act + Assert
         fc.assert(
           fc.property(fc.oneof(arbGitIndexV2(), arbGitIndexV3()), (index) => {
-            const result = parseIndex(withChecksum(serializeIndex(index)));
+            const result = parseIndex(withChecksum(serializeIndex(index, 20)), 20);
             const paths = result.entries.map((e) => e.path as string);
             for (let i = 1; i < paths.length; i++) {
               expect(paths[i - 1]! <= paths[i]!).toBe(true);

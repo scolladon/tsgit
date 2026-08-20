@@ -358,7 +358,7 @@ export async function serializeIndexFixtureAsync(
   index: GitIndex,
   ctx: Context,
 ): Promise<Uint8Array> {
-  const body = serializeIndex(index);
+  const body = serializeIndex(index, ctx.hashConfig.digestLength);
   const hex = await ctx.hash.hashHex(body);
   const trailer = new Uint8Array(20);
   for (let i = 0; i < 20; i += 1) {
@@ -375,7 +375,7 @@ export async function serializeIndexFixtureAsync(
  * self-test which only checks size-shape, not parse round-trip.
  */
 export function serializeIndexFixture(index: GitIndex): Uint8Array {
-  return serializeIndex(index);
+  return serializeIndex(index, 20);
 }
 
 const byOidAscending = (a: Commit, b: Commit): number => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);

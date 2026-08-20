@@ -14,7 +14,24 @@ import { encode, hexToBytes } from '../objects/encoding.js';
 import type { GitIndex, IndexEntry } from './index-entry.js';
 
 const DIRC_SIGNATURE = 0x44495243;
-const ENTRY_HEADER_SIZE = 62;
+const STAT_FIELDS_SIZE = 40;
+const FLAGS_WORD_SIZE = 2;
+
+/**
+ * The width of every entry's oid this module writes comes from a single
+ * `digestLength` `serializeIndex` takes as its last parameter (the caller's
+ * `ctx.hashConfig.digestLength`) — the same repository-wide width
+ * `index-parser.ts` reads back at. These are the two derived offsets
+ * `writeEntry` needs; the oid itself is always written at `offset + 40`
+ * (self-sizing from `entry.id`'s own hex length) regardless of width.
+ */
+function entryHeaderSize(digestLength: 20 | 32): number {
+  return STAT_FIELDS_SIZE + digestLength + FLAGS_WORD_SIZE;
+}
+
+function flagsOffset(digestLength: 20 | 32): number {
+  return STAT_FIELDS_SIZE + digestLength;
+}
 
 /**
  * Lexicographic comparator for index entries. Git stores entries
@@ -30,13 +47,14 @@ export function compareEntryPath(a: IndexEntry, b: IndexEntry): number {
   return 0;
 }
 
-export function serializeIndex(index: GitIndex): Uint8Array {
+export function serializeIndex(index: GitIndex, digestLength: 20 | 32): Uint8Array {
+  const headerSize = entryHeaderSize(digestLength);
   const sortedEntries = [...index.entries].sort(compareEntryPath);
 
   const entryMetas = sortedEntries.map((entry) => {
     const pathBytes = encode(entry.path as string);
     const extended = entry.flags.skipWorktree || entry.flags.intentToAdd;
-    const entryLength = ENTRY_HEADER_SIZE + (extended ? 2 : 0) + pathBytes.length;
+    const entryLength = headerSize + (extended ? 2 : 0) + pathBytes.length;
     const paddedLength = (entryLength + 8) & ~7;
     return { entry, pathBytes, extended, paddedLength };
   });
@@ -66,7 +84,7 @@ export function serializeIndex(index: GitIndex): Uint8Array {
 
   let offset = 12;
   for (const { entry, pathBytes, extended, paddedLength } of entryMetas) {
-    writeEntry(result, view, offset, entry, pathBytes, extended);
+    writeEntry(result, view, offset, entry, pathBytes, extended, digestLength);
     offset += paddedLength;
   }
   for (const { ext, sigBytes, totalLength } of extensionMetas) {
@@ -86,6 +104,7 @@ function writeEntry(
   entry: IndexEntry,
   pathBytes: Uint8Array,
   extended: boolean,
+  digestLength: 20 | 32,
 ): void {
   view.setUint32(offset, entry.ctimeSeconds);
   view.setUint32(offset + 4, entry.ctimeNanoseconds);
@@ -107,14 +126,15 @@ function writeEntry(
     (extended ? 0x4000 : 0) |
     (entry.flags.stage << 12) |
     nameLength;
-  view.setUint16(offset + 60, flagsRaw);
+  view.setUint16(offset + flagsOffset(digestLength), flagsRaw);
 
+  const headerSize = entryHeaderSize(digestLength);
   // Index v3 extended-flags word — emitted only for an entry that needs it.
-  // Stryker disable next-line ConditionalExpression: equivalent — forcing the guard true for a non-extended entry writes extRaw (always 0, as skipWorktree/intentToAdd are both false) at offset+62, which the next `buf.set(pathBytes, offset+62)` overwrites; the zero-init buffer makes any un-overwritten byte identical.
+  // Stryker disable next-line ConditionalExpression: equivalent — forcing the guard true for a non-extended entry writes extRaw (always 0, as skipWorktree/intentToAdd are both false) at offset+headerSize, which the next `buf.set(pathBytes, offset+headerSize)` overwrites; the zero-init buffer makes any un-overwritten byte identical.
   if (extended) {
     const extRaw = (entry.flags.skipWorktree ? 0x4000 : 0) | (entry.flags.intentToAdd ? 0x2000 : 0);
-    view.setUint16(offset + ENTRY_HEADER_SIZE, extRaw);
+    view.setUint16(offset + headerSize, extRaw);
   }
 
-  buf.set(pathBytes, offset + ENTRY_HEADER_SIZE + (extended ? 2 : 0));
+  buf.set(pathBytes, offset + headerSize + (extended ? 2 : 0));
 }

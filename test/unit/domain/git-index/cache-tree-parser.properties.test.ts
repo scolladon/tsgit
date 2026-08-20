@@ -40,7 +40,7 @@ describe('cache-tree parser properties', () => {
           fc.property(arbCacheTreeEntry(), (tree) => {
             const sut = parseCacheTree;
             const bytes = encodeCacheTreeEntry(tree);
-            const result = sut(bytes);
+            const result = sut(bytes, 20);
             expect(result).toEqual(tree);
           }),
           { numRuns: 200 },
@@ -79,7 +79,7 @@ describe('cache-tree parser properties', () => {
           fc.property(fc.oneof(rawBytes, corruptedBuilt), (bytes) => {
             let result: CacheTreeEntry | undefined;
             try {
-              result = sut(bytes);
+              result = sut(bytes, 20);
             } catch (e) {
               expect((e as TsgitError).data.code).toBe('INVALID_INDEX_ENTRY');
               return;

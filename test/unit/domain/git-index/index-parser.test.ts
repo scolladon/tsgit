@@ -102,7 +102,7 @@ describe('parseIndex', () => {
         const input = buildTestIndex([]);
 
         // Act
-        const result = parseIndex(input);
+        const result = parseIndex(input, 20);
 
         // Assert
         expect(result.version).toBe(2);
@@ -128,7 +128,7 @@ describe('parseIndex', () => {
         ]);
 
         // Act
-        const result = parseIndex(input);
+        const result = parseIndex(input, 20);
 
         // Assert
         expect(result.entries).toHaveLength(1);
@@ -167,7 +167,7 @@ describe('parseIndex', () => {
         ]);
 
         // Act
-        const result = parseIndex(input);
+        const result = parseIndex(input, 20);
 
         // Assert
         expect(result.entries).toHaveLength(3);
@@ -188,7 +188,7 @@ describe('parseIndex', () => {
         ]);
 
         // Act
-        const result = parseIndex(input);
+        const result = parseIndex(input, 20);
 
         // Assert
         expect(result.entries[0]?.path).toBe('z.txt');
@@ -205,7 +205,7 @@ describe('parseIndex', () => {
         const input = buildTestIndex([], [{ signature: 'TREE', data: extData }]);
 
         // Act
-        const result = parseIndex(input);
+        const result = parseIndex(input, 20);
 
         // Assert
         expect(result.extensions).toHaveLength(1);
@@ -244,7 +244,7 @@ describe('parseIndex', () => {
 
         // Act & Assert
         try {
-          parseIndex(input);
+          parseIndex(input, 20);
           // Assert
           expect.fail('should have thrown');
         } catch (e) {
@@ -282,7 +282,7 @@ describe('parseIndex', () => {
 
         // Act & Assert — code, offset AND reason all pinned via try/catch.
         try {
-          parseIndex(buf);
+          parseIndex(buf, 20);
           // Assert
           expect.fail('should have thrown');
         } catch (e) {
@@ -319,7 +319,7 @@ describe('parseIndex', () => {
         buf.set(pathBytes, 12 + 62);
 
         // Act
-        const result = parseIndex(buf);
+        const result = parseIndex(buf, 20);
 
         // Assert
         expect(result.entries[0]?.path).toBe(longPath);
@@ -336,7 +336,7 @@ describe('parseIndex', () => {
 
         // Act & Assert
         try {
-          parseIndex(buf);
+          parseIndex(buf, 20);
           // Assert
           expect.fail('should have thrown');
         } catch (e) {
@@ -361,7 +361,7 @@ describe('parseIndex', () => {
 
         // Act & Assert
         try {
-          parseIndex(buf);
+          parseIndex(buf, 20);
           // Assert
           expect.fail('should have thrown');
         } catch (e) {
@@ -387,7 +387,7 @@ describe('parseIndex', () => {
 
         // Act & Assert
         try {
-          parseIndex(buf);
+          parseIndex(buf, 20);
           // Assert
           expect.fail('should have thrown');
         } catch (e) {
@@ -409,7 +409,7 @@ describe('parseIndex', () => {
 
         // Act & Assert
         try {
-          parseIndex(buf);
+          parseIndex(buf, 20);
           // Assert
           expect.fail('should have thrown');
         } catch (e) {
@@ -435,7 +435,7 @@ describe('parseIndex', () => {
 
         // Act & Assert
         try {
-          parseIndex(buf);
+          parseIndex(buf, 20);
           // Assert
           expect.fail('should have thrown');
         } catch (e) {
@@ -464,7 +464,7 @@ describe('parseIndex', () => {
 
         // Act & Assert
         try {
-          parseIndex(buf);
+          parseIndex(buf, 20);
           // Assert
           expect.fail('should have thrown');
         } catch (e) {
@@ -493,7 +493,7 @@ describe('parseIndex', () => {
 
         // Act & Assert
         try {
-          parseIndex(buf);
+          parseIndex(buf, 20);
           // Assert
           expect.fail('should have thrown');
         } catch (e) {
@@ -520,7 +520,7 @@ describe('parseIndex', () => {
 
         // Act & Assert
         try {
-          parseIndex(buf);
+          parseIndex(buf, 20);
           // Assert
           expect.fail('should have thrown');
         } catch (e) {
@@ -538,7 +538,7 @@ describe('parseIndex', () => {
         const input = buildTestIndex([{ path: 'conflict.txt', sha: SHA_A, stage: 2 }]);
 
         // Act
-        const result = parseIndex(input);
+        const result = parseIndex(input, 20);
 
         // Assert
         expect(result.entries[0]?.flags.stage).toBe(2);
@@ -553,7 +553,7 @@ describe('parseIndex', () => {
         const input = buildTestIndex([{ path: 'assumed.txt', sha: SHA_A, assumeValid: true }]);
 
         // Act
-        const result = parseIndex(input);
+        const result = parseIndex(input, 20);
 
         // Assert
         expect(result.entries[0]?.flags.assumeValid).toBe(true);
@@ -579,7 +579,7 @@ describe('parseIndex', () => {
 
         // Act & Assert
         try {
-          parseIndex(buf);
+          parseIndex(buf, 20);
           // Assert
           expect.fail('should have thrown');
         } catch (e) {
@@ -607,7 +607,7 @@ describe('parseIndex', () => {
 
         // Act & Assert
         try {
-          parseIndex(buf);
+          parseIndex(buf, 20);
           // Assert
           expect.fail('should have thrown');
         } catch (e) {
@@ -636,7 +636,7 @@ describe('parseIndex', () => {
         );
 
         // Act
-        const result = parseIndex(input);
+        const result = parseIndex(input, 20);
 
         // Assert
         expect(result.extensions).toHaveLength(2);
@@ -655,7 +655,7 @@ describe('parseIndex', () => {
         const input = buildTestIndex([], [{ signature: '{bcd', data: new Uint8Array([1]) }]);
 
         // Act
-        const result = parseIndex(input);
+        const result = parseIndex(input, 20);
 
         // Assert
         expect(result.extensions).toHaveLength(1);
@@ -691,7 +691,7 @@ describe('parseIndex', () => {
         const input = buildTestIndex([{ path: 'a', sha: SHA_A }]);
 
         // Act — this should parse successfully
-        const result = parseIndex(input);
+        const result = parseIndex(input, 20);
 
         // Assert
         expect(result.entries).toHaveLength(1);
@@ -721,7 +721,7 @@ describe('parseIndex', () => {
         buf.fill(0x42, 20, 20 + extSize);
 
         // Act
-        const result = parseIndex(buf);
+        const result = parseIndex(buf, 20);
 
         // Assert
         expect(result.extensions).toHaveLength(1);
@@ -749,7 +749,7 @@ describe('parseIndex', () => {
 
         // Act & Assert
         try {
-          parseIndex(buf);
+          parseIndex(buf, 20);
           // Assert
           expect.fail('should have thrown');
         } catch (e) {
@@ -820,7 +820,7 @@ describe('parseIndex', () => {
         // Act
         let caught: unknown;
         try {
-          parseIndex(bytes);
+          parseIndex(bytes, 20);
         } catch (err) {
           caught = err;
         }
@@ -865,7 +865,7 @@ describe('parseIndex', () => {
         const bytes = buildTestIndex([{ path, sha: PATH_SHA }]);
 
         // Act
-        const result = parseIndex(bytes);
+        const result = parseIndex(bytes, 20);
 
         // Assert
         expect(result.entries).toHaveLength(1);
@@ -884,7 +884,7 @@ describe('parseIndex', () => {
         const bytes = buildTestIndex([{ path: 'foo bar.txt', sha: SHA_A }]);
 
         // Act
-        const result = parseIndex(bytes);
+        const result = parseIndex(bytes, 20);
 
         // Assert
         expect(result.entries).toHaveLength(1);
@@ -909,7 +909,7 @@ describe('parseIndex', () => {
         // Act
         let caught: unknown;
         try {
-          parseIndex(buf);
+          parseIndex(buf, 20);
         } catch (err) {
           caught = err;
         }
@@ -942,7 +942,7 @@ describe('parseIndex', () => {
         // Act
         let caught: unknown;
         try {
-          parseIndex(buf);
+          parseIndex(buf, 20);
         } catch (err) {
           caught = err;
         }
@@ -982,10 +982,64 @@ describe('parseIndex', () => {
         buf.set(pathBytes, 12 + 62);
 
         // Act
-        const result = parseIndex(buf);
+        const result = parseIndex(buf, 20);
 
         // Assert — exactly the first 3 bytes, proving nameLength was used.
         expect(result.entries[0]?.path).toBe('abc');
+      });
+    });
+  });
+});
+
+describe('parseIndex — SHA-256 (digestLength 32)', () => {
+  // Captured from real `git init --object-format=sha256 && git add a.txt`
+  // (git 2.55.0): one entry for 'a.txt' ('hello\n'), a 74-byte fixed entry
+  // portion (40 stat bytes + 32-byte oid + 2-byte flags) plus a 5-byte name
+  // padded to 80, then the 32-byte trailing SHA-256 checksum.
+  const SHA256_INDEX_HEX =
+    '4449524300000002000000016a86f22b225b533b6a86f22b225b533b0100000f1a7a1124' +
+    '000081a4000001f500000014000000062cf8d83d9ee29543b34a87727421fdecb7e3f3a1' +
+    '83d337639025de576db9ebb40005612e74787400d13e69eb396d98fde89aae27b7f9a979' +
+    '2d205fe7afac5c15851c98a78d1459de';
+
+  describe('Given a git-produced SHA-256 index with one entry', () => {
+    describe('When parsing at digestLength 32', () => {
+      it('Then the entry set matches — full 64-hex oid, path and size', () => {
+        // Arrange
+        const bytes = hexToBytes(SHA256_INDEX_HEX);
+
+        // Act
+        const result = parseIndex(bytes, 32);
+
+        // Assert
+        expect(result.version).toBe(2);
+        expect(result.entries).toHaveLength(1);
+        expect(result.entries[0]?.path).toBe('a.txt');
+        expect(result.entries[0]?.id).toBe(
+          '2cf8d83d9ee29543b34a87727421fdecb7e3f3a183d337639025de576db9ebb4',
+        );
+        expect(result.entries[0]?.fileSize).toBe(6);
+      });
+    });
+  });
+
+  describe('Given the same git-produced buffer', () => {
+    describe('When parseIndex computes trailerSha at digestLength 32', () => {
+      it('Then it agrees with the trailer read-index would slice at the same digestLength', () => {
+        // Arrange — R4a regression guard: read-index.ts:40 slices the trailer
+        // at `ctx.hashConfig.digestLength` BEFORE handing the full buffer to
+        // parseIndex; both must agree on the same boundary or a SHA-256
+        // index's checksum validation and its structural parse disagree on
+        // where the payload ends.
+        const bytes = hexToBytes(SHA256_INDEX_HEX);
+        const trailerSize = 32;
+        const expectedTrailer = bytes.subarray(bytes.length - trailerSize);
+
+        // Act
+        const result = parseIndex(bytes, 32);
+
+        // Assert
+        expect(result.trailerSha).toEqual(expectedTrailer);
       });
     });
   });
@@ -1098,7 +1152,7 @@ describe('parseIndex — index v3 extended flags', () => {
         ]);
 
         // Act
-        const result = parseIndex(input);
+        const result = parseIndex(input, 20);
 
         // Assert
         expect(result.version).toBe(3);
@@ -1124,7 +1178,7 @@ describe('parseIndex — index v3 extended flags', () => {
         ]);
 
         // Act
-        const result = parseIndex(input);
+        const result = parseIndex(input, 20);
 
         // Assert
         expect(result.entries).toHaveLength(2);
@@ -1159,7 +1213,7 @@ describe('parseIndex — index v3 extended flags', () => {
         // Act
         let caught: unknown;
         try {
-          parseIndex(buf);
+          parseIndex(buf, 20);
         } catch (err) {
           caught = err;
         }
@@ -1196,7 +1250,7 @@ describe('parseIndex — index v3 extended flags', () => {
         // Act
         let caught: unknown;
         try {
-          parseIndex(buf);
+          parseIndex(buf, 20);
         } catch (err) {
           caught = err;
         }

@@ -82,7 +82,7 @@ describe('adapter + domain interop', () => {
         extensions: [],
         trailerSha: new Uint8Array(0),
       };
-      const body = serializeIndex(emptyIndex);
+      const body = serializeIndex(emptyIndex, ctx.hashConfig.digestLength);
       // Append a 20-byte SHA-1 trailer computed via the HashService
       const checksum = await ctx.hash.hash(body);
       const full = new Uint8Array(body.length + checksum.length);
@@ -92,7 +92,7 @@ describe('adapter + domain interop', () => {
       // Act
       await ctx.fs.write('/repo/.git/index', full);
       const readBack = await ctx.fs.read('/repo/.git/index');
-      const parsed = parseIndex(readBack);
+      const parsed = parseIndex(readBack, ctx.hashConfig.digestLength);
 
       // Assert
       expect(parsed.version).toBe(2);
