@@ -313,8 +313,8 @@ export const SHA256_CONFIG: HashConfig = Object.freeze({ digestLength: 32, hexLe
 ```
 
 Add `readonly algorithm: 'sha1' | 'sha256'` and populate both frozen constants. `HashConfig` is
-public (`src/domain/objects/index.ts:37`, re-exported by `src/public-types.ts:86` via
-`export type *`), and `SHA1_CONFIG`/`SHA256_CONFIG` are public values (`index.ts:38`, both
+public (`src/domain/objects/index.ts:38`, re-exported by `src/public-types.ts:86` via
+`export type *`), and `SHA1_CONFIG`/`SHA256_CONFIG` are public values (`index.ts:39`, both
 already in `reports/api.json`). **This is an `api.json` change — regenerate in this part.**
 
 **New file `src/domain/objects/oid-pattern.ts`:**
