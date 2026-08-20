@@ -862,29 +862,29 @@ ADR-696. The config-value refusal family — a **third** tier, distinct from the
 refusals (ADR-668) and from the point-of-use refusal (ADR-685). These fire at the Stage-2 layout
 read, i.e. **open time**, strictly before any `assert*` tier runs.
 
-**`src/repository/read-repository-format.ts` (168 lines) is the whole surface to change.**
+**`src/repository/read-repository-format.ts` (430 lines) is the whole surface to change.**
 The machinery is already there:
 
 ```ts
-const EXTENSIONS_SECTION = 'extensions';                       // :21
-const lastTopLevelEntry = (tokens, section, key): ScannedEntry | undefined => …  // :39-64
-interface ScannedFormat { bare; worktree; worktreeConfig }     // :67-71
-worktreeConfig: lastTopLevelEntry(tokens, EXTENSIONS_SECTION, WORKTREE_CONFIG_KEY),  // :92
-export interface RepositoryFormat { bare; worktree; worktreeConfig }  // :14-18
+const EXTENSIONS_SECTION = 'extensions';                       // :29
+const lastTopLevelEntry = (tokens, section, key): ScannedEntry | undefined => …  // :101-113
+interface ScannedFormat { bare; worktree; worktreeConfig; tokens }  // :274-279
+worktreeConfig: lastTopLevelEntry(tokens, EXTENSIONS_SECTION, WORKTREE_CONFIG_KEY),  // :300
+export interface RepositoryFormat { bare; worktree; worktreeConfig; refusal }  // :21-27
 ```
 
 Adding the read is: one constant (`OBJECT_FORMAT_KEY = 'objectformat'` — the key is matched
-lower-cased at `:57`), one `lastTopLevelEntry` call in `scanConfigFile` (`:89-93`), one field on
-`ScannedFormat`, one resolver beside `resolveBare` (`:97`) / `resolveWorktree` (`:106`), and one
+lower-cased at `:92`), one `lastTopLevelEntry` call in `scanConfigFile` (`:281-303`), one field on
+`ScannedFormat`, one resolver beside `resolveBare` (`:349`) / `resolveWorktree` (`:358`), and one
 field on `RepositoryFormat`.
 
 **Two things must NOT be copied from the neighbouring keys:**
 
-- **Scoping.** `core.bare` and `core.worktree` go through `pickScoped` (`:147-148`, `:162-168`).
+- **Scoping.** `core.bare` and `core.worktree` go through `pickScoped` (call at `:406`, definition at `:424`).
   The format keys do **not** — a `repositoryformatversion` or `extensions.*` planted in
   `config.worktree` is inert even with `extensions.worktreeConfig = true`. `objectFormat` reads
   `<commonDir>/config` only. Call `lastTopLevelEntry` on `local` and never consult `scoped`.
-- **Leniency.** `scanConfigFile`'s absent-file-behaves-as-empty rule (`:85-87`) is right for
+- **Leniency.** `scanConfigFile`'s absent-file-behaves-as-empty rule (`:285-294`) is right for
   `objectFormat` (absent ⇒ sha1) but the present-and-malformed cases are **refusals**, matching
   the `configBadBooleanValue` / `configMissingValue` throws the same function already performs.
 
@@ -901,7 +901,7 @@ field on `RepositoryFormat`.
 | `objectFormat` (valueless, no `=`) | `error: missing value for 'extensions.objectformat'` + `fatal: bad config line N in file <F>`, exit 128 |
 | `sha256` then `sha1` | **last-wins** ⇒ sha1 (exactly what `lastTopLevelEntry` already does) |
 | key absent, at v1 | accepted ⇒ **sha1** |
-| `[extensions "x"] objectFormat = sha256` | the **acceptance gate's** refusal, not this one — `lastTopLevelEntry` skips subsectioned entries at `:55`, which is already correct |
+| `[extensions "x"] objectFormat = sha256` | the **acceptance gate's** refusal, not this one — `lastTopLevelEntry` skips subsectioned entries at `:108`, which is already correct |
 | `objectFormat = sha256` at v0 | again the acceptance gate's refusal |
 
 **The case-sensitivity row is its own test.** A `toLowerCase()` added "for symmetry with the key"
