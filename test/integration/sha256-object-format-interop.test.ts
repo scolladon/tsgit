@@ -55,6 +55,7 @@ import { findGitHttpBackend, startGitHttpBackend } from '../bench/support/http-b
 import {
   disableAutoMaintenance,
   GIT_AVAILABLE,
+  GIT_HAS_RUST_COMPAT,
   lsStage,
   runGit,
   runGitEnv,
@@ -992,9 +993,14 @@ describe.skipIf(!GIT_AVAILABLE)(
             caught = err;
           }
 
-          // Assert — git
-          expect(theirs.exitCode).toBe(128);
-          expect(theirs.stderr).toContain('compatibility hash algorithm support requires Rust');
+          // Assert — git. The refusal is a property of the BUILD (`rust:
+          // disabled` in `git version --build-options`), not the version — a
+          // Rust-enabled git accepts the extension. Pin only the outcome that
+          // was measured; tsgit's own refusal below is asserted either way.
+          if (!GIT_HAS_RUST_COMPAT) {
+            expect(theirs.exitCode).toBe(128);
+            expect(theirs.stderr).toContain('compatibility hash algorithm support requires Rust');
+          }
           // Assert — tsgit
           expect(caught).toBeInstanceOf(TsgitError);
           expect((caught as TsgitError).data).toEqual({

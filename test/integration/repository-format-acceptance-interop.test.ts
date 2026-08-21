@@ -27,7 +27,14 @@ import { init } from '../../src/application/commands/init.js';
 import { TsgitError } from '../../src/domain/error.js';
 import { openRepository } from '../../src/index.node.js';
 import type { Repository } from '../../src/repository.js';
-import { GIT_AVAILABLE, git, runGit, runGitEnv, tryRunGitWithExit } from './interop-helpers.js';
+import {
+  GIT_AVAILABLE,
+  GIT_HAS_RUST_COMPAT,
+  git,
+  runGit,
+  runGitEnv,
+  tryRunGitWithExit,
+} from './interop-helpers.js';
 
 /** Probes one `git init` capability once, in a throwaway `mktemp` dir, never touching a fixture. */
 const probeInitCapability = (...args: ReadonlyArray<string>): boolean => {
@@ -637,11 +644,17 @@ describe.skipIf(!GIT_AVAILABLE)(
             // Assert — git
             if (gitOutcome === 'accept') {
               expect(g.exitCode).toBe(0);
-            } else {
+            } else if (!GIT_HAS_RUST_COMPAT) {
+              // git's refusal here depends on the BUILD, not the version: a
+              // Rust-enabled git accepts `compatObjectFormat` and carries on.
+              // Only the non-Rust outcome is measured, so only it is pinned;
+              // asserting an unmeasured exit code would be guessing at git.
               expect(g.exitCode).toBe(128);
               expect(g.stderr).toContain(
                 'fatal: compatibility hash algorithm support requires Rust',
               );
+            } else {
+              expect(g.stderr).not.toContain('requires Rust');
             }
 
             // Assert — tsgit: the names it can act on carry no refusal.
@@ -867,15 +880,17 @@ describe.skipIf(!GIT_AVAILABLE)(
             caught = err;
           }
 
-          // Assert — git
-          expect(status.exitCode).toBe(128);
-          expect(status.stderr).toContain(
-            'fatal: compatibility hash algorithm support requires Rust',
-          );
-          expect(list.exitCode).toBe(128);
-          expect(list.stderr).toContain(
-            'fatal: compatibility hash algorithm support requires Rust',
-          );
+          // Assert — git (only on a build that refuses; see GIT_HAS_RUST_COMPAT)
+          if (!GIT_HAS_RUST_COMPAT) {
+            expect(status.exitCode).toBe(128);
+            expect(status.stderr).toContain(
+              'fatal: compatibility hash algorithm support requires Rust',
+            );
+            expect(list.exitCode).toBe(128);
+            expect(list.stderr).toContain(
+              'fatal: compatibility hash algorithm support requires Rust',
+            );
+          }
           // Assert — tsgit
           expect(caught).toBeInstanceOf(TsgitError);
           expect((caught as TsgitError).data).toEqual({
@@ -1476,8 +1491,8 @@ describe.skipIf(!GIT_AVAILABLE)(
             caught = err;
           }
 
-          // Assert — git
-          expect(list.exitCode).toBe(128);
+          // Assert — git (only on a build that refuses; see GIT_HAS_RUST_COMPAT)
+          if (!GIT_HAS_RUST_COMPAT) expect(list.exitCode).toBe(128);
           // Assert — tsgit: no repository, no config surface reachable at all
           expect(caught).toBeInstanceOf(TsgitError);
           expect((caught as TsgitError).data).toMatchObject({
