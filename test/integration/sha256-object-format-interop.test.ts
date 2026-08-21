@@ -401,7 +401,7 @@ describe.skipIf(!GIT_AVAILABLE)('sha256 object format — .git/index interop', (
     });
   });
 
-  describe("Given today's live desync — a caller-supplied sha256 hash service on a plain SHA-1 repository, opened through the real public Node entry point", () => {
+  describe("Given today's live desync — a caller-supplied sha256 hash service on a plain SHA-1 repository, opened through the real public Node entry point, When openRepository runs", () => {
     it('Then openRepository refuses with OBJECT_FORMAT_CONFLICT instead of silently pairing ctx.hash=sha256 with ctx.hashConfig=SHA1_CONFIG', async () => {
       // Arrange — a plain (SHA-1) repository, built the same way the
       // adjacent 64-hex-refusal test above builds one; before this part,
@@ -673,7 +673,7 @@ describe.skipIf(!GIT_AVAILABLE)(
       await rm(dir, { recursive: true, force: true });
     });
 
-    describe('Given the .rev file git wrote for a SHA-256 pack', () => {
+    describe('Given the .rev file git wrote for a SHA-256 pack, When tsgit reads its header', () => {
       it('Then its hash id is 2', () => {
         // Arrange
         const view = new DataView(revBytes.buffer, revBytes.byteOffset, revBytes.byteLength);
@@ -686,21 +686,27 @@ describe.skipIf(!GIT_AVAILABLE)(
       });
     });
 
-    describe('Given the multi-pack-index git wrote', () => {
+    describe('Given the multi-pack-index git wrote, When tsgit reads its header', () => {
       it('Then its hash-version byte is 02', () => {
+        // Arrange — byte 5 of the midx header is the hash-version field.
+        const sut = midxBytes;
+
         // Act & Assert
-        expect(midxBytes[5]).toBe(2);
+        expect(sut[5]).toBe(2);
       });
     });
 
-    describe('Given the commit-graph git wrote', () => {
+    describe('Given the commit-graph git wrote, When tsgit reads its header', () => {
       it('Then its hash-version byte is 02', () => {
+        // Arrange — byte 5 of the commit-graph header is the hash-version field.
+        const sut = commitGraphBytes;
+
         // Act & Assert
-        expect(commitGraphBytes[5]).toBe(2);
+        expect(sut[5]).toBe(2);
       });
     });
 
-    describe('Given the pack .idx v2 trailer git wrote', () => {
+    describe("Given the pack .idx v2 trailer git wrote, When tsgit's pack-index reader frames it", () => {
       it("Then tsgit's own pack-index reader frames it at 64 bytes (two 32-byte SHA-256 checksums)", () => {
         // Arrange & Act
         const parsed = parsePackIndex(idxBytes, 32);
@@ -710,7 +716,7 @@ describe.skipIf(!GIT_AVAILABLE)(
       });
     });
 
-    describe('Given git packed the refs, removing the loose refs/heads/main file', () => {
+    describe('Given git packed the refs, removing the loose refs/heads/main file, When tsgit resolves the branch', () => {
       it("Then tsgit's revParse still resolves main by reading only packed-refs", async () => {
         // Arrange
         const looseRefExists = existsSync(path.join(dir, '.git', 'refs', 'heads', 'main'));
@@ -724,17 +730,20 @@ describe.skipIf(!GIT_AVAILABLE)(
       });
     });
 
-    describe('Given the pack + .rev + multi-pack-index + commit-graph git wrote', () => {
+    describe('Given the pack + .rev + multi-pack-index + commit-graph git wrote, When tsgit log walks the repository', () => {
       it("Then tsgit log walks it and reproduces git log's exact oid sequence", async () => {
+        // Arrange
+        const sut = log;
+
         // Act
-        const entries = await log(sha256Context(dir));
+        const entries = await sut(sha256Context(dir));
 
         // Assert
         expect(entries.map((entry) => entry.id)).toEqual(expectedLog);
       });
     });
 
-    describe('Given the pack .bitmap git wrote', () => {
+    describe('Given the pack .bitmap git wrote, When tsgit runs fsck over it', () => {
       it('Then tsgit fsck reads it cleanly, matching git fsck exit 0', async () => {
         // Arrange
         const theirs = tryRunGitWithExit(['-C', dir, 'fsck'], { env: runGitEnv() });
@@ -791,7 +800,7 @@ describe.skipIf(!GIT_AVAILABLE)(
       await rm(dir, { recursive: true, force: true });
     });
 
-    describe('Given the .rev file git wrote for a SHA-1 pack', () => {
+    describe('Given the .rev file git wrote for a SHA-1 pack, When tsgit reads its header', () => {
       it('Then its hash id is still 1', () => {
         // Arrange
         const view = new DataView(revBytes.buffer, revBytes.byteOffset, revBytes.byteLength);
@@ -804,7 +813,7 @@ describe.skipIf(!GIT_AVAILABLE)(
       });
     });
 
-    describe('Given the pack .idx v2 trailer git wrote', () => {
+    describe("Given the pack .idx v2 trailer git wrote, When tsgit's pack-index reader frames it", () => {
       it("Then tsgit's own pack-index reader still frames it at 40 bytes (two 20-byte SHA-1 checksums)", () => {
         // Arrange & Act
         const parsed = parsePackIndex(idxBytes, 20);
@@ -814,10 +823,13 @@ describe.skipIf(!GIT_AVAILABLE)(
       });
     });
 
-    describe('Given every commit tsgit reads back from this repository', () => {
+    describe("Given every commit tsgit reads back from this repository, When their oids are compared with git's", () => {
       it("Then every oid is still 40 hex characters, matching git log's own sequence", async () => {
+        // Arrange
+        const sut = log;
+
         // Act
-        const entries = await log(createNodeContext({ workDir: dir }));
+        const entries = await sut(createNodeContext({ workDir: dir }));
 
         // Assert
         expect(entries.map((entry) => entry.id)).toEqual(expectedLog);
@@ -827,7 +839,7 @@ describe.skipIf(!GIT_AVAILABLE)(
       });
     });
 
-    describe('Given a new working-tree file, staged once by tsgit add and once by git add (each on its own copy)', () => {
+    describe('Given a new working-tree file, staged once by tsgit add and once by git add (each on its own copy), When both indexes are read back', () => {
       it("Then git ls-files --stage reads back tsgit's index with the full 40-hex oid at the unchanged 62-byte fixed entry header, matching git's own add exactly", async () => {
         // Arrange — two independent copies of the same base repo, one for
         // each side, so the destructive `add` on one cannot affect the other.
@@ -862,7 +874,7 @@ describe.skipIf(!GIT_AVAILABLE)(
 describe.skipIf(!GIT_AVAILABLE)(
   'sha256 object format — R13 cross-format meeting points inside one working tree',
   () => {
-    describe('Given a linked worktree of a SHA-256 repository', () => {
+    describe('Given a linked worktree of a SHA-256 repository, When both tools operate inside it', () => {
       it("Then git reports sha256 from inside it, and tsgit's own add there writes a 32-byte-oid index — the format is inherited from the common dir, no worktree-specific branch needed", async () => {
         // Arrange
         const dir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-sha256-lwt-base-'));
@@ -912,7 +924,7 @@ describe.skipIf(!GIT_AVAILABLE)(
 describe.skipIf(!GIT_AVAILABLE)(
   'sha256 object format — compatObjectFormat (git itself refuses it at the point of use)',
   () => {
-    describe('Given a SHA-256 repository with extensions.compatObjectFormat = sha1 planted', () => {
+    describe('Given a SHA-256 repository with extensions.compatObjectFormat = sha1 planted, When both tools open it', () => {
       it("Then git refuses with 'compatibility hash algorithm support requires Rust' (exit 128), and tsgit's openRepository refuses with REPOSITORY_EXTENSION_UNSUPPORTED naming compatobjectformat", async () => {
         // Arrange
         const dir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-sha256-compat-'));
@@ -1145,7 +1157,7 @@ describe.skipIf(TRANSPORT_SKIP)('sha256 object format — transport negotiation 
     { legLabel: 'protocol v2', forwardGitProtocol: true },
     { legLabel: 'the v1 fallback', forwardGitProtocol: false },
   ])(
-    'Given a sha256 local repository cloning a sha256 bare peer, over $legLabel',
+    'Given a sha256 local repository cloning a sha256 bare peer, over $legLabel, When clone runs',
     ({ forwardGitProtocol }) => {
       it("Then it succeeds, and the client's own request carries object-format=sha256 (its real algorithm, matching the real peer's own)", async () => {
         // Arrange — the peer is a REAL git repository, served by a REAL
@@ -1182,7 +1194,7 @@ describe.skipIf(TRANSPORT_SKIP)('sha256 object format — transport negotiation 
     },
   );
 
-  describe('Given a sha1-default local repository (unconfigured) cloning a sha256 bare peer', () => {
+  describe('Given a sha1-default local repository (unconfigured) cloning a sha256 bare peer, When clone runs', () => {
     it("Then it adopts sha256 — the destination's config declares [extensions] before [core], every fetched ref is 64 hex, and real git reads the result", async () => {
       // Arrange — git's clone has no --object-format flag; the LOCAL context
       // is left at its library default (sha1, unconfigured) so the only way
@@ -1215,7 +1227,7 @@ describe.skipIf(TRANSPORT_SKIP)('sha256 object format — transport negotiation 
     }, 60_000);
   });
 
-  describe('Given depth: 1 against a sha256 bare peer', () => {
+  describe('Given depth: 1 against a sha256 bare peer, When clone runs', () => {
     it('Then .git/shallow carries a 64-hex boundary line', async () => {
       // Arrange
       const source = await createBareTransportSource('clone-adopt-shallow', 'sha256');
@@ -1239,7 +1251,7 @@ describe.skipIf(TRANSPORT_SKIP)('sha256 object format — transport negotiation 
     }, 60_000);
   });
 
-  describe('Given a sha256 local repository with a new commit and an EMPTY sha256 bare receiver', () => {
+  describe('Given a sha256 local repository with a new commit and an EMPTY sha256 bare receiver, When push runs', () => {
     it('Then tsgit push succeeds over its v1-only wire and the receiver observes the new commit', async () => {
       // Arrange
       const receiver = await createBareTransportReceiver('push-same-fmt', 'sha256');
@@ -1276,7 +1288,7 @@ describe.skipIf(TRANSPORT_SKIP)('sha256 object format — transport negotiation 
     { legLabel: 'protocol v2', forwardGitProtocol: true },
     { legLabel: 'the v1 fallback', forwardGitProtocol: false },
   ])(
-    'Given a sha1 local repository fetching from a sha256 bare peer, over $legLabel',
+    'Given a sha1 local repository fetching from a sha256 bare peer, over $legLabel, When fetch negotiates',
     ({ forwardGitProtocol }) => {
       it("Then it refuses with UNSUPPORTED_OBJECT_FORMAT, format 'sha256' local 'sha1'", async () => {
         // Arrange
@@ -1319,7 +1331,7 @@ describe.skipIf(TRANSPORT_SKIP)('sha256 object format — transport negotiation 
     { legLabel: 'protocol v2', forwardGitProtocol: true },
     { legLabel: 'the v1 fallback', forwardGitProtocol: false },
   ])(
-    'Given a sha256 local repository fetching from a sha1 bare peer, over $legLabel',
+    'Given a sha256 local repository fetching from a sha1 bare peer, over $legLabel, When fetch negotiates',
     ({ forwardGitProtocol }) => {
       it("Then it refuses with UNSUPPORTED_OBJECT_FORMAT, format 'sha1' local 'sha256'", async () => {
         // Arrange — the mirrored direction: local and peer swapped.
@@ -1358,7 +1370,7 @@ describe.skipIf(TRANSPORT_SKIP)('sha256 object format — transport negotiation 
     },
   );
 
-  describe('Given a sha256 local repository with a new commit and an EMPTY sha1 bare receiver', () => {
+  describe('Given a sha256 local repository with a new commit and an EMPTY sha1 bare receiver, When push runs', () => {
     it("Then tsgit push refuses with PUSH_OBJECT_FORMAT_UNSUPPORTED, local 'sha256' remote 'sha1' — the v1-only wire is the only leg push has, proving the refusal is reachable at all", async () => {
       // Arrange
       const receiver = await createBareTransportReceiver('push-mismatch', 'sha1');
@@ -1417,7 +1429,7 @@ const initLocalSuper = async (slug: string, algorithm: 'sha1' | 'sha256'): Promi
 describe.skipIf(TRANSPORT_SKIP)(
   'sha256 object format — submodule add refuses across formats (R13)',
   () => {
-    describe('Given a SHA-1 superproject adding a SHA-256 submodule remote', () => {
+    describe('Given a SHA-1 superproject adding a SHA-256 submodule remote, When submodule add runs', () => {
       it("Then it refuses SUBMODULE_OBJECT_FORMAT_MISMATCH (local 'sha1', remote 'sha256'), leaving the partial .git/modules/sub state behind — the clone has already happened", async () => {
         // Arrange
         const source = await createBareTransportSource('submodule-sha1-super', 'sha256');
@@ -1451,7 +1463,7 @@ describe.skipIf(TRANSPORT_SKIP)(
       }, 60_000);
     });
 
-    describe('Given a SHA-256 superproject adding a SHA-1 submodule remote', () => {
+    describe('Given a SHA-256 superproject adding a SHA-1 submodule remote, When submodule add runs', () => {
       it("Then it refuses SUBMODULE_OBJECT_FORMAT_MISMATCH (local 'sha256', remote 'sha1'), leaving the partial .git/modules/sub state behind — the mirrored direction", async () => {
         // Arrange
         const source = await createBareTransportSource('submodule-sha256-super', 'sha1');

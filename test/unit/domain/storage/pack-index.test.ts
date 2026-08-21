@@ -1010,8 +1010,11 @@ describe('pack-index', () => {
     describe('Given the full 64-char SHA-256 oid as prefix', () => {
       describe('When searching', () => {
         it('Then it resolves to that oid', () => {
+          // Arrange
+          const sut = findByPrefix;
+
           // Act
-          const result = findByPrefix(sha256Index, fullOid);
+          const result = sut(sha256Index, fullOid);
 
           // Assert
           expect(result).toEqual([fullOid]);
@@ -1046,9 +1049,12 @@ describe('pack-index', () => {
     describe('Given a prefix shorter than 4 hex chars', () => {
       describe('When searching', () => {
         it('Then throws INVALID_PACK_INDEX for the too-short guard', () => {
+          // Arrange
+          const sut = findByPrefix;
+
           // Act & Assert
           try {
-            findByPrefix(sha256Index, 'abc');
+            sut(sha256Index, 'abc');
             // Assert
             expect.fail('Should have thrown');
           } catch (e) {
