@@ -83,6 +83,7 @@ Codes are grouped by domain. Within each group, alphabetical.
 | `INVALID_REF` | `name, reason` | Ref name violates git syntax. |
 | `INVALID_REF_LINE` | `reason` | Ref-line on the wire was malformed. |
 | `INVALID_REFLOG_ENTRY` | `reason` | Reflog file line could not be parsed. |
+| `INVALID_REFTABLE` | `check, reason` | A reftable stack file failed a structural parse gate. |
 | `REF_CHAIN_TOO_DEEP` | `depth, limit` | Symbolic ref chain exceeded the recursion cap. |
 | `REF_CYCLE_DETECTED` | `name` | Symbolic ref pointed at itself directly or indirectly. |
 | `REF_LOCKED` | `name` | Another writer holds the ref lock. |

@@ -1,9 +1,36 @@
 import { TsgitError } from '../error.js';
 import type { ObjectId, RefName } from '../objects/object-id.js';
 
+/**
+ * The parse gate that refused a reftable stack file — a closed discriminant
+ * so the application layer can classify the fault without re-deriving it
+ * from the free-text reason.
+ *
+ * `'magic'`, `'version'`, `'footer-crc'`, `'truncated'` and
+ * `'varint-overflow'` are raised by the header/footer/varint/block-framing
+ * codec. `'block-type'`, `'restart-count'` and `'record-overrun'` are raised
+ * once ref/index/obj block record grammar is decoded; `'tables-list'` is
+ * raised once the multi-file stack (`tables.list`) is read.
+ */
+export type ReftableCheck =
+  | 'magic'
+  | 'version'
+  | 'footer-crc'
+  | 'truncated'
+  | 'block-type'
+  | 'restart-count'
+  | 'record-overrun'
+  | 'varint-overflow'
+  | 'tables-list';
+
 export type RefsError =
   | { readonly code: 'INVALID_REF'; readonly reason: string }
   | { readonly code: 'INVALID_PACKED_REFS'; readonly reason: string }
+  | {
+      readonly code: 'INVALID_REFTABLE';
+      readonly check: ReftableCheck;
+      readonly reason: string;
+    }
   | { readonly code: 'REF_NOT_FOUND'; readonly name: RefName }
   | {
       readonly code: 'REF_CHAIN_TOO_DEEP';
@@ -27,6 +54,9 @@ export const invalidRef = (reason: string): TsgitError =>
 
 export const invalidPackedRefs = (reason: string): TsgitError =>
   new TsgitError({ code: 'INVALID_PACKED_REFS', reason });
+
+export const invalidReftable = (check: ReftableCheck, reason: string): TsgitError =>
+  new TsgitError({ code: 'INVALID_REFTABLE', check, reason });
 
 export const refNotFound = (name: RefName): TsgitError =>
   new TsgitError({ code: 'REF_NOT_FOUND', name });
