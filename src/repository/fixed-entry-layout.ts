@@ -40,8 +40,21 @@ export const resolveFixedEntryLayout = async (
   // 'DISCOVERED'` (there is no walk, so `BARE_DIR` is unreachable) and
   // `fileSystemLayoutProbe` omits `isOwnedByCaller`, so both gates are inert
   // by construction — a parameter here could only ever be ignored.
-  return finishLayout(probe, outcome, portablePosixPolicy, workDir, {
+  const layout = await finishLayout(probe, outcome, portablePosixPolicy, workDir, {
     ...(bare !== undefined ? { bare } : {}),
     ...(explicitWorkDir !== undefined ? { workDir: explicitWorkDir } : {}),
   });
+  if (entry !== undefined) return layout;
+  // Nothing exists at the entry yet — this is the bootstrap shape `init` and
+  // `clone` open before there is a repository to describe. `finishLayout`
+  // states `objectFormat` UNCONDITIONALLY (sha1 when the key is absent),
+  // which is right for a repository that EXISTS and simply declares nothing,
+  // but wrong here: a format nobody has written yet is unknown, not sha1.
+  // Reporting sha1 makes `resolveAlgorithm` treat a defaulted value as a
+  // declaration and refuse `openRepository({ algorithm: 'sha256' })` with
+  // OBJECT_FORMAT_CONFLICT — on the walk-based shims the same call succeeds,
+  // because a found-nothing walk yields `syntheticFallbackLayout`, which
+  // never sets the field. Dropping it here restores that parity.
+  const { objectFormat: _undeclared, ...bootstrap } = layout;
+  return bootstrap;
 };
