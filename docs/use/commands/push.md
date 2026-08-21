@@ -83,6 +83,8 @@ for (const r of result.pushedRefs) {
 - `INVALID_URL` — malformed remote URL; HTTP: failed SSRF validation; SSH/scp: a control character, or the host/path begins with `-` (argv-injection guard).
 - `ADAPTER_UNAVAILABLE` — an `ssh://`/scp-like remote given to a runtime with no `SshTransport` wired (Browser, Memory).
 - `NETWORK_ERROR` — transport failure (SSH surfaces the `ssh` child's exit code).
+- `PUSH_OBJECT_FORMAT_UNSUPPORTED` — the receiving end's advertised hash algorithm differs from this repository's own; carries `{ local, remote }`. Push has no v2 wire form, so the value comes from the v1 advertisement. Nothing is sent.
+- `UNSUPPORTED_OBJECT_FORMAT` — the receiving end advertised a value outside the closed `sha1`/`sha256` set. Distinct from the mismatch above: an algorithm tsgit does not implement is a different condition from a known one that simply differs, and git words them differently.
 - `REMOTE_NOT_CONFIGURED` — `remote` is not in `.git/config`.
 - `CONFIG_MISSING_VALUE` — `remote.<name>.pushurl` or `remote.<name>.url` is present but valueless (git NULL); carries `{ key, source, line }`. Push resolves `pushUrl ?? url`, and refuses on whichever is valueless before that fallback substitutes. Distinct from the absent case (`REMOTE_NOT_CONFIGURED`).
 - `INVALID_PUSH_DEFAULT` — `push.default` is set to a value other than `nothing`, `current`, `upstream`, `simple`, `matching`, or the `tracking` alias; carries `{ value, source, line }`. Checked eagerly before the remote or refspec is resolved, even when `refspecs` is given explicitly.

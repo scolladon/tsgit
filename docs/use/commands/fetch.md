@@ -72,6 +72,7 @@ console.log(result.prunedRefs);
 - `REFSPEC_INVALID` — refspec syntactically invalid.
 - `REMOTE_FILTER_UNSUPPORTED` — the repo's stored `partialclonefilter` can't be re-applied because the server's capabilities lack `filter` support (v1 capability list or v2 `fetch` command's sub-features).
 - `SHALLOW_FILE_MALFORMED` — persisting the server's `shallow`/`unshallow` lines would exceed the entry cap or include a foreign-width oid; refuses before any repository state changes (refs unmoved).
+- `UNSUPPORTED_OBJECT_FORMAT` — the peer's declared hash algorithm (v1 advertisement token or v2 capability line) differs from this repository's own (`local` set), or lies outside the closed `sha1`/`sha256` set (`local` absent). Refused before any pack is requested, so nothing is written.
 
 ## See also
 
