@@ -37,6 +37,7 @@ import { log } from '../../src/application/commands/log.js';
 import { packObjects } from '../../src/application/commands/pack-objects.js';
 import { push } from '../../src/application/commands/push.js';
 import { revParse } from '../../src/application/commands/rev-parse.js';
+import { status } from '../../src/application/commands/status.js';
 import { submoduleAdd } from '../../src/application/commands/submodule.js';
 import { tarArchive } from '../../src/domain/archive/tar.js';
 import { parseCommitGraphLayer } from '../../src/domain/commit/commit-graph.js';
@@ -384,6 +385,33 @@ describe.skipIf(!GIT_AVAILABLE)('sha256 object format — .git/index interop', (
         expect.objectContaining({ ok: true, id: expectedHead, type: 'commit' }),
         expect.objectContaining({ ok: true, id: expectedTree, type: 'tree' }),
       ]);
+    });
+  });
+
+  describe('Given a SHA-256 repository with a staged change, When tsgit status reports it', () => {
+    it("Then the staged blob oid is git's own 64-hex oid, not a truncated 40-hex one", async () => {
+      // Arrange — `status` is the one verb whose oid width had no coverage at
+      // all under SHA-256, and a truncated id is exactly the symptom it was
+      // suspected of. Its own copy of the fixture: `add` mutates the index.
+      const dir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-sha256-status-'));
+      await cp(baseDir, dir, { recursive: true });
+      await writeFile(path.join(dir, 'staged.txt'), 'staged\n');
+      const env = runGitEnv();
+      runGit(['-C', dir, 'add', 'staged.txt'], { env });
+      const expected = runGit(['-C', dir, 'hash-object', 'staged.txt'], { env }).trim();
+      const sut = status;
+
+      try {
+        // Act
+        const result = await sut(sha256Context(dir));
+
+        // Assert
+        const staged = result.changes.find((change) => change.path === 'staged.txt');
+        expect(expected).toMatch(/^[0-9a-f]{64}$/);
+        expect(staged?.index?.id).toBe(expected);
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
     });
   });
 
