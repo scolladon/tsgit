@@ -214,6 +214,17 @@ reconstructed from git's stderr text.
   `.gitattributes` blob-content checks (`gitmodulesUrl`, `gitmodulesParse`,
   `gitattributesLineLength`, …) and `badDateOverflow` on overflowing
   commit/tag dates.
+- **Oid width follows the repository's hash algorithm.** A commit's `tree` and
+  `parent` lines, a tag's `object` line, and a tree entry's binary sha are only
+  well-formed at the width `extensions.objectFormat` declares — 40 hex (20
+  bytes) under SHA-1, 64 hex (32 bytes) under SHA-256. The other algorithm's
+  width is corruption, not a tolerated variant: a 40-hex tree pointer is a
+  truncated oid in a SHA-256 repository, and a 64-hex one is over-long in a
+  SHA-1 repository. Both raise `badTreeSha1` / `badParentSha1` /
+  `badObjectSha1` at ERROR severity (exit bit 1). git reaches the same verdict
+  by a different route — the object fails to parse before its content checks
+  run, so git prints `bogus commit object` instead of a msg-id — so the
+  agreement to rely on is the finding and the exit bit, not the message text.
 - **Refs-verify pass** (`checkReferences: true`, the default) validates loose
   and packed-refs content, producing `bad-ref` findings for `badRefContent`
   (exit bit 8) and ref→absent-OID pointers (exit bit 2). Composite exit 10
