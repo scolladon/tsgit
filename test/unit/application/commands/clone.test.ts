@@ -224,6 +224,13 @@ describe('clone', () => {
         expect(config).toContain('objectformat = sha256');
         expect(result.fetchedRefs).toHaveLength(1);
         expect(result.fetchedRefs.every((ref) => ref.id.length === 64)).toBe(true);
+        // The adopted format is REPORTED, not left to be inferred from an
+        // oid's width. `submodule add`'s cross-format refusal reads this
+        // field: inferring from `fetchedRefs` instead would pass silently
+        // whenever a peer advertises only namespaces `writeFetchedRefs`
+        // drops (`HEAD`, unsafe names, anything outside refs/heads and
+        // refs/tags), leaving that list empty on a successful clone.
+        expect(result.objectFormat).toBe('sha256');
       });
     });
   });

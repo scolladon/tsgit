@@ -48,6 +48,15 @@ export interface CloneResult {
   readonly path: FilePath;
   readonly head: RefName | undefined;
   readonly fetchedRefs: ReadonlyArray<{ readonly name: RefName; readonly id: ObjectId }>;
+  /**
+   * The object format the destination ADOPTED from the peer — git has no
+   * `clone --object-format`, so this is learned from the advertisement rather
+   * than chosen. Reported because a caller cannot otherwise know it without
+   * re-reading the new repository's config, and because deriving it from a
+   * fetched oid's width would be inferring the algorithm from data rather
+   * than from a declaration.
+   */
+  readonly objectFormat: 'sha1' | 'sha256';
 }
 
 /**
@@ -200,7 +209,7 @@ const negotiateAndWritePack = async (
   const fetchedRefs = await writeFetchedRefs(cloneCtx, advertisement, reflogUrl);
   const head = await applyRemoteHead(cloneCtx, advertisement, reflogUrl);
   await writeCloneConfig(cloneCtx, opts.url, headTrackedBranch(advertisement), filterSpec);
-  return { path: bootstrap.gitDir, head, fetchedRefs };
+  return { path: bootstrap.gitDir, head, fetchedRefs, objectFormat: cloneCtx.hashConfig.algorithm };
 };
 
 /**

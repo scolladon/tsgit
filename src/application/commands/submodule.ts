@@ -601,18 +601,20 @@ const stageSubmodule = async (
  * hash algorithm`). `clone` always ADOPTS the peer's algorithm for the
  * child's own on-disk repository (its own doc comment), so by the time this
  * runs the absorbed gitdir already holds the submodule's true width. The
- * check reads that width off `fetchedRefs`' oid STRINGS — never through an
- * object/pack read — because `child`'s Context still carries the
- * SUPERPROJECT's inherited `hashConfig` here (Context is immutable, and
- * `clone`'s internally-adopted context never escapes it); a width-sensitive
- * read through `child` at this point would misparse a genuinely mismatched
- * pack instead of refusing cleanly. `clone` itself already guarantees at
- * least one fetched ref whenever it succeeds (`remoteAdvertisesNoRefs`).
+ * check compares `clone`'s REPORTED adopted format against the
+ * superproject's — never a width read through `child`, whose Context still
+ * carries the SUPERPROJECT's inherited `hashConfig` here (Context is
+ * immutable, and `clone`'s internally-adopted context never escapes it), and
+ * never an inference from a fetched oid's width. Reading the width off
+ * `fetchedRefs` would leave a hole: `writeFetchedRefs` drops `HEAD`, unsafe
+ * names, and every namespace outside `refs/heads/*` and `refs/tags/*`, so a
+ * peer advertising only e.g. `refs/pull/1/head` clones successfully with an
+ * EMPTY `fetchedRefs` and the guard would silently pass. The submodule URL
+ * comes from `.gitmodules`, so that peer is attacker-influenceable.
  */
 const assertSameObjectFormat = (ctx: Context, cloned: CloneResult): void => {
-  const remoteOid = cloned.fetchedRefs[0]?.id;
-  if (remoteOid === undefined || remoteOid.length === ctx.hashConfig.hexLength) return;
-  const remote = remoteOid.length === 64 ? 'sha256' : 'sha1';
+  const remote = cloned.objectFormat;
+  if (remote === ctx.hashConfig.algorithm) return;
   throw submoduleObjectFormatMismatch(ctx.hashConfig.algorithm, remote);
 };
 
