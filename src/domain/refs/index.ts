@@ -19,6 +19,9 @@ export { refCandidates } from './ref-candidates.js';
 export type { DirectRef, LooseRef, PackedRefEntry, PackedRefs, SymbolicRef } from './ref-types.js';
 // Validation
 export { isSafeRefName, validateRefName } from './ref-validation.js';
+// Reftable codec: ref, index and obj block record grammar
+export type { ReftableRefRecord, ReftableRefValue } from './reftable/reftable-block.js';
+export { iterateReftableRefs, lookupReftableRef } from './reftable/reftable-block.js';
 // Reftable codec: header, footer, varint and block framing
 export type { Reftable, ReftableFooter, ReftableHeader } from './reftable/reftable-format.js';
 export { parseReftable } from './reftable/reftable-format.js';

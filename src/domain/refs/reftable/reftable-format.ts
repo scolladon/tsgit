@@ -73,7 +73,9 @@ export interface Reftable {
   readonly _view: DataView;
 }
 
-function readUint24(view: DataView, offset: number): number {
+/** Shared with `reftable-block.ts`'s restart-offset and record-count reads —
+ *  the only `uint24` reader in `src/domain`. */
+export function readUint24(view: DataView, offset: number): number {
   return (view.getUint8(offset) << 16) | view.getUint16(offset + 1);
 }
 

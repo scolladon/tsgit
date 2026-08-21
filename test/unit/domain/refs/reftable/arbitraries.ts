@@ -6,12 +6,22 @@
  * friends) arrive in a later part.
  */
 export type {
+  IndexBlockSpec,
+  IndexRecordSpec,
+  ObjBlockSpec,
+  ObjRecordSpec,
+  RefBlockSpec,
+  RefRecordSpec,
+  RefRecordValueSpec,
   ReftableBlockSpec,
   ReftableFooterSpec,
   ReftableHeaderSpec,
   ReftableSpec,
 } from '../../../../fixtures/refs/reftable-writers.js';
 export {
+  buildIndexBlock,
+  buildObjBlock,
+  buildRefBlock,
   buildReftable,
   buildReftableBlock,
   buildReftableHeader,

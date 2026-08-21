@@ -9,7 +9,7 @@ import type { ObjectId, RefName } from '../objects/object-id.js';
  * `'magic'`, `'version'`, `'footer-crc'`, `'truncated'` and
  * `'varint-overflow'` are raised by the header/footer/varint/block-framing
  * codec. `'block-type'`, `'restart-count'` and `'record-overrun'` are raised
- * once ref/index/obj block record grammar is decoded; `'tables-list'` is
+ * by the ref/index/obj block record grammar decoder; `'tables-list'` is
  * raised once the multi-file stack (`tables.list`) is read.
  */
 export type ReftableCheck =
