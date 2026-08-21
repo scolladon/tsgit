@@ -1,5 +1,14 @@
 # Changelog
 
+## [3.5.0](https://github.com/scolladon/tsgit/compare/v3.4.0...v3.5.0) (2026-08-21)
+
+
+### Features
+
+* bare repositories, explicit layout arguments, and faithful work-tree refusals ([#277](https://github.com/scolladon/tsgit/issues/277)) ([d3a3af4](https://github.com/scolladon/tsgit/commit/d3a3af485dc7af28211e1c92748c9f6c4082e756))
+* refuse repositories git refuses — repository-format and ownership-trust acceptance gates ([#279](https://github.com/scolladon/tsgit/issues/279)) ([3da7be1](https://github.com/scolladon/tsgit/commit/3da7be188bbcc1532bbe75b8d2da264f54ad4128))
+* SHA-256 object format at full write parity, plus bundle v3 ([#280](https://github.com/scolladon/tsgit/issues/280)) ([ed7ca3d](https://github.com/scolladon/tsgit/commit/ed7ca3dfbde6a463518c7c73355ac77fe6a7021b))
+
 ## [3.4.0](https://github.com/scolladon/tsgit/compare/v3.3.0...v3.4.0) (2026-08-16)
 
 
