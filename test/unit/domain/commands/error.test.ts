@@ -33,6 +33,7 @@ import {
   invalidOption,
   invalidPushDefault,
   invalidUrl,
+  MAX_BUNDLE_DETAIL_IN_ERROR,
   MAX_HOOK_STDERR_IN_ERROR,
   maxRefspecsExceeded,
   mergeHasConflicts,
@@ -1643,6 +1644,15 @@ describe('domain commands error — extractDetail message formatting', () => {
       } as unknown as CommandError,
       `BUNDLE_PREREQUISITE_NOT_COMMIT: boundary object ${'a'.repeat(40)} is not a commit (got tree)`,
     ],
+    [
+      {
+        code: 'BUNDLE_PREREQUISITE_ALGORITHM_MISMATCH',
+        oid: 'b'.repeat(64),
+        bundleAlgorithm: 'sha256',
+        localAlgorithm: 'sha1',
+      } as unknown as CommandError,
+      `BUNDLE_PREREQUISITE_ALGORITHM_MISMATCH: missing mapping of ${'b'.repeat(64)} to sha1`,
+    ],
   ];
 
   describe('Given command error %j', () => {
@@ -1938,6 +1948,79 @@ describe('domain commands error — extractDetail message formatting', () => {
           code: 'GREP_LINE_TOO_LONG',
           length: 536_870_889,
           limit: 536_870_888,
+        });
+      });
+    });
+  });
+});
+
+describe('bundle header detail bound', () => {
+  // Bundle bytes are untrusted, so every echoed header detail is sanitized and
+  // bounded. Each reason carries its own bounded field, and a reason whose arm
+  // stopped bounding would return the caller's bytes verbatim.
+  describe('Given a malformed-header line longer than the bound', () => {
+    describe('When bundleBadHeader builds the error', () => {
+      it('Then the echoed line is truncated to the bound', () => {
+        // Arrange
+        const oversized = 'x'.repeat(MAX_BUNDLE_DETAIL_IN_ERROR + 50);
+
+        // Act
+        const result = bundleBadHeader('/bad.bundle', {
+          reason: 'malformed-header',
+          line: oversized,
+          length: oversized.length,
+        });
+
+        // Assert — length reports the ORIGINAL byte count, line is bounded
+        expect(result.data).toEqual({
+          code: 'BUNDLE_BAD_HEADER',
+          path: '/bad.bundle',
+          reason: 'malformed-header',
+          line: 'x'.repeat(MAX_BUNDLE_DETAIL_IN_ERROR),
+          length: oversized.length,
+        });
+      });
+    });
+  });
+
+  describe('Given an unknown-hash-algorithm value longer than the bound', () => {
+    describe('When bundleBadHeader builds the error', () => {
+      it('Then the echoed algorithm is truncated to the bound', () => {
+        // Arrange
+        const oversized = 'y'.repeat(MAX_BUNDLE_DETAIL_IN_ERROR + 50);
+
+        // Act
+        const result = bundleBadHeader('/bad.bundle', {
+          reason: 'unknown-hash-algorithm',
+          algorithm: oversized,
+        });
+
+        // Assert
+        expect(result.data).toEqual({
+          code: 'BUNDLE_BAD_HEADER',
+          path: '/bad.bundle',
+          reason: 'unknown-hash-algorithm',
+          algorithm: 'y'.repeat(MAX_BUNDLE_DETAIL_IN_ERROR),
+        });
+      });
+    });
+  });
+
+  describe('Given an unknown-hash-algorithm value carrying control bytes', () => {
+    describe('When bundleBadHeader builds the error', () => {
+      it('Then the control bytes are escaped', () => {
+        // Arrange + Act
+        const result = bundleBadHeader('/bad.bundle', {
+          reason: 'unknown-hash-algorithm',
+          algorithm: 'sha\x00256',
+        });
+
+        // Assert
+        expect(result.data).toEqual({
+          code: 'BUNDLE_BAD_HEADER',
+          path: '/bad.bundle',
+          reason: 'unknown-hash-algorithm',
+          algorithm: 'sha\\x00256',
         });
       });
     });

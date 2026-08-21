@@ -295,6 +295,7 @@ export const bundleCreate = async (
   const version = selectBundleVersion({
     algorithm: ctx.hashConfig.algorithm,
     filter: false,
+    // Stryker disable next-line ConditionalExpression: equivalent — `selectBundleVersion` reads `requested` only through its first guard, `input.requested === undefined`, so spreading `{ requested: undefined }` and omitting the key take the same branch and return the same version.
     ...(opts.version !== undefined ? { requested: opts.version } : {}),
   });
   const allRefs = await enumerateRefs(ctx);

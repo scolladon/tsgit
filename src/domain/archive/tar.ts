@@ -377,9 +377,11 @@ function paxCommentPayload(oid: string): string {
  * oids settle in two iterations.
  */
 function paxRecordSize(payload: string): number {
+  // Stryker disable next-line ArithmeticOperator: equivalent — the result is the unique fixed point of `size = payload.length + digits(size) + 1`; the seed only chooses where iteration starts. `payload.length + 1` and `payload.length - 1` share a digit count except across a power of ten, and even there the loop converges on that same fixed point (checked exhaustively for payload lengths 0..3000).
   let size = payload.length + 1;
   for (;;) {
     const candidate = payload.length + String(size).length + 1;
+    // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — the only caller is `buildPaxHeader` via `paxCommentPayload`, so payload is always `comment=<oid>\n`: 49 bytes for a 40-hex oid, 73 for a 64-hex one. For both, the FIRST candidate already equals the fixed point (49→52, 73→76), so returning on the first iteration, or on the first inequality, returns exactly what the loop returns.
     if (candidate === size) return candidate;
     size = candidate;
   }

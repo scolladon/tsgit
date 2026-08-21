@@ -275,6 +275,35 @@ describe('clone', () => {
     });
   });
 
+  describe('Given a hash service without withAlgorithm and a peer advertising the local object-format', () => {
+    describe('When clone', () => {
+      it('Then it clones without ever asking the service to switch', async () => {
+        // Arrange — the peer already agrees with us, so no adoption is needed
+        // and the absent capability must never be reached. Folding the
+        // agreement check into the adoption path would turn every ordinary
+        // same-format clone into an UNSUPPORTED_OPERATION for such a caller.
+        const baseCtx = createMemoryContext();
+        const ctx: Context = { ...baseCtx, hash: hashServiceWithoutWithAlgorithm(baseCtx.hash) };
+        const sourceCtx = createMemoryContext();
+        const { packBytes, blobId } = await buildPackFromSingleBlob(sourceCtx, 'cloned blob\n');
+        const transport = buildCloneRemote({
+          capabilities: ['side-band-64k', 'ofs-delta', 'object-format=sha1'],
+          refs: [{ name: 'refs/heads/main', id: blobId }],
+          head: 'refs/heads/main',
+          packBytes,
+        });
+        const networkCtx = withTransport(ctx, transport);
+
+        // Act
+        const result = await clone(networkCtx, { url: REMOTE_URL });
+
+        // Assert
+        expect(result.objectFormat).toBe('sha1');
+        expect(result.fetchedRefs).toHaveLength(1);
+      });
+    });
+  });
+
   describe('Given a peer advertising object-format sha256 and an instrumented pre-derivation context', () => {
     describe('When clone runs against a sha1-configured context', () => {
       it('Then nothing reads hash or hashConfig through the original context once bootstrap has started writing', async () => {

@@ -371,3 +371,29 @@ describe('resolveOidPrefix', () => {
     });
   });
 });
+
+describe('resolveOidPrefix on an over-long hex string', () => {
+  describe('Given a hex string one character longer than a full oid', () => {
+    describe('When resolveOidPrefix is called on a repository holding a pack', () => {
+      it('Then it reports no match rather than probing the pack index', async () => {
+        // Arrange — the prefix grammar stops one character BELOW the full
+        // width, because a full-width string is already handled by the `isOid`
+        // fast path above it. An over-long string is not a prefix at all, and
+        // `findByPrefix` refuses one outright — so widening the grammar would
+        // turn a plain "no such object" into an INVALID_PACK_INDEX raised from
+        // deep inside the pack reader.
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'p1', [
+          { kind: 'base', type: 'blob', content: new Uint8Array([7, 7, 7]) },
+        ]);
+        const sut = resolveOidPrefix;
+
+        // Act
+        const result = await sut(ctx, 'a'.repeat(41));
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+});

@@ -1071,3 +1071,49 @@ describe('bundleVerify on a repository the acceptance tier rejected', () => {
     });
   });
 });
+
+describe('bundleVerify and the optional withAlgorithm capability', () => {
+  describe('Given a same-format bundle and a hash service that cannot switch algorithms', () => {
+    describe('When bundleVerify is called', () => {
+      it('Then it verifies without ever asking the service to switch', async () => {
+        // Arrange — a bundle framed at the repository's OWN algorithm needs no
+        // switch, so the missing capability must not be reached at all.
+        const { ctx } = await buildSingleCommitRepo();
+        const created = await bundleCreate(ctx, { all: true });
+        const { withAlgorithm: _omitted, ...hashWithoutSwitch } = ctx.hash;
+        const restricted: Context = { ...ctx, hash: hashWithoutSwitch };
+        await restricted.fs.write(BUNDLE_PATH, created.bytes);
+        const sut = bundleVerify;
+
+        // Act
+        const result = await sut(restricted, { path: BUNDLE_PATH });
+
+        // Assert
+        expect(result.hashAlgorithm).toBe('sha1');
+        expect(result.prerequisitesPresent).toBe(true);
+        expect(result.recordsCompleteHistory).toBe(true);
+      });
+    });
+  });
+});
+
+describe('bundleVerify filter key exposure', () => {
+  describe('Given a bundle whose header declares no filter capability', () => {
+    describe('When bundleVerify is called', () => {
+      it('Then the result omits the filter key rather than carrying it as undefined', async () => {
+        // Arrange
+        const { ctx } = await buildSingleCommitRepo();
+        const created = await bundleCreate(ctx, { all: true });
+        await ctx.fs.write(BUNDLE_PATH, created.bytes);
+        const sut = bundleVerify;
+
+        // Act
+        const result = await sut(ctx, { path: BUNDLE_PATH });
+
+        // Assert — key PRESENCE is the oracle: `toEqual` cannot tell an absent
+        // optional key from one explicitly present with the value `undefined`.
+        expect('filter' in result).toBe(false);
+      });
+    });
+  });
+});

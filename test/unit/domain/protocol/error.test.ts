@@ -438,3 +438,42 @@ describe('domain protocol error', () => {
     });
   });
 });
+
+describe('peer object-format bound', () => {
+  describe('Given a peer object-format far longer than any legal value', () => {
+    describe('When unsupportedObjectFormat builds the refusal', () => {
+      it('Then the reported format is truncated to the bound', () => {
+        // Arrange — a hostile advertisement can be a whole pkt-line of bytes
+        const sut = unsupportedObjectFormat;
+        const hostile = 'x'.repeat(200);
+
+        // Act
+        const result = sut(hostile);
+
+        // Assert
+        expect(result.data).toEqual({
+          code: 'UNSUPPORTED_OBJECT_FORMAT',
+          format: 'x'.repeat(32),
+        });
+      });
+    });
+  });
+
+  describe('Given a peer object-format carrying control bytes', () => {
+    describe('When unsupportedObjectFormat builds the refusal', () => {
+      it('Then the control bytes are escaped before the bound is applied', () => {
+        // Arrange
+        const sut = unsupportedObjectFormat;
+
+        // Act
+        const result = sut('\x00\x01');
+
+        // Assert
+        expect(result.data).toEqual({
+          code: 'UNSUPPORTED_OBJECT_FORMAT',
+          format: '\\x00\\x01',
+        });
+      });
+    });
+  });
+});
