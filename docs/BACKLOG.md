@@ -13,9 +13,12 @@ Details live in git history, ADRs (`docs/adr/`), and design docs (`docs/design/`
 | **v1.0** — foundation through launch | 0–11 | shipped (`@scolladon/tsgit@1.0.0`) |
 | **v1.x** — semantic completion | 12–17 | shipped |
 | **v1.x** — housekeeping & doc restructure | 18 | shipped (18.3 doc-maintenance harness) |
-| **v2.0** — test base + porcelain completeness + history rewriting | 19–22 | complete; **2.0.0 release PR open via release-please** |
-| **v3.0** — inspection + topology + utilities + extension | 23–24 | queued |
-| **v4.0** — transport + signing + perf | 25–26 | queued |
+| **v2.0** — test base + porcelain completeness + history rewriting | 19–22 | shipped |
+| **v3.0** — inspection + topology + utilities + extension | 23–24 | complete |
+| **v4.0** — transport + signing + perf | 25–26 | complete |
+| **v5.0** — test base rework + pack storage + repository trust | 27–29 | in progress — 27 and 28 complete; **29.4** (reftable) is the only open item |
+
+Latest published release: `@scolladon/tsgit@3.4.0`.
 
 Wave 0 of every major (test base, then docs, then features) is non-negotiable. Performance pass closes each major.
 
