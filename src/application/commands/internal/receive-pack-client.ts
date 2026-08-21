@@ -15,6 +15,7 @@ import {
   CLIENT_CAPABILITIES_PUSH,
   negotiateCapabilities as negotiateProtocolCapabilities,
   PUSH_CERT,
+  peerNegotiatesObjectFormat,
 } from '../../../domain/protocol/index.js';
 import type { GitServiceSession } from './git-service-session.js';
 import { discoverRefsForService } from './refs-discovery.js';
@@ -43,5 +44,9 @@ export const selectPushCapabilities = (
   const base = CLIENT_CAPABILITIES_PUSH.filter((c) => c !== AGENT);
   const clientWants = signing ? [...base, PUSH_CERT] : base;
   const intersected = negotiateProtocolCapabilities(advertised, clientWants);
-  return [...intersected, AGENT, `object-format=${objectFormat}`];
+  // git orders `object-format` before `agent`, and sends it only when the
+  // peer advertised the capability.
+  return peerNegotiatesObjectFormat(advertised)
+    ? [...intersected, `object-format=${objectFormat}`, AGENT]
+    : [...intersected, AGENT];
 };

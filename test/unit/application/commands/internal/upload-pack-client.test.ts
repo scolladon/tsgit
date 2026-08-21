@@ -156,12 +156,24 @@ describe('selectFetchCapabilities', () => {
 
   describe('Given the local repository is sha1', () => {
     describe('When selectFetchCapabilities runs', () => {
-      it('Then the result carries object-format=sha1', () => {
-        // Arrange & Act
-        const result = selectFetchCapabilities(['side-band-64k'], 'sha1');
+      it('Then the result carries object-format=sha1 when the peer advertised the capability', () => {
+        // Arrange & Act — the peer must advertise `object-format` for git to
+        // send one; the value sent is OURS, never the peer's echoed back.
+        const result = selectFetchCapabilities(['side-band-64k', 'object-format=sha1'], 'sha1');
 
         // Assert
         expect(result).toContain('object-format=sha1');
+      });
+
+      it('Then the result omits object-format entirely when the peer never advertised it', () => {
+        // Arrange & Act — a pre-2.28 peer advertises no `object-format`, and
+        // git gates its own token on `server_supports_hash()`. Sending one
+        // regardless would put an unsolicited capability on every legacy
+        // SHA-1 exchange.
+        const result = selectFetchCapabilities(['side-band-64k'], 'sha1');
+
+        // Assert
+        expect(result.some((capability) => capability.startsWith('object-format='))).toBe(false);
       });
     });
   });

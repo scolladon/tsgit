@@ -172,11 +172,27 @@ describe('selectPushCapabilities', () => {
     });
   });
 
+  describe('Given a peer that never advertised object-format', () => {
+    describe('When selectPushCapabilities runs', () => {
+      it('Then the result omits object-format entirely', () => {
+        // Arrange & Act — a pre-2.28 peer advertises no `object-format`, and
+        // git gates its own token on `server_supports_hash()`. Sending one
+        // regardless would put an unsolicited capability on every legacy
+        // SHA-1 push.
+        const result = selectPushCapabilities(['report-status'], 'sha1');
+
+        // Assert
+        expect(result.some((capability) => capability.startsWith('object-format='))).toBe(false);
+      });
+    });
+  });
+
   describe('Given the local repository is sha1', () => {
     describe('When selectPushCapabilities runs', () => {
-      it('Then the result carries object-format=sha1', () => {
-        // Arrange & Act
-        const result = selectPushCapabilities(['report-status'], 'sha1');
+      it('Then the result carries object-format=sha1 when the peer advertised the capability', () => {
+        // Arrange & Act — the peer must advertise `object-format` for git to
+        // send one; the value sent is OURS, never the peer's echoed back.
+        const result = selectPushCapabilities(['report-status', 'object-format=sha1'], 'sha1');
 
         // Assert
         expect(result).toContain('object-format=sha1');

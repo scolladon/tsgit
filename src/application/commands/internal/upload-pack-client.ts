@@ -23,6 +23,7 @@ import {
   AGENT,
   CLIENT_CAPABILITIES_FETCH,
   negotiateCapabilities as negotiateProtocolCapabilities,
+  peerNegotiatesObjectFormat,
 } from '../../../domain/protocol/index.js';
 import type { GitServiceSession } from './git-service-session.js';
 import { discoverRefsForService } from './refs-discovery.js';
@@ -50,7 +51,11 @@ export const selectFetchCapabilities = (
     (c) => c !== 'thin-pack' && c !== 'no-progress' && c !== AGENT,
   );
   const intersected = negotiateProtocolCapabilities(advertised, clientWants);
-  return [...intersected, AGENT, `object-format=${objectFormat}`];
+  // git orders `object-format` before `agent`, and sends it only when the
+  // peer advertised the capability.
+  return peerNegotiatesObjectFormat(advertised)
+    ? [...intersected, `object-format=${objectFormat}`, AGENT]
+    : [...intersected, AGENT];
 };
 
 /**

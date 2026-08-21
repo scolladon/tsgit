@@ -6,6 +6,7 @@ export {
   negotiateCapabilities,
   PUSH_CERT,
   parseCapabilities,
+  peerNegotiatesObjectFormat,
   readObjectFormat,
 } from './capabilities.js';
 export type { ProtocolError } from './error.js';

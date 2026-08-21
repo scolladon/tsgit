@@ -74,3 +74,15 @@ export const negotiateCapabilities = (
   }
   return out;
 };
+
+/**
+ * Whether the peer advertised `object-format` at all. git gates the client's
+ * own token on this (`server_supports_hash()` in `fetch-pack.c` /
+ * `send_pack.c`): a pre-2.28 peer never advertises the capability and never
+ * receives one, so sending it unconditionally would put an unsolicited token
+ * on every legacy SHA-1 fetch and push. The value sent is OUR algorithm, not
+ * the peer's echoed back — which is why this cannot go through
+ * `negotiateCapabilities`, whose contract is to echo the server's value.
+ */
+export const peerNegotiatesObjectFormat = (advertised: ReadonlyArray<string>): boolean =>
+  advertised.some((capability) => capability.startsWith('object-format='));
