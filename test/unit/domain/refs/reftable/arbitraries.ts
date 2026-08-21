@@ -6,8 +6,12 @@
  * friends) arrive in a later part.
  */
 export type {
+  DeflateFn,
   IndexBlockSpec,
   IndexRecordSpec,
+  LogBlockSpec,
+  LogRecordEntrySpec,
+  LogRecordSpec,
   ObjBlockSpec,
   ObjRecordSpec,
   RefBlockSpec,
@@ -25,4 +29,5 @@ export {
   buildReftable,
   buildReftableBlock,
   buildReftableHeader,
+  buildReftableLogBlock,
 } from '../../../../fixtures/refs/reftable-writers.js';

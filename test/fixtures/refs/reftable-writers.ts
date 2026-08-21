@@ -1,8 +1,9 @@
 /**
- * Hand-built-bytes writer for the on-disk reftable stack-file format — header,
- * footer, and non-log block framing. Every size this module defaults to is
- * measured against `git init --ref-format=reftable` (git 2.55.0, SHA-1 and
- * SHA-256), not derived from the spec prose alone.
+ * Hand-built-bytes writer for the on-disk reftable stack-file format —
+ * header, footer, non-log block framing, and log block framing (including
+ * the deflate step, via a caller-supplied compressor). Every size this
+ * module defaults to is measured against `git init --ref-format=reftable`
+ * (git 2.55.0, SHA-1 and SHA-256), not derived from the spec prose alone.
  *
  * Kept free of `fast-check` (and of any other test-only dependency) on
  * purpose: the parity scenarios reach this writer, and the Deno, Bun and
@@ -24,6 +25,13 @@ import {
   VALUE_TYPE_PEELED,
   VALUE_TYPE_SYMBOLIC,
 } from '../../../src/domain/refs/reftable/reftable-block.ts';
+import {
+  encodeTzOffset,
+  LOG_BLOCK_HEADER_LENGTH,
+  LOG_TYPE_DELETION,
+  LOG_TYPE_ENTRY,
+  REVERSE_INT64_MAX,
+} from '../../../src/domain/refs/reftable/reftable-log.ts';
 import { crc32 } from '../../../src/domain/storage/crc32.ts';
 import { encodeOfsDistance } from '../../../src/domain/storage/pack-entry.ts';
 
@@ -475,4 +483,152 @@ export function buildObjBlock(spec: ObjBlockSpec): Uint8Array {
   const restartIndices = spec.restartIndices ?? [0];
   const { recordBytes, recordOffsets } = encodeObjRecords(spec.records, restartIndices);
   return finishBlock('o', recordBytes, recordOffsets, spec);
+}
+
+// --- Log block writer -----------------------------------------------------
+//
+// Unlike ref/index/obj blocks, a log block's record area is compressed
+// (`zlib_deflate`) and its declared `block_len` is the INFLATED size
+// including the 4-byte header — never the on-disk extent. Restart offsets
+// are computed against that phantom header too, so the first one is always
+// `LOG_BLOCK_HEADER_LENGTH`, not `0`.
+
+export type LogRecordEntrySpec =
+  | { readonly kind: 'deletion' }
+  | {
+      readonly kind: 'entry';
+      readonly oldId: Uint8Array;
+      readonly newId: Uint8Array;
+      readonly name: string;
+      readonly email: string;
+      readonly timestamp: number;
+      readonly tzOffset: string;
+      readonly message: string;
+    };
+
+export interface LogRecordSpec {
+  readonly refName: string;
+  readonly updateIndex: bigint;
+  readonly entry: LogRecordEntrySpec;
+}
+
+export interface LogBlockSpec {
+  readonly records: ReadonlyArray<LogRecordSpec>;
+  readonly restartIndices?: ReadonlyArray<number>;
+}
+
+/** Structural match for `Compressor['deflate']` — kept as a callback rather
+ *  than importing the port, the same seam `reftable-log.ts`'s own
+ *  `InflateAt` uses for the read side. */
+export type DeflateFn = (bytes: Uint8Array) => Promise<Uint8Array>;
+
+/** Log key: `refname '\0' reverse_int64(update_index)`. */
+function encodeLogKey(refName: string, updateIndex: bigint): Uint8Array {
+  const nameBytes = encode(refName);
+  const key = new Uint8Array(nameBytes.length + 1 + 8);
+  key.set(nameBytes, 0);
+  const view = new DataView(key.buffer, nameBytes.length + 1, 8);
+  view.setBigUint64(0, REVERSE_INT64_MAX - updateIndex);
+  return key;
+}
+
+function encodeLogData(entry: Extract<LogRecordEntrySpec, { kind: 'entry' }>): Uint8Array {
+  const nameBytes = encode(entry.name);
+  const emailBytes = encode(entry.email);
+  const messageBytes = encode(entry.message);
+  const tzBytes = new Uint8Array(2);
+  new DataView(tzBytes.buffer).setInt16(0, encodeTzOffset(entry.tzOffset));
+  return concatParts([
+    entry.oldId,
+    entry.newId,
+    encodeOfsDistance(nameBytes.length),
+    nameBytes,
+    encodeOfsDistance(emailBytes.length),
+    emailBytes,
+    encodeOfsDistance(entry.timestamp),
+    tzBytes,
+    encodeOfsDistance(messageBytes.length),
+    messageBytes,
+  ]);
+}
+
+function encodeLogRecord(
+  record: LogRecordSpec,
+  keyBytes: Uint8Array,
+  prefixLength: number,
+): Uint8Array {
+  const suffix = keyBytes.subarray(prefixLength);
+  const logType = record.entry.kind === 'deletion' ? LOG_TYPE_DELETION : LOG_TYPE_ENTRY;
+  const packed = (suffix.length << SUFFIX_SHIFT) | logType;
+  const dataBytes =
+    record.entry.kind === 'deletion' ? new Uint8Array(0) : encodeLogData(record.entry);
+  return concatParts([
+    encodeOfsDistance(prefixLength),
+    encodeOfsDistance(packed),
+    suffix,
+    dataBytes,
+  ]);
+}
+
+function encodeLogRecords(
+  records: ReadonlyArray<LogRecordSpec>,
+  restartIndices: ReadonlyArray<number>,
+): { readonly recordBytes: Uint8Array; readonly recordOffsets: ReadonlyArray<number> } {
+  const parts: Uint8Array[] = [];
+  const recordOffsets: number[] = [];
+  let cursor = 0;
+  let priorKeyBytes: Uint8Array | undefined;
+  records.forEach((record, i) => {
+    recordOffsets.push(cursor);
+    const keyBytes = encodeLogKey(record.refName, record.updateIndex);
+    const prefixLength = restartIndices.includes(i)
+      ? 0
+      : longestCommonPrefix(priorKeyBytes, keyBytes);
+    const bytes = encodeLogRecord(record, keyBytes, prefixLength);
+    parts.push(bytes);
+    cursor += bytes.length;
+    priorKeyBytes = keyBytes;
+  });
+  return { recordBytes: concatParts(parts), recordOffsets };
+}
+
+/** Restart offsets for a log block are the same virtual-offset values
+ *  `logBlockBounds` reads back — each record's physical offset shifted by
+ *  `LOG_BLOCK_HEADER_LENGTH` for the phantom block header. */
+function buildLogRestartArray(
+  recordOffsets: ReadonlyArray<number>,
+  restartIndices: ReadonlyArray<number>,
+): Uint8Array {
+  const bytes = new Uint8Array(restartIndices.length * 3 + 2);
+  const view = new DataView(bytes.buffer);
+  restartIndices.forEach((recordIndex, i) => {
+    writeUint24(view, i * 3, recordOffsets[recordIndex]! + LOG_BLOCK_HEADER_LENGTH);
+  });
+  view.setUint16(restartIndices.length * 3, restartIndices.length);
+  return bytes;
+}
+
+/**
+ * Writer for one log block (`block_type = 'g'`): deflates
+ * `log_record+ | restart_offset+ | restart_count` via the caller-supplied
+ * `deflate`, then frames it as `'g' | uint24(declared_len)` where
+ * `declared_len` is the INFLATED size including this 4-byte header — never
+ * the compressed length.
+ */
+export async function buildReftableLogBlock(
+  spec: LogBlockSpec,
+  deflate: DeflateFn,
+): Promise<Uint8Array> {
+  const restartIndices = spec.restartIndices ?? [0];
+  const { recordBytes, recordOffsets } = encodeLogRecords(spec.records, restartIndices);
+  const restartBytes = buildLogRestartArray(recordOffsets, restartIndices);
+  const payload = concatParts([recordBytes, restartBytes]);
+  const compressed = await deflate(payload);
+
+  const bytes = new Uint8Array(LOG_BLOCK_HEADER_LENGTH + compressed.length);
+  const view = new DataView(bytes.buffer);
+  bytes[0] = 'g'.charCodeAt(0);
+  writeUint24(view, 1, LOG_BLOCK_HEADER_LENGTH + payload.length);
+  bytes.set(compressed, LOG_BLOCK_HEADER_LENGTH);
+  return bytes;
 }

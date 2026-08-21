@@ -25,3 +25,6 @@ export { iterateReftableRefs, lookupReftableRef } from './reftable/reftable-bloc
 // Reftable codec: header, footer, varint and block framing
 export type { Reftable, ReftableFooter, ReftableHeader } from './reftable/reftable-format.js';
 export { parseReftable } from './reftable/reftable-format.js';
+// Reftable codec: log blocks and reflog records
+export type { InflateAt, LoadedReftable, ReftableLogRecord } from './reftable/reftable-log.js';
+export { iterateReftableLogs, loadReftable } from './reftable/reftable-log.js';

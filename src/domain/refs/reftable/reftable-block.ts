@@ -140,13 +140,15 @@ function readRestartOffsets(
 
 /**
  * Decodes the shared `varint(prefix_length) | varint(packed) | suffix`
- * prefix-compression cursor every block kind starts a record with.
- * `prefix_length` is validated against `priorNameBytes` here — an absent
- * predecessor (the block's first record, or a jump straight to a restart
- * point) with a nonzero `prefix_length` is corrupt, since there is nothing
- * to compress against.
+ * prefix-compression cursor every block kind starts a record with — ref,
+ * index and obj records compress a name; log records (`reftable-log.ts`)
+ * reuse it unchanged to compress a log key, since the cursor mechanics don't
+ * care what the compressed bytes mean. `prefix_length` is validated against
+ * `priorNameBytes` here — an absent predecessor (the block's first record,
+ * or a jump straight to a restart point) with a nonzero `prefix_length` is
+ * corrupt, since there is nothing to compress against.
  */
-function readPrefixedName(
+export function readPrefixedName(
   bytes: Uint8Array,
   offset: number,
   priorNameBytes: Uint8Array | undefined,
