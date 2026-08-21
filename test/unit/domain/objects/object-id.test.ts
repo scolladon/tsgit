@@ -3,12 +3,15 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { bytesToHex, hexToBytes } from '../../../../src/domain/objects/encoding.js';
 import { TsgitError } from '../../../../src/domain/objects/error.js';
+import { SHA1_CONFIG, SHA256_CONFIG } from '../../../../src/domain/objects/hash-config.js';
 import {
   EMPTY_TREE_OID,
+  emptyTreeOid,
   FilePath,
   ObjectId,
   RefName,
   ZERO_OID,
+  zeroOid,
 } from '../../../../src/domain/objects/object-id.js';
 import { arbObjectId } from './arbitraries.js';
 
@@ -305,6 +308,70 @@ describe('object-id', () => {
 
           // Assert
           expect(result).toBe(EMPTY_TREE_OID);
+        });
+      });
+    });
+  });
+
+  describe('zeroOid', () => {
+    describe('Given SHA1_CONFIG', () => {
+      describe('When zeroOid is called', () => {
+        it('Then it returns 40 zero characters', () => {
+          // Arrange
+          const sut = zeroOid;
+
+          // Act
+          const result = sut(SHA1_CONFIG);
+
+          // Assert
+          expect(result).toBe('0000000000000000000000000000000000000000');
+        });
+      });
+    });
+
+    describe('Given SHA256_CONFIG', () => {
+      describe('When zeroOid is called', () => {
+        it('Then it returns 64 zero characters', () => {
+          // Arrange
+          const sut = zeroOid;
+
+          // Act
+          const result = sut(SHA256_CONFIG);
+
+          // Assert
+          expect(result).toBe('0000000000000000000000000000000000000000000000000000000000000000');
+        });
+      });
+    });
+  });
+
+  describe('emptyTreeOid', () => {
+    describe('Given SHA1_CONFIG', () => {
+      describe('When emptyTreeOid is called', () => {
+        it('Then it returns the canonical SHA-1 empty-tree literal', () => {
+          // Arrange
+          const sut = emptyTreeOid;
+
+          // Act
+          const result = sut(SHA1_CONFIG);
+
+          // Assert
+          expect(result).toBe('4b825dc642cb6eb9a060e54bf8d69288fbee4904');
+        });
+      });
+    });
+
+    describe('Given SHA256_CONFIG', () => {
+      describe('When emptyTreeOid is called', () => {
+        it('Then it returns the canonical SHA-256 empty-tree literal', () => {
+          // Arrange
+          const sut = emptyTreeOid;
+
+          // Act
+          const result = sut(SHA256_CONFIG);
+
+          // Assert
+          expect(result).toBe('6ef19b41225c5369f1c104d45d8d85efa9b057b53b14b4b9b939dd74decc5321');
         });
       });
     });

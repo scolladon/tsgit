@@ -66,7 +66,7 @@ describe('parseCacheTree', () => {
         const bytes = buildEntryBytes('', 3, 0, SHA_A);
 
         // Act
-        const result = sut(bytes);
+        const result = sut(bytes, 20);
 
         // Assert
         expect(result).toEqual({
@@ -89,7 +89,7 @@ describe('parseCacheTree', () => {
         const root = concatBytes([buildEntryBytes('', 2, 1, SHA_A), child]);
 
         // Act
-        const result = sut(root);
+        const result = sut(root, 20);
 
         // Assert
         expect(result).toEqual({
@@ -114,7 +114,7 @@ describe('parseCacheTree', () => {
         const root = concatBytes([buildEntryBytes('', 4, 2, SHA_C), firstChild, secondChild]);
 
         // Act
-        const result = sut(root);
+        const result = sut(root, 20);
 
         // Assert
         expect(result).toEqual({
@@ -146,7 +146,7 @@ describe('parseCacheTree', () => {
 
         // Act & Assert
         try {
-          sut(bytes);
+          sut(bytes, 20);
           expect.fail('should have thrown');
         } catch (e) {
           expect(e).toBeInstanceOf(TsgitError);
@@ -169,7 +169,7 @@ describe('parseCacheTree', () => {
 
         // Act & Assert
         try {
-          sut(bytes);
+          sut(bytes, 20);
           expect.fail('should have thrown');
         } catch (e) {
           expect(e).toBeInstanceOf(TsgitError);
@@ -192,7 +192,7 @@ describe('parseCacheTree', () => {
 
         // Act & Assert
         try {
-          sut(bytes);
+          sut(bytes, 20);
           expect.fail('should have thrown');
         } catch (e) {
           expect(e).toBeInstanceOf(TsgitError);
@@ -215,7 +215,7 @@ describe('parseCacheTree', () => {
 
         // Act & Assert
         try {
-          sut(bytes);
+          sut(bytes, 20);
           expect.fail('should have thrown');
         } catch (e) {
           expect(e).toBeInstanceOf(TsgitError);
@@ -238,7 +238,7 @@ describe('parseCacheTree', () => {
 
         // Act & Assert
         try {
-          sut(bytes);
+          sut(bytes, 20);
           expect.fail('should have thrown');
         } catch (e) {
           expect(e).toBeInstanceOf(TsgitError);
@@ -261,7 +261,7 @@ describe('parseCacheTree', () => {
 
         // Act & Assert
         try {
-          sut(bytes);
+          sut(bytes, 20);
           expect.fail('should have thrown');
         } catch (e) {
           expect(e).toBeInstanceOf(TsgitError);
@@ -284,7 +284,7 @@ describe('parseCacheTree', () => {
 
         // Act & Assert
         try {
-          sut(bytes);
+          sut(bytes, 20);
           expect.fail('should have thrown');
         } catch (e) {
           expect(e).toBeInstanceOf(TsgitError);
@@ -307,7 +307,7 @@ describe('parseCacheTree', () => {
 
         // Act & Assert
         try {
-          sut(bytes);
+          sut(bytes, 20);
           expect.fail('should have thrown');
         } catch (e) {
           expect(e).toBeInstanceOf(TsgitError);
@@ -329,7 +329,7 @@ describe('parseCacheTree', () => {
         const bytes = buildNestedChain(DEEPEST_ACCEPTED_CHAIN);
 
         // Act
-        const result = sut(bytes);
+        const result = sut(bytes, 20);
 
         // Assert
         expect(result.subtreeCount).toBe(1);
@@ -346,7 +346,7 @@ describe('parseCacheTree', () => {
 
         // Act & Assert
         try {
-          sut(bytes);
+          sut(bytes, 20);
           expect.fail('should have thrown');
         } catch (e) {
           expect(e).toBeInstanceOf(TsgitError);
@@ -370,7 +370,7 @@ describe('parseCacheTree', () => {
         const bytes = concatBytes([buildEntryBytes('', 1, 1, SHA_B), child]);
 
         // Act
-        const result = sut(bytes);
+        const result = sut(bytes, 20);
 
         // Assert
         expect(result.children).toEqual([
@@ -390,7 +390,7 @@ describe('parseCacheTree', () => {
 
         // Act & Assert
         try {
-          sut(bytes);
+          sut(bytes, 20);
           expect.fail('should have thrown');
         } catch (e) {
           expect(e).toBeInstanceOf(TsgitError);
@@ -400,6 +400,29 @@ describe('parseCacheTree', () => {
             reason: 'cache-tree entry missing NUL-terminated path',
           });
         }
+      });
+    });
+  });
+
+  describe('Given a root-only cache-tree with a 32-byte (SHA-256) oid', () => {
+    describe('When parsing at digestLength 32', () => {
+      it('Then it returns the root entry with its full 64-hex oid', () => {
+        // Arrange
+        const sut = parseCacheTree;
+        const SHA_256_A = '2cf8d83d9ee29543b34a87727421fdecb7e3f3a183d337639025de576db9ebb4';
+        const bytes = buildEntryBytes('', 1, 0, SHA_256_A);
+
+        // Act
+        const result = sut(bytes, 32);
+
+        // Assert
+        expect(result).toEqual({
+          path: '',
+          entryCount: 1,
+          subtreeCount: 0,
+          id: SHA_256_A,
+          children: [],
+        });
       });
     });
   });

@@ -39,7 +39,6 @@ const ENCODER = new TextEncoder();
 
 const VALID_MODES: ReadonlySet<string> = new Set(['100644', '100755', '120000', '40000', '160000']);
 
-const SHA_LENGTH = 20;
 const MAX_NAME_BYTES = 4096;
 
 function isZeroSha(sha: Uint8Array): boolean {
@@ -50,7 +49,10 @@ function isZeroSha(sha: Uint8Array): boolean {
 }
 
 /** Parse tree bytes tolerantly, returning entries and any badTree fault. */
-function parseTreeEntriesTolerant(raw: Uint8Array): {
+function parseTreeEntriesTolerant(
+  raw: Uint8Array,
+  digestLength: 20 | 32,
+): {
   readonly entries: ReadonlyArray<TreeEntry>;
   readonly badTree: boolean;
 } {
@@ -64,7 +66,7 @@ function parseTreeEntriesTolerant(raw: Uint8Array): {
     const nullIdx = indexOf(raw, 0x00, spaceIdx + 1);
     if (nullIdx === -1) return { entries, badTree: true };
 
-    const shaEnd = nullIdx + 1 + SHA_LENGTH;
+    const shaEnd = nullIdx + 1 + digestLength;
     if (shaEnd > raw.length) return { entries, badTree: true };
 
     const modeBytes = raw.subarray(offset, spaceIdx);
@@ -223,8 +225,12 @@ function checkEntryFaults(
 }
 
 /** Validate a raw tree object body, returning ordered findings. */
-export function validateTree(raw: Uint8Array, strict: boolean): ReadonlyArray<TreeFinding> {
-  const { entries, badTree } = parseTreeEntriesTolerant(raw);
+export function validateTree(
+  raw: Uint8Array,
+  strict: boolean,
+  digestLength: 20 | 32,
+): ReadonlyArray<TreeFinding> {
+  const { entries, badTree } = parseTreeEntriesTolerant(raw, digestLength);
   if (badTree) {
     return [{ msgId: MSG_BAD_TREE, severity: resolveSeverity(MSG_BAD_TREE, strict) }];
   }

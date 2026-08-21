@@ -44,7 +44,7 @@ counting carried lines would make the total depend on how the fix is factored.
 | C9 | bundle | **6** | `src/domain/bundle/types.ts:4` · `src/domain/bundle/parse-bundle-header.ts:14,16,38,46,59` |
 | C10 | wire protocol | **4** | `src/domain/protocol/v2/sections.ts:51` · `src/domain/protocol/v2/capabilities.ts:67` · `src/domain/protocol/capabilities.ts:6` (`CLIENT_CAPABILITIES_FETCH`) · `:17` (`CLIENT_CAPABILITIES_PUSH`) |
 | C11 | repository creation | **2** | `src/application/commands/internal/bootstrap.ts:8,28` |
-| C12 | runtime wiring pins | **8** | `src/index.node.ts:93,109` · `src/index.browser.ts:79,84` · `src/adapters/node/node-adapter.ts:55,73` · `src/adapters/browser/browser-adapter.ts:34,44` |
+| C12 | runtime wiring pins | **8** | `src/index.node.ts:95,111` · `src/index.browser.ts:79,84` · `src/adapters/node/node-adapter.ts:55,73` · `src/adapters/browser/browser-adapter.ts:34,44` |
 
 **Authoritative total: 55 width-sweep sites.**
 
@@ -70,7 +70,7 @@ implementation (they are edits, not sweep sites):
    see `src/domain/commands/error.ts:243`. The two-value claim lives only in the factory's
    comment at `:769`. Widening it to a four-member union is a **type narrowing** on a shipped
    payload, so it is an `api.json` change.
-4. **`SHA256_CONFIG` is already public** — exported as a value from `src/domain/objects/index.ts:38`
+4. **`SHA256_CONFIG` is already public** — exported as a value from `src/domain/objects/index.ts:39`
    and already present in `reports/api.json`. The design's "not in the public surface" note is stale.
 5. **This repository calls the legacy protocol `v1`, not `v0`** (`FetchWireVersion = 1 | 2`).
    Everywhere ADR-697 and the design say "protocol v0", the code says v1. Use the repo's naming
@@ -110,7 +110,7 @@ config-free dual one. `resolve-oid-prefix.ts` is therefore **in** the sweep, not
 
 - **New error code:** add to the union in the owning `error.ts` (`src/domain/commands/error.ts`
   or `src/domain/protocol/error.ts`), add a `case` to the renderer switch in
-  `src/domain/error.ts` (the `const _exhaustive: never = data;` at `:561` is what fails the
+  `src/domain/error.ts` (the `const _exhaustive: never = data;` at `:573` is what fails the
   build if you miss one), add a row to `docs/use/errors.md` under the right `###` group
   (alphabetical within the group; groups at `:36` Adapters & I/O, `:50` Objects/storage/packs,
   `:70` Refs/reflog/revparse, `:95` Index/worktree, `:117` Diff & merge, `:127` Commits &
@@ -131,7 +131,7 @@ config-free dual one. `resolve-oid-prefix.ts` is therefore **in** the sweep, not
 
 **This is a live data-integrity bug on the current release**, reachable today with no new
 option: `openRepository({ algorithm: 'sha256' })` on the memory entry (`src/index.default.ts:42`,
-a documented public option that already wires `SHA256_CONFIG` at `:88`) then `add` writes a
+a documented public option that already wires `SHA256_CONFIG` at `:98`) then `add` writes a
 corrupt `.git/index`, and `status` then reports the entry oid as a silently **truncated 40-hex**
 id with no error. Land it first, alone, so it is independently reviewable and can be cherry-picked
 onto a release branch on its own.
@@ -313,8 +313,8 @@ export const SHA256_CONFIG: HashConfig = Object.freeze({ digestLength: 32, hexLe
 ```
 
 Add `readonly algorithm: 'sha1' | 'sha256'` and populate both frozen constants. `HashConfig` is
-public (`src/domain/objects/index.ts:37`, re-exported by `src/public-types.ts:86` via
-`export type *`), and `SHA1_CONFIG`/`SHA256_CONFIG` are public values (`index.ts:38`, both
+public (`src/domain/objects/index.ts:38`, re-exported by `src/public-types.ts:86` via
+`export type *`), and `SHA1_CONFIG`/`SHA256_CONFIG` are public values (`index.ts:39`, both
 already in `reports/api.json`). **This is an `api.json` change — regenerate in this part.**
 
 **New file `src/domain/objects/oid-pattern.ts`:**
@@ -448,7 +448,7 @@ A **local shadow** of the domain constant: wrong width *and* duplicated. **Delet
 widen it.
 
 **Shape.** `ZERO_OID` and `EMPTY_TREE_OID` are public exports (`src/domain/objects/object-id.ts`
-is re-exported wholesale by `export * from './object-id.js'` at `src/domain/objects/index.ts:41`,
+is re-exported wholesale by `export * from './object-id.js'` at `src/domain/objects/index.ts:43`,
 and both are in `reports/api.json`). **Do not remove them** — a removal breaks consumers.
 Keep them as the SHA-1 constants with a doc comment saying so, and add
 `zeroOid(config: HashConfig): ObjectId` and `emptyTreeOid(config: HashConfig): ObjectId` beside
@@ -862,29 +862,29 @@ ADR-696. The config-value refusal family — a **third** tier, distinct from the
 refusals (ADR-668) and from the point-of-use refusal (ADR-685). These fire at the Stage-2 layout
 read, i.e. **open time**, strictly before any `assert*` tier runs.
 
-**`src/repository/read-repository-format.ts` (168 lines) is the whole surface to change.**
+**`src/repository/read-repository-format.ts` (430 lines) is the whole surface to change.**
 The machinery is already there:
 
 ```ts
-const EXTENSIONS_SECTION = 'extensions';                       // :21
-const lastTopLevelEntry = (tokens, section, key): ScannedEntry | undefined => …  // :39-64
-interface ScannedFormat { bare; worktree; worktreeConfig }     // :67-71
-worktreeConfig: lastTopLevelEntry(tokens, EXTENSIONS_SECTION, WORKTREE_CONFIG_KEY),  // :92
-export interface RepositoryFormat { bare; worktree; worktreeConfig }  // :14-18
+const EXTENSIONS_SECTION = 'extensions';                       // :29
+const lastTopLevelEntry = (tokens, section, key): ScannedEntry | undefined => …  // :101-113
+interface ScannedFormat { bare; worktree; worktreeConfig; tokens }  // :274-279
+worktreeConfig: lastTopLevelEntry(tokens, EXTENSIONS_SECTION, WORKTREE_CONFIG_KEY),  // :300
+export interface RepositoryFormat { bare; worktree; worktreeConfig; refusal }  // :21-27
 ```
 
 Adding the read is: one constant (`OBJECT_FORMAT_KEY = 'objectformat'` — the key is matched
-lower-cased at `:57`), one `lastTopLevelEntry` call in `scanConfigFile` (`:89-93`), one field on
-`ScannedFormat`, one resolver beside `resolveBare` (`:97`) / `resolveWorktree` (`:106`), and one
+lower-cased at `:92`), one `lastTopLevelEntry` call in `scanConfigFile` (`:281-303`), one field on
+`ScannedFormat`, one resolver beside `resolveBare` (`:349`) / `resolveWorktree` (`:358`), and one
 field on `RepositoryFormat`.
 
 **Two things must NOT be copied from the neighbouring keys:**
 
-- **Scoping.** `core.bare` and `core.worktree` go through `pickScoped` (`:147-148`, `:162-168`).
+- **Scoping.** `core.bare` and `core.worktree` go through `pickScoped` (call at `:406`, definition at `:424`).
   The format keys do **not** — a `repositoryformatversion` or `extensions.*` planted in
   `config.worktree` is inert even with `extensions.worktreeConfig = true`. `objectFormat` reads
   `<commonDir>/config` only. Call `lastTopLevelEntry` on `local` and never consult `scoped`.
-- **Leniency.** `scanConfigFile`'s absent-file-behaves-as-empty rule (`:85-87`) is right for
+- **Leniency.** `scanConfigFile`'s absent-file-behaves-as-empty rule (`:285-294`) is right for
   `objectFormat` (absent ⇒ sha1) but the present-and-malformed cases are **refusals**, matching
   the `configBadBooleanValue` / `configMissingValue` throws the same function already performs.
 
@@ -901,7 +901,7 @@ field on `RepositoryFormat`.
 | `objectFormat` (valueless, no `=`) | `error: missing value for 'extensions.objectformat'` + `fatal: bad config line N in file <F>`, exit 128 |
 | `sha256` then `sha1` | **last-wins** ⇒ sha1 (exactly what `lastTopLevelEntry` already does) |
 | key absent, at v1 | accepted ⇒ **sha1** |
-| `[extensions "x"] objectFormat = sha256` | the **acceptance gate's** refusal, not this one — `lastTopLevelEntry` skips subsectioned entries at `:55`, which is already correct |
+| `[extensions "x"] objectFormat = sha256` | the **acceptance gate's** refusal, not this one — `lastTopLevelEntry` skips subsectioned entries at `:108`, which is already correct |
 | `objectFormat = sha256` at v0 | again the acceptance gate's refusal |
 
 **The case-sensitivity row is its own test.** A `toLowerCase()` added "for symmetry with the key"
@@ -913,7 +913,7 @@ this part:
 1. Union member in `src/domain/commands/error.ts` beside `CONFIG_BAD_BOOLEAN_LITERAL` (`:165`)
    and `CONFIG_BAD_BOOLEAN_VALUE` (`:159`); factory beside `configBadBooleanValue` (`:587`).
 2. Renderer `case` in `src/domain/error.ts` — the switch ends with
-   `const _exhaustive: never = data;` at `:561`, so a missed case fails `check:types`.
+   `const _exhaustive: never = data;` at `:573`, so a missed case fails `check:types`.
    Render shape follows `CONFIG_BAD_BOOLEAN_LITERAL`'s neighbour convention; the interop test
    reconstructs git's two lines from the fields (ADR-249 — the library emits no rendered line).
 3. `docs/use/errors.md` — a new row under **`### Repository state`** (`:191`), alphabetical:
@@ -989,27 +989,27 @@ both tiers** — any implementation that pretends otherwise is wrong.
 **Three structural facts, already true — verify, do not re-derive:**
 
 1. **The three async entry points already resolve layout before constructing adapters.**
-   `src/index.node.ts` resolves at `:68` (`resolveNodeLayout` → `resolveLayout` → `finishLayout` →
+   `src/index.node.ts` resolves at `:70` (`resolveNodeLayout` → `resolveLayout` → `finishLayout` →
    `readRepositoryFormat`, opening and tokenising `<commonDir>/config`) and constructs
-   `new NodeHashService()` at `:93`. `src/index.browser.ts` resolves at `:70`
+   `new NodeHashService()` at `:95`. `src/index.browser.ts` resolves at `:70`
    (`resolveFixedEntryLayout`) and constructs at `:79`. `src/index.default.ts` resolves at `:74-80`
-   and constructs at `:83`. **Detection needs no reordering on any of them.**
+   and constructs at `:93`. **Detection needs no reordering on any of them.**
 2. **The two sync factories structurally cannot detect.** `createNodeContext`
    (`src/adapters/node/node-adapter.ts:48`) and `createBrowserContext`
    (`src/adapters/browser/browser-adapter.ts:26`) return `Context`, not a promise, and build their
    layouts purely lexically (`buildLayout(...)` at `node-adapter.ts:60`; an object literal at
    `browser-adapter.ts:38-42`). Neither touches disk. Making them detect means making them
    `async` — a breaking signature change on a public surface. They take the explicit option.
-3. **`syntheticFallbackLayout` (`src/repository/resolve-layout.ts:160-178`) reads nothing from
+3. **`syntheticFallbackLayout` (`src/repository/resolve-layout.ts:214-242`) reads nothing from
    disk** by design — the found-nothing bootstrap path `init` and `clone` take. A repository being
    *created* can never have its format detected; it can only be told.
 
 **The channel out of `finishLayout`.** Today `fmt` dies there:
-`src/repository/resolve-layout.ts:190-220` consumes `readRepositoryFormat`'s result and folds
+`src/repository/resolve-layout.ts:244-300` consumes `readRepositoryFormat`'s result and folds
 every field into `bare` / `workDir` / `workTreeConfigBogus`; the returned
 `RepositoryLayoutInput` has no slot for anything else. Add `objectFormat?: 'sha1' | 'sha256'` to
 `RepositoryLayoutInput` and, per ADR-658, as an **additive optional field** on
-`RepositoryLayout` (`src/ports/context.ts:21-55`, beside `commonDir` at `:38`). Public type ⇒
+`RepositoryLayout` (`src/ports/context.ts:35-70`, beside `commonDir` at `:52`). Public type ⇒
 `api.json`.
 
 **The four wiring pins to convert (C12, 8 sites).** Each constructs the hash service with no
@@ -1017,13 +1017,13 @@ argument (taking the `= 'sha1'` default) and pairs it with a literal `SHA1_CONFI
 
 | entry | hash construction | hashConfig pin | import |
 |---|---|---|---|
-| `src/index.node.ts` | `:93` `new NodeHashService()` | `:109` `hashConfig: SHA1_CONFIG` | `:19` |
+| `src/index.node.ts` | `:95` `new NodeHashService()` | `:111` `hashConfig: SHA1_CONFIG` | `:20` |
 | `src/index.browser.ts` | `:79` `new BrowserHashService()` | `:84` | `:12` |
 | `src/adapters/node/node-adapter.ts` | `:55` `new NodeHashService()` | `:73` | `:3` |
 | `src/adapters/browser/browser-adapter.ts` | `:34` `new BrowserHashService()` | `:44` | `:2` |
 
 **The precedent to copy** is already in the repository, twice —
-`src/index.default.ts:50, 83, 88` and `src/adapters/memory/memory-adapter.ts:51, 52, 64`:
+`src/index.default.ts:50, 93, 98` and `src/adapters/memory/memory-adapter.ts:51, 52, 64`:
 
 ```ts
 const algorithm = opts.algorithm ?? 'sha1';
@@ -1038,7 +1038,7 @@ and all three really compute SHA-256 (`node-hash-service.ts:16,22` `createHash(t
 
 **Option surface.** Promote `algorithm?: 'sha1' | 'sha256'` from the memory-only
 `OpenMemoryRepositoryOptions` (`src/index.default.ts:41-42`) to the **core**
-`OpenRepositoryOptions` (`src/repository.ts:76`), and add it to `NodeAdapterOptions`
+`OpenRepositoryOptions` (`src/repository.ts:76` — verified exact), and add it to `NodeAdapterOptions`
 (`src/adapters/node/node-adapter.ts:19-46`) and `BrowserAdapterOptions`
 (`src/adapters/browser/browser-adapter.ts:14-21`). `MemoryAdapterOptions` already has it
 (`memory-adapter.ts:18`). All public ⇒ `api.json`.
@@ -1046,15 +1046,15 @@ and all three really compute SHA-256 (`node-hash-service.ts:16,22` `createHash(t
 **The contradiction refusal — the load-bearing half.** Without it, (c) re-opens the
 `ctx.hash` / `ctx.hashConfig` desync that exists **today**: `openRepository({ hash: new
 NodeHashService('sha256') })` on the Node entry yields `ctx.hash.algorithm === 'sha256'` paired
-with `ctx.hashConfig === SHA1_CONFIG`, and nothing refuses it (`src/repository.ts:470`
+with `ctx.hashConfig === SHA1_CONFIG`, and nothing refuses it (`src/repository.ts:516`
 `hashConfig: fallback.hashConfig` is the only consumer; `hash` goes through `composeAdapters`
 (`src/repository/compose-adapters.ts:53`) whose `AdapterFallback` does not even carry
-`hashConfig`; `createContext` (`src/ports/context.ts:194-197`) is a bare spread + freeze with
+`hashConfig`; `createContext` (`src/ports/context.ts:221-232`) is a bare spread + freeze with
 zero validation). `serialize-and-hash.ts:19-20` uses both in consecutive lines.
 
 Reconcile at **one** place — `createContext` is the wrong place (it is a frozen spread with no
 error vocabulary); do it in `src/repository.ts` where `fallback` and `opts` are both in hand,
-just before `baseCtx` is built (`:457-472`). Refuse when any two of these disagree:
+just before `baseCtx` is built (`:503-518`). Refuse when any two of these disagree:
 `opts.algorithm`, `layout.objectFormat`, `opts.hash?.algorithm`, `fallback.hashConfig.algorithm`.
 New code (name it for the condition, not the key — e.g. `OBJECT_FORMAT_CONFLICT` carrying
 `{ requested, declared, source }`). It is an **option/config conflict**, not a repository
@@ -1225,7 +1225,8 @@ there is the minimal change that reaches both legs plus the ls-refs request buil
 - **`UNSUPPORTED_OBJECT_FORMAT` widens in place** (ADR-695). Today
   `{ code: 'UNSUPPORTED_OBJECT_FORMAT'; format: string }`
   (`src/domain/protocol/error.ts:35`, factory `:102-103`), rendered
-  `unsupported object format: ${data.format}` (`src/domain/error.ts:419`). Add `local: string`;
+  `unsupported object format: ${data.format}` (in `src/domain/error.ts`'s renderer switch —
+  locate the `case 'UNSUPPORTED_OBJECT_FORMAT':` by content; this file gains cases every part). Add `local: string`;
   `format` keeps meaning **the peer's**. The reconstruction needs two fields —
   `mismatched algorithms: client <local>; server <format>`.
   **Its `docs/use/errors.md:180` row is FALSIFIED by this change** and must be rewritten in this
@@ -1353,19 +1354,19 @@ re-init rows are already covered by an earlier refusal — assert that, do not a
 **`clone` — it adopts, and this is the one place the design leaves a hole.** git has **no**
 `clone --object-format` in 2.55.0 (`error: unknown option 'object-format=…'`); the algorithm is
 learned from the wire advertisement **before** the destination config is written. tsgit's
-`clone` today calls `bootstrapRepository` at `src/application/commands/clone.ts:94` — **before**
-the session opens at `:118` and before `negotiateDiscovery` at `:133`. A `clone` that keeps that
+`clone` today calls `bootstrapRepository` at `src/application/commands/clone.ts:95` — **before**
+the session opens at `:119` and before `negotiateDiscovery` at `:134`. A `clone` that keeps that
 order writes a sha1 repository and then fills it with sha256 objects.
 
 **Decision (the design does not specify a mechanism; this plan does):**
 
 1. **Move `bootstrapRepository` after discovery.** In `negotiateAndWritePack`
-   (`clone.ts:126-132`), immediately after `const discovery = await negotiateDiscovery(session)`
-   at `:133`, read the peer's advertised `object-format` (Part 9 made it reachable on `DiscoveryResult`), then
-   bootstrap with that format. The outer `catch` at `clone.ts:97-105` already does
+   (`clone.ts:127-133`), immediately after `const discovery = await negotiateDiscovery(session, ctx)`
+   at `:134` (Part 9's `assertPeerAlgorithm` call sits at `:139` — **replace it** with adoption), read the peer's advertised `object-format` (Part 9 made it reachable on `DiscoveryResult`), then
+   bootstrap with that format. The outer `catch` ending at `clone.ts:105` already does
    `rmRecursive(ctx.layout.gitDir)` on any failure past bootstrap, and git also creates the target
    then cleans up on failure, so the observable end state is unchanged. The
-   `targetDirectoryNotEmpty` guard at `:83-86` stays where it is, before anything else.
+   `targetDirectoryNotEmpty` guard at `:85` stays where it is, before anything else.
    **The ordering risk was checked, not assumed:** `openGitSession`
    (`src/application/commands/internal/git-service-session.ts:69-76`) reads only `parseRemoteUrl(url)`,
    `ctx.ssh` and `ctx.config?.auth` — the caller-supplied `RepositoryConfig`, never the
@@ -1387,7 +1388,7 @@ order writes a sha1 repository and then fills it with sha256 objects.
 3. **When `withAlgorithm` is absent** (a caller-supplied `HashService`), refuse with the widened
    `UNSUPPORTED_OBJECT_FORMAT { format, local }` from Part 9 — the peer's format is one this
    client cannot work with. Do not silently continue at the wrong width.
-4. **Persist the format.** `writeCloneConfig` (`clone.ts:184-217`) already writes
+4. **Persist the format.** `writeCloneConfig` (called at `clone.ts:179`) already writes
    `extensions.*` and `repositoryformatversion` through `updateConfigEntries(ctx, entries)`
    (`src/application/primitives/update-config.ts:421`, `ConfigEntry { section, subsection?, key,
    value }`) — it does exactly that for partial clone at `:210-214`. Bootstrap having already
@@ -1533,7 +1534,7 @@ PACK…
 | `@` alone | `error: unknown capability ''`, exit 1 |
 | `@object-format=sha512` | `error: unrecognized bundle hash algorithm: sha512`, exit 1 |
 | `@filter=bogus` | `fatal: invalid filter-spec 'bogus'`, exit **128** — the only fatal in the table |
-| v3 with **no** capability block | `error: unrecognized header: <first ref line> (80)`, exit 1 — the parenthesised number is the line's byte length |
+| v3 with **no** capability block | `error: unrecognized header: <first ref line> (<len>)`, exit 1 — the parenthesised number is THAT line's byte length, computed per fixture (a 64-hex oid + space + `refs/heads/master` measures 82); never hardcode it |
 | v3 with `@object-format` **after** the first ref line | the same `unrecognized header` on that ref line |
 | v2 magic **plus** a capability line | `error: unrecognized header: @object-format=sha256 (21)`, exit 1 |
 | **v2 magic with 64-hex oids** | `error: unrecognized header: <ref line> (80)`, exit 1 |
@@ -1541,13 +1542,13 @@ PACK…
 
 **`BUNDLE_BAD_HEADER`'s `reason` widens from two values to four.** Note the actual current type is
 `{ code: 'BUNDLE_BAD_HEADER'; path: string; reason: string }`
-(`src/domain/commands/error.ts:243`) — `string`, not a union; only the factory's comment at `:769`
+(`src/domain/commands/error.ts:256`) — `string`, not a union; only the factory's comment at `:825`
 claims two values. Introduce and export
 `type BundleBadHeaderReason = 'not-a-bundle' | 'malformed-header' | 'unknown-capability' | 'unknown-hash-algorithm'`
 and type the field with it. Each reason carries the fields its git line needs (ADR-249 — fields
 only, no rendered string): the offending line and its byte length for `malformed-header`, the
 capability text for `unknown-capability`, the algorithm value for `unknown-hash-algorithm`.
-**The renderer must widen too**: `src/domain/error.ts:531` returns one line
+**The renderer must widen too**: `src/domain/error.ts:551` returns one line
 (`'<path>' does not look like a v2 or v3 bundle file`) for **every** reason today, where git has
 three distinct lines. Branch on `reason` — that is what the discriminator is for.
 Narrowing `string` to a union is an `api.json` change.
@@ -1684,9 +1685,9 @@ interop reconstruction must not assume the message names the real cause.
 the rule above; supplied, it is honoured, and the v2-where-v3-is-required combination refuses.
 This is a **format** selector — it changes the bytes on disk, exactly as `objectFormat` does — so
 ADR-249 does not exclude it. `bundleUnsupportedSerializeVersion(version)`
-(`src/domain/commands/error.ts:784`) already fits the refusal; note it emits the **same**
+(`src/domain/commands/error.ts:859`) already fits the refusal; note it emits the **same**
 `BUNDLE_UNSUPPORTED_VERSION` code as the read-side refusal and is told apart only by `path` being
-absent (`src/domain/error.ts:533-536`) — a sentinel-shaped distinction. Do not change that shape
+absent (`src/domain/error.ts:565-568`) — a sentinel-shaped distinction. Do not change that shape
 here; do assert both arms in tests so the distinction stays alive.
 `BundleCreateResult.version` (`:34`) already reports the chosen version, so callers see what they
 got with no new field. Public option ⇒ `api.json`.
@@ -1699,9 +1700,9 @@ git says `error: unrecognized argument: --version=3`. That is a probe artefact, 
 maps `OBJECT_NOT_FOUND` into `missingPrerequisites`:
 
 ```ts
-const missingPrerequisites = await findMissingPrerequisites(ctx, header.prerequisites);  // :39
+const missingPrerequisites = await findMissingPrerequisites(ctx, header.prerequisites);  // :61
 const isMissingObject = async (ctx, oid) => { try { await readObject(ctx, oid); return false; }
-  catch (err) { if (err instanceof TsgitError && err.data.code === 'OBJECT_NOT_FOUND') return true; throw err; } };  // :96-104
+  catch (err) { if (err instanceof TsgitError && err.data.code === 'OBJECT_NOT_FOUND') return true; throw err; } };  // :118 (findMissingPrerequisites at :107)
 ```
 
 git draws **two** conditions tsgit currently cannot tell apart:
@@ -1725,15 +1726,15 @@ prerequisite loop, never on the header read — otherwise `bundleListHeads` (whi
 a repository entirely) would break.
 
 **R15 — no bundle path takes its width from the surrounding repository.** In
-`bundle-verify.ts`, `verifyPackTrailer(packBytes, ctx)` (`:43`) and
-`walkPackEntries(ctx, packBytes, resolver)` (`:46`) currently frame against `ctx.hashConfig`.
+`bundle-verify.ts`, `verifyPackTrailer(packBytes, ctx)` (`:65`) and
+`walkPackEntries(ctx, packBytes, resolver)` (`:68`) currently frame against `ctx.hashConfig`.
 They move to the **bundle's** declared algorithm. Only the prerequisite *lookup* stays a
-repository operation. `resolveExternalBase` (`:63-73`) calls
+repository operation. `resolveExternalBase` (`:85`) calls
 `serializeObject(obj, ctx.hashConfig)` — that one is a repository read and correctly stays.
 `bundleListHeads` (`src/application/commands/bundle-list-heads.ts`) already threads
-`header.version` at `:22`; `bundleVerify` already threads `header.hashAlgorithm` at `:55`. Those
+`header.version` at `:22`; `bundleVerify` (declared at `:55`) already threads `header.hashAlgorithm` into its result builder at `:75`. Those
 fields simply stop being single-valued — that is the whole public-surface change on the read side.
-Expose the parsed `@filter` on `BundleVerifyResult` (`:24-32`) alongside them.
+Expose the parsed `@filter` on `BundleVerifyResult` (`:26`) alongside them.
 
 **Out of scope, do not add:** tsgit has **no** `unbundle` and no clone- or fetch-from-bundle path
 (`clone.ts` and `fetch.ts` never mention bundles). Adding one is a new command.
@@ -1745,7 +1746,7 @@ algorithm; R15 keeps the two tools agreeing on every well-formed bundle.
 **Interop rows to append** to `test/integration/bundle-interop.test.ts` — **beside its existing
 v2 rows, not duplicated into a new file.** Its shared `beforeAll` is at `:151-267` with timeout
 `60_000`; the natural extension point for the algorithm pin is the existing
-`hashAlgorithm`-field describe at `:973`. A second SHA-256 fixture repo joins the existing pair in
+`hashAlgorithm`-field describe at `:974`. A second SHA-256 fixture repo joins the existing pair in
 that same `beforeAll` (do not add a second `beforeAll`). Rows:
 
 - a **tsgit-written v3 bundle** from a SHA-256 repository passes `git bundle verify` and
@@ -1765,8 +1766,8 @@ that same `beforeAll` (do not add a second `beforeAll`). Rows:
   exit-128 row.
 
 **Docs:** `docs/use/commands/bundle.md` (245 lines; `## Actions` `:83` with `### create` `:85`,
-`### verify` `:107`, `### listHeads` `:122`; `## Behaviour` `:133`; `## Throws` `:202` with
-`### create` `:204` and `### verify and listHeads` `:216`). Add the `version` option under
+`### verify` `:107`, `### listHeads` `:122`; `## Behaviour` `:133`; `## Throws` `:213` with
+`### create` `:215` and `### verify and listHeads` `:228`). Add the `version` option under
 `### create`, the version-selection rule under `## Behaviour`, the widened `hashAlgorithm` /
 `version` result fields, the exposed filter, and the new refusals under `## Throws`.
 

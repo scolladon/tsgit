@@ -9,12 +9,7 @@
  */
 
 import { invalidOption } from '../../domain/commands/error.js';
-import {
-  type FilePath,
-  type ObjectId,
-  type RefName,
-  ZERO_OID,
-} from '../../domain/objects/index.js';
+import { type FilePath, type ObjectId, type RefName, zeroOid } from '../../domain/objects/index.js';
 import { resetMovingTo } from '../../domain/reflog/reflog-messages.js';
 import { HEADS_PREFIX } from '../../domain/refs/ref-prefixes.js';
 import { ORIG_HEAD } from '../../domain/refs/state-files.js';
@@ -189,7 +184,7 @@ const materializeWorktree = async (child: Context, treeId: ObjectId): Promise<vo
  * HEAD` entry; a detached add logs only the first.
  */
 const writeHeadReflog = async (child: Context, mode: AddMode, oid: ObjectId): Promise<void> => {
-  await recordRefUpdate(child, HEAD_REF, ZERO_OID, oid, '');
+  await recordRefUpdate(child, HEAD_REF, zeroOid(child.hashConfig), oid, '');
   if (mode.kind !== 'detached') {
     await recordRefUpdate(child, HEAD_REF, oid, oid, resetMovingTo('HEAD'));
   }

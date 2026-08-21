@@ -1,5 +1,5 @@
 /// <reference lib="dom" />
-import { SHA1_CONFIG } from '../../domain/objects/hash-config.js';
+import { configFor } from '../../domain/objects/hash-config.js';
 import { createLruCache } from '../../domain/storage/lru-cache.js';
 import { type Context, type CreateContextParts, createContext } from '../../ports/context.js';
 import { noopProgress } from '../../progress.js';
@@ -18,6 +18,13 @@ export interface BrowserAdapterOptions {
   readonly signal?: AbortSignal;
   readonly deltaCacheMaxBytes?: number;
   readonly deltaCacheMaxEntries?: number;
+  /**
+   * Hash algorithm this context's objects are read/written under. Default
+   * `'sha1'`. A sync factory has no repository to detect a declared format
+   * from, so this is the only channel — pass it explicitly for a SHA-256
+   * repository.
+   */
+  readonly algorithm?: 'sha1' | 'sha256';
 }
 
 const DEFAULT_GIT_DIR_NAME = '.git';
@@ -25,13 +32,14 @@ const ROOT_WORK_DIR = '/';
 
 export function createBrowserContext(options: BrowserAdapterOptions): Context {
   const gitDirName = options.gitDirName ?? DEFAULT_GIT_DIR_NAME;
+  const algorithm = options.algorithm ?? 'sha1';
   const deltaCache = createLruCache<Uint8Array>(
     options.deltaCacheMaxBytes ?? DEFAULT_DELTA_CACHE_BYTES,
     options.deltaCacheMaxEntries ?? DEFAULT_DELTA_CACHE_ENTRIES,
   );
   const parts: CreateContextParts = {
     fs: new BrowserFileSystem(options.rootHandle),
-    hash: new BrowserHashService(),
+    hash: new BrowserHashService(algorithm),
     compressor: new BrowserCompressor(),
     transport: new BrowserHttpTransport(),
     progress: noopProgress,
@@ -41,7 +49,7 @@ export function createBrowserContext(options: BrowserAdapterOptions): Context {
       bare: options.bare ?? false,
     },
     runtime: 'browser',
-    hashConfig: SHA1_CONFIG,
+    hashConfig: configFor(algorithm),
     deltaCache,
     ...(options.signal !== undefined ? { signal: options.signal } : {}),
   };

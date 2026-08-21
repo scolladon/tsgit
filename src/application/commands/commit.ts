@@ -4,7 +4,7 @@ import { nothingToCommit } from '../../domain/index.js';
 import type { Commit, CommitData } from '../../domain/objects/commit.js';
 import { subjectLine } from '../../domain/objects/commit-message.js';
 import type { AuthorIdentity, FilePath, ObjectId, TreeEntry } from '../../domain/objects/index.js';
-import { serializeCommitContent, ZERO_OID } from '../../domain/objects/index.js';
+import { serializeCommitContent, zeroOid } from '../../domain/objects/index.js';
 import type { RefName } from '../../domain/objects/object-id.js';
 import {
   commitCherryPickReflog,
@@ -240,7 +240,13 @@ const writeCommitRef = async (ctx: Context, update: CommitRefUpdate): Promise<vo
     return;
   }
   await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `${id}\n`);
-  await recordRefUpdate(ctx, 'HEAD' as RefName, parentId ?? ZERO_OID, id, reflogMessage);
+  await recordRefUpdate(
+    ctx,
+    'HEAD' as RefName,
+    parentId ?? zeroOid(ctx.hashConfig),
+    id,
+    reflogMessage,
+  );
 };
 
 interface PendingMarkers {
@@ -391,7 +397,7 @@ const tryResolve = async (ctx: Context, name: RefName): Promise<ObjectId | undef
 
 const getParentTree = async (ctx: Context, parentId: ObjectId): Promise<ObjectId> => {
   const obj = await readObject(ctx, parentId);
-  if (obj.type !== 'commit') return ZERO_OID;
+  if (obj.type !== 'commit') return zeroOid(ctx.hashConfig);
   return obj.data.tree;
 };
 

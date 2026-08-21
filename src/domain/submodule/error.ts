@@ -4,6 +4,11 @@ import { TsgitError } from '../error.js';
 export type SubmoduleError =
   | { readonly code: 'RELATIVE_URL_UNRESOLVABLE'; readonly url: string }
   | { readonly code: 'SUBMODULE_HAS_MODIFICATIONS'; readonly path: string }
+  | {
+      readonly code: 'SUBMODULE_OBJECT_FORMAT_MISMATCH';
+      readonly local: string;
+      readonly remote: string;
+    }
   | { readonly code: 'SUBMODULE_PATH_EXISTS'; readonly path: string };
 
 /**
@@ -24,6 +29,17 @@ export const relativeUrlUnresolvable = (url: string): TsgitError =>
  */
 export const submoduleHasModifications = (path: string): TsgitError =>
   new TsgitError({ code: 'SUBMODULE_HAS_MODIFICATIONS', path });
+
+/**
+ * `add` refuses a submodule whose hash algorithm differs from the
+ * superproject's — a cross-width gitlink oid cannot be written into the
+ * superproject's own tree. git's `error: cannot add a submodule of a
+ * different hash algorithm`. The clone into the absorbed gitdir has
+ * already happened by the time this fires, so the resulting partial
+ * `.git/modules/<name>` state is left behind, matching git.
+ */
+export const submoduleObjectFormatMismatch = (local: string, remote: string): TsgitError =>
+  new TsgitError({ code: 'SUBMODULE_OBJECT_FORMAT_MISMATCH', local, remote });
 
 /**
  * `add` refuses when the target path is already tracked in the superproject

@@ -19,6 +19,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 
 import { openRepository } from '../../../dist/esm/index.node.js';
+import { runScenario } from '../../parity/run-scenario.ts';
 import { SCENARIOS } from '../../parity/scenarios/index.ts';
 import type { ScenarioInputs } from '../../parity/scenarios/types.ts';
 
@@ -40,10 +41,10 @@ for (const scenario of supported) {
       await t.step('Then the result matches the scenario expected golden', async () => {
         // Arrange
         await stageFiles(tmpDir, scenario.inputs);
-        const sut = await openRepository({ cwd: tmpDir });
+        const sut = await openRepository({ cwd: tmpDir, ...scenario.openOptions });
 
         // Act
-        const result = await scenario.run(sut, scenario.inputs);
+        const result = await runScenario(sut, scenario);
 
         // Assert
         assertEquals(result, scenario.expected);

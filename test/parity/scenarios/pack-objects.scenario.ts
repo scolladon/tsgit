@@ -34,7 +34,7 @@ export const packObjectsScenario: Scenario<PackObjectsScenarioResult> = {
     const packDir = `${repo.ctx.layout.gitDir}/objects/pack`;
     const dirEntries = await repo.ctx.fs.readdir(packDir);
     const idxBytes = await repo.ctx.fs.read(`${packDir}/pack-${result.packId}.idx`);
-    const parsedIdx = parsePackIndex(idxBytes);
+    const parsedIdx = parsePackIndex(idxBytes, 20);
 
     return {
       objectCount: result.objectCount,

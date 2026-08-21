@@ -129,7 +129,7 @@ const offsetTableBlobEntry = (contentIndex: number): EntrySpec => ({
 async function writeCorrectRevIndex(ctx: Context, packName: string): Promise<void> {
   const idxPath = `${ctx.layout.gitDir}/objects/pack/pack-${packName}.idx`;
   const idxBytes = await ctx.fs.read(idxPath);
-  const body = packPositionMap(parsePackIndex(idxBytes));
+  const body = packPositionMap(parsePackIndex(idxBytes, 20));
   await writeSyntheticRevIndex(ctx, packName, body);
 }
 

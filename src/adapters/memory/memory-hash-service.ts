@@ -32,6 +32,8 @@ export class MemoryHashService implements HashService {
     this.subtleAlgo = SUBTLE_ALGO[algorithm];
   }
 
+  withAlgorithm = (algorithm: Algorithm): HashService => new MemoryHashService(algorithm);
+
   hash = async (data: Uint8Array): Promise<Uint8Array> => {
     const buffer = await this.subtle.digest(this.subtleAlgo, data as unknown as ArrayBuffer);
     return new Uint8Array(buffer);

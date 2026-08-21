@@ -14,6 +14,7 @@ import { NodeHookRunner } from '../../../../src/adapters/node/node-hook-runner.j
 import { NodeHttpTransport } from '../../../../src/adapters/node/node-http-transport.js';
 import { NodeSshTransport } from '../../../../src/adapters/node/node-ssh-transport.js';
 import { TsgitError } from '../../../../src/domain/index.js';
+import { SHA1_CONFIG, SHA256_CONFIG } from '../../../../src/domain/objects/hash-config.js';
 
 describe('createNodeContext', () => {
   describe('Given workDir only', () => {
@@ -192,6 +193,27 @@ describe('createNodeContext', () => {
         expect(sut.compressor).toBeInstanceOf(NodeCompressor);
         expect(sut.transport).toBeInstanceOf(NodeHttpTransport);
         expect(sut.hash.algorithm).toBe('sha1');
+      });
+
+      it('Then ctx.hashConfig is SHA1_CONFIG', () => {
+        // Arrange / Act
+        const sut = createNodeContext({ workDir: '/tmp/tsgit-ports-hash-config' });
+
+        // Assert — the default (no algorithm option) still yields sha1 (R6).
+        expect(sut.hashConfig).toBe(SHA1_CONFIG);
+      });
+    });
+  });
+
+  describe("Given algorithm 'sha256'", () => {
+    describe('When creating context', () => {
+      it("Then ctx.hash.algorithm is 'sha256' and ctx.hashConfig is SHA256_CONFIG", () => {
+        // Arrange / Act
+        const sut = createNodeContext({ workDir: '/tmp/tsgit-sha256', algorithm: 'sha256' });
+
+        // Assert
+        expect(sut.hash.algorithm).toBe('sha256');
+        expect(sut.hashConfig).toBe(SHA256_CONFIG);
       });
     });
   });

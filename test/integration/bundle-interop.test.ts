@@ -18,12 +18,17 @@
  *                   inflate still fails — proves walkPackEntries runs);
  *                   refusal reconstruction vs git messages;
  *                   list-heads exact-name filter parity;
- *                   hash-algorithm field reconstruction
+ *                   hash-algorithm field reconstruction;
+ *                   bundle-version selection rule (v2/v3, filter capability,
+ *                   version-2-with-sha256 refusal) parity vs git's own
+ *                   selection and exit codes; SHA-256 v3 bundle round-trips
+ *                   (tsgit-write read by git and clone, git-write read by
+ *                   tsgit) and cross-format bundleListHeads
  *   interopSurface: bundleCreate, bundleVerify, bundleListHeads
  */
 
 import { createHash } from 'node:crypto';
-import { chmodSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -44,7 +49,22 @@ import {
   runGit,
   runGitEnv,
   tryRunGit,
+  tryRunGitWithExit,
 } from './interop-helpers.js';
+
+/** Probes one `git init` capability once, in a throwaway `mktemp` dir, never touching a fixture. */
+const probeInitCapability = (...args: ReadonlyArray<string>): boolean => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'tsgit-bundle-caps-'));
+  try {
+    return tryRunGitWithExit(['init', '-q', ...args, dir]).exitCode === 0;
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+};
+
+// Computed once at module load — `describe.skipIf` reads its condition at
+// collection time, before any `beforeAll` has run.
+const SHA256_AVAILABLE = GIT_AVAILABLE && probeInitCapability('--object-format=sha256');
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -122,11 +142,14 @@ const reconstructVerifyLines = (
 describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
   let pair: PeerPair;
   let pairCriss: PeerPair;
+  let pairSha256: PeerPair;
   let cloneDir: string;
   /** Subdirectory within pair.peer for all bundle scratch files accessible via ctx. */
   let bundleDir: string;
   /** Subdirectory within pairCriss.peer for bundle scratch files accessible via crissCross ctx. */
   let bundleDirCriss: string;
+  /** Subdirectory within pairSha256.peer for bundle scratch files accessible via the sha256 ctx. */
+  let bundleDirSha256: string;
 
   // Main repo OIDs resolved in beforeAll
   let firstOid: string;
@@ -137,6 +160,9 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
   // Criss-cross OIDs
   let ccAOid: string;
   let ccBOid: string;
+
+  // SHA-256 repo OID (only populated when SHA256_AVAILABLE)
+  let sha256Oid: string;
 
   const buildCommitEnv = (): NodeJS.ProcessEnv => ({
     ...runGitEnv(),
@@ -151,12 +177,15 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
   beforeAll(async () => {
     pair = await makePeerPair('bundle');
     pairCriss = await makePeerPair('bundle-criss');
+    pairSha256 = await makePeerPair('bundle-sha256');
     cloneDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-bundle-clone-'));
     // Bundle scratch dirs live inside peer so NodeFileSystem containment passes for ctx.
     bundleDir = path.join(pair.peer, 'bundles');
     bundleDirCriss = path.join(pairCriss.peer, 'bundles');
+    bundleDirSha256 = path.join(pairSha256.peer, 'bundles');
     await mkdir(bundleDir, { recursive: true });
     await mkdir(bundleDirCriss, { recursive: true });
+    await mkdir(bundleDirSha256, { recursive: true });
 
     const env = runGitEnv();
     const commitEnv = buildCommitEnv();
@@ -264,11 +293,29 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
     // Use the commit oid, not the branch name, so branch-a (now at M1) is not merged in
     runGit(['-C', ccDir, 'checkout', 'branch-b'], { env });
     runGit(['-C', ccDir, 'merge', '--no-ff', '-m', 'M2 merge', ccAOid], { env: commitEnv });
+
+    // ──────────────────────────────────────────────────────────────────
+    // SHA-256 repo: one commit on main. Skipped entirely (dir left empty)
+    // when the local git build lacks SHA-256 support.
+    // ──────────────────────────────────────────────────────────────────
+    if (SHA256_AVAILABLE) {
+      const sha256Dir = pairSha256.peer;
+      runGit(['-C', sha256Dir, 'init', '-q', '-b', 'main', '--object-format=sha256'], { env });
+      runGit(['-C', sha256Dir, 'config', 'user.name', 'Ada'], { env });
+      runGit(['-C', sha256Dir, 'config', 'user.email', 'ada@example.com'], { env });
+      runGit(['-C', sha256Dir, 'config', 'commit.gpgsign', 'false'], { env });
+      runGit(['-C', sha256Dir, 'config', 'core.autocrlf', 'false'], { env });
+      writeFileSync(path.join(sha256Dir, 'a.txt'), 'sha256 hello\n');
+      runGit(['-C', sha256Dir, 'add', '-A'], { env });
+      runGit(['-C', sha256Dir, 'commit', '-m', 'sha256 commit'], { env: commitEnv });
+      sha256Oid = runGit(['-C', sha256Dir, 'rev-parse', 'HEAD'], { env }).trim();
+    }
   }, 60_000);
 
   afterAll(async () => {
     await pair.dispose();
     await pairCriss.dispose();
+    await pairSha256.dispose();
     await rm(cloneDir, { recursive: true, force: true });
   });
 
@@ -864,19 +911,20 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
     );
   });
 
-  describe('Given a hand-crafted # v3 git bundle file, When bundleVerify is called', () => {
-    it('Then BUNDLE_UNSUPPORTED_VERSION { version: 3 } is thrown — intentional divergence from git 2.54.0', async () => {
-      // Intentional divergence: git 2.54.0 successfully reads a forced v3-sha1 bundle
-      // because it recognises @object-format=sha1 as a known capability. tsgit
-      // deliberately refuses ALL v3 bundles at the parse layer to avoid silently
-      // ignoring unknown future capability lines. This is NOT a faithfulness bug —
-      // it is the documented, intentional policy for v3 support. git 2.54.0 accepting
-      // a v3 bundle while tsgit refuses is the ONE sanctioned divergence.
+  describe('Given a hand-crafted # v3 git bundle file with a valid header but no pack bytes, When bundleVerify is called', () => {
+    it('Then git accepts the empty pack ("is okay") while tsgit throws INVALID_PACK_HEADER — the pre-existing pack-walk divergence, now proven on a v3 header', async () => {
+      // v3 support landed: tsgit parses this header exactly like git (v2 rows
+      // pin the same fact for `# v2 git bundle`). The remaining divergence here
+      // is pre-existing and unrelated to the version/algorithm work — git's own
+      // `bundle verify` never opens the embedded pack at all (see the Runtime
+      // support note in docs/use/commands/bundle.md), so an empty pack still
+      // reads "is okay"; tsgit performs a full per-entry pack walk, so the same
+      // fixture fails at the pack layer instead of the header layer.
 
-      // Arrange — minimal syntactically plausible v3 header (no valid pack after it)
+      // Arrange — a syntactically valid v3/sha1 header, zero refs, no pack bytes
       const ctx = createNodeContext({ workDir: pair.peer });
       const v3Header = '# v3 git bundle\n@object-format=sha1\n\n';
-      const v3File = path.join(bundleDir, 'v3.bundle');
+      const v3File = path.join(bundleDir, 'v3-empty-pack.bundle');
       writeFileSync(v3File, Buffer.from(v3Header, 'utf8'));
 
       // Act
@@ -887,11 +935,14 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
         caught = err;
       }
 
-      // Assert — tsgit refuses with BUNDLE_UNSUPPORTED_VERSION { version: 3 }
+      // Assert — tsgit fails at the pack layer, not the header layer
       expect(caught).toBeInstanceOf(TsgitError);
-      const data = (caught as TsgitError).data;
-      expect(data.code).toBe('BUNDLE_UNSUPPORTED_VERSION');
-      expect((data as { code: 'BUNDLE_UNSUPPORTED_VERSION'; version: number }).version).toBe(3);
+      expect((caught as TsgitError).data.code).toBe('INVALID_PACK_HEADER');
+
+      // git accepts the identical bytes — it never inspects the embedded pack
+      const gitResult = tryRunGit(['bundle', 'verify', v3File], { env: runGitEnv() });
+      expect(gitResult.ok).toBe(true);
+      expect(gitResult.stdout).toContain('The bundle records a complete history.');
     });
   });
 
@@ -1057,4 +1108,186 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
       expect(gitResult.stderr).toContain(secondOid);
     });
   });
+
+  // ─────────────────────────────────────────────────────────────────────
+  // Pin 11: bundle version selection and SHA-256 cross-format bundles
+  // ─────────────────────────────────────────────────────────────────────
+
+  describe('Given a SHA-1 repository, When bundleCreate writes with no version option (regression control)', () => {
+    it('Then the bytes are byte-identical to git bundle create --all and the bundle still verifies (R6)', async () => {
+      // Arrange
+      const ctx = createNodeContext({ workDir: pair.peer });
+      const env = runGitEnv();
+      const bundleFile = path.join(bundleDir, 'pin11-v2-control.bundle');
+      const gitBytes = gitBundleCreate(pair.peer, bundleFile, ['--all'], env);
+
+      // Act
+      const result = await bundleCreate(ctx, { all: true });
+
+      // Assert — v2, byte-identical header, and git itself still accepts it
+      expect(result.version).toBe(2);
+      expect(headerBytes(result.bytes)).toEqual(headerBytes(gitBytes));
+      const verifyOwn = tryRunGit(['-C', pair.peer, 'bundle', 'verify', bundleFile], { env });
+      expect(verifyOwn.ok).toBe(true);
+    });
+  });
+
+  describe('Given git bundle create --filter=blob:none on a SHA-1 repository, When bundleVerify reads the resulting bundle', () => {
+    it('Then git writes v3 with the filter capability and tsgit exposes it, keyed on the filter trigger rather than the algorithm', async () => {
+      // Arrange
+      const ctx = createNodeContext({ workDir: pair.peer });
+      const env = runGitEnv();
+      const bundleFile = path.join(bundleDir, 'pin11-filter.bundle');
+      gitBundleCreate(pair.peer, bundleFile, ['--all', '--filter=blob:none'], env);
+
+      // Act
+      const result = await bundleVerify(ctx, { path: bundleFile });
+
+      // Assert
+      expect(result.version).toBe(3);
+      expect(result.hashAlgorithm).toBe('sha1');
+      expect(result.filter).toEqual({ kind: 'blob-none' });
+    });
+  });
+
+  describe.skipIf(!SHA256_AVAILABLE)(
+    'Given a SHA-256 repository, When bundleCreate writes a v3 bundle',
+    () => {
+      it('Then git bundle verify and git bundle list-heads both accept it, and cloning it yields a SHA-256 repository', async () => {
+        // Arrange
+        const ctx = createNodeContext({ workDir: pairSha256.peer, algorithm: 'sha256' });
+        const env = runGitEnv();
+        const bundleFile = path.join(bundleDirSha256, 'pin11-sha256-write.bundle');
+
+        // Act
+        const result = await bundleCreate(ctx, { all: true });
+        await writeFile(bundleFile, result.bytes);
+
+        // Assert — structured result
+        expect(result.version).toBe(3);
+
+        // git accepts the bundle tsgit wrote
+        const verifyResult = tryRunGit(['-C', pairSha256.peer, 'bundle', 'verify', bundleFile], {
+          env,
+        });
+        expect(verifyResult.ok).toBe(true);
+        const listResult = tryRunGit(['-C', pairSha256.peer, 'bundle', 'list-heads', bundleFile], {
+          env,
+        });
+        expect(listResult.ok).toBe(true);
+
+        // git clone yields a SHA-256 repository
+        const cloneTarget = path.join(cloneDir, 'sha256-clone');
+        runGit(['clone', '-q', bundleFile, cloneTarget], { env });
+        const format = tryRunGitWithExit(['-C', cloneTarget, 'rev-parse', '--show-object-format'], {
+          env,
+        });
+        expect(format.stdout.trim()).toBe('sha256');
+      });
+    },
+  );
+
+  describe.skipIf(!SHA256_AVAILABLE)(
+    'Given a git-written v3 bundle from a SHA-256 repository, When bundleVerify reads it',
+    () => {
+      it("Then version, hashAlgorithm and 64-hex refs match git's own bundle", async () => {
+        // Arrange
+        const ctx = createNodeContext({ workDir: pairSha256.peer, algorithm: 'sha256' });
+        const env = runGitEnv();
+        const bundleFile = path.join(bundleDirSha256, 'pin11-git-write.bundle');
+        const gitBytes = gitBundleCreate(pairSha256.peer, bundleFile, ['--all'], env);
+
+        // Act
+        const result = await bundleVerify(ctx, { path: bundleFile });
+
+        // Assert
+        expect(result.version).toBe(3);
+        expect(result.hashAlgorithm).toBe('sha256');
+        const gitHdr = parseBundleHeader(gitBytes, '<git>');
+        const gitRefs = gitHdr.refs.map((r) => `${r.name as string} ${r.oid as string}`);
+        const tsRefs = result.refs.map((r) => `${r.name as string} ${r.oid as string}`);
+        expect(tsRefs).toEqual(gitRefs);
+        for (const ref of result.refs) {
+          expect(ref.oid as string).toMatch(/^[0-9a-f]{64}$/);
+        }
+        expect(result.refs.find((r) => r.name === 'refs/heads/main')?.oid as string).toBe(
+          sha256Oid,
+        );
+      });
+    },
+  );
+
+  describe.skipIf(!SHA256_AVAILABLE)(
+    'Given bundles whose algorithm differs from the reading context, When bundleListHeads is called',
+    () => {
+      it('Then it succeeds in both directions (header-only, no repository width assumption)', async () => {
+        // Arrange — each bundle file must live under the FS root the reading
+        // context is confined to, so the sha256-bytes file is written into
+        // bundleDir (sha1Ctx's own root) and vice versa; only the bundle
+        // CONTENT is cross-format, not the reading context's containment root.
+        const sha1Ctx = createNodeContext({ workDir: pair.peer });
+        const sha256Ctx = createNodeContext({ workDir: pairSha256.peer, algorithm: 'sha256' });
+        const sha256BytesInSha1Root = path.join(
+          bundleDir,
+          'pin11-cross-sha256-in-sha1-root.bundle',
+        );
+        const sha1BytesInSha256Root = path.join(
+          bundleDirSha256,
+          'pin11-cross-sha1-in-sha256-root.bundle',
+        );
+        await writeFile(
+          sha256BytesInSha1Root,
+          (await bundleCreate(sha256Ctx, { all: true })).bytes,
+        );
+        await writeFile(sha1BytesInSha256Root, (await bundleCreate(sha1Ctx, { all: true })).bytes);
+
+        // Act
+        const sha256ReadBySha1Ctx = await bundleListHeads(sha1Ctx, {
+          path: sha256BytesInSha1Root,
+        });
+        const sha1ReadBySha256Ctx = await bundleListHeads(sha256Ctx, {
+          path: sha1BytesInSha256Root,
+        });
+
+        // Assert
+        expect(sha256ReadBySha1Ctx.refs.length).toBeGreaterThan(0);
+        expect(sha1ReadBySha256Ctx.refs.length).toBeGreaterThan(0);
+      });
+    },
+  );
+
+  describe.skipIf(!SHA256_AVAILABLE)(
+    'Given a SHA-256 repository, When bundleCreate is asked for version 2',
+    () => {
+      it('Then it refuses BUNDLE_UNSUPPORTED_VERSION with version 2, twinned against git exit 128 for the same request', async () => {
+        // Arrange
+        const ctx = createNodeContext({ workDir: pairSha256.peer, algorithm: 'sha256' });
+        const env = runGitEnv();
+        const bundleFile = path.join(bundleDirSha256, 'pin11-v2-refused.bundle');
+
+        // Act
+        let thrown: unknown;
+        try {
+          await bundleCreate(ctx, { all: true, version: 2 });
+        } catch (err) {
+          thrown = err;
+        }
+
+        // Assert — tsgit refuses
+        expect(thrown).toBeInstanceOf(TsgitError);
+        const tsErr = thrown as TsgitError;
+        expect(tsErr.data.code).toBe('BUNDLE_UNSUPPORTED_VERSION');
+        expect((tsErr.data as { version: number }).version).toBe(2);
+
+        // git refuses the identical request: exit 128, no file written
+        const gitResult = tryRunGitWithExit(
+          ['-C', pairSha256.peer, 'bundle', 'create', '--version=2', bundleFile, '--all'],
+          { env },
+        );
+        expect(gitResult.exitCode).toBe(128);
+        expect(gitResult.stderr).toContain('cannot write bundle version 2 with algorithm sha256');
+        expect(existsSync(bundleFile)).toBe(false);
+      });
+    },
+  );
 });

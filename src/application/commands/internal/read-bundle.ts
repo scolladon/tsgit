@@ -31,7 +31,7 @@ const readOrThrow = async (ctx: Context, path: string): Promise<Uint8Array> => {
 const classifyReadFailure = async (ctx: Context, path: string): Promise<TsgitError> => {
   try {
     const stat = await ctx.fs.stat(path);
-    if (stat.isDirectory) return bundleBadHeader(path, 'not-a-bundle');
+    if (stat.isDirectory) return bundleBadHeader(path, { reason: 'not-a-bundle' });
   } catch {
     // stat failed — path absent or unreadable; treat as generic read failure
   }

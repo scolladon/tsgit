@@ -44,6 +44,20 @@ export const parseCapabilities = (tail: string): ReadonlyArray<string> => {
   return dedupeByKey(tokens);
 };
 
+const OBJECT_FORMAT_PREFIX = 'object-format=';
+const DEFAULT_OBJECT_FORMAT = 'sha1';
+
+/**
+ * v1 has no dedicated capability parser — `object-format=<algo>` survives on
+ * the raw token array (`Advertisement.capabilities`) like every other v1
+ * capability. An absent token means sha1 by protocol spec (the class-B
+ * default), mirroring v2's `DEFAULT_OBJECT_FORMAT`.
+ */
+export const readObjectFormat = (caps: ReadonlyArray<string>): string => {
+  const token = caps.find((c) => c.startsWith(OBJECT_FORMAT_PREFIX));
+  return token === undefined ? DEFAULT_OBJECT_FORMAT : token.slice(OBJECT_FORMAT_PREFIX.length);
+};
+
 export const formatCapabilities = (caps: ReadonlyArray<string>): string => caps.join(' ');
 
 export const negotiateCapabilities = (
@@ -60,3 +74,25 @@ export const negotiateCapabilities = (
   }
   return out;
 };
+
+/**
+ * Whether the peer advertised `object-format` at all. git gates the client's
+ * own token on this (`server_supports_hash()` in `fetch-pack.c` /
+ * `send_pack.c`): a pre-2.28 peer never advertises the capability and never
+ * receives one, so sending it unconditionally would put an unsolicited token
+ * on every legacy SHA-1 fetch and push. The value sent is OUR algorithm, not
+ * the peer's echoed back — which is why this cannot go through
+ * `negotiateCapabilities`, whose contract is to echo the server's value.
+ */
+export const peerNegotiatesObjectFormat = (advertised: ReadonlyArray<string>): boolean =>
+  advertised.some((capability) => capability.startsWith('object-format='));
+
+/**
+ * Whether a peer-supplied `object-format` value names an algorithm this
+ * client implements. Separating "not an algorithm we know" from "a known
+ * algorithm that differs from ours" is what keeps git's two distinct
+ * refusals distinguishable: `unknown object format '<x>' specified by
+ * server` versus `mismatched algorithms: client A; server B`.
+ */
+export const isSupportedObjectFormat = (value: string): value is 'sha1' | 'sha256' =>
+  value === 'sha1' || value === 'sha256';

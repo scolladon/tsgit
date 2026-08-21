@@ -23,4 +23,6 @@ export interface Scenario<TResult> {
    * that rely on lenient DecompressionStream behaviour not available in workerd.
    */
   readonly unsupportedRuntimes?: readonly string[];
+  /** Extra `openRepository` options every driver spreads into its own open call. */
+  readonly openOptions?: { readonly algorithm?: 'sha1' | 'sha256' };
 }

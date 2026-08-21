@@ -44,11 +44,12 @@ export const encodeCommandRequest = (
   command: string,
   args: ReadonlyArray<string>,
   payloads: ReadonlyArray<Uint8Array>,
+  objectFormat: 'sha1' | 'sha256',
 ): Uint8Array => {
   const header = encodePktLines([
     TEXT_ENCODER.encode(`command=${command}\n`),
     TEXT_ENCODER.encode(`${AGENT}\n`),
-    TEXT_ENCODER.encode('object-format=sha1\n'),
+    TEXT_ENCODER.encode(`object-format=${objectFormat}\n`),
   ]);
   const body = encodePktLines([...args.map((arg) => TEXT_ENCODER.encode(`${arg}\n`)), ...payloads]);
   return concatBytes(header, DELIM_PKT, body, FLUSH_PKT);

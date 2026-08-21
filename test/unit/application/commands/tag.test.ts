@@ -55,6 +55,26 @@ describe('tag', () => {
     });
   });
 
+  describe('Given a SHA-256 repository and an explicit target (64-hex oid)', () => {
+    describe('When tag create', () => {
+      it('Then the new tag points at that oid, taken verbatim', async () => {
+        // Arrange
+        const ctx = createMemoryContext({ algorithm: 'sha256' });
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
+        await add(ctx, ['a.txt']);
+        const { id: commitId } = await commit(ctx, { message: 'first', author });
+        expect(commitId).toHaveLength(64);
+
+        // Act
+        const result = await tagCreate(ctx, { name: 'v1.0', target: commitId });
+
+        // Assert
+        expect(result.id).toBe(commitId);
+      });
+    });
+  });
+
   describe('Given an existing tag', () => {
     describe('When tag create without force', () => {
       it('Then throws TAG_EXISTS', async () => {

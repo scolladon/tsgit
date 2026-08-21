@@ -249,7 +249,7 @@ function gitObjectTypes(dir: string, ids: ReadonlyArray<string>): ReadonlyMap<st
  *  for the identical closure. */
 async function idxObjectIds(idxPath: string): Promise<ReadonlySet<string>> {
   const bytes = await readFile(idxPath);
-  const index = parsePackIndex(bytes);
+  const index = parsePackIndex(bytes, 20);
   return new Set(allObjectIds(index));
 }
 

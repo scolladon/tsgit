@@ -87,7 +87,9 @@ Every `read` / `write` on the Memory adapter clones the `Uint8Array`. Caller mut
 
 ## Object integrity
 
-Every object read through `readObject` is hashed and verified against the requested `ObjectId`. Bytes that don't hash to the id throw `OBJECT_HASH_MISMATCH`. There is no opt-out.
+Every object read through `readObject` is hashed and verified against the requested `ObjectId`. Bytes that don't hash to the id throw `OBJECT_HASH_MISMATCH`. Verification is on by default; a caller that has already established provenance can waive it for a single read with `verifyHash: false`, which is the only way to skip it. Which hash function performs that verification is itself a config value — `extensions.objectFormat` in `<commonDir>/config` selects SHA-1 or SHA-256 — exactly the property canonical git has too: the config is the authority on the repository's format there as well.
+
+tsgit never infers the algorithm from **data** — an object id's width, a `.rev` file's hash id, a `multi-pack-index` or `commit-graph`'s hash-version byte — only from the repository's own **declaration**. Inferring from data would let planted bytes choose their own verifier: a hostile object store could declare itself SHA-256-shaped by construction and steer verification toward whichever function is easiest to forge for its payload. The declaration-only rule also fails **closed**: a repository declared SHA-1 that holds 64-hex object ids cannot resolve them. The pack-index and multi-pack-index searches refuse a target whose width is not the index's own, so such an id reads as *absent* rather than being compared byte-by-byte against a wider slot — a comparison that would run off the end of the target and, because `NaN` is neither less nor greater than zero, could otherwise settle on an unrelated object. Absent, not reinterpreted, and not dependent on the hash check to catch it afterwards.
 
 ## Object & pack size caps
 

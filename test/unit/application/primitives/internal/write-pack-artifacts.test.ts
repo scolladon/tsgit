@@ -68,7 +68,7 @@ describe('buildRev', () => {
 
         // Assert
         const idxBytes = await buildIdx(ctx, entries, PACK_SHA);
-        const expected = packPositionMap(parsePackIndex(idxBytes));
+        const expected = packPositionMap(parsePackIndex(idxBytes, 20));
         const parsedRev = parsePackRevIndex(revBytes, ctx.hash.digestLength, entries.length);
         const actual = revIndexPositions(parsedRev, entries.length);
         expect(actual).toEqual(expected);

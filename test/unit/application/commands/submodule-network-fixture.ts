@@ -76,7 +76,17 @@ const makeTransport = (
  */
 export const buildSubmoduleRemote = async (
   ctx: Context,
-  opts: { readonly branches: ReadonlyArray<RemoteBranchSpec>; readonly head: string },
+  opts: {
+    readonly branches: ReadonlyArray<RemoteBranchSpec>;
+    readonly head: string;
+    /**
+     * Advertise `object-format=<algo>` alongside the usual capabilities. The
+     * pack itself is always framed at `ctx`'s algorithm, so pass a SHA-256
+     * `ctx` together with `objectFormat: 'sha256'` to serve a genuinely
+     * cross-format remote to a SHA-1 superproject.
+     */
+    readonly objectFormat?: 'sha1' | 'sha256';
+  },
 ): Promise<SubmoduleRemote> => {
   const entries: EntrySpec[] = [];
   const commits = new Map<string, ObjectId>();
@@ -121,7 +131,12 @@ export const buildSubmoduleRemote = async (
     refs.push({ name: `refs/heads/${branch.name}`, id: commitId });
   }
   const { packBytes } = await buildSyntheticPack(ctx, entries);
-  const capabilities = ['side-band-64k', 'ofs-delta', `symref=HEAD:refs/heads/${opts.head}`];
+  const capabilities = [
+    'side-band-64k',
+    'ofs-delta',
+    `symref=HEAD:refs/heads/${opts.head}`,
+    ...(opts.objectFormat !== undefined ? [`object-format=${opts.objectFormat}`] : []),
+  ];
   return { transport: makeTransport(refs, capabilities, packBytes), commits };
 };
 

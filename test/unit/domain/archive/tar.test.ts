@@ -120,6 +120,9 @@ function makeEntry(path: string, mode: string, content?: Uint8Array): ArchiveEnt
 
 const FIXED_MTIME = 1_112_904_793;
 const SAMPLE_OID = 'aabbccdd00112233445566778899aabbccddeeff';
+// 64-hex (SHA-256 width) commit oid — literal, captured from `git rev-parse HEAD`
+// in a real `git init --object-format=sha256` repository (git 2.55.0).
+const SAMPLE_OID_SHA256 = '0e3459f47ec2fad125795139fdcfdb3e37bd10b3a19e1d5f423476371a28d0e5';
 
 // ---------------------------------------------------------------------------
 // Mode table M: each arm in its own test (mutation-resistant)
@@ -366,6 +369,74 @@ describe('Given a result with commit defined', () => {
 
       // Assert
       expect(readOctalField(paxHeader, OFF_SIZE, 12)).toBe(52);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Pax global header at 64-hex (SHA-256) oid width: the record's declared
+// length must be computed from the oid, never restated as a literal — a
+// hardcoded 52 here would emit a corrupt tar (declared 52, actual 76) that
+// both `tar` and `git archive` reject. This class of bug is write-only: it
+// has no read-side symptom in tsgit's own round-trip, so the oracle here is
+// git-written literal bytes (the first test) plus a self-consistency
+// invariant (the second) — never a round trip through tsgit alone.
+// ---------------------------------------------------------------------------
+
+describe('Given a result with a SHA-256 (64-hex) commit oid defined', () => {
+  describe('When tarArchive is called', () => {
+    it('Then the second block contains the 76-byte pax record "76 comment=<oid>\\n" padded to 512', async () => {
+      // Arrange
+      const sut = tarArchive(makeResult([], SAMPLE_OID_SHA256, FIXED_MTIME), {
+        mtime: FIXED_MTIME,
+      });
+
+      // Act
+      const result = await collectBytes(sut);
+      const paxData = result.slice(BLOCK_SIZE, BLOCK_SIZE * 2);
+
+      // Assert — record is exactly "76 comment=<oid>\n": 11 (digits + space +
+      // "comment=") + 64-hex oid + 1 (\n) = 76, self-inclusive (measured
+      // against real git 2.55.0's own `git archive --format=tar` output).
+      const expectedRecord = `76 comment=${SAMPLE_OID_SHA256}\n`;
+      const expected = new Uint8Array(BLOCK_SIZE);
+      new TextEncoder().encodeInto(expectedRecord, expected);
+      expect(paxData).toEqual(expected);
+    });
+
+    it('Then the pax header size field is 76 (decimal) = 114 (octal)', async () => {
+      // Arrange
+      const sut = tarArchive(makeResult([], SAMPLE_OID_SHA256, FIXED_MTIME), {
+        mtime: FIXED_MTIME,
+      });
+
+      // Act
+      const result = await collectBytes(sut);
+      const paxHeader = result.slice(0, HEADER_SIZE);
+
+      // Assert
+      expect(readOctalField(paxHeader, OFF_SIZE, 12)).toBe(76);
+    });
+
+    it('Then the record’s declared length equals its actual byte length (self-consistency, independent of the literal above)', async () => {
+      // Arrange — the write-only class this bug belongs to has no read-side
+      // symptom, so this invariant is checked without assuming the literal
+      // "76": the declared size field must equal the record's own measured
+      // length up to its first zero-padding byte.
+      const sut = tarArchive(makeResult([], SAMPLE_OID_SHA256, FIXED_MTIME), {
+        mtime: FIXED_MTIME,
+      });
+
+      // Act
+      const result = await collectBytes(sut);
+      const paxHeader = result.slice(0, HEADER_SIZE);
+      const paxData = result.slice(BLOCK_SIZE, BLOCK_SIZE * 2);
+      const declaredSize = readOctalField(paxHeader, OFF_SIZE, 12);
+      const firstZeroByte = paxData.indexOf(0);
+      const actualRecordLength = firstZeroByte === -1 ? paxData.length : firstZeroByte;
+
+      // Assert
+      expect(actualRecordLength).toBe(declaredSize);
     });
   });
 });

@@ -23,6 +23,7 @@ import {
   AGENT,
   CLIENT_CAPABILITIES_FETCH,
   negotiateCapabilities as negotiateProtocolCapabilities,
+  peerNegotiatesObjectFormat,
 } from '../../../domain/protocol/index.js';
 import type { GitServiceSession } from './git-service-session.js';
 import { discoverRefsForService } from './refs-discovery.js';
@@ -37,16 +38,24 @@ export const discoverRefs = async (session: GitServiceSession): Promise<Advertis
  * + `done` in one POST), but a server may answer with `ACK <oid> common`
  * lines instead of a bare `ACK`, and the response parser already tolerates
  * that shape. Always append the agent string — the server does not need to
- * advertise it for the client to send it.
+ * advertise it for the client to send it. `object-format=<objectFormat>` is
+ * appended the same way: it is OUR OWN algorithm, sent verbatim regardless
+ * of what the server advertised (a v1 server has no `object-format`
+ * negotiation of its own to intersect against).
  */
 export const selectFetchCapabilities = (
   advertised: ReadonlyArray<string>,
+  objectFormat: 'sha1' | 'sha256',
 ): ReadonlyArray<string> => {
   const clientWants = CLIENT_CAPABILITIES_FETCH.filter(
     (c) => c !== 'thin-pack' && c !== 'no-progress' && c !== AGENT,
   );
   const intersected = negotiateProtocolCapabilities(advertised, clientWants);
-  return [...intersected, AGENT];
+  // git orders `object-format` before `agent`, and sends it only when the
+  // peer advertised the capability.
+  return peerNegotiatesObjectFormat(advertised)
+    ? [...intersected, `object-format=${objectFormat}`, AGENT]
+    : [...intersected, AGENT];
 };
 
 /**

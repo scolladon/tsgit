@@ -13,6 +13,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { openRepository } from '../../../dist/esm/index.default.js';
+import { runScenario } from '../../parity/run-scenario.ts';
 import { SCENARIOS } from '../../parity/scenarios/index.ts';
 import type { ScenarioInputs } from '../../parity/scenarios/types.ts';
 
@@ -36,10 +37,13 @@ describe.each(supported)('Given the $name scenario', (scenario) => {
   describe('When the Workers driver runs it', () => {
     it('Then the result matches the scenario expected golden', async () => {
       // Arrange
-      const sut = await openRepository({ files: stageFiles(scenario.inputs) });
+      const sut = await openRepository({
+        files: stageFiles(scenario.inputs),
+        ...scenario.openOptions,
+      });
 
       // Act
-      const result = await scenario.run(sut, scenario.inputs);
+      const result = await runScenario(sut, scenario);
 
       // Assert
       expect(result).toEqual(scenario.expected);

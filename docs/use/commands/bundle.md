@@ -30,10 +30,11 @@ interface BundleCreateOptions {
   readonly all?: boolean;
   readonly branches?: boolean;
   readonly tags?: boolean;
+  readonly version?: 2 | 3;  // omit to derive — see version selection below
 }
 
 interface BundleCreateResult {
-  readonly version:       BundleVersion;              // always 2
+  readonly version:       BundleVersion;              // the version actually written
   readonly bytes:         Uint8Array;                 // header ++ packfile
   readonly refs:          ReadonlyArray<BundleRef>;
   readonly prerequisites: ReadonlyArray<BundlePrerequisite>; // oid-sorted
@@ -59,12 +60,13 @@ interface BundleVerifyInput {
 
 interface BundleVerifyResult {
   readonly version:               BundleVersion;
-  readonly hashAlgorithm:         BundleHashAlgorithm;   // 'sha1'
+  readonly hashAlgorithm:         BundleHashAlgorithm;   // 'sha1' | 'sha256' — the bundle's own, never the repository's
   readonly refs:                  ReadonlyArray<BundleRef>;
   readonly prerequisites:         ReadonlyArray<BundlePrerequisite>;
   readonly missingPrerequisites:  ReadonlyArray<ObjectId>;
   readonly prerequisitesPresent:  boolean;
   readonly recordsCompleteHistory: boolean;
+  readonly filter?:               ObjectFilter;          // present only for a v3 header carrying @filter
 }
 
 // --- listHeads ---
@@ -90,6 +92,7 @@ interface BundleListHeadsResult {
 | `all` | `boolean` | `undefined` | Include every `refs/*` ref sorted by full name, then `HEAD` last. |
 | `branches` | `boolean` | `undefined` | Include every `refs/heads/*` ref sorted by full name. |
 | `tags` | `boolean` | `undefined` | Include every `refs/tags/*` ref sorted by full name. |
+| `version` | `2 \| 3` | `undefined` | Bundle format version. Omitted: derived by the version-selection rule (see Behaviour below). Supplied: honoured, or refused with `BUNDLE_UNSUPPORTED_VERSION` if it cannot express the rule's requirement (e.g. `2` while the repository's algorithm or a filter requires `3`). |
 
 **Rev grammar** (field shapes inside `BundleRevArg`):
 
@@ -132,8 +135,21 @@ do not.
 
 ## Behaviour
 
-- **Version 2 only.** `create` always produces a v2 bundle. `verify` and
-  `listHeads` read v2; a `# v3 git bundle` file throws `BUNDLE_UNSUPPORTED_VERSION`.
+- **Version selection in `create`.** v3 is written iff the repository's
+  algorithm is not `sha1` **or** a filter is present — never "v3 iff sha256"
+  alone, since a SHA-1 repository writing a filter capability also needs v3.
+  Omit `version` to derive it from that rule; supply `version: 2 | 3` to
+  request one explicitly. `verify` and `listHeads` read both v2 and v3; a v3
+  header's `@object-format` and `@filter` capabilities are surfaced as
+  `hashAlgorithm` and `filter` on `BundleVerifyResult` — read from the
+  bundle's own header, never assumed from the reading repository.
+- **Cross-format prerequisites in `verify`.** A prerequisite oid declared
+  under an algorithm the repository does not itself use throws
+  `BUNDLE_PREREQUISITE_ALGORITHM_MISMATCH` — git can never map such an oid to
+  a local object. This fires only when the bundle carries prerequisites: a
+  cross-format *complete* bundle (no prerequisites) verifies successfully in
+  either direction, and its embedded pack is parsed at the bundle's own
+  declared algorithm regardless of the repository's.
 - **Ref ordering in `create`.** Explicit `{ tip }` / `{ range }` / `{ symmetricRange }`
   refs appear in argument order. `--all` emits `refs/*` sorted by full refname,
   `HEAD` last. `--branches` / `--tags` emit the matching subset sorted.
@@ -195,7 +211,7 @@ const sym = await repo.bundle.create({
 const verifyResult = await repo.bundle.verify({ path: '/backup/repo.bundle' });
 console.log(verifyResult.prerequisitesPresent); // true — all prereqs found
 console.log(verifyResult.recordsCompleteHistory); // true — no prerequisites
-console.log(verifyResult.hashAlgorithm);  // 'sha1'
+console.log(verifyResult.hashAlgorithm);  // 'sha1' | 'sha256' — the bundle's own
 
 // List all refs in a bundle (header-only, no pack read)
 const headsResult = await repo.bundle.listHeads({ path: '/backup/repo.bundle' });
@@ -224,17 +240,20 @@ const filtered = await repo.bundle.listHeads({
 - `REVPARSE_UNRESOLVED` / `REVPARSE_AMBIGUOUS` — a rev argument cannot be
   resolved (propagated from `revParse`).
 - `PACK_TOO_LARGE` — the object closure exceeds the built-in object-count ceiling.
+- `BUNDLE_UNSUPPORTED_VERSION` `version` (no `path`) — an explicit `version`
+  option that cannot be honoured: outside `{2, 3}`, or `2` while the
+  repository's algorithm or a filter requires `3`.
 
 ### `verify` and `listHeads`
 
 - `NOT_A_REPOSITORY` — (`verify` only) the ambient repository is absent, **or** the acceptance tier rejects it (ownership, implicit-bare, or an unsupported format/version) — git demotes the latter case to the same repository-absent refusal rather than raising its own ownership or format fatal, and tsgit matches (see Behaviour above). `listHeads` never touches the ambient repository, so it never raises this.
 - `BUNDLE_READ_FAILED` — the file cannot be opened or read (missing or unreadable).
 - `BUNDLE_BAD_HEADER` — the file does not look like a v2 or v3 bundle (not a
-  bundle file, or a directory path).
-- `BUNDLE_UNSUPPORTED_VERSION` — the file has a `# v3 git bundle` magic line.
-  This is a deliberate divergence from git: git 2.54.0 reads a forced
-  `# v3 git bundle`/sha1 file without error; tsgit refuses because it has no
-  faithful v3 producer and tsgit is SHA-1 only.
+  bundle file, a directory path, or a magic line naming neither version).
+- `BUNDLE_PREREQUISITE_ALGORITHM_MISMATCH` — (`verify` only) a prerequisite
+  oid is declared under an algorithm the repository does not itself use;
+  raised before the presence lookup, so it is never mistaken for a merely
+  absent prerequisite (see Behaviour above).
 - `INVALID_PACK_*` / `INVALID_DELTA` — (verify only) the embedded packfile is
   corrupt; thrown when a pack entry fails to inflate or the trailer is bad.
 

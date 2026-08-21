@@ -1344,3 +1344,161 @@ describe('openRepository — config-scope allowlist', () => {
     });
   });
 });
+
+describe('openRepository — object algorithm resolution', () => {
+  const fallbackWithDeclaredFormat = (objectFormat: 'sha1' | 'sha256'): RuntimeFallback => ({
+    ...makeFallback(),
+    layout: { workDir: '/repo', gitDir: '/repo/.git', bare: false, objectFormat },
+  });
+
+  describe('Given a repository whose layout declares extensions.objectFormat = sha256', () => {
+    describe('When openRepository runs with no algorithm option', () => {
+      it("Then ctx.hashConfig.algorithm is 'sha256' and ctx.hash.algorithm is 'sha256' (the layout channel)", async () => {
+        // Arrange
+        const fallback = fallbackWithDeclaredFormat('sha256');
+
+        // Act
+        const sut = await openRepository({ cwd: '/repo' }, fallback);
+
+        // Assert — the fallback's own default hash service (sha1) is upgraded
+        // via withAlgorithm to match the declared format.
+        expect(sut.ctx.hashConfig.algorithm).toBe('sha256');
+        expect(sut.ctx.hash.algorithm).toBe('sha256');
+      });
+    });
+
+    describe('When openRepository is called with algorithm: sha256', () => {
+      it('Then it opens (agreement is not a conflict)', async () => {
+        // Arrange
+        const fallback = fallbackWithDeclaredFormat('sha256');
+
+        // Act
+        const sut = await openRepository({ cwd: '/repo', algorithm: 'sha256' }, fallback);
+
+        // Assert
+        expect(sut.ctx.hashConfig.algorithm).toBe('sha256');
+      });
+    });
+  });
+
+  describe('Given no declared format and no algorithm option (the default)', () => {
+    describe('When openRepository runs', () => {
+      it("Then ctx.hashConfig is SHA1_CONFIG and ctx.hash is the fallback's own instance unchanged", async () => {
+        // Arrange
+        const fallback = makeFallback();
+
+        // Act
+        const sut = await openRepository({ cwd: '/repo' }, fallback);
+
+        // Assert — R6: default stays sha1; no upgrade needed, so the fallback's
+        // own hash instance is reused (kills a mutant that always upgrades).
+        expect(sut.ctx.hashConfig).toBe(SHA1_CONFIG);
+        expect(sut.ctx.hash).toBe(fallback.hash);
+      });
+    });
+  });
+
+  describe('Given the algorithm option disagrees with the declared format', () => {
+    describe('When openRepository runs', () => {
+      it('Then throws OBJECT_FORMAT_CONFLICT{ requested: option, declared, source: "option" }', async () => {
+        // Arrange
+        const fallback = fallbackWithDeclaredFormat('sha1');
+        let caught: unknown;
+
+        // Act
+        try {
+          await openRepository({ cwd: '/repo', algorithm: 'sha256' }, fallback);
+          expect.fail('expected OBJECT_FORMAT_CONFLICT');
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data).toEqual({
+          code: 'OBJECT_FORMAT_CONFLICT',
+          requested: 'sha256',
+          declared: 'sha1',
+          source: 'option',
+        });
+      });
+    });
+  });
+
+  describe('Given a caller-supplied hash algorithm disagrees with the declared format', () => {
+    describe('When openRepository runs', () => {
+      it('Then throws OBJECT_FORMAT_CONFLICT{ requested: hash, declared, source: "hash" }', async () => {
+        // Arrange
+        const fallback = fallbackWithDeclaredFormat('sha1');
+        let caught: unknown;
+
+        // Act
+        try {
+          await openRepository({ cwd: '/repo', hash: new MemoryHashService('sha256') }, fallback);
+          expect.fail('expected OBJECT_FORMAT_CONFLICT');
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data).toEqual({
+          code: 'OBJECT_FORMAT_CONFLICT',
+          requested: 'sha256',
+          declared: 'sha1',
+          source: 'hash',
+        });
+      });
+    });
+  });
+
+  describe('Given a caller-supplied hash algorithm disagrees with the algorithm option', () => {
+    describe('When openRepository runs', () => {
+      it('Then throws OBJECT_FORMAT_CONFLICT{ requested: hash, declared: option, source: "hash" }', async () => {
+        // Arrange
+        let caught: unknown;
+
+        // Act
+        try {
+          await openRepository(
+            { cwd: '/repo', algorithm: 'sha1', hash: new MemoryHashService('sha256') },
+            makeFallback(),
+          );
+          expect.fail('expected OBJECT_FORMAT_CONFLICT');
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data).toEqual({
+          code: 'OBJECT_FORMAT_CONFLICT',
+          requested: 'sha256',
+          declared: 'sha1',
+          source: 'hash',
+        });
+      });
+    });
+  });
+
+  describe("Given today's desync bug shape — a caller-supplied sha256 hash on a plain sha1 repository", () => {
+    describe('When openRepository runs', () => {
+      it('Then it refuses instead of silently pairing ctx.hash=sha256 with ctx.hashConfig=SHA1_CONFIG', async () => {
+        // Arrange — a plain repository (declared sha1), no algorithm option —
+        // the exact desync that existed before this reconciliation: ctx.hash
+        // reporting sha256 paired with ctx.hashConfig staying SHA1_CONFIG.
+        const fallback = fallbackWithDeclaredFormat('sha1');
+
+        // Act
+        const rejection = await openRepository(
+          { cwd: '/repo', hash: new MemoryHashService('sha256') },
+          fallback,
+        ).catch((err: unknown) => err);
+
+        // Assert
+        expect(rejection).toBeInstanceOf(TsgitError);
+        expect((rejection as TsgitError).data.code).toBe('OBJECT_FORMAT_CONFLICT');
+      });
+    });
+  });
+});

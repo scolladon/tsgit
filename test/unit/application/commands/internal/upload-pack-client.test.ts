@@ -68,7 +68,7 @@ describe('selectFetchCapabilities', () => {
     describe('When selectFetchCapabilities runs', () => {
       it('Then the agent string is always appended', async () => {
         // Arrange & Act
-        const result = selectFetchCapabilities(['side-band-64k']);
+        const result = selectFetchCapabilities(['side-band-64k'], 'sha1');
 
         // Assert — the AGENT slot is always sent regardless of server advert.
         expect(result.some((c) => c.startsWith('agent='))).toBe(true);
@@ -83,7 +83,7 @@ describe('selectFetchCapabilities', () => {
         async (cap) => {
           // Arrange & Act — kills each of the `c !== '<cap>'` mutants inside
           // the filter predicate.
-          const result = selectFetchCapabilities([cap, 'side-band-64k']);
+          const result = selectFetchCapabilities([cap, 'side-band-64k'], 'sha1');
 
           // Assert
           expect(result).not.toContain(cap);
@@ -96,19 +96,17 @@ describe('selectFetchCapabilities', () => {
     describe('When selecting fetch capabilities', () => {
       it('Then multi_ack_detailed is retained', async () => {
         // Arrange & Act
-        const result = selectFetchCapabilities([
-          'multi_ack_detailed',
-          'side-band-64k',
-          'ofs-delta',
-          'thin-pack',
-        ]);
+        const result = selectFetchCapabilities(
+          ['multi_ack_detailed', 'side-band-64k', 'ofs-delta', 'thin-pack'],
+          'sha1',
+        );
 
         // Assert — retained (single-round strategy tolerates ACK ... common),
         // while thin-pack/no-progress stay filtered and AGENT is appended last.
         expect(result).toContain('multi_ack_detailed');
         expect(result).not.toContain('thin-pack');
         expect(result).not.toContain('no-progress');
-        expect(result[result.length - 1]).toBe(AGENT);
+        expect(result).toContain(AGENT);
       });
     });
   });
@@ -119,7 +117,7 @@ describe('selectFetchCapabilities', () => {
         // Arrange & Act — kills the `.filter` → no-filter mutant; without the
         // intersect step, capabilities the server doesn't support would still
         // be sent.
-        const result = selectFetchCapabilities([]);
+        const result = selectFetchCapabilities([], 'sha1');
 
         // Assert
         expect(result).not.toContain('side-band-64k');
@@ -131,7 +129,7 @@ describe('selectFetchCapabilities', () => {
     describe('When selectFetchCapabilities runs', () => {
       it('Then side-band-64k IS in the result', async () => {
         // Arrange & Act
-        const result = selectFetchCapabilities(['side-band-64k']);
+        const result = selectFetchCapabilities(['side-band-64k'], 'sha1');
 
         // Assert
         expect(result).toContain('side-band-64k');
@@ -145,13 +143,52 @@ describe('selectFetchCapabilities', () => {
         // Arrange — kills the `c !== AGENT` filter mutant on the last
         // conjunct. With the mutant, AGENT would survive the intersect step
         // and then get appended a SECOND time at the end of the function.
-        const result = selectFetchCapabilities(['agent=git/2.x', 'side-band-64k']);
+        const result = selectFetchCapabilities(['agent=git/2.x', 'side-band-64k'], 'sha1');
 
         // Assert — exactly one agent= entry, and it is the client's, not
         // the server's leaked echo.
         const agentEntries = result.filter((c) => c.startsWith('agent='));
         expect(agentEntries).toHaveLength(1);
         expect(agentEntries[0]).not.toBe('agent=git/2.x');
+      });
+    });
+  });
+
+  describe('Given the local repository is sha1', () => {
+    describe('When selectFetchCapabilities runs', () => {
+      it('Then the result carries object-format=sha1 when the peer advertised the capability', () => {
+        // Arrange & Act — the peer must advertise `object-format` for git to
+        // send one; the value sent is OURS, never the peer's echoed back.
+        const result = selectFetchCapabilities(['side-band-64k', 'object-format=sha1'], 'sha1');
+
+        // Assert
+        expect(result).toContain('object-format=sha1');
+      });
+
+      it('Then the result omits object-format entirely when the peer never advertised it', () => {
+        // Arrange & Act — a pre-2.28 peer advertises no `object-format`, and
+        // git gates its own token on `server_supports_hash()`. Sending one
+        // regardless would put an unsolicited capability on every legacy
+        // SHA-1 exchange.
+        const result = selectFetchCapabilities(['side-band-64k'], 'sha1');
+
+        // Assert
+        expect(result.some((capability) => capability.startsWith('object-format='))).toBe(false);
+      });
+    });
+  });
+
+  describe('Given the local repository is sha256', () => {
+    describe('When selectFetchCapabilities runs', () => {
+      it('Then the result carries object-format=sha256, our own, regardless of the server advert', () => {
+        // Arrange & Act — the server's own object-format token (if any) is
+        // dropped by the intersect step; we always send OUR OWN algorithm,
+        // the same way AGENT is always appended verbatim.
+        const result = selectFetchCapabilities(['object-format=sha1'], 'sha256');
+
+        // Assert
+        expect(result).toContain('object-format=sha256');
+        expect(result).not.toContain('object-format=sha1');
       });
     });
   });

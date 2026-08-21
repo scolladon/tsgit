@@ -24,6 +24,23 @@ describe('NodeHashService', () => {
       });
     });
 
+    describe('Given a sha1 service', () => {
+      describe("When calling withAlgorithm('sha256')", () => {
+        it('Then returns a NodeHashService whose algorithm is sha256', () => {
+          // Arrange
+          const sut = new NodeHashService('sha1');
+
+          // Act
+          const result = sut.withAlgorithm?.('sha256');
+
+          // Assert
+          expect(result).toBeInstanceOf(NodeHashService);
+          expect(result?.algorithm).toBe('sha256');
+          expect(result?.digestLength).toBe(32);
+        });
+      });
+    });
+
     describe('Given default constructor', () => {
       describe('When instantiating', () => {
         it('Then algorithm is sha1', async () => {

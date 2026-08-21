@@ -39,6 +39,23 @@ describe('MemoryHashService', () => {
       });
     });
 
+    describe('Given a sha1 service', () => {
+      describe("When calling withAlgorithm('sha256')", () => {
+        it('Then returns a MemoryHashService whose algorithm is sha256', () => {
+          // Arrange
+          const sut = new MemoryHashService('sha1');
+
+          // Act
+          const result = sut.withAlgorithm?.('sha256');
+
+          // Assert
+          expect(result).toBeInstanceOf(MemoryHashService);
+          expect(result?.algorithm).toBe('sha256');
+          expect(result?.digestLength).toBe(32);
+        });
+      });
+    });
+
     describe('Given Hasher after digestHex', () => {
       describe('When calling update', () => {
         it('Then throws HASH_FAILED with update-after-digest reason', async () => {

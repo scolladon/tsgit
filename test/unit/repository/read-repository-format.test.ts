@@ -36,6 +36,7 @@ describe('readRepositoryFormat', () => {
           bare: undefined,
           worktree: undefined,
           worktreeConfig: false,
+          objectFormat: 'sha1',
           refusal: undefined,
         });
       });
@@ -108,6 +109,7 @@ describe('readRepositoryFormat', () => {
           bare: true,
           worktree: undefined,
           worktreeConfig: true,
+          objectFormat: 'sha1',
           refusal: undefined,
         });
       });
@@ -161,6 +163,7 @@ describe('readRepositoryFormat', () => {
           bare: false,
           worktree: undefined,
           worktreeConfig: false,
+          objectFormat: 'sha1',
           refusal: undefined,
         });
       });
@@ -298,6 +301,7 @@ describe('readRepositoryFormat', () => {
           bare: undefined,
           worktree: undefined,
           worktreeConfig: false,
+          objectFormat: 'sha1',
           refusal: undefined,
         });
       });
@@ -330,6 +334,7 @@ describe('readRepositoryFormat', () => {
           bare: undefined,
           worktree: undefined,
           worktreeConfig: false,
+          objectFormat: 'sha1',
           refusal: undefined,
         });
       });
@@ -426,6 +431,7 @@ describe('readRepositoryFormat', () => {
           bare: false,
           worktree: undefined,
           worktreeConfig: false,
+          objectFormat: 'sha1',
           refusal: undefined,
         });
       });
@@ -1064,18 +1070,32 @@ describe('readRepositoryFormat', () => {
 
   // ───────────────────────────────────────────────────────────────────────
   // The two extension arms — git's nine known names × {absent, v0, v1},
-  // plus an unknown name in the same three states. The three
-  // UNBACKED_EXTENSIONS members are excluded at v1 (they throw, asserted
-  // separately below) rather than folded into this sweep's oracle.
+  // plus an unknown name in the same three states. The two remaining
+  // UNBACKED_EXTENSIONS members (compatObjectFormat, refStorage) are
+  // excluded at v1 (they throw, asserted separately below) rather than
+  // folded into this sweep's oracle. `objectFormat` left that set (its own
+  // dedicated test below covers its v1 row) but keeps its undefined/v0 rows
+  // here for parity with the sibling sweeps.
   // ───────────────────────────────────────────────────────────────────────
 
   describe('The two extension arms', () => {
-    /** Plants ONE `extensions.<name> = true` entry, with an optional version. */
-    const buildExtensionsConfig = (version: number | undefined, name: string): string => {
+    /** Plants ONE `extensions.<name> = <value>` entry, with an optional version. */
+    const buildExtensionsConfig = (
+      version: number | undefined,
+      name: string,
+      value: string,
+    ): string => {
       const versionBlock =
         version === undefined ? '' : `[core]\n\trepositoryformatversion = ${version}\n`;
-      return `${versionBlock}[extensions]\n\t${name} = true\n`;
+      return `${versionBlock}[extensions]\n\t${name} = ${value}\n`;
     };
+
+    // `objectFormat` alone now carries its own value grammar (this part);
+    // every other known extension name stays a grammar-free placeholder —
+    // measured against git 2.55.0: `objectFormat = true` refuses with
+    // CONFIG_INVALID_ENUM_VALUE before the acceptance gate ever runs, so
+    // the generic placeholder would falsify the 'accept'/'v1only' rows below.
+    const plantedValueFor = (name: string): string => (name === 'objectFormat' ? 'sha256' : 'true');
 
     describe('Given each git-known extension planted alone at absent, v0, and v1', () => {
       describe('When readRepositoryFormat runs', () => {
@@ -1110,7 +1130,10 @@ describe('readRepositoryFormat', () => {
         ] as const)('Then extensions.%s at version %s is %s', async (name, version, expected) => {
           // Arrange
           const fs = new MemoryFileSystem({ rootDir: '/repo' });
-          await fs.writeUtf8('/repo/.git/config', buildExtensionsConfig(version, name));
+          await fs.writeUtf8(
+            '/repo/.git/config',
+            buildExtensionsConfig(version, name, plantedValueFor(name)),
+          );
           const lowerName = name.toLowerCase();
 
           // Act
@@ -1344,7 +1367,6 @@ describe('readRepositoryFormat', () => {
       describe('When readRepositoryFormat runs', () => {
         it.each([
           ['compatObjectFormat', 'sha1'],
-          ['objectFormat', 'sha256'],
           ['refStorage', 'reftable'],
         ])(
           'Then extensions.%s throws REPOSITORY_EXTENSION_UNSUPPORTED naming the value %s',
@@ -1378,6 +1400,31 @@ describe('readRepositoryFormat', () => {
             });
           },
         );
+      });
+    });
+
+    describe('Given a repository declaring extensions.objectFormat = sha256 at version 1', () => {
+      describe('When readRepositoryFormat runs', () => {
+        it('Then it succeeds — objectFormat left the unbacked-extension refuse set', async () => {
+          // Arrange
+          const fs = new MemoryFileSystem({ rootDir: '/repo' });
+          await fs.writeUtf8(
+            '/repo/.git/config',
+            '[core]\n\trepositoryformatversion = 1\n[extensions]\n\tobjectFormat = sha256\n',
+          );
+
+          // Act
+          const result = await readRepositoryFormat(
+            fileSystemLayoutProbe(fs),
+            '/repo/.git',
+            '/repo/.git',
+            posixPolicy,
+          );
+
+          // Assert
+          expect(result.refusal).toBeUndefined();
+          expect(result.objectFormat).toBe('sha256');
+        });
       });
     });
 
@@ -1511,6 +1558,358 @@ describe('readRepositoryFormat', () => {
             extension: 'compatobjectformat',
             value: 'sha1',
           });
+        });
+      });
+    });
+  });
+
+  // ───────────────────────────────────────────────────────────────────────
+  // extensions.objectFormat — the value grammar (measured against git
+  // 2.55.0). Deliberately planted with NO core.repositoryformatversion, so
+  // the version-ceiling arm of the acceptance gate never enters the picture
+  // — these rows exercise the value-grammar layer in isolation, exactly like
+  // `core.bare` / `core.worktree` above. `objectFormat` no longer sits in
+  // UNBACKED_EXTENSIONS, so this isolation is no longer load-bearing for the
+  // refuse-set arm either — kept anyway for parity with the sibling sweeps.
+  // ───────────────────────────────────────────────────────────────────────
+
+  describe('extensions.objectFormat — the value grammar', () => {
+    /** Run readRepositoryFormat against a local config, catching a throw. */
+    const catchObjectFormat = async (config: string): Promise<unknown> => {
+      const fs = new MemoryFileSystem({ rootDir: '/repo' });
+      await fs.writeUtf8('/repo/.git/config', config);
+      try {
+        await readRepositoryFormat(
+          fileSystemLayoutProbe(fs),
+          '/repo/.git',
+          '/repo/.git',
+          posixPolicy,
+        );
+        return undefined;
+      } catch (err) {
+        return err;
+      }
+    };
+
+    describe('Given extensions.objectFormat = sha256', () => {
+      describe('When readRepositoryFormat runs', () => {
+        it("Then objectFormat is 'sha256'", async () => {
+          // Arrange
+          const fs = new MemoryFileSystem({ rootDir: '/repo' });
+          await fs.writeUtf8(
+            '/repo/.git/config',
+            '[core]\n\trepositoryformatversion = 1\n[extensions]\n\tobjectFormat = sha256\n',
+          );
+
+          // Act
+          const result = await readRepositoryFormat(
+            fileSystemLayoutProbe(fs),
+            '/repo/.git',
+            '/repo/.git',
+            posixPolicy,
+          );
+
+          // Assert
+          expect(result.objectFormat).toBe('sha256');
+        });
+      });
+    });
+
+    describe('Given extensions.objectFormat = sha1', () => {
+      describe('When readRepositoryFormat runs', () => {
+        it("Then objectFormat is 'sha1' — an explicit, legal no-op", async () => {
+          // Arrange
+          const fs = new MemoryFileSystem({ rootDir: '/repo' });
+          await fs.writeUtf8(
+            '/repo/.git/config',
+            '[core]\n\trepositoryformatversion = 1\n[extensions]\n\tobjectFormat = sha1\n',
+          );
+
+          // Act
+          const result = await readRepositoryFormat(
+            fileSystemLayoutProbe(fs),
+            '/repo/.git',
+            '/repo/.git',
+            posixPolicy,
+          );
+
+          // Assert
+          expect(result.objectFormat).toBe('sha1');
+        });
+      });
+    });
+
+    describe('Given no extensions.objectFormat at v1', () => {
+      describe('When readRepositoryFormat runs', () => {
+        it("Then objectFormat is 'sha1'", async () => {
+          // Arrange
+          const fs = new MemoryFileSystem({ rootDir: '/repo' });
+          await fs.writeUtf8('/repo/.git/config', '[core]\n\trepositoryformatversion = 1\n');
+
+          // Act
+          const result = await readRepositoryFormat(
+            fileSystemLayoutProbe(fs),
+            '/repo/.git',
+            '/repo/.git',
+            posixPolicy,
+          );
+
+          // Assert
+          expect(result.objectFormat).toBe('sha1');
+        });
+      });
+    });
+
+    describe('Given extensions.objectFormat = SHA256 (upper-case)', () => {
+      describe('When readRepositoryFormat runs', () => {
+        it('Then it throws CONFIG_INVALID_ENUM_VALUE naming the lower-cased key and the verbatim value — the value grammar is case-sensitive', async () => {
+          // Arrange & Act
+          const caught = await catchObjectFormat('[extensions]\n\tobjectFormat = SHA256\n');
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data).toEqual({
+            code: 'CONFIG_INVALID_ENUM_VALUE',
+            key: 'extensions.objectformat',
+            source: '/repo/.git/config',
+            value: 'SHA256',
+            line: 2,
+          });
+        });
+      });
+    });
+
+    describe('Given extensions.objectFormat = Sha256 (mixed case)', () => {
+      describe('When readRepositoryFormat runs', () => {
+        it('Then it throws CONFIG_INVALID_ENUM_VALUE with value Sha256 — case-sensitivity is not an all-caps special case', async () => {
+          // Arrange & Act
+          const caught = await catchObjectFormat('[extensions]\n\tobjectFormat = Sha256\n');
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data).toEqual({
+            code: 'CONFIG_INVALID_ENUM_VALUE',
+            key: 'extensions.objectformat',
+            source: '/repo/.git/config',
+            value: 'Sha256',
+            line: 2,
+          });
+        });
+      });
+    });
+
+    describe('Given extensions.objectFormat = sha-256', () => {
+      describe('When readRepositoryFormat runs', () => {
+        it('Then it throws CONFIG_INVALID_ENUM_VALUE with value sha-256', async () => {
+          // Arrange & Act
+          const caught = await catchObjectFormat('[extensions]\n\tobjectFormat = sha-256\n');
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data).toEqual({
+            code: 'CONFIG_INVALID_ENUM_VALUE',
+            key: 'extensions.objectformat',
+            source: '/repo/.git/config',
+            value: 'sha-256',
+            line: 2,
+          });
+        });
+      });
+    });
+
+    describe('Given extensions.objectFormat = sha256x', () => {
+      describe('When readRepositoryFormat runs', () => {
+        it('Then it throws CONFIG_INVALID_ENUM_VALUE with value sha256x', async () => {
+          // Arrange & Act
+          const caught = await catchObjectFormat('[extensions]\n\tobjectFormat = sha256x\n');
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data).toEqual({
+            code: 'CONFIG_INVALID_ENUM_VALUE',
+            key: 'extensions.objectformat',
+            source: '/repo/.git/config',
+            value: 'sha256x',
+            line: 2,
+          });
+        });
+      });
+    });
+
+    describe('Given extensions.objectFormat set to the empty string', () => {
+      describe('When readRepositoryFormat runs', () => {
+        it("Then it throws CONFIG_INVALID_ENUM_VALUE with value '' — an empty string is a value, not the missing-value shape", async () => {
+          // Arrange & Act
+          const caught = await catchObjectFormat('[extensions]\n\tobjectFormat =\n');
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data).toEqual({
+            code: 'CONFIG_INVALID_ENUM_VALUE',
+            key: 'extensions.objectformat',
+            source: '/repo/.git/config',
+            value: '',
+            line: 2,
+          });
+        });
+      });
+    });
+
+    describe('Given a valueless extensions.objectFormat', () => {
+      describe('When readRepositoryFormat runs', () => {
+        it('Then it throws CONFIG_MISSING_VALUE naming the key, the source and the 1-based line — the second guard, proven alone', async () => {
+          // Arrange & Act
+          const caught = await catchObjectFormat('[extensions]\n\tobjectFormat\n');
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data).toEqual({
+            code: 'CONFIG_MISSING_VALUE',
+            key: 'extensions.objectformat',
+            source: '/repo/.git/config',
+            line: 2,
+          });
+        });
+      });
+    });
+
+    describe('Given extensions.objectFormat padded with whitespace', () => {
+      describe('When readRepositoryFormat runs', () => {
+        it("Then it is accepted as 'sha256' — the config tokeniser strips before the grammar ever sees it", async () => {
+          // Arrange
+          const fs = new MemoryFileSystem({ rootDir: '/repo' });
+          await fs.writeUtf8(
+            '/repo/.git/config',
+            '[core]\n\trepositoryformatversion = 1\n[extensions]\n\tobjectFormat =   sha256  \n',
+          );
+
+          // Act
+          const result = await readRepositoryFormat(
+            fileSystemLayoutProbe(fs),
+            '/repo/.git',
+            '/repo/.git',
+            posixPolicy,
+          );
+
+          // Assert
+          expect(result.objectFormat).toBe('sha256');
+        });
+      });
+    });
+
+    describe('Given extensions.objectFormat = sha256 then sha1', () => {
+      describe('When readRepositoryFormat runs', () => {
+        it("Then last-wins yields 'sha1'", async () => {
+          // Arrange
+          const fs = new MemoryFileSystem({ rootDir: '/repo' });
+          await fs.writeUtf8(
+            '/repo/.git/config',
+            '[core]\n\trepositoryformatversion = 1\n[extensions]\n\tobjectFormat = sha256\n\tobjectFormat = sha1\n',
+          );
+
+          // Act
+          const result = await readRepositoryFormat(
+            fileSystemLayoutProbe(fs),
+            '/repo/.git',
+            '/repo/.git',
+            posixPolicy,
+          );
+
+          // Assert
+          expect(result.objectFormat).toBe('sha1');
+        });
+      });
+    });
+
+    describe('Given extensions.objectFormat = sha1 then sha256', () => {
+      describe('When readRepositoryFormat runs', () => {
+        it("Then last-wins yields 'sha256' — proven in both orders", async () => {
+          // Arrange
+          const fs = new MemoryFileSystem({ rootDir: '/repo' });
+          await fs.writeUtf8(
+            '/repo/.git/config',
+            '[core]\n\trepositoryformatversion = 1\n[extensions]\n\tobjectFormat = sha1\n\tobjectFormat = sha256\n',
+          );
+
+          // Act
+          const result = await readRepositoryFormat(
+            fileSystemLayoutProbe(fs),
+            '/repo/.git',
+            '/repo/.git',
+            posixPolicy,
+          );
+
+          // Assert
+          expect(result.objectFormat).toBe('sha256');
+        });
+      });
+    });
+
+    describe('Given extensions.objectFormat = sha256 with NO core.repositoryformatversion key', () => {
+      describe('When readRepositoryFormat runs', () => {
+        it('Then the extension is inert and the format stays sha1 — git ignores extensions below version 1', async () => {
+          // Arrange — measured on git 2.55.0: this exact config opens cleanly
+          // and `rev-parse --show-object-format` reports sha1. Adopting sha256
+          // here would read every oid, index entry and pack at 32 bytes in a
+          // repository git reads at 20.
+          const fs = new MemoryFileSystem({ rootDir: '/repo' });
+          await fs.writeUtf8('/repo/.git/config', '[extensions]\n\tobjectFormat = sha256\n');
+
+          // Act
+          const result = await readRepositoryFormat(
+            fileSystemLayoutProbe(fs),
+            '/repo/.git',
+            '/repo/.git',
+            posixPolicy,
+          );
+
+          // Assert
+          expect(result.objectFormat).toBe('sha1');
+          expect(result.refusal).toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given an INVALID extensions.objectFormat with NO core.repositoryformatversion key', () => {
+      describe('When readRepositoryFormat runs', () => {
+        it('Then it still refuses — the grammar is checked at every version, only the adoption is gated', async () => {
+          // Arrange — the companion to the row above, and the reason the
+          // version gate wraps the ADOPTION rather than the resolve: measured,
+          // git refuses this with `invalid value for 'extensions.objectformat'`
+          // even though it would have ignored a well-formed value here.
+          const caught = await catchObjectFormat('[extensions]\n\tobjectFormat = SHA256\n');
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data;
+          expect(data.code).toBe('CONFIG_INVALID_ENUM_VALUE');
+          if (data.code !== 'CONFIG_INVALID_ENUM_VALUE') expect.unreachable();
+          expect(data.value).toBe('SHA256');
+        });
+      });
+    });
+
+    describe('Given extensions.objectFormat = sha256 planted only in config.worktree, with worktreeConfig true', () => {
+      describe('When readRepositoryFormat runs', () => {
+        it('Then it is inert and the format stays sha1 — the format keys are never scoped to config.worktree', async () => {
+          // Arrange
+          const fs = new MemoryFileSystem({ rootDir: '/repo' });
+          await fs.writeUtf8('/repo/.git/config', '[extensions]\n\tworktreeConfig = true\n');
+          await fs.writeUtf8(
+            '/repo/.git/config.worktree',
+            '[core]\n\trepositoryformatversion = 1\n[extensions]\n\tobjectFormat = sha256\n',
+          );
+
+          // Act
+          const result = await readRepositoryFormat(
+            fileSystemLayoutProbe(fs),
+            '/repo/.git',
+            '/repo/.git',
+            posixPolicy,
+          );
+
+          // Assert
+          expect(result.objectFormat).toBe('sha1');
         });
       });
     });

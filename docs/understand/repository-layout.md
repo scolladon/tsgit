@@ -69,9 +69,14 @@ resolved `gitDir`, optional `commonDir` (linked worktrees), optional `workDir`
 and `implicitBare` (present only when `true` — the ownership-trust gate's
 verdict, see Refusals below), optional `foreignPath` (the first checked path
 the ownership predicate reported unowned, present only when one was found),
-and optional `formatRefusal` — the repository-acceptance verdict
+optional `formatRefusal` — the repository-acceptance verdict
 (`core.repositoryformatversion` / `extensions.*`), absent when the repository is
-accepted; see Refusals for how it is enforced. Every `git rev-parse` layout query —
+accepted; see Refusals for how it is enforced — and optional `objectFormat`,
+the repository's declared `extensions.objectFormat` (`'sha1' | 'sha256'`),
+absent meaning sha1 (git's own default when the key is unset). A linked
+worktree's `objectFormat` is always the common dir's value — the admin dir
+holds no format-bearing config of its own, so no worktree-specific read
+exists. Every `git rev-parse` layout query —
 `--git-dir`, `--git-common-dir`, `--is-bare-repository`, `--show-toplevel`,
 `--show-prefix`, `--show-cdup`, `--is-inside-work-tree`, `--is-inside-git-dir` — is
 reconstructible from these fields plus your own cwd; tsgit ships the data, never a

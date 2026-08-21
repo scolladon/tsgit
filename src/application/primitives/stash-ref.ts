@@ -17,7 +17,7 @@
  * reflog read, not the shared rev-parse DWIM ladder.
  */
 import { stashNotFound } from '../../domain/commands/error.js';
-import { type ObjectId, type RefName, ZERO_OID } from '../../domain/objects/index.js';
+import { type ObjectId, type RefName, zeroOid } from '../../domain/objects/index.js';
 import type { ReflogEntry } from '../../domain/reflog/reflog-entry.js';
 import { sanitizeReflogMessage } from '../../domain/reflog/reflog-format.js';
 import type { Context } from '../../ports/context.js';
@@ -39,10 +39,10 @@ export interface StashStackEntry {
 
 const REF_ENCODER = new TextEncoder();
 
-/** The current `refs/stash` tip oid, or `ZERO_OID` when the ref is absent. */
+/** The current `refs/stash` tip oid, or the zero oid when the ref is absent. */
 const currentTip = async (ctx: Context): Promise<ObjectId> => {
   const result = await getRefStore(ctx).resolveDirect(STASH_REF);
-  return result.kind === 'direct' ? result.id : ZERO_OID;
+  return result.kind === 'direct' ? result.id : zeroOid(ctx.hashConfig);
 };
 
 const writeStashRef = (ctx: Context, oid: ObjectId): Promise<void> =>

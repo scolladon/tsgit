@@ -130,8 +130,9 @@ describe('negotiateDiscovery', () => {
         const exchangeResponse = concatBytes(pktBytes(`${OID_A} refs/heads/main\n`), FLUSH);
         const session = stubSession({ discoveryBody, servicePrologue: false, exchangeResponse });
 
+        const ctx = createMemoryContext();
         // Act
-        const result = await negotiateDiscovery(session);
+        const result = await negotiateDiscovery(ctx, session);
 
         // Assert
         expect(result.version).toBe(2);
@@ -151,8 +152,9 @@ describe('negotiateDiscovery', () => {
         const exchangeResponse = concatBytes(pktBytes(`${OID_A} refs/heads/main\n`), FLUSH);
         const session = stubSession({ discoveryBody, servicePrologue: false, exchangeResponse });
 
+        const ctx = createMemoryContext();
         // Act
-        await negotiateDiscovery(session);
+        await negotiateDiscovery(ctx, session);
 
         // Assert
         const request = await decodeRequest(session);
@@ -174,8 +176,9 @@ describe('negotiateDiscovery', () => {
         const exchangeResponse = concatBytes(pktBytes(`${OID_A} refs/heads/main\n`), FLUSH);
         const session = stubSession({ discoveryBody, servicePrologue: true, exchangeResponse });
 
+        const ctx = createMemoryContext();
         // Act
-        const result = await negotiateDiscovery(session);
+        const result = await negotiateDiscovery(ctx, session);
 
         // Assert
         expect(result.version).toBe(2);
@@ -195,8 +198,9 @@ describe('negotiateDiscovery', () => {
         const exchangeResponse = concatBytes(pktBytes(`${OID_A} refs/heads/main\n`), FLUSH);
         const session = stubSession({ discoveryBody, servicePrologue: true, exchangeResponse });
 
+        const ctx = createMemoryContext();
         // Act
-        const result = await negotiateDiscovery(session);
+        const result = await negotiateDiscovery(ctx, session);
 
         // Assert
         expect(result.version).toBe(2);
@@ -212,8 +216,9 @@ describe('negotiateDiscovery', () => {
         const discoveryBody = concatBytes(v1RefLine(), FLUSH);
         const session = stubSession({ discoveryBody, servicePrologue: false });
 
+        const ctx = createMemoryContext();
         // Act
-        const result = await negotiateDiscovery(session);
+        const result = await negotiateDiscovery(ctx, session);
 
         // Assert
         expect(result.version).toBe(1);
@@ -232,8 +237,9 @@ describe('negotiateDiscovery', () => {
         const discoveryBody = concatBytes(SERVICE_HEADER, v1RefLine(), FLUSH);
         const session = stubSession({ discoveryBody, servicePrologue: true });
 
+        const ctx = createMemoryContext();
         // Act
-        const result = await negotiateDiscovery(session);
+        const result = await negotiateDiscovery(ctx, session);
 
         // Assert
         expect(result.version).toBe(1);
@@ -258,8 +264,9 @@ describe('negotiateDiscovery', () => {
         const exchangeResponse = concatBytes(pktBytes(`${OID_A} refs/heads/main\n`), FLUSH);
         const session = stubSession({ discoveryBody, servicePrologue: false, exchangeResponse });
 
+        const ctx = createMemoryContext();
         // Act
-        const result = await negotiateDiscovery(session);
+        const result = await negotiateDiscovery(ctx, session);
 
         // Assert
         expect(result.version).toBe(2);
@@ -285,8 +292,9 @@ describe('negotiateDiscovery', () => {
           servicePrologue: false,
         };
 
+        const ctx = createMemoryContext();
         // Act
-        const result = await negotiateDiscovery(session);
+        const result = await negotiateDiscovery(ctx, session);
 
         // Assert
         expect(result.version).toBe(1);
@@ -318,8 +326,9 @@ describe('negotiateDiscovery', () => {
           servicePrologue: false,
         };
 
+        const ctx = createMemoryContext();
         // Act
-        const result = await negotiateDiscovery(session);
+        const result = await negotiateDiscovery(ctx, session);
 
         // Assert
         expect(result.version).toBe(1);
@@ -343,8 +352,9 @@ describe('negotiateDiscovery', () => {
           servicePrologue: false,
         };
 
+        const ctx = createMemoryContext();
         // Act
-        await negotiateDiscovery(session);
+        await negotiateDiscovery(ctx, session);
 
         // Assert
         expect(discovery.returnSpy).toHaveBeenCalledTimes(1);
@@ -360,10 +370,11 @@ describe('negotiateDiscovery', () => {
         const discoveryBody = concatBytes(...v2CapabilityLines({ fetch: false }), FLUSH);
         const session = stubSession({ discoveryBody, servicePrologue: false });
 
+        const ctx = createMemoryContext();
         // Act
         let caught: TsgitError | undefined;
         try {
-          await negotiateDiscovery(session);
+          await negotiateDiscovery(ctx, session);
         } catch (err) {
           caught = err as TsgitError;
         }
@@ -385,8 +396,9 @@ describe('negotiateDiscovery', () => {
         const exchangeResponse = concatBytes(pktBytes(`${OID_A} refs/heads/main\n`), FLUSH);
         const session = stubSession({ discoveryBody, servicePrologue: false, exchangeResponse });
 
+        const ctx = createMemoryContext();
         // Act
-        const result = await negotiateDiscovery(session);
+        const result = await negotiateDiscovery(ctx, session);
 
         // Assert
         expect(result.advertisement.capabilities).toContain('filter');
@@ -402,8 +414,9 @@ describe('negotiateDiscovery', () => {
         const exchangeResponse = concatBytes(pktBytes(`${OID_A} refs/heads/main\n`), FLUSH);
         const session = stubSession({ discoveryBody, servicePrologue: false, exchangeResponse });
 
+        const ctx = createMemoryContext();
         // Act
-        const result = await negotiateDiscovery(session);
+        const result = await negotiateDiscovery(ctx, session);
 
         // Assert
         expect(result.advertisement.capabilities).not.toContain('filter');

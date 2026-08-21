@@ -1,5 +1,6 @@
 import {
   type Commit,
+  type HashConfig,
   invalidCommit,
   type ObjectId,
   serializeIdentity,
@@ -26,16 +27,16 @@ import { writeObject } from './write-object.js';
  *  value into a `parent <x>` header — this is the last gate before bytes.
  *  Width is checked against the repository hash: a foreign-width oid is
  *  well-formed hex but a permanently unresolvable link in this repo. */
-function assertWellFormedParents(parents: ReadonlyArray<ObjectId>, hexLength: 40 | 64): void {
+function assertWellFormedParents(parents: ReadonlyArray<ObjectId>, config: HashConfig): void {
   for (const parent of parents) {
-    if (isMalformedParentOid(parent) || parent.length !== hexLength) {
+    if (isMalformedParentOid(parent, config)) {
       throw invalidCommit(REASON_PARENT_INVALID);
     }
   }
 }
 
 export async function createCommit(ctx: Context, input: CreateCommitInput): Promise<ObjectId> {
-  assertWellFormedParents(input.parents, ctx.hashConfig.hexLength);
+  assertWellFormedParents(input.parents, ctx.hashConfig);
   if (messageContainsNul(input.message)) {
     throw invalidCommit(REASON_MESSAGE_CONTAINS_NUL);
   }

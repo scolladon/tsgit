@@ -5,11 +5,9 @@
 import { operationAborted, TsgitError } from '../../domain/error.js';
 import { objectHashMismatch, objectNotFound, objectTooLarge } from '../../domain/objects/error.js';
 import {
-  EMPTY_TREE_OID,
+  emptyTreeOid,
   type GitObject,
-  type HashConfig,
   type ObjectId,
-  ObjectId as ObjectIdFactory,
   parseHeader,
   parseObject,
   serializeObject,
@@ -38,13 +36,6 @@ import { commonGitDir, looseObjectPath } from './path-layout.js';
  * ONLY the empty tree — the empty blob is not virtual and still misses.
  */
 const EMPTY_TREE_BYTES = new TextEncoder().encode('tree 0\0');
-const EMPTY_TREE_OID_SHA256: ObjectId = ObjectIdFactory.from(
-  '6ef19b41225c5369f1c104d45d8d85efa9b057b53b14b4b9b939dd74decc5321',
-);
-
-function emptyTreeOid(hash: HashConfig): ObjectId {
-  return hash.digestLength === 32 ? EMPTY_TREE_OID_SHA256 : EMPTY_TREE_OID;
-}
 
 export async function resolveObjectBytes(
   ctx: Context,

@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { SHA1_CONFIG, SHA256_CONFIG } from '../../../../src/domain/objects/hash-config.js';
+import {
+  configFor,
+  SHA1_CONFIG,
+  SHA256_CONFIG,
+} from '../../../../src/domain/objects/hash-config.js';
 
 describe('hash-config', () => {
   describe('Given SHA1_CONFIG', () => {
@@ -41,6 +45,72 @@ describe('hash-config', () => {
 
         // Assert
         expect(result.hexLength).toBe(64);
+      });
+    });
+  });
+
+  describe('Given SHA1_CONFIG', () => {
+    describe('When reading algorithm', () => {
+      it("Then returns 'sha1'", () => {
+        // Arrange & Act
+        const result = SHA1_CONFIG;
+
+        // Assert
+        expect(result.algorithm).toBe('sha1');
+      });
+    });
+  });
+
+  describe('Given SHA256_CONFIG', () => {
+    describe('When reading algorithm', () => {
+      it("Then returns 'sha256'", () => {
+        // Arrange & Act
+        const result = SHA256_CONFIG;
+
+        // Assert
+        expect(result.algorithm).toBe('sha256');
+      });
+    });
+  });
+
+  describe('Given the frozen hash configs', () => {
+    describe('When comparing hexLength to digestLength', () => {
+      it('Then SHA1_CONFIG hexLength is exactly twice digestLength', () => {
+        // Arrange & Act
+        const result = SHA1_CONFIG;
+
+        // Assert
+        expect(result.hexLength).toBe(result.digestLength * 2);
+      });
+
+      it('Then SHA256_CONFIG hexLength is exactly twice digestLength', () => {
+        // Arrange & Act
+        const result = SHA256_CONFIG;
+
+        // Assert
+        expect(result.hexLength).toBe(result.digestLength * 2);
+      });
+    });
+  });
+
+  describe('Given configFor', () => {
+    describe("When called with 'sha1'", () => {
+      it('Then returns SHA1_CONFIG', () => {
+        // Arrange / Act
+        const result = configFor('sha1');
+
+        // Assert
+        expect(result).toBe(SHA1_CONFIG);
+      });
+    });
+
+    describe("When called with 'sha256'", () => {
+      it('Then returns SHA256_CONFIG', () => {
+        // Arrange / Act
+        const result = configFor('sha256');
+
+        // Assert
+        expect(result).toBe(SHA256_CONFIG);
       });
     });
   });

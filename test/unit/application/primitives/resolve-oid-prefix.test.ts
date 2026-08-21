@@ -288,6 +288,70 @@ describe('resolveOidPrefix', () => {
     });
   });
 
+  describe('Given a SHA-256 repository', () => {
+    describe('When a full 64-hex oid is resolved', () => {
+      it('Then it returns verbatim with no scan', async () => {
+        // Arrange
+        const base = await buildSeededContext({ algorithm: 'sha256' });
+        const wrapped = instrumentedContext(base);
+        const full = 'a'.repeat(64);
+
+        // Act
+        const result = await resolveOidPrefix(wrapped.ctx, full);
+
+        // Assert
+        expect(result).toBe(full);
+        expect(wrapped.calls().filter((c) => c.method === 'readdir')).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a SHA-256 repository with one loose object', () => {
+    describe('When a 10-char prefix is resolved', () => {
+      it('Then it returns the full 64-hex oid', async () => {
+        // Arrange
+        const ctx = await buildSeededContext({ algorithm: 'sha256' });
+        const id = await writeObject(ctx, blobOf(new Uint8Array([0xca, 0xfe])));
+
+        // Act
+        const result = await resolveOidPrefix(ctx, id.slice(0, 10));
+
+        // Assert
+        expect(result).toBe(id);
+      });
+    });
+
+    describe('When a 63-char prefix (hexLength - 1) is resolved', () => {
+      it('Then it returns the full 64-hex oid via the prefix scan', async () => {
+        // Arrange
+        const ctx = await buildSeededContext({ algorithm: 'sha256' });
+        const id = await writeObject(ctx, blobOf(new Uint8Array([0x21])));
+
+        // Act
+        const result = await resolveOidPrefix(ctx, id.slice(0, 63));
+
+        // Assert
+        expect(result).toBe(id);
+      });
+    });
+
+    describe('When the full 64-char oid is resolved', () => {
+      it('Then it is treated as a full oid, not scanned as a prefix', async () => {
+        // Arrange
+        const base = await buildSeededContext({ algorithm: 'sha256' });
+        const id = await writeObject(base, blobOf(new Uint8Array([0x22])));
+        const wrapped = instrumentedContext(base);
+
+        // Act
+        const result = await resolveOidPrefix(wrapped.ctx, id);
+
+        // Assert
+        expect(result).toBe(id);
+        expect(wrapped.calls().filter((c) => c.method === 'readdir')).toEqual([]);
+      });
+    });
+  });
+
   describe('Given two loose objects in one fanout that differ past the prefix', () => {
     describe('When resolveOidPrefix scans a prefix matching exactly one', () => {
       it('Then returns only the matching object (the non-matching name is filtered out)', async () => {
@@ -303,6 +367,32 @@ describe('resolveOidPrefix', () => {
 
         // Assert
         expect(result).toBe(match);
+      });
+    });
+  });
+});
+
+describe('resolveOidPrefix on an over-long hex string', () => {
+  describe('Given a hex string one character longer than a full oid', () => {
+    describe('When resolveOidPrefix is called on a repository holding a pack', () => {
+      it('Then it reports no match rather than probing the pack index', async () => {
+        // Arrange — the prefix grammar stops one character BELOW the full
+        // width, because a full-width string is already handled by the `isOid`
+        // fast path above it. An over-long string is not a prefix at all, and
+        // `findByPrefix` refuses one outright — so widening the grammar would
+        // turn a plain "no such object" into an INVALID_PACK_INDEX raised from
+        // deep inside the pack reader.
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'p1', [
+          { kind: 'base', type: 'blob', content: new Uint8Array([7, 7, 7]) },
+        ]);
+        const sut = resolveOidPrefix;
+
+        // Act
+        const result = await sut(ctx, 'a'.repeat(41));
+
+        // Assert
+        expect(result).toBeUndefined();
       });
     });
   });

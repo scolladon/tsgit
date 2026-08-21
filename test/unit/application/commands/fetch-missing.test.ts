@@ -34,9 +34,9 @@ const streamOf = (bytes: Uint8Array): ReadableStream<Uint8Array> =>
   });
 
 /** Two-flush smart-HTTP advertisement: `# service` pkt+flush, ref pkt+flush. */
-const advertisementBytes = (): Uint8Array => {
+const advertisementBytes = (caps: string = CAPS): Uint8Array => {
   const header = encodePktStream([ENCODER.encode('# service=git-upload-pack\n')]);
-  const refs = encodePktStream([ENCODER.encode(`${FAKE_TIP} refs/heads/main\0${CAPS}\n`)]);
+  const refs = encodePktStream([ENCODER.encode(`${FAKE_TIP} refs/heads/main\0${caps}\n`)]);
   const out = new Uint8Array(header.length + refs.length);
   out.set(header, 0);
   out.set(refs, header.length);
@@ -56,9 +56,9 @@ interface FakeRemote {
   readonly requests: HttpRequest[];
 }
 
-const fakeRemote = (packBytes: Uint8Array): FakeRemote => {
+const fakeRemote = (packBytes: Uint8Array, caps?: string): FakeRemote => {
   const requests: HttpRequest[] = [];
-  const advertisement = advertisementBytes();
+  const advertisement = advertisementBytes(caps);
   const pack = packBodyBytes(packBytes);
   const transport: HttpTransport = {
     request: async (req: HttpRequest): Promise<HttpResponse> => {
@@ -368,6 +368,39 @@ describe('fetchMissing', () => {
         const packSha = await ctx.hash.hashHex(packBytes.subarray(0, -20));
         const promisorPath = `${ctx.layout.gitDir}/objects/pack/pack-${packSha}.promisor`;
         expect(await ctx.fs.exists(promisorPath)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a promisor remote advertising a different hash algorithm', () => {
+    describe('When fetchMissing negotiates', () => {
+      it('Then it refuses rather than accepting a cross-format pack', async () => {
+        // Arrange — the lazy-fetch path reaches a peer exactly as `fetch` does,
+        // so it owes the same refusal: a sha256 peer serving a sha1 repository
+        // would otherwise write wrong-width oids with nothing objecting.
+        const base = createMemoryContext();
+        await seedRepo(base, {});
+        await withConfig(base, PARTIAL_CONFIG);
+        const { packBytes, blobId } = await onePackedBlob(base, 'lazy content\n');
+        const { transport } = fakeRemote(packBytes, `${CAPS} object-format=sha256`);
+        const ctx: Context = { ...base, transport };
+        const sut = fetchMissing;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, { oids: [blobId] });
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('UNSUPPORTED_OBJECT_FORMAT');
+        if (data.code !== 'UNSUPPORTED_OBJECT_FORMAT') expect.unreachable();
+        expect(data.format).toBe('sha256');
+        expect(data.local).toBe('sha1');
       });
     });
   });

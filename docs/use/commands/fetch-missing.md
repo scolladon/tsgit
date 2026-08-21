@@ -43,6 +43,7 @@ for (const oid of [blobA, blobB, blobC]) {
 - `NO_PROMISOR_REMOTE` — repository has no promisor remote in `.git/config`.
 - `NETWORK_ERROR` — transport failure.
 - `REMOTE_FILTER_UNSUPPORTED` — promisor remote does not advertise `allowfilter` (rare; misconfigured server).
+- `UNSUPPORTED_OBJECT_FORMAT` — the promisor remote's declared hash algorithm differs from this repository's own, or lies outside the closed `sha1`/`sha256` set. The lazy-fetch path reaches a peer exactly as `fetch` does, so it owes the same refusal — without it a cross-format promisor would write wrong-width oids into the repository with nothing objecting.
 
 ## See also
 

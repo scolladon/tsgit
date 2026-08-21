@@ -48,6 +48,7 @@ describe('buildLsRefsRequest', () => {
           symrefs: true,
           peel: true,
           refPrefixes: ['HEAD', 'refs/heads/', 'refs/tags/'],
+          objectFormat: 'sha1',
         });
         const lines = await decodeAll(bytes);
 
@@ -72,7 +73,7 @@ describe('buildLsRefsRequest', () => {
     describe('When buildLsRefsRequest builds the request', () => {
       it('Then it emits only the command header, delim, and flush', async () => {
         // Arrange & Act
-        const bytes = buildLsRefsRequest({});
+        const bytes = buildLsRefsRequest({ objectFormat: 'sha1' });
         const lines = await decodeAll(bytes);
 
         // Assert

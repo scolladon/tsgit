@@ -129,6 +129,7 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'INVALID_OPTION':
     case 'REPOSITORY_DISPOSED':
     case 'ADAPTER_UNAVAILABLE':
+    case 'OBJECT_FORMAT_CONFLICT':
     case 'TOO_MANY_ADVERTISED_REFS':
     case 'OBJECT_TOO_LARGE':
     case 'WORKING_TREE_FILE_TOO_LARGE':
@@ -147,6 +148,7 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'V2_COMMAND_UNSUPPORTED':
     case 'TOO_MANY_SECTION_ENTRIES':
     case 'UNSUPPORTED_OBJECT_FORMAT':
+    case 'PUSH_OBJECT_FORMAT_UNSUPPORTED':
     case 'SNAPSHOT_REQUIRED':
     case 'WORKDIR_RACE':
     case 'ORDER_INVARIANT_VIOLATION':
@@ -158,6 +160,7 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'CONFIG_BAD_NUMERIC_VALUE':
     case 'CONFIG_BAD_BOOLEAN_VALUE':
     case 'CONFIG_BAD_BOOLEAN_LITERAL':
+    case 'CONFIG_INVALID_ENUM_VALUE':
     case 'CONFIG_BAD_ZLIB_LEVEL':
     case 'CONFIG_INVALID_FILE':
     case 'CONFIG_MULTIPLE_VALUES':
@@ -189,6 +192,7 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'CANNOT_DESCRIBE':
     case 'RELATIVE_URL_UNRESOLVABLE':
     case 'SUBMODULE_HAS_MODIFICATIONS':
+    case 'SUBMODULE_OBJECT_FORMAT_MISMATCH':
     case 'SUBMODULE_PATH_EXISTS':
     case 'WORKTREE_PATH_EXISTS':
     case 'BRANCH_CHECKED_OUT':
@@ -202,6 +206,7 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'BUNDLE_BAD_HEADER':
     case 'BUNDLE_UNSUPPORTED_VERSION':
     case 'BUNDLE_PREREQUISITE_NOT_COMMIT':
+    case 'BUNDLE_PREREQUISITE_ALGORITHM_MISMATCH':
     case 'NOTES_ALREADY_EXIST':
     case 'NOTES_OBJECT_HAS_NONE':
     case 'NOTES_REF_OUTSIDE':

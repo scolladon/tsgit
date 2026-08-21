@@ -51,5 +51,8 @@ export async function readIndex(ctx: Context): Promise<GitIndex> {
     throw invalidIndexHeader(REASON_INDEX_CHECKSUM_MISMATCH);
   }
 
-  return { ...parseIndex(bytes), indexMtime: indexMtimeFrom(stat) };
+  return {
+    ...parseIndex(bytes, ctx.hashConfig.digestLength),
+    indexMtime: indexMtimeFrom(stat),
+  };
 }

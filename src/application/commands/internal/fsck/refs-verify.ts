@@ -1,5 +1,5 @@
 import type { ObjectId, RefName } from '../../../../domain/objects/index.js';
-import { ZERO_OID } from '../../../../domain/objects/index.js';
+import { zeroOid } from '../../../../domain/objects/index.js';
 import type { Context } from '../../../../ports/context.js';
 import { enumerateRefs } from '../../../primitives/enumerate-refs.js';
 import { getRefStore } from '../../../primitives/ref-store.js';
@@ -66,7 +66,7 @@ async function checkLooseRef(
       ref,
       msgId: 'badRefOid',
       severity: 'error',
-      target: ZERO_OID,
+      target: zeroOid(ctx.hashConfig),
     });
     return { findings: badFindings, exitBit: bit };
   }

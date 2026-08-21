@@ -17,6 +17,7 @@
 import { assertEquals } from 'jsr:@std/assert@1';
 
 import { openRepository } from '../../../dist/esm/index.default.js';
+import { runScenario } from '../../parity/run-scenario.ts';
 import { SCENARIOS } from '../../parity/scenarios/index.ts';
 import type { ScenarioInputs } from '../../parity/scenarios/types.ts';
 
@@ -38,10 +39,13 @@ for (const scenario of supported) {
   Deno.test(`Given the ${scenario.name} scenario, When the Deno driver runs it against the Memory adapter`, async (t) => {
     await t.step('Then the result matches the scenario expected golden', async () => {
       // Arrange
-      const sut = await openRepository({ files: stageFiles(scenario.inputs) });
+      const sut = await openRepository({
+        files: stageFiles(scenario.inputs),
+        ...scenario.openOptions,
+      });
 
       // Act
-      const result = await scenario.run(sut, scenario.inputs);
+      const result = await runScenario(sut, scenario);
 
       // Assert
       assertEquals(result, scenario.expected);

@@ -47,7 +47,7 @@ const entry = (path: string): DomainIndexEntry => ({
 
 const writeIndexFile = async (repo: Repository, index: GitIndex): Promise<void> => {
   const { serializeIndex } = await import('../../src/domain/git-index/index-writer.js');
-  const body = serializeIndex(index);
+  const body = serializeIndex(index, repo.ctx.hashConfig.digestLength);
   const hashHex = await repo.ctx.hash.hashHex(body);
   const trailer = new Uint8Array(20);
   for (let i = 0; i < 20; i += 1) trailer[i] = Number.parseInt(hashHex.slice(i * 2, i * 2 + 2), 16);

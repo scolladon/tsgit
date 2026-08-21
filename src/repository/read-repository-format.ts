@@ -2,6 +2,7 @@ import type { PathPolicy } from '../adapters/node/path-policy.js';
 import {
   configBadBooleanValue,
   configBadNumericValue,
+  configInvalidEnumValue,
   configMissingValue,
 } from '../domain/commands/error.js';
 import type { ConfigToken } from '../domain/config/config-ini.js';
@@ -15,13 +16,17 @@ import type { LayoutProbe } from '../ports/layout-probe.js';
  * git's setup-time read, before a work tree is decided and before a Context
  * exists. `worktreeConfig` is whether `extensions.worktreeConfig` parsed as
  * true in `<commonDir>/config` (the gate for also consulting
- * `<gitDir>/config.worktree`). `refusal` is the repository-format
- * acceptance verdict — absent when accepted; see `RepositoryFormatRefusal`.
+ * `<gitDir>/config.worktree`). `objectFormat` is `extensions.objectFormat`'s
+ * resolved value, defaulting to `'sha1'` when the key is absent — read from
+ * `<commonDir>/config` ONLY, never scoped to `config.worktree` (unlike
+ * `bare`/`worktree`). `refusal` is the repository-format acceptance verdict
+ * — absent when accepted; see `RepositoryFormatRefusal`.
  */
 export interface RepositoryFormat {
   readonly bare: boolean | undefined;
   readonly worktree: string | undefined;
   readonly worktreeConfig: boolean;
+  readonly objectFormat: ObjectFormat;
   readonly refusal: RepositoryFormatRefusal | undefined;
 }
 
@@ -31,13 +36,24 @@ const BARE_KEY = 'bare';
 const WORKTREE_KEY = 'worktree';
 const WORKTREE_CONFIG_KEY = 'worktreeconfig';
 const VERSION_KEY = 'repositoryformatversion';
+const OBJECT_FORMAT_KEY = 'objectformat';
 const CONFIG_FILE = 'config';
 const WORKTREE_CONFIG_FILE = 'config.worktree';
+
+// git 2.55.0's legal `extensions.objectFormat` literals — case-sensitive,
+// never touched by the key's own lower-casing. `extensions.refStorage`
+// shares this exact grammar shape (`resolveEnum` below is general for it).
+const OBJECT_FORMAT_VALUES = ['sha1', 'sha256'] as const;
+type ObjectFormat = (typeof OBJECT_FORMAT_VALUES)[number];
 
 // git's format gate: the effective (last-wins) core.repositoryformatversion
 // must not exceed this. A named ceiling, never membership in a set — `-1` is
 // accepted by `> MAX_REPOSITORY_FORMAT_VERSION` but refused by `{0, 1}`.
 const MAX_REPOSITORY_FORMAT_VERSION = 1;
+
+// The lowest `core.repositoryformatversion` at which an `extensions.*` entry
+// is honoured rather than ignored (version 0) or absent-and-inert.
+const MIN_EXTENSION_VERSION = 1;
 
 /** One scalar key's raw value, as last seen in file order (git's last-wins resolution). */
 interface ScannedEntry {
@@ -182,11 +198,7 @@ const GIT_V1_ONLY_EXTENSIONS = lowerCasedSet([
  * entry — one array element, nothing else — the moment its support lands;
  * the entry IS the promise that nothing reads the repository wrong.
  */
-const UNBACKED_EXTENSIONS: ReadonlyArray<string> = [
-  'compatobjectformat',
-  'objectformat',
-  'refstorage',
-];
+const UNBACKED_EXTENSIONS: ReadonlyArray<string> = ['compatobjectformat', 'refstorage'];
 
 // A subsectioned spelling of a known name is not known — membership is
 // keyed on the bare key only when `subsection` is `undefined`.
@@ -200,6 +212,16 @@ const namesWhere = (
   entries: ReadonlyArray<ExtensionEntry>,
   predicate: (entry: ExtensionEntry) => boolean,
 ): ReadonlyArray<string> => entries.filter(predicate).map((entry) => entry.name);
+
+/**
+ * Whether a declared `extensions.*` value is acted on at all. git honours the
+ * section only from `core.repositoryformatversion` 1 up: an ABSENT version key
+ * leaves every extension inert (measured — the repository reads as SHA-1 even
+ * with `extensions.objectFormat = sha256` present), and version 0 refuses the
+ * v1-only names outright rather than honouring them.
+ */
+const honoursExtensions = (version: number | undefined): boolean =>
+  version !== undefined && version >= MIN_EXTENSION_VERSION;
 
 /**
  * The extensions arm — version-selected, independent of the version-ceiling
@@ -275,6 +297,7 @@ interface ScannedFormat {
   readonly bare: ScannedEntry | undefined;
   readonly worktree: ScannedEntry | undefined;
   readonly worktreeConfig: ScannedEntry | undefined;
+  readonly objectFormat: ScannedEntry | undefined;
   readonly tokens: ReadonlyArray<ConfigToken>;
 }
 
@@ -298,6 +321,7 @@ const scanConfigFile = async (
     bare: lastTopLevelEntry(tokens, CORE_SECTION, BARE_KEY),
     worktree: lastTopLevelEntry(tokens, CORE_SECTION, WORKTREE_KEY),
     worktreeConfig: lastTopLevelEntry(tokens, EXTENSIONS_SECTION, WORKTREE_CONFIG_KEY),
+    objectFormat: lastTopLevelEntry(tokens, EXTENSIONS_SECTION, OBJECT_FORMAT_KEY),
     tokens,
   };
 };
@@ -361,6 +385,36 @@ const resolveWorktree = (entry: ScannedEntry | undefined, source: string): strin
   return entry.value;
 };
 
+/** Narrows `value` to a member of `allowed`, compared case-SENSITIVELY. */
+const isAllowedValue = <T extends string>(value: string, allowed: ReadonlyArray<T>): value is T =>
+  (allowed as ReadonlyArray<string>).includes(value);
+
+/**
+ * A string-typed config key's value must be one of `allowed`'s literals —
+ * the shared shape behind `extensions.objectFormat` and (identically)
+ * `extensions.refStorage`. Comparison is case-SENSITIVE, unlike `key`
+ * itself, which git lower-cases for its error messages (measured: git 2.55.0
+ * refuses `SHA256` even though the repository was created with
+ * `--object-format=sha256`). Absent resolves to `fallback`; a valueless
+ * entry throws `CONFIG_MISSING_VALUE` (git's internal NULL); any other
+ * out-of-grammar value — including the empty string, a DIFFERENT condition
+ * from valueless — throws `CONFIG_INVALID_ENUM_VALUE`.
+ */
+const resolveEnum = <T extends string>(
+  entry: ScannedEntry | undefined,
+  source: string,
+  key: string,
+  allowed: ReadonlyArray<T>,
+  fallback: T,
+): T => {
+  if (entry === undefined) return fallback;
+  if (entry.value === null) throw configMissingValue(key, source, entry.line);
+  if (!isAllowedValue(entry.value, allowed)) {
+    throw configInvalidEnumValue(key, source, entry.value, entry.line);
+  }
+  return entry.value;
+};
+
 const isWorktreeConfigActive = (entry: ScannedEntry | undefined): boolean => {
   if (entry === undefined) return false;
   const parsed = parseGitBoolean(entry.value);
@@ -371,25 +425,31 @@ const isWorktreeConfigActive = (entry: ScannedEntry | undefined): boolean => {
 
 /**
  * Reads the repository-format keys — `core.bare`, `core.worktree`,
- * `extensions.worktreeConfig`, `core.repositoryformatversion` — from
- * `<commonDir>/config`, and, when that file sets `extensions.worktreeConfig`
- * true, ALSO from `<gitDir>/config.worktree`, whose `core.bare`/
- * `core.worktree` win when present. No global, no system, no `include.path`
- * expansion. `core.repositoryformatversion` is read ONLY from
- * `<commonDir>/config` — unlike `core.bare`/`core.worktree`, it is never
- * scoped to `config.worktree`. Everything else in the file is validated
+ * `extensions.worktreeConfig`, `extensions.objectFormat`,
+ * `core.repositoryformatversion` — from `<commonDir>/config`, and, when that
+ * file sets `extensions.worktreeConfig` true, ALSO from
+ * `<gitDir>/config.worktree`, whose `core.bare`/`core.worktree` win when
+ * present. No global, no system, no `include.path` expansion.
+ * `core.repositoryformatversion` and `extensions.objectFormat` are read ONLY
+ * from `<commonDir>/config` — unlike `core.bare`/`core.worktree`, neither is
+ * ever scoped to `config.worktree`. Everything else in the file is validated
  * later, on first command, by the existing two-tier eager gates.
  *
  * Throws, in order: `CONFIG_BAD_NUMERIC_VALUE` for a malformed
  * `core.repositoryformatversion` occurrence, `CONFIG_BAD_BOOLEAN_VALUE` for
- * a malformed `core.bare`, and `CONFIG_MISSING_VALUE` for a valueless
- * `core.worktree` — git's setup-time refusals, now surfacing at
- * `openRepository` rather than the first command. A version ABOVE the
- * supported ceiling is not thrown here — it is carried on `refusal`, since
- * `core.bare`/`core.worktree` still need resolving either way. An absent or
- * non-regular config file behaves as empty, never as a refusal: discovery
- * must stay lenient so `init`/`clone` can bootstrap into a gitDir that is
- * not yet a repository.
+ * a malformed `core.bare`, `CONFIG_MISSING_VALUE` for a valueless
+ * `core.worktree`, and `CONFIG_INVALID_ENUM_VALUE` — or, for a valueless
+ * entry, `CONFIG_MISSING_VALUE` again — for an out-of-grammar
+ * `extensions.objectFormat` — git's setup-time refusals, now surfacing at
+ * `openRepository` rather than the first command. `extensions.objectFormat`'s
+ * grammar check runs unconditionally, ahead of every acceptance-gate verdict
+ * below it (measured: git rejects a malformed value even at an unsupported
+ * `core.repositoryformatversion`). A version ABOVE the supported ceiling is
+ * not thrown here — it is carried on `refusal`, since `core.bare`/
+ * `core.worktree`/`extensions.objectFormat` still need resolving either way.
+ * An absent or non-regular config file behaves as empty, never as a
+ * refusal: discovery must stay lenient so `init`/`clone` can bootstrap into
+ * a gitDir that is not yet a repository.
  */
 export const readRepositoryFormat = async (
   probe: LayoutProbe,
@@ -407,12 +467,29 @@ export const readRepositoryFormat = async (
   const worktree = pickScoped(local?.worktree, localPath, scoped?.worktree, scopedPath);
   const resolvedBare = resolveBare(bare.entry, bare.source);
   const resolvedWorktree = resolveWorktree(worktree.entry, worktree.source);
+  // The value GRAMMAR is checked at every version; the extension is only
+  // HONOURED from version 1 up. Measured on git 2.55.0: with no
+  // `core.repositoryformatversion` key, `extensions.objectFormat = sha256`
+  // parses, is ignored, and `rev-parse --show-object-format` reports `sha1` —
+  // while an INVALID value at that same absent version still refuses. So the
+  // resolve runs unconditionally and only its ADOPTION is version-gated;
+  // gating the resolve itself would silently accept a malformed value, and
+  // adopting it ungated would read a repository git reads as SHA-1 at the
+  // wrong width.
+  const declaredObjectFormat = resolveEnum(
+    local?.objectFormat,
+    localPath,
+    `${EXTENSIONS_SECTION}.${OBJECT_FORMAT_KEY}`,
+    OBJECT_FORMAT_VALUES,
+    'sha1',
+  );
+  const objectFormat = honoursExtensions(version) ? declaredObjectFormat : 'sha1';
   const extensions = enumerateExtensionEntries(local?.tokens ?? []);
   const refusal = formatRefusal(version, extensions);
   if (refusal === undefined) {
     assertExtensionBacked(version, extensions, local?.worktreeConfig, localPath);
   }
-  return { bare: resolvedBare, worktree: resolvedWorktree, worktreeConfig, refusal };
+  return { bare: resolvedBare, worktree: resolvedWorktree, worktreeConfig, objectFormat, refusal };
 };
 
 /** A key's winning entry with the file it came from — scoped (`config.worktree`) wins when present. */

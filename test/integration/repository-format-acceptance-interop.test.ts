@@ -27,7 +27,14 @@ import { init } from '../../src/application/commands/init.js';
 import { TsgitError } from '../../src/domain/error.js';
 import { openRepository } from '../../src/index.node.js';
 import type { Repository } from '../../src/repository.js';
-import { GIT_AVAILABLE, git, runGit, runGitEnv, tryRunGitWithExit } from './interop-helpers.js';
+import {
+  GIT_AVAILABLE,
+  GIT_HAS_RUST_COMPAT,
+  git,
+  runGit,
+  runGitEnv,
+  tryRunGitWithExit,
+} from './interop-helpers.js';
 
 /** Probes one `git init` capability once, in a throwaway `mktemp` dir, never touching a fixture. */
 const probeInitCapability = (...args: ReadonlyArray<string>): boolean => {
@@ -637,17 +644,25 @@ describe.skipIf(!GIT_AVAILABLE)(
             // Assert — git
             if (gitOutcome === 'accept') {
               expect(g.exitCode).toBe(0);
-            } else {
+            } else if (!GIT_HAS_RUST_COMPAT) {
+              // git's refusal here depends on the BUILD, not the version: a
+              // Rust-enabled git accepts `compatObjectFormat` and carries on.
+              // Only the non-Rust outcome is measured, so only it is pinned;
+              // asserting an unmeasured exit code would be guessing at git.
               expect(g.exitCode).toBe(128);
               expect(g.stderr).toContain(
                 'fatal: compatibility hash algorithm support requires Rust',
               );
+            } else {
+              expect(g.stderr).not.toContain('requires Rust');
             }
 
-            // Assert — tsgit: the six implemented names carry no refusal;
-            // objectFormat/refStorage/compatObjectFormat are all still in
-            // tsgit's unbacked-extension refuse set today, so all three throw.
-            const unbacked = new Set(['objectFormat', 'refStorage', 'compatObjectFormat']);
+            // Assert — tsgit: the names it can act on carry no refusal.
+            // `objectFormat` left the refuse set when SHA-256 support landed.
+            // The two that remain are `refStorage` (no reftable backend yet)
+            // and `compatObjectFormat`, which git itself refuses on a non-Rust
+            // build — refusing that one IS the faithful behaviour, not a gap.
+            const unbacked = new Set(['refStorage', 'compatObjectFormat']);
             if (unbacked.has(name)) {
               let caught: unknown;
               try {
@@ -865,15 +880,17 @@ describe.skipIf(!GIT_AVAILABLE)(
             caught = err;
           }
 
-          // Assert — git
-          expect(status.exitCode).toBe(128);
-          expect(status.stderr).toContain(
-            'fatal: compatibility hash algorithm support requires Rust',
-          );
-          expect(list.exitCode).toBe(128);
-          expect(list.stderr).toContain(
-            'fatal: compatibility hash algorithm support requires Rust',
-          );
+          // Assert — git (only on a build that refuses; see GIT_HAS_RUST_COMPAT)
+          if (!GIT_HAS_RUST_COMPAT) {
+            expect(status.exitCode).toBe(128);
+            expect(status.stderr).toContain(
+              'fatal: compatibility hash algorithm support requires Rust',
+            );
+            expect(list.exitCode).toBe(128);
+            expect(list.stderr).toContain(
+              'fatal: compatibility hash algorithm support requires Rust',
+            );
+          }
           // Assert — tsgit
           expect(caught).toBeInstanceOf(TsgitError);
           expect((caught as TsgitError).data).toEqual({
@@ -990,27 +1007,27 @@ describe.skipIf(!GIT_AVAILABLE)(
       'Given a real git init --object-format=sha256 repository',
       () => {
         describe('When openRepository runs', () => {
-          it('Then tsgit refuses at the gate — TRANSIENT until SHA-256 support lands', async () => {
-            // Arrange
+          it('Then the gate accepts it and the repository reports the sha256 algorithm', async () => {
+            // Arrange — the gate refused this repository while `objectFormat`
+            // sat in the point-of-use refuse set. SHA-256 support removed that
+            // entry, so the same repository must now open and carry its
+            // declared algorithm through to the context.
             const root = await mkdtemp(path.join(os.tmpdir(), 'tsgit-format-sha256-'));
             rowDirs.push(root);
             const dir = path.join(root, 'repo');
             runGit(['init', '-q', '--object-format=sha256', dir]);
 
             // Act
-            let caught: unknown;
-            try {
-              await openRow(dir);
-            } catch (err) {
-              caught = err;
-            }
+            const repo = await openRow(dir);
 
             // Assert
-            expect(caught).toBeInstanceOf(TsgitError);
-            expect((caught as TsgitError).data).toMatchObject({
-              code: 'REPOSITORY_EXTENSION_UNSUPPORTED',
-              extension: 'objectformat',
-            });
+            try {
+              expect(repo.ctx.layout.formatRefusal).toBeUndefined();
+              expect(repo.ctx.hashConfig.algorithm).toBe('sha256');
+              expect(repo.ctx.hashConfig.hexLength).toBe(64);
+            } finally {
+              await repo.dispose();
+            }
           });
         });
       },
@@ -1474,8 +1491,8 @@ describe.skipIf(!GIT_AVAILABLE)(
             caught = err;
           }
 
-          // Assert — git
-          expect(list.exitCode).toBe(128);
+          // Assert — git (only on a build that refuses; see GIT_HAS_RUST_COMPAT)
+          if (!GIT_HAS_RUST_COMPAT) expect(list.exitCode).toBe(128);
           // Assert — tsgit: no repository, no config surface reachable at all
           expect(caught).toBeInstanceOf(TsgitError);
           expect((caught as TsgitError).data).toMatchObject({

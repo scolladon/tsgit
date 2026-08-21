@@ -52,6 +52,72 @@ describe('init', () => {
     });
   });
 
+  describe("Given opts.objectFormat='sha256'", () => {
+    describe('When init()', () => {
+      it('Then .git/config is exactly the [extensions]-then-[core] block with objectformat = sha256 and repositoryformatversion = 1', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+
+        // Act
+        await init(ctx, { objectFormat: 'sha256' });
+
+        // Assert — byte-literal, TABs included. The [extensions]-before-[core]
+        // ordering and the lower-cased key are measured against
+        // `git init --object-format=sha256` (git 2.55.0). git's own init also
+        // writes logallrefupdates/ignorecase/precomposeunicode, but none of
+        // them is format-conditional — it writes the same set for sha1,
+        // gates logallrefupdates on not-bare, and probes the filesystem for
+        // the other two — so tsgit keeps its existing three-key block and
+        // adds only the format bump.
+        const config = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+        expect(config).toBe(
+          '[extensions]\n' +
+            '\tobjectformat = sha256\n' +
+            '[core]\n' +
+            '\trepositoryformatversion = 1\n' +
+            '\tfilemode = true\n' +
+            '\tbare = false\n',
+        );
+      });
+    });
+  });
+
+  describe('Given no opts.objectFormat', () => {
+    describe('When init()', () => {
+      it("Then .git/config is byte-identical to today's default", async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+
+        // Act
+        await init(ctx);
+
+        // Assert
+        const config = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+        expect(config).toBe(
+          '[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n',
+        );
+      });
+    });
+  });
+
+  describe("Given opts.objectFormat='sha256' and opts.bare=true", () => {
+    describe('When init()', () => {
+      it('Then bare = true and the [extensions] block still precedes [core]', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+
+        // Act
+        await init(ctx, { objectFormat: 'sha256', bare: true });
+
+        // Assert
+        const config = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+        expect(config.indexOf('[extensions]')).toBe(0);
+        expect(config.indexOf('[extensions]')).toBeLessThan(config.indexOf('[core]'));
+        expect(config).toContain('\tbare = true\n');
+      });
+    });
+  });
+
   describe('Given an existing .git/HEAD', () => {
     describe('When init()', () => {
       it('Then throws ALREADY_INITIALIZED', async () => {

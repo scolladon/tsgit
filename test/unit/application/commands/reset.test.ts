@@ -51,6 +51,31 @@ describe('reset', () => {
     });
   });
 
+  describe('Given a SHA-256 repository and a soft reset to a raw 64-hex oid', () => {
+    describe('When reset', () => {
+      it('Then current branch points at that oid, taken verbatim', async () => {
+        // Arrange
+        const ctx = createMemoryContext({ algorithm: 'sha256' });
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
+        await add(ctx, ['a.txt']);
+        const { id: c1 } = await commit(ctx, { message: 'first', author });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'b');
+        await add(ctx, ['b.txt']);
+        await commit(ctx, { message: 'second', author });
+        expect(c1).toHaveLength(64);
+
+        // Act
+        const result = await reset(ctx, { mode: 'soft', rev: c1 });
+
+        // Assert
+        expect(result.id).toBe(c1);
+        const ref = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/refs/heads/main`);
+        expect(ref.trim()).toBe(c1);
+      });
+    });
+  });
+
   describe('Given mixed mode and target oid', () => {
     describe('When reset', () => {
       it('Then HEAD branch updated', async () => {

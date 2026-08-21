@@ -41,6 +41,17 @@ const seedWithCommit = async () => {
   return { ctx, commitId: c.id };
 };
 
+const seedWithCommitSha256 = async () => {
+  const ctx = createMemoryContext({ algorithm: 'sha256' });
+  await init(ctx);
+  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, USER_CONFIG);
+  __resetConfigCacheForTests();
+  await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
+  await add(ctx, ['a.txt']);
+  const c = await commit(ctx, { message: 'first', author });
+  return { ctx, commitId: c.id };
+};
+
 const seedWithTwoCommits = async () => {
   const ctx = createMemoryContext();
   await init(ctx);
@@ -96,6 +107,24 @@ const seedFannedNotesRef = async (
 describe('notes', () => {
   beforeEach(() => {
     __resetConfigCacheForTests();
+  });
+
+  describe('Given a SHA-256 repository, a commit, and user config', () => {
+    describe('When notesAdd is given the raw 64-hex commit oid as object', () => {
+      it('Then resolves the object verbatim and returns 64-char oids', async () => {
+        // Arrange
+        const { ctx, commitId } = await seedWithCommitSha256();
+        expect(commitId).toHaveLength(64);
+        const content = encoder.encode('hello note');
+
+        // Act
+        const result = await notesAdd(ctx, { object: commitId, content });
+
+        // Assert
+        expect(result.notesCommit).toHaveLength(64);
+        expect(result.note).toHaveLength(64);
+      });
+    });
   });
 
   describe('Given a commit and user config', () => {

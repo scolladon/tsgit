@@ -1,6 +1,6 @@
 import { homedir } from 'node:os';
 import * as nodePath from 'node:path';
-import { SHA1_CONFIG } from '../../domain/objects/hash-config.js';
+import { configFor } from '../../domain/objects/hash-config.js';
 import { createLruCache } from '../../domain/storage/lru-cache.js';
 import { type Context, createContext, type RepositoryLayout } from '../../ports/context.js';
 import { noopProgress } from '../../progress.js';
@@ -43,6 +43,13 @@ export interface NodeAdapterOptions {
    * the full `process.env`.
    */
   readonly ssh?: boolean;
+  /**
+   * Hash algorithm this context's objects are read/written under. Default
+   * `'sha1'`. A sync factory has no repository to detect a declared format
+   * from, so this is the only channel — pass it explicitly for a SHA-256
+   * repository.
+   */
+  readonly algorithm?: 'sha1' | 'sha256';
 }
 
 export function createNodeContext(options: NodeAdapterOptions): Context {
@@ -51,8 +58,9 @@ export function createNodeContext(options: NodeAdapterOptions): Context {
     options.gitDir !== undefined
       ? nodePath.resolve(options.gitDir)
       : nodePath.join(workDir, '.git');
+  const algorithm = options.algorithm ?? 'sha1';
   const fs = new NodeFileSystem(workDir);
-  const hash = new NodeHashService();
+  const hash = new NodeHashService(algorithm);
   const compressor = new NodeCompressor();
   const transport = new NodeHttpTransport({
     allowInsecureHttp: options.allowInsecureHttp ?? false,
@@ -70,7 +78,7 @@ export function createNodeContext(options: NodeAdapterOptions): Context {
     progress: noopProgress,
     layout,
     runtime: 'node' as const,
-    hashConfig: SHA1_CONFIG,
+    hashConfig: configFor(algorithm),
     deltaCache,
     ...(options.signal !== undefined ? { signal: options.signal } : {}),
     ...(options.hooks === false ? {} : { hooks: new NodeHookRunner() }),

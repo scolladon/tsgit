@@ -13,6 +13,7 @@ import { insert, lookup, remove } from '../../domain/notes/mutate.js';
 import { FILE_MODE } from '../../domain/objects/file-mode.js';
 import type { RefName } from '../../domain/objects/object-id.js';
 import { ObjectId } from '../../domain/objects/object-id.js';
+import { isOid } from '../../domain/objects/oid-pattern.js';
 import type { Context } from '../../ports/context.js';
 import { loadNotesTree } from '../primitives/load-notes-tree.js';
 import { readBlob } from '../primitives/read-blob.js';
@@ -27,9 +28,6 @@ import { assertOperationalRepository } from './internal/repo-state.js';
 
 /** Matches a full-length annotated-object oid (SHA-1 or SHA-256). */
 const FULL_HEX = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
-
-/** Matches a SHA-1 oid (40 hex) for object resolution, as tagCreate does. */
-const OID_RE = /^[0-9a-f]{40}$/;
 
 // Commit messages match git byte-for-byte: git appends \n to notes commit bodies.
 const NOTES_ADD_MESSAGE = "Notes added by 'git notes add'\n";
@@ -86,7 +84,7 @@ export interface NotesRemoveResult {
 
 /** Resolves a string (full oid or ref name) to an ObjectId. */
 const resolveObject = async (ctx: Context, object: string): Promise<ObjectId> =>
-  OID_RE.test(object) ? (object as ObjectId) : resolveRef(ctx, object as RefName);
+  isOid(object, ctx.hashConfig) ? (object as ObjectId) : resolveRef(ctx, object as RefName);
 
 // ─── Verbs ────────────────────────────────────────────────────────────────────
 

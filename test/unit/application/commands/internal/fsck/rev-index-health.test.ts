@@ -33,7 +33,7 @@ const manyPackEntries = (n: number, prefix: string) =>
  *  same reference `runRevIndexHealthPass` itself compares against. */
 async function correctBody(ctx: Context, name: string): Promise<Uint32Array> {
   const idxBytes = await ctx.fs.read(idxFilePath(ctx, name));
-  return packPositionMap(parsePackIndex(idxBytes));
+  return packPositionMap(parsePackIndex(idxBytes, 20));
 }
 
 /** The same table, derived WITHOUT the production helper: each `.idx` entry
@@ -42,7 +42,7 @@ async function correctBody(ctx: Context, name: string): Promise<Uint32Array> {
  *  reordering and not whatever the code under test happens to compute. */
 async function offsetSortedBody(ctx: Context, name: string): Promise<ReadonlyArray<number>> {
   const idxBytes = await ctx.fs.read(idxFilePath(ctx, name));
-  return entryOffsets(parsePackIndex(idxBytes))
+  return entryOffsets(parsePackIndex(idxBytes, 20))
     .map((offset, indexPosition) => ({ offset, indexPosition }))
     .sort((left, right) => left.offset - right.offset)
     .map((entry) => entry.indexPosition);

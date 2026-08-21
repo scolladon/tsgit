@@ -1,4 +1,4 @@
-import { TsgitError } from '../error.js';
+import { sanitizeForDisplay, TsgitError } from '../error.js';
 
 export type ProtocolError =
   | { readonly code: 'INVALID_PKT_LENGTH'; readonly value: string }
@@ -32,7 +32,24 @@ export type ProtocolError =
       readonly count: number;
       readonly limit: number;
     }
-  | { readonly code: 'UNSUPPORTED_OBJECT_FORMAT'; readonly format: string };
+  | {
+      readonly code: 'UNSUPPORTED_OBJECT_FORMAT';
+      /** The peer's advertised value. */
+      readonly format: string;
+      /**
+       * This repository's own algorithm. Present only when the peer's value
+       * IS a recognised algorithm that simply differs from ours (a pairing
+       * mismatch); absent when the peer advertised a value outside the
+       * closed sha1/sha256 set (a hostile or malformed advertisement, which
+       * has no "local" side to compare against).
+       */
+      readonly local?: string;
+    }
+  | {
+      readonly code: 'PUSH_OBJECT_FORMAT_UNSUPPORTED';
+      readonly local: string;
+      readonly remote: string;
+    };
 
 export const invalidPktLength = (value: string): TsgitError =>
   new TsgitError({ code: 'INVALID_PKT_LENGTH', value });
@@ -99,5 +116,31 @@ export const v2CommandUnsupported = (command: string): TsgitError =>
 export const tooManySectionEntries = (section: string, count: number, limit: number): TsgitError =>
   new TsgitError({ code: 'TOO_MANY_SECTION_ENTRIES', section, count, limit });
 
-export const unsupportedObjectFormat = (format: string): TsgitError =>
-  new TsgitError({ code: 'UNSUPPORTED_OBJECT_FORMAT', format });
+/**
+ * A peer's `object-format` value reaches these payloads verbatim, and on v2 it
+ * can be up to a whole pkt-line of arbitrary bytes. Selection is already
+ * closed-set — an unrecognised value always refuses and never falls back — so
+ * the only exposure is the reported string itself. A legal value is at most
+ * six characters; this bound keeps a hostile advertisement from putting
+ * unbounded remote text (control bytes included) into a logged message.
+ */
+const MAX_PEER_FORMAT_IN_ERROR = 32;
+
+const boundedFormat = (value: string): string =>
+  sanitizeForDisplay(value).slice(0, MAX_PEER_FORMAT_IN_ERROR);
+
+export const unsupportedObjectFormat = (format: string, local?: string): TsgitError =>
+  local === undefined
+    ? new TsgitError({ code: 'UNSUPPORTED_OBJECT_FORMAT', format: boundedFormat(format) })
+    : new TsgitError({
+        code: 'UNSUPPORTED_OBJECT_FORMAT',
+        format: boundedFormat(format),
+        local,
+      });
+
+export const pushObjectFormatUnsupported = (local: string, remote: string): TsgitError =>
+  new TsgitError({
+    code: 'PUSH_OBJECT_FORMAT_UNSUPPORTED',
+    local,
+    remote: boundedFormat(remote),
+  });

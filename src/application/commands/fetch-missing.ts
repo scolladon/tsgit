@@ -20,6 +20,7 @@ import { createPackRegistry, type PackRegistry } from '../primitives/pack-regist
 import { commonGitDir, looseObjectPath } from '../primitives/path-layout.js';
 import { negotiateDiscovery, negotiatePackBytes } from './internal/fetch-negotiation.js';
 import { openGitSession } from './internal/git-service-session.js';
+import { assertPeerAlgorithm } from './internal/object-format-guard.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
 import { selectFetchCapabilities } from './internal/upload-pack-client.js';
 
@@ -99,8 +100,15 @@ const fetchMissingInternal = async (
 
   const session = openGitSession(ctx, url, 'git-upload-pack');
   try {
-    const discovery = await negotiateDiscovery(session);
-    const capabilities = selectFetchCapabilities(discovery.advertisement.capabilities);
+    const discovery = await negotiateDiscovery(ctx, session);
+    // The lazy-fetch path reaches a peer exactly as `fetch` does, so it owes
+    // the same refusal — otherwise a cross-format promisor writes wrong-width
+    // oids into the repository with nothing objecting.
+    assertPeerAlgorithm(ctx.hashConfig.algorithm, discovery.objectFormat, 'fetch');
+    const capabilities = selectFetchCapabilities(
+      discovery.advertisement.capabilities,
+      ctx.hashConfig.algorithm,
+    );
     try {
       // No `filter`: a lazy-fetch requests exact oids.
       await fetchPack(ctx, (c, req) => negotiatePackBytes(c, session, discovery.version, req), {

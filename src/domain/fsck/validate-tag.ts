@@ -1,3 +1,5 @@
+import type { HashConfig } from '../objects/hash-config.js';
+import { isOid } from '../objects/oid-pattern.js';
 import {
   MSG_BAD_DATE_OVERFLOW,
   MSG_BAD_OBJECT_SHA1,
@@ -20,13 +22,7 @@ export interface TagFinding {
 
 const DECODER = new TextDecoder();
 
-const SHA1_HEX_RE = /^[0-9a-f]{40}$/;
-const SHA256_HEX_RE = /^[0-9a-f]{64}$/;
 const VALID_OBJECT_TYPES: ReadonlySet<string> = new Set(['blob', 'tree', 'commit', 'tag']);
-
-function isValidSha(hex: string): boolean {
-  return SHA1_HEX_RE.test(hex) || SHA256_HEX_RE.test(hex);
-}
 
 // INT64_MAX = 2^63 - 1 = 9223372036854775807 (19 decimal digits).
 // Pinned real git 2.54.0: tagger timestamps above this value emit badDateOverflow.
@@ -74,6 +70,7 @@ function checkTaggerLine(line: string, strict: boolean): ReadonlyArray<TagFindin
 function checkObjectAndType(
   lines: ReadonlyArray<string>,
   strict: boolean,
+  config: HashConfig,
 ): { readonly findings: ReadonlyArray<TagFinding>; readonly nextIdx: number } {
   const findings: TagFinding[] = [];
 
@@ -85,7 +82,7 @@ function checkObjectAndType(
       nextIdx: -1,
     };
   }
-  if (!isValidSha(lines[0].slice(7))) {
+  if (!isOid(lines[0].slice(7), config)) {
     findings.push({
       msgId: MSG_BAD_OBJECT_SHA1,
       severity: resolveSeverity(MSG_BAD_OBJECT_SHA1, strict),
@@ -148,7 +145,11 @@ function checkTagAndTagger(
 }
 
 /** Validate a raw tag object body, returning ordered findings. */
-export function validateTag(raw: Uint8Array, strict: boolean): ReadonlyArray<TagFinding> {
+export function validateTag(
+  raw: Uint8Array,
+  strict: boolean,
+  config: HashConfig,
+): ReadonlyArray<TagFinding> {
   const text = DECODER.decode(raw);
   // Stryker disable next-line StringLiteral: equivalent — indexOf('') always returns 0; with any blankIdx value, headerText and lines parsing is unaffected since tag parser only accesses fixed indices [0],[1],[2],[3].
   const blankIdx = text.indexOf('\n\n');
@@ -156,7 +157,7 @@ export function validateTag(raw: Uint8Array, strict: boolean): ReadonlyArray<Tag
   const headerText = blankIdx !== -1 ? text : text.slice(0, blankIdx);
   const lines = headerText.split('\n');
 
-  const { findings: headerFindings, nextIdx } = checkObjectAndType(lines, strict);
+  const { findings: headerFindings, nextIdx } = checkObjectAndType(lines, strict, config);
   if (nextIdx === -1) return headerFindings;
 
   return [...headerFindings, ...checkTagAndTagger(lines, nextIdx, strict)];

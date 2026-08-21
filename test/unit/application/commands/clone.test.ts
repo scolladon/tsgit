@@ -6,6 +6,7 @@ import { TsgitError } from '../../../../src/domain/index.js';
 import type { RefName } from '../../../../src/domain/objects/index.js';
 import { encodePktStream } from '../../../../src/domain/protocol/pkt-line.js';
 import type { Context } from '../../../../src/ports/context.js';
+import type { HashService } from '../../../../src/ports/hash-service.js';
 import type {
   HttpRequest,
   HttpResponse,
@@ -187,7 +188,178 @@ const buildCloneRemoteV2 = (
   return { transport, requests };
 };
 
+/** `ctx.hash` with `withAlgorithm` stripped — a caller-supplied HashService need not be re-instantiable. */
+const hashServiceWithoutWithAlgorithm = (hash: HashService): HashService => ({
+  hash: hash.hash,
+  hashHex: hash.hashHex,
+  createHasher: hash.createHasher,
+  algorithm: hash.algorithm,
+  digestLength: hash.digestLength,
+});
+
 describe('clone', () => {
+  describe('Given a sha1-default local repository cloning from a v1 peer advertising object-format=sha256', () => {
+    describe('When clone', () => {
+      it('Then it adopts sha256: the destination config declares it and every written oid is 64 hex', async () => {
+        // Arrange — git's clone has no --object-format flag; it learns the
+        // algorithm from the peer's own advertisement and adopts it.
+        const ctx = createMemoryContext();
+        const sourceCtx = createMemoryContext({ algorithm: 'sha256' });
+        const { packBytes, blobId } = await buildPackFromSingleBlob(sourceCtx, 'cloned blob\n');
+        const transport = buildCloneRemote({
+          capabilities: ['side-band-64k', 'ofs-delta', 'object-format=sha256'],
+          refs: [{ name: 'refs/heads/main', id: blobId }],
+          head: 'refs/heads/main',
+          packBytes,
+        });
+        const networkCtx = withTransport(ctx, transport);
+
+        // Act
+        const result = await clone(networkCtx, { url: REMOTE_URL });
+
+        // Assert — destination config, block ordering, oid widths.
+        const config = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+        expect(config.indexOf('[extensions]')).toBe(0);
+        expect(config.indexOf('[extensions]')).toBeLessThan(config.indexOf('[core]'));
+        expect(config).toContain('objectformat = sha256');
+        expect(result.fetchedRefs).toHaveLength(1);
+        expect(result.fetchedRefs.every((ref) => ref.id.length === 64)).toBe(true);
+        // The adopted format is REPORTED, not left to be inferred from an
+        // oid's width. `submodule add`'s cross-format refusal reads this
+        // field: inferring from `fetchedRefs` instead would pass silently
+        // whenever a peer advertises only namespaces `writeFetchedRefs`
+        // drops (`HEAD`, unsafe names, anything outside refs/heads and
+        // refs/tags), leaving that list empty on a successful clone.
+        expect(result.objectFormat).toBe('sha256');
+      });
+    });
+  });
+
+  describe('Given a hash service without withAlgorithm and a v1 peer advertising object-format=sha256', () => {
+    describe('When clone', () => {
+      it('Then it refuses UNSUPPORTED_OPERATION naming the hash service, not the peer', async () => {
+        // Arrange — this is the one clone path that still refuses: a caller
+        // supplied a HashService that cannot be re-instantiated for another
+        // algorithm, so adoption is impossible. The peer's sha256 is a
+        // perfectly supported format — the limitation is the caller's own
+        // adapter, so reporting UNSUPPORTED_OBJECT_FORMAT here would send
+        // them to fix the wrong end. `bundleVerify` refuses the identical
+        // condition the same way.
+        const baseCtx = createMemoryContext();
+        const ctx: Context = { ...baseCtx, hash: hashServiceWithoutWithAlgorithm(baseCtx.hash) };
+        const { packBytes, blobId } = await buildPackFromSingleBlob(baseCtx, 'cloned blob\n');
+        const transport = buildCloneRemote({
+          capabilities: ['side-band-64k', 'ofs-delta', 'object-format=sha256'],
+          refs: [{ name: 'refs/heads/main', id: blobId }],
+          head: 'refs/heads/main',
+          packBytes,
+        });
+        const networkCtx = withTransport(ctx, transport);
+
+        // Act
+        let caught: unknown;
+        try {
+          await clone(networkCtx, { url: REMOTE_URL });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('UNSUPPORTED_OPERATION');
+        if (data.code !== 'UNSUPPORTED_OPERATION') expect.unreachable();
+        expect(data.operation).toBe('clone');
+        expect(data.reason).toContain('sha256');
+      });
+    });
+  });
+
+  describe('Given a hash service without withAlgorithm and a peer advertising the local object-format', () => {
+    describe('When clone', () => {
+      it('Then it clones without ever asking the service to switch', async () => {
+        // Arrange — the peer already agrees with us, so no adoption is needed
+        // and the absent capability must never be reached. Folding the
+        // agreement check into the adoption path would turn every ordinary
+        // same-format clone into an UNSUPPORTED_OPERATION for such a caller.
+        const baseCtx = createMemoryContext();
+        const ctx: Context = { ...baseCtx, hash: hashServiceWithoutWithAlgorithm(baseCtx.hash) };
+        const sourceCtx = createMemoryContext();
+        const { packBytes, blobId } = await buildPackFromSingleBlob(sourceCtx, 'cloned blob\n');
+        const transport = buildCloneRemote({
+          capabilities: ['side-band-64k', 'ofs-delta', 'object-format=sha1'],
+          refs: [{ name: 'refs/heads/main', id: blobId }],
+          head: 'refs/heads/main',
+          packBytes,
+        });
+        const networkCtx = withTransport(ctx, transport);
+
+        // Act
+        const result = await clone(networkCtx, { url: REMOTE_URL });
+
+        // Assert
+        expect(result.objectFormat).toBe('sha1');
+        expect(result.fetchedRefs).toHaveLength(1);
+      });
+    });
+  });
+
+  describe('Given a peer advertising object-format sha256 and an instrumented pre-derivation context', () => {
+    describe('When clone runs against a sha1-configured context', () => {
+      it('Then nothing reads hash or hashConfig through the original context once bootstrap has started writing', async () => {
+        // Arrange — a hazard specific to this repository: `readConfig` and
+        // the pack registry memoize per-Context identity, so a call that
+        // slips through with the pre-adoption context instead of the
+        // derived one reproduces an intermittent OBJECT_NOT_FOUND. Track
+        // every `hash`/`hashConfig` read on the ORIGINAL context, gated by a
+        // marker that flips the moment bootstrap performs its first
+        // filesystem write — the one legitimate read (copying `ctx.hash`/
+        // `ctx.hashConfig` while deriving the adopted context) always
+        // happens before that marker flips.
+        const ctx = createMemoryContext();
+        const sourceCtx = createMemoryContext({ algorithm: 'sha256' });
+        const { packBytes, blobId } = await buildPackFromSingleBlob(sourceCtx, 'tracked blob\n');
+        const transport = buildCloneRemote({
+          capabilities: ['side-band-64k', 'ofs-delta', 'object-format=sha256'],
+          refs: [{ name: 'refs/heads/main', id: blobId }],
+          head: 'refs/heads/main',
+          packBytes,
+        });
+        const networkCtx = withTransport(ctx, transport);
+        let bootstrapStarted = false;
+        const trackingFs = new Proxy(networkCtx.fs, {
+          get(target, prop, receiver) {
+            if (prop === 'mkdir') bootstrapStarted = true;
+            return Reflect.get(target, prop, receiver);
+          },
+        });
+        // Every downstream write needs `fs`/`layout` for its I/O path and
+        // `hash`/`hashConfig` for object widths — a helper threaded the
+        // wrong context touches at least one of the four, whether or not
+        // that particular call happens to also produce an organic failure.
+        const IDENTITY_SENSITIVE_PROPS = new Set(['fs', 'layout', 'hash', 'hashConfig']);
+        let staleReadsAfterBootstrap = 0;
+        const trackingCtx = new Proxy(
+          { ...networkCtx, fs: trackingFs },
+          {
+            get(target, prop, receiver) {
+              if (bootstrapStarted && IDENTITY_SENSITIVE_PROPS.has(String(prop))) {
+                staleReadsAfterBootstrap += 1;
+              }
+              return Reflect.get(target, prop, receiver);
+            },
+          },
+        );
+
+        // Act
+        await clone(trackingCtx, { url: REMOTE_URL });
+
+        // Assert
+        expect(staleReadsAfterBootstrap).toBe(0);
+      });
+    });
+  });
+
   describe('Given depth: 1 and a server emitting a shallow block', () => {
     describe('When clone', () => {
       it('Then writes.git/shallow with the boundary oid', async () => {

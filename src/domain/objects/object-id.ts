@@ -1,5 +1,6 @@
 import { bytesToHex } from './encoding.js';
 import { invalidObjectId } from './error.js';
+import type { HashConfig } from './hash-config.js';
 
 const SHA1_HEX_LENGTH = 40;
 const SHA256_HEX_LENGTH = 64;
@@ -56,14 +57,39 @@ export const ObjectId = {
   },
 } as const;
 
+/**
+ * git's null oid at its historical SHA-1 width (40 zero characters). Kept for
+ * source compatibility with existing callers that never see a SHA-256
+ * repository; a caller that knows the active `HashConfig` uses {@link zeroOid}.
+ */
 export const ZERO_OID: ObjectId = ObjectId.from('0000000000000000000000000000000000000000');
 
+const ZERO_OID_SHA256: ObjectId = ObjectId.from(
+  '0000000000000000000000000000000000000000000000000000000000000000',
+);
+
+/** git's null oid for `config`'s hash algorithm — 40 zeros for SHA-1, 64 for SHA-256. */
+export function zeroOid(config: HashConfig): ObjectId {
+  return config.algorithm === 'sha256' ? ZERO_OID_SHA256 : ZERO_OID;
+}
+
 /**
- * SHA-1 of the canonical empty tree object. Used by `merge` for unrelated-history
- * three-way merges where the merge base is undefined — substituted as the
- * "empty base" so mergeTrees produces the union of both sides.
+ * SHA-1 of the canonical empty tree object, at its historical SHA-1 width.
+ * Used by `merge` for unrelated-history three-way merges where the merge base
+ * is undefined — substituted as the "empty base" so mergeTrees produces the
+ * union of both sides. Kept for source compatibility; a caller that knows the
+ * active `HashConfig` uses {@link emptyTreeOid}.
  */
 export const EMPTY_TREE_OID: ObjectId = ObjectId.from('4b825dc642cb6eb9a060e54bf8d69288fbee4904');
+
+const EMPTY_TREE_OID_SHA256: ObjectId = ObjectId.from(
+  '6ef19b41225c5369f1c104d45d8d85efa9b057b53b14b4b9b939dd74decc5321',
+);
+
+/** The canonical empty-tree oid for `config`'s hash algorithm. */
+export function emptyTreeOid(config: HashConfig): ObjectId {
+  return config.algorithm === 'sha256' ? EMPTY_TREE_OID_SHA256 : EMPTY_TREE_OID;
+}
 
 export type RefName = string & { readonly __brand: unique symbol };
 

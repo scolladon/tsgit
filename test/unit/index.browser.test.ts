@@ -229,7 +229,12 @@ describe('fixed-entry layout resolution (the browser shim path)', () => {
         const result = await sut(fs, '/', '/.git', false);
 
         // Assert
-        expect(result).toEqual({ workDir: '/', gitDir: '/admin', bare: false });
+        expect(result).toEqual({
+          workDir: '/',
+          gitDir: '/admin',
+          bare: false,
+          objectFormat: 'sha1',
+        });
       });
     });
   });
@@ -256,6 +261,7 @@ describe('fixed-entry layout resolution (the browser shim path)', () => {
           gitDir: '/admin',
           commonDir: '/common',
           bare: false,
+          objectFormat: 'sha1',
         });
       });
     });
@@ -298,7 +304,12 @@ describe('fixed-entry layout resolution (the browser shim path)', () => {
         const result = await sut(fs, '/', '/.git', undefined, '/custom-wt');
 
         // Assert
-        expect(result).toStrictEqual({ gitDir: '/.git', workDir: '/custom-wt', bare: false });
+        expect(result).toStrictEqual({
+          gitDir: '/.git',
+          workDir: '/custom-wt',
+          bare: false,
+          objectFormat: 'sha1',
+        });
       });
     });
   });
@@ -314,7 +325,12 @@ describe('fixed-entry layout resolution (the browser shim path)', () => {
         const result = await sut(fs, '/', '/.git', false);
 
         // Assert
-        expect(result).toEqual({ workDir: '/', gitDir: '/.git', bare: false });
+        expect(result).toEqual({
+          workDir: '/',
+          gitDir: '/.git',
+          bare: false,
+          objectFormat: 'sha1',
+        });
       });
     });
   });
@@ -334,7 +350,7 @@ describe('fixed-entry layout resolution (the browser shim path)', () => {
         const result = await sut(fs, '/', '/.git', undefined);
 
         // Assert
-        expect(result).toStrictEqual({ gitDir: '/.git', bare: true });
+        expect(result).toStrictEqual({ gitDir: '/.git', bare: true, objectFormat: 'sha1' });
       });
     });
   });
@@ -353,7 +369,40 @@ describe('fixed-entry layout resolution (the browser shim path)', () => {
         const result = await sut(fs, '/', '/.git', undefined);
 
         // Assert
-        expect(result).toStrictEqual({ gitDir: '/.git', workDir: '/custom-wt', bare: false });
+        expect(result).toStrictEqual({
+          gitDir: '/.git',
+          workDir: '/custom-wt',
+          bare: false,
+          objectFormat: 'sha1',
+        });
+      });
+    });
+  });
+});
+
+describe('browser shim — object format before a repository exists', () => {
+  describe('Given a root whose gitDir does not exist yet', () => {
+    describe('When openRepository runs', () => {
+      it('Then the layout declares no objectFormat', async () => {
+        // Arrange / Act
+        const sut = await openRepository({ rootHandle: fakeHandle });
+
+        // Assert — a format nobody has written yet is UNKNOWN, not sha1.
+        // Reporting sha1 here would make a defaulted value read as a
+        // declaration; `resolveAlgorithm` would then treat an explicit
+        // `algorithm` option as a contradiction.
+        expect(sut.ctx.layout.objectFormat).toBeUndefined();
+      });
+
+      it('Then an explicit sha256 algorithm is accepted rather than refused as a conflict', async () => {
+        // Arrange / Act — the walk-based shims accept this on an empty
+        // directory (a found-nothing walk declares nothing); the fixed-entry
+        // shim must not diverge just because it has no walk.
+        const sut = await openRepository({ rootHandle: fakeHandle, algorithm: 'sha256' });
+
+        // Assert
+        expect(sut.ctx.hashConfig.algorithm).toBe('sha256');
+        expect(sut.ctx.hashConfig.hexLength).toBe(64);
       });
     });
   });

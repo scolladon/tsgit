@@ -58,13 +58,14 @@ async function collectSections(pktStream: AsyncIterable<PktLine>): Promise<Colle
 
 describe('encodeCommandRequest', () => {
   describe('Given a command, args, and payloads', () => {
-    describe('When encodeCommandRequest builds the request', () => {
-      it('Then it emits command header, delim, args, flush in order', async () => {
+    describe('When encodeCommandRequest builds the request with objectFormat "sha1"', () => {
+      it('Then it emits command header, delim, args, flush in order, byte-identical to before objectFormat existed', async () => {
         // Arrange & Act
         const bytes = encodeCommandRequest(
           'ls-refs',
           ['symrefs', 'peel'],
           [bytesOf('ref-prefix HEAD\n')],
+          'sha1',
         );
         const lines = await decodeAll(bytes);
 
@@ -79,6 +80,17 @@ describe('encodeCommandRequest', () => {
           dataLine('ref-prefix HEAD\n'),
           { kind: 'flush' },
         ]);
+      });
+    });
+
+    describe('When encodeCommandRequest builds the request with objectFormat "sha256"', () => {
+      it('Then the third pkt-line is object-format=sha256', async () => {
+        // Arrange & Act
+        const bytes = encodeCommandRequest('ls-refs', [], [], 'sha256');
+        const lines = await decodeAll(bytes);
+
+        // Assert
+        expect(lines[2]).toEqual(dataLine('object-format=sha256\n'));
       });
     });
   });

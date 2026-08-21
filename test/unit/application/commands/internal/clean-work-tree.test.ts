@@ -64,7 +64,7 @@ const writeFramedIndex = async (
   entries: ReadonlyArray<IndexEntry>,
 ): Promise<void> => {
   const index: GitIndex = { version: 2, entries, extensions: [], trailerSha: new Uint8Array(0) };
-  const body = serializeIndex(index);
+  const body = serializeIndex(index, ctx.hashConfig.digestLength);
   const trailer = hexToBytes(await ctx.hash.hashHex(body));
   const framed = new Uint8Array(body.length + 20);
   framed.set(body);

@@ -5,7 +5,7 @@ import type { Context } from '../../../ports/context.js';
 interface BootstrapOptions {
   readonly initialBranch: string;
   readonly bare: boolean;
-  readonly hash?: 'sha1';
+  readonly objectFormat?: 'sha1' | 'sha256';
 }
 
 interface BootstrapResult {
@@ -24,8 +24,32 @@ const INFO_EXCLUDE = `# git ls-files --others --exclude-from=.git/info/exclude
 
 const DESCRIPTION = "Unnamed repository; edit this file 'description' to name the repository.\n";
 
-const renderConfig = (bare: boolean): string =>
-  `[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = ${bare ? 'true' : 'false'}\n`;
+const EXTENSIONS_BLOCK = '[extensions]\n\tobjectformat = sha256\n';
+
+// Only the format bump is format-conditional. git's own init also writes
+// `logallrefupdates`, `ignorecase` and `precomposeunicode`, but NONE of them
+// is a property of the object format — measured across all four init
+// variants on git 2.55.0: sha1 and sha256 emit the same set,
+// `logallrefupdates` is gated on NOT being bare, and the other two are
+// filesystem probes (true on a case-insensitive, decomposing volume; absent
+// elsewhere). Emitting them on the sha256 branch alone would write a config
+// git never writes — `logallrefupdates = true` beside `bare = true`, and an
+// `ignorecase = true` that is a claim about the filesystem rather than a
+// default. Adding them correctly is a separate, format-independent concern.
+const coreBlock = (bare: boolean, objectFormat?: 'sha1' | 'sha256'): string => {
+  const version = objectFormat === 'sha256' ? 1 : 0;
+  return `[core]\n\trepositoryformatversion = ${version}\n\tfilemode = true\n\tbare = ${bare ? 'true' : 'false'}\n`;
+};
+
+/**
+ * `[extensions]` precedes `[core]` — measured against `git init
+ * --object-format=sha256` byte-for-byte; a writer that swaps the order is
+ * semantically identical but byte-different, so the order is load-bearing.
+ */
+const renderConfig = (bare: boolean, objectFormat?: 'sha1' | 'sha256'): string =>
+  objectFormat === 'sha256'
+    ? `${EXTENSIONS_BLOCK}${coreBlock(bare, objectFormat)}`
+    : coreBlock(bare, objectFormat);
 
 /**
  * Create a fresh `.git` layout at `ctx.layout.gitDir`. Used by `init` and `clone`.
@@ -46,7 +70,7 @@ export const bootstrapRepository = async (
   try {
     await ctx.fs.mkdir(gitDir);
     await ctx.fs.writeUtf8(`${gitDir}/HEAD`, `ref: refs/heads/${branch}\n`);
-    await ctx.fs.writeUtf8(`${gitDir}/config`, renderConfig(opts.bare));
+    await ctx.fs.writeUtf8(`${gitDir}/config`, renderConfig(opts.bare, opts.objectFormat));
     await ctx.fs.mkdir(`${gitDir}/refs/heads`);
     await ctx.fs.mkdir(`${gitDir}/refs/tags`);
     await ctx.fs.mkdir(`${gitDir}/objects/info`);

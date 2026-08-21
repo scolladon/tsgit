@@ -49,7 +49,7 @@ describe('serializeReflogLine', () => {
         const entry = ENTRY;
 
         // Act
-        const line = serializeReflogLine(entry);
+        const line = serializeReflogLine(entry, 40);
 
         // Assert
         expect(line).toBe(
@@ -70,7 +70,7 @@ describe('serializeReflogLine', () => {
         };
 
         // Act
-        const line = serializeReflogLine(entry);
+        const line = serializeReflogLine(entry, 40);
 
         // Assert
         expect(line.startsWith(`${ZERO_OID} ${OID_B} `)).toBe(true);
@@ -86,7 +86,7 @@ describe('serializeReflogLine', () => {
         const entry: ReflogEntry = { ...ENTRY, message: '' };
 
         // Act
-        const line = serializeReflogLine(entry);
+        const line = serializeReflogLine(entry, 40);
 
         // Assert
         expect(line.endsWith('+0000\n')).toBe(true);
@@ -105,7 +105,45 @@ describe('serializeReflogLine', () => {
         const entry: ReflogEntry = { ...ENTRY, message };
 
         // Act & Assert
-        expectInvalidReflogEntry(() => serializeReflogLine(entry), 'message contains a line break');
+        expectInvalidReflogEntry(
+          () => serializeReflogLine(entry, 40),
+          'message contains a line break',
+        );
+      });
+    });
+  });
+
+  describe('Given an old id shorter than the repository hex width', () => {
+    describe('When serializing at hexLength 64', () => {
+      it('Then throws INVALID_REFLOG_ENTRY', () => {
+        // Arrange — OID_A/OID_B are 40-hex (SHA-1 width); the repo is SHA-256.
+        const entry: ReflogEntry = { ...ENTRY, oldId: OID_A };
+
+        // Act & Assert
+        expectInvalidReflogEntry(
+          () => serializeReflogLine(entry, 64),
+          'object id does not match the repository oid width',
+        );
+      });
+    });
+  });
+
+  describe('Given a new id shorter than the repository hex width', () => {
+    describe('When serializing at hexLength 64', () => {
+      it('Then throws INVALID_REFLOG_ENTRY', () => {
+        // Arrange — the old id alone is 64-hex; the new id is still 40-hex,
+        // proving the `||` guard's second arm fires independently of the first.
+        const entry: ReflogEntry = {
+          ...ENTRY,
+          oldId: ObjectId.from('a'.repeat(64)),
+          newId: OID_B,
+        };
+
+        // Act & Assert
+        expectInvalidReflogEntry(
+          () => serializeReflogLine(entry, 64),
+          'object id does not match the repository oid width',
+        );
       });
     });
   });
@@ -119,7 +157,7 @@ describe('parseReflogLine', () => {
         const line = `${OID_A} ${OID_B} Ada Lovelace <ada@example.com> 1716240000 +0000\tcommit: second`;
 
         // Act
-        const entry = parseReflogLine(line);
+        const entry = parseReflogLine(line, 40);
 
         // Assert
         expect(entry).toEqual(ENTRY);
@@ -134,7 +172,7 @@ describe('parseReflogLine', () => {
         const line = `${OID_A} ${OID_B} Ada Lovelace <ada@example.com> 1716240000 +0000\t`;
 
         // Act
-        const entry = parseReflogLine(line);
+        const entry = parseReflogLine(line, 40);
 
         // Assert
         expect(entry.message).toBe('');
@@ -149,7 +187,7 @@ describe('parseReflogLine', () => {
         const line = `${OID_A} ${OID_B} Ada Lovelace <ada@example.com> 1716240000 +0000\tmerge topic: Fast-forward`;
 
         // Act
-        const entry = parseReflogLine(line);
+        const entry = parseReflogLine(line, 40);
 
         // Assert
         expect(entry.message).toBe('merge topic: Fast-forward');
@@ -164,7 +202,7 @@ describe('parseReflogLine', () => {
         const line = `${OID_A} ${OID_B} Ada Augusta Lovelace <ada@example.com> 1716240000 +0000\tx`;
 
         // Act
-        const entry = parseReflogLine(line);
+        const entry = parseReflogLine(line, 40);
 
         // Assert
         expect(entry.identity.name).toBe('Ada Augusta Lovelace');
@@ -180,7 +218,7 @@ describe('parseReflogLine', () => {
         const line = `${OID_A} ${OID_B} Ada <ada@example.com> 1716240000 +0000`;
 
         // Act
-        const entry = parseReflogLine(line);
+        const entry = parseReflogLine(line, 40);
 
         // Assert
         expect(entry.message).toBe('');
@@ -221,8 +259,76 @@ describe('parseReflogLine', () => {
         },
       ])('Then throws INVALID_REFLOG_ENTRY for $label', ({ line, reason }) => {
         // Arrange & Act & Assert
-        expectInvalidReflogEntry(() => parseReflogLine(line), reason);
+        expectInvalidReflogEntry(() => parseReflogLine(line, 40), reason);
       });
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SHA-256 (hexLength 64) — git-written literal bytes, captured from
+// `git init --object-format=sha256; git commit` (real git 2.55.0, signing
+// off). A round-trip through tsgit's own serialize/parse proves nothing here
+// (both sides would agree on a shared bug); only git-written bytes do.
+// ---------------------------------------------------------------------------
+
+const SHA256_COMMIT_OID = ObjectId.from(
+  '0e3459f47ec2fad125795139fdcfdb3e37bd10b3a19e1d5f423476371a28d0e5',
+);
+const SHA256_ZERO_OID = ObjectId.from('0'.repeat(64));
+
+describe('Given a git-written SHA-256 reflog line', () => {
+  describe('When parseReflogLine reads it at hexLength 64', () => {
+    it('Then oldId, newId, identity and message match', () => {
+      // Arrange — literal bytes from .git/logs/HEAD in a real
+      // `git init --object-format=sha256` repository's first commit.
+      const line =
+        `${SHA256_ZERO_OID} ${SHA256_COMMIT_OID} Ada Lovelace <ada@example.com> ` +
+        '1716240000 +0000\tcommit (initial): first commit';
+
+      // Act
+      const entry = parseReflogLine(line, 64);
+
+      // Assert
+      expect(entry).toEqual({
+        oldId: SHA256_ZERO_OID,
+        newId: SHA256_COMMIT_OID,
+        identity: {
+          name: 'Ada Lovelace',
+          email: 'ada@example.com',
+          timestamp: 1716240000,
+          timezoneOffset: '+0000',
+        },
+        message: 'commit (initial): first commit',
+      });
+    });
+  });
+});
+
+describe('Given a create entry in a SHA-256 repository', () => {
+  describe('When serializeReflogLine writes it', () => {
+    it('Then the old id is 64 zeros and the bytes equal git’s literal line', () => {
+      // Arrange
+      const entry: ReflogEntry = {
+        oldId: SHA256_ZERO_OID,
+        newId: SHA256_COMMIT_OID,
+        identity: {
+          name: 'Ada Lovelace',
+          email: 'ada@example.com',
+          timestamp: 1716240000,
+          timezoneOffset: '+0000',
+        },
+        message: 'commit (initial): first commit',
+      };
+
+      // Act
+      const line = serializeReflogLine(entry, 64);
+
+      // Assert — byte-equal to the literal git-written line (LF appended)
+      expect(line).toBe(
+        `${SHA256_ZERO_OID} ${SHA256_COMMIT_OID} Ada Lovelace <ada@example.com> ` +
+          '1716240000 +0000\tcommit (initial): first commit\n',
+      );
     });
   });
 });
@@ -234,10 +340,10 @@ describe('parseReflog', () => {
         // Arrange
         const first: ReflogEntry = { ...ENTRY, oldId: ZERO_OID, message: 'commit (initial): a' };
         const second: ReflogEntry = { ...ENTRY, message: 'commit: b' };
-        const content = `${serializeReflogLine(first)}${serializeReflogLine(second)}`;
+        const content = `${serializeReflogLine(first, 40)}${serializeReflogLine(second, 40)}`;
 
         // Act
-        const entries = parseReflog(content);
+        const entries = parseReflog(content, 40);
 
         // Assert
         expect(entries).toEqual([first, second]);
@@ -249,10 +355,10 @@ describe('parseReflog', () => {
     describe('When parsing', () => {
       it('Then the blank line is tolerated', () => {
         // Arrange
-        const content = `${serializeReflogLine(ENTRY)}`;
+        const content = `${serializeReflogLine(ENTRY, 40)}`;
 
         // Act
-        const entries = parseReflog(content);
+        const entries = parseReflog(content, 40);
 
         // Assert
         expect(entries).toEqual([ENTRY]);
@@ -267,7 +373,7 @@ describe('parseReflog', () => {
         const content = '';
 
         // Act
-        const entries = parseReflog(content);
+        const entries = parseReflog(content, 40);
 
         // Assert
         expect(entries).toEqual([]);
@@ -281,10 +387,10 @@ describe('parseReflog', () => {
         // Arrange — a tab-less garbage line is now read as an empty-message
         // entry, so it fails on the misplaced field separator (too short for
         // the index-40 space) rather than a missing tab.
-        const content = `${serializeReflogLine(ENTRY)}garbage line\n`;
+        const content = `${serializeReflogLine(ENTRY, 40)}garbage line\n`;
 
         // Act & Assert
-        expectInvalidReflogEntry(() => parseReflog(content), 'misplaced field separator');
+        expectInvalidReflogEntry(() => parseReflog(content, 40), 'misplaced field separator');
       });
     });
   });
@@ -360,7 +466,10 @@ describe('reflog line round-trip property', () => {
         fc.assert(
           fc.property(arbEntry, (entry) => {
             // Act
-            const recovered = parseReflogLine(serializeReflogLine(entry).replace(/\n$/, ''));
+            const recovered = parseReflogLine(
+              serializeReflogLine(entry, 40).replace(/\n$/, ''),
+              40,
+            );
 
             // Assert
             expect(recovered).toEqual(entry);

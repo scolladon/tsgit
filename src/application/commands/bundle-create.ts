@@ -1,6 +1,10 @@
 import type { BundlePrerequisite, BundleRef, BundleVersion } from '../../domain/bundle/index.js';
 import { serializeBundleHeader } from '../../domain/bundle/index.js';
-import { bundleEmpty, bundlePrerequisiteNotCommit } from '../../domain/commands/error.js';
+import {
+  bundleEmpty,
+  bundlePrerequisiteNotCommit,
+  bundleUnsupportedSerializeVersion,
+} from '../../domain/commands/error.js';
 import { foldSubject } from '../../domain/objects/commit-message.js';
 import type { Commit, GitObject, ObjectId, RefName } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
@@ -29,6 +33,8 @@ export interface BundleCreateOptions {
   readonly all?: boolean;
   readonly branches?: boolean;
   readonly tags?: boolean;
+  /** Omitted: derived from `selectBundleVersion`'s rule. Supplied: honoured, or refused if it cannot express the rule's requirement (e.g. `2` when the algorithm or a filter requires `3`). */
+  readonly version?: 2 | 3;
 }
 
 export interface BundleCreateResult {
@@ -231,14 +237,50 @@ const concat = (a: Uint8Array, b: Uint8Array): Uint8Array => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Version selection
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface SelectBundleVersionInput {
+  readonly algorithm: 'sha1' | 'sha256';
+  /** Whether a `--filter` capability will be written. tsgit has no `--filter`
+   * on `bundleCreate` yet, so every caller passes `false` today — the rule
+   * still tests it explicitly so a future filter option composes for free. */
+  readonly filter: boolean;
+  readonly requested?: number;
+}
+
+const isSerializableVersion = (version: number): version is BundleVersion =>
+  version === 2 || version === 3;
+
+/**
+ * The bundle-version selection rule, measured against git 2.55.0: v3 is
+ * required the moment EITHER the repository's algorithm is not sha1 OR a
+ * filter is present — never "v3 iff sha256" alone, since a sha1 repository
+ * with a filter also writes v3. Absent a requested version, the rule
+ * derives the version from that OR; supplied, the request is honoured
+ * unless it cannot express the rule's requirement, in which case it is
+ * refused rather than silently upgraded (`2` while v3 is required, or any
+ * version outside `{2, 3}`).
+ */
+export const selectBundleVersion = (input: SelectBundleVersionInput): BundleVersion => {
+  const requiresV3 = input.algorithm !== 'sha1' || input.filter;
+  if (input.requested === undefined) return requiresV3 ? 3 : 2;
+  if (!isSerializableVersion(input.requested)) {
+    throw bundleUnsupportedSerializeVersion(input.requested);
+  }
+  if (input.requested === 2 && requiresV3) throw bundleUnsupportedSerializeVersion(2);
+  return input.requested;
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Main command
 // ─────────────────────────────────────────────────────────────────────────────
 
-const VERSION: BundleVersion = 2;
-
 /**
- * Produces a v2 git bundle — the full object closure for the given rev
- * selection plus the structured header metadata.
+ * Produces a git bundle — the full object closure for the given rev
+ * selection plus the structured header metadata. The bundle version is
+ * selected by `selectBundleVersion` (v2 by default for a SHA-1 repository,
+ * v3 otherwise, or as `opts.version` requests and permits).
  *
  * Returns `bytes` (header ++ packfile) for the caller to write, alongside
  * the structured metadata so the caller can inspect the result without
@@ -250,6 +292,12 @@ export const bundleCreate = async (
   opts: BundleCreateOptions,
 ): Promise<BundleCreateResult> => {
   await assertOperationalRepository(ctx);
+  const version = selectBundleVersion({
+    algorithm: ctx.hashConfig.algorithm,
+    filter: false,
+    // Stryker disable next-line ConditionalExpression: equivalent — `selectBundleVersion` reads `requested` only through its first guard, `input.requested === undefined`, so spreading `{ requested: undefined }` and omitting the key take the same branch and return the same version.
+    ...(opts.version !== undefined ? { requested: opts.version } : {}),
+  });
   const allRefs = await enumerateRefs(ctx);
   const acc: Accumulator = { refs: [], wants: [], haves: [] };
   await expandPseudoRefs(ctx, opts, allRefs, acc);
@@ -261,10 +309,15 @@ export const bundleCreate = async (
   if (closure.objects.length === 0) throw bundleEmpty('no-objects');
   const prerequisites = await makePrerequisites(ctx, closure.boundary);
   const pack = await buildPack(ctx, { oids: closure.objects });
-  const header = serializeBundleHeader({ version: VERSION, prerequisites, refs: acc.refs });
+  const header = serializeBundleHeader({
+    version,
+    hashAlgorithm: ctx.hashConfig.algorithm,
+    prerequisites,
+    refs: acc.refs,
+  });
   const bytes = concat(header, pack.bytes);
   return {
-    version: VERSION,
+    version,
     bytes,
     refs: acc.refs,
     prerequisites,

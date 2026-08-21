@@ -1,9 +1,21 @@
-import { TsgitError } from '../error.js';
+import { sanitizeForDisplay, TsgitError } from '../error.js';
 import type { HookName } from '../hooks/index.js';
 import type { FilePath, ObjectId, RefName } from '../objects/object-id.js';
 import type { ReceivePackResponse as ReportStatus } from '../protocol/receive-pack.js';
 import type { PendingOperation } from '../sequencer/operation-labels.js';
 import type { ConfigScope } from './config-key.js';
+
+/**
+ * Per-reason fields `BUNDLE_BAD_HEADER` carries — exactly what each git line
+ * needs. The `reason` literals are the discriminator; they live inline here
+ * rather than in a separate alias so a member can never gain a reason without
+ * declaring the fields that reason's git line requires.
+ */
+export type BundleBadHeaderDetails =
+  | { readonly reason: 'not-a-bundle' }
+  | { readonly reason: 'malformed-header'; readonly line: string; readonly length: number }
+  | { readonly reason: 'unknown-capability'; readonly capability: string }
+  | { readonly reason: 'unknown-hash-algorithm'; readonly algorithm: string };
 
 export type CommandError =
   | {
@@ -80,6 +92,12 @@ export type CommandError =
       readonly code: 'ADAPTER_UNAVAILABLE';
       readonly runtime: 'node' | 'browser' | 'memory';
       readonly reason: string;
+    }
+  | {
+      readonly code: 'OBJECT_FORMAT_CONFLICT';
+      readonly requested: 'sha1' | 'sha256';
+      readonly declared: 'sha1' | 'sha256';
+      readonly source: 'option' | 'hash';
     }
   | {
       readonly code: 'WORKING_TREE_FILE_TOO_LARGE';
@@ -167,6 +185,13 @@ export type CommandError =
       readonly source: string;
       readonly value: string;
     }
+  | {
+      readonly code: 'CONFIG_INVALID_ENUM_VALUE';
+      readonly key: string;
+      readonly source: string;
+      readonly value: string;
+      readonly line: number;
+    }
   | { readonly code: 'CONFIG_BAD_ZLIB_LEVEL'; readonly level: number }
   | {
       readonly code: 'CONFIG_MULTIPLE_VALUES';
@@ -240,16 +265,21 @@ export type CommandError =
   | { readonly code: 'CANNOT_DESCRIBE'; readonly oid: ObjectId }
   | { readonly code: 'BUNDLE_EMPTY'; readonly reason: 'no-refs' | 'no-objects' }
   | { readonly code: 'BUNDLE_READ_FAILED'; readonly path: string }
-  | { readonly code: 'BUNDLE_BAD_HEADER'; readonly path: string; readonly reason: string }
+  | ({ readonly code: 'BUNDLE_BAD_HEADER'; readonly path: string } & BundleBadHeaderDetails)
   | {
       readonly code: 'BUNDLE_UNSUPPORTED_VERSION';
-      readonly path?: string;
       readonly version: number;
     }
   | {
       readonly code: 'BUNDLE_PREREQUISITE_NOT_COMMIT';
       readonly oid: ObjectId;
       readonly objectType: string;
+    }
+  | {
+      readonly code: 'BUNDLE_PREREQUISITE_ALGORITHM_MISMATCH';
+      readonly oid: ObjectId;
+      readonly bundleAlgorithm: 'sha1' | 'sha256';
+      readonly localAlgorithm: 'sha1' | 'sha256';
     }
   | { readonly code: 'NOTES_ALREADY_EXIST'; readonly object: ObjectId }
   | { readonly code: 'NOTES_OBJECT_HAS_NONE'; readonly object: ObjectId }
@@ -279,19 +309,6 @@ export type CommandError =
       readonly line: number;
     }
   | { readonly code: 'GREP_LINE_TOO_LONG'; readonly length: number; readonly limit: number };
-
-const sanitizeForDisplay = (s: string): string => {
-  let out = '';
-  for (let i = 0; i < s.length; i += 1) {
-    const code = s.charCodeAt(i);
-    if (code === 0x09 || code === 0x0a || (code >= 0x20 && code <= 0x7e)) {
-      out += s[i];
-    } else {
-      out += `\\x${code.toString(16).toUpperCase().padStart(2, '0')}`;
-    }
-  }
-  return out;
-};
 
 export const sanitize = sanitizeForDisplay;
 
@@ -462,6 +479,22 @@ export const adapterUnavailable = (
     reason: sanitizeForDisplay(reason),
   });
 
+/**
+ * Two of the object-algorithm channels (the `algorithm` option, the
+ * repository's declared `extensions.objectFormat`, a caller-supplied `hash`
+ * service's own algorithm) disagree. `source` names which channel
+ * `requested` came from; `declared` is the other side of the disagreement —
+ * not necessarily the repository's declared format (a `hash` vs `algorithm`
+ * conflict names the option's value there). An option/config conflict, not
+ * a repository property — raised outside the repository-format acceptance
+ * tier, never from an `assert*` function.
+ */
+export const objectFormatConflict = (
+  requested: 'sha1' | 'sha256',
+  declared: 'sha1' | 'sha256',
+  source: 'option' | 'hash',
+): TsgitError => new TsgitError({ code: 'OBJECT_FORMAT_CONFLICT', requested, declared, source });
+
 export const workingTreeFileTooLarge = (path: FilePath, size: number, limit: number): TsgitError =>
   new TsgitError({ code: 'WORKING_TREE_FILE_TOO_LARGE', path, size, limit });
 
@@ -603,6 +636,32 @@ export const configBadBooleanLiteral = (key: string, source: string, value: stri
     key: sanitizeForDisplay(key),
     source,
     value: sanitizeForDisplay(value),
+  });
+
+/**
+ * A string-typed config key restricted to a fixed, case-sensitive set of
+ * literals (e.g. `extensions.objectFormat`'s `sha1`/`sha256`; `extensions.refStorage`
+ * shares the identical grammar) holds a value outside that set. `key` is the
+ * fully-qualified, lower-cased config key, `source` is the file path, `value`
+ * is the raw post-tokenizer string — case preserved, since the grammar is
+ * case-sensitive on the VALUE even though the key itself is lower-cased for
+ * the message. A valueless entry is `CONFIG_MISSING_VALUE` instead, never
+ * this code. `line` is the entry's 1-based config-file line — git names it in
+ * the second line of its refusal (`fatal: bad config line <N> in file <F>`),
+ * so a caller cannot reconstruct that line without it.
+ */
+export const configInvalidEnumValue = (
+  key: string,
+  source: string,
+  value: string,
+  line: number,
+): TsgitError =>
+  new TsgitError({
+    code: 'CONFIG_INVALID_ENUM_VALUE',
+    key: sanitizeForDisplay(key),
+    source,
+    value: sanitizeForDisplay(value),
+    line,
   });
 
 /**
@@ -763,24 +822,60 @@ export const bundleReadFailed = (path: string): TsgitError =>
   new TsgitError({ code: 'BUNDLE_READ_FAILED', path: sanitizeForDisplay(path) });
 
 // `bundle verify`/`bundle list-heads` header-parse failure: the file opened but
-// its content does not conform to the bundle header grammar.
-// git: `error: '<path>' does not look like a v2 or v3 bundle file`.
-// `reason` is a short discriminator tag (`'not-a-bundle' | 'malformed-header'`).
-export const bundleBadHeader = (path: string, reason: string): TsgitError =>
-  new TsgitError({ code: 'BUNDLE_BAD_HEADER', path: sanitizeForDisplay(path), reason });
+// its content does not conform to the bundle header grammar — a magic line
+// that names neither v2 nor v3, a content line that doesn't fit the
+// prerequisite/ref shape (or arrives before a v3 header's algorithm is
+// known), or a capability line naming neither a recognised capability nor a
+// supported hash algorithm. `details` carries the fields the matching git
+// line needs (`error: unrecognized header: <line> (<len>)`,
+// `error: unknown capability '<text>'`, or
+// `error: unrecognized bundle hash algorithm: <value>`).
+/**
+ * Longest run of bundle-derived text echoed into a refusal payload. Bundle
+ * bytes are untrusted and a header line is unbounded — `findBlankLineOffset`
+ * scans the whole file for its terminator, so a crafted first line can be
+ * megabytes. The offending text is still reported, just bounded and stripped
+ * of control bytes, the same treatment `HOOK_FAILED` gives captured stderr.
+ * `length` deliberately keeps the TRUE pre-truncation byte count, because git
+ * prints that number and a caller reconstructs its line from this field.
+ */
+export const MAX_BUNDLE_DETAIL_IN_ERROR = 256;
 
-// `bundle verify`/`bundle list-heads` version refusal: the magic line indicates
-// a bundle version tsgit does not support (currently v3 only).
-// git 2.54.0 reads v3-sha1; tsgit refuses (sanctioned divergence).
-export const bundleUnsupportedVersion = (path: string, version: number): TsgitError =>
+const boundedDetail = (details: BundleBadHeaderDetails): BundleBadHeaderDetails => {
+  switch (details.reason) {
+    case 'malformed-header':
+      return {
+        ...details,
+        line: sanitizeForDisplay(details.line).slice(0, MAX_BUNDLE_DETAIL_IN_ERROR),
+      };
+    case 'unknown-capability':
+      return {
+        ...details,
+        capability: sanitizeForDisplay(details.capability).slice(0, MAX_BUNDLE_DETAIL_IN_ERROR),
+      };
+    case 'unknown-hash-algorithm':
+      return {
+        ...details,
+        algorithm: sanitizeForDisplay(details.algorithm).slice(0, MAX_BUNDLE_DETAIL_IN_ERROR),
+      };
+    case 'not-a-bundle':
+      return details;
+  }
+};
+
+export const bundleBadHeader = (path: string, details: BundleBadHeaderDetails): TsgitError =>
   new TsgitError({
-    code: 'BUNDLE_UNSUPPORTED_VERSION',
+    code: 'BUNDLE_BAD_HEADER',
     path: sanitizeForDisplay(path),
-    version,
+    ...boundedDetail(details),
   });
 
-// `bundle create` version refusal: the caller requested a version that
-// `serializeBundleHeader` does not support (only v2 is supported for writing).
+// The ONLY producer of `BUNDLE_UNSUPPORTED_VERSION`: `bundle create` refuses a
+// version `serializeBundleHeader` cannot honour — either outside {2, 3}, or 2
+// while the selected algorithm requires 3. There is no read-side counterpart:
+// a magic line naming neither v2 nor v3 is not a bundle at all, and
+// `parseBundleHeader` reports it as `BUNDLE_BAD_HEADER { reason:
+// 'not-a-bundle' }`.
 export const bundleUnsupportedSerializeVersion = (version: number): TsgitError =>
   new TsgitError({ code: 'BUNDLE_UNSUPPORTED_VERSION', version });
 
@@ -789,6 +884,23 @@ export const bundleUnsupportedSerializeVersion = (version: number): TsgitError =
 // come from `peel(ctx, oid, 'commit')`); this error surfaces store corruption.
 export const bundlePrerequisiteNotCommit = (oid: ObjectId, objectType: string): TsgitError =>
   new TsgitError({ code: 'BUNDLE_PREREQUISITE_NOT_COMMIT', oid, objectType });
+
+// `bundle verify` cross-format refusal: a prerequisite oid is declared under an
+// algorithm the verifying repository does not itself use — git can never map
+// such an oid to a local object, so it refuses `fatal: missing mapping of <oid>
+// to <local-algo>`, exit 128, distinct from (and raised BEFORE) the plain
+// absent-prerequisite check, which keeps its own exit-1 shape.
+export const bundlePrerequisiteAlgorithmMismatch = (
+  oid: ObjectId,
+  bundleAlgorithm: 'sha1' | 'sha256',
+  localAlgorithm: 'sha1' | 'sha256',
+): TsgitError =>
+  new TsgitError({
+    code: 'BUNDLE_PREREQUISITE_ALGORITHM_MISMATCH',
+    oid,
+    bundleAlgorithm,
+    localAlgorithm,
+  });
 
 // `notes add` refusal when a note already exists and `force` was not set.
 // git: `error: Cannot add notes. Found existing notes for object <oid>.`

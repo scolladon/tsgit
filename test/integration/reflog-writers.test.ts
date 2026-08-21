@@ -274,12 +274,15 @@ describe.skipIf(GIT === undefined)('integration — reflog interop with canonica
       runGit(['-C', tmpdir, 'config', 'user.email', 'ada@example.com']);
       runGit(['-C', tmpdir, 'commit', '-q', '--allow-empty', '-m', 'seed']);
       const headOid = runGit(['-C', tmpdir, 'rev-parse', 'HEAD']).trim() as ObjectId;
-      const line = serializeReflogLine({
-        oldId: headOid,
-        newId: headOid,
-        identity: author,
-        message: 'reset: moving to HEAD',
-      });
+      const line = serializeReflogLine(
+        {
+          oldId: headOid,
+          newId: headOid,
+          identity: author,
+          message: 'reset: moving to HEAD',
+        },
+        40,
+      );
 
       // Act — append the tsgit-serialized entry, then ask git to read the log
       const { appendFile } = await import('node:fs/promises');
@@ -302,7 +305,7 @@ describe.skipIf(GIT === undefined)('integration — reflog interop with canonica
 
       // Act
       const raw = await readFile(path.join(tmpdir, '.git', 'logs', 'HEAD'), 'utf8');
-      const result = parseReflog(raw);
+      const result = parseReflog(raw, 40);
 
       // Assert — both commit entries parsed, oldest-first
       expect(result).toHaveLength(2);

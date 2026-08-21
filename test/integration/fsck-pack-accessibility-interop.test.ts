@@ -242,12 +242,12 @@ async function corruptSolePackToV99(dir: string): Promise<void> {
 async function stripCacheTreeExtension(dir: string): Promise<void> {
   const indexFile = path.join(dir, '.git', 'index');
   const raw = await readFile(indexFile);
-  const parsed = parseIndex(raw);
+  const parsed = parseIndex(raw, 20);
   const withoutCacheTree = {
     ...parsed,
     extensions: parsed.extensions.filter((ext) => ext.signature !== 'TREE'),
   };
-  const body = serializeIndex(withoutCacheTree);
+  const body = serializeIndex(withoutCacheTree, 20);
   const trailer = sha1(body);
   await writeFile(indexFile, Buffer.concat([body, trailer]));
 }

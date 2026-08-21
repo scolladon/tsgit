@@ -1,6 +1,6 @@
 import { unsupportedOperation } from '../../domain/error.js';
 import type { ObjectId, RefName } from '../../domain/objects/index.js';
-import { ZERO_OID } from '../../domain/objects/index.js';
+import { zeroOid } from '../../domain/objects/index.js';
 import { refNotFound, refUpdateConflict } from '../../domain/refs/error.js';
 import { validateRefName } from '../../domain/refs/ref-validation.js';
 import type { Context } from '../../ports/context.js';
@@ -41,7 +41,7 @@ export async function updateRef(
     return;
   }
 
-  const oldId = current.kind === 'direct' ? current.id : ZERO_OID;
+  const oldId = current.kind === 'direct' ? current.id : zeroOid(ctx.hashConfig);
   const content = new TextEncoder().encode(`${newId}\n`);
   await atomicWriteRef(ctx, name, refPath, content);
   // A no-op update (old === new) records no entry on the direct ref — git's ref

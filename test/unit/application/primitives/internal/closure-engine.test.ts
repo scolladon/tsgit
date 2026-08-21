@@ -1397,7 +1397,7 @@ describe('computeClosure — bitmap-tier artefact preference', () => {
     // once a midx is present, so `readObject` (the closure algorithm's own
     // object reads) would throw on an invented packIndex/offset.
     const idxBytes = await ctx.fs.read(`${packDirOf(ctx)}/pack-${name}.idx`);
-    const index = parsePackIndex(idxBytes);
+    const index = parsePackIndex(idxBytes, 20);
     const offset = lookupPackIndex(index, blobId) as number;
     const midxSpec: MidxSpec = {
       version: 1,

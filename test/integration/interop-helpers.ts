@@ -133,6 +133,30 @@ export const hasGit = (): boolean => {
 
 export const GIT_AVAILABLE = hasGit();
 
+/**
+ * Whether the local git was built with Rust support — the switch that gates
+ * `extensions.compatObjectFormat`.
+ *
+ * MEASURED, never assumed. A build reporting `rust: disabled` refuses the
+ * extension outright (`fatal: compatibility hash algorithm support requires
+ * Rust`, exit 128); a Rust-enabled build accepts it and carries on. Both
+ * builds ship as "git 2.55.0", so the version string cannot tell them apart —
+ * GitHub's ubuntu-24.04 image moved from a non-Rust git 2.54.0 to a
+ * Rust-enabled 2.55.0 between two runs of this suite, turning every
+ * hard-coded `expect(exitCode).toBe(128)` on that extension red without a
+ * single line of production code changing.
+ */
+export const gitHasRustCompat = (): boolean => {
+  if (!GIT_AVAILABLE) return false;
+  try {
+    return /^rust:\s*enabled$/m.test(runGit(['version', '--build-options']));
+  } catch {
+    return false;
+  }
+};
+
+export const GIT_HAS_RUST_COMPAT = gitHasRustCompat();
+
 export interface PeerPair {
   readonly peer: string;
   readonly ours: string;

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { submoduleAdd } from '../../../../src/application/commands/submodule.js';
 import { readConfig } from '../../../../src/application/primitives/config-read.js';
 import { acquireIndexLock } from '../../../../src/application/primitives/internal/index-lock.js';
@@ -44,15 +45,20 @@ const indexEntry = (path: string, id: ObjectId): IndexEntry => ({
 
 /** Seed a superproject (one committed README) and attach the submodule remote. */
 const seedSuper = async (
-  opts: { readonly head?: string } = {},
+  opts: { readonly head?: string; readonly remoteObjectFormat?: 'sha256' } = {},
 ): Promise<{ ctx: Context; remote: Awaited<ReturnType<typeof buildSubmoduleRemote>> }> => {
   const base = await buildSeededContext();
-  const remote = await buildSubmoduleRemote(base, {
+  // The superproject is always SHA-1 here; `remoteObjectFormat` gives the
+  // remote a genuinely different algorithm — pack and advertisement both.
+  const remoteCtx =
+    opts.remoteObjectFormat === undefined ? base : createMemoryContext({ algorithm: 'sha256' });
+  const remote = await buildSubmoduleRemote(remoteCtx, {
     branches: [
       { name: 'main', file: 'lib.txt', content: 'lib v1\n' },
       { name: 'dev', file: 'lib.txt', content: 'lib dev\n' },
     ],
     head: opts.head ?? 'main',
+    ...(opts.remoteObjectFormat !== undefined ? { objectFormat: opts.remoteObjectFormat } : {}),
   });
   const blob = (await writeObject(base, {
     type: 'blob',
@@ -334,6 +340,36 @@ describe('Given a superproject and a submodule remote', () => {
 
       // Assert
       expect(error.data).toMatchObject({ operation: 'submodule add' });
+    });
+  });
+});
+
+describe('Given a SHA-1 superproject and a submodule remote serving a SHA-256 repository', () => {
+  describe('When add clones the submodule', () => {
+    it('Then it refuses with SUBMODULE_OBJECT_FORMAT_MISMATCH naming both algorithms', async () => {
+      // Arrange — the algorithm is read off the clone's REPORTED format, never
+      // inferred from a fetched oid's width: a peer advertising only namespaces
+      // `writeFetchedRefs` drops would clone with an empty ref list and an
+      // inference-based guard would pass silently. The submodule URL comes from
+      // `.gitmodules`, so that peer is attacker-influenceable.
+      const { ctx } = await seedSuper({ remoteObjectFormat: 'sha256' });
+      const sut = submoduleAdd;
+
+      // Act
+      let caught: unknown;
+      try {
+        await sut(ctx, { url: SUB_URL, path: 'libs/sub' });
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      expect((caught as TsgitError).data).toEqual({
+        code: 'SUBMODULE_OBJECT_FORMAT_MISMATCH',
+        local: 'sha1',
+        remote: 'sha256',
+      });
     });
   });
 });

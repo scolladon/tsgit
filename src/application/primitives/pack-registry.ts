@@ -295,7 +295,8 @@ function loadPack(
   // The first caller to force this memo (directly, or via the generation's
   // resolveIndexes classification) pays the one bounded read.
   const indexMemo = createPromiseMemo(
-    async (): Promise<PackIndex> => parsePackIndex(await readBoundedIdx(ctx, idxPath)),
+    async (): Promise<PackIndex> =>
+      parsePackIndex(await readBoundedIdx(ctx, idxPath), ctx.hashConfig.digestLength),
   );
 
   // Depends on indexMemo for objectCount — safe even for an unindexable pack:

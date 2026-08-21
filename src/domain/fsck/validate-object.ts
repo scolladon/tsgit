@@ -1,22 +1,41 @@
-import type { FsckObjectType, FsckSeverity } from './types.js';
+import type { HashConfig } from '../objects/hash-config.js';
+import type { FsckSeverity } from './types.js';
 import { validateBlob } from './validate-blob.js';
 import { validateCommit } from './validate-commit.js';
 import { validateTag } from './validate-tag.js';
 import { validateTree } from './validate-tree.js';
 
-export interface ValidateObjectInput {
+interface ValidateObjectInputBase {
   /** The decompressed raw object body (without the git loose-object header). */
   readonly rawBody: Uint8Array;
-  /** The declared object kind. */
-  readonly kind: FsckObjectType;
   /** When true, WARN-class msg-ids are upgraded to ERROR. */
   readonly strict: boolean;
-  /**
-   * For blob objects: the file name this blob is stored as in its parent tree.
-   * Required for special-file content checks (.gitmodules, .gitattributes).
-   */
-  readonly fileName?: string;
 }
+
+export type ValidateObjectInput =
+  | (ValidateObjectInputBase & {
+      readonly kind: 'tree';
+      /** The repository's hash config — a raw tree's binary shas carry no width marker of their own. */
+      readonly hashConfig: HashConfig;
+    })
+  | (ValidateObjectInputBase & {
+      readonly kind: 'commit';
+      /** The repository's hash config — fixes the width `tree`/`parent` oids must be. */
+      readonly hashConfig: HashConfig;
+    })
+  | (ValidateObjectInputBase & {
+      readonly kind: 'tag';
+      /** The repository's hash config — fixes the width the `object` oid must be. */
+      readonly hashConfig: HashConfig;
+    })
+  | (ValidateObjectInputBase & {
+      readonly kind: 'blob';
+      /**
+       * The file name this blob is stored as in its parent tree. Required for
+       * special-file content checks (.gitmodules, .gitattributes).
+       */
+      readonly fileName?: string;
+    });
 
 export interface ObjectFinding {
   readonly msgId: string;
@@ -38,15 +57,14 @@ export interface ObjectFinding {
  * throws — it classifies faults and returns them.
  */
 export function validateObject(input: ValidateObjectInput): ReadonlyArray<ObjectFinding> {
-  const { rawBody, kind, strict, fileName } = input;
-  switch (kind) {
+  switch (input.kind) {
     case 'tree':
-      return validateTree(rawBody, strict);
+      return validateTree(input.rawBody, input.strict, input.hashConfig.digestLength);
     case 'commit':
-      return validateCommit(rawBody, strict);
+      return validateCommit(input.rawBody, input.strict, input.hashConfig);
     case 'tag':
-      return validateTag(rawBody, strict);
+      return validateTag(input.rawBody, input.strict, input.hashConfig);
     case 'blob':
-      return validateBlob(rawBody, strict, fileName);
+      return validateBlob(input.rawBody, input.strict, input.fileName);
   }
 }

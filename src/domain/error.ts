@@ -114,6 +114,25 @@ export function dirname(path: string): string {
   return slash === -1 ? '' : path.slice(0, slash);
 }
 
+/**
+ * Render a string safely into an error payload: tab and newline survive, every
+ * other control or non-ASCII byte becomes a visible `\xNN` escape. Used
+ * wherever untrusted input (hook stderr, config values, bundle header text, a
+ * peer's advertised capability) reaches a message a caller may log.
+ */
+export const sanitizeForDisplay = (s: string): string => {
+  let out = '';
+  for (let i = 0; i < s.length; i += 1) {
+    const code = s.charCodeAt(i);
+    if (code === 0x09 || code === 0x0a || (code >= 0x20 && code <= 0x7e)) {
+      out += s[i];
+    } else {
+      out += `\\x${code.toString(16).toUpperCase().padStart(2, '0')}`;
+    }
+  }
+  return out;
+};
+
 export const fileNotFound = (path: string): TsgitError =>
   new TsgitError({ code: 'FILE_NOT_FOUND', path });
 
@@ -173,6 +192,19 @@ export const workdirRace = (
 
 export const orderInvariantViolation = (previous: string, current: string): TsgitError =>
   new TsgitError({ code: 'ORDER_INVARIANT_VIOLATION', previous, current });
+
+function renderBundleBadHeader(data: Extract<CommandError, { code: 'BUNDLE_BAD_HEADER' }>): string {
+  switch (data.reason) {
+    case 'not-a-bundle':
+      return `'${data.path}' does not look like a v2 or v3 bundle file`;
+    case 'malformed-header':
+      return `unrecognized header: ${data.line} (${data.length})`;
+    case 'unknown-capability':
+      return `unknown capability '${data.capability}'`;
+    case 'unknown-hash-algorithm':
+      return `unrecognized bundle hash algorithm: ${data.algorithm}`;
+  }
+}
 
 function extractDetail(data: TsgitErrorData): string {
   switch (data.code) {
@@ -398,6 +430,8 @@ function extractDetail(data: TsgitErrorData): string {
       return 'repository has been disposed; create a new one with openRepository()';
     case 'ADAPTER_UNAVAILABLE':
       return `adapter unavailable for runtime ${data.runtime}: ${data.reason}`;
+    case 'OBJECT_FORMAT_CONFLICT':
+      return `object format conflict: ${data.source} requested ${data.requested} but ${data.declared} was declared`;
     case 'WORKING_TREE_FILE_TOO_LARGE':
       return `working-tree file too large: ${basename(data.path)} size=${data.size} limit=${data.limit}`;
     case 'GITIGNORE_FILE_TOO_LARGE':
@@ -429,7 +463,11 @@ function extractDetail(data: TsgitErrorData): string {
     case 'TOO_MANY_SECTION_ENTRIES':
       return `v2 section "${data.section}" entries (${data.count}) exceed limit ${data.limit}`;
     case 'UNSUPPORTED_OBJECT_FORMAT':
-      return `unsupported object format: ${data.format}`;
+      return data.local === undefined
+        ? `unsupported object format: ${data.format}`
+        : `mismatched algorithms: client ${data.local}; server ${data.format}`;
+    case 'PUSH_OBJECT_FORMAT_UNSUPPORTED':
+      return `the receiving end does not support this repository's hash algorithm: local ${data.local}, remote ${data.remote}`;
     case 'SNAPSHOT_REQUIRED':
       return `snapshot required: ${data.reason}`;
     case 'WORKDIR_RACE':
@@ -456,6 +494,8 @@ function extractDetail(data: TsgitErrorData): string {
       return `bad boolean config value '${data.value}' for '${data.key}' in file ${data.source}`;
     case 'CONFIG_BAD_BOOLEAN_LITERAL':
       return `invalid value for '${data.key}' in file ${data.source}`;
+    case 'CONFIG_INVALID_ENUM_VALUE':
+      return `invalid value for '${data.key}': '${data.value}' in file ${data.source} at line ${data.line}`;
     case 'CONFIG_BAD_ZLIB_LEVEL':
       return `bad zlib compression level ${data.level}`;
     case 'CONFIG_INVALID_FILE':
@@ -521,6 +561,8 @@ function extractDetail(data: TsgitErrorData): string {
       return `submodule work tree '${data.path}' contains local modifications`;
     case 'SUBMODULE_PATH_EXISTS':
       return `'${data.path}' already exists in the index`;
+    case 'SUBMODULE_OBJECT_FORMAT_MISMATCH':
+      return `cannot add a submodule of a different hash algorithm: local ${data.local}, remote ${data.remote}`;
     case 'WORKTREE_PATH_EXISTS':
       return `'${data.path}' already exists`;
     case 'BRANCH_CHECKED_OUT':
@@ -540,13 +582,13 @@ function extractDetail(data: TsgitErrorData): string {
     case 'BUNDLE_READ_FAILED':
       return `could not open '${data.path}'`;
     case 'BUNDLE_BAD_HEADER':
-      return `'${data.path}' does not look like a v2 or v3 bundle file`;
+      return renderBundleBadHeader(data);
     case 'BUNDLE_UNSUPPORTED_VERSION':
-      return data.path !== undefined
-        ? `unsupported bundle version ${data.version} in '${data.path}'`
-        : `unsupported bundle version ${data.version} for serialization`;
+      return `unsupported bundle version ${data.version} for serialization`;
     case 'BUNDLE_PREREQUISITE_NOT_COMMIT':
       return `boundary object ${data.oid} is not a commit (got ${data.objectType})`;
+    case 'BUNDLE_PREREQUISITE_ALGORITHM_MISMATCH':
+      return `missing mapping of ${data.oid} to ${data.localAlgorithm}`;
     case 'NOTES_ALREADY_EXIST':
       return `Cannot add notes. Found existing notes for object ${data.object}. Use '-f' to overwrite existing notes`;
     case 'NOTES_OBJECT_HAS_NONE':

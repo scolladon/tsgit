@@ -62,6 +62,16 @@ const initRepo = async (): Promise<Context> => {
   return ctx;
 };
 
+/** A SHA-256 repository with one commit on main — for cross-format fixtures. */
+const buildSha256SingleCommitRepo = async (): Promise<Context> => {
+  const ctx = createMemoryContext({ algorithm: 'sha256' });
+  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+  const tree = await writeTree(ctx, []);
+  const commit = await makeCommitObj(ctx, tree, [], 'sha256 commit', 1);
+  await setRef(ctx, 'refs/heads/main', commit);
+  return ctx;
+};
+
 interface SingleCommitRepo {
   readonly ctx: Context;
   readonly commit1: ObjectId;
@@ -154,6 +164,7 @@ const buildThinBundle = async (ctx: Context, prereqOid: ObjectId): Promise<Uint8
 
   const headerBytes = serializeBundleHeader({
     version: 2,
+    hashAlgorithm: 'sha1',
     prerequisites: [{ oid: prereqOid, comment: 'test prereq' }],
     refs: [{ oid: targetId as ObjectId, name: 'refs/heads/main' as RefName }],
   });
@@ -470,10 +481,12 @@ describe('bundleVerify', () => {
 
   // ── read-failure: v3 bundle file ──────────────────────────────────────────
 
-  describe("Given a path containing a '# v3 git bundle' magic line", () => {
+  describe("Given a path containing a '# v3 git bundle' magic line and no pack bytes", () => {
     describe('When bundleVerify is called', () => {
-      it('Then throws BUNDLE_UNSUPPORTED_VERSION with version 3', async () => {
-        // Arrange
+      it('Then the header parses (v3 is no longer refused) and the empty pack fails its own validation', async () => {
+        // Arrange — the header alone is well-formed; this fixture carries no
+        // pack bytes at all, which is an independent pack-validation failure,
+        // not a version refusal.
         const ctx = createMemoryContext();
         const V3_PATH = '/repo/v3.bundle';
         await ctx.fs.write(
@@ -492,9 +505,7 @@ describe('bundleVerify', () => {
         // Assert
         expect(thrown).toBeInstanceOf(TsgitError);
         const tsErr = thrown as TsgitError;
-        expect(tsErr.data.code).toBe('BUNDLE_UNSUPPORTED_VERSION');
-        expect((tsErr.data as { version: number }).version).toBe(3);
-        expect((tsErr.data as { path: string }).path).toBe(V3_PATH);
+        expect(tsErr.data.code).toBe('INVALID_PACK_HEADER');
       });
     });
   });
@@ -635,6 +646,7 @@ describe('bundleVerify', () => {
 
         const headerBytes = serializeBundleHeader({
           version: 2,
+          hashAlgorithm: 'sha1',
           prerequisites: [{ oid: prereqOid, comment: 'prereq' }],
           refs: [{ oid: ids[0] as ObjectId, name: 'refs/heads/main' as RefName }],
         });
@@ -696,6 +708,7 @@ describe('bundleVerify', () => {
 
         const headerBytes = serializeBundleHeader({
           version: 2,
+          hashAlgorithm: 'sha1',
           prerequisites: [{ oid: prereqOid, comment: 'prereq' }],
           refs: [{ oid: ids[0] as ObjectId, name: 'refs/heads/main' as RefName }],
         });
@@ -766,6 +779,7 @@ describe('bundleVerify', () => {
       }));
       const headerBytes = serializeBundleHeader({
         version: 2,
+        hashAlgorithm: 'sha1',
         prerequisites: [{ oid: prereqOid, comment: 'prereq' }],
         refs,
       });
@@ -809,6 +823,153 @@ describe('bundleVerify', () => {
         // Assert — base is read twice: once by the prereq check, once by the memoized
         // resolver (second REF_DELTA entry hits cache — no extra read)
         expect(baseReadCount).toBe(2);
+      });
+    });
+  });
+
+  // ── cross-format prerequisite refusal ─────────────────────────────────────
+
+  describe('Given a SHA-256 bundle whose prerequisite is verified against a SHA-1 repository', () => {
+    describe('When bundleVerify is called', () => {
+      it("Then it throws the cross-format refusal with oid, bundleAlgorithm 'sha256' and localAlgorithm 'sha1'", async () => {
+        // Arrange — hand-built v3/sha256 header; the pack bytes are irrelevant
+        // because the guard fires before any pack read is attempted.
+        const ctx = await initRepo(); // sha1 repository
+        const prereqOid = 'a'.repeat(64);
+        const refOid = 'b'.repeat(64);
+        const headerText =
+          `# v3 git bundle\n@object-format=sha256\n` +
+          `-${prereqOid} boundary commit\n${refOid} refs/heads/main\n\n`;
+        await ctx.fs.write(BUNDLE_PATH, enc.encode(headerText));
+
+        // Act
+        let thrown: unknown;
+        try {
+          await bundleVerify(ctx, { path: BUNDLE_PATH });
+        } catch (err) {
+          thrown = err;
+        }
+
+        // Assert
+        expect(thrown).toBeInstanceOf(TsgitError);
+        const data = (thrown as TsgitError).data as {
+          code: string;
+          oid: string;
+          bundleAlgorithm: string;
+          localAlgorithm: string;
+        };
+        expect(data.code).toBe('BUNDLE_PREREQUISITE_ALGORITHM_MISMATCH');
+        expect(data.oid).toBe(prereqOid);
+        expect(data.bundleAlgorithm).toBe('sha256');
+        expect(data.localAlgorithm).toBe('sha1');
+      });
+    });
+  });
+
+  describe('Given a same-format bundle whose prerequisite commit is absent from the target repo', () => {
+    describe('When bundleVerify is called', () => {
+      it('Then the prerequisite is still reported in missingPrerequisites — the narrowing guard does not swallow the absent-prerequisite path', async () => {
+        // Arrange
+        const { ctx: sourceCtx, commit1 } = await buildTwoCommitRepo();
+        const createResult = await bundleCreate(sourceCtx, {
+          revs: [{ range: ['refs/heads/main~1', 'refs/heads/main'] }],
+        });
+        const emptyCtx = await initRepo();
+        await emptyCtx.fs.write(BUNDLE_PATH, createResult.bytes);
+
+        // Act
+        const result = await bundleVerify(emptyCtx, { path: BUNDLE_PATH });
+
+        // Assert — exit-1 shape (missing, not thrown) survives the new guard
+        expect(result.prerequisitesPresent).toBe(false);
+        expect(result.missingPrerequisites).toContain(commit1);
+      });
+    });
+  });
+
+  describe('Given a SHA-256 bundle with no prerequisites, verified from within a SHA-1 repository', () => {
+    describe('When bundleVerify is called', () => {
+      it("Then it verifies successfully — the guard does not fire on a complete bundle, and the pack is framed at the bundle's own algorithm rather than the repository's", async () => {
+        // Arrange — a complete (0-prerequisite) SHA-256 bundle, verified from a
+        // SHA-1 repository. Framing the pack trailer/entries at the repository's
+        // 20-byte width instead of the bundle's own 32-byte width would fail the
+        // trailer digest check, so a successful verify is itself the proof.
+        const sha256Ctx = await buildSha256SingleCommitRepo();
+        const created = await bundleCreate(sha256Ctx, { all: true });
+        const sha1Ctx = await initRepo();
+        await sha1Ctx.fs.write(BUNDLE_PATH, created.bytes);
+
+        // Act
+        const result = await bundleVerify(sha1Ctx, { path: BUNDLE_PATH });
+
+        // Assert
+        expect(result.recordsCompleteHistory).toBe(true);
+        expect(result.prerequisitesPresent).toBe(true);
+        expect(result.hashAlgorithm).toBe('sha256');
+        expect(result.refs[0]?.oid).toMatch(/^[0-9a-f]{64}$/);
+      });
+    });
+  });
+
+  describe('Given a cross-format bundle and a hash service that cannot switch algorithms', () => {
+    describe('When bundleVerify is called', () => {
+      it("Then it refuses rather than silently framing the pack at the repository's width", async () => {
+        // Arrange — `withAlgorithm` is optional on the port precisely so a
+        // caller-supplied service may omit it. Without it the bundle's own
+        // width is unreachable, and no bundle path may fall back to the
+        // surrounding repository's width.
+        const sha256Ctx = await buildSha256SingleCommitRepo();
+        const created = await bundleCreate(sha256Ctx, { all: true });
+        const base = await initRepo();
+        const { withAlgorithm: _omitted, ...hashWithoutSwitch } = base.hash;
+        const sha1Ctx: Context = { ...base, hash: hashWithoutSwitch };
+        await sha1Ctx.fs.write(BUNDLE_PATH, created.bytes);
+        const sut = bundleVerify;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(sha1Ctx, { path: BUNDLE_PATH });
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('UNSUPPORTED_OPERATION');
+        if (data.code !== 'UNSUPPORTED_OPERATION') expect.unreachable();
+        expect(data.reason).toContain('sha256');
+      });
+    });
+  });
+
+  // ── filter capability exposure ────────────────────────────────────────────
+
+  describe('Given a v3 bundle whose header declares a @filter capability', () => {
+    describe('When bundleVerify is called', () => {
+      it('Then the result exposes filter alongside version and hashAlgorithm', async () => {
+        // Arrange — reuse a real pack from bundleCreate, but hand-write the v3
+        // header text so it carries @filter (bundleCreate has no --filter yet).
+        const { ctx } = await buildSingleCommitRepo();
+        const created = await bundleCreate(ctx, { all: true });
+        const originalHeader = parseBundleHeader(created.bytes, '<fixture>');
+        const packBytes = created.bytes.subarray(originalHeader.packOffset);
+        const refLines = originalHeader.refs.map((r) => `${r.oid} ${r.name}\n`).join('');
+        const headerText = `# v3 git bundle\n@object-format=sha1\n@filter=blob:none\n${refLines}\n`;
+        const headerEncoded = enc.encode(headerText);
+        const bundleBytes = new Uint8Array(headerEncoded.length + packBytes.length);
+        bundleBytes.set(headerEncoded, 0);
+        bundleBytes.set(packBytes, headerEncoded.length);
+        await ctx.fs.write(BUNDLE_PATH, bundleBytes);
+
+        // Act
+        const result = await bundleVerify(ctx, { path: BUNDLE_PATH });
+
+        // Assert
+        expect(result.version).toBe(3);
+        expect(result.hashAlgorithm).toBe('sha1');
+        expect(result.filter).toEqual({ kind: 'blob-none' });
       });
     });
   });
@@ -906,6 +1067,52 @@ describe('bundleVerify on a repository the acceptance tier rejected', () => {
 
         // Assert
         expect(caught?.data.code).not.toBe('NOT_A_REPOSITORY');
+      });
+    });
+  });
+});
+
+describe('bundleVerify and the optional withAlgorithm capability', () => {
+  describe('Given a same-format bundle and a hash service that cannot switch algorithms', () => {
+    describe('When bundleVerify is called', () => {
+      it('Then it verifies without ever asking the service to switch', async () => {
+        // Arrange — a bundle framed at the repository's OWN algorithm needs no
+        // switch, so the missing capability must not be reached at all.
+        const { ctx } = await buildSingleCommitRepo();
+        const created = await bundleCreate(ctx, { all: true });
+        const { withAlgorithm: _omitted, ...hashWithoutSwitch } = ctx.hash;
+        const restricted: Context = { ...ctx, hash: hashWithoutSwitch };
+        await restricted.fs.write(BUNDLE_PATH, created.bytes);
+        const sut = bundleVerify;
+
+        // Act
+        const result = await sut(restricted, { path: BUNDLE_PATH });
+
+        // Assert
+        expect(result.hashAlgorithm).toBe('sha1');
+        expect(result.prerequisitesPresent).toBe(true);
+        expect(result.recordsCompleteHistory).toBe(true);
+      });
+    });
+  });
+});
+
+describe('bundleVerify filter key exposure', () => {
+  describe('Given a bundle whose header declares no filter capability', () => {
+    describe('When bundleVerify is called', () => {
+      it('Then the result omits the filter key rather than carrying it as undefined', async () => {
+        // Arrange
+        const { ctx } = await buildSingleCommitRepo();
+        const created = await bundleCreate(ctx, { all: true });
+        await ctx.fs.write(BUNDLE_PATH, created.bytes);
+        const sut = bundleVerify;
+
+        // Act
+        const result = await sut(ctx, { path: BUNDLE_PATH });
+
+        // Assert — key PRESENCE is the oracle: `toEqual` cannot tell an absent
+        // optional key from one explicitly present with the value `undefined`.
+        expect('filter' in result).toBe(false);
       });
     });
   });

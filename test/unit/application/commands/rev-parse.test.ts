@@ -90,7 +90,7 @@ const writeIndexFile = async (
     extensions: [],
     trailerSha: new Uint8Array(0),
   };
-  const body = serializeIndex(index);
+  const body = serializeIndex(index, ctx.hashConfig.digestLength);
   const trailer = hexToBytes(await ctx.hash.hashHex(body));
   const framed = new Uint8Array(body.length + trailer.length);
   framed.set(body);
@@ -147,6 +147,23 @@ describe('revParse', () => {
         const ctx = createMemoryContext();
         await seedRepo(ctx, {});
         const oid = '0123456789abcdef0123456789abcdef01234567';
+
+        // Act
+        const result = await revParse(ctx, oid);
+
+        // Assert
+        expect(result).toBe(oid);
+      });
+    });
+  });
+
+  describe('Given a SHA-256 repository and a full 64-hex oid', () => {
+    describe('When revParse', () => {
+      it('Then returns it directly (no lookup)', async () => {
+        // Arrange
+        const ctx = createMemoryContext({ algorithm: 'sha256' });
+        await seedRepo(ctx, {});
+        const oid = 'a'.repeat(64);
 
         // Act
         const result = await revParse(ctx, oid);

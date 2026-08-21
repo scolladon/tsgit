@@ -1,4 +1,4 @@
-import { SHA1_CONFIG, SHA256_CONFIG } from '../../domain/objects/hash-config.js';
+import { configFor } from '../../domain/objects/hash-config.js';
 import { createLruCache } from '../../domain/storage/lru-cache.js';
 import type { CommandRunner } from '../../ports/command-runner.js';
 import { type Context, createContext, type RepositoryLayout } from '../../ports/context.js';
@@ -61,7 +61,7 @@ export function createMemoryContext(options: MemoryAdapterOptions = {}): Context
           bare: false,
           homeDir: options.homeDir,
         };
-  const hashConfig = algorithm === 'sha256' ? SHA256_CONFIG : SHA1_CONFIG;
+  const hashConfig = configFor(algorithm);
   const deltaCache = createLruCache<Uint8Array>(
     options.deltaCacheMaxBytes ?? DEFAULT_DELTA_CACHE_BYTES,
     options.deltaCacheMaxEntries ?? DEFAULT_DELTA_CACHE_ENTRIES,

@@ -94,6 +94,14 @@ an unsafe/empty `name`/`path`/`url` (CVE-2018-17456 lineage) or an already-track
 path (`SUBMODULE_PATH_EXISTS`). Neither the index nor `.gitmodules` is committed —
 that is left to the caller, exactly as git.
 
+A submodule whose remote uses a **different hash algorithm** than the
+superproject refuses `SUBMODULE_OBJECT_FORMAT_MISMATCH` (`{ local, remote }`):
+a cross-width gitlink oid cannot be represented in the superproject's tree. The
+algorithm is read off the clone's own reported `objectFormat`, never inferred
+from a fetched oid's width. The clone into `.git/modules/<name>` has already
+happened when this fires and the partial state is left behind, matching git's
+`error: cannot add a submodule of a different hash algorithm`.
+
 ```ts
 await repo.submodule.add({ url: 'https://host/lib.git', path: 'libs/lib' });
 await repo.submodule.add({ url: 'https://host/lib.git', path: 'libs/lib', branch: 'dev' });

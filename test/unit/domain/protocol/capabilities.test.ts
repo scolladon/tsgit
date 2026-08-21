@@ -5,9 +5,11 @@ import {
   CLIENT_CAPABILITIES_FETCH,
   CLIENT_CAPABILITIES_PUSH,
   formatCapabilities,
+  isSupportedObjectFormat,
   negotiateCapabilities,
   PUSH_CERT,
   parseCapabilities,
+  readObjectFormat,
 } from '../../../../src/domain/protocol/capabilities.js';
 
 describe('parseCapabilities', () => {
@@ -154,6 +156,38 @@ describe('negotiateCapabilities', () => {
   });
 });
 
+describe('readObjectFormat', () => {
+  describe('Given a token list containing object-format=sha256', () => {
+    describe('When readObjectFormat runs', () => {
+      it('Then it returns sha256', () => {
+        // Arrange
+        const caps = ['report-status', 'object-format=sha256', 'ofs-delta'];
+
+        // Act
+        const result = readObjectFormat(caps);
+
+        // Assert
+        expect(result).toBe('sha256');
+      });
+    });
+  });
+
+  describe('Given a token list with no object-format token', () => {
+    describe('When readObjectFormat runs', () => {
+      it('Then it returns sha1', () => {
+        // Arrange
+        const caps = ['report-status', 'ofs-delta'];
+
+        // Act
+        const result = readObjectFormat(caps);
+
+        // Assert
+        expect(result).toBe('sha1');
+      });
+    });
+  });
+});
+
 describe('AGENT constant shape', () => {
   describe('Given AGENT', () => {
     describe('When inspected', () => {
@@ -224,6 +258,31 @@ describe('PUSH_CERT constant', () => {
         // Arrange + Assert
         expect(PUSH_CERT).toBe('push-cert');
       });
+    });
+  });
+});
+
+describe('isSupportedObjectFormat', () => {
+  describe('Given an algorithm name this client implements', () => {
+    describe('When isSupportedObjectFormat runs', () => {
+      it.each(['sha1', 'sha256'])('Then %j is supported', (value) => {
+        // Arrange + Act + Assert
+        expect(isSupportedObjectFormat(value)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a value outside the implemented set', () => {
+    describe('When isSupportedObjectFormat runs', () => {
+      // Each row is its own case so neither arm of the two-operand guard can
+      // be dropped without a failure: a collapsed guard would admit them all.
+      it.each(['sha512', 'SHA1', 'sha-1', 'sha', 'sha2560', ''])(
+        'Then %j is not supported',
+        (value) => {
+          // Arrange + Act + Assert
+          expect(isSupportedObjectFormat(value)).toBe(false);
+        },
+      );
     });
   });
 });

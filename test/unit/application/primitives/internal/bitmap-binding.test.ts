@@ -440,7 +440,7 @@ describe('Given a pack bitmap whose entry header must resolve through the .idx',
       // the wrong reading observable at all.
       const fixture = await buildLinearBitmapFixture(4, { name: 'header-mapping' });
       const idxBytes = await fixture.ctx.fs.read(packIdxPath(fixture.ctx, 'header-mapping'));
-      const index = parsePackIndex(idxBytes);
+      const index = parsePackIndex(idxBytes, 20);
       const packPositions = packPositionMap(index);
       const target = fixture.commitIds.find((id, i) => {
         const indexPosition = indexPositionOf(fixture.ids, id);
@@ -498,7 +498,7 @@ describe('RegisteredPack position mapping — .rev usable, absent, refused', () 
       const fixture = await buildLinearBitmapFixture(3, {
         name: 'rev-usable',
         writeRev: async (ctx, name, idxBytes) => {
-          await writeSyntheticRevIndex(ctx, name, packPositionMap(parsePackIndex(idxBytes)));
+          await writeSyntheticRevIndex(ctx, name, packPositionMap(parsePackIndex(idxBytes, 20)));
         },
       });
 
@@ -533,7 +533,7 @@ describe('RegisteredPack position mapping — .rev usable, absent, refused', () 
       const fixture = await buildLinearBitmapFixture(3, {
         name: 'rev-refused',
         writeRev: async (ctx, name, idxBytes) => {
-          await writeSyntheticRevIndex(ctx, name, packPositionMap(parsePackIndex(idxBytes)), {
+          await writeSyntheticRevIndex(ctx, name, packPositionMap(parsePackIndex(idxBytes, 20)), {
             magic: 0,
           });
         },
@@ -1240,7 +1240,7 @@ describe('Given a pack whose .rev stores index position 0 at every pack position
       const fixture = await buildLinearBitmapFixture(1, {
         name: 'rev-not-a-permutation',
         writeRev: async (ctx, name, idxBytes) => {
-          const objectCount = parsePackIndex(idxBytes).objectCount;
+          const objectCount = parsePackIndex(idxBytes, 20).objectCount;
           await writeSyntheticRevIndex(ctx, name, new Array<number>(objectCount).fill(0));
         },
       });
@@ -1551,7 +1551,7 @@ async function realMidxBinding(
   ids: ReadonlyArray<string>,
 ): Promise<Pick<MidxSpec, 'entries' | 'packNames'>> {
   const idxBytes = await ctx.fs.read(packIdxPath(ctx, name));
-  const index = parsePackIndex(idxBytes);
+  const index = parsePackIndex(idxBytes, 20);
   return {
     packNames: [`pack-${name}.idx`],
     entries: ids.map((id) => ({

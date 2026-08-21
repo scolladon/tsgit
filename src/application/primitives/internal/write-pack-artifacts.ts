@@ -33,7 +33,8 @@ export const buildIdx = async (
   const packShaBytes = hexToBytes(packSha);
   const body = serializePackIndex(entries, packShaBytes, presorted);
   // serializePackIndex writes the pack trailer SHA as the file's first checksum
-  // (20 bytes at the tail of `body`); parsePackIndex expects a second checksum
+  // (packShaBytes.length bytes at the tail of `body`, so 20 or 32 depending on
+  // the repository's algorithm); parsePackIndex expects a second checksum
   // immediately after — the SHA over the body itself. Real git produces both;
   // we follow suit so subsequent `parsePackIndex` reads round-trip cleanly.
   const idxTrailerHex = await ctx.hash.hashHex(body);

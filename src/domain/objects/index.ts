@@ -41,6 +41,8 @@ export { SHA1_CONFIG, SHA256_CONFIG } from './hash-config.js';
 export type { ObjectType } from './header.js';
 export { parseHeader, serializeHeader } from './header.js';
 export * from './object-id.js';
+// Oid pattern
+export { isOid, oidPattern } from './oid-pattern.js';
 // Payload size
 export { payloadByteLength } from './size.js';
 

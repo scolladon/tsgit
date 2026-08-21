@@ -18,16 +18,22 @@ import type { IndexEntry } from '../../domain/git-index/index.js';
 import {
   FILE_MODE,
   type FilePath,
+  type HashConfig,
+  isOid,
   ObjectId,
   type RefName,
-  ZERO_OID,
+  zeroOid,
 } from '../../domain/objects/index.js';
 import { branchCreatedFrom } from '../../domain/reflog/reflog-messages.js';
 import { validateRefName } from '../../domain/refs/index.js';
 import { HEADS_PREFIX } from '../../domain/refs/ref-prefixes.js';
 import { shortBranchName } from '../../domain/refs/short-branch-name.js';
 import { DEFAULT_REMOTE } from '../../domain/remote.js';
-import { submoduleHasModifications, submodulePathExists } from '../../domain/submodule/error.js';
+import {
+  submoduleHasModifications,
+  submoduleObjectFormatMismatch,
+  submodulePathExists,
+} from '../../domain/submodule/error.js';
 import { submoduleCoreWorktree, submoduleGitfile } from '../../domain/submodule/gitlink-path.js';
 import { isUnsafeSubmoduleName } from '../../domain/submodule/name.js';
 import { resolveSubmoduleUrl } from '../../domain/submodule/relative-url.js';
@@ -60,11 +66,10 @@ import {
   type ConfigOperation,
   updateConfigOperations,
 } from '../primitives/update-config.js';
-import { looksLikeObjectId } from '../primitives/validators.js';
 import { walkSubmodules } from '../primitives/walk-submodules.js';
 import { writeObject } from '../primitives/write-object.js';
 import { checkout } from './checkout.js';
-import { clone } from './clone.js';
+import { type CloneResult, clone } from './clone.js';
 import {
   assertOperationalRepository,
   currentBranchRef,
@@ -440,8 +445,8 @@ export interface SubmoduleListResult {
   readonly entries: ReadonlyArray<SubmoduleEntry>;
 }
 
-const coerceRef = (ref: string): RefName | ObjectId =>
-  looksLikeObjectId(ref) ? ObjectId.from(ref) : validateRefName(ref);
+const coerceRef = (ref: string, config: HashConfig): RefName | ObjectId =>
+  isOid(ref, config) ? ObjectId.from(ref) : validateRefName(ref);
 
 export const submoduleList = async (
   ctx: Context,
@@ -454,7 +459,7 @@ export const submoduleList = async (
   await assertValidBooleanConfigInSection(ctx, 'submodule', ['active'], {
     requireSubsection: true,
   });
-  const ref = coerceRef(opts.ref ?? 'HEAD');
+  const ref = coerceRef(opts.ref ?? 'HEAD', ctx.hashConfig);
   const recursive = opts.recursive === true;
   const entries: SubmoduleEntry[] = [];
   for await (const entry of walkSubmodules(ctx, {
@@ -589,6 +594,30 @@ const stageSubmodule = async (
  * Shared by `add` and `update`'s clone-if-missing step; the caller then
  * materialises / checks out the worktree.
  */
+/**
+ * git refuses a submodule whose object format differs from the
+ * superproject's — a cross-width gitlink oid cannot be represented in the
+ * superproject's own tree (`error: cannot add a submodule of a different
+ * hash algorithm`). `clone` always ADOPTS the peer's algorithm for the
+ * child's own on-disk repository (its own doc comment), so by the time this
+ * runs the absorbed gitdir already holds the submodule's true width. The
+ * check compares `clone`'s REPORTED adopted format against the
+ * superproject's — never a width read through `child`, whose Context still
+ * carries the SUPERPROJECT's inherited `hashConfig` here (Context is
+ * immutable, and `clone`'s internally-adopted context never escapes it), and
+ * never an inference from a fetched oid's width. Reading the width off
+ * `fetchedRefs` would leave a hole: `writeFetchedRefs` drops `HEAD`, unsafe
+ * names, and every namespace outside `refs/heads/*` and `refs/tags/*`, so a
+ * peer advertising only e.g. `refs/pull/1/head` clones successfully with an
+ * EMPTY `fetchedRefs` and the guard would silently pass. The submodule URL
+ * comes from `.gitmodules`, so that peer is attacker-influenceable.
+ */
+const assertSameObjectFormat = (ctx: Context, cloned: CloneResult): void => {
+  const remote = cloned.objectFormat;
+  if (remote === ctx.hashConfig.algorithm) return;
+  throw submoduleObjectFormatMismatch(ctx.hashConfig.algorithm, remote);
+};
+
 const cloneSubmoduleInto = async (
   ctx: Context,
   workDir: string,
@@ -597,7 +626,8 @@ const cloneSubmoduleInto = async (
   name: string,
   path: string,
 ): Promise<void> => {
-  await clone(child, { url: resolvedUrl });
+  const cloned = await clone(child, { url: resolvedUrl });
+  assertSameObjectFormat(ctx, cloned);
   await updateConfigOperations(child, [
     { kind: 'set', section: 'core', key: 'worktree', value: submoduleCoreWorktree(name, path) },
   ]);
@@ -621,7 +651,13 @@ const checkoutTrackingBranch = async (child: Context, branch: string): Promise<v
   const oid = await resolveRef(child, `refs/remotes/origin/${branch}` as RefName);
   const ref = `${HEADS_PREFIX}${branch}` as RefName;
   await child.fs.writeUtf8(`${child.layout.gitDir}/${ref}`, `${oid}\n`);
-  await recordRefUpdate(child, ref, ZERO_OID, oid, branchCreatedFrom(`origin/${branch}`));
+  await recordRefUpdate(
+    child,
+    ref,
+    zeroOid(child.hashConfig),
+    oid,
+    branchCreatedFrom(`origin/${branch}`),
+  );
   await updateConfigOperations(child, [
     { kind: 'set', section: 'branch', subsection: branch, key: 'remote', value: 'origin' },
     { kind: 'set', section: 'branch', subsection: branch, key: 'merge', value: ref },

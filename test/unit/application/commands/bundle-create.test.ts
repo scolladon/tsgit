@@ -5,6 +5,7 @@ import {
   type BundleCreateOptions,
   type BundleCreateResult,
   bundleCreate,
+  selectBundleVersion,
 } from '../../../../src/application/commands/bundle-create.js';
 import { invalidateConfigCache } from '../../../../src/application/primitives/config-read.js';
 import { createCommit } from '../../../../src/application/primitives/create-commit.js';
@@ -66,6 +67,12 @@ const initRepo = async (): Promise<Context> => {
   return ctx;
 };
 
+const initRepoWithAlgorithm = async (algorithm: 'sha1' | 'sha256'): Promise<Context> => {
+  const ctx = createMemoryContext({ algorithm });
+  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+  return ctx;
+};
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Repo fixtures
 // ─────────────────────────────────────────────────────────────────────────────
@@ -77,6 +84,16 @@ interface SingleCommitRepo {
 
 const buildSingleCommitRepo = async (): Promise<SingleCommitRepo> => {
   const ctx = await initRepo();
+  const tree1 = await writeTree(ctx, []);
+  const commit1 = await makeCommitObj(ctx, tree1, [], 'initial commit', 1);
+  await setRef(ctx, 'refs/heads/main', commit1);
+  return { ctx, commit1 };
+};
+
+const buildSingleCommitRepoWithAlgorithm = async (
+  algorithm: 'sha1' | 'sha256',
+): Promise<SingleCommitRepo> => {
+  const ctx = await initRepoWithAlgorithm(algorithm);
   const tree1 = await writeTree(ctx, []);
   const commit1 = await makeCommitObj(ctx, tree1, [], 'initial commit', 1);
   await setRef(ctx, 'refs/heads/main', commit1);
@@ -620,11 +637,248 @@ describe('bundleCreate', () => {
     });
   });
 
+  // ── Bundle version selection ──────────────────────────────────────────────
+
+  describe('Given a SHA-256 repository', () => {
+    describe('When bundleCreate runs with no version option', () => {
+      it('Then the result version is 3 and the header carries @object-format=sha256', async () => {
+        // Arrange
+        const { ctx } = await buildSingleCommitRepoWithAlgorithm('sha256');
+
+        // Act
+        const result = await bundleCreate(ctx, { all: true });
+
+        // Assert
+        expect(result.version).toBe(3);
+        const headerText = new TextDecoder().decode(result.bytes.subarray(0, 38));
+        expect(headerText).toBe('# v3 git bundle\n@object-format=sha256\n');
+      });
+    });
+  });
+
+  describe('Given a SHA-1 repository and no options', () => {
+    describe('When bundleCreate runs', () => {
+      it('Then the version is 2 and the header magic carries no capability line (R6)', async () => {
+        // Arrange — SHA-1 output must be unaffected by version selection.
+        const { ctx } = await buildSingleCommitRepoWithAlgorithm('sha1');
+
+        // Act
+        const result = await bundleCreate(ctx, { all: true });
+
+        // Assert
+        expect(result.version).toBe(2);
+        const headerText = new TextDecoder().decode(result.bytes.subarray(0, 16));
+        expect(headerText).toBe('# v2 git bundle\n');
+      });
+    });
+  });
+
+  describe('Given a SHA-1 repository and version 3 requested', () => {
+    describe('When bundleCreate runs', () => {
+      it('Then it writes v3 with @object-format=sha1', async () => {
+        // Arrange
+        const { ctx } = await buildSingleCommitRepoWithAlgorithm('sha1');
+
+        // Act
+        const result = await bundleCreate(ctx, { all: true, version: 3 });
+
+        // Assert
+        expect(result.version).toBe(3);
+        const headerText = new TextDecoder().decode(result.bytes.subarray(0, 36));
+        expect(headerText).toBe('# v3 git bundle\n@object-format=sha1\n');
+      });
+    });
+  });
+
+  describe('Given a SHA-256 repository and version 2 requested', () => {
+    describe('When bundleCreate runs', () => {
+      it('Then it throws BUNDLE_UNSUPPORTED_VERSION with version 2 and no path (the serialize arm)', async () => {
+        // Arrange
+        const { ctx } = await buildSingleCommitRepoWithAlgorithm('sha256');
+
+        // Act
+        let thrown: unknown;
+        try {
+          await bundleCreate(ctx, { all: true, version: 2 });
+        } catch (err) {
+          thrown = err;
+        }
+
+        // Assert
+        expect(thrown).toBeInstanceOf(TsgitError);
+        const data = (thrown as TsgitError).data as {
+          code: string;
+          version: number;
+          path?: string;
+        };
+        expect(data.code).toBe('BUNDLE_UNSUPPORTED_VERSION');
+        expect(data.version).toBe(2);
+        expect(data.path).toBeUndefined();
+      });
+    });
+  });
+
+  describe.each([
+    { label: 'version 1', requested: 1 },
+    { label: 'version 4', requested: 4 },
+  ])('Given a repository and $label requested', ({ requested }) => {
+    describe('When bundleCreate runs', () => {
+      it('Then it throws BUNDLE_UNSUPPORTED_VERSION with the requested version', async () => {
+        // Arrange
+        const { ctx } = await buildSingleCommitRepoWithAlgorithm('sha1');
+
+        // Act
+        let thrown: unknown;
+        try {
+          await bundleCreate(ctx, { all: true, version: requested as unknown as 2 });
+        } catch (err) {
+          thrown = err;
+        }
+
+        // Assert
+        expect(thrown).toBeInstanceOf(TsgitError);
+        const data = (thrown as TsgitError).data as { code: string; version: number };
+        expect(data.code).toBe('BUNDLE_UNSUPPORTED_VERSION');
+        expect(data.version).toBe(requested);
+      });
+    });
+  });
+
   // ── Non-commit boundary object (invariant guard) ──────────────────────────
   // assertBoundaryCommit is tested in a standalone describe below because
   // triggering it through bundleCreate requires defeating readObject hash
   // verification — the invariant (boundary oids always come from
   // peel-to-commit) makes the branch structurally unreachable in normal use.
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// selectBundleVersion — the pure version-selection rule, unit-tested directly
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('selectBundleVersion', () => {
+  describe('Given algorithm sha1, no filter, no requested version', () => {
+    describe('When selectBundleVersion runs', () => {
+      it('Then it returns 2', () => {
+        // Arrange
+        const sut = selectBundleVersion;
+
+        // Act
+        const result = sut({ algorithm: 'sha1', filter: false });
+
+        // Assert
+        expect(result).toBe(2);
+      });
+    });
+  });
+
+  describe('Given algorithm sha256, no filter, no requested version', () => {
+    describe('When selectBundleVersion runs', () => {
+      it('Then it returns 3', () => {
+        // Arrange
+        const sut = selectBundleVersion;
+
+        // Act
+        const result = sut({ algorithm: 'sha256', filter: false });
+
+        // Assert
+        expect(result).toBe(3);
+      });
+    });
+  });
+
+  describe('Given algorithm sha1, a filter present, no requested version', () => {
+    describe('When selectBundleVersion runs', () => {
+      it('Then it returns 3 — the filter alone triggers v3, independent of the algorithm', () => {
+        // Arrange
+        const sut = selectBundleVersion;
+
+        // Act
+        const result = sut({ algorithm: 'sha1', filter: true });
+
+        // Assert
+        expect(result).toBe(3);
+      });
+    });
+  });
+
+  describe('Given algorithm sha1, no filter, version 2 requested', () => {
+    describe('When selectBundleVersion runs', () => {
+      it('Then it returns 2', () => {
+        // Arrange
+        const sut = selectBundleVersion;
+
+        // Act
+        const result = sut({ algorithm: 'sha1', filter: false, requested: 2 });
+
+        // Assert
+        expect(result).toBe(2);
+      });
+    });
+  });
+
+  describe('Given algorithm sha256, no filter, version 3 requested', () => {
+    describe('When selectBundleVersion runs', () => {
+      it('Then it returns 3', () => {
+        // Arrange
+        const sut = selectBundleVersion;
+
+        // Act
+        const result = sut({ algorithm: 'sha256', filter: false, requested: 3 });
+
+        // Assert
+        expect(result).toBe(3);
+      });
+    });
+  });
+
+  describe('Given algorithm sha256, no filter, version 2 requested', () => {
+    describe('When selectBundleVersion runs', () => {
+      it('Then it throws BUNDLE_UNSUPPORTED_VERSION with version 2', () => {
+        // Arrange
+        const sut = selectBundleVersion;
+
+        // Act
+        let thrown: unknown;
+        try {
+          sut({ algorithm: 'sha256', filter: false, requested: 2 });
+        } catch (err) {
+          thrown = err;
+        }
+
+        // Assert
+        expect(thrown).toBeInstanceOf(TsgitError);
+        const data = (thrown as TsgitError).data as { code: string; version: number };
+        expect(data.code).toBe('BUNDLE_UNSUPPORTED_VERSION');
+        expect(data.version).toBe(2);
+      });
+    });
+  });
+
+  describe.each([{ requested: 1 }, { requested: 4 }])(
+    'Given requested version $requested outside {2, 3}',
+    ({ requested }) => {
+      describe('When selectBundleVersion runs', () => {
+        it('Then it throws BUNDLE_UNSUPPORTED_VERSION with that version', () => {
+          // Arrange
+          const sut = selectBundleVersion;
+
+          // Act
+          let thrown: unknown;
+          try {
+            sut({ algorithm: 'sha1', filter: false, requested });
+          } catch (err) {
+            thrown = err;
+          }
+
+          // Assert
+          expect(thrown).toBeInstanceOf(TsgitError);
+          const data = (thrown as TsgitError).data as { code: string; version: number };
+          expect(data.code).toBe('BUNDLE_UNSUPPORTED_VERSION');
+          expect(data.version).toBe(requested);
+        });
+      });
+    },
+  );
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

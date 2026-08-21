@@ -553,7 +553,7 @@ describe.skipIf(!GIT_AVAILABLE)('.rev write surface, against real git', () => {
       const written = await packObjects(sut, { wants: ['HEAD'] });
       const artefacts = packArtefactPaths(dir);
       const idxBytes = await readFile(artefacts.idx);
-      const parsedIdx = parsePackIndex(idxBytes);
+      const parsedIdx = parsePackIndex(idxBytes, 20);
 
       // Act
       const load = await loadPackRevIndex(
@@ -611,7 +611,7 @@ describe.skipIf(!GIT_AVAILABLE)('.rev write surface, against real git', () => {
       await removeLooseObjectDirs(dir);
       // Positive oracle at scale: the 5,000-object .rev itself is usable and
       // agrees with the .idx-derived position map.
-      const parsedIdx = parsePackIndex(new Uint8Array(await readFile(written.idxPath)));
+      const parsedIdx = parsePackIndex(new Uint8Array(await readFile(written.idxPath)), 20);
       const revPath = `${written.packPath.slice(0, -'.pack'.length)}.rev`;
       const scaleCtx = trackedNodeContext(dir);
       const load = await loadPackRevIndex(

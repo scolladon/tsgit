@@ -9,7 +9,6 @@ import {
   bundleBadHeader,
   bundleEmpty,
   bundleReadFailed,
-  bundleUnsupportedVersion,
   type CommandError,
   cannotDeleteCheckedOutBranch,
   cannotDescribe,
@@ -34,6 +33,7 @@ import {
   invalidOption,
   invalidPushDefault,
   invalidUrl,
+  MAX_BUNDLE_DETAIL_IN_ERROR,
   MAX_HOOK_STDERR_IN_ERROR,
   maxRefspecsExceeded,
   mergeHasConflicts,
@@ -49,6 +49,7 @@ import {
   notesRefOutside,
   nothingToCommit,
   noUpstreamConfigured,
+  objectFormatConflict,
   operationInProgress,
   pathspecBeyondSymlink,
   pathspecNoMatch,
@@ -804,6 +805,20 @@ describe('domain commands error — factory data', () => {
     });
   });
 
+  describe('Given a requested, declared, and source', () => {
+    describe('When objectFormatConflict', () => {
+      it('Then data carries all three verbatim', () => {
+        // Arrange + Assert
+        expect(objectFormatConflict('sha256', 'sha1', 'option').data).toEqual({
+          code: 'OBJECT_FORMAT_CONFLICT',
+          requested: 'sha256',
+          declared: 'sha1',
+          source: 'option',
+        });
+      });
+    });
+  });
+
   describe('Given a hook, exit code, and stderr', () => {
     describe('When hookFailed', () => {
       it('Then data carries every field verbatim', () => {
@@ -1426,6 +1441,14 @@ describe('domain commands error — extractDetail message formatting', () => {
       'ADAPTER_UNAVAILABLE: adapter unavailable for runtime memory: k',
     ],
     [
+      { code: 'OBJECT_FORMAT_CONFLICT', requested: 'sha256', declared: 'sha1', source: 'option' },
+      'OBJECT_FORMAT_CONFLICT: object format conflict: option requested sha256 but sha1 was declared',
+    ],
+    [
+      { code: 'OBJECT_FORMAT_CONFLICT', requested: 'sha1', declared: 'sha256', source: 'hash' },
+      'OBJECT_FORMAT_CONFLICT: object format conflict: hash requested sha1 but sha256 was declared',
+    ],
+    [
       {
         code: 'WORKING_TREE_FILE_TOO_LARGE',
         path: '/repo/big.bin' as FilePath,
@@ -1582,8 +1605,32 @@ describe('domain commands error — extractDetail message formatting', () => {
       "BUNDLE_BAD_HEADER: '/bad.bundle' does not look like a v2 or v3 bundle file",
     ],
     [
-      { code: 'BUNDLE_UNSUPPORTED_VERSION', version: 3, path: '/v3.bundle' },
-      "BUNDLE_UNSUPPORTED_VERSION: unsupported bundle version 3 in '/v3.bundle'",
+      {
+        code: 'BUNDLE_BAD_HEADER',
+        path: '/bad.bundle',
+        reason: 'malformed-header',
+        line: '@object-format=sha512',
+        length: 22,
+      },
+      'BUNDLE_BAD_HEADER: unrecognized header: @object-format=sha512 (22)',
+    ],
+    [
+      {
+        code: 'BUNDLE_BAD_HEADER',
+        path: '/bad.bundle',
+        reason: 'unknown-capability',
+        capability: 'bogus=1',
+      },
+      "BUNDLE_BAD_HEADER: unknown capability 'bogus=1'",
+    ],
+    [
+      {
+        code: 'BUNDLE_BAD_HEADER',
+        path: '/bad.bundle',
+        reason: 'unknown-hash-algorithm',
+        algorithm: 'sha512',
+      },
+      'BUNDLE_BAD_HEADER: unrecognized bundle hash algorithm: sha512',
     ],
     [
       { code: 'BUNDLE_UNSUPPORTED_VERSION', version: 3 },
@@ -1596,6 +1643,15 @@ describe('domain commands error — extractDetail message formatting', () => {
         objectType: 'tree',
       } as unknown as CommandError,
       `BUNDLE_PREREQUISITE_NOT_COMMIT: boundary object ${'a'.repeat(40)} is not a commit (got tree)`,
+    ],
+    [
+      {
+        code: 'BUNDLE_PREREQUISITE_ALGORITHM_MISMATCH',
+        oid: 'b'.repeat(64),
+        bundleAlgorithm: 'sha256',
+        localAlgorithm: 'sha1',
+      } as unknown as CommandError,
+      `BUNDLE_PREREQUISITE_ALGORITHM_MISMATCH: missing mapping of ${'b'.repeat(64)} to sha1`,
     ],
   ];
 
@@ -1639,32 +1695,72 @@ describe('domain commands error — extractDetail message formatting', () => {
   });
 
   describe('Given the bundleBadHeader error helper', () => {
-    describe('When called with path /bad.bundle', () => {
-      it.each([['not-a-bundle'], ['malformed-header']] as const)(
-        'Then data carries reason=%s',
-        (reason) => {
-          // Arrange + Act
-          const result = bundleBadHeader('/bad.bundle', reason);
+    describe('When called with path /bad.bundle and a reason carrying no extra fields', () => {
+      it.each([['not-a-bundle']] as const)('Then data carries reason=%s', (reason) => {
+        // Arrange + Act
+        const result = bundleBadHeader('/bad.bundle', { reason });
 
-          // Assert
-          expect(result.data).toEqual({
-            code: 'BUNDLE_BAD_HEADER',
-            path: '/bad.bundle',
-            reason,
-          });
-        },
-      );
+        // Assert
+        expect(result.data).toEqual({
+          code: 'BUNDLE_BAD_HEADER',
+          path: '/bad.bundle',
+          reason,
+        });
+      });
     });
-  });
 
-  describe('Given the bundleUnsupportedVersion error helper', () => {
-    describe('When called with path and version 3', () => {
-      it('Then data contains the path and version', () => {
-        // Arrange + Assert
-        expect(bundleUnsupportedVersion('/v3.bundle', 3).data).toEqual({
-          code: 'BUNDLE_UNSUPPORTED_VERSION',
-          path: '/v3.bundle',
-          version: 3,
+    describe('When called with reason malformed-header', () => {
+      it('Then data carries the offending line and its byte length', () => {
+        // Arrange + Act
+        const result = bundleBadHeader('/bad.bundle', {
+          reason: 'malformed-header',
+          line: '@bogus',
+          length: 6,
+        });
+
+        // Assert
+        expect(result.data).toEqual({
+          code: 'BUNDLE_BAD_HEADER',
+          path: '/bad.bundle',
+          reason: 'malformed-header',
+          line: '@bogus',
+          length: 6,
+        });
+      });
+    });
+
+    describe('When called with reason unknown-capability', () => {
+      it('Then data carries the capability text verbatim', () => {
+        // Arrange + Act
+        const result = bundleBadHeader('/bad.bundle', {
+          reason: 'unknown-capability',
+          capability: 'bogus=1',
+        });
+
+        // Assert
+        expect(result.data).toEqual({
+          code: 'BUNDLE_BAD_HEADER',
+          path: '/bad.bundle',
+          reason: 'unknown-capability',
+          capability: 'bogus=1',
+        });
+      });
+    });
+
+    describe('When called with reason unknown-hash-algorithm', () => {
+      it('Then data carries the algorithm value', () => {
+        // Arrange + Act
+        const result = bundleBadHeader('/bad.bundle', {
+          reason: 'unknown-hash-algorithm',
+          algorithm: 'sha512',
+        });
+
+        // Assert
+        expect(result.data).toEqual({
+          code: 'BUNDLE_BAD_HEADER',
+          path: '/bad.bundle',
+          reason: 'unknown-hash-algorithm',
+          algorithm: 'sha512',
         });
       });
     });
@@ -1852,6 +1948,79 @@ describe('domain commands error — extractDetail message formatting', () => {
           code: 'GREP_LINE_TOO_LONG',
           length: 536_870_889,
           limit: 536_870_888,
+        });
+      });
+    });
+  });
+});
+
+describe('bundle header detail bound', () => {
+  // Bundle bytes are untrusted, so every echoed header detail is sanitized and
+  // bounded. Each reason carries its own bounded field, and a reason whose arm
+  // stopped bounding would return the caller's bytes verbatim.
+  describe('Given a malformed-header line longer than the bound', () => {
+    describe('When bundleBadHeader builds the error', () => {
+      it('Then the echoed line is truncated to the bound', () => {
+        // Arrange
+        const oversized = 'x'.repeat(MAX_BUNDLE_DETAIL_IN_ERROR + 50);
+
+        // Act
+        const result = bundleBadHeader('/bad.bundle', {
+          reason: 'malformed-header',
+          line: oversized,
+          length: oversized.length,
+        });
+
+        // Assert — length reports the ORIGINAL byte count, line is bounded
+        expect(result.data).toEqual({
+          code: 'BUNDLE_BAD_HEADER',
+          path: '/bad.bundle',
+          reason: 'malformed-header',
+          line: 'x'.repeat(MAX_BUNDLE_DETAIL_IN_ERROR),
+          length: oversized.length,
+        });
+      });
+    });
+  });
+
+  describe('Given an unknown-hash-algorithm value longer than the bound', () => {
+    describe('When bundleBadHeader builds the error', () => {
+      it('Then the echoed algorithm is truncated to the bound', () => {
+        // Arrange
+        const oversized = 'y'.repeat(MAX_BUNDLE_DETAIL_IN_ERROR + 50);
+
+        // Act
+        const result = bundleBadHeader('/bad.bundle', {
+          reason: 'unknown-hash-algorithm',
+          algorithm: oversized,
+        });
+
+        // Assert
+        expect(result.data).toEqual({
+          code: 'BUNDLE_BAD_HEADER',
+          path: '/bad.bundle',
+          reason: 'unknown-hash-algorithm',
+          algorithm: 'y'.repeat(MAX_BUNDLE_DETAIL_IN_ERROR),
+        });
+      });
+    });
+  });
+
+  describe('Given an unknown-hash-algorithm value carrying control bytes', () => {
+    describe('When bundleBadHeader builds the error', () => {
+      it('Then the control bytes are escaped', () => {
+        // Arrange + Act
+        const result = bundleBadHeader('/bad.bundle', {
+          reason: 'unknown-hash-algorithm',
+          algorithm: 'sha\x00256',
+        });
+
+        // Assert
+        expect(result.data).toEqual({
+          code: 'BUNDLE_BAD_HEADER',
+          path: '/bad.bundle',
+          reason: 'unknown-hash-algorithm',
+          algorithm: 'sha\\x00256',
         });
       });
     });

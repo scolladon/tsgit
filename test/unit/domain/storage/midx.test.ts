@@ -1651,6 +1651,25 @@ describe('midx', () => {
           expect(result).toBeUndefined();
         });
       });
+
+      describe('When an id of the WRONG WIDTH is looked up', () => {
+        it('Then it is absent, never a fabricated hit on an unrelated entry', () => {
+          // Arrange — a 64-hex id is a legal ObjectId, so it reaches the search
+          // as ordinary input against this 20-byte-oid midx. Comparing it would
+          // run off the end of the stored slot: `stored[k] - undefined` is NaN,
+          // which is neither < 0 nor > 0, so an unguarded search settles on the
+          // midpoint and reports an object nobody asked for.
+          const spec = baseSpec();
+          const midx = parseMultiPackIndex(buildMidx(spec), spec.digestLength);
+          const sut = lookupMidxPosition;
+
+          // Act
+          const result = sut(midx, oid('01', 64));
+
+          // Assert
+          expect(result).toBeUndefined();
+        });
+      });
     });
   });
 

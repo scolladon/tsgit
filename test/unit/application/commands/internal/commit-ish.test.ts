@@ -55,6 +55,48 @@ describe('resolveCommitIsh', () => {
     });
   });
 
+  describe('Given a SHA-256 repository and an exact 64-hex object id', () => {
+    describe('When resolved', () => {
+      it('Then returns it verbatim', async () => {
+        // Arrange
+        const ctx = createMemoryContext({ algorithm: 'sha256' });
+        await init(ctx);
+        const id = 'a'.repeat(64);
+
+        // Act
+        const result = await resolveCommitIsh(ctx, id);
+
+        // Assert
+        expect(result).toBe(id);
+      });
+    });
+  });
+
+  describe('Given a SHA-256 repository with one loose object', () => {
+    describe('When a 40-hex prefix of its id is resolved', () => {
+      it('Then it is NOT taken verbatim — it resolves via the prefix scan to the full 64-hex id', async () => {
+        // Arrange — this is the trap: under a permissive 40-OR-64 check, this
+        // 40-char string would be (wrongly) accepted as a full oid and
+        // returned truncated instead of reaching resolveOidPrefix.
+        const ctx = createMemoryContext({ algorithm: 'sha256' });
+        await init(ctx);
+        const id = await writeObject(ctx, {
+          type: 'blob',
+          id: '' as ObjectId,
+          content: new Uint8Array([0x9a]),
+        });
+        const prefix40 = id.slice(0, 40);
+
+        // Act
+        const result = await resolveCommitIsh(ctx, prefix40);
+
+        // Assert
+        expect(result).toBe(id);
+        expect(result).not.toBe(prefix40);
+      });
+    });
+  });
+
   describe('Given an abbreviated object id matching a commit', () => {
     describe('When resolved', () => {
       it('Then resolves it to the full commit id', async () => {

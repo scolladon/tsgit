@@ -39,6 +39,15 @@ await bare.status();             // throws WORK_TREE_REQUIRED — there is no wo
 
 `gitDir`, `workDir`, `bare`, and `ceilingDirs` — the argument equivalents of git's `--git-dir`, `--work-tree`, and `GIT_CEILING_DIRECTORIES` — let a caller pin the layout instead of relying on discovery. None of them read an environment variable; every input is an explicit argument.
 
+An existing repository's hash algorithm (SHA-1 or SHA-256) is detected automatically from its own `extensions.objectFormat` — you never need to pass `algorithm` to open one. Pass it explicitly only when there is no repository yet to detect a format from — `init` or `clone` into a fresh target:
+
+```ts
+const repo = await openRepository({ cwd: '/tmp/new-repo', algorithm: 'sha256' });
+await repo.init();
+```
+
+Passing `algorithm` that disagrees with a repository's own declared format — or with a caller-supplied `hash` adapter's algorithm — throws `OBJECT_FORMAT_CONFLICT` rather than silently mismatching object ids. See [errors](../use/errors.md#repository-state).
+
 ```ts
 // Explicit gitDir with a work tree elsewhere
 const repo = await openRepository({

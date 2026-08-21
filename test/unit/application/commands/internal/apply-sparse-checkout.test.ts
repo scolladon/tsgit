@@ -47,7 +47,7 @@ const seedIndex = async (ctx: Context, entries: ReadonlyArray<IndexEntry>): Prom
     extensions: [],
     trailerSha: new Uint8Array(0),
   };
-  const body = serializeIndex(index);
+  const body = serializeIndex(index, ctx.hashConfig.digestLength);
   const checksum = await ctx.hash.hash(body);
   const bytes = new Uint8Array(body.length + checksum.length);
   bytes.set(body, 0);

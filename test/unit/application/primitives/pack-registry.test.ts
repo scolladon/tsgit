@@ -5071,7 +5071,7 @@ describe('PackRegistry.lookup — multi-pack-index authority', () => {
           { kind: 'base', type: 'blob', content: new TextEncoder().encode('header-memo-2') },
         ]);
         const idxBytes = await ctx.fs.read(`${ctx.layout.gitDir}/objects/pack/pack-shared.idx`);
-        const index = parsePackIndex(idxBytes);
+        const index = parsePackIndex(idxBytes, 20);
         const id0 = ids[0] as ObjectId;
         const id1 = ids[1] as ObjectId;
         const offset0 = lookupPackIndex(index, id0)!;
@@ -5306,13 +5306,13 @@ const revAccelIdxPath = (ctx: Context, name: string): string =>
 /** The pack-position map the pack's own `.idx` implies — a correct `.rev` body. */
 async function revAccelCorrectBody(ctx: Context, name: string): Promise<Uint32Array> {
   const idxBytes = await ctx.fs.read(revAccelIdxPath(ctx, name));
-  return packPositionMap(parsePackIndex(idxBytes));
+  return packPositionMap(parsePackIndex(idxBytes, 20));
 }
 
 /** `entryOffsets` for a written pack's `.idx` — the sort's own raw input. */
 async function revAccelRawOffsets(ctx: Context, name: string): Promise<ReadonlyArray<number>> {
   const idxBytes = await ctx.fs.read(revAccelIdxPath(ctx, name));
-  return entryOffsets(parsePackIndex(idxBytes));
+  return entryOffsets(parsePackIndex(idxBytes, 20));
 }
 
 /** The expected offset table, in the same `Float64Array` shape both arms of
@@ -5787,7 +5787,7 @@ describe('RegisteredPack.packPositions', () => {
         const idxBytes = await withoutRev.fs.read(
           revAccelIdxPath(withoutRev, 'positions-identity'),
         );
-        const expected = packPositionMap(parsePackIndex(idxBytes));
+        const expected = packPositionMap(parsePackIndex(idxBytes, 20));
 
         // Act
         const [withRevPack] = await createPackRegistry(withRev).all();
@@ -5816,7 +5816,7 @@ describe('RegisteredPack.packPositions', () => {
           { magic: 0 },
         );
         const idxBytes = await ctx.fs.read(revAccelIdxPath(ctx, 'positions-refused'));
-        const expected = packPositionMap(parsePackIndex(idxBytes));
+        const expected = packPositionMap(parsePackIndex(idxBytes, 20));
 
         // Act
         const [pack] = await getPackRegistry(ctx).all();
@@ -5839,7 +5839,7 @@ describe('RegisteredPack.packPositions', () => {
         const outOfRange = [correct.length, ...correct.slice(1)];
         await writeSyntheticRevIndex(ctx, 'positions-oob', outOfRange);
         const idxBytes = await ctx.fs.read(revAccelIdxPath(ctx, 'positions-oob'));
-        const expected = packPositionMap(parsePackIndex(idxBytes));
+        const expected = packPositionMap(parsePackIndex(idxBytes, 20));
 
         // Act
         const [pack] = await getPackRegistry(ctx).all();
@@ -5864,7 +5864,7 @@ describe('RegisteredPack.packPositions', () => {
           await revAccelCorrectBody(ctx, 'positions-unreadable'),
         );
         const idxBytes = await ctx.fs.read(revAccelIdxPath(ctx, 'positions-unreadable'));
-        const expected = packPositionMap(parsePackIndex(idxBytes));
+        const expected = packPositionMap(parsePackIndex(idxBytes, 20));
         const wrapped = withUnreadableRev(ctx);
 
         // Act
@@ -6011,7 +6011,7 @@ describe('RegisteredPack.offsetTable — what the fallback warns say', () => {
           ...correct.slice(1),
         ]);
         const idxBytes = await ctx.fs.read(revAccelIdxPath(ctx, 'positions-boundary'));
-        const expected = packPositionMap(parsePackIndex(idxBytes));
+        const expected = packPositionMap(parsePackIndex(idxBytes, 20));
 
         // Act
         const [pack] = await getPackRegistry(ctx).all();

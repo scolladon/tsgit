@@ -15,17 +15,28 @@ const DIRC_SIGNATURE = 0x44495243;
 const INDEX_HEADER_SIZE = 12;
 /**
  * The width of EVERY oid this module reads — an entry's own sha, the file's
- * trailing checksum, and a cache-tree entry's oid alike. The index parser is
- * SHA-1-only, deliberately and as a whole: git sizes all three together from
- * the repository's hash algorithm, so widening one without the others would
- * mis-frame the file rather than read a SHA-256 index. That is why
- * `parseCacheTree` takes no `digestLength` parameter the way the pack-side
- * parsers do — the width is not a per-function choice here.
+ * trailing checksum, and a cache-tree entry's oid alike — comes from a
+ * single `digestLength` every entry point below takes as its last parameter
+ * (the caller's `ctx.hashConfig.digestLength`). Git sizes all three together
+ * from the repository's hash algorithm, so widening one without the others
+ * would mis-frame the file rather than read a SHA-256 index — that is why
+ * `parseCacheTree` takes the SAME parameter `parseIndex` does, rather than
+ * each entry point choosing its own width. `entryHeaderSize`/`flagsOffset`
+ * below are the two derived offsets every function needs.
  */
-const INDEX_OID_LENGTH = 20;
-const INDEX_CHECKSUM_SIZE = INDEX_OID_LENGTH;
-const ENTRY_HEADER_SIZE = 62;
-const CACHE_TREE_OID_LENGTH = INDEX_OID_LENGTH;
+const STAT_FIELDS_SIZE = 40;
+const FLAGS_WORD_SIZE = 2;
+
+/** Fixed portion of one entry: 40 stat bytes + the oid + the flags word. */
+function entryHeaderSize(digestLength: 20 | 32): number {
+  return STAT_FIELDS_SIZE + digestLength + FLAGS_WORD_SIZE;
+}
+
+/** Byte offset of the flags word, relative to an entry's own start. */
+function flagsOffset(digestLength: 20 | 32): number {
+  return STAT_FIELDS_SIZE + digestLength;
+}
+
 const CACHE_TREE_SPACE = 0x20;
 const CACHE_TREE_LF = 0x0a;
 /**
@@ -37,7 +48,7 @@ const CACHE_TREE_LF = 0x0a;
  */
 const MAX_CACHE_TREE_DEPTH = 1024;
 
-export function parseIndex(bytes: Uint8Array): GitIndex {
+export function parseIndex(bytes: Uint8Array, digestLength: 20 | 32): GitIndex {
   if (bytes.length < INDEX_HEADER_SIZE) {
     throw invalidIndexHeader('truncated header');
   }
@@ -53,9 +64,11 @@ export function parseIndex(bytes: Uint8Array): GitIndex {
     throw invalidIndexHeader(`unsupported version: ${version}`);
   }
 
+  const trailerSize = digestLength;
+  const headerSize = entryHeaderSize(digestLength);
   const entryCount = view.getUint32(8);
-  const maxEntryBytes = bytes.length - INDEX_HEADER_SIZE - INDEX_CHECKSUM_SIZE;
-  if (entryCount * ENTRY_HEADER_SIZE > maxEntryBytes) {
+  const maxEntryBytes = bytes.length - INDEX_HEADER_SIZE - trailerSize;
+  if (entryCount * headerSize > maxEntryBytes) {
     throw invalidIndexHeader(`entry count ${entryCount} exceeds file capacity`);
   }
 
@@ -64,7 +77,7 @@ export function parseIndex(bytes: Uint8Array): GitIndex {
 
   for (let i = 0; i < entryCount; i++) {
     const entryStart = offset;
-    if (offset + ENTRY_HEADER_SIZE > bytes.length - INDEX_CHECKSUM_SIZE) {
+    if (offset + headerSize > bytes.length - trailerSize) {
       throw invalidIndexEntry(offset, 'truncated entry');
     }
 
@@ -79,14 +92,20 @@ export function parseIndex(bytes: Uint8Array): GitIndex {
     const gid = view.getUint32(offset + 32);
     const fileSize = view.getUint32(offset + 36);
 
-    const shaBytes = bytes.subarray(offset + 40, offset + 40 + INDEX_OID_LENGTH);
+    const shaBytes = bytes.subarray(offset + 40, offset + 40 + digestLength);
     const id = bytesToHex(shaBytes) as ObjectId;
 
-    const flagsRaw = view.getUint16(offset + 60);
-    const { flags, extendedSize } = decodeEntryFlags(view, offset, version, bytes.length);
+    const flagsRaw = view.getUint16(offset + flagsOffset(digestLength));
+    const { flags, extendedSize } = decodeEntryFlags(
+      view,
+      offset,
+      version,
+      bytes.length,
+      digestLength,
+    );
 
     const mode = normalizeFileMode(rawMode.toString(8)) as FileMode;
-    offset += ENTRY_HEADER_SIZE + extendedSize;
+    offset += headerSize + extendedSize;
 
     const nulEnd = findNul(bytes, offset);
     if (nulEnd === -1) {
@@ -121,35 +140,38 @@ export function parseIndex(bytes: Uint8Array): GitIndex {
     });
   }
 
-  const extensions = parseExtensions(bytes, offset, view);
-  const trailerSha = bytes.slice(bytes.length - INDEX_CHECKSUM_SIZE);
+  const extensions = parseExtensions(bytes, offset, view, trailerSize);
+  const trailerSha = bytes.slice(bytes.length - trailerSize);
 
   return { version: version as 2 | 3, entries, extensions, trailerSha };
 }
 
 /**
- * Decode an entry's flags. Reads the 16-bit `flags` word at `offset + 60`;
- * when its extended (`0x4000`) bit is set, also reads the index-v3 16-bit
- * extended-flags word that follows the 62-byte fixed header. Returns the
- * decoded {@link IndexEntryFlags} plus `extendedSize` (`2` for an extended
- * entry, `0` otherwise) so the caller can advance the cursor.
+ * Decode an entry's flags. Reads the 16-bit `flags` word at
+ * `offset + flagsOffset(digestLength)`; when its extended (`0x4000`) bit is
+ * set, also reads the index-v3 16-bit extended-flags word that follows the
+ * `entryHeaderSize(digestLength)`-byte fixed header. Returns the decoded
+ * {@link IndexEntryFlags} plus `extendedSize` (`2` for an extended entry, `0`
+ * otherwise) so the caller can advance the cursor.
  */
 function decodeEntryFlags(
   view: DataView,
   offset: number,
   version: number,
   byteLength: number,
+  digestLength: 20 | 32,
 ): { readonly flags: IndexEntryFlags; readonly extendedSize: number } {
-  const flagsRaw = view.getUint16(offset + 60);
+  const headerSize = entryHeaderSize(digestLength);
+  const flagsRaw = view.getUint16(offset + flagsOffset(digestLength));
   const extended = (flagsRaw & 0x4000) !== 0;
   if (extended && version !== 3) {
     throw invalidIndexEntry(offset, 'extended flag requires index v3');
   }
   const extendedSize = extended ? 2 : 0;
-  if (offset + ENTRY_HEADER_SIZE + extendedSize > byteLength - INDEX_CHECKSUM_SIZE) {
+  if (offset + headerSize + extendedSize > byteLength - digestLength) {
     throw invalidIndexEntry(offset, 'truncated extended flags');
   }
-  const extRaw = extended ? view.getUint16(offset + ENTRY_HEADER_SIZE) : 0;
+  const extRaw = extended ? view.getUint16(offset + headerSize) : 0;
   return { flags: parseFlags(flagsRaw, extRaw), extendedSize };
 }
 
@@ -174,13 +196,21 @@ function findNul(bytes: Uint8Array, fromIndex: number): number {
   return -1;
 }
 
+/**
+ * Every extension whose signature this parser does not recognise (including
+ * `REUC`) is stored as opaque `{ signature, data }` bytes, so it round-trips
+ * unread at any `digestLength`. A future `REUC` *decoder* would read oids out
+ * of that payload and inherits this same width problem — it too would need
+ * `digestLength` threaded in, not a fixed SHA-1 width.
+ */
 function parseExtensions(
   bytes: Uint8Array,
   offset: number,
   view: DataView,
+  trailerSize: number,
 ): ReadonlyArray<IndexExtension> {
   const extensions: IndexExtension[] = [];
-  const extensionEnd = bytes.length - INDEX_CHECKSUM_SIZE;
+  const extensionEnd = bytes.length - trailerSize;
 
   while (offset + 8 <= extensionEnd) {
     const signature = decode(bytes.subarray(offset, offset + 4));
@@ -212,11 +242,11 @@ function parseExtensions(
  * follow immediately, each parsed the same way, which is what produces the
  * depth-first nesting — bounded at `MAX_CACHE_TREE_DEPTH`, since that nesting
  * is the one thing an untrusted payload gets to drive without limit. The oid
- * is read at `INDEX_OID_LENGTH`, the SHA-1 width the whole index parser is
- * fixed to.
+ * is read at the caller-supplied `digestLength` — the same width `parseIndex`
+ * frames the rest of the file at.
  */
-export function parseCacheTree(data: Uint8Array): CacheTreeEntry {
-  const { entry, offset } = parseCacheTreeEntry(data, 0, 0);
+export function parseCacheTree(data: Uint8Array, digestLength: 20 | 32): CacheTreeEntry {
+  const { entry, offset } = parseCacheTreeEntry(data, 0, 0, digestLength);
   if (offset !== data.length) {
     throw invalidIndexEntry(offset, 'cache-tree data has trailing bytes');
   }
@@ -227,6 +257,7 @@ function parseCacheTreeEntry(
   data: Uint8Array,
   start: number,
   depth: number,
+  digestLength: 20 | 32,
 ): { readonly entry: CacheTreeEntry; readonly offset: number } {
   if (depth > MAX_CACHE_TREE_DEPTH) {
     throw invalidIndexEntry(start, 'cache-tree nesting exceeds the maximum depth');
@@ -256,8 +287,14 @@ function parseCacheTreeEntry(
     start,
   );
 
-  const { id, offset: afterOid } = readCacheTreeOid(data, lfIndex + 1, entryCount, start);
-  return readCacheTreeChildren(data, afterOid, subtreeCount, depth, {
+  const { id, offset: afterOid } = readCacheTreeOid(
+    data,
+    lfIndex + 1,
+    entryCount,
+    start,
+    digestLength,
+  );
+  return readCacheTreeChildren(data, afterOid, subtreeCount, depth, digestLength, {
     path,
     entryCount,
     subtreeCount,
@@ -270,13 +307,14 @@ function readCacheTreeOid(
   offset: number,
   entryCount: number,
   entryStart: number,
+  digestLength: 20 | 32,
 ): { readonly id: ObjectId | undefined; readonly offset: number } {
   if (entryCount < 0) return { id: undefined, offset };
-  if (offset + CACHE_TREE_OID_LENGTH > data.length) {
+  if (offset + digestLength > data.length) {
     throw invalidIndexEntry(entryStart, 'cache-tree entry truncated oid');
   }
-  const id = bytesToHex(data.subarray(offset, offset + CACHE_TREE_OID_LENGTH)) as ObjectId;
-  return { id, offset: offset + CACHE_TREE_OID_LENGTH };
+  const id = bytesToHex(data.subarray(offset, offset + digestLength)) as ObjectId;
+  return { id, offset: offset + digestLength };
 }
 
 function readCacheTreeChildren(
@@ -284,6 +322,7 @@ function readCacheTreeChildren(
   start: number,
   subtreeCount: number,
   depth: number,
+  digestLength: 20 | 32,
   base: {
     readonly path: string;
     readonly entryCount: number;
@@ -294,7 +333,7 @@ function readCacheTreeChildren(
   const children: CacheTreeEntry[] = [];
   let cursor = start;
   for (let i = 0; i < subtreeCount; i++) {
-    const child = parseCacheTreeEntry(data, cursor, depth + 1);
+    const child = parseCacheTreeEntry(data, cursor, depth + 1, digestLength);
     children.push(child.entry);
     cursor = child.offset;
   }

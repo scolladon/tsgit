@@ -1,6 +1,7 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import type { TsgitError } from '../../../../src/domain/error.js';
+import { hexToBytes } from '../../../../src/domain/objects/encoding.js';
 import type { ObjectId } from '../../../../src/domain/objects/object-id.js';
 import {
   allObjectIds,
@@ -12,6 +13,56 @@ import {
   parsePackIndex,
 } from '../../../../src/domain/storage/pack-index.js';
 import { arbObjectId, buildTestIndex, type TestIndexEntry } from './arbitraries.js';
+
+/**
+ * Captured from real `git init --object-format=sha256`, `printf 'hello\n' >
+ * a.txt && git add a.txt && git commit -m base && git repack -adq` (git
+ * 2.55.0): 3 objects (1 blob, 1 tree, 1 commit), 32-byte oid stride, 64-byte
+ * trailer (pack checksum + idx checksum). Arithmetic check: 8 + 1024 +
+ * 3*32 + 3*4 + 3*4 + 64 = 1216 bytes, the fixture's exact length.
+ */
+const SHA256_IDX_HEX =
+  'ff744f63000000020000000000000000000000000000000000000000000000000000000000' +
+  '00000000000000000000000000000000000000000000000000000000000000000000000000' +
+  '00000000000000000000000000000000000000000000000000000000000000000000000000' +
+  '00000000000000000000000000000000000000000000000000000000000000000000000000' +
+  '00000000000000000000000000000000000000000000000000000000000000000000000000' +
+  '00000100000001000000010000000100000001000000010000000100000001000000010000' +
+  '00010000000100000002000000020000000200000002000000020000000200000002000000' +
+  '02000000020000000200000002000000020000000200000002000000020000000200000002' +
+  '00000002000000020000000200000002000000020000000200000002000000020000000200' +
+  '00000200000002000000020000000200000002000000020000000200000002000000020000' +
+  '00020000000200000002000000020000000200000002000000020000000200000002000000' +
+  '02000000020000000200000002000000020000000200000002000000020000000200000002' +
+  '00000002000000020000000200000002000000020000000200000002000000020000000200' +
+  '00000200000002000000020000000200000002000000020000000200000002000000020000' +
+  '00020000000200000002000000020000000200000002000000020000000200000002000000' +
+  '02000000020000000200000002000000020000000200000002000000020000000200000002' +
+  '00000002000000020000000200000002000000020000000200000002000000020000000200' +
+  '00000200000002000000020000000200000002000000020000000200000002000000020000' +
+  '00020000000200000002000000020000000200000002000000020000000200000002000000' +
+  '02000000020000000200000002000000020000000200000002000000020000000200000002' +
+  '00000002000000020000000200000002000000020000000200000002000000020000000200' +
+  '00000200000002000000020000000200000002000000020000000200000002000000020000' +
+  '00020000000200000002000000020000000200000002000000020000000200000002000000' +
+  '02000000020000000200000002000000020000000200000002000000020000000300000003' +
+  '00000003000000030000000300000003000000030000000300000003000000030000000300' +
+  '00000300000003000000030000000300000003000000030000000300000003000000030000' +
+  '00030000000300000003000000030000000300000003000000030000000300000003000000' +
+  '0300000003000000030000000300000003000000030000000300000003000000032cf8d83d' +
+  '9ee29543b34a87727421fdecb7e3f3a183d337639025de576db9ebb4371aac45c3ba401d13' +
+  'c2ce98c9537b4e53c6049b950bf8a33cbc400712d9f4fada53442fc09b8dcfef048ce91a04' +
+  'f41bdc06d3478540bfa913b39d0b2978a60252941500582b1b889eed1c6900000087000000' +
+  '960000000c654b102f28c5803f2256fa3589f4e536b4540b587f61e0e31aafad1a5c13513a' +
+  'd29671e1867f5e19a41be1ce607be9bcde10b56bdc045208060cc32a96f49d84';
+
+/** `git verify-pack -v`'s listing for the fixture above, sorted ascending —
+ *  the order the index itself stores its sha table in. */
+const SHA256_IDX_OIDS = [
+  '2cf8d83d9ee29543b34a87727421fdecb7e3f3a183d337639025de576db9ebb4', // blob 'hello\n'
+  '371aac45c3ba401d13c2ce98c9537b4e53c6049b950bf8a33cbc400712d9f4fa', // tree
+  'da53442fc09b8dcfef048ce91a04f41bdc06d3478540bfa913b39d0b2978a602', // commit
+] as const;
 
 // Property test skipped: entryOffsets is a thin loop whose only invariant is
 // result.length === index.objectCount. A property oracle would tautologically
@@ -94,7 +145,7 @@ describe('pack-index', () => {
           const bytes = buildTestIndex(entries);
 
           // Act
-          const result = parsePackIndex(bytes);
+          const result = parsePackIndex(bytes, 20);
 
           // Assert
           expect(result.objectCount).toBe(expectedCount);
@@ -132,7 +183,7 @@ describe('pack-index', () => {
         ])('Then throws INVALID_PACK_INDEX for $label', ({ bytes, reasonContains }) => {
           // Arrange + Act & Assert
           try {
-            parsePackIndex(bytes);
+            parsePackIndex(bytes, 20);
             // Assert
             expect.fail('Should have thrown');
           } catch (e) {
@@ -183,7 +234,7 @@ describe('pack-index', () => {
           },
         ])('Then returns $expected for $label', ({ entries, lookupId, expected }) => {
           // Arrange
-          const idx = parsePackIndex(buildTestIndex(entries));
+          const idx = parsePackIndex(buildTestIndex(entries), 20);
 
           // Act
           const result = lookupPackIndex(idx, lookupId as ObjectId);
@@ -200,7 +251,7 @@ describe('pack-index', () => {
             makeEntry('bb' + '00'.repeat(19), 200),
             makeEntry('cc' + '00'.repeat(19), 300),
           ];
-          const idx = parsePackIndex(buildTestIndex(entries));
+          const idx = parsePackIndex(buildTestIndex(entries), 20);
 
           // Act
           const result = lookupPackIndex(idx, ('dd' + '00'.repeat(19)) as ObjectId);
@@ -231,7 +282,7 @@ describe('pack-index', () => {
           },
         ])('Then returns 1 match for $label', ({ prefix, expected }) => {
           // Arrange
-          const idx = parsePackIndex(buildTestIndex(entries));
+          const idx = parsePackIndex(buildTestIndex(entries), 20);
 
           // Act
           const result = findByPrefix(idx, prefix);
@@ -262,7 +313,7 @@ describe('pack-index', () => {
           'Then returns $expectedLength match(es) for $label',
           ({ prefix, entries: rowEntries, expectedLength }) => {
             // Arrange
-            const idx = parsePackIndex(buildTestIndex(rowEntries));
+            const idx = parsePackIndex(buildTestIndex(rowEntries), 20);
 
             // Act
             const result = findByPrefix(idx, prefix);
@@ -298,7 +349,7 @@ describe('pack-index', () => {
           },
         ])('Then throws INVALID_PACK_INDEX for $label', ({ prefix, reasonContains }) => {
           // Arrange
-          const idx = parsePackIndex(buildTestIndex(entries));
+          const idx = parsePackIndex(buildTestIndex(entries), 20);
 
           // Act & Assert
           try {
@@ -324,7 +375,7 @@ describe('pack-index', () => {
       describe('When entryOffsets is called', () => {
         it('Then returns an empty array', () => {
           // Arrange
-          const index = parsePackIndex(buildTestIndex([]));
+          const index = parsePackIndex(buildTestIndex([]), 20);
 
           // Act
           const result = entryOffsets(index);
@@ -345,7 +396,7 @@ describe('pack-index', () => {
             makeEntry('bb' + '00'.repeat(19), 200),
             makeEntry('cc' + '00'.repeat(19), 300),
           ];
-          const index = parsePackIndex(buildTestIndex(entries));
+          const index = parsePackIndex(buildTestIndex(entries), 20);
 
           // Act
           const result = entryOffsets(index);
@@ -366,7 +417,7 @@ describe('pack-index', () => {
           const entries: TestIndexEntry[] = [
             { id: '00'.repeat(20) as ObjectId, offset: 0x200000000, crc32: 0 },
           ];
-          const index = parsePackIndex(buildTestIndex(entries));
+          const index = parsePackIndex(buildTestIndex(entries), 20);
 
           // Act
           const result = entryOffsets(index);
@@ -405,7 +456,7 @@ describe('pack-index', () => {
 
           // Act & Assert
           try {
-            parsePackIndex(bytes);
+            parsePackIndex(bytes, 20);
             // Assert
             expect.fail('Should have thrown');
           } catch (e) {
@@ -441,7 +492,7 @@ describe('pack-index', () => {
           },
         ])('Then reads correct 64-bit offsets for $label', ({ entries }) => {
           // Arrange
-          const idx = parsePackIndex(buildTestIndex(entries));
+          const idx = parsePackIndex(buildTestIndex(entries), 20);
 
           // Act & Assert
           for (const entry of entries) {
@@ -459,7 +510,7 @@ describe('pack-index', () => {
           // Arrange — build index with 1 entry that has MSB set in small offset,
           // but largeIdx points to non-existent large offset entry
           const entries: TestIndexEntry[] = [makeEntry('aa' + '00'.repeat(19), 42)];
-          const idx = parsePackIndex(buildTestIndex(entries));
+          const idx = parsePackIndex(buildTestIndex(entries), 20);
           // Corrupt the small offset table to have MSB set with a huge largeIdx
           const offsetStart = idx.smallOffsetsTableOffset;
           idx._view.setUint32(offsetStart, 0x80000000 | 999);
@@ -487,7 +538,7 @@ describe('pack-index', () => {
         it('Then throws INVALID_PACK_INDEX', () => {
           // Arrange — build index with a large offset, then corrupt the high word
           const entries: TestIndexEntry[] = [makeEntry('aa' + '00'.repeat(19), 0x80000001)];
-          const idx = parsePackIndex(buildTestIndex(entries));
+          const idx = parsePackIndex(buildTestIndex(entries), 20);
           // Find the large offset table and set high word to exceed safe range
           const largeOffset = idx.largeOffsetsTableOffset;
           idx._view.setUint32(largeOffset, 0x200000);
@@ -523,7 +574,7 @@ describe('pack-index', () => {
             makeEntry('aa33' + '00'.repeat(18), 40),
             makeEntry('aaff' + '00'.repeat(18), 50),
           ];
-          const idx = parsePackIndex(buildTestIndex(entries));
+          const idx = parsePackIndex(buildTestIndex(entries), 20);
 
           // Act — looking up the last one forces multiple cmp < 0 iterations
           const result = lookupPackIndex(idx, ('aaff' + '00'.repeat(18)) as ObjectId);
@@ -546,7 +597,7 @@ describe('pack-index', () => {
             makeEntry('aa22' + '00'.repeat(18), 30),
             makeEntry('aaff' + '00'.repeat(18), 40),
           ];
-          const idx = parsePackIndex(buildTestIndex(entries));
+          const idx = parsePackIndex(buildTestIndex(entries), 20);
 
           // Act
           const result = findByPrefix(idx, 'aaff');
@@ -568,7 +619,7 @@ describe('pack-index', () => {
             makeEntry('00aa' + '00'.repeat(18), 100),
             makeEntry('00bb' + '00'.repeat(18), 200),
           ];
-          const idx = parsePackIndex(buildTestIndex(entries));
+          const idx = parsePackIndex(buildTestIndex(entries), 20);
 
           // Act
           const result = findByPrefix(idx, '00aa');
@@ -594,7 +645,7 @@ describe('pack-index', () => {
 
           // Act & Assert
           try {
-            parsePackIndex(bytes);
+            parsePackIndex(bytes, 20);
             // Assert
             expect.fail('Should have thrown');
           } catch (e) {
@@ -623,7 +674,7 @@ describe('pack-index', () => {
 
           // Act & Assert
           try {
-            parsePackIndex(bytes);
+            parsePackIndex(bytes, 20);
             // Assert
             expect.fail('Should have thrown');
           } catch (e) {
@@ -646,7 +697,7 @@ describe('pack-index', () => {
 
           // Act & Assert
           try {
-            parsePackIndex(bytes);
+            parsePackIndex(bytes, 20);
             // Assert
             expect.fail('Should have thrown');
           } catch (e) {
@@ -681,7 +732,7 @@ describe('pack-index', () => {
           // `largeOffset - 8` mutant computes 1060 > 1068 = false and would
           // wrongly proceed).
           const entries: TestIndexEntry[] = [makeEntry(id, 0x80000001)];
-          const idx = parsePackIndex(buildTestIndex(entries));
+          const idx = parsePackIndex(buildTestIndex(entries), 20);
           idx._view.setUint32(idx.smallOffsetsTableOffset, 0x80000000 | 1);
 
           // Act & Assert
@@ -709,7 +760,7 @@ describe('pack-index', () => {
           // guard must be a strict `high > 0x1fffff`: a `>=` mutant would reject
           // this valid offset.
           const entries: TestIndexEntry[] = [makeEntry('cc' + '00'.repeat(19), 0x80000001)];
-          const idx = parsePackIndex(buildTestIndex(entries));
+          const idx = parsePackIndex(buildTestIndex(entries), 20);
           idx._view.setUint32(idx.largeOffsetsTableOffset, 0x1fffff);
           idx._view.setUint32(idx.largeOffsetsTableOffset + 4, 7);
 
@@ -738,7 +789,7 @@ describe('pack-index', () => {
             makeEntry('22' + '00'.repeat(19), 20),
             makeEntry('33' + '00'.repeat(19), 30),
           ];
-          const idx = parsePackIndex(buildTestIndex(entries));
+          const idx = parsePackIndex(buildTestIndex(entries), 20);
 
           // Act
           const result = lookupPackIndex(idx, ('33' + '00'.repeat(19)) as ObjectId);
@@ -758,7 +809,7 @@ describe('pack-index', () => {
           fc.assert(
             fc.property(arbUniqueEntries(10), (entries) => {
               fc.pre(entries.length > 0);
-              const idx = parsePackIndex(buildTestIndex(entries));
+              const idx = parsePackIndex(buildTestIndex(entries), 20);
               for (const entry of entries) {
                 expect(lookupPackIndex(idx, entry.id)).toBe(entry.offset);
               }
@@ -776,7 +827,7 @@ describe('pack-index', () => {
             fc.property(arbObjectId(40), arbObjectId(40), (indexId, lookupId) => {
               fc.pre(indexId !== lookupId);
               const entries: TestIndexEntry[] = [{ id: indexId, offset: 42, crc32: 0 }];
-              const idx = parsePackIndex(buildTestIndex(entries));
+              const idx = parsePackIndex(buildTestIndex(entries), 20);
 
               const result = lookupPackIndex(idx, lookupId);
 
@@ -803,7 +854,7 @@ describe('pack-index', () => {
           { lookupId: 'cc' + '00'.repeat(19), expected: 2, label: 'the last id' },
         ])('Then $label reports its own index position', ({ lookupId, expected }) => {
           // Arrange
-          const index = parsePackIndex(buildTestIndex(positionEntries));
+          const index = parsePackIndex(buildTestIndex(positionEntries), 20);
           const sut = lookupPackIndexPosition;
 
           // Act
@@ -817,7 +868,7 @@ describe('pack-index', () => {
       describe('When an id the index does not carry is looked up', () => {
         it('Then it returns undefined', () => {
           // Arrange
-          const index = parsePackIndex(buildTestIndex(positionEntries));
+          const index = parsePackIndex(buildTestIndex(positionEntries), 20);
           const sut = lookupPackIndexPosition;
 
           // Act
@@ -831,7 +882,7 @@ describe('pack-index', () => {
       describe('When every position is resolved back to an oid', () => {
         it('Then objectIdAt inverts the position lookup for every entry', () => {
           // Arrange
-          const index = parsePackIndex(buildTestIndex(positionEntries));
+          const index = parsePackIndex(buildTestIndex(positionEntries), 20);
           const sut = objectIdAt;
 
           // Act
@@ -851,7 +902,7 @@ describe('pack-index', () => {
       describe('When allObjectIds is called', () => {
         it('Then returns an empty array', () => {
           // Arrange
-          const index = parsePackIndex(buildTestIndex([]));
+          const index = parsePackIndex(buildTestIndex([]), 20);
 
           // Act
           const result = allObjectIds(index);
@@ -871,7 +922,7 @@ describe('pack-index', () => {
             makeEntry('bb' + '00'.repeat(19), 200),
             makeEntry('cc' + '00'.repeat(19), 300),
           ];
-          const index = parsePackIndex(buildTestIndex(entries));
+          const index = parsePackIndex(buildTestIndex(entries), 20);
 
           // Act
           const result = allObjectIds(index);
@@ -882,6 +933,180 @@ describe('pack-index', () => {
           expect(result[0]).toBe('aa' + '00'.repeat(19));
           expect(result[1]).toBe('bb' + '00'.repeat(19));
           expect(result[2]).toBe('cc' + '00'.repeat(19));
+        });
+      });
+    });
+  });
+
+  describe('parsePackIndex — SHA-256 (digestLength 32)', () => {
+    describe('Given a git-produced SHA-256 .idx with 3 objects', () => {
+      describe('When parsing at digestLength 32', () => {
+        it("Then objectCount and every oid match git verify-pack's listing", () => {
+          // Arrange
+          const bytes = hexToBytes(SHA256_IDX_HEX);
+
+          // Act
+          const result = parsePackIndex(bytes, 32);
+
+          // Assert
+          expect(result.objectCount).toBe(3);
+          expect(result.digestLength).toBe(32);
+          expect(allObjectIds(result)).toEqual(SHA256_IDX_OIDS);
+        });
+      });
+    });
+
+    describe('Given the same git-produced fixture', () => {
+      describe("When looking up each of git verify-pack's oids", () => {
+        it('Then lookupPackIndex resolves every one to an offset', () => {
+          // Arrange
+          const index = parsePackIndex(hexToBytes(SHA256_IDX_HEX), 32);
+
+          // Act & Assert
+          for (const id of SHA256_IDX_OIDS) {
+            expect(lookupPackIndex(index, id as ObjectId)).not.toBeUndefined();
+          }
+        });
+      });
+    });
+  });
+
+  describe('parsePackIndex — digestLength default', () => {
+    describe('Given a SHA-1 .idx v2 and no explicit digestLength argument', () => {
+      describe('When parsing', () => {
+        it('Then digestLength defaults to 20', () => {
+          // Arrange
+          const bytes = buildTestIndex([]);
+
+          // Act
+          const result = parsePackIndex(bytes, 20);
+
+          // Assert
+          expect(result.digestLength).toBe(20);
+        });
+      });
+    });
+  });
+
+  describe('lookupPackIndex — a wrong-width oid is absent, never a fabricated hit', () => {
+    const sha256Index = parsePackIndex(hexToBytes(SHA256_IDX_HEX), 32);
+    const [fullSha256Oid] = SHA256_IDX_OIDS;
+
+    describe('Given a SHA-256 index and a 40-hex id sharing the first 20 bytes of a stored oid', () => {
+      describe('When lookupPackIndex searches for it', () => {
+        it('Then it reports the object absent rather than matching an unrelated entry', () => {
+          // Arrange — a 40-hex id is a legal ObjectId, so this reaches the
+          // search as ordinary input. Its 20 bytes are a strict prefix of a
+          // stored 32-byte oid, so every in-range byte compares equal and the
+          // comparison runs off the end of the target. `stored[k] - undefined`
+          // is NaN, which is neither < 0 nor > 0, so an unguarded search
+          // returns the midpoint — a hit on an object that was never asked for.
+          const shortId = fullSha256Oid.slice(0, 40) as ObjectId;
+          const sut = lookupPackIndex;
+
+          // Act
+          const result = sut(sha256Index, shortId);
+
+          // Assert
+          expect(result).toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given the same index and the full 64-hex oid', () => {
+      describe('When lookupPackIndex searches for it', () => {
+        it('Then it still resolves — the guard rejects only the wrong width', () => {
+          // Arrange
+          const sut = lookupPackIndex;
+
+          // Act
+          const result = sut(sha256Index, fullSha256Oid as ObjectId);
+
+          // Assert
+          expect(result).toBeGreaterThanOrEqual(0);
+        });
+      });
+    });
+  });
+
+  describe('findByPrefix — SHA-256 (digestLength 32)', () => {
+    const sha256Index = parsePackIndex(hexToBytes(SHA256_IDX_HEX), 32);
+    const [fullOid] = SHA256_IDX_OIDS;
+
+    describe('Given a 63-char prefix of a known SHA-256 oid', () => {
+      describe('When searching', () => {
+        it('Then it resolves to that oid', () => {
+          // Arrange
+          const prefix = fullOid.slice(0, 63);
+
+          // Act
+          const result = findByPrefix(sha256Index, prefix);
+
+          // Assert
+          expect(result).toEqual([fullOid]);
+        });
+      });
+    });
+
+    describe('Given the full 64-char SHA-256 oid as prefix', () => {
+      describe('When searching', () => {
+        it('Then it resolves to that oid', () => {
+          // Arrange
+          const sut = findByPrefix;
+
+          // Act
+          const result = sut(sha256Index, fullOid);
+
+          // Assert
+          expect(result).toEqual([fullOid]);
+        });
+      });
+    });
+
+    describe('Given a 65-char prefix (one longer than a full SHA-256 oid)', () => {
+      describe('When searching', () => {
+        it('Then throws INVALID_PACK_INDEX with the 64-char cap in .data', () => {
+          // Arrange
+          const prefix = `${fullOid}0`;
+
+          // Act & Assert
+          try {
+            findByPrefix(sha256Index, prefix);
+            // Assert
+            expect.fail('Should have thrown');
+          } catch (e) {
+            const err = e as TsgitError;
+            expect(err.data).toEqual(
+              expect.objectContaining({
+                code: 'INVALID_PACK_INDEX',
+                reason: expect.stringContaining('maximum 64 hex chars'),
+              }),
+            );
+          }
+        });
+      });
+    });
+
+    describe('Given a prefix shorter than 4 hex chars', () => {
+      describe('When searching', () => {
+        it('Then throws INVALID_PACK_INDEX for the too-short guard', () => {
+          // Arrange
+          const sut = findByPrefix;
+
+          // Act & Assert
+          try {
+            sut(sha256Index, 'abc');
+            // Assert
+            expect.fail('Should have thrown');
+          } catch (e) {
+            const err = e as TsgitError;
+            expect(err.data).toEqual(
+              expect.objectContaining({
+                code: 'INVALID_PACK_INDEX',
+                reason: expect.stringContaining('too short'),
+              }),
+            );
+          }
         });
       });
     });

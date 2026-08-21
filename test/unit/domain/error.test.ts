@@ -998,6 +998,26 @@ describe('domain error — AdapterError', () => {
       });
     });
 
+    describe('Given CONFIG_INVALID_ENUM_VALUE', () => {
+      describe('When reading message', () => {
+        it("Then equals the \"invalid value for 'key': 'value' in file F at line N\" format", () => {
+          // Arrange & Act
+          const result = new TsgitErrorClass({
+            code: 'CONFIG_INVALID_ENUM_VALUE',
+            key: 'extensions.objectformat',
+            source: '/repo/.git/config',
+            value: 'SHA256',
+            line: 9,
+          });
+
+          // Assert
+          expect(result.message).toBe(
+            "CONFIG_INVALID_ENUM_VALUE: invalid value for 'extensions.objectformat': 'SHA256' in file /repo/.git/config at line 9",
+          );
+        });
+      });
+    });
+
     describe('Given CONFIG_INVALID_FILE', () => {
       describe('When reading message', () => {
         it('Then names the invalid section and the config file', () => {
@@ -1056,6 +1076,26 @@ describe('domain error — AdapterError', () => {
           // Assert — the " in the index" suffix distinguishes it from WORKTREE_PATH_EXISTS.
           expect(result.message).toBe(
             "SUBMODULE_PATH_EXISTS: 'libs/sub' already exists in the index",
+          );
+        });
+      });
+    });
+
+    describe('Given SUBMODULE_OBJECT_FORMAT_MISMATCH', () => {
+      describe('When reading message', () => {
+        it('Then names both algorithms, so a caller can tell which side is which', () => {
+          // Arrange & Act
+          const result = new TsgitErrorClass({
+            code: 'SUBMODULE_OBJECT_FORMAT_MISMATCH',
+            local: 'sha1',
+            remote: 'sha256',
+          });
+
+          // Assert — the superproject's algorithm is `local`, the submodule
+          // source's is `remote`; a message naming only one would leave the
+          // caller unable to say which end to change.
+          expect(result.message).toBe(
+            'SUBMODULE_OBJECT_FORMAT_MISMATCH: cannot add a submodule of a different hash algorithm: local sha1, remote sha256',
           );
         });
       });
