@@ -7,7 +7,7 @@ import type { Context } from '../../ports/context.js';
 import { atomicWriteRef } from './atomic-write.js';
 import { looseRefPath, perWorktreeRefDir } from './path-layout.js';
 import { recordRefUpdate } from './record-ref-update.js';
-import { getRefStore, type RefStore } from './ref-store.js';
+import { getRefStore, type RefStore, type ResolveDirectResult } from './ref-store.js';
 import { deleteReflog } from './reflog-store.js';
 import type { UpdateRefOptions } from './types.js';
 
@@ -27,6 +27,10 @@ export async function updateRef(
 
   const store = getRefStore(ctx);
   const current = await store.resolveDirect(name);
+  // Resolved before any write so a corrupt HEAD, a symref cycle, or an I/O
+  // error refuses the whole update instead of leaving a committed ref, a
+  // written reflog, and a thrown call.
+  const head = await store.resolveDirect(HEAD);
 
   if (options.expected !== undefined) {
     const actual = current.kind === 'direct' ? current.id : 'absent';
@@ -50,7 +54,17 @@ export async function updateRef(
   if (oldId !== newId) {
     await recordRefUpdate(ctx, name, oldId, newId, options.reflogMessage);
   }
-  await logCoupledHead(ctx, store, name, oldId, newId, options.reflogMessage);
+  if (coupledHeadTarget(head, name)) {
+    await recordRefUpdate(ctx, HEAD, oldId, newId, options.reflogMessage);
+  }
+}
+
+/**
+ * True when HEAD symbolically points at the ref just written — git appends a
+ * matching entry to `.git/logs/HEAD` too in that case.
+ */
+function coupledHeadTarget(head: ResolveDirectResult, name: RefName): boolean {
+  return head.kind === 'symbolic' && head.target === name;
 }
 
 async function deleteRef(store: RefStore, name: RefName): Promise<void> {
@@ -69,23 +83,4 @@ async function deleteRef(store: RefStore, name: RefName): Promise<void> {
   // Neither loose nor packed — surface a clear error instead of silently
   // succeeding. Callers that want idempotent delete can catch refNotFound.
   throw refNotFound(name);
-}
-
-/**
- * When HEAD symbolically points at the branch just written, git appends a
- * matching entry to `.git/logs/HEAD` too. `recordRefUpdate` self-gates, so a
- * closed gate makes this a cheap no-op.
- */
-async function logCoupledHead(
-  ctx: Context,
-  store: RefStore,
-  name: RefName,
-  oldId: ObjectId,
-  newId: ObjectId,
-  reflogMessage: string,
-): Promise<void> {
-  const head = await store.resolveDirect(HEAD);
-  if (head.kind !== 'symbolic') return;
-  if (head.target !== name) return;
-  await recordRefUpdate(ctx, HEAD, oldId, newId, reflogMessage);
 }

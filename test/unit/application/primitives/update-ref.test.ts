@@ -6,6 +6,7 @@ import { updateRef } from '../../../../src/application/primitives/update-ref.js'
 import { writeSymbolicRef } from '../../../../src/application/primitives/write-symbolic-ref.js';
 import type { TsgitError } from '../../../../src/domain/error.js';
 import type { ObjectId, RefName } from '../../../../src/domain/objects/index.js';
+import type { Context } from '../../../../src/ports/context.js';
 import { buildSeededContext } from './fixtures.js';
 
 const ID_A = 'a'.repeat(40) as ObjectId;
@@ -16,6 +17,29 @@ const ZERO_SHA256 = '0'.repeat(64) as ObjectId;
 const MAIN = 'refs/heads/main' as RefName;
 const HEAD = 'HEAD' as RefName;
 const REASON = 'commit: test';
+
+/**
+ * Recursively read every file under `dir` (sorted, path + UTF-8 content
+ * pairs) so a test can compare a directory's contents byte-for-byte before
+ * and after an operation. `dir` itself may not exist — that's "no files".
+ */
+async function snapshotDir(
+  ctx: Context,
+  dir: string,
+): Promise<ReadonlyArray<readonly [string, string]>> {
+  if (!(await ctx.fs.exists(dir))) return [];
+  const entries = await ctx.fs.readdir(dir);
+  const files: Array<readonly [string, string]> = [];
+  for (const entry of entries) {
+    const path = `${dir}/${entry.name}`;
+    if (entry.isDirectory) {
+      files.push(...(await snapshotDir(ctx, path)));
+    } else {
+      files.push([path, await ctx.fs.readUtf8(path)]);
+    }
+  }
+  return files.slice().sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+}
 
 describe('updateRef', () => {
   describe('Given a fresh ref', () => {
@@ -145,6 +169,49 @@ describe('updateRef', () => {
         } catch (error) {
           expect((error as TsgitError).data.code).toBe('INVALID_REF');
         }
+      });
+    });
+  });
+
+  describe('Given a repository whose HEAD cannot be resolved', () => {
+    describe('When updateRef writes a branch', () => {
+      it('Then it throws and leaves the ref and its reflog byte-unchanged', async () => {
+        // Arrange
+        const ctx = await buildSeededContext({ refs: [{ name: MAIN, id: ID_A }] });
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/.invalid\n');
+        const refsBefore = await snapshotDir(ctx, `${ctx.layout.gitDir}/refs`);
+        const logsBefore = await snapshotDir(ctx, `${ctx.layout.gitDir}/logs`);
+
+        // Act
+        let thrown: TsgitError | undefined;
+        try {
+          await updateRef(ctx, MAIN, ID_B, { reflogMessage: REASON });
+          expect.unreachable();
+        } catch (error) {
+          thrown = error as TsgitError;
+        }
+
+        // Assert
+        expect(thrown?.data.code).toBe('INVALID_REF');
+        expect(await snapshotDir(ctx, `${ctx.layout.gitDir}/refs`)).toEqual(refsBefore);
+        expect(await snapshotDir(ctx, `${ctx.layout.gitDir}/logs`)).toEqual(logsBefore);
+      });
+
+      it('Then the coupled HEAD reflog is not written', async () => {
+        // Arrange
+        const ctx = await buildSeededContext({ refs: [{ name: MAIN, id: ID_A }] });
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/.invalid\n');
+
+        // Act
+        try {
+          await updateRef(ctx, MAIN, ID_B, { reflogMessage: REASON });
+          expect.unreachable();
+        } catch {
+          // the throw itself is asserted by the sibling test
+        }
+
+        // Assert
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/logs/HEAD`)).toBe(false);
       });
     });
   });
