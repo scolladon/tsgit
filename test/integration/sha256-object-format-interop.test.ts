@@ -909,7 +909,7 @@ describe.skipIf(!GIT_AVAILABLE)(
           // git's OWN name for the content tsgit just hashed and wrote.
           const gitOid = runGit(['-C', wtDir, 'hash-object', 'wt.txt']).trim();
           // git recomputes the digest of the object tsgit wrote to the store.
-          const fscked = tryRunGitWithExit(['-C', wtDir, 'fsck']);
+          const fsckResult = tryRunGitWithExit(['-C', wtDir, 'fsck']);
 
           // Assert
           expect(shown.exitCode).toBe(0);
@@ -921,7 +921,7 @@ describe.skipIf(!GIT_AVAILABLE)(
           // fsck nothing here would touch the object store at all.
           expect(gitOid).toMatch(/^[0-9a-f]{64}$/);
           expect(staged).toContain(`100644 ${gitOid} 0\twt.txt`);
-          expect(fscked.exitCode).toBe(0);
+          expect(fsckResult.exitCode).toBe(0);
           // The admin dir holds no config of its own, so the format read
           // needs no worktree-specific branch — inherited from the common dir.
           expect(existsSync(path.join(adminDir, 'config'))).toBe(false);
