@@ -888,11 +888,22 @@ describe.skipIf(!GIT_AVAILABLE)(
           }
           const staged = runGit(['-C', wtDir, 'ls-files', '--stage']);
           const adminDir = path.join(dir, '.git', 'worktrees', path.basename(wtDir));
+          // git's OWN name for the content tsgit just hashed and wrote.
+          const gitOid = runGit(['-C', wtDir, 'hash-object', 'wt.txt']).trim();
+          // git recomputes the digest of the object tsgit wrote to the store.
+          const fscked = tryRunGitWithExit(['-C', wtDir, 'fsck']);
 
           // Assert
           expect(shown.exitCode).toBe(0);
           expect(shown.stdout.trim()).toBe('sha256');
-          expect(staged).toMatch(/^100644 [0-9a-f]{64} 0\twt\.txt$/m);
+          // Not just 64 hex — THE 64 hex git computes. A width-only assertion
+          // passes for a service that is correctly labelled sha256 but hashes
+          // wrongly, which is exactly the failure a `withAlgorithm` swap could
+          // introduce; and `ls-files` reads the index alone, so without the
+          // fsck nothing here would touch the object store at all.
+          expect(gitOid).toMatch(/^[0-9a-f]{64}$/);
+          expect(staged).toContain(`100644 ${gitOid} 0\twt.txt`);
+          expect(fscked.exitCode).toBe(0);
           // The admin dir holds no config of its own, so the format read
           // needs no worktree-specific branch — inherited from the common dir.
           expect(existsSync(path.join(adminDir, 'config'))).toBe(false);
