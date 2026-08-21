@@ -235,23 +235,6 @@ export function exceedsMaxTreeEntries(count: number, cap: number): boolean {
 
 /* ──────────────── readTree / readObject helpers ──────────────── */
 
-const OBJECT_ID_SHA1_RE = /^[0-9a-f]{40}$/;
-const OBJECT_ID_SHA256_RE = /^[0-9a-f]{64}$/;
-
-/**
- * Return true when a string has the WIDTH of a valid SHA-1 (40 hex chars) or
- * SHA-256 (64 hex chars) oid. This is a config-free FORMAT check only — it
- * does not know which algorithm the repository uses, so in a SHA-256
- * repository a 40-hex string matches here even though it is only a
- * *prefix* of a full oid there (verified against real git: `rev-parse
- * --verify` on a 40-hex string resolves in a SHA-256 repository). Never use
- * this where the repository's actual hash config is known — use the
- * repository-aware `isOid(value, hashConfig)` instead.
- */
-export function looksLikeObjectId(value: string): boolean {
-  return OBJECT_ID_SHA1_RE.test(value) || OBJECT_ID_SHA256_RE.test(value);
-}
-
 /* ──────────────── writeObject ──────────────── */
 
 /** A declared id is present if the caller pre-populated it (non-empty). */

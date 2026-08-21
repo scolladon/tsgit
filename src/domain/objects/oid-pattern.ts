@@ -13,9 +13,11 @@ import type { HashConfig } from './hash-config.js';
  * can pass a different repository's (or a bundle's) declared algorithm
  * instead of the current repository's.
  *
- * `looksLikeObjectId` (`application/primitives/validators.ts`) is a
- * config-free FORMAT check (accepts 40 OR 64 hex) — it is not a substitute
- * for this predicate anywhere the repository's hash config is known.
+ * There is deliberately no config-free "looks like an oid" companion that
+ * accepts 40 OR 64 hex. Such a predicate cannot tell a full SHA-1 oid from a
+ * 40-character PREFIX of a SHA-256 one, and every caller in this codebase
+ * knows its repository's config, so the width-permissive form has no correct
+ * use here.
  */
 // One frozen pattern per algorithm, selected rather than constructed. These
 // are module CONSTANTS, not a cache: nothing is ever inserted or evicted, so

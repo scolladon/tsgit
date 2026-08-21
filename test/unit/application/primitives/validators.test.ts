@@ -21,7 +21,6 @@ import {
   isGitlink,
   isHead,
   isInvalidExtraHeaderKey,
-  looksLikeObjectId,
   MAX_MIDX_BYTES,
   MAX_MIDX_CHAIN_LAYERS,
   MAX_PACK_IDX_BYTES,
@@ -281,40 +280,6 @@ describe('exceedsMaxTreeEntries boundary triple', () => {
       ])('Then $label', ({ count, cap, expected }) => {
         // Arrange & Act
         const result = exceedsMaxTreeEntries(count, cap);
-
-        // Assert
-        expect(result).toBe(expected);
-      });
-    });
-  });
-});
-
-describe('looksLikeObjectId', () => {
-  describe('Given a candidate object-id string', () => {
-    describe('When invoked', () => {
-      it.each([
-        {
-          value: '0123456789abcdef0123456789abcdef01234567',
-          expected: true,
-          label: 'returns true (SHA1)',
-        },
-        { value: 'a'.repeat(64), expected: true, label: 'returns true (SHA256)' },
-        { value: '0'.repeat(39), expected: false, label: 'returns false (too short)' },
-        {
-          value: '0'.repeat(41),
-          expected: false,
-          label: 'returns false (not SHA1 or SHA256)',
-        },
-        {
-          value: 'A'.repeat(40),
-          expected: false,
-          label: 'returns false (only lowercase accepted)',
-        },
-        { value: 'refs/heads/main', expected: false, label: 'returns false (ref-like)' },
-        { value: '', expected: false, label: 'returns false (empty string)' },
-      ])('Then $label', ({ value, expected }) => {
-        // Arrange & Act
-        const result = looksLikeObjectId(value);
 
         // Assert
         expect(result).toBe(expected);
