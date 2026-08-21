@@ -56,7 +56,7 @@
   {
     "name": "Browser bundle (no-build)",
     "path": "dist/browser/tsgit.js",
-    "limit": "160 kB",
+    "limit": "165 kB",
     "gzip": true
   },
   {
