@@ -5,6 +5,7 @@ import { refNotFound, refUpdateConflict } from '../../domain/refs/error.js';
 import { validateRefName } from '../../domain/refs/ref-validation.js';
 import type { Context } from '../../ports/context.js';
 import { atomicWriteRef } from './atomic-write.js';
+import { errorDataCode } from './internal/error-data-code.js';
 import { looseRefPath, perWorktreeRefDir } from './path-layout.js';
 import { recordRefUpdate } from './record-ref-update.js';
 import { getRefStore, type RefStore, type ResolveDirectResult } from './ref-store.js';
@@ -27,10 +28,10 @@ export async function updateRef(
 
   const store = getRefStore(ctx);
   const current = await store.resolveDirect(name);
-  // Resolved before any write so a corrupt HEAD, a symref cycle, or an I/O
-  // error refuses the whole update instead of leaving a committed ref, a
-  // written reflog, and a thrown call.
-  const head = await store.resolveDirect(HEAD);
+  // Resolved before any write so a genuine I/O error refuses the whole
+  // update instead of leaving a committed ref, a written reflog, and a
+  // thrown call.
+  const head = await resolveHeadForCoupling(store);
 
   if (options.expected !== undefined) {
     const actual = current.kind === 'direct' ? current.id : 'absent';
@@ -65,6 +66,20 @@ export async function updateRef(
  */
 function coupledHeadTarget(head: ResolveDirectResult, name: RefName): boolean {
   return head.kind === 'symbolic' && head.target === name;
+}
+
+/**
+ * git tolerates an unreadable HEAD when updating any other ref: HEAD simply
+ * reads as uncoupled and only the logs/HEAD entry is skipped. HEAD's own
+ * malformed content is forgiven here; an I/O failure still propagates.
+ */
+async function resolveHeadForCoupling(store: RefStore): Promise<ResolveDirectResult> {
+  try {
+    return await store.resolveDirect(HEAD);
+  } catch (error) {
+    if (errorDataCode(error) === 'INVALID_REF') return { kind: 'missing' };
+    throw error;
+  }
 }
 
 async function deleteRef(store: RefStore, name: RefName): Promise<void> {

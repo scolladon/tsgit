@@ -7,10 +7,12 @@
  * @proves
  *   surface:        looseRef
  *   bucket:         cross-tool-interop
- *   unique:         loose ref file byte-identical to git update-ref output
+ *   unique:         loose ref file byte-identical to git update-ref output; a
+ *                    malformed HEAD is tolerated (uncoupled) by both tools, so
+ *                    the unrelated write succeeds and logs/HEAD is unchanged
  *   interopSurface: looseRef
  */
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -57,6 +59,41 @@ describe.skipIf(!GIT_AVAILABLE)('loose-ref interop', () => {
         const peerBytes = await readFile(path.join(peer, '.git/refs/heads/test-ref'));
         const oursBytes = await readFile(path.join(ours, '.git/refs/heads/test-ref'));
         expect(oursBytes).toEqual(peerBytes);
+      });
+    });
+  });
+
+  describe('Given HEAD content is malformed', () => {
+    describe('When updating an unrelated ref, on both canonical git and tsgit', () => {
+      it('Then the write succeeds and logs/HEAD is left byte-unchanged', async () => {
+        // Arrange — seed both repos identically, capture the commit sha and
+        // the coupled logs/HEAD bytes a normal commit produces, THEN corrupt
+        // HEAD — mirroring an already-working repo whose HEAD gets damaged.
+        let sha = '';
+        const logsHeadBefore = new Map<string, Buffer>();
+        for (const dir of [peer, ours]) {
+          runGit(['init', '-q', '-b', 'main', dir]);
+          runGit(['-C', dir, 'config', 'user.name', 'Ada']);
+          runGit(['-C', dir, 'config', 'user.email', 'ada@example.com']);
+          runGit(['-C', dir, 'commit', '-q', '--allow-empty', '-m', 'seed']);
+          sha = runGit(['-C', dir, 'rev-parse', 'HEAD']).trim();
+          logsHeadBefore.set(dir, await readFile(path.join(dir, '.git/logs/HEAD')));
+          await writeFile(path.join(dir, '.git/HEAD'), 'ref: refs/heads/.invalid\n');
+        }
+
+        // Act
+        runGit(['-C', peer, 'update-ref', 'refs/heads/bar', sha]);
+        const sut = createNodeContext({ workDir: ours });
+        await updateRef(sut, 'refs/heads/bar' as RefName, sha as ObjectId, {
+          reflogMessage: 'interop',
+        });
+
+        // Assert — both tools wrote the same ref bytes and left logs/HEAD alone
+        const peerRefBytes = await readFile(path.join(peer, '.git/refs/heads/bar'));
+        const oursRefBytes = await readFile(path.join(ours, '.git/refs/heads/bar'));
+        expect(oursRefBytes).toEqual(peerRefBytes);
+        expect(await readFile(path.join(peer, '.git/logs/HEAD'))).toEqual(logsHeadBefore.get(peer));
+        expect(await readFile(path.join(ours, '.git/logs/HEAD'))).toEqual(logsHeadBefore.get(ours));
       });
     });
   });

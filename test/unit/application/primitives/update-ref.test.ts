@@ -173,45 +173,86 @@ describe('updateRef', () => {
     });
   });
 
-  describe('Given a repository whose HEAD cannot be resolved', () => {
+  describe('Given HEAD content is malformed', () => {
     describe('When updateRef writes a branch', () => {
-      it('Then it throws and leaves the ref and its reflog byte-unchanged', async () => {
+      it('Then it succeeds and writes the branch ref and its reflog', async () => {
         // Arrange
         const ctx = await buildSeededContext({ refs: [{ name: MAIN, id: ID_A }] });
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/.invalid\n');
+
+        // Act
+        await updateRef(ctx, MAIN, ID_B, { reflogMessage: REASON });
+
+        // Assert
+        expect(await resolveRef(ctx, MAIN)).toBe(ID_B);
+        const reflog = await readReflog(ctx, MAIN);
+        expect(reflog).toHaveLength(1);
+        expect(reflog[0]?.oldId).toBe(ID_A);
+        expect(reflog[0]?.newId).toBe(ID_B);
+      });
+
+      it('Then the coupled HEAD reflog entry is not written', async () => {
+        // Arrange
+        const ctx = await buildSeededContext({ refs: [{ name: MAIN, id: ID_A }] });
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/.invalid\n');
+
+        // Act
+        await updateRef(ctx, MAIN, ID_B, { reflogMessage: REASON });
+
+        // Assert
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/logs/HEAD`)).toBe(false);
+      });
+    });
+
+    describe('When updateRef deletes a ref', () => {
+      it('Then it succeeds and the ref is gone', async () => {
+        // Arrange
+        const ctx = await buildSeededContext({ refs: [{ name: MAIN, id: ID_A }] });
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/.invalid\n');
+
+        // Act
+        await updateRef(ctx, MAIN, ID_A, { delete: true });
+
+        // Assert
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/${MAIN}`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given HEAD cannot be read due to a non-INVALID_REF I/O error', () => {
+    describe('When updateRef writes a branch', () => {
+      it('Then it throws and leaves refs and logs byte-unchanged', async () => {
+        // Arrange
+        const ctx = await buildSeededContext({ refs: [{ name: MAIN, id: ID_A }] });
+        const headPath = `${ctx.layout.gitDir}/HEAD`;
+        await ctx.fs.writeUtf8(headPath, 'ref: refs/heads/main\n');
+        const ioError = new Error('EIO: simulated read failure');
+        const failingCtx: Context = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            readUtf8: async (path: string): Promise<string> => {
+              if (path === headPath) throw ioError;
+              return ctx.fs.readUtf8(path);
+            },
+          },
+        };
         const refsBefore = await snapshotDir(ctx, `${ctx.layout.gitDir}/refs`);
         const logsBefore = await snapshotDir(ctx, `${ctx.layout.gitDir}/logs`);
 
         // Act
-        let thrown: TsgitError | undefined;
+        let thrown: unknown;
         try {
-          await updateRef(ctx, MAIN, ID_B, { reflogMessage: REASON });
+          await updateRef(failingCtx, MAIN, ID_B, { reflogMessage: REASON });
           expect.unreachable();
         } catch (error) {
-          thrown = error as TsgitError;
+          thrown = error;
         }
 
         // Assert
-        expect(thrown?.data.code).toBe('INVALID_REF');
+        expect(thrown).toBe(ioError);
         expect(await snapshotDir(ctx, `${ctx.layout.gitDir}/refs`)).toEqual(refsBefore);
         expect(await snapshotDir(ctx, `${ctx.layout.gitDir}/logs`)).toEqual(logsBefore);
-      });
-
-      it('Then the coupled HEAD reflog is not written', async () => {
-        // Arrange
-        const ctx = await buildSeededContext({ refs: [{ name: MAIN, id: ID_A }] });
-        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/.invalid\n');
-
-        // Act
-        try {
-          await updateRef(ctx, MAIN, ID_B, { reflogMessage: REASON });
-          expect.unreachable();
-        } catch {
-          // the throw itself is asserted by the sibling test
-        }
-
-        // Assert
-        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/logs/HEAD`)).toBe(false);
       });
     });
   });
