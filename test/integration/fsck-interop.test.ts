@@ -32,6 +32,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import type { FsckFinding } from '../../src/application/commands/fsck.js';
 import { fsck } from '../../src/application/commands/fsck.js';
+import { openRepository } from '../../src/index.node.js';
 import type { Context } from '../../src/ports/context.js';
 import { GIT_AVAILABLE, runGit } from './interop-helpers.js';
 
@@ -1438,6 +1439,116 @@ describe.skipIf(!GIT_AVAILABLE)(
           }
         },
       );
+    });
+  },
+);
+
+// --- Scenario: oid width is fixed by the repository's hash algorithm --------
+//
+// A commit whose `tree` line carries the OTHER algorithm's hex width is
+// corrupt. Measured on git 2.55.0, `git fsck --strict` exits 1 in BOTH
+// directions — a 64-hex tree pointer in a SHA-1 repository and a 40-hex one
+// in a SHA-256 repository — because `parse_oid_hex` takes its width from the
+// repository's algorithm, so neither is a whole oid there.
+//
+// git reports these as unparseable objects ("bogus commit object") rather
+// than through a catalogue msg-id, because the object fails to parse before
+// fsck's content checks run. tsgit parses tolerantly on purpose so the
+// catalogue stays reachable (see `validateObject`), so what is pinned here is
+// the VERDICT both tools agree on — a bad-object finding and exit bit 1 — not
+// git's message text.
+
+function initRepoWithFormat(dir: string, objectFormat: 'sha1' | 'sha256'): void {
+  runGit(['-C', dir, 'init', '-q', '-b', 'main', `--object-format=${objectFormat}`], {
+    env: SAFE_ENV,
+  });
+  runGit(['-C', dir, 'config', 'user.name', 'Test'], { env: SAFE_ENV });
+  runGit(['-C', dir, 'config', 'user.email', 'test@example.com'], { env: SAFE_ENV });
+}
+
+/** Write a commit whose `tree` line carries `treeOid`, bypassing git's own validation. */
+function writeCommitWithTreeOid(dir: string, treeOid: string): string {
+  const identity = 'Test <test@example.com> 1234567890 +0000';
+  const body = `tree ${treeOid}\nauthor ${identity}\ncommitter ${identity}\n\nwidth\n`;
+  return runGit(['-C', dir, 'hash-object', '-t', 'commit', '-w', '--stdin', '--literally'], {
+    env: SAFE_ENV,
+    input: body,
+  }).trim();
+}
+
+const SHA1_WIDTH_TREE_OID = 'a'.repeat(40);
+const SHA256_WIDTH_TREE_OID = 'a'.repeat(64);
+
+let widthSha1Dir = '';
+let widthSha256Dir = '';
+
+beforeAll(async () => {
+  widthSha1Dir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-fsck-width-sha1-'));
+  initRepoWithFormat(widthSha1Dir, 'sha1');
+  writeCommitWithTreeOid(widthSha1Dir, SHA256_WIDTH_TREE_OID);
+
+  widthSha256Dir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-fsck-width-sha256-'));
+  initRepoWithFormat(widthSha256Dir, 'sha256');
+  writeCommitWithTreeOid(widthSha256Dir, SHA1_WIDTH_TREE_OID);
+}, SETUP_TIMEOUT);
+
+afterAll(async () => {
+  if (widthSha1Dir !== '') await rm(widthSha1Dir, { recursive: true, force: true });
+  if (widthSha256Dir !== '') await rm(widthSha256Dir, { recursive: true, force: true });
+});
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'Given a SHA-1 repository holding a commit whose tree oid is SHA-256 width',
+  () => {
+    describe('When fsck runs', () => {
+      it('Then reports the commit as bad and exits 1, as real git does', async () => {
+        // Arrange
+        const gitResult = gitFsck(widthSha1Dir, '--strict');
+        const sut = await openRepository({ cwd: widthSha1Dir });
+
+        // Act
+        const result = await sut.fsck({ strict: true });
+
+        // Assert — both tools call the repository corrupt
+        expect(gitResult.exitCode & 1).toBe(1);
+        expect(result.exitCode & 1).toBe(1);
+
+        // Assert — tsgit attributes it to the tree pointer
+        const badTree = result.findings.find(
+          (f): f is FsckFinding & { type: 'bad-object' } =>
+            f.type === 'bad-object' && f.msgId === 'badTreeSha1',
+        );
+        expect(badTree).toBeDefined();
+        expect(badTree?.severity).toBe('error');
+      });
+    });
+  },
+);
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'Given a SHA-256 repository holding a commit whose tree oid is SHA-1 width',
+  () => {
+    describe('When fsck runs', () => {
+      it('Then reports the commit as bad and exits 1, as real git does', async () => {
+        // Arrange
+        const gitResult = gitFsck(widthSha256Dir, '--strict');
+        const sut = await openRepository({ cwd: widthSha256Dir });
+
+        // Act
+        const result = await sut.fsck({ strict: true });
+
+        // Assert — both tools call the repository corrupt
+        expect(gitResult.exitCode & 1).toBe(1);
+        expect(result.exitCode & 1).toBe(1);
+
+        // Assert — tsgit attributes it to the tree pointer
+        const badTree = result.findings.find(
+          (f): f is FsckFinding & { type: 'bad-object' } =>
+            f.type === 'bad-object' && f.msgId === 'badTreeSha1',
+        );
+        expect(badTree).toBeDefined();
+        expect(badTree?.severity).toBe('error');
+      });
     });
   },
 );

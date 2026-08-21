@@ -87,13 +87,17 @@ async function collectBytes(chunks: AsyncIterable<Uint8Array>): Promise<Uint8Arr
 
 /**
  * A Node-backed `Context` rooted at `dir`, rehashing at SHA-256 via the
- * `algorithm` option `createNodeContext` now exposes. Deliberately NOT the
- * full async `openRepository` — a real `git init --object-format=sha256`
- * repository's `extensions.objectFormat` config entry unconditionally trips
- * `assertExtensionBacked`'s point-of-use refusal (`UNBACKED_EXTENSIONS` — out
- * of this part's scope; its removal is Part 13's job), so `openRepository`
- * cannot open one yet. The sync factory builds a `Context` lexically, without
- * reading the repository's config at all, so it bypasses that gate.
+ * `algorithm` option `createNodeContext` exposes. This is the SYNC factory: it
+ * builds a `Context` lexically, without reading the repository's config, which
+ * keeps each scenario's arrange step to one call and lets a scenario state the
+ * algorithm it is exercising at the call site.
+ *
+ * `openRepository` now opens a real `git init --object-format=sha256`
+ * repository too — `extensions.objectFormat` is a backed extension as of this
+ * change, so the point-of-use refusal no longer fires. That end-to-end path
+ * (config-declared algorithm, never a caller-supplied one) is pinned in
+ * `fsck-interop.test.ts`, which opens SHA-1 and SHA-256 repositories through
+ * `openRepository` and compares the verdict against real git.
  */
 const sha256Context = (dir: string): Context =>
   createNodeContext({ workDir: dir, algorithm: 'sha256' });

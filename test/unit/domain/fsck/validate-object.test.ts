@@ -4,6 +4,7 @@ import { resolveSeverity } from '../../../../src/domain/fsck/severity.js';
 import type { ValidateObjectInput } from '../../../../src/domain/fsck/validate-object.js';
 import { validateObject } from '../../../../src/domain/fsck/validate-object.js';
 import { encode } from '../../../../src/domain/objects/encoding.js';
+import { SHA1_CONFIG, SHA256_CONFIG } from '../../../../src/domain/objects/hash-config.js';
 
 // ---------------------------------------------------------------------------
 // Raw tree-entry builder helpers
@@ -110,7 +111,7 @@ describe('Given tree with zero-padded filemode', () => {
         kind: 'tree',
         rawBody: rawBytes,
         strict: false,
-        digestLength: 20,
+        hashConfig: SHA1_CONFIG,
       });
 
       // Assert
@@ -128,7 +129,7 @@ describe('Given tree with zero-padded filemode', () => {
         kind: 'tree',
         rawBody: rawBytes,
         strict: true,
-        digestLength: 20,
+        hashConfig: SHA1_CONFIG,
       });
 
       // Assert
@@ -155,7 +156,7 @@ describe('Given tree with entries in wrong sort order', () => {
         kind: 'tree',
         rawBody: rawBytes,
         strict: false,
-        digestLength: 20,
+        hashConfig: SHA1_CONFIG,
       });
 
       // Assert
@@ -176,7 +177,7 @@ describe('Given tree with entries in wrong sort order', () => {
         kind: 'tree',
         rawBody: rawBytes,
         strict: true,
-        digestLength: 20,
+        hashConfig: SHA1_CONFIG,
       });
 
       // Assert
@@ -200,7 +201,12 @@ describe('Given commit with missing space before email', () => {
       });
 
       // Act
-      const result = validateObject({ kind: 'commit', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'commit',
+        rawBody: rawBytes,
+        strict: false,
+        hashConfig: SHA1_CONFIG,
+      });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'missingSpaceBeforeEmail', severity: 'error' });
@@ -217,7 +223,12 @@ describe('Given commit with missing space before email', () => {
       });
 
       // Act
-      const result = validateObject({ kind: 'commit', rawBody: rawBytes, strict: true });
+      const result = validateObject({
+        kind: 'commit',
+        rawBody: rawBytes,
+        strict: true,
+        hashConfig: SHA1_CONFIG,
+      });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'missingSpaceBeforeEmail', severity: 'error' });
@@ -237,7 +248,12 @@ describe('Given tag with missing space before email in tagger', () => {
       });
 
       // Act
-      const result = validateObject({ kind: 'tag', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'tag',
+        rawBody: rawBytes,
+        strict: false,
+        hashConfig: SHA1_CONFIG,
+      });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'missingSpaceBeforeEmail', severity: 'error' });
@@ -260,7 +276,12 @@ describe('Given tag without tagger entry', () => {
       });
 
       // Act
-      const result = validateObject({ kind: 'tag', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'tag',
+        rawBody: rawBytes,
+        strict: false,
+        hashConfig: SHA1_CONFIG,
+      });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'missingTaggerEntry', severity: 'info' });
@@ -277,7 +298,12 @@ describe('Given tag without tagger entry', () => {
       });
 
       // Act
-      const result = validateObject({ kind: 'tag', rawBody: rawBytes, strict: true });
+      const result = validateObject({
+        kind: 'tag',
+        rawBody: rawBytes,
+        strict: true,
+        hashConfig: SHA1_CONFIG,
+      });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'missingTaggerEntry', severity: 'info' });
@@ -292,15 +318,26 @@ describe('Given tag without tagger entry', () => {
 describe('Given a valid object', () => {
   describe('When validateObject runs', () => {
     it.each<{ label: string; build: () => ValidateObjectInput }>([
-      { label: 'commit', build: () => ({ kind: 'commit', rawBody: VALID_COMMIT, strict: false }) },
-      { label: 'tag', build: () => ({ kind: 'tag', rawBody: VALID_TAG, strict: false }) },
+      {
+        label: 'commit',
+        build: () => ({
+          kind: 'commit',
+          rawBody: VALID_COMMIT,
+          strict: false,
+          hashConfig: SHA1_CONFIG,
+        }),
+      },
+      {
+        label: 'tag',
+        build: () => ({ kind: 'tag', rawBody: VALID_TAG, strict: false, hashConfig: SHA1_CONFIG }),
+      },
       {
         label: 'tree',
         build: () => ({
           kind: 'tree',
           rawBody: buildTree(buildTreeEntry('100644', 'file.txt', BLOB_SHA)),
           strict: false,
-          digestLength: 20,
+          hashConfig: SHA1_CONFIG,
         }),
       },
       {
@@ -336,7 +373,7 @@ describe('Given tree with empty entry name', () => {
         kind: 'tree',
         rawBody: rawBytes,
         strict: false,
-        digestLength: 20,
+        hashConfig: SHA1_CONFIG,
       });
 
       // Assert
@@ -354,7 +391,7 @@ describe('Given tree with empty entry name', () => {
         kind: 'tree',
         rawBody: rawBytes,
         strict: true,
-        digestLength: 20,
+        hashConfig: SHA1_CONFIG,
       });
 
       // Assert
@@ -378,7 +415,7 @@ describe('Given tree with entry named "."', () => {
         kind: 'tree',
         rawBody: rawBytes,
         strict: false,
-        digestLength: 20,
+        hashConfig: SHA1_CONFIG,
       });
 
       // Assert
@@ -396,7 +433,7 @@ describe('Given tree with entry named "."', () => {
         kind: 'tree',
         rawBody: rawBytes,
         strict: true,
-        digestLength: 20,
+        hashConfig: SHA1_CONFIG,
       });
 
       // Assert
@@ -420,7 +457,7 @@ describe('Given tree with entry named ".."', () => {
         kind: 'tree',
         rawBody: rawBytes,
         strict: false,
-        digestLength: 20,
+        hashConfig: SHA1_CONFIG,
       });
 
       // Assert
@@ -438,7 +475,7 @@ describe('Given tree with entry named ".."', () => {
         kind: 'tree',
         rawBody: rawBytes,
         strict: true,
-        digestLength: 20,
+        hashConfig: SHA1_CONFIG,
       });
 
       // Assert
@@ -462,7 +499,7 @@ describe('Given tree with entry named ".git"', () => {
         kind: 'tree',
         rawBody: rawBytes,
         strict: false,
-        digestLength: 20,
+        hashConfig: SHA1_CONFIG,
       });
 
       // Assert
@@ -480,7 +517,7 @@ describe('Given tree with entry named ".git"', () => {
         kind: 'tree',
         rawBody: rawBytes,
         strict: true,
-        digestLength: 20,
+        hashConfig: SHA1_CONFIG,
       });
 
       // Assert
@@ -504,7 +541,7 @@ describe('Given tree with entry name containing "/"', () => {
         kind: 'tree',
         rawBody: rawBytes,
         strict: false,
-        digestLength: 20,
+        hashConfig: SHA1_CONFIG,
       });
 
       // Assert
@@ -522,7 +559,7 @@ describe('Given tree with entry name containing "/"', () => {
         kind: 'tree',
         rawBody: rawBytes,
         strict: true,
-        digestLength: 20,
+        hashConfig: SHA1_CONFIG,
       });
 
       // Assert
@@ -546,7 +583,7 @@ describe('Given tree with null SHA1 entry', () => {
         kind: 'tree',
         rawBody: rawBytes,
         strict: false,
-        digestLength: 20,
+        hashConfig: SHA1_CONFIG,
       });
 
       // Assert
@@ -564,7 +601,7 @@ describe('Given tree with null SHA1 entry', () => {
         kind: 'tree',
         rawBody: rawBytes,
         strict: true,
-        digestLength: 20,
+        hashConfig: SHA1_CONFIG,
       });
 
       // Assert
@@ -589,7 +626,7 @@ describe('Given tree with entry name exceeding 4096 bytes', () => {
         kind: 'tree',
         rawBody: rawBytes,
         strict: false,
-        digestLength: 20,
+        hashConfig: SHA1_CONFIG,
       });
 
       // Assert
@@ -608,7 +645,7 @@ describe('Given tree with entry name exceeding 4096 bytes', () => {
         kind: 'tree',
         rawBody: rawBytes,
         strict: true,
-        digestLength: 20,
+        hashConfig: SHA1_CONFIG,
       });
 
       // Assert
@@ -630,7 +667,12 @@ describe('Given commit with NUL byte in message body', () => {
       );
 
       // Act
-      const result = validateObject({ kind: 'commit', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'commit',
+        rawBody: rawBytes,
+        strict: false,
+        hashConfig: SHA1_CONFIG,
+      });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'nulInCommit', severity: 'warning' });
@@ -645,7 +687,12 @@ describe('Given commit with NUL byte in message body', () => {
       );
 
       // Act
-      const result = validateObject({ kind: 'commit', rawBody: rawBytes, strict: true });
+      const result = validateObject({
+        kind: 'commit',
+        rawBody: rawBytes,
+        strict: true,
+        hashConfig: SHA1_CONFIG,
+      });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'nulInCommit', severity: 'error' });
@@ -668,7 +715,7 @@ describe('Given tree with unknown file mode', () => {
         kind: 'tree',
         rawBody: rawBytes,
         strict: false,
-        digestLength: 20,
+        hashConfig: SHA1_CONFIG,
       });
 
       // Assert
@@ -686,7 +733,7 @@ describe('Given tree with unknown file mode', () => {
         kind: 'tree',
         rawBody: rawBytes,
         strict: true,
-        digestLength: 20,
+        hashConfig: SHA1_CONFIG,
       });
 
       // Assert
@@ -713,7 +760,7 @@ describe('Given tree with duplicate entry names', () => {
         kind: 'tree',
         rawBody: rawBytes,
         strict: false,
-        digestLength: 20,
+        hashConfig: SHA1_CONFIG,
       });
 
       // Assert
@@ -837,7 +884,12 @@ describe('Given tree bytes that are malformed or truncated', () => {
       const rawBody = build();
 
       // Act
-      const result = validateObject({ kind: 'tree', rawBody, strict: false, digestLength: 20 });
+      const result = validateObject({
+        kind: 'tree',
+        rawBody,
+        strict: false,
+        hashConfig: SHA1_CONFIG,
+      });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'badTree', severity: 'error' });
@@ -860,7 +912,7 @@ describe('Given tree where .gitmodules is a symlink', () => {
         kind: 'tree',
         rawBody: rawBytes,
         strict: false,
-        digestLength: 20,
+        hashConfig: SHA1_CONFIG,
       });
 
       // Assert
@@ -884,7 +936,7 @@ describe('Given tree where .gitattributes is a symlink', () => {
         kind: 'tree',
         rawBody: rawBytes,
         strict: false,
-        digestLength: 20,
+        hashConfig: SHA1_CONFIG,
       });
 
       // Assert
@@ -908,7 +960,7 @@ describe('Given tree where .gitignore is a symlink', () => {
         kind: 'tree',
         rawBody: rawBytes,
         strict: false,
-        digestLength: 20,
+        hashConfig: SHA1_CONFIG,
       });
 
       // Assert
@@ -932,7 +984,7 @@ describe('Given tree where .mailmap is a symlink', () => {
         kind: 'tree',
         rawBody: rawBytes,
         strict: false,
-        digestLength: 20,
+        hashConfig: SHA1_CONFIG,
       });
 
       // Assert
@@ -956,7 +1008,7 @@ describe('Given tree where .gitmodules is a directory (non-blob)', () => {
         kind: 'tree',
         rawBody: rawBytes,
         strict: false,
-        digestLength: 20,
+        hashConfig: SHA1_CONFIG,
       });
 
       // Assert
@@ -980,7 +1032,7 @@ describe('Given tree where .gitattributes is a directory (non-blob)', () => {
         kind: 'tree',
         rawBody: rawBytes,
         strict: false,
-        digestLength: 20,
+        hashConfig: SHA1_CONFIG,
       });
 
       // Assert
@@ -1003,7 +1055,12 @@ describe('Given commit without tree line', () => {
       });
 
       // Act
-      const result = validateObject({ kind: 'commit', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'commit',
+        rawBody: rawBytes,
+        strict: false,
+        hashConfig: SHA1_CONFIG,
+      });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'missingTree', severity: 'error' });
@@ -1025,7 +1082,12 @@ describe('Given commit without author line', () => {
       });
 
       // Act
-      const result = validateObject({ kind: 'commit', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'commit',
+        rawBody: rawBytes,
+        strict: false,
+        hashConfig: SHA1_CONFIG,
+      });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'missingAuthor', severity: 'error' });
@@ -1047,7 +1109,12 @@ describe('Given commit without committer line', () => {
       });
 
       // Act
-      const result = validateObject({ kind: 'commit', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'commit',
+        rawBody: rawBytes,
+        strict: false,
+        hashConfig: SHA1_CONFIG,
+      });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'missingCommitter', severity: 'error' });
@@ -1068,7 +1135,12 @@ describe('Given commit with multiple author lines', () => {
       );
 
       // Act
-      const result = validateObject({ kind: 'commit', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'commit',
+        rawBody: rawBytes,
+        strict: false,
+        hashConfig: SHA1_CONFIG,
+      });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'multipleAuthors', severity: 'error' });
@@ -1090,7 +1162,12 @@ describe('Given commit with NUL byte in header', () => {
       );
 
       // Act
-      const result = validateObject({ kind: 'commit', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'commit',
+        rawBody: rawBytes,
+        strict: false,
+        hashConfig: SHA1_CONFIG,
+      });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'nulInHeader', severity: 'error' });
@@ -1111,7 +1188,12 @@ describe('Given commit header NUL byte AND missing committer', () => {
       const rawBytes = encode(`tree ${BLOB_SHA_HEX}\x00junk\nauthor ${VALID_IDENTITY}\n\nmsg\n`);
 
       // Act
-      const result = validateObject({ kind: 'commit', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'commit',
+        rawBody: rawBytes,
+        strict: false,
+        hashConfig: SHA1_CONFIG,
+      });
 
       // Assert
       expect(result).toHaveLength(1);
@@ -1135,7 +1217,12 @@ describe('Given commit with zero-padded timestamp', () => {
       });
 
       // Act
-      const result = validateObject({ kind: 'commit', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'commit',
+        rawBody: rawBytes,
+        strict: false,
+        hashConfig: SHA1_CONFIG,
+      });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'zeroPaddedDate', severity: 'error' });
@@ -1158,7 +1245,12 @@ describe('Given commit with non-numeric timestamp', () => {
       });
 
       // Act
-      const result = validateObject({ kind: 'commit', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'commit',
+        rawBody: rawBytes,
+        strict: false,
+        hashConfig: SHA1_CONFIG,
+      });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'badDate', severity: 'error' });
@@ -1194,7 +1286,12 @@ describe('Given commit with an author timestamp that overflows INT64_MAX', () =>
       });
 
       // Act
-      const result = validateObject({ kind: 'commit', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'commit',
+        rawBody: rawBytes,
+        strict: false,
+        hashConfig: SHA1_CONFIG,
+      });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'badDateOverflow', severity: 'error' });
@@ -1214,7 +1311,12 @@ describe('Given commit with timestamp exactly at INT64_MAX (9223372036854775807)
       });
 
       // Act
-      const result = validateObject({ kind: 'commit', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'commit',
+        rawBody: rawBytes,
+        strict: false,
+        hashConfig: SHA1_CONFIG,
+      });
 
       // Assert — no badDate or badDateOverflow
       expect(result).not.toContainEqual(expect.objectContaining({ msgId: 'badDate' }));
@@ -1247,7 +1349,12 @@ describe('Given commit with a non-numeric author timestamp', () => {
       });
 
       // Act
-      const result = validateObject({ kind: 'commit', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'commit',
+        rawBody: rawBytes,
+        strict: false,
+        hashConfig: SHA1_CONFIG,
+      });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'badDate', severity: 'error' });
@@ -1284,7 +1391,12 @@ describe('Given commit with an invalid author timezone', () => {
       const rawBytes = buildCommit({ tree: BLOB_SHA_HEX, author, committer: VALID_IDENTITY });
 
       // Act
-      const result = validateObject({ kind: 'commit', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'commit',
+        rawBody: rawBytes,
+        strict: false,
+        hashConfig: SHA1_CONFIG,
+      });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'badTimezone', severity: 'error' });
@@ -1307,7 +1419,12 @@ describe('Given commit with no space between email and date', () => {
       });
 
       // Act
-      const result = validateObject({ kind: 'commit', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'commit',
+        rawBody: rawBytes,
+        strict: false,
+        hashConfig: SHA1_CONFIG,
+      });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'missingSpaceBeforeDate', severity: 'error' });
@@ -1330,7 +1447,12 @@ describe('Given commit with no email angle brackets in author', () => {
       });
 
       // Act
-      const result = validateObject({ kind: 'commit', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'commit',
+        rawBody: rawBytes,
+        strict: false,
+        hashConfig: SHA1_CONFIG,
+      });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'missingEmail', severity: 'error' });
@@ -1353,7 +1475,12 @@ describe('Given commit with no name before email', () => {
       });
 
       // Act
-      const result = validateObject({ kind: 'commit', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'commit',
+        rawBody: rawBytes,
+        strict: false,
+        hashConfig: SHA1_CONFIG,
+      });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'missingNameBeforeEmail', severity: 'error' });
@@ -1374,7 +1501,12 @@ describe('Given commit with invalid parent SHA1', () => {
       );
 
       // Act
-      const result = validateObject({ kind: 'commit', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'commit',
+        rawBody: rawBytes,
+        strict: false,
+        hashConfig: SHA1_CONFIG,
+      });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'badParentSha1', severity: 'error' });
@@ -1395,7 +1527,12 @@ describe('Given commit with invalid tree SHA1', () => {
       );
 
       // Act
-      const result = validateObject({ kind: 'commit', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'commit',
+        rawBody: rawBytes,
+        strict: false,
+        hashConfig: SHA1_CONFIG,
+      });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'badTreeSha1', severity: 'error' });
@@ -1418,7 +1555,12 @@ describe('Given tag without type line', () => {
       });
 
       // Act
-      const result = validateObject({ kind: 'tag', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'tag',
+        rawBody: rawBytes,
+        strict: false,
+        hashConfig: SHA1_CONFIG,
+      });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'missingType', severity: 'error' });
@@ -1440,7 +1582,12 @@ describe('Given tag with empty type value', () => {
       );
 
       // Act
-      const result = validateObject({ kind: 'tag', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'tag',
+        rawBody: rawBytes,
+        strict: false,
+        hashConfig: SHA1_CONFIG,
+      });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'missingTypeEntry', severity: 'error' });
@@ -1463,7 +1610,12 @@ describe('Given tag without tag-name line', () => {
       });
 
       // Act
-      const result = validateObject({ kind: 'tag', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'tag',
+        rawBody: rawBytes,
+        strict: false,
+        hashConfig: SHA1_CONFIG,
+      });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'missingTag', severity: 'error' });
@@ -1485,7 +1637,12 @@ describe('Given tag with empty tag name', () => {
       );
 
       // Act
-      const result = validateObject({ kind: 'tag', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'tag',
+        rawBody: rawBytes,
+        strict: false,
+        hashConfig: SHA1_CONFIG,
+      });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'missingTagEntry', severity: 'error' });
@@ -1507,7 +1664,12 @@ describe('Given tag with tag name containing NUL', () => {
       );
 
       // Act
-      const result = validateObject({ kind: 'tag', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'tag',
+        rawBody: rawBytes,
+        strict: false,
+        hashConfig: SHA1_CONFIG,
+      });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'badTagName', severity: 'info' });
@@ -1522,7 +1684,12 @@ describe('Given tag with tag name containing NUL', () => {
       );
 
       // Act
-      const result = validateObject({ kind: 'tag', rawBody: rawBytes, strict: true });
+      const result = validateObject({
+        kind: 'tag',
+        rawBody: rawBytes,
+        strict: true,
+        hashConfig: SHA1_CONFIG,
+      });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'badTagName', severity: 'info' });
@@ -1546,7 +1713,12 @@ describe('Given tag with invalid object SHA1', () => {
       });
 
       // Act
-      const result = validateObject({ kind: 'tag', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'tag',
+        rawBody: rawBytes,
+        strict: false,
+        hashConfig: SHA1_CONFIG,
+      });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'badObjectSha1', severity: 'error' });
@@ -1571,7 +1743,12 @@ describe('Given tag with extra unknown header', () => {
       });
 
       // Act
-      const result = validateObject({ kind: 'tag', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'tag',
+        rawBody: rawBytes,
+        strict: false,
+        hashConfig: SHA1_CONFIG,
+      });
 
       // Assert
       expect(result.map((f) => f.msgId)).not.toContain(MSG_EXTRA_HEADER_ENTRY);
@@ -1868,7 +2045,7 @@ describe('Given an INFO severity id (badFilemode) with strict mode', () => {
         kind: 'tree',
         rawBody: rawBytes,
         strict: true,
-        digestLength: 20,
+        hashConfig: SHA1_CONFIG,
       });
 
       // Assert
@@ -1974,7 +2151,12 @@ describe('Given commit with author that has < but no closing >', () => {
       });
 
       // Act
-      const result = validateObject({ kind: 'commit', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'commit',
+        rawBody: rawBytes,
+        strict: false,
+        hashConfig: SHA1_CONFIG,
+      });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'missingEmail', severity: 'error' });
@@ -2016,7 +2198,12 @@ describe('Given tag with a tagger timestamp that overflows INT64_MAX', () => {
       });
 
       // Act
-      const result = validateObject({ kind: 'tag', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'tag',
+        rawBody: rawBytes,
+        strict: false,
+        hashConfig: SHA1_CONFIG,
+      });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'badDateOverflow', severity: 'error' });
@@ -2039,7 +2226,12 @@ describe('Given tag with tagger line that has no < character', () => {
       );
 
       // Act
-      const result = validateObject({ kind: 'tag', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'tag',
+        rawBody: rawBytes,
+        strict: false,
+        hashConfig: SHA1_CONFIG,
+      });
 
       // Assert — checkTaggerLine's early-return branch produces no findings for the
       // tagger line itself (the tag is otherwise valid so no other findings either)
@@ -2063,7 +2255,12 @@ describe('Given tag body with no blank-line separator between header and message
       );
 
       // Act
-      const result = validateObject({ kind: 'tag', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'tag',
+        rawBody: rawBytes,
+        strict: false,
+        hashConfig: SHA1_CONFIG,
+      });
 
       // Assert — no findings for a structurally valid tag even without blank separator
       expect(result).toHaveLength(0);
@@ -2116,7 +2313,7 @@ describe('Given a correctly-sorted tree exercising the directory sort-key', () =
         kind: 'tree',
         rawBody: rawBytes,
         strict: false,
-        digestLength: 20,
+        hashConfig: SHA1_CONFIG,
       });
 
       // Assert
@@ -2150,7 +2347,7 @@ describe('Given tree with directory entry (040000) before file where dir sort ke
         kind: 'tree',
         rawBody: rawBytes,
         strict: false,
-        digestLength: 20,
+        hashConfig: SHA1_CONFIG,
       });
 
       // Assert — dir sort key 'a/' > 'a!' triggers treeNotSorted
@@ -2175,7 +2372,7 @@ describe('Given tree where .gitmodules is an executable file (mode 100755)', () 
         kind: 'tree',
         rawBody: rawBytes,
         strict: false,
-        digestLength: 20,
+        hashConfig: SHA1_CONFIG,
       });
 
       // Assert — 100755 is a regular file; must NOT emit gitmodulesBlob
@@ -2200,7 +2397,7 @@ describe('Given tree with a symlink entry NOT named .mailmap', () => {
         kind: 'tree',
         rawBody: rawBytes,
         strict: false,
-        digestLength: 20,
+        hashConfig: SHA1_CONFIG,
       });
 
       // Assert — mailmapSymlink must only fire for '.mailmap' specifically
@@ -2225,7 +2422,7 @@ describe('Given tree with .gitmodules as a regular file (mode 100644)', () => {
         kind: 'tree',
         rawBody: rawBytes,
         strict: false,
-        digestLength: 20,
+        hashConfig: SHA1_CONFIG,
       });
 
       // Assert
@@ -2251,7 +2448,7 @@ describe('Given tree with .gitattributes as a regular file (mode 100644)', () =>
         kind: 'tree',
         rawBody: rawBytes,
         strict: false,
-        digestLength: 20,
+        hashConfig: SHA1_CONFIG,
       });
 
       // Assert
@@ -2303,7 +2500,12 @@ describe('Given commit with committer that has no space before email', () => {
       });
 
       // Act
-      const result = validateObject({ kind: 'commit', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'commit',
+        rawBody: rawBytes,
+        strict: false,
+        hashConfig: SHA1_CONFIG,
+      });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'missingSpaceBeforeEmail', severity: 'error' });
@@ -2326,7 +2528,12 @@ describe('Given commit with an extra non-committer line between author and commi
       );
 
       // Act
-      const result = validateObject({ kind: 'commit', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'commit',
+        rawBody: rawBytes,
+        strict: false,
+        hashConfig: SHA1_CONFIG,
+      });
 
       // Assert — no missingCommitter finding (committer was found after skip)
       expect(result.filter((f) => f.msgId === 'missingCommitter')).toHaveLength(0);
@@ -2335,24 +2542,194 @@ describe('Given commit with an extra non-committer line between author and commi
 });
 
 // ---------------------------------------------------------------------------
-// commit — SHA-256 tree OID (isValidSha: SHA256_HEX_RE true branch)
+// commit / tag — oid width is fixed by the repository's hash algorithm
+//
+// A 40-hex string is a full oid under SHA-1 but only a PREFIX under SHA-256;
+// a 64-hex string is a full oid under SHA-256 but over-long under SHA-1.
+// Measured on real git 2.55.0: `git fsck --strict` exits 1 on a commit whose
+// `tree` line carries the other algorithm's width, in BOTH directions, and
+// likewise on a tag's `object` line. Accepting either width regardless of the
+// repository would let genuine corruption pass unreported.
 // ---------------------------------------------------------------------------
 
-describe('Given commit with a SHA-256 tree OID (64 hex chars)', () => {
-  describe('When validateObject runs', () => {
-    it('Then emits no badTreeSha1 finding (SHA-256 OID is valid)', () => {
+const SHA1_WIDTH_OID = 'a'.repeat(40);
+const SHA256_WIDTH_OID = 'a'.repeat(64);
+
+describe('Given a commit whose tree oid carries SHA-256 width', () => {
+  describe('When validated against a SHA-1 repository', () => {
+    it('Then reports the tree pointer as malformed', () => {
       // Arrange
-      // 64-hex-char SHA-256 OID: SHA1_HEX_RE.test() = false, SHA256_HEX_RE.test() = true.
-      const sha256TreeOid = 'a'.repeat(64);
-      const rawBytes = encode(
-        `tree ${sha256TreeOid}\nauthor ${VALID_IDENTITY}\ncommitter ${VALID_IDENTITY}\n\nmsg\n`,
-      );
+      const sut = validateObject;
+      const rawBody = buildCommit({
+        tree: SHA256_WIDTH_OID,
+        author: VALID_IDENTITY,
+        committer: VALID_IDENTITY,
+      });
 
       // Act
-      const result = validateObject({ kind: 'commit', rawBody: rawBytes, strict: false });
+      const result = sut({ kind: 'commit', rawBody, strict: false, hashConfig: SHA1_CONFIG });
+
+      // Assert
+      expect(result).toContainEqual({ msgId: 'badTreeSha1', severity: 'error' });
+    });
+  });
+
+  describe('When validated against a SHA-256 repository', () => {
+    it('Then accepts the tree pointer', () => {
+      // Arrange
+      const sut = validateObject;
+      const rawBody = buildCommit({
+        tree: SHA256_WIDTH_OID,
+        author: VALID_IDENTITY,
+        committer: VALID_IDENTITY,
+      });
+
+      // Act
+      const result = sut({ kind: 'commit', rawBody, strict: false, hashConfig: SHA256_CONFIG });
 
       // Assert
       expect(result.filter((f) => f.msgId === 'badTreeSha1')).toHaveLength(0);
+    });
+  });
+});
+
+describe('Given a commit whose tree oid carries SHA-1 width', () => {
+  describe('When validated against a SHA-256 repository', () => {
+    it('Then reports the tree pointer as malformed', () => {
+      // Arrange
+      const sut = validateObject;
+      const rawBody = buildCommit({
+        tree: SHA1_WIDTH_OID,
+        author: VALID_IDENTITY,
+        committer: VALID_IDENTITY,
+      });
+
+      // Act
+      const result = sut({ kind: 'commit', rawBody, strict: false, hashConfig: SHA256_CONFIG });
+
+      // Assert
+      expect(result).toContainEqual({ msgId: 'badTreeSha1', severity: 'error' });
+    });
+  });
+
+  describe('When validated against a SHA-1 repository', () => {
+    it('Then accepts the tree pointer', () => {
+      // Arrange
+      const sut = validateObject;
+      const rawBody = buildCommit({
+        tree: SHA1_WIDTH_OID,
+        author: VALID_IDENTITY,
+        committer: VALID_IDENTITY,
+      });
+
+      // Act
+      const result = sut({ kind: 'commit', rawBody, strict: false, hashConfig: SHA1_CONFIG });
+
+      // Assert
+      expect(result.filter((f) => f.msgId === 'badTreeSha1')).toHaveLength(0);
+    });
+  });
+});
+
+describe('Given a commit whose parent oid carries SHA-256 width', () => {
+  describe('When validated against a SHA-1 repository', () => {
+    it('Then reports the parent pointer as malformed', () => {
+      // Arrange
+      const sut = validateObject;
+      const rawBody = buildCommit({
+        tree: SHA1_WIDTH_OID,
+        parents: [SHA256_WIDTH_OID],
+        author: VALID_IDENTITY,
+        committer: VALID_IDENTITY,
+      });
+
+      // Act
+      const result = sut({ kind: 'commit', rawBody, strict: false, hashConfig: SHA1_CONFIG });
+
+      // Assert
+      expect(result).toContainEqual({ msgId: 'badParentSha1', severity: 'error' });
+    });
+  });
+});
+
+describe('Given a commit whose parent oid carries SHA-1 width', () => {
+  describe('When validated against a SHA-256 repository', () => {
+    it('Then reports the parent pointer as malformed', () => {
+      // Arrange
+      const sut = validateObject;
+      const rawBody = buildCommit({
+        tree: SHA256_WIDTH_OID,
+        parents: [SHA1_WIDTH_OID],
+        author: VALID_IDENTITY,
+        committer: VALID_IDENTITY,
+      });
+
+      // Act
+      const result = sut({ kind: 'commit', rawBody, strict: false, hashConfig: SHA256_CONFIG });
+
+      // Assert
+      expect(result).toContainEqual({ msgId: 'badParentSha1', severity: 'error' });
+    });
+  });
+});
+
+describe('Given a tag whose object oid carries SHA-256 width', () => {
+  describe('When validated against a SHA-1 repository', () => {
+    it('Then reports the tagged object pointer as malformed', () => {
+      // Arrange
+      const sut = validateObject;
+      const rawBody = buildTag({
+        object: SHA256_WIDTH_OID,
+        type: 'blob',
+        tag: 'v1.0',
+        tagger: VALID_IDENTITY,
+      });
+
+      // Act
+      const result = sut({ kind: 'tag', rawBody, strict: false, hashConfig: SHA1_CONFIG });
+
+      // Assert
+      expect(result).toContainEqual({ msgId: 'badObjectSha1', severity: 'error' });
+    });
+  });
+
+  describe('When validated against a SHA-256 repository', () => {
+    it('Then accepts the tagged object pointer', () => {
+      // Arrange
+      const sut = validateObject;
+      const rawBody = buildTag({
+        object: SHA256_WIDTH_OID,
+        type: 'blob',
+        tag: 'v1.0',
+        tagger: VALID_IDENTITY,
+      });
+
+      // Act
+      const result = sut({ kind: 'tag', rawBody, strict: false, hashConfig: SHA256_CONFIG });
+
+      // Assert
+      expect(result.filter((f) => f.msgId === 'badObjectSha1')).toHaveLength(0);
+    });
+  });
+});
+
+describe('Given a tag whose object oid carries SHA-1 width', () => {
+  describe('When validated against a SHA-256 repository', () => {
+    it('Then reports the tagged object pointer as malformed', () => {
+      // Arrange
+      const sut = validateObject;
+      const rawBody = buildTag({
+        object: SHA1_WIDTH_OID,
+        type: 'blob',
+        tag: 'v1.0',
+        tagger: VALID_IDENTITY,
+      });
+
+      // Act
+      const result = sut({ kind: 'tag', rawBody, strict: false, hashConfig: SHA256_CONFIG });
+
+      // Assert
+      expect(result).toContainEqual({ msgId: 'badObjectSha1', severity: 'error' });
     });
   });
 });
@@ -2372,7 +2749,12 @@ describe('Given commit body with no blank-line separator between header and mess
       );
 
       // Act
-      const result = validateObject({ kind: 'commit', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'commit',
+        rawBody: rawBytes,
+        strict: false,
+        hashConfig: SHA1_CONFIG,
+      });
 
       // Assert — no findings for a structurally valid commit even without blank separator
       expect(result).toHaveLength(0);
@@ -2398,7 +2780,12 @@ describe('Given commit with author that has no timezone after the timestamp', ()
       });
 
       // Act
-      const result = validateObject({ kind: 'commit', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'commit',
+        rawBody: rawBytes,
+        strict: false,
+        hashConfig: SHA1_CONFIG,
+      });
 
       // Assert — no badTimezone finding for empty timezone
       expect(result.filter((f) => f.msgId === 'badTimezone')).toHaveLength(0);
@@ -2441,7 +2828,12 @@ describe('Given a tag tagger line that must not reach the date-overflow check', 
       const rawBytes = buildTag({ object: BLOB_SHA_HEX, type: 'blob', tag: 'v1.0', tagger });
 
       // Act
-      const result = validateObject({ kind: 'tag', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'tag',
+        rawBody: rawBytes,
+        strict: false,
+        hashConfig: SHA1_CONFIG,
+      });
 
       // Assert — no date fault because the parser bails before the date field
       expect(result).not.toContainEqual(expect.objectContaining({ msgId: 'badDateOverflow' }));
@@ -2606,7 +2998,12 @@ describe('Given commit with exactly one extra author line (two author lines tota
       );
 
       // Act
-      const result = validateObject({ kind: 'commit', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'commit',
+        rawBody: rawBytes,
+        strict: false,
+        hashConfig: SHA1_CONFIG,
+      });
 
       // Assert
       expect(result.filter((f) => f.msgId === 'multipleAuthors')).toHaveLength(1);
@@ -2632,7 +3029,12 @@ describe('Given commit with author but no committer and no intermediate lines', 
       const rawBytes = encode(`tree ${BLOB_SHA_HEX}\nauthor ${VALID_IDENTITY}\n\nmsg\n`);
 
       // Act
-      const result = validateObject({ kind: 'commit', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'commit',
+        rawBody: rawBytes,
+        strict: false,
+        hashConfig: SHA1_CONFIG,
+      });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'missingCommitter', severity: 'error' });
@@ -2660,7 +3062,12 @@ describe('Given commit with committer that has no name before the email angle-br
       );
 
       // Act
-      const result = validateObject({ kind: 'commit', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'commit',
+        rawBody: rawBytes,
+        strict: false,
+        hashConfig: SHA1_CONFIG,
+      });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'missingNameBeforeEmail', severity: 'error' });
@@ -2685,7 +3092,12 @@ describe('Given commit with missing tree header', () => {
       const rawBytes = encode(`author ${VALID_IDENTITY}\ncommitter ${VALID_IDENTITY}\n\nmsg\n`);
 
       // Act
-      const result = validateObject({ kind: 'commit', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'commit',
+        rawBody: rawBytes,
+        strict: false,
+        hashConfig: SHA1_CONFIG,
+      });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'missingTree', severity: 'error' });
@@ -2717,7 +3129,7 @@ describe('Given tree with directory "a" (mode 40000) before file "a-" (mode 1006
         kind: 'tree',
         rawBody: rawBytes,
         strict: false,
-        digestLength: 20,
+        hashConfig: SHA1_CONFIG,
       });
 
       // Assert
@@ -2746,7 +3158,7 @@ describe('Given tree with entry name of exactly 4096 ASCII bytes (at the boundar
         kind: 'tree',
         rawBody: rawBytes,
         strict: false,
-        digestLength: 20,
+        hashConfig: SHA1_CONFIG,
       });
 
       // Assert
@@ -2774,7 +3186,7 @@ describe('Given tree with .gitignore as a regular file (mode 100644)', () => {
         kind: 'tree',
         rawBody: rawBytes,
         strict: false,
-        digestLength: 20,
+        hashConfig: SHA1_CONFIG,
       });
 
       // Assert
@@ -2802,7 +3214,7 @@ describe('Given tree with .mailmap as a regular file (mode 100644)', () => {
         kind: 'tree',
         rawBody: rawBytes,
         strict: false,
-        digestLength: 20,
+        hashConfig: SHA1_CONFIG,
       });
 
       // Assert
@@ -2831,7 +3243,7 @@ describe('Given tree with zero-padded mode "0100644" (normalises to valid mode "
         kind: 'tree',
         rawBody: rawBytes,
         strict: false,
-        digestLength: 20,
+        hashConfig: SHA1_CONFIG,
       });
 
       // Assert — zeroPaddedFilemode is expected; badFilemode must NOT appear
@@ -2863,7 +3275,7 @@ describe('Given tree with two entries sharing the same name (duplicate)', () => 
         kind: 'tree',
         rawBody: rawBytes,
         strict: false,
-        digestLength: 20,
+        hashConfig: SHA1_CONFIG,
       });
 
       // Assert — duplicate is flagged, but equal sort key is not a sort violation
@@ -2897,7 +3309,12 @@ describe('Given tag with tagger timestamp exactly equal to INT64_MAX (9223372036
       });
 
       // Act
-      const result = validateObject({ kind: 'tag', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'tag',
+        rawBody: rawBytes,
+        strict: false,
+        hashConfig: SHA1_CONFIG,
+      });
 
       // Assert
       expect(result).not.toContainEqual(expect.objectContaining({ msgId: 'badDateOverflow' }));
@@ -2929,7 +3346,12 @@ describe('Given tag with tagger timestamp of 18 nines (999999999999999999, less 
       });
 
       // Act
-      const result = validateObject({ kind: 'tag', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'tag',
+        rawBody: rawBytes,
+        strict: false,
+        hashConfig: SHA1_CONFIG,
+      });
 
       // Assert
       expect(result).not.toContainEqual(expect.objectContaining({ msgId: 'badDateOverflow' }));
@@ -2973,7 +3395,12 @@ describe('Given tag with a valid tagger where the identity has a space before th
       );
 
       // Act
-      const result = validateObject({ kind: 'tag', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'tag',
+        rawBody: rawBytes,
+        strict: false,
+        hashConfig: SHA1_CONFIG,
+      });
 
       // Assert — no name before email in tagger: missingSpaceBeforeEmail must fire
       expect(result).toContainEqual({ msgId: 'missingSpaceBeforeEmail', severity: 'error' });
@@ -2998,7 +3425,12 @@ describe('Given valid tag with a blank-line separator and a message body', () =>
       );
 
       // Act
-      const result = validateObject({ kind: 'tag', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'tag',
+        rawBody: rawBytes,
+        strict: false,
+        hashConfig: SHA1_CONFIG,
+      });
 
       // Assert — a structurally valid tag returns no findings
       expect(result).toHaveLength(0);
@@ -3029,7 +3461,12 @@ describe('Given tag without an object line (checkObjectAndType returns nextIdx: 
       });
 
       // Act
-      const result = validateObject({ kind: 'tag', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'tag',
+        rawBody: rawBytes,
+        strict: false,
+        hashConfig: SHA1_CONFIG,
+      });
 
       // Assert — exactly missingObject, no missingTag or missingTaggerEntry
       expect(result).toContainEqual({ msgId: 'missingObject', severity: 'error' });
@@ -3059,7 +3496,12 @@ describe('Given tag with type and tagger but neither object nor tag-name line', 
       const rawBytes = encode(`type blob\ntagger ${VALID_IDENTITY}\n\nmsg\n`);
 
       // Act
-      const result = validateObject({ kind: 'tag', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'tag',
+        rawBody: rawBytes,
+        strict: false,
+        hashConfig: SHA1_CONFIG,
+      });
 
       // Assert — only missingObject; processing must stop before tag/tagger checks
       expect(result).toContainEqual({ msgId: 'missingObject', severity: 'error' });
@@ -3088,7 +3530,12 @@ describe('Given tag with object and tagger but neither type nor tag-name line', 
       const rawBytes = encode(`object ${BLOB_SHA_HEX}\ntagger ${VALID_IDENTITY}\n\nmsg\n`);
 
       // Act
-      const result = validateObject({ kind: 'tag', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'tag',
+        rawBody: rawBytes,
+        strict: false,
+        hashConfig: SHA1_CONFIG,
+      });
 
       // Assert — only missingType; processing must stop before tag/tagger checks
       expect(result).toContainEqual({ msgId: 'missingType', severity: 'error' });
@@ -3121,7 +3568,12 @@ describe('Given tag with a non-empty invalid type value (e.g. "frog")', () => {
       );
 
       // Act
-      const result = validateObject({ kind: 'tag', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'tag',
+        rawBody: rawBytes,
+        strict: false,
+        hashConfig: SHA1_CONFIG,
+      });
 
       // Assert — missingTypeEntry present, missingTag absent
       expect(result).toContainEqual({ msgId: 'missingTypeEntry', severity: 'error' });
@@ -3155,7 +3607,12 @@ describe('Given tag where tagger line is present but has wrong prefix (author in
       );
 
       // Act
-      const result = validateObject({ kind: 'tag', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'tag',
+        rawBody: rawBytes,
+        strict: false,
+        hashConfig: SHA1_CONFIG,
+      });
 
       // Assert — wrong-prefix tagger line must trigger missingTaggerEntry
       expect(result).toContainEqual({ msgId: 'missingTaggerEntry', severity: 'info' });
@@ -3185,7 +3642,12 @@ describe('Given commit author with a valid timezone offset of +0230', () => {
       });
 
       // Act
-      const result = validateObject({ kind: 'commit', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'commit',
+        rawBody: rawBytes,
+        strict: false,
+        hashConfig: SHA1_CONFIG,
+      });
 
       // Assert
       expect(result).not.toContainEqual(expect.objectContaining({ msgId: 'badTimezone' }));
@@ -3215,7 +3677,12 @@ describe('Given commit author with 18-digit all-nines timestamp (999999999999999
       });
 
       // Act
-      const result = validateObject({ kind: 'commit', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'commit',
+        rawBody: rawBytes,
+        strict: false,
+        hashConfig: SHA1_CONFIG,
+      });
 
       // Assert
       expect(result).not.toContainEqual(expect.objectContaining({ msgId: 'badDateOverflow' }));
@@ -3245,7 +3712,12 @@ describe('Given commit author with single-character zero timestamp ("0")', () =>
       });
 
       // Act
-      const result = validateObject({ kind: 'commit', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'commit',
+        rawBody: rawBytes,
+        strict: false,
+        hashConfig: SHA1_CONFIG,
+      });
 
       // Assert — '0' is a valid timestamp (epoch); must not trigger zeroPaddedDate
       expect(result).not.toContainEqual(expect.objectContaining({ msgId: 'zeroPaddedDate' }));
@@ -3278,7 +3750,12 @@ describe('Given commit author identity with ">" but no "<" (opening angle-bracke
       });
 
       // Act
-      const result = validateObject({ kind: 'commit', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'commit',
+        rawBody: rawBytes,
+        strict: false,
+        hashConfig: SHA1_CONFIG,
+      });
 
       // Assert
       expect(result).toContainEqual({ msgId: 'missingEmail', severity: 'error' });
@@ -3305,7 +3782,12 @@ describe('Given commit with a NUL byte in the body (after the blank-line separat
       );
 
       // Act
-      const result = validateObject({ kind: 'commit', rawBody: rawBytes, strict: false });
+      const result = validateObject({
+        kind: 'commit',
+        rawBody: rawBytes,
+        strict: false,
+        hashConfig: SHA1_CONFIG,
+      });
 
       // Assert — nulInCommit (warning), not nulInHeader, because the NUL is only in the body
       expect(result).toContainEqual({ msgId: 'nulInCommit', severity: 'warning' });
@@ -3337,7 +3819,7 @@ describe('Given tree entry with canonical directory mode "40000"', () => {
         kind: 'tree',
         rawBody: rawBytes,
         strict: false,
-        digestLength: 20,
+        hashConfig: SHA1_CONFIG,
       });
 
       // Assert
@@ -3366,7 +3848,7 @@ describe('Given a SHA-256 tree with three entries', () => {
         kind: 'tree',
         rawBody: rawBytes,
         strict: false,
-        digestLength: 32,
+        hashConfig: SHA256_CONFIG,
       });
 
       // Assert
@@ -3387,7 +3869,7 @@ describe('Given a SHA-256 tree entry truncated to a 20-byte (SHA-1-width) oid', 
         kind: 'tree',
         rawBody: rawBytes,
         strict: false,
-        digestLength: 32,
+        hashConfig: SHA256_CONFIG,
       });
 
       // Assert

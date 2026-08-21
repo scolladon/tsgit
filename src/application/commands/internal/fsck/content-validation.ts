@@ -1,6 +1,7 @@
 import { TsgitError } from '../../../../domain/error.js';
 import type { FsckObjectType, ValidateObjectInput } from '../../../../domain/fsck/index.js';
 import { validateObject } from '../../../../domain/fsck/index.js';
+import type { HashConfig } from '../../../../domain/objects/hash-config.js';
 import type { ObjectId } from '../../../../domain/objects/index.js';
 import { parseHeader } from '../../../../domain/objects/index.js';
 import type { Context } from '../../../../ports/context.js';
@@ -117,29 +118,31 @@ interface ContentValidationResult {
 }
 
 /**
- * Build the kind-specific `validateObject` input. Only `tree` needs the
- * repository's own oid byte width — a raw tree's binary shas carry no width
- * marker of their own, so the caller's `ctx.hashConfig.digestLength` is the
- * only source of truth; only `blob` optionally carries the special-file name
- * used by `.gitmodules`/`.gitattributes` content checks.
+ * Build the kind-specific `validateObject` input. Every oid-bearing kind needs
+ * the repository's own hash config: a raw tree's binary shas carry no width
+ * marker of their own, and a commit's `tree`/`parent` and a tag's `object`
+ * lines are only well-formed at their repository's hex width — a 40-hex tree
+ * pointer is a full oid under SHA-1 but a truncated one under SHA-256, and
+ * real git refuses each in the other's repository. Only `blob` needs no
+ * config, and only `blob` optionally carries the special-file name used by
+ * `.gitmodules`/`.gitattributes` content checks.
  */
 function buildValidateObjectInput(
-  ctx: Context,
+  hashConfig: HashConfig,
   kind: FsckObjectType,
   rawBody: Uint8Array,
   strict: boolean,
   fileName: string | undefined,
 ): ValidateObjectInput {
   switch (kind) {
-    case 'tree':
-      return { kind, rawBody, strict, digestLength: ctx.hashConfig.digestLength };
     case 'blob':
       return fileName !== undefined
         ? { kind, rawBody, strict, fileName }
         : { kind, rawBody, strict };
+    case 'tree':
     case 'commit':
     case 'tag':
-      return { kind, rawBody, strict };
+      return { kind, rawBody, strict, hashConfig };
   }
 }
 
@@ -171,7 +174,7 @@ async function validateOneObject(
   // (.gitmodules / .gitattributes) so content checks fire (gitmodulesUrl, …).
   const fileName = kind === 'blob' ? blobFilenames.get(id) : undefined;
   const catalogueFindings = validateObject(
-    buildValidateObjectInput(ctx, kind, rawBody, strict, fileName),
+    buildValidateObjectInput(ctx.hashConfig, kind, rawBody, strict, fileName),
   );
   for (const { msgId, severity } of catalogueFindings) {
     findings.push({ type: 'bad-object', id, objectType: kind, msgId, severity });

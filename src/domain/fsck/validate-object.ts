@@ -1,3 +1,4 @@
+import type { HashConfig } from '../objects/hash-config.js';
 import type { FsckSeverity } from './types.js';
 import { validateBlob } from './validate-blob.js';
 import { validateCommit } from './validate-commit.js';
@@ -14,11 +15,19 @@ interface ValidateObjectInputBase {
 export type ValidateObjectInput =
   | (ValidateObjectInputBase & {
       readonly kind: 'tree';
-      /** The repository's oid byte width — 20 for SHA-1, 32 for SHA-256. */
-      readonly digestLength: 20 | 32;
+      /** The repository's hash config — a raw tree's binary shas carry no width marker of their own. */
+      readonly hashConfig: HashConfig;
     })
-  | (ValidateObjectInputBase & { readonly kind: 'commit' })
-  | (ValidateObjectInputBase & { readonly kind: 'tag' })
+  | (ValidateObjectInputBase & {
+      readonly kind: 'commit';
+      /** The repository's hash config — fixes the width `tree`/`parent` oids must be. */
+      readonly hashConfig: HashConfig;
+    })
+  | (ValidateObjectInputBase & {
+      readonly kind: 'tag';
+      /** The repository's hash config — fixes the width the `object` oid must be. */
+      readonly hashConfig: HashConfig;
+    })
   | (ValidateObjectInputBase & {
       readonly kind: 'blob';
       /**
@@ -50,11 +59,11 @@ export interface ObjectFinding {
 export function validateObject(input: ValidateObjectInput): ReadonlyArray<ObjectFinding> {
   switch (input.kind) {
     case 'tree':
-      return validateTree(input.rawBody, input.strict, input.digestLength);
+      return validateTree(input.rawBody, input.strict, input.hashConfig.digestLength);
     case 'commit':
-      return validateCommit(input.rawBody, input.strict);
+      return validateCommit(input.rawBody, input.strict, input.hashConfig);
     case 'tag':
-      return validateTag(input.rawBody, input.strict);
+      return validateTag(input.rawBody, input.strict, input.hashConfig);
     case 'blob':
       return validateBlob(input.rawBody, input.strict, input.fileName);
   }

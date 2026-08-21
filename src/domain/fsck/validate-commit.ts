@@ -1,3 +1,5 @@
+import type { HashConfig } from '../objects/hash-config.js';
+import { isOid } from '../objects/oid-pattern.js';
 import {
   MSG_BAD_DATE,
   MSG_BAD_DATE_OVERFLOW,
@@ -26,13 +28,7 @@ export interface CommitFinding {
 
 const DECODER = new TextDecoder();
 
-const SHA1_HEX_RE = /^[0-9a-f]{40}$/;
-const SHA256_HEX_RE = /^[0-9a-f]{64}$/;
 const TIMEZONE_RE = /^[+-]\d{4}$/;
-
-function isValidSha(hex: string): boolean {
-  return SHA1_HEX_RE.test(hex) || SHA256_HEX_RE.test(hex);
-}
 
 function isValidTimezone(tz: string): boolean {
   if (!TIMEZONE_RE.test(tz)) return false;
@@ -151,6 +147,7 @@ function parseHeaderLines(text: string): {
 function checkTreeAndParents(
   lines: ReadonlyArray<string>,
   strict: boolean,
+  config: HashConfig,
 ): { readonly findings: ReadonlyArray<CommitFinding>; readonly nextIdx: number } {
   const findings: CommitFinding[] = [];
 
@@ -160,7 +157,7 @@ function checkTreeAndParents(
     return { findings, nextIdx: -1 };
   }
   const treeVal = firstLine.slice(5);
-  if (!isValidSha(treeVal)) {
+  if (!isOid(treeVal, config)) {
     findings.push({
       msgId: MSG_BAD_TREE_SHA1,
       severity: resolveSeverity(MSG_BAD_TREE_SHA1, strict),
@@ -173,7 +170,7 @@ function checkTreeAndParents(
     const line = lines[i];
     if (line === undefined || !line.startsWith('parent ')) break;
     const parentVal = line.slice(7);
-    if (!isValidSha(parentVal)) {
+    if (!isOid(parentVal, config)) {
       findings.push({
         msgId: MSG_BAD_PARENT_SHA1,
         severity: resolveSeverity(MSG_BAD_PARENT_SHA1, strict),
@@ -232,7 +229,11 @@ function checkAuthorAndCommitter(
 }
 
 /** Validate a raw commit object body, returning ordered findings. */
-export function validateCommit(raw: Uint8Array, strict: boolean): ReadonlyArray<CommitFinding> {
+export function validateCommit(
+  raw: Uint8Array,
+  strict: boolean,
+  config: HashConfig,
+): ReadonlyArray<CommitFinding> {
   const text = DECODER.decode(raw);
   const { headerText, messageBody, lines } = parseHeaderLines(text);
 
@@ -240,7 +241,7 @@ export function validateCommit(raw: Uint8Array, strict: boolean): ReadonlyArray<
     return [{ msgId: MSG_NUL_IN_HEADER, severity: resolveSeverity(MSG_NUL_IN_HEADER, strict) }];
   }
 
-  const { findings: headerFindings, nextIdx } = checkTreeAndParents(lines, strict);
+  const { findings: headerFindings, nextIdx } = checkTreeAndParents(lines, strict, config);
   if (nextIdx === -1) return headerFindings;
 
   const findings: CommitFinding[] = [...headerFindings];
