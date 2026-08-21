@@ -492,6 +492,35 @@ describe('parseBundleHeader', () => {
     });
   });
 
+  describe('Given a v3 header whose capability text is far longer than any legal value, When parsed', () => {
+    it('Then the refusal reports a bounded, control-byte-free capability', () => {
+      // Arrange — bundle bytes are untrusted and a header line is unbounded,
+      // so the reported text is capped and escaped rather than echoed whole.
+      const hostile = `${'A'.repeat(4000)}\u0007\u001b[31m`;
+      const bytes = encode(`# v3 git bundle\n@${hostile}\n${OID_A} refs/heads/main\n\n`);
+      const sut = parseBundleHeader;
+
+      // Act
+      let caught: unknown;
+      try {
+        sut(bytes, 'hostile.bundle');
+      } catch (error) {
+        caught = error;
+      }
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      const data = (caught as TsgitError).data;
+      expect(data.code).toBe('BUNDLE_BAD_HEADER');
+      if (data.code !== 'BUNDLE_BAD_HEADER') expect.unreachable();
+      expect(data.reason).toBe('unknown-capability');
+      if (data.reason !== 'unknown-capability') expect.unreachable();
+      expect(data.capability.length).toBeLessThanOrEqual(256);
+      expect(data.capability).not.toContain('\u0007');
+      expect(data.capability).not.toContain('\u001b');
+    });
+  });
+
   describe('Given a header with no blank line whose first line exceeds the 64-byte diagnostic cap, When parsed', () => {
     it('Then the reported line and length are capped, not the whole untrusted first line', () => {
       // Arrange — bundle bytes are untrusted, so the diagnostic reads a bounded

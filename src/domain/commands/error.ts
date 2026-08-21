@@ -1,4 +1,4 @@
-import { TsgitError } from '../error.js';
+import { sanitizeForDisplay, TsgitError } from '../error.js';
 import type { HookName } from '../hooks/index.js';
 import type { FilePath, ObjectId, RefName } from '../objects/object-id.js';
 import type { ReceivePackResponse as ReportStatus } from '../protocol/receive-pack.js';
@@ -309,19 +309,6 @@ export type CommandError =
       readonly line: number;
     }
   | { readonly code: 'GREP_LINE_TOO_LONG'; readonly length: number; readonly limit: number };
-
-const sanitizeForDisplay = (s: string): string => {
-  let out = '';
-  for (let i = 0; i < s.length; i += 1) {
-    const code = s.charCodeAt(i);
-    if (code === 0x09 || code === 0x0a || (code >= 0x20 && code <= 0x7e)) {
-      out += s[i];
-    } else {
-      out += `\\x${code.toString(16).toUpperCase().padStart(2, '0')}`;
-    }
-  }
-  return out;
-};
 
 export const sanitize = sanitizeForDisplay;
 
@@ -843,8 +830,45 @@ export const bundleReadFailed = (path: string): TsgitError =>
 // line needs (`error: unrecognized header: <line> (<len>)`,
 // `error: unknown capability '<text>'`, or
 // `error: unrecognized bundle hash algorithm: <value>`).
+/**
+ * Longest run of bundle-derived text echoed into a refusal payload. Bundle
+ * bytes are untrusted and a header line is unbounded — `findBlankLineOffset`
+ * scans the whole file for its terminator, so a crafted first line can be
+ * megabytes. The offending text is still reported, just bounded and stripped
+ * of control bytes, the same treatment `HOOK_FAILED` gives captured stderr.
+ * `length` deliberately keeps the TRUE pre-truncation byte count, because git
+ * prints that number and a caller reconstructs its line from this field.
+ */
+export const MAX_BUNDLE_DETAIL_IN_ERROR = 256;
+
+const boundedDetail = (details: BundleBadHeaderDetails): BundleBadHeaderDetails => {
+  switch (details.reason) {
+    case 'malformed-header':
+      return {
+        ...details,
+        line: sanitizeForDisplay(details.line).slice(0, MAX_BUNDLE_DETAIL_IN_ERROR),
+      };
+    case 'unknown-capability':
+      return {
+        ...details,
+        capability: sanitizeForDisplay(details.capability).slice(0, MAX_BUNDLE_DETAIL_IN_ERROR),
+      };
+    case 'unknown-hash-algorithm':
+      return {
+        ...details,
+        algorithm: sanitizeForDisplay(details.algorithm).slice(0, MAX_BUNDLE_DETAIL_IN_ERROR),
+      };
+    case 'not-a-bundle':
+      return details;
+  }
+};
+
 export const bundleBadHeader = (path: string, details: BundleBadHeaderDetails): TsgitError =>
-  new TsgitError({ code: 'BUNDLE_BAD_HEADER', path: sanitizeForDisplay(path), ...details });
+  new TsgitError({
+    code: 'BUNDLE_BAD_HEADER',
+    path: sanitizeForDisplay(path),
+    ...boundedDetail(details),
+  });
 
 // The ONLY producer of `BUNDLE_UNSUPPORTED_VERSION`: `bundle create` refuses a
 // version `serializeBundleHeader` cannot honour — either outside {2, 3}, or 2

@@ -114,6 +114,25 @@ export function dirname(path: string): string {
   return slash === -1 ? '' : path.slice(0, slash);
 }
 
+/**
+ * Render a string safely into an error payload: tab and newline survive, every
+ * other control or non-ASCII byte becomes a visible `\xNN` escape. Used
+ * wherever untrusted input (hook stderr, config values, bundle header text, a
+ * peer's advertised capability) reaches a message a caller may log.
+ */
+export const sanitizeForDisplay = (s: string): string => {
+  let out = '';
+  for (let i = 0; i < s.length; i += 1) {
+    const code = s.charCodeAt(i);
+    if (code === 0x09 || code === 0x0a || (code >= 0x20 && code <= 0x7e)) {
+      out += s[i];
+    } else {
+      out += `\\x${code.toString(16).toUpperCase().padStart(2, '0')}`;
+    }
+  }
+  return out;
+};
+
 export const fileNotFound = (path: string): TsgitError =>
   new TsgitError({ code: 'FILE_NOT_FOUND', path });
 

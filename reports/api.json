@@ -37808,6 +37808,22 @@
 									"variant": "signature",
 									"kind": 4096,
 									"flags": {},
+									"comment": {
+										"summary": [
+											{
+												"kind": "text",
+												"text": "Render a string safely into an error payload: tab and newline survive, every\nother control or non-ASCII byte becomes a visible "
+											},
+											{
+												"kind": "code",
+												"text": "`\\xNN`"
+											},
+											{
+												"kind": "text",
+												"text": " escape. Used\nwherever untrusted input (hook stderr, config values, bundle header text, a\npeer's advertised capability) reaches a message a caller may log."
+											}
+										]
+									},
 									"parameters": [
 										{
 											"id": 7774,
@@ -195270,17 +195286,17 @@
 		},
 		"7772": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/commands/error.ts",
+			"packagePath": "src/domain/error.ts",
 			"qualifiedName": "__function"
 		},
 		"7773": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/commands/error.ts",
+			"packagePath": "src/domain/error.ts",
 			"qualifiedName": "__function"
 		},
 		"7774": {
 			"packageName": "@scolladon/tsgit",
-			"packagePath": "src/domain/commands/error.ts",
+			"packagePath": "src/domain/error.ts",
 			"qualifiedName": "s"
 		},
 		"7775": {
