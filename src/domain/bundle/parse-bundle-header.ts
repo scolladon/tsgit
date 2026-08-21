@@ -17,7 +17,9 @@ const MAGIC_V3 = '# v3 git bundle';
 const OBJECT_FORMAT_PREFIX = 'object-format=';
 const FILTER_PREFIX = 'filter=';
 
-const byteLength = (s: string): number => new TextEncoder().encode(s).length;
+const HEADER_ENCODER = new TextEncoder();
+
+const byteLength = (s: string): number => HEADER_ENCODER.encode(s).length;
 
 const findBlankLineOffset = (bytes: Uint8Array): number => {
   // Stryker disable next-line EqualityOperator,ArithmeticOperator: equivalent — an out-of-bounds Uint8Array read is undefined, so the extra iterations never satisfy the LF+LF check and the same offset is returned

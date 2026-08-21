@@ -125,7 +125,7 @@ const contextForBundleAlgorithm = (ctx: Context, algorithm: BundleHashAlgorithm)
       `the supplied hash service cannot switch to the bundle's declared algorithm ${algorithm}`,
     );
   }
-  return { ...ctx, hash, hashConfig: configFor(algorithm) };
+  return Object.freeze({ ...ctx, hash, hashConfig: configFor(algorithm) });
 };
 
 const buildResult = (

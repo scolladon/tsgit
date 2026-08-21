@@ -20,13 +20,18 @@ export interface PackIndex {
   readonly _view: DataView;
 }
 
-/**
- * `.idx` trailer size: pack checksum + idx checksum, each `digestLength`
- * bytes. The SAME arithmetic also gives a full oid's hex-character length
- * (two hex digits per byte) — `findByPrefix` reuses this helper for that,
- * rather than restating `2 * digestLength` a third time.
- */
+/** `.idx` trailer size: pack checksum + idx checksum, each `digestLength` bytes. */
 function idxTrailerSize(digestLength: number): number {
+  return 2 * digestLength;
+}
+
+/**
+ * A full oid's hex-character count — two hex digits per byte. Numerically
+ * equal to `idxTrailerSize`, but a different quantity: reusing that helper
+ * here would silently corrupt prefix bounds the day the trailer layout
+ * changes.
+ */
+function hexCharsFor(digestLength: number): number {
   return 2 * digestLength;
 }
 
@@ -105,9 +110,13 @@ function readFanout(index: PackIndex, byte: number): number {
 }
 
 function compareShaAtIndex(index: PackIndex, i: number, targetBytes: Uint8Array): number {
-  const base = shaSlotOffset(i, index.digestLength);
+  // Hoisted: this is the innermost step of the fanout-narrowed binary search,
+  // run ~log2(n) times per object lookup, so the bound is a local rather than
+  // a property load per iteration.
+  const digestLength = index.digestLength;
+  const base = shaSlotOffset(i, digestLength);
   const bytes = index._bytes;
-  for (let k = 0; k < index.digestLength; k += 1) {
+  for (let k = 0; k < digestLength; k += 1) {
     const diff = bytes[base + k]! - targetBytes[k]!;
     if (diff !== 0) return diff;
   }
@@ -209,7 +218,7 @@ export function objectIdAt(index: PackIndex, position: number): ObjectId {
 const HEX_RE = /^[0-9a-f]+$/;
 
 export function findByPrefix(index: PackIndex, prefix: string): ReadonlyArray<ObjectId> {
-  const hexLength = idxTrailerSize(index.digestLength);
+  const hexLength = hexCharsFor(index.digestLength);
   if (prefix.length < 4) {
     throw invalidPackIndex(`prefix too short: minimum 4 hex chars, got ${prefix.length}`);
   }

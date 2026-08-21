@@ -17,8 +17,15 @@ import type { HashConfig } from './hash-config.js';
  * config-free FORMAT check (accepts 40 OR 64 hex) — it is not a substitute
  * for this predicate anywhere the repository's hash config is known.
  */
+// One frozen pattern per algorithm, selected rather than constructed. These
+// are module CONSTANTS, not a cache: nothing is ever inserted or evicted, so
+// there is no mutable shared state. `.test()` keeps no cursor without the `g`
+// or `y` flag, so handing the same instance to every caller is safe.
+const SHA1_OID_PATTERN = /^[0-9a-f]{40}$/;
+const SHA256_OID_PATTERN = /^[0-9a-f]{64}$/;
+
 export function oidPattern(config: HashConfig): RegExp {
-  return new RegExp(`^[0-9a-f]{${config.hexLength}}$`);
+  return config.algorithm === 'sha256' ? SHA256_OID_PATTERN : SHA1_OID_PATTERN;
 }
 
 export function isOid(value: string, config: HashConfig): boolean {
