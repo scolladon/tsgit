@@ -39,9 +39,12 @@ import { push } from '../../src/application/commands/push.js';
 import { revParse } from '../../src/application/commands/rev-parse.js';
 import { submoduleAdd } from '../../src/application/commands/submodule.js';
 import { tarArchive } from '../../src/domain/archive/tar.js';
+import { parseCommitGraphLayer } from '../../src/domain/commit/commit-graph.js';
 import { TsgitError } from '../../src/domain/error.js';
 import type { AuthorIdentity } from '../../src/domain/objects/index.js';
+import { parseMultiPackIndex } from '../../src/domain/storage/midx.js';
 import { parsePackIndex } from '../../src/domain/storage/pack-index.js';
+import { parsePackRevIndex } from '../../src/domain/storage/rev-index.js';
 import { openRepository } from '../../src/index.node.js';
 import type { Context } from '../../src/ports/context.js';
 import type { HttpTransport } from '../../src/ports/http-transport.js';
@@ -658,35 +661,48 @@ describe.skipIf(!GIT_AVAILABLE)(
     });
 
     describe('Given the .rev file git wrote for a SHA-256 pack, When tsgit reads its header', () => {
-      it('Then its hash id is 2', () => {
-        // Arrange
-        const view = new DataView(revBytes.buffer, revBytes.byteOffset, revBytes.byteLength);
+      it('Then tsgit parses it at 32-byte oids and reports hash id 2', () => {
+        // Arrange — through tsgit's OWN reader: asserting the byte directly
+        // would test git's writer, not tsgit's, and no tsgit regression could
+        // ever fail it.
+        const objectCount = parsePackIndex(idxBytes, 32).objectCount;
+        const sut = parsePackRevIndex;
 
         // Act
-        const hashId = view.getUint32(8);
+        const result = sut(revBytes, 32, objectCount);
 
         // Assert
-        expect(hashId).toBe(2);
+        expect(result.hashId).toBe(2);
+        expect(result.objectCount).toBe(objectCount);
       });
     });
 
     describe('Given the multi-pack-index git wrote, When tsgit reads its header', () => {
-      it('Then its hash-version byte is 02', () => {
-        // Arrange — byte 5 of the midx header is the hash-version field.
-        const sut = midxBytes;
+      it('Then tsgit parses it at 32-byte oids without refusing the hash-version byte', () => {
+        // Arrange — `parseMultiPackIndex` cross-checks the file's declared
+        // hash version against the caller's width and refuses a disagreement,
+        // so parsing at 32 IS the assertion that the byte says sha256.
+        const sut = parseMultiPackIndex;
 
-        // Act & Assert
-        expect(sut[5]).toBe(2);
+        // Act
+        const result = sut(midxBytes, 32);
+
+        // Assert
+        expect(result.digestLength).toBe(32);
+        expect(result.objectCount).toBeGreaterThan(0);
       });
     });
 
     describe('Given the commit-graph git wrote, When tsgit reads its header', () => {
-      it('Then its hash-version byte is 02', () => {
-        // Arrange — byte 5 of the commit-graph header is the hash-version field.
-        const sut = commitGraphBytes;
+      it('Then tsgit parses the layer and reports its sha256 hash version', () => {
+        // Arrange
+        const sut = parseCommitGraphLayer;
 
-        // Act & Assert
-        expect(sut[5]).toBe(2);
+        // Act
+        const result = sut(commitGraphBytes);
+
+        // Assert
+        expect(result.hashVersion).toBe(2);
       });
     });
 
@@ -785,15 +801,17 @@ describe.skipIf(!GIT_AVAILABLE)(
     });
 
     describe('Given the .rev file git wrote for a SHA-1 pack, When tsgit reads its header', () => {
-      it('Then its hash id is still 1', () => {
-        // Arrange
-        const view = new DataView(revBytes.buffer, revBytes.byteOffset, revBytes.byteLength);
+      it('Then tsgit parses it at 20-byte oids and reports hash id 1', () => {
+        // Arrange — the SHA-1 control for the row above, through the same reader.
+        const objectCount = parsePackIndex(idxBytes, 20).objectCount;
+        const sut = parsePackRevIndex;
 
         // Act
-        const hashId = view.getUint32(8);
+        const result = sut(revBytes, 20, objectCount);
 
         // Assert
-        expect(hashId).toBe(1);
+        expect(result.hashId).toBe(1);
+        expect(result.objectCount).toBe(objectCount);
       });
     });
 
