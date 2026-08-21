@@ -565,9 +565,7 @@ function extractDetail(data: TsgitErrorData): string {
     case 'BUNDLE_BAD_HEADER':
       return renderBundleBadHeader(data);
     case 'BUNDLE_UNSUPPORTED_VERSION':
-      return data.path !== undefined
-        ? `unsupported bundle version ${data.version} in '${data.path}'`
-        : `unsupported bundle version ${data.version} for serialization`;
+      return `unsupported bundle version ${data.version} for serialization`;
     case 'BUNDLE_PREREQUISITE_NOT_COMMIT':
       return `boundary object ${data.oid} is not a commit (got ${data.objectType})`;
     case 'BUNDLE_PREREQUISITE_ALGORITHM_MISMATCH':

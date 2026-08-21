@@ -268,7 +268,6 @@ export type CommandError =
   | ({ readonly code: 'BUNDLE_BAD_HEADER'; readonly path: string } & BundleBadHeaderDetails)
   | {
       readonly code: 'BUNDLE_UNSUPPORTED_VERSION';
-      readonly path?: string;
       readonly version: number;
     }
   | {
@@ -847,19 +846,12 @@ export const bundleReadFailed = (path: string): TsgitError =>
 export const bundleBadHeader = (path: string, details: BundleBadHeaderDetails): TsgitError =>
   new TsgitError({ code: 'BUNDLE_BAD_HEADER', path: sanitizeForDisplay(path), ...details });
 
-// `bundle verify`/`bundle list-heads` version refusal: the magic line indicates
-// a bundle version outside the supported set (v2 and v3 are both accepted;
-// nothing else has a magic line to recognise in the first place).
-export const bundleUnsupportedVersion = (path: string, version: number): TsgitError =>
-  new TsgitError({
-    code: 'BUNDLE_UNSUPPORTED_VERSION',
-    path: sanitizeForDisplay(path),
-    version,
-  });
-
-// `bundle create` version refusal: the caller explicitly requested a version
-// `serializeBundleHeader` cannot honour — either outside {2, 3}, or 2 while
-// the selected algorithm requires 3.
+// The ONLY producer of `BUNDLE_UNSUPPORTED_VERSION`: `bundle create` refuses a
+// version `serializeBundleHeader` cannot honour — either outside {2, 3}, or 2
+// while the selected algorithm requires 3. There is no read-side counterpart:
+// a magic line naming neither v2 nor v3 is not a bundle at all, and
+// `parseBundleHeader` reports it as `BUNDLE_BAD_HEADER { reason:
+// 'not-a-bundle' }`.
 export const bundleUnsupportedSerializeVersion = (version: number): TsgitError =>
   new TsgitError({ code: 'BUNDLE_UNSUPPORTED_VERSION', version });
 

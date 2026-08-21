@@ -9,7 +9,6 @@ import {
   bundleBadHeader,
   bundleEmpty,
   bundleReadFailed,
-  bundleUnsupportedVersion,
   type CommandError,
   cannotDeleteCheckedOutBranch,
   cannotDescribe,
@@ -1633,10 +1632,6 @@ describe('domain commands error — extractDetail message formatting', () => {
       'BUNDLE_BAD_HEADER: unrecognized bundle hash algorithm: sha512',
     ],
     [
-      { code: 'BUNDLE_UNSUPPORTED_VERSION', version: 3, path: '/v3.bundle' },
-      "BUNDLE_UNSUPPORTED_VERSION: unsupported bundle version 3 in '/v3.bundle'",
-    ],
-    [
       { code: 'BUNDLE_UNSUPPORTED_VERSION', version: 3 },
       'BUNDLE_UNSUPPORTED_VERSION: unsupported bundle version 3 for serialization',
     ],
@@ -1756,19 +1751,6 @@ describe('domain commands error — extractDetail message formatting', () => {
           path: '/bad.bundle',
           reason: 'unknown-hash-algorithm',
           algorithm: 'sha512',
-        });
-      });
-    });
-  });
-
-  describe('Given the bundleUnsupportedVersion error helper', () => {
-    describe('When called with path and version 3', () => {
-      it('Then data contains the path and version', () => {
-        // Arrange + Assert
-        expect(bundleUnsupportedVersion('/v3.bundle', 3).data).toEqual({
-          code: 'BUNDLE_UNSUPPORTED_VERSION',
-          path: '/v3.bundle',
-          version: 3,
         });
       });
     });
