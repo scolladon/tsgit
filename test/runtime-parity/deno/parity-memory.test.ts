@@ -17,6 +17,7 @@
 import { assertEquals } from 'jsr:@std/assert@1';
 
 import { openRepository } from '../../../dist/esm/index.default.js';
+import { runScenario } from '../../parity/run-scenario.ts';
 import { SCENARIOS } from '../../parity/scenarios/index.ts';
 import type { ScenarioInputs } from '../../parity/scenarios/types.ts';
 
@@ -44,7 +45,7 @@ for (const scenario of supported) {
       });
 
       // Act
-      const result = await scenario.run(sut, scenario.inputs);
+      const result = await runScenario(sut, scenario);
 
       // Assert
       assertEquals(result, scenario.expected);

@@ -13,6 +13,7 @@ import * as path from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { openRepository } from '../../src/index.node.ts';
+import { runScenario } from './run-scenario.ts';
 import { SCENARIOS } from './scenarios/index.ts';
 import type { ScenarioInputs } from './scenarios/types.ts';
 
@@ -42,7 +43,7 @@ describe.each(SCENARIOS)('Given the $name scenario', (scenario) => {
       const sut = await openRepository({ cwd: tmpDir, ...scenario.openOptions });
 
       // Act
-      const result = await scenario.run(sut, scenario.inputs);
+      const result = await runScenario(sut, scenario);
 
       // Assert
       expect(result).toEqual(scenario.expected);
