@@ -1596,7 +1596,10 @@ describe('readRepositoryFormat', () => {
         it("Then objectFormat is 'sha256'", async () => {
           // Arrange
           const fs = new MemoryFileSystem({ rootDir: '/repo' });
-          await fs.writeUtf8('/repo/.git/config', '[extensions]\n\tobjectFormat = sha256\n');
+          await fs.writeUtf8(
+            '/repo/.git/config',
+            '[core]\n\trepositoryformatversion = 1\n[extensions]\n\tobjectFormat = sha256\n',
+          );
 
           // Act
           const result = await readRepositoryFormat(
@@ -1617,7 +1620,10 @@ describe('readRepositoryFormat', () => {
         it("Then objectFormat is 'sha1' — an explicit, legal no-op", async () => {
           // Arrange
           const fs = new MemoryFileSystem({ rootDir: '/repo' });
-          await fs.writeUtf8('/repo/.git/config', '[extensions]\n\tobjectFormat = sha1\n');
+          await fs.writeUtf8(
+            '/repo/.git/config',
+            '[core]\n\trepositoryformatversion = 1\n[extensions]\n\tobjectFormat = sha1\n',
+          );
 
           // Act
           const result = await readRepositoryFormat(
@@ -1772,7 +1778,10 @@ describe('readRepositoryFormat', () => {
         it("Then it is accepted as 'sha256' — the config tokeniser strips before the grammar ever sees it", async () => {
           // Arrange
           const fs = new MemoryFileSystem({ rootDir: '/repo' });
-          await fs.writeUtf8('/repo/.git/config', '[extensions]\n\tobjectFormat =   sha256  \n');
+          await fs.writeUtf8(
+            '/repo/.git/config',
+            '[core]\n\trepositoryformatversion = 1\n[extensions]\n\tobjectFormat =   sha256  \n',
+          );
 
           // Act
           const result = await readRepositoryFormat(
@@ -1795,7 +1804,7 @@ describe('readRepositoryFormat', () => {
           const fs = new MemoryFileSystem({ rootDir: '/repo' });
           await fs.writeUtf8(
             '/repo/.git/config',
-            '[extensions]\n\tobjectFormat = sha256\n\tobjectFormat = sha1\n',
+            '[core]\n\trepositoryformatversion = 1\n[extensions]\n\tobjectFormat = sha256\n\tobjectFormat = sha1\n',
           );
 
           // Act
@@ -1819,7 +1828,7 @@ describe('readRepositoryFormat', () => {
           const fs = new MemoryFileSystem({ rootDir: '/repo' });
           await fs.writeUtf8(
             '/repo/.git/config',
-            '[extensions]\n\tobjectFormat = sha1\n\tobjectFormat = sha256\n',
+            '[core]\n\trepositoryformatversion = 1\n[extensions]\n\tobjectFormat = sha1\n\tobjectFormat = sha256\n',
           );
 
           // Act
@@ -1836,6 +1845,50 @@ describe('readRepositoryFormat', () => {
       });
     });
 
+    describe('Given extensions.objectFormat = sha256 with NO core.repositoryformatversion key', () => {
+      describe('When readRepositoryFormat runs', () => {
+        it('Then the extension is inert and the format stays sha1 — git ignores extensions below version 1', async () => {
+          // Arrange — measured on git 2.55.0: this exact config opens cleanly
+          // and `rev-parse --show-object-format` reports sha1. Adopting sha256
+          // here would read every oid, index entry and pack at 32 bytes in a
+          // repository git reads at 20.
+          const fs = new MemoryFileSystem({ rootDir: '/repo' });
+          await fs.writeUtf8('/repo/.git/config', '[extensions]\n\tobjectFormat = sha256\n');
+
+          // Act
+          const result = await readRepositoryFormat(
+            fileSystemLayoutProbe(fs),
+            '/repo/.git',
+            '/repo/.git',
+            posixPolicy,
+          );
+
+          // Assert
+          expect(result.objectFormat).toBe('sha1');
+          expect(result.refusal).toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given an INVALID extensions.objectFormat with NO core.repositoryformatversion key', () => {
+      describe('When readRepositoryFormat runs', () => {
+        it('Then it still refuses — the grammar is checked at every version, only the adoption is gated', async () => {
+          // Arrange — the companion to the row above, and the reason the
+          // version gate wraps the ADOPTION rather than the resolve: measured,
+          // git refuses this with `invalid value for 'extensions.objectformat'`
+          // even though it would have ignored a well-formed value here.
+          const caught = await catchObjectFormat('[extensions]\n\tobjectFormat = SHA256\n');
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data;
+          expect(data.code).toBe('CONFIG_INVALID_ENUM_VALUE');
+          if (data.code !== 'CONFIG_INVALID_ENUM_VALUE') expect.unreachable();
+          expect(data.value).toBe('SHA256');
+        });
+      });
+    });
+
     describe('Given extensions.objectFormat = sha256 planted only in config.worktree, with worktreeConfig true', () => {
       describe('When readRepositoryFormat runs', () => {
         it('Then it is inert and the format stays sha1 — the format keys are never scoped to config.worktree', async () => {
@@ -1844,7 +1897,7 @@ describe('readRepositoryFormat', () => {
           await fs.writeUtf8('/repo/.git/config', '[extensions]\n\tworktreeConfig = true\n');
           await fs.writeUtf8(
             '/repo/.git/config.worktree',
-            '[extensions]\n\tobjectFormat = sha256\n',
+            '[core]\n\trepositoryformatversion = 1\n[extensions]\n\tobjectFormat = sha256\n',
           );
 
           // Act

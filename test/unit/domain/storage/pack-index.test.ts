@@ -988,6 +988,47 @@ describe('pack-index', () => {
     });
   });
 
+  describe('lookupPackIndex — a wrong-width oid is absent, never a fabricated hit', () => {
+    const sha256Index = parsePackIndex(hexToBytes(SHA256_IDX_HEX), 32);
+    const [fullSha256Oid] = SHA256_IDX_OIDS;
+
+    describe('Given a SHA-256 index and a 40-hex id sharing the first 20 bytes of a stored oid', () => {
+      describe('When lookupPackIndex searches for it', () => {
+        it('Then it reports the object absent rather than matching an unrelated entry', () => {
+          // Arrange — a 40-hex id is a legal ObjectId, so this reaches the
+          // search as ordinary input. Its 20 bytes are a strict prefix of a
+          // stored 32-byte oid, so every in-range byte compares equal and the
+          // comparison runs off the end of the target. `stored[k] - undefined`
+          // is NaN, which is neither < 0 nor > 0, so an unguarded search
+          // returns the midpoint — a hit on an object that was never asked for.
+          const shortId = fullSha256Oid.slice(0, 40) as ObjectId;
+          const sut = lookupPackIndex;
+
+          // Act
+          const result = sut(sha256Index, shortId);
+
+          // Assert
+          expect(result).toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given the same index and the full 64-hex oid', () => {
+      describe('When lookupPackIndex searches for it', () => {
+        it('Then it still resolves — the guard rejects only the wrong width', () => {
+          // Arrange
+          const sut = lookupPackIndex;
+
+          // Act
+          const result = sut(sha256Index, fullSha256Oid as ObjectId);
+
+          // Assert
+          expect(result).toBeGreaterThanOrEqual(0);
+        });
+      });
+    });
+  });
+
   describe('findByPrefix — SHA-256 (digestLength 32)', () => {
     const sha256Index = parsePackIndex(hexToBytes(SHA256_IDX_HEX), 32);
     const [fullOid] = SHA256_IDX_OIDS;

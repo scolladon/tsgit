@@ -431,6 +431,10 @@ export function midxReverseIndexPositions(midx: MultiPackIndex): Uint32Array | u
 }
 
 function searchMidxPosition(midx: MultiPackIndex, targetBytes: Uint8Array): number | undefined {
+  // Same width guard as the pack-index search: a wrong-width target would
+  // otherwise compare `NaN` past its end, which is neither `< 0` nor `> 0`,
+  // and the search would fabricate a hit on an unrelated object.
+  if (targetBytes.length !== midx.digestLength) return undefined;
   const firstByte = targetBytes[0]!;
   // Stryker disable next-line ConditionalExpression: equivalent — `lo` only narrows the search
   // window; the loop over [0, hi) still converges on the same index (the target, if present,

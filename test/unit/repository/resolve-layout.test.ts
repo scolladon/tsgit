@@ -196,14 +196,16 @@ describe('resolveLayout', () => {
     describe('Given extensions.objectFormat = sha256 in the repository config', () => {
       describe('When resolveLayout runs', () => {
         it('Then the returned layout carries objectFormat: sha256', async () => {
-          // Arrange — no core.repositoryformatversion: isolates the value-grammar
-          // layer this part reads from the UNCONDITIONAL point-of-use refusal
-          // `assertExtensionBacked` still raises for a present `objectformat` key
-          // at version 1 (`UNBACKED_EXTENSIONS` — out of this part's scope; its
-          // removal is Part 13's job). Same isolation the interop suite uses.
+          // Arrange — the config declares version 1, which is what makes the
+          // extension load-bearing: git honours `extensions.*` only from
+          // version 1 up, so a fixture without the key would assert a format
+          // git itself ignores.
           const fs = new MemoryFileSystem({ rootDir: '/repo' });
           await makeGitDir(fs, '/repo/sha256/.git');
-          await fs.writeUtf8('/repo/sha256/.git/config', '[extensions]\n\tobjectformat = sha256\n');
+          await fs.writeUtf8(
+            '/repo/sha256/.git/config',
+            '[core]\n\trepositoryformatversion = 1\n[extensions]\n\tobjectformat = sha256\n',
+          );
 
           // Act
           const result = await resolveLayout(

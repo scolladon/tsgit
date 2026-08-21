@@ -146,6 +146,14 @@ export function entryOffsets(index: PackIndex): ReadonlyArray<number> {
  * or `undefined` when this index does not carry the object at all.
  */
 function searchIndexPosition(index: PackIndex, targetBytes: Uint8Array): number | undefined {
+  // A target of the wrong width is ABSENT, never a match. Without this guard
+  // the byte compare reads past the target's end: `stored[k] - undefined` is
+  // `NaN`, which passes the `!== 0` "they differ" test but satisfies neither
+  // `< 0` nor `> 0`, so the search falls through to `return mid` and
+  // fabricates a hit on an unrelated object. A 40-hex id is a legal
+  // `ObjectId` in a SHA-256 repository, so this is reachable input rather
+  // than a corrupt-file case.
+  if (targetBytes.length !== index.digestLength) return undefined;
   const firstByte = targetBytes[0]!;
   // Stryker disable next-line ConditionalExpression: equivalent — `lo` only narrows the binary search; the loop over [0, hi) still converges on the same index (the target, if present, lies in [lo, hi) ⊆ [0, hi)), so forcing `lo` to 0 cannot change the position found.
   const lo = firstByte === 0 ? 0 : readFanout(index, firstByte - 1);

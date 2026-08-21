@@ -51,6 +51,10 @@ type ObjectFormat = (typeof OBJECT_FORMAT_VALUES)[number];
 // accepted by `> MAX_REPOSITORY_FORMAT_VERSION` but refused by `{0, 1}`.
 const MAX_REPOSITORY_FORMAT_VERSION = 1;
 
+// The lowest `core.repositoryformatversion` at which an `extensions.*` entry
+// is honoured rather than ignored (version 0) or absent-and-inert.
+const MIN_EXTENSION_VERSION = 1;
+
 /** One scalar key's raw value, as last seen in file order (git's last-wins resolution). */
 interface ScannedEntry {
   readonly value: string | null;
@@ -208,6 +212,16 @@ const namesWhere = (
   entries: ReadonlyArray<ExtensionEntry>,
   predicate: (entry: ExtensionEntry) => boolean,
 ): ReadonlyArray<string> => entries.filter(predicate).map((entry) => entry.name);
+
+/**
+ * Whether a declared `extensions.*` value is acted on at all. git honours the
+ * section only from `core.repositoryformatversion` 1 up: an ABSENT version key
+ * leaves every extension inert (measured — the repository reads as SHA-1 even
+ * with `extensions.objectFormat = sha256` present), and version 0 refuses the
+ * v1-only names outright rather than honouring them.
+ */
+const honoursExtensions = (version: number | undefined): boolean =>
+  version !== undefined && version >= MIN_EXTENSION_VERSION;
 
 /**
  * The extensions arm — version-selected, independent of the version-ceiling
@@ -453,13 +467,23 @@ export const readRepositoryFormat = async (
   const worktree = pickScoped(local?.worktree, localPath, scoped?.worktree, scopedPath);
   const resolvedBare = resolveBare(bare.entry, bare.source);
   const resolvedWorktree = resolveWorktree(worktree.entry, worktree.source);
-  const objectFormat = resolveEnum(
+  // The value GRAMMAR is checked at every version; the extension is only
+  // HONOURED from version 1 up. Measured on git 2.55.0: with no
+  // `core.repositoryformatversion` key, `extensions.objectFormat = sha256`
+  // parses, is ignored, and `rev-parse --show-object-format` reports `sha1` —
+  // while an INVALID value at that same absent version still refuses. So the
+  // resolve runs unconditionally and only its ADOPTION is version-gated;
+  // gating the resolve itself would silently accept a malformed value, and
+  // adopting it ungated would read a repository git reads as SHA-1 at the
+  // wrong width.
+  const declaredObjectFormat = resolveEnum(
     local?.objectFormat,
     localPath,
     `${EXTENSIONS_SECTION}.${OBJECT_FORMAT_KEY}`,
     OBJECT_FORMAT_VALUES,
     'sha1',
   );
+  const objectFormat = honoursExtensions(version) ? declaredObjectFormat : 'sha1';
   const extensions = enumerateExtensionEntries(local?.tokens ?? []);
   const refusal = formatRefusal(version, extensions);
   if (refusal === undefined) {
