@@ -100,7 +100,7 @@ const fetchMissingInternal = async (
 
   const session = openGitSession(ctx, url, 'git-upload-pack');
   try {
-    const discovery = await negotiateDiscovery(session, ctx);
+    const discovery = await negotiateDiscovery(ctx, session);
     // The lazy-fetch path reaches a peer exactly as `fetch` does, so it owes
     // the same refusal — otherwise a cross-format promisor writes wrong-width
     // oids into the repository with nothing objecting.

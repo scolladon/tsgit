@@ -22,18 +22,6 @@ const CONTROL_CHARS = /[\n\r]/;
  * wide, so `newIdStart`/`newIdEnd`/`identityStart` are all offsets by that
  * one number.
  */
-interface ReflogFieldOffsets {
-  readonly newIdStart: number;
-  readonly newIdEnd: number;
-  readonly identityStart: number;
-}
-
-function reflogFieldOffsets(hexLength: 40 | 64): ReflogFieldOffsets {
-  const newIdStart = hexLength + 1;
-  const newIdEnd = newIdStart + hexLength;
-  return { newIdStart, newIdEnd, identityStart: newIdEnd + 1 };
-}
-
 /** Serialize one entry to a single LF-terminated reflog line. */
 export function serializeReflogLine(entry: ReflogEntry, hexLength: 40 | 64): string {
   if (CONTROL_CHARS.test(entry.message)) {
@@ -55,7 +43,11 @@ export function parseReflogLine(line: string, hexLength: 40 | 64): ReflogEntry {
   // A tab-less line is git's empty-message form: the committer runs to the end.
   const meta = tab === -1 ? line : line.slice(0, tab);
   const message = tab === -1 ? '' : line.slice(tab + 1);
-  const { newIdStart, newIdEnd, identityStart } = reflogFieldOffsets(hexLength);
+  // Locals rather than a returned object: `parseReflog` maps this over every
+  // line of the file, so an intermediate allocation per line buys nothing.
+  const newIdStart = hexLength + 1;
+  const newIdEnd = newIdStart + hexLength;
+  const identityStart = newIdEnd + 1;
   if (meta[hexLength] !== FIELD_SEPARATOR || meta[newIdEnd] !== FIELD_SEPARATOR) {
     throw invalidReflogEntry('misplaced field separator');
   }

@@ -119,8 +119,8 @@ const withV2FilterCapability = (
     : advertisement;
 
 export const negotiateDiscovery = async (
-  session: GitServiceSession,
   ctx: Context,
+  session: GitServiceSession,
 ): Promise<DiscoveryResult> => {
   const pktStream = await session.advertisement();
   const iter = pktStream[Symbol.asyncIterator]();

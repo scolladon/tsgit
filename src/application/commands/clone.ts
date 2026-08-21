@@ -166,7 +166,7 @@ const negotiateAndWritePack = async (
   filterSpec: string | undefined,
   session: GitServiceSession,
 ): Promise<CloneResult> => {
-  const discovery = await negotiateDiscovery(session, ctx);
+  const discovery = await negotiateDiscovery(ctx, session);
   const cloneCtx = adoptPeerAlgorithm(ctx, discovery.objectFormat);
   const bootstrap = await bootstrapRepository(cloneCtx, {
     initialBranch: opts.initialBranch ?? 'main',

@@ -129,7 +129,7 @@ const negotiateAndApply = async (
   filter: string | undefined,
   session: GitServiceSession,
 ): Promise<FetchResult> => {
-  const discovery = await negotiateDiscovery(session, ctx);
+  const discovery = await negotiateDiscovery(ctx, session);
   assertPeerAlgorithm(ctx.hashConfig.algorithm, discovery.objectFormat, 'fetch');
   const advertisement = discovery.advertisement;
   if (advertisement.refs.length === 0) throw remoteAdvertisesNoRefs();

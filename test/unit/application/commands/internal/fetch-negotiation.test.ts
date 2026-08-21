@@ -132,7 +132,7 @@ describe('negotiateDiscovery', () => {
 
         const ctx = createMemoryContext();
         // Act
-        const result = await negotiateDiscovery(session, ctx);
+        const result = await negotiateDiscovery(ctx, session);
 
         // Assert
         expect(result.version).toBe(2);
@@ -154,7 +154,7 @@ describe('negotiateDiscovery', () => {
 
         const ctx = createMemoryContext();
         // Act
-        await negotiateDiscovery(session, ctx);
+        await negotiateDiscovery(ctx, session);
 
         // Assert
         const request = await decodeRequest(session);
@@ -178,7 +178,7 @@ describe('negotiateDiscovery', () => {
 
         const ctx = createMemoryContext();
         // Act
-        const result = await negotiateDiscovery(session, ctx);
+        const result = await negotiateDiscovery(ctx, session);
 
         // Assert
         expect(result.version).toBe(2);
@@ -200,7 +200,7 @@ describe('negotiateDiscovery', () => {
 
         const ctx = createMemoryContext();
         // Act
-        const result = await negotiateDiscovery(session, ctx);
+        const result = await negotiateDiscovery(ctx, session);
 
         // Assert
         expect(result.version).toBe(2);
@@ -218,7 +218,7 @@ describe('negotiateDiscovery', () => {
 
         const ctx = createMemoryContext();
         // Act
-        const result = await negotiateDiscovery(session, ctx);
+        const result = await negotiateDiscovery(ctx, session);
 
         // Assert
         expect(result.version).toBe(1);
@@ -239,7 +239,7 @@ describe('negotiateDiscovery', () => {
 
         const ctx = createMemoryContext();
         // Act
-        const result = await negotiateDiscovery(session, ctx);
+        const result = await negotiateDiscovery(ctx, session);
 
         // Assert
         expect(result.version).toBe(1);
@@ -266,7 +266,7 @@ describe('negotiateDiscovery', () => {
 
         const ctx = createMemoryContext();
         // Act
-        const result = await negotiateDiscovery(session, ctx);
+        const result = await negotiateDiscovery(ctx, session);
 
         // Assert
         expect(result.version).toBe(2);
@@ -294,7 +294,7 @@ describe('negotiateDiscovery', () => {
 
         const ctx = createMemoryContext();
         // Act
-        const result = await negotiateDiscovery(session, ctx);
+        const result = await negotiateDiscovery(ctx, session);
 
         // Assert
         expect(result.version).toBe(1);
@@ -328,7 +328,7 @@ describe('negotiateDiscovery', () => {
 
         const ctx = createMemoryContext();
         // Act
-        const result = await negotiateDiscovery(session, ctx);
+        const result = await negotiateDiscovery(ctx, session);
 
         // Assert
         expect(result.version).toBe(1);
@@ -354,7 +354,7 @@ describe('negotiateDiscovery', () => {
 
         const ctx = createMemoryContext();
         // Act
-        await negotiateDiscovery(session, ctx);
+        await negotiateDiscovery(ctx, session);
 
         // Assert
         expect(discovery.returnSpy).toHaveBeenCalledTimes(1);
@@ -374,7 +374,7 @@ describe('negotiateDiscovery', () => {
         // Act
         let caught: TsgitError | undefined;
         try {
-          await negotiateDiscovery(session, ctx);
+          await negotiateDiscovery(ctx, session);
         } catch (err) {
           caught = err as TsgitError;
         }
@@ -398,7 +398,7 @@ describe('negotiateDiscovery', () => {
 
         const ctx = createMemoryContext();
         // Act
-        const result = await negotiateDiscovery(session, ctx);
+        const result = await negotiateDiscovery(ctx, session);
 
         // Assert
         expect(result.advertisement.capabilities).toContain('filter');
@@ -416,7 +416,7 @@ describe('negotiateDiscovery', () => {
 
         const ctx = createMemoryContext();
         // Act
-        const result = await negotiateDiscovery(session, ctx);
+        const result = await negotiateDiscovery(ctx, session);
 
         // Assert
         expect(result.advertisement.capabilities).not.toContain('filter');
