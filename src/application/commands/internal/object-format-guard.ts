@@ -8,6 +8,7 @@
  * by code rather than by call site.
  */
 import {
+  isSupportedObjectFormat,
   pushObjectFormatUnsupported,
   unsupportedObjectFormat,
 } from '../../../domain/protocol/index.js';
@@ -20,6 +21,11 @@ export const assertPeerAlgorithm = (
   verb: ObjectFormatVerb,
 ): void => {
   if (peer === local) return;
+  // An algorithm we do not implement is a DIFFERENT condition from a known
+  // algorithm that simply differs from ours, and git words them differently.
+  // Passing `local` unconditionally would render every out-of-set value as a
+  // pairing mismatch and leave the discriminating field never exercised.
+  if (!isSupportedObjectFormat(peer)) throw unsupportedObjectFormat(peer);
   if (verb === 'push') throw pushObjectFormatUnsupported(local, peer);
   throw unsupportedObjectFormat(peer, local);
 };

@@ -1,3 +1,4 @@
+import { unsupportedOperation } from '../../domain/error.js';
 import { remoteAdvertisesNoRefs, targetDirectoryNotEmpty } from '../../domain/index.js';
 import { configFor } from '../../domain/objects/hash-config.js';
 import type { ObjectId, RefName } from '../../domain/objects/index.js';
@@ -6,6 +7,7 @@ import type { FilePath } from '../../domain/objects/object-id.js';
 import type { Advertisement } from '../../domain/protocol/index.js';
 import {
   formatObjectFilter,
+  isSupportedObjectFormat,
   parseObjectFilter,
   remoteFilterUnsupported,
   unsupportedObjectFormat,
@@ -129,9 +131,6 @@ const fetchAndPropagate = async (
   }
 };
 
-const isSupportedObjectFormat = (value: string): value is 'sha1' | 'sha256' =>
-  value === 'sha1' || value === 'sha256';
-
 /**
  * Adopt the peer's declared object-format for this clone. git has no `clone
  * --object-format` to negotiate one — the destination format is whatever the
@@ -146,13 +145,18 @@ const isSupportedObjectFormat = (value: string): value is 'sha1' | 'sha256' =>
  */
 const adoptPeerAlgorithm = (ctx: Context, peer: string): Context => {
   const local = ctx.hash.algorithm;
-  const adopted =
-    peer === local
-      ? ctx.hash
-      : isSupportedObjectFormat(peer)
-        ? ctx.hash.withAlgorithm?.(peer)
-        : undefined;
-  if (adopted === undefined) throw unsupportedObjectFormat(peer, local);
+  if (peer === local) return ctx;
+  // Three distinct conditions, three distinct refusals. Collapsing them tells
+  // a caller the SERVER's format is unsupported when the real problem may be
+  // their own adapter.
+  if (!isSupportedObjectFormat(peer)) throw unsupportedObjectFormat(peer);
+  const adopted = ctx.hash.withAlgorithm?.(peer);
+  if (adopted === undefined) {
+    throw unsupportedOperation(
+      'clone',
+      `the supplied hash service cannot switch to the peer's declared algorithm ${peer}`,
+    );
+  }
   return Object.freeze({ ...ctx, hash: adopted, hashConfig: configFor(adopted.algorithm) });
 };
 

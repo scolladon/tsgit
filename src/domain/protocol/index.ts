@@ -3,6 +3,7 @@ export {
   CLIENT_CAPABILITIES_FETCH,
   CLIENT_CAPABILITIES_PUSH,
   formatCapabilities,
+  isSupportedObjectFormat,
   negotiateCapabilities,
   PUSH_CERT,
   parseCapabilities,

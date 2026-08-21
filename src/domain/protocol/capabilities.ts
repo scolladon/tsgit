@@ -86,3 +86,13 @@ export const negotiateCapabilities = (
  */
 export const peerNegotiatesObjectFormat = (advertised: ReadonlyArray<string>): boolean =>
   advertised.some((capability) => capability.startsWith('object-format='));
+
+/**
+ * Whether a peer-supplied `object-format` value names an algorithm this
+ * client implements. Separating "not an algorithm we know" from "a known
+ * algorithm that differs from ours" is what keeps git's two distinct
+ * refusals distinguishable: `unknown object format '<x>' specified by
+ * server` versus `mismatched algorithms: client A; server B`.
+ */
+export const isSupportedObjectFormat = (value: string): value is 'sha1' | 'sha256' =>
+  value === 'sha1' || value === 'sha256';

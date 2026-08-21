@@ -237,10 +237,14 @@ describe('clone', () => {
 
   describe('Given a hash service without withAlgorithm and a v1 peer advertising object-format=sha256', () => {
     describe('When clone', () => {
-      it("Then it throws UNSUPPORTED_OBJECT_FORMAT, format 'sha256' local 'sha1'", async () => {
+      it('Then it refuses UNSUPPORTED_OPERATION naming the hash service, not the peer', async () => {
         // Arrange — this is the one clone path that still refuses: a caller
         // supplied a HashService that cannot be re-instantiated for another
-        // algorithm, so adoption is impossible.
+        // algorithm, so adoption is impossible. The peer's sha256 is a
+        // perfectly supported format — the limitation is the caller's own
+        // adapter, so reporting UNSUPPORTED_OBJECT_FORMAT here would send
+        // them to fix the wrong end. `bundleVerify` refuses the identical
+        // condition the same way.
         const baseCtx = createMemoryContext();
         const ctx: Context = { ...baseCtx, hash: hashServiceWithoutWithAlgorithm(baseCtx.hash) };
         const { packBytes, blobId } = await buildPackFromSingleBlob(baseCtx, 'cloned blob\n');
@@ -262,11 +266,11 @@ describe('clone', () => {
 
         // Assert
         expect(caught).toBeInstanceOf(TsgitError);
-        expect((caught as TsgitError).data).toEqual({
-          code: 'UNSUPPORTED_OBJECT_FORMAT',
-          format: 'sha256',
-          local: 'sha1',
-        });
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('UNSUPPORTED_OPERATION');
+        if (data.code !== 'UNSUPPORTED_OPERATION') expect.unreachable();
+        expect(data.operation).toBe('clone');
+        expect(data.reason).toContain('sha256');
       });
     });
   });

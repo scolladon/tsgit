@@ -16,6 +16,7 @@ import {
 import { disposeAdapters } from './dispose-adapters.js';
 import { repositoryDisposed } from './domain/commands/error.js';
 import type { StatTreeDiff, TreeDiff } from './domain/diff/index.js';
+import { unsupportedOperation } from './domain/error.js';
 import { configFor } from './domain/objects/hash-config.js';
 import type { CommandRunner } from './ports/command-runner.js';
 import type { Compressor } from './ports/compressor.js';
@@ -474,6 +475,25 @@ const buildOptionalCtxFields = (inputs: OptionalCtxInputs) => ({
  * Factory for the Repository handle. The runtime fallback (adapters + layout)
  * is supplied by the calling shim — `openRepository` itself is runtime-agnostic.
  */
+/**
+ * The hash service to run this repository at. Keeping a service whose
+ * `algorithm` disagrees with the resolved format would desynchronise the
+ * verifier from `hashConfig` — the same desync `resolveAlgorithm` exists to
+ * refuse — so an un-switchable service is a refusal here, exactly as it is in
+ * `clone` and `bundleVerify`, rather than a silent downgrade.
+ */
+const hashForAlgorithm = (service: HashService, algorithm: 'sha1' | 'sha256'): HashService => {
+  if (service.algorithm === algorithm) return service;
+  const switched = service.withAlgorithm?.(algorithm);
+  if (switched === undefined) {
+    throw unsupportedOperation(
+      'openRepository',
+      `the supplied hash service cannot switch to the repository's declared algorithm ${algorithm}`,
+    );
+  }
+  return switched;
+};
+
 export const openRepository = async (
   opts: OpenRepositoryOptions,
   fallback: RuntimeFallback,
@@ -532,10 +552,7 @@ export const openRepository = async (
       : {}),
     ...(opts.hash?.algorithm !== undefined ? { service: opts.hash.algorithm } : {}),
   });
-  const hash =
-    adapters.hash.algorithm === resolvedAlgorithm
-      ? adapters.hash
-      : (adapters.hash.withAlgorithm?.(resolvedAlgorithm) ?? adapters.hash);
+  const hash = hashForAlgorithm(adapters.hash, resolvedAlgorithm);
   // Build ctx incrementally so optional fields (config, logger) are absent
   // when undefined — required by `exactOptionalPropertyTypes: true`.
   const baseCtx = {
