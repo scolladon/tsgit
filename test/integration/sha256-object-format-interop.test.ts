@@ -473,25 +473,6 @@ describe.skipIf(!GIT_AVAILABLE)('sha256 object format — .git/index interop', (
       return dir;
     };
 
-    /**
-     * Drops `core.repositoryformatversion` from `dir`'s config entirely,
-     * leaving `extensions.objectFormat` as the only relevant key. Isolates
-     * the value-grammar layer this part adds from the UNCONDITIONAL
-     * point-of-use refusal `assertExtensionBacked` still raises for
-     * `objectformat` at version 1 (`UNBACKED_EXTENSIONS` — out of THIS
-     * part's scope; its removal is the last step of the whole change, once
-     * the algorithm is actually wired through). The same isolation the unit
-     * tests use, here reproduced on a real, git-initialized repo. Called
-     * only AFTER git's own verdict on the untouched (version 1) file has
-     * already been captured.
-     */
-    const stripRepositoryFormatVersion = async (dir: string): Promise<void> => {
-      const configPath = path.join(dir, '.git', 'config');
-      const text = await readFile(configPath, 'utf8');
-      const updated = text.replace(/\n\trepositoryformatversion = \d+\n/, '\n');
-      await writeFile(configPath, updated);
-    };
-
     describe('When the value is git-legal', () => {
       it.each([
         ['\tobjectformat = sha1', 'sha1'],
@@ -516,8 +497,11 @@ describe.skipIf(!GIT_AVAILABLE)('sha256 object format — .git/index interop', (
             expect(theirs.exitCode).toBe(0);
             expect(theirs.stdout.trim()).toBe(expected);
 
-            // Act — tsgit's verdict, with the unrelated refuse-set isolated
-            await stripRepositoryFormatVersion(dir);
+            // Act — tsgit's verdict on the SAME bytes git just judged. The
+            // config keeps its `repositoryformatversion = 1`, which is what
+            // makes `extensions.objectFormat` load-bearing at all: reading a
+            // stripped copy here would compare the two tools on different
+            // files and hide any divergence at the version git honours.
             const ours = await readObjectFormat(dir);
 
             // Assert — tsgit

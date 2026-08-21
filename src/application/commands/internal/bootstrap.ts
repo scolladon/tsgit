@@ -24,20 +24,21 @@ const INFO_EXCLUDE = `# git ls-files --others --exclude-from=.git/info/exclude
 
 const DESCRIPTION = "Unnamed repository; edit this file 'description' to name the repository.\n";
 
-const extensionsBlock = (): string => '[extensions]\n\tobjectformat = sha256\n';
+const EXTENSIONS_BLOCK = '[extensions]\n\tobjectformat = sha256\n';
 
-// git's own `--object-format=sha256` init emits three extra `[core]` keys
-// alongside the format bump — measured byte-for-byte against git 2.55.0.
-// The sha1/default path stays exactly as it was before this option existed
-// (no regression to the legacy three-line block).
-const CORE_EXTRAS_SHA256 =
-  '\n\tlogallrefupdates = true\n\tignorecase = true\n\tprecomposeunicode = true';
-
+// Only the format bump is format-conditional. git's own init also writes
+// `logallrefupdates`, `ignorecase` and `precomposeunicode`, but NONE of them
+// is a property of the object format — measured across all four init
+// variants on git 2.55.0: sha1 and sha256 emit the same set,
+// `logallrefupdates` is gated on NOT being bare, and the other two are
+// filesystem probes (true on a case-insensitive, decomposing volume; absent
+// elsewhere). Emitting them on the sha256 branch alone would write a config
+// git never writes — `logallrefupdates = true` beside `bare = true`, and an
+// `ignorecase = true` that is a claim about the filesystem rather than a
+// default. Adding them correctly is a separate, format-independent concern.
 const coreBlock = (bare: boolean, objectFormat?: 'sha1' | 'sha256'): string => {
-  const isSha256 = objectFormat === 'sha256';
-  const version = isSha256 ? 1 : 0;
-  const extras = isSha256 ? CORE_EXTRAS_SHA256 : '';
-  return `[core]\n\trepositoryformatversion = ${version}\n\tfilemode = true\n\tbare = ${bare ? 'true' : 'false'}${extras}\n`;
+  const version = objectFormat === 'sha256' ? 1 : 0;
+  return `[core]\n\trepositoryformatversion = ${version}\n\tfilemode = true\n\tbare = ${bare ? 'true' : 'false'}\n`;
 };
 
 /**
@@ -47,7 +48,7 @@ const coreBlock = (bare: boolean, objectFormat?: 'sha1' | 'sha256'): string => {
  */
 const renderConfig = (bare: boolean, objectFormat?: 'sha1' | 'sha256'): string =>
   objectFormat === 'sha256'
-    ? `${extensionsBlock()}${coreBlock(bare, objectFormat)}`
+    ? `${EXTENSIONS_BLOCK}${coreBlock(bare, objectFormat)}`
     : coreBlock(bare, objectFormat);
 
 /**

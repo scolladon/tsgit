@@ -61,8 +61,14 @@ describe('init', () => {
         // Act
         await init(ctx, { objectFormat: 'sha256' });
 
-        // Assert — byte-literal, TABs included; measured against
-        // `git init --object-format=sha256` (git 2.55.0).
+        // Assert — byte-literal, TABs included. The [extensions]-before-[core]
+        // ordering and the lower-cased key are measured against
+        // `git init --object-format=sha256` (git 2.55.0). git's own init also
+        // writes logallrefupdates/ignorecase/precomposeunicode, but none of
+        // them is format-conditional — it writes the same set for sha1,
+        // gates logallrefupdates on not-bare, and probes the filesystem for
+        // the other two — so tsgit keeps its existing three-key block and
+        // adds only the format bump.
         const config = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
         expect(config).toBe(
           '[extensions]\n' +
@@ -70,10 +76,7 @@ describe('init', () => {
             '[core]\n' +
             '\trepositoryformatversion = 1\n' +
             '\tfilemode = true\n' +
-            '\tbare = false\n' +
-            '\tlogallrefupdates = true\n' +
-            '\tignorecase = true\n' +
-            '\tprecomposeunicode = true\n',
+            '\tbare = false\n',
         );
       });
     });
