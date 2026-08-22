@@ -162,6 +162,53 @@ export function compressorContractTests(createSut: () => Promise<Compressor>): v
       expect(result).toEqual(data);
     });
 
+    it('Given a stream whose output exceeds a caller-supplied bound smaller than the adapter default, When streamInflate is called with that bound, Then it rejects with DECOMPRESS_FAILED', async () => {
+      const sut = await createSut();
+      const payload = new TextEncoder().encode('this payload is longer than the tiny bound');
+      const deflated = await sut.deflate(payload);
+
+      try {
+        await sut.streamInflate(deflated, 0, 4);
+        expect.fail('expected DECOMPRESS_FAILED');
+      } catch (err) {
+        expect(err).toBeInstanceOf(TsgitError);
+        expect((err as TsgitError).data.code).toBe('DECOMPRESS_FAILED');
+      }
+    });
+
+    it('Given a stream whose output is within a caller-supplied bound, When streamInflate is called with that bound, Then it succeeds', async () => {
+      const sut = await createSut();
+      const payload = new TextEncoder().encode('short');
+      const deflated = await sut.deflate(payload);
+
+      const result = await sut.streamInflate(deflated, 0, payload.length);
+
+      expect(result.output).toEqual(payload);
+    });
+
+    it('Given a zlib member whose full output vastly exceeds a caller-supplied bound, When streamInflate is called with that bound, Then it aborts well within a short timeout rather than materializing the full output first', async () => {
+      // Arrange — 64 MiB of zeros deflates to a tiny compressed member (high
+      // compressibility), so building the fixture is cheap; fully decoding it
+      // is not. An implementation that inflates in full before comparing
+      // `output.length` against the bound measurably exceeds this timeout —
+      // the pure-JS decoder alone takes several hundred milliseconds to
+      // decode 64 MiB. A genuinely incremental abort, bounded by the 1 KiB
+      // cap, returns in low single-digit milliseconds regardless of how
+      // large the declared/actual total is.
+      const sut = await createSut();
+      const fullSize = 64 * 1024 * 1024;
+      const bound = 1024;
+      const deflated = await sut.deflate(new Uint8Array(fullSize));
+
+      try {
+        await sut.streamInflate(deflated, 0, bound);
+        expect.fail('expected DECOMPRESS_FAILED');
+      } catch (err) {
+        expect(err).toBeInstanceOf(TsgitError);
+        expect((err as TsgitError).data.code).toBe('DECOMPRESS_FAILED');
+      }
+    }, 200);
+
     it('Given non-empty data, When deflateRaw vs deflate, Then outputs differ (no zlib wrapper)', async () => {
       // Arrange — kills a mutant aliasing deflateRaw to deflate: deflate wraps with
       // a 2-byte zlib header (0x78…) and a 4-byte adler32 trailer; deflateRaw omits both.

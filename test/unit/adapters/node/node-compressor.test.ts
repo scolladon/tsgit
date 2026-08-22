@@ -233,6 +233,57 @@ describe('NodeCompressor', () => {
       });
     });
 
+    describe('Given a caller-supplied streamInflate bound larger than the instance cap', () => {
+      describe('When streamInflate runs', () => {
+        it('Then the instance cap still applies — a caller cannot raise the cap', async () => {
+          // Arrange — the instance cap (4 bytes) is smaller than the
+          // caller-supplied bound (1,000,000), so the effective cap must stay
+          // at 4: a `Math.max` (or otherwise unclamped) mutant would let the
+          // larger caller bound win and this 20-byte payload would succeed.
+          const sut = new NodeCompressor({ maxInflatedBytes: 4 });
+          const payload = new TextEncoder().encode('aaaaaaaaaaaaaaaaaaaa'); // 20 bytes
+          const deflated = await sut.deflate(payload);
+
+          // Act
+          let caught: unknown;
+          try {
+            await sut.streamInflate(deflated, 0, 1_000_000);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data.code).toBe('DECOMPRESS_FAILED');
+        });
+      });
+    });
+
+    describe('Given a caller-supplied streamInflate bound smaller than the instance cap', () => {
+      describe('When streamInflate runs', () => {
+        it('Then the caller bound applies — narrowing the cap is honoured', async () => {
+          // Arrange — the instance cap (the adapter default) would happily
+          // accept this 20-byte payload; only the caller's own 4-byte bound
+          // rejects it.
+          const sut = new NodeCompressor();
+          const payload = new TextEncoder().encode('aaaaaaaaaaaaaaaaaaaa'); // 20 bytes
+          const deflated = await sut.deflate(payload);
+
+          // Act
+          let caught: unknown;
+          try {
+            await sut.streamInflate(deflated, 0, 4);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data.code).toBe('DECOMPRESS_FAILED');
+        });
+      });
+    });
+
     describe('Given the streamInflate cap rejection', () => {
       describe('When triggered', () => {
         it('Then the error message is exactly "inflated output exceeds safety cap"', async () => {

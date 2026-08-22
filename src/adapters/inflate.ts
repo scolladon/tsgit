@@ -43,7 +43,18 @@ const BUFFER_GROWTH_FACTOR = 2;
  * NodeCompressor's 2 GiB output cap so all three adapters refuse the same
  * malicious member with the same error, instead of exhausting memory.
  */
-const MAX_INFLATED_OUTPUT_BYTES = 2 * 1024 * 1024 * 1024;
+export const MAX_INFLATED_OUTPUT_BYTES = 2 * 1024 * 1024 * 1024;
+
+/**
+ * Clamp a caller-supplied `streamInflate` bound to this decoder's own
+ * default cap: a caller may narrow the effective cap, never raise it above
+ * the adapter's own ceiling. Omitting the bound preserves today's default.
+ */
+export function boundedInflateCap(maxOutputBytes: number | undefined): number {
+  return maxOutputBytes === undefined
+    ? MAX_INFLATED_OUTPUT_BYTES
+    : Math.min(maxOutputBytes, MAX_INFLATED_OUTPUT_BYTES);
+}
 
 /** RFC 1951: DEFLATE Huffman codes are at most 15 bits long. */
 const MAX_HUFFMAN_CODE_BITS = 15;
