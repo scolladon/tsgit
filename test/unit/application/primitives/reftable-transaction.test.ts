@@ -1141,4 +1141,52 @@ describe('reftable-transaction', () => {
       });
     });
   });
+
+  describe('Given a reftable stack with one table', () => {
+    describe('When another writer attempts to stage a new table while packRefs is mid-sweep', () => {
+      it('Then the concurrent write is blocked by the still-held lock — never exposed to the sweep to be lost', async () => {
+        // Arrange — the sweep reads tables.list, then (under the bug) frees
+        // the lock before its readdir + unlink loop; a second writer racing
+        // into that window can stage and commit a table the sweep's
+        // already-fixed keep set doesn't know about, then have it deleted
+        // out from under it. Hooking the sweep's own readdir call is the
+        // earliest point at which a correct implementation must STILL hold
+        // the lock.
+        const ctx = withReftableStorage(createMemoryContext());
+        const dir = commonReftableDir(ctx);
+        const oldBytes = await buildFixtureTable(
+          ctx,
+          [liveRef('refs/heads/old', 1, 1)],
+          [],
+          1n,
+          1n,
+        );
+        await writeReftableFiles(ctx, dir, [{ name: 'old.ref', bytes: oldBytes }]);
+        const originalReaddir = ctx.fs.readdir.bind(ctx.fs);
+        let concurrentWriteOutcome: 'blocked' | 'succeeded' | undefined;
+        vi.spyOn(ctx.fs, 'readdir').mockImplementation(async (path: string) => {
+          if (path === dir && concurrentWriteOutcome === undefined) {
+            try {
+              await applyReftableUpdates(ctx, [
+                { kind: 'set', name: ref('refs/heads/concurrent'), id: oid(9) },
+              ]);
+              concurrentWriteOutcome = 'succeeded';
+            } catch (err) {
+              concurrentWriteOutcome =
+                (err as TsgitError).data.code === 'REFTABLE_LOCKED' ? 'blocked' : 'succeeded';
+            }
+          }
+          return originalReaddir(path);
+        });
+
+        // Act
+        await packReftableStack(ctx, ctx.layout.gitDir);
+
+        // Assert — a concurrent write that raced into the sweep's window
+        // must be refused, not silently allowed to stage a table the sweep
+        // then deletes.
+        expect(concurrentWriteOutcome).toBe('blocked');
+      }, 2000);
+    });
+  });
 });

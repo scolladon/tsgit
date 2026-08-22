@@ -902,10 +902,15 @@ async function tryAutoCompact(ctx: Context, gitDir: string): Promise<void> {
 // `*.ref` / `*.temp` file the CURRENT `tables.list` doesn't name is
 // unlinked — crash residue this module's own write protocol can leave
 // behind (steps 6/7), or a stale byproduct of any compaction, tsgit's or
-// git's own. A file absent from a list read under the lock is unreachable
-// by any correct reader at the moment it's read, so the sweep is safe even
-// though the unlink itself runs after the lock is released (best effort,
-// mirroring compaction's own step 8).
+// git's own. The lock is held across the WHOLE readdir + unlink walk, not
+// just the `tables.list` read: "absent from a list read under the lock" is
+// only a safe deletion criterion for a file that EXISTED at read time — a
+// writer that stages its own table (steps 6-7) DURING an unlocked window
+// produces a file that is legitimately absent from that stale list too, and
+// an unlink then deletes a live, in-flight table out from under it. Holding
+// the lock throughout — git's own `reftable_stack_clean` — closes that
+// window by construction: no writer can even begin staging while the sweep
+// holds it.
 
 /** Forces a compaction over the WHOLE stack rather than the geometric
  *  suggestion — `plannedNames = probedNames` in full, so the segment is
@@ -927,27 +932,28 @@ function isOrphanCandidate(fileName: string): boolean {
   return ORPHAN_TABLE_SUFFIXES.some((suffix) => fileName.endsWith(suffix));
 }
 
-/** Unlinks every `*.ref` / `*.temp` file the tables.list read under a fresh
- *  lock doesn't name. Best effort: a file already gone by the time the
- *  unlink runs (a concurrent reader's own cleanup, or a race with another
- *  writer) is not an error. */
+/** Unlinks every `*.ref` / `*.temp` file the tables.list read under the lock
+ *  doesn't name — the lock held across the readdir + unlink walk too (see
+ *  the module comment above), so no writer can stage a table this sweep
+ *  would then mistake for an orphan. Best effort within that protected
+ *  window: a file already gone by the time the unlink runs (a concurrent
+ *  reader's own cleanup) is not an error. */
 async function sweepOrphanTables(ctx: Context, gitDir: string): Promise<number> {
   const listLockPath = await acquireStackLock(ctx, gitDir);
-  let currentNames: readonly string[];
   try {
-    currentNames = parseTablesList(await ctx.fs.readUtf8(tablesListPath(gitDir)));
+    const currentNames = parseTablesList(await ctx.fs.readUtf8(tablesListPath(gitDir)));
+    const dir = reftableDir(gitDir);
+    const keep = new Set(currentNames);
+    let removedOrphanCount = 0;
+    for (const entry of await ctx.fs.readdir(dir)) {
+      if (entry.isDirectory || keep.has(entry.name) || !isOrphanCandidate(entry.name)) continue;
+      await removeIfPresent(ctx, `${dir}/${entry.name}`);
+      removedOrphanCount += 1;
+    }
+    return removedOrphanCount;
   } finally {
     await removeIfPresent(ctx, listLockPath);
   }
-  const dir = reftableDir(gitDir);
-  const keep = new Set(currentNames);
-  let removedOrphanCount = 0;
-  for (const entry of await ctx.fs.readdir(dir)) {
-    if (entry.isDirectory || keep.has(entry.name) || !isOrphanCandidate(entry.name)) continue;
-    await removeIfPresent(ctx, `${dir}/${entry.name}`);
-    removedOrphanCount += 1;
-  }
-  return removedOrphanCount;
 }
 
 /**
