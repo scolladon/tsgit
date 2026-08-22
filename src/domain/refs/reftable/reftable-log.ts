@@ -300,9 +300,9 @@ function logSectionEnd(table: Reftable): number {
  * already ceilings a declared size at `0xFFFFFF - LOG_BLOCK_HEADER_LENGTH`
  * (~16.7 MiB), so a `maxBlockBytes` at or above that would never fire and
  * would be dead code. Kept well below that ceiling, it rejects an implausible
- * declared size for CPU-cheap, before spending any decompression work on it —
- * real git-produced reflog blocks are ~1KB, so this stays generous by three
- * orders of magnitude.
+ * declared size cheaply, before spending any decompression work on it — real
+ * git-produced reflog blocks are ~1KB, so this stays generous by three orders
+ * of magnitude.
  *
  * Passing `declaredPayloadBytes` itself as `inflateAt`'s own output bound is
  * what makes the actual inflate call safe regardless of `maxBlockBytes`: the
