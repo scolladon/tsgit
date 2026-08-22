@@ -423,19 +423,27 @@ function assertForwardProgress(cursor: number, nextOffset: number): void {
 /** The largest restart index whose record's name sorts at or before
  *  `target` — scanning forward from it is guaranteed to reach `target` if
  *  present. Falls back to restart `0` when `target` sorts before every
- *  restart, which still scans the whole block correctly. */
-function floorRestartIndex<T>(
+ *  restart, which still scans the whole block correctly.
+ *
+ * Every restart point starts a fresh (uncompressed) name — the shared
+ * cursor's own contract, since `prefix_length` must be `0` where there is no
+ * predecessor to compress against — so each binary-search probe needs only
+ * the KEY: `readPrefixedName` directly, never the record's full
+ * `decodeRecord`, which would additionally construct its value (an
+ * `ObjectId` allocation, a symbolic-target decode-and-validate, or an
+ * obj-record's position-delta walk) only to have every probe but the
+ * winning one discard it unread. */
+function floorRestartIndex(
   bytes: Uint8Array,
   restartOffsets: ReadonlyArray<number>,
   target: Uint8Array,
-  decodeRecord: RecordDecoder<T>,
 ): number {
   let lo = 0;
   let hi = restartOffsets.length - 1;
   let floor = 0;
   while (lo <= hi) {
     const mid = (lo + hi) >>> 1;
-    const { nameBytes } = decodeRecord(bytes, restartOffsets[mid]!, undefined);
+    const { nameBytes } = readPrefixedName(bytes, restartOffsets[mid]!, undefined);
     if (compareBytes(nameBytes, target) <= 0) {
       floor = mid;
       lo = mid + 1;
@@ -461,7 +469,7 @@ export function findInBlock<T>(
   target: Uint8Array,
   decodeRecord: RecordDecoder<T>,
 ): BlockRecord<T> | undefined {
-  const restartIndex = floorRestartIndex(bytes, bounds.restartOffsets, target, decodeRecord);
+  const restartIndex = floorRestartIndex(bytes, bounds.restartOffsets, target);
   let cursor = bounds.restartOffsets[restartIndex]!;
   let priorNameBytes: Uint8Array | undefined;
   while (cursor < bounds.recordsEnd) {

@@ -750,6 +750,41 @@ describe('reftable-block', () => {
       });
     });
 
+    describe('Given a restart point whose value is corrupt but whose target name is not needed', () => {
+      describe('When looking up a later name in the SAME block', () => {
+        it("Then the lookup succeeds — the binary-search probe never decodes the corrupt restart record's value", () => {
+          // Arrange — restart 0 (`refs/heads/aaa`, alphabetically first) is a
+          // symbolic ref whose target embeds a newline: `record-overrun`
+          // ("dangerous") the moment its VALUE is actually decoded. A
+          // two-restart binary search always probes index 0 first, so the
+          // old "decode the full record just to compare its name" probe
+          // would throw here regardless of what name is being looked up;
+          // the key-only probe never touches the poisoned value at all.
+          const header = buildReftableHeader({ version: 1 });
+          const block = buildRefBlock({
+            records: [
+              {
+                name: 'refs/heads/aaa',
+                value: { kind: 'symbolic', target: 'refs/heads/evil\nfake-injected-line' },
+              },
+              { name: 'refs/heads/zzz', value: { kind: 'direct', id: oid(0x09) } },
+            ],
+            restartIndices: [0, 1],
+            isFirstBlock: true,
+            headerLength: header.length,
+          });
+          const reftable = parseReftable(buildReftable({ version: 1, blocks: [block] }));
+          const sut = lookupReftableRef;
+
+          // Act
+          const result = sut(reftable, RefName.from('refs/heads/zzz'));
+
+          // Assert
+          expect(result?.value).toStrictEqual({ kind: 'direct', id: ObjectId.fromRaw(oid(0x09)) });
+        });
+      });
+    });
+
     describe('Given a block whose only record is a tombstone', () => {
       describe('When looking up that name', () => {
         it("Then returns the 'deletion' record faithfully", () => {
