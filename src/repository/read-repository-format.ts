@@ -19,7 +19,11 @@ import type { LayoutProbe } from '../ports/layout-probe.js';
  * `<gitDir>/config.worktree`). `objectFormat` is `extensions.objectFormat`'s
  * resolved value, defaulting to `'sha1'` when the key is absent — read from
  * `<commonDir>/config` ONLY, never scoped to `config.worktree` (unlike
- * `bare`/`worktree`). `refusal` is the repository-format acceptance verdict
+ * `bare`/`worktree`). `refStorage` is `extensions.refStorage`'s resolved
+ * value, defaulting to `'files'` when the key is absent — same scope, same
+ * grammar shape and the same version-gating as `objectFormat` (git honours
+ * `extensions.*` only from `core.repositoryformatversion` 1 up). `refusal`
+ * is the repository-format acceptance verdict
  * — absent when accepted; see `RepositoryFormatRefusal`.
  */
 export interface RepositoryFormat {
@@ -27,6 +31,7 @@ export interface RepositoryFormat {
   readonly worktree: string | undefined;
   readonly worktreeConfig: boolean;
   readonly objectFormat: ObjectFormat;
+  readonly refStorage: RefStorage;
   readonly refusal: RepositoryFormatRefusal | undefined;
 }
 
@@ -37,6 +42,7 @@ const WORKTREE_KEY = 'worktree';
 const WORKTREE_CONFIG_KEY = 'worktreeconfig';
 const VERSION_KEY = 'repositoryformatversion';
 const OBJECT_FORMAT_KEY = 'objectformat';
+const REFSTORAGE_KEY = 'refstorage';
 const CONFIG_FILE = 'config';
 const WORKTREE_CONFIG_FILE = 'config.worktree';
 
@@ -45,6 +51,12 @@ const WORKTREE_CONFIG_FILE = 'config.worktree';
 // shares this exact grammar shape (`resolveEnum` below is general for it).
 const OBJECT_FORMAT_VALUES = ['sha1', 'sha256'] as const;
 type ObjectFormat = (typeof OBJECT_FORMAT_VALUES)[number];
+
+// git 2.55.0's legal `extensions.refStorage` literals — the same grammar
+// shape as `OBJECT_FORMAT_VALUES` above (case-sensitive, `resolveEnum` is
+// general for both).
+const REF_STORAGE_VALUES = ['files', 'reftable'] as const;
+type RefStorage = (typeof REF_STORAGE_VALUES)[number];
 
 // git's format gate: the effective (last-wins) core.repositoryformatversion
 // must not exceed this. A named ceiling, never membership in a set — `-1` is
@@ -298,6 +310,7 @@ interface ScannedFormat {
   readonly worktree: ScannedEntry | undefined;
   readonly worktreeConfig: ScannedEntry | undefined;
   readonly objectFormat: ScannedEntry | undefined;
+  readonly refStorage: ScannedEntry | undefined;
   readonly tokens: ReadonlyArray<ConfigToken>;
 }
 
@@ -322,6 +335,7 @@ const scanConfigFile = async (
     worktree: lastTopLevelEntry(tokens, CORE_SECTION, WORKTREE_KEY),
     worktreeConfig: lastTopLevelEntry(tokens, EXTENSIONS_SECTION, WORKTREE_CONFIG_KEY),
     objectFormat: lastTopLevelEntry(tokens, EXTENSIONS_SECTION, OBJECT_FORMAT_KEY),
+    refStorage: lastTopLevelEntry(tokens, EXTENSIONS_SECTION, REFSTORAGE_KEY),
     tokens,
   };
 };
@@ -426,27 +440,30 @@ const isWorktreeConfigActive = (entry: ScannedEntry | undefined): boolean => {
 /**
  * Reads the repository-format keys — `core.bare`, `core.worktree`,
  * `extensions.worktreeConfig`, `extensions.objectFormat`,
- * `core.repositoryformatversion` — from `<commonDir>/config`, and, when that
- * file sets `extensions.worktreeConfig` true, ALSO from
- * `<gitDir>/config.worktree`, whose `core.bare`/`core.worktree` win when
- * present. No global, no system, no `include.path` expansion.
- * `core.repositoryformatversion` and `extensions.objectFormat` are read ONLY
- * from `<commonDir>/config` — unlike `core.bare`/`core.worktree`, neither is
- * ever scoped to `config.worktree`. Everything else in the file is validated
- * later, on first command, by the existing two-tier eager gates.
+ * `extensions.refStorage`, `core.repositoryformatversion` — from
+ * `<commonDir>/config`, and, when that file sets `extensions.worktreeConfig`
+ * true, ALSO from `<gitDir>/config.worktree`, whose `core.bare`/
+ * `core.worktree` win when present. No global, no system, no `include.path`
+ * expansion. `core.repositoryformatversion`, `extensions.objectFormat` and
+ * `extensions.refStorage` are read ONLY from `<commonDir>/config` — unlike
+ * `core.bare`/`core.worktree`, none of the three is ever scoped to
+ * `config.worktree`. Everything else in the file is validated later, on
+ * first command, by the existing two-tier eager gates.
  *
  * Throws, in order: `CONFIG_BAD_NUMERIC_VALUE` for a malformed
  * `core.repositoryformatversion` occurrence, `CONFIG_BAD_BOOLEAN_VALUE` for
  * a malformed `core.bare`, `CONFIG_MISSING_VALUE` for a valueless
  * `core.worktree`, and `CONFIG_INVALID_ENUM_VALUE` — or, for a valueless
  * entry, `CONFIG_MISSING_VALUE` again — for an out-of-grammar
- * `extensions.objectFormat` — git's setup-time refusals, now surfacing at
- * `openRepository` rather than the first command. `extensions.objectFormat`'s
- * grammar check runs unconditionally, ahead of every acceptance-gate verdict
- * below it (measured: git rejects a malformed value even at an unsupported
- * `core.repositoryformatversion`). A version ABOVE the supported ceiling is
- * not thrown here — it is carried on `refusal`, since `core.bare`/
- * `core.worktree`/`extensions.objectFormat` still need resolving either way.
+ * `extensions.objectFormat` or `extensions.refStorage` — git's setup-time
+ * refusals, now surfacing at `openRepository` rather than the first command.
+ * Both enum keys' grammar checks run unconditionally, ahead of every
+ * acceptance-gate verdict below them (measured: git rejects a malformed
+ * value even at an unsupported `core.repositoryformatversion`). A version
+ * ABOVE the supported ceiling is not thrown here — it is carried on
+ * `refusal`, since `core.bare`/
+ * `core.worktree`/`extensions.objectFormat`/`extensions.refStorage` still
+ * need resolving either way.
  * An absent or non-regular config file behaves as empty, never as a
  * refusal: discovery must stay lenient so `init`/`clone` can bootstrap into
  * a gitDir that is not yet a repository.
@@ -484,12 +501,27 @@ export const readRepositoryFormat = async (
     'sha1',
   );
   const objectFormat = honoursExtensions(version) ? declaredObjectFormat : 'sha1';
+  const declaredRefStorage = resolveEnum(
+    local?.refStorage,
+    localPath,
+    `${EXTENSIONS_SECTION}.${REFSTORAGE_KEY}`,
+    REF_STORAGE_VALUES,
+    'files',
+  );
+  const refStorage = honoursExtensions(version) ? declaredRefStorage : 'files';
   const extensions = enumerateExtensionEntries(local?.tokens ?? []);
   const refusal = formatRefusal(version, extensions);
   if (refusal === undefined) {
     assertExtensionBacked(version, extensions, local?.worktreeConfig, localPath);
   }
-  return { bare: resolvedBare, worktree: resolvedWorktree, worktreeConfig, objectFormat, refusal };
+  return {
+    bare: resolvedBare,
+    worktree: resolvedWorktree,
+    worktreeConfig,
+    objectFormat,
+    refStorage,
+    refusal,
+  };
 };
 
 /** A key's winning entry with the file it came from — scoped (`config.worktree`) wins when present. */

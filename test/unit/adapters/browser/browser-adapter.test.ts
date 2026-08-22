@@ -54,4 +54,19 @@ describe('createBrowserContext', () => {
       });
     });
   });
+
+  describe('Given no options', () => {
+    describe('When reading layout.refStorage', () => {
+      it("Then it is 'files' — the browser shim never runs the Stage-2 scan", () => {
+        // Arrange
+        const sut = createBrowserContext;
+
+        // Act
+        const result = sut({ rootHandle });
+
+        // Assert
+        expect(result.layout.refStorage).toBe('files');
+      });
+    });
+  });
 });

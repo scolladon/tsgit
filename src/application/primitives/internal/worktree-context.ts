@@ -44,6 +44,10 @@ export const deriveWorktreeContext = (
       gitDir,
       commonDir: common,
       bare: false,
+      // A linked worktree shares its main checkout's commonDir config —
+      // same repository, same backend — so refStorage is inherited, unlike
+      // the submodule derivation below (a submodule is its own repository).
+      refStorage: ctx.layout.refStorage,
       ...(ctx.layout.homeDir !== undefined ? { homeDir: ctx.layout.homeDir } : {}),
       ...inheritedAcceptanceVerdicts(ctx.layout),
     }),

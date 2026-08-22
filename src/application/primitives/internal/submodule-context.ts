@@ -24,6 +24,12 @@ const buildChildContext = (ctx: Context, name: string, treeRelPath: FilePath): C
       workDir,
       gitDir,
       bare: false,
+      // A submodule is its own repository and can declare its own
+      // `extensions.refStorage`, independent of the parent's — this
+      // derivation does not run the Stage-2 scan, so it defaults to
+      // 'files' by explicit assignment rather than copying the parent's
+      // value (unlike the worktree derivation, which shares one repository).
+      refStorage: 'files',
       // Stryker disable next-line ConditionalExpression,BooleanLiteral,EqualityOperator,ObjectLiteral: equivalent — when `homeDir` is undefined the always-true mutant yields `{ homeDir: undefined }`, indistinguishable from the `{}` branch on `layout.homeDir`; the conditional only exists to satisfy `exactOptionalPropertyTypes`. The killable always-`{}` half is covered by the homeDir-propagation tests.
       ...(ctx.layout.homeDir !== undefined ? { homeDir: ctx.layout.homeDir } : {}),
       ...inheritedAcceptanceVerdicts(ctx.layout),

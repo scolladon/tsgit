@@ -55,6 +55,15 @@ export const looseRefPath = (gitDir: string, name: RefName): string => `${gitDir
 
 export const packedRefsPath = (gitDir: string): string => `${gitDir}/packed-refs`;
 
+/** The reftable backend's stack directory — the files-backend's `refs/` counterpart. */
+export const reftableDir = (gitDir: string): string => `${gitDir}/reftable`;
+
+/** The reftable stack's ordered table list, oldest → newest. */
+export const tablesListPath = (gitDir: string): string => `${gitDir}/reftable/tables.list`;
+
+/** The lock file a reftable transaction holds while `tables.list` is being rewritten. */
+export const tablesListLockPath = (gitDir: string): string => `${gitDir}/reftable/tables.list.lock`;
+
 export const indexPath = (gitDir: string): string => `${gitDir}/index`;
 
 export const objectsDir = (gitDir: string, prefix: string): string => `${gitDir}/objects/${prefix}`;

@@ -116,6 +116,22 @@ describe('deriveWorktreeContext', () => {
       });
     });
   });
+
+  describe('Given a parent Context whose layout declares refStorage: reftable', () => {
+    describe('When deriveWorktreeContext runs', () => {
+      it("Then the child layout carries the same refStorage: 'reftable' — a linked worktree shares one repository", () => {
+        // Arrange
+        const base = createMemoryContext();
+        const parent = { ...base, layout: { ...base.layout, refStorage: 'reftable' as const } };
+
+        // Act
+        const result = deriveWorktreeContext(parent, 'wt', '/abs/wt');
+
+        // Assert
+        expect(result.layout.refStorage).toBe('reftable');
+      });
+    });
+  });
 });
 
 describe('deriveWorktreeContext — the acceptance verdicts', () => {

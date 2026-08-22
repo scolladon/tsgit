@@ -48,6 +48,20 @@ describe('Given a superproject Context and a submodule name', () => {
       // Assert
       expect(result?.layout.homeDir).toBe('/home/u');
     });
+
+    it("Then the child's refStorage is 'files' — not inherited from a reftable parent", async () => {
+      // Arrange — a submodule is its own repository and can declare its own
+      // extensions.refStorage, independent of the parent's; this derivation
+      // does not run the Stage-2 scan, so it must not silently copy the
+      // parent's value either.
+      const parent = createMemoryContext();
+      const ctx = { ...parent, layout: { ...parent.layout, refStorage: 'reftable' as const } };
+      await seedHead(ctx, 'm');
+      // Act
+      const result = await deriveSubmoduleContext(ctx, 'm', 'm' as FilePath);
+      // Assert
+      expect(result?.layout.refStorage).toBe('files');
+    });
   });
 
   describe('When no child Context can be derived', () => {

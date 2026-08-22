@@ -234,6 +234,7 @@ describe('fixed-entry layout resolution (the browser shim path)', () => {
           gitDir: '/admin',
           bare: false,
           objectFormat: 'sha1',
+          refStorage: 'files',
         });
       });
     });
@@ -262,6 +263,7 @@ describe('fixed-entry layout resolution (the browser shim path)', () => {
           commonDir: '/common',
           bare: false,
           objectFormat: 'sha1',
+          refStorage: 'files',
         });
       });
     });
@@ -309,6 +311,7 @@ describe('fixed-entry layout resolution (the browser shim path)', () => {
           workDir: '/custom-wt',
           bare: false,
           objectFormat: 'sha1',
+          refStorage: 'files',
         });
       });
     });
@@ -330,6 +333,7 @@ describe('fixed-entry layout resolution (the browser shim path)', () => {
           gitDir: '/.git',
           bare: false,
           objectFormat: 'sha1',
+          refStorage: 'files',
         });
       });
     });
@@ -350,7 +354,12 @@ describe('fixed-entry layout resolution (the browser shim path)', () => {
         const result = await sut(fs, '/', '/.git', undefined);
 
         // Assert
-        expect(result).toStrictEqual({ gitDir: '/.git', bare: true, objectFormat: 'sha1' });
+        expect(result).toStrictEqual({
+          gitDir: '/.git',
+          bare: true,
+          objectFormat: 'sha1',
+          refStorage: 'files',
+        });
       });
     });
   });
@@ -374,6 +383,7 @@ describe('fixed-entry layout resolution (the browser shim path)', () => {
           workDir: '/custom-wt',
           bare: false,
           objectFormat: 'sha1',
+          refStorage: 'files',
         });
       });
     });

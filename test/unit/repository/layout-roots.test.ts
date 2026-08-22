@@ -7,7 +7,12 @@ describe('layoutRootsOf', () => {
     describe('When layoutRootsOf runs', () => {
       it('Then it minimises to the single workDir root', () => {
         // Arrange
-        const layout = { workDir: '/r', gitDir: '/r/.git', bare: false };
+        const layout = {
+          workDir: '/r',
+          gitDir: '/r/.git',
+          bare: false,
+          refStorage: 'files' as const,
+        };
 
         // Act
         const result = layoutRootsOf(layout);
@@ -23,7 +28,7 @@ describe('layoutRootsOf', () => {
       it('Then the root set starts at gitDir, not an absent workDir', () => {
         // Arrange — `workDir` omitted entirely (exactOptionalPropertyTypes),
         // the shape `resolveLayout` produces for a bare repository.
-        const layout = { gitDir: '/bare.git', bare: true };
+        const layout = { gitDir: '/bare.git', bare: true, refStorage: 'files' as const };
 
         // Act
         const result = layoutRootsOf(layout);
@@ -38,7 +43,12 @@ describe('layoutRootsOf', () => {
     describe('When layoutRootsOf runs', () => {
       it('Then it collapses to the single shared root', () => {
         // Arrange
-        const layout = { workDir: '/bare.git', gitDir: '/bare.git', bare: true };
+        const layout = {
+          workDir: '/bare.git',
+          gitDir: '/bare.git',
+          bare: true,
+          refStorage: 'files' as const,
+        };
 
         // Act
         const result = layoutRootsOf(layout);
@@ -58,6 +68,7 @@ describe('layoutRootsOf', () => {
           gitDir: '/main/.git/worktrees/wt',
           bare: false,
           commonDir: '/main/.git',
+          refStorage: 'files' as const,
         };
 
         // Act
@@ -79,6 +90,7 @@ describe('layoutRootsOf', () => {
           gitDir: '/elsewhere/admin',
           bare: false,
           commonDir: '/other/common',
+          refStorage: 'files' as const,
         };
 
         // Act
@@ -100,6 +112,7 @@ describe('layoutRootsOf', () => {
           gitDir: '/submodule/.git/modules/sub',
           bare: false,
           commonDir: '/submodule/.git/modules/sub',
+          refStorage: 'files' as const,
         };
 
         // Act
@@ -122,6 +135,7 @@ describe('layoutRootsOf', () => {
           gitDir: '/a-main/.git/worktrees/wt',
           bare: false,
           commonDir: '/a-main/.git',
+          refStorage: 'files' as const,
         };
 
         // Act

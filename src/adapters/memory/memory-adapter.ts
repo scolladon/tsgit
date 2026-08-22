@@ -54,12 +54,13 @@ export function createMemoryContext(options: MemoryAdapterOptions = {}): Context
   const transport = new MemoryHttpTransport();
   const layout: RepositoryLayout =
     options.homeDir === undefined
-      ? { workDir: DEFAULT_WORK_DIR, gitDir: DEFAULT_GIT_DIR, bare: false }
+      ? { workDir: DEFAULT_WORK_DIR, gitDir: DEFAULT_GIT_DIR, bare: false, refStorage: 'files' }
       : {
           workDir: DEFAULT_WORK_DIR,
           gitDir: DEFAULT_GIT_DIR,
           bare: false,
           homeDir: options.homeDir,
+          refStorage: 'files',
         };
   const hashConfig = configFor(algorithm);
   const deltaCache = createLruCache<Uint8Array>(

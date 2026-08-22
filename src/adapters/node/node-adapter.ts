@@ -110,6 +110,8 @@ export const buildLayout = (
   bare: boolean,
   homeDir: string | undefined,
 ): RepositoryLayout =>
-  homeDir === undefined ? { workDir, gitDir, bare } : { workDir, gitDir, bare, homeDir };
+  homeDir === undefined
+    ? { workDir, gitDir, bare, refStorage: 'files' }
+    : { workDir, gitDir, bare, homeDir, refStorage: 'files' };
 
 const safeHomedir = (): string | undefined => resolveHomeDir(homedir());

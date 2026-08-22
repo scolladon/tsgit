@@ -23,7 +23,7 @@ const makeFallback = (): RuntimeFallback => ({
   compressor: new MemoryCompressor(),
   transport: new MemoryHttpTransport(),
   runtime: 'memory',
-  layout: { workDir: '/repo', gitDir: '/repo/.git', bare: false },
+  layout: { workDir: '/repo', gitDir: '/repo/.git', bare: false, refStorage: 'files' },
   hashConfig: SHA1_CONFIG,
   deltaCache: createLruCache<Uint8Array>(1024),
 });
@@ -1152,7 +1152,12 @@ describe('openRepository — worktreeFs capability', () => {
         const fallback: RuntimeFallback = {
           ...makeFallback(),
           fs,
-          layout: { workDir: '/root/repo', gitDir: '/root/repo/.git', bare: false },
+          layout: {
+            workDir: '/root/repo',
+            gitDir: '/root/repo/.git',
+            bare: false,
+            refStorage: 'files',
+          },
         };
         const sut = await openRepository({ cwd: '/root/repo' }, fallback);
         const worktreeFs = worktreeScopedFs(sut, '/root/wt');
@@ -1201,6 +1206,7 @@ describe('openRepository — layout.commonDir plumbing', () => {
       gitDir: '/root/repo/.git',
       bare: false,
       commonDir: '/root/common',
+      refStorage: 'files',
     },
   });
 
@@ -1348,7 +1354,13 @@ describe('openRepository — config-scope allowlist', () => {
 describe('openRepository — object algorithm resolution', () => {
   const fallbackWithDeclaredFormat = (objectFormat: 'sha1' | 'sha256'): RuntimeFallback => ({
     ...makeFallback(),
-    layout: { workDir: '/repo', gitDir: '/repo/.git', bare: false, objectFormat },
+    layout: {
+      workDir: '/repo',
+      gitDir: '/repo/.git',
+      bare: false,
+      objectFormat,
+      refStorage: 'files',
+    },
   });
 
   describe('Given a repository whose layout declares extensions.objectFormat = sha256', () => {

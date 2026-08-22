@@ -30,6 +30,7 @@ describe('createNodeContext', () => {
         expect(sut.layout.workDir).toBe(nodePath.resolve(workDir));
         expect(sut.layout.gitDir).toBe(nodePath.join(nodePath.resolve(workDir), '.git'));
         expect(sut.layout.bare).toBe(false);
+        expect(sut.layout.refStorage).toBe('files');
       });
     });
   });
@@ -364,7 +365,12 @@ describe('buildLayout', () => {
         const result = buildLayout('/wt', '/wt/.git', false, undefined);
 
         // Assert
-        expect(result).toEqual({ workDir: '/wt', gitDir: '/wt/.git', bare: false });
+        expect(result).toEqual({
+          workDir: '/wt',
+          gitDir: '/wt/.git',
+          bare: false,
+          refStorage: 'files',
+        });
         expect('homeDir' in result).toBe(false);
       });
     });

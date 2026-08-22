@@ -18,7 +18,10 @@ import {
   packedRefsPath,
   packsDir,
   reflogPath,
+  reftableDir,
   sparseCheckoutPath,
+  tablesListLockPath,
+  tablesListPath,
 } from '../../../../src/application/primitives/path-layout.js';
 import type { ObjectId, RefName } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
@@ -71,6 +74,33 @@ describe('path-layout', () => {
 
         // Assert
         expect(result).toBe('/g/index');
+      });
+    });
+    describe('When reftableDir', () => {
+      it('Then returns /gitDir/reftable', () => {
+        // Arrange & Act
+        const result = reftableDir('/g');
+
+        // Assert
+        expect(result).toBe('/g/reftable');
+      });
+    });
+    describe('When tablesListPath', () => {
+      it('Then returns /gitDir/reftable/tables.list', () => {
+        // Arrange & Act
+        const result = tablesListPath('/g');
+
+        // Assert
+        expect(result).toBe('/g/reftable/tables.list');
+      });
+    });
+    describe('When tablesListLockPath', () => {
+      it('Then returns /gitDir/reftable/tables.list.lock', () => {
+        // Arrange & Act
+        const result = tablesListLockPath('/g');
+
+        // Assert
+        expect(result).toBe('/g/reftable/tables.list.lock');
       });
     });
   });
@@ -296,7 +326,12 @@ describe('getSpawnCwd', () => {
         const sut = getSpawnCwd;
 
         // Act
-        const result = sut({ workDir: '/repo', gitDir: '/repo/.git', bare: false });
+        const result = sut({
+          workDir: '/repo',
+          gitDir: '/repo/.git',
+          bare: false,
+          refStorage: 'files',
+        });
 
         // Assert
         expect(result).toBe('/repo');
@@ -311,7 +346,7 @@ describe('getSpawnCwd', () => {
         const sut = getSpawnCwd;
 
         // Act
-        const result = sut({ gitDir: '/srv/bare.git', bare: true });
+        const result = sut({ gitDir: '/srv/bare.git', bare: true, refStorage: 'files' });
 
         // Assert
         expect(result).toBe('/srv/bare.git');

@@ -226,6 +226,12 @@ export interface RepositoryLayoutInput {
    * see `RepositoryLayout.objectFormat` (`ports/context.ts`).
    */
   readonly objectFormat?: 'sha1' | 'sha256';
+  /**
+   * The repository's declared `extensions.refStorage`, resolved by
+   * `finishLayout` — see `RepositoryLayout.refStorage` (`ports/context.ts`)
+   * for why this is REQUIRED rather than optional.
+   */
+  readonly refStorage: 'files' | 'reftable';
 }
 
 /**
