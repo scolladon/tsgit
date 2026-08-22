@@ -102,6 +102,8 @@
         "createPromiseMemo",
         "withHandleLedger",
         "createRefStore",
+        "createReftableRefStore",
+        "getRefStore",
         "ownedByCallerPredicate",
         "acquireIndexLock",
         "createWorkdirEntry",

@@ -352,10 +352,9 @@ describe('branch', () => {
         // Arrange — measured: git 2.55.0 `branch --list` against a dangling
         // HEAD symlink exits 0 and lists branches, marking none current.
         const { ctx } = await seedWithCommit();
-        const sut = withUnresolvableHead(ctx);
 
         // Act
-        const result = await branchList(sut);
+        const result = await branchList(withUnresolvableHead(ctx));
 
         // Assert
         expect(result.branches.map((b) => b.name)).toContain('refs/heads/main');
@@ -369,10 +368,9 @@ describe('branch', () => {
       it('Then returns an empty array without throwing', async () => {
         // Arrange
         const ctx = createMemoryContext();
-        const sut = withUnresolvableHead(ctx);
 
         // Act
-        const result = await branchList(sut);
+        const result = await branchList(withUnresolvableHead(ctx));
 
         // Assert
         expect(result.branches).toEqual([]);

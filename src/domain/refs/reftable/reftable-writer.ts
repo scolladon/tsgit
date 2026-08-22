@@ -532,14 +532,17 @@ function toIndexEntries(section: IndexSource): readonly IndexLeafEntry[] {
  * block's start: the ref index's leaf entries and the obj records' position
  * lists alike. Every other position (index blocks, obj blocks, log blocks)
  * starts strictly after the ref section, so it never collides with
- * `headerLength` and is written verbatim. Only `refBlocks.positions[0]` can
- * ever equal `headerLength` — every later block starts strictly after it.
+ * `headerLength` and is written verbatim.
+ *
+ * Both call sites gate on `refIndexEmitted`
+ * (`refBlocks.blocks.length >= INDEX_EMIT_THRESHOLD_BLOCKS`), so at least one
+ * ref block always exists by the time this runs — and `packBlocks` seeds a
+ * block list's first position from its `startPosition` unconditionally, so
+ * `refBlocks.positions[0]` is always defined and always exactly
+ * `headerLength`. A guard on that no longer being the case would be
+ * unreachable dead code, so the rewrite is unconditional.
  */
-function encodedRefBlockPositions(
-  refBlocks: PackedSection,
-  headerLength: number,
-): readonly number[] {
-  if (refBlocks.positions[0] !== headerLength) return refBlocks.positions;
+function encodedRefBlockPositions(refBlocks: PackedSection): readonly number[] {
   return [0, ...refBlocks.positions.slice(1)];
 }
 
@@ -714,12 +717,11 @@ function assembleObjSection(
   refIndexEmitted: boolean,
   options: ReftableWriteOptions,
   startPosition: number,
-  headerLength: number,
 ): ObjSectionResult {
   if (!refIndexEmitted || !options.indexObjects) {
     return EMPTY_OBJ_SECTION;
   }
-  const refBlockPositions = encodedRefBlockPositions(refBlocks, headerLength);
+  const refBlockPositions = encodedRefBlockPositions(refBlocks);
   const oidEntries = collectObjEntries(refs, refBlockPositions, refBlocks.counts);
   if (oidEntries.length === 0) {
     return EMPTY_OBJ_SECTION;
@@ -766,7 +768,7 @@ function assembleRefSection(
   const refIndex = refIndexEmitted
     ? buildIndexLevels(
         toIndexEntries({
-          positions: encodedRefBlockPositions(refBlocks, headerLength),
+          positions: encodedRefBlockPositions(refBlocks),
           lastKeys: refBlocks.lastKeys,
         }),
         options,
@@ -776,14 +778,7 @@ function assembleRefSection(
     : EMPTY_INDEX_RESULT;
 
   const objCursor = headerLength + refBlocks.totalLength + refIndex.totalLength;
-  const objSection = assembleObjSection(
-    refs,
-    refBlocks,
-    refIndexEmitted,
-    options,
-    objCursor,
-    headerLength,
-  );
+  const objSection = assembleObjSection(refs, refBlocks, refIndexEmitted, options, objCursor);
   const objIndex = maybeBuildIndex(objSection, options, objCursor + objSection.totalLength);
 
   const bytes = concatParts([

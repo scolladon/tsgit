@@ -2,11 +2,11 @@
  * Cross-tool interop — the reftable read backend. Builds several
  * `git init --ref-format=reftable` repositories with canonical git (pinned
  * author/committer dates, signing off), then asserts that tsgit's reftable
- * `RefStore` and the Tier-1 commands built on it (`branch.list`, `tag.list`,
- * `resolveRef`) read the exact same ref set, symref chains, peeled tag
- * values, HEAD target, tombstones, reflog history and section layout that
- * canonical git itself reports. This is what closes the write-surface audit
- * gap the reftable backend left open until now.
+ * `RefStore` and the Tier-1 commands built atop it — `branch.list`,
+ * `tag.list`, `resolveRef` — read the exact same ref set, symref chains,
+ * peeled tag values, HEAD target, tombstones, reflog history and section
+ * layout that canonical git itself reports. This is what closes the
+ * write-surface audit gap the reftable backend left open until now.
  *
  * @proves
  *   surface:        reftable
@@ -127,7 +127,7 @@ const buildTzLog = (dir: string): ReadonlyArray<TzLogEntry> => {
   // The fixture's initial commit is `--allow-empty` (no tracked files), so
   // there is nothing for `git rm --cached` to clear before the first orphan
   // commit — every commit on this branch stays empty-tree throughout.
-  git(dir, 'checkout', '-q', '--orphan', 'tzlog');
+  git(dir, 'checkout', '-q', '--orphan', 'tz-log');
   const entries: TzLogEntry[] = [];
   let oldId = '0'.repeat(40);
   TZ_OFFSETS.forEach((tz, index) => {
@@ -275,8 +275,8 @@ interface WorktreeFixture {
 }
 
 const buildWorktreeFixture = (rootDir: string): WorktreeFixture => {
-  const dir = path.join(rootDir, 'wtmain');
-  const wtDir = path.join(rootDir, 'wtlinked');
+  const dir = path.join(rootDir, 'worktreeMain');
+  const wtDir = path.join(rootDir, 'worktreeLinked');
   initReftableRepo(dir);
   runGit(['-C', dir, 'commit', '-q', '--allow-empty', '-m', 'c1'], {
     env: dateEnv(1_700_000_000, '+0000'),
@@ -644,18 +644,18 @@ describe.skipIf(!GIT_AVAILABLE)('reftable-ref-storage interop', () => {
   });
 
   describe('Given a reflog spanning six distinct tz offsets', () => {
-    describe('When readReflog reads refs/heads/tzlog', () => {
+    describe('When readReflog reads refs/heads/tz-log', () => {
       it('Then entries, order, oids, identity and message match git reflog show --date=raw', async () => {
         // Arrange
         const sut = getRefStore(main.ctx);
-        const expectedSubjects = git(main.dir, 'reflog', 'show', '--date=raw', 'tzlog')
+        const expectedSubjects = git(main.dir, 'reflog', 'show', '--date=raw', 'tz-log')
           .split('\n')
           .filter((line) => line.length > 0)
           .map((line) => line.slice(line.indexOf(': ') + 2))
           .reverse();
 
         // Act
-        const entries = await sut.readReflog('refs/heads/tzlog' as RefName);
+        const entries = await sut.readReflog('refs/heads/tz-log' as RefName);
 
         // Assert
         expect(entries).toHaveLength(main.tzLog.length);
@@ -1001,7 +1001,7 @@ describe.skipIf(!GIT_AVAILABLE)('reftable-ref-storage interop', () => {
     describe('When buildReftableRefSection replays its logical content', () => {
       it('Then the ref section is byte-identical up to log_position, and the log section is records-equal beyond it', async () => {
         // Arrange
-        const dir = path.join(rootDir, 'write-bytepin');
+        const dir = path.join(rootDir, 'write-byte-pin');
         initReftableRepo(dir);
         runGit(['-C', dir, 'commit', '-q', '--allow-empty', '-m', 'c1'], {
           env: dateEnv(1_700_000_000, '+0000'),
@@ -1475,27 +1475,27 @@ describe.skipIf(!GIT_AVAILABLE)('reftable-ref-storage interop', () => {
       it('Then git for-each-ref reports rc 0 with no rows', () => {
         // Arrange
         const fixture = fixtureFor(row.label);
-        const sut = tryRunGitWithExit(['-C', fixture.dir, 'for-each-ref'], {
+        const result = tryRunGitWithExit(['-C', fixture.dir, 'for-each-ref'], {
           env: runGitEnv(),
         });
 
         // Assert — same fault class is loud (fatal, rc 128) on the files
         // backend's packed-refs; reftable is silently empty instead.
-        expect(sut.exitCode).toBe(0);
-        expect(sut.stdout.trim()).toBe('');
+        expect(result.exitCode).toBe(0);
+        expect(result.stdout.trim()).toBe('');
       });
 
       it('Then git fsck matches its independently measured exit', () => {
         // Arrange
         const fixture = fixtureFor(row.label);
-        const sut = tryRunGitWithExit(['-C', fixture.dir, 'fsck'], { env: runGitEnv() });
+        const result = tryRunGitWithExit(['-C', fixture.dir, 'fsck'], { env: runGitEnv() });
 
         // Assert
         if (fixture.outcome === 'refuse') {
-          expect(sut.exitCode).toBe(8);
-          expect(sut.stderr).toContain('refs died of signal 11');
+          expect(result.exitCode).toBe(8);
+          expect(result.stderr).toContain('refs died of signal 11');
         } else {
-          expect(sut.exitCode).toBe(0);
+          expect(result.exitCode).toBe(0);
         }
       });
 

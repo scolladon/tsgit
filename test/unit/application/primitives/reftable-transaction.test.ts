@@ -420,14 +420,14 @@ describe('reftable-transaction', () => {
 
         // Act
         await applyReftableUpdates(ctx, [
-          { kind: 'set', name: ref('refs/heads/newref'), id: oid(2) },
+          { kind: 'set', name: ref('refs/heads/newRef'), id: oid(2) },
         ]);
 
         // Assert
         const stack = await loadReftableStack(ctx, dir);
         expect(stack.tables).toHaveLength(1);
         const names = [...iterateReftableRefs(stack.tables[0]!)].map((r) => r.name).sort();
-        expect(names).toEqual(['refs/heads/newref', 'refs/heads/old']);
+        expect(names).toEqual(['refs/heads/newRef', 'refs/heads/old']);
       });
 
       it('Then the merged table carries the oldest min and the newest max update index', async () => {
@@ -445,7 +445,7 @@ describe('reftable-transaction', () => {
 
         // Act
         await applyReftableUpdates(ctx, [
-          { kind: 'set', name: ref('refs/heads/newref'), id: oid(2) },
+          { kind: 'set', name: ref('refs/heads/newRef'), id: oid(2) },
         ]);
 
         // Assert
@@ -474,7 +474,7 @@ describe('reftable-transaction', () => {
 
         // Act
         await applyReftableUpdates(ctx, [
-          { kind: 'set', name: ref('refs/heads/newref'), id: oid(2) },
+          { kind: 'set', name: ref('refs/heads/newRef'), id: oid(2) },
         ]);
 
         // Assert — the whole (2-table) stack merged into one table starting
@@ -516,7 +516,7 @@ describe('reftable-transaction', () => {
 
         // Act
         await applyReftableUpdates(ctx, [
-          { kind: 'set', name: ref('refs/heads/newref'), id: oid(3) },
+          { kind: 'set', name: ref('refs/heads/newRef'), id: oid(3) },
         ]);
 
         // Assert — the oldest (big) table stays byte-identical and named
@@ -606,7 +606,7 @@ describe('reftable-transaction', () => {
 
         // Act
         await applyReftableUpdates(ctx, [
-          { kind: 'set', name: ref('refs/heads/newref'), id: oid(4) },
+          { kind: 'set', name: ref('refs/heads/newRef'), id: oid(4) },
         ]);
 
         // Assert — big.ref and midA.ref (locked) both survive untouched;
@@ -623,7 +623,7 @@ describe('reftable-transaction', () => {
           kind: 'direct',
           id: oid(3),
         });
-        expect(await store.resolveDirect(ref('refs/heads/newref'))).toEqual({
+        expect(await store.resolveDirect(ref('refs/heads/newRef'))).toEqual({
           kind: 'direct',
           id: oid(4),
         });
@@ -652,7 +652,7 @@ describe('reftable-transaction', () => {
 
         // Act
         await applyReftableUpdates(ctx, [
-          { kind: 'set', name: ref('refs/heads/newref'), id: oid(2) },
+          { kind: 'set', name: ref('refs/heads/newRef'), id: oid(2) },
         ]);
 
         // Assert — both tables remain, unmerged; the write itself still
@@ -660,7 +660,7 @@ describe('reftable-transaction', () => {
         const stack = await loadReftableStack(ctx, dir);
         expect(stack.tables).toHaveLength(2);
         const store = createReftableRefStore(ctx);
-        expect(await store.resolveDirect(ref('refs/heads/newref'))).toEqual({
+        expect(await store.resolveDirect(ref('refs/heads/newRef'))).toEqual({
           kind: 'direct',
           id: oid(2),
         });
@@ -695,7 +695,7 @@ describe('reftable-transaction', () => {
 
         // Act
         await applyReftableUpdates(ctx, [
-          { kind: 'set', name: ref('refs/heads/newref'), id: oid(2) },
+          { kind: 'set', name: ref('refs/heads/newRef'), id: oid(2) },
         ]);
 
         // Assert — the ref committed; the stack merely grew by one, because
@@ -703,7 +703,7 @@ describe('reftable-transaction', () => {
         const stack = await loadReftableStack(ctx, dir);
         expect(stack.tables).toHaveLength(2);
         const store = createReftableRefStore(ctx);
-        expect(await store.resolveDirect(ref('refs/heads/newref'))).toEqual({
+        expect(await store.resolveDirect(ref('refs/heads/newRef'))).toEqual({
           kind: 'direct',
           id: oid(2),
         });
@@ -738,7 +738,7 @@ describe('reftable-transaction', () => {
 
         // Act + Assert
         await expect(
-          applyReftableUpdates(ctx, [{ kind: 'set', name: ref('refs/heads/newref'), id: oid(2) }]),
+          applyReftableUpdates(ctx, [{ kind: 'set', name: ref('refs/heads/newRef'), id: oid(2) }]),
         ).rejects.toBe(fault);
       });
     });
@@ -768,7 +768,7 @@ describe('reftable-transaction', () => {
 
         // Act
         await applyReftableUpdates(ctx, [
-          { kind: 'set', name: ref('refs/heads/newref'), id: oid(2) },
+          { kind: 'set', name: ref('refs/heads/newRef'), id: oid(2) },
         ]);
 
         // Assert — the merge still completed: one merged table, both
@@ -781,7 +781,7 @@ describe('reftable-transaction', () => {
         const stack = await loadReftableStack(ctx, dir);
         expect(stack.tables).toHaveLength(1);
         const names = [...iterateReftableRefs(stack.tables[0]!)].map((r) => r.name).sort();
-        expect(names).toEqual(['refs/heads/newref', 'refs/heads/old']);
+        expect(names).toEqual(['refs/heads/newRef', 'refs/heads/old']);
       });
     });
   });
@@ -827,7 +827,7 @@ describe('reftable-transaction', () => {
 
         // Act
         await applyReftableUpdates(ctx, [
-          { kind: 'set', name: ref('refs/heads/newref'), id: oid(2) },
+          { kind: 'set', name: ref('refs/heads/newRef'), id: oid(2) },
         ]);
 
         // Assert — compaction aborted silently: both tables are still
@@ -839,7 +839,7 @@ describe('reftable-transaction', () => {
         const entries = (await ctx.fs.readdir(dir)).map((e) => e.name);
         expect(entries.some((name) => name.includes('.temp'))).toBe(false);
         const store = createReftableRefStore(ctx);
-        expect(await store.resolveDirect(ref('refs/heads/newref'))).toEqual({
+        expect(await store.resolveDirect(ref('refs/heads/newRef'))).toEqual({
           kind: 'direct',
           id: oid(2),
         });
