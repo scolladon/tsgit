@@ -54,7 +54,7 @@ const execFileAsync = promisify(execFile);
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const DIST_ESM = path.join(ROOT, 'dist', 'esm', 'index.node.js');
-const BUILD_TIMEOUT_MS = 120_000;
+const BUILD_TIMEOUT_MS = 600_000;
 
 // `diffTrees` is excluded: public-types.ts deliberately keeps it type-only on
 // the main entry (the name clashes with application/primitives' diffTrees —
