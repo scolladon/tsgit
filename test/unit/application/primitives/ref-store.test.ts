@@ -724,7 +724,7 @@ describe('ref-store', () => {
         // Arrange — `refsWalkRoot` pushes `refs/remotes/origin/main` down to
         // `refs/remotes/origin`; here that path is itself a loose ref
         // FILE (a D/F collision a fetch or a stray write can produce), not
-        // a `refs/**` directory. The pre-pushdown whole-tree walk would
+        // a `refs/**` directory. The pre-push-down whole-tree walk would
         // have silently contributed nothing for a root shaped like this
         // too — pushing the walk down must not change that.
         const ctx = await buildSeededContext();

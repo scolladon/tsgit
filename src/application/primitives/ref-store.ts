@@ -426,7 +426,7 @@ function createFilesRefStore(ctx: Context): RefStore {
    * deepest COMPLETE prefix segment, which can land on a path that is
    * itself a loose ref FILE rather than a `refs/**` directory (a D/F
    * transition mid-fetch, or simply `refs/remotes/origin` colliding with a
-   * ref literally named that). The pre-prefix-pushdown shape (a whole-tree
+   * ref literally named that). The pre-prefix-push-down shape (a whole-tree
    * walk plus a `startsWith` filter) silently contributed nothing for a
    * root like that too — `ctx.fs.exists` alone can't tell the two shapes
    * apart, since it answers `true` for a file just as readily as a
