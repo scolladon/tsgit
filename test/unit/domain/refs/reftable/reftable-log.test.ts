@@ -361,6 +361,44 @@ describe('reftable-log', () => {
     });
   });
 
+  describe('Given a log record whose ref name embeds a newline', () => {
+    describe('When iterating', () => {
+      it('Then refuses rather than yielding a name that could forge a line downstream', async () => {
+        // Arrange — the reflog counterpart of `reftable-block.ts`'s ref-name
+        // and symbolic-target guards: `splitLogKey` decodes the ref name
+        // half of the log key the same unguarded way `refRecordDecoder` used
+        // to.
+        const block = await buildReftableLogBlock(
+          {
+            records: [
+              {
+                refName: 'refs/heads/evil\nfake-injected-line',
+                updateIndex: 1n,
+                entry: entrySpec(),
+              },
+            ],
+          },
+          deflate,
+        );
+        const bytes = buildLogOnlyReftable([block]);
+        const table = await loadReftable(bytes, inflateAt);
+        const sut = iterateReftableLogs;
+
+        // Act
+        let caught: unknown;
+        try {
+          Array.from(sut(table));
+        } catch (e) {
+          caught = e;
+        }
+
+        // Assert
+        expect((caught as { data: { code: string } }).data.code).toBe('INVALID_REFTABLE');
+        expect((caught as { data: { reason: string } }).data.reason).toContain('dangerous');
+      });
+    });
+  });
+
   describe('Given nine reflog records over three ref names', () => {
     describe('When iterating via iterateReftableLogs', () => {
       it('Then records decode grouped by name, newest update_index first within a group', async () => {

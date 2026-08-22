@@ -13,10 +13,10 @@
  */
 import type { AuthorIdentity } from '../../objects/author-identity.js';
 import { decode } from '../../objects/encoding.js';
-import { ObjectId, RefName } from '../../objects/index.js';
+import { ObjectId, type RefName } from '../../objects/index.js';
 import type { ReflogEntry } from '../../reflog/reflog-entry.js';
 import { invalidReftable } from '../error.js';
-import { readPrefixedName } from './reftable-block.js';
+import { decodeSafeRefName, readPrefixedName } from './reftable-block.js';
 import { parseReftable, type Reftable, readUint24, readVarint } from './reftable-format.js';
 
 /** `log_type` — the low bits of `log_record`'s packed
@@ -98,7 +98,10 @@ function splitLogKey(keyBytes: Uint8Array): {
     LOG_KEY_UPDATE_INDEX_WIDTH,
   );
   const reversed = view.getBigUint64(0);
-  return { name: RefName.from(decode(nameBytes)), updateIndex: REVERSE_INT64_MAX - reversed };
+  return {
+    name: decodeSafeRefName(nameBytes, 'reflog ref name'),
+    updateIndex: REVERSE_INT64_MAX - reversed,
+  };
 }
 
 /**

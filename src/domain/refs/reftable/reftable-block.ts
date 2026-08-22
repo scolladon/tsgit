@@ -13,6 +13,7 @@
 import { bytesEqual, compareBytes, decode, encode } from '../../objects/encoding.js';
 import { ObjectId, RefName } from '../../objects/index.js';
 import { invalidReftable } from '../error.js';
+import { isSafeRefName } from '../ref-validation.js';
 import {
   blockLengthAt,
   blockTypeAt,
@@ -251,9 +252,31 @@ function readPeeledValue(bytes: Uint8Array, offset: number, digestLength: number
   };
 }
 
+/**
+ * Decodes `bytes` as UTF-8 and gates it through {@link isSafeRefName} — the
+ * reftable parse boundary's own counterpart to `parsePackedRefs`'s
+ * `isSafeRefName` guard on its own entries (`packed-refs.ts`). `RefName.from`
+ * alone rejects only the empty string; a name or symbolic target decoded
+ * here reaches line-oriented output verbatim downstream (a bundle header's
+ * `<oid> <name>\n`, a pkt-line) with no escaping of its own, so an
+ * unconstrained name is a line-injection primitive, not just a cosmetic
+ * looseness. Exported for `reftable-log.ts`'s `splitLogKey`, the reflog
+ * counterpart of this same parse-boundary gate.
+ */
+export function decodeSafeRefName(bytes: Uint8Array, subject: string): RefName {
+  const decoded = decode(bytes);
+  if (!isSafeRefName(decoded)) {
+    throw invalidReftable('record-overrun', `${subject} is dangerous: ${decoded.slice(0, 80)}`);
+  }
+  return RefName.from(decoded);
+}
+
 function readSymbolicValue(bytes: Uint8Array, offset: number) {
   const { value: targetLen, nextOffset: afterLen } = readVarint(bytes, offset);
-  const target = RefName.from(decode(bytes.subarray(afterLen, afterLen + targetLen)));
+  const target = decodeSafeRefName(
+    bytes.subarray(afterLen, afterLen + targetLen),
+    'symbolic ref target',
+  );
   return { value: { kind: 'symbolic' as const, target }, nextOffset: afterLen + targetLen };
 }
 
@@ -296,7 +319,7 @@ export function refRecordDecoder(header: ReftableHeader): RecordDecoder<Reftable
     const { value: delta, nextOffset: afterDelta } = readVarint(bytes, afterName);
     const { value, nextOffset } = readRefValue(bytes, afterDelta, valueType, header.digestLength);
     const record: ReftableRefRecord = {
-      name: RefName.from(decode(nameBytes)),
+      name: decodeSafeRefName(nameBytes, 'ref name'),
       updateIndex: header.minUpdateIndex + BigInt(delta),
       value,
     };

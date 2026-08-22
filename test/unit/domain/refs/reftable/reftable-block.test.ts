@@ -616,6 +616,92 @@ describe('reftable-block', () => {
         }, 2000);
       });
     });
+
+    describe('Given a direct ref record whose name embeds a newline', () => {
+      describe('When iterating', () => {
+        it('Then refuses with record-overrun rather than yielding a name that could forge a line downstream', () => {
+          // Arrange — `RefName.from` rejects only the empty string, and a
+          // reftable-decoded name reaches line-oriented output verbatim
+          // (`serialize-bundle-header.ts`'s `${ref.oid} ${ref.name}\n`, no
+          // escaping) — an embedded newline injects a forged line into a
+          // bundle built from a hostile repo. Mirrors the guard
+          // `parsePackedRefs` already applies to its own entries.
+          const header = buildReftableHeader({ version: 1 });
+          const block = buildRefBlock({
+            records: [
+              {
+                name: 'refs/heads/evil\nfake-injected-line',
+                value: { kind: 'direct', id: oid(0x01) },
+              },
+            ],
+            restartIndices: [0],
+            isFirstBlock: true,
+            headerLength: header.length,
+          });
+          const reftable = parseReftable(buildReftable({ version: 1, blocks: [block] }));
+
+          // Act & Assert
+          expectRefusal(
+            () => Array.from(iterateReftableRefs(reftable)),
+            'record-overrun',
+            'dangerous',
+          );
+        });
+      });
+    });
+
+    describe('Given a symbolic ref record whose target embeds a newline', () => {
+      describe('When iterating', () => {
+        it('Then refuses with record-overrun, isolated from the name-side guard', () => {
+          // Arrange — the target is decoded and validated independently of
+          // the record's own (here safe) name, since `readSymbolicValue` is
+          // a separate parse site from `refRecordDecoder`'s own name cursor.
+          const header = buildReftableHeader({ version: 1 });
+          const block = buildRefBlock({
+            records: [
+              {
+                name: 'refs/heads/symbolic',
+                value: { kind: 'symbolic', target: 'refs/heads/evil\nfake-injected-line' },
+              },
+            ],
+            restartIndices: [0],
+            isFirstBlock: true,
+            headerLength: header.length,
+          });
+          const reftable = parseReftable(buildReftable({ version: 1, blocks: [block] }));
+
+          // Act & Assert
+          expectRefusal(
+            () => Array.from(iterateReftableRefs(reftable)),
+            'record-overrun',
+            'dangerous',
+          );
+        });
+      });
+    });
+
+    describe('Given a ref record with an ordinary safe name', () => {
+      describe('When iterating', () => {
+        it('Then it still decodes — regression guard against over-rejection', () => {
+          // Arrange
+          const header = buildReftableHeader({ version: 1 });
+          const block = buildRefBlock({
+            records: [{ name: 'refs/heads/feature/x', value: { kind: 'direct', id: oid(0x01) } }],
+            restartIndices: [0],
+            isFirstBlock: true,
+            headerLength: header.length,
+          });
+          const reftable = parseReftable(buildReftable({ version: 1, blocks: [block] }));
+          const sut = iterateReftableRefs;
+
+          // Act
+          const [record] = Array.from(sut(reftable));
+
+          // Assert
+          expect(record?.name).toBe(RefName.from('refs/heads/feature/x'));
+        });
+      });
+    });
   });
 
   describe('lookupReftableRef', () => {
