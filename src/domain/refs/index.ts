@@ -22,12 +22,22 @@ export { isSafeRefName, validateRefName } from './ref-validation.js';
 // Reftable codec: ref, index and obj block record grammar
 export type { ReftableRefRecord, ReftableRefValue } from './reftable/reftable-block.js';
 export { iterateReftableRefs, lookupReftableRef } from './reftable/reftable-block.js';
+// Reftable codec: compaction policy (size metric, geometric merge segment)
+export type { CompactionSegment } from './reftable/reftable-compaction.js';
+export {
+  compactionMetric,
+  DEFAULT_GEOMETRIC_FACTOR,
+  suggestCompactionSegment,
+} from './reftable/reftable-compaction.js';
 // Reftable codec: header, footer, varint and block framing
 export type { Reftable, ReftableFooter, ReftableHeader } from './reftable/reftable-format.js';
 export { parseReftable } from './reftable/reftable-format.js';
 // Reftable codec: log blocks and reflog records
 export type { InflateAt, LoadedReftable, ReftableLogRecord } from './reftable/reftable-log.js';
 export { iterateReftableLogs, loadReftable } from './reftable/reftable-log.js';
+// Reftable codec: stack merge view (multi-table lookup/names/logs)
+export type { ReftableStack } from './reftable/reftable-stack.js';
+export { createReftableStack } from './reftable/reftable-stack.js';
 // Reftable codec: writer (ref/index/obj/log block emission, header/footer framing)
 export type { ReftableWriteOptions } from './reftable/reftable-writer.js';
 export { buildReftableRefSection, serializeReftable } from './reftable/reftable-writer.js';

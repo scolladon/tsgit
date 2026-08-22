@@ -14,10 +14,13 @@ import { crc32 } from '../../storage/crc32.js';
 import { invalidReftable } from '../error.js';
 
 const REFT_MAGIC = 0x52454654; // 'REFT'
-const HEADER_LENGTH_V1 = 24;
-const HEADER_LENGTH_V2 = 28;
-const FOOTER_LENGTH_V1 = 68;
-const FOOTER_LENGTH_V2 = 72;
+/** Exported for `reftable-compaction.ts`'s size metric, which subtracts
+ *  exactly these per-version framing widths from a table's on-disk size —
+ *  never a bare literal. */
+export const HEADER_LENGTH_V1 = 24;
+export const HEADER_LENGTH_V2 = 28;
+export const FOOTER_LENGTH_V1 = 68;
+export const FOOTER_LENGTH_V2 = 72;
 const DIGEST_LENGTH_SHA1 = 20;
 const DIGEST_LENGTH_SHA256 = 32;
 /** git's `ofs-delta`-style varint accepts at most 5 continuation bytes —
