@@ -28,6 +28,7 @@ import { rangeDiffScenario } from './range-diff.scenario.ts';
 import { readPipelineScenario } from './read-pipeline.scenario.ts';
 import { rebaseScenario } from './rebase.scenario.ts';
 import { refsPipelineScenario } from './refs-pipeline.scenario.ts';
+import { reftableRefsScenario } from './reftable-refs.scenario.ts';
 import { remoteCrudScenario } from './remote-crud.scenario.ts';
 import { resetRmReflogScenario } from './reset-rm-reflog.scenario.ts';
 import { revListScenario } from './rev-list.scenario.ts';
@@ -92,4 +93,5 @@ export const SCENARIOS: ReadonlyArray<Scenario<unknown>> = [
   packRefsScenario,
   trustDefaultsScenario,
   sha256ObjectFormatScenario,
+  reftableRefsScenario,
 ];

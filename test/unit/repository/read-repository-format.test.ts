@@ -1076,12 +1076,12 @@ describe('readRepositoryFormat', () => {
 
   // ───────────────────────────────────────────────────────────────────────
   // The two extension arms — git's nine known names × {absent, v0, v1},
-  // plus an unknown name in the same three states. The two remaining
-  // UNBACKED_EXTENSIONS members (compatObjectFormat, refStorage) are
-  // excluded at v1 (they throw, asserted separately below) rather than
-  // folded into this sweep's oracle. `objectFormat` left that set (its own
-  // dedicated test below covers its v1 row) but keeps its undefined/v0 rows
-  // here for parity with the sibling sweeps.
+  // plus an unknown name in the same three states. The one remaining
+  // UNBACKED_EXTENSIONS member (compatObjectFormat) is excluded at v1 (it
+  // throws, asserted separately below) rather than folded into this sweep's
+  // oracle. `objectFormat` and `refStorage` both left that set (their own
+  // dedicated tests below cover their v1 rows) but keep their undefined/v0
+  // rows here for parity with the sibling sweeps.
   // ───────────────────────────────────────────────────────────────────────
 
   describe('The two extension arms', () => {
@@ -1375,10 +1375,7 @@ describe('readRepositoryFormat', () => {
 
     describe('Given extensions.<name> = <value> at version 1, for each unbacked-extension member', () => {
       describe('When readRepositoryFormat runs', () => {
-        it.each([
-          ['compatObjectFormat', 'sha1'],
-          ['refStorage', 'reftable'],
-        ])(
+        it.each([['compatObjectFormat', 'sha1']])(
           'Then extensions.%s throws REPOSITORY_EXTENSION_UNSUPPORTED naming the value %s',
           async (name, value) => {
             // Arrange
@@ -1434,6 +1431,31 @@ describe('readRepositoryFormat', () => {
           // Assert
           expect(result.refusal).toBeUndefined();
           expect(result.objectFormat).toBe('sha256');
+        });
+      });
+    });
+
+    describe('Given a repository declaring extensions.refStorage = reftable at version 1', () => {
+      describe('When readRepositoryFormat runs', () => {
+        it('Then it succeeds — refStorage left the unbacked-extension refuse set', async () => {
+          // Arrange
+          const fs = new MemoryFileSystem({ rootDir: '/repo' });
+          await fs.writeUtf8(
+            '/repo/.git/config',
+            '[core]\n\trepositoryformatversion = 1\n[extensions]\n\trefStorage = reftable\n',
+          );
+
+          // Act
+          const result = await readRepositoryFormat(
+            fileSystemLayoutProbe(fs),
+            '/repo/.git',
+            '/repo/.git',
+            posixPolicy,
+          );
+
+          // Assert
+          expect(result.refusal).toBeUndefined();
+          expect(result.refStorage).toBe('reftable');
         });
       });
     });

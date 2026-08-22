@@ -5,15 +5,14 @@ import { fileSystemLayoutProbe } from '../../../src/repository/file-system-layou
 
 // `finishLayout` composes `readRepositoryFormat`'s resolved `refStorage` into
 // the returned layout — the ref-storage backend is resolved on the layout,
-// strictly before any acceptance-tier assertion. `extensions.refStorage`
-// stays in the acceptance gate's unbacked-extension refuse set until a
-// reftable backend actually lands, so a REAL config declaring `reftable` at
-// version 1 still throws `REPOSITORY_EXTENSION_UNSUPPORTED` from
-// `readRepositoryFormat` itself — that refusal lifts only once the backend
-// exists to act on the value. Mocking the collaborator is therefore the only
-// way to observe `finishLayout`'s OWN behaviour (pass-through, no directory
-// sniffing) in isolation, mirroring `resolve-layout-trust-options-shape.test.ts`'s
-// own precedent for exactly this situation.
+// strictly before any acceptance-tier assertion. A REAL config declaring
+// `extensions.refStorage = reftable` at version 1 now opens successfully
+// (the reftable backend is implemented and the acceptance gate's refuse set
+// no longer names it), so mocking the collaborator here is not needed to
+// dodge a refusal — it isolates `finishLayout`'s OWN behaviour (pass-through,
+// no directory sniffing) from `readRepositoryFormat`'s own resolution logic,
+// mirroring `resolve-layout-trust-options-shape.test.ts`'s own precedent for
+// exactly this situation.
 vi.mock('../../../src/repository/read-repository-format.js', async (importOriginal) => {
   const actual =
     await importOriginal<typeof import('../../../src/repository/read-repository-format.js')>();
