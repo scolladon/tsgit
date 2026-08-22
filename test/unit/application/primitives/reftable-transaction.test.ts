@@ -828,8 +828,8 @@ describe('reftable-transaction', () => {
         // Arrange — a big filler table keeps the compaction segment from
         // starting at 0 (mirroring the existing mid-stack fixture), a
         // second small table carries refs/heads/target's live creation
-        // entry, and the delete (added by the Act) tombstones it at the
-        // SAME update_index the live entry already occupies.
+        // entry, and the upcoming delete tombstones it at the SAME
+        // update_index the live entry already occupies.
         const ctx = withReftableStorage(createMemoryContext());
         const dir = commonReftableDir(ctx);
         const bigBytes = await buildFixtureTable(ctx, fillerRefs(50, 1), [], 1n, 1n);
