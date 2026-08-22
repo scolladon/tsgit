@@ -10,6 +10,8 @@ import { writeObject } from '../../../../src/application/primitives/write-object
 import type { TsgitError } from '../../../../src/domain/error.js';
 import type { AuthorIdentity, ObjectId, RefName } from '../../../../src/domain/objects/index.js';
 import type { ReflogEntry } from '../../../../src/domain/reflog/index.js';
+import type { Context } from '../../../../src/ports/context.js';
+import type { DirEntry } from '../../../../src/ports/file-system.js';
 import {
   buildRefBlock,
   buildReftable,
@@ -884,6 +886,44 @@ describe('ref-store', () => {
 
         // Assert
         expect(result).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a refs root with far more entries than V8’s spread-call argument ceiling', () => {
+    describe('When listRefNames runs', () => {
+      it('Then it does not throw — the loose-name collector loops rather than spread-pushing', async () => {
+        // Arrange — a large unpacked ref space (a mirror's `refs/pull/*`, a
+        // fetch not yet followed by `pack-refs`) can legitimately exceed
+        // V8's ~10^5 spread-argument ceiling; `names.push(...bigArray)`
+        // throws `RangeError: Maximum call stack size exceeded` past it.
+        // `readdir` is stubbed rather than seeding 150,000 real files, which
+        // would make this test itself the slow thing.
+        const ctx = await buildSeededContext();
+        const entryCount = 150_000;
+        const entries: readonly DirEntry[] = Array.from({ length: entryCount }, (_, i) => ({
+          name: `ref${i}`,
+          isFile: true,
+          isDirectory: false,
+          isSymbolicLink: false,
+        }));
+        const refsDir = `${ctx.layout.gitDir}/refs`;
+        await ctx.fs.writeUtf8(`${refsDir}/placeholder`, `${'a'.repeat(40)}\n`);
+        const originalReaddir = ctx.fs.readdir.bind(ctx.fs);
+        const patchedCtx: Context = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            readdir: async (path: string) => (path === refsDir ? entries : originalReaddir(path)),
+          },
+        };
+        const sut = createRefStore(patchedCtx);
+
+        // Act
+        const names = await sut.listRefNames();
+
+        // Assert
+        expect(names).toHaveLength(entryCount);
       });
     });
   });

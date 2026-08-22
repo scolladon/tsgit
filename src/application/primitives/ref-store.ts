@@ -435,7 +435,13 @@ function createFilesRefStore(ctx: Context): RefStore {
     const commonRefs = `${commonGitDir(ctx)}/${root.relative}`;
     const roots = ownRefs === commonRefs ? [ownRefs] : [ownRefs, commonRefs];
     for (const walkRoot of roots) {
-      names.push(...(await walkRefsRoot(walkRoot, root.relative, prefix)));
+      // Loop form, not `names.push(...names)` — `walkRefDir`'s own reason
+      // twelve lines above applies here too: V8 caps spread-call argument
+      // counts (~10^5), which a large unpacked ref space (a mirror's
+      // `refs/pull/*`, a fetch not yet followed by `pack-refs`) can exceed.
+      for (const name of await walkRefsRoot(walkRoot, root.relative, prefix)) {
+        names.push(name);
+      }
     }
     return names;
   }
