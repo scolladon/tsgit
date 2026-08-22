@@ -847,6 +847,8 @@ export const submoduleUpdate = async (
     }
     const url = config.submodule?.get(row.name)?.url ?? row.url ?? '';
     const child = deriveSubmoduleCloneContext(ctx, row.name, row.path as FilePath);
+    // Verdict: discovery-tier — a presence probe (already-cloned guard), not
+    // a content read; unaffected by what HEAD's content becomes on any backend.
     const cloned = !(await ctx.fs.exists(`${child.layout.gitDir}/HEAD`));
     if (cloned) {
       await cloneSubmoduleInto(ctx, workDir, child, url, row.name, row.path);

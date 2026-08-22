@@ -92,6 +92,8 @@ export const clone = async (ctx: Context, opts: CloneOptions): Promise<CloneResu
   // client-only and reaches its source through a transport, so it has no
   // analogue for the source-side read; a destination-side gate would refuse
   // where git succeeds.
+  // Verdict: discovery-tier — a presence probe (target-not-empty guard), not
+  // a content read; unaffected by what HEAD's content becomes on any backend.
   if (await ctx.fs.exists(`${ctx.layout.gitDir}/HEAD`)) {
     // A bare clone's target IS the gitDir — there is no work tree to name.
     throw targetDirectoryNotEmpty((ctx.layout.workDir ?? ctx.layout.gitDir) as FilePath);

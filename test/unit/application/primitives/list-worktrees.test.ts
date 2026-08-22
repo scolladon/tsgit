@@ -225,6 +225,52 @@ describe('listWorktrees', () => {
     });
   });
 
+  describe('Given the calling Context is itself opened at a different admin dir with its own HEAD', () => {
+    describe('When listWorktrees runs', () => {
+      it("Then a registered linked worktree resolves its OWN HEAD, not the calling Context's", async () => {
+        // Arrange — the calling Context's own gitDir (`callerAdminDir`) is
+        // deliberately kept OUTSIDE `<common>/worktrees/` so it is never
+        // itself enumerated, and is seeded with a DIFFERENT HEAD than `wt`'s
+        // own admin dir. If `wt`'s entry resolved against the calling
+        // Context instead of a Context derived for `wt`'s own admin dir, it
+        // would report `main`'s branch/oid here instead of `wt`'s.
+        const ctx = await buildSeededContext({
+          refs: [
+            { name: 'refs/heads/main' as RefName, id: OID_MAIN },
+            { name: 'refs/heads/wt' as RefName, id: OID_WT },
+          ],
+        });
+        await seedMainHead(ctx);
+        await seedAdmin(ctx, { id: 'wt', path: '/repo/wts/wt', head: 'ref: refs/heads/wt' });
+        const callerAdminDir = `${ctx.layout.workDir}/wts/caller/.git`;
+        await ctx.fs.writeUtf8(`${callerAdminDir}/HEAD`, 'ref: refs/heads/main\n');
+        const sut: Context = {
+          ...ctx,
+          layout: {
+            ...ctx.layout,
+            workDir: '/repo/wts/caller',
+            gitDir: callerAdminDir,
+            commonDir: ctx.layout.gitDir,
+          },
+        };
+
+        // Act
+        const result = await listWorktrees(sut);
+
+        // Assert
+        expect(result[1]).toEqual({
+          id: 'wt',
+          path: '/repo/wts/wt',
+          head: OID_WT,
+          branch: 'refs/heads/wt',
+          detached: false,
+          bare: false,
+          main: false,
+        });
+      });
+    });
+  });
+
   describe('Given a linked branch worktree', () => {
     describe('When listWorktrees runs', () => {
       it('Then it reports the branch and resolved head', async () => {

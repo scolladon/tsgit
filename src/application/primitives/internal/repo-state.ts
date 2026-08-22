@@ -5,12 +5,10 @@ import {
   configMissingValue,
   operationInProgress,
 } from '../../../domain/commands/error.js';
-import { TsgitError } from '../../../domain/error.js';
 import { notARepository, workTreeConfigInvalid, workTreeRequired } from '../../../domain/index.js';
-import { type ObjectId, RefName } from '../../../domain/objects/index.js';
+import { RefName } from '../../../domain/objects/index.js';
 import type { FilePath } from '../../../domain/objects/object-id.js';
 import { refNotFound } from '../../../domain/refs/error.js';
-import { parseLooseRef } from '../../../domain/refs/index.js';
 import {
   CHERRY_PICK_HEAD,
   MERGE_HEAD,
@@ -43,13 +41,17 @@ import {
   type InvalidCompressionEntry,
   type ValuelessEntry,
 } from '../config-read.js';
+import { getRefStore, type ResolveDirectResult } from '../ref-store.js';
 
 const HEAD_REF = RefName.from('HEAD');
 
-/** Discriminated union returned by `readHeadRaw`. */
-export type HeadState =
-  | { readonly kind: 'symbolic'; readonly target: RefName }
-  | { readonly kind: 'direct'; readonly id: ObjectId };
+/**
+ * `readHeadRaw`'s return shape: `ResolveDirectResult` narrowed to exclude
+ * `'missing'` (`readHeadRaw` throws `REF_NOT_FOUND` for that case instead of
+ * returning it) — one shape, not two structurally identical unions. Kept as
+ * a named alias so `HeadState` stays the type every call site imports.
+ */
+export type HeadState = Exclude<ResolveDirectResult, { readonly kind: 'missing' }>;
 
 /**
  * Smallest-`line` selection shared by every eager gate in this file: distinct
@@ -113,6 +115,10 @@ export const assertRepository = async (ctx: Context): Promise<FilePath> => {
  */
 const hasUsableHead = async (ctx: Context): Promise<boolean> => {
   const headPath = `${ctx.layout.gitDir}/HEAD`;
+  // Verdict: discovery-tier — this runs BEFORE a ref backend exists (it is
+  // what decides whether one can be built at all), so it stays a raw
+  // files-layout probe; a reftable repository satisfies it through the stub
+  // file exactly as git intends.
   const linkText = await ctx.fs.readlink(headPath).catch(() => undefined);
   if (linkText !== undefined) return isRefsLinkText(linkText);
   const head = await ctx.fs.readUtf8(headPath).catch(() => undefined);
@@ -289,23 +295,17 @@ export const requireWorkTree = (ctx: Context, operation: string): string => {
   return workDir;
 };
 
-/** Read and parse `.git/HEAD`. Missing → REF_NOT_FOUND. */
+/**
+ * HEAD resolved through the ref backend — the seam every other ref read
+ * already uses. Verdict: bug, fixed here — this used to read `<gitDir>/HEAD`
+ * as a raw file directly, which answers with a reftable stub instead of the
+ * real value once the backend is reftable; deferring to `getRefStore` like
+ * every other ref closes that gap. Missing → REF_NOT_FOUND.
+ */
 export const readHeadRaw = async (ctx: Context): Promise<HeadState> => {
-  const path = `${ctx.layout.gitDir}/HEAD`;
-  let content: string;
-  try {
-    content = await ctx.fs.readUtf8(path);
-  } catch (err) {
-    if (err instanceof TsgitError && err.data.code === 'FILE_NOT_FOUND') {
-      throw refNotFound(HEAD_REF);
-    }
-    throw err;
-  }
-  const parsed = parseLooseRef(content);
-  if (parsed.type === 'symbolic') {
-    return { kind: 'symbolic', target: parsed.target };
-  }
-  return { kind: 'direct', id: parsed.target };
+  const result = await getRefStore(ctx).resolveDirect(HEAD_REF);
+  if (result.kind === 'missing') throw refNotFound(HEAD_REF);
+  return result;
 };
 
 /** The current branch's full ref when HEAD is symbolic; `undefined` when detached. */

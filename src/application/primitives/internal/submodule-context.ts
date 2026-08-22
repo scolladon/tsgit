@@ -57,6 +57,9 @@ export const deriveSubmoduleContext = async (
   // present to catch future contract changes (e.g. a relaxed name rule).
   // Stryker disable next-line ConditionalExpression,BooleanLiteral: equivalent — visited.has(gitDir) is always false under the current contract, so replacing it with `false` produces identical behaviour; the guard's value is defensive, not behavioral.
   if (visited.has(gitDir)) return undefined;
+  // Verdict: discovery-tier — a presence probe (uninitialised-submodule
+  // detection), not a content read; a reftable repository's HEAD file still
+  // exists as the routing stub, so `exists()` remains a valid signal.
   // Stryker disable next-line ConditionalExpression: equivalent — when the HEAD probe is false (uninitialised), removing the early `return undefined` lets the child Context be returned; downstream reads then surface the resulting `OBJECT_NOT_FOUND` and yield the same "no children" outcome.
   if (!(await ctx.fs.exists(`${gitDir}/HEAD`))) return undefined;
   return buildChildContext(ctx, name, treeRelPath);
