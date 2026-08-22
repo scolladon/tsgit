@@ -1,7 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { getRefStore } from '../../../../src/application/primitives/ref-store.js';
-import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
+import { readReflog, reflogExists } from '../../../../src/application/primitives/reflog-store.js';
 import {
   dropStashEntry,
   pushStashRef,
@@ -10,11 +10,21 @@ import {
 } from '../../../../src/application/primitives/stash-ref.js';
 import { TsgitError } from '../../../../src/domain/error.js';
 import { type ObjectId, type RefName, ZERO_OID } from '../../../../src/domain/objects/index.js';
+import type { Context } from '../../../../src/ports/context.js';
 
 const STASH_REF = 'refs/stash' as RefName;
 const W0 = 'a0'.repeat(20) as ObjectId;
 const W1 = 'b1'.repeat(20) as ObjectId;
 const W2 = 'c2'.repeat(20) as ObjectId;
+
+/** The linked worktree's own (admin) gitdir under the common dir's `worktrees/`. */
+const adminDir = (ctx: Context): string => `${ctx.layout.gitDir}/worktrees/wt`;
+
+/** Reframe a seeded main-repo Context as a linked-worktree child Context. */
+const asWorktreeChild = (ctx: Context): Context => ({
+  ...ctx,
+  layout: { ...ctx.layout, gitDir: adminDir(ctx), commonDir: ctx.layout.gitDir },
+});
 
 describe('stash-ref primitive', () => {
   describe('Given an empty repository', () => {
@@ -65,6 +75,48 @@ describe('stash-ref primitive', () => {
         ]);
         const reflog = await readReflog(ctx, STASH_REF);
         expect(reflog[0]?.oldId).toBe(ZERO_OID);
+        expect(reflog[0]?.newId).toBe(W0);
+      });
+    });
+  });
+
+  describe('Given a push from a linked-worktree child Context', () => {
+    describe('When pushStashRef writes the ref', () => {
+      it('Then refs/stash lands in the common dir, not the per-worktree admin dir', async () => {
+        // Arrange — refs/stash is not in the per-worktree set, so it must
+        // resolve through the same split every sibling ref write uses
+        // (perWorktreeRefDir), landing in the shared common dir.
+        const ctx = createMemoryContext();
+        const sut = asWorktreeChild(ctx);
+
+        // Act
+        await pushStashRef(sut, W0, 'WIP on main: 000 first');
+
+        // Assert
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/stash`)).toBe(true);
+        expect(await ctx.fs.exists(`${adminDir(ctx)}/refs/stash`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given autocreate reflog disabled and no reflog file for refs/stash', () => {
+    describe('When pushStashRef writes the entry', () => {
+      it('Then a reflog entry is appended anyway', async () => {
+        // Arrange — refs/stash sits outside the default-loggable prefix set,
+        // and disabling autocreate closes the normal gate entirely.
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[core]\n\tlogallrefupdates = false\n',
+        );
+        expect(await reflogExists(ctx, STASH_REF)).toBe(false);
+
+        // Act
+        await pushStashRef(ctx, W0, 'WIP on main: 000 first');
+
+        // Assert
+        const reflog = await readReflog(ctx, STASH_REF);
+        expect(reflog).toHaveLength(1);
         expect(reflog[0]?.newId).toBe(W0);
       });
     });
@@ -137,6 +189,26 @@ describe('stash-ref primitive', () => {
         expect(await resolveStashEntry(ctx, 0)).toBe(W0);
         const tip = await getRefStore(ctx).resolveDirect(STASH_REF);
         expect(tip).toEqual({ kind: 'direct', id: W0 });
+      });
+    });
+
+    describe('When the newest entry is dropped, observed through applyRefUpdates', () => {
+      it('Then the ref repoint and reflog rewrite are one applyRefUpdates call, not a separate writeReflog', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await pushStashRef(ctx, W0, 'WIP on main: 000 a');
+        await pushStashRef(ctx, W1, 'WIP on main: 111 b');
+        const store = getRefStore(ctx);
+        const applySpy = vi.spyOn(store, 'applyRefUpdates');
+
+        // Act
+        await dropStashEntry(ctx, 0);
+
+        // Assert — one call, carrying both the ref repoint and the reflog rewrite.
+        expect(applySpy).toHaveBeenCalledTimes(1);
+        const [updates] = applySpy.mock.calls[0] as [ReadonlyArray<{ readonly kind: string }>];
+        expect(updates.map((update) => update.kind).sort()).toEqual(['reflogReplace', 'set']);
+        applySpy.mockRestore();
       });
     });
   });

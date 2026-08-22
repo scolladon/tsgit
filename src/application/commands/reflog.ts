@@ -13,7 +13,8 @@ import type { ReflogEntry } from '../../domain/reflog/reflog-entry.js';
 import { validateRefName } from '../../domain/refs/index.js';
 import type { Context } from '../../ports/context.js';
 import { enumerateRefs } from '../primitives/enumerate-refs.js';
-import { listReflogs, readReflog, reflogExists, writeReflog } from '../primitives/reflog-store.js';
+import { getRefStore } from '../primitives/ref-store.js';
+import { listReflogs, readReflog } from '../primitives/reflog-store.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import { walkCommits } from '../primitives/walk-commits.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
@@ -86,8 +87,17 @@ const runShow = async (ctx: Context, refName: string): Promise<ReflogResult> => 
   return { kind: 'show', ref, entries };
 };
 
+/**
+ * Whether `ref` has a reflog at all — a file-presence question independent of
+ * entry count (an emptied-but-present log still counts, matching real git).
+ * Routed through `listReflogs` rather than a files-only probe so the check
+ * stays backend-neutral.
+ */
+const hasReflog = async (ctx: Context, ref: RefName): Promise<boolean> =>
+  (await listReflogs(ctx)).includes(ref);
+
 const runExists = async (ctx: Context, refName: string): Promise<ReflogResult> => {
-  return { kind: 'exists', exists: await reflogExists(ctx, resolveUserRef(refName)) };
+  return { kind: 'exists', exists: await hasReflog(ctx, resolveUserRef(refName)) };
 };
 
 const runDelete = async (
@@ -95,7 +105,7 @@ const runDelete = async (
   opts: { readonly ref: string; readonly index: number; readonly rewrite?: boolean },
 ): Promise<ReflogResult> => {
   const ref = resolveUserRef(opts.ref);
-  if (!(await reflogExists(ctx, ref))) throw reflogNotFound(ref);
+  if (!(await hasReflog(ctx, ref))) throw reflogNotFound(ref);
   const stored = await readReflog(ctx, ref);
   // A non-integer or negative index would bypass the range guard below
   // (`stored[NaN]` is `undefined`, silently returned as an entry).
@@ -110,7 +120,9 @@ const runDelete = async (
   }
   const removed = stored[target] as ReflogEntry;
   const survivors = repairChain(stored, target, opts.rewrite === true);
-  await writeReflog(ctx, ref, survivors);
+  await getRefStore(ctx).applyRefUpdates([
+    { kind: 'reflogReplace', name: ref, entries: survivors },
+  ]);
   return { kind: 'delete', removed };
 };
 
@@ -153,7 +165,11 @@ const runExpire = async (
     );
     removed += stored.length - survivors.length;
     kept += survivors.length;
-    if (survivors.length !== stored.length) await writeReflog(ctx, ref, survivors);
+    if (survivors.length !== stored.length) {
+      await getRefStore(ctx).applyRefUpdates([
+        { kind: 'reflogReplace', name: ref, entries: survivors },
+      ]);
+    }
   }
   return { kind: 'expire', removed, kept };
 };

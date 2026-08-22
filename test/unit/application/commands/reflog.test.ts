@@ -192,6 +192,24 @@ describe('reflog command', () => {
         });
       });
     });
+
+    describe('Given a ref whose reflog was emptied by a prior delete (file present, no entries)', () => {
+      describe('When reflog exists', () => {
+        it('Then still returns true — a present-but-empty log is not "no reflog" (matches real git)', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx, {});
+          await writeReflog(ctx, BRANCH, [entry()]);
+          await reflog(ctx, { action: 'delete', ref: 'refs/heads/main', index: 0 });
+
+          // Act
+          const result = await reflog(ctx, { action: 'exists', ref: 'refs/heads/main' });
+
+          // Assert
+          expect(result).toEqual({ kind: 'exists', exists: true });
+        });
+      });
+    });
   });
 
   describe('delete', () => {

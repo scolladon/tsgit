@@ -39,7 +39,6 @@ import { materializeTree } from '../primitives/materialize-tree.js';
 import { commonGitDir } from '../primitives/path-layout.js';
 import { readIndex } from '../primitives/read-index.js';
 import { readTree } from '../primitives/read-tree.js';
-import { recordRefUpdate } from '../primitives/record-ref-update.js';
 import { getRefStore, type RefUpdate } from '../primitives/ref-store.js';
 import { branchCreate } from './branch.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
@@ -187,13 +186,23 @@ const materializeWorktree = async (child: Context, treeId: ObjectId): Promise<vo
 /**
  * Write the worktree `logs/HEAD`. git logs an empty-message HEAD set, then —
  * when HEAD is a branch (or an existing branch checkout) — a `reset: moving to
- * HEAD` entry; a detached add logs only the first.
+ * HEAD` entry; a detached add logs only the first. Both entries genuinely log
+ * without writing (the ref itself was already set by `writeAdmin`, well
+ * before `materializeWorktree`), so each rides `reflogOnly` on the seam.
  */
 const writeHeadReflog = async (child: Context, mode: AddMode, oid: ObjectId): Promise<void> => {
-  await recordRefUpdate(child, HEAD_REF, zeroOid(child.hashConfig), oid, '');
+  const zero = zeroOid(child.hashConfig);
+  const updates: RefUpdate[] = [
+    { kind: 'reflogOnly', name: HEAD_REF, reflog: { oldId: zero, newId: oid, message: '' } },
+  ];
   if (mode.kind !== 'detached') {
-    await recordRefUpdate(child, HEAD_REF, oid, oid, resetMovingTo('HEAD'));
+    updates.push({
+      kind: 'reflogOnly',
+      name: HEAD_REF,
+      reflog: { oldId: oid, newId: oid, message: resetMovingTo('HEAD') },
+    });
   }
+  await getRefStore(child).applyRefUpdates(updates);
 };
 
 /**

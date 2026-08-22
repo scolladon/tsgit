@@ -4,11 +4,27 @@ import {
   createRefStore,
   getRefStore,
 } from '../../../../src/application/primitives/ref-store.js';
-import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
+import { appendReflog, readReflog } from '../../../../src/application/primitives/reflog-store.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import type { TsgitError } from '../../../../src/domain/error.js';
-import type { ObjectId, RefName } from '../../../../src/domain/objects/index.js';
+import type { AuthorIdentity, ObjectId, RefName } from '../../../../src/domain/objects/index.js';
+import type { ReflogEntry } from '../../../../src/domain/reflog/index.js';
 import { buildSeededContext } from './fixtures.js';
+
+const IDENTITY: AuthorIdentity = {
+  name: 'Ada',
+  email: 'ada@example.com',
+  timestamp: 1716240000,
+  timezoneOffset: '+0000',
+};
+
+const reflogEntry = (overrides: Partial<ReflogEntry> = {}): ReflogEntry => ({
+  oldId: 'a'.repeat(40) as ObjectId,
+  newId: 'b'.repeat(40) as ObjectId,
+  identity: IDENTITY,
+  message: 'commit: seed',
+  ...overrides,
+});
 
 describe('ref-store', () => {
   describe('Given refs that resolve to a direct id', () => {
@@ -635,6 +651,122 @@ describe('ref-store', () => {
 
         // Act + Assert
         expect(getRefStore(ctxA)).not.toBe(getRefStore(ctxB));
+      });
+    });
+  });
+
+  describe('Given a ref with two reflog entries', () => {
+    describe('When readReflog is called on the store', () => {
+      it('Then both entries are returned newest last', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const first = reflogEntry({ message: 'first' });
+        const second = reflogEntry({ oldId: first.newId, message: 'second' });
+        await appendReflog(ctx, 'refs/heads/main' as RefName, first);
+        await appendReflog(ctx, 'refs/heads/main' as RefName, second);
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.readReflog('refs/heads/main' as RefName);
+
+        // Assert
+        expect(result).toEqual([first, second]);
+      });
+    });
+  });
+
+  describe('Given a ref with no reflog', () => {
+    describe('When readReflog is called on the store', () => {
+      it('Then an empty array is returned', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.readReflog('refs/heads/absent' as RefName);
+
+        // Assert
+        expect(result).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given per-worktree and shared reflogs, including HEAD', () => {
+    describe('When listReflogs is called on the store', () => {
+      it('Then per-worktree and shared reflogs are returned merged and deduplicated', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await appendReflog(ctx, 'HEAD' as RefName, reflogEntry());
+        await appendReflog(ctx, 'refs/heads/main' as RefName, reflogEntry());
+        await appendReflog(ctx, 'refs/remotes/origin/main' as RefName, reflogEntry());
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.listReflogs();
+
+        // Assert
+        expect([...result].sort()).toEqual(
+          ['HEAD', 'refs/heads/main', 'refs/remotes/origin/main'].sort(),
+        );
+      });
+    });
+  });
+
+  describe('Given a reflogReplace update with a shorter entries list', () => {
+    describe('When applyRefUpdates is called', () => {
+      it('Then the reflog is replaced with exactly the given entries', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const first = reflogEntry({ message: 'first' });
+        const second = reflogEntry({ oldId: first.newId, message: 'second' });
+        await appendReflog(ctx, 'refs/heads/main' as RefName, first);
+        await appendReflog(ctx, 'refs/heads/main' as RefName, second);
+        const kept = reflogEntry({ message: 'kept' });
+        const sut = createRefStore(ctx);
+
+        // Act
+        await sut.applyRefUpdates([
+          { kind: 'reflogReplace', name: 'refs/heads/main' as RefName, entries: [kept] },
+        ]);
+
+        // Assert
+        expect(await readReflog(ctx, 'refs/heads/main' as RefName)).toEqual([kept]);
+      });
+    });
+  });
+
+  describe('Given a set update with an unconditional reflog entry, no reflog file, and autocreate disabled', () => {
+    describe('When applyRefUpdates is called', () => {
+      it('Then the reflog entry is appended anyway', async () => {
+        // Arrange — refs/stash-shaped ref, outside the default-loggable set,
+        // proves the isLoggable gate is bypassed rather than satisfied.
+        const ctx = await buildSeededContext();
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[core]\n\tlogallrefupdates = false\n',
+        );
+        const name = 'refs/stash' as RefName;
+        const sut = createRefStore(ctx);
+
+        // Act
+        await sut.applyRefUpdates([
+          {
+            kind: 'set',
+            name,
+            id: 'c'.repeat(40) as ObjectId,
+            reflog: {
+              oldId: 'a'.repeat(40) as ObjectId,
+              newId: 'c'.repeat(40) as ObjectId,
+              message: 'stash entry',
+              unconditional: true,
+            },
+          },
+        ]);
+
+        // Assert
+        const entries = await readReflog(ctx, name);
+        expect(entries).toHaveLength(1);
+        expect(entries[0]?.message).toBe('stash entry');
       });
     });
   });

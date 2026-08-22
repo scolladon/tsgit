@@ -3,6 +3,9 @@
  */
 import { TsgitError, unsupportedOperation } from '../../domain/error.js';
 import type { ObjectId, RefName } from '../../domain/objects/index.js';
+import { invalidReflogEntry } from '../../domain/reflog/error.js';
+import type { ReflogEntry } from '../../domain/reflog/reflog-entry.js';
+import { parseReflog, serializeReflogLine } from '../../domain/reflog/reflog-format.js';
 import { refNotFound, refUpdateConflict } from '../../domain/refs/error.js';
 import {
   type PackedRefs,
@@ -15,13 +18,15 @@ import type { Context } from '../../ports/context.js';
 import { atomicWriteRef } from './atomic-write.js';
 import {
   commonGitDir,
+  logsDir,
   looseObjectPath,
   looseRefPath,
   packedRefsPath,
   perWorktreeRefDir,
+  reflogPath,
 } from './path-layout.js';
 import { recordRefUpdate } from './record-ref-update.js';
-import { deleteReflog } from './reflog-store.js';
+import { MAX_REFLOG_BYTES } from './types.js';
 
 const TEXT_ENCODER = new TextEncoder();
 
@@ -58,6 +63,10 @@ export interface RefStore {
    * reachability audit. Independent of any external reachability scope.
    */
   verifyIntegrity(): Promise<readonly RefIntegrityFinding[]>;
+  /** `name`'s reflog, oldest-first. Empty when the ref has no reflog. */
+  readReflog(name: RefName): Promise<readonly ReflogEntry[]>;
+  /** Every ref this backend has a reflog for, merged across scopes. */
+  listReflogs(): Promise<readonly RefName[]>;
 }
 
 export type ResolveDirectResult =
@@ -74,11 +83,17 @@ export type RefIntegrityFinding =
   | { readonly ref: RefName; readonly msgId: 'badRefContent' }
   | { readonly ref: RefName; readonly msgId: 'badRefOid'; readonly target: ObjectId };
 
-/** A reflog entry to append, carrying what `recordRefUpdate` needs. */
+/**
+ * A reflog entry to append, carrying what `recordRefUpdate` needs.
+ * `unconditional` skips the usual "does this ref already log" gate — the
+ * flag `refs/stash` needs, because git always logs the stash even though it
+ * sits outside the default-loggable prefix set.
+ */
 export interface ReflogAppend {
   readonly oldId: ObjectId;
   readonly newId: ObjectId;
   readonly message: string;
+  readonly unconditional?: boolean;
 }
 
 /**
@@ -87,7 +102,11 @@ export interface ReflogAppend {
  * for "must not exist"); a mismatch throws `REF_UPDATE_CONFLICT`. `reflog`
  * appends through the same `recordRefUpdate` gate a direct call would —
  * `reflogOnly` is the shape for a log entry with no accompanying ref write
- * (e.g. the coupled-HEAD entry a branch update also produces).
+ * (e.g. the coupled-HEAD entry a branch update also produces). `reflogReplace`
+ * is the files backend's only way to express dropping/filtering existing
+ * entries (`reflog delete`/`expire`, stash drop); the reftable backend must
+ * decompose it into one log tombstone per REMOVED entry, each carrying that
+ * entry's own `update_index`, not the new one.
  */
 export type RefUpdate =
   | {
@@ -113,6 +132,11 @@ export type RefUpdate =
       readonly kind: 'reflogOnly';
       readonly name: RefName;
       readonly reflog: ReflogAppend;
+    }
+  | {
+      readonly kind: 'reflogReplace';
+      readonly name: RefName;
+      readonly entries: readonly ReflogEntry[];
     };
 
 /**
@@ -333,7 +357,74 @@ export function createRefStore(ctx: Context): RefStore {
   /** Append `reflog` through the shared gate — a no-op when no entry accompanies this update. */
   async function applyReflog(name: RefName, reflog: ReflogAppend | undefined): Promise<void> {
     if (reflog === undefined) return;
-    await recordRefUpdate(ctx, name, reflog.oldId, reflog.newId, reflog.message);
+    await recordRefUpdate(ctx, name, reflog.oldId, reflog.newId, reflog.message, {
+      unconditional: reflog.unconditional === true,
+    });
+  }
+
+  /** Remove `name`'s reflog file. A no-op when the file is already absent. */
+  async function removeReflogFile(name: RefName): Promise<void> {
+    const path = reflogPath(refDir(name), name);
+    if (await ctx.fs.exists(path)) {
+      await ctx.fs.rm(path);
+    }
+  }
+
+  /** Replace `name`'s reflog with exactly `entries` — the files backend's whole-file rewrite. */
+  async function applyReflogReplace(
+    update: Extract<RefUpdate, { kind: 'reflogReplace' }>,
+  ): Promise<void> {
+    const text = update.entries
+      .map((entry) => serializeReflogLine(entry, ctx.hashConfig.hexLength))
+      .join('');
+    await ctx.fs.writeUtf8(reflogPath(refDir(update.name), update.name), text);
+  }
+
+  /** `name`'s reflog, oldest-first. `[]` when the file is absent. */
+  async function readReflog(name: RefName): Promise<readonly ReflogEntry[]> {
+    const path = reflogPath(refDir(name), name);
+    if (!(await ctx.fs.exists(path))) return [];
+    const stat = await ctx.fs.stat(path);
+    if (stat.size > MAX_REFLOG_BYTES) {
+      throw invalidReflogEntry(`reflog file exceeds ${MAX_REFLOG_BYTES} bytes`);
+    }
+    return parseReflog(await ctx.fs.readUtf8(path), ctx.hashConfig.hexLength);
+  }
+
+  /** Recursively walk one `logs/**` root, composing slash-joined ref names as it descends. */
+  async function walkReflogDir(dir: string, prefix: string): Promise<ReadonlyArray<RefName>> {
+    const entries = await ctx.fs.readdir(dir);
+    const names: RefName[] = [];
+    for (const entry of entries) {
+      const rel = prefix === '' ? entry.name : `${prefix}/${entry.name}`;
+      if (entry.isDirectory) {
+        for (const name of await walkReflogDir(`${dir}/${entry.name}`, rel)) {
+          names.push(name);
+        }
+      } else {
+        names.push(rel as RefName);
+      }
+    }
+    return names;
+  }
+
+  /**
+   * Every reflog under `logs/`, merged across the per-worktree and common
+   * scopes and deduplicated — the two roots collapse into a single walk when
+   * they are the same directory (a normal repo / the main worktree).
+   */
+  async function listReflogs(): Promise<readonly RefName[]> {
+    const own = logsDir(ctx.layout.gitDir);
+    const common = logsDir(commonGitDir(ctx));
+    const roots = own === common ? [own] : [own, common];
+    const names = new Set<RefName>();
+    for (const root of roots) {
+      if (!(await ctx.fs.exists(root))) continue;
+      for (const name of await walkReflogDir(root, '')) {
+        names.add(name);
+      }
+    }
+    return [...names];
   }
 
   async function applySet(update: Extract<RefUpdate, { kind: 'set' }>): Promise<void> {
@@ -365,7 +456,7 @@ export function createRefStore(ctx: Context): RefStore {
     const path = looseRefPath(refDir(update.name), update.name);
     if (await ctx.fs.exists(path)) {
       await ctx.fs.rm(path);
-      await deleteReflog(ctx, update.name);
+      await removeReflogFile(update.name);
       return;
     }
     const packed = await resolveDirect(update.name);
@@ -388,6 +479,8 @@ export function createRefStore(ctx: Context): RefStore {
         return applyDelete(update);
       case 'reflogOnly':
         return applyReflog(update.name, update.reflog);
+      case 'reflogReplace':
+        return applyReflogReplace(update);
     }
   }
 
@@ -402,5 +495,7 @@ export function createRefStore(ctx: Context): RefStore {
     applyRefUpdates,
     listRefs,
     verifyIntegrity,
+    readReflog,
+    listReflogs,
   };
 }

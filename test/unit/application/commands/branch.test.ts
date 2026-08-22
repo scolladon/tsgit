@@ -174,6 +174,28 @@ describe('branch', () => {
     });
   });
 
+  describe('Given a branch with reflog history', () => {
+    describe('When branch rename', () => {
+      it('Then the rename entry carries the current tip as both oldId and newId', async () => {
+        // Arrange — the rename entry notes the rename; it does not move the
+        // ref's value, so old/new are both the tip resolveRef found before
+        // the write (measured against real git's files-backend `branch -m`).
+        const { ctx } = await seedWithCommit();
+        const before = await readReflog(ctx, 'refs/heads/main' as RefName);
+        const tip = before[0]?.newId;
+
+        // Act
+        await branchRename(ctx, { from: 'main', to: 'trunk' });
+
+        // Assert
+        const movedLog = await readReflog(ctx, 'refs/heads/trunk' as RefName);
+        const renameEntry = movedLog[movedLog.length - 1];
+        expect(renameEntry?.oldId).toBe(tip);
+        expect(renameEntry?.newId).toBe(tip);
+      });
+    });
+  });
+
   describe('Given a source branch with no reflog', () => {
     describe('When branch rename', () => {
       it('Then the renamed branch gets no empty reflog file', async () => {

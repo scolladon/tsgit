@@ -13,7 +13,7 @@ import { validateRefName } from '../../domain/refs/index.js';
 import { HEADS_PREFIX } from '../../domain/refs/ref-prefixes.js';
 import type { Context } from '../../ports/context.js';
 import { getRefStore, refExists } from '../primitives/ref-store.js';
-import { readReflog, writeReflog } from '../primitives/reflog-store.js';
+import { readReflog } from '../primitives/reflog-store.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import { updateRef } from '../primitives/update-ref.js';
 import { writeSymbolicRef } from '../primitives/write-symbolic-ref.js';
@@ -145,13 +145,20 @@ export const branchRename = async (
   const reflogMessage = branchRenamed(from, to);
   // Capture the source log before any write so the rename preserves history.
   const movedLog = await readReflog(ctx, from);
+  const store = getRefStore(ctx);
   try {
-    await updateRef(
-      ctx,
-      to,
-      id,
-      input.force === true ? { reflogMessage } : { expected: 'absent', reflogMessage },
-    );
+    // A rename entry notes the rename without moving the ref's value, so
+    // old/new are both the resolved tip (measured against real git's files
+    // backend) — not the zero id `updateRef`'s own creation path would infer.
+    await store.applyRefUpdates([
+      {
+        kind: 'set',
+        name: to,
+        id,
+        ...(input.force === true ? {} : { expected: 'absent' as const }),
+        reflog: { oldId: id, newId: id, message: reflogMessage },
+      },
+    ]);
   } catch (err) {
     if (err instanceof TsgitError && err.data.code === 'REF_UPDATE_CONFLICT') {
       throw branchExists(to);
@@ -161,9 +168,11 @@ export const branchRename = async (
   // Re-attach `from`'s history to `to` BEFORE deleting `from`: were the
   // merged-log write to fail, `from`'s reflog must still be intact.
   if (movedLog.length > 0) {
-    await writeReflog(ctx, to, [...movedLog, ...(await readReflog(ctx, to))]);
+    await store.applyRefUpdates([
+      { kind: 'reflogReplace', name: to, entries: [...movedLog, ...(await readReflog(ctx, to))] },
+    ]);
   }
-  // updateRef's delete path drops `from`'s log; its history is already on `to`.
+  // The delete update drops `from`'s log; its history is already on `to`.
   await updateRef(ctx, from, zeroOid(ctx.hashConfig), { delete: true });
   const head = await readHeadRaw(ctx);
   if (head.kind === 'symbolic' && head.target === from) {
