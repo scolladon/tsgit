@@ -158,6 +158,7 @@ describe('ref-store', () => {
         const result = await sut.resolveDirect('refs/heads/new' as RefName);
 
         // Assert
+        expect(result.kind).toBe('direct');
         if (result.kind === 'direct') expect(result.id).toBe('d'.repeat(40));
       });
     });
@@ -178,6 +179,7 @@ describe('ref-store', () => {
         const result = await sut.resolveDirect('refs/heads/main' as RefName);
 
         // Assert
+        expect(result.kind).toBe('direct');
         if (result.kind === 'direct') expect(result.id).toBe('c'.repeat(40));
       });
     });

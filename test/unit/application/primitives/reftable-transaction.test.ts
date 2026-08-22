@@ -262,15 +262,25 @@ describe('reftable-transaction', () => {
         expect(data.reason).toContain(lockPath);
       });
 
-      it('Then a stale lock is never broken on the atomic path', async () => {
-        // Arrange
+      it('Then a stale lock whose body matches tables.list is still never broken on the atomic path', async () => {
+        // Arrange — commit once so tables.list exists, then stage a lock
+        // whose body is byte-identical to tables.list: exactly the
+        // condition the degraded path (see below) breaks a lock under.
+        // Without this, `tables.list` would never exist and the lock body
+        // would never match it, so `breakStaleLockIfProvable` would return
+        // false via its unrelated catch/bytesEqual arms regardless of the
+        // atomic-path guard actually under test.
         const ctx = withReftableStorage(createMemoryContext());
+        await applyReftableUpdates(ctx, [
+          { kind: 'set', name: ref('refs/heads/a'), id: oid(0x01) },
+        ]);
+        const listBody = await ctx.fs.read(tablesListPath(ctx.layout.gitDir));
         const lockPath = tablesListLockPath(ctx.layout.gitDir);
-        await ctx.fs.writeExclusive(lockPath, new Uint8Array(0));
+        await ctx.fs.writeExclusive(lockPath, listBody);
 
         // Act
         await expectReftableLocked(() =>
-          applyReftableUpdates(ctx, [{ kind: 'set', name: ref('refs/heads/a'), id: oid(0x01) }]),
+          applyReftableUpdates(ctx, [{ kind: 'set', name: ref('refs/heads/b'), id: oid(0x02) }]),
         );
 
         // Assert
@@ -433,7 +443,12 @@ describe('reftable-transaction', () => {
         expect(refRecords).toHaveLength(1);
         expect(refRecords[0]?.updateIndex).toBe(4n);
         expect(refRecords[0]?.value).toEqual({ kind: 'deletion' });
-        expect(logRecords.map((r) => r.updateIndex).sort()).toEqual([1n, 2n, 3n]);
+        // Unsorted on purpose — `sortLogRecords` guarantees DESCENDING
+        // update_index within a name; re-sorting here would erase a
+        // sign-flip mutant in that comparator (tsgit's own reader is
+        // linear and wouldn't notice, but git's restart-point binary
+        // search would).
+        expect(logRecords.map((r) => r.updateIndex)).toEqual([3n, 2n, 1n]);
         expect(logRecords.every((r) => r.entry.kind === 'deletion')).toBe(true);
       });
     });
@@ -722,7 +737,10 @@ describe('reftable-transaction', () => {
         // Assert
         const stack = await loadReftableStack(ctx, dir);
         expect(stack.tables).toHaveLength(1);
-        const names = [...iterateReftableRefs(stack.tables[0]!)].map((r) => r.name).sort();
+        // Unsorted on purpose — `sortRefRecords` writes refs in ascending
+        // name order; re-sorting here would erase a `compareRefNames`
+        // sign-flip mutant that reverses it.
+        const names = [...iterateReftableRefs(stack.tables[0]!)].map((r) => r.name);
         expect(names).toEqual(['refs/heads/newRef', 'refs/heads/old']);
       });
 
@@ -1204,7 +1222,10 @@ describe('reftable-transaction', () => {
         expect(namesAfter).not.toContain('old.ref');
         const stack = await loadReftableStack(ctx, dir);
         expect(stack.tables).toHaveLength(1);
-        const names = [...iterateReftableRefs(stack.tables[0]!)].map((r) => r.name).sort();
+        // Unsorted on purpose — `sortRefRecords` writes refs in ascending
+        // name order; re-sorting here would erase a `compareRefNames`
+        // sign-flip mutant that reverses it.
+        const names = [...iterateReftableRefs(stack.tables[0]!)].map((r) => r.name);
         expect(names).toEqual(['refs/heads/newRef', 'refs/heads/old']);
       });
     });
