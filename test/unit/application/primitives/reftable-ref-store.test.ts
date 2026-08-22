@@ -367,6 +367,52 @@ describe('reftable-ref-store', () => {
       });
     });
 
+    describe('When verifyIntegrity runs over a stack with one structurally corrupt table', () => {
+      it('Then it returns one finding naming that table and its failed check', async () => {
+        // Arrange — a healthy one-record table alongside a second table
+        // whose magic bytes were corrupted after the fact.
+        const ctx = withReftableStorage(createMemoryContext());
+        const dir = commonReftableDir(ctx);
+        const headerSpec = { version: 1 as const, minUpdateIndex: 1n, maxUpdateIndex: 1n };
+        const header = buildReftableHeader(headerSpec);
+        const block = buildRefBlock({
+          records: [{ name: 'refs/heads/main', value: { kind: 'direct', id: ID_MAIN } }],
+          restartIndices: [0],
+          isFirstBlock: true,
+          headerLength: header.length,
+        });
+        const healthyTable = buildReftable({ ...headerSpec, blocks: [block] });
+        const corruptTable = healthyTable.slice();
+        corruptTable.set([0x58, 0x58, 0x58, 0x58], 0); // 'XXXX'
+        await writeReftableFiles(ctx, dir, [
+          { name: 'a.ref', bytes: healthyTable },
+          { name: 'b.ref', bytes: corruptTable },
+        ]);
+        const sut = createReftableRefStore(ctx);
+
+        // Act
+        const findings = await sut.verifyIntegrity();
+
+        // Assert — never badRefContent: there is no raw per-ref text in a
+        // reftable, so that loose-grammar fault class cannot exist here.
+        expect(findings).toEqual([{ table: 'b.ref', msgId: 'badReftableTable', check: 'magic' }]);
+      });
+    });
+
+    describe('When verifyIntegrity runs over a stack whose tables.list is absent', () => {
+      it('Then it reports no findings — a legitimately empty stack', async () => {
+        // Arrange
+        const ctx = withReftableStorage(createMemoryContext());
+        const sut = createReftableRefStore(ctx);
+
+        // Act
+        const findings = await sut.verifyIntegrity();
+
+        // Assert
+        expect(findings).toEqual([]);
+      });
+    });
+
     describe('When applyRefUpdates runs', () => {
       it('Then it refuses as unsupported', async () => {
         // Arrange

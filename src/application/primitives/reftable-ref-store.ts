@@ -3,16 +3,19 @@
  * from a `loadReftableStack`-loaded stack merge view; `applyRefUpdates`
  * (the write path) is not implemented on this backend yet and refuses.
  */
-import { unsupportedOperation } from '../../domain/error.js';
+import { TsgitError, unsupportedOperation } from '../../domain/error.js';
 import type { RefName } from '../../domain/objects/index.js';
 import type { ReflogEntry } from '../../domain/reflog/reflog-entry.js';
 import {
   iterateReftableLogs,
+  loadReftable,
+  type ReftableCheck,
   type ReftableRefValue,
   type ReftableStack,
 } from '../../domain/refs/index.js';
 import type { Context } from '../../ports/context.js';
-import { loadReftableStack } from './load-reftable-stack.js';
+import { isDegradableReftableFault } from './internal/reftable-source.js';
+import { loadReftableStack, parseTablesList } from './load-reftable-stack.js';
 import { commonGitDir, perWorktreeRefDir, reftableDir } from './path-layout.js';
 import type {
   RefEntry,
@@ -21,6 +24,89 @@ import type {
   RefUpdate,
   ResolveDirectResult,
 } from './ref-store.js';
+
+const TABLES_LIST_FILE = 'tables.list';
+
+/** One finding for a table that failed a structural check — `check` is
+ *  whatever the caller already extracted from the caught
+ *  `INVALID_REFTABLE` error. */
+function tableFinding(table: string, check: ReftableCheck): RefIntegrityFinding {
+  return { table, msgId: 'badReftableTable', check };
+}
+
+/** `err.data.check` when `err` is an `INVALID_REFTABLE` `TsgitError`,
+ *  `undefined` for anything else — the shared narrowing both
+ *  `verifyStackTables` and `verifyOneTable` catch on. */
+function invalidReftableCheck(err: unknown): ReftableCheck | undefined {
+  return err instanceof TsgitError && err.data.code === 'INVALID_REFTABLE'
+    ? err.data.check
+    : undefined;
+}
+
+/**
+ * Reads and parses one table `tables.list` names, in isolation from every
+ * other table in the stack: a table that has vanished since the listing
+ * read (the same compaction race `load-reftable-stack.ts` retries once
+ * for) or a structural fault in its bytes both become ONE finding rather
+ * than aborting the whole audit.
+ */
+async function verifyOneTable(
+  ctx: Context,
+  dir: string,
+  name: string,
+): Promise<RefIntegrityFinding | undefined> {
+  let bytes: Uint8Array;
+  try {
+    bytes = await ctx.fs.read(`${dir}/${name}`);
+  } catch (err) {
+    if (isDegradableReftableFault(err)) return tableFinding(name, 'tables-list');
+    throw err;
+  }
+  try {
+    await loadReftable(bytes, ctx.compressor.streamInflate);
+    return undefined;
+  } catch (err) {
+    const check = invalidReftableCheck(err);
+    if (check !== undefined) return tableFinding(name, check);
+    throw err;
+  }
+}
+
+/**
+ * One stack directory's findings. An absent `tables.list` is a
+ * legitimately empty stack — no findings, mirroring `load-reftable-stack.ts`'s
+ * own degrade — a malformed manifest is one finding naming the manifest
+ * itself, and every table the manifest DOES name is then verified
+ * independently by {@link verifyOneTable}.
+ */
+async function verifyStackTables(
+  ctx: Context,
+  dir: string,
+): Promise<readonly RefIntegrityFinding[]> {
+  let text: string;
+  try {
+    text = await ctx.fs.readUtf8(`${dir}/${TABLES_LIST_FILE}`);
+  } catch (err) {
+    if (isDegradableReftableFault(err)) return [];
+    throw err;
+  }
+
+  let names: readonly string[];
+  try {
+    names = parseTablesList(text);
+  } catch (err) {
+    const check = invalidReftableCheck(err);
+    if (check !== undefined) return [tableFinding(TABLES_LIST_FILE, check)];
+    throw err;
+  }
+
+  const findings: RefIntegrityFinding[] = [];
+  for (const name of names) {
+    const finding = await verifyOneTable(ctx, dir, name);
+    if (finding !== undefined) findings.push(finding);
+  }
+  return findings;
+}
 
 /** Byte-wise total order over ref names, matching git's own ref ordering —
  *  the same comparator `ref-store.ts` defines for the files backend, kept
@@ -67,6 +153,16 @@ export function createReftableRefStore(ctx: Context): RefStore {
     return [commonStack, await stackAt(ctx.layout.gitDir)];
   }
 
+  /** Same set of stacks as `everyStack()`, as directory paths rather than
+   *  loaded stacks — `verifyIntegrity` needs its own by-table walk, never
+   *  `stackAt`'s eager, throw-on-first-fault `loadReftableStack`. */
+  function stackDirs(): readonly string[] {
+    const common = commonGitDir(ctx);
+    const dirs = [reftableDir(common)];
+    if (ctx.layout.gitDir !== common) dirs.push(reftableDir(ctx.layout.gitDir));
+    return dirs;
+  }
+
   async function resolveDirect(name: RefName): Promise<ResolveDirectResult> {
     const stack = await stackFor(name);
     const record = stack.lookup(name);
@@ -94,14 +190,23 @@ export function createReftableRefStore(ctx: Context): RefStore {
   }
 
   /**
-   * Reftable records are grammar-validated at load time — a malformed
-   * record throws `INVALID_REFTABLE` before the stack is even usable — so
-   * there is no post-load "bad ref content" state left to report, unlike
-   * the files backend's loose-file probe. Object-backing verification is a
-   * separate concern this backend does not perform yet.
+   * Backend-owned ref-content health, per `stackDirs()` (the common stack,
+   * plus a linked worktree's own when it differs). Unlike `stackAt`'s eager
+   * `loadReftableStack`, this never denies the whole audit for one broken
+   * table: each table is read and parsed independently, so a structural
+   * fault on one becomes its own `badReftableTable` finding — naming the
+   * table and the failed check — and the walk continues past it. There is
+   * no raw per-ref text in a reftable, so `badRefContent`'s loose-grammar
+   * fault class is structurally unreachable here, and object-backing
+   * verification (`badRefOid`'s reftable counterpart) is a separate
+   * concern this backend does not perform yet.
    */
   async function verifyIntegrity(): Promise<readonly RefIntegrityFinding[]> {
-    return [];
+    const findings: RefIntegrityFinding[] = [];
+    for (const dir of stackDirs()) {
+      findings.push(...(await verifyStackTables(ctx, dir)));
+    }
+    return findings;
   }
 
   async function readReflog(name: RefName): Promise<readonly ReflogEntry[]> {

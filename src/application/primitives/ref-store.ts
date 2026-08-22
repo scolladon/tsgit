@@ -6,7 +6,7 @@ import type { ObjectId, RefName } from '../../domain/objects/index.js';
 import { invalidReflogEntry } from '../../domain/reflog/error.js';
 import type { ReflogEntry } from '../../domain/reflog/reflog-entry.js';
 import { parseReflog, serializeReflogLine } from '../../domain/reflog/reflog-format.js';
-import { refNotFound, refUpdateConflict } from '../../domain/refs/error.js';
+import { type ReftableCheck, refNotFound, refUpdateConflict } from '../../domain/refs/error.js';
 import {
   type PackedRefs,
   parseLooseRef,
@@ -57,11 +57,15 @@ export interface RefStore {
    */
   listRefs(prefix?: RefName): Promise<readonly RefEntry[]>;
   /**
-   * Backend-owned ref-content health: loose refs whose body is neither a
-   * well-formed OID nor a `ref: <target>` line (`badRefContent`), and
-   * well-formed loose OIDs with no LOOSE object backing them
-   * (`badRefOid`) — a cheap local-store probe, not a pack-aware
-   * reachability audit. Independent of any external reachability scope.
+   * Backend-owned ref-content health. The files backend reports loose refs
+   * whose body is neither a well-formed OID nor a `ref: <target>` line
+   * (`badRefContent`), and well-formed loose OIDs with no LOOSE object
+   * backing them (`badRefOid`) — a cheap local-store probe, not a
+   * pack-aware reachability audit. The reftable backend has no raw per-ref
+   * text to run that grammar check against, so `badRefContent` never
+   * appears there; it instead reports one `badReftableTable` finding per
+   * table that fails a structural check, naming the table and the check.
+   * Independent of any external reachability scope.
    */
   verifyIntegrity(): Promise<readonly RefIntegrityFinding[]>;
   /** `name`'s reflog, oldest-first. Empty when the ref has no reflog. */
@@ -82,7 +86,12 @@ export interface RefEntry {
 
 export type RefIntegrityFinding =
   | { readonly ref: RefName; readonly msgId: 'badRefContent' }
-  | { readonly ref: RefName; readonly msgId: 'badRefOid'; readonly target: ObjectId };
+  | { readonly ref: RefName; readonly msgId: 'badRefOid'; readonly target: ObjectId }
+  | {
+      readonly table: string;
+      readonly msgId: 'badReftableTable';
+      readonly check: ReftableCheck;
+    };
 
 /**
  * A reflog entry to append, carrying what `recordRefUpdate` needs.

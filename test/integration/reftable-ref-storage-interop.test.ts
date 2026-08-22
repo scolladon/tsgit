@@ -14,6 +14,7 @@
  *   unique:         reftable stack reads and writes agree with canonical git
  *   interopSurface: reftable
  */
+import { cpSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -26,7 +27,9 @@ import { reftableDir } from '../../src/application/primitives/path-layout.js';
 import { readObject } from '../../src/application/primitives/read-object.js';
 import { getRefStore } from '../../src/application/primitives/ref-store.js';
 import { resolveRef } from '../../src/application/primitives/resolve-ref.js';
+import type { TsgitError } from '../../src/domain/error.js';
 import type { ObjectId, RefName } from '../../src/domain/objects/index.js';
+import type { ReftableCheck } from '../../src/domain/refs/index.js';
 import type { Context } from '../../src/ports/context.js';
 import {
   disableAutoMaintenance,
@@ -34,6 +37,7 @@ import {
   git,
   runGit,
   runGitEnv,
+  tryRunGitWithExit,
 } from './interop-helpers.js';
 
 const IDENTITY_ENV: NodeJS.ProcessEnv = {
@@ -277,6 +281,167 @@ const buildWorktreeFixture = (rootDir: string): WorktreeFixture => {
   return { dir, wtDir, mainCtx, worktreeCtx, bisectId };
 };
 
+/**
+ * A structurally-broken or absent `.git/reftable/` stack — the seven
+ * damaged copies of {@link buildHealthyFiveRefRepo} that pin the corrupt-
+ * stack tiering divergence (§ below). `outcome` is tsgit's own
+ * classification: `'refuse'` structural faults (a `ReftableCheck` on a
+ * table `tables.list` names) versus `'degrade'` absences (a legitimately
+ * empty stack). Every row was independently re-measured against this
+ * exact pinned git build before being encoded here.
+ */
+interface CorruptFixture {
+  readonly label: string;
+  readonly dir: string;
+  readonly ctx: Context;
+  readonly outcome: 'refuse' | 'degrade';
+  readonly check?: ReftableCheck;
+}
+
+const reftableSubdir = (repoDir: string): string => `${repoDir}/.git/reftable`;
+const tablesListPath = (repoDir: string): string => `${reftableSubdir(repoDir)}/tables.list`;
+
+/** The one table `tables.list` names, after `pack-refs --all` compacted the
+ *  fixture down to a single file — every byte-level damager targets this
+ *  one well-understood path. */
+const soleTablePath = (repoDir: string): string => {
+  const listing = readFileSync(tablesListPath(repoDir), 'utf8');
+  const name = listing.split('\n').find((line) => line.length > 0);
+  if (name === undefined) throw new Error(`tables.list names no table under ${repoDir}`);
+  return `${reftableSubdir(repoDir)}/${name}`;
+};
+
+type Damager = (repoDir: string) => void;
+
+const corruptMagic: Damager = (repoDir) => {
+  const tablePath = soleTablePath(repoDir);
+  const bytes = readFileSync(tablePath);
+  bytes.set([0x58, 0x58, 0x58, 0x58], 0); // 'XXXX'
+  writeFileSync(tablePath, bytes);
+};
+
+/**
+ * Truncated to 50 bytes — below v1's own 24-byte header plus 68-byte
+ * footer (92 bytes). The design doc's own recipe truncates to 400 bytes,
+ * but re-measured against THIS fixture's actual table (494 bytes: five
+ * refs plus one annotated tag), 400 bytes lands ABOVE that 92-byte floor —
+ * `parseReftable` reads a header fine and then reads a "footer" from
+ * whatever mid-file bytes now sit at the truncated end, which is a
+ * `footer-crc` mismatch, not `truncated`. Truncating well below the floor
+ * instead reliably exercises the DISTINCT `truncated` check this row means
+ * to cover; git's own for-each-ref/fsck behaviour is identical at either
+ * length (re-measured both ways).
+ */
+const truncateTableBelowItsOwnHeaderAndFooter: Damager = (repoDir) => {
+  const tablePath = soleTablePath(repoDir);
+  const bytes = readFileSync(tablePath);
+  writeFileSync(tablePath, bytes.subarray(0, 50));
+};
+
+const corruptFooterCrc: Damager = (repoDir) => {
+  const tablePath = soleTablePath(repoDir);
+  const bytes = readFileSync(tablePath);
+  // Flipping the STORED CRC's own last byte, not a byte it covers, keeps
+  // every other footer field valid and isolates the fault to the checksum
+  // comparison alone.
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const lastIndex = bytes.length - 1;
+  view.setUint8(lastIndex, view.getUint8(lastIndex) ^ 0xff);
+  writeFileSync(tablePath, bytes);
+};
+
+const corruptHeaderVersion: Damager = (repoDir) => {
+  const tablePath = soleTablePath(repoDir);
+  const bytes = readFileSync(tablePath);
+  bytes.set([9], 4);
+  writeFileSync(tablePath, bytes);
+};
+
+const tablesListNamesAMissingFile: Damager = (repoDir) => {
+  rmSync(soleTablePath(repoDir));
+};
+
+const tablesListRemoved: Damager = (repoDir) => {
+  rmSync(tablesListPath(repoDir));
+};
+
+const reftableDirectoryRemoved: Damager = (repoDir) => {
+  rmSync(reftableSubdir(repoDir), { recursive: true, force: true });
+};
+
+/** The design's healthy five-ref control repository — `main`, `dev`,
+ *  `feature`, a symbolic ref, and one annotated tag — compacted to a
+ *  single reftable so each damage variant below corrupts one
+ *  well-understood file. */
+const buildHealthyFiveRefRepo = (dir: string): void => {
+  initReftableRepo(dir);
+  runGit(['-C', dir, 'commit', '-q', '--allow-empty', '-m', 'c1'], {
+    env: dateEnv(1_700_000_000, '+0000'),
+  });
+  git(dir, 'branch', 'dev');
+  git(dir, 'branch', 'feature');
+  git(dir, 'symbolic-ref', 'refs/heads/symbolic', 'refs/heads/main');
+  runGit(['-C', dir, 'tag', '-a', 'v1', '-m', 'release v1'], {
+    env: dateEnv(1_700_000_100, '+0000'),
+  });
+  git(dir, 'pack-refs', '--all');
+};
+
+interface CorruptRow {
+  readonly label: string;
+  readonly damage: Damager;
+  readonly outcome: 'refuse' | 'degrade';
+  readonly check?: ReftableCheck;
+}
+
+/** Every row's `outcome`/`check` and its `for-each-ref`/`fsck` counterpart
+ *  (asserted in the row-11 describe block below) were each independently
+ *  re-measured against this exact pinned git build, not copied from the
+ *  design doc unread. */
+const CORRUPT_ROWS: ReadonlyArray<CorruptRow> = [
+  { label: 'bad magic', damage: corruptMagic, outcome: 'refuse', check: 'magic' },
+  {
+    label: 'truncated below its own header and footer',
+    damage: truncateTableBelowItsOwnHeaderAndFooter,
+    outcome: 'refuse',
+    check: 'truncated',
+  },
+  {
+    label: 'footer CRC corrupted',
+    damage: corruptFooterCrc,
+    outcome: 'refuse',
+    check: 'footer-crc',
+  },
+  {
+    label: 'header version 9',
+    damage: corruptHeaderVersion,
+    outcome: 'refuse',
+    check: 'version',
+  },
+  {
+    label: 'tables.list names a missing file',
+    damage: tablesListNamesAMissingFile,
+    outcome: 'refuse',
+    check: 'tables-list',
+  },
+  { label: 'tables.list removed', damage: tablesListRemoved, outcome: 'degrade' },
+  { label: '.git/reftable/ removed', damage: reftableDirectoryRemoved, outcome: 'degrade' },
+];
+
+const buildCorruptFixtures = (rootDir: string, baseDir: string): readonly CorruptFixture[] =>
+  CORRUPT_ROWS.map((row, index) => {
+    const dir = path.join(rootDir, `corrupt-${index}`);
+    cpSync(baseDir, dir, { recursive: true });
+    row.damage(dir);
+    return {
+      label: row.label,
+      dir,
+      ctx: reftableCtx(dir),
+      outcome: row.outcome,
+      ...(row.check !== undefined ? { check: row.check } : {}),
+    };
+  });
+
 describe.skipIf(!GIT_AVAILABLE)('reftable-ref-storage interop', () => {
   let rootDir: string;
   let main: MainFixture;
@@ -284,6 +449,8 @@ describe.skipIf(!GIT_AVAILABLE)('reftable-ref-storage interop', () => {
   let big: BigFixture;
   let hundred: HundredFixture;
   let worktree: WorktreeFixture;
+  let corruptControl: { readonly dir: string; readonly ctx: Context };
+  let corrupt: readonly CorruptFixture[];
 
   beforeAll(async () => {
     rootDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-interop-reftable-'));
@@ -292,6 +459,13 @@ describe.skipIf(!GIT_AVAILABLE)('reftable-ref-storage interop', () => {
     big = buildBigFixture(rootDir);
     hundred = buildHundredFixture(rootDir);
     worktree = buildWorktreeFixture(rootDir);
+
+    const corruptBaseDir = path.join(rootDir, 'corrupt-base');
+    buildHealthyFiveRefRepo(corruptBaseDir);
+    const controlDir = path.join(rootDir, 'corrupt-control');
+    cpSync(corruptBaseDir, controlDir, { recursive: true });
+    corruptControl = { dir: controlDir, ctx: reftableCtx(controlDir) };
+    corrupt = buildCorruptFixtures(rootDir, corruptBaseDir);
   }, 60_000);
 
   afterAll(async () => {
@@ -626,6 +800,115 @@ describe.skipIf(!GIT_AVAILABLE)('reftable-ref-storage interop', () => {
         expect(fromWorktree).toEqual({ kind: 'direct', id: worktree.bisectId });
         expect(showRefNames(worktree.dir)).not.toContain('refs/bisect/bad');
         expect(showRefNames(worktree.wtDir)).toContain('refs/bisect/bad');
+      });
+    });
+  });
+
+  describe('Given the healthy five-ref repository, copied but left undamaged', () => {
+    describe('When tsgit reads its ref set', () => {
+      it('Then all five refs are present — the damaged fixtures below are known-sound copies', async () => {
+        // Arrange
+        const sut = getRefStore(corruptControl.ctx);
+
+        // Act
+        const entries = await sut.listRefs();
+        const names = entries.map((entry) => entry.name).filter((name) => name !== 'HEAD');
+
+        // Assert
+        expect(names.slice().sort()).toEqual(showRefNames(corruptControl.dir));
+        expect(names).toHaveLength(5);
+      });
+    });
+  });
+
+  /**
+   * A documented divergence, not an oversight (see `internal/reftable-source.ts`).
+   * Canonical git does not `fatal` on a structurally broken reftable stack —
+   * `for-each-ref` reports rc 0 with no rows on every one of these seven
+   * fixtures, healthy-looking and silent. The files backend is loud on the
+   * SAME class of damage (a garbage line in `packed-refs` is `fatal:`, rc
+   * 128) — reftable is uniquely silent. And git's own `fsck` dies on a
+   * signal on every STRUCTURAL fault (`error: refs died of signal 11`, exit
+   * 8) — a genuine git bug, not a behaviour tsgit can copy. tsgit instead
+   * refuses with a structured `INVALID_REFTABLE` error wherever git
+   * crashes, and degrades to an empty ref space only where git's own
+   * degrade is coherent (an absent `tables.list` or `.git/reftable/`).
+   *
+   * Every assertion below is intentionally LOOSER than "tsgit matches git"
+   * for the five `refuse` rows: git has no defined behaviour to match there
+   * (a crash isn't a contract), so only the two independently-measured git
+   * signals — `for-each-ref`'s silence and `fsck`'s exit code/signal text —
+   * are pinned, beside tsgit's OWN structured refusal or degrade. A later
+   * reader must not "tighten" this into equality with git's stdout.
+   *
+   * tsgit never crashes and never hangs on any of the seven: reaching
+   * either the `catch` block (a well-formed `TsgitError`) or the resolved
+   * empty stack, rather than an unhandled rejection or a test-timeout, IS
+   * that proof — it is the property the whole tier split exists to
+   * guarantee.
+   */
+  describe('Given a structurally broken or absent reftable stack', () => {
+    // `describe.each` collects its tree synchronously at module-load time,
+    // before `beforeAll` has built `corrupt` — so each row here is looked
+    // up LAZILY, inside each `it` body, from the static `CORRUPT_ROWS` label
+    // rather than closed over the (not-yet-populated) fixture array.
+    const fixtureFor = (label: string): CorruptFixture => {
+      const found = corrupt.find((candidate) => candidate.label === label);
+      if (found === undefined) throw new Error(`no corrupt fixture built for ${label}`);
+      return found;
+    };
+
+    describe.each(CORRUPT_ROWS)('When the damage is $label', (row) => {
+      it('Then git for-each-ref reports rc 0 with no rows', () => {
+        // Arrange
+        const fixture = fixtureFor(row.label);
+        const sut = tryRunGitWithExit(['-C', fixture.dir, 'for-each-ref'], {
+          env: runGitEnv(),
+        });
+
+        // Assert — same fault class is loud (fatal, rc 128) on the files
+        // backend's packed-refs; reftable is silently empty instead.
+        expect(sut.exitCode).toBe(0);
+        expect(sut.stdout.trim()).toBe('');
+      });
+
+      it('Then git fsck matches its independently measured exit', () => {
+        // Arrange
+        const fixture = fixtureFor(row.label);
+        const sut = tryRunGitWithExit(['-C', fixture.dir, 'fsck'], { env: runGitEnv() });
+
+        // Assert
+        if (fixture.outcome === 'refuse') {
+          expect(sut.exitCode).toBe(8);
+          expect(sut.stderr).toContain('refs died of signal 11');
+        } else {
+          expect(sut.exitCode).toBe(0);
+        }
+      });
+
+      it('Then tsgit classifies the fault per the tiering', async () => {
+        // Arrange
+        const fixture = fixtureFor(row.label);
+        const dir = reftableDir(fixture.ctx.layout.gitDir);
+        const sut = loadReftableStack;
+
+        // Act + Assert
+        if (fixture.outcome === 'refuse') {
+          try {
+            await sut(fixture.ctx, dir);
+            expect.unreachable();
+          } catch (err) {
+            expect((err as TsgitError).data.code).toBe('INVALID_REFTABLE');
+            expect((err as TsgitError).data).toMatchObject({
+              check: fixture.check,
+              reason: expect.any(String),
+            });
+          }
+          return;
+        }
+        const stack = await sut(fixture.ctx, dir);
+        expect(stack.tables).toEqual([]);
+        expect([...stack.names()]).toEqual([]);
       });
     });
   });

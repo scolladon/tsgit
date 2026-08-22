@@ -281,6 +281,159 @@ describe('load-reftable-stack', () => {
     });
   });
 
+  describe('Given tables.list is absent but the reftable directory otherwise exists', () => {
+    describe('When the stack is loaded', () => {
+      it('Then it degrades to an empty stack', async () => {
+        // Arrange — a stray leftover table with no tables.list naming it: the
+        // "tables.list removed" fixture shape (a prior compaction step wrote
+        // the table but never got to rewrite the manifest).
+        const ctx = createMemoryContext();
+        const dir = commonReftableDir(ctx);
+        const table = buildSimpleTable({ refName: 'refs/heads/main', id: oid(0x01) });
+        await ctx.fs.write(`${dir}/orphan.ref`, table);
+        const sut = loadReftableStack;
+
+        // Act
+        const result = await sut(ctx, dir);
+
+        // Assert
+        expect(result.tables).toEqual([]);
+        expect([...result.names()]).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given the reftable directory itself is absent', () => {
+    describe('When the stack is loaded', () => {
+      it('Then it degrades to an empty stack', async () => {
+        // Arrange — nothing at all is written under the stack directory: the
+        // ".git/reftable/ removed" fixture shape, and also the ordinary shape
+        // of a freshly-declared reftable repository before its first write.
+        const ctx = createMemoryContext();
+        const dir = commonReftableDir(ctx);
+        const sut = loadReftableStack;
+
+        // Act
+        const result = await sut(ctx, dir);
+
+        // Assert
+        expect(result.tables).toEqual([]);
+        expect([...result.names()]).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a table whose magic bytes are corrupted', () => {
+    describe('When the stack is loaded', () => {
+      it('Then it refuses with check magic', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const dir = commonReftableDir(ctx);
+        const table = buildSimpleTable({ refName: 'refs/heads/main', id: oid(0x01) });
+        const corrupted = table.slice();
+        corrupted.set([0x58, 0x58, 0x58, 0x58], 0); // 'XXXX'
+        await writeReftableFiles(ctx, dir, [{ name: 'a.ref', bytes: corrupted }]);
+        const sut = loadReftableStack;
+
+        // Act + Assert
+        try {
+          await sut(ctx, dir);
+          expect.unreachable();
+        } catch (err) {
+          expect((err as TsgitError).data.code).toBe('INVALID_REFTABLE');
+          expect((err as TsgitError).data).toMatchObject({
+            check: 'magic',
+            reason: expect.any(String),
+          });
+        }
+      });
+    });
+  });
+
+  describe('Given a table truncated below its own header and footer length', () => {
+    describe('When the stack is loaded', () => {
+      it('Then it refuses with check truncated', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const dir = commonReftableDir(ctx);
+        const table = buildSimpleTable({ refName: 'refs/heads/main', id: oid(0x01) });
+        const truncated = table.slice(0, 50);
+        await writeReftableFiles(ctx, dir, [{ name: 'a.ref', bytes: truncated }]);
+        const sut = loadReftableStack;
+
+        // Act + Assert
+        try {
+          await sut(ctx, dir);
+          expect.unreachable();
+        } catch (err) {
+          expect((err as TsgitError).data.code).toBe('INVALID_REFTABLE');
+          expect((err as TsgitError).data).toMatchObject({
+            check: 'truncated',
+            reason: expect.any(String),
+          });
+        }
+      });
+    });
+  });
+
+  describe('Given a table whose footer CRC no longer matches its footer bytes', () => {
+    describe('When the stack is loaded', () => {
+      it('Then it refuses with check footer-crc', async () => {
+        // Arrange — flipping the stored CRC's own last byte, not the bytes it
+        // covers, keeps every other footer field valid and isolates the
+        // fault to the checksum comparison alone.
+        const ctx = createMemoryContext();
+        const dir = commonReftableDir(ctx);
+        const table = buildSimpleTable({ refName: 'refs/heads/main', id: oid(0x01) });
+        const corrupted = table.slice();
+        const view = new DataView(corrupted.buffer, corrupted.byteOffset, corrupted.byteLength);
+        const lastIndex = corrupted.length - 1;
+        view.setUint8(lastIndex, view.getUint8(lastIndex) ^ 0xff);
+        await writeReftableFiles(ctx, dir, [{ name: 'a.ref', bytes: corrupted }]);
+        const sut = loadReftableStack;
+
+        // Act + Assert
+        try {
+          await sut(ctx, dir);
+          expect.unreachable();
+        } catch (err) {
+          expect((err as TsgitError).data.code).toBe('INVALID_REFTABLE');
+          expect((err as TsgitError).data).toMatchObject({
+            check: 'footer-crc',
+            reason: expect.any(String),
+          });
+        }
+      });
+    });
+  });
+
+  describe('Given a table declaring an unsupported header version', () => {
+    describe('When the stack is loaded', () => {
+      it('Then it refuses with check version', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const dir = commonReftableDir(ctx);
+        const table = buildSimpleTable({ refName: 'refs/heads/main', id: oid(0x01) });
+        const corrupted = table.slice();
+        corrupted[4] = 9;
+        await writeReftableFiles(ctx, dir, [{ name: 'a.ref', bytes: corrupted }]);
+        const sut = loadReftableStack;
+
+        // Act + Assert
+        try {
+          await sut(ctx, dir);
+          expect.unreachable();
+        } catch (err) {
+          expect((err as TsgitError).data.code).toBe('INVALID_REFTABLE');
+          expect((err as TsgitError).data).toMatchObject({
+            check: 'version',
+            reason: expect.any(String),
+          });
+        }
+      });
+    });
+  });
+
   describe('Given a .log-extension entry carrying only log blocks', () => {
     describe('When the stack is loaded', () => {
       it('Then it loads — dispatch is by content, not by extension', async () => {

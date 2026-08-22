@@ -16,6 +16,12 @@
  * packed-refs memo: both the update and compaction protocols rewrite
  * `tables.list` as their final step, so the key catches every committed
  * change.
+ *
+ * An absent `tables.list` — whether its own file was never written, or the
+ * whole `.git/reftable/` directory never existed — degrades to an empty
+ * stack rather than propagating: `internal/reftable-source.ts`'s tiering
+ * classifies both shapes the same way canonical git itself treats them, a
+ * legitimately empty ref space rather than damage.
  */
 import { TsgitError } from '../../domain/error.js';
 import { invalidReftable } from '../../domain/refs/error.js';
@@ -25,6 +31,8 @@ import {
   type ReftableStack,
 } from '../../domain/refs/reftable/reftable-stack.js';
 import type { Context } from '../../ports/context.js';
+import type { FileStat } from '../../ports/file-system.js';
+import { isDegradableReftableFault } from './internal/reftable-source.js';
 
 const TABLES_LIST_FILE = 'tables.list';
 
@@ -44,9 +52,11 @@ function isFileNotFound(err: unknown): boolean {
 /**
  * `tables.list`'s body: one filename per line, LF-terminated INCLUDING the
  * last line. Anything else — a missing trailing LF, or a blank line other
- * than that terminator — is a malformed listing.
+ * than that terminator — is a malformed listing. Exported for
+ * `reftable-ref-store.ts`'s `verifyIntegrity`, which needs the same
+ * manifest grammar without the eager throw-on-first-fault load protocol.
  */
-function parseTablesList(text: string): readonly string[] {
+export function parseTablesList(text: string): readonly string[] {
   if (text === '') return [];
   if (!text.endsWith('\n')) {
     throw invalidReftable('tables-list', 'tables.list is not newline-terminated');
@@ -117,7 +127,13 @@ function scopedCache(ctx: Context): Map<string, CachedStack> {
  * before this resolves.
  */
 export async function loadReftableStack(ctx: Context, reftableDir: string): Promise<ReftableStack> {
-  const stat = await ctx.fs.stat(`${reftableDir}/${TABLES_LIST_FILE}`);
+  let stat: FileStat;
+  try {
+    stat = await ctx.fs.stat(`${reftableDir}/${TABLES_LIST_FILE}`);
+  } catch (err) {
+    if (isDegradableReftableFault(err)) return createReftableStack([]);
+    throw err;
+  }
   const mtimeKey = `${stat.mtimeMs}:${stat.size}`;
   const cache = scopedCache(ctx);
   const cached = cache.get(reftableDir);
