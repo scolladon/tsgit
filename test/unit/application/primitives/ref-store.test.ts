@@ -457,6 +457,29 @@ describe('ref-store', () => {
     });
   });
 
+  describe('Given listRefNames already ran once and never touched the packed name index', () => {
+    describe('When resolveDirect looks up a packed-only ref afterward', () => {
+      it('Then it still resolves correctly — the lazy index builds on its own first use', async () => {
+        // Arrange — `listRefNames`/`listRefs` scan `packed.entries` directly
+        // and never call `packed.byName()`; the index is built lazily, on
+        // ITS OWN first call, memoised inside the same cached `loaded`
+        // instance both paths share.
+        const ctx = await buildSeededContext({
+          refs: [{ name: 'refs/heads/main' as RefName, id: 'a'.repeat(40) as ObjectId }],
+          packedRefs: [{ name: 'refs/tags/v1' as RefName, id: 'b'.repeat(40) as ObjectId }],
+        });
+        const sut = createRefStore(ctx);
+        await sut.listRefNames();
+
+        // Act
+        const result = await sut.resolveDirect('refs/tags/v1' as RefName);
+
+        // Assert
+        expect(result).toEqual({ kind: 'direct', id: 'b'.repeat(40) });
+      });
+    });
+  });
+
   describe('Given a delete update on a ref that exists in neither loose nor packed storage', () => {
     describe('When applyRefUpdates is called', () => {
       it('Then it throws REF_NOT_FOUND', async () => {

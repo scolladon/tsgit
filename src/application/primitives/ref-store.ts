@@ -289,19 +289,39 @@ export function createRefStore(ctx: Context): RefStore {
 }
 
 /** `loadPackedRefs`'s own return shape: the parsed entries (for a full scan —
- *  `collectCandidateNames`'s enumeration has no name to index by) alongside
- *  a name-indexed `Map` of the SAME entries, so a point lookup never falls
- *  back to a linear scan over every packed ref. Always internally
- *  consistent — never a stale `Map` alongside fresh `entries` or vice versa,
- *  including the "packed-refs file is absent" fast path, which returns a
- *  freshly empty pair rather than whatever the mtime+size cache still holds
- *  from before the file was removed. */
+ *  `collectCandidateNames`/`listRefNames`'s enumeration walks `entries`
+ *  directly and has no name to index by) alongside a LAZY name-indexed
+ *  `Map` of the SAME entries, built only on its first call, so a point
+ *  lookup (`resolveDirect`) never falls back to a linear scan over every
+ *  packed ref — but the bench-tracked enumeration path, which never reads
+ *  it, no longer pays for the `Map` construction (or retains the P-entry
+ *  index) it never needed. Built once per `loaded` instance and memoised
+ *  inside the closure, so repeated `resolveDirect` calls against the SAME
+ *  cached `loaded` share one `Map`, not one per call. Always internally
+ *  consistent — never a stale index alongside fresh `entries` or vice
+ *  versa, including the "packed-refs file is absent" fast path, which
+ *  returns a freshly empty pair rather than whatever the mtime+size cache
+ *  still holds from before the file was removed. */
 interface LoadedPackedRefs {
   readonly entries: readonly PackedRefEntry[];
-  readonly byName: ReadonlyMap<RefName, PackedRefEntry>;
+  readonly byName: () => ReadonlyMap<RefName, PackedRefEntry>;
 }
 
-const EMPTY_PACKED_REFS: LoadedPackedRefs = { entries: [], byName: new Map() };
+function lazyByNameIndex(
+  entries: readonly PackedRefEntry[],
+): () => ReadonlyMap<RefName, PackedRefEntry> {
+  let index: ReadonlyMap<RefName, PackedRefEntry> | undefined;
+  return () => {
+    index ??= new Map(entries.map((entry) => [entry.name, entry] as const));
+    return index;
+  };
+}
+
+const EMPTY_BY_NAME_INDEX: ReadonlyMap<RefName, PackedRefEntry> = new Map();
+const EMPTY_PACKED_REFS: LoadedPackedRefs = {
+  entries: [],
+  byName: () => EMPTY_BY_NAME_INDEX,
+};
 
 function createFilesRefStore(ctx: Context): RefStore {
   let packedCache: { readonly loaded: LoadedPackedRefs; readonly mtimeKey: string } | undefined;
@@ -320,8 +340,7 @@ function createFilesRefStore(ctx: Context): RefStore {
     }
     const content = await ctx.fs.readUtf8(path);
     const { entries } = parsePackedRefs(content);
-    const byName = new Map(entries.map((entry) => [entry.name, entry] as const));
-    const loaded: LoadedPackedRefs = { entries, byName };
+    const loaded: LoadedPackedRefs = { entries, byName: lazyByNameIndex(entries) };
     packedCache = { loaded, mtimeKey: key };
     return loaded;
   }
@@ -346,7 +365,7 @@ function createFilesRefStore(ctx: Context): RefStore {
       return { kind: 'direct', id: parsed.target };
     }
     const packed = await loadPackedRefs();
-    const entry = packed.byName.get(name);
+    const entry = packed.byName().get(name);
     return entry === undefined ? { kind: 'missing' } : { kind: 'direct', id: entry.id };
   }
 
