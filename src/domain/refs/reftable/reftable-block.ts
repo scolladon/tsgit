@@ -116,6 +116,19 @@ export function blockBoundsAt(reftable: Reftable, blockStart: number): BlockBoun
   const isFirstBlock = blockStart === reftable.header.headerLength;
   const blockEnd = isFirstBlock ? declaredLength : blockStart + declaredLength;
 
+  // `blockEnd > blockStart` also closes `enumerateRefBlocks`'s own hole: a
+  // non-first block declaring `block_len` 0 would otherwise make
+  // `nextBlockStart` return `blockStart` unchanged, looping forever with no
+  // index involved. `blockEnd <= reftable._bytes.length` is what stops a
+  // declared length like 0xFFFFFF from driving every read below straight
+  // into a raw `RangeError`, bypassing the INVALID_REFTABLE contract.
+  if (blockEnd <= blockStart || blockEnd > reftable._bytes.length) {
+    throw invalidReftable(
+      'block-bounds',
+      `block at file offset ${blockStart} declares an out-of-bounds length (declared end ${blockEnd}, file length ${reftable._bytes.length})`,
+    );
+  }
+
   const view = reftable._view;
   const restartCount = view.getUint16(blockEnd - RESTART_COUNT_SIZE);
   if (restartCount === 0) {
@@ -125,7 +138,15 @@ export function blockBoundsAt(reftable: Reftable, blockStart: number): BlockBoun
     );
   }
 
+  const recordsStart = blockStart + BLOCK_HEADER_SIZE;
   const restartArrayStart = blockEnd - RESTART_COUNT_SIZE - restartCount * RESTART_ENTRY_SIZE;
+  if (restartArrayStart < recordsStart) {
+    throw invalidReftable(
+      'block-bounds',
+      `block at file offset ${blockStart} declares a restart array (${restartCount} entries) overlapping its record area`,
+    );
+  }
+
   const restartOffsets = readRestartOffsets(
     view,
     restartArrayStart,
@@ -135,7 +156,7 @@ export function blockBoundsAt(reftable: Reftable, blockStart: number): BlockBoun
   );
 
   return {
-    recordsStart: blockStart + BLOCK_HEADER_SIZE,
+    recordsStart,
     recordsEnd: restartArrayStart,
     restartOffsets,
     blockEnd,
@@ -432,8 +453,27 @@ export function findInBlock<T>(
   return undefined;
 }
 
+/**
+ * `blockTypeAt`/`blockLengthAt` (`reftable-format.ts`) are documented as
+ * trusted, unchecked reads — "the caller owns bounds and type validation".
+ * This is that validation: every position this module treats as a
+ * candidate block start ultimately comes from attacker-controlled bytes (a
+ * footer position, or an index record's own `block_position`), and reading
+ * a block's type-plus-length header needs room for all `BLOCK_HEADER_SIZE`
+ * bytes, not just the one the type check itself touches.
+ */
+function boundedBlockTypeAt(reftable: Reftable, offset: number): string {
+  if (offset < 0 || offset + BLOCK_HEADER_SIZE > reftable._bytes.length) {
+    throw invalidReftable(
+      'block-bounds',
+      `block position ${offset} is outside the file (length ${reftable._bytes.length})`,
+    );
+  }
+  return blockTypeAt(reftable, offset);
+}
+
 function assertBlockType(reftable: Reftable, offset: number, expected: 'r' | 'i'): void {
-  const actual = blockTypeAt(reftable, offset);
+  const actual = boundedBlockTypeAt(reftable, offset);
   if (actual !== expected) {
     throw invalidReftable(
       'block-type',
@@ -548,7 +588,7 @@ function resolveRefBlockPosition(reftable: Reftable, target: Uint8Array): number
       return undefined;
     }
     const childPosition = resolveBlockOffset(reftable, found.payload);
-    if (blockTypeAt(reftable, childPosition) !== 'i') {
+    if (boundedBlockTypeAt(reftable, childPosition) !== 'i') {
       assertBlockType(reftable, childPosition, 'r');
       return childPosition;
     }
@@ -613,7 +653,7 @@ function* collectIndexLeaves(
   const bounds = blockBoundsAt(reftable, indexBlockStart);
   for (const { payload } of walkBlockRecords(reftable._bytes, bounds, decodeIndexRecord)) {
     const childPosition = resolveBlockOffset(reftable, payload);
-    if (blockTypeAt(reftable, childPosition) === 'i') {
+    if (boundedBlockTypeAt(reftable, childPosition) === 'i') {
       yield* collectIndexLeaves(reftable, childPosition, depth + 1);
     } else {
       assertBlockType(reftable, childPosition, 'r');

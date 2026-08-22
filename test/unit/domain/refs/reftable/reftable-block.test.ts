@@ -370,6 +370,103 @@ describe('reftable-block', () => {
         });
       });
     });
+
+    describe('Given a block declaring block_len 0xFFFFFF, far past the end of the file', () => {
+      describe('When reading block bounds', () => {
+        it('Then refuses with block-bounds rather than escaping as a RangeError', () => {
+          // Arrange — the security reviewer's PoC: patching a real table's
+          // first block_len to 0xFFFFFF made `iterateReftableRefs` escape
+          // with a raw `RangeError`, bypassing the INVALID_REFTABLE contract
+          // and the corrupt-stack refuse/degrade tiering entirely.
+          const header = buildReftableHeader({ version: 1 });
+          const block = buildRefBlock({
+            records: [{ name: 'refs/heads/aaa', value: { kind: 'direct', id: oid(0x01) } }],
+            restartIndices: [0],
+            isFirstBlock: true,
+            headerLength: header.length,
+          });
+          const bytes = buildReftable({ version: 1, blocks: [block] });
+          const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+          view.setUint8(header.length + 1, 0xff);
+          view.setUint8(header.length + 2, 0xff);
+          view.setUint8(header.length + 3, 0xff);
+          const reftable = parseReftable(bytes);
+
+          // Act & Assert
+          expectRefusal(
+            () => blockBoundsAt(reftable, header.length),
+            'block-bounds',
+            'out-of-bounds',
+          );
+        });
+      });
+    });
+
+    describe('Given a non-first block declaring block_len 0', () => {
+      describe('When reading block bounds', () => {
+        it('Then refuses with block-bounds rather than reading the preceding block as its own trailer', () => {
+          // Arrange — the shape behind the reviewer's second PoC:
+          // `enumerateRefBlocks` derives the next block's start from this
+          // block's own `blockEnd`, so a zero-length non-first block that
+          // silently "succeeded" would make `nextBlockStart` return the same
+          // position forever.
+          const header = buildReftableHeader({ version: 1 });
+          const block0 = buildRefBlock({
+            records: [{ name: 'refs/heads/aaa', value: { kind: 'direct', id: oid(0x01) } }],
+            restartIndices: [0],
+            isFirstBlock: true,
+            headerLength: header.length,
+          });
+          const block1 = buildRefBlock({
+            records: [{ name: 'refs/heads/bbb', value: { kind: 'direct', id: oid(0x02) } }],
+            restartIndices: [0],
+          });
+          const bytes = buildReftable({ version: 1, blockSize: 0, blocks: [block0, block1] });
+          const secondBlockStart = header.length + block0.length;
+          const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+          view.setUint8(secondBlockStart + 1, 0);
+          view.setUint8(secondBlockStart + 2, 0);
+          view.setUint8(secondBlockStart + 3, 0);
+          const reftable = parseReftable(bytes);
+
+          // Act & Assert
+          expectRefusal(
+            () => blockBoundsAt(reftable, secondBlockStart),
+            'block-bounds',
+            'out-of-bounds',
+          );
+        });
+      });
+    });
+
+    describe('Given a block whose restart_count claims far more entries than the block has room for', () => {
+      describe('When reading block bounds', () => {
+        it('Then refuses with block-bounds rather than reading restart offsets from before the block', () => {
+          // Arrange — the block is built (and self-consistently sized) with
+          // one real restart entry, then its trailer's `restart_count` field
+          // is patched to a much larger value, mirroring a `block_len`-style
+          // single-field corruption rather than hand-assembling raw bytes.
+          const header = buildReftableHeader({ version: 1 });
+          const recordBytes = new Uint8Array(10).fill(0xaa);
+          const rawBlock = buildReftableBlock({
+            type: 'r',
+            recordBytes,
+            restartOffsets: [header.length + 4],
+            declaredLength: header.length + 1 + 3 + recordBytes.length + 3 + 2,
+          });
+          const patched = rawBlock.slice();
+          new DataView(patched.buffer).setUint16(patched.length - 2, 5000);
+          const reftable = parseReftable(buildReftable({ version: 1, blocks: [patched] }));
+
+          // Act & Assert
+          expectRefusal(
+            () => blockBoundsAt(reftable, header.length),
+            'block-bounds',
+            'restart array',
+          );
+        });
+      });
+    });
   });
 
   describe('ref record grammar refusals', () => {
@@ -585,6 +682,38 @@ describe('reftable-block', () => {
 
           // Assert
           expect(result?.value).toStrictEqual({ kind: 'deletion' });
+        });
+      });
+    });
+
+    describe('Given a footer refIndexPosition that points far past the end of the file', () => {
+      describe('When looking up any name', () => {
+        it('Then refuses with block-bounds rather than escaping as a RangeError', () => {
+          // Arrange — `resolveRefBlockPosition` treats `refIndexPosition`
+          // as trusted the moment it dereferences it; an unvalidated huge
+          // position drives straight into a raw `RangeError` the same way
+          // an oversized `block_len` does.
+          const header = buildReftableHeader({ version: 1 });
+          const block = buildRefBlock({
+            records: [{ name: 'refs/heads/aaa', value: { kind: 'direct', id: oid(0x01) } }],
+            restartIndices: [0],
+            isFirstBlock: true,
+            headerLength: header.length,
+          });
+          const bytes = buildReftable({
+            version: 1,
+            blocks: [block],
+            refIndexPosition: 10_000_000,
+          });
+          const reftable = parseReftable(bytes);
+          const sut = lookupReftableRef;
+
+          // Act & Assert
+          expectRefusal(
+            () => sut(reftable, RefName.from('refs/heads/aaa')),
+            'block-bounds',
+            'outside the file',
+          );
         });
       });
     });
@@ -930,6 +1059,39 @@ describe('reftable-block', () => {
           expect(table.footer.refIndexPosition).toBe(0);
           expect(names).toStrictEqual(makeSequentialRefs(17).map((r) => r.name));
         });
+      });
+    });
+
+    describe('Given a second ref block declaring block_len 0, with no ref index', () => {
+      describe('When iterating every ref', () => {
+        it('Then refuses with block-bounds rather than enumerateRefBlocks looping forever', () => {
+          // Arrange — `enumerateRefBlocks` derives each next block's start
+          // from the previous one's own `blockEnd`; a zero-length non-first
+          // block made that position stand still, forever, with no ref
+          // index anywhere in the picture.
+          const header = buildReftableHeader({ version: 1 });
+          const block0 = buildRefBlock({
+            records: [{ name: 'refs/heads/aaa', value: { kind: 'direct', id: oid(0x01) } }],
+            restartIndices: [0],
+            isFirstBlock: true,
+            headerLength: header.length,
+          });
+          const block1 = buildRefBlock({
+            records: [{ name: 'refs/heads/bbb', value: { kind: 'direct', id: oid(0x02) } }],
+            restartIndices: [0],
+          });
+          const bytes = buildReftable({ version: 1, blockSize: 0, blocks: [block0, block1] });
+          const secondBlockStart = header.length + block0.length;
+          const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+          view.setUint8(secondBlockStart + 1, 0);
+          view.setUint8(secondBlockStart + 2, 0);
+          view.setUint8(secondBlockStart + 3, 0);
+          const reftable = parseReftable(bytes);
+          const sut = iterateReftableRefs;
+
+          // Act & Assert
+          expectRefusal(() => Array.from(sut(reftable)), 'block-bounds', 'out-of-bounds');
+        }, 2000);
       });
     });
   });
