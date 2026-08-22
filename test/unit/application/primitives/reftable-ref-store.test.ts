@@ -569,5 +569,38 @@ describe('reftable-ref-store', () => {
         expect(result).toEqual({ kind: 'direct', id: hexOid(0x03) });
       });
     });
+
+    describe('When listRefs runs and a per-worktree name exists in both the common and the own stack', () => {
+      it('Then it resolves the name through its own stack, not whichever stack it was seen in first', async () => {
+        // Arrange — the common stack holds the MAIN worktree's own HEAD
+        // (symbolic to refs/heads/main), which `listRefs` must not surface
+        // to a linked-worktree caller; the worktree's own stack holds a
+        // DIFFERENT HEAD, symbolic to refs/heads/topic.
+        const base = withReftableStorage(createMemoryContext());
+        const common = commonReftableDir(base);
+        await seedTwoTableStack(base, common);
+        const sut = createReftableRefStore(asWorktreeChild(base));
+        const ownDir = `${adminDir(base)}/reftable`;
+        const headerSpec = { version: 1 as const, minUpdateIndex: 1n, maxUpdateIndex: 1n };
+        const header = buildReftableHeader(headerSpec);
+        const block = buildRefBlock({
+          records: [{ name: 'HEAD', value: { kind: 'symbolic', target: 'refs/heads/topic' } }],
+          restartIndices: [0],
+          isFirstBlock: true,
+          headerLength: header.length,
+        });
+        const bytes = buildReftable({ ...headerSpec, blocks: [block] });
+        await writeReftableFiles(base, ownDir, [{ name: 'table1.ref', bytes }]);
+
+        // Act
+        const entries = await sut.listRefs();
+        const head = entries.find((entry) => entry.name === 'HEAD');
+
+        // Assert — the worktree's own HEAD, matching resolveDirect(HEAD);
+        // the main worktree's own HEAD (refs/heads/main) never appears.
+        expect(head?.value).toEqual({ kind: 'symbolic', target: 'refs/heads/topic' });
+        expect(entries.map((entry) => entry.name)).toContain('refs/heads/main');
+      });
+    });
   });
 });

@@ -184,18 +184,38 @@ export function createReftableRefStore(ctx: Context): RefStore {
   const matchesPrefix = (name: RefName, prefix: RefName | undefined): boolean =>
     prefix === undefined || name.startsWith(prefix);
 
-  async function listRefs(prefix?: RefName): Promise<readonly RefEntry[]> {
-    const stacks = await everyStack();
-    const seen = new Set<RefName>();
-    const entries: RefEntry[] = [];
-    for (const stack of stacks) {
+  /**
+   * Every name a Context can see, collected from its OWNING stack only: a
+   * per-worktree name (HEAD, `refs/bisect/…`) is kept only when found in
+   * `perWorktreeRefDir`'s own directory, never the common dir's — a linked
+   * worktree's Context walks the common stack too (for its shared refs),
+   * and that stack, for the main worktree, doubles as the main worktree's
+   * OWN per-worktree state. Without this filter a linked worktree's
+   * `listRefs` would surface the main worktree's own HEAD as if it were the
+   * caller's. Resolution happens separately, in `listRefs` itself, through
+   * `stackFor(name)` — never the stack a name happened to be SEEN in here —
+   * so a name collected from the wrong stack can never win a wrong value.
+   */
+  async function collectCandidateNames(prefix: RefName | undefined): Promise<ReadonlySet<RefName>> {
+    const names = new Set<RefName>();
+    for (const dir of gitDirs()) {
+      const stack = await stackAt(dir);
       for (const name of stack.names()) {
-        if (!matchesPrefix(name, prefix) || seen.has(name)) continue;
-        seen.add(name);
-        const record = stack.lookup(name);
-        if (record !== undefined) {
-          entries.push({ name, value: toResolveResult(record.value) });
+        if (matchesPrefix(name, prefix) && perWorktreeRefDir(ctx, name) === dir) {
+          names.add(name);
         }
+      }
+    }
+    return names;
+  }
+
+  async function listRefs(prefix?: RefName): Promise<readonly RefEntry[]> {
+    const entries: RefEntry[] = [];
+    for (const name of await collectCandidateNames(prefix)) {
+      const stack = await stackFor(name);
+      const record = stack.lookup(name);
+      if (record !== undefined) {
+        entries.push({ name, value: toResolveResult(record.value) });
       }
     }
     return entries.sort(byName);
