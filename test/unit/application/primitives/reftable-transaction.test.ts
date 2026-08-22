@@ -756,6 +756,41 @@ describe('reftable-transaction', () => {
         expect(stack.lookup(ref('refs/heads/gone2'))).toBeUndefined();
       });
     });
+
+    describe('When a transaction commits', () => {
+      it('Then auto-compaction sizes the untouched older table without a second full read of it', async () => {
+        // Arrange — same 3-table stack shape as the sibling test above: the
+        // write's own CAS/merge pass (`prepareStackWrite`) legitimately
+        // reads `big.ref` once; step 11's compaction-planning pass must size
+        // it (stat + a 5-byte prefix) without reading its bytes a second time.
+        const ctx = withReftableStorage(createMemoryContext());
+        const dir = commonReftableDir(ctx);
+        const bigBytes = await buildFixtureTable(ctx, fillerRefs(50, 1), [], 1n, 1n);
+        const goneBytes = await buildFixtureTable(
+          ctx,
+          [tombstoneRef('refs/heads/gone2', 2)],
+          [],
+          2n,
+          2n,
+        );
+        await writeReftableFiles(ctx, dir, [
+          { name: 'big.ref', bytes: bigBytes },
+          { name: 'gone2.ref', bytes: goneBytes },
+        ]);
+        const readSpy = vi.spyOn(ctx.fs, 'read');
+
+        // Act
+        await applyReftableUpdates(ctx, [
+          { kind: 'set', name: ref('refs/heads/newRef'), id: oid(3) },
+        ]);
+
+        // Assert
+        const bigReadCount = readSpy.mock.calls.filter(
+          (call) => call[0] === `${dir}/big.ref`,
+        ).length;
+        expect(bigReadCount).toBe(1);
+      });
+    });
   });
 
   describe('Given an all-tombstone segment starting at table 0', () => {
@@ -1037,7 +1072,12 @@ describe('reftable-transaction', () => {
         vi.spyOn(ctx.fs, 'read').mockImplementation(async (path: string) => {
           if (path.endsWith('.ref')) {
             refReads += 1;
-            if (refReads > 3) throw fault;
+            // The write's own CAS pass (`prepareStackWrite`) reads `old.ref`
+            // once; compaction's size probe no longer reads table bytes at
+            // all (a `stat` + a 5-byte `readSlice` instead), so the very
+            // next `.ref` read is `mergeSegment`'s own — the merge step this
+            // test targets.
+            if (refReads > 1) throw fault;
           }
           return original(path);
         });
@@ -1149,6 +1189,46 @@ describe('reftable-transaction', () => {
           kind: 'direct',
           id: oid(2),
         });
+      });
+    });
+  });
+
+  describe('Given a reftable stack with two tables', () => {
+    describe('When packRefs forces a whole-stack compaction', () => {
+      it('Then each table is read at most once (no discarded existingNames probe)', async () => {
+        // Arrange — `compactWholeStack` only ever needs `existingNames` to
+        // decide the segment is the whole stack; it must not pay for a full
+        // `readFreshStack` (every table's bytes, log blocks inflated) just to
+        // discard the merge view and keep the name list.
+        const ctx = withReftableStorage(createMemoryContext());
+        const dir = commonReftableDir(ctx);
+        const oldBytes = await buildFixtureTable(
+          ctx,
+          [liveRef('refs/heads/old', 1, 1)],
+          [],
+          1n,
+          1n,
+        );
+        const newBytes = await buildFixtureTable(
+          ctx,
+          [liveRef('refs/heads/other', 2, 2)],
+          [],
+          2n,
+          2n,
+        );
+        await writeReftableFiles(ctx, dir, [
+          { name: 'old.ref', bytes: oldBytes },
+          { name: 'other.ref', bytes: newBytes },
+        ]);
+        const readSpy = vi.spyOn(ctx.fs, 'read');
+
+        // Act
+        await packReftableStack(ctx, ctx.layout.gitDir);
+
+        // Assert
+        const paths = readSpy.mock.calls.map((call) => call[0]);
+        expect(paths.filter((p) => p === `${dir}/old.ref`)).toHaveLength(1);
+        expect(paths.filter((p) => p === `${dir}/other.ref`)).toHaveLength(1);
       });
     });
   });

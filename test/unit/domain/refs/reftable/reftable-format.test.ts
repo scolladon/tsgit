@@ -7,6 +7,7 @@ import {
   FOOTER_LENGTH_V1,
   HEADER_LENGTH_V1,
   parseReftable,
+  readMagicAndVersion,
   readVarint,
 } from '../../../../../src/domain/refs/reftable/reftable-format.js';
 import { buildReftable, buildReftableBlock, buildReftableHeader } from './arbitraries.js';
@@ -303,6 +304,108 @@ describe('reftable-format', () => {
 
           // Act & Assert
           expectRefusal(() => parseReftable(bytes), 'version', 'hash id');
+        });
+      });
+    });
+  });
+
+  describe('readMagicAndVersion', () => {
+    describe('Given a valid v1 table', () => {
+      describe('When reading just its 5-byte magic/version prefix and real length', () => {
+        it('Then it returns version 1 — the same version parseReftable reads from the full bytes', () => {
+          // Arrange
+          const bytes = buildReftable({ version: 1, blocks: [] });
+          const sut = readMagicAndVersion;
+
+          // Act
+          const result = sut(bytes.subarray(0, 5), bytes.length);
+
+          // Assert
+          expect(result.version).toBe(parseReftable(bytes).header.version);
+        });
+      });
+    });
+
+    describe('Given a valid v2 table', () => {
+      describe('When reading just its 5-byte magic/version prefix and real length', () => {
+        it('Then it returns version 2', () => {
+          // Arrange
+          const bytes = buildReftable({ version: 2, hashId: 'sha1', blocks: [] });
+          const sut = readMagicAndVersion;
+
+          // Act
+          const result = sut(bytes.subarray(0, 5), bytes.length);
+
+          // Assert
+          expect(result.version).toBe(2);
+        });
+      });
+    });
+
+    describe('Given a prefix with the magic bytes replaced by XXXX', () => {
+      describe('When reading it', () => {
+        it('Then refuses with magic', () => {
+          // Arrange
+          const bytes = pokeMagic(buildReftable({ version: 1 }));
+
+          // Act & Assert
+          expectRefusal(
+            () => readMagicAndVersion(bytes.subarray(0, 5), bytes.length),
+            'magic',
+            'magic',
+          );
+        });
+      });
+    });
+
+    describe('Given a prefix declaring version 9', () => {
+      describe('When reading it', () => {
+        it('Then refuses with version', () => {
+          // Arrange
+          const bytes = pokeVersion(buildReftable({ version: 1 }), 9);
+
+          // Act & Assert
+          expectRefusal(
+            () => readMagicAndVersion(bytes.subarray(0, 5), bytes.length),
+            'version',
+            'version',
+          );
+        });
+      });
+    });
+
+    describe('Given a file length shorter than the smallest possible header', () => {
+      describe('When reading it', () => {
+        it('Then refuses with truncated, without ever reading the prefix bytes', () => {
+          // Arrange — a real caller would pass the true (short) file length
+          // from `stat`, so this checks the length gate fires before the
+          // `DataView` over `prefix` is even constructed.
+          const bytes = buildReftable({ version: 1 });
+
+          // Act & Assert
+          expectRefusal(
+            () => readMagicAndVersion(bytes.subarray(0, 5), 10),
+            'truncated',
+            'truncated',
+          );
+        });
+      });
+    });
+
+    describe('Given a v1-magic file whose real length is too short for its own header and footer', () => {
+      describe('When reading it', () => {
+        it('Then refuses with truncated', () => {
+          // Arrange — `fileByteLength` (91) is at least HEADER_LENGTH_V1
+          // (24) but under the v1 header+footer floor (92), the SECOND
+          // truncation gate `parseReftable` itself also enforces.
+          const bytes = buildReftable({ version: 1, blocks: [] });
+
+          // Act & Assert
+          expectRefusal(
+            () => readMagicAndVersion(bytes.subarray(0, 5), 91),
+            'truncated',
+            'truncated',
+          );
         });
       });
     });

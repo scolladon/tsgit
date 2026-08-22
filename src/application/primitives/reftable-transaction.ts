@@ -72,6 +72,7 @@ import {
   type ReftableRefRecord,
   type ReftableStack,
   type ReftableWriteOptions,
+  readMagicAndVersion,
   serializeReftable,
   suggestCompactionSegment,
 } from '../../domain/refs/index.js';
@@ -100,6 +101,10 @@ const TEXT_ENCODER = new TextEncoder();
 /** git's own `reftable.lockTimeout` default: 100ms, jittered backoff. */
 const LOCK_RETRY_BUDGET_MS = 100;
 const LOCK_RETRY_BASE_MS = 10;
+
+/** `readMagicAndVersion`'s own input width: 4-byte magic + 1-byte version —
+ *  the size-probe's whole read per table. */
+const MAGIC_AND_VERSION_PREFIX_BYTES = 5;
 
 function isFileExists(err: unknown): boolean {
   return errorDataCode(err) === 'FILE_EXISTS';
@@ -204,6 +209,54 @@ async function readFreshStack(ctx: Context, gitDir: string): Promise<FreshStackR
     tables.push(await loadReftable(bytes, ctx.compressor.streamInflate));
   }
   return { stack: createReftableStack(tables), existingNames };
+}
+
+/**
+ * `tables.list`'s own name listing — `readFreshStack`'s `existingNames`
+ * half, without opening (let alone log-block-inflating) a single table.
+ * `compactWholeStack` needs nothing else: its segment is always the whole
+ * stack, so there is no per-table decision to make from the bytes.
+ */
+async function readFreshTableNames(ctx: Context, gitDir: string): Promise<readonly string[]> {
+  let text: string;
+  try {
+    text = await ctx.fs.readUtf8(tablesListPath(gitDir));
+  } catch (err) {
+    if (isDegradableReftableFault(err)) return [];
+    throw err;
+  }
+  return parseTablesList(text);
+}
+
+interface StackSizeProbe {
+  readonly existingNames: readonly string[];
+  readonly sizes: readonly number[];
+}
+
+/**
+ * `readFreshStack`'s size-only counterpart: `planCompaction`'s geometric
+ * decision needs each table's on-disk size and format version, never its
+ * parsed ref/log records — so this sizes every table with one `stat` and a
+ * 5-byte `readSlice` apiece instead of reading (and, via `loadReftable`,
+ * fully log-block-inflating) each one whole. Correctness is unaffected:
+ * `acquireCompactionLocks` re-verifies the probed name list against a fresh
+ * `tables.list` read under the lock before anything is merged, and the
+ * merge itself (`mergeSegment`) loads the ACTUAL tables it merges in full —
+ * a table this probe mis-sizes (impossible for a well-formed file) or skips
+ * validating beyond its header would still be caught there.
+ */
+async function probeStackSizes(ctx: Context, gitDir: string): Promise<StackSizeProbe> {
+  const existingNames = await readFreshTableNames(ctx, gitDir);
+  const dir = reftableDir(gitDir);
+  const sizes: number[] = [];
+  for (const name of existingNames) {
+    const path = `${dir}/${name}`;
+    const fileSize = (await ctx.fs.stat(path)).size;
+    const prefix = await ctx.fs.readSlice(path, 0, MAGIC_AND_VERSION_PREFIX_BYTES);
+    const { version } = readMagicAndVersion(prefix, fileSize);
+    sizes.push(compactionMetric(fileSize, version));
+  }
+  return { existingNames, sizes };
 }
 
 function expectedOf(update: RefUpdate): ObjectId | 'absent' | undefined {
@@ -617,11 +670,8 @@ interface CompactionPlan {
 
 function planCompaction(
   existingNames: readonly string[],
-  stack: ReftableStack,
+  sizes: readonly number[],
 ): CompactionPlan | undefined {
-  const sizes = stack.tables.map((table) =>
-    compactionMetric(table._bytes.length, table.header.version),
-  );
   const segment = suggestCompactionSegment(sizes, DEFAULT_GEOMETRIC_FACTOR);
   if (segment.start === segment.end) return undefined;
   return { plannedNames: existingNames.slice(segment.start, segment.end) };
@@ -855,8 +905,8 @@ async function commitCompaction(
 }
 
 async function runAutoCompaction(ctx: Context, gitDir: string): Promise<void> {
-  const { stack, existingNames } = await readFreshStack(ctx, gitDir);
-  const plan = planCompaction(existingNames, stack);
+  const { existingNames, sizes } = await probeStackSizes(ctx, gitDir);
+  const plan = planCompaction(existingNames, sizes);
   if (plan === undefined) return;
 
   const locked = await acquireCompactionLocks(ctx, gitDir, existingNames, plan.plannedNames);
@@ -917,7 +967,7 @@ async function tryAutoCompact(ctx: Context, gitDir: string): Promise<void> {
  *  always `[0, n)` when nothing shrinks it under contention. A stack of
  *  fewer than two tables has nothing to compact. */
 async function compactWholeStack(ctx: Context, gitDir: string): Promise<void> {
-  const { existingNames } = await readFreshStack(ctx, gitDir);
+  const existingNames = await readFreshTableNames(ctx, gitDir);
   if (existingNames.length < 2) return;
   const locked = await acquireCompactionLocks(ctx, gitDir, existingNames, existingNames);
   if (locked === undefined) return;

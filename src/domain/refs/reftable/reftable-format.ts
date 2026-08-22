@@ -158,25 +158,31 @@ function readFooter(bytes: Uint8Array, view: DataView, layout: VersionLayout): R
 }
 
 /**
- * Parses a reftable stack file's bytes into its header and footer fields.
- * Every `DataView` read is proved in-bounds by an earlier gate — a
- * `RangeError` escaping this function is a defect, never an expected error
- * path. Ref/index/obj block record grammar is not decoded here — that is
- * `reftable-block.ts`'s job.
+ * The magic/version/truncation subset of {@link parseReftable}'s own gates —
+ * everything a caller can decide from just the first 5 bytes plus the file's
+ * total length, never its footer. Exported so `reftable-transaction.ts`'s
+ * compaction size probe can size every table in a stack from a `stat` and a
+ * 5-byte `readSlice` alone, instead of reading (and, for `parseReftable`'s
+ * caller `loadReftable`, inflating every log block of) each one in full just
+ * to learn its version. `prefix` needs only its first 5 bytes; `fileByteLength`
+ * is the file's REAL total size (from `stat`), never `prefix.length`.
  */
-export function parseReftable(bytes: Uint8Array): Reftable {
-  if (bytes.length < HEADER_LENGTH_V1) {
+export function readMagicAndVersion(
+  prefix: Uint8Array,
+  fileByteLength: number,
+): { readonly version: 1 | 2 } {
+  if (fileByteLength < HEADER_LENGTH_V1) {
     throw invalidReftable(
       'truncated',
-      `truncated: file too short for a reftable header: ${bytes.length} bytes`,
+      `truncated: file too short for a reftable header: ${fileByteLength} bytes`,
     );
   }
 
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const view = new DataView(prefix.buffer, prefix.byteOffset, prefix.byteLength);
 
   const magic = view.getUint32(0);
   if (magic !== REFT_MAGIC) {
-    // Never echo the bytes actually read: `bytes` can come from an
+    // Never echo the bytes actually read: `prefix` can come from an
     // unvalidated `tables.list` entry — a shipped symlink pointing outside
     // the reftable directory, say — and echoing its content back turns a
     // parse refusal into a four-bytes-at-a-time read oracle over whatever
@@ -190,13 +196,27 @@ export function parseReftable(bytes: Uint8Array): Reftable {
   }
 
   const layout = VERSION_LAYOUT.get(version)!;
-  if (bytes.length < layout.headerLength + layout.footerLength) {
+  if (fileByteLength < layout.headerLength + layout.footerLength) {
     throw invalidReftable(
       'truncated',
-      `truncated: file too short for its own header and footer: ${bytes.length} bytes, needs at least ${layout.headerLength + layout.footerLength}`,
+      `truncated: file too short for its own header and footer: ${fileByteLength} bytes, needs at least ${layout.headerLength + layout.footerLength}`,
     );
   }
 
+  return { version };
+}
+
+/**
+ * Parses a reftable stack file's bytes into its header and footer fields.
+ * Every `DataView` read is proved in-bounds by an earlier gate — a
+ * `RangeError` escaping this function is a defect, never an expected error
+ * path. Ref/index/obj block record grammar is not decoded here — that is
+ * `reftable-block.ts`'s job.
+ */
+export function parseReftable(bytes: Uint8Array): Reftable {
+  const { version } = readMagicAndVersion(bytes, bytes.length);
+  const layout = VERSION_LAYOUT.get(version)!;
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const header = readHeader(bytes, view, version, layout);
   const footer = readFooter(bytes, view, layout);
 
