@@ -26,6 +26,7 @@ import {
   reflogPath,
 } from './path-layout.js';
 import { recordRefUpdate } from './record-ref-update.js';
+import { createReftableRefStore } from './reftable-ref-store.js';
 import { MAX_REFLOG_BYTES } from './types.js';
 
 const TEXT_ENCODER = new TextEncoder();
@@ -193,7 +194,16 @@ const byName = (a: RefEntry, b: RefEntry): number => {
   return 0;
 };
 
+/** Backend dispatcher: `ctx.layout.refStorage` picks the files or reftable
+ *  implementation. `getRefStore`'s `Context`-keyed memo (below) is what
+ *  keeps this a one-shot decision per Context. */
 export function createRefStore(ctx: Context): RefStore {
+  return ctx.layout.refStorage === 'reftable'
+    ? createReftableRefStore(ctx)
+    : createFilesRefStore(ctx);
+}
+
+function createFilesRefStore(ctx: Context): RefStore {
   let packedCache: { readonly parsed: PackedRefs; readonly mtimeKey: string } | undefined;
 
   const refDir = (name: RefName): string => perWorktreeRefDir(ctx, name);

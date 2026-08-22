@@ -529,7 +529,17 @@ describe('reftable-block', () => {
         isFirstBlock: true,
         headerLength: header.length,
       });
+      // `pos0` is the byte offset block0 actually starts at in the file
+      // (the header). The index-record `block_position` NAMING block0 is a
+      // different value — `0`, not `header.length` — measured against a
+      // real git-produced multi-block index (git 2.55.0): the writer's
+      // block-boundary arithmetic treats the file header as part of the
+      // first block's own span, so an index record naming the first block
+      // always carries `block_position: 0`, never its true file offset.
+      // `resolveRefBlockPosition`/`collectIndexLeaves` translate that `0`
+      // back to `header.length` before reading a block-type byte there.
       const pos0 = header.length;
+      const block0IndexPosition = 0;
       const block1 = buildRefBlock({
         records: [{ name: 'refs/heads/zzz', value: { kind: 'direct', id: oid(0x22) } }],
         isFirstBlock: false,
@@ -537,7 +547,7 @@ describe('reftable-block', () => {
       const pos1 = pos0 + block0.length;
       const leafIndex = buildIndexBlock({
         records: [
-          { key: 'refs/heads/aaa', blockPosition: pos0 },
+          { key: 'refs/heads/aaa', blockPosition: block0IndexPosition },
           { key: 'refs/heads/zzz', blockPosition: pos1 },
         ],
         isFirstBlock: false,

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import {
   assertRenamableTrackingRef,
   createRefStore,
@@ -9,7 +10,26 @@ import { writeObject } from '../../../../src/application/primitives/write-object
 import type { TsgitError } from '../../../../src/domain/error.js';
 import type { AuthorIdentity, ObjectId, RefName } from '../../../../src/domain/objects/index.js';
 import type { ReflogEntry } from '../../../../src/domain/reflog/index.js';
+import {
+  buildRefBlock,
+  buildReftable,
+  buildReftableHeader,
+} from '../../../fixtures/refs/reftable-writers.js';
 import { buildSeededContext } from './fixtures.js';
+import { commonReftableDir, withReftableStorage, writeReftableFiles } from './reftable-fixtures.js';
+
+/** A single-record ref-block table naming `refName -> id`. */
+function buildSingleRefTable(refName: string, id: Uint8Array): Uint8Array {
+  const headerSpec = { version: 1 as const, minUpdateIndex: 1n, maxUpdateIndex: 1n };
+  const header = buildReftableHeader(headerSpec);
+  const block = buildRefBlock({
+    records: [{ name: refName, value: { kind: 'direct', id } }],
+    restartIndices: [0],
+    isFirstBlock: true,
+    headerLength: header.length,
+  });
+  return buildReftable({ ...headerSpec, blocks: [block] });
+}
 
 const IDENTITY: AuthorIdentity = {
   name: 'Ada',
@@ -767,6 +787,52 @@ describe('ref-store', () => {
         const entries = await readReflog(ctx, name);
         expect(entries).toHaveLength(1);
         expect(entries[0]?.message).toBe('stash entry');
+      });
+    });
+  });
+
+  describe('Given a Context whose layout declares refStorage: reftable', () => {
+    describe('When createRefStore builds the backend', () => {
+      it('Then it produces the reftable backend', async () => {
+        // Arrange — no loose/packed files exist at all; only a reftable stack.
+        const ctx = withReftableStorage(createMemoryContext());
+        await writeReftableFiles(ctx, commonReftableDir(ctx), [
+          {
+            name: 'table1.ref',
+            bytes: buildSingleRefTable('refs/heads/main', new Uint8Array(20).fill(0xaa)),
+          },
+        ]);
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.resolveDirect('refs/heads/main' as RefName);
+
+        // Assert
+        expect(result).toEqual({ kind: 'direct', id: 'aa'.repeat(20) });
+      });
+    });
+  });
+
+  describe('Given a Context whose layout declares refStorage: files', () => {
+    describe('When createRefStore builds the backend', () => {
+      it('Then it produces the files backend, ignoring a reftable stack on disk', async () => {
+        // Arrange — a reftable stack AND a loose ref disagree on the value;
+        // the files backend must read the loose file, proving dispatch.
+        const ctx = createMemoryContext();
+        await writeReftableFiles(ctx, commonReftableDir(ctx), [
+          {
+            name: 'table1.ref',
+            bytes: buildSingleRefTable('refs/heads/main', new Uint8Array(20).fill(0xaa)),
+          },
+        ]);
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${'bb'.repeat(20)}\n`);
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.resolveDirect('refs/heads/main' as RefName);
+
+        // Assert
+        expect(result).toEqual({ kind: 'direct', id: 'bb'.repeat(20) });
       });
     });
   });

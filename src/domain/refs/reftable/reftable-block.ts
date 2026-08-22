@@ -465,6 +465,23 @@ function findRefBlockContaining(reftable: Reftable, target: Uint8Array): number 
 }
 
 /**
+ * An index record's `block_position` is the writer's own block-boundary
+ * arithmetic, which treats the file header as PART of the first block's
+ * span — so the first ref (or index) block is always recorded as position
+ * `0`, never as `header.headerLength`, even though byte `0` itself is the
+ * file's magic, not a block-type byte. Every other block's recorded
+ * position is already the literal file offset its type byte lives at. This
+ * is the index-record counterpart to the "S2" restart-offset divergence
+ * `blockBoundsAt` already translates for the first block's own restart
+ * array (same root cause — the first block's header-inclusive span —
+ * surfacing in a different field); measured against a real git-produced
+ * multi-block index, not assumed from the spec prose.
+ */
+function resolveBlockOffset(reftable: Reftable, position: number): number {
+  return position === 0 ? reftable.header.headerLength : position;
+}
+
+/**
  * Resolves `target`'s candidate ref-block position. `undefined` when the
  * table has no ref section at all (a literally empty table, or a log-only
  * file) — detected from the block type actually present at `headerLength`,
@@ -489,11 +506,12 @@ function resolveRefBlockPosition(reftable: Reftable, target: Uint8Array): number
     if (found === undefined) {
       return undefined;
     }
-    if (blockTypeAt(reftable, found.payload) !== 'i') {
-      assertBlockType(reftable, found.payload, 'r');
-      return found.payload;
+    const childPosition = resolveBlockOffset(reftable, found.payload);
+    if (blockTypeAt(reftable, childPosition) !== 'i') {
+      assertBlockType(reftable, childPosition, 'r');
+      return childPosition;
     }
-    indexBlockStart = found.payload;
+    indexBlockStart = childPosition;
   }
 }
 
@@ -538,11 +556,8 @@ function* refBlockPositions(reftable: Reftable): Generator<number> {
 function* collectIndexLeaves(reftable: Reftable, indexBlockStart: number): Generator<number> {
   assertBlockType(reftable, indexBlockStart, 'i');
   const bounds = blockBoundsAt(reftable, indexBlockStart);
-  for (const { payload: childPosition } of walkBlockRecords(
-    reftable._bytes,
-    bounds,
-    decodeIndexRecord,
-  )) {
+  for (const { payload } of walkBlockRecords(reftable._bytes, bounds, decodeIndexRecord)) {
+    const childPosition = resolveBlockOffset(reftable, payload);
     if (blockTypeAt(reftable, childPosition) === 'i') {
       yield* collectIndexLeaves(reftable, childPosition);
     } else {
