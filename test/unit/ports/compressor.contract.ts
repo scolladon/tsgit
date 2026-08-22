@@ -186,28 +186,43 @@ export function compressorContractTests(createSut: () => Promise<Compressor>): v
       expect(result.output).toEqual(payload);
     });
 
-    it('Given a zlib member whose full output vastly exceeds a caller-supplied bound, When streamInflate is called with that bound, Then it aborts well within a short timeout rather than materializing the full output first', async () => {
-      // Arrange — 64 MiB of zeros deflates to a tiny compressed member (high
-      // compressibility), so building the fixture is cheap; fully decoding it
-      // is not. An implementation that inflates in full before comparing
-      // `output.length` against the bound measurably exceeds this timeout —
-      // the pure-JS decoder alone takes several hundred milliseconds to
-      // decode 64 MiB. A genuinely incremental abort, bounded by the 1 KiB
-      // cap, returns in low single-digit milliseconds regardless of how
-      // large the declared/actual total is.
+    it('Given a zlib member whose full output vastly exceeds a caller-supplied bound, When streamInflate is called with that bound, Then it aborts after decoding a fraction of the member rather than materializing all of it', async () => {
+      // Arrange — a highly compressible buffer deflates to a tiny member, so
+      // building the fixture is cheap while decoding it in full is not. The
+      // oracle is RELATIVE, never an absolute wall-clock budget: an absolute
+      // one is really a measurement of the host and of whatever instrumentation
+      // wraps the run, and fails under coverage on an implementation that is
+      // perfectly correct. Timing the same member unbounded, in the same
+      // process under the same instrumentation, calibrates the comparison
+      // away. An implementation that inflates fully and only then compares
+      // `output.length` does the SAME work in both arms, so the ratio
+      // collapses toward 1 and this fails — which is exactly the defect the
+      // row exists to catch.
       const sut = await createSut();
-      const fullSize = 64 * 1024 * 1024;
       const bound = 1024;
-      const deflated = await sut.deflate(new Uint8Array(fullSize));
+      const deflated = await sut.deflate(new Uint8Array(8 * 1024 * 1024));
 
+      // Act — unbounded decode first, to calibrate the cost of the full member.
+      const beforeFull = performance.now();
+      const full = await sut.streamInflate(deflated, 0);
+      const fullElapsed = performance.now() - beforeFull;
+
+      const beforeBounded = performance.now();
+      let bounded: unknown;
       try {
         await sut.streamInflate(deflated, 0, bound);
-        expect.fail('expected DECOMPRESS_FAILED');
       } catch (err) {
-        expect(err).toBeInstanceOf(TsgitError);
-        expect((err as TsgitError).data.code).toBe('DECOMPRESS_FAILED');
+        bounded = err;
       }
-    }, 200);
+      const boundedElapsed = performance.now() - beforeBounded;
+
+      // Assert — the bounded arm refuses, and got there without paying for the
+      // whole member.
+      expect(full.output.length).toBe(8 * 1024 * 1024);
+      expect(bounded).toBeInstanceOf(TsgitError);
+      expect((bounded as TsgitError).data.code).toBe('DECOMPRESS_FAILED');
+      expect(boundedElapsed).toBeLessThan(fullElapsed / 4);
+    });
 
     it('Given non-empty data, When deflateRaw vs deflate, Then outputs differ (no zlib wrapper)', async () => {
       // Arrange — kills a mutant aliasing deflateRaw to deflate: deflate wraps with
