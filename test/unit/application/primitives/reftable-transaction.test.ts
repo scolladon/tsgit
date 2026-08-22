@@ -553,6 +553,84 @@ describe('reftable-transaction', () => {
     });
   });
 
+  describe('Given a non-default-loggable ref with prior reflog history, updated alongside a sibling with none', () => {
+    describe('When one transaction updates both refs without unconditional reflog entries', () => {
+      it('Then only the ref with prior history gains a new entry', async () => {
+        // Arrange — `refs/tags/*` is not in git's default-loggable prefix
+        // set, so a non-unconditional reflog append is gated purely by
+        // whether the ref ALREADY has log history anywhere in the stack.
+        // Both refs are updated in ONE transaction, so both share the same
+        // hoisted loggable-names set `prepareStackWrite` computes once.
+        const ctx = withReftableStorage(createMemoryContext());
+        const withHistory = ref('refs/tags/v1');
+        const withoutHistory = ref('refs/tags/v2');
+        await applyReftableUpdates(ctx, [
+          {
+            kind: 'set',
+            name: withHistory,
+            id: oid(1),
+            reflog: { oldId: oid(0), newId: oid(1), message: 'created', unconditional: true },
+          },
+        ]);
+
+        // Act
+        await applyReftableUpdates(ctx, [
+          {
+            kind: 'set',
+            name: withHistory,
+            id: oid(2),
+            reflog: { oldId: oid(1), newId: oid(2), message: 'moved' },
+          },
+          {
+            kind: 'set',
+            name: withoutHistory,
+            id: oid(3),
+            reflog: { oldId: oid(0), newId: oid(3), message: 'moved too' },
+          },
+        ]);
+
+        // Assert
+        const store = createReftableRefStore(ctx);
+        expect(await store.readReflog(withHistory)).toHaveLength(2);
+        expect(await store.readReflog(withoutHistory)).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a non-default-loggable ref whose entire reflog was tombstoned by a deletion', () => {
+    describe('When it is re-created without an unconditional reflog entry', () => {
+      it('Then no reflog entry is appended — a shadowed (deleted) history does not count as loggable', async () => {
+        // Arrange
+        const ctx = withReftableStorage(createMemoryContext());
+        const name = ref('refs/tags/v1');
+        await applyReftableUpdates(ctx, [
+          {
+            kind: 'set',
+            name,
+            id: oid(1),
+            reflog: { oldId: oid(0), newId: oid(1), message: 'created', unconditional: true },
+          },
+        ]);
+        await applyReftableUpdates(ctx, [{ kind: 'delete', name }]);
+
+        // Act
+        await applyReftableUpdates(ctx, [
+          {
+            kind: 'set',
+            name,
+            id: oid(2),
+            reflog: { oldId: oid(0), newId: oid(2), message: 'recreated' },
+          },
+        ]);
+
+        // Assert
+        const store = createReftableRefStore(ctx);
+        expect(await store.readReflog(name)).toEqual([]);
+        expect(await store.resolveDirect(name)).toEqual({ kind: 'direct', id: oid(2) });
+      });
+    });
+  });
+
   describe('Given an update list spanning a shared ref and a per-worktree ref', () => {
     describe('When the transaction commits', () => {
       it('Then the common lock is acquired before the worktree lock, and both stacks commit', async () => {

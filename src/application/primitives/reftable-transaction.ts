@@ -319,19 +319,41 @@ function verifyExpectations(updates: readonly RefUpdate[], stack: ReftableStack)
   }
 }
 
-function hasLogHistory(stack: ReftableStack, name: RefName): boolean {
-  for (const _entry of stack.logs(name)) return true;
-  return false;
+/**
+ * Every name with at least one LIVE log record anywhere in `stack` — one
+ * pass over every table's log records (newest table first, mirroring
+ * `mergeLogRecords`'s own `(name, update_index)` shadow key), computed ONCE
+ * per {@link prepareStackWrite} rather than re-derived by a fresh
+ * `stack.logs(name)` scan — an O(stack log records) walk on its own — for
+ * EVERY update in the batch. `hasLogHistory` below is then an O(1) lookup
+ * against this set.
+ */
+function collectLoggableNames(stack: ReftableStack): ReadonlySet<RefName> {
+  const live = new Set<RefName>();
+  const shadowedKeys = new Set<string>();
+  for (const table of [...stack.tables].reverse()) {
+    for (const record of iterateReftableLogs(table)) {
+      const key = `${record.name}\0${record.updateIndex}`;
+      if (shadowedKeys.has(key)) continue;
+      shadowedKeys.add(key);
+      if (record.entry.kind !== 'deletion') live.add(record.name);
+    }
+  }
+  return live;
+}
+
+function hasLogHistory(loggableNames: ReadonlySet<RefName>, name: RefName): boolean {
+  return loggableNames.has(name);
 }
 
 /** The reftable counterpart to `record-ref-update.ts`'s `isLoggable`: "has a
  *  reflog" is any log record anywhere in the stack, not a physical file. */
 async function isReftableLoggable(
   ctx: Context,
-  stack: ReftableStack,
+  loggableNames: ReadonlySet<RefName>,
   name: RefName,
 ): Promise<boolean> {
-  if (hasLogHistory(stack, name)) return true;
+  if (hasLogHistory(loggableNames, name)) return true;
   const config = await readConfig(ctx);
   return shouldAutocreateReflog(name, config.core ?? {});
 }
@@ -343,7 +365,7 @@ async function isReftableLoggable(
  *  the loggability gate is closed. */
 async function maybeAppendReflog(
   ctx: Context,
-  stack: ReftableStack,
+  loggableNames: ReadonlySet<RefName>,
   logs: ReftableLogRecord[],
   name: RefName,
   updateIndex: bigint,
@@ -351,7 +373,8 @@ async function maybeAppendReflog(
   reflog: ReflogAppend | undefined,
 ): Promise<boolean> {
   if (reflog === undefined) return false;
-  if (reflog.unconditional !== true && !(await isReftableLoggable(ctx, stack, name))) return false;
+  if (reflog.unconditional !== true && !(await isReftableLoggable(ctx, loggableNames, name)))
+    return false;
   logs.push({
     name,
     updateIndex,
@@ -436,6 +459,7 @@ function applyReflogReplaceRecords(
 async function applyOneUpdate(
   ctx: Context,
   stack: ReftableStack,
+  loggableNames: ReadonlySet<RefName>,
   update: RefUpdate,
   updateIndex: bigint,
   identity: AuthorIdentity,
@@ -445,7 +469,15 @@ async function applyOneUpdate(
   switch (update.kind) {
     case 'set':
       refs.push({ name: update.name, updateIndex, value: { kind: 'direct', id: update.id } });
-      await maybeAppendReflog(ctx, stack, logs, update.name, updateIndex, identity, update.reflog);
+      await maybeAppendReflog(
+        ctx,
+        loggableNames,
+        logs,
+        update.name,
+        updateIndex,
+        identity,
+        update.reflog,
+      );
       return;
     case 'setSymbolic':
       refs.push({
@@ -453,13 +485,29 @@ async function applyOneUpdate(
         updateIndex,
         value: { kind: 'symbolic', target: update.target },
       });
-      await maybeAppendReflog(ctx, stack, logs, update.name, updateIndex, identity, update.reflog);
+      await maybeAppendReflog(
+        ctx,
+        loggableNames,
+        logs,
+        update.name,
+        updateIndex,
+        identity,
+        update.reflog,
+      );
       return;
     case 'delete':
       applyDeleteRecords(stack, update.name, updateIndex, refs, logs);
       return;
     case 'reflogOnly':
-      await maybeAppendReflog(ctx, stack, logs, update.name, updateIndex, identity, update.reflog);
+      await maybeAppendReflog(
+        ctx,
+        loggableNames,
+        logs,
+        update.name,
+        updateIndex,
+        identity,
+        update.reflog,
+      );
       return;
     case 'reflogReplace':
       applyReflogReplaceRecords(stack, update, updateIndex, logs);
@@ -508,10 +556,11 @@ async function prepareStackWrite(
   const { stack, existingNames } = await readFreshStack(ctx, gitDir);
   verifyExpectations(updates, stack);
   const updateIndex = stack.maxUpdateIndex + 1n;
+  const loggableNames = collectLoggableNames(stack);
   const refs: ReftableRefRecord[] = [];
   const logs: ReftableLogRecord[] = [];
   for (const update of updates) {
-    await applyOneUpdate(ctx, stack, update, updateIndex, identity, refs, logs);
+    await applyOneUpdate(ctx, stack, loggableNames, update, updateIndex, identity, refs, logs);
   }
   const bounds = boundingIndices(updateIndex, refs, logs);
   return {
