@@ -1496,6 +1496,54 @@ describe('reftable-transaction', () => {
     });
   });
 
+  describe('Given a compaction mid-merge, and a concurrent packRefs sweep observing its in-flight temp file', () => {
+    describe('When the sweep runs before the compaction renames its temp table in', () => {
+      it('Then the sweep does not unlink the live temp file — the compaction still commits', async () => {
+        // Arrange — two tables qualify `compactWholeStack`'s forced
+        // whole-stack segment. Spying on `writeExclusive` fires a
+        // CONCURRENT `packReftableStack` call the instant the compaction's
+        // own temp file lands, but before its rename — `acquireCompactionLocks`
+        // releases `tables.list.lock` after step 3 (so concurrent writers
+        // aren't blocked during the merge), which is exactly the window a
+        // concurrent sweep's own list-lock acquisition can land in. The
+        // per-table `*.ref.lock`s the outer compaction still holds are what
+        // must keep the sweep from treating the temp file as orphaned.
+        const ctx = withReftableStorage(createMemoryContext());
+        const dir = commonReftableDir(ctx);
+        const bytesA = await buildFixtureTable(ctx, [liveRef('refs/heads/a', 1, 1)], [], 1n, 1n);
+        const bytesB = await buildFixtureTable(ctx, [liveRef('refs/heads/b', 2, 2)], [], 2n, 2n);
+        await writeReftableFiles(ctx, dir, [
+          { name: 'a.ref', bytes: bytesA },
+          { name: 'b.ref', bytes: bytesB },
+        ]);
+        const originalWriteExclusive = ctx.fs.writeExclusive.bind(ctx.fs);
+        let interleaved = false;
+        vi.spyOn(ctx.fs, 'writeExclusive').mockImplementation(
+          async (path: string, data: Uint8Array) => {
+            const result = await originalWriteExclusive(path, data);
+            if (!interleaved && path.endsWith('.temp')) {
+              interleaved = true;
+              await packReftableStack(ctx, ctx.layout.gitDir);
+            }
+            return result;
+          },
+        );
+
+        // Act
+        await packReftableStack(ctx, ctx.layout.gitDir);
+
+        // Assert — the outer compaction still merged both tables into one;
+        // a deleted-out-from-under-it temp file would have made
+        // `commitMergedList`'s rename throw instead.
+        expect(interleaved).toBe(true);
+        const stack = await loadReftableStack(ctx, dir);
+        expect(stack.tables).toHaveLength(1);
+        expect(stack.lookup(ref('refs/heads/a'))).toBeDefined();
+        expect(stack.lookup(ref('refs/heads/b'))).toBeDefined();
+      });
+    });
+  });
+
   describe('Given tables.list changes between compaction planning its merge and re-verifying it', () => {
     describe('When a transaction commits', () => {
       it('Then the stack is outdated between the two lock acquisitions and the compaction aborts', async () => {

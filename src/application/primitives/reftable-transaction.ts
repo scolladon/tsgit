@@ -1077,9 +1077,19 @@ async function tryAutoCompact(ctx: Context, gitDir: string): Promise<void> {
 // writer that stages its own table (steps 6-7) DURING an unlocked window
 // produces a file that is legitimately absent from that stale list too, and
 // an unlink then deletes a live, in-flight table out from under it. Holding
-// the lock throughout — git's own `reftable_stack_clean` — closes that
-// window by construction: no writer can even begin staging while the sweep
-// holds it.
+// the lock throughout — git's own `reftable_stack_clean` — closes THAT
+// window by construction for a plain write: `applyReftableUpdates` holds
+// `tables.list.lock` continuously from before it stages a single table to
+// after it commits. A COMPACTION's own temp file is NOT covered by the same
+// guarantee — `acquireCompactionLocks` deliberately releases the list lock
+// once its segment's tables are locked, so a concurrent sweep's list-lock
+// acquisition can land squarely inside `mergeSegment`'s write. What DOES
+// cover a compaction's temp file: every table it is merging stays
+// `*.ref.lock`ed for the segment's whole lifetime (released only once
+// `commitCompaction` finishes) — so the sweep treats ANY such lock file's
+// presence as "a compaction might be mid-flight" and defers `*.temp`
+// cleanup for that pass. Conservative (a genuinely stale temp waits one
+// more sweep before it is reclaimed), never unsafe.
 
 /** Forces a compaction over the WHOLE stack rather than the geometric
  *  suggestion — `plannedNames = probedNames` in full, so the segment is
@@ -1097,6 +1107,11 @@ async function compactWholeStack(ctx: Context, gitDir: string): Promise<void> {
 
 const ORPHAN_TABLE_SUFFIXES: readonly string[] = ['.ref', '.temp'];
 
+/** `reftableTableLockPath`'s own suffix (`<tableName>.lock`, where
+ *  `tableName` already ends in `.ref`) — the sweep's own signal that a
+ *  compaction might currently be mid-merge (see the module comment above). */
+const TABLE_LOCK_SUFFIX = '.ref.lock';
+
 function isOrphanCandidate(fileName: string): boolean {
   return ORPHAN_TABLE_SUFFIXES.some((suffix) => fileName.endsWith(suffix));
 }
@@ -1104,18 +1119,31 @@ function isOrphanCandidate(fileName: string): boolean {
 /** Unlinks every `*.ref` / `*.temp` file the tables.list read under the lock
  *  doesn't name — the lock held across the readdir + unlink walk too (see
  *  the module comment above), so no writer can stage a table this sweep
- *  would then mistake for an orphan. Best effort within that protected
- *  window: a file already gone by the time the unlink runs (a concurrent
- *  reader's own cleanup) is not an error. */
+ *  would then mistake for an orphan. A COMPACTION's own in-flight temp file
+ *  is the one shape that guarantee doesn't cover (its list-lock hold is
+ *  released before the temp write — see the module comment), so `*.temp`
+ *  cleanup is skipped for this pass whenever any `*.ref.lock` is present:
+ *  that lock is exactly what a mid-merge compaction still holds throughout
+ *  the vulnerable window. `*.ref` orphans stay safe to remove regardless —
+ *  a compaction's rename into a real `.ref` name always happens under the
+ *  SAME list lock as the `tables.list` rewrite that names it, so the two
+ *  can never observably disagree. Best effort within the protected window:
+ *  a file already gone by the time the unlink runs (a concurrent reader's
+ *  own cleanup) is not an error. */
 async function sweepOrphanTables(ctx: Context, gitDir: string): Promise<number> {
   const listLockPath = await acquireStackLock(ctx, gitDir);
   try {
     const currentNames = parseTablesList(await ctx.fs.readUtf8(tablesListPath(gitDir)));
     const dir = reftableDir(gitDir);
     const keep = new Set(currentNames);
+    const entries = await ctx.fs.readdir(dir);
+    const compactionMayBeInFlight = entries.some(
+      (entry) => !entry.isDirectory && entry.name.endsWith(TABLE_LOCK_SUFFIX),
+    );
     let removedOrphanCount = 0;
-    for (const entry of await ctx.fs.readdir(dir)) {
+    for (const entry of entries) {
       if (entry.isDirectory || keep.has(entry.name) || !isOrphanCandidate(entry.name)) continue;
+      if (compactionMayBeInFlight && entry.name.endsWith('.temp')) continue;
       await removeIfPresent(ctx, `${dir}/${entry.name}`);
       removedOrphanCount += 1;
     }

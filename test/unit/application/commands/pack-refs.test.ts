@@ -383,6 +383,36 @@ describe('packRefs — reftable backend', () => {
     });
   });
 
+  describe('Given an orphan *.temp file alongside a stray *.ref.lock file', () => {
+    describe('When packRefs runs', () => {
+      it('Then the temp file survives this pass — a *.ref.lock signals a compaction might be mid-flight', async () => {
+        // Arrange — the lock's OWN table name is irrelevant; its mere
+        // presence in the directory is the sweep's only signal, since a
+        // compaction's temp file carries no lock of its own to match
+        // against by name.
+        const ctx = await seedReftableRepo();
+        const dir = commonReftableDir(ctx);
+        const t1 = await buildFixtureTable(ctx, [liveRef('refs/heads/a', 1, 1)], [], 1n, 1n);
+        await writeReftableFiles(ctx, dir, [{ name: 't1.ref', bytes: t1 }]);
+        await ctx.fs.write(`${dir}/0x000000000099-0x000000000099-cafebabe.temp`, t1);
+        await ctx.fs.writeExclusive(
+          `${dir}/0x000000000042-0x000000000042-aaaaaaaa.ref.lock`,
+          new Uint8Array(0),
+        );
+        const sut = packRefs;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result.removedOrphanCount).toBe(0);
+        expect(await ctx.fs.exists(`${dir}/0x000000000099-0x000000000099-cafebabe.temp`)).toBe(
+          true,
+        );
+      });
+    });
+  });
+
   describe('Given an older table with a live ref and a newer table that tombstones it', () => {
     describe('When packRefs runs', () => {
       it('Then the deleted ref stays absent after a full compaction', async () => {
