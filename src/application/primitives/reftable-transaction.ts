@@ -54,7 +54,6 @@
  * `REFTABLE_LOCKED`. git never reads a lock body and never runs on OPFS, so
  * this non-empty body can never confuse it.
  */
-import { unsupportedOperation } from '../../domain/error.js';
 import type { AuthorIdentity } from '../../domain/objects/author-identity.js';
 import { bytesEqual } from '../../domain/objects/encoding.js';
 import type { ObjectId, RefName } from '../../domain/objects/index.js';
@@ -314,6 +313,21 @@ async function maybeAppendReflog(
   return true;
 }
 
+/** Tombstones every log record `stack.logs(name)` currently reports as
+ *  live, each at ITS OWN `update_index` — never a freshly assigned one.
+ *  Shared by a ref deletion (git deletes the whole reflog with it) and a
+ *  reflog replace (which must first shadow whatever is on disk before
+ *  writing the replacement set — see {@link applyReflogReplaceRecords}). */
+function tombstoneExistingLogs(
+  stack: ReftableStack,
+  name: RefName,
+  logs: ReftableLogRecord[],
+): void {
+  for (const record of stack.logs(name)) {
+    logs.push({ name, updateIndex: record.updateIndex, entry: { kind: 'deletion' } });
+  }
+}
+
 /** A deletion appends a ref tombstone at the NEW `update_index`, plus one
  *  log tombstone per EXISTING live reflog entry, each at THAT entry's own
  *  `update_index` — never the new one. Refuses `REF_NOT_FOUND` when the ref
@@ -327,11 +341,43 @@ function applyDeleteRecords(
 ): void {
   if (stack.lookup(name) === undefined) throw refNotFound(name);
   refs.push({ name, updateIndex, value: { kind: 'deletion' } });
-  for (const record of stack.logs(name)) {
-    if (record.entry.kind === 'entry') {
-      logs.push({ name, updateIndex: record.updateIndex, entry: { kind: 'deletion' } });
-    }
-  }
+  tombstoneExistingLogs(stack, name, logs);
+}
+
+/**
+ * `reflogReplace`'s reftable decomposition: tombstone every record
+ * currently on disk for `name` — shadowing whatever history is there now —
+ * then write `update.entries` (oldest -> newest, the shared `ReflogEntry`
+ * contract) as fresh log records, each at its own newly allocated index so
+ * every entry keeps a distinct `(name, update_index)` key.
+ *
+ * `ReflogEntry` carries no `update_index` of its own — the files backend
+ * has no such concept, so nothing upstream of this call could preserve one
+ * even if it wanted to. The exact numeric values chosen here are therefore
+ * an internal storage choice, not an observable one: no reader anywhere in
+ * this codebase surfaces `update_index` as data, only the ORDER and CONTENT
+ * of entries, both of which this preserves exactly.
+ */
+function applyReflogReplaceRecords(
+  stack: ReftableStack,
+  update: Extract<RefUpdate, { kind: 'reflogReplace' }>,
+  baseIndex: bigint,
+  logs: ReftableLogRecord[],
+): void {
+  tombstoneExistingLogs(stack, update.name, logs);
+  update.entries.forEach((entry, position) => {
+    logs.push({
+      name: update.name,
+      updateIndex: baseIndex + BigInt(position),
+      entry: {
+        kind: 'entry',
+        oldId: entry.oldId,
+        newId: entry.newId,
+        identity: entry.identity,
+        message: sanitizeReflogMessage(entry.message),
+      },
+    });
+  });
 }
 
 async function applyOneUpdate(
@@ -363,10 +409,8 @@ async function applyOneUpdate(
       await maybeAppendReflog(ctx, stack, logs, update.name, updateIndex, identity, update.reflog);
       return;
     case 'reflogReplace':
-      throw unsupportedOperation(
-        'reftable-reflog-replace',
-        'reflog history editing is not yet implemented for the reftable backend',
-      );
+      applyReflogReplaceRecords(stack, update, updateIndex, logs);
+      return;
   }
 }
 
@@ -376,7 +420,29 @@ interface PreparedStackWrite {
   readonly existingNames: readonly string[];
   readonly refs: readonly ReftableRefRecord[];
   readonly logs: readonly ReftableLogRecord[];
-  readonly updateIndex: bigint;
+  readonly minUpdateIndex: bigint;
+  readonly maxUpdateIndex: bigint;
+}
+
+/** The table header's true `(min, max)` update_index bounds for one write.
+ *  Every record shares `base` UNLESS a `reflogReplace` in this batch placed
+ *  some below it (a shadowed entry's own, older index) — ref records never
+ *  do, so `base` alone is always a safe starting accumulator for both
+ *  bounds. Ref-record delta-encoding (`reftable-writer.ts`) requires
+ *  `minUpdateIndex <= every ref record's updateIndex`, so this must be the
+ *  TRUE minimum, never just `base` reused for both ends. */
+function boundingIndices(
+  base: bigint,
+  refs: readonly ReftableRefRecord[],
+  logs: readonly ReftableLogRecord[],
+): { readonly min: bigint; readonly max: bigint } {
+  let min = base;
+  let max = base;
+  for (const record of [...refs, ...logs]) {
+    if (record.updateIndex < min) min = record.updateIndex;
+    if (record.updateIndex > max) max = record.updateIndex;
+  }
+  return { min, max };
 }
 
 async function prepareStackWrite(
@@ -394,13 +460,15 @@ async function prepareStackWrite(
   for (const update of updates) {
     await applyOneUpdate(ctx, stack, update, updateIndex, identity, refs, logs);
   }
+  const bounds = boundingIndices(updateIndex, refs, logs);
   return {
     gitDir,
     lockPath,
     existingNames,
     refs: sortRefRecords(refs),
     logs: sortLogRecords(logs),
-    updateIndex,
+    minUpdateIndex: bounds.min,
+    maxUpdateIndex: bounds.max,
   };
 }
 
@@ -454,10 +522,10 @@ async function writeStackTableFile(
   ctx: Context,
   write: PreparedStackWrite,
 ): Promise<StagedStackWrite> {
-  const options = writeOptionsFor(ctx, write.updateIndex, write.updateIndex);
+  const options = writeOptionsFor(ctx, write.minUpdateIndex, write.maxUpdateIndex);
   const bytes = await serializeReftable(write.refs, write.logs, options, ctx.compressor.deflate);
   const dir = reftableDir(write.gitDir);
-  const prefix = formatUpdateIndexPair(write.updateIndex, write.updateIndex);
+  const prefix = formatUpdateIndexPair(write.minUpdateIndex, write.maxUpdateIndex);
   const tempPath = await writeTempTable(ctx, dir, prefix, bytes);
   const tableName = `${prefix}-${randomHex8()}.ref`;
   await ctx.fs.rename(tempPath, `${dir}/${tableName}`);

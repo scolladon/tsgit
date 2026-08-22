@@ -11,10 +11,17 @@ import {
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
 import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
-import { readReflog, reflogExists } from '../../../../src/application/primitives/reflog-store.js';
+import { getRefStore } from '../../../../src/application/primitives/ref-store.js';
+import {
+  listReflogs,
+  readReflog,
+  reflogExists,
+} from '../../../../src/application/primitives/reflog-store.js';
 import { TsgitError } from '../../../../src/domain/index.js';
 import type { AuthorIdentity, RefName } from '../../../../src/domain/objects/index.js';
+import { ObjectId, zeroOid } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
+import { withReftableStorage } from '../primitives/reftable-fixtures.js';
 
 const author: AuthorIdentity = {
   name: 'Ada',
@@ -30,6 +37,39 @@ const seedWithCommit = async () => {
   await add(ctx, ['a.txt']);
   const c = await commit(ctx, { message: 'first', author });
   return { ctx, commitId: c.id };
+};
+
+/**
+ * A reftable-backed repository with `refs/heads/main` live and one reflog
+ * entry — seeded through the real `RefStore` write path (`applyRefUpdates`),
+ * never hand-built binary tables. `init` bootstraps the files-style
+ * compatibility state (`.git/HEAD`, `.git/config`) `assertOperationalRepository`
+ * needs; tsgit's `init` never PRODUCES a reftable repository on its own
+ * (that stack is populated here, standing in for one created by real git),
+ * so HEAD and `refs/heads/main` are written directly into the stack.
+ */
+const seedReftableWithCommit = async (): Promise<{
+  readonly ctx: Context;
+  readonly tip: ObjectId;
+}> => {
+  const ctx = withReftableStorage(createMemoryContext());
+  await init(ctx);
+  const tip = ObjectId.fromRaw(new Uint8Array(20).fill(0x01));
+  await getRefStore(ctx).applyRefUpdates([
+    { kind: 'setSymbolic', name: 'HEAD' as RefName, target: 'refs/heads/main' as RefName },
+    {
+      kind: 'set',
+      name: 'refs/heads/main' as RefName,
+      id: tip,
+      reflog: {
+        oldId: zeroOid(ctx.hashConfig),
+        newId: tip,
+        message: 'commit (initial): first',
+        unconditional: true,
+      },
+    },
+  ]);
+  return { ctx, tip };
 };
 
 const expectError = async (fn: () => Promise<unknown>, code: string): Promise<TsgitError> => {
@@ -192,6 +232,37 @@ describe('branch', () => {
         const renameEntry = movedLog[movedLog.length - 1];
         expect(renameEntry?.oldId).toBe(tip);
         expect(renameEntry?.newId).toBe(tip);
+      });
+    });
+  });
+
+  describe('Given a reftable-backed branch with reflog history', () => {
+    describe('When branch rename runs', () => {
+      it('Then the old branch is gone, the new branch exists, and history moved — never a half-applied rename', async () => {
+        // Arrange — the reftable reflogReplace decomposition used to throw
+        // UNSUPPORTED_OPERATION here, after `to` had already been created
+        // and before `from` was deleted, leaving both branches on disk.
+        const { ctx } = await seedReftableWithCommit();
+        const before = await readReflog(ctx, 'refs/heads/main' as RefName);
+        expect(before).toHaveLength(1);
+
+        // Act
+        const result = await branchRename(ctx, { from: 'main', to: 'trunk' });
+
+        // Assert — the two branches never coexist.
+        expect(result).toEqual({ from: 'refs/heads/main', to: 'refs/heads/trunk' });
+        const names = (await branchList(ctx)).branches.map((b) => b.name);
+        expect(names).not.toContain('refs/heads/main');
+        expect(names).toContain('refs/heads/trunk');
+
+        // Assert — moved history precedes the rename entry, matching the
+        // files backend's own contract; the source reflog is gone entirely.
+        const movedLog = await readReflog(ctx, 'refs/heads/trunk' as RefName);
+        expect(movedLog).toHaveLength(2);
+        expect(movedLog[0]).toEqual(before[0]);
+        expect(movedLog[1]?.message).toBe('branch: renamed refs/heads/main to refs/heads/trunk');
+        expect(await readReflog(ctx, 'refs/heads/main' as RefName)).toEqual([]);
+        expect(await listReflogs(ctx)).not.toContain('refs/heads/main');
       });
     });
   });

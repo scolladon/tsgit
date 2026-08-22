@@ -12,7 +12,9 @@ import {
   packReftableStack,
 } from '../../../../src/application/primitives/reftable-transaction.js';
 import { TsgitError } from '../../../../src/domain/error.js';
+import type { AuthorIdentity } from '../../../../src/domain/objects/index.js';
 import { ObjectId, RefName } from '../../../../src/domain/objects/index.js';
+import type { ReflogEntry } from '../../../../src/domain/reflog/reflog-entry.js';
 import {
   iterateReftableLogs,
   iterateReftableRefs,
@@ -351,6 +353,120 @@ describe('reftable-transaction', () => {
         expect(refRecords[0]?.value).toEqual({ kind: 'deletion' });
         expect(logRecords.map((r) => r.updateIndex).sort()).toEqual([1n, 2n, 3n]);
         expect(logRecords.every((r) => r.entry.kind === 'deletion')).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a ref updated twice, each carrying a reflog entry', () => {
+    describe('When reflogReplace rewrites its history to a single entry', () => {
+      it('Then only the replacement entry is readable — the old entries are shadowed, not resurrected', async () => {
+        // Arrange
+        const ctx = withReftableStorage(createMemoryContext());
+        const name = ref('refs/heads/topic');
+        for (let step = 0; step < 2; step += 1) {
+          await applyReftableUpdates(ctx, [
+            {
+              kind: 'set',
+              name,
+              id: oid(step + 1),
+              reflog: {
+                oldId: oid(step),
+                newId: oid(step + 1),
+                message: `step ${step}`,
+                unconditional: true,
+              },
+            },
+          ]);
+        }
+        const identity: AuthorIdentity = {
+          name: 'Ada',
+          email: 'ada@example.com',
+          timestamp: 1_700_000_000,
+          timezoneOffset: '+0000',
+        };
+        const replacement: ReflogEntry = {
+          oldId: oid(0),
+          newId: oid(2),
+          identity,
+          message: 'squashed',
+        };
+
+        // Act — this throws UNSUPPORTED_OPERATION before the reftable
+        // reflogReplace decomposition was implemented.
+        await applyReftableUpdates(ctx, [{ kind: 'reflogReplace', name, entries: [replacement] }]);
+
+        // Assert
+        const store = createReftableRefStore(ctx);
+        const entries = await store.readReflog(name);
+        expect(entries).toHaveLength(1);
+        expect(entries[0]?.message).toBe('squashed');
+      });
+    });
+  });
+
+  describe('Given a ref with one live reflog entry', () => {
+    describe('When reflogReplace rewrites its history to zero entries', () => {
+      it('Then the reflog reads as empty and the ref itself stays live', async () => {
+        // Arrange
+        const ctx = withReftableStorage(createMemoryContext());
+        const name = ref('refs/heads/topic');
+        await applyReftableUpdates(ctx, [
+          {
+            kind: 'set',
+            name,
+            id: oid(1),
+            reflog: { oldId: oid(0), newId: oid(1), message: 'created', unconditional: true },
+          },
+        ]);
+
+        // Act
+        await applyReftableUpdates(ctx, [{ kind: 'reflogReplace', name, entries: [] }]);
+
+        // Assert
+        const store = createReftableRefStore(ctx);
+        expect(await store.readReflog(name)).toEqual([]);
+        expect(await store.resolveDirect(name)).toEqual({ kind: 'direct', id: oid(1) });
+      });
+    });
+  });
+
+  describe('Given a ref with two live reflog entries', () => {
+    describe('When one applyReftableUpdates call both repoints the ref and replaces its reflog', () => {
+      it('Then the ref moves to the new tip and the reflog carries only the survivor', async () => {
+        // Arrange — mirrors `dropStashEntry`'s own shape: a `set` and a
+        // `reflogReplace` for the SAME name in ONE update list.
+        const ctx = withReftableStorage(createMemoryContext());
+        const name = ref('refs/heads/topic');
+        await applyReftableUpdates(ctx, [
+          {
+            kind: 'set',
+            name,
+            id: oid(1),
+            reflog: { oldId: oid(0), newId: oid(1), message: 'stash 0', unconditional: true },
+          },
+        ]);
+        await applyReftableUpdates(ctx, [
+          {
+            kind: 'set',
+            name,
+            id: oid(2),
+            reflog: { oldId: oid(1), newId: oid(2), message: 'stash 1', unconditional: true },
+          },
+        ]);
+        const store = createReftableRefStore(ctx);
+        const before = await store.readReflog(name);
+        expect(before).toHaveLength(2);
+        const survivor = before[0] as ReflogEntry;
+
+        // Act
+        await applyReftableUpdates(ctx, [
+          { kind: 'set', name, id: survivor.newId },
+          { kind: 'reflogReplace', name, entries: [survivor] },
+        ]);
+
+        // Assert
+        expect(await store.resolveDirect(name)).toEqual({ kind: 'direct', id: survivor.newId });
+        expect(await store.readReflog(name)).toEqual([survivor]);
       });
     });
   });
