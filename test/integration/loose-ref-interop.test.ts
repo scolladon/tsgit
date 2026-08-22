@@ -19,7 +19,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import { updateRef } from '../../src/application/primitives/update-ref.js';
 import type { ObjectId, RefName } from '../../src/domain/objects/index.js';
-import { GIT_AVAILABLE, runGit } from './interop-helpers.js';
+import { GIT_AVAILABLE, runGit, runGitEnv } from './interop-helpers.js';
 
 describe.skipIf(!GIT_AVAILABLE)('loose-ref interop', () => {
   let peer: string;
@@ -69,13 +69,23 @@ describe.skipIf(!GIT_AVAILABLE)('loose-ref interop', () => {
         // Arrange — seed both repos identically, capture the commit sha and
         // the coupled logs/HEAD bytes a normal commit produces, THEN corrupt
         // HEAD — mirroring an already-working repo whose HEAD gets damaged.
+        // A pinned author/committer date makes both repositories produce the
+        // identical commit oid. Without it the two seed commits differ whenever
+        // they straddle a second boundary, and the sha captured from the second
+        // repository is then absent from the first — git refuses to write a ref
+        // pointing at an object it does not have.
+        const pinnedDates: NodeJS.ProcessEnv = {
+          ...runGitEnv(),
+          GIT_AUTHOR_DATE: '2026-01-01T00:00:00Z',
+          GIT_COMMITTER_DATE: '2026-01-01T00:00:00Z',
+        };
         let sha = '';
         const logsHeadBefore = new Map<string, Buffer>();
         for (const dir of [peer, ours]) {
           runGit(['init', '-q', '-b', 'main', dir]);
           runGit(['-C', dir, 'config', 'user.name', 'Ada']);
           runGit(['-C', dir, 'config', 'user.email', 'ada@example.com']);
-          runGit(['-C', dir, 'commit', '-q', '--allow-empty', '-m', 'seed']);
+          runGit(['-C', dir, 'commit', '-q', '--allow-empty', '-m', 'seed'], { env: pinnedDates });
           sha = runGit(['-C', dir, 'rev-parse', 'HEAD']).trim();
           logsHeadBefore.set(dir, await readFile(path.join(dir, '.git/logs/HEAD')));
           await writeFile(path.join(dir, '.git/HEAD'), 'ref: refs/heads/.invalid\n');
