@@ -155,18 +155,22 @@ function decodeLogData(
   };
 }
 
-/** Decodes one `log_record` at `offset`: the shared prefix-compressed key
- *  cursor ({@link readPrefixedName}, reused verbatim from `reftable-block.ts`),
- *  then either nothing (a tombstone) or a full {@link decodeLogData}. */
-function decodeLogRecord(
+/** Decodes just the `log_record` key at `offset`: the shared
+ *  prefix-compressed key cursor ({@link readPrefixedName}, reused verbatim
+ *  from `reftable-block.ts`) plus the packed `log_type` tag — never the
+ *  value that follows. The key-cursor half `walkLogBlockRecords` decides a
+ *  `matches` filter from BEFORE choosing whether to materialise the value
+ *  ({@link decodeLogData}) or merely skip past it ({@link skipLogData}). */
+function decodeLogKey(
   bytes: Uint8Array,
   offset: number,
   priorKeyBytes: Uint8Array | undefined,
-  digestLength: number,
 ): {
   readonly keyBytes: Uint8Array;
-  readonly record: ReftableLogRecord;
-  readonly nextOffset: number;
+  readonly name: RefName;
+  readonly updateIndex: bigint;
+  readonly logType: number;
+  readonly afterKey: number;
 } {
   const {
     nameBytes: keyBytes,
@@ -174,26 +178,28 @@ function decodeLogRecord(
     nextOffset: afterKey,
   } = readPrefixedName(bytes, offset, priorKeyBytes);
   const { name, updateIndex } = splitLogKey(keyBytes);
-  const logType = packed & LOG_TYPE_MASK;
+  return { keyBytes, name, updateIndex, logType: packed & LOG_TYPE_MASK, afterKey };
+}
 
-  if (logType === LOG_TYPE_DELETION) {
-    return {
-      keyBytes,
-      record: { name, updateIndex, entry: { kind: 'deletion' } },
-      nextOffset: afterKey,
-    };
-  }
-
-  const { oldId, newId, identity, message, nextOffset } = decodeLogData(
-    bytes,
-    afterKey,
-    digestLength,
-  );
-  return {
-    keyBytes,
-    record: { name, updateIndex, entry: { kind: 'entry', oldId, newId, identity, message } },
-    nextOffset,
-  };
+/**
+ * `log_data`'s exact byte length, walked field by field via its own
+ * varint-delimited lengths — WITHOUT decoding any of their content: no
+ * `ObjectId` allocation for either id, no `TextDecoder` call for the name,
+ * email or message. The key-cursor's "skip a non-matching entry" path,
+ * paired with {@link decodeLogData}'s "materialise a matching one" — the
+ * two are kept in exact lock-step field-by-field, since a drift between
+ * them would silently miscount bytes and corrupt every record after it.
+ */
+function skipLogData(bytes: Uint8Array, offset: number, digestLength: number): number {
+  let cursor = offset + 2 * digestLength;
+  const { value: nameLen, nextOffset: afterNameLen } = readVarint(bytes, cursor);
+  cursor = afterNameLen + nameLen;
+  const { value: emailLen, nextOffset: afterEmailLen } = readVarint(bytes, cursor);
+  cursor = afterEmailLen + emailLen;
+  const { nextOffset: afterTimestamp } = readVarint(bytes, cursor);
+  cursor = afterTimestamp + 2;
+  const { value: messageLen, nextOffset: afterMessageLen } = readVarint(bytes, cursor);
+  return afterMessageLen + messageLen;
 }
 
 /**
@@ -225,35 +231,58 @@ export function logBlockBounds(payload: Uint8Array): LogBlockBounds {
 /**
  * Full forward scan of one inflated log block's records — never a binary
  * search: S3 means the log index is never consulted on read, so there is no
- * candidate block to narrow down to in the first place.
+ * candidate block to narrow down to in the first place. `matches` decides,
+ * from the KEY alone, whether a record is worth materialising in full
+ * ({@link decodeLogData}) or only worth skipping past ({@link skipLogData})
+ * — a name filter no longer pays for every OTHER ref's identity/message
+ * decode just to discard it a moment later.
  *
  * No explicit forward-progress assertion here (unlike `walkBlockRecords`'s
- * and `findInBlock`'s own, in `reftable-block.ts`): every path through
- * `decodeLogRecord` bottoms out in `readPrefixedName`, whose two varint
- * reads each consume at least one byte before its own now-bounds-checked
- * suffix length is added, so `nextOffset` is provably `> cursor` for every
- * input this decoder can be handed — a runtime guard here would be
- * unreachable dead code, not a second layer of defence.
+ * and `findInBlock`'s own, in `reftable-block.ts`): every path bottoms out
+ * in `readPrefixedName` (whose two varint reads each consume at least one
+ * byte before its own now-bounds-checked suffix length is added) followed
+ * by either nothing (deletion), `decodeLogData`, or `skipLogData` — the
+ * latter two share the identical varint-walk shape, each consuming at least
+ * one more byte per field — so `nextOffset` is provably `> cursor` on every
+ * path a runtime guard here would be unreachable dead code, not a second
+ * layer of defence.
  */
 function* walkLogBlockRecords(
   payload: Uint8Array,
   digestLength: number,
+  matches: (name: RefName) => boolean,
 ): Generator<ReftableLogRecord> {
   const bounds = logBlockBounds(payload);
   let cursor = bounds.recordsStart;
   let priorKeyBytes: Uint8Array | undefined;
   while (cursor < bounds.recordsEnd) {
-    const { keyBytes, record, nextOffset } = decodeLogRecord(
+    const { keyBytes, name, updateIndex, logType, afterKey } = decodeLogKey(
       payload,
       cursor,
       priorKeyBytes,
-      digestLength,
     );
-    yield record;
+    if (logType === LOG_TYPE_DELETION) {
+      if (matches(name)) yield { name, updateIndex, entry: { kind: 'deletion' } };
+      priorKeyBytes = keyBytes;
+      cursor = afterKey;
+      continue;
+    }
+    if (matches(name)) {
+      const { oldId, newId, identity, message, nextOffset } = decodeLogData(
+        payload,
+        afterKey,
+        digestLength,
+      );
+      yield { name, updateIndex, entry: { kind: 'entry', oldId, newId, identity, message } };
+      cursor = nextOffset;
+    } else {
+      cursor = skipLogData(payload, afterKey, digestLength);
+    }
     priorKeyBytes = keyBytes;
-    cursor = nextOffset;
   }
 }
+
+const MATCH_ANY = (): boolean => true;
 
 /** Every reflog record across every (pre-inflated) log block, in file
  *  (key-sorted) order — filtered to `name` when given. Synchronous: this is
@@ -262,12 +291,9 @@ export function* iterateReftableLogs(
   table: LoadedReftable,
   name?: RefName,
 ): Iterable<ReftableLogRecord> {
+  const matches = name === undefined ? MATCH_ANY : (candidate: RefName) => candidate === name;
   for (const payload of table.logBlocks) {
-    for (const record of walkLogBlockRecords(payload, table.header.digestLength)) {
-      if (name === undefined || record.name === name) {
-        yield record;
-      }
-    }
+    yield* walkLogBlockRecords(payload, table.header.digestLength, matches);
   }
 }
 

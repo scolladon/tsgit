@@ -442,6 +442,32 @@ describe('reftable-log', () => {
         expect(records.every((r) => r.name === RefName.from('HEAD'))).toBe(true);
       });
     });
+
+    describe('When iterating via iterateReftableLogs filtered to refs/stash (the last group in file order)', () => {
+      it('Then the lazily-skipped filter matches a full decode filtered afterward, cursor-exact', async () => {
+        // Arrange — reaching `refs/stash`'s single record means the reader
+        // must correctly skip past every one of the 8 preceding records
+        // (5 HEAD, 2 refs/heads/main, 1 refs/heads/other) via `skipLogData`
+        // rather than `decodeLogData` — a one-byte drift between the two
+        // would misalign the cursor and either throw or return the wrong
+        // record.
+        const block = await buildReftableLogBlock({ records: GROUPING_RECORDS }, deflate);
+        const bytes = buildLogOnlyReftable([block]);
+        const table = await loadReftable(bytes, inflateAt);
+
+        // Act
+        const filtered = Array.from(iterateReftableLogs(table, RefName.from('refs/stash')));
+        const fromFull = Array.from(iterateReftableLogs(table)).filter(
+          (r) => r.name === RefName.from('refs/stash'),
+        );
+
+        // Assert
+        expect(filtered).toEqual(fromFull);
+        expect(filtered).toHaveLength(1);
+        expect(filtered[0]?.updateIndex).toBe(8n);
+        expect(filtered[0]?.entry).toMatchObject({ kind: 'entry', message: 'stash: push' });
+      });
+    });
   });
 
   describe('Given the same reflog records split across a 3-block table with no log index', () => {
