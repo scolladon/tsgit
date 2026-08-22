@@ -115,11 +115,13 @@ async function verifyStackTables(
  *  the same comparator `ref-store.ts` defines for the files backend, kept
  *  local here rather than shared across a cross-backend import for one
  *  four-line function. */
-const byName = (a: RefEntry, b: RefEntry): number => {
-  if (a.name < b.name) return -1;
-  if (a.name > b.name) return 1;
+const compareRefNames = (a: RefName, b: RefName): number => {
+  if (a < b) return -1;
+  if (a > b) return 1;
   return 0;
 };
+
+const byName = (a: RefEntry, b: RefEntry): number => compareRefNames(a.name, b.name);
 
 /**
  * A live ref record's value → the backend-neutral `ResolveDirectResult`.
@@ -219,6 +221,10 @@ export function createReftableRefStore(ctx: Context): RefStore {
       }
     }
     return entries.sort(byName);
+  }
+
+  async function listRefNames(prefix?: RefName): Promise<readonly RefName[]> {
+    return [...(await collectCandidateNames(prefix))].sort(compareRefNames);
   }
 
   /**
@@ -323,6 +329,7 @@ export function createReftableRefStore(ctx: Context): RefStore {
     resolveDirect,
     applyRefUpdates,
     listRefs,
+    listRefNames,
     verifyIntegrity,
     readReflog,
     listReflogs,

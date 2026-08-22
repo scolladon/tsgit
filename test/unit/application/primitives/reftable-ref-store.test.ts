@@ -221,6 +221,36 @@ describe('reftable-ref-store', () => {
         expect(entries.map((entry) => entry.name)).toEqual(['refs/heads/main']);
       });
     });
+
+    describe('When listRefNames runs with no prefix', () => {
+      it('Then it returns the exact same names listRefs resolves, without a prefix restriction', async () => {
+        // Arrange
+        const ctx = withReftableStorage(createMemoryContext());
+        await seedTwoTableStack(ctx, commonReftableDir(ctx));
+        const sut = createReftableRefStore(ctx);
+
+        // Act
+        const names = await sut.listRefNames();
+
+        // Assert
+        expect(names).toEqual((await sut.listRefs()).map((entry) => entry.name));
+      });
+    });
+
+    describe('When listRefNames runs with a refs/heads/ prefix', () => {
+      it('Then only matching names come back', async () => {
+        // Arrange
+        const ctx = withReftableStorage(createMemoryContext());
+        await seedTwoTableStack(ctx, commonReftableDir(ctx));
+        const sut = createReftableRefStore(ctx);
+
+        // Act
+        const names = await sut.listRefNames(ref('refs/heads/'));
+
+        // Assert
+        expect(names).toEqual(['refs/heads/main']);
+      });
+    });
   });
 
   describe('Given a stack with a reflog for refs/heads/main', () => {

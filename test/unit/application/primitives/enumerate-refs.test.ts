@@ -69,6 +69,34 @@ describe('enumerateRefs', () => {
           ['HEAD', 'refs/heads/main', 'refs/remotes/origin/main'].sort(),
         );
       });
+
+      it('Then no loose ref file content is ever read — names only', async () => {
+        // Arrange
+        const base = await buildSeededContext({
+          refs: [
+            { name: 'refs/heads/main' as RefName, id: OID_A },
+            { name: 'refs/remotes/origin/main' as RefName, id: OID_B },
+          ],
+        });
+        await base.fs.writeUtf8(`${base.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+        const readUtf8Calls: string[] = [];
+        const ctx: Context = {
+          ...base,
+          fs: {
+            ...base.fs,
+            readUtf8: async (path: string) => {
+              readUtf8Calls.push(path);
+              return base.fs.readUtf8(path);
+            },
+          },
+        };
+
+        // Act
+        await enumerateRefs(ctx);
+
+        // Assert
+        expect(readUtf8Calls).toEqual([]);
+      });
     });
   });
 

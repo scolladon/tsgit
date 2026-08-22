@@ -730,6 +730,92 @@ describe('ref-store', () => {
     });
   });
 
+  describe('Given a repository with a loose ref, a packed ref and a nested loose ref', () => {
+    describe('When listRefNames runs with no prefix', () => {
+      it('Then it returns the exact same names listRefs resolves', async () => {
+        // Arrange
+        const ctx = await buildSeededContext({
+          refs: [
+            { name: 'refs/heads/main' as RefName, id: 'a'.repeat(40) as ObjectId },
+            { name: 'refs/heads/feat/x' as RefName, id: 'c'.repeat(40) as ObjectId },
+          ],
+          packedRefs: [{ name: 'refs/tags/v1' as RefName, id: 'b'.repeat(40) as ObjectId }],
+        });
+        const sut = createRefStore(ctx);
+
+        // Act
+        const names = await sut.listRefNames();
+
+        // Assert
+        expect(names).toEqual((await sut.listRefs()).map((entry) => entry.name));
+      });
+    });
+
+    describe('When listRefNames runs with prefix refs/heads/', () => {
+      it('Then only matching names come back', async () => {
+        // Arrange
+        const ctx = await buildSeededContext({
+          refs: [
+            { name: 'refs/heads/main' as RefName, id: 'a'.repeat(40) as ObjectId },
+            { name: 'refs/heads/feat/x' as RefName, id: 'c'.repeat(40) as ObjectId },
+          ],
+          packedRefs: [{ name: 'refs/tags/v1' as RefName, id: 'b'.repeat(40) as ObjectId }],
+        });
+        const sut = createRefStore(ctx);
+
+        // Act
+        const names = await sut.listRefNames('refs/heads/' as RefName);
+
+        // Assert
+        expect(names).toEqual(['refs/heads/feat/x', 'refs/heads/main']);
+      });
+    });
+  });
+
+  describe('Given loose refs whose content is never read for listRefNames', () => {
+    describe('When listRefNames runs', () => {
+      it('Then no loose ref file content is read — names only', async () => {
+        // Arrange
+        const base = await buildSeededContext({
+          refs: [
+            { name: 'refs/heads/main' as RefName, id: 'a'.repeat(40) as ObjectId },
+            { name: 'refs/heads/other' as RefName, id: 'b'.repeat(40) as ObjectId },
+          ],
+        });
+        const { ctx, calls } = instrumentedContext(base);
+        const sut = createRefStore(ctx);
+
+        // Act
+        const names = await sut.listRefNames();
+
+        // Assert
+        expect(names).toEqual(['refs/heads/main', 'refs/heads/other']);
+        expect(calls().some((c) => c.method === 'readUtf8')).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a loose ref whose body is neither an oid nor a symbolic ref', () => {
+    describe('When listRefNames runs', () => {
+      it('Then the malformed ref name is still included, unlike listRefs', async () => {
+        // Arrange — listRefNames is the pre-migration "zero per-ref reads"
+        // enumeration: it never opens a loose file to validate its content,
+        // so a name it finds is reported regardless of what that file holds.
+        const ctx = await buildSeededContext();
+        await ctx.fs.writeUtf8('/repo/.git/refs/heads/garbage', 'not-a-valid-sha\n');
+        const sut = createRefStore(ctx);
+
+        // Act
+        const names = await sut.listRefNames();
+        const entries = await sut.listRefs();
+
+        // Assert
+        expect(names).toContain('refs/heads/garbage');
+        expect(entries.map((entry) => entry.name)).not.toContain('refs/heads/garbage');
+      });
+    });
+  });
+
   describe('Given a loose ref whose body is neither an oid nor a symbolic ref', () => {
     describe('When verifyIntegrity is called', () => {
       it('Then a badRefContent finding is returned for that ref', async () => {

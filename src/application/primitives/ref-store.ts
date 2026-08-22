@@ -67,6 +67,17 @@ export interface RefStore {
    */
   listRefs(prefix?: RefName): Promise<readonly RefEntry[]>;
   /**
+   * Every ref NAME this backend knows, merged across scopes, deduplicated,
+   * sorted — {@link listRefs} without resolving a single one, for a caller
+   * that only ever reads `.name` off the result. Deliberately unfiltered,
+   * unlike `listRefs`: a loose ref whose content fails to parse still
+   * contributes its name here (the files backend never opens the file to
+   * find out), matching what a plain directory/packed-refs/stack-names
+   * enumeration reports in real git. An optional `prefix` restricts the
+   * result the same way `listRefs`'s does.
+   */
+  listRefNames(prefix?: RefName): Promise<readonly RefName[]>;
+  /**
    * Backend-owned ref-content health. The files backend reports loose refs
    * whose body is neither a well-formed OID nor a `ref: <target>` line
    * (`badRefContent`), and well-formed loose OIDs with no LOOSE object
@@ -235,11 +246,13 @@ function isFileNotFound(err: unknown): boolean {
 }
 
 /** Byte-wise total order over ref names, matching git's own ref ordering (never `localeCompare`). */
-const byName = (a: RefEntry, b: RefEntry): number => {
-  if (a.name < b.name) return -1;
-  if (a.name > b.name) return 1;
+const compareRefNames = (a: RefName, b: RefName): number => {
+  if (a < b) return -1;
+  if (a > b) return 1;
   return 0;
 };
+
+const byName = (a: RefEntry, b: RefEntry): number => compareRefNames(a.name, b.name);
 
 /** Backend dispatcher: `ctx.layout.refStorage` picks the files or reftable
  *  implementation. `getRefStore`'s `Context`-keyed memo (below) is what
@@ -440,6 +453,10 @@ function createFilesRefStore(ctx: Context): RefStore {
       if (entry !== undefined) entries.push(entry);
     }
     return entries.sort(byName);
+  }
+
+  async function listRefNames(prefix?: RefName): Promise<readonly RefName[]> {
+    return [...(await collectCandidateNames(prefix))].sort(compareRefNames);
   }
 
   async function verifyIntegrity(): Promise<readonly RefIntegrityFinding[]> {
@@ -685,6 +702,7 @@ function createFilesRefStore(ctx: Context): RefStore {
     resolveDirect,
     applyRefUpdates,
     listRefs,
+    listRefNames,
     verifyIntegrity,
     readReflog,
     listReflogs,
