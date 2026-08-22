@@ -174,6 +174,25 @@ describe('reftable-stack', () => {
     });
   });
 
+  describe('Given a ref that only the older of two tables holds', () => {
+    const older = buildTableWithLiveRef('refs/heads/only-old', 0x33, 1n);
+    const newer = buildTableWithLiveRef('refs/heads/other', 0x44, 2n);
+    const stack = createReftableStack([older, newer]);
+
+    describe('When looking the ref up', () => {
+      it('Then the lookup falls through the newer table to find it in the older one', () => {
+        // Arrange
+        const sut = stack.lookup;
+
+        // Act
+        const result = sut(RefName.from('refs/heads/only-old'));
+
+        // Assert
+        expect(result?.value).toStrictEqual({ kind: 'direct', id: ObjectId.fromRaw(oid(0x33)) });
+      });
+    });
+  });
+
   describe('Given the same ref name live in two tables with different oids', () => {
     const older = buildTableWithLiveRef('refs/heads/x', 0x11, 1n);
     const newer = buildTableWithLiveRef('refs/heads/x', 0x22, 2n);

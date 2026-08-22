@@ -5,12 +5,15 @@ import { ObjectId, RefName } from '../../../../../src/domain/objects/index.js';
 import type { ReftableCheck } from '../../../../../src/domain/refs/error.js';
 import {
   blockBoundsAt,
+  decodeObjRecord,
   iterateReftableRefs,
   lookupReftableRef,
   type ReftableRefRecord,
+  walkBlockRecords,
 } from '../../../../../src/domain/refs/reftable/reftable-block.js';
 import {
   parseReftable,
+  type Reftable,
   readUint24,
 } from '../../../../../src/domain/refs/reftable/reftable-format.js';
 import {
@@ -174,6 +177,28 @@ describe('Given one ref and an aligned block size', () => {
       expect(bytes.length).toBe(DEFAULT_BLOCK_SIZE);
       expect(declaredLength).toBeLessThan(DEFAULT_BLOCK_SIZE);
       expect(bytes.subarray(declaredLength).every((b) => b === 0)).toBe(true);
+    });
+  });
+});
+
+describe('Given a single ref whose record already exceeds a tiny configured block_size', () => {
+  describe('When building the ref section', () => {
+    it('Then the sole block is emitted as-is, with no padding added', () => {
+      // Arrange — the first record in a block is always added regardless of
+      // overflow (tryAddRecord only rejects a record past the first one), so
+      // block_size 1 guarantees this block's own bytes already exceed it;
+      // paddingLength is then <= 0 and padBlock must return bytes unpadded.
+      const options = baseOptions({ blockSize: 1 });
+
+      // Act
+      const bytes = buildReftableRefSection([directRef('refs/heads/main', 0n, 1)], options);
+      const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+      const declaredLength = readUint24(view, options.hashId === 'sha1' ? 24 + 1 : 28 + 1);
+
+      // Assert — no padding bytes trail the declared block length, and the
+      // block legitimately overran the configured (absurdly small) size.
+      expect(declaredLength).toBeGreaterThan(options.blockSize);
+      expect(bytes.length).toBe(declaredLength);
     });
   });
 });
@@ -412,6 +437,91 @@ describe('Given an obj-bearing table with no adjacent oid collisions', () => {
 
       // Assert
       expect(table.footer.objIdLength).toBe(2);
+    });
+  });
+});
+
+// --- Obj section shape: no object identity at all, and repeated objects ---
+
+/** Walks every obj block between `footer.objPosition` and
+ *  `footer.objIndexPosition`, decoding each record's key and position list.
+ *  There is no production reader for the obj section yet (a later part), so
+ *  these tests inspect the writer's own encode output directly through the
+ *  exported block-decode primitives `reftable-block.test.ts` already uses
+ *  for the reader side. */
+function collectObjRecords(
+  table: Reftable,
+  blockSize: number,
+): ReadonlyArray<{ readonly nameBytes: Uint8Array; readonly positions: readonly number[] }> {
+  const records: { nameBytes: Uint8Array; positions: readonly number[] }[] = [];
+  let blockStart = table.footer.objPosition;
+  const boundary = table.footer.objIndexPosition;
+  while (blockStart < boundary) {
+    const bounds = blockBoundsAt(table, blockStart);
+    for (const record of walkBlockRecords(table._bytes, bounds, decodeObjRecord)) {
+      records.push({ nameBytes: record.nameBytes, positions: record.payload });
+    }
+    blockStart = Math.ceil(bounds.blockEnd / blockSize) * blockSize;
+  }
+  return records;
+}
+
+describe('Given a ref-indexed table where every ref is symbolic (no object id)', () => {
+  describe('When building with indexObjects true', () => {
+    it('Then the ref index is still emitted but the obj section stays empty', async () => {
+      // Arrange — 30 symbolic refs clear the ref-index threshold (measured at
+      // block_size 200) with no ref ever contributing an object id, so
+      // collectObjEntries comes back empty despite refIndexEmitted being true.
+      const refs: ReftableRefRecord[] = Array.from({ length: 30 }, (_, i) => ({
+        name: RefName.from(`refs/heads/b${i.toString().padStart(4, '0')}`),
+        updateIndex: 0n,
+        value: { kind: 'symbolic', target: RefName.from('refs/heads/main') },
+      }));
+      const options = baseOptions({ blockSize: 200 });
+
+      // Act
+      const bytes = await serializeReftable(refs, [], options, identityDeflate);
+      const table = parseReftable(bytes);
+
+      // Assert
+      expect(table.footer.refIndexPosition).not.toBe(0);
+      expect(table.footer.objPosition).toBe(0);
+    });
+  });
+});
+
+describe('Given many refs where one object is shared across more than 7 ref blocks', () => {
+  describe('When building with indexObjects true', () => {
+    it('Then the obj section itself gets an index, and the shared object records every distinct block position once, sorted ascending', async () => {
+      // Arrange — every 6th ref (of 120, at block_size 200) points at the
+      // same object; measured to land in more than 7 distinct ref blocks,
+      // pushing that obj record's cnt_3 to 0 (deferring to cnt_large) and its
+      // position list past a single delta, and pushing the obj section itself
+      // past the 4-block index threshold.
+      const popularId = ObjectId.fromRaw(new Uint8Array(20).fill(0xaa));
+      const refs: ReftableRefRecord[] = Array.from({ length: 120 }, (_, i) => ({
+        name: RefName.from(`refs/heads/b${i.toString().padStart(4, '0')}`),
+        updateIndex: 0n,
+        value:
+          i % 6 === 0
+            ? { kind: 'direct', id: popularId }
+            : { kind: 'direct', id: ObjectId.fromRaw(oid(i + 1)) },
+      }));
+      const options = baseOptions({ blockSize: 200 });
+
+      // Act
+      const bytes = await serializeReftable(refs, [], options, identityDeflate);
+      const table = parseReftable(bytes);
+      const objRecords = collectObjRecords(table, options.blockSize);
+      const popularRecord = objRecords.find((r) => r.positions.length > 7);
+
+      // Assert
+      expect(table.footer.objIndexPosition).not.toBe(0);
+      expect(popularRecord).toBeDefined();
+      expect(popularRecord!.positions).toStrictEqual(
+        [...popularRecord!.positions].sort((a, b) => a - b),
+      );
+      expect(new Set(popularRecord!.positions).size).toBe(popularRecord!.positions.length);
     });
   });
 });

@@ -106,10 +106,14 @@ function concatParts(parts: readonly Uint8Array[]): Uint8Array {
   return bytes;
 }
 
-function longestCommonPrefix(a: Uint8Array | undefined, b: Uint8Array): number {
-  if (a === undefined) {
-    return 0;
-  }
+/** `a` is always defined at every call site: `tryAddRecord`/`tryAddLogRecord`
+ *  only reach this behind `!isRestart`, and position 0 in a block is always
+ *  a restart (`0 % restartInterval === 0` for any positive interval), so by
+ *  the time a non-restart record is packed the accumulator already carries
+ *  a prior key; `computeObjIdLength` only ever compares adjacent, already-
+ *  defined sorted entries. An `undefined`-guarding branch here would be
+ *  unreachable dead code. */
+function longestCommonPrefix(a: Uint8Array, b: Uint8Array): number {
   const max = Math.min(a.length, b.length);
   let i = 0;
   while (i < max && a[i] === b[i]) {
@@ -205,7 +209,9 @@ function tryAddRecord<T>(
 ): RecordStep | undefined {
   const isRestart = positionInBlock % opts.restartInterval === 0;
   const keyBytes = opts.keyBytesOf(item);
-  const prefixLength = isRestart ? 0 : longestCommonPrefix(state.priorKeyBytes, keyBytes);
+  // Non-restart implies a prior record already ran in this block (see
+  // longestCommonPrefix's own invariant note).
+  const prefixLength = isRestart ? 0 : longestCommonPrefix(state.priorKeyBytes!, keyBytes);
   const encoded = opts.encodeItem(item, keyBytes, prefixLength);
 
   const restartCount = state.restartCount + (isRestart ? 1 : 0);
@@ -800,7 +806,9 @@ function tryAddLogRecord(
 ): RecordStep | undefined {
   const isRestart = positionInBlock % restartInterval === 0;
   const keyBytes = encodeLogKey(record.name, record.updateIndex);
-  const prefixLength = isRestart ? 0 : longestCommonPrefix(state.priorKeyBytes, keyBytes);
+  // Non-restart implies a prior record already ran in this block (see
+  // longestCommonPrefix's own invariant note).
+  const prefixLength = isRestart ? 0 : longestCommonPrefix(state.priorKeyBytes!, keyBytes);
   const encoded = encodeLogRecord(record, keyBytes, prefixLength);
 
   const restartCount = state.restartCount + (isRestart ? 1 : 0);

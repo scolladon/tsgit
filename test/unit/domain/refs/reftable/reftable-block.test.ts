@@ -453,6 +453,21 @@ describe('reftable-block', () => {
           expect(result).toBeUndefined();
         });
       });
+
+      describe('When looking up a name that sorts after every record in the block', () => {
+        it('Then returns undefined without a false match', () => {
+          // Arrange — 'zzz' sorts after 'refs/tags/v1', the block's last
+          // record, so findInBlock runs off the end of the (only, unindexed)
+          // ref block and findRefBlockContaining's own scan completes empty.
+          const sut = lookupReftableRef;
+
+          // Act
+          const result = sut(reftable, RefName.from('zzz'));
+
+          // Assert
+          expect(result).toBeUndefined();
+        });
+      });
     });
 
     describe('Given a block whose only record is a tombstone', () => {
@@ -564,6 +579,21 @@ describe('reftable-block', () => {
 
           // Assert
           expect(names).toStrictEqual(['refs/heads/aaa', 'refs/heads/zzz']);
+        });
+      });
+
+      describe('When looking up a name that sorts after every entry in the top index', () => {
+        it('Then returns undefined without descending into a leaf', () => {
+          // Arrange — 'zzzzz' sorts after 'refs/heads/zzz', the top index's
+          // only (and last) entry, so findInBlock on the index itself comes
+          // back empty and resolveRefBlockPosition reports absence directly.
+          const sut = lookupReftableRef;
+
+          // Act
+          const result = sut(reftable, RefName.from('zzzzz'));
+
+          // Assert
+          expect(result).toBeUndefined();
         });
       });
     });
