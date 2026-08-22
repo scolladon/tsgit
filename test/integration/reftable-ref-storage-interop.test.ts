@@ -32,11 +32,14 @@ import type { TsgitError } from '../../src/domain/error.js';
 import type { ObjectId, RefName } from '../../src/domain/objects/index.js';
 import {
   buildReftableRefSection,
+  compactionMetric,
+  DEFAULT_GEOMETRIC_FACTOR,
   iterateReftableLogs,
   iterateReftableRefs,
   loadReftable,
   type ReftableCheck,
   serializeReftable,
+  suggestCompactionSegment,
 } from '../../src/domain/refs/index.js';
 import type { ReftableWriteOptions } from '../../src/domain/refs/reftable/reftable-writer.js';
 import { DEFAULT_RESTART_INTERVAL } from '../../src/domain/refs/reftable/reftable-writer.js';
@@ -1039,6 +1042,179 @@ describe.skipIf(!GIT_AVAILABLE)('reftable-ref-storage interop', () => {
         const gitRefSectionBytes = table._bytes.subarray(0, table.footer.logPosition);
         expect(rebuiltRefSection).toEqual(gitRefSectionBytes);
         expect([...iterateReftableLogs(reparsed)]).toEqual(logs);
+      });
+    });
+  });
+
+  /** `tables.list`'s own names, in order — read via node's `fs` directly
+   *  rather than through tsgit, so it observes exactly what is on disk
+   *  regardless of which tool last wrote it. */
+  const tableNamesOf = (reftableDirPath: string): string[] =>
+    readFileSync(`${reftableDirPath}/tables.list`, 'utf8')
+      .split('\n')
+      .filter((line) => line.length > 0);
+
+  /** The stack's own compaction invariant, over the CURRENT on-disk state:
+   *  never the exact table count (deflate-size-dependent — see the
+   *  compaction module's own doc comment for why), only that the stack
+   *  satisfies git's own compaction rule. */
+  const isStackGeometric = async (ctx: Context, reftableDirPath: string): Promise<boolean> => {
+    const stack = await loadReftableStack(ctx, reftableDirPath);
+    const sizes = stack.tables.map((table) =>
+      compactionMetric(table._bytes.length, table.header.version),
+    );
+    const segment = suggestCompactionSegment(sizes, DEFAULT_GEOMETRIC_FACTOR);
+    return segment.start === segment.end;
+  };
+
+  describe('Given a fresh git-made reftable repository with one commit', () => {
+    describe('When tsgit writes 60 refs one at a time', () => {
+      it('Then git show-ref matches tsgit after every single write, and the stack stays geometric throughout', async () => {
+        // Arrange
+        const dir = path.join(rootDir, 'write-sixty');
+        initReftableRepo(dir);
+        runGit(['-C', dir, 'commit', '-q', '--allow-empty', '-m', 'c1'], {
+          env: dateEnv(1_700_000_000, '+0000'),
+        });
+        const mainId = git(dir, 'rev-parse', 'HEAD').trim();
+        const ctx = reftableCtx(dir);
+        const stackDir = reftableDir(ctx.layout.gitDir);
+        const store = getRefStore(ctx);
+
+        // Act + Assert — 60 refs, written one at a time, replaying the
+        // same transition count the compaction policy's own measured
+        // table was validated against.
+        for (let i = 0; i < 60; i += 1) {
+          const name = `refs/heads/w${String(i).padStart(3, '0')}` as RefName;
+          await store.applyRefUpdates([{ kind: 'set', name, id: mainId as ObjectId }]);
+
+          const tsgitNames = (await store.listRefs())
+            .map((entry) => entry.name)
+            .filter((entryName) => entryName !== 'HEAD')
+            .sort();
+          expect(tsgitNames).toEqual(showRefNames(dir));
+          expect(await isStackGeometric(ctx, stackDir)).toBe(true);
+        }
+      });
+    });
+  });
+
+  describe('Given a git-built multi-table stack containing a tombstone', () => {
+    describe('When tsgit writes one more ref, triggering its own auto-compaction', () => {
+      it('Then git show-ref, git reflog and git fsck all agree with the pre-state, and the tombstone is elided only when the merge segment started at table 0', async () => {
+        // Arrange — `reftable.geometricFactor=1` keeps GIT from folding its
+        // own writes together, so the stack tsgit inherits below is
+        // genuinely multi-table; tsgit is unaffected, since its own
+        // compaction always uses its hardcoded default factor of 2.
+        const dir = path.join(rootDir, 'write-compact-round-trip');
+        initReftableRepo(dir);
+        git(dir, 'config', 'reftable.geometricFactor', '1');
+        runGit(['-C', dir, 'commit', '-q', '--allow-empty', '-m', 'c1'], {
+          env: dateEnv(1_700_000_000, '+0000'),
+        });
+        const mainId = git(dir, 'rev-parse', 'HEAD').trim();
+        for (let i = 0; i < 8; i += 1) {
+          git(dir, 'update-ref', `refs/heads/g${i}`, mainId);
+        }
+        git(dir, 'update-ref', 'refs/heads/tomb20', mainId);
+        git(dir, 'update-ref', '-d', 'refs/heads/tomb20');
+        git(dir, 'config', '--unset', 'reftable.geometricFactor');
+
+        const ctx = reftableCtx(dir);
+        const stackDir = reftableDir(ctx.layout.gitDir);
+        const preNames = tableNamesOf(stackDir);
+        const oldestName = preNames[0]!;
+        const oldestBytesBefore = readFileSync(`${stackDir}/${oldestName}`);
+        const preRefs = showRefNames(dir);
+        const preReflogG0 = tryRunGitWithExit(['-C', dir, 'reflog', 'show', 'refs/heads/g0'], {
+          env: runGitEnv(),
+        }).stdout;
+
+        // Act
+        await getRefStore(ctx).applyRefUpdates([
+          { kind: 'set', name: 'refs/heads/newest20' as RefName, id: mainId as ObjectId },
+        ]);
+
+        // Assert — cross-tool agreement, both directions
+        expect(showRefNames(dir)).toEqual([...preRefs, 'refs/heads/newest20'].sort());
+        expect(showRefNames(dir)).not.toContain('refs/heads/tomb20');
+        expect((await getRefStore(ctx).listRefs()).map((entry) => entry.name)).not.toContain(
+          'refs/heads/tomb20',
+        );
+        expect(tryRunGitWithExit(['-C', dir, 'fsck'], { env: runGitEnv() }).exitCode).toBe(0);
+        expect(
+          tryRunGitWithExit(['-C', dir, 'reflog', 'show', 'refs/heads/g0'], { env: runGitEnv() })
+            .stdout,
+        ).toBe(preReflogG0);
+
+        // Assert — the tombstone rule, observed rather than assumed: never
+        // asserting which tables merged (deflate-size-dependent), only
+        // that the rule held for whichever segment tsgit actually chose.
+        const postNames = tableNamesOf(stackDir);
+        if (postNames.includes(oldestName)) {
+          // The merge segment did not reach table 0 — the oldest table is
+          // untouched, byte for byte.
+          expect(readFileSync(`${stackDir}/${oldestName}`)).toEqual(oldestBytesBefore);
+        } else {
+          // The whole stack merged from table 0 — the tombstone is gone
+          // outright, not merely hidden by the merge join.
+          const stack = await loadReftableStack(ctx, stackDir);
+          const tombRef = 'refs/heads/tomb20' as RefName;
+          for (const table of stack.tables) {
+            expect([...iterateReftableRefs(table)].some((r) => r.name === tombRef)).toBe(false);
+            expect([...iterateReftableLogs(table)].some((l) => l.name === tombRef)).toBe(false);
+          }
+        }
+      });
+    });
+  });
+
+  describe('Given a stack written by git and tsgit alternately', () => {
+    describe('When a git update-ref and a tsgit write interleave repeatedly', () => {
+      it('Then all refs are present, the stack stays geometric, and no orphan files remain', async () => {
+        // Arrange
+        const dir = path.join(rootDir, 'write-interleaved');
+        initReftableRepo(dir);
+        runGit(['-C', dir, 'commit', '-q', '--allow-empty', '-m', 'c1'], {
+          env: dateEnv(1_700_000_000, '+0000'),
+        });
+        const mainId = git(dir, 'rev-parse', 'HEAD').trim();
+        const ctx = reftableCtx(dir);
+        const stackDir = reftableDir(ctx.layout.gitDir);
+        const store = getRefStore(ctx);
+        const expectedNames = new Set<string>(['refs/heads/main']);
+
+        // Act — 20 rounds, alternating writer
+        for (let round = 0; round < 20; round += 1) {
+          if (round % 2 === 0) {
+            const name = `refs/heads/git${round}`;
+            git(dir, 'update-ref', name, mainId);
+            expectedNames.add(name);
+          } else {
+            const name = `refs/heads/tsgit${round}` as RefName;
+            await store.applyRefUpdates([{ kind: 'set', name, id: mainId as ObjectId }]);
+            expectedNames.add(name);
+          }
+        }
+
+        // Assert — every ref present on both sides
+        const sortedExpected = [...expectedNames].sort();
+        expect(showRefNames(dir)).toEqual(sortedExpected);
+        const tsgitNames = (await store.listRefs())
+          .map((entry) => entry.name)
+          .filter((entryName) => entryName !== 'HEAD')
+          .sort();
+        expect(tsgitNames).toEqual(sortedExpected);
+
+        // Assert — geometric (round 19 is tsgit's; its own compaction ran
+        // last), and no orphan files: every `.ref` on disk is named in
+        // `tables.list`, and no stray lock/temp file survives.
+        expect(await isStackGeometric(ctx, stackDir)).toBe(true);
+        const listedNames = new Set(tableNamesOf(stackDir));
+        const onDisk = readdirSync(stackDir);
+        const refFiles = onDisk.filter((name) => name.endsWith('.ref'));
+        expect(refFiles.every((name) => listedNames.has(name))).toBe(true);
+        expect(onDisk.some((name) => name.endsWith('.lock') || name.endsWith('.temp'))).toBe(false);
       });
     });
   });

@@ -62,13 +62,19 @@ import { sanitizeReflogMessage } from '../../domain/reflog/reflog-format.js';
 import { shouldAutocreateReflog } from '../../domain/reflog/should-log.js';
 import { refNotFound, reftableLocked, refUpdateConflict } from '../../domain/refs/error.js';
 import {
+  compactionMetric,
   createReftableStack,
+  DEFAULT_GEOMETRIC_FACTOR,
+  iterateReftableLogs,
+  iterateReftableRefs,
+  type LoadedReftable,
   loadReftable,
   type ReftableLogRecord,
   type ReftableRefRecord,
   type ReftableStack,
   type ReftableWriteOptions,
   serializeReftable,
+  suggestCompactionSegment,
 } from '../../domain/refs/index.js';
 import {
   DEFAULT_BLOCK_SIZE,
@@ -83,6 +89,7 @@ import {
   commonGitDir,
   perWorktreeRefDir,
   reftableDir,
+  reftableTableLockPath,
   tablesListLockPath,
   tablesListPath,
 } from './path-layout.js';
@@ -399,9 +406,10 @@ async function prepareStackWrite(
 
 // --- Steps 6-7: table file naming and write --------------------------------
 
-function formatUpdateIndexPair(updateIndex: bigint): string {
-  const hex = updateIndex.toString(16).padStart(12, '0');
-  return `0x${hex}-0x${hex}`;
+function formatUpdateIndexPair(minUpdateIndex: bigint, maxUpdateIndex: bigint): string {
+  const min = minUpdateIndex.toString(16).padStart(12, '0');
+  const max = maxUpdateIndex.toString(16).padStart(12, '0');
+  return `0x${min}-0x${max}`;
 }
 
 /** `fs.writeExclusive` gives the collision check for free — the `%08x`
@@ -423,14 +431,18 @@ async function writeTempTable(
   }
 }
 
-function writeOptionsFor(ctx: Context, updateIndex: bigint): ReftableWriteOptions {
+function writeOptionsFor(
+  ctx: Context,
+  minUpdateIndex: bigint,
+  maxUpdateIndex: bigint,
+): ReftableWriteOptions {
   return {
     hashId: ctx.hashConfig.algorithm === 'sha256' ? 's256' : 'sha1',
     blockSize: DEFAULT_BLOCK_SIZE,
     restartInterval: DEFAULT_RESTART_INTERVAL,
     indexObjects: true,
-    minUpdateIndex: updateIndex,
-    maxUpdateIndex: updateIndex,
+    minUpdateIndex,
+    maxUpdateIndex,
   };
 }
 
@@ -442,10 +454,10 @@ async function writeStackTableFile(
   ctx: Context,
   write: PreparedStackWrite,
 ): Promise<StagedStackWrite> {
-  const options = writeOptionsFor(ctx, write.updateIndex);
+  const options = writeOptionsFor(ctx, write.updateIndex, write.updateIndex);
   const bytes = await serializeReftable(write.refs, write.logs, options, ctx.compressor.deflate);
   const dir = reftableDir(write.gitDir);
-  const prefix = formatUpdateIndexPair(write.updateIndex);
+  const prefix = formatUpdateIndexPair(write.updateIndex, write.updateIndex);
   const tempPath = await writeTempTable(ctx, dir, prefix, bytes);
   const tableName = `${prefix}-${randomHex8()}.ref`;
   await ctx.fs.rename(tempPath, `${dir}/${tableName}`);
@@ -473,15 +485,321 @@ function tablesListBody(names: readonly string[]): string {
   return names.map((name) => `${name}\n`).join('');
 }
 
-async function commitStackList(ctx: Context, write: StagedStackWrite): Promise<void> {
-  const body = TEXT_ENCODER.encode(tablesListBody([...write.existingNames, write.tableName]));
-  await ctx.fs.write(write.lockPath, body);
+/** Writes `names` through `lockPath` and commits it over `tables.list` —
+ *  the atomic-vs-degraded branching shared by the main write's own commit
+ *  (step 9) and auto-compaction's (step 11's own step 7). */
+async function commitListBody(
+  ctx: Context,
+  gitDir: string,
+  lockPath: string,
+  names: readonly string[],
+): Promise<void> {
+  const body = TEXT_ENCODER.encode(tablesListBody(names));
+  await ctx.fs.write(lockPath, body);
   if (ctx.fs.atomicRename !== undefined) {
-    await ctx.fs.atomicRename(write.lockPath, tablesListPath(write.gitDir));
+    await ctx.fs.atomicRename(lockPath, tablesListPath(gitDir));
     return;
   }
-  await ctx.fs.write(tablesListPath(write.gitDir), body);
-  await ctx.fs.rm(write.lockPath);
+  await ctx.fs.write(tablesListPath(gitDir), body);
+  await ctx.fs.rm(lockPath);
+}
+
+async function commitStackList(ctx: Context, write: StagedStackWrite): Promise<void> {
+  await commitListBody(ctx, write.gitDir, write.lockPath, [
+    ...write.existingNames,
+    write.tableName,
+  ]);
+}
+
+// --- Step 11: auto-compaction ------------------------------------------
+//
+// Runs once per stack, after that stack's own write has committed (see
+// `applyReftableUpdates` below). Consumes Part 6's pure
+// `suggestCompactionSegment` / `compactionMetric` policy unchanged; this
+// section is only the I/O protocol around it, measured against git's own
+// `stack_compact_range`:
+//
+//   1  acquire tables.list.lock; verify the stack is still the one the
+//      segment was planned against, else abort
+//   2  acquire <table>.ref.lock for every table in the segment, newest ->
+//      oldest; a held lock shrinks the range; fewer than two remaining
+//      gives up
+//   3  release tables.list.lock — concurrent appends may proceed while the
+//      merge (step 4) runs
+//   4  merge the locked tables into a temp file
+//   5  re-acquire tables.list.lock; re-read tables.list; verify the
+//      compacted names still appear, contiguously and in the same order;
+//      abort if not
+//   6  rename the temp file in — unless the merge produced an empty
+//      table, which is simply omitted
+//   7  write the new tables.list through the lock and rename it over
+//   8  unlink the merged tables, best effort; release the per-table locks
+//
+// Every abort above (an outdated stack, or too few lockable tables) is a
+// plain early return, never a throw, so "auto-compaction never fails a
+// write" holds for those paths by construction — nothing to catch. The one
+// path that DOES throw is `tables.list.lock` itself (steps 1 and 5)
+// timing out its retry budget (REFTABLE_LOCKED, reusing acquireStackLock).
+// `tryAutoCompact` below swallows exactly that, and only that, narrowly,
+// and only after the write it follows has already committed.
+
+interface CompactionPlan {
+  readonly plannedNames: readonly string[]; // contiguous, oldest -> newest
+}
+
+function planCompaction(
+  existingNames: readonly string[],
+  stack: ReftableStack,
+): CompactionPlan | undefined {
+  const sizes = stack.tables.map((table) =>
+    compactionMetric(table._bytes.length, table.header.version),
+  );
+  const segment = suggestCompactionSegment(sizes, DEFAULT_GEOMETRIC_FACTOR);
+  if (segment.start === segment.end) return undefined;
+  return { plannedNames: existingNames.slice(segment.start, segment.end) };
+}
+
+function sameNames(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((name, index) => name === b[index]);
+}
+
+interface LockedSegment {
+  readonly tableNames: readonly string[]; // oldest -> newest, possibly shrunk
+  readonly tableLockPaths: readonly string[]; // same order as tableNames
+  readonly startsAtStackZero: boolean;
+}
+
+/** Step 2: per-table locks, newest -> oldest, one attempt each — no retry;
+ *  a held lock shrinks the range rather than waiting. `undefined` when
+ *  fewer than two end up locked, having released whatever was taken (the
+ *  give-up-silently rule). */
+async function lockTablesNewestToOldest(
+  ctx: Context,
+  gitDir: string,
+  plannedNames: readonly string[],
+  wholeStackOldest: string | undefined,
+): Promise<LockedSegment | undefined> {
+  const lockedNewestFirst: string[] = [];
+  const lockPathsNewestFirst: string[] = [];
+  for (const name of [...plannedNames].reverse()) {
+    const lockPath = reftableTableLockPath(gitDir, name);
+    if (!(await tryAcquireLock(ctx, lockPath))) break;
+    lockedNewestFirst.push(name);
+    lockPathsNewestFirst.push(lockPath);
+  }
+  if (lockedNewestFirst.length < 2) {
+    await releaseLocksReverse(ctx, lockPathsNewestFirst);
+    return undefined;
+  }
+  const tableNames = [...lockedNewestFirst].reverse();
+  return {
+    tableNames,
+    tableLockPaths: [...lockPathsNewestFirst].reverse(),
+    startsAtStackZero: tableNames[0] === wholeStackOldest,
+  };
+}
+
+/** Steps 1-3: acquire `tables.list.lock`, verify the probed stack is still
+ *  current, lock the segment's tables, then release the list lock so
+ *  concurrent appends may proceed while the merge (step 4) runs.
+ *  `undefined` on either abort path — an outdated probe, or too few
+ *  lockable tables. */
+async function acquireCompactionLocks(
+  ctx: Context,
+  gitDir: string,
+  probedNames: readonly string[],
+  plannedNames: readonly string[],
+): Promise<LockedSegment | undefined> {
+  const listLockPath = await acquireStackLock(ctx, gitDir);
+  try {
+    const current = parseTablesList(await ctx.fs.readUtf8(tablesListPath(gitDir)));
+    if (!sameNames(current, probedNames)) return undefined;
+    return await lockTablesNewestToOldest(ctx, gitDir, plannedNames, probedNames[0]);
+  } finally {
+    await removeIfPresent(ctx, listLockPath);
+  }
+}
+
+/** One ref record per name — the newest merged table's record wins, the
+ *  same newest-first precedence `reftable-stack.ts`'s view applies, but
+ *  over records rather than resolved values, and restricted to the tables
+ *  actually being merged. A winning tombstone is dropped only when
+ *  `dropTombstones` — the segment's own `start === 0` rule, passed in as
+ *  an explicit boolean, never re-derived here. */
+function mergeRefRecords(
+  tablesOldestFirst: readonly LoadedReftable[],
+  dropTombstones: boolean,
+): readonly ReftableRefRecord[] {
+  const winners = new Map<RefName, ReftableRefRecord>();
+  for (const table of tablesOldestFirst) {
+    for (const record of iterateReftableRefs(table)) {
+      winners.set(record.name, record);
+    }
+  }
+  return [...winners.values()].filter(
+    (record) => !(dropTombstones && record.value.kind === 'deletion'),
+  );
+}
+
+/** Log records are keyed by `(name, update_index)`, not by name alone, so
+ *  merging tables' log sections is a concatenation across the merged
+ *  range, never a per-name reduction. Tombstone entries are dropped under
+ *  the same `dropTombstones` boolean the ref merge uses. */
+function mergeLogRecords(
+  tablesOldestFirst: readonly LoadedReftable[],
+  dropTombstones: boolean,
+): readonly ReftableLogRecord[] {
+  const merged: ReftableLogRecord[] = [];
+  for (const table of tablesOldestFirst) {
+    for (const record of iterateReftableLogs(table)) {
+      if (dropTombstones && record.entry.kind === 'deletion') continue;
+      merged.push(record);
+    }
+  }
+  return merged;
+}
+
+interface MergedSegment {
+  readonly mergedName: string | undefined; // undefined => empty result, omitted
+  readonly tempPath: string | undefined;
+}
+
+/** Step 4: loads the locked tables, merges them per the tombstone rule,
+ *  and writes the result to a temp file — unless the merge produced no
+ *  records at all, reported as `mergedName: undefined` rather than
+ *  written (an empty table is never renamed in). */
+async function mergeSegment(
+  ctx: Context,
+  gitDir: string,
+  locked: LockedSegment,
+): Promise<MergedSegment> {
+  const dir = reftableDir(gitDir);
+  const tables: LoadedReftable[] = [];
+  for (const name of locked.tableNames) {
+    tables.push(
+      await loadReftable(await ctx.fs.read(`${dir}/${name}`), ctx.compressor.streamInflate),
+    );
+  }
+  const refs = sortRefRecords(mergeRefRecords(tables, locked.startsAtStackZero));
+  const logs = sortLogRecords(mergeLogRecords(tables, locked.startsAtStackZero));
+  if (refs.length === 0 && logs.length === 0) {
+    return { mergedName: undefined, tempPath: undefined };
+  }
+  const minUpdateIndex = tables[0]!.header.minUpdateIndex;
+  const maxUpdateIndex = tables[tables.length - 1]!.header.maxUpdateIndex;
+  const options = writeOptionsFor(ctx, minUpdateIndex, maxUpdateIndex);
+  const bytes = await serializeReftable(refs, logs, options, ctx.compressor.deflate);
+  const prefix = formatUpdateIndexPair(minUpdateIndex, maxUpdateIndex);
+  const tempPath = await writeTempTable(ctx, dir, prefix, bytes);
+  return { mergedName: `${prefix}-${randomHex8()}.ref`, tempPath };
+}
+
+/** The re-verified `tables.list` with the locked segment spliced out —
+ *  replaced by the merged table's name (or simply removed, if the merge
+ *  was empty). `undefined` when the locked names no longer appear as a
+ *  contiguous, in-order run — the stack-outdated abort. Names outside the
+ *  segment (including any newly appended since step 3's release) pass
+ *  through untouched. */
+function spliceLockedSegment(
+  fresh: readonly string[],
+  lockedNames: readonly string[],
+  mergedName: string | undefined,
+): readonly string[] | undefined {
+  const startIndex = fresh.indexOf(lockedNames[0]!);
+  if (startIndex === -1) return undefined;
+  const slice = fresh.slice(startIndex, startIndex + lockedNames.length);
+  if (!sameNames(slice, lockedNames)) return undefined;
+  const before = fresh.slice(0, startIndex);
+  const after = fresh.slice(startIndex + lockedNames.length);
+  return mergedName === undefined ? [...before, ...after] : [...before, mergedName, ...after];
+}
+
+async function discardTempFile(ctx: Context, tempPath: string | undefined): Promise<void> {
+  if (tempPath !== undefined) await removeIfPresent(ctx, tempPath);
+}
+
+async function unlinkSegmentTables(
+  ctx: Context,
+  gitDir: string,
+  names: readonly string[],
+): Promise<void> {
+  const dir = reftableDir(gitDir);
+  for (const name of names) {
+    await removeIfPresent(ctx, `${dir}/${name}`);
+  }
+}
+
+/** Steps 5-8, list-lock scoped: re-verify, rename the merged table in
+ *  (unless empty), rewrite `tables.list`, unlink the merged tables. Silent
+ *  no-op (after discarding the temp file) when re-verification finds the
+ *  segment no longer intact — the stack-outdated abort. */
+async function commitMergedList(
+  ctx: Context,
+  gitDir: string,
+  locked: LockedSegment,
+  merged: MergedSegment,
+): Promise<void> {
+  const listLockPath = await acquireStackLock(ctx, gitDir);
+  try {
+    const fresh = parseTablesList(await ctx.fs.readUtf8(tablesListPath(gitDir)));
+    const spliced = spliceLockedSegment(fresh, locked.tableNames, merged.mergedName);
+    if (spliced === undefined) {
+      await discardTempFile(ctx, merged.tempPath);
+      return;
+    }
+    if (merged.tempPath !== undefined && merged.mergedName !== undefined) {
+      await ctx.fs.rename(merged.tempPath, `${reftableDir(gitDir)}/${merged.mergedName}`);
+    }
+    await commitListBody(ctx, gitDir, listLockPath, spliced);
+  } finally {
+    await removeIfPresent(ctx, listLockPath);
+  }
+  await unlinkSegmentTables(ctx, gitDir, locked.tableNames);
+}
+
+async function commitCompaction(
+  ctx: Context,
+  gitDir: string,
+  locked: LockedSegment,
+  merged: MergedSegment,
+): Promise<void> {
+  try {
+    await commitMergedList(ctx, gitDir, locked, merged);
+  } finally {
+    await releaseLocksReverse(ctx, [...locked.tableLockPaths].reverse());
+  }
+}
+
+async function runAutoCompaction(ctx: Context, gitDir: string): Promise<void> {
+  const { stack, existingNames } = await readFreshStack(ctx, gitDir);
+  const plan = planCompaction(existingNames, stack);
+  if (plan === undefined) return;
+
+  const locked = await acquireCompactionLocks(ctx, gitDir, existingNames, plan.plannedNames);
+  if (locked === undefined) return;
+
+  const merged = await mergeSegment(ctx, gitDir, locked);
+  await commitCompaction(ctx, gitDir, locked, merged);
+}
+
+/**
+ * Step 11's own boundary: the ref update this follows has already
+ * committed, so a lock conflict acquiring `tables.list.lock` for the
+ * compaction pass (steps 1 or 5's retry budget expiring) is swallowed here
+ * — narrowly, by error code, and only from this call. Every OTHER abort
+ * path inside auto-compaction (an outdated stack, or fewer than two
+ * tables left lockable) is already a silent no-op by construction and
+ * never reaches this catch. Anything of a different shape — a corrupt
+ * table, a genuine I/O fault — propagates and fails the whole
+ * transaction, exactly like any other unexpected error.
+ */
+async function tryAutoCompact(ctx: Context, gitDir: string): Promise<void> {
+  try {
+    await runAutoCompaction(ctx, gitDir);
+  } catch (err) {
+    if (errorDataCode(err) === 'REFTABLE_LOCKED') return;
+    throw err;
+  }
 }
 
 // --- Cross-stack partitioning -----------------------------------------------
@@ -532,6 +850,7 @@ export async function applyReftableUpdates(
   if (buckets.length === 0) return;
   const identity = await resolveReflogIdentity(ctx);
   const locks: string[] = [];
+  let staged: readonly StagedStackWrite[] = [];
 
   try {
     const prepared: PreparedStackWrite[] = [];
@@ -542,12 +861,18 @@ export async function applyReftableUpdates(
         await prepareStackWrite(ctx, bucket.gitDir, lockPath, bucket.updates, identity),
       );
     }
-    const staged = await writeAllTables(ctx, prepared);
+    staged = await writeAllTables(ctx, prepared);
     for (const write of staged) {
       await commitStackList(ctx, write);
       invalidateReftableStack(ctx, reftableDir(write.gitDir));
     }
   } finally {
     await releaseLocksReverse(ctx, locks);
+  }
+
+  // Step 11, per stack that actually committed a table — every lock above
+  // is already released, so compaction takes its own independent locks.
+  for (const write of staged) {
+    await tryAutoCompact(ctx, write.gitDir);
   }
 }

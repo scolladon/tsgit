@@ -64,6 +64,12 @@ export const tablesListPath = (gitDir: string): string => `${gitDir}/reftable/ta
 /** The lock file a reftable transaction holds while `tables.list` is being rewritten. */
 export const tablesListLockPath = (gitDir: string): string => `${gitDir}/reftable/tables.list.lock`;
 
+/** The lock a compacting transaction holds on one table while it is part of
+ *  an in-progress merge segment — `<table>.ref.lock`, observed alongside
+ *  `tables.list.lock` during auto-compaction. */
+export const reftableTableLockPath = (gitDir: string, tableName: string): string =>
+  `${reftableDir(gitDir)}/${tableName}.lock`;
+
 export const indexPath = (gitDir: string): string => `${gitDir}/index`;
 
 export const objectsDir = (gitDir: string, prefix: string): string => `${gitDir}/objects/${prefix}`;

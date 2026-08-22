@@ -19,6 +19,7 @@ import {
   packsDir,
   reflogPath,
   reftableDir,
+  reftableTableLockPath,
   sparseCheckoutPath,
   tablesListLockPath,
   tablesListPath,
@@ -101,6 +102,18 @@ describe('path-layout', () => {
 
         // Assert
         expect(result).toBe('/g/reftable/tables.list.lock');
+      });
+    });
+  });
+
+  describe('Given gitDir and a table name', () => {
+    describe('When reftableTableLockPath', () => {
+      it('Then returns /gitDir/reftable/<table>.lock', () => {
+        // Arrange & Act
+        const result = reftableTableLockPath('/g', '0x01-0x01-aaaaaaaa.ref');
+
+        // Assert
+        expect(result).toBe('/g/reftable/0x01-0x01-aaaaaaaa.ref.lock');
       });
     });
   });
