@@ -66,7 +66,15 @@ async function verifyOneTable(
     throw err;
   }
   try {
-    await loadReftable(bytes, ctx.compressor.streamInflate);
+    const table = await loadReftable(bytes, ctx.compressor.streamInflate);
+    // `loadReftable` only inflates each log block; it never walks the
+    // records inside one, so a block whose restart array or log keys are
+    // malformed would otherwise pass this audit as healthy. Consuming the
+    // iterator is what forces `logBlockBounds`/`splitLogKey`'s own guards to
+    // run against every block this table carries.
+    for (const _record of iterateReftableLogs(table)) {
+      // Walked for its structural side effect only — see comment above.
+    }
     return undefined;
   } catch (err) {
     const check = invalidReftableCheck(err);

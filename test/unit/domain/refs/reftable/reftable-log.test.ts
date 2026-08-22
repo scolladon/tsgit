@@ -10,10 +10,12 @@ import {
   encodeTzOffset,
   iterateReftableLogs,
   LOG_BLOCK_HEADER_LENGTH,
+  LOG_TYPE_DELETION,
   type LogInflationBudget,
   loadReftable,
   logBlockBounds,
 } from '../../../../../src/domain/refs/reftable/reftable-log.js';
+import { encodeOfsDistance } from '../../../../../src/domain/storage/pack-entry.js';
 import type { LogRecordEntrySpec, LogRecordSpec } from './arbitraries.js';
 import { buildReftable, buildReftableHeader, buildReftableLogBlock } from './arbitraries.js';
 
@@ -76,6 +78,38 @@ async function buildRawLogBlock(
   const view = new DataView(bytes.buffer);
   bytes[0] = 'g'.charCodeAt(0);
   const declared = declaredLengthOverride ?? LOG_BLOCK_HEADER_LENGTH + payloadLength;
+  view.setUint8(1, (declared >>> 16) & 0xff);
+  view.setUint16(2, declared & 0xffff);
+  bytes.set(compressed, LOG_BLOCK_HEADER_LENGTH);
+  return bytes;
+}
+
+/** One raw `'g'`-type log block payload holding a single tombstone record
+ *  whose KEY is exactly `keyBytes` — never the 9-byte
+ *  refname+separator+reverse_int64 suffix `encodeLogKey` always emits. Only
+ *  reachable via a hand-crafted table: the shape `splitLogKey`'s own
+ *  width guard must refuse rather than crash on. */
+async function buildShortKeyLogBlock(keyBytes: Uint8Array): Promise<Uint8Array> {
+  const packed = (keyBytes.length << 3) | LOG_TYPE_DELETION;
+  const record = new Uint8Array([
+    ...encodeOfsDistance(0),
+    ...encodeOfsDistance(packed),
+    ...keyBytes,
+  ]);
+  // One restart entry pointing at the phantom-header-relative offset 4
+  // (LOG_BLOCK_HEADER_LENGTH), plus the trailing uint16 restart_count.
+  const restart = new Uint8Array(5);
+  const restartView = new DataView(restart.buffer);
+  restartView.setUint8(0, (LOG_BLOCK_HEADER_LENGTH >>> 16) & 0xff);
+  restartView.setUint16(1, LOG_BLOCK_HEADER_LENGTH & 0xffff);
+  restartView.setUint16(3, 1);
+  const payload = new Uint8Array([...record, ...restart]);
+  const compressed = await deflate(payload);
+
+  const bytes = new Uint8Array(LOG_BLOCK_HEADER_LENGTH + compressed.length);
+  const view = new DataView(bytes.buffer);
+  bytes[0] = 'g'.charCodeAt(0);
+  const declared = LOG_BLOCK_HEADER_LENGTH + payload.length;
   view.setUint8(1, (declared >>> 16) & 0xff);
   view.setUint16(2, declared & 0xffff);
   bytes.set(compressed, LOG_BLOCK_HEADER_LENGTH);
@@ -619,6 +653,118 @@ describe('reftable-log', () => {
           // Assert
           expect(table.logBlocks).toHaveLength(1);
           expect(table.logBlocks[0]).toHaveLength(50);
+        });
+      });
+    });
+  });
+
+  describe('log-block record-grammar bounds', () => {
+    describe('Given a log block payload too short to hold its own restart_count', () => {
+      describe('When resolving its bounds', () => {
+        it('Then refuses with block-bounds instead of a raw RangeError', () => {
+          // Arrange — the exact shape two independent reviewers reproduced:
+          // a table declaring `block_len = LOG_BLOCK_HEADER_LENGTH` (a
+          // zero-byte inflated payload). `payload.length -
+          // RESTART_COUNT_SIZE` goes negative, and `DataView.getUint16` on a
+          // negative offset throws a raw RangeError before any
+          // INVALID_REFTABLE guard gets a chance to fire.
+          const payload = new Uint8Array(0);
+          const sut = logBlockBounds;
+
+          // Act
+          let caught: unknown;
+          try {
+            sut(payload);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect((caught as { data: { code: string } }).data.code).toBe('INVALID_REFTABLE');
+          expect((caught as { data: { check: string } }).data.check).toBe('block-bounds');
+        });
+      });
+    });
+
+    describe('Given a log block whose declared restart_count overruns its own payload', () => {
+      describe('When resolving its bounds', () => {
+        it('Then refuses with block-bounds instead of computing a negative restart array start', () => {
+          // Arrange — the trailing uint16 (readable on its own, at offset 8
+          // of this 10-byte payload) declares 5 restart entries, but 5 * 3
+          // bytes leaves no room for them: `restartArrayStart` computes to
+          // -7, and the un-guarded loop would call `readUint24` at negative
+          // offsets.
+          const payload = new Uint8Array(10);
+          new DataView(payload.buffer).setUint16(8, 5);
+          const sut = logBlockBounds;
+
+          // Act
+          let caught: unknown;
+          try {
+            sut(payload);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect((caught as { data: { code: string } }).data.code).toBe('INVALID_REFTABLE');
+          expect((caught as { data: { check: string } }).data.check).toBe('block-bounds');
+        });
+      });
+    });
+
+    describe('Given a table whose only log block declares block_len 4 with a zero-byte inflated payload', () => {
+      describe('When iterating its records via loadReftable + iterateReftableLogs', () => {
+        it('Then refuses with block-bounds instead of crashing the read path with a RangeError', async () => {
+          // Arrange — the end-to-end repro: the ref section is untouched (a
+          // log-only table has none), so only a log walk (readReflog,
+          // listReflogs, or a write appending through the loggable-names
+          // scan) ever reaches this block.
+          const block = await buildRawLogBlock(0);
+          const bytes = buildLogOnlyReftable([block]);
+          const table = await loadReftable(bytes, inflateAt);
+          const sut = iterateReftableLogs;
+
+          // Act
+          let caught: unknown;
+          try {
+            Array.from(sut(table));
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect((caught as { data: { code: string } }).data.code).toBe('INVALID_REFTABLE');
+          expect((caught as { data: { check: string } }).data.check).toBe('block-bounds');
+        });
+      });
+    });
+
+    describe('Given a log record whose decoded key is shorter than the reversed update_index suffix', () => {
+      describe('When iterating via iterateReftableLogs', () => {
+        it('Then refuses with record-overrun instead of crashing or reading adjacent bytes', async () => {
+          // Arrange — an empty key: no legitimate writer ever produces this
+          // (`encodeLogKey` always emits at least the 9-byte
+          // refname+separator+reverse_int64 suffix), but a hostile table can
+          // declare it. `splitLogKey` used to build its `DataView` at
+          // `keyBytes.byteOffset + keyBytes.length - 8` before checking the
+          // key was even 8 bytes long.
+          const block = await buildShortKeyLogBlock(new Uint8Array(0));
+          const bytes = buildLogOnlyReftable([block]);
+          const table = await loadReftable(bytes, inflateAt);
+          const sut = iterateReftableLogs;
+
+          // Act
+          let caught: unknown;
+          try {
+            Array.from(sut(table));
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect((caught as { data: { code: string } }).data.code).toBe('INVALID_REFTABLE');
+          expect((caught as { data: { check: string } }).data.check).toBe('record-overrun');
         });
       });
     });

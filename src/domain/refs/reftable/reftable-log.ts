@@ -92,6 +92,12 @@ function splitLogKey(keyBytes: Uint8Array): {
   readonly updateIndex: bigint;
 } {
   const suffixWidth = LOG_KEY_SEPARATOR_WIDTH + LOG_KEY_UPDATE_INDEX_WIDTH;
+  if (keyBytes.length < suffixWidth) {
+    throw invalidReftable(
+      'record-overrun',
+      `log key of ${keyBytes.length} bytes is too short to hold the ${suffixWidth}-byte separator + reversed update_index suffix`,
+    );
+  }
   const nameBytes = keyBytes.subarray(0, keyBytes.length - suffixWidth);
   const view = new DataView(
     keyBytes.buffer,
@@ -216,9 +222,22 @@ export interface LogBlockBounds {
 }
 
 export function logBlockBounds(payload: Uint8Array): LogBlockBounds {
+  if (payload.length < RESTART_COUNT_SIZE) {
+    throw invalidReftable(
+      'block-bounds',
+      `log block payload of ${payload.length} bytes is too short to hold its own restart_count`,
+    );
+  }
+
   const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
   const restartCount = view.getUint16(payload.length - RESTART_COUNT_SIZE);
   const restartArrayStart = payload.length - RESTART_COUNT_SIZE - restartCount * RESTART_ENTRY_SIZE;
+  if (restartArrayStart < 0) {
+    throw invalidReftable(
+      'block-bounds',
+      `log block declares restart_count ${restartCount}, overrunning its ${payload.length}-byte payload`,
+    );
+  }
 
   const restartOffsets: number[] = [];
   for (let i = 0; i < restartCount; i += 1) {

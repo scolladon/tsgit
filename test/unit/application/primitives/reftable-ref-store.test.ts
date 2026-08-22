@@ -61,6 +61,23 @@ function buildTwoTableStack(): { readonly table1: Uint8Array; readonly table2: U
   return { table1, table2 };
 }
 
+/** One raw `'g'`-type log block declaring `block_len =
+ *  LOG_BLOCK_HEADER_LENGTH` (4) with a genuinely EMPTY inflated payload — no
+ *  room for its own trailing `restart_count`, the exact shape a read-path
+ *  `RangeError` regression was found in. `loadReftable` alone only inflates
+ *  a log block; it never walks the records inside one, so this is what
+ *  `verifyIntegrity` must consume its log iterator to catch. */
+async function buildCorruptLogBlock(ctx: Context): Promise<Uint8Array> {
+  const compressed = await ctx.compressor.deflate(new Uint8Array(0));
+  const bytes = new Uint8Array(4 + compressed.length);
+  const view = new DataView(bytes.buffer);
+  bytes[0] = 'g'.charCodeAt(0);
+  view.setUint8(1, 0);
+  view.setUint16(2, 4);
+  bytes.set(compressed, 4);
+  return bytes;
+}
+
 async function seedTwoTableStack(ctx: Context, dir: string): Promise<void> {
   const { table1, table2 } = buildTwoTableStack();
   await writeReftableFiles(ctx, dir, [
@@ -579,6 +596,31 @@ describe('reftable-ref-store', () => {
         // Assert — never badRefContent: there is no raw per-ref text in a
         // reftable, so that loose-grammar fault class cannot exist here.
         expect(findings).toEqual([{ table: 'b.ref', msgId: 'badReftableTable', check: 'magic' }]);
+      });
+    });
+
+    describe('When verifyIntegrity runs over a stack whose only table has a structurally corrupt log block', () => {
+      it('Then it returns a finding for that table instead of reporting the stack healthy', async () => {
+        // Arrange
+        const ctx = withReftableStorage(createMemoryContext());
+        const dir = commonReftableDir(ctx);
+        const header = buildReftableHeader({ version: 1 });
+        const logBlock = await buildCorruptLogBlock(ctx);
+        const corruptTable = buildReftable({
+          version: 1,
+          blocks: [logBlock],
+          logPosition: header.length,
+        });
+        await writeReftableFiles(ctx, dir, [{ name: 'corrupt.ref', bytes: corruptTable }]);
+        const sut = createReftableRefStore(ctx);
+
+        // Act
+        const findings = await sut.verifyIntegrity();
+
+        // Assert
+        expect(findings).toEqual([
+          { table: 'corrupt.ref', msgId: 'badReftableTable', check: 'block-bounds' },
+        ]);
       });
     });
 
