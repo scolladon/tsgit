@@ -211,13 +211,22 @@ export function createReftableRefStore(ctx: Context): RefStore {
     return names;
   }
 
+  /**
+   * Every ref this Context can see, resolved. Walks `stack.entries()` per
+   * dir — the same ownership filter `collectCandidateNames` applies for
+   * names alone — rather than collecting candidate names first and
+   * re-deriving each one's record through `stackFor(name)` + `lookup()`:
+   * `entries()` already IS that per-name winning record, computed once by
+   * the same k-way merge `names()` walks.
+   */
   async function listRefs(prefix?: RefName): Promise<readonly RefEntry[]> {
     const entries: RefEntry[] = [];
-    for (const name of await collectCandidateNames(prefix)) {
-      const stack = await stackFor(name);
-      const record = stack.lookup(name);
-      if (record !== undefined) {
-        entries.push({ name, value: toResolveResult(record.value) });
+    for (const dir of gitDirs()) {
+      const stack = await stackAt(dir);
+      for (const record of stack.entries()) {
+        if (!matchesPrefix(record.name, prefix)) continue;
+        if (perWorktreeRefDir(ctx, record.name) !== dir) continue;
+        entries.push({ name: record.name, value: toResolveResult(record.value) });
       }
     }
     return entries.sort(byName);

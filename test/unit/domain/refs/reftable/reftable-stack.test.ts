@@ -197,6 +197,24 @@ describe('reftable-stack', () => {
         );
       });
     });
+
+    describe('When listing every entry in the merged view', () => {
+      it('Then entries() yields exactly the same names names() does, each with its lookup()-equal record', () => {
+        // Arrange
+        const sut = stack.entries;
+
+        // Act
+        const result = Array.from(sut());
+
+        // Assert — same name set as names(), and every entry is the exact
+        // record a separate lookup(name) call would independently return —
+        // proving entries() never has to be re-resolved through lookup().
+        expect(result.map((entry) => entry.name).sort()).toEqual(Array.from(stack.names()).sort());
+        for (const entry of result) {
+          expect(entry).toStrictEqual(stack.lookup(entry.name));
+        }
+      });
+    });
   });
 
   describe('Given a ref that only the older of two tables holds', () => {
@@ -233,6 +251,20 @@ describe('reftable-stack', () => {
 
         // Assert
         expect(result?.value).toStrictEqual({ kind: 'direct', id: ObjectId.fromRaw(oid(0x22)) });
+      });
+    });
+
+    describe('When listing every entry in the merged view', () => {
+      it('Then entries() also resolves to the newest table’s record', () => {
+        // Arrange
+        const sut = stack.entries;
+
+        // Act
+        const result = Array.from(sut());
+
+        // Assert
+        expect(result).toHaveLength(1);
+        expect(result[0]?.value).toStrictEqual({ kind: 'direct', id: ObjectId.fromRaw(oid(0x22)) });
       });
     });
   });

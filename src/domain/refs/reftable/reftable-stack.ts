@@ -24,6 +24,11 @@ export interface ReftableStack {
   readonly maxUpdateIndex: bigint;
   lookup(name: RefName): ReftableRefRecord | undefined;
   names(): Iterable<RefName>;
+  /** Every live (tombstone-free) record in the merge view, name-sorted —
+   *  `names()` plus each name's already-resolved winning record, computed
+   *  by the SAME k-way merge rather than a `names()` walk followed by one
+   *  `lookup()` re-search per name. */
+  entries(): Iterable<ReftableRefRecord>;
   logs(name: RefName): Iterable<ReftableLogRecord>;
 }
 
@@ -110,18 +115,30 @@ function resolveAndAdvance(
   return winner!;
 }
 
-/** The merged, tombstone-free name set: a lazy k-way walk over each table's
- *  own sorted iterator (oldest -> newest), rather than a materialised map,
- *  so a caller stops paying for the walk as soon as it stops pulling. */
-function* mergeNames(tables: readonly LoadedReftable[]): Generator<RefName> {
+/** The merged, tombstone-free record set: a lazy k-way walk over each
+ *  table's own sorted iterator (oldest -> newest), rather than a
+ *  materialised map, so a caller stops paying for the walk as soon as it
+ *  stops pulling. Yields each name's WINNING record — the same one
+ *  `lookup(name)` would separately re-derive by re-searching every table —
+ *  so a caller that wants both the name and the resolved value never pays
+ *  for that second search. */
+function* mergeEntries(tables: readonly LoadedReftable[]): Generator<ReftableRefRecord> {
   const iterators = tables.map((table) => iterateReftableRefs(table)[Symbol.iterator]());
   const heads: (ReftableRefRecord | undefined)[] = iterators.map(nextOrUndefined);
 
   for (let next = minName(heads); next !== undefined; next = minName(heads)) {
     const winner = resolveAndAdvance(heads, iterators, next);
     if (winner.value.kind !== 'deletion') {
-      yield next;
+      yield winner;
     }
+  }
+}
+
+/** `mergeEntries`, names only — `names()`'s own implementation, so the two
+ *  can never drift apart on which records the merge actually yields. */
+function* mergeNames(tables: readonly LoadedReftable[]): Generator<RefName> {
+  for (const entry of mergeEntries(tables)) {
+    yield entry.name;
   }
 }
 
@@ -142,6 +159,7 @@ export function createReftableStack(tables: readonly LoadedReftable[]): Reftable
     maxUpdateIndex: latestMaxUpdateIndex(tables),
     lookup: (name) => lookupInStack(tablesNewestFirst, name),
     names: () => mergeNames(tables),
+    entries: () => mergeEntries(tables),
     logs: (name) => logsInStack(tablesNewestFirst, name),
   };
 }
