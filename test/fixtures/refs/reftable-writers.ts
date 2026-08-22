@@ -119,7 +119,7 @@ export function buildReftableBlock(spec: ReftableBlockSpec): Uint8Array {
  * so the default single-block fixture matches a real git file byte-for-byte
  * in total size and framing.
  */
-const HEAD_SYMREF_RECORD_BYTES = Uint8Array.from([
+export const HEAD_SYMREF_RECORD_BYTES = Uint8Array.from([
   0x00, 0x23, 0x48, 0x45, 0x41, 0x44, 0x00, 0x0f, 0x72, 0x65, 0x66, 0x73, 0x2f, 0x68, 0x65, 0x61,
   0x64, 0x73, 0x2f, 0x6d, 0x61, 0x69, 0x6e,
 ]);

@@ -28,6 +28,7 @@ import {
   buildReftable,
   buildReftableBlock,
   buildReftableHeader,
+  HEAD_SYMREF_RECORD_BYTES,
 } from './arbitraries.js';
 
 // --- Fixture helpers -----------------------------------------------------
@@ -228,6 +229,43 @@ describe('reftable-block', () => {
 
           // Assert
           expect(bounds.blockEnd).toBe(270);
+        });
+      });
+    });
+
+    describe('Given the HEAD-symref ref_record git 2.55.0 itself wrote (captured verbatim, never re-derived from SUFFIX_SHIFT/VALUE_TYPE_*)', () => {
+      describe('When iterating the default single-block table built from it', () => {
+        it('Then it decodes as a symbolic HEAD pointing at refs/heads/main', () => {
+          // Arrange — `HEAD_SYMREF_RECORD_BYTES` is opaque, real-git-produced
+          // bytes; a `SUFFIX_SHIFT`/`VALUE_TYPE_*` mutant that stays
+          // self-consistent between this suite's own writer and reader would
+          // still corrupt decoding of THESE bytes, because they were never
+          // encoded through those constants in the first place. Framed
+          // explicitly (not via `buildReftable`'s own default block) so the
+          // dependency on the captured constant is visible here, not buried
+          // in the fixture's own default wiring.
+          const header = buildReftableHeader({ version: 1 });
+          const ownLength = 1 + 3 + HEAD_SYMREF_RECORD_BYTES.length + 3 + 2;
+          const block = buildReftableBlock({
+            type: 'r',
+            recordBytes: HEAD_SYMREF_RECORD_BYTES,
+            restartOffsets: [header.length + 4],
+            declaredLength: header.length + ownLength,
+          });
+          const reftable = parseReftable(buildReftable({ version: 1, blocks: [block] }));
+          const sut = iterateReftableRefs;
+
+          // Act
+          const records = Array.from(sut(reftable));
+
+          // Assert
+          expect(records).toStrictEqual<ReftableRefRecord[]>([
+            {
+              name: RefName.from('HEAD'),
+              updateIndex: 1n,
+              value: { kind: 'symbolic', target: RefName.from('refs/heads/main') },
+            },
+          ]);
         });
       });
     });

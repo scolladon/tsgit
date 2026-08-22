@@ -42,6 +42,7 @@ export {
   buildReftableBlock,
   buildReftableHeader,
   buildReftableLogBlock,
+  HEAD_SYMREF_RECORD_BYTES,
 } from '../../../../fixtures/refs/reftable-writers.js';
 export { arbRefName } from '../arbitraries.js';
 
