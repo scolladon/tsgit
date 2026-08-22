@@ -134,6 +134,30 @@ async function buildTableWithLogRecord(
   return loadReftable(bytes, compressor.streamInflate);
 }
 
+/** A log-only table holding one TOMBSTONE record for `name` at `updateIndex`
+ *  — the shape `applyDeleteRecords` writes for an existing live entry it
+ *  shadows, never a fresh one. */
+async function buildTableWithLogTombstone(
+  name: string,
+  updateIndex: bigint,
+): Promise<LoadedReftable> {
+  const record: LogRecordSpec = { refName: name, updateIndex, entry: { kind: 'deletion' } };
+  const block = await buildReftableLogBlock({ records: [record] }, compressor.deflate);
+  const header = buildReftableHeader({
+    version: 1,
+    minUpdateIndex: updateIndex,
+    maxUpdateIndex: updateIndex,
+  });
+  const bytes = buildReftable({
+    version: 1,
+    minUpdateIndex: updateIndex,
+    maxUpdateIndex: updateIndex,
+    blocks: [block],
+    logPosition: header.length,
+  });
+  return loadReftable(bytes, compressor.streamInflate);
+}
+
 describe('reftable-stack', () => {
   describe('Given a two-table stack whose newest table tombstones a ref', () => {
     const stack = createReftableStack([buildTableWithLiveRecords(), buildTableWithTombstone()]);
@@ -228,6 +252,49 @@ describe('reftable-stack', () => {
         expect(result).toHaveLength(2);
         expect(result[0]!.updateIndex).toBe(5n);
         expect(result[1]!.updateIndex).toBe(2n);
+      });
+    });
+  });
+
+  describe('Given an older table’s live log entry tombstoned by a newer table at the same update_index', () => {
+    describe('When merging logs(name) across the stack', () => {
+      it('Then the entry is shadowed — the tombstone wins, not a concatenation of both', async () => {
+        // Arrange
+        const older = await buildTableWithLogRecord('refs/heads/x', 2n, 'shadowed entry');
+        const newer = await buildTableWithLogTombstone('refs/heads/x', 2n);
+        const stack = createReftableStack([older, newer]);
+        const sut = stack.logs;
+
+        // Act
+        const result = Array.from(sut(RefName.from('refs/heads/x')));
+
+        // Assert
+        expect(result).toStrictEqual([]);
+      });
+    });
+  });
+
+  describe('Given a tombstoned entry at one update_index and a live entry at another, for the same name', () => {
+    describe('When merging logs(name) across the stack', () => {
+      it('Then only the unshadowed live entry survives', async () => {
+        // Arrange
+        const oldest = await buildTableWithLogRecord('refs/heads/x', 1n, 'still live');
+        const older = await buildTableWithLogRecord('refs/heads/x', 2n, 'about to be shadowed');
+        const newer = await buildTableWithLogTombstone('refs/heads/x', 2n);
+        const stack = createReftableStack([oldest, older, newer]);
+        const sut = stack.logs;
+
+        // Act
+        const result = Array.from(sut(RefName.from('refs/heads/x')));
+
+        // Assert
+        expect(result).toHaveLength(1);
+        const [survivor] = result;
+        expect(survivor?.updateIndex).toBe(1n);
+        expect(survivor?.entry.kind).toBe('entry');
+        expect(survivor?.entry.kind === 'entry' ? survivor.entry.message : undefined).toBe(
+          'still live',
+        );
       });
     });
   });

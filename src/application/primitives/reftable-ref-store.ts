@@ -238,15 +238,43 @@ export function createReftableRefStore(ctx: Context): RefStore {
     return entries.reverse();
   }
 
+  /** Whether `stack.logs(name)` — already tombstone-shadowed — yields at
+   *  least one live entry. A name whose raw tables carry only shadowed-away
+   *  entries has no reflog at all, matching the files backend's own
+   *  file-deleted-means-gone behaviour. */
+  function hasLiveReflog(stack: ReftableStack, name: RefName): boolean {
+    for (const _record of stack.logs(name)) return true;
+    return false;
+  }
+
+  /** Every name ANY raw table in `stack` carries a log record for — a
+   *  superset candidate list `hasLiveReflog` then filters down to names
+   *  still live after tombstone shadowing. */
+  function candidateReflogNames(stack: ReftableStack): ReadonlySet<RefName> {
+    const candidates = new Set<RefName>();
+    for (const table of stack.tables) {
+      for (const record of iterateReftableLogs(table)) {
+        candidates.add(record.name);
+      }
+    }
+    return candidates;
+  }
+
+  /** `stack`'s own live reflog names — the candidates that survive
+   *  tombstone shadowing. */
+  function liveReflogNames(stack: ReftableStack): ReadonlySet<RefName> {
+    const names = new Set<RefName>();
+    for (const name of candidateReflogNames(stack)) {
+      if (hasLiveReflog(stack, name)) names.add(name);
+    }
+    return names;
+  }
+
   async function listReflogs(): Promise<readonly RefName[]> {
     const stacks = await everyStack();
     const names = new Set<RefName>();
     for (const stack of stacks) {
-      for (const table of stack.tables) {
-        for (const record of iterateReftableLogs(table)) {
-          if (record.entry.kind === 'entry') names.add(record.name);
-        }
-      }
+      for (const name of liveReflogNames(stack)) names.add(name);
     }
     return [...names];
   }

@@ -641,22 +641,32 @@ function mergeRefRecords(
   );
 }
 
-/** Log records are keyed by `(name, update_index)`, not by name alone, so
- *  merging tables' log sections is a concatenation across the merged
- *  range, never a per-name reduction. Tombstone entries are dropped under
- *  the same `dropTombstones` boolean the ref merge uses. */
+/** Log records are keyed by `(name, update_index)` — not by name alone, the
+ *  way `mergeRefRecords` reduces — but a tombstone REUSES the shadowed
+ *  entry's own key rather than a fresh one (`applyDeleteRecords`), so the
+ *  same key can legitimately recur across the merged tables: an older
+ *  table's live entry and a newer table's tombstone for it. Reducing by the
+ *  full `(name, update_index)` key, newest table winning (oldest-first
+ *  iteration order means a later `.set()` always overwrites an earlier one
+ *  for the same key), is what `mergeRefRecords` already does for names —
+ *  this mirrors it. Getting this wrong either resurrects the shadowed entry
+ *  (a plain concatenation only drops the tombstone record itself) or writes
+ *  both records at one key, corrupting git's restart-point binary search
+ *  (`sortLogRecords`'s own contract). A winning tombstone is dropped only
+ *  when `dropTombstones` — the segment's own `start === 0` rule. */
 function mergeLogRecords(
   tablesOldestFirst: readonly LoadedReftable[],
   dropTombstones: boolean,
 ): readonly ReftableLogRecord[] {
-  const merged: ReftableLogRecord[] = [];
+  const winners = new Map<string, ReftableLogRecord>();
   for (const table of tablesOldestFirst) {
     for (const record of iterateReftableLogs(table)) {
-      if (dropTombstones && record.entry.kind === 'deletion') continue;
-      merged.push(record);
+      winners.set(`${record.name}\0${record.updateIndex}`, record);
     }
   }
-  return merged;
+  return [...winners.values()].filter(
+    (record) => !(dropTombstones && record.entry.kind === 'deletion'),
+  );
 }
 
 interface MergedSegment {

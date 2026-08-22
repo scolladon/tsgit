@@ -226,9 +226,12 @@ describe('reftable-ref-store', () => {
   describe('Given a stack with a reflog for refs/heads/main', () => {
     describe('When readReflog runs', () => {
       it('Then entries come back oldest-first, tombstones excluded', async () => {
-        // Arrange — a single table with two log records for the same ref,
-        // key-sorted newest-update_index-first (the reverse-int64 log key
-        // order), so a correct reader must reverse before returning.
+        // Arrange — an older table with two log records for the same ref
+        // (key-sorted newest-update_index-first, the reverse-int64 log key
+        // order, so a correct reader must reverse before returning), plus a
+        // newer table that tombstones the update_index=2 entry — a correct
+        // reader must SHADOW that entry, not merely skip the tombstone
+        // record itself and leave the shadowed entry visible.
         const ctx = withReftableStorage(createMemoryContext());
         const dir = commonReftableDir(ctx);
         const headerSpec = { version: 1 as const, minUpdateIndex: 1n, maxUpdateIndex: 2n };
@@ -274,16 +277,34 @@ describe('reftable-ref-store', () => {
           logPosition: header.length,
           logIndexPosition: 0,
         });
-        await writeReftableFiles(ctx, dir, [{ name: 'table1.ref', bytes }]);
+        const tombstoneHeaderSpec = { version: 1 as const, minUpdateIndex: 3n, maxUpdateIndex: 3n };
+        const tombstoneHeader = buildReftableHeader(tombstoneHeaderSpec);
+        const tombstoneBlock = await buildReftableLogBlock(
+          {
+            records: [{ refName: 'refs/heads/main', updateIndex: 2n, entry: { kind: 'deletion' } }],
+          },
+          ctx.compressor.deflate,
+        );
+        const tombstoneBytes = buildReftable({
+          ...tombstoneHeaderSpec,
+          blocks: [tombstoneBlock],
+          logPosition: tombstoneHeader.length,
+          logIndexPosition: 0,
+        });
+        await writeReftableFiles(ctx, dir, [
+          { name: 'table1.ref', bytes },
+          { name: 'table2.ref', bytes: tombstoneBytes },
+        ]);
         const sut = createReftableRefStore(ctx);
 
         // Act
         const entries = await sut.readReflog(ref('refs/heads/main'));
 
-        // Assert
-        expect(entries).toHaveLength(2);
+        // Assert — the update_index=2 entry ("commit: second") is shadowed
+        // by table2's tombstone; only the unshadowed update_index=1 entry
+        // survives.
+        expect(entries).toHaveLength(1);
         expect(entries[0]?.message).toBe('commit (initial): first');
-        expect(entries[1]?.message).toBe('commit: second');
       });
     });
 
@@ -329,6 +350,77 @@ describe('reftable-ref-store', () => {
 
         // Assert
         expect(names).toEqual(['refs/heads/main']);
+      });
+    });
+  });
+
+  describe('Given a ref whose entire reflog is tombstoned by a newer table', () => {
+    describe('When readReflog and listReflogs run', () => {
+      it('Then the ref reads as having no history at all — not the deleted entries', async () => {
+        // Arrange — table1 carries one live log record for
+        // refs/heads/topic; table2 tombstones it at the same update_index,
+        // mirroring what a ref delete leaves behind on disk.
+        const ctx = withReftableStorage(createMemoryContext());
+        const dir = commonReftableDir(ctx);
+        const headerSpec = { version: 1 as const, minUpdateIndex: 1n, maxUpdateIndex: 1n };
+        const header = buildReftableHeader(headerSpec);
+        const logBlock = await buildReftableLogBlock(
+          {
+            records: [
+              {
+                refName: 'refs/heads/topic',
+                updateIndex: 1n,
+                entry: {
+                  kind: 'entry',
+                  oldId: oid(0x00),
+                  newId: ID_MAIN,
+                  name: 'Ada',
+                  email: 'ada@example.com',
+                  timestamp: 1_700_000_000,
+                  tzOffset: '+0000',
+                  message: 'commit (initial): first',
+                },
+              },
+            ],
+          },
+          ctx.compressor.deflate,
+        );
+        const bytes = buildReftable({
+          ...headerSpec,
+          blocks: [logBlock],
+          logPosition: header.length,
+          logIndexPosition: 0,
+        });
+        const tombstoneHeaderSpec = { version: 1 as const, minUpdateIndex: 2n, maxUpdateIndex: 2n };
+        const tombstoneHeader = buildReftableHeader(tombstoneHeaderSpec);
+        const tombstoneBlock = await buildReftableLogBlock(
+          {
+            records: [
+              { refName: 'refs/heads/topic', updateIndex: 1n, entry: { kind: 'deletion' } },
+            ],
+          },
+          ctx.compressor.deflate,
+        );
+        const tombstoneBytes = buildReftable({
+          ...tombstoneHeaderSpec,
+          blocks: [tombstoneBlock],
+          logPosition: tombstoneHeader.length,
+          logIndexPosition: 0,
+        });
+        await writeReftableFiles(ctx, dir, [
+          { name: 'table1.ref', bytes },
+          { name: 'table2.ref', bytes: tombstoneBytes },
+        ]);
+        const sut = createReftableRefStore(ctx);
+
+        // Act
+        const entries = await sut.readReflog(ref('refs/heads/topic'));
+        const names = await sut.listReflogs();
+
+        // Assert — matches the files backend's own behaviour for a deleted
+        // ref: no entries, and the name absent from the reflog listing.
+        expect(entries).toEqual([]);
+        expect(names).toEqual([]);
       });
     });
   });

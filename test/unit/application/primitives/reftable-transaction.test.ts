@@ -7,7 +7,10 @@ import {
   tablesListPath,
 } from '../../../../src/application/primitives/path-layout.js';
 import { createReftableRefStore } from '../../../../src/application/primitives/reftable-ref-store.js';
-import { applyReftableUpdates } from '../../../../src/application/primitives/reftable-transaction.js';
+import {
+  applyReftableUpdates,
+  packReftableStack,
+} from '../../../../src/application/primitives/reftable-transaction.js';
 import { TsgitError } from '../../../../src/domain/error.js';
 import { ObjectId, RefName } from '../../../../src/domain/objects/index.js';
 import {
@@ -45,6 +48,23 @@ const tombstoneLog = (name: string, updateIndex: number): ReftableLogRecord => (
   name: ref(name),
   updateIndex: BigInt(updateIndex),
   entry: { kind: 'deletion' },
+});
+
+const liveLog = (name: string, updateIndex: number, message: string): ReftableLogRecord => ({
+  name: ref(name),
+  updateIndex: BigInt(updateIndex),
+  entry: {
+    kind: 'entry',
+    oldId: oid(0),
+    newId: oid(1),
+    identity: {
+      name: 'Ada',
+      email: 'ada@example.com',
+      timestamp: 1_700_000_000,
+      timezoneOffset: '+0000',
+    },
+    message,
+  },
 });
 
 /** `count` filler live refs at `updateIndex` — zero-padded names, already
@@ -569,6 +589,94 @@ describe('reftable-transaction', () => {
         expect(entries.filter((name) => name.endsWith('.ref'))).toEqual([]);
         const stack = await loadReftableStack(ctx, dir);
         expect(stack.tables).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a log tombstone shadowing a live entry at the same update_index, across two tables', () => {
+    describe('When packRefs merges the whole stack from table 0', () => {
+      it('Then the merged result carries neither the entry nor the tombstone — deleted, not resurrected', async () => {
+        // Arrange — table1 carries refs/heads/target's live creation entry;
+        // table2 carries its ref tombstone (new index) and a log tombstone
+        // at the ORIGINAL entry's own index (1), the exact shape a real
+        // delete produces (see `applyDeleteRecords`).
+        const ctx = withReftableStorage(createMemoryContext());
+        const dir = commonReftableDir(ctx);
+        const liveBytes = await buildFixtureTable(
+          ctx,
+          [liveRef('refs/heads/target', 1, 1)],
+          [liveLog('refs/heads/target', 1, 'created')],
+          1n,
+          1n,
+        );
+        const deleteBytes = await buildFixtureTable(
+          ctx,
+          [tombstoneRef('refs/heads/target', 2)],
+          [tombstoneLog('refs/heads/target', 1)],
+          2n,
+          2n,
+        );
+        await writeReftableFiles(ctx, dir, [
+          { name: 'live.ref', bytes: liveBytes },
+          { name: 'delete.ref', bytes: deleteBytes },
+        ]);
+
+        // Act — a full compaction always covers segment [0, n), so the
+        // tombstone-drop rule applies to both the ref and the log side.
+        await packReftableStack(ctx, ctx.layout.gitDir);
+
+        // Assert — a plain concatenation would drop only the tombstone
+        // record (kind === 'deletion') and leave the shadowed live entry
+        // resurrected in a freshly-written table; a correct by-key merge
+        // leaves nothing at all, so the stack goes empty.
+        const stack = await loadReftableStack(ctx, dir);
+        expect(stack.tables).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a log tombstone and its shadowed entry sit in a segment that does not start at table 0', () => {
+    describe('When auto-compaction merges the segment', () => {
+      it('Then exactly the tombstone survives at that key — never both, never neither', async () => {
+        // Arrange — a big filler table keeps the compaction segment from
+        // starting at 0 (mirroring the existing mid-stack fixture), a
+        // second small table carries refs/heads/target's live creation
+        // entry, and the delete (added by the Act) tombstones it at the
+        // SAME update_index the live entry already occupies.
+        const ctx = withReftableStorage(createMemoryContext());
+        const dir = commonReftableDir(ctx);
+        const bigBytes = await buildFixtureTable(ctx, fillerRefs(50, 1), [], 1n, 1n);
+        const targetBytes = await buildFixtureTable(
+          ctx,
+          [liveRef('refs/heads/target', 1, 2)],
+          [liveLog('refs/heads/target', 2, 'created')],
+          2n,
+          2n,
+        );
+        await writeReftableFiles(ctx, dir, [
+          { name: 'big.ref', bytes: bigBytes },
+          { name: 'target.ref', bytes: targetBytes },
+        ]);
+
+        // Act
+        await applyReftableUpdates(ctx, [
+          { kind: 'delete', name: ref('refs/heads/target'), expected: oid(1) },
+        ]);
+
+        // Assert — big.ref stays untouched (segment starts mid-stack, so
+        // dropTombstones is false); the merged table carries exactly ONE
+        // record at (refs/heads/target, update_index=2) — a plain
+        // concatenation would instead carry two records at that identical
+        // key (the live entry AND the tombstone), which corrupts git's
+        // restart-point binary search.
+        const stack = await loadReftableStack(ctx, dir);
+        expect(stack.tables).toHaveLength(2);
+        const merged = stack.tables.find((t) => t !== stack.tables[0]) ?? stack.tables[1]!;
+        const atKey = [...iterateReftableLogs(merged)].filter(
+          (l) => l.name === ref('refs/heads/target') && l.updateIndex === 2n,
+        );
+        expect(atKey).toHaveLength(1);
+        expect(atKey[0]?.entry.kind).toBe('deletion');
       });
     });
   });

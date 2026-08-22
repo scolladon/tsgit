@@ -48,16 +48,27 @@ function lookupInStack(
   return undefined;
 }
 
-/** Every reflog record for `name` across the whole stack, newest first.
- *  Tables never overlap in `update_index` range, and each table's own
- *  iteration is already newest-first, so walking tables newest-to-oldest and
- *  concatenating preserves the global order without a merge or a sort. */
+/** Every LIVE reflog record for `name` across the whole stack, newest first.
+ *  A log record's key is `(name, update_index)`; the same key can recur in
+ *  more than one table — a newer table's tombstone shadowing an older
+ *  table's live entry at the entry's own `update_index` (never a fresh one,
+ *  matching how the write side places a deletion). Tables never overlap in
+ *  `update_index` RANGE for a fresh write, but a tombstone deliberately
+ *  reuses an older index, so the shadow set must be tracked explicitly
+ *  rather than assumed away — walking tables newest-to-oldest and keeping
+ *  only the first (newest) record seen for each `update_index` reproduces
+ *  the same newest-wins rule `lookupInStack` already applies by name. */
 function* logsInStack(
   tablesNewestFirst: readonly LoadedReftable[],
   name: RefName,
 ): Generator<ReftableLogRecord> {
+  const seenIndices = new Set<bigint>();
   for (const table of tablesNewestFirst) {
-    yield* iterateReftableLogs(table, name);
+    for (const record of iterateReftableLogs(table, name)) {
+      if (seenIndices.has(record.updateIndex)) continue;
+      seenIndices.add(record.updateIndex);
+      if (record.entry.kind !== 'deletion') yield record;
+    }
   }
 }
 
