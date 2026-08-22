@@ -696,6 +696,104 @@ describe('reftable-transaction', () => {
     });
   });
 
+  describe('Given a stack with reflog history under several OTHER ref names, and a single-update batch for a brand-new ref', () => {
+    describe('When the transaction commits', () => {
+      it('Then only the checked name would ever be decoded — none of the other names’ log records are', async () => {
+        // Arrange — five unrelated ref names each carry a live log entry;
+        // the checked name (a sixth, brand-new ref, so it has no history of
+        // its own) is the ONLY candidate in this batch. `decodeLogData`
+        // (two `ObjectId.fromRaw` calls per record) is the eager
+        // full-stack-materialisation cost a single-candidate write must not
+        // pay: the loggability check must use the name-filtered scan, which
+        // skips every non-matching record instead of decoding it.
+        const ctx = withReftableStorage(createMemoryContext());
+        const dir = commonReftableDir(ctx);
+        const priorNames = [
+          'refs/tags/a',
+          'refs/tags/b',
+          'refs/tags/c',
+          'refs/tags/d',
+          'refs/tags/e',
+        ];
+        const priorLogs = priorNames.map((name, i) => liveLog(name, i + 1, `history for ${name}`));
+        const priorRefs = priorNames.map((name, i) => liveRef(name, i + 1, i + 1));
+        const bytes = await buildFixtureTable(
+          ctx,
+          priorRefs,
+          priorLogs,
+          1n,
+          BigInt(priorNames.length),
+        );
+        await writeReftableFiles(ctx, dir, [{ name: 'history.ref', bytes }]);
+        const newId = oid(9);
+        const zeroId = oid(0);
+        const fromRawSpy = vi.spyOn(ObjectId, 'fromRaw');
+        fromRawSpy.mockClear();
+
+        // Act
+        await applyReftableUpdates(ctx, [
+          {
+            kind: 'set',
+            name: ref('refs/tags/new'),
+            id: newId,
+            reflog: { oldId: zeroId, newId, message: 'created' },
+          },
+        ]);
+
+        // Assert
+        expect(fromRawSpy).not.toHaveBeenCalled();
+        fromRawSpy.mockRestore();
+      });
+    });
+  });
+
+  describe('Given a stack with reflog history under several ref names, and a delete-only batch', () => {
+    describe('When the transaction commits', () => {
+      it('Then no log record anywhere in the stack is decoded — a delete never consults loggability', async () => {
+        // Arrange — a delete tombstones ITS OWN name's existing log records
+        // via `stack.logs(name)` (already name-filtered), but never calls
+        // `isReftableLoggable` at all. The eager, unconditional
+        // `collectLoggableNames` hoist used to run regardless, decoding
+        // every OTHER name's records too, even though nothing in a
+        // delete-only batch ever consults the result. The delete target is
+        // symbolic (never decodes an `ObjectId` on lookup either), so any
+        // `fromRaw` call here can only have come from the loggable-names
+        // scan under test.
+        const ctx = withReftableStorage(createMemoryContext());
+        const dir = commonReftableDir(ctx);
+        const priorNames = ['refs/tags/a', 'refs/tags/b', 'refs/tags/c'];
+        const priorLogs = priorNames.map((name, i) => liveLog(name, i + 1, `history for ${name}`));
+        const targetName = ref('refs/heads/doomed');
+        const doomedRecord: ReftableRefRecord = {
+          name: targetName,
+          updateIndex: BigInt(priorNames.length + 1),
+          value: { kind: 'symbolic', target: ref('refs/heads/main') },
+        };
+        const priorRefs = [
+          doomedRecord,
+          ...priorNames.map((name, i) => liveRef(name, i + 1, i + 1)),
+        ];
+        const bytes = await buildFixtureTable(
+          ctx,
+          priorRefs,
+          priorLogs,
+          1n,
+          BigInt(priorNames.length + 1),
+        );
+        await writeReftableFiles(ctx, dir, [{ name: 'history.ref', bytes }]);
+        const fromRawSpy = vi.spyOn(ObjectId, 'fromRaw');
+        fromRawSpy.mockClear();
+
+        // Act
+        await applyReftableUpdates(ctx, [{ kind: 'delete', name: targetName }]);
+
+        // Assert
+        expect(fromRawSpy).not.toHaveBeenCalled();
+        fromRawSpy.mockRestore();
+      });
+    });
+  });
+
   describe('Given a non-default-loggable ref whose entire reflog was tombstoned by a deletion', () => {
     describe('When it is re-created without an unconditional reflog entry', () => {
       it('Then no reflog entry is appended — a shadowed (deleted) history does not count as loggable', async () => {

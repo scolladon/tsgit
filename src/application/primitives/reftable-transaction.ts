@@ -326,11 +326,10 @@ function verifyExpectations(updates: readonly RefUpdate[], stack: ReftableStack)
 /**
  * Every name with at least one LIVE log record anywhere in `stack` — one
  * pass over every table's log records (newest table first, mirroring
- * `mergeLogRecords`'s own `(name, update_index)` shadow key), computed ONCE
- * per {@link prepareStackWrite} rather than re-derived by a fresh
- * `stack.logs(name)` scan — an O(stack log records) walk on its own — for
- * EVERY update in the batch. `hasLogHistory` below is then an O(1) lookup
- * against this set.
+ * `mergeLogRecords`'s own `(name, update_index)` shadow key). Used by
+ * {@link createLoggableLookup} to amortise a BATCH of several distinct
+ * candidate names into one Θ(stack log records) pass, rather than one
+ * {@link hasLiveLogRecord} scan per name.
  */
 function collectLoggableNames(stack: ReftableStack): ReadonlySet<RefName> {
   const live = new Set<RefName>();
@@ -346,18 +345,82 @@ function collectLoggableNames(stack: ReftableStack): ReadonlySet<RefName> {
   return live;
 }
 
-function hasLogHistory(loggableNames: ReadonlySet<RefName>, name: RefName): boolean {
-  return loggableNames.has(name);
+/** `name`'s own live-log-history question, answered by `stack.logs(name)`'s
+ *  own early-exit-bounded, name-filtered scan: stops at the first live
+ *  record, and never decodes a non-matching record's value
+ *  (`iterateReftableLogs`'s own `matches` filter skips it). {@link
+ *  createLoggableLookup} reaches for this when only one distinct name in
+ *  the batch needs the check, so the single-update write path — the
+ *  dominant real shape — never pays for a full-stack pass. */
+function hasLiveLogRecord(stack: ReftableStack, name: RefName): boolean {
+  for (const _record of stack.logs(name)) return true;
+  return false;
+}
+
+/**
+ * Only `'set'` / `'setSymbolic'` / `'reflogOnly'` updates carrying a
+ * CONDITIONAL `reflog` (no `unconditional: true`) ever consult
+ * loggability — a `delete` or `reflogReplace` tombstones/replaces directly,
+ * and an unconditional or reflog-less update never calls
+ * `isReftableLoggable` at all. Restricting the candidate set to exactly
+ * these names is what lets {@link createLoggableLookup} decide, per batch,
+ * which strategy is worth its own cost — a pure, synchronous, in-memory
+ * pass over the batch itself, never the stack.
+ */
+function loggableCandidateNames(updates: readonly RefUpdate[]): ReadonlySet<RefName> {
+  const names = new Set<RefName>();
+  for (const update of updates) {
+    if (update.kind !== 'set' && update.kind !== 'setSymbolic' && update.kind !== 'reflogOnly') {
+      continue;
+    }
+    if (update.reflog === undefined || update.reflog.unconditional === true) continue;
+    names.add(update.name);
+  }
+  return names;
+}
+
+/**
+ * Lazy, per-write loggability source. A single candidate name (the dominant
+ * real shape — one commit, branch update, or checkout's HEAD move) is
+ * answered by {@link hasLiveLogRecord}'s own early-exit scan, restoring the
+ * pre-batch-hoist cost for that case. Two or more distinct names fall back
+ * to ONE combined {@link collectLoggableNames} pass, so a large batch still
+ * pays Θ(stack log records) once, never once per name — the hoist's own
+ * guarantee, kept for the case it actually matters. Either strategy is
+ * itself lazy: nothing touches the stack until the returned function's
+ * first call, so a batch whose `candidates` set is empty (delete-only,
+ * `reflogReplace`-only, every reflog unconditional or absent) never reaches
+ * a single log record.
+ */
+function createLoggableLookup(
+  stack: ReftableStack,
+  candidates: ReadonlySet<RefName>,
+): (name: RefName) => boolean {
+  if (candidates.size > 1) {
+    let collected: ReadonlySet<RefName> | undefined;
+    return (name) => {
+      collected ??= collectLoggableNames(stack);
+      return collected.has(name);
+    };
+  }
+  const memo = new Map<RefName, boolean>();
+  return (name) => {
+    const cached = memo.get(name);
+    if (cached !== undefined) return cached;
+    const result = hasLiveLogRecord(stack, name);
+    memo.set(name, result);
+    return result;
+  };
 }
 
 /** The reftable counterpart to `record-ref-update.ts`'s `isLoggable`: "has a
  *  reflog" is any log record anywhere in the stack, not a physical file. */
 async function isReftableLoggable(
   ctx: Context,
-  loggableNames: ReadonlySet<RefName>,
+  loggable: (name: RefName) => boolean,
   name: RefName,
 ): Promise<boolean> {
-  if (hasLogHistory(loggableNames, name)) return true;
+  if (loggable(name)) return true;
   const config = await readConfig(ctx);
   return shouldAutocreateReflog(name, config.core ?? {});
 }
@@ -369,7 +432,7 @@ async function isReftableLoggable(
  *  the loggability gate is closed. */
 async function maybeAppendReflog(
   ctx: Context,
-  loggableNames: ReadonlySet<RefName>,
+  loggable: (name: RefName) => boolean,
   logs: ReftableLogRecord[],
   name: RefName,
   updateIndex: bigint,
@@ -377,7 +440,7 @@ async function maybeAppendReflog(
   reflog: ReflogAppend | undefined,
 ): Promise<boolean> {
   if (reflog === undefined) return false;
-  if (reflog.unconditional !== true && !(await isReftableLoggable(ctx, loggableNames, name)))
+  if (reflog.unconditional !== true && !(await isReftableLoggable(ctx, loggable, name)))
     return false;
   logs.push({
     name,
@@ -463,7 +526,7 @@ function applyReflogReplaceRecords(
 async function applyOneUpdate(
   ctx: Context,
   stack: ReftableStack,
-  loggableNames: ReadonlySet<RefName>,
+  loggable: (name: RefName) => boolean,
   update: RefUpdate,
   updateIndex: bigint,
   identity: AuthorIdentity,
@@ -475,7 +538,7 @@ async function applyOneUpdate(
       refs.push({ name: update.name, updateIndex, value: { kind: 'direct', id: update.id } });
       await maybeAppendReflog(
         ctx,
-        loggableNames,
+        loggable,
         logs,
         update.name,
         updateIndex,
@@ -491,7 +554,7 @@ async function applyOneUpdate(
       });
       await maybeAppendReflog(
         ctx,
-        loggableNames,
+        loggable,
         logs,
         update.name,
         updateIndex,
@@ -505,7 +568,7 @@ async function applyOneUpdate(
     case 'reflogOnly':
       await maybeAppendReflog(
         ctx,
-        loggableNames,
+        loggable,
         logs,
         update.name,
         updateIndex,
@@ -560,11 +623,11 @@ async function prepareStackWrite(
   const { stack, existingNames } = await readFreshStack(ctx, gitDir);
   verifyExpectations(updates, stack);
   const updateIndex = stack.maxUpdateIndex + 1n;
-  const loggableNames = collectLoggableNames(stack);
+  const loggable = createLoggableLookup(stack, loggableCandidateNames(updates));
   const refs: ReftableRefRecord[] = [];
   const logs: ReftableLogRecord[] = [];
   for (const update of updates) {
-    await applyOneUpdate(ctx, stack, loggableNames, update, updateIndex, identity, refs, logs);
+    await applyOneUpdate(ctx, stack, loggable, update, updateIndex, identity, refs, logs);
   }
   const bounds = boundingIndices(updateIndex, refs, logs);
   return {
