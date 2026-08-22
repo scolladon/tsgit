@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { createRefStore, getRefStore } from '../../../../src/application/primitives/ref-store.js';
+import {
+  assertRenamableTrackingRef,
+  createRefStore,
+  getRefStore,
+} from '../../../../src/application/primitives/ref-store.js';
+import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
+import type { TsgitError } from '../../../../src/domain/error.js';
 import type { ObjectId, RefName } from '../../../../src/domain/objects/index.js';
 import { buildSeededContext } from './fixtures.js';
 
@@ -80,15 +86,17 @@ describe('ref-store', () => {
     });
   });
 
-  describe('Given writeLoose then resolveDirect', () => {
-    describe('When invoked', () => {
-      it('Then returns the written id', async () => {
+  describe('Given a set update', () => {
+    describe('When applyRefUpdates is called', () => {
+      it('Then resolveDirect returns the written id', async () => {
         // Arrange
         const ctx = await buildSeededContext();
         const sut = createRefStore(ctx);
 
         // Act
-        await sut.writeLoose('refs/heads/new' as RefName, 'd'.repeat(40) as ObjectId);
+        await sut.applyRefUpdates([
+          { kind: 'set', name: 'refs/heads/new' as RefName, id: 'd'.repeat(40) as ObjectId },
+        ]);
         const result = await sut.resolveDirect('refs/heads/new' as RefName);
 
         // Assert
@@ -97,9 +105,9 @@ describe('ref-store', () => {
     });
   });
 
-  describe('Given removeLoose on a shadowing loose ref', () => {
-    describe('When resolveDirect', () => {
-      it('Then falls through to packed', async () => {
+  describe('Given a delete update on a shadowing loose ref', () => {
+    describe('When applyRefUpdates is called', () => {
+      it('Then resolveDirect falls through to packed', async () => {
         // Arrange
         const ctx = await buildSeededContext({
           refs: [{ name: 'refs/heads/main' as RefName, id: 'a'.repeat(40) as ObjectId }],
@@ -108,11 +116,234 @@ describe('ref-store', () => {
         const sut = createRefStore(ctx);
 
         // Act
-        await sut.removeLoose('refs/heads/main' as RefName);
+        await sut.applyRefUpdates([{ kind: 'delete', name: 'refs/heads/main' as RefName }]);
         const result = await sut.resolveDirect('refs/heads/main' as RefName);
 
         // Assert
         if (result.kind === 'direct') expect(result.id).toBe('c'.repeat(40));
+      });
+    });
+  });
+
+  describe('Given two updates in one list', () => {
+    describe('When applyRefUpdates is called', () => {
+      it('Then both refs are written', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const sut = createRefStore(ctx);
+        const idA = 'a'.repeat(40) as ObjectId;
+        const idB = 'b'.repeat(40) as ObjectId;
+
+        // Act
+        await sut.applyRefUpdates([
+          { kind: 'set', name: 'refs/heads/one' as RefName, id: idA },
+          { kind: 'set', name: 'refs/heads/two' as RefName, id: idB },
+        ]);
+        const one = await sut.resolveDirect('refs/heads/one' as RefName);
+        const two = await sut.resolveDirect('refs/heads/two' as RefName);
+
+        // Assert
+        expect(one).toEqual({ kind: 'direct', id: idA });
+        expect(two).toEqual({ kind: 'direct', id: idB });
+      });
+    });
+  });
+
+  describe('Given a list whose second update carries a mismatched expected', () => {
+    describe('When applyRefUpdates is called', () => {
+      it('Then it throws REF_UPDATE_CONFLICT with name, expected and actual populated', async () => {
+        // Arrange
+        const ctx = await buildSeededContext({
+          refs: [{ name: 'refs/heads/main' as RefName, id: 'a'.repeat(40) as ObjectId }],
+        });
+        const sut = createRefStore(ctx);
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut.applyRefUpdates([
+            { kind: 'set', name: 'refs/heads/one' as RefName, id: 'b'.repeat(40) as ObjectId },
+            {
+              kind: 'set',
+              name: 'refs/heads/main' as RefName,
+              id: 'c'.repeat(40) as ObjectId,
+              expected: 'd'.repeat(40) as ObjectId,
+            },
+          ]);
+          expect.unreachable();
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('REF_UPDATE_CONFLICT');
+        if (data.code === 'REF_UPDATE_CONFLICT') {
+          expect(data.name).toBe('refs/heads/main');
+          expect(data.expected).toBe('d'.repeat(40));
+          expect(data.actual).toBe('a'.repeat(40));
+        }
+      });
+    });
+  });
+
+  describe('Given a set update', () => {
+    describe('When applyRefUpdates is called', () => {
+      it('Then it writes through the ref lock (transient .lock, then gone)', async () => {
+        // Arrange — kills a mutant that swaps `atomicWriteRef` for a plain
+        // write: intercepting `rename` observes the lock file mid-flight,
+        // right before atomicWriteRef renames it onto the final ref path.
+        const ctx = await buildSeededContext();
+        const lockPath = '/repo/.git/refs/heads/atomic.lock';
+        let lockExistedDuringWrite = false;
+        const wrapped = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            rename: async (from: string, to: string) => {
+              lockExistedDuringWrite = await ctx.fs.exists(lockPath);
+              return ctx.fs.rename(from, to);
+            },
+          },
+        };
+        const sut = createRefStore(wrapped);
+
+        // Act
+        await sut.applyRefUpdates([
+          { kind: 'set', name: 'refs/heads/atomic' as RefName, id: 'f'.repeat(40) as ObjectId },
+        ]);
+
+        // Assert
+        expect(lockExistedDuringWrite).toBe(true);
+        expect(await ctx.fs.exists(lockPath)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a reflogOnly update', () => {
+    describe('When applyRefUpdates is called', () => {
+      it('Then it appends to the reflog without touching the ref', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const sut = createRefStore(ctx);
+        const name = 'refs/heads/untouched' as RefName;
+        const idA = 'a'.repeat(40) as ObjectId;
+        const idB = 'b'.repeat(40) as ObjectId;
+
+        // Act
+        await sut.applyRefUpdates([
+          { kind: 'reflogOnly', name, reflog: { oldId: idA, newId: idB, message: 'reflog-only' } },
+        ]);
+
+        // Assert
+        expect(await ctx.fs.exists('/repo/.git/refs/heads/untouched')).toBe(false);
+        const log = await readReflog(ctx, name);
+        expect(log).toHaveLength(1);
+        expect(log[0]?.oldId).toBe(idA);
+        expect(log[0]?.newId).toBe(idB);
+        expect(log[0]?.message).toBe('reflog-only');
+      });
+    });
+  });
+
+  describe('Given an existing ref with a reflog', () => {
+    describe('When applyRefUpdates applies a delete update', () => {
+      it('Then the ref and its reflog are both removed', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const sut = createRefStore(ctx);
+        const name = 'refs/heads/tmp' as RefName;
+        const idA = 'a'.repeat(40) as ObjectId;
+        await sut.applyRefUpdates([
+          {
+            kind: 'set',
+            name,
+            id: idA,
+            reflog: { oldId: 'e'.repeat(40) as ObjectId, newId: idA, message: 'seed' },
+          },
+        ]);
+
+        // Act
+        await sut.applyRefUpdates([{ kind: 'delete', name }]);
+
+        // Assert
+        expect(await ctx.fs.exists('/repo/.git/refs/heads/tmp')).toBe(false);
+        expect(await ctx.fs.exists('/repo/.git/logs/refs/heads/tmp')).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a packed-only ref', () => {
+    describe('When applyRefUpdates applies a delete update', () => {
+      it('Then it throws UNSUPPORTED_OPERATION with operation delete-packed-ref', async () => {
+        // Arrange
+        const ctx = await buildSeededContext({
+          packedRefs: [{ name: 'refs/tags/old' as RefName, id: 'a'.repeat(40) as ObjectId }],
+        });
+        const sut = createRefStore(ctx);
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut.applyRefUpdates([{ kind: 'delete', name: 'refs/tags/old' as RefName }]);
+          expect.unreachable();
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('UNSUPPORTED_OPERATION');
+        if (data.code === 'UNSUPPORTED_OPERATION') {
+          expect(data.operation).toBe('delete-packed-ref');
+          expect(data.reason).toMatch(/packed-only refs/);
+        }
+      });
+    });
+  });
+
+  describe('Given a packed-only tracking ref', () => {
+    describe('When assertRenamableTrackingRef is called', () => {
+      it('Then it throws UNSUPPORTED_OPERATION with operation rename-packed-tracking-ref', async () => {
+        // Arrange
+        const ctx = await buildSeededContext({
+          packedRefs: [
+            { name: 'refs/remotes/origin/main' as RefName, id: 'a'.repeat(40) as ObjectId },
+          ],
+        });
+
+        // Act
+        let caught: unknown;
+        try {
+          await assertRenamableTrackingRef(ctx, 'refs/remotes/origin/main' as RefName);
+          expect.unreachable();
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('UNSUPPORTED_OPERATION');
+        if (data.code === 'UNSUPPORTED_OPERATION') {
+          expect(data.operation).toBe('rename-packed-tracking-ref');
+          expect(data.reason).toContain('packed-only ref refs/remotes/origin/main');
+        }
+      });
+    });
+  });
+
+  describe('Given a loose tracking ref', () => {
+    describe('When assertRenamableTrackingRef is called', () => {
+      it('Then it does not throw', async () => {
+        // Arrange
+        const ctx = await buildSeededContext({
+          refs: [{ name: 'refs/remotes/origin/main' as RefName, id: 'a'.repeat(40) as ObjectId }],
+        });
+
+        // Act + Assert
+        await expect(
+          assertRenamableTrackingRef(ctx, 'refs/remotes/origin/main' as RefName),
+        ).resolves.toBeUndefined();
       });
     });
   });
@@ -141,31 +372,42 @@ describe('ref-store', () => {
     });
   });
 
-  describe('Given removeLoose on a ref that does not exist', () => {
-    describe('When called', () => {
-      it('Then does not throw', async () => {
+  describe('Given a delete update on a ref that exists in neither loose nor packed storage', () => {
+    describe('When applyRefUpdates is called', () => {
+      it('Then it throws REF_NOT_FOUND', async () => {
         // Arrange
         // Kills the `if (await ctx.fs.exists(path))` ConditionalExpression `true`
         // mutant: under `true`, rm is always called and would fail on missing path.
         const ctx = await buildSeededContext();
         const sut = createRefStore(ctx);
 
-        // Act + Assert
-        await expect(sut.removeLoose('refs/heads/never' as RefName)).resolves.toBeUndefined();
+        // Act
+        let caught: unknown;
+        try {
+          await sut.applyRefUpdates([{ kind: 'delete', name: 'refs/heads/never' as RefName }]);
+          expect.unreachable();
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data.code).toBe('REF_NOT_FOUND');
       });
     });
   });
 
-  describe('Given writeLoose then exists check', () => {
-    describe('When checked', () => {
-      it('Then the loose file was created (writeLoose body is not empty)', async () => {
+  describe('Given a set update', () => {
+    describe('When applyRefUpdates is called', () => {
+      it('Then the loose file was created (applySet body is not empty)', async () => {
         // Arrange
-        // Kills the BlockStatement `{}` mutant on writeLoose body.
+        // Kills the BlockStatement `{}` mutant on applySet's body.
         const ctx = await buildSeededContext();
         const sut = createRefStore(ctx);
 
         // Act
-        await sut.writeLoose('refs/heads/new2' as RefName, 'e'.repeat(40) as ObjectId);
+        await sut.applyRefUpdates([
+          { kind: 'set', name: 'refs/heads/new2' as RefName, id: 'e'.repeat(40) as ObjectId },
+        ]);
         const exists = await ctx.fs.exists('/repo/.git/refs/heads/new2');
 
         // Assert

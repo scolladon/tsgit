@@ -54,7 +54,6 @@ import { materialisePatchFiles } from '../primitives/materialise-patch-files.js'
 import { mergeBase } from '../primitives/merge-base.js';
 import { computePatchId } from '../primitives/patch-id.js';
 import { readIndex } from '../primitives/read-index.js';
-import { recordRefUpdate } from '../primitives/record-ref-update.js';
 import { getRefStore } from '../primitives/ref-store.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import { runHook, runInformationalHook } from '../primitives/run-hook.js';
@@ -62,7 +61,6 @@ import { synthesizeTreeFromIndex } from '../primitives/synthesize-tree-from-inde
 import { updateRef } from '../primitives/update-ref.js';
 import { REASON_SKIP_TARGET_PARENTLESS } from '../primitives/validators.js';
 import { walkCommits } from '../primitives/walk-commits.js';
-import { writeSymbolicRef } from '../primitives/write-symbolic-ref.js';
 import { conflictMergeMsg } from './internal/cherry-pick-state.js';
 import { assertCleanWorkTree } from './internal/clean-work-tree.js';
 import { resolveCommitIsh } from './internal/commit-ish.js';
@@ -234,8 +232,14 @@ const detachHead = async (
   onto: ObjectId,
   ontoName: string,
 ): Promise<void> => {
-  await getRefStore(ctx).writeLoose(HEAD, onto);
-  await recordRefUpdate(ctx, HEAD, fromHead, onto, rebaseStartCheckout(ontoName));
+  await getRefStore(ctx).applyRefUpdates([
+    {
+      kind: 'set',
+      name: HEAD,
+      id: onto,
+      reflog: { oldId: fromHead, newId: onto, message: rebaseStartCheckout(ontoName) },
+    },
+  ]);
   await hardResetWorktreeToCommit(ctx, onto);
 };
 
@@ -384,8 +388,14 @@ const finishRebase = async (
     expected: origHead,
     reflogMessage: rebaseFinishOnto(branch, onto),
   });
-  await writeSymbolicRef(ctx, HEAD, branch);
-  await recordRefUpdate(ctx, HEAD, newTip, newTip, rebaseFinishReturningTo(branch));
+  await getRefStore(ctx).applyRefUpdates([
+    {
+      kind: 'setSymbolic',
+      name: HEAD,
+      target: branch,
+      reflog: { oldId: newTip, newId: newTip, message: rebaseFinishReturningTo(branch) },
+    },
+  ]);
 };
 
 /**
@@ -600,19 +610,19 @@ export const rebaseAbort = async (ctx: Context): Promise<RebaseAbortResult> => {
   await hardResetWorktreeToCommit(ctx, state.origHead);
   // A branch rebase reattaches HEAD to the ref (`returning to <branch>`); a
   // detached rebase moves HEAD back to the original oid (`returning to <oid>`).
-  if (branch !== undefined) {
-    await writeSymbolicRef(ctx, HEAD, branch);
-    await recordRefUpdate(ctx, HEAD, currentHead, state.origHead, rebaseAbortReturningTo(branch));
-  } else {
-    await getRefStore(ctx).writeLoose(HEAD, state.origHead);
-    await recordRefUpdate(
-      ctx,
-      HEAD,
-      currentHead,
-      state.origHead,
-      rebaseAbortReturningTo(state.origHead),
-    );
-  }
+  const reflog = {
+    oldId: currentHead,
+    newId: state.origHead,
+    message:
+      branch !== undefined
+        ? rebaseAbortReturningTo(branch)
+        : rebaseAbortReturningTo(state.origHead),
+  };
+  await getRefStore(ctx).applyRefUpdates([
+    branch !== undefined
+      ? { kind: 'setSymbolic', name: HEAD, target: branch, reflog }
+      : { kind: 'set', name: HEAD, id: state.origHead, reflog },
+  ]);
   await clearRebaseState(ctx);
   return { head: state.origHead, headName: state.headName };
 };
@@ -714,8 +724,14 @@ const detachInteractive = async (
   ontoName: string,
   foldedHead: ObjectId,
 ): Promise<void> => {
-  await getRefStore(ctx).writeLoose(HEAD, foldedHead);
-  await recordRefUpdate(ctx, HEAD, fromHead, foldedHead, rebaseStartCheckout(ontoName));
+  await getRefStore(ctx).applyRefUpdates([
+    {
+      kind: 'set',
+      name: HEAD,
+      id: foldedHead,
+      reflog: { oldId: fromHead, newId: foldedHead, message: rebaseStartCheckout(ontoName) },
+    },
+  ]);
   await hardResetWorktreeToCommit(ctx, foldedHead);
 };
 
@@ -723,8 +739,14 @@ const detachInteractive = async (
  *  is the current HEAD), recording git's `rebase: fast-forward`. */
 const fastForwardOnto = async (ctx: Context, target: ObjectId): Promise<void> => {
   const from = await resolveRef(ctx, HEAD);
-  await getRefStore(ctx).writeLoose(HEAD, target);
-  await recordRefUpdate(ctx, HEAD, from, target, REBASE_FAST_FORWARD);
+  await getRefStore(ctx).applyRefUpdates([
+    {
+      kind: 'set',
+      name: HEAD,
+      id: target,
+      reflog: { oldId: from, newId: target, message: REBASE_FAST_FORWARD },
+    },
+  ]);
   await hardResetWorktreeToCommit(ctx, target);
 };
 
@@ -1216,7 +1238,7 @@ const rebaseSkipInteractive = async (ctx: Context, state: RebaseState): Promise<
   // An edit stop already committed the edit'd commit, so dropping it moves the
   // detached HEAD back to its parent; a conflict stop never committed, so HEAD
   // already sits at the last good pick — writing it back to itself is a no-op.
-  await getRefStore(ctx).writeLoose(HEAD, target);
+  await getRefStore(ctx).applyRefUpdates([{ kind: 'set', name: HEAD, id: target }]);
   await hardResetWorktreeToCommit(ctx, target);
   const ic: InteractiveContext = {
     branch: branchOf(state.headName),

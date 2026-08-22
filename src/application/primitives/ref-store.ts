@@ -1,15 +1,18 @@
 /**
  * Loose-first-then-packed ref lookup with mtime-based packed-refs cache invalidation.
  */
-import { TsgitError } from '../../domain/error.js';
+import { TsgitError, unsupportedOperation } from '../../domain/error.js';
 import type { ObjectId, RefName } from '../../domain/objects/index.js';
+import { refNotFound, refUpdateConflict } from '../../domain/refs/error.js';
 import {
   type PackedRefs,
   parseLooseRef,
   parsePackedRefs,
   serializeDirectRef,
+  serializeSymbolicRef,
 } from '../../domain/refs/index.js';
 import type { Context } from '../../ports/context.js';
+import { atomicWriteRef } from './atomic-write.js';
 import {
   commonGitDir,
   looseObjectPath,
@@ -17,6 +20,10 @@ import {
   packedRefsPath,
   perWorktreeRefDir,
 } from './path-layout.js';
+import { recordRefUpdate } from './record-ref-update.js';
+import { deleteReflog } from './reflog-store.js';
+
+const TEXT_ENCODER = new TextEncoder();
 
 export interface RefStore {
   /**
@@ -25,9 +32,16 @@ export interface RefStore {
    * Throws if the loose file content is a symbolic ref (callers must handle).
    */
   resolveDirect(name: RefName): Promise<ResolveDirectResult>;
-  writeLoose(name: RefName, id: ObjectId): Promise<void>;
-  removeLoose(name: RefName): Promise<void>;
-  isLoose(name: RefName): Promise<boolean>;
+  /**
+   * Apply every update in `updates`, in order, as one call. Each `set` /
+   * `setSymbolic` writes atomically through the ref lock; each `delete`
+   * removes the ref and tombstones its reflog; each carried `reflog` (or a
+   * bare `reflogOnly` entry) appends through the same gate `recordRefUpdate`
+   * applies. The single call is what lets a coupled write (e.g. a branch tip
+   * plus the symbolic HEAD's reflog entry) land together instead of as two
+   * separately-observable mutations.
+   */
+  applyRefUpdates(updates: readonly RefUpdate[]): Promise<void>;
   /**
    * Every ref this backend knows, merged across the per-worktree and common
    * scopes, deduplicated, sorted by name. An optional `prefix` restricts the
@@ -60,6 +74,47 @@ export type RefIntegrityFinding =
   | { readonly ref: RefName; readonly msgId: 'badRefContent' }
   | { readonly ref: RefName; readonly msgId: 'badRefOid'; readonly target: ObjectId };
 
+/** A reflog entry to append, carrying what `recordRefUpdate` needs. */
+export interface ReflogAppend {
+  readonly oldId: ObjectId;
+  readonly newId: ObjectId;
+  readonly message: string;
+}
+
+/**
+ * One ref mutation to apply through {@link RefStore.applyRefUpdates}. `expected`
+ * is the CAS guard (an `ObjectId` the ref must currently hold, or `'absent'`
+ * for "must not exist"); a mismatch throws `REF_UPDATE_CONFLICT`. `reflog`
+ * appends through the same `recordRefUpdate` gate a direct call would —
+ * `reflogOnly` is the shape for a log entry with no accompanying ref write
+ * (e.g. the coupled-HEAD entry a branch update also produces).
+ */
+export type RefUpdate =
+  | {
+      readonly kind: 'set';
+      readonly name: RefName;
+      readonly id: ObjectId;
+      readonly expected?: ObjectId | 'absent';
+      readonly reflog?: ReflogAppend;
+    }
+  | {
+      readonly kind: 'setSymbolic';
+      readonly name: RefName;
+      readonly target: RefName;
+      readonly expected?: ObjectId | 'absent';
+      readonly reflog?: ReflogAppend;
+    }
+  | {
+      readonly kind: 'delete';
+      readonly name: RefName;
+      readonly expected?: ObjectId | 'absent';
+    }
+  | {
+      readonly kind: 'reflogOnly';
+      readonly name: RefName;
+      readonly reflog: ReflogAppend;
+    };
+
 /**
  * Per-Context store cache. Mirrors the registryCache pattern in read-object —
  * a session that resolves N refs reuses one parsed packed-refs (with mtime-keyed
@@ -79,6 +134,26 @@ export function getRefStore(ctx: Context): RefStore {
 /** Whether `name` exists in either loose or packed storage — the one seam every existence-probe caller shares. */
 export async function refExists(ctx: Context, name: RefName): Promise<boolean> {
   return (await getRefStore(ctx).resolveDirect(name)).kind !== 'missing';
+}
+
+/**
+ * Refuse a rename whose source is a packed-only tracking ref — moving it
+ * would require a packed-refs rewrite the files backend doesn't perform. A
+ * files-backend limitation (reftable has no packed refs and deletes by
+ * tombstone), not a seam-level fact, so it lives here rather than on the
+ * `RefStore` interface itself. A no-op when `name` is loose (or absent
+ * entirely — the caller's own existence check handles that case).
+ */
+export async function assertRenamableTrackingRef(ctx: Context, name: RefName): Promise<void> {
+  const path = looseRefPath(perWorktreeRefDir(ctx, name), name);
+  if (await ctx.fs.exists(path)) return;
+  const resolved = await getRefStore(ctx).resolveDirect(name);
+  if (resolved.kind === 'direct') {
+    throw unsupportedOperation(
+      'rename-packed-tracking-ref',
+      `cannot rename packed-only ref ${name} — run \`git pack-refs --unpack\` and retry`,
+    );
+  }
 }
 
 const HEAD_NAME: RefName = 'HEAD' as RefName;
@@ -244,25 +319,87 @@ export function createRefStore(ctx: Context): RefStore {
     return findings;
   }
 
+  /** CAS guard shared by `set` / `setSymbolic` / `delete` — a no-op when `expected` is absent. */
+  async function checkExpected(
+    name: RefName,
+    expected: ObjectId | 'absent' | undefined,
+  ): Promise<void> {
+    if (expected === undefined) return;
+    const current = await resolveDirect(name);
+    const actual = current.kind === 'direct' ? current.id : 'absent';
+    if (expected !== actual) throw refUpdateConflict(name, expected, actual);
+  }
+
+  /** Append `reflog` through the shared gate — a no-op when no entry accompanies this update. */
+  async function applyReflog(name: RefName, reflog: ReflogAppend | undefined): Promise<void> {
+    if (reflog === undefined) return;
+    await recordRefUpdate(ctx, name, reflog.oldId, reflog.newId, reflog.message);
+  }
+
+  async function applySet(update: Extract<RefUpdate, { kind: 'set' }>): Promise<void> {
+    await checkExpected(update.name, update.expected);
+    const path = looseRefPath(refDir(update.name), update.name);
+    const content = TEXT_ENCODER.encode(serializeDirectRef(update.id));
+    await atomicWriteRef(ctx, update.name, path, content);
+    await applyReflog(update.name, update.reflog);
+  }
+
+  async function applySetSymbolic(
+    update: Extract<RefUpdate, { kind: 'setSymbolic' }>,
+  ): Promise<void> {
+    await checkExpected(update.name, update.expected);
+    const path = looseRefPath(refDir(update.name), update.name);
+    const content = TEXT_ENCODER.encode(serializeSymbolicRef(update.target));
+    await atomicWriteRef(ctx, update.name, path, content);
+    await applyReflog(update.name, update.reflog);
+  }
+
+  /**
+   * Remove `name`'s loose file and tombstone its reflog. A packed-only ref
+   * refuses (`delete-packed-ref` — deleting it would require a packed-refs
+   * rewrite this backend doesn't perform); a ref that is neither loose nor
+   * packed refuses `REF_NOT_FOUND` instead of silently succeeding.
+   */
+  async function applyDelete(update: Extract<RefUpdate, { kind: 'delete' }>): Promise<void> {
+    await checkExpected(update.name, update.expected);
+    const path = looseRefPath(refDir(update.name), update.name);
+    if (await ctx.fs.exists(path)) {
+      await ctx.fs.rm(path);
+      await deleteReflog(ctx, update.name);
+      return;
+    }
+    const packed = await resolveDirect(update.name);
+    if (packed.kind === 'direct') {
+      throw unsupportedOperation(
+        'delete-packed-ref',
+        'deleting packed-only refs requires packed-refs rewrite',
+      );
+    }
+    throw refNotFound(update.name);
+  }
+
+  async function applyOne(update: RefUpdate): Promise<void> {
+    switch (update.kind) {
+      case 'set':
+        return applySet(update);
+      case 'setSymbolic':
+        return applySetSymbolic(update);
+      case 'delete':
+        return applyDelete(update);
+      case 'reflogOnly':
+        return applyReflog(update.name, update.reflog);
+    }
+  }
+
+  async function applyRefUpdates(updates: readonly RefUpdate[]): Promise<void> {
+    for (const update of updates) {
+      await applyOne(update);
+    }
+  }
+
   return {
     resolveDirect,
-
-    async writeLoose(name: RefName, id: ObjectId): Promise<void> {
-      const path = looseRefPath(refDir(name), name);
-      await ctx.fs.writeUtf8(path, serializeDirectRef(id));
-    },
-
-    async removeLoose(name: RefName): Promise<void> {
-      const path = looseRefPath(refDir(name), name);
-      if (await ctx.fs.exists(path)) {
-        await ctx.fs.rm(path);
-      }
-    },
-
-    async isLoose(name: RefName): Promise<boolean> {
-      return ctx.fs.exists(looseRefPath(refDir(name), name));
-    },
-
+    applyRefUpdates,
     listRefs,
     verifyIntegrity,
   };

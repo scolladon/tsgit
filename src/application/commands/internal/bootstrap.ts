@@ -69,6 +69,11 @@ export const bootstrapRepository = async (
   const gitDir = ctx.layout.gitDir;
   try {
     await ctx.fs.mkdir(gitDir);
+    // Deliberately a raw write, not `getRefStore(ctx).applyRefUpdates`: no
+    // repository exists yet for a `RefStore` to route through, and this is
+    // exactly what keeps `init` emitting `repositoryformatversion = 0` with
+    // no `[extensions]` — tsgit must never create a reftable repository by
+    // accident and trip its own backend.
     await ctx.fs.writeUtf8(`${gitDir}/HEAD`, `ref: refs/heads/${branch}\n`);
     await ctx.fs.writeUtf8(`${gitDir}/config`, renderConfig(opts.bare, opts.objectFormat));
     await ctx.fs.mkdir(`${gitDir}/refs/heads`);

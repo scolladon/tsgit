@@ -68,7 +68,9 @@ describe('common-dir ref + reflog split', () => {
         const sut = asWorktreeChild(ctx);
 
         // Act
-        await getRefStore(sut).writeLoose('refs/heads/feature' as RefName, OID_A);
+        await getRefStore(sut).applyRefUpdates([
+          { kind: 'set', name: 'refs/heads/feature' as RefName, id: OID_A },
+        ]);
 
         // Assert
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/heads/feature`)).toBe(true);
@@ -83,7 +85,9 @@ describe('common-dir ref + reflog split', () => {
         const sut = asWorktreeChild(ctx);
 
         // Act
-        await getRefStore(sut).writeLoose('ORIG_HEAD' as RefName, OID_A);
+        await getRefStore(sut).applyRefUpdates([
+          { kind: 'set', name: 'ORIG_HEAD' as RefName, id: OID_A },
+        ]);
 
         // Assert
         expect(await ctx.fs.exists(`${adminDir(ctx)}/ORIG_HEAD`)).toBe(true);

@@ -1,15 +1,15 @@
-import { unsupportedOperation } from '../../domain/error.js';
 import type { ObjectId, RefName } from '../../domain/objects/index.js';
 import { zeroOid } from '../../domain/objects/index.js';
-import { refNotFound, refUpdateConflict } from '../../domain/refs/error.js';
+import { refUpdateConflict } from '../../domain/refs/error.js';
 import { validateRefName } from '../../domain/refs/ref-validation.js';
 import type { Context } from '../../ports/context.js';
-import { atomicWriteRef } from './atomic-write.js';
 import { errorDataCode } from './internal/error-data-code.js';
-import { looseRefPath, perWorktreeRefDir } from './path-layout.js';
-import { recordRefUpdate } from './record-ref-update.js';
-import { getRefStore, type RefStore, type ResolveDirectResult } from './ref-store.js';
-import { deleteReflog } from './reflog-store.js';
+import {
+  getRefStore,
+  type RefStore,
+  type RefUpdate,
+  type ResolveDirectResult,
+} from './ref-store.js';
 import type { UpdateRefOptions } from './types.js';
 
 const HEAD: RefName = 'HEAD' as RefName;
@@ -24,7 +24,6 @@ export async function updateRef(
   // that could let `${gitDir}/${name}` escape the repo — no separate path
   // containment check is needed.
   validateRefName(name);
-  const refPath = looseRefPath(perWorktreeRefDir(ctx, name), name);
 
   const store = getRefStore(ctx);
   const current = await store.resolveDirect(name);
@@ -41,23 +40,36 @@ export async function updateRef(
   }
 
   if (options.delete === true) {
-    await deleteRef(store, name);
-    await deleteReflog(ctx, name);
+    await store.applyRefUpdates([{ kind: 'delete', name }]);
     return;
   }
 
   const oldId = current.kind === 'direct' ? current.id : zeroOid(ctx.hashConfig);
-  const content = new TextEncoder().encode(`${newId}\n`);
-  await atomicWriteRef(ctx, name, refPath, content);
-  // A no-op update (old === new) records no entry on the direct ref — git's ref
-  // backend skips the reflog when the value is unchanged. The coupled HEAD is the
-  // symref log-only path, which logs unconditionally (e.g. `reset: moving to`).
-  if (oldId !== newId) {
-    await recordRefUpdate(ctx, name, oldId, newId, options.reflogMessage);
-  }
-  if (coupledHeadTarget(head, name)) {
-    await recordRefUpdate(ctx, HEAD, oldId, newId, options.reflogMessage);
-  }
+  await store.applyRefUpdates(refUpdatesFor(name, newId, oldId, options.reflogMessage, head));
+}
+
+/**
+ * The one or two updates a branch write produces: the direct `set`
+ * (reflog attached unless old === new — git's ref backend skips the reflog
+ * when the value is unchanged) plus, when HEAD symbolically points at `name`,
+ * a `reflogOnly` HEAD entry — the symref log-only path, which logs
+ * unconditionally (e.g. `reset: moving to`).
+ */
+function refUpdatesFor(
+  name: RefName,
+  newId: ObjectId,
+  oldId: ObjectId,
+  message: string,
+  head: ResolveDirectResult,
+): readonly RefUpdate[] {
+  const set: RefUpdate = {
+    kind: 'set',
+    name,
+    id: newId,
+    ...(oldId !== newId ? { reflog: { oldId, newId, message } } : {}),
+  };
+  if (!coupledHeadTarget(head, name)) return [set];
+  return [set, { kind: 'reflogOnly', name: HEAD, reflog: { oldId, newId, message } }];
 }
 
 /**
@@ -80,22 +92,4 @@ async function resolveHeadForCoupling(store: RefStore): Promise<ResolveDirectRes
     if (errorDataCode(error) === 'INVALID_REF') return { kind: 'missing' };
     throw error;
   }
-}
-
-async function deleteRef(store: RefStore, name: RefName): Promise<void> {
-  const looseExists = await store.isLoose(name);
-  if (looseExists) {
-    await store.removeLoose(name);
-    return;
-  }
-  const packed = await store.resolveDirect(name);
-  if (packed.kind === 'direct') {
-    throw unsupportedOperation(
-      'delete-packed-ref',
-      'deleting packed-only refs requires packed-refs rewrite',
-    );
-  }
-  // Neither loose nor packed — surface a clear error instead of silently
-  // succeeding. Callers that want idempotent delete can catch refNotFound.
-  throw refNotFound(name);
 }

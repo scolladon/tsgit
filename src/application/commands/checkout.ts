@@ -14,13 +14,11 @@ import { materializeTree } from '../primitives/materialize-tree.js';
 import { readIndex } from '../primitives/read-index.js';
 import { loadSparseMatcher } from '../primitives/read-sparse-checkout.js';
 import { readTree } from '../primitives/read-tree.js';
-import { recordRefUpdate } from '../primitives/record-ref-update.js';
-import { refExists } from '../primitives/ref-store.js';
+import { getRefStore, refExists } from '../primitives/ref-store.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import { runInformationalHook } from '../primitives/run-hook.js';
 import { synthesizeTreeFromIndex } from '../primitives/synthesize-tree-from-index.js';
 import { walkTree } from '../primitives/walk-tree.js';
-import { writeSymbolicRef } from '../primitives/write-symbolic-ref.js';
 import { acquireIndexLock } from './internal/index-update.js';
 import {
   assertNoPendingOperation,
@@ -135,23 +133,31 @@ const switchBranch = async (ctx: Context, opts: CheckoutSwitchOptions): Promise<
   // Move HEAD — outside the index lock (HEAD writes are atomic on their own).
   const fromLabel = headCheckoutLabel(priorHead);
   if (detached) {
-    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `${oid}\n`);
-    await recordRefUpdate(
-      ctx,
-      'HEAD' as RefName,
-      oldOid,
-      oid,
-      `checkout: moving from ${fromLabel} to ${oid.slice(0, 7)}`,
-    );
+    await getRefStore(ctx).applyRefUpdates([
+      {
+        kind: 'set',
+        name: 'HEAD' as RefName,
+        id: oid,
+        reflog: {
+          oldId: oldOid,
+          newId: oid,
+          message: `checkout: moving from ${fromLabel} to ${oid.slice(0, 7)}`,
+        },
+      },
+    ]);
   } else {
-    await writeSymbolicRef(ctx, 'HEAD' as RefName, branchRef as RefName);
-    await recordRefUpdate(
-      ctx,
-      'HEAD' as RefName,
-      oldOid,
-      oid,
-      `checkout: moving from ${fromLabel} to ${opts.rev}`,
-    );
+    await getRefStore(ctx).applyRefUpdates([
+      {
+        kind: 'setSymbolic',
+        name: 'HEAD' as RefName,
+        target: branchRef as RefName,
+        reflog: {
+          oldId: oldOid,
+          newId: oid,
+          message: `checkout: moving from ${fromLabel} to ${opts.rev}`,
+        },
+      },
+    ]);
   }
   // post-checkout (informational) fires after the worktree + HEAD are updated;
   // a branch checkout (changing branches / detaching) flags `1`.

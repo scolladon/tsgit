@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
+import { getRefStore } from '../../../../src/application/primitives/ref-store.js';
 import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
 import { resolveRef } from '../../../../src/application/primitives/resolve-ref.js';
 import { updateRef } from '../../../../src/application/primitives/update-ref.js';
@@ -420,6 +421,26 @@ describe('updateRef', () => {
           expect(result).toHaveLength(1);
           expect(result[0]?.newId).toBe(ID_A);
           expect(result[0]?.message).toBe(REASON);
+        });
+
+        it('Then the branch and the coupled HEAD reflog land in one applyRefUpdates call', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          await writeSymbolicRef(ctx, HEAD, MAIN);
+          const store = getRefStore(ctx);
+          const calls: unknown[][] = [];
+          const originalApply = store.applyRefUpdates.bind(store);
+          store.applyRefUpdates = async (updates) => {
+            calls.push([...updates]);
+            return originalApply(updates);
+          };
+
+          // Act
+          await updateRef(ctx, MAIN, ID_A, { reflogMessage: REASON });
+
+          // Assert
+          expect(calls).toHaveLength(1);
+          expect(calls[0]).toHaveLength(2);
         });
       });
     });
