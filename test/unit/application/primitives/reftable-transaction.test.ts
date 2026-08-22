@@ -431,6 +431,36 @@ describe('reftable-transaction', () => {
     });
   });
 
+  describe('Given a ref that exists in neither an empty nor a populated stack', () => {
+    describe('When applyReftableUpdates applies a delete update', () => {
+      it('Then it throws REF_NOT_FOUND naming the ref', async () => {
+        // Arrange — every other delete test in this file deletes a LIVE
+        // ref; `applyDeleteRecords`'s own `stack.lookup(name) === undefined`
+        // guard is otherwise never exercised on the reftable path.
+        const ctx = withReftableStorage(createMemoryContext());
+        await applyReftableUpdates(ctx, [
+          { kind: 'set', name: ref('refs/heads/present'), id: oid(0x01) },
+        ]);
+
+        // Act
+        let caught: unknown;
+        try {
+          await applyReftableUpdates(ctx, [{ kind: 'delete', name: ref('refs/heads/never') }]);
+          expect.unreachable();
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('REF_NOT_FOUND');
+        if (data.code === 'REF_NOT_FOUND') {
+          expect(data.name).toBe(ref('refs/heads/never'));
+        }
+      });
+    });
+  });
+
   describe('Given a ref updated three times, each carrying a reflog entry', () => {
     describe('When the ref is deleted', () => {
       it('Then one ref tombstone lands at the new index and three log tombstones at indexes 1, 2 and 3', async () => {
