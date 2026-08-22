@@ -1,9 +1,17 @@
 import { describe, expect, it } from 'vitest';
+import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { listWorktrees } from '../../../../src/application/primitives/list-worktrees.js';
+import { reftableDir } from '../../../../src/application/primitives/path-layout.js';
 import { TsgitError } from '../../../../src/domain/error.js';
 import type { ObjectId, RefName } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
+import {
+  buildRefBlock,
+  buildReftable,
+  buildReftableHeader,
+} from '../../../fixtures/refs/reftable-writers.js';
 import { buildSeededContext } from './fixtures.js';
+import { commonReftableDir, withReftableStorage, writeReftableFiles } from './reftable-fixtures.js';
 
 const OID_MAIN = 'a'.repeat(40) as ObjectId;
 const OID_WT = 'b'.repeat(40) as ObjectId;
@@ -27,6 +35,61 @@ const seedAdmin = async (ctx: Context, spec: AdminSpec): Promise<void> => {
   if (spec.locked !== undefined) await ctx.fs.writeUtf8(`${admin}/locked`, spec.locked);
   // A present worktree dir so the entry is not prunable (unless overridden).
   if (spec.gitdirTarget === undefined) await ctx.fs.writeUtf8(`${spec.path}/.git`, 'gitdir: x\n');
+};
+
+/** One single-record ref-block table naming `refName -> value`, wrapped in a
+ *  complete reftable file — the shape every reftable-backend fixture in this
+ *  suite builds a one-table stack from. */
+function buildSingleRecordTable(
+  refName: string,
+  value: Parameters<typeof buildRefBlock>[0]['records'][number]['value'],
+): Uint8Array {
+  const headerSpec = { version: 1 as const, minUpdateIndex: 1n, maxUpdateIndex: 1n };
+  const header = buildReftableHeader(headerSpec);
+  const block = buildRefBlock({
+    records: [{ name: refName, value }],
+    restartIndices: [0],
+    isFirstBlock: true,
+    headerLength: header.length,
+  });
+  return buildReftable({ ...headerSpec, blocks: [block] });
+}
+
+const OID_MAIN_BYTES = new Uint8Array(20).fill(0xaa);
+
+/** Seeds the common stack with a symbolic `HEAD -> refs/heads/main` and a
+ *  direct `refs/heads/main` — the main worktree's own state, since
+ *  `gitDir === commonDir` for a non-linked Context routes `HEAD` there too. */
+const seedReftableCommonStack = async (ctx: Context): Promise<void> => {
+  const dir = commonReftableDir(ctx);
+  await writeReftableFiles(ctx, dir, [
+    {
+      name: 'head.ref',
+      bytes: buildSingleRecordTable('HEAD', { kind: 'symbolic', target: 'refs/heads/main' }),
+    },
+    {
+      name: 'main.ref',
+      bytes: buildSingleRecordTable('refs/heads/main', { kind: 'direct', id: OID_MAIN_BYTES }),
+    },
+  ]);
+};
+
+/** Seeds one linked worktree's own admin-dir reftable stack: just its
+ *  symbolic `HEAD -> refs/heads/main` — the shared branch itself lives only
+ *  in the common stack, resolved through it on every worktree entry. */
+const seedReftableAdmin = async (
+  ctx: Context,
+  spec: { readonly id: string; readonly path: string },
+): Promise<void> => {
+  const admin = `${ctx.layout.gitDir}/worktrees/${spec.id}`;
+  await writeReftableFiles(ctx, reftableDir(admin), [
+    {
+      name: 'head.ref',
+      bytes: buildSingleRecordTable('HEAD', { kind: 'symbolic', target: 'refs/heads/main' }),
+    },
+  ]);
+  await ctx.fs.writeUtf8(`${admin}/gitdir`, `${spec.path}/.git\n`);
+  await ctx.fs.writeUtf8(`${spec.path}/.git`, 'gitdir: x\n');
 };
 
 describe('listWorktrees', () => {
@@ -537,6 +600,62 @@ describe('listWorktrees', () => {
           '/repo/wts/alpha',
           '/repo/wts/zebra',
         ]);
+      });
+    });
+  });
+
+  describe('Given a reftable-backed repository with several linked worktrees sharing one branch', () => {
+    describe('When listWorktrees runs', () => {
+      it('Then correctly resolves every worktree’s HEAD to the shared branch', async () => {
+        // Arrange
+        const ctx = withReftableStorage(createMemoryContext());
+        await seedReftableCommonStack(ctx);
+        await seedReftableAdmin(ctx, { id: 'one', path: '/repo/wts/one' });
+        await seedReftableAdmin(ctx, { id: 'two', path: '/repo/wts/two' });
+        await seedReftableAdmin(ctx, { id: 'three', path: '/repo/wts/three' });
+
+        // Act
+        const result = await listWorktrees(ctx);
+
+        // Assert
+        expect(result).toHaveLength(4);
+        expect(result.every((entry) => entry.branch === 'refs/heads/main')).toBe(true);
+        expect(result.every((entry) => entry.head === 'aa'.repeat(20))).toBe(true);
+      });
+
+      it('Then the common stack is fully loaded only once, not once per worktree', async () => {
+        // Arrange — 3 linked worktrees, each resolving its own per-worktree
+        // HEAD (necessarily a fresh read, one dir per worktree) and then the
+        // SAME shared `refs/heads/main` through the common stack. Before the
+        // fix, each worktree's own derived Context defeated the reftable
+        // stack memo (keyed by Context/fs identity, both fresh per worktree
+        // Context), so the common stack reloaded from scratch every time.
+        const ctx = withReftableStorage(createMemoryContext());
+        await seedReftableCommonStack(ctx);
+        await seedReftableAdmin(ctx, { id: 'one', path: '/repo/wts/one' });
+        await seedReftableAdmin(ctx, { id: 'two', path: '/repo/wts/two' });
+        await seedReftableAdmin(ctx, { id: 'three', path: '/repo/wts/three' });
+        const commonTablesList = `${commonReftableDir(ctx)}/tables.list`;
+        const readUtf8Calls: string[] = [];
+        const originalReadUtf8 = ctx.fs.readUtf8.bind(ctx.fs);
+        const instrumented: Context = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            readUtf8: async (path: string) => {
+              readUtf8Calls.push(path);
+              return originalReadUtf8(path);
+            },
+          },
+        };
+
+        // Act
+        await listWorktrees(instrumented);
+
+        // Assert — one full read of the common tables.list content, shared
+        // across the main entry and all 3 linked worktrees' shared-ref
+        // resolution, instead of one per worktree (4 total).
+        expect(readUtf8Calls.filter((p) => p === commonTablesList)).toHaveLength(1);
       });
     });
   });

@@ -53,9 +53,26 @@ interface CachedStack {
   readonly mtimeKey: string;
 }
 
-/** Per-`Context`, per-stack-directory memo — a `Context` may back two
- *  independent stacks (common dir + a linked worktree's own). */
-const stackCache = new WeakMap<Context, Map<string, CachedStack>>();
+/**
+ * Per-repository, per-stack-directory memo — a repository may back two
+ * independent stacks (common dir + a linked worktree's own). Keyed by
+ * `ctx.deltaCache` rather than `ctx` itself: every `Context` derived from
+ * the same `openRepository()`/`createXContext()` call carries the SAME
+ * `deltaCache` object by reference (it survives every spread-derivation this
+ * codebase does — `deriveWorktreeContext`, `deriveSubmoduleContext`, …),
+ * whereas `ctx` — and even `ctx.fs` — does not: `list-worktrees.ts` builds a
+ * FRESH Context per worktree, and a linked worktree's own `fs` is a fresh
+ * confinement wrapper (`worktreeFs(path)`, rebuilt on every call, never
+ * memoised) on top of that. Keying on `ctx` (or `ctx.fs`) therefore misses
+ * this memo on every worktree, forcing `listWorktrees` to reload the SAME
+ * common stack once per worktree instead of once for the whole call.
+ * `deltaCache` is otherwise unrelated to ref storage — reused here purely as
+ * a stable, per-repository identity anchor already threaded everywhere a
+ * `Context` goes, never a global path-keyed cache (which would alias
+ * independent repositories that happen to share a path string, e.g. two
+ * `createMemoryContext()` instances in the same test process).
+ */
+const stackCache = new WeakMap<Context['deltaCache'], Map<string, CachedStack>>();
 
 function isFileNotFound(err: unknown): boolean {
   return err instanceof TsgitError && err.data.code === 'FILE_NOT_FOUND';
@@ -165,10 +182,10 @@ async function openTables(ctx: Context, reftableDir: string): Promise<readonly L
 }
 
 function scopedCache(ctx: Context): Map<string, CachedStack> {
-  let scoped = stackCache.get(ctx);
+  let scoped = stackCache.get(ctx.deltaCache);
   if (scoped === undefined) {
     scoped = new Map();
-    stackCache.set(ctx, scoped);
+    stackCache.set(ctx.deltaCache, scoped);
   }
   return scoped;
 }
@@ -188,7 +205,7 @@ function scopedCache(ctx: Context): Map<string, CachedStack> {
  * nothing was cached yet.
  */
 export function invalidateReftableStack(ctx: Context, reftableDir: string): void {
-  stackCache.get(ctx)?.delete(reftableDir);
+  stackCache.get(ctx.deltaCache)?.delete(reftableDir);
 }
 
 export async function loadReftableStack(ctx: Context, reftableDir: string): Promise<ReftableStack> {
