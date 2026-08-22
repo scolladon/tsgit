@@ -126,6 +126,17 @@ function scopedCache(ctx: Context): Map<string, CachedStack> {
  * including its log blocks, inflated via `ctx.compressor.streamInflate` —
  * before this resolves.
  */
+/**
+ * Drops `reftableDir`'s memoised stack for `ctx`, if cached — the write
+ * path's own escape from the mtime+size cache key (`reftable-transaction.ts`'s
+ * commit-protocol step 10), since a same-second commit could alias the
+ * post-commit `tables.list` against the pre-commit cache entry. A no-op when
+ * nothing was cached yet.
+ */
+export function invalidateReftableStack(ctx: Context, reftableDir: string): void {
+  stackCache.get(ctx)?.delete(reftableDir);
+}
+
 export async function loadReftableStack(ctx: Context, reftableDir: string): Promise<ReftableStack> {
   let stat: FileStat;
   try {

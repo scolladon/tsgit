@@ -287,6 +287,8 @@ function extractDetail(data: TsgitErrorData): string {
       return `ref locked: ${data.name}`;
     case 'REF_UPDATE_CONFLICT':
       return `ref update conflict: name=${data.name} expected=${data.expected} actual=${data.actual}`;
+    case 'REFTABLE_LOCKED':
+      return `reftable stack locked: stack=${data.stack} ${data.reason}`;
     case 'INVALID_WALK_INPUT':
       return `invalid walk input: ${data.reason}`;
     case 'OPERATION_ABORTED':

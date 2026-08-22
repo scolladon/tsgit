@@ -1,8 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { createReftableRefStore } from '../../../../src/application/primitives/reftable-ref-store.js';
-import type { TsgitError } from '../../../../src/domain/error.js';
-import { RefName } from '../../../../src/domain/objects/index.js';
+import { ObjectId, RefName } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
 import {
   buildRefBlock,
@@ -413,20 +412,20 @@ describe('reftable-ref-store', () => {
       });
     });
 
-    describe('When applyRefUpdates runs', () => {
-      it('Then it refuses as unsupported', async () => {
+    describe('When applyRefUpdates commits a new ref through the store', () => {
+      it('Then the ref resolves — the write path routes through reftable-transaction.ts', async () => {
         // Arrange
         const ctx = withReftableStorage(createMemoryContext());
         await seedTwoTableStack(ctx, commonReftableDir(ctx));
         const sut = createReftableRefStore(ctx);
+        const newId = ObjectId.fromRaw(oid(0x09));
 
-        // Act + Assert
-        try {
-          await sut.applyRefUpdates([]);
-          expect.unreachable();
-        } catch (err) {
-          expect((err as TsgitError).data.code).toBe('UNSUPPORTED_OPERATION');
-        }
+        // Act
+        await sut.applyRefUpdates([{ kind: 'set', name: ref('refs/heads/fresh'), id: newId }]);
+        const result = await sut.resolveDirect(ref('refs/heads/fresh'));
+
+        // Assert
+        expect(result).toEqual({ kind: 'direct', id: newId });
       });
     });
   });

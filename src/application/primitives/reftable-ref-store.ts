@@ -1,9 +1,10 @@
 /**
  * The reftable backend's `RefStore` implementation. Every read verb answers
- * from a `loadReftableStack`-loaded stack merge view; `applyRefUpdates`
- * (the write path) is not implemented on this backend yet and refuses.
+ * from a `loadReftableStack`-loaded stack merge view; `applyRefUpdates` (the
+ * write path) commits through `reftable-transaction.ts`'s stack-lock
+ * protocol.
  */
-import { TsgitError, unsupportedOperation } from '../../domain/error.js';
+import { TsgitError } from '../../domain/error.js';
 import type { RefName } from '../../domain/objects/index.js';
 import type { ReflogEntry } from '../../domain/reflog/reflog-entry.js';
 import {
@@ -24,6 +25,7 @@ import type {
   RefUpdate,
   ResolveDirectResult,
 } from './ref-store.js';
+import { applyReftableUpdates } from './reftable-transaction.js';
 
 const TABLES_LIST_FILE = 'tables.list';
 
@@ -239,8 +241,8 @@ export function createReftableRefStore(ctx: Context): RefStore {
     return [...names];
   }
 
-  async function applyRefUpdates(_updates: readonly RefUpdate[]): Promise<void> {
-    throw unsupportedOperation('reftable-write', 'reftable ref updates are not yet implemented');
+  async function applyRefUpdates(updates: readonly RefUpdate[]): Promise<void> {
+    await applyReftableUpdates(ctx, updates);
   }
 
   return {

@@ -14,7 +14,7 @@
  *   unique:         reftable stack reads and writes agree with canonical git
  *   interopSurface: reftable
  */
-import { cpSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -27,9 +27,19 @@ import { reftableDir } from '../../src/application/primitives/path-layout.js';
 import { readObject } from '../../src/application/primitives/read-object.js';
 import { getRefStore } from '../../src/application/primitives/ref-store.js';
 import { resolveRef } from '../../src/application/primitives/resolve-ref.js';
+import { updateRef } from '../../src/application/primitives/update-ref.js';
 import type { TsgitError } from '../../src/domain/error.js';
 import type { ObjectId, RefName } from '../../src/domain/objects/index.js';
-import type { ReftableCheck } from '../../src/domain/refs/index.js';
+import {
+  buildReftableRefSection,
+  iterateReftableLogs,
+  iterateReftableRefs,
+  loadReftable,
+  type ReftableCheck,
+  serializeReftable,
+} from '../../src/domain/refs/index.js';
+import type { ReftableWriteOptions } from '../../src/domain/refs/reftable/reftable-writer.js';
+import { DEFAULT_RESTART_INTERVAL } from '../../src/domain/refs/reftable/reftable-writer.js';
 import type { Context } from '../../src/ports/context.js';
 import {
   disableAutoMaintenance,
@@ -37,6 +47,7 @@ import {
   git,
   runGit,
   runGitEnv,
+  topReflogSubject,
   tryRunGitWithExit,
 } from './interop-helpers.js';
 
@@ -800,6 +811,432 @@ describe.skipIf(!GIT_AVAILABLE)('reftable-ref-storage interop', () => {
         expect(fromWorktree).toEqual({ kind: 'direct', id: worktree.bisectId });
         expect(showRefNames(worktree.dir)).not.toContain('refs/bisect/bad');
         expect(showRefNames(worktree.wtDir)).toContain('refs/bisect/bad');
+      });
+    });
+  });
+
+  // --- The write path: rows 12-17 and 21-23 ---------------------------------
+
+  /** Snapshot of every file directly under `dir` (non-recursive — every
+   *  reftable stack directory this suite builds is flat), keyed by name. */
+  const snapshotDir = (dir: string): ReadonlyMap<string, Buffer> =>
+    new Map(readdirSync(dir).map((name) => [name, readFileSync(`${dir}/${name}`)]));
+
+  /** The one table `tables.list` names — works for any stack, compacted or
+   *  not, as long as it names at least one table. */
+  const soleTableIn = (reftableDirPath: string): string => {
+    const listing = readFileSync(`${reftableDirPath}/tables.list`, 'utf8');
+    const name = listing.split('\n').find((line) => line.length > 0);
+    if (name === undefined) throw new Error(`tables.list names no table under ${reftableDirPath}`);
+    return `${reftableDirPath}/${name}`;
+  };
+
+  describe('Given a git-made reftable repository with one commit', () => {
+    describe('When tsgit creates a new ref through applyRefUpdates', () => {
+      it('Then git show-ref sees it, and git fsck / git refs verify report clean', async () => {
+        // Arrange
+        const dir = path.join(rootDir, 'write-create');
+        initReftableRepo(dir);
+        runGit(['-C', dir, 'commit', '-q', '--allow-empty', '-m', 'c1'], {
+          env: dateEnv(1_700_000_000, '+0000'),
+        });
+        const mainId = git(dir, 'rev-parse', 'HEAD').trim();
+        const ctx = reftableCtx(dir);
+
+        // Act
+        await getRefStore(ctx).applyRefUpdates([
+          { kind: 'set', name: 'refs/heads/created' as RefName, id: mainId as ObjectId },
+        ]);
+
+        // Assert
+        expect(showRefNames(dir)).toContain('refs/heads/created');
+        expect(tryRunGitWithExit(['-C', dir, 'fsck'], { env: runGitEnv() }).exitCode).toBe(0);
+        expect(
+          tryRunGitWithExit(['-C', dir, 'refs', 'verify'], { env: runGitEnv() }).exitCode,
+        ).toBe(0);
+      });
+    });
+  });
+
+  describe('Given a git-made ref with three prior updates (three reflog entries)', () => {
+    describe('When tsgit deletes it', () => {
+      it('Then it is gone from git show-ref and its reflog is gone from git reflog', async () => {
+        // Arrange
+        const dir = path.join(rootDir, 'write-delete');
+        initReftableRepo(dir);
+        runGit(['-C', dir, 'commit', '-q', '--allow-empty', '-m', 'c1'], {
+          env: dateEnv(1_700_000_000, '+0000'),
+        });
+        git(dir, 'branch', 'doomed');
+        for (let step = 0; step < 2; step += 1) {
+          runGit(['-C', dir, 'commit', '-q', '--allow-empty', '-m', `step ${step}`], {
+            env: dateEnv(1_700_000_100 + step * 100, '+0000'),
+          });
+          git(dir, 'update-ref', 'refs/heads/doomed', 'HEAD');
+        }
+        const ctx = reftableCtx(dir);
+
+        // Act
+        await getRefStore(ctx).applyRefUpdates([
+          { kind: 'delete', name: 'refs/heads/doomed' as RefName },
+        ]);
+
+        // Assert
+        expect(showRefNames(dir)).not.toContain('refs/heads/doomed');
+        const reflog = tryRunGitWithExit(['-C', dir, 'reflog', 'show', 'refs/heads/doomed'], {
+          env: runGitEnv(),
+        });
+        expect(reflog.exitCode).not.toBe(0);
+      });
+    });
+  });
+
+  describe('Given a git-made reftable repository with a target branch', () => {
+    describe('When tsgit writes a symbolic ref through applyRefUpdates', () => {
+      it('Then it matches git symbolic-ref', async () => {
+        // Arrange
+        const dir = path.join(rootDir, 'write-symbolic');
+        initReftableRepo(dir);
+        runGit(['-C', dir, 'commit', '-q', '--allow-empty', '-m', 'c1'], {
+          env: dateEnv(1_700_000_000, '+0000'),
+        });
+        git(dir, 'branch', 'target');
+        const ctx = reftableCtx(dir);
+
+        // Act
+        await getRefStore(ctx).applyRefUpdates([
+          {
+            kind: 'setSymbolic',
+            name: 'refs/heads/alias' as RefName,
+            target: 'refs/heads/target' as RefName,
+          },
+        ]);
+
+        // Assert
+        expect(git(dir, 'symbolic-ref', 'refs/heads/alias').trim()).toBe('refs/heads/target');
+      });
+    });
+  });
+
+  describe('Given tsgit commits on the branch HEAD points at', () => {
+    describe('When the coupled update is applied as one transaction', () => {
+      it('Then git reflog HEAD and git reflog <branch> both gain an entry at the same update index', async () => {
+        // Arrange
+        const dir = path.join(rootDir, 'write-coupled');
+        initReftableRepo(dir);
+        runGit(['-C', dir, 'commit', '-q', '--allow-empty', '-m', 'c1'], {
+          env: dateEnv(1_700_000_000, '+0000'),
+        });
+        const oldId = git(dir, 'rev-parse', 'HEAD').trim();
+        const treeId = git(dir, 'rev-parse', 'HEAD^{tree}').trim();
+        const newId = git(dir, 'commit-tree', treeId, '-p', oldId, '-m', 'c2').trim();
+        const ctx = reftableCtx(dir);
+        const message = 'commit: c2';
+
+        // Act
+        await getRefStore(ctx).applyRefUpdates([
+          {
+            kind: 'set',
+            name: 'refs/heads/main' as RefName,
+            id: newId as ObjectId,
+            reflog: { oldId: oldId as ObjectId, newId: newId as ObjectId, message },
+          },
+          {
+            kind: 'reflogOnly',
+            name: 'HEAD' as RefName,
+            reflog: { oldId: oldId as ObjectId, newId: newId as ObjectId, message },
+          },
+        ]);
+
+        // Assert
+        expect(topReflogSubject(dir, 'refs/heads/main')).toBe(message);
+        expect(topReflogSubject(dir, 'HEAD')).toBe(message);
+        const stack = await loadReftableStack(ctx, reftableDir(ctx.layout.gitDir));
+        const newest = stack.tables[stack.tables.length - 1]!;
+        const logs = [...iterateReftableLogs(newest)];
+        const mainLog = logs.find((r) => r.name === ('refs/heads/main' as RefName));
+        const headLog = logs.find((r) => r.name === ('HEAD' as RefName));
+        expect(mainLog?.updateIndex).toBeDefined();
+        expect(mainLog?.updateIndex).toBe(headLog?.updateIndex);
+      });
+    });
+  });
+
+  describe('Given a --object-format=sha256 git-made reftable repository', () => {
+    describe('When tsgit writes a new ref', () => {
+      it('Then the newest table stays v2 and git show-ref sees the new ref', async () => {
+        // Arrange
+        const dir = path.join(rootDir, 'write-sha256');
+        initReftableRepo(dir, ['--object-format=sha256']);
+        runGit(['-C', dir, 'commit', '-q', '--allow-empty', '-m', 'c1'], {
+          env: dateEnv(1_700_000_000, '+0000'),
+        });
+        const mainId = git(dir, 'rev-parse', 'HEAD').trim();
+        // `createNodeContext` defaults to sha1 unless told otherwise — a
+        // real caller reaches this Context through `openRepository`, which
+        // auto-detects `extensions.objectFormat`; this interop suite builds
+        // Contexts directly, so the write path needs the algorithm named
+        // explicitly, matching the fixture's own `--object-format=sha256`.
+        const ctx = withReftableStorage(createNodeContext({ workDir: dir, algorithm: 'sha256' }));
+
+        // Act
+        await getRefStore(ctx).applyRefUpdates([
+          { kind: 'set', name: 'refs/heads/created' as RefName, id: mainId as ObjectId },
+        ]);
+
+        // Assert
+        expect(showRefNames(dir)).toContain('refs/heads/created');
+        const stack = await loadReftableStack(ctx, reftableDir(ctx.layout.gitDir));
+        const newest = stack.tables[stack.tables.length - 1]!;
+        expect(newest.header.version).toBe(2);
+        expect(newest.header.hashId).toBe('s256');
+      });
+    });
+  });
+
+  describe('Given a git-made reftable repository compacted to one table', () => {
+    describe('When buildReftableRefSection replays its logical content', () => {
+      it('Then the ref section is byte-identical up to log_position, and the log section is records-equal beyond it', async () => {
+        // Arrange
+        const dir = path.join(rootDir, 'write-bytepin');
+        initReftableRepo(dir);
+        runGit(['-C', dir, 'commit', '-q', '--allow-empty', '-m', 'c1'], {
+          env: dateEnv(1_700_000_000, '+0000'),
+        });
+        git(dir, 'branch', 'dev');
+        const ctx = reftableCtx(dir);
+        const stack = await loadReftableStack(ctx, reftableDir(ctx.layout.gitDir));
+        // Precondition, not an assumption: git's own auto-compaction folds
+        // this small fixture down to one table, giving one unambiguous
+        // ground-truth file to replay — re-checked here rather than assumed.
+        expect(stack.tables).toHaveLength(1);
+        const table = stack.tables[0]!;
+        const refs = [...iterateReftableRefs(table)];
+        const logs = [...iterateReftableLogs(table)];
+        expect(table.footer.logPosition).toBeGreaterThan(0);
+
+        // Act
+        const options: ReftableWriteOptions = {
+          hashId: table.header.hashId,
+          blockSize: table.header.blockSize,
+          restartInterval: DEFAULT_RESTART_INTERVAL,
+          indexObjects: true,
+          minUpdateIndex: table.header.minUpdateIndex,
+          maxUpdateIndex: table.header.maxUpdateIndex,
+        };
+        const rebuiltRefSection = buildReftableRefSection(refs, options);
+        const rebuiltFullTable = await serializeReftable(
+          refs,
+          logs,
+          options,
+          ctx.compressor.deflate,
+        );
+        const reparsed = await loadReftable(rebuiltFullTable, ctx.compressor.streamInflate);
+
+        // Assert — byte-identical up to log_position (the pure, sync half of
+        // the writer); records-equal beyond it (the log section cannot be
+        // byte-pinned — DEFLATE has no canonical output).
+        const gitRefSectionBytes = table._bytes.subarray(0, table.footer.logPosition);
+        expect(rebuiltRefSection).toEqual(gitRefSectionBytes);
+        expect([...iterateReftableLogs(reparsed)]).toEqual(logs);
+      });
+    });
+  });
+
+  describe('Given a git-made reftable repository with tables.list.lock planted', () => {
+    describe('When both tools attempt a write', () => {
+      it('Then tsgit raises REFTABLE_LOCKED naming the path, git refuses to lock references, the stack stays byte-unchanged, and reads still succeed on both sides', async () => {
+        // Arrange
+        const dir = path.join(rootDir, 'write-locked');
+        initReftableRepo(dir);
+        runGit(['-C', dir, 'commit', '-q', '--allow-empty', '-m', 'c1'], {
+          env: dateEnv(1_700_000_000, '+0000'),
+        });
+        const mainId = git(dir, 'rev-parse', 'HEAD').trim();
+        const ctx = reftableCtx(dir);
+        const stackDir = reftableDir(ctx.layout.gitDir);
+        writeFileSync(`${stackDir}/tables.list.lock`, '');
+        const before = snapshotDir(stackDir);
+
+        // Act + Assert — tsgit
+        try {
+          await getRefStore(ctx).applyRefUpdates([
+            { kind: 'set', name: 'refs/heads/locked' as RefName, id: mainId as ObjectId },
+          ]);
+          expect.unreachable('expected REFTABLE_LOCKED');
+        } catch (err) {
+          const data = (err as TsgitError).data;
+          if (data.code !== 'REFTABLE_LOCKED')
+            expect.fail(`expected REFTABLE_LOCKED, got ${data.code}`);
+          expect(data.reason).toContain('tables.list.lock');
+        }
+
+        // Act + Assert — git
+        const gitResult = tryRunGitWithExit(
+          ['-C', dir, 'update-ref', 'refs/heads/locked', mainId],
+          { env: runGitEnv() },
+        );
+        expect(gitResult.exitCode).not.toBe(0);
+        expect(gitResult.stderr).toContain('cannot lock references');
+
+        // Assert — byte-unchanged (neither tool's failed attempt wrote
+        // anything), reads still succeed on both sides
+        expect(snapshotDir(stackDir)).toEqual(before);
+        expect(showRefNames(dir)).toEqual(['refs/heads/main']);
+        expect((await getRefStore(ctx).listRefs()).map((e) => e.name)).toContain('refs/heads/main');
+        rmSync(`${stackDir}/tables.list.lock`);
+      });
+    });
+  });
+
+  describe('Given crash residue planted at each step of the write protocol', () => {
+    let baseDir: string;
+
+    beforeAll(() => {
+      baseDir = path.join(rootDir, 'write-crash-base');
+      initReftableRepo(baseDir);
+      runGit(['-C', baseDir, 'commit', '-q', '--allow-empty', '-m', 'c1'], {
+        env: dateEnv(1_700_000_000, '+0000'),
+      });
+    });
+
+    const residueRows: ReadonlyArray<{
+      readonly label: string;
+      readonly plant: (dir: string) => void;
+    }> = [
+      {
+        label: 'crash-1-to-5-empty-lock',
+        plant: (dir) => writeFileSync(`${reftableDir(`${dir}/.git`)}/tables.list.lock`, ''),
+      },
+      {
+        label: 'crash-6-orphan-temp',
+        plant: (dir) =>
+          writeFileSync(
+            `${reftableDir(`${dir}/.git`)}/0x000000000099-0x000000000099-deadbeef.temp`,
+            new Uint8Array(4),
+          ),
+      },
+      {
+        label: 'crash-7-orphan-ref',
+        plant: (dir) =>
+          writeFileSync(
+            `${reftableDir(`${dir}/.git`)}/0x000000000099-0x000000000099-deadbeef.ref`,
+            new Uint8Array(4),
+          ),
+      },
+    ];
+
+    describe.each(residueRows)('When the residue is $label', (row) => {
+      it('Then git and tsgit both read the same (pre-residue) state', async () => {
+        // Arrange
+        const dir = path.join(rootDir, `write-${row.label}`);
+        cpSync(baseDir, dir, { recursive: true });
+        row.plant(dir);
+        const ctx = reftableCtx(dir);
+
+        // Act
+        const gitNames = showRefNames(dir);
+        const tsgitEntries = await getRefStore(ctx).listRefs();
+
+        // Assert
+        expect(gitNames).toEqual(['refs/heads/main']);
+        expect(
+          tsgitEntries
+            .map((e) => e.name)
+            .filter((n) => n !== 'HEAD')
+            .sort(),
+        ).toEqual(gitNames);
+      });
+    });
+  });
+
+  describe('Given a files-backend repository with a chmod-000 HEAD', () => {
+    describe('When updateRef writes the branch HEAD points at', () => {
+      it('Then it throws and .git/refs and .git/logs stay byte-identical to before', async () => {
+        // Arrange
+        const dir = path.join(rootDir, 'write-regression-files');
+        runGit(['init', '-q', '-b', 'main', dir]);
+        git(dir, 'config', 'user.name', 'Ada');
+        git(dir, 'config', 'user.email', 'ada@example.com');
+        disableAutoMaintenance(dir);
+        runGit(['-C', dir, 'commit', '-q', '--allow-empty', '-m', 'c1'], {
+          env: dateEnv(1_700_000_000, '+0000'),
+        });
+        const oldId = git(dir, 'rev-parse', 'HEAD').trim();
+        const treeId = git(dir, 'rev-parse', 'HEAD^{tree}').trim();
+        const newId = git(dir, 'commit-tree', treeId, '-p', oldId, '-m', 'c2').trim();
+        const ctx = createNodeContext({ workDir: dir });
+        const refsBefore = readFileSync(`${dir}/.git/refs/heads/main`, 'utf8');
+        const logsBefore = readFileSync(`${dir}/.git/logs/refs/heads/main`, 'utf8');
+        const headPath = `${dir}/.git/HEAD`;
+        chmodSync(headPath, 0o000);
+
+        // Act + Assert
+        try {
+          await expect(
+            updateRef(ctx, 'refs/heads/main' as RefName, newId as ObjectId, {
+              reflogMessage: 'commit: c2',
+            }),
+          ).rejects.toBeDefined();
+        } finally {
+          chmodSync(headPath, 0o644);
+        }
+
+        // Assert — nothing committed despite the thrown coupling-read failure
+        expect(readFileSync(`${dir}/.git/refs/heads/main`, 'utf8')).toBe(refsBefore);
+        expect(readFileSync(`${dir}/.git/logs/refs/heads/main`, 'utf8')).toBe(logsBefore);
+      });
+    });
+  });
+
+  describe('Given a reftable-backend linked worktree whose own stack is corrupted', () => {
+    describe('When updateRef writes the shared branch HEAD points at, from the worktree', () => {
+      it('Then it throws and both reftable stacks stay byte-identical to before', async () => {
+        // Arrange
+        const dir = path.join(rootDir, 'write-regression-reftable');
+        const wtDir = path.join(rootDir, 'write-regression-reftable-wt');
+        initReftableRepo(dir);
+        runGit(['-C', dir, 'commit', '-q', '--allow-empty', '-m', 'c1'], {
+          env: dateEnv(1_700_000_000, '+0000'),
+        });
+        runGit(['-C', dir, 'worktree', 'add', '-q', '-b', 'feature', wtDir]);
+        const oldId = git(wtDir, 'rev-parse', 'HEAD').trim();
+        const treeId = git(wtDir, 'rev-parse', 'HEAD^{tree}').trim();
+        const newId = git(wtDir, 'commit-tree', treeId, '-p', oldId, '-m', 'c2').trim();
+
+        const mainCtx = reftableCtx(dir);
+        const adminDir = `${mainCtx.layout.gitDir}/worktrees/${path.basename(wtDir)}`;
+        const worktreeCtx: Context = {
+          ...mainCtx,
+          layout: { ...mainCtx.layout, gitDir: adminDir, commonDir: mainCtx.layout.gitDir },
+        };
+        const commonStackDir = reftableDir(mainCtx.layout.gitDir);
+        const worktreeStackDir = reftableDir(adminDir);
+        const commonBefore = snapshotDir(commonStackDir);
+        const worktreeBefore = snapshotDir(worktreeStackDir);
+
+        const tablePath = soleTableIn(worktreeStackDir);
+        const corrupted = Buffer.from(readFileSync(tablePath));
+        corrupted.set([0x58, 0x58, 0x58, 0x58], 0); // 'XXXX' — invalid magic
+        writeFileSync(tablePath, corrupted);
+
+        // Act
+        await expect(
+          updateRef(worktreeCtx, 'refs/heads/main' as RefName, newId as ObjectId, {
+            reflogMessage: 'commit: c2',
+          }),
+        ).rejects.toBeDefined();
+
+        // Assert — the common stack (where refs/heads/main lives) never saw
+        // a write attempt at all; the worktree's own stack carries only the
+        // corruption this test itself planted, nothing updateRef added.
+        expect(snapshotDir(commonStackDir)).toEqual(commonBefore);
+        const worktreeAfter = snapshotDir(worktreeStackDir);
+        const tableName = path.basename(tablePath);
+        expect(worktreeAfter.get(tableName)).toEqual(corrupted);
+        const expectedWorktreeAfter = new Map(worktreeBefore);
+        expectedWorktreeAfter.set(tableName, corrupted);
+        expect(worktreeAfter).toEqual(expectedWorktreeAfter);
       });
     });
   });

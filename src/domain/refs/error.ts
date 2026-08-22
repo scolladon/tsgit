@@ -47,7 +47,8 @@ export type RefsError =
       readonly name: RefName;
       readonly expected: ObjectId | 'absent';
       readonly actual: ObjectId | 'absent';
-    };
+    }
+  | { readonly code: 'REFTABLE_LOCKED'; readonly stack: string; readonly reason: string };
 
 export const invalidRef = (reason: string): TsgitError =>
   new TsgitError({ code: 'INVALID_REF', reason });
@@ -75,3 +76,6 @@ export const refUpdateConflict = (
   expected: ObjectId | 'absent',
   actual: ObjectId | 'absent',
 ): TsgitError => new TsgitError({ code: 'REF_UPDATE_CONFLICT', name, expected, actual });
+
+export const reftableLocked = (stack: string, reason: string): TsgitError =>
+  new TsgitError({ code: 'REFTABLE_LOCKED', stack, reason });

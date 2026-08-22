@@ -1,6 +1,6 @@
 // Error types
 export type { RefsError, ReftableCheck } from './error.js';
-export { invalidPackedRefs, invalidRef, invalidReftable } from './error.js';
+export { invalidPackedRefs, invalidRef, invalidReftable, reftableLocked } from './error.js';
 
 // Loose refs
 export { parseLooseRef, serializeDirectRef, serializeSymbolicRef } from './loose-ref.js';

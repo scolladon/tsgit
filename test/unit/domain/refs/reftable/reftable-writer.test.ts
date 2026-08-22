@@ -5,6 +5,7 @@ import { ObjectId, RefName } from '../../../../../src/domain/objects/index.js';
 import type { ReftableCheck } from '../../../../../src/domain/refs/error.js';
 import {
   blockBoundsAt,
+  decodeIndexRecord,
   decodeObjRecord,
   iterateReftableRefs,
   lookupReftableRef,
@@ -164,8 +165,12 @@ describe('Given 40 refs sharing one block', () => {
 
 describe('Given one ref and an aligned block size', () => {
   describe('When building the ref section', () => {
-    it('Then it is padded with zero bytes to the block_size boundary', () => {
-      // Arrange
+    it('Then the sole block is NOT padded — nothing downstream needs stride-based addressing to it', () => {
+      // Arrange — measured against a git-made single-block reftable (a
+      // two-ref fixture: 353 bytes total, no trailing zero padding),
+      // diverging from the multi-block case (a git-made 3001-ref, 20-block
+      // fixture: every block, including the last, padded to the
+      // block_size boundary the ref index position names).
       const options = baseOptions({ blockSize: DEFAULT_BLOCK_SIZE });
 
       // Act
@@ -174,9 +179,27 @@ describe('Given one ref and an aligned block size', () => {
       const declaredLength = readUint24(view, options.hashId === 'sha1' ? 24 + 1 : 28 + 1);
 
       // Assert
-      expect(bytes.length).toBe(DEFAULT_BLOCK_SIZE);
-      expect(declaredLength).toBeLessThan(DEFAULT_BLOCK_SIZE);
-      expect(bytes.subarray(declaredLength).every((b) => b === 0)).toBe(true);
+      expect(bytes.length).toBeLessThan(DEFAULT_BLOCK_SIZE);
+      expect(bytes.length).toBe(declaredLength);
+    });
+  });
+
+  describe('When building a ref section with more than one block', () => {
+    it('Then every ref block, including the last, is padded to the block_size boundary', async () => {
+      // Arrange — 21 refs at block_size 200 packs into exactly 4 ref blocks
+      // (the ref-index threshold), so the ref-block run is never a sole
+      // block — asserted via where the (separately, possibly sole-block)
+      // ref index lands, which only sits at a block_size multiple when
+      // every ref block ahead of it padded out to the boundary.
+      const options = baseOptions({ blockSize: 200 });
+
+      // Act
+      const bytes = await serializeReftable(makeRefs(21), [], options, identityDeflate);
+      const table = parseReftable(bytes);
+
+      // Assert
+      expect(table.footer.refIndexPosition % 200).toBe(0);
+      expect(table.footer.refIndexPosition).toBeGreaterThan(200);
     });
   });
 });
@@ -357,6 +380,56 @@ describe('Given a ref set that packs into exactly 4 blocks at block_size 200', (
   });
 });
 
+// --- First-block index position: git's `0`, never `header.headerLength` --
+
+describe('Given a ref set whose ref index is emitted', () => {
+  describe('When the index leaf entry naming the first ref block is decoded', () => {
+    it('Then it records block_position 0, matching gits own writer convention', async () => {
+      // Arrange
+      const options = baseOptions({ blockSize: 200 });
+
+      // Act
+      const bytes = await serializeReftable(makeRefs(21), [], options, identityDeflate);
+      const table = parseReftable(bytes);
+      const bounds = blockBoundsAt(table, table.footer.refIndexPosition);
+      const [firstEntry] = Array.from(walkBlockRecords(table._bytes, bounds, decodeIndexRecord));
+
+      // Assert
+      expect(firstEntry?.payload).toBe(0);
+    });
+  });
+
+  describe('When the obj records naming objects found in the first ref block are decoded', () => {
+    it('Then at least one position list carries 0, not header.headerLength', async () => {
+      // Arrange — 21 distinct-object refs at block_size 200 packs the first
+      // several ref records (and their obj entries) into the first ref block.
+      // No obj index is emitted at this scale, so the obj section end is the
+      // footer's own start — collectObjRecords assumes an obj index boundary,
+      // so this walk is inlined rather than reusing it.
+      const options = baseOptions({ blockSize: 200 });
+      const bytes = await serializeReftable(makeRefs(21), [], options, identityDeflate);
+      const table = parseReftable(bytes);
+      const footerLength = options.hashId === 'sha1' ? 68 : 72;
+      const boundary = table._bytes.length - footerLength;
+      const positions: number[][] = [];
+      let blockStart = table.footer.objPosition;
+
+      // Act
+      while (blockStart < boundary) {
+        const bounds = blockBoundsAt(table, blockStart);
+        for (const record of walkBlockRecords(table._bytes, bounds, decodeObjRecord)) {
+          positions.push([...record.payload]);
+        }
+        blockStart = Math.ceil(bounds.blockEnd / options.blockSize) * options.blockSize;
+      }
+
+      // Assert
+      expect(table.footer.objIndexPosition).toBe(0);
+      expect(positions.some((p) => p.includes(0))).toBe(true);
+    });
+  });
+});
+
 // --- Threshold pair: log index ------------------------------------------
 
 describe('Given a log set that packs into exactly 3 blocks at block_size 100', () => {
@@ -448,20 +521,27 @@ describe('Given an obj-bearing table with no adjacent oid collisions', () => {
  *  There is no production reader for the obj section yet (a later part), so
  *  these tests inspect the writer's own encode output directly through the
  *  exported block-decode primitives `reftable-block.test.ts` already uses
- *  for the reader side. */
+ *  for the reader side. Padding is stride-relative to `footer.objPosition`,
+ *  not to file offset 0 — unlike the ref section's first block, the obj
+ *  section carries no `firstBlockExtraLength` compensation, so its own
+ *  start is never guaranteed block_size-aligned from 0 (measured: a ref
+ *  index condensing to its own single, unpadded block shifts objPosition
+ *  off any global block_size multiple). */
 function collectObjRecords(
   table: Reftable,
   blockSize: number,
 ): ReadonlyArray<{ readonly nameBytes: Uint8Array; readonly positions: readonly number[] }> {
   const records: { nameBytes: Uint8Array; positions: readonly number[] }[] = [];
-  let blockStart = table.footer.objPosition;
+  const sectionStart = table.footer.objPosition;
+  let blockStart = sectionStart;
   const boundary = table.footer.objIndexPosition;
   while (blockStart < boundary) {
     const bounds = blockBoundsAt(table, blockStart);
     for (const record of walkBlockRecords(table._bytes, bounds, decodeObjRecord)) {
       records.push({ nameBytes: record.nameBytes, positions: record.payload });
     }
-    blockStart = Math.ceil(bounds.blockEnd / blockSize) * blockSize;
+    const relativeEnd = bounds.blockEnd - sectionStart;
+    blockStart = sectionStart + Math.ceil(relativeEnd / blockSize) * blockSize;
   }
   return records;
 }

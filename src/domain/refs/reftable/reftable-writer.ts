@@ -107,12 +107,10 @@ function concatParts(parts: readonly Uint8Array[]): Uint8Array {
 }
 
 /** `a` is always defined at every call site: `tryAddRecord`/`tryAddLogRecord`
- *  only reach this behind `!isRestart`, and position 0 in a block is always
- *  a restart (`0 % restartInterval === 0` for any positive interval), so by
- *  the time a non-restart record is packed the accumulator already carries
- *  a prior key; `computeObjIdLength` only ever compares adjacent, already-
- *  defined sorted entries. An `undefined`-guarding branch here would be
- *  unreachable dead code. */
+ *  only reach this behind `positionInBlock > 0`, so by the time it runs the
+ *  accumulator already carries a prior key; `computeObjIdLength` only ever
+ *  compares adjacent, already-defined sorted entries. An `undefined`-guarding
+ *  branch here would be unreachable dead code. */
 function longestCommonPrefix(a: Uint8Array, b: Uint8Array): number {
   const max = Math.min(a.length, b.length);
   let i = 0;
@@ -200,6 +198,30 @@ interface RecordStep {
   readonly isRestart: boolean;
 }
 
+/**
+ * A record is a restart point when its position lands on the configured
+ * interval, OR when it shares no prefix at all with its predecessor —
+ * measured against real git output twice: `HEAD` immediately before
+ * `refs/heads/aaa` (completely different top-level segment) restarts even
+ * off the interval, while `refs/notes/ddd` after `refs/tags/ccc`'s sibling
+ * run (sharing the shorter but nonzero `refs/` prefix) does not. Position 0
+ * is always a restart both ways: no predecessor to compare against, and
+ * `0 % restartInterval === 0` for any positive interval. Returns the
+ * decision AND the prefix length to encode (`0` for a restart, whatever the
+ * natural shared length is otherwise) so the caller never recomputes it.
+ */
+function restartDecision(
+  positionInBlock: number,
+  restartInterval: number,
+  priorKeyBytes: Uint8Array | undefined,
+  keyBytes: Uint8Array,
+): { readonly isRestart: boolean; readonly prefixLength: number } {
+  const naturalPrefixLength =
+    positionInBlock === 0 ? 0 : longestCommonPrefix(priorKeyBytes!, keyBytes);
+  const isRestart = positionInBlock % restartInterval === 0 || naturalPrefixLength === 0;
+  return { isRestart, prefixLength: isRestart ? 0 : naturalPrefixLength };
+}
+
 function tryAddRecord<T>(
   item: T,
   positionInBlock: number,
@@ -207,11 +229,13 @@ function tryAddRecord<T>(
   state: BlockState,
   extraLength: number,
 ): RecordStep | undefined {
-  const isRestart = positionInBlock % opts.restartInterval === 0;
   const keyBytes = opts.keyBytesOf(item);
-  // Non-restart implies a prior record already ran in this block (see
-  // longestCommonPrefix's own invariant note).
-  const prefixLength = isRestart ? 0 : longestCommonPrefix(state.priorKeyBytes!, keyBytes);
+  const { isRestart, prefixLength } = restartDecision(
+    positionInBlock,
+    opts.restartInterval,
+    state.priorKeyBytes,
+    keyBytes,
+  );
   const encoded = opts.encodeItem(item, keyBytes, prefixLength);
 
   const restartCount = state.restartCount + (isRestart ? 1 : 0);
@@ -350,8 +374,32 @@ function padBlock(
   return paddingLength > 0 ? concatParts([bytes, new Uint8Array(paddingLength)]) : bytes;
 }
 
+/**
+ * A section with exactly one block needs no stride-based addressing to a
+ * sibling block within it — nothing downstream ever derives that block's
+ * position via `block_size` arithmetic, since a solitary block is always
+ * either the whole section (the no-index ref-read path) or found through an
+ * index's own explicit stored position. Real git leaves it unpadded:
+ * measured against a git-made single-block reftable (a two-ref fixture, 353
+ * bytes total, no trailing padding) versus a git-made multi-block one (a
+ * 3001-ref, 20-block fixture, block_size 4096: every block — including the
+ * last — padded exactly to the 20 * 4096 boundary the footer's own
+ * `refIndexPosition` names). This reverses padding after the fact, once the
+ * block count is known, rather than deciding per-block mid-loop, since a
+ * block earlier in the section always still needs padding to keep the NEXT
+ * block's cursor correct.
+ */
+function unpadSoleBlock(
+  blocks: readonly Uint8Array[],
+  declaredLengths: readonly number[],
+): readonly Uint8Array[] {
+  if (blocks.length !== 1) return blocks;
+  return [blocks[0]!.subarray(0, declaredLengths[0]!)];
+}
+
 function packBlocks<T>(items: readonly T[], opts: PackOptions<T>): PackedSection {
   const blocks: Uint8Array[] = [];
+  const declaredLengths: number[] = [];
   const positions: number[] = [];
   const lastKeys: Uint8Array[] = [];
   const counts: number[] = [];
@@ -363,6 +411,7 @@ function packBlocks<T>(items: readonly T[], opts: PackOptions<T>): PackedSection
     const built = packOneBlock(items, index, opts, extraLength);
     const padded = padBlock(built.bytes, opts.blockSize, extraLength, opts.alignment);
     blocks.push(padded);
+    declaredLengths.push(built.bytes.length);
     positions.push(cursor);
     lastKeys.push(built.lastKeyBytes);
     counts.push(built.nextIndex - index);
@@ -370,7 +419,9 @@ function packBlocks<T>(items: readonly T[], opts: PackOptions<T>): PackedSection
     index = built.nextIndex;
   }
 
-  return { blocks, positions, lastKeys, counts, totalLength: cursor - opts.startPosition };
+  const unpadded = unpadSoleBlock(blocks, declaredLengths);
+  const totalLength = unpadded === blocks ? cursor - opts.startPosition : unpadded[0]!.length;
+  return { blocks: unpadded, positions, lastKeys, counts, totalLength };
 }
 
 // --- Ref record grammar -----------------------------------------------------
@@ -468,6 +519,28 @@ function toIndexEntries(section: IndexSource): readonly IndexLeafEntry[] {
     keyBytes: section.lastKeys[i]!,
     blockPosition,
   }));
+}
+
+/**
+ * The write-side mirror of `reftable-block.ts`'s `resolveBlockOffset`: the
+ * writer's own block-boundary arithmetic treats the file header as part of
+ * the first ref block's span (see `assembleRefBlocks`'s `firstBlockExtraLength`
+ * and `blockBoundsAt`'s `isFirstBlock` branch), so any recorded reference to
+ * that block's physical start — always exactly `headerLength`, since no
+ * other block can ever start there — must be written as `0`, matching git's
+ * own writer convention. Applies wherever a position field names a REF
+ * block's start: the ref index's leaf entries and the obj records' position
+ * lists alike. Every other position (index blocks, obj blocks, log blocks)
+ * starts strictly after the ref section, so it never collides with
+ * `headerLength` and is written verbatim. Only `refBlocks.positions[0]` can
+ * ever equal `headerLength` — every later block starts strictly after it.
+ */
+function encodedRefBlockPositions(
+  refBlocks: PackedSection,
+  headerLength: number,
+): readonly number[] {
+  if (refBlocks.positions[0] !== headerLength) return refBlocks.positions;
+  return [0, ...refBlocks.positions.slice(1)];
 }
 
 interface IndexResult {
@@ -641,11 +714,13 @@ function assembleObjSection(
   refIndexEmitted: boolean,
   options: ReftableWriteOptions,
   startPosition: number,
+  headerLength: number,
 ): ObjSectionResult {
   if (!refIndexEmitted || !options.indexObjects) {
     return EMPTY_OBJ_SECTION;
   }
-  const oidEntries = collectObjEntries(refs, refBlocks.positions, refBlocks.counts);
+  const refBlockPositions = encodedRefBlockPositions(refBlocks, headerLength);
+  const oidEntries = collectObjEntries(refs, refBlockPositions, refBlocks.counts);
   if (oidEntries.length === 0) {
     return EMPTY_OBJ_SECTION;
   }
@@ -690,7 +765,10 @@ function assembleRefSection(
   const refIndexEmitted = refBlocks.blocks.length >= INDEX_EMIT_THRESHOLD_BLOCKS;
   const refIndex = refIndexEmitted
     ? buildIndexLevels(
-        toIndexEntries(refBlocks),
+        toIndexEntries({
+          positions: encodedRefBlockPositions(refBlocks, headerLength),
+          lastKeys: refBlocks.lastKeys,
+        }),
         options,
         headerLength + refBlocks.totalLength,
         'aligned',
@@ -698,7 +776,14 @@ function assembleRefSection(
     : EMPTY_INDEX_RESULT;
 
   const objCursor = headerLength + refBlocks.totalLength + refIndex.totalLength;
-  const objSection = assembleObjSection(refs, refBlocks, refIndexEmitted, options, objCursor);
+  const objSection = assembleObjSection(
+    refs,
+    refBlocks,
+    refIndexEmitted,
+    options,
+    objCursor,
+    headerLength,
+  );
   const objIndex = maybeBuildIndex(objSection, options, objCursor + objSection.totalLength);
 
   const bytes = concatParts([
@@ -804,11 +889,13 @@ function tryAddLogRecord(
   state: BlockState,
   budget: number,
 ): RecordStep | undefined {
-  const isRestart = positionInBlock % restartInterval === 0;
   const keyBytes = encodeLogKey(record.name, record.updateIndex);
-  // Non-restart implies a prior record already ran in this block (see
-  // longestCommonPrefix's own invariant note).
-  const prefixLength = isRestart ? 0 : longestCommonPrefix(state.priorKeyBytes!, keyBytes);
+  const { isRestart, prefixLength } = restartDecision(
+    positionInBlock,
+    restartInterval,
+    state.priorKeyBytes,
+    keyBytes,
+  );
   const encoded = encodeLogRecord(record, keyBytes, prefixLength);
 
   const restartCount = state.restartCount + (isRestart ? 1 : 0);

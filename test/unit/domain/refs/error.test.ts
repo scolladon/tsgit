@@ -4,6 +4,7 @@ import {
   invalidPackedRefs,
   invalidRef,
   invalidReftable,
+  reftableLocked,
 } from '../../../../src/domain/refs/error.js';
 import { assertExhaustiveSwitch } from '../exhaustiveness.js';
 
@@ -41,6 +42,22 @@ describe('refs error', () => {
 
           // Assert
           expect(result.data).toEqual({ code: 'INVALID_REFTABLE', check: 'magic', reason: 'bad' });
+        });
+      });
+    });
+
+    describe("Given reftableLocked('.git/reftable', 'held by another writer')", () => {
+      describe('When checking error.data', () => {
+        it("Then code is 'REFTABLE_LOCKED', stack and reason match", () => {
+          // Arrange & Act
+          const result = reftableLocked('.git/reftable', 'held by another writer');
+
+          // Assert
+          expect(result.data).toEqual({
+            code: 'REFTABLE_LOCKED',
+            stack: '.git/reftable',
+            reason: 'held by another writer',
+          });
         });
       });
     });

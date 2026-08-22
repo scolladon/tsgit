@@ -60,6 +60,7 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'REF_CYCLE_DETECTED':
     case 'REF_LOCKED':
     case 'REF_UPDATE_CONFLICT':
+    case 'REFTABLE_LOCKED':
     case 'INVALID_WALK_INPUT':
     case 'OPERATION_ABORTED':
     case 'INVALID_PKT_LENGTH':

@@ -91,6 +91,7 @@ Codes are grouped by domain. Within each group, alphabetical.
 | `REF_UPDATE_CONFLICT` | `name, expected, actual` | CAS check failed in `updateRef`. |
 | `REFLOG_ENTRY_OUT_OF_RANGE` | `index, length` | `@{N}` (or explicit delete by index) beyond reflog length. |
 | `REFLOG_NOT_FOUND` | `ref` | Ref has no reflog. |
+| `REFTABLE_LOCKED` | `stack, reason` | Another writer holds the reftable stack's `tables.list.lock`. |
 | `REVPARSE_AMBIGUOUS` | `expression, candidates` | Short oid matched multiple objects. |
 | `REVPARSE_UNRESOLVED` | `expression, reason` | Revision expression could not resolve. |
 | `TAG_EXISTS` | `name` | `tag.create(...)` without `force` against an existing tag. |
