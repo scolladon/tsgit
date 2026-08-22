@@ -205,6 +205,28 @@ describe('reftable-transaction', () => {
         expect(await ctx.fs.exists(lockPath)).toBe(false);
       });
     });
+
+    describe('When the transaction commits, and the fs calls themselves are observed', () => {
+      it('Then the commit takes the atomicRename branch, not the degraded write-then-rm pair', async () => {
+        // Arrange — the on-disk END STATE is identical either way (both
+        // branches leave the same bytes at tables.list), so no assertion on
+        // ref/reflog content can tell the branches apart. Only observing
+        // the fs calls themselves can: kills a mutant that always takes the
+        // degraded path even though `ctx.fs.atomicRename` is available.
+        const ctx = withReftableStorage(createMemoryContext());
+        const lockPath = tablesListLockPath(ctx.layout.gitDir);
+        const listPath = tablesListPath(ctx.layout.gitDir);
+        const atomicRenameSpy = vi.spyOn(ctx.fs, 'atomicRename');
+
+        // Act
+        await applyReftableUpdates(ctx, [
+          { kind: 'set', name: ref('refs/heads/a'), id: oid(0x01) },
+        ]);
+
+        // Assert
+        expect(atomicRenameSpy).toHaveBeenCalledWith(lockPath, listPath);
+      });
+    });
   });
 
   describe('Given an existing ref and an update carrying a mismatched expected', () => {
@@ -450,6 +472,38 @@ describe('reftable-transaction', () => {
         // search would).
         expect(logRecords.map((r) => r.updateIndex)).toEqual([3n, 2n, 1n]);
         expect(logRecords.every((r) => r.entry.kind === 'deletion')).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a reflogOnly update with no ref-set anywhere in the transaction', () => {
+    describe('When applyReftableUpdates is called', () => {
+      it('Then a table is still written, carrying the log record and no ref record', async () => {
+        // Arrange — isolates `isActiveWrite`'s `logs.length > 0` disjunct:
+        // `reflogOnly` (see `applyOneUpdate`) pushes ONLY a log record, so a
+        // prepared write with zero ref changes must still be committed, not
+        // skipped as if there were nothing to write.
+        const ctx = withReftableStorage(createMemoryContext());
+        const dir = commonReftableDir(ctx);
+        const name = ref('refs/heads/untouched');
+
+        // Act
+        await applyReftableUpdates(ctx, [
+          {
+            kind: 'reflogOnly',
+            name,
+            reflog: { oldId: oid(0), newId: oid(1), message: 'reflog only', unconditional: true },
+          },
+        ]);
+
+        // Assert
+        const stack = await loadReftableStack(ctx, dir);
+        expect(stack.tables).toHaveLength(1);
+        const store = createReftableRefStore(ctx);
+        expect(await store.resolveDirect(name)).toEqual({ kind: 'missing' });
+        const entries = await store.readReflog(name);
+        expect(entries).toHaveLength(1);
+        expect(entries[0]?.message).toBe('reflog only');
       });
     });
   });
