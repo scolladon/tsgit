@@ -317,6 +317,77 @@ describe('reftable-transaction', () => {
     });
   });
 
+  describe('Given a transaction whose own lock rename just committed', () => {
+    describe('When another writer legitimately acquires a lock at that same path before this transaction’s cleanup runs', () => {
+      it('Then the cleanup does not delete the concurrent writer’s lock', async () => {
+        // Arrange — stage the exact interleaving sec-5 describes: this
+        // transaction's own commit (the atomic rename that consumes
+        // `lockPath`) succeeds, and ONLY THEN does a second writer legitimately
+        // acquire a fresh lock at the now-free path.
+        const ctx = withReftableStorage(createMemoryContext());
+        const lockPath = tablesListLockPath(ctx.layout.gitDir);
+        const originalAtomicRename = ctx.fs.atomicRename?.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'atomicRename').mockImplementation(async (from: string, to: string) => {
+          await originalAtomicRename?.(from, to);
+          if (from === lockPath) {
+            await ctx.fs.writeExclusive(lockPath, new Uint8Array(0));
+          }
+        });
+
+        // Act
+        await applyReftableUpdates(ctx, [
+          { kind: 'set', name: ref('refs/heads/a'), id: oid(0x01) },
+        ]);
+
+        // Assert — a `finally` that unlinks `lockPath` unconditionally would
+        // delete the concurrent writer's lock here; a correct one must not,
+        // because this transaction no longer owns anything at that path.
+        expect(await ctx.fs.exists(lockPath)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a compacting transaction whose own list-lock rename just committed', () => {
+    describe('When another writer legitimately acquires a lock at that same path before compaction’s cleanup runs', () => {
+      it('Then compaction’s cleanup does not delete the concurrent writer’s lock', async () => {
+        // Arrange — one small pre-existing table qualifies for auto-compaction
+        // against the upcoming write, so this transaction's own step-11 pass
+        // reaches `commitMergedList`'s SECOND list-lock rename (the first is
+        // the main write's own commit).
+        const ctx = withReftableStorage(createMemoryContext());
+        const dir = commonReftableDir(ctx);
+        const oldBytes = await buildFixtureTable(
+          ctx,
+          [liveRef('refs/heads/old', 1, 1)],
+          [],
+          1n,
+          1n,
+        );
+        await writeReftableFiles(ctx, dir, [{ name: 'old.ref', bytes: oldBytes }]);
+        const lockPath = tablesListLockPath(ctx.layout.gitDir);
+        const originalAtomicRename = ctx.fs.atomicRename?.bind(ctx.fs);
+        let renameCount = 0;
+        vi.spyOn(ctx.fs, 'atomicRename').mockImplementation(async (from: string, to: string) => {
+          await originalAtomicRename?.(from, to);
+          if (from === lockPath) {
+            renameCount += 1;
+            if (renameCount === 2) {
+              await ctx.fs.writeExclusive(lockPath, new Uint8Array(0));
+            }
+          }
+        });
+
+        // Act
+        await applyReftableUpdates(ctx, [
+          { kind: 'set', name: ref('refs/heads/newRef'), id: oid(2) },
+        ]);
+
+        // Assert
+        expect(await ctx.fs.exists(lockPath)).toBe(true);
+      });
+    });
+  });
+
   describe('Given a ref updated three times, each carrying a reflog entry', () => {
     describe('When the ref is deleted', () => {
       it('Then one ref tombstone lands at the new index and three log tombstones at indexes 1, 2 and 3', async () => {

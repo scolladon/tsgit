@@ -810,7 +810,11 @@ async function unlinkSegmentTables(
 /** Steps 5-8, list-lock scoped: re-verify, rename the merged table in
  *  (unless empty), rewrite `tables.list`, unlink the merged tables. Silent
  *  no-op (after discarding the temp file) when re-verification finds the
- *  segment no longer intact — the stack-outdated abort. */
+ *  segment no longer intact — the stack-outdated abort. Once
+ *  `commitListBody` has consumed `listLockPath`, this transaction no longer
+ *  owns whatever lives at that path — the `finally` below must not unlink
+ *  it, or it can delete a different writer's legitimately-acquired lock
+ *  (the same rule {@link applyReftableUpdates} applies to its own lock). */
 async function commitMergedList(
   ctx: Context,
   gitDir: string,
@@ -818,6 +822,7 @@ async function commitMergedList(
   merged: MergedSegment,
 ): Promise<void> {
   const listLockPath = await acquireStackLock(ctx, gitDir);
+  let consumed = false;
   try {
     const fresh = parseTablesList(await ctx.fs.readUtf8(tablesListPath(gitDir)));
     const spliced = spliceLockedSegment(fresh, locked.tableNames, merged.mergedName);
@@ -829,8 +834,9 @@ async function commitMergedList(
       await ctx.fs.rename(merged.tempPath, `${reftableDir(gitDir)}/${merged.mergedName}`);
     }
     await commitListBody(ctx, gitDir, listLockPath, spliced);
+    consumed = true;
   } finally {
-    await removeIfPresent(ctx, listLockPath);
+    if (!consumed) await removeIfPresent(ctx, listLockPath);
   }
   await unlinkSegmentTables(ctx, gitDir, locked.tableNames);
 }
@@ -985,8 +991,20 @@ function partitionByStack(ctx: Context, updates: readonly RefUpdate[]): readonly
 
 // --- Top-level orchestration -------------------------------------------------
 
-async function releaseLocksReverse(ctx: Context, locks: readonly string[]): Promise<void> {
+/** Releases every lock in `locks` NOT already in `consumed` — git's own
+ *  `commit_lock_file` semantics: once a lock's rename/write-then-rm has
+ *  committed the state it guarded, this transaction no longer owns the path,
+ *  and a release step that still unlinks it by path can delete a DIFFERENT
+ *  writer's lock legitimately acquired there in the meantime. Skipping a
+ *  consumed path outright — never re-probing the filesystem to decide — is
+ *  what closes that window rather than merely narrowing it. */
+async function releaseLocksReverse(
+  ctx: Context,
+  locks: readonly string[],
+  consumed: ReadonlySet<string> = new Set(),
+): Promise<void> {
   for (const lockPath of [...locks].reverse()) {
+    if (consumed.has(lockPath)) continue;
     await removeIfPresent(ctx, lockPath);
   }
 }
@@ -997,8 +1015,9 @@ async function releaseLocksReverse(ctx: Context, locks: readonly string[]): Prom
  * are acquired up front (common first), every stack's CAS check runs before
  * any stack is written, then every stack is written and committed in the
  * same fixed order. Any lock still present when this returns or throws is
- * best-effort released in reverse acquisition order — a no-op for a lock
- * already consumed by a successful commit.
+ * best-effort released in reverse acquisition order — except one this
+ * transaction already consumed via a successful commit, which is never
+ * touched again (see {@link releaseLocksReverse}).
  */
 export async function applyReftableUpdates(
   ctx: Context,
@@ -1008,6 +1027,7 @@ export async function applyReftableUpdates(
   if (buckets.length === 0) return;
   const identity = await resolveReflogIdentity(ctx);
   const locks: string[] = [];
+  const consumed = new Set<string>();
   let staged: readonly StagedStackWrite[] = [];
 
   try {
@@ -1022,10 +1042,11 @@ export async function applyReftableUpdates(
     staged = await writeAllTables(ctx, prepared);
     for (const write of staged) {
       await commitStackList(ctx, write);
+      consumed.add(write.lockPath);
       invalidateReftableStack(ctx, reftableDir(write.gitDir));
     }
   } finally {
-    await releaseLocksReverse(ctx, locks);
+    await releaseLocksReverse(ctx, locks, consumed);
   }
 
   // Step 11, per stack that actually committed a table — every lock above
