@@ -19,13 +19,14 @@ import { isDegradableReftableFault } from './internal/reftable-source.js';
 import { loadReftableStack, parseTablesList } from './load-reftable-stack.js';
 import { commonGitDir, perWorktreeRefDir, reftableDir } from './path-layout.js';
 import type {
+  PackRefsOutcome,
   RefEntry,
   RefIntegrityFinding,
   RefStore,
   RefUpdate,
   ResolveDirectResult,
 } from './ref-store.js';
-import { applyReftableUpdates } from './reftable-transaction.js';
+import { applyReftableUpdates, packReftableStack } from './reftable-transaction.js';
 
 const TABLES_LIST_FILE = 'tables.list';
 
@@ -165,6 +166,15 @@ export function createReftableRefStore(ctx: Context): RefStore {
     return dirs;
   }
 
+  /** `everyStack()`'s own two-dir construction, as gitDirs rather than
+   *  reftable subdirectories or loaded stacks — `packRefs` runs its I/O
+   *  protocol (`reftable-transaction.ts`) per gitDir, which derives its
+   *  own `reftableDir` internally. */
+  function gitDirs(): readonly string[] {
+    const common = commonGitDir(ctx);
+    return ctx.layout.gitDir === common ? [common] : [common, ctx.layout.gitDir];
+  }
+
   async function resolveDirect(name: RefName): Promise<ResolveDirectResult> {
     const stack = await stackFor(name);
     const record = stack.lookup(name);
@@ -245,6 +255,22 @@ export function createReftableRefStore(ctx: Context): RefStore {
     await applyReftableUpdates(ctx, updates);
   }
 
+  /**
+   * `packRefs`'s reftable-backend verb: forces a full compaction (and
+   * unlinks orphaned tables) on every stack this Context can see, then
+   * reports the packed ref count from a fresh `listRefs()` merge view —
+   * `packReftableStack` reports only what it uniquely knows (the orphan
+   * count), never a table count.
+   */
+  async function packRefs(): Promise<PackRefsOutcome> {
+    let removedOrphanCount = 0;
+    for (const dir of gitDirs()) {
+      removedOrphanCount += (await packReftableStack(ctx, dir)).removedOrphanCount;
+    }
+    const packedRefCount = (await listRefs()).length;
+    return { packedRefCount, prunedLooseRefCount: 0, removedOrphanCount };
+  }
+
   return {
     resolveDirect,
     applyRefUpdates,
@@ -252,5 +278,6 @@ export function createReftableRefStore(ctx: Context): RefStore {
     verifyIntegrity,
     readReflog,
     listReflogs,
+    packRefs,
   };
 }

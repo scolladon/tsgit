@@ -802,6 +802,86 @@ async function tryAutoCompact(ctx: Context, gitDir: string): Promise<void> {
   }
 }
 
+// --- packRefs: forced full-stack compaction + orphan sweep -----------------
+//
+// Unlike step 11's auto-compaction (a geometric SUGGESTION), `packRefs`
+// always targets the WHOLE stack — segment `[0, existingNames.length)` — so
+// tombstones are always elided (a merge that starts at table 0 always
+// qualifies). Reuses the exact same lock/merge machinery as auto-compaction:
+// under contention it degrades exactly the same way (shrink the lockable
+// range, give up silently below two tables), because "never assert the
+// table count" applies here too — a caller that races packRefs against a
+// concurrent writer gets a best-effort compaction, not a guaranteed single
+// table.
+//
+// Then, separately, under a FRESH `tables.list.lock` acquisition, every
+// `*.ref` / `*.temp` file the CURRENT `tables.list` doesn't name is
+// unlinked — crash residue this module's own write protocol can leave
+// behind (steps 6/7), or a stale byproduct of any compaction, tsgit's or
+// git's own. A file absent from a list read under the lock is unreachable
+// by any correct reader at the moment it's read, so the sweep is safe even
+// though the unlink itself runs after the lock is released (best effort,
+// mirroring compaction's own step 8).
+
+/** Forces a compaction over the WHOLE stack rather than the geometric
+ *  suggestion — `plannedNames = probedNames` in full, so the segment is
+ *  always `[0, n)` when nothing shrinks it under contention. A stack of
+ *  fewer than two tables has nothing to compact. */
+async function compactWholeStack(ctx: Context, gitDir: string): Promise<void> {
+  const { existingNames } = await readFreshStack(ctx, gitDir);
+  if (existingNames.length < 2) return;
+  const locked = await acquireCompactionLocks(ctx, gitDir, existingNames, existingNames);
+  if (locked === undefined) return;
+  const merged = await mergeSegment(ctx, gitDir, locked);
+  await commitCompaction(ctx, gitDir, locked, merged);
+  invalidateReftableStack(ctx, reftableDir(gitDir));
+}
+
+const ORPHAN_TABLE_SUFFIXES: readonly string[] = ['.ref', '.temp'];
+
+function isOrphanCandidate(fileName: string): boolean {
+  return ORPHAN_TABLE_SUFFIXES.some((suffix) => fileName.endsWith(suffix));
+}
+
+/** Unlinks every `*.ref` / `*.temp` file the tables.list read under a fresh
+ *  lock doesn't name. Best effort: a file already gone by the time the
+ *  unlink runs (a concurrent reader's own cleanup, or a race with another
+ *  writer) is not an error. */
+async function sweepOrphanTables(ctx: Context, gitDir: string): Promise<number> {
+  const listLockPath = await acquireStackLock(ctx, gitDir);
+  let currentNames: readonly string[];
+  try {
+    currentNames = parseTablesList(await ctx.fs.readUtf8(tablesListPath(gitDir)));
+  } finally {
+    await removeIfPresent(ctx, listLockPath);
+  }
+  const dir = reftableDir(gitDir);
+  const keep = new Set(currentNames);
+  let removedOrphanCount = 0;
+  for (const entry of await ctx.fs.readdir(dir)) {
+    if (entry.isDirectory || keep.has(entry.name) || !isOrphanCandidate(entry.name)) continue;
+    await removeIfPresent(ctx, `${dir}/${entry.name}`);
+    removedOrphanCount += 1;
+  }
+  return removedOrphanCount;
+}
+
+/**
+ * `packRefs`'s reftable-backend I/O protocol for ONE stack directory:
+ * compact the whole stack, then sweep whatever the compacted `tables.list`
+ * no longer names. The caller (`reftable-ref-store.ts`) runs this once per
+ * stack the Context can see (the common dir, plus a linked worktree's own)
+ * and derives the packed ref COUNT from its own `listRefs()` merge view
+ * afterwards — this function reports only what it uniquely knows.
+ */
+export async function packReftableStack(
+  ctx: Context,
+  gitDir: string,
+): Promise<{ readonly removedOrphanCount: number }> {
+  await compactWholeStack(ctx, gitDir);
+  return { removedOrphanCount: await sweepOrphanTables(ctx, gitDir) };
+}
+
 // --- Cross-stack partitioning -----------------------------------------------
 
 interface StackBucket {

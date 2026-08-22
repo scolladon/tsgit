@@ -389,6 +389,16 @@
         "default": "./dist/cjs/commands/pack-objects.cjs"
       }
     },
+    "./commands/pack-refs": {
+      "import": {
+        "types": "./dist/types/commands/pack-refs.d.ts",
+        "default": "./dist/esm/commands/pack-refs.js"
+      },
+      "require": {
+        "types": "./dist/types/commands/pack-refs.d.cts",
+        "default": "./dist/cjs/commands/pack-refs.cjs"
+      }
+    },
     "./commands/pull": {
       "import": {
         "types": "./dist/types/commands/pull.d.ts",

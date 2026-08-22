@@ -234,6 +234,12 @@
     "gzip": true
   },
   {
+    "name": "Command (pack-refs)",
+    "path": "dist/esm/commands/pack-refs.js",
+    "limit": "1.5 kB",
+    "gzip": true
+  },
+  {
     "name": "Command (pull)",
     "path": "dist/esm/commands/pull.js",
     "limit": "3 kB",

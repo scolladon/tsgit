@@ -6,12 +6,20 @@ import type { ObjectId, RefName } from '../../domain/objects/index.js';
 import { invalidReflogEntry } from '../../domain/reflog/error.js';
 import type { ReflogEntry } from '../../domain/reflog/reflog-entry.js';
 import { parseReflog, serializeReflogLine } from '../../domain/reflog/reflog-format.js';
-import { type ReftableCheck, refNotFound, refUpdateConflict } from '../../domain/refs/error.js';
 import {
+  type ReftableCheck,
+  refChainTooDeep,
+  refNotFound,
+  refUpdateConflict,
+} from '../../domain/refs/error.js';
+import {
+  isPerWorktreeRef,
+  type PackedRefEntry,
   type PackedRefs,
   parseLooseRef,
   parsePackedRefs,
   serializeDirectRef,
+  serializePackedRefs,
   serializeSymbolicRef,
 } from '../../domain/refs/index.js';
 import type { Context } from '../../ports/context.js';
@@ -25,9 +33,11 @@ import {
   perWorktreeRefDir,
   reflogPath,
 } from './path-layout.js';
+import { readObject } from './read-object.js';
 import { recordRefUpdate } from './record-ref-update.js';
 import { createReftableRefStore } from './reftable-ref-store.js';
-import { MAX_REFLOG_BYTES } from './types.js';
+import { MAX_PEEL_DEPTH, MAX_REFLOG_BYTES } from './types.js';
+import { exceedsMaxPeelDepth } from './validators.js';
 
 const TEXT_ENCODER = new TextEncoder();
 
@@ -72,6 +82,30 @@ export interface RefStore {
   readReflog(name: RefName): Promise<readonly ReflogEntry[]>;
   /** Every ref this backend has a reflog for, merged across scopes. */
   listReflogs(): Promise<readonly RefName[]>;
+  /**
+   * Pack every ref into the backend's most-compact on-disk form, and
+   * remove whatever the packing makes redundant. Mirrors git's
+   * `pack-refs --all` — every ref is always in scope; there is no
+   * bare/tags-only mode, because the reftable backend's whole-stack
+   * compaction has no per-namespace equivalent to express one.
+   *
+   * Files: rewrites `packed-refs` from every current packable ref (loose ∪
+   * already-packed) and deletes the loose files that now duplicate it.
+   * Reftable: compacts the whole stack into one table (tombstones elided)
+   * and unlinks orphaned `*.ref` / `*.temp` files the resulting
+   * `tables.list` no longer names.
+   */
+  packRefs(): Promise<PackRefsOutcome>;
+}
+
+/** Backend-neutral counts {@link RefStore.packRefs} reports. Never a table
+ *  count or any other internal compaction detail — auto-compaction's own
+ *  metric can legitimately differ, byte for byte, between two equally
+ *  correct implementations. */
+export interface PackRefsOutcome {
+  readonly packedRefCount: number;
+  readonly prunedLooseRefCount: number;
+  readonly removedOrphanCount: number;
 }
 
 export type ResolveDirectResult =
@@ -509,6 +543,74 @@ function createFilesRefStore(ctx: Context): RefStore {
     }
   }
 
+  /** Every packable ref — direct-kind (never symbolic, matching git's own
+   *  `--all` exclusion), and never a per-worktree name (`HEAD`, `refs/bisect/`,
+   *  …): `packed-refs` is a common-dir-only file, and git never packs a
+   *  symbolic or per-worktree ref regardless of `--all`. */
+  async function packableEntries(): Promise<readonly RefEntry[]> {
+    const entries = await listRefs();
+    return entries.filter(
+      (entry) => entry.value.kind === 'direct' && !isPerWorktreeRef(entry.name),
+    );
+  }
+
+  /** Follows a tag chain to its first non-tag object — the peeled OID a
+   *  packed-refs entry for an annotated tag carries on its own `^` line. */
+  async function peelToNonTag(id: ObjectId): Promise<ObjectId> {
+    let current = id;
+    let depth = 0;
+    for (;;) {
+      const object = await readObject(ctx, current);
+      if (object.type !== 'tag') return current;
+      depth += 1;
+      if (exceedsMaxPeelDepth(depth, MAX_PEEL_DEPTH)) {
+        throw refChainTooDeep(depth, []);
+      }
+      current = object.data.object;
+    }
+  }
+
+  async function buildPackedEntry(entry: RefEntry): Promise<PackedRefEntry> {
+    // `packableEntries` already narrowed to the `'direct'` arm.
+    const { id } = entry.value as Extract<ResolveDirectResult, { kind: 'direct' }>;
+    const peeled = await peelToNonTag(id);
+    return peeled === id ? { name: entry.name, id } : { name: entry.name, id, peeled };
+  }
+
+  /**
+   * git's `pack-refs --all`: every packable ref is rewritten into
+   * `packed-refs` (traits `peeled fully-peeled sorted`, matching git's own
+   * unconditional header regardless of whether any entry needs peeling),
+   * and every loose file that duplicated a now-packed ref is removed.
+   * Nothing to pack (an empty repository) writes nothing — `packed-refs`'s
+   * OWN absence already reads back as zero entries, so an empty repo is
+   * left byte-for-byte unchanged rather than gaining a header-only file.
+   */
+  async function packRefs(): Promise<PackRefsOutcome> {
+    const packable = await packableEntries();
+    if (packable.length === 0) {
+      return { packedRefCount: 0, prunedLooseRefCount: 0, removedOrphanCount: 0 };
+    }
+    const toPrune: RefName[] = [];
+    for (const entry of packable) {
+      if (await ctx.fs.exists(looseRefPath(refDir(entry.name), entry.name))) {
+        toPrune.push(entry.name);
+      }
+    }
+    const entries = await Promise.all(packable.map(buildPackedEntry));
+    const content = serializePackedRefs({ entries, peeling: 'fully', sorted: true });
+    await ctx.fs.writeUtf8(packedRefsPath(commonGitDir(ctx)), content);
+    packedCache = undefined;
+    for (const name of toPrune) {
+      await ctx.fs.rm(looseRefPath(refDir(name), name));
+    }
+    return {
+      packedRefCount: packable.length,
+      prunedLooseRefCount: toPrune.length,
+      removedOrphanCount: 0,
+    };
+  }
+
   return {
     resolveDirect,
     applyRefUpdates,
@@ -516,5 +618,6 @@ function createFilesRefStore(ctx: Context): RefStore {
     verifyIntegrity,
     readReflog,
     listReflogs,
+    packRefs,
   };
 }

@@ -273,6 +273,7 @@ describe('openRepository — Repository binding integrity', () => {
             'nameRev',
             'notes',
             'packObjects',
+            'packRefs',
             'primitives',
             'pull',
             'push',
