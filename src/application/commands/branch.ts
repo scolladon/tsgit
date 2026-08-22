@@ -12,6 +12,7 @@ import { branchCreatedFrom, branchRenamed } from '../../domain/reflog/reflog-mes
 import { validateRefName } from '../../domain/refs/index.js';
 import { HEADS_PREFIX } from '../../domain/refs/ref-prefixes.js';
 import type { Context } from '../../ports/context.js';
+import { errorDataCode } from '../primitives/internal/error-data-code.js';
 import { getRefStore, refExists } from '../primitives/ref-store.js';
 import { readReflog } from '../primitives/reflog-store.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
@@ -63,9 +64,7 @@ export interface BranchRenameResult {
 
 export const branchList = async (ctx: Context): Promise<BranchListResult> => {
   await assertOperationalRepository(ctx);
-  const head = await readHeadRaw(ctx);
-  const ref = branchRefFromHead(head);
-  const currentTarget = ref?.startsWith(HEADS_PREFIX) ? ref : undefined;
+  const currentTarget = await resolveCurrentBranchTarget(ctx);
   const entries = await getRefStore(ctx).listRefs(HEADS_PREFIX as RefName);
   const branches: BranchInfo[] = [];
   for (const entry of entries) {
@@ -76,6 +75,27 @@ export const branchList = async (ctx: Context): Promise<BranchListResult> => {
   }
   branches.sort((a, b) => compareRefName(a.name, b.name));
   return { branches };
+};
+
+/**
+ * The current branch's full ref, or `undefined` when HEAD is detached — or
+ * does not resolve at all. Measured against git 2.55.0: `git branch --list`
+ * against a repository whose `HEAD` is a dangling symlink still exits 0 and
+ * lists every branch, simply marking none current — git treats an
+ * unresolvable `HEAD` as "no current branch", not as a failure to list. A
+ * `HEAD` that resolves to malformed content is a different, harder refusal
+ * in real git (`fatal: failed to resolve HEAD as a valid ref`), so only the
+ * "does not resolve" code (`REF_NOT_FOUND`) is folded here; anything else
+ * — including a malformed `HEAD` (`INVALID_REF`) — still propagates.
+ */
+const resolveCurrentBranchTarget = async (ctx: Context): Promise<RefName | undefined> => {
+  try {
+    const ref = branchRefFromHead(await readHeadRaw(ctx));
+    return ref?.startsWith(HEADS_PREFIX) ? ref : undefined;
+  } catch (err) {
+    if (errorDataCode(err) === 'REF_NOT_FOUND') return undefined;
+    throw err;
+  }
 };
 
 /**

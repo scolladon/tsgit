@@ -324,6 +324,62 @@ describe('branch', () => {
     });
   });
 
+  /**
+   * Simulates a dangling-symlink HEAD (the shape real git's discovery
+   * accepts by link text alone — measured against git 2.55.0): `readlink`
+   * succeeds so discovery's `hasUsableHead` passes, but the loose-ref lookup
+   * `resolveDirect` performs `exists`-then-`readUtf8` — which a stat-following
+   * `exists` reports as absent for a dangling target, exactly like the node
+   * adapter does for a real dangling symlink. `resolveDirect(HEAD)` therefore
+   * answers `{ kind: 'missing' }`, and `readHeadRaw` throws `REF_NOT_FOUND`.
+   */
+  const withUnresolvableHead = (ctx: Context): Context => {
+    const headPath = `${ctx.layout.gitDir}/HEAD`;
+    return {
+      ...ctx,
+      fs: {
+        ...ctx.fs,
+        readlink: async (path: string) =>
+          path === headPath ? 'refs/heads/does-not-exist' : ctx.fs.readlink(path),
+        exists: async (path: string) => (path === headPath ? false : ctx.fs.exists(path)),
+      },
+    };
+  };
+
+  describe('Given a repository with branches whose HEAD does not resolve', () => {
+    describe('When branch list', () => {
+      it('Then every branch is listed with current: false, instead of throwing', async () => {
+        // Arrange — measured: git 2.55.0 `branch --list` against a dangling
+        // HEAD symlink exits 0 and lists branches, marking none current.
+        const { ctx } = await seedWithCommit();
+        const sut = withUnresolvableHead(ctx);
+
+        // Act
+        const result = await branchList(sut);
+
+        // Assert
+        expect(result.branches.map((b) => b.name)).toContain('refs/heads/main');
+        expect(result.branches.every((b) => b.current === false)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a repository with no branches and an unresolvable HEAD', () => {
+    describe('When branch list', () => {
+      it('Then returns an empty array without throwing', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const sut = withUnresolvableHead(ctx);
+
+        // Act
+        const result = await branchList(sut);
+
+        // Assert
+        expect(result.branches).toEqual([]);
+      });
+    });
+  });
+
   describe('Given an existing target branch + force=true', () => {
     describe('When branch rename', () => {
       it('Then force overrides the BRANCH_EXISTS guard', async () => {
