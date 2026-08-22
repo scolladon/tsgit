@@ -55,6 +55,7 @@ export interface ReftableLogRecord {
 export type InflateAt = (
   bytes: Uint8Array,
   offset: number,
+  maxOutputBytes?: number,
 ) => Promise<{ readonly output: Uint8Array; readonly bytesConsumed: number }>;
 
 export interface LoadedReftable extends Reftable {
@@ -291,15 +292,31 @@ function logSectionEnd(table: Reftable): number {
 
 /**
  * Bounds `collectLogBlocks`'s eager whole-table inflation against a
- * decompression bomb (CWE-409): a handful of small zlib streams, each
- * expanding toward the compressor's own per-stream cap, retained all at
- * once. `maxBlockBytes` is checked against each block's own declared
- * (plaintext, pre-inflate) size before that block is ever inflated;
+ * decompression bomb (CWE-409), in two layers with distinct jobs:
+ *
+ * `maxBlockBytes` is checked against each block's own declared (plaintext,
+ * pre-inflate) size — read straight from the block header's `uint24` field —
+ * before that block is ever inflated. It must stay reachable: `uint24` alone
+ * already ceilings a declared size at `0xFFFFFF - LOG_BLOCK_HEADER_LENGTH`
+ * (~16.7 MiB), so a `maxBlockBytes` at or above that would never fire and
+ * would be dead code. Kept well below that ceiling, it rejects an implausible
+ * declared size for CPU-cheap, before spending any decompression work on it —
+ * real git-produced reflog blocks are ~1KB, so this stays generous by three
+ * orders of magnitude.
+ *
+ * Passing `declaredPayloadBytes` itself as `inflateAt`'s own output bound is
+ * what makes the actual inflate call safe regardless of `maxBlockBytes`: the
+ * compressor aborts incrementally, during decode, the moment cumulative
+ * output would exceed what the block claimed, so no single block can ever
+ * transiently allocate more than its own declared size — but that bound only
+ * catches a block that UNDER-declares and then inflates past its own claim,
+ * whereas `maxBlockBytes` rejects an absurd declared size outright, without
+ * even starting to decode it. Neither layer is redundant with the other.
+ *
  * `maxTableBytes` bounds the running total across every block this ONE
- * table's `tables.list` entry contributes. Both are generous relative to
- * any git-produced reflog (the design's own measured blocks are ~1KB) —
- * `loadReftableStack`'s table-count ceiling (`load-reftable-stack.ts`) is
- * what keeps the STACK-wide total bounded in turn.
+ * table's `tables.list` entry contributes — `loadReftableStack`'s
+ * table-count ceiling (`load-reftable-stack.ts`) is what keeps the
+ * STACK-wide total bounded in turn.
  */
 export interface LogInflationBudget {
   readonly maxBlockBytes: number;
@@ -307,7 +324,7 @@ export interface LogInflationBudget {
 }
 
 const DEFAULT_LOG_INFLATION_BUDGET: LogInflationBudget = {
-  maxBlockBytes: 64 * 1024 * 1024,
+  maxBlockBytes: 8 * 1024 * 1024,
   maxTableBytes: 256 * 1024 * 1024,
 };
 
@@ -335,6 +352,7 @@ async function collectLogBlocks(
     const { output, bytesConsumed } = await inflateAt(
       table._bytes,
       offset + LOG_BLOCK_HEADER_LENGTH,
+      declaredPayloadBytes,
     );
     if (output.length !== declaredPayloadBytes) {
       throw invalidReftable(

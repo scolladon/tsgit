@@ -523,6 +523,25 @@ describe('reftable-log', () => {
       });
     });
 
+    describe('Given a log block declaring more inflated bytes than the DEFAULT per-block budget', () => {
+      describe('When loading the table without an explicit budget', () => {
+        it('Then refuses with block-bounds before ever inflating it', async () => {
+          // Arrange — proves the default budget's own per-block guard is
+          // reachable in production, not dead code: the declared size here
+          // (10,000,000) sits below the block header's own uint24 ceiling
+          // (~16.7 MiB) but above DEFAULT_LOG_INFLATION_BUDGET's own
+          // maxBlockBytes, so the DEFAULT budget — not an overridden one —
+          // is what must reject it.
+          const block = await buildRawLogBlock(10, LOG_BLOCK_HEADER_LENGTH + 10_000_000);
+          const bytes = buildLogOnlyReftable([block]);
+          const sut = loadReftable;
+
+          // Act & Assert
+          await expectReftableRefusal(sut(bytes, inflateAt), 'per-block limit');
+        });
+      });
+    });
+
     describe('Given a log block whose actual inflated size disagrees with its declared block_len', () => {
       describe('When loading the table', () => {
         it('Then refuses with block-bounds naming the mismatch', async () => {
