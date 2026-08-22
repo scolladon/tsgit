@@ -175,10 +175,12 @@ export function parseReftable(bytes: Uint8Array): Reftable {
 
   const magic = view.getUint32(0);
   if (magic !== REFT_MAGIC) {
-    throw invalidReftable(
-      'magic',
-      `invalid magic: expected 0x${REFT_MAGIC.toString(16)}, got 0x${magic.toString(16).padStart(8, '0')}`,
-    );
+    // Never echo the bytes actually read: `bytes` can come from an
+    // unvalidated `tables.list` entry — a shipped symlink pointing outside
+    // the reftable directory, say — and echoing its content back turns a
+    // parse refusal into a four-bytes-at-a-time read oracle over whatever
+    // it resolves to.
+    throw invalidReftable('magic', `invalid magic: expected 0x${REFT_MAGIC.toString(16)}`);
   }
 
   const version = view.getUint8(4);

@@ -260,6 +260,85 @@ describe('load-reftable-stack', () => {
     });
   });
 
+  describe.each([
+    { label: 'a path-traversal entry', name: '../config' },
+    { label: 'an entry with a forward slash', name: 'sub/table.ref' },
+    { label: 'an entry with a backslash', name: 'sub\\table.ref' },
+    { label: 'an entry with .. outside a path separator', name: 'a..ref' },
+    { label: 'a dotfile entry', name: '.hidden.ref' },
+  ])('Given tables.list names $label', ({ name }) => {
+    describe('When the stack is loaded', () => {
+      it('Then it refuses with check tables-list, isolated from the other unsafe shapes', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const dir = commonReftableDir(ctx);
+        await ctx.fs.writeUtf8(`${dir}/tables.list`, `${name}\n`);
+        const sut = loadReftableStack;
+
+        // Act + Assert
+        try {
+          await sut(ctx, dir);
+          expect.unreachable();
+        } catch (err) {
+          expect((err as TsgitError).data.code).toBe('INVALID_REFTABLE');
+          expect((err as TsgitError).data).toMatchObject({ check: 'tables-list' });
+          expect(((err as TsgitError).data as { reason: string }).reason).toContain(name);
+        }
+      });
+    });
+  });
+
+  describe('Given a tables.list entry naming a real file outside the reftable directory', () => {
+    describe('When the stack is loaded', () => {
+      it('Then it refuses before ever reading the escaped file', async () => {
+        // Arrange — matches real git 2.55.0's OWN tolerance measured against
+        // the peer binary: git follows `../../../outside/escape.ref`
+        // (and even an absolute path) with no confinement of its own at
+        // all. tsgit diverges deliberately here: the entry grammar is
+        // constrained so a `tables.list` line can never walk outside its
+        // own directory in the first place, closing the gap NodeFileSystem's
+        // own root confinement doesn't fully cover (a byte-echoed read of
+        // whatever the escaped path resolves to).
+        const ctx = createMemoryContext();
+        const dir = commonReftableDir(ctx);
+        const escapeTarget = `${ctx.layout.gitDir}/config`;
+        await ctx.fs.writeUtf8(escapeTarget, 'real config content, never to be read back');
+        await ctx.fs.writeUtf8(`${dir}/tables.list`, '../config\n');
+        const sut = loadReftableStack;
+
+        // Act + Assert
+        try {
+          await sut(ctx, dir);
+          expect.unreachable();
+        } catch (err) {
+          expect((err as TsgitError).data.code).toBe('INVALID_REFTABLE');
+          expect((err as TsgitError).data).toMatchObject({ check: 'tables-list' });
+        }
+      });
+    });
+  });
+
+  describe('Given a well-formed table name matching git 2.55.0’s own writer grammar', () => {
+    describe('When the stack is loaded', () => {
+      it('Then it still loads — regression guard against over-rejection', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const dir = commonReftableDir(ctx);
+        const table = buildSimpleTable({ refName: 'refs/heads/main', id: oid(0x01) });
+        await writeReftableFiles(ctx, dir, [
+          { name: '0x000000000001-0x000000000001-a1b2c3d4.ref', bytes: table },
+        ]);
+        const sut = loadReftableStack;
+
+        // Act
+        const result = await sut(ctx, dir);
+
+        // Assert
+        expect(result.tables).toHaveLength(1);
+      });
+    });
+  });
+
   describe('Given repeated loads with tables.list size held constant', () => {
     describe('When mtime changes between calls', () => {
       it('Then the stack reloads', async () => {

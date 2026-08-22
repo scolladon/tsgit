@@ -62,11 +62,34 @@ function isFileNotFound(err: unknown): boolean {
 }
 
 /**
+ * Real git 2.55.0's own writer always names a table
+ * `0x<12 hex>-0x<12 hex>-<8 hex>.ref` — but measured against the peer
+ * binary, its READER enforces no grammar at all: it happily follows
+ * `../../../outside/escape.ref`, or even an absolute path, wherever
+ * `tables.list` points it. tsgit diverges here deliberately (documented,
+ * not silent): every entry is interpolated straight into a path for a
+ * `read`, a table-lock `writeExclusive`, and an `rm`, so an unconstrained
+ * grammar turns `tables.list` into a path-traversal primitive the moment
+ * this loader's own directory confinement is the only thing standing in
+ * the way. Rather than pin git's exact writer form (which would refuse
+ * otherwise-harmless names a future writer might choose), this rejects only
+ * what can escape the stack directory or otherwise misdirect a path join:
+ * a path separator (either OS's), a `..` traversal segment anywhere in the
+ * name, a NUL byte, and a leading `.` (dotfile/relative-component tricks).
+ */
+const UNSAFE_TABLE_NAME = /[/\\]|\.\.|\0/;
+
+function isSafeTableName(name: string): boolean {
+  return !name.startsWith('.') && !UNSAFE_TABLE_NAME.test(name);
+}
+
+/**
  * `tables.list`'s body: one filename per line, LF-terminated INCLUDING the
- * last line. Anything else — a missing trailing LF, or a blank line other
- * than that terminator — is a malformed listing. Exported for
- * `reftable-ref-store.ts`'s `verifyIntegrity`, which needs the same
- * manifest grammar without the eager throw-on-first-fault load protocol.
+ * last line. Anything else — a missing trailing LF, a blank line other than
+ * that terminator, or an entry {@link isSafeTableName} refuses — is a
+ * malformed listing. Exported for `reftable-ref-store.ts`'s
+ * `verifyIntegrity`, which needs the same manifest grammar without the
+ * eager throw-on-first-fault load protocol.
  */
 export function parseTablesList(text: string): readonly string[] {
   if (text === '') return [];
@@ -82,6 +105,10 @@ export function parseTablesList(text: string): readonly string[] {
       'tables-list',
       `tables.list names ${lines.length} tables, exceeding the ${MAX_TABLES_PER_STACK}-table limit`,
     );
+  }
+  const unsafe = lines.find((line) => !isSafeTableName(line));
+  if (unsafe !== undefined) {
+    throw invalidReftable('tables-list', `tables.list entry is unsafe: ${unsafe}`);
   }
   return lines;
 }

@@ -4,6 +4,8 @@ import type { ReftableCheck } from '../../../../../src/domain/refs/error.js';
 import {
   blockLengthAt,
   blockTypeAt,
+  FOOTER_LENGTH_V1,
+  HEADER_LENGTH_V1,
   parseReftable,
   readVarint,
 } from '../../../../../src/domain/refs/reftable/reftable-format.js';
@@ -226,6 +228,33 @@ describe('reftable-format', () => {
 
           // Act & Assert
           expectRefusal(() => parseReftable(bytes), 'magic', 'magic');
+        });
+      });
+    });
+
+    describe('Given a file whose first four bytes are unrecognized content, not corrupted magic', () => {
+      describe('When parsing', () => {
+        it('Then the refusal reason never echoes the bytes actually read', () => {
+          // Arrange — a `tables.list` entry naming an unvalidated path (a
+          // shipped symlink pointing outside the reftable directory, say)
+          // must not turn this refusal into a four-bytes-at-a-time read
+          // oracle over whatever file it resolves to.
+          const bytes = new Uint8Array(HEADER_LENGTH_V1 + FOOTER_LENGTH_V1);
+          bytes.set([0xde, 0xad, 0xbe, 0xef], 0);
+
+          // Act
+          let caught: unknown;
+          try {
+            parseReftable(bytes);
+          } catch (e) {
+            caught = e;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(Object);
+          const reason = (caught as TsgitError).data as { reason: string };
+          expect(reason.reason).not.toContain('deadbeef');
+          expect(reason.reason).not.toContain('DEADBEEF');
         });
       });
     });
