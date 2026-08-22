@@ -30,6 +30,7 @@ import {
   createReftableStack,
   type ReftableStack,
 } from '../../domain/refs/reftable/reftable-stack.js';
+import { createLruCache, type LruCache } from '../../domain/storage/lru-cache.js';
 import type { Context } from '../../ports/context.js';
 import type { FileStat } from '../../ports/file-system.js';
 import { isDegradableReftableFault } from './internal/reftable-source.js';
@@ -53,6 +54,18 @@ interface CachedStack {
   readonly mtimeKey: string;
 }
 
+/** Bounds how much a single repository's stack memo retains — both by total
+ *  bytes (a stack's tables plus their inflated log blocks) and by entry
+ *  count, whichever binds first. A repository backs at most two stacks per
+ *  Context (common dir + a linked worktree's own), but a long-running
+ *  process cycling through MANY worktrees over its lifetime would otherwise
+ *  retain a fully-loaded stack per distinct `reftableDir` it ever visited —
+ *  nothing prunes an entry when its worktree is removed. Comfortably above
+ *  any realistic per-call working set (a handful of concurrently-active
+ *  worktrees), so eviction only ever bites the long tail. */
+const MAX_CACHED_STACK_BYTES = 256 * 1024 * 1024;
+const MAX_CACHED_STACKS = 64;
+
 /**
  * Per-repository, per-stack-directory memo — a repository may back two
  * independent stacks (common dir + a linked worktree's own). Keyed by
@@ -70,9 +83,30 @@ interface CachedStack {
  * a stable, per-repository identity anchor already threaded everywhere a
  * `Context` goes, never a global path-keyed cache (which would alias
  * independent repositories that happen to share a path string, e.g. two
- * `createMemoryContext()` instances in the same test process).
+ * `createMemoryContext()` instances in the same test process). The INNER
+ * cache is itself bounded (see {@link MAX_CACHED_STACK_BYTES}), so retention
+ * tracks recent use rather than growing for the repository's whole
+ * lifetime.
  */
-const stackCache = new WeakMap<Context['deltaCache'], Map<string, CachedStack>>();
+const stackCache = new WeakMap<Context['deltaCache'], LruCache<CachedStack>>();
+
+/** A stack's retained footprint: every table's own on-disk bytes plus its
+ *  log blocks' INFLATED bytes (never smaller, sometimes larger, than their
+ *  compressed on-disk extent) — the two buffers `LoadedReftable` actually
+ *  keeps resident. Floored at 1: `LruCache.set` requires a positive
+ *  `byteSize`, and a genuinely empty (zero-table) stack is still worth
+ *  caching — it's the `mtimeMs`+`size` re-`stat` this memo exists to skip,
+ *  not a meaningful amount of memory either way. */
+function stackByteSize(stack: ReftableStack): number {
+  let total = 0;
+  for (const table of stack.tables) {
+    total += table._bytes.length;
+    for (const block of table.logBlocks) {
+      total += block.length;
+    }
+  }
+  return Math.max(1, total);
+}
 
 function isFileNotFound(err: unknown): boolean {
   return err instanceof TsgitError && err.data.code === 'FILE_NOT_FOUND';
@@ -198,10 +232,10 @@ async function openTables(ctx: Context, reftableDir: string): Promise<readonly L
   );
 }
 
-function scopedCache(ctx: Context): Map<string, CachedStack> {
+function scopedCache(ctx: Context): LruCache<CachedStack> {
   let scoped = stackCache.get(ctx.deltaCache);
   if (scoped === undefined) {
-    scoped = new Map();
+    scoped = createLruCache<CachedStack>(MAX_CACHED_STACK_BYTES, MAX_CACHED_STACKS);
     stackCache.set(ctx.deltaCache, scoped);
   }
   return scoped;
@@ -241,6 +275,6 @@ export async function loadReftableStack(ctx: Context, reftableDir: string): Prom
   }
   const tables = await openTables(ctx, reftableDir);
   const stack = createReftableStack(tables);
-  cache.set(reftableDir, { stack, mtimeKey });
+  cache.set(reftableDir, { stack, mtimeKey }, stackByteSize(stack));
   return stack;
 }

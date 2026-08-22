@@ -411,6 +411,44 @@ describe('load-reftable-stack', () => {
     });
   });
 
+  describe('Given more distinct reftableDirs visited than the stack memo retains', () => {
+    describe('When the least-recently-used one is revisited', () => {
+      it('Then it reloads from disk rather than staying permanently cached', async () => {
+        // Arrange — one Context (one `deltaCache` identity) visiting more
+        // distinct stack directories than the memo's entry cap, the shape a
+        // long-running process cycling through many worktrees over its
+        // lifetime produces. Before this fix nothing ever evicted an entry,
+        // so every distinct `reftableDir` ever visited stayed cached for
+        // the process's whole lifetime.
+        const ctx = createMemoryContext();
+        const dirCount = 65;
+        const dirs = Array.from(
+          { length: dirCount },
+          (_unused, i) => `${ctx.layout.gitDir}/wt${i}/reftable`,
+        );
+        for (const [i, dir] of dirs.entries()) {
+          const table = buildSimpleTable({ refName: `refs/heads/b${i}`, id: oid(i % 256) });
+          await writeReftableFiles(ctx, dir, [{ name: 't.ref', bytes: table }]);
+        }
+        for (const dir of dirs) {
+          await loadReftableStack(ctx, dir);
+        }
+        const leastRecentlyUsed = dirs[0]!;
+        const readSpy = vi.spyOn(ctx.fs, 'readUtf8');
+        const sut = loadReftableStack;
+
+        // Act
+        await sut(ctx, leastRecentlyUsed);
+
+        // Assert — a cache HIT never re-reads `tables.list`'s body for an
+        // unchanged mtime+size key; only an evicted-then-reloaded entry does.
+        expect(
+          readSpy.mock.calls.some(([path]) => path === `${leastRecentlyUsed}/tables.list`),
+        ).toBe(true);
+      });
+    });
+  });
+
   describe('Given tables.list is absent but the reftable directory otherwise exists', () => {
     describe('When the stack is loaded', () => {
       it('Then it degrades to an empty stack', async () => {
