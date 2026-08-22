@@ -130,19 +130,36 @@ export function parseTablesList(text: string): readonly string[] {
   return lines;
 }
 
+/**
+ * The per-table size ceiling, enforced universally: `stat`s `path` before
+ * ever reading it, so an oversized `.ref` is refused by its declared size
+ * alone — never slurped whole into memory first. The one gate every reftable
+ * table read goes through, not just this module's own load path: exported
+ * for `reftable-transaction.ts`'s `readFreshStack` and `mergeSegment`, and
+ * `reftable-ref-store.ts`'s `verifyOneTable`, which used to call
+ * `ctx.fs.read` directly and so had no ceiling at all. Every failure —
+ * including `FILE_NOT_FOUND` — propagates unchanged; a caller that wants
+ * "missing is a legitimate signal" builds that on top (see
+ * {@link readTableBytes} below).
+ */
+export async function readSizeCheckedTableBytes(ctx: Context, path: string): Promise<Uint8Array> {
+  const stat = await ctx.fs.stat(path);
+  if (stat.size > MAX_TABLE_FILE_BYTES) {
+    throw invalidReftable(
+      'tables-list',
+      `table ${path} is ${stat.size} bytes, exceeding the ${MAX_TABLE_FILE_BYTES}-byte limit`,
+    );
+  }
+  return ctx.fs.read(path);
+}
+
 /** `undefined` on a `FILE_NOT_FOUND` miss — every other failure propagates.
- *  `stat`s before `read`ing so an oversized table is refused by its size
- *  alone, never fully read into memory first. */
+ *  Built on {@link readSizeCheckedTableBytes}, this module's own load-path
+ *  convenience: a missing table mid-load is worth one retry, never an
+ *  immediate refusal. */
 async function readTableBytes(ctx: Context, path: string): Promise<Uint8Array | undefined> {
   try {
-    const stat = await ctx.fs.stat(path);
-    if (stat.size > MAX_TABLE_FILE_BYTES) {
-      throw invalidReftable(
-        'tables-list',
-        `table ${path} is ${stat.size} bytes, exceeding the ${MAX_TABLE_FILE_BYTES}-byte limit`,
-      );
-    }
-    return await ctx.fs.read(path);
+    return await readSizeCheckedTableBytes(ctx, path);
   } catch (err) {
     if (isFileNotFound(err)) return undefined;
     throw err;

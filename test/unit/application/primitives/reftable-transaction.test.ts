@@ -973,6 +973,89 @@ describe('reftable-transaction', () => {
     });
   });
 
+  describe('Given an existing table whose stat-reported size exceeds the per-table ceiling', () => {
+    describe('When a transaction reads the fresh stack before committing', () => {
+      it('Then it refuses with tables-list instead of reading the oversized table into memory', async () => {
+        // Arrange — `readFreshStack` used to call `ctx.fs.read` directly,
+        // with no size gate at all. Only `stat`'s REPORTED size is inflated
+        // here, so this never actually allocates a 64MB+ buffer.
+        const ctx = withReftableStorage(createMemoryContext());
+        const dir = commonReftableDir(ctx);
+        const oldBytes = await buildFixtureTable(
+          ctx,
+          [liveRef('refs/heads/old', 1, 1)],
+          [],
+          1n,
+          1n,
+        );
+        await writeReftableFiles(ctx, dir, [{ name: 'old.ref', bytes: oldBytes }]);
+        const oversizedPath = `${dir}/old.ref`;
+        const originalStat = ctx.fs.stat.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'stat').mockImplementation(async (path: string) => {
+          const stat = await originalStat(path);
+          return path === oversizedPath ? { ...stat, size: 64 * 1024 * 1024 + 1 } : stat;
+        });
+
+        // Act
+        let caught: unknown;
+        try {
+          await applyReftableUpdates(ctx, [
+            { kind: 'set', name: ref('refs/heads/newRef'), id: oid(2) },
+          ]);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        if (!(caught instanceof TsgitError)) {
+          expect.fail(`expected INVALID_REFTABLE, got ${String(caught)}`);
+        }
+        expect(caught.data.code).toBe('INVALID_REFTABLE');
+        expect((caught.data as { check: string }).check).toBe('tables-list');
+      });
+    });
+  });
+
+  describe('Given two lockable tables where the OLDER one’s stat-reported size exceeds the per-table ceiling', () => {
+    describe('When packRefs compacts the whole stack', () => {
+      it('Then it refuses with tables-list instead of merging the oversized table into memory', async () => {
+        // Arrange — `mergeSegment` used to call `ctx.fs.read` directly too;
+        // `packReftableStack` forces the FULL segment (no geometric
+        // planning, so no `probeStackSizes` call to confound with this
+        // mocked size), reaching `mergeSegment` directly.
+        const ctx = withReftableStorage(createMemoryContext());
+        const dir = commonReftableDir(ctx);
+        const oldBytes = await buildFixtureTable(ctx, [liveRef('refs/heads/a', 1, 1)], [], 1n, 1n);
+        const newBytes = await buildFixtureTable(ctx, [liveRef('refs/heads/b', 2, 2)], [], 2n, 2n);
+        await writeReftableFiles(ctx, dir, [
+          { name: 'a.ref', bytes: oldBytes },
+          { name: 'b.ref', bytes: newBytes },
+        ]);
+        const oversizedPath = `${dir}/a.ref`;
+        const originalStat = ctx.fs.stat.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'stat').mockImplementation(async (path: string) => {
+          const stat = await originalStat(path);
+          return path === oversizedPath ? { ...stat, size: 64 * 1024 * 1024 + 1 } : stat;
+        });
+
+        // Act
+        let caught: unknown;
+        try {
+          await packReftableStack(ctx, ctx.layout.gitDir);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        if (!(caught instanceof TsgitError)) {
+          expect.fail(`expected INVALID_REFTABLE, got ${String(caught)}`);
+        }
+        expect(caught.data.code).toBe('INVALID_REFTABLE');
+        expect((caught.data as { check: string }).check).toBe('tables-list');
+      });
+    });
+  });
+
   describe('Given an all-tombstone segment starting at table 0', () => {
     describe('When a transaction commits', () => {
       it('Then an empty merge result is omitted from tables.list', async () => {

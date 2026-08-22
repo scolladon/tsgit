@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { createReftableRefStore } from '../../../../src/application/primitives/reftable-ref-store.js';
 import { ObjectId, RefName } from '../../../../src/domain/objects/index.js';
@@ -620,6 +620,32 @@ describe('reftable-ref-store', () => {
         // Assert
         expect(findings).toEqual([
           { table: 'corrupt.ref', msgId: 'badReftableTable', check: 'block-bounds' },
+        ]);
+      });
+    });
+
+    describe('When verifyIntegrity runs over a stack whose table stat-reports past the per-table size ceiling', () => {
+      it('Then it returns a tables-list finding instead of reading the oversized table into memory', async () => {
+        // Arrange — `verifyOneTable` used to call `ctx.fs.read` directly,
+        // with no size gate at all. Only `stat`'s REPORTED size is inflated
+        // here, so this never actually allocates a 64MB+ buffer.
+        const ctx = withReftableStorage(createMemoryContext());
+        const dir = commonReftableDir(ctx);
+        await seedTwoTableStack(ctx, dir);
+        const oversizedPath = `${dir}/table1.ref`;
+        const originalStat = ctx.fs.stat.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'stat').mockImplementation(async (path: string) => {
+          const stat = await originalStat(path);
+          return path === oversizedPath ? { ...stat, size: 64 * 1024 * 1024 + 1 } : stat;
+        });
+        const sut = createReftableRefStore(ctx);
+
+        // Act
+        const findings = await sut.verifyIntegrity();
+
+        // Assert
+        expect(findings).toEqual([
+          { table: 'table1.ref', msgId: 'badReftableTable', check: 'tables-list' },
         ]);
       });
     });

@@ -16,7 +16,11 @@ import {
 } from '../../domain/refs/index.js';
 import type { Context } from '../../ports/context.js';
 import { isDegradableReftableFault } from './internal/reftable-source.js';
-import { loadReftableStack, parseTablesList } from './load-reftable-stack.js';
+import {
+  loadReftableStack,
+  parseTablesList,
+  readSizeCheckedTableBytes,
+} from './load-reftable-stack.js';
 import { commonGitDir, perWorktreeRefDir, reftableDir } from './path-layout.js';
 import type {
   PackRefsOutcome,
@@ -60,9 +64,11 @@ async function verifyOneTable(
 ): Promise<RefIntegrityFinding | undefined> {
   let bytes: Uint8Array;
   try {
-    bytes = await ctx.fs.read(`${dir}/${name}`);
+    bytes = await readSizeCheckedTableBytes(ctx, `${dir}/${name}`);
   } catch (err) {
     if (isDegradableReftableFault(err)) return tableFinding(name, 'tables-list');
+    const check = invalidReftableCheck(err);
+    if (check !== undefined) return tableFinding(name, check);
     throw err;
   }
   try {

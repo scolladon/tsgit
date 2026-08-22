@@ -84,7 +84,11 @@ import type { Context } from '../../ports/context.js';
 import { readConfig } from './config-read.js';
 import { errorDataCode } from './internal/error-data-code.js';
 import { isDegradableReftableFault } from './internal/reftable-source.js';
-import { invalidateReftableStack, parseTablesList } from './load-reftable-stack.js';
+import {
+  invalidateReftableStack,
+  parseTablesList,
+  readSizeCheckedTableBytes,
+} from './load-reftable-stack.js';
 import {
   commonGitDir,
   perWorktreeRefDir,
@@ -205,7 +209,7 @@ async function readFreshStack(ctx: Context, gitDir: string): Promise<FreshStackR
   const dir = reftableDir(gitDir);
   const tables = [];
   for (const name of existingNames) {
-    const bytes = await ctx.fs.read(`${dir}/${name}`);
+    const bytes = await readSizeCheckedTableBytes(ctx, `${dir}/${name}`);
     tables.push(await loadReftable(bytes, ctx.compressor.streamInflate));
   }
   return { stack: createReftableStack(tables), existingNames };
@@ -854,7 +858,10 @@ async function mergeSegment(
   const tables: LoadedReftable[] = [];
   for (const name of locked.tableNames) {
     tables.push(
-      await loadReftable(await ctx.fs.read(`${dir}/${name}`), ctx.compressor.streamInflate),
+      await loadReftable(
+        await readSizeCheckedTableBytes(ctx, `${dir}/${name}`),
+        ctx.compressor.streamInflate,
+      ),
     );
   }
   const refs = sortRefRecords(mergeRefRecords(tables, locked.startsAtStackZero));
