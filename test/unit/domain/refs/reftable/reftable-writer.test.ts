@@ -19,6 +19,7 @@ import {
 } from '../../../../../src/domain/refs/reftable/reftable-format.js';
 import {
   iterateReftableLogs,
+  LOG_BLOCK_HEADER_LENGTH,
   loadReftable,
   type ReftableLogRecord,
 } from '../../../../../src/domain/refs/reftable/reftable-log.js';
@@ -674,6 +675,40 @@ describe('Given a log record whose message has an embedded newline', () => {
       ).rejects.toMatchObject({
         data: { code: 'INVALID_REFTABLE', check: 'record-overrun' },
       });
+    });
+  });
+});
+
+describe('Given a single deletion log record for update_index 1', () => {
+  describe('When the raw (un-inflated, since identityDeflate is a pass-through) key bytes are inspected directly', () => {
+    it('Then the trailing 8 bytes equal 2^64 - 1 - update_index, not merely REVERSE_INT64_MAX applied twice', async () => {
+      // Arrange — `REVERSE_INT64_MAX` is imported by the production writer,
+      // the production reader AND the test fixture writer alike: a wrong
+      // base would cancel out in any write-then-read-back assertion (both
+      // sides use the same constant), shifting every key uniformly while
+      // preserving relative order. The expected value below is a fresh
+      // literal computed independently of that import, so a wrong constant
+      // is only catchable by inspecting the on-disk bytes directly.
+      const logs: ReftableLogRecord[] = [
+        { name: RefName.from('HEAD'), updateIndex: 1n, entry: { kind: 'deletion' } },
+      ];
+
+      // Act — `identityDeflate` makes the log block's "compressed" bytes
+      // identical to its plaintext payload, so no independent inflate step
+      // is even needed to reach the raw key bytes.
+      const bytes = await serializeReftable([], logs, baseOptions(), identityDeflate);
+      const { footer } = parseReftable(bytes);
+      const payloadStart = footer.logPosition + LOG_BLOCK_HEADER_LENGTH;
+      // payload: varint(prefix_length=0) | varint(packed) | "HEAD" | NUL |
+      // key-tail. Both varints are one byte: prefix_length is 0, and packed
+      // = (suffix length 13 << 3) | log_type 0 = 104, well under the
+      // 128 continuation threshold — so the key's 8-byte tail starts at a
+      // fixed offset: 2 varint bytes, 4 name bytes, 1 NUL separator.
+      const keyTailOffset = payloadStart + 2 + 4 + 1;
+      const view = new DataView(bytes.buffer, bytes.byteOffset + keyTailOffset, 8);
+
+      // Assert
+      expect(view.getBigUint64(0)).toBe(0xffff_ffff_ffff_fffen);
     });
   });
 });

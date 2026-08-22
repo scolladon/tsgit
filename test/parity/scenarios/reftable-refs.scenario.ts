@@ -26,6 +26,14 @@
  * content is instead compared semantically, via `reflogSubjects` (the
  * decoded message text, not the compressed block).
  *
+ * `nonLogPrefixMatches` alone only proves an adapter's write round-trips
+ * against ITSELF — three adapters that each wrote different (but internally
+ * self-consistent) bytes would all report `true`, and the shared `expected`
+ * golden this suite diffs every adapter's result against has no way to
+ * catch that. `nonLogPrefixHex` closes the gap: the SAME prefix bytes, as a
+ * literal hex string every adapter's actual result is diffed against, so a
+ * genuine cross-adapter divergence has a fixed value to diverge from.
+ *
  * Surfaces closed:
  *   primitives: resolveRef, updateRef
  */
@@ -38,7 +46,7 @@ import {
 } from '../../../src/application/primitives/path-layout.ts';
 import { resolveRef } from '../../../src/application/primitives/resolve-ref.ts';
 import { updateRef } from '../../../src/application/primitives/update-ref.ts';
-import { bytesEqual } from '../../../src/domain/objects/encoding.ts';
+import { bytesEqual, bytesToHex } from '../../../src/domain/objects/encoding.ts';
 import { ObjectId, RefName } from '../../../src/domain/objects/index.ts';
 import {
   buildReftableRefSection,
@@ -61,12 +69,20 @@ const MAIN_REF = RefName.from('refs/heads/main');
 const OLD_OID = ObjectId.from('a'.repeat(40));
 const NEW_OID = ObjectId.from('b'.repeat(40));
 const REFLOG_MESSAGE = 'reftable-refs scenario update';
+/** The newest table's uncompressed ref-section prefix, measured once
+ *  against the memory adapter's own output for this exact scenario — a
+ *  literal, not re-derived from the same rebuild the scenario itself
+ *  computes, so a genuine cross-adapter divergence has something fixed to
+ *  diverge FROM. */
+const NON_LOG_PREFIX_HEX =
+  '524546540100100000000000000000010000000000000002720000470079726566732f68656164732f6d61696e01bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb00001c0001';
 
 interface ReftableRefsScenarioResult {
   readonly oidBeforeWrite: string;
   readonly oidAfterWrite: string;
   readonly reflogSubjects: ReadonlyArray<string>;
   readonly nonLogPrefixMatches: boolean;
+  readonly nonLogPrefixHex: string;
   readonly hasCompactionSuggestion: boolean;
 }
 
@@ -109,6 +125,11 @@ export const reftableRefsScenario: Scenario<ReftableRefsScenarioResult> = {
     oidAfterWrite: NEW_OID,
     reflogSubjects: [REFLOG_MESSAGE],
     nonLogPrefixMatches: true,
+    // Measured against the memory adapter's own output for this exact
+    // scenario: cross-adapter divergence in the (uncompressed) ref-section
+    // bytes fails here, unlike `nonLogPrefixMatches`, which only proves an
+    // adapter's write round-trips against ITSELF.
+    nonLogPrefixHex: NON_LOG_PREFIX_HEX,
     hasCompactionSuggestion: false,
   },
   run: async (repo) => {
@@ -165,6 +186,7 @@ export const reftableRefsScenario: Scenario<ReftableRefsScenarioResult> = {
       oidAfterWrite,
       reflogSubjects,
       nonLogPrefixMatches: bytesEqual(rebuiltPrefix, actualPrefix),
+      nonLogPrefixHex: bytesToHex(actualPrefix),
       hasCompactionSuggestion: segment.start !== segment.end,
     };
   },

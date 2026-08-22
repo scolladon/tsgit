@@ -39,7 +39,6 @@ import {
   loadReftable,
   type ReftableCheck,
   serializeReftable,
-  suggestCompactionSegment,
 } from '../../src/domain/refs/index.js';
 import type { ReftableWriteOptions } from '../../src/domain/refs/reftable/reftable-writer.js';
 import { DEFAULT_RESTART_INTERVAL } from '../../src/domain/refs/reftable/reftable-writer.js';
@@ -1164,14 +1163,20 @@ describe.skipIf(!GIT_AVAILABLE)('reftable-ref-storage interop', () => {
   /** The stack's own compaction invariant, over the CURRENT on-disk state:
    *  never the exact table count (deflate-size-dependent — see the
    *  compaction module's own doc comment for why), only that the stack
-   *  satisfies git's own compaction rule. */
+   *  satisfies git's own compaction rule. Restates that rule directly
+   *  (adjacent pair check) rather than calling `suggestCompactionSegment` —
+   *  the exact function `planCompaction` uses to decide what to merge — so
+   *  this stays an INDEPENDENT oracle, not a tautology that a bug in that
+   *  function's own decision would pass right along to. */
   const isStackGeometric = async (ctx: Context, reftableDirPath: string): Promise<boolean> => {
     const stack = await loadReftableStack(ctx, reftableDirPath);
     const sizes = stack.tables.map((table) =>
       compactionMetric(table._bytes.length, table.header.version),
     );
-    const segment = suggestCompactionSegment(sizes, DEFAULT_GEOMETRIC_FACTOR);
-    return segment.start === segment.end;
+    for (let i = 1; i < sizes.length; i += 1) {
+      if (sizes[i - 1]! < sizes[i]! * DEFAULT_GEOMETRIC_FACTOR) return false;
+    }
+    return true;
   };
 
   describe('Given a fresh git-made reftable repository with one commit', () => {
