@@ -208,7 +208,7 @@ describe('branch', () => {
         const movedLog = await readReflog(ctx, 'refs/heads/trunk' as RefName);
         expect(movedLog).toHaveLength(2);
         expect(movedLog[0]).toEqual(before[0]);
-        expect(movedLog[1]?.message).toBe('branch: renamed refs/heads/main to refs/heads/trunk');
+        expect(movedLog[1]?.message).toBe('Branch: renamed refs/heads/main to refs/heads/trunk');
         expect(await reflogExists(ctx, 'refs/heads/main' as RefName)).toBe(false);
       });
     });
@@ -260,7 +260,7 @@ describe('branch', () => {
         const movedLog = await readReflog(ctx, 'refs/heads/trunk' as RefName);
         expect(movedLog).toHaveLength(2);
         expect(movedLog[0]).toEqual(before[0]);
-        expect(movedLog[1]?.message).toBe('branch: renamed refs/heads/main to refs/heads/trunk');
+        expect(movedLog[1]?.message).toBe('Branch: renamed refs/heads/main to refs/heads/trunk');
         expect(await readReflog(ctx, 'refs/heads/main' as RefName)).toEqual([]);
         expect(await listReflogs(ctx)).not.toContain('refs/heads/main');
       });
