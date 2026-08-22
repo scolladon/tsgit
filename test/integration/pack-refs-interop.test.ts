@@ -25,7 +25,8 @@ import { commit } from '../../src/application/commands/commit.js';
 import { packRefs } from '../../src/application/commands/pack-refs.js';
 import { loadReftableStack } from '../../src/application/primitives/load-reftable-stack.js';
 import { reftableDir } from '../../src/application/primitives/path-layout.js';
-import type { AuthorIdentity } from '../../src/domain/objects/index.js';
+import { writeObject } from '../../src/application/primitives/write-object.js';
+import type { AuthorIdentity, ObjectId } from '../../src/domain/objects/index.js';
 import {
   compactionMetric,
   DEFAULT_GEOMETRIC_FACTOR,
@@ -189,6 +190,53 @@ describe.skipIf(!GIT_AVAILABLE)('packRefs interop — files backend', () => {
         expect(oursHead).toBe('ref: refs/heads/main\n');
         const peerPacked = await readFile(path.join(pair.peer, '.git/packed-refs'), 'utf8');
         expect(peerPacked).not.toContain('HEAD');
+      });
+    });
+  });
+
+  describe('Given an annotated tag pointing at the seeded commit, built identically on both sides', () => {
+    describe('When git pack-refs --all runs on the peer and packRefs runs on ours', () => {
+      it('Then the packed-refs bytes match, including the peeled ^ line — proving peelToNonTag against real git', async () => {
+        // Arrange — `tagCreate` resolves its tagger identity via
+        // `resolveCurrentIdentity` (real wall-clock `Date.now()`, no
+        // override), so it can never reproduce a pinned SHA. `writeObject`
+        // bypasses it, given the SAME tagger identity `commitEnv` pins for
+        // git's own `GIT_COMMITTER_*` — the two annotated tag objects are
+        // then byte-identical by construction, not merely by luck.
+        runGit(['-C', pair.peer, 'commit', '-q', '--allow-empty', '-m', 'seed'], {
+          env: commitEnv,
+        });
+        const commitId = git(pair.peer, 'rev-parse', 'HEAD').trim();
+        runGit(['-C', pair.peer, 'tag', '-a', 'v1', '-m', 'release'], { env: commitEnv });
+        const peerTagId = git(pair.peer, 'rev-parse', 'refs/tags/v1').trim();
+
+        const ours = createNodeContext({ workDir: pair.ours });
+        await commit(ours, { message: 'seed', author: AUTHOR });
+        const oursTagId = await writeObject(ours, {
+          type: 'tag',
+          id: '' as ObjectId,
+          data: {
+            object: commitId as ObjectId,
+            objectType: 'commit',
+            tagName: 'v1',
+            tagger: AUTHOR,
+            message: 'release\n',
+            extraHeaders: [],
+          },
+        });
+        expect(oursTagId).toBe(peerTagId);
+        await ours.fs.writeUtf8(`${ours.layout.gitDir}/refs/tags/v1`, `${oursTagId}\n`);
+
+        // Act
+        runGit(['-C', pair.peer, 'pack-refs', '--all']);
+        const result = await packRefs(ours);
+
+        // Assert
+        expect(result.packedRefCount).toBeGreaterThan(0);
+        const peerPacked = await readFile(path.join(pair.peer, '.git/packed-refs'), 'utf8');
+        const oursPacked = await readFile(path.join(pair.ours, '.git/packed-refs'), 'utf8');
+        expect(oursPacked).toBe(peerPacked);
+        expect(peerPacked).toContain(`^${commitId}`);
       });
     });
   });

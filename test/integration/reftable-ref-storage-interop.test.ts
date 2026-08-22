@@ -1459,15 +1459,25 @@ describe.skipIf(!GIT_AVAILABLE)('reftable-ref-storage interop', () => {
         const headPath = `${dir}/.git/HEAD`;
         chmodSync(headPath, 0o000);
 
-        // Act + Assert
+        // Act + Assert — measured (git 2.55.0's own file-mode semantics
+        // play no part here; this is Node's EACCES surfacing through
+        // `mapErrno`): an unreadable HEAD rejects with PERMISSION_DENIED
+        // naming HEAD's own path, never merely "some rejection".
+        let caught: unknown;
         try {
-          await expect(
-            updateRef(ctx, 'refs/heads/main' as RefName, newId as ObjectId, {
-              reflogMessage: 'commit: c2',
-            }),
-          ).rejects.toBeDefined();
+          await updateRef(ctx, 'refs/heads/main' as RefName, newId as ObjectId, {
+            reflogMessage: 'commit: c2',
+          });
+          expect.unreachable();
+        } catch (err) {
+          caught = err;
         } finally {
           chmodSync(headPath, 0o644);
+        }
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('PERMISSION_DENIED');
+        if (data.code === 'PERMISSION_DENIED') {
+          expect(data.path).toBe(headPath);
         }
 
         // Assert — nothing committed despite the thrown coupling-read failure
@@ -1508,12 +1518,22 @@ describe.skipIf(!GIT_AVAILABLE)('reftable-ref-storage interop', () => {
         corrupted.set([0x58, 0x58, 0x58, 0x58], 0); // 'XXXX' — invalid magic
         writeFileSync(tablePath, corrupted);
 
-        // Act
-        await expect(
-          updateRef(worktreeCtx, 'refs/heads/main' as RefName, newId as ObjectId, {
+        // Act — measured: the corrupted magic surfaces as INVALID_REFTABLE
+        // check 'magic', never merely "some rejection".
+        let caught: unknown;
+        try {
+          await updateRef(worktreeCtx, 'refs/heads/main' as RefName, newId as ObjectId, {
             reflogMessage: 'commit: c2',
-          }),
-        ).rejects.toBeDefined();
+          });
+          expect.unreachable();
+        } catch (err) {
+          caught = err;
+        }
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('INVALID_REFTABLE');
+        if (data.code === 'INVALID_REFTABLE') {
+          expect(data.check).toBe('magic');
+        }
 
         // Assert — the common stack (where refs/heads/main lives) never saw
         // a write attempt at all; the worktree's own stack carries only the
