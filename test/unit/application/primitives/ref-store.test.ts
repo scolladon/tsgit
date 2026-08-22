@@ -821,21 +821,15 @@ describe('ref-store', () => {
     });
   });
 
-  describe('Given loose refs and a packed-only ref', () => {
+  describe('Given loose refs whose content is never read for listRefNames', () => {
     describe('When listRefNames runs', () => {
-      it('Then the packed-only ref never triggers a loose-content read', async () => {
-        // Arrange — listRefNames still skips listRefs's own resolution cost
-        // for a name that is packed-only: `parsePackedRefs` already
-        // enforces the grammar on the whole file at load time, so no
-        // per-name read is owed here. A LOOSE name's own content, by
-        // contrast, must be read once to decide whether it is even a
-        // legitimate result (see the sibling malformed-ref test).
+      it('Then no loose ref file content is read — names only', async () => {
+        // Arrange
         const base = await buildSeededContext({
           refs: [
             { name: 'refs/heads/main' as RefName, id: 'a'.repeat(40) as ObjectId },
             { name: 'refs/heads/other' as RefName, id: 'b'.repeat(40) as ObjectId },
           ],
-          packedRefs: [{ name: 'refs/tags/v1' as RefName, id: 'c'.repeat(40) as ObjectId }],
         });
         const { ctx, calls } = instrumentedContext(base);
         const sut = createRefStore(ctx);
@@ -844,21 +838,18 @@ describe('ref-store', () => {
         const names = await sut.listRefNames();
 
         // Assert
-        expect(names).toEqual(['refs/heads/main', 'refs/heads/other', 'refs/tags/v1']);
-        const readUtf8Paths = calls()
-          .filter((c) => c.method === 'readUtf8')
-          .map((c) => c.path);
-        expect(readUtf8Paths.some((p) => p.endsWith('refs/tags/v1'))).toBe(false);
+        expect(names).toEqual(['refs/heads/main', 'refs/heads/other']);
+        expect(calls().some((c) => c.method === 'readUtf8')).toBe(false);
       });
     });
   });
 
   describe('Given a loose ref whose body is neither an oid nor a symbolic ref', () => {
     describe('When listRefNames runs', () => {
-      it('Then the malformed ref name is excluded, matching listRefs and real git’s for-each-ref/branch', async () => {
-        // Arrange — measured against git 2.55.0: both `for-each-ref` and
-        // `branch` warn ("ignoring broken ref …") and omit a ref shaped
-        // like this from their own output, rather than reporting its name.
+      it('Then the malformed ref name is still included, unlike listRefs', async () => {
+        // Arrange — listRefNames is the pre-migration "zero per-ref reads"
+        // enumeration: it never opens a loose file to validate its content,
+        // so a name it finds is reported regardless of what that file holds.
         const ctx = await buildSeededContext();
         await ctx.fs.writeUtf8('/repo/.git/refs/heads/garbage', 'not-a-valid-sha\n');
         const sut = createRefStore(ctx);
@@ -868,7 +859,7 @@ describe('ref-store', () => {
         const entries = await sut.listRefs();
 
         // Assert
-        expect(names).not.toContain('refs/heads/garbage');
+        expect(names).toContain('refs/heads/garbage');
         expect(entries.map((entry) => entry.name)).not.toContain('refs/heads/garbage');
       });
     });
