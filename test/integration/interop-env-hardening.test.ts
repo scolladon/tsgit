@@ -82,14 +82,44 @@ describe.skipIf(!GIT_AVAILABLE)('interop-env-hardening', () => {
     });
 
     describe('When inspecting the spawn env GIT_* keys', () => {
-      it('Then only the two deliberate GIT_* keys survive and the ceiling guard is os.tmpdir()', () => {
+      it('Then only the deliberate GIT_* keys survive and the ceiling guard is os.tmpdir()', () => {
         // Arrange & Act
         const env = runGitEnv();
 
         // Assert
         const gitKeys = Object.keys(env).filter((k) => k.startsWith('GIT_'));
-        expect(gitKeys.sort()).toEqual(['GIT_CEILING_DIRECTORIES', 'GIT_CONFIG_NOSYSTEM']);
+        expect(gitKeys.sort()).toEqual([
+          'GIT_CEILING_DIRECTORIES',
+          'GIT_CONFIG_COUNT',
+          'GIT_CONFIG_KEY_0',
+          'GIT_CONFIG_KEY_1',
+          'GIT_CONFIG_KEY_2',
+          'GIT_CONFIG_NOSYSTEM',
+          'GIT_CONFIG_VALUE_0',
+          'GIT_CONFIG_VALUE_1',
+          'GIT_CONFIG_VALUE_2',
+        ]);
         expect(env.GIT_CEILING_DIRECTORIES).toBe(os.tmpdir());
+      });
+
+      it('Then the injected config triple is exactly the auto-maintenance switches, off', () => {
+        // Arrange & Act
+        const env = runGitEnv();
+        const injected = Object.fromEntries(
+          Array.from({ length: Number(env.GIT_CONFIG_COUNT) }, (_unused, index) => [
+            env[`GIT_CONFIG_KEY_${index}`] as string,
+            env[`GIT_CONFIG_VALUE_${index}`] as string,
+          ]),
+        );
+
+        // Assert — pinned by MEANING, not just by key count: a future edit that
+        // renumbers the triple or flips a value to `true` reintroduces the
+        // detached `gc --auto` these exist to suppress.
+        expect(injected).toEqual({
+          'gc.auto': '0',
+          'gc.autoDetach': 'false',
+          'maintenance.auto': 'false',
+        });
       });
     });
   });
