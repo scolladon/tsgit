@@ -8,10 +8,16 @@ import {
   decodeObjRecord,
   iterateReftableRefs,
   lookupReftableRef,
+  type ReftableRefRecord,
   refRecordDecoder,
   walkBlockRecords,
 } from '../../../../../src/domain/refs/reftable/reftable-block.js';
 import { parseReftable } from '../../../../../src/domain/refs/reftable/reftable-format.js';
+import {
+  DEFAULT_RESTART_INTERVAL,
+  type ReftableWriteOptions,
+  serializeReftable,
+} from '../../../../../src/domain/refs/reftable/reftable-writer.js';
 import type { RefRecordSpec } from './arbitraries.js';
 import {
   buildIndexBlock,
@@ -26,6 +32,36 @@ import {
 
 function oid(fill: number): Uint8Array {
   return new Uint8Array(20).fill(fill);
+}
+
+const identityDeflate = async (data: Uint8Array): Promise<Uint8Array> => data;
+
+/** `n` sequentially-named direct refs (`refs/heads/b0000`, `b0001`, …) — the
+ *  same shape `reftable-writer.test.ts`'s own `makeRefs` uses to cross the
+ *  writer's measured block-count thresholds. */
+function makeSequentialRefs(n: number): ReftableRefRecord[] {
+  return Array.from({ length: n }, (_, i) => ({
+    name: RefName.from(`refs/heads/b${i.toString().padStart(4, '0')}`),
+    updateIndex: 0n,
+    value: { kind: 'direct' as const, id: ObjectId.fromRaw(oid(i % 256)) },
+  }));
+}
+
+/** `blockSize: 200` with `n` sequential refs, run through the real writer —
+ *  measured at 7-13 refs for exactly 2 ref blocks and 14-20 for exactly 3,
+ *  both comfortably under the 21-ref threshold where a ref index appears
+ *  (`reftable-writer.test.ts`'s own 20-vs-21 threshold pair). */
+async function buildNoIndexRefSection(refCount: number) {
+  const options: ReftableWriteOptions = {
+    hashId: 'sha1',
+    blockSize: 200,
+    restartInterval: DEFAULT_RESTART_INTERVAL,
+    indexObjects: true,
+    minUpdateIndex: 0n,
+    maxUpdateIndex: 1000n,
+  };
+  const bytes = await serializeReftable(makeSequentialRefs(refCount), [], options, identityDeflate);
+  return parseReftable(bytes);
 }
 
 function expectRefusal(act: () => void, check: ReftableCheck, reasonContains: string): void {
@@ -702,6 +738,60 @@ describe('reftable-block', () => {
 
           // Assert
           expect(result).toBeUndefined();
+        });
+      });
+    });
+  });
+
+  describe('no ref index, multi-block ref sections', () => {
+    describe('Given a real-writer table packing into 2 ref blocks with no ref index', () => {
+      describe('When iterating every ref', () => {
+        it('Then yields every record, including those in block 2', async () => {
+          // Arrange
+          const table = await buildNoIndexRefSection(10);
+          const sut = iterateReftableRefs;
+
+          // Act
+          const names = Array.from(sut(table)).map((r) => r.name);
+
+          // Assert
+          expect(table.footer.refIndexPosition).toBe(0);
+          expect(names).toStrictEqual(makeSequentialRefs(10).map((r) => r.name));
+        });
+      });
+
+      describe('When looking up a ref that lives in block 2', () => {
+        it('Then finds it rather than reading as absent', async () => {
+          // Arrange
+          const table = await buildNoIndexRefSection(10);
+          const sut = lookupReftableRef;
+
+          // Act
+          const result = sut(table, RefName.from('refs/heads/b0009'));
+
+          // Assert
+          expect(table.footer.refIndexPosition).toBe(0);
+          expect(result?.value).toStrictEqual({
+            kind: 'direct',
+            id: ObjectId.fromRaw(oid(9)),
+          });
+        });
+      });
+    });
+
+    describe('Given a real-writer table packing into 3 ref blocks with no ref index', () => {
+      describe('When iterating every ref', () => {
+        it('Then round-trips every record across all three blocks', async () => {
+          // Arrange
+          const table = await buildNoIndexRefSection(17);
+          const sut = iterateReftableRefs;
+
+          // Act
+          const names = Array.from(sut(table)).map((r) => r.name);
+
+          // Assert
+          expect(table.footer.refIndexPosition).toBe(0);
+          expect(names).toStrictEqual(makeSequentialRefs(17).map((r) => r.name));
         });
       });
     });

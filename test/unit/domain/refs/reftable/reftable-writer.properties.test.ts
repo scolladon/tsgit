@@ -42,30 +42,18 @@ function logSortKey(record: ReftableLogRecord): string {
  * must be unique within one reftable: ref name for refs, `(name,
  * update_index)` for logs — a real writer never receives two live records
  * for the same key in one transaction.
- *
- * `blockSize` folds the generator's 512 draw into 4096: the reader only
- * descends into a second ref block through the ref index, and an index is
- * only emitted at 4+ blocks, so a ref section landing at 2-3 blocks with no
- * index is unreachable past its first block by the existing reader — a
- * pre-existing gap outside this part's scope. `blockSize` 0 is
- * unconditionally single-block by this writer's own overflow guard, and
- * 4096 comfortably holds every record this bounded scenario can generate,
- * so both remaining choices stay inside the reader's covered regime while
- * still exercising the aligned/unaligned split.
  */
 function arbReftableScenario() {
-  return arbWriteOptions()
-    .map((opts) => (opts.blockSize === 512 ? { ...opts, blockSize: 4096 } : opts))
-    .chain((opts) =>
-      fc.record({
-        opts: fc.constant(opts),
-        refs: fc.uniqueArray(arbRefRecord(opts.hashId), { selector: (r) => r.name, maxLength: 8 }),
-        logs: fc.uniqueArray(arbLogRecord(opts.hashId), {
-          selector: (r) => `${r.name}\0${r.updateIndex}`,
-          maxLength: 8,
-        }),
+  return arbWriteOptions().chain((opts) =>
+    fc.record({
+      opts: fc.constant(opts),
+      refs: fc.uniqueArray(arbRefRecord(opts.hashId), { selector: (r) => r.name, maxLength: 8 }),
+      logs: fc.uniqueArray(arbLogRecord(opts.hashId), {
+        selector: (r) => `${r.name}\0${r.updateIndex}`,
+        maxLength: 8,
       }),
-    );
+    }),
+  );
 }
 
 describe('reftable writer properties', () => {

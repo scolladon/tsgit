@@ -22,6 +22,14 @@ import {
   readVarint,
 } from './reftable-format.js';
 
+/** `header.headerLength` → footer byte length — restated narrowly here
+ *  rather than widening `reftable-format.ts`'s surface for one field (same
+ *  precedent as `reftable-log.ts`'s own `FOOTER_LENGTH_BY_HEADER_LENGTH`). */
+const FOOTER_LENGTH_BY_HEADER_LENGTH: ReadonlyMap<24 | 28, 68 | 72> = new Map([
+  [24, 68],
+  [28, 72],
+]);
+
 export const VALUE_TYPE_DELETION = 0x0;
 export const VALUE_TYPE_DIRECT = 0x1;
 export const VALUE_TYPE_PEELED = 0x2;
@@ -393,20 +401,84 @@ function assertBlockType(reftable: Reftable, offset: number, expected: 'r' | 'i'
   }
 }
 
+/** The ref section's exclusive upper bound: the first non-zero footer
+ *  position among the sections that can follow it (ref index, obj, log), or
+ *  the footer's own start when none of them are set — mirrors
+ *  `reftable-log.ts`'s `logSectionEnd`. */
+function refSectionEnd(reftable: Reftable): number {
+  const { refIndexPosition, objPosition, logPosition } = reftable.footer;
+  const followingPositions = [refIndexPosition, objPosition, logPosition].filter((p) => p > 0);
+  if (followingPositions.length > 0) {
+    return Math.min(...followingPositions);
+  }
+  const footerLength = FOOTER_LENGTH_BY_HEADER_LENGTH.get(reftable.header.headerLength)!;
+  return reftable._bytes.length - footerLength;
+}
+
+/** The next ref/index/obj block's start position after one ending at
+ *  `blockEnd`: blocks are zero-padded to the next `header.blockSize`
+ *  boundary when `blockSize > 0`, so the next block begins at the next
+ *  multiple of `blockSize`; an unaligned file (`blockSize === 0`) has no
+ *  fixed stride, so the next block starts exactly at `blockEnd`. */
+function nextBlockStart(header: ReftableHeader, blockEnd: number): number {
+  if (header.blockSize === 0) {
+    return blockEnd;
+  }
+  return Math.ceil(blockEnd / header.blockSize) * header.blockSize;
+}
+
+/**
+ * Every ref-block start position in file order when the table has no ref
+ * index, walked sequentially by each block's own declared length rather than
+ * assumed to be the sole block at `headerLength` — git only emits a ref
+ * index at 4+ ref blocks, so a 2- or 3-block ref section legitimately has no
+ * index and every block past the first must still be visited. Both
+ * `resolveRefBlockPosition` and `refBlockPositions` fold through this so
+ * they cannot drift apart on the assumption again.
+ */
+function* enumerateRefBlocks(reftable: Reftable): Generator<number> {
+  const sectionEnd = refSectionEnd(reftable);
+  let blockStart: number = reftable.header.headerLength;
+  while (blockStart < sectionEnd) {
+    assertBlockType(reftable, blockStart, 'r');
+    yield blockStart;
+    blockStart = nextBlockStart(reftable.header, blockBoundsAt(reftable, blockStart).blockEnd);
+  }
+}
+
+/** Scans every ref block in file order for the first one holding a record
+ *  whose name sorts at or after `target` — the no-index counterpart to
+ *  descending a ref index, since there is no index to say which block a
+ *  name falls in. Each block is still binary-searched via `findInBlock`; a
+ *  block returns a candidate whenever `target` sorts at or before its last
+ *  key, so the first block to answer is always the right one to report
+ *  absence from or hand back to the caller for the equality check. */
+function findRefBlockContaining(reftable: Reftable, target: Uint8Array): number | undefined {
+  const decodeRecord = refRecordDecoder(reftable.header);
+  for (const blockStart of enumerateRefBlocks(reftable)) {
+    const bounds = blockBoundsAt(reftable, blockStart);
+    if (findInBlock(reftable._bytes, bounds, target, decodeRecord) !== undefined) {
+      return blockStart;
+    }
+  }
+  return undefined;
+}
+
 /**
  * Resolves `target`'s candidate ref-block position. `undefined` when the
  * table has no ref section at all (a literally empty table, or a log-only
  * file) — detected from the block type actually present at `headerLength`,
  * never from a filename or extension. When a ref index exists, descends it,
  * recursing while the visited block type is `'i'` (a multi-level index may
- * point at further index blocks before the leaf).
+ * point at further index blocks before the leaf). Without an index, scans
+ * every ref block in sequence via `findRefBlockContaining`.
  */
 function resolveRefBlockPosition(reftable: Reftable, target: Uint8Array): number | undefined {
   if (blockTypeAt(reftable, reftable.header.headerLength) !== 'r') {
     return undefined;
   }
   if (reftable.footer.refIndexPosition === 0) {
-    return reftable.header.headerLength;
+    return findRefBlockContaining(reftable, target);
   }
 
   let indexBlockStart = reftable.footer.refIndexPosition;
@@ -447,7 +519,7 @@ export function lookupReftableRef(table: Reftable, name: RefName): ReftableRefRe
 }
 
 /**
- * Every ref-block position in file order: the sole block at `headerLength`
+ * Every ref-block position in file order: every block in `enumerateRefBlocks`
  * when there is no ref index, or every leaf reached by walking the
  * (possibly multi-level) ref index otherwise. Yields nothing when the table
  * has no ref section.
@@ -457,7 +529,7 @@ function* refBlockPositions(reftable: Reftable): Generator<number> {
     return;
   }
   if (reftable.footer.refIndexPosition === 0) {
-    yield reftable.header.headerLength;
+    yield* enumerateRefBlocks(reftable);
     return;
   }
   yield* collectIndexLeaves(reftable, reftable.footer.refIndexPosition);
