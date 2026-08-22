@@ -20,7 +20,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
-import { branchList } from '../../src/application/commands/branch.js';
+import { branchList, branchRename } from '../../src/application/commands/branch.js';
 import { tagList } from '../../src/application/commands/tag.js';
 import { loadReftableStack } from '../../src/application/primitives/load-reftable-stack.js';
 import { reftableDir } from '../../src/application/primitives/path-layout.js';
@@ -1042,6 +1042,113 @@ describe.skipIf(!GIT_AVAILABLE)('reftable-ref-storage interop', () => {
         const gitRefSectionBytes = table._bytes.subarray(0, table.footer.logPosition);
         expect(rebuiltRefSection).toEqual(gitRefSectionBytes);
         expect([...iterateReftableLogs(reparsed)]).toEqual(logs);
+      });
+    });
+  });
+
+  interface GitReflogRow {
+    readonly oid: string;
+    readonly timestamp: number;
+    readonly tzOffset: string;
+    readonly message: string;
+  }
+
+  const REFLOG_SELECTOR = /@\{(\d+) ([+-]\d{4})\}$/;
+
+  /** `git log -g --date=raw --format='%H<TAB>%gd<TAB>%gs' <ref>`, parsed
+   *  oldest -> newest (git itself lists newest -> oldest, matching
+   *  `git reflog show`) — the FULL oid, never the abbreviated one
+   *  `git reflog show` prints, so an oid comparison needs no truncation. */
+  const reflogRows = (dir: string, ref: string): GitReflogRow[] =>
+    git(dir, 'log', '-g', '--date=raw', '--format=%H\t%gd\t%gs', ref)
+      .split('\n')
+      .filter((line) => line.length > 0)
+      .map((line) => {
+        const [oid, selector, ...rest] = line.split('\t');
+        const match = REFLOG_SELECTOR.exec(selector ?? '');
+        if (match === null) throw new Error(`unparsed reflog selector: ${selector}`);
+        const [, timestamp, tzOffset] = match;
+        return {
+          oid: oid ?? '',
+          timestamp: Number(timestamp),
+          tzOffset: tzOffset ?? '',
+          message: rest.join('\t'),
+        };
+      })
+      .reverse();
+
+  describe('Given a git-made reftable branch with a three-timezone reflog history, checked out as HEAD', () => {
+    describe('When tsgit renames it through branchRename', () => {
+      it('Then the two branches never coexist, the moved history — including its identity, timestamp and timezone — reads back through git unchanged, the rename entry is prepended in git-faithful shape, HEAD follows, and git fsck / git refs verify accept the tsgit-written stack', async () => {
+        // Arrange — three commits, three distinct timezone offsets, so a
+        // shared encoding bug in the write path (constant-offset, swapped
+        // sign, truncated timestamp) cannot hide behind a single value.
+        const dir = path.join(rootDir, 'write-rename');
+        initReftableRepo(dir);
+        runGit(['-C', dir, 'commit', '-q', '--allow-empty', '-m', 'c1'], {
+          env: dateEnv(1_700_000_000, '+0000'),
+        });
+        runGit(['-C', dir, 'branch', 'topic'], { env: dateEnv(1_700_000_100, '+0530') });
+        runGit(['-C', dir, 'checkout', '-q', 'topic']);
+        runGit(['-C', dir, 'commit', '-q', '--allow-empty', '-m', 'c2'], {
+          env: dateEnv(1_700_000_200, '-0700'),
+        });
+        runGit(['-C', dir, 'commit', '-q', '--allow-empty', '-m', 'c3'], {
+          env: dateEnv(1_700_000_300, '+0000'),
+        });
+        const expectedMovedLog = reflogRows(dir, 'topic');
+        expect(expectedMovedLog).toHaveLength(3);
+        const tip = git(dir, 'rev-parse', 'topic').trim();
+        const ctx = reftableCtx(dir);
+
+        // Act
+        await branchRename(ctx, { from: 'topic', to: 'renamed' });
+
+        // Assert — the two branches never coexist, from both tools' view.
+        expect(showRefNames(dir)).toEqual(['refs/heads/main', 'refs/heads/renamed']);
+        expect(
+          forEachRef(dir)
+            .map((row) => row.refname)
+            .sort(),
+        ).toEqual(['refs/heads/main', 'refs/heads/renamed']);
+        const tsgitBranchNames = (await branchList(ctx)).branches.map((b) => b.name);
+        expect(tsgitBranchNames).not.toContain('refs/heads/topic');
+        expect(tsgitBranchNames).toContain('refs/heads/renamed');
+
+        // Assert — the moved history is byte-identical in oid, identity
+        // (timestamp + timezone) and message, read back by git ITSELF —
+        // closing the gap a tsgit-only encode/decode round trip cannot: a
+        // shared encoding bug would cancel out there but not here.
+        const renamedLog = reflogRows(dir, 'renamed');
+        expect(renamedLog).toHaveLength(4);
+        renamedLog.slice(0, 3).forEach((row, index) => {
+          const expected = expectedMovedLog[index]!;
+          expect(row.oid).toBe(expected.oid);
+          expect(row.timestamp).toBe(expected.timestamp);
+          expect(row.tzOffset).toBe(expected.tzOffset);
+          expect(row.message).toBe(expected.message);
+        });
+
+        // Assert — the rename entry is prepended (newest-first display),
+        // git's own capitalised wording (measured against git 2.55.0, both
+        // the files and reftable backends), oldId/newId both the tip.
+        const renameRow = renamedLog[3]!;
+        expect(renameRow.oid).toBe(tip);
+        expect(renameRow.message).toBe('Branch: renamed refs/heads/topic to refs/heads/renamed');
+
+        // Assert — HEAD followed the rename, and the old name is gone
+        // entirely — not merely emptied, `git reflog show` refuses it.
+        expect(git(dir, 'symbolic-ref', 'HEAD').trim()).toBe('refs/heads/renamed');
+        expect(showRefNames(dir)).not.toContain('refs/heads/topic');
+        expect(
+          tryRunGitWithExit(['-C', dir, 'reflog', 'show', 'topic'], { env: runGitEnv() }).exitCode,
+        ).not.toBe(0);
+
+        // Assert — git itself accepts the tsgit-written stack.
+        expect(tryRunGitWithExit(['-C', dir, 'fsck'], { env: runGitEnv() }).exitCode).toBe(0);
+        expect(
+          tryRunGitWithExit(['-C', dir, 'refs', 'verify'], { env: runGitEnv() }).exitCode,
+        ).toBe(0);
       });
     });
   });
