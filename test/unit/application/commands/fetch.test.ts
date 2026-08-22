@@ -2001,6 +2001,50 @@ describe('fetch', () => {
       });
     });
   });
+
+  describe('prune refuses a dangerous packed-refs entry', () => {
+    describe('Given packed-refs carries a dangerous name under refs/remotes/<remote>/', () => {
+      describe('When fetch prunes', () => {
+        it('Then it refuses (throws INVALID_PACKED_REFS) rather than deleting or traversing', async () => {
+          // Arrange — re-pins the adversarial property covered, pre-listRefs,
+          // by a phantom-readdir-entry test at the prune walk itself: a
+          // dangerous name reachable under refs/remotes/<remote>/ must never
+          // reach a delete. Now that enumeration is backed by packed-refs
+          // parsing, the seam moved to read time — `listRefs` (called from
+          // `prune`) loads packed-refs via `parsePackedRefs`, which refuses
+          // the whole read the way git does, so the dangerous entry never
+          // becomes a prune candidate in the first place.
+          const ctx = createMemoryContext();
+          await seedRepo(ctx, { refs: { 'refs/remotes/origin/main': FAKE_OID('a') } });
+          const dangerous = 'refs/remotes/origin/../../../../tmp/pwned';
+          await ctx.fs.writeUtf8(
+            `${ctx.layout.gitDir}/packed-refs`,
+            `# pack-refs with: peeled fully-peeled sorted\n${'c'.repeat(40)} ${dangerous}\n`,
+          );
+          await writeOriginConfig(ctx);
+          const { packBytes, blobId } = await buildOneBlobPack(ctx, 'dangerous packed prune\n');
+          const { transport } = fakeRemote({
+            url: 'https://example.com/r.git',
+            advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+            packBytes,
+          });
+
+          // Act
+          let caught: unknown;
+          try {
+            await fetch({ ...ctx, transport }, { prune: true });
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert — refused at read time, not silently skipped or traversed.
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data.code).toBe('INVALID_PACKED_REFS');
+          expect(((caught as TsgitError).data as { reason: string }).reason).toContain(dangerous);
+        });
+      });
+    });
+  });
 });
 
 describe('fetch — partial clone', () => {

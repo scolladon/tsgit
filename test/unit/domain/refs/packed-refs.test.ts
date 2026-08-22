@@ -284,6 +284,71 @@ describe('parsePackedRefs', () => {
       });
     });
   });
+
+  describe('Given a packed ref entry with a dangerous name (path-traversal via ..)', () => {
+    describe('When parsing', () => {
+      it('Then throws INVALID_PACKED_REFS naming the dangerous refname', () => {
+        // Arrange — matches git 2.55.0: `fatal: packed refname is dangerous:
+        // refs/remotes/origin/../../../../tmp/pwned`. Git refuses the whole
+        // read; tsgit must refuse at the same seam, not merely fail to
+        // traverse later.
+        const dangerous = 'refs/remotes/origin/../../../../tmp/pwned';
+        const content = `${'a'.repeat(40)} ${dangerous}\n`;
+
+        // Act & Assert
+        try {
+          parsePackedRefs(content);
+          expect.fail('should have thrown');
+        } catch (e) {
+          expect(e).toBeInstanceOf(TsgitError);
+          expect((e as TsgitError).data.code).toBe('INVALID_PACKED_REFS');
+          expect(((e as TsgitError).data as { reason: string }).reason).toContain(dangerous);
+        }
+      });
+    });
+  });
+
+  describe('Given a packed ref entry with a dangerous name (.lock component)', () => {
+    describe('When parsing', () => {
+      it('Then throws INVALID_PACKED_REFS, isolated from the .. guard', () => {
+        // Arrange — a distinct dangerous shape (no `..` anywhere) so this
+        // guard is proven independently of the path-traversal guard above;
+        // one test triggering both would not prove each works alone.
+        const dangerous = 'refs/remotes/origin/foo.lock';
+        const content = `${'a'.repeat(40)} ${dangerous}\n`;
+
+        // Act & Assert
+        try {
+          parsePackedRefs(content);
+          expect.fail('should have thrown');
+        } catch (e) {
+          expect(e).toBeInstanceOf(TsgitError);
+          expect((e as TsgitError).data.code).toBe('INVALID_PACKED_REFS');
+          expect(((e as TsgitError).data as { reason: string }).reason).toContain(dangerous);
+        }
+      });
+    });
+  });
+
+  describe('Given a well-formed nested packed ref name', () => {
+    describe('When parsing', () => {
+      it('Then it still parses (regression guard against over-rejection)', () => {
+        // Arrange — the dangerous-name guard must not over-reject ordinary
+        // nested remote-tracking names.
+        const content = `${'a'.repeat(40)} refs/remotes/origin/feat/x\n`;
+
+        // Act
+        const result = parsePackedRefs(content);
+
+        // Assert
+        expect(result.entries).toHaveLength(1);
+        expect(result.entries[0]).toEqual({
+          name: 'refs/remotes/origin/feat/x',
+          id: 'a'.repeat(40),
+        });
+      });
+    });
+  });
 });
 
 describe('serializePackedRefs', () => {

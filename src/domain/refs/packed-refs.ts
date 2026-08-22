@@ -11,6 +11,7 @@
 import { ObjectId as ObjectIdFactory, RefName as RefNameFactory } from '../objects/index.js';
 import { invalidPackedRefs } from './error.js';
 import type { PackedRefEntry, PackedRefs } from './ref-types.js';
+import { isSafeRefName } from './ref-validation.js';
 
 const HEADER_PREFIX = '# pack-refs with:';
 
@@ -78,6 +79,9 @@ function parseEntries(
 
     const sha = line.slice(0, spaceIdx);
     const name = line.slice(spaceIdx + 1);
+    if (!isSafeRefName(name)) {
+      throw invalidPackedRefs(`packed refname is dangerous: ${name.slice(0, 80)}`);
+    }
     const id = ObjectIdFactory.from(sha);
     entries.push({ name: RefNameFactory.from(name), id });
   }
