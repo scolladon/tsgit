@@ -586,8 +586,22 @@ function createFilesRefStore(ctx: Context): RefStore {
     return parseReflog(await ctx.fs.readUtf8(path), ctx.hashConfig.hexLength);
   }
 
+  /** Whether `name` has a reflog FILE — never a directory. `ctx.fs.exists`
+   *  alone answers "does something live at this path" and returns `true`
+   *  for a directory too, which a name like `refs/heads/feature` collides
+   *  with the moment a sibling `refs/heads/feature/x` also has a reflog
+   *  (`logs/refs/heads/feature` is then a directory, not `feature`'s own
+   *  file). Measured against git 2.55.0: `git reflog exists` requires a
+   *  regular file (`S_ISREG`) and reports absent for that same directory
+   *  shape. */
   async function hasReflog(name: RefName): Promise<boolean> {
-    return ctx.fs.exists(reflogPath(refDir(name), name));
+    const path = reflogPath(refDir(name), name);
+    try {
+      return (await ctx.fs.stat(path)).isFile;
+    } catch (err) {
+      if (isFileNotFound(err)) return false;
+      throw err;
+    }
   }
 
   /** Recursively walk one `logs/**` root, composing slash-joined ref names as it descends. */

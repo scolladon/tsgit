@@ -1029,6 +1029,26 @@ describe('ref-store', () => {
     });
   });
 
+  describe('Given a reflog path that is a directory because a sibling ref nests under it', () => {
+    describe('When hasReflog is called on the store', () => {
+      it('Then it returns false, matching real git’s S_ISREG requirement', async () => {
+        // Arrange — measured against git 2.55.0: `git reflog exists
+        // refs/heads/feature` exits 1 (absent) once
+        // `.git/logs/refs/heads/feature` is a directory holding
+        // `feature/x`'s own reflog file, not `feature`'s own.
+        const ctx = await buildSeededContext();
+        await appendReflog(ctx, 'refs/heads/feature/x' as RefName, reflogEntry());
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.hasReflog('refs/heads/feature' as RefName);
+
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+  });
+
   describe('Given many other reflogs but not the one being asked about', () => {
     describe('When hasReflog is called on the store', () => {
       it('Then it never walks the logs directory tree — a single existence probe', async () => {
