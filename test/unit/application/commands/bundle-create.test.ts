@@ -547,6 +547,31 @@ describe('bundleCreate', () => {
     });
   });
 
+  describe('Given a repository with a branch and a second branch whose loose file is a symref to a nonexistent target', () => {
+    describe('When bundleCreate is called with branches: true', () => {
+      it('Then the unresolvable branch is omitted rather than aborting the whole bundle', async () => {
+        // Arrange — a syntactically well-formed loose ref (a `ref: …` line,
+        // so it is not filtered out of enumeration by its own grammar) that
+        // still fails to RESOLVE, the same shape `rev-list.ts`,
+        // `fsck`'s `addRefRoots` and `reflog.ts` already tolerate on their
+        // own `enumerateRefs` walks.
+        const { ctx, commit1 } = await buildSingleCommitRepo();
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/refs/heads/broken`,
+          'ref: refs/heads/does-not-exist\n',
+        );
+
+        // Act
+        const result = await bundleCreate(ctx, { branches: true });
+
+        // Assert
+        const refNames = result.refs.map((r) => r.name);
+        expect(refNames).toEqual(['refs/heads/main']);
+        expect(result.refs.find((r) => r.name === 'refs/heads/main')?.oid).toBe(commit1);
+      });
+    });
+  });
+
   // ── --tags ────────────────────────────────────────────────────────────────
 
   describe('Given a repository with a commit and a tag', () => {

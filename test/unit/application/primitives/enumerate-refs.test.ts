@@ -70,13 +70,18 @@ describe('enumerateRefs', () => {
         );
       });
 
-      it('Then no loose ref file content is ever read — names only', async () => {
-        // Arrange
+      it('Then a packed-only ref never triggers a loose-content read', async () => {
+        // Arrange — `enumerateRefs` still skips the resolution cost for a
+        // name that is packed-only (`parsePackedRefs` already enforces the
+        // grammar on the whole file at load time); a LOOSE name's own
+        // content is read once, to decide whether it is even a legitimate
+        // result — see the sibling malformed-ref test below.
         const base = await buildSeededContext({
           refs: [
             { name: 'refs/heads/main' as RefName, id: OID_A },
             { name: 'refs/remotes/origin/main' as RefName, id: OID_B },
           ],
+          packedRefs: [{ name: 'refs/tags/v1.0.0' as RefName, id: OID_C }],
         });
         await base.fs.writeUtf8(`${base.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
         const readUtf8Calls: string[] = [];
@@ -95,7 +100,28 @@ describe('enumerateRefs', () => {
         await enumerateRefs(ctx);
 
         // Assert
-        expect(readUtf8Calls).toEqual([]);
+        expect(readUtf8Calls.some((p) => p.endsWith('refs/tags/v1.0.0'))).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a loose ref whose body is neither an oid nor a symbolic ref', () => {
+    describe('When enumerateRefs', () => {
+      it('Then the broken ref is excluded, matching real git’s for-each-ref/branch enumeration', async () => {
+        // Arrange — measured against git 2.55.0: both `for-each-ref` and
+        // `branch` warn ("ignoring broken ref …") and omit a ref shaped
+        // like this from their own output.
+        const ctx = await buildSeededContext({
+          refs: [{ name: 'refs/heads/good' as RefName, id: OID_A }],
+        });
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/good\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/broken`, 'not-an-oid\n');
+
+        // Act
+        const result = await enumerateRefs(ctx);
+
+        // Assert
+        expect([...result].sort()).toEqual(['HEAD', 'refs/heads/good']);
       });
     });
   });

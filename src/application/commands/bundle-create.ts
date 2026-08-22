@@ -5,6 +5,7 @@ import {
   bundlePrerequisiteNotCommit,
   bundleUnsupportedSerializeVersion,
 } from '../../domain/commands/error.js';
+import { TsgitError } from '../../domain/error.js';
 import { foldSubject } from '../../domain/objects/commit-message.js';
 import type { Commit, GitObject, ObjectId, RefName } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
@@ -81,8 +82,24 @@ const findFullRef = (name: string, allRefs: ReadonlyArray<RefName>): RefName | u
 // Pseudo-ref expansion (--all / --branches / --tags)
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * Resolves `ref` for the `--all`/`--branches`/`--tags` pseudo-ref expansion,
+ * tolerating an unresolvable ref by omitting it — the same shape
+ * `rev-list.ts`'s `resolveAllRefTips`, `fsck`'s `addRefRoots` and
+ * `reflog.ts`'s `resolveTips` already apply to their own `enumerateRefs`
+ * walks, so one malformed or dangling ref never aborts expansion of every
+ * OTHER one. An explicit rev-arg (`processTip`/`processExclude`) is never
+ * routed through here — the user asked for that name specifically, so it
+ * still refuses loudly if it doesn't resolve.
+ */
 const addRefToAccumulator = async (ctx: Context, ref: RefName, acc: Accumulator): Promise<void> => {
-  const oid = await resolveRef(ctx, ref);
+  let oid: ObjectId;
+  try {
+    oid = await resolveRef(ctx, ref);
+  } catch (err) {
+    if (err instanceof TsgitError) return;
+    throw err;
+  }
   acc.refs.push({ name: ref, oid });
   acc.wants.push(oid);
 };

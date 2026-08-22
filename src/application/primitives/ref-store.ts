@@ -68,13 +68,20 @@ export interface RefStore {
   listRefs(prefix?: RefName): Promise<readonly RefEntry[]>;
   /**
    * Every ref NAME this backend knows, merged across scopes, deduplicated,
-   * sorted — {@link listRefs} without resolving a single one, for a caller
-   * that only ever reads `.name` off the result. Deliberately unfiltered,
-   * unlike `listRefs`: a loose ref whose content fails to parse still
-   * contributes its name here (the files backend never opens the file to
-   * find out), matching what a plain directory/packed-refs/stack-names
-   * enumeration reports in real git. An optional `prefix` restricts the
-   * result the same way `listRefs`'s does.
+   * sorted — {@link listRefs} without constructing a resolved value for a
+   * caller that only ever reads `.name` off the result. A loose ref whose
+   * OWN content fails to parse is excluded, same as `listRefs`: measured
+   * against git 2.55.0, both `for-each-ref` and `branch` warn ("ignoring
+   * broken ref …") and omit a ref shaped like this from their own output
+   * rather than reporting its name, so an unfiltered result here would be a
+   * faithfulness divergence, not a shortcut. What IS skipped is `listRefs`'s
+   * own resolution cost: no symbolic-target follow-through, no packed-refs
+   * fallback lookup for a name that already has a loose file, no
+   * `ResolveDirectResult` construction — a loose name's own immediate
+   * content is read once, to decide whether it is even a legitimate result,
+   * and nothing more; a packed-only name never triggers a loose read at
+   * all. An optional `prefix` restricts the result the same way
+   * `listRefs`'s does.
    */
   listRefNames(prefix?: RefName): Promise<readonly RefName[]>;
   /**
@@ -248,6 +255,15 @@ const REFS_DIR = 'refs';
 const SYMBOLIC_PREFIX = 'ref: ';
 /** Matches valid SHA-1 (40-hex) or SHA-256 (64-hex) loose-ref content. */
 const LOOSE_OID_RE = /^[0-9a-f]{40}$|^[0-9a-f]{64}$/;
+
+/** A loose ref's own grammar (`content` already has trailing EOLs
+ *  stripped): a `ref: <target>` symbolic line, or a valid SHA-1/SHA-256 OID
+ *  line — never anything else. Shared by `verifyIntegrity`'s `badRefContent`
+ *  check and `listRefNames`'s well-formedness filter, so the two can never
+ *  disagree on what counts as broken. */
+function isWellFormedLooseRefContent(content: string): boolean {
+  return content.startsWith(SYMBOLIC_PREFIX) || LOOSE_OID_RE.test(content);
+}
 
 function isFileNotFound(err: unknown): boolean {
   return errorDataCode(err) === 'FILE_NOT_FOUND';
@@ -463,8 +479,33 @@ function createFilesRefStore(ctx: Context): RefStore {
     return entries.sort(byName);
   }
 
+  /**
+   * Whether `name`'s OWN loose file, if it has one, parses as legitimate ref
+   * content — real git's plain enumeration (`for-each-ref`, `branch`) warns
+   * and skips a ref shaped like this rather than reporting its name. A name
+   * with no loose file (a packed-only ref) is always well-formed here,
+   * since `parsePackedRefs` already enforces the grammar on the whole file
+   * at load time — no read happens for it. Deliberately shallow: never
+   * follows a symbolic target, never falls back to packed-refs, never
+   * checks object backing — those stay `resolveDirect`'s and
+   * `verifyIntegrity`'s own concerns.
+   */
+  async function isLooseNameWellFormed(name: RefName): Promise<boolean> {
+    const raw = await readLooseContent(name);
+    if (raw === undefined) return true;
+    return isWellFormedLooseRefContent(raw.replace(/[\r\n]+$/, ''));
+  }
+
   async function listRefNames(prefix?: RefName): Promise<readonly RefName[]> {
-    return [...(await collectCandidateNames(prefix))].sort(compareRefNames);
+    const names = new Set<RefName>();
+    for (const name of await walkAllLooseRefNames(prefix)) {
+      if (await isLooseNameWellFormed(name)) names.add(name);
+    }
+    const packed = await loadPackedRefs();
+    for (const entry of packed.entries) {
+      if (matchesPrefix(entry.name, prefix)) names.add(entry.name);
+    }
+    return [...names].sort(compareRefNames);
   }
 
   async function verifyIntegrity(): Promise<readonly RefIntegrityFinding[]> {
@@ -474,7 +515,7 @@ function createFilesRefStore(ctx: Context): RefStore {
       if (raw === undefined) continue;
       const content = raw.replace(/[\r\n]+$/, '');
       if (content.startsWith(SYMBOLIC_PREFIX)) continue;
-      if (!LOOSE_OID_RE.test(content)) {
+      if (!isWellFormedLooseRefContent(content)) {
         findings.push({ ref: name, msgId: 'badRefContent' });
         continue;
       }
