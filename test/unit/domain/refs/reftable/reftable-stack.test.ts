@@ -20,8 +20,9 @@ function oid(fill: number): Uint8Array {
 }
 
 /**
- * The design's measured seven-record reference block (same fixture Part 3
- * pins byte-for-byte), min_update_index 1 — table 1 of the canonical
+ * The design's measured seven-record reference block (the same fixture
+ * `reftable-block.test.ts` pins byte-for-byte), min_update_index 1 — table 1
+ * of the canonical
  * two-table stack.
  */
 const SEVEN_RECORDS: ReadonlyArray<RefRecordSpec> = [

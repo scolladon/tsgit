@@ -161,7 +161,8 @@ function readFooter(bytes: Uint8Array, view: DataView, layout: VersionLayout): R
  * Parses a reftable stack file's bytes into its header and footer fields.
  * Every `DataView` read is proved in-bounds by an earlier gate — a
  * `RangeError` escaping this function is a defect, never an expected error
- * path. Ref/index/obj block record grammar is not decoded here (Part 3).
+ * path. Ref/index/obj block record grammar is not decoded here — that is
+ * `reftable-block.ts`'s job.
  */
 export function parseReftable(bytes: Uint8Array): Reftable {
   if (bytes.length < HEADER_LENGTH_V1) {
@@ -204,7 +205,8 @@ export function parseReftable(bytes: Uint8Array): Reftable {
 
 /** The one-character block type (`'r'` ref, `'i'` index, `'o'` obj, `'g'`
  *  log) at `offset` — a trusted read, exactly as `blockLengthAt`'s: the
- *  caller (Part 3's block walker) owns bounds and type validation. */
+ *  caller (`reftable-block.ts`'s block walker) owns bounds and type
+ *  validation. */
 export function blockTypeAt(reftable: Reftable, offset: number): string {
   return String.fromCharCode(reftable._view.getUint8(offset));
 }

@@ -582,7 +582,7 @@ async function commitStackList(ctx: Context, write: StagedStackWrite): Promise<v
 // --- Step 11: auto-compaction ------------------------------------------
 //
 // Runs once per stack, after that stack's own write has committed (see
-// `applyReftableUpdates` below). Consumes Part 6's pure
+// `applyReftableUpdates` below). Consumes the pure
 // `suggestCompactionSegment` / `compactionMetric` policy unchanged; this
 // section is only the I/O protocol around it, measured against git's own
 // `stack_compact_range`:

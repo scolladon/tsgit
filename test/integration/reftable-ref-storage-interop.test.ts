@@ -298,7 +298,7 @@ const buildWorktreeFixture = (rootDir: string): WorktreeFixture => {
 /**
  * A structurally-broken or absent `.git/reftable/` stack — the seven
  * damaged copies of {@link buildHealthyFiveRefRepo} that pin the corrupt-
- * stack tiering divergence (§ below). `outcome` is tsgit's own
+ * stack tiering divergence described below. `outcome` is tsgit's own
  * classification: `'refuse'` structural faults (a `ReftableCheck` on a
  * table `tables.list` names) versus `'degrade'` absences (a legitimately
  * empty stack). Every row was independently re-measured against this

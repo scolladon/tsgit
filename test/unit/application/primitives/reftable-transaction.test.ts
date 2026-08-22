@@ -99,7 +99,7 @@ async function buildFixtureTable(
 }
 
 /** Reframes a Context onto a `fs` that omits `atomicRename` — the browser
- *  adapter's own shape (Part 7) — while sharing the SAME underlying memory
+ *  adapter's own shape — while sharing the SAME underlying memory
  *  filesystem instance, so a degraded-path Context and its atomic sibling
  *  observe each other's writes. */
 function withoutAtomicRename(ctx: Context): Context {
@@ -118,17 +118,28 @@ const asWorktreeChild = (ctx: Context): Context => ({
 async function expectReftableLocked(
   act: () => Promise<void>,
 ): Promise<{ readonly stack: string; readonly reason: string }> {
+  // The rejection is captured rather than asserted inside the `catch`: a
+  // `catch` that also has to recognise the assertion library's OWN failure
+  // (thrown when `act` unexpectedly resolves) reads that failure back as a
+  // `TsgitError`, and reports a `TypeError` on undefined `.data` instead of
+  // the mismatch it was meant to describe.
+  let caught: unknown;
   try {
     await act();
-    expect.unreachable('expected REFTABLE_LOCKED');
   } catch (err) {
-    const data = (err as TsgitError).data;
-    if (data.code !== 'REFTABLE_LOCKED') {
-      expect.fail(`expected REFTABLE_LOCKED, got ${data.code}`);
-    }
-    return data;
+    caught = err;
   }
-  throw new Error('unreachable');
+
+  if (!(caught instanceof TsgitError)) {
+    expect.fail(
+      `expected REFTABLE_LOCKED, got ${caught === undefined ? 'no rejection' : String(caught)}`,
+    );
+  }
+  const { data } = caught;
+  if (data.code !== 'REFTABLE_LOCKED') {
+    expect.fail(`expected REFTABLE_LOCKED, got ${data.code}`);
+  }
+  return data;
 }
 
 describe('reftable-transaction', () => {
