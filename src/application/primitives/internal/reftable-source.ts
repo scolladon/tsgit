@@ -25,8 +25,10 @@ type ReftableTier = 'degrade' | 'refuse';
  * One total function from the closed `ReftableCheck` union to a tier. No
  * `default` arm: a future `ReftableCheck` member is a compile error here,
  * not a runtime surprise. Every member is `'refuse'` today — canonical
- * git's own `fsck` crashes on each of these, so there is no coherent git
- * behaviour for tsgit to degrade past instead.
+ * git's own `fsck` crashes on each of these (including the hang/overflow
+ * `'cycle'` and `'block-bounds'` shapes: git's own reader has no bound
+ * against them either), so there is no coherent git behaviour for tsgit to
+ * degrade past instead.
  */
 export function tierOf(check: ReftableCheck): ReftableTier {
   switch (check) {
@@ -38,6 +40,8 @@ export function tierOf(check: ReftableCheck): ReftableTier {
     case 'restart-count':
     case 'record-overrun':
     case 'varint-overflow':
+    case 'block-bounds':
+    case 'cycle':
     case 'tables-list':
       return 'refuse';
   }

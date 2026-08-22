@@ -6,11 +6,16 @@ import type { ObjectId, RefName } from '../objects/object-id.js';
  * so the application layer can classify the fault without re-deriving it
  * from the free-text reason.
  *
- * `'magic'`, `'version'`, `'footer-crc'`, `'truncated'` and
- * `'varint-overflow'` are raised by the header/footer/varint/block-framing
- * codec. `'block-type'`, `'restart-count'` and `'record-overrun'` are raised
- * by the ref/index/obj block record grammar decoder; `'tables-list'` is
- * raised once the multi-file stack (`tables.list`) is read.
+ * `'magic'`, `'version'`, `'footer-crc'`, `'truncated'`, `'varint-overflow'`
+ * and `'block-bounds'` are raised by the header/footer/varint/block-framing
+ * codec — `'block-bounds'` covers a declared block length or footer section
+ * position that would read outside the file. `'block-type'`,
+ * `'restart-count'`, `'record-overrun'` and `'cycle'` are raised by the
+ * ref/index/obj block record grammar decoder — `'cycle'` is a ref-index
+ * descent (iterative or recursive) that exceeded its depth bound, the
+ * refusal a self-referential or pathologically deep index gets instead of
+ * hanging or overflowing the stack. `'tables-list'` is raised once the
+ * multi-file stack (`tables.list`) is read.
  */
 export type ReftableCheck =
   | 'magic'
@@ -21,6 +26,8 @@ export type ReftableCheck =
   | 'restart-count'
   | 'record-overrun'
   | 'varint-overflow'
+  | 'block-bounds'
+  | 'cycle'
   | 'tables-list';
 
 export type RefsError =

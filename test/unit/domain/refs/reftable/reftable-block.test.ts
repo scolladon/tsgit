@@ -836,4 +836,63 @@ describe('reftable-block', () => {
       });
     });
   });
+
+  describe('ref index descent bound', () => {
+    /** A ref block (holding the only real record) immediately followed by an
+     *  index block whose own single record's `block_position` points back at
+     *  the index block itself — the self-referential shape the security
+     *  reviewer's PoC patched into real writer output, one field at a time,
+     *  leaving the footer CRC (which only covers the footer's own bytes)
+     *  valid throughout. `resolveRefBlockPosition`'s iterative descent and
+     *  `collectIndexLeaves`'s recursive one both walk straight back into this
+     *  same block forever without a depth bound. */
+    function buildCyclicIndexReftable(): ReturnType<typeof parseReftable> {
+      const header = buildReftableHeader({ version: 1 });
+      const refBlock = buildRefBlock({
+        records: [{ name: 'refs/heads/aaa', value: { kind: 'direct', id: oid(0x01) } }],
+        restartIndices: [0],
+        isFirstBlock: true,
+        headerLength: header.length,
+      });
+      const indexBlockStart = header.length + refBlock.length;
+      const indexBlock = buildIndexBlock({
+        records: [{ key: 'refs/heads/aaa', blockPosition: indexBlockStart }],
+        restartIndices: [0],
+      });
+      const bytes = buildReftable({
+        version: 1,
+        blocks: [refBlock, indexBlock],
+        refIndexPosition: indexBlockStart,
+      });
+      return parseReftable(bytes);
+    }
+
+    describe('Given a ref index whose only record points back at itself', () => {
+      describe('When looking up a name via the iterative descent', () => {
+        it('Then refuses with cycle rather than looping forever', () => {
+          // Arrange
+          const reftable = buildCyclicIndexReftable();
+          const sut = lookupReftableRef;
+
+          // Act & Assert
+          expectRefusal(
+            () => sut(reftable, RefName.from('refs/heads/aaa')),
+            'cycle',
+            'ref index descent',
+          );
+        }, 2000);
+      });
+
+      describe('When iterating every ref via the recursive index-leaf walk', () => {
+        it('Then refuses with cycle rather than overflowing the stack', () => {
+          // Arrange
+          const reftable = buildCyclicIndexReftable();
+          const sut = iterateReftableRefs;
+
+          // Act & Assert
+          expectRefusal(() => Array.from(sut(reftable)), 'cycle', 'ref index descent');
+        }, 2000);
+      });
+    });
+  });
 });

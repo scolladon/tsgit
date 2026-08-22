@@ -49,6 +49,17 @@ export const BLOCK_HEADER_SIZE = 4;
 const RESTART_ENTRY_SIZE = 3;
 const RESTART_COUNT_SIZE = 2;
 
+/**
+ * Bounds ref-index descent — both `resolveRefBlockPosition`'s iterative walk
+ * and `collectIndexLeaves`'s recursive one — against a self-referential or
+ * pathologically deep `block_position` chain. A real git-produced index
+ * never nests more than a handful of levels even at tens of millions of
+ * refs (high per-block fanout), so this bound is orders of magnitude above
+ * any legitimate depth while still failing fast — in O(bound) steps, not
+ * O(∞) — on a cycle an attacker wrote into `block_position`.
+ */
+const MAX_REF_INDEX_DEPTH = 64;
+
 export type ReftableRefValue =
   | { readonly kind: 'deletion' }
   | { readonly kind: 'direct'; readonly id: ObjectId }
@@ -500,7 +511,7 @@ function resolveRefBlockPosition(reftable: Reftable, target: Uint8Array): number
 
   let indexBlockStart = reftable.footer.refIndexPosition;
   assertBlockType(reftable, indexBlockStart, 'i');
-  while (true) {
+  for (let depth = 0; depth < MAX_REF_INDEX_DEPTH; depth += 1) {
     const bounds = blockBoundsAt(reftable, indexBlockStart);
     const found = findInBlock(reftable._bytes, bounds, target, decodeIndexRecord);
     if (found === undefined) {
@@ -513,6 +524,10 @@ function resolveRefBlockPosition(reftable: Reftable, target: Uint8Array): number
     }
     indexBlockStart = childPosition;
   }
+  throw invalidReftable(
+    'cycle',
+    `ref index descent exceeded ${MAX_REF_INDEX_DEPTH} levels (cyclic or pathologically deep index)`,
+  );
 }
 
 /**
@@ -553,13 +568,23 @@ function* refBlockPositions(reftable: Reftable): Generator<number> {
   yield* collectIndexLeaves(reftable, reftable.footer.refIndexPosition);
 }
 
-function* collectIndexLeaves(reftable: Reftable, indexBlockStart: number): Generator<number> {
+function* collectIndexLeaves(
+  reftable: Reftable,
+  indexBlockStart: number,
+  depth = 0,
+): Generator<number> {
+  if (depth >= MAX_REF_INDEX_DEPTH) {
+    throw invalidReftable(
+      'cycle',
+      `ref index descent exceeded ${MAX_REF_INDEX_DEPTH} levels (cyclic or pathologically deep index)`,
+    );
+  }
   assertBlockType(reftable, indexBlockStart, 'i');
   const bounds = blockBoundsAt(reftable, indexBlockStart);
   for (const { payload } of walkBlockRecords(reftable._bytes, bounds, decodeIndexRecord)) {
     const childPosition = resolveBlockOffset(reftable, payload);
     if (blockTypeAt(reftable, childPosition) === 'i') {
-      yield* collectIndexLeaves(reftable, childPosition);
+      yield* collectIndexLeaves(reftable, childPosition, depth + 1);
     } else {
       assertBlockType(reftable, childPosition, 'r');
       yield childPosition;
