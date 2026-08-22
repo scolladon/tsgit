@@ -28,3 +28,6 @@ export { parseReftable } from './reftable/reftable-format.js';
 // Reftable codec: log blocks and reflog records
 export type { InflateAt, LoadedReftable, ReftableLogRecord } from './reftable/reftable-log.js';
 export { iterateReftableLogs, loadReftable } from './reftable/reftable-log.js';
+// Reftable codec: writer (ref/index/obj/log block emission, header/footer framing)
+export type { ReftableWriteOptions } from './reftable/reftable-writer.js';
+export { buildReftableRefSection, serializeReftable } from './reftable/reftable-writer.js';
