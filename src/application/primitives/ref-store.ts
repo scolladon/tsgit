@@ -22,6 +22,7 @@ import {
   serializeSymbolicRef,
 } from '../../domain/refs/index.js';
 import type { Context } from '../../ports/context.js';
+import type { FileStat } from '../../ports/file-system.js';
 import { atomicWriteRef } from './atomic-write.js';
 import { errorDataCode } from './internal/error-data-code.js';
 import {
@@ -399,14 +400,32 @@ function createFilesRefStore(ctx: Context): RefStore {
     return (await ctx.fs.exists(`${ctx.layout.gitDir}/HEAD`)) ? HEAD_NAME : undefined;
   }
 
-  /** Every name under one `refs/**` root matching `prefix`, or `[]` when the
-   *  root doesn't exist — the per-root half of {@link walkAllLooseRefNames}. */
+  /**
+   * Every name under one `refs/**` root matching `prefix`, or `[]` when the
+   * root doesn't exist OR isn't a directory — the per-root half of {@link
+   * walkAllLooseRefNames}. `refsWalkRoot` pushes the walk down to the
+   * deepest COMPLETE prefix segment, which can land on a path that is
+   * itself a loose ref FILE rather than a `refs/**` directory (a D/F
+   * transition mid-fetch, or simply `refs/remotes/origin` colliding with a
+   * ref literally named that). The pre-prefix-pushdown shape (a whole-tree
+   * walk plus a `startsWith` filter) silently contributed nothing for a
+   * root like that too — `ctx.fs.exists` alone can't tell the two shapes
+   * apart, since it answers `true` for a file just as readily as a
+   * directory, so this checks `stat().isDirectory` instead.
+   */
   async function walkRefsRoot(
     root: string,
     relative: string,
     prefix: RefName | undefined,
   ): Promise<ReadonlyArray<RefName>> {
-    if (!(await ctx.fs.exists(root))) return [];
+    let stat: FileStat;
+    try {
+      stat = await ctx.fs.stat(root);
+    } catch (err) {
+      if (isFileNotFound(err)) return [];
+      throw err;
+    }
+    if (!stat.isDirectory) return [];
     const names: RefName[] = [];
     for (const name of await walkRefDir(root, relative)) {
       if (matchesPrefix(name, prefix)) names.push(name);

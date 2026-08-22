@@ -695,6 +695,28 @@ describe('ref-store', () => {
     });
   });
 
+  describe('Given a prefix whose pushed-down walk root is itself a loose ref FILE, not a directory', () => {
+    describe('When listing ref names with that prefix', () => {
+      it('Then it returns empty rather than throwing a filesystem not-a-directory error', async () => {
+        // Arrange — `refsWalkRoot` pushes `refs/remotes/origin/main` down to
+        // `refs/remotes/origin`; here that path is itself a loose ref
+        // FILE (a D/F collision a fetch or a stray write can produce), not
+        // a `refs/**` directory. The pre-pushdown whole-tree walk would
+        // have silently contributed nothing for a root shaped like this
+        // too — pushing the walk down must not change that.
+        const ctx = await buildSeededContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/remotes/origin`, `${'a'.repeat(40)}\n`);
+        const sut = createRefStore(ctx);
+
+        // Act
+        const names = await sut.listRefNames('refs/remotes/origin/main' as RefName);
+
+        // Assert
+        expect(names).toEqual([]);
+      });
+    });
+  });
+
   describe('Given a prefix that only HEAD could match', () => {
     describe('When listing refs with that prefix', () => {
       it('Then the HEAD existence probe is skipped entirely', async () => {
