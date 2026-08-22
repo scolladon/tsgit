@@ -182,7 +182,19 @@ export function readPrefixedName(
   }
 
   const { value: packed, nextOffset: afterPacked } = readVarint(bytes, afterPrefix);
-  const suffixLength = packed >> SUFFIX_SHIFT;
+  // `Math.floor(packed / 2 ** SUFFIX_SHIFT)` rather than `packed >>
+  // SUFFIX_SHIFT`: `packed` is a `readVarint` value, which (at the format's
+  // own 5-byte varint cap) can exceed 2**31 — `>>` would coerce it through
+  // ToInt32 first and silently wrap to a negative suffix_length, which
+  // `subarray`'s own silent index-clamping then launders into a corrupt
+  // (but not obviously invalid) `nextOffset` instead of a refusal.
+  const suffixLength = Math.floor(packed / 2 ** SUFFIX_SHIFT);
+  if (afterPacked + suffixLength > bytes.length) {
+    throw invalidReftable(
+      'record-overrun',
+      `suffix_length ${suffixLength} at byte ${afterPacked} runs past the end of the file`,
+    );
+  }
   const suffix = bytes.subarray(afterPacked, afterPacked + suffixLength);
   const nameBytes = concatPrefixSuffix(priorNameBytes, prefixLength, suffix);
 
@@ -341,9 +353,26 @@ export function* walkBlockRecords<T>(
   let priorNameBytes: Uint8Array | undefined;
   while (cursor < bounds.recordsEnd) {
     const record = decodeRecord(bytes, cursor, priorNameBytes);
+    assertForwardProgress(cursor, record.nextOffset);
     yield record;
     priorNameBytes = record.nameBytes;
     cursor = record.nextOffset;
+  }
+}
+
+/**
+ * Every record decoder must advance the cursor — a `nextOffset` at or before
+ * the position it was decoded from can only come from a corrupt length
+ * field upstream (a wrapped or otherwise malformed suffix/value length), and
+ * re-decoding the same bytes forever is exactly the shape of an unbounded
+ * loop an attacker-controlled table must never be able to trigger.
+ */
+function assertForwardProgress(cursor: number, nextOffset: number): void {
+  if (nextOffset <= cursor) {
+    throw invalidReftable(
+      'record-overrun',
+      `record at byte ${cursor} made no forward progress (next offset ${nextOffset})`,
+    );
   }
 }
 
@@ -393,6 +422,7 @@ export function findInBlock<T>(
   let priorNameBytes: Uint8Array | undefined;
   while (cursor < bounds.recordsEnd) {
     const record = decodeRecord(bytes, cursor, priorNameBytes);
+    assertForwardProgress(cursor, record.nextOffset);
     if (compareBytes(record.nameBytes, target) >= 0) {
       return record;
     }

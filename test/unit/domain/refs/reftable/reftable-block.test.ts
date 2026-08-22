@@ -6,6 +6,7 @@ import {
   blockBoundsAt,
   decodeIndexRecord,
   decodeObjRecord,
+  findInBlock,
   iterateReftableRefs,
   lookupReftableRef,
   type ReftableRefRecord,
@@ -18,6 +19,7 @@ import {
   type ReftableWriteOptions,
   serializeReftable,
 } from '../../../../../src/domain/refs/reftable/reftable-writer.js';
+import { encodeOfsDistance } from '../../../../../src/domain/storage/pack-entry.js';
 import type { RefRecordSpec } from './arbitraries.js';
 import {
   buildIndexBlock,
@@ -420,6 +422,101 @@ describe('reftable-block', () => {
             'prefix_length',
           );
         });
+      });
+    });
+
+    describe('Given a record whose packed (suffix_length << 3 | tag) field is 2**31', () => {
+      describe('When iterating', () => {
+        it('Then refuses with record-overrun naming the overrunning suffix_length, never a RangeError', () => {
+          // Arrange — packed = 2**31 exceeds JS's 32-bit signed bitwise
+          // domain, so the production `packed >> 3` computation (ToInt32
+          // first) wraps to a negative suffix_length instead of the true
+          // 268435456. A negative suffix_length previously slipped past
+          // `subarray`'s silent clamping and produced a corrupt
+          // `nextOffset` rather than a classified refusal.
+          const header = buildReftableHeader({ version: 1 });
+          const hugePacked = 2 ** 31;
+          const recordBytes = Uint8Array.from([0x00, ...encodeOfsDistance(hugePacked)]);
+          const block = buildReftableBlock({
+            type: 'r',
+            recordBytes,
+            restartOffsets: [header.length + 4],
+            declaredLength: header.length + 1 + 3 + recordBytes.length + 3 + 2,
+          });
+          const reftable = parseReftable(buildReftable({ version: 1, blocks: [block] }));
+
+          // Act & Assert
+          expectRefusal(
+            () => Array.from(iterateReftableRefs(reftable)),
+            'record-overrun',
+            'suffix_length',
+          );
+        }, 2000);
+      });
+    });
+
+    describe('Given a record whose decode makes no forward progress', () => {
+      /** A hand-built decoder that always reports `nextOffset` equal to the
+       *  cursor it was handed — the shape a wrapped/negative length field
+       *  could produce upstream of any real record grammar, isolating
+       *  `walkBlockRecords`'/`findInBlock`'s own forward-progress guard from
+       *  the ref-record grammar that normally feeds them. */
+      function stuckDecoder(): (
+        bytes: Uint8Array,
+        offset: number,
+      ) => { nameBytes: Uint8Array; payload: null; nextOffset: number } {
+        return (_bytes, offset) => ({
+          nameBytes: new Uint8Array(1),
+          payload: null,
+          nextOffset: offset,
+        });
+      }
+
+      describe('When walking every record', () => {
+        it('Then refuses with record-overrun rather than looping forever', () => {
+          // Arrange
+          const header = buildReftableHeader({ version: 1 });
+          const block = buildRefBlock({
+            records: [{ name: 'refs/heads/a', value: { kind: 'direct', id: oid(0x01) } }],
+            restartIndices: [0],
+            isFirstBlock: true,
+            headerLength: header.length,
+          });
+          const reftable = parseReftable(buildReftable({ version: 1, blocks: [block] }));
+          const bounds = blockBoundsAt(reftable, header.length);
+          const sut = walkBlockRecords;
+
+          // Act & Assert
+          expectRefusal(
+            () => Array.from(sut(reftable._bytes, bounds, stuckDecoder())),
+            'record-overrun',
+            'forward progress',
+          );
+        }, 2000);
+      });
+
+      describe('When finding a target that sorts past the stuck record', () => {
+        it('Then refuses with record-overrun rather than looping forever', () => {
+          // Arrange
+          const header = buildReftableHeader({ version: 1 });
+          const block = buildRefBlock({
+            records: [{ name: 'refs/heads/a', value: { kind: 'direct', id: oid(0x01) } }],
+            restartIndices: [0],
+            isFirstBlock: true,
+            headerLength: header.length,
+          });
+          const reftable = parseReftable(buildReftable({ version: 1, blocks: [block] }));
+          const bounds = blockBoundsAt(reftable, header.length);
+          const target = new TextEncoder().encode('zzz');
+          const sut = findInBlock;
+
+          // Act & Assert
+          expectRefusal(
+            () => sut(reftable._bytes, bounds, target, stuckDecoder()),
+            'record-overrun',
+            'forward progress',
+          );
+        }, 2000);
       });
     });
   });

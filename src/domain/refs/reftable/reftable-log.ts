@@ -217,9 +217,19 @@ export function logBlockBounds(payload: Uint8Array): LogBlockBounds {
   return { recordsStart: 0, recordsEnd: restartArrayStart, restartOffsets };
 }
 
-/** Full forward scan of one inflated log block's records — never a binary
- *  search: S3 means the log index is never consulted on read, so there is
- *  no candidate block to narrow down to in the first place. */
+/**
+ * Full forward scan of one inflated log block's records — never a binary
+ * search: S3 means the log index is never consulted on read, so there is no
+ * candidate block to narrow down to in the first place.
+ *
+ * No explicit forward-progress assertion here (unlike `walkBlockRecords`'s
+ * and `findInBlock`'s own, in `reftable-block.ts`): every path through
+ * `decodeLogRecord` bottoms out in `readPrefixedName`, whose two varint
+ * reads each consume at least one byte before its own now-bounds-checked
+ * suffix length is added, so `nextOffset` is provably `> cursor` for every
+ * input this decoder can be handed — a runtime guard here would be
+ * unreachable dead code, not a second layer of defence.
+ */
 function* walkLogBlockRecords(
   payload: Uint8Array,
   digestLength: number,

@@ -228,7 +228,7 @@ export function readVarint(
   bytes: Uint8Array,
   offset: number,
 ): { readonly value: number; readonly nextOffset: number } {
-  if (offset >= bytes.length) {
+  if (offset < 0 || offset >= bytes.length) {
     throw invalidReftable('truncated', `varint truncated at byte ${offset}`);
   }
 
@@ -247,7 +247,12 @@ export function readVarint(
     if (pos >= bytes.length) {
       throw invalidReftable('truncated', `varint truncated at byte ${offset}`);
     }
-    value = ((value + 1) << 7) | (bytes[pos]! & 0x7f);
+    // `(value + 1) * 128 + byte` rather than `((value + 1) << 7) | byte`:
+    // JS's bitwise operators coerce both operands through ToInt32 first, so
+    // once the accumulator crosses 2**31 the `<<`/`|` form silently wraps to
+    // a negative number instead of continuing the true (and, at 5 bytes,
+    // well within float64's exact-integer range) arithmetic value.
+    value = (value + 1) * 128 + (bytes[pos]! & 0x7f);
     bytesRead += 1;
   }
 

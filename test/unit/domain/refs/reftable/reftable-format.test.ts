@@ -352,6 +352,43 @@ describe('reftable-format', () => {
         });
       });
     });
+
+    describe('Given the 5-byte sequence 87 80 80 80 00', () => {
+      describe('When reading at offset 0', () => {
+        it('Then decodes to the exact positive value 2149597312, not a 32-bit-wrapped negative', () => {
+          // Arrange — the security reviewer's PoC: the production decoder's
+          // `((value + 1) << 7) | byte` accumulation overflows JS's 32-bit
+          // signed bitwise domain partway through this exact byte sequence
+          // and returns -2145369984. A downstream `prefixLength >
+          // priorLength` guard silently accepts that negative as "smaller",
+          // laundering attacker-controlled out-of-bounds reads as valid data.
+          const bytes = Uint8Array.from([0x87, 0x80, 0x80, 0x80, 0x00]);
+          const sut = readVarint;
+
+          // Act
+          const result = sut(bytes, 0);
+
+          // Assert
+          expect(result.value).toBe(2149597312);
+          expect(result.value).toBeGreaterThan(0);
+          expect(result.nextOffset).toBe(5);
+        });
+      });
+    });
+
+    describe('Given a negative read offset', () => {
+      describe('When reading', () => {
+        it('Then refuses with truncated rather than laundering bytes[-1] as 0', () => {
+          // Arrange — `bytes[-1]` is `undefined` in JS; `undefined & 0x7f`
+          // silently coerces to 0 instead of signalling an out-of-bounds
+          // read, so a negative offset must be rejected explicitly.
+          const bytes = Uint8Array.from([0x05]);
+
+          // Act & Assert
+          expectRefusal(() => readVarint(bytes, -1), 'truncated', 'truncated');
+        });
+      });
+    });
   });
 
   describe('block framing', () => {
