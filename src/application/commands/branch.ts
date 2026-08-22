@@ -12,7 +12,7 @@ import { branchCreatedFrom, branchRenamed } from '../../domain/reflog/reflog-mes
 import { validateRefName } from '../../domain/refs/index.js';
 import { HEADS_PREFIX } from '../../domain/refs/ref-prefixes.js';
 import type { Context } from '../../ports/context.js';
-import { commonGitDir, perWorktreeRefDir } from '../primitives/path-layout.js';
+import { getRefStore, refExists } from '../primitives/ref-store.js';
 import { readReflog, writeReflog } from '../primitives/reflog-store.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import { updateRef } from '../primitives/update-ref.js';
@@ -63,18 +63,16 @@ export interface BranchRenameResult {
 
 export const branchList = async (ctx: Context): Promise<BranchListResult> => {
   await assertOperationalRepository(ctx);
-  const headsDir = `${commonGitDir(ctx)}/refs/heads`;
-  if (!(await ctx.fs.exists(headsDir))) return { branches: [] };
   const head = await readHeadRaw(ctx);
   const ref = branchRefFromHead(head);
   const currentTarget = ref?.startsWith(HEADS_PREFIX) ? ref : undefined;
-  const entries = await ctx.fs.readdir(headsDir);
+  const entries = await getRefStore(ctx).listRefs(HEADS_PREFIX as RefName);
   const branches: BranchInfo[] = [];
   for (const entry of entries) {
-    if (!entry.isFile) continue;
-    const name = `${HEADS_PREFIX}${entry.name}` as RefName;
-    const id = await resolveRef(ctx, name);
-    branches.push({ name, id, current: name === currentTarget });
+    // A branch ref is always direct in practice; a hand-crafted symbolic one
+    // still resolves faithfully via the general (chain-following) resolver.
+    const id = entry.value.kind === 'direct' ? entry.value.id : await resolveRef(ctx, entry.name);
+    branches.push({ name: entry.name, id, current: entry.name === currentTarget });
   }
   branches.sort((a, b) => compareRefName(a.name, b.name));
   return { branches };
@@ -129,7 +127,7 @@ export const branchDelete = async (
   if (head.kind === 'symbolic' && head.target === name) {
     throw cannotDeleteCheckedOutBranch(name);
   }
-  if (!(await ctx.fs.exists(`${perWorktreeRefDir(ctx, name)}/${name}`))) {
+  if (!(await refExists(ctx, name))) {
     throw branchNotFound(name);
   }
   await updateRef(ctx, name, zeroOid(ctx.hashConfig), { delete: true });

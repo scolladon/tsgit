@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createRefStore, getRefStore } from '../../../../src/application/primitives/ref-store.js';
+import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import type { ObjectId, RefName } from '../../../../src/domain/objects/index.js';
 import { buildSeededContext } from './fixtures.js';
 
@@ -239,23 +240,127 @@ describe('ref-store', () => {
     });
   });
 
-  describe('Given no packed-refs file', () => {
-    describe('When getPackedRefs is called', () => {
-      it('Then returns an empty unsorted PackedRefs (sorted=false)', async () => {
-        // Kills the BooleanLiteral mutant on the no-file fallback `sorted: false`:
-        // under `true`, downstream callers relying on the unsorted flag (e.g. to
-        // trigger a sort before binary search) would skip the sort and misbehave.
+  describe('Given a repository with a loose ref, a packed ref and a nested loose ref', () => {
+    describe('When listing refs with no prefix', () => {
+      it('Then all three are returned sorted by name', async () => {
         // Arrange
-        const ctx = await buildSeededContext();
+        const ctx = await buildSeededContext({
+          refs: [
+            { name: 'refs/heads/main' as RefName, id: 'a'.repeat(40) as ObjectId },
+            { name: 'refs/heads/feat/x' as RefName, id: 'c'.repeat(40) as ObjectId },
+          ],
+          packedRefs: [{ name: 'refs/tags/v1' as RefName, id: 'b'.repeat(40) as ObjectId }],
+        });
         const sut = createRefStore(ctx);
 
         // Act
-        const result = await sut.getPackedRefs();
+        const result = await sut.listRefs();
 
         // Assert
-        expect(result.entries).toEqual([]);
-        expect(result.peeling).toBe('none');
-        expect(result.sorted).toBe(false);
+        expect(result.map((entry) => entry.name)).toEqual([
+          'refs/heads/feat/x',
+          'refs/heads/main',
+          'refs/tags/v1',
+        ]);
+      });
+    });
+
+    describe('When listing refs with prefix refs/heads/', () => {
+      it('Then only the heads refs are returned, including the nested one', async () => {
+        // Arrange
+        const ctx = await buildSeededContext({
+          refs: [
+            { name: 'refs/heads/main' as RefName, id: 'a'.repeat(40) as ObjectId },
+            { name: 'refs/heads/feat/x' as RefName, id: 'c'.repeat(40) as ObjectId },
+          ],
+          packedRefs: [{ name: 'refs/tags/v1' as RefName, id: 'b'.repeat(40) as ObjectId }],
+        });
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.listRefs('refs/heads/' as RefName);
+
+        // Assert
+        expect(result.map((entry) => entry.name)).toEqual(['refs/heads/feat/x', 'refs/heads/main']);
+      });
+    });
+  });
+
+  describe('Given a symbolic HEAD', () => {
+    describe('When listing refs with no prefix', () => {
+      it('Then HEAD is returned with its symbolic target', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.writeUtf8('/repo/.git/HEAD', 'ref: refs/heads/main\n');
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.listRefs();
+
+        // Assert
+        const head = result.find((entry) => entry.name === 'HEAD');
+        expect(head?.value).toEqual({ kind: 'symbolic', target: 'refs/heads/main' });
+      });
+    });
+  });
+
+  describe('Given a loose ref whose body is neither an oid nor a symbolic ref', () => {
+    describe('When verifyIntegrity is called', () => {
+      it('Then a badRefContent finding is returned for that ref', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.writeUtf8('/repo/.git/refs/heads/garbage', 'not-a-valid-sha\n');
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.verifyIntegrity();
+
+        // Assert
+        expect(result).toContainEqual({ ref: 'refs/heads/garbage', msgId: 'badRefContent' });
+      });
+    });
+  });
+
+  describe('Given a loose ref naming a well-formed but unknown oid', () => {
+    describe('When verifyIntegrity is called', () => {
+      it('Then a badRefOid finding is returned with the target oid', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const unknownOid = 'a'.repeat(40) as ObjectId;
+        await ctx.fs.writeUtf8('/repo/.git/refs/heads/broken', `${unknownOid}\n`);
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.verifyIntegrity();
+
+        // Assert
+        expect(result).toContainEqual({
+          ref: 'refs/heads/broken',
+          msgId: 'badRefOid',
+          target: unknownOid,
+        });
+      });
+    });
+  });
+
+  describe('Given a loose ref naming a known oid', () => {
+    describe('When verifyIntegrity is called', () => {
+      it('Then no finding is returned', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const blobId = await writeObject(ctx, {
+          type: 'blob',
+          content: new TextEncoder().encode('x'),
+          id: '' as ObjectId,
+        });
+        await ctx.fs.writeUtf8('/repo/.git/refs/heads/main', `${blobId}\n`);
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.verifyIntegrity();
+
+        // Assert
+        expect(result).toEqual([]);
       });
     });
   });

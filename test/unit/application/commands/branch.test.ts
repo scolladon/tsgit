@@ -332,19 +332,28 @@ describe('branch', () => {
     });
   });
 
-  describe('Given refs/heads holding a sub-directory + a file', () => {
+  describe('Given a nested branch and a packed-only branch', () => {
     describe('When branch list', () => {
-      it('Then directory entries are skipped', async () => {
-        // Arrange — `nested/leaf` creates a `nested` DIRECTORY entry under refs/heads;
-        // resolveRef on that directory would throw if the `!entry.isFile` skip is removed.
-        const { ctx } = await seedWithCommit();
+      it('Then both the nested branch and the packed-only branch appear', async () => {
+        // Arrange — `nested/leaf` creates a `nested` DIRECTORY entry under
+        // refs/heads (a flat readdir would have skipped it); `packed` exists
+        // only in packed-refs, with no loose file at all.
+        const { ctx, commitId } = await seedWithCommit();
         await branchCreate(ctx, { name: 'nested/leaf' });
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/packed-refs`,
+          `# pack-refs with: peeled fully-peeled sorted\n${commitId} refs/heads/packed\n`,
+        );
 
         // Act
         const result = await branchList(ctx);
 
         // Assert
-        expect(result.branches.map((b) => b.name)).toEqual(['refs/heads/main']);
+        expect(result.branches.map((b) => b.name)).toEqual([
+          'refs/heads/main',
+          'refs/heads/nested/leaf',
+          'refs/heads/packed',
+        ]);
       });
     });
   });

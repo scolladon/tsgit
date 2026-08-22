@@ -220,6 +220,19 @@ describe('tag', () => {
           expectedNames: ['refs/tags/v1.0'],
         },
         {
+          label: 'a packed-only tag appears alongside a loose one',
+          build: async (): Promise<Context> => {
+            const { ctx, commitId } = await seedWithCommit();
+            await tagCreate(ctx, { name: 'v1.0' });
+            await ctx.fs.writeUtf8(
+              `${ctx.layout.gitDir}/packed-refs`,
+              `# pack-refs with: peeled fully-peeled sorted\n${commitId} refs/tags/packed\n`,
+            );
+            return ctx;
+          },
+          expectedNames: ['refs/tags/packed', 'refs/tags/v1.0'],
+        },
+        {
           label: 'three tags created out of order are returned in strict ascending order',
           build: async (): Promise<Context> => {
             const { ctx } = await seedWithCommit();
