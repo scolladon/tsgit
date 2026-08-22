@@ -112,9 +112,11 @@ describe('load-reftable-stack', () => {
   describe('Given a table named by tables.list that is missing on disk', () => {
     describe('When the table materializes before the retry runs', () => {
       it('Then exactly one reload absorbs the miss and the stack loads', async () => {
-        // Arrange — table B is absent on the FIRST read; the read spy writes
-        // it as a side effect once, simulating a table that finishes being
-        // written concurrently — so the retry's re-read finds it.
+        // Arrange — table B is absent on the FIRST attempt; `readTableBytes`
+        // now `stat`s before it `read`s (the size-ceiling gate), so the
+        // race-simulating side effect lives on the `stat` spy — the first
+        // filesystem call `readTableBytes` makes for the missing path —
+        // rather than `read`, to still fire exactly once per absorbed miss.
         const ctx = createMemoryContext();
         const dir = commonReftableDir(ctx);
         const tableA = buildSimpleTable({ refName: 'refs/heads/a', id: oid(0x01) });
@@ -122,16 +124,16 @@ describe('load-reftable-stack', () => {
         await writeReftableFiles(ctx, dir, [{ name: 'a.ref', bytes: tableA }]);
         await ctx.fs.writeUtf8(`${dir}/tables.list`, 'a.ref\nb.ref\n');
         const listSpy = vi.spyOn(ctx.fs, 'readUtf8');
-        const originalRead = ctx.fs.read;
+        const originalStat = ctx.fs.stat;
         const missingPath = `${dir}/b.ref`;
         let materialized = false;
-        vi.spyOn(ctx.fs, 'read').mockImplementation(async (path: string) => {
+        vi.spyOn(ctx.fs, 'stat').mockImplementation(async (path: string) => {
           if (path === missingPath && !materialized) {
             materialized = true;
             await ctx.fs.write(path, tableB);
             throw fileNotFound(path);
           }
-          return originalRead(path);
+          return originalStat(path);
         });
 
         // Act
@@ -195,6 +197,55 @@ describe('load-reftable-stack', () => {
         const ctx = createMemoryContext();
         const dir = commonReftableDir(ctx);
         await ctx.fs.writeUtf8(`${dir}/tables.list`, 'a.ref\n\nb.ref\n');
+        const sut = loadReftableStack;
+
+        // Act + Assert
+        try {
+          await sut(ctx, dir);
+          expect.unreachable();
+        } catch (err) {
+          expect((err as TsgitError).data.code).toBe('INVALID_REFTABLE');
+          expect((err as TsgitError).data).toMatchObject({ check: 'tables-list' });
+        }
+      });
+    });
+  });
+
+  describe('Given a tables.list naming more tables than the stack ceiling allows', () => {
+    describe('When the stack is loaded', () => {
+      it('Then it refuses with check tables-list rather than opening thousands of files', async () => {
+        // Arrange — one line per table name; content is irrelevant, only the
+        // count matters, so this stays cheap to build.
+        const ctx = createMemoryContext();
+        const dir = commonReftableDir(ctx);
+        const names = Array.from({ length: 4097 }, (_, i) => `t${i}.ref`);
+        await ctx.fs.writeUtf8(`${dir}/tables.list`, `${names.join('\n')}\n`);
+        const sut = loadReftableStack;
+
+        // Act + Assert
+        try {
+          await sut(ctx, dir);
+          expect.unreachable();
+        } catch (err) {
+          expect((err as TsgitError).data.code).toBe('INVALID_REFTABLE');
+          expect((err as TsgitError).data).toMatchObject({ check: 'tables-list' });
+          expect(((err as TsgitError).data as { reason: string }).reason).toContain('4097');
+        }
+      });
+    });
+  });
+
+  describe('Given a table file larger than the per-table size ceiling', () => {
+    describe('When the stack is loaded', () => {
+      it('Then it refuses with check tables-list before parsing the oversized file', async () => {
+        // Arrange — content is irrelevant; `stat` alone (before any `read`)
+        // must be enough to refuse, so this never actually parses 64MB+ of
+        // garbage as a reftable.
+        const ctx = createMemoryContext();
+        const dir = commonReftableDir(ctx);
+        const oversized = new Uint8Array(64 * 1024 * 1024 + 1);
+        await ctx.fs.writeUtf8(`${dir}/tables.list`, 'huge.ref\n');
+        await ctx.fs.write(`${dir}/huge.ref`, oversized);
         const sut = loadReftableStack;
 
         // Act + Assert

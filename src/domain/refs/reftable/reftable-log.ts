@@ -15,6 +15,7 @@ import type { AuthorIdentity } from '../../objects/author-identity.js';
 import { decode } from '../../objects/encoding.js';
 import { ObjectId, RefName } from '../../objects/index.js';
 import type { ReflogEntry } from '../../reflog/reflog-entry.js';
+import { invalidReftable } from '../error.js';
 import { readPrefixedName } from './reftable-block.js';
 import { parseReftable, type Reftable, readUint24, readVarint } from './reftable-format.js';
 
@@ -285,9 +286,32 @@ function logSectionEnd(table: Reftable): number {
   return table._bytes.length - footerLength;
 }
 
+/**
+ * Bounds `collectLogBlocks`'s eager whole-table inflation against a
+ * decompression bomb (CWE-409): a handful of small zlib streams, each
+ * expanding toward the compressor's own per-stream cap, retained all at
+ * once. `maxBlockBytes` is checked against each block's own declared
+ * (plaintext, pre-inflate) size before that block is ever inflated;
+ * `maxTableBytes` bounds the running total across every block this ONE
+ * table's `tables.list` entry contributes. Both are generous relative to
+ * any git-produced reflog (the design's own measured blocks are ~1KB) —
+ * `loadReftableStack`'s table-count ceiling (`load-reftable-stack.ts`) is
+ * what keeps the STACK-wide total bounded in turn.
+ */
+export interface LogInflationBudget {
+  readonly maxBlockBytes: number;
+  readonly maxTableBytes: number;
+}
+
+const DEFAULT_LOG_INFLATION_BUDGET: LogInflationBudget = {
+  maxBlockBytes: 64 * 1024 * 1024,
+  maxTableBytes: 256 * 1024 * 1024,
+};
+
 async function collectLogBlocks(
   table: Reftable,
   inflateAt: InflateAt,
+  budget: LogInflationBudget,
 ): Promise<readonly Uint8Array[]> {
   if (table.footer.logPosition === 0) {
     return [];
@@ -296,11 +320,32 @@ async function collectLogBlocks(
   const sectionEnd = logSectionEnd(table);
   const blocks: Uint8Array[] = [];
   let offset = table.footer.logPosition;
+  let totalInflatedBytes = 0;
   while (offset < sectionEnd) {
+    const declaredPayloadBytes = readUint24(table._view, offset + 1) - LOG_BLOCK_HEADER_LENGTH;
+    if (declaredPayloadBytes > budget.maxBlockBytes) {
+      throw invalidReftable(
+        'block-bounds',
+        `log block at file offset ${offset} declares ${declaredPayloadBytes} inflated bytes, exceeding the ${budget.maxBlockBytes}-byte per-block limit`,
+      );
+    }
     const { output, bytesConsumed } = await inflateAt(
       table._bytes,
       offset + LOG_BLOCK_HEADER_LENGTH,
     );
+    if (output.length !== declaredPayloadBytes) {
+      throw invalidReftable(
+        'block-bounds',
+        `log block at file offset ${offset} inflated to ${output.length} bytes, not its declared ${declaredPayloadBytes}`,
+      );
+    }
+    totalInflatedBytes += output.length;
+    if (totalInflatedBytes > budget.maxTableBytes) {
+      throw invalidReftable(
+        'block-bounds',
+        `table's log blocks inflated to ${totalInflatedBytes} bytes, exceeding the ${budget.maxTableBytes}-byte aggregate limit`,
+      );
+    }
     blocks.push(output);
     offset += LOG_BLOCK_HEADER_LENGTH + bytesConsumed;
   }
@@ -309,17 +354,19 @@ async function collectLogBlocks(
 
 /**
  * Parses `bytes`' header and footer via `parseReftable`, then eagerly
- * inflates every log block into `logBlocks` (file order). Log blocks are
- * never padded or aligned — the next block's position always comes from the
- * inflater's own `bytesConsumed`, never from `header.blockSize` or from a
- * log block's own declared (and, uniquely among block types, inflated-size-
- * only) length.
+ * inflates every log block into `logBlocks` (file order), bounded by
+ * `budget` (defaults to {@link DEFAULT_LOG_INFLATION_BUDGET}). Log blocks
+ * are never padded or aligned — the next block's position always comes from
+ * the inflater's own `bytesConsumed`, never from `header.blockSize` or from
+ * a log block's own declared (and, uniquely among block types,
+ * inflated-size-only) length.
  */
 export async function loadReftable(
   bytes: Uint8Array,
   inflateAt: InflateAt,
+  budget: LogInflationBudget = DEFAULT_LOG_INFLATION_BUDGET,
 ): Promise<LoadedReftable> {
   const table = parseReftable(bytes);
-  const logBlocks = await collectLogBlocks(table, inflateAt);
+  const logBlocks = await collectLogBlocks(table, inflateAt, budget);
   return { ...table, logBlocks };
 }

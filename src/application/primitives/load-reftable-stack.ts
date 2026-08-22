@@ -36,6 +36,18 @@ import { isDegradableReftableFault } from './internal/reftable-source.js';
 
 const TABLES_LIST_FILE = 'tables.list';
 
+/** A stack this size or smaller comfortably covers any real git-produced
+ *  layout (auto-compaction keeps the table count near `log2(ref count)`);
+ *  beyond it, opening every named table one file descriptor at a time is a
+ *  resource-exhaustion vector `tables.list` itself never bounds. */
+const MAX_TABLES_PER_STACK = 4096;
+
+/** A generous per-table ceiling — the design's own measured tables (even a
+ *  3001-ref fixture) are under 100KB — checked via `stat`, before any
+ *  `read`, so an oversized file is refused without ever being slurped into
+ *  memory. */
+const MAX_TABLE_FILE_BYTES = 64 * 1024 * 1024;
+
 interface CachedStack {
   readonly stack: ReftableStack;
   readonly mtimeKey: string;
@@ -65,12 +77,27 @@ export function parseTablesList(text: string): readonly string[] {
   if (lines.some((line) => line.length === 0)) {
     throw invalidReftable('tables-list', 'tables.list contains a blank line');
   }
+  if (lines.length > MAX_TABLES_PER_STACK) {
+    throw invalidReftable(
+      'tables-list',
+      `tables.list names ${lines.length} tables, exceeding the ${MAX_TABLES_PER_STACK}-table limit`,
+    );
+  }
   return lines;
 }
 
-/** `undefined` on a `FILE_NOT_FOUND` miss — every other failure propagates. */
+/** `undefined` on a `FILE_NOT_FOUND` miss — every other failure propagates.
+ *  `stat`s before `read`ing so an oversized table is refused by its size
+ *  alone, never fully read into memory first. */
 async function readTableBytes(ctx: Context, path: string): Promise<Uint8Array | undefined> {
   try {
+    const stat = await ctx.fs.stat(path);
+    if (stat.size > MAX_TABLE_FILE_BYTES) {
+      throw invalidReftable(
+        'tables-list',
+        `table ${path} is ${stat.size} bytes, exceeding the ${MAX_TABLE_FILE_BYTES}-byte limit`,
+      );
+    }
     return await ctx.fs.read(path);
   } catch (err) {
     if (isFileNotFound(err)) return undefined;

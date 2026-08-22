@@ -9,6 +9,8 @@ import {
   decodeTzOffset,
   encodeTzOffset,
   iterateReftableLogs,
+  LOG_BLOCK_HEADER_LENGTH,
+  type LogInflationBudget,
   loadReftable,
   logBlockBounds,
 } from '../../../../../src/domain/refs/reftable/reftable-log.js';
@@ -57,6 +59,39 @@ function buildLogOnlyReftable(
     logPosition: header.length,
     logIndexPosition: opts.logIndexPosition ?? 0,
   });
+}
+
+/** One `'g'`-type log block whose `block_len` (the 3 bytes right after the
+ *  type byte, ALWAYS plaintext — never inside the deflate stream) can be
+ *  independently lied about via `declaredLengthOverride`, isolating the
+ *  size-budget guard from the record grammar: the payload itself is
+ *  zero-filled and never decoded as log records by these tests. */
+async function buildRawLogBlock(
+  payloadLength: number,
+  declaredLengthOverride?: number,
+): Promise<Uint8Array> {
+  const payload = new Uint8Array(payloadLength);
+  const compressed = await deflate(payload);
+  const bytes = new Uint8Array(LOG_BLOCK_HEADER_LENGTH + compressed.length);
+  const view = new DataView(bytes.buffer);
+  bytes[0] = 'g'.charCodeAt(0);
+  const declared = declaredLengthOverride ?? LOG_BLOCK_HEADER_LENGTH + payloadLength;
+  view.setUint8(1, (declared >>> 16) & 0xff);
+  view.setUint16(2, declared & 0xffff);
+  bytes.set(compressed, LOG_BLOCK_HEADER_LENGTH);
+  return bytes;
+}
+
+function expectReftableRefusal(promise: Promise<unknown>, reasonContains: string): Promise<void> {
+  return promise.then(
+    () => {
+      expect.fail('Should have thrown');
+    },
+    (err: unknown) => {
+      expect((err as { data: { code: string } }).data.code).toBe('INVALID_REFTABLE');
+      expect((err as { data: { reason: string } }).data.reason).toContain(reasonContains);
+    },
+  );
 }
 
 /**
@@ -426,6 +461,81 @@ describe('reftable-log', () => {
           expect(Array.from(iterateReftableLogs(noIndexTable))).toStrictEqual(
             Array.from(iterateReftableLogs(withIndexTable)),
           );
+        });
+      });
+    });
+  });
+
+  describe('log-block inflation budget', () => {
+    describe('Given a log block declaring far more inflated bytes than the per-block budget', () => {
+      describe('When loading the table', () => {
+        it('Then refuses with block-bounds before ever inflating it', async () => {
+          // Arrange — the declared length alone (plaintext, read before any
+          // inflate call) already exceeds the budget, so this needs no large
+          // payload: a decompression bomb is refused on its own advertised
+          // size, not only once it has already expanded.
+          const block = await buildRawLogBlock(10, LOG_BLOCK_HEADER_LENGTH + 10_000_000);
+          const bytes = buildLogOnlyReftable([block]);
+          const budget: LogInflationBudget = { maxBlockBytes: 1000, maxTableBytes: 1_000_000 };
+          const sut = loadReftable;
+
+          // Act & Assert
+          await expectReftableRefusal(sut(bytes, inflateAt, budget), 'per-block limit');
+        });
+      });
+    });
+
+    describe('Given a log block whose actual inflated size disagrees with its declared block_len', () => {
+      describe('When loading the table', () => {
+        it('Then refuses with block-bounds naming the mismatch', async () => {
+          // Arrange — the payload really is 50 bytes and inflates cleanly;
+          // only the plaintext length field lies.
+          const block = await buildRawLogBlock(50, LOG_BLOCK_HEADER_LENGTH + 57);
+          const bytes = buildLogOnlyReftable([block]);
+          const budget: LogInflationBudget = { maxBlockBytes: 1000, maxTableBytes: 1_000_000 };
+          const sut = loadReftable;
+
+          // Act & Assert
+          await expectReftableRefusal(sut(bytes, inflateAt, budget), 'not its declared');
+        });
+      });
+    });
+
+    describe('Given correctly-declared log blocks whose combined size exceeds the per-table budget', () => {
+      describe('When loading the table', () => {
+        it('Then refuses with block-bounds naming the aggregate limit', async () => {
+          // Arrange — each block is individually honest and well under the
+          // per-block budget; only their sum crosses the per-table one.
+          const blocks = [
+            await buildRawLogBlock(150),
+            await buildRawLogBlock(150),
+            await buildRawLogBlock(150),
+          ];
+          const bytes = buildLogOnlyReftable(blocks);
+          const budget: LogInflationBudget = { maxBlockBytes: 1000, maxTableBytes: 300 };
+          const sut = loadReftable;
+
+          // Act & Assert
+          await expectReftableRefusal(sut(bytes, inflateAt, budget), 'aggregate limit');
+        });
+      });
+    });
+
+    describe('Given log blocks well within both budgets', () => {
+      describe('When loading the table', () => {
+        it('Then loads normally — regression guard against over-refusing', async () => {
+          // Arrange
+          const block = await buildRawLogBlock(50);
+          const bytes = buildLogOnlyReftable([block]);
+          const budget: LogInflationBudget = { maxBlockBytes: 1000, maxTableBytes: 1000 };
+          const sut = loadReftable;
+
+          // Act
+          const table = await sut(bytes, inflateAt, budget);
+
+          // Assert
+          expect(table.logBlocks).toHaveLength(1);
+          expect(table.logBlocks[0]).toHaveLength(50);
         });
       });
     });
