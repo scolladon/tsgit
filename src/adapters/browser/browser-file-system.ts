@@ -152,9 +152,10 @@ export class BrowserFileSystem implements FileSystem {
 
   async rename(src: string, dst: string): Promise<void> {
     // OPFS lacks native rename — emulate via read/write/rm. NON-ATOMIC: a failure or
-    // browser crash between `write(dst)` and `rm(src)` leaves both copies. Callers
-    // depending on atomicity (e.g., lock-file protocols) MUST use the Node or Memory
-    // adapter. See FileSystem port JSDoc.
+    // browser crash between `write(dst)` and `rm(src)` leaves both copies. This
+    // adapter does not expose `atomicRename` (the port's optional capability) for
+    // exactly this reason — callers must branch on its absence rather than assume
+    // `rename` is safe to commit through. See FileSystem port JSDoc.
     const data = await this.read(src);
     await this.write(dst, data);
     await this.rm(src);

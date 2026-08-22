@@ -113,6 +113,17 @@ export interface FileSystem {
    */
   readonly rename: (src: string, dst: string) => Promise<void>;
 
+  /**
+   * Rename `src` over `dst` as a single atomic replace. OPTIONAL: present only
+   * where the platform can guarantee that no observer ever sees an intermediate
+   * state. Node (`rename(2)`) and memory (synchronous map surgery inside one
+   * event-loop turn) provide it; OPFS has no rename and no atomic replace, so the
+   * browser adapter omits it. Omission is a documented answer, not an oversight:
+   * a lock-file protocol that finds this absent must take its own degraded path
+   * rather than assuming `rename` is safe to commit through.
+   */
+  readonly atomicRename?: (src: string, dst: string) => Promise<void>;
+
   /** Read the target of a symbolic link. Throws FILE_NOT_FOUND if not a symlink. */
   readonly readlink: (path: string) => Promise<string>;
 

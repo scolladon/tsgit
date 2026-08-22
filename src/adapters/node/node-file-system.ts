@@ -730,6 +730,13 @@ export class NodeFileSystem implements FileSystem {
     this.parentRealpathCache.clear();
   };
 
+  // `rename` above is already atomic on POSIX (`rename(2)`) and clears the
+  // parent-realpath cache; the capability is just that guarantee exposed
+  // under its own name so callers can rely on it without re-deriving it.
+  atomicRename = async (src: string, dst: string): Promise<void> => {
+    await this.rename(src, dst);
+  };
+
   readlink = async (path: string): Promise<string> => {
     const { all } = this.resolvedRootSet ?? (await this.loadRootSet());
     const real = this.resolveRead(path, all);

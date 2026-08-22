@@ -772,6 +772,24 @@ describe('MemoryFileSystem', () => {
         });
       });
     });
+
+    describe('Given a memory file system', () => {
+      describe('When atomicRename is invoked', () => {
+        it('Then the destination holds the source bytes and the source is gone', async () => {
+          // Arrange
+          const sut = new MemoryFileSystem({ rootDir: '/repo' });
+          const data = new Uint8Array([7, 8, 9]);
+          await sut.write('/repo/atomic-src.bin', data);
+
+          // Act
+          await sut.atomicRename('/repo/atomic-src.bin', '/repo/atomic-dst.bin');
+
+          // Assert
+          expect(await sut.read('/repo/atomic-dst.bin')).toEqual(data);
+          expect(await sut.exists('/repo/atomic-src.bin')).toBe(false);
+        });
+      });
+    });
   });
 
   describe('writeExclusive contract', () => {

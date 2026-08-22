@@ -1631,6 +1631,27 @@ describe('NodeFileSystem — write guard parent-realpath LRU (DI)', () => {
         expect(parentCalls.length).toBe(2);
       });
     });
+
+    describe('When atomicRename then a same-dir rm fires', () => {
+      it('Then realpath(dirname) is invoked twice total (atomicRename clears the cache like rename)', async () => {
+        // Arrange
+        const rootDir = '/root';
+        const realpathSpy = vi.fn().mockImplementation(async (input: string) => input);
+        const fsOps = fakeFsOps({ realpath: realpathSpy });
+        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+
+        // Act
+        await sut.rm('/root/sub/a');
+        await sut.atomicRename('/root/sub/a', '/root/sub/renamed');
+        await sut.rm('/root/sub/b');
+
+        // Assert
+        const parentCalls = realpathSpy.mock.calls.filter(
+          ([arg]: readonly unknown[]) => arg === '/root/sub',
+        );
+        expect(parentCalls.length).toBe(2);
+      });
+    });
   });
 
   describe('Given an rm call whose parent is ENOENT', () => {
