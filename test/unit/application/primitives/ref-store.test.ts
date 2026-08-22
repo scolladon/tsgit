@@ -15,7 +15,7 @@ import {
   buildReftable,
   buildReftableHeader,
 } from '../../../fixtures/refs/reftable-writers.js';
-import { buildSeededContext } from './fixtures.js';
+import { buildSeededContext, instrumentedContext } from './fixtures.js';
 import { commonReftableDir, withReftableStorage, writeReftableFiles } from './reftable-fixtures.js';
 
 /** A single-record ref-block table naming `refName -> id`. */
@@ -100,6 +100,28 @@ describe('ref-store', () => {
 
         // Assert
         expect(result.kind).toBe('missing');
+      });
+    });
+  });
+
+  describe('Given a loose ref that exists', () => {
+    describe('When resolveDirect reads it', () => {
+      it('Then the loose content is read without a separate existence probe', async () => {
+        // Arrange
+        const base = await buildSeededContext({
+          refs: [{ name: 'refs/heads/main' as RefName, id: 'a'.repeat(40) as ObjectId }],
+        });
+        const { ctx, calls } = instrumentedContext(base);
+        const sut = createRefStore(ctx);
+
+        // Act
+        await sut.resolveDirect('refs/heads/main' as RefName);
+
+        // Assert — one `readUtf8` and no `exists` probe on the loose path.
+        const loosePath = `${ctx.layout.gitDir}/refs/heads/main`;
+        expect(calls().filter((c) => c.path === loosePath)).toEqual([
+          { method: 'readUtf8', path: loosePath },
+        ]);
       });
     });
   });
@@ -408,6 +430,29 @@ describe('ref-store', () => {
     });
   });
 
+  describe('Given a large packed-refs file', () => {
+    describe('When resolveDirect looks up the very last entry', () => {
+      it('Then it still returns the right id (name-indexed lookup, not a linear scan)', async () => {
+        // Arrange
+        const REF_COUNT = 500;
+        const packedRefEntry = (i: number): { readonly name: RefName; readonly id: ObjectId } => ({
+          name: `refs/tags/t${String(i).padStart(4, '0')}` as RefName,
+          id: (i % 10 === 9 ? 'f' : `${i % 10}`).repeat(40) as ObjectId,
+        });
+        const packedRefs = Array.from({ length: REF_COUNT }, (_, i) => packedRefEntry(i));
+        const last = packedRefEntry(REF_COUNT - 1);
+        const ctx = await buildSeededContext({ packedRefs });
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.resolveDirect(last.name);
+
+        // Assert
+        expect(result).toEqual({ kind: 'direct', id: last.id });
+      });
+    });
+  });
+
   describe('Given a delete update on a ref that exists in neither loose nor packed storage', () => {
     describe('When applyRefUpdates is called', () => {
       it('Then it throws REF_NOT_FOUND', async () => {
@@ -560,6 +605,109 @@ describe('ref-store', () => {
 
         // Assert
         expect(result.map((entry) => entry.name)).toEqual(['refs/heads/feat/x', 'refs/heads/main']);
+      });
+    });
+  });
+
+  describe('Given loose refs under refs/heads/ and a sibling refs/tags/ namespace', () => {
+    describe('When listing refs with prefix refs/heads/', () => {
+      it('Then the walk never reads the refs/tags directory', async () => {
+        // Arrange
+        const base = await buildSeededContext({
+          refs: [
+            { name: 'refs/heads/main' as RefName, id: 'a'.repeat(40) as ObjectId },
+            { name: 'refs/tags/v1' as RefName, id: 'b'.repeat(40) as ObjectId },
+          ],
+        });
+        const { ctx, calls } = instrumentedContext(base);
+        const sut = createRefStore(ctx);
+
+        // Act
+        await sut.listRefs('refs/heads/' as RefName);
+
+        // Assert
+        const tagsDir = `${ctx.layout.gitDir}/refs/tags`;
+        expect(calls().some((c) => c.path === tagsDir)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a prefix that cannot match anything under refs/', () => {
+    describe('When listing refs with that prefix', () => {
+      it('Then no refs directory is ever read and the result is empty', async () => {
+        // Arrange
+        const base = await buildSeededContext({
+          refs: [{ name: 'refs/heads/main' as RefName, id: 'a'.repeat(40) as ObjectId }],
+        });
+        const { ctx, calls } = instrumentedContext(base);
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.listRefs('other/' as RefName);
+
+        // Assert
+        expect(result).toEqual([]);
+        expect(calls().some((c) => c.path.includes('/refs'))).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a prefix shorter than the refs/ root itself', () => {
+    describe('When listing refs with that prefix', () => {
+      it('Then the whole refs tree is still walked', async () => {
+        // Arrange
+        const ctx = await buildSeededContext({
+          refs: [{ name: 'refs/heads/main' as RefName, id: 'a'.repeat(40) as ObjectId }],
+        });
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.listRefs('ref' as RefName);
+
+        // Assert
+        expect(result.map((entry) => entry.name)).toEqual(['refs/heads/main']);
+      });
+    });
+  });
+
+  describe('Given a prefix that ends mid-segment inside refs/heads/', () => {
+    describe('When listing refs with that prefix', () => {
+      it('Then only names sharing that partial segment are returned', async () => {
+        // Arrange
+        const ctx = await buildSeededContext({
+          refs: [
+            { name: 'refs/heads/feature' as RefName, id: 'a'.repeat(40) as ObjectId },
+            { name: 'refs/heads/fix' as RefName, id: 'b'.repeat(40) as ObjectId },
+          ],
+        });
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.listRefs('refs/heads/fea' as RefName);
+
+        // Assert
+        expect(result.map((entry) => entry.name)).toEqual(['refs/heads/feature']);
+      });
+    });
+  });
+
+  describe('Given a prefix that only HEAD could match', () => {
+    describe('When listing refs with that prefix', () => {
+      it('Then the HEAD existence probe is skipped entirely', async () => {
+        // Arrange
+        const base = await buildSeededContext({
+          refs: [{ name: 'refs/heads/main' as RefName, id: 'a'.repeat(40) as ObjectId }],
+        });
+        const { ctx, calls } = instrumentedContext(base);
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.listRefs('refs/heads/' as RefName);
+
+        // Assert
+        expect(result.map((entry) => entry.name)).toEqual(['refs/heads/main']);
+        const headPath = `${ctx.layout.gitDir}/HEAD`;
+        expect(calls().some((c) => c.path === headPath)).toBe(false);
       });
     });
   });

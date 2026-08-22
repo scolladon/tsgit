@@ -15,7 +15,6 @@ import {
 import {
   isPerWorktreeRef,
   type PackedRefEntry,
-  type PackedRefs,
   parseLooseRef,
   parsePackedRefs,
   serializeDirectRef,
@@ -24,6 +23,7 @@ import {
 } from '../../domain/refs/index.js';
 import type { Context } from '../../ports/context.js';
 import { atomicWriteRef } from './atomic-write.js';
+import { errorDataCode } from './internal/error-data-code.js';
 import {
   commonGitDir,
   logsDir,
@@ -230,6 +230,10 @@ const SYMBOLIC_PREFIX = 'ref: ';
 /** Matches valid SHA-1 (40-hex) or SHA-256 (64-hex) loose-ref content. */
 const LOOSE_OID_RE = /^[0-9a-f]{40}$|^[0-9a-f]{64}$/;
 
+function isFileNotFound(err: unknown): boolean {
+  return errorDataCode(err) === 'FILE_NOT_FOUND';
+}
+
 /** Byte-wise total order over ref names, matching git's own ref ordering (never `localeCompare`). */
 const byName = (a: RefEntry, b: RefEntry): number => {
   if (a.name < b.name) return -1;
@@ -246,31 +250,52 @@ export function createRefStore(ctx: Context): RefStore {
     : createFilesRefStore(ctx);
 }
 
+/** `loadPackedRefs`'s own return shape: the parsed entries (for a full scan —
+ *  `collectCandidateNames`'s enumeration has no name to index by) alongside
+ *  a name-indexed `Map` of the SAME entries, so a point lookup never falls
+ *  back to a linear scan over every packed ref. Always internally
+ *  consistent — never a stale `Map` alongside fresh `entries` or vice versa,
+ *  including the "packed-refs file is absent" fast path, which returns a
+ *  freshly empty pair rather than whatever the mtime+size cache still holds
+ *  from before the file was removed. */
+interface LoadedPackedRefs {
+  readonly entries: readonly PackedRefEntry[];
+  readonly byName: ReadonlyMap<RefName, PackedRefEntry>;
+}
+
+const EMPTY_PACKED_REFS: LoadedPackedRefs = { entries: [], byName: new Map() };
+
 function createFilesRefStore(ctx: Context): RefStore {
-  let packedCache: { readonly parsed: PackedRefs; readonly mtimeKey: string } | undefined;
+  let packedCache: { readonly loaded: LoadedPackedRefs; readonly mtimeKey: string } | undefined;
 
   const refDir = (name: RefName): string => perWorktreeRefDir(ctx, name);
 
-  async function loadPackedRefs(): Promise<PackedRefs> {
+  async function loadPackedRefs(): Promise<LoadedPackedRefs> {
     const path = packedRefsPath(commonGitDir(ctx));
     if (!(await ctx.fs.exists(path))) {
-      return { entries: [], peeling: 'none', sorted: false };
+      return EMPTY_PACKED_REFS;
     }
     const stat = await ctx.fs.stat(path);
     const key = `${stat.mtimeMs}:${stat.size}`;
     if (packedCache !== undefined && packedCache.mtimeKey === key) {
-      return packedCache.parsed;
+      return packedCache.loaded;
     }
     const content = await ctx.fs.readUtf8(path);
-    const parsed = parsePackedRefs(content);
-    packedCache = { parsed, mtimeKey: key };
-    return parsed;
+    const { entries } = parsePackedRefs(content);
+    const byName = new Map(entries.map((entry) => [entry.name, entry] as const));
+    const loaded: LoadedPackedRefs = { entries, byName };
+    packedCache = { loaded, mtimeKey: key };
+    return loaded;
   }
 
   async function readLooseContent(name: RefName): Promise<string | undefined> {
     const path = looseRefPath(refDir(name), name);
-    if (!(await ctx.fs.exists(path))) return undefined;
-    return ctx.fs.readUtf8(path);
+    try {
+      return await ctx.fs.readUtf8(path);
+    } catch (err) {
+      if (isFileNotFound(err)) return undefined;
+      throw err;
+    }
   }
 
   async function resolveDirect(name: RefName): Promise<ResolveDirectResult> {
@@ -283,12 +308,8 @@ function createFilesRefStore(ctx: Context): RefStore {
       return { kind: 'direct', id: parsed.target };
     }
     const packed = await loadPackedRefs();
-    for (const entry of packed.entries) {
-      if (entry.name === name) {
-        return { kind: 'direct', id: entry.id };
-      }
-    }
-    return { kind: 'missing' };
+    const entry = packed.byName.get(name);
+    return entry === undefined ? { kind: 'missing' } : { kind: 'direct', id: entry.id };
   }
 
   /** Recursively walk one `refs/**` root, composing slash-joined ref names as it descends. */
@@ -308,35 +329,84 @@ function createFilesRefStore(ctx: Context): RefStore {
     return names;
   }
 
+  const matchesPrefix = (name: RefName, prefix: RefName | undefined): boolean =>
+    prefix === undefined || name.startsWith(prefix);
+
   /**
-   * Every loose ref name this Context can see: `HEAD` plus a full walk of
-   * `refs/**` under both the worktree's own gitdir and the common dir (the
-   * two roots collapse into a single walk when they're the same directory).
+   * The deepest `refs/**` subdirectory `prefix` can push the walk down to
+   * before a `startsWith` filter is still needed — the directory whose
+   * children are exactly `matchesPrefix`'s search space, one whole path
+   * segment at a time. `undefined` when `prefix` diverges from `refs/`
+   * before consuming it (nothing under `refs/**` can ever match), skipping
+   * the walk entirely; never deeper than `refs/` itself, since `prefix` may
+   * end mid-segment (`refs/heads/fea`) or shorter than the tree
+   * (`undefined`, or a prefix of `'refs'` itself) — both of which still need
+   * every sibling `matchesPrefix` alone was already filtering.
    */
-  async function walkAllLooseRefNames(): Promise<ReadonlyArray<RefName>> {
-    const names: RefName[] = [];
-    if (await ctx.fs.exists(`${ctx.layout.gitDir}/HEAD`)) {
-      names.push(HEAD_NAME);
+  function refsWalkRoot(prefix: RefName | undefined): { readonly relative: string } | undefined {
+    if (prefix === undefined || prefix.length <= REFS_DIR.length) {
+      return REFS_DIR.startsWith(prefix ?? '') ? { relative: REFS_DIR } : undefined;
     }
-    const ownRefs = `${ctx.layout.gitDir}/${REFS_DIR}`;
-    const commonRefs = `${commonGitDir(ctx)}/${REFS_DIR}`;
-    const roots = ownRefs === commonRefs ? [ownRefs] : [ownRefs, commonRefs];
-    for (const root of roots) {
-      if (!(await ctx.fs.exists(root))) continue;
-      for (const name of await walkRefDir(root, REFS_DIR)) {
-        names.push(name);
-      }
+    if (!prefix.startsWith(`${REFS_DIR}/`)) return undefined;
+    const afterRefs = prefix.slice(REFS_DIR.length + 1);
+    const lastSlash = afterRefs.lastIndexOf('/');
+    const completeSegments = lastSlash === -1 ? '' : afterRefs.slice(0, lastSlash);
+    return { relative: completeSegments === '' ? REFS_DIR : `${REFS_DIR}/${completeSegments}` };
+  }
+
+  /** `HEAD` itself, when it both matches `prefix` and actually exists — the
+   *  `exists` probe is skipped entirely once the prefix already rules it
+   *  out. */
+  async function headCandidate(prefix: RefName | undefined): Promise<RefName | undefined> {
+    if (!matchesPrefix(HEAD_NAME, prefix)) return undefined;
+    return (await ctx.fs.exists(`${ctx.layout.gitDir}/HEAD`)) ? HEAD_NAME : undefined;
+  }
+
+  /** Every name under one `refs/**` root matching `prefix`, or `[]` when the
+   *  root doesn't exist — the per-root half of {@link walkAllLooseRefNames}. */
+  async function walkRefsRoot(
+    root: string,
+    relative: string,
+    prefix: RefName | undefined,
+  ): Promise<ReadonlyArray<RefName>> {
+    if (!(await ctx.fs.exists(root))) return [];
+    const names: RefName[] = [];
+    for (const name of await walkRefDir(root, relative)) {
+      if (matchesPrefix(name, prefix)) names.push(name);
     }
     return names;
   }
 
-  const matchesPrefix = (name: RefName, prefix: RefName | undefined): boolean =>
-    prefix === undefined || name.startsWith(prefix);
+  /**
+   * Every loose ref name this Context can see matching `prefix`: `HEAD`
+   * (when it matches) plus a walk of `refs/**` under both the worktree's own
+   * gitdir and the common dir (the two roots collapse into a single walk
+   * when they're the same directory), pushed down to {@link refsWalkRoot}'s
+   * subdirectory rather than always walking the whole tree and filtering
+   * every name afterward — `branchList`/`tagList`'s own single-level
+   * `readdir` shape, generalised to an arbitrary prefix depth.
+   */
+  async function walkAllLooseRefNames(
+    prefix: RefName | undefined,
+  ): Promise<ReadonlyArray<RefName>> {
+    const names: RefName[] = [];
+    const head = await headCandidate(prefix);
+    if (head !== undefined) names.push(head);
+    const root = refsWalkRoot(prefix);
+    if (root === undefined) return names;
+    const ownRefs = `${ctx.layout.gitDir}/${root.relative}`;
+    const commonRefs = `${commonGitDir(ctx)}/${root.relative}`;
+    const roots = ownRefs === commonRefs ? [ownRefs] : [ownRefs, commonRefs];
+    for (const walkRoot of roots) {
+      names.push(...(await walkRefsRoot(walkRoot, root.relative, prefix)));
+    }
+    return names;
+  }
 
   async function collectCandidateNames(prefix: RefName | undefined): Promise<ReadonlySet<RefName>> {
     const names = new Set<RefName>();
-    for (const name of await walkAllLooseRefNames()) {
-      if (matchesPrefix(name, prefix)) names.add(name);
+    for (const name of await walkAllLooseRefNames(prefix)) {
+      names.add(name);
     }
     const packed = await loadPackedRefs();
     for (const entry of packed.entries) {
@@ -374,7 +444,7 @@ function createFilesRefStore(ctx: Context): RefStore {
 
   async function verifyIntegrity(): Promise<readonly RefIntegrityFinding[]> {
     const findings: RefIntegrityFinding[] = [];
-    for (const name of await walkAllLooseRefNames()) {
+    for (const name of await walkAllLooseRefNames(undefined)) {
       const raw = await readLooseContent(name);
       if (raw === undefined) continue;
       const content = raw.replace(/[\r\n]+$/, '');

@@ -17,7 +17,7 @@ import {
   readReflog,
   reflogExists,
 } from '../../../../src/application/primitives/reflog-store.js';
-import { TsgitError } from '../../../../src/domain/index.js';
+import { fileNotFound, TsgitError } from '../../../../src/domain/index.js';
 import type { AuthorIdentity, RefName } from '../../../../src/domain/objects/index.js';
 import { ObjectId, zeroOid } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
@@ -399,10 +399,12 @@ describe('branch', () => {
    * Simulates a dangling-symlink HEAD (the shape real git's discovery
    * accepts by link text alone — measured against git 2.55.0): `readlink`
    * succeeds so discovery's `hasUsableHead` passes, but the loose-ref lookup
-   * `resolveDirect` performs `exists`-then-`readUtf8` — which a stat-following
-   * `exists` reports as absent for a dangling target, exactly like the node
-   * adapter does for a real dangling symlink. `resolveDirect(HEAD)` therefore
-   * answers `{ kind: 'missing' }`, and `readHeadRaw` throws `REF_NOT_FOUND`.
+   * `resolveDirect` reads the target through `readUtf8` — which a
+   * stat-following read reports as `FILE_NOT_FOUND` for a dangling target,
+   * exactly like the node adapter does for a real dangling symlink (`exists`
+   * is faked the same way, for the same reason). `resolveDirect(HEAD)`
+   * therefore answers `{ kind: 'missing' }`, and `readHeadRaw` throws
+   * `REF_NOT_FOUND`.
    */
   const withUnresolvableHead = (ctx: Context): Context => {
     const headPath = `${ctx.layout.gitDir}/HEAD`;
@@ -413,6 +415,10 @@ describe('branch', () => {
         readlink: async (path: string) =>
           path === headPath ? 'refs/heads/does-not-exist' : ctx.fs.readlink(path),
         exists: async (path: string) => (path === headPath ? false : ctx.fs.exists(path)),
+        readUtf8: async (path: string) => {
+          if (path === headPath) throw fileNotFound(headPath);
+          return ctx.fs.readUtf8(path);
+        },
       },
     };
   };
