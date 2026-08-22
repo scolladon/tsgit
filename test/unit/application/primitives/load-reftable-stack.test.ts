@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { loadReftableStack } from '../../../../src/application/primitives/load-reftable-stack.js';
-import { fileNotFound, type TsgitError } from '../../../../src/domain/error.js';
+import { fileNotFound, permissionDenied, type TsgitError } from '../../../../src/domain/error.js';
 import { RefName } from '../../../../src/domain/objects/index.js';
 import type { FileStat } from '../../../../src/ports/file-system.js';
 import {
@@ -449,6 +449,62 @@ describe('load-reftable-stack', () => {
         // Assert
         expect(result.tables).toEqual([]);
         expect([...result.names()]).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given tables.list is un-statable for a reason other than FILE_NOT_FOUND', () => {
+    describe('When the stack is loaded', () => {
+      it('Then the fault propagates rather than degrading to an empty stack', async () => {
+        // Arrange — kills the mutant that deletes `throw err`: only
+        // `FILE_NOT_FOUND` is a legitimately empty ref space (an absent
+        // `tables.list` or an absent `.git/reftable/`); every other stat
+        // fault, permission denial included, is real damage that must
+        // surface, not silently read back as "no refs".
+        const ctx = createMemoryContext();
+        const dir = commonReftableDir(ctx);
+        const listPath = `${dir}/tables.list`;
+        const fault = permissionDenied(listPath);
+        vi.spyOn(ctx.fs, 'stat').mockImplementation(async (path: string) => {
+          if (path === listPath) throw fault;
+          throw fileNotFound(path);
+        });
+        const sut = loadReftableStack;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, dir);
+          expect.unreachable();
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBe(fault);
+      });
+    });
+  });
+
+  describe('Given tables.list exists on disk but is a genuinely empty (zero-byte) file', () => {
+    describe('When the stack is loaded', () => {
+      it('Then it loads as an empty stack, not a not-newline-terminated refusal', async () => {
+        // Arrange — the shape a full tombstone-drop compaction leaves
+        // behind: the FILE still exists (this is not the absent-file
+        // degrade path — `stat` succeeds), but names zero tables. Isolates
+        // `parseTablesList`'s own `text === ''` guard: deleting it would
+        // fall through to the newline check, and `''.endsWith('\n')` is
+        // false, misclassifying this as malformed.
+        const ctx = createMemoryContext();
+        const dir = commonReftableDir(ctx);
+        await ctx.fs.writeUtf8(`${dir}/tables.list`, '');
+        const sut = loadReftableStack;
+
+        // Act
+        const result = await sut(ctx, dir);
+
+        // Assert
+        expect(result.tables).toEqual([]);
       });
     });
   });

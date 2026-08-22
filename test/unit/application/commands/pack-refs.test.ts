@@ -27,7 +27,10 @@ import { packRefs } from '../../../../src/application/commands/pack-refs.js';
 import { tagCreate } from '../../../../src/application/commands/tag.js';
 import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
 import { tablesListPath } from '../../../../src/application/primitives/path-layout.js';
-import type { AuthorIdentity, ObjectId } from '../../../../src/domain/objects/index.js';
+import { MAX_PEEL_DEPTH } from '../../../../src/application/primitives/types.js';
+import { writeObject } from '../../../../src/application/primitives/write-object.js';
+import type { TsgitError } from '../../../../src/domain/error.js';
+import type { AuthorIdentity, ObjectId, Tag } from '../../../../src/domain/objects/index.js';
 import { ObjectId as ObjectIdFactory, RefName } from '../../../../src/domain/objects/index.js';
 import {
   type ReftableLogRecord,
@@ -201,7 +204,88 @@ describe('packRefs — files backend', () => {
       });
     });
   });
+
+  describe('Given a tag chain at exactly MAX_PEEL_DEPTH pointing at a commit', () => {
+    describe('When packRefs runs', () => {
+      it('Then it succeeds and the packed-refs entry carries the commit as the peeled oid', async () => {
+        // Arrange — kills the `depth > MAX_PEEL_DEPTH` EqualityOperator `>=`
+        // mutant on `ref-store.ts`'s OWN `peelToNonTag` (pack-refs' peel
+        // walk), distinct from `resolve-ref.ts`'s own bound.
+        const { ctx, commitId } = await seedOneCommit();
+        const chainTip = await buildTagChain(ctx, MAX_PEEL_DEPTH, commitId);
+        await ctx.fs.writeUtf8(`${gitDirOf(ctx)}/refs/tags/chain`, `${chainTip}\n`);
+        const sut = packRefs;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result.packedRefCount).toBeGreaterThan(0);
+        const packed = await ctx.fs.readUtf8(packedRefsPathOf(ctx));
+        const lines = packed.split('\n');
+        const tagLineIndex = lines.findIndex((line) => line.endsWith('refs/tags/chain'));
+        expect(tagLineIndex).toBeGreaterThan(-1);
+        expect(lines[tagLineIndex]).toBe(`${chainTip} refs/tags/chain`);
+        expect(lines[tagLineIndex + 1]).toBe(`^${commitId}`);
+      });
+    });
+  });
+
+  describe('Given a tag chain exceeding MAX_PEEL_DEPTH', () => {
+    describe('When packRefs runs', () => {
+      it('Then it throws REF_CHAIN_TOO_DEEP with the depth at which the walk stopped', async () => {
+        // Arrange — one hop past the cap: the walk counter, not a
+        // coincidence of chain length, is what stops it.
+        const { ctx, commitId } = await seedOneCommit();
+        const chainTip = await buildTagChain(ctx, MAX_PEEL_DEPTH + 1, commitId);
+        await ctx.fs.writeUtf8(`${gitDirOf(ctx)}/refs/tags/deep`, `${chainTip}\n`);
+        const sut = packRefs;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx);
+          expect.unreachable();
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('REF_CHAIN_TOO_DEEP');
+        if (data.code === 'REF_CHAIN_TOO_DEEP') {
+          expect(data.depth).toBe(MAX_PEEL_DEPTH + 1);
+        }
+      });
+    });
+  });
 });
+
+/** `length` tags chained onto `base` (a commit): tag 0 points at `base`, tag
+ *  1 at tag 0, and so on — the same shape `read-tree.test.ts`'s own
+ *  MAX_PEEL_DEPTH fixtures use, reused here against `ref-store.ts`'s
+ *  separate `peelToNonTag` (the pack-refs peel walk). */
+async function buildTagChain(ctx: Context, length: number, base: ObjectId): Promise<ObjectId> {
+  let currentId = base;
+  let currentType: 'commit' | 'tag' = 'commit';
+  for (let i = 0; i < length; i += 1) {
+    const tag: Tag = {
+      type: 'tag',
+      id: '' as ObjectId,
+      data: {
+        object: currentId,
+        objectType: currentType,
+        tagName: `chain${i}`,
+        tagger: AUTHOR,
+        message: `t${i}`,
+        extraHeaders: [],
+      },
+    };
+    currentId = await writeObject(ctx, tag);
+    currentType = 'tag';
+  }
+  return currentId;
+}
 
 const oid = (fill: number): ObjectId => ObjectIdFactory.fromRaw(new Uint8Array(20).fill(fill));
 
