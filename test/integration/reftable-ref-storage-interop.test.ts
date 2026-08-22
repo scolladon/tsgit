@@ -1622,10 +1622,15 @@ describe.skipIf(!GIT_AVAILABLE)('reftable-ref-storage interop', () => {
         const fixture = fixtureFor(row.label);
         const result = tryRunGitWithExit(['-C', fixture.dir, 'fsck'], { env: runGitEnv() });
 
-        // Assert
+        // Assert — git's own crash is not a contract: pinning its EXACT
+        // exit code/signal here would turn this row red the day a git
+        // release fixes the bug, for a reason unrelated to tsgit. Only
+        // non-zero is pinned; git's signal is deliberately asserted beside
+        // tsgit's own structured refusal below (that PAIRING must survive),
+        // measured at git 2.55.0 as exitCode 8, stderr containing
+        // 'refs died of signal 11'.
         if (fixture.outcome === 'refuse') {
-          expect(result.exitCode).toBe(8);
-          expect(result.stderr).toContain('refs died of signal 11');
+          expect(result.exitCode).not.toBe(0);
         } else {
           expect(result.exitCode).toBe(0);
         }
