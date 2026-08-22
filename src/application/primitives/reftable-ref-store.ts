@@ -273,6 +273,10 @@ export function createReftableRefStore(ctx: Context): RefStore {
     return false;
   }
 
+  async function hasReflog(name: RefName): Promise<boolean> {
+    return hasLiveReflog(await stackFor(name), name);
+  }
+
   /** Every name ANY raw table in `stack` carries a log record for — a
    *  superset candidate list `hasLiveReflog` then filters down to names
    *  still live after tombstone shadowing. */
@@ -332,6 +336,7 @@ export function createReftableRefStore(ctx: Context): RefStore {
     listRefNames,
     verifyIntegrity,
     readReflog,
+    hasReflog,
     listReflogs,
     packRefs,
   };

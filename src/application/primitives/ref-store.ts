@@ -91,6 +91,14 @@ export interface RefStore {
   verifyIntegrity(): Promise<readonly RefIntegrityFinding[]>;
   /** `name`'s reflog, oldest-first. Empty when the ref has no reflog. */
   readReflog(name: RefName): Promise<readonly ReflogEntry[]>;
+  /**
+   * Whether `name` has a reflog at all — a file-presence question
+   * independent of entry count (an emptied-but-present log still counts,
+   * matching real git), and independent of `listReflogs`'s whole-tree walk:
+   * the files backend answers with one `exists` probe on `name`'s own
+   * reflog path, never a `logs/**` enumeration of every OTHER ref's.
+   */
+  hasReflog(name: RefName): Promise<boolean>;
   /** Every ref this backend has a reflog for, merged across scopes. */
   listReflogs(): Promise<readonly RefName[]>;
   /**
@@ -531,6 +539,10 @@ function createFilesRefStore(ctx: Context): RefStore {
     return parseReflog(await ctx.fs.readUtf8(path), ctx.hashConfig.hexLength);
   }
 
+  async function hasReflog(name: RefName): Promise<boolean> {
+    return ctx.fs.exists(reflogPath(refDir(name), name));
+  }
+
   /** Recursively walk one `logs/**` root, composing slash-joined ref names as it descends. */
   async function walkReflogDir(dir: string, prefix: string): Promise<ReadonlyArray<RefName>> {
     const entries = await ctx.fs.readdir(dir);
@@ -705,6 +717,7 @@ function createFilesRefStore(ctx: Context): RefStore {
     listRefNames,
     verifyIntegrity,
     readReflog,
+    hasReflog,
     listReflogs,
     packRefs,
   };

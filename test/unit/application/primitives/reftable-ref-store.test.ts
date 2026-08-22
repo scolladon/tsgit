@@ -382,6 +382,68 @@ describe('reftable-ref-store', () => {
         expect(names).toEqual(['refs/heads/main']);
       });
     });
+
+    describe('When hasReflog runs for that ref', () => {
+      it('Then it returns true', async () => {
+        // Arrange
+        const ctx = withReftableStorage(createMemoryContext());
+        const dir = commonReftableDir(ctx);
+        const headerSpec = { version: 1 as const, minUpdateIndex: 1n, maxUpdateIndex: 1n };
+        const header = buildReftableHeader(headerSpec);
+        const logBlock = await buildReftableLogBlock(
+          {
+            records: [
+              {
+                refName: 'refs/heads/main',
+                updateIndex: 1n,
+                entry: {
+                  kind: 'entry',
+                  oldId: oid(0x00),
+                  newId: ID_MAIN,
+                  name: 'Ada',
+                  email: 'ada@example.com',
+                  timestamp: 1_700_000_000,
+                  tzOffset: '+0000',
+                  message: 'commit (initial): first',
+                },
+              },
+            ],
+          },
+          ctx.compressor.deflate,
+        );
+        const bytes = buildReftable({
+          ...headerSpec,
+          blocks: [logBlock],
+          logPosition: header.length,
+          logIndexPosition: 0,
+        });
+        await writeReftableFiles(ctx, dir, [{ name: 'table1.ref', bytes }]);
+        const sut = createReftableRefStore(ctx);
+
+        // Act
+        const result = await sut.hasReflog(ref('refs/heads/main'));
+
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a stack with ref records but no log records at all', () => {
+    describe('When hasReflog runs', () => {
+      it('Then it returns false', async () => {
+        // Arrange
+        const ctx = withReftableStorage(createMemoryContext());
+        await seedTwoTableStack(ctx, commonReftableDir(ctx));
+        const sut = createReftableRefStore(ctx);
+
+        // Act
+        const result = await sut.hasReflog(ref('refs/heads/main'));
+
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
   });
 
   describe('Given a ref whose entire reflog is tombstoned by a newer table', () => {

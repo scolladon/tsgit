@@ -90,11 +90,12 @@ const runShow = async (ctx: Context, refName: string): Promise<ReflogResult> => 
 /**
  * Whether `ref` has a reflog at all — a file-presence question independent of
  * entry count (an emptied-but-present log still counts, matching real git).
- * Routed through `listReflogs` rather than a files-only probe so the check
- * stays backend-neutral.
+ * Routed through the backend-neutral `RefStore.hasReflog` seam verb — one
+ * probe scoped to `ref` itself, never `listReflogs`'s whole-`logs/**` walk
+ * just to check membership.
  */
 const hasReflog = async (ctx: Context, ref: RefName): Promise<boolean> =>
-  (await listReflogs(ctx)).includes(ref);
+  getRefStore(ctx).hasReflog(ref);
 
 const runExists = async (ctx: Context, refName: string): Promise<ReflogResult> => {
   return { kind: 'exists', exists: await hasReflog(ctx, resolveUserRef(refName)) };

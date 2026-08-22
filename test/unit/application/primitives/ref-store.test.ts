@@ -945,6 +945,60 @@ describe('ref-store', () => {
     });
   });
 
+  describe('Given a ref with a reflog', () => {
+    describe('When hasReflog is called on the store', () => {
+      it('Then it returns true', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await appendReflog(ctx, 'refs/heads/main' as RefName, reflogEntry());
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.hasReflog('refs/heads/main' as RefName);
+
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a ref with no reflog', () => {
+    describe('When hasReflog is called on the store', () => {
+      it('Then it returns false', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.hasReflog('refs/heads/absent' as RefName);
+
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+  });
+
+  describe('Given many other reflogs but not the one being asked about', () => {
+    describe('When hasReflog is called on the store', () => {
+      it('Then it never walks the logs directory tree — a single existence probe', async () => {
+        // Arrange
+        const base = await buildSeededContext();
+        for (let i = 0; i < 20; i += 1) {
+          await appendReflog(base, `refs/heads/other${i}` as RefName, reflogEntry());
+        }
+        const { ctx, calls } = instrumentedContext(base);
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.hasReflog('refs/heads/absent' as RefName);
+
+        // Assert
+        expect(result).toBe(false);
+        expect(calls().some((c) => c.method === 'readdir')).toBe(false);
+      });
+    });
+  });
+
   describe('Given per-worktree and shared reflogs, including HEAD', () => {
     describe('When listReflogs is called on the store', () => {
       it('Then per-worktree and shared reflogs are returned merged and deduplicated', async () => {
