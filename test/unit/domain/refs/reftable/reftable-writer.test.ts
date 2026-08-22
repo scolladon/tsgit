@@ -688,7 +688,7 @@ describe('Given a single deletion log record for update_index 1', () => {
       // sides use the same constant), shifting every key uniformly while
       // preserving relative order. The expected value below is a fresh
       // literal computed independently of that import, so a wrong constant
-      // is only catchable by inspecting the on-disk bytes directly.
+      // can only be caught by inspecting the on-disk bytes directly.
       const logs: ReftableLogRecord[] = [
         { name: RefName.from('HEAD'), updateIndex: 1n, entry: { kind: 'deletion' } },
       ];
