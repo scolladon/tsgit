@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { createReftableRefStore } from '../../../../src/application/primitives/reftable-ref-store.js';
+import { fileNotFound, permissionDenied } from '../../../../src/domain/error.js';
 import { ObjectId, RefName } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
 import {
@@ -650,6 +651,73 @@ describe('reftable-ref-store', () => {
       });
     });
 
+    describe('When verifyIntegrity runs and tables.list cannot be read for a reason other than FILE_NOT_FOUND', () => {
+      it('Then the fault propagates rather than reading as an empty stack', async () => {
+        // Arrange
+        const ctx = withReftableStorage(createMemoryContext());
+        const dir = commonReftableDir(ctx);
+        await seedTwoTableStack(ctx, dir);
+        const listPath = `${dir}/tables.list`;
+        const fault = permissionDenied(listPath);
+        const originalReadUtf8 = ctx.fs.readUtf8.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'readUtf8').mockImplementation(async (path: string) => {
+          if (path === listPath) throw fault;
+          return originalReadUtf8(path);
+        });
+        const sut = createReftableRefStore(ctx);
+
+        // Act + Assert
+        await expect(sut.verifyIntegrity()).rejects.toBe(fault);
+      });
+    });
+
+    describe('When verifyIntegrity runs and a table named by tables.list vanishes before it is read', () => {
+      it('Then it reports a tables-list finding for that table instead of throwing', async () => {
+        // Arrange — the same compaction race `load-reftable-stack.ts`
+        // retries once for, but `verifyOneTable` degrades it to a finding
+        // instead, so one vanished table does not deny the whole audit.
+        const ctx = withReftableStorage(createMemoryContext());
+        const dir = commonReftableDir(ctx);
+        await seedTwoTableStack(ctx, dir);
+        const vanishedPath = `${dir}/table1.ref`;
+        const originalStat = ctx.fs.stat.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'stat').mockImplementation(async (path: string) => {
+          if (path === vanishedPath) throw fileNotFound(path);
+          return originalStat(path);
+        });
+        const sut = createReftableRefStore(ctx);
+
+        // Act
+        const findings = await sut.verifyIntegrity();
+
+        // Assert
+        expect(findings).toContainEqual({
+          table: 'table1.ref',
+          msgId: 'badReftableTable',
+          check: 'tables-list',
+        });
+      });
+    });
+
+    describe('When verifyIntegrity runs over a stack whose tables.list is itself malformed', () => {
+      it('Then it returns a finding naming tables.list rather than throwing', async () => {
+        // Arrange — no trailing newline, isolating `parseTablesList`'s own
+        // grammar refusal from the per-table structural checks above.
+        const ctx = withReftableStorage(createMemoryContext());
+        const dir = commonReftableDir(ctx);
+        await ctx.fs.writeUtf8(`${dir}/tables.list`, 'a.ref');
+        const sut = createReftableRefStore(ctx);
+
+        // Act
+        const findings = await sut.verifyIntegrity();
+
+        // Assert
+        expect(findings).toEqual([
+          { table: 'tables.list', msgId: 'badReftableTable', check: 'tables-list' },
+        ]);
+      });
+    });
+
     describe('When verifyIntegrity runs over a stack whose tables.list is absent', () => {
       it('Then it reports no findings — a legitimately empty stack', async () => {
         // Arrange
@@ -688,6 +756,68 @@ describe('reftable-ref-store', () => {
       ...ctx,
       layout: { ...ctx.layout, gitDir: adminDir(ctx), commonDir: ctx.layout.gitDir },
     });
+
+    /** Plants a single direct-ref table in `dir` — the shared one-record
+     *  fixture shape every test below that only cares about a name/id pair
+     *  (not the two-table merge `seedTwoTableStack` exercises) reuses. */
+    const writeSingleRefTable = async (
+      ctx: Context,
+      dir: string,
+      name: string,
+      id: Uint8Array,
+    ): Promise<void> => {
+      const headerSpec = { version: 1 as const, minUpdateIndex: 1n, maxUpdateIndex: 1n };
+      const header = buildReftableHeader(headerSpec);
+      const block = buildRefBlock({
+        records: [{ name, value: { kind: 'direct', id } }],
+        restartIndices: [0],
+        isFirstBlock: true,
+        headerLength: header.length,
+      });
+      const bytes = buildReftable({ ...headerSpec, blocks: [block] });
+      await writeReftableFiles(ctx, dir, [{ name: 'table1.ref', bytes }]);
+    };
+
+    /** Plants a single log-only table in `dir` naming one reflog entry for
+     *  `refName` — the shared fixture shape the per-stack `listReflogs` test
+     *  below reuses. */
+    const writeSingleLogTable = async (
+      ctx: Context,
+      dir: string,
+      refName: string,
+      newId: Uint8Array,
+    ): Promise<void> => {
+      const headerSpec = { version: 1 as const, minUpdateIndex: 1n, maxUpdateIndex: 1n };
+      const header = buildReftableHeader(headerSpec);
+      const logBlock = await buildReftableLogBlock(
+        {
+          records: [
+            {
+              refName,
+              updateIndex: 1n,
+              entry: {
+                kind: 'entry',
+                oldId: oid(0x00),
+                newId,
+                name: 'Ada',
+                email: 'ada@example.com',
+                timestamp: 1_700_000_000,
+                tzOffset: '+0000',
+                message: 'commit (initial): first',
+              },
+            },
+          ],
+        },
+        ctx.compressor.deflate,
+      );
+      const bytes = buildReftable({
+        ...headerSpec,
+        blocks: [logBlock],
+        logPosition: header.length,
+        logIndexPosition: 0,
+      });
+      await writeReftableFiles(ctx, dir, [{ name: 'table1.ref', bytes }]);
+    };
 
     describe('When resolveDirect resolves a shared ref name', () => {
       it('Then it reads from the common stack, not the worktree own stack', async () => {
@@ -760,6 +890,113 @@ describe('reftable-ref-store', () => {
         // the main worktree's own HEAD (refs/heads/main) never appears.
         expect(head?.value).toEqual({ kind: 'symbolic', target: 'refs/heads/topic' });
         expect(entries.map((entry) => entry.name)).toContain('refs/heads/main');
+      });
+    });
+
+    describe('When listRefNames runs and the common stack holds the main worktree HEAD', () => {
+      it('Then the linked worktree listing excludes the main worktree HEAD name', async () => {
+        // Arrange — `HEAD` here belongs to the MAIN worktree (it lives only
+        // in the common stack); this linked worktree has none of its own.
+        const base = withReftableStorage(createMemoryContext());
+        const common = commonReftableDir(base);
+        await seedTwoTableStack(base, common);
+        const sut = createReftableRefStore(asWorktreeChild(base));
+
+        // Act
+        const names = await sut.listRefNames();
+
+        // Assert
+        expect(names).toContain('refs/heads/main');
+        expect(names).not.toContain('HEAD');
+      });
+    });
+
+    describe('When listRefs runs and the common and own stacks combine out of name order', () => {
+      it('Then the merged result is still sorted ascending by name', async () => {
+        // Arrange — `gitDirs()` visits the common stack BEFORE the
+        // worktree's own, and the common name here sorts AFTER the
+        // worktree-own name, so only an actual re-sort (not the k-way
+        // merge's own per-stack order) produces the correct final order.
+        const base = withReftableStorage(createMemoryContext());
+        const common = commonReftableDir(base);
+        await writeSingleRefTable(base, common, 'refs/heads/zzz', ID_MAIN);
+        const sut = createReftableRefStore(asWorktreeChild(base));
+        const ownDir = `${adminDir(base)}/reftable`;
+        await writeSingleRefTable(base, ownDir, 'refs/bisect/aaa', ID_TAG);
+
+        // Act
+        const entries = await sut.listRefs();
+
+        // Assert
+        expect(entries.map((entry) => entry.name)).toEqual(['refs/bisect/aaa', 'refs/heads/zzz']);
+      });
+    });
+
+    describe('When listRefNames runs and the common and own stacks combine out of name order', () => {
+      it('Then the merged result is still sorted ascending by name', async () => {
+        // Arrange
+        const base = withReftableStorage(createMemoryContext());
+        const common = commonReftableDir(base);
+        await writeSingleRefTable(base, common, 'refs/heads/zzz', ID_MAIN);
+        const sut = createReftableRefStore(asWorktreeChild(base));
+        const ownDir = `${adminDir(base)}/reftable`;
+        await writeSingleRefTable(base, ownDir, 'refs/bisect/aaa', ID_TAG);
+
+        // Act
+        const names = await sut.listRefNames();
+
+        // Assert
+        expect(names).toEqual(['refs/bisect/aaa', 'refs/heads/zzz']);
+      });
+    });
+
+    describe('When listReflogs runs and each stack owns a distinct log record', () => {
+      it('Then both are returned merged — the worktree own reflog is not lost', async () => {
+        // Arrange
+        const base = withReftableStorage(createMemoryContext());
+        const common = commonReftableDir(base);
+        await writeSingleLogTable(base, common, 'refs/heads/main', ID_MAIN);
+        const sut = createReftableRefStore(asWorktreeChild(base));
+        const ownDir = `${adminDir(base)}/reftable`;
+        await writeSingleLogTable(base, ownDir, 'refs/bisect/bad', ID_TAG);
+
+        // Act
+        const names = await sut.listReflogs();
+
+        // Assert
+        expect([...names].sort()).toEqual(['refs/bisect/bad', 'refs/heads/main']);
+      });
+    });
+
+    describe('When verifyIntegrity runs and only the worktree own stack has a corrupt table', () => {
+      it('Then the finding still surfaces — the own stack is not skipped', async () => {
+        // Arrange — the common stack is entirely healthy; only the linked
+        // worktree's own table is structurally corrupt.
+        const base = withReftableStorage(createMemoryContext());
+        const common = commonReftableDir(base);
+        await seedTwoTableStack(base, common);
+        const sut = createReftableRefStore(asWorktreeChild(base));
+        const ownDir = `${adminDir(base)}/reftable`;
+        const headerSpec = { version: 1 as const, minUpdateIndex: 1n, maxUpdateIndex: 1n };
+        const header = buildReftableHeader(headerSpec);
+        const block = buildRefBlock({
+          records: [{ name: 'refs/bisect/bad', value: { kind: 'direct', id: ID_TAG } }],
+          restartIndices: [0],
+          isFirstBlock: true,
+          headerLength: header.length,
+        });
+        const healthy = buildReftable({ ...headerSpec, blocks: [block] });
+        const corrupt = healthy.slice();
+        corrupt.set([0x58, 0x58, 0x58, 0x58], 0); // 'XXXX'
+        await writeReftableFiles(base, ownDir, [{ name: 'table1.ref', bytes: corrupt }]);
+
+        // Act
+        const findings = await sut.verifyIntegrity();
+
+        // Assert
+        expect(findings).toEqual([
+          { table: 'table1.ref', msgId: 'badReftableTable', check: 'magic' },
+        ]);
       });
     });
   });
