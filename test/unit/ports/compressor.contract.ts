@@ -186,42 +186,39 @@ export function compressorContractTests(createSut: () => Promise<Compressor>): v
       expect(result.output).toEqual(payload);
     });
 
-    it('Given a zlib member whose full output vastly exceeds a caller-supplied bound, When streamInflate is called with that bound, Then it aborts after decoding a fraction of the member rather than materializing all of it', async () => {
-      // Arrange — a highly compressible buffer deflates to a tiny member, so
-      // building the fixture is cheap while decoding it in full is not. The
-      // oracle is RELATIVE, never an absolute wall-clock budget: an absolute
-      // one is really a measurement of the host and of whatever instrumentation
-      // wraps the run, and fails under coverage on an implementation that is
-      // perfectly correct. Timing the same member unbounded, in the same
-      // process under the same instrumentation, calibrates the comparison
-      // away. An implementation that inflates fully and only then compares
-      // `output.length` does the SAME work in both arms, so the ratio
-      // collapses toward 1 and this fails — which is exactly the defect the
-      // row exists to catch.
+    it('Given a zlib member whose oversized first block alone exceeds a caller-supplied bound, When streamInflate is called with that bound, Then it rejects on the cap before ever reaching the corrupted block that follows', async () => {
+      // Arrange — a hand-built (not adapter-produced) member: one oversized
+      // STORED block of live zero bytes, immediately followed by a corrupted
+      // block header (BTYPE=3, reserved by RFC 1951 -- always invalid). This
+      // is a STRUCTURAL oracle, not a timing one: an implementation that
+      // checks the output cap incrementally never gets past the first block
+      // — it throws the safety-cap reason before the corrupted second block
+      // is ever read. An implementation that inflates fully and only then
+      // compares `output.length` keeps decoding into the corrupted block and
+      // throws a DIFFERENT, format-level reason instead — deterministically
+      // distinguishing the two, no clock involved.
       const sut = await createSut();
-      const bound = 1024;
-      const deflated = await sut.deflate(new Uint8Array(8 * 1024 * 1024));
+      // Past Node's default zlib chunkSize (16 KiB), so a real streaming
+      // decoder flushes output from this block alone before it even finishes.
+      const literalByteCount = 20_000;
+      const bound = 100;
+      const bytes = buildOverCapStoredZlibMember(literalByteCount);
 
-      // Act — unbounded decode first, to calibrate the cost of the full member.
-      const beforeFull = performance.now();
-      const full = await sut.streamInflate(deflated, 0);
-      const fullElapsed = performance.now() - beforeFull;
-
-      const beforeBounded = performance.now();
-      let bounded: unknown;
+      // Act
+      let caught: unknown;
       try {
-        await sut.streamInflate(deflated, 0, bound);
+        await sut.streamInflate(bytes, 0, bound);
       } catch (err) {
-        bounded = err;
+        caught = err;
       }
-      const boundedElapsed = performance.now() - beforeBounded;
 
-      // Assert — the bounded arm refuses, and got there without paying for the
-      // whole member.
-      expect(full.output.length).toBe(8 * 1024 * 1024);
-      expect(bounded).toBeInstanceOf(TsgitError);
-      expect((bounded as TsgitError).data.code).toBe('DECOMPRESS_FAILED');
-      expect(boundedElapsed).toBeLessThan(fullElapsed / 4);
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      const data = (caught as TsgitError).data;
+      if (data.code !== 'DECOMPRESS_FAILED') {
+        expect.fail(`expected DECOMPRESS_FAILED, got ${data.code}`);
+      }
+      expect(data.reason).toContain('exceeds safety cap');
     });
 
     it('Given non-empty data, When deflateRaw vs deflate, Then outputs differ (no zlib wrapper)', async () => {
@@ -238,6 +235,30 @@ export function compressorContractTests(createSut: () => Promise<Compressor>): v
       expect(raw).not.toEqual(zlib);
     });
   });
+}
+
+/**
+ * A valid RFC 1950 zlib member holding one STORED block of `literalByteCount`
+ * zero bytes (BFINAL=0), followed by a corrupted trailing block header
+ * (BTYPE=3, reserved by RFC 1951 -- no decoder ever accepts it). Built
+ * byte-by-byte rather than through any adapter's `deflate`, so its layout is
+ * identical for every `Compressor` under this contract.
+ */
+function buildOverCapStoredZlibMember(literalByteCount: number): Uint8Array {
+  const ZLIB_HEADER = [0x78, 0x9c]; // CM=8 (deflate), FCHECK-valid, no preset dictionary
+  const STORED_BLOCK_HEADER = 0x00; // BFINAL=0, BTYPE=00 (stored)
+  const RESERVED_BLOCK_HEADER = 0x06; // BFINAL=0, BTYPE=11 (reserved)
+  const nlen = ~literalByteCount & 0xffff;
+  return new Uint8Array([
+    ...ZLIB_HEADER,
+    STORED_BLOCK_HEADER,
+    literalByteCount & 0xff,
+    (literalByteCount >> 8) & 0xff,
+    nlen & 0xff,
+    (nlen >> 8) & 0xff,
+    ...new Array(literalByteCount).fill(0),
+    RESERVED_BLOCK_HEADER,
+  ]);
 }
 
 async function rawInflate(data: Uint8Array): Promise<Uint8Array> {
