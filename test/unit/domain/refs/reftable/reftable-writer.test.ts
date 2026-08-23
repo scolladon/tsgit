@@ -115,6 +115,33 @@ function expectInvalidReftable(
 
 // --- Header ------------------------------------------------------------
 
+describe('Given a block_size too small for an index level to summarise the one below it', () => {
+  describe('When serializing enough refs to force a multi-level index', () => {
+    it('Then it refuses with block-bounds instead of looping forever', async () => {
+      // Arrange — every index level must summarise its predecessor, so the
+      // entry count has to strictly shrink. At block_size 1 a level holds one
+      // record per block, so each level reproduces the previous count and the
+      // multi-level loop's exit test never goes false. The refusal is what
+      // stops a WRITE from hanging; no reader-side bound applies here.
+      const options = baseOptions({ blockSize: 1 });
+      const sut = serializeReftable;
+
+      // Act
+      const caught = await sut(makeRefs(40), [], options, identityDeflate).then(
+        () => undefined,
+        (err: unknown) => err,
+      );
+
+      // Assert
+      expect((caught as { data: { code: string } } | undefined)?.data.code).toBe(
+        'INVALID_REFTABLE',
+      );
+      expect((caught as { data: { check: string } }).data.check).toBe('block-bounds');
+      expect((caught as { data: { reason: string } }).data.reason).toContain('did not shrink');
+    }, 10_000);
+  });
+});
+
 describe('Given a single ref', () => {
   describe('When building the ref section at the default block size', () => {
     it('Then the header carries the measured block_size, at v1', () => {

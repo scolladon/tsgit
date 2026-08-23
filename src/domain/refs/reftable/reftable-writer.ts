@@ -582,6 +582,7 @@ function buildIndexLevels(
   let level: PackedSection;
 
   do {
+    const entryCountBefore = entries.length;
     level = packBlocks(entries, {
       type: 'i',
       keyBytesOf: (e) => e.keyBytes,
@@ -595,6 +596,18 @@ function buildIndexLevels(
     allBlocks.push(...level.blocks);
     cursor += level.totalLength;
     entries = toIndexEntries(level);
+    // Each level must summarise the one below it, so the entry count has to
+    // strictly shrink; the loop's own exit test only asks whether it shrank
+    // ENOUGH. A `blockSize` too small to hold more than one index record per
+    // block makes every level reproduce its predecessor's count, and the
+    // `while` below then never goes false — an unbounded loop inside a write,
+    // not a read, so no reader-side bound can catch it.
+    if (entries.length >= entryCountBefore) {
+      throw invalidReftable(
+        'block-bounds',
+        `index level did not shrink (${entryCountBefore} -> ${entries.length} entries): block_size ${options.blockSize} is too small to summarise this section`,
+      );
+    }
   } while (level.blocks.length > MULTI_LEVEL_INDEX_THRESHOLD_BLOCKS);
 
   return {
