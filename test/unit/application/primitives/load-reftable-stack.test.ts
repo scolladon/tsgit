@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
-import { loadReftableStack } from '../../../../src/application/primitives/load-reftable-stack.js';
+import {
+  loadReftableStack,
+  parseTablesList,
+  readSizeCheckedTableBytes,
+} from '../../../../src/application/primitives/load-reftable-stack.js';
 import { fileNotFound, permissionDenied, type TsgitError } from '../../../../src/domain/error.js';
 import { RefName } from '../../../../src/domain/objects/index.js';
 import type { FileStat } from '../../../../src/ports/file-system.js';
@@ -170,7 +174,7 @@ describe('load-reftable-stack', () => {
         expect((caught as TsgitError).data.code).toBe('INVALID_REFTABLE');
         expect((caught as TsgitError).data).toMatchObject({
           check: 'tables-list',
-          reason: expect.any(String),
+          reason: `a table named by ${dir}/tables.list is still missing after one retry`,
         });
       });
     });
@@ -788,6 +792,180 @@ describe('load-reftable-stack', () => {
         expect(result.tables).toHaveLength(1);
         expect(result.tables[0]?.logBlocks).toHaveLength(1);
         expect([...result.names()]).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a table read fails for a reason other than FILE_NOT_FOUND', () => {
+    describe('When the stack is loaded', () => {
+      it('Then the fault propagates rather than being retried as a missing table', async () => {
+        // Arrange — a permission fault on the TABLE read (as opposed to the
+        // `tables.list` stat another test already covers) must surface as
+        // itself; treating it as "missing" would mask it behind the
+        // retry-exhausted `tables-list` refusal instead.
+        const ctx = createMemoryContext();
+        const dir = commonReftableDir(ctx);
+        const table = buildSimpleTable({ refName: 'refs/heads/main', id: oid(0x01) });
+        await writeReftableFiles(ctx, dir, [{ name: 'a.ref', bytes: table }]);
+        const tablePath = `${dir}/a.ref`;
+        const fault = permissionDenied(tablePath);
+        const originalRead = ctx.fs.read.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'read').mockImplementation(async (path: string) => {
+          if (path === tablePath) throw fault;
+          return originalRead(path);
+        });
+        const sut = loadReftableStack;
+
+        // Act — captured OUTSIDE the try: an `expect.unreachable()`
+        // thrown inside it would be swallowed by this same `catch` and
+        // resurface as a confusing downstream TypeError instead of the
+        // intended message.
+        let caught: unknown;
+        try {
+          await sut(ctx, dir);
+        } catch (err) {
+          caught = err;
+        }
+        if (caught === undefined) expect.unreachable();
+
+        // Assert
+        expect(caught).toBe(fault);
+      });
+    });
+  });
+});
+
+describe('parseTablesList', () => {
+  describe('Given a tables.list body that is not newline-terminated', () => {
+    describe('When it is parsed', () => {
+      it('Then it throws with check tables-list and a newline-terminated reason', () => {
+        // Arrange
+        const sut = parseTablesList;
+
+        // Act — captured OUTSIDE the try: an `expect.unreachable()`
+        // thrown inside it would be swallowed by this same `catch` and
+        // resurface as a confusing downstream TypeError instead of the
+        // intended message.
+        let caught: unknown;
+        try {
+          sut('a.ref');
+        } catch (err) {
+          caught = err;
+        }
+        if (caught === undefined) expect.unreachable();
+
+        // Assert
+        expect((caught as TsgitError).data.code).toBe('INVALID_REFTABLE');
+        expect((caught as TsgitError).data).toMatchObject({
+          check: 'tables-list',
+          reason: 'tables.list is not newline-terminated',
+        });
+      });
+    });
+  });
+
+  describe('Given a tables.list body mixing blank and named lines', () => {
+    describe('When it is parsed', () => {
+      it('Then it throws with check tables-list and a blank-line reason', () => {
+        // Arrange — mixed blank/non-blank lines, not an all-blank body:
+        // `.every(line.length === 0)` would (wrongly) agree with `.some` on
+        // an all-blank body, so this isolates the two.
+        const sut = parseTablesList;
+
+        // Act — captured OUTSIDE the try: an `expect.unreachable()`
+        // thrown inside it would be swallowed by this same `catch` and
+        // resurface as a confusing downstream TypeError instead of the
+        // intended message.
+        let caught: unknown;
+        try {
+          sut('a.ref\n\nb.ref\n');
+        } catch (err) {
+          caught = err;
+        }
+        if (caught === undefined) expect.unreachable();
+
+        // Assert
+        expect((caught as TsgitError).data.code).toBe('INVALID_REFTABLE');
+        expect((caught as TsgitError).data).toMatchObject({
+          check: 'tables-list',
+          reason: 'tables.list contains a blank line',
+        });
+      });
+    });
+  });
+
+  describe('Given tables.list naming exactly the stack ceiling of tables', () => {
+    describe('When it is parsed', () => {
+      it('Then it returns every name rather than refusing at the boundary', () => {
+        // Arrange — the ceiling itself must still load; only ONE more name
+        // refuses (already covered by the 4097-name loadReftableStack test).
+        const names = Array.from({ length: 4096 }, (_unused, i) => `t${i}.ref`);
+        const sut = parseTablesList;
+
+        // Act
+        const result = sut(`${names.join('\n')}\n`);
+
+        // Assert
+        expect(result).toHaveLength(4096);
+      });
+    });
+  });
+});
+
+describe('readSizeCheckedTableBytes', () => {
+  describe('Given a table file whose size sits exactly at the per-table ceiling', () => {
+    describe('When it is read', () => {
+      it('Then it succeeds rather than refusing at the boundary', async () => {
+        // Arrange — the ceiling itself must still be readable; only ONE
+        // byte more refuses (already covered by the oversized-table test).
+        const ctx = createMemoryContext();
+        const dir = commonReftableDir(ctx);
+        const path = `${dir}/a.ref`;
+        await ctx.fs.write(path, new Uint8Array([1, 2, 3]));
+        const baseline = await ctx.fs.stat(path);
+        vi.spyOn(ctx.fs, 'stat').mockResolvedValue({ ...baseline, size: 64 * 1024 * 1024 });
+        const sut = readSizeCheckedTableBytes;
+
+        // Act
+        const result = await sut(ctx, path);
+
+        // Assert
+        expect(result).toEqual(new Uint8Array([1, 2, 3]));
+      });
+    });
+  });
+
+  describe('Given a table file larger than the per-table ceiling', () => {
+    describe('When it is read', () => {
+      it('Then it refuses with a reason naming both the size and the limit', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const dir = commonReftableDir(ctx);
+        const path = `${dir}/huge.ref`;
+        await ctx.fs.write(path, new Uint8Array([1]));
+        const baseline = await ctx.fs.stat(path);
+        const oversizedBy1 = 64 * 1024 * 1024 + 1;
+        vi.spyOn(ctx.fs, 'stat').mockResolvedValue({ ...baseline, size: oversizedBy1 });
+        const sut = readSizeCheckedTableBytes;
+
+        // Act — captured OUTSIDE the try: an `expect.unreachable()`
+        // thrown inside it would be swallowed by this same `catch` and
+        // resurface as a confusing downstream TypeError instead of the
+        // intended message.
+        let caught: unknown;
+        try {
+          await sut(ctx, path);
+        } catch (err) {
+          caught = err;
+        }
+        if (caught === undefined) expect.unreachable();
+
+        // Assert
+        expect((caught as TsgitError).data.code).toBe('INVALID_REFTABLE');
+        expect((caught as TsgitError).data).toMatchObject({
+          check: 'tables-list',
+          reason: `table ${path} is ${oversizedBy1} bytes, exceeding the ${64 * 1024 * 1024}-byte limit`,
+        });
       });
     });
   });
