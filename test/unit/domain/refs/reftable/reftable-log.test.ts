@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { MemoryCompressor } from '../../../../../src/adapters/memory/memory-compressor.js';
 import { RefName } from '../../../../../src/domain/objects/index.js';
+import { invalidReftable } from '../../../../../src/domain/refs/error.js';
 import {
   blockLengthAt,
   parseReftable,
@@ -800,6 +801,41 @@ describe('reftable-log', () => {
 
         // Act & Assert
         await expectReftableRefusal(sut(bytes, inflateAt), 'failed to inflate', 'block-bounds');
+      });
+    });
+  });
+
+  describe('Given a log block whose inflation fails for a reason that is not decompression', () => {
+    describe('When the thrown fault is not a TsgitError at all', () => {
+      it('Then it propagates unchanged rather than being restated as a corrupt table', async () => {
+        // Arrange — the restatement must stay narrow: an adapter bug is not
+        // evidence that the table's bytes are bad.
+        const block = await buildRawLogBlock(4);
+        const bytes = buildLogOnlyReftable([block]);
+        const fault = new Error('adapter exploded');
+        const sut = loadReftable;
+
+        // Act
+        const result = await sut(bytes, () => Promise.reject(fault)).catch((err: unknown) => err);
+
+        // Assert
+        expect(result).toBe(fault);
+      });
+    });
+
+    describe('When the thrown fault is a TsgitError carrying a different code', () => {
+      it('Then it propagates unchanged rather than being restated as a corrupt table', async () => {
+        // Arrange
+        const block = await buildRawLogBlock(4);
+        const bytes = buildLogOnlyReftable([block]);
+        const fault = invalidReftable('truncated', 'some other structural fault');
+        const sut = loadReftable;
+
+        // Act
+        const result = await sut(bytes, () => Promise.reject(fault)).catch((err: unknown) => err);
+
+        // Assert
+        expect(result).toBe(fault);
       });
     });
   });

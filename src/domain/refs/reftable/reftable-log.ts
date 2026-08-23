@@ -11,6 +11,8 @@
  * index (parsed into the footer by `reftable-format.ts`) is never consulted
  * here: the whole table is already resident, so every read is a linear scan.
  */
+
+import { TsgitError } from '../../error.js';
 import type { AuthorIdentity } from '../../objects/author-identity.js';
 import { decode } from '../../objects/encoding.js';
 import { ObjectId, type RefName } from '../../objects/index.js';
@@ -417,24 +419,22 @@ async function inflateLogBlock(
   try {
     return await inflateAt(table._bytes, offset + LOG_BLOCK_HEADER_LENGTH, declaredPayloadBytes);
   } catch (err) {
-    if (errorCodeOf(err) !== 'DECOMPRESS_FAILED') throw err;
+    // Deliberately NARROW: only a decompression fault is restated. Anything
+    // else — an adapter bug, an abort, a fault from a different subsystem —
+    // propagates untouched, so this catch can never launder an unrelated
+    // failure into "this table is corrupt".
+    if (!isDecompressFailure(err)) throw err;
     throw invalidReftable(
       'block-bounds',
-      `log block at file offset ${offset} failed to inflate: ${reasonOf(err)}`,
+      `log block at file offset ${offset} failed to inflate: ${err.data.reason}`,
     );
   }
 }
 
-/** The `data.code` of a `TsgitError`, or `undefined` for any other throw —
- *  narrowing without importing the error class into the domain codec. */
-function errorCodeOf(err: unknown): string | undefined {
-  const data = (err as { readonly data?: { readonly code?: unknown } } | null)?.data;
-  return typeof data?.code === 'string' ? data.code : undefined;
-}
-
-function reasonOf(err: unknown): string {
-  const data = (err as { readonly data?: { readonly reason?: unknown } } | null)?.data;
-  return typeof data?.reason === 'string' ? data.reason : 'unknown cause';
+function isDecompressFailure(err: unknown): err is TsgitError & {
+  readonly data: { readonly reason: string };
+} {
+  return err instanceof TsgitError && err.data.code === 'DECOMPRESS_FAILED';
 }
 
 async function collectLogBlocks(
