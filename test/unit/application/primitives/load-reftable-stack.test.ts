@@ -154,17 +154,24 @@ describe('load-reftable-stack', () => {
         await ctx.fs.writeUtf8(`${dir}/tables.list`, 'ghost.ref\n');
         const sut = loadReftableStack;
 
-        // Act + Assert
+        // Act — captured OUTSIDE the try: an `expect.unreachable()`
+        // thrown inside it would be swallowed by this same `catch` and
+        // resurface as a confusing downstream TypeError instead of the
+        // intended message.
+        let caught: unknown;
         try {
           await sut(ctx, dir);
-          expect.unreachable();
         } catch (err) {
-          expect((err as TsgitError).data.code).toBe('INVALID_REFTABLE');
-          expect((err as TsgitError).data).toMatchObject({
-            check: 'tables-list',
-            reason: expect.any(String),
-          });
+          caught = err;
         }
+        if (caught === undefined) expect.unreachable();
+
+        // Assert
+        expect((caught as TsgitError).data.code).toBe('INVALID_REFTABLE');
+        expect((caught as TsgitError).data).toMatchObject({
+          check: 'tables-list',
+          reason: expect.any(String),
+        });
       });
     });
   });
@@ -178,14 +185,21 @@ describe('load-reftable-stack', () => {
         await ctx.fs.writeUtf8(`${dir}/tables.list`, 'a.ref');
         const sut = loadReftableStack;
 
-        // Act + Assert
+        // Act — captured OUTSIDE the try: an `expect.unreachable()`
+        // thrown inside it would be swallowed by this same `catch` and
+        // resurface as a confusing downstream TypeError instead of the
+        // intended message.
+        let caught: unknown;
         try {
           await sut(ctx, dir);
-          expect.unreachable();
         } catch (err) {
-          expect((err as TsgitError).data.code).toBe('INVALID_REFTABLE');
-          expect((err as TsgitError).data).toMatchObject({ check: 'tables-list' });
+          caught = err;
         }
+        if (caught === undefined) expect.unreachable();
+
+        // Assert
+        expect((caught as TsgitError).data.code).toBe('INVALID_REFTABLE');
+        expect((caught as TsgitError).data).toMatchObject({ check: 'tables-list' });
       });
     });
   });
@@ -199,14 +213,21 @@ describe('load-reftable-stack', () => {
         await ctx.fs.writeUtf8(`${dir}/tables.list`, 'a.ref\n\nb.ref\n');
         const sut = loadReftableStack;
 
-        // Act + Assert
+        // Act — captured OUTSIDE the try: an `expect.unreachable()`
+        // thrown inside it would be swallowed by this same `catch` and
+        // resurface as a confusing downstream TypeError instead of the
+        // intended message.
+        let caught: unknown;
         try {
           await sut(ctx, dir);
-          expect.unreachable();
         } catch (err) {
-          expect((err as TsgitError).data.code).toBe('INVALID_REFTABLE');
-          expect((err as TsgitError).data).toMatchObject({ check: 'tables-list' });
+          caught = err;
         }
+        if (caught === undefined) expect.unreachable();
+
+        // Assert
+        expect((caught as TsgitError).data.code).toBe('INVALID_REFTABLE');
+        expect((caught as TsgitError).data).toMatchObject({ check: 'tables-list' });
       });
     });
   });
@@ -222,15 +243,22 @@ describe('load-reftable-stack', () => {
         await ctx.fs.writeUtf8(`${dir}/tables.list`, `${names.join('\n')}\n`);
         const sut = loadReftableStack;
 
-        // Act + Assert
+        // Act — captured OUTSIDE the try: an `expect.unreachable()`
+        // thrown inside it would be swallowed by this same `catch` and
+        // resurface as a confusing downstream TypeError instead of the
+        // intended message.
+        let caught: unknown;
         try {
           await sut(ctx, dir);
-          expect.unreachable();
         } catch (err) {
-          expect((err as TsgitError).data.code).toBe('INVALID_REFTABLE');
-          expect((err as TsgitError).data).toMatchObject({ check: 'tables-list' });
-          expect(((err as TsgitError).data as { reason: string }).reason).toContain('4097');
+          caught = err;
         }
+        if (caught === undefined) expect.unreachable();
+
+        // Assert
+        expect((caught as TsgitError).data.code).toBe('INVALID_REFTABLE');
+        expect((caught as TsgitError).data).toMatchObject({ check: 'tables-list' });
+        expect(((caught as TsgitError).data as { reason: string }).reason).toContain('4097');
       });
     });
   });
@@ -248,14 +276,21 @@ describe('load-reftable-stack', () => {
         await ctx.fs.write(`${dir}/huge.ref`, oversized);
         const sut = loadReftableStack;
 
-        // Act + Assert
+        // Act — captured OUTSIDE the try: an `expect.unreachable()`
+        // thrown inside it would be swallowed by this same `catch` and
+        // resurface as a confusing downstream TypeError instead of the
+        // intended message.
+        let caught: unknown;
         try {
           await sut(ctx, dir);
-          expect.unreachable();
         } catch (err) {
-          expect((err as TsgitError).data.code).toBe('INVALID_REFTABLE');
-          expect((err as TsgitError).data).toMatchObject({ check: 'tables-list' });
+          caught = err;
         }
+        if (caught === undefined) expect.unreachable();
+
+        // Assert
+        expect((caught as TsgitError).data.code).toBe('INVALID_REFTABLE');
+        expect((caught as TsgitError).data).toMatchObject({ check: 'tables-list' });
       });
     });
   });
@@ -275,15 +310,22 @@ describe('load-reftable-stack', () => {
         await ctx.fs.writeUtf8(`${dir}/tables.list`, `${name}\n`);
         const sut = loadReftableStack;
 
-        // Act + Assert
+        // Act — captured OUTSIDE the try: an `expect.unreachable()`
+        // thrown inside it would be swallowed by this same `catch` and
+        // resurface as a confusing downstream TypeError instead of the
+        // intended message.
+        let caught: unknown;
         try {
           await sut(ctx, dir);
-          expect.unreachable();
         } catch (err) {
-          expect((err as TsgitError).data.code).toBe('INVALID_REFTABLE');
-          expect((err as TsgitError).data).toMatchObject({ check: 'tables-list' });
-          expect(((err as TsgitError).data as { reason: string }).reason).toContain(name);
+          caught = err;
         }
+        if (caught === undefined) expect.unreachable();
+
+        // Assert
+        expect((caught as TsgitError).data.code).toBe('INVALID_REFTABLE');
+        expect((caught as TsgitError).data).toMatchObject({ check: 'tables-list' });
+        expect(((caught as TsgitError).data as { reason: string }).reason).toContain(name);
       });
     });
   });
@@ -306,14 +348,21 @@ describe('load-reftable-stack', () => {
         await ctx.fs.writeUtf8(`${dir}/tables.list`, '../config\n');
         const sut = loadReftableStack;
 
-        // Act + Assert
+        // Act — captured OUTSIDE the try: an `expect.unreachable()`
+        // thrown inside it would be swallowed by this same `catch` and
+        // resurface as a confusing downstream TypeError instead of the
+        // intended message.
+        let caught: unknown;
         try {
           await sut(ctx, dir);
-          expect.unreachable();
         } catch (err) {
-          expect((err as TsgitError).data.code).toBe('INVALID_REFTABLE');
-          expect((err as TsgitError).data).toMatchObject({ check: 'tables-list' });
+          caught = err;
         }
+        if (caught === undefined) expect.unreachable();
+
+        // Assert
+        expect((caught as TsgitError).data.code).toBe('INVALID_REFTABLE');
+        expect((caught as TsgitError).data).toMatchObject({ check: 'tables-list' });
       });
     });
   });
@@ -449,6 +498,42 @@ describe('load-reftable-stack', () => {
     });
   });
 
+  describe('Given two independent Contexts sharing the identical reftableDir path and an identical tables.list stat', () => {
+    describe('When each loads its own stack', () => {
+      it('Then loadReftableStack returns each Context’s own stack, never the other’s', async () => {
+        // Arrange — the memo is keyed on Context identity (`ctx.deltaCache`),
+        // never on the path string alone: `createMemoryContext()` defaults
+        // every instance to the SAME gitDir, so both Contexts share the
+        // identical `reftableDir`, and forcing their `tables.list` stats to
+        // report an identical mtime+size closes off that guard too — the
+        // exact double-coincidence a module-level path-keyed cache would
+        // alias two unrelated repositories on.
+        const ctxA = createMemoryContext();
+        const ctxB = createMemoryContext();
+        const dir = commonReftableDir(ctxA);
+        expect(commonReftableDir(ctxB)).toBe(dir);
+        const tableA = buildSimpleTable({ refName: 'refs/heads/a', id: oid(0xaa) });
+        const tableB = buildSimpleTable({ refName: 'refs/heads/b', id: oid(0xbb) });
+        await writeReftableFiles(ctxA, dir, [{ name: 'a.ref', bytes: tableA }]);
+        await writeReftableFiles(ctxB, dir, [{ name: 'b.ref', bytes: tableB }]);
+        const sharedStat = await ctxA.fs.stat(`${dir}/tables.list`);
+        vi.spyOn(ctxA.fs, 'stat').mockResolvedValue(sharedStat);
+        vi.spyOn(ctxB.fs, 'stat').mockResolvedValue(sharedStat);
+        const sut = loadReftableStack;
+
+        // Act
+        const stackA = await sut(ctxA, dir);
+        const stackB = await sut(ctxB, dir);
+
+        // Assert
+        expect(stackA.lookup(RefName.from('refs/heads/a'))).toBeDefined();
+        expect(stackA.lookup(RefName.from('refs/heads/b'))).toBeUndefined();
+        expect(stackB.lookup(RefName.from('refs/heads/b'))).toBeDefined();
+        expect(stackB.lookup(RefName.from('refs/heads/a'))).toBeUndefined();
+      });
+    });
+  });
+
   describe('Given tables.list is absent but the reftable directory otherwise exists', () => {
     describe('When the stack is loaded', () => {
       it('Then it degrades to an empty stack', async () => {
@@ -513,10 +598,10 @@ describe('load-reftable-stack', () => {
         let caught: unknown;
         try {
           await sut(ctx, dir);
-          expect.unreachable();
         } catch (err) {
           caught = err;
         }
+        if (caught === undefined) expect.unreachable();
 
         // Assert
         expect(caught).toBe(fault);
@@ -559,17 +644,24 @@ describe('load-reftable-stack', () => {
         await writeReftableFiles(ctx, dir, [{ name: 'a.ref', bytes: corrupted }]);
         const sut = loadReftableStack;
 
-        // Act + Assert
+        // Act — captured OUTSIDE the try: an `expect.unreachable()`
+        // thrown inside it would be swallowed by this same `catch` and
+        // resurface as a confusing downstream TypeError instead of the
+        // intended message.
+        let caught: unknown;
         try {
           await sut(ctx, dir);
-          expect.unreachable();
         } catch (err) {
-          expect((err as TsgitError).data.code).toBe('INVALID_REFTABLE');
-          expect((err as TsgitError).data).toMatchObject({
-            check: 'magic',
-            reason: expect.any(String),
-          });
+          caught = err;
         }
+        if (caught === undefined) expect.unreachable();
+
+        // Assert
+        expect((caught as TsgitError).data.code).toBe('INVALID_REFTABLE');
+        expect((caught as TsgitError).data).toMatchObject({
+          check: 'magic',
+          reason: expect.any(String),
+        });
       });
     });
   });
@@ -585,17 +677,24 @@ describe('load-reftable-stack', () => {
         await writeReftableFiles(ctx, dir, [{ name: 'a.ref', bytes: truncated }]);
         const sut = loadReftableStack;
 
-        // Act + Assert
+        // Act — captured OUTSIDE the try: an `expect.unreachable()`
+        // thrown inside it would be swallowed by this same `catch` and
+        // resurface as a confusing downstream TypeError instead of the
+        // intended message.
+        let caught: unknown;
         try {
           await sut(ctx, dir);
-          expect.unreachable();
         } catch (err) {
-          expect((err as TsgitError).data.code).toBe('INVALID_REFTABLE');
-          expect((err as TsgitError).data).toMatchObject({
-            check: 'truncated',
-            reason: expect.any(String),
-          });
+          caught = err;
         }
+        if (caught === undefined) expect.unreachable();
+
+        // Assert
+        expect((caught as TsgitError).data.code).toBe('INVALID_REFTABLE');
+        expect((caught as TsgitError).data).toMatchObject({
+          check: 'truncated',
+          reason: expect.any(String),
+        });
       });
     });
   });
@@ -616,17 +715,24 @@ describe('load-reftable-stack', () => {
         await writeReftableFiles(ctx, dir, [{ name: 'a.ref', bytes: corrupted }]);
         const sut = loadReftableStack;
 
-        // Act + Assert
+        // Act — captured OUTSIDE the try: an `expect.unreachable()`
+        // thrown inside it would be swallowed by this same `catch` and
+        // resurface as a confusing downstream TypeError instead of the
+        // intended message.
+        let caught: unknown;
         try {
           await sut(ctx, dir);
-          expect.unreachable();
         } catch (err) {
-          expect((err as TsgitError).data.code).toBe('INVALID_REFTABLE');
-          expect((err as TsgitError).data).toMatchObject({
-            check: 'footer-crc',
-            reason: expect.any(String),
-          });
+          caught = err;
         }
+        if (caught === undefined) expect.unreachable();
+
+        // Assert
+        expect((caught as TsgitError).data.code).toBe('INVALID_REFTABLE');
+        expect((caught as TsgitError).data).toMatchObject({
+          check: 'footer-crc',
+          reason: expect.any(String),
+        });
       });
     });
   });
@@ -643,17 +749,24 @@ describe('load-reftable-stack', () => {
         await writeReftableFiles(ctx, dir, [{ name: 'a.ref', bytes: corrupted }]);
         const sut = loadReftableStack;
 
-        // Act + Assert
+        // Act — captured OUTSIDE the try: an `expect.unreachable()`
+        // thrown inside it would be swallowed by this same `catch` and
+        // resurface as a confusing downstream TypeError instead of the
+        // intended message.
+        let caught: unknown;
         try {
           await sut(ctx, dir);
-          expect.unreachable();
         } catch (err) {
-          expect((err as TsgitError).data.code).toBe('INVALID_REFTABLE');
-          expect((err as TsgitError).data).toMatchObject({
-            check: 'version',
-            reason: expect.any(String),
-          });
+          caught = err;
         }
+        if (caught === undefined) expect.unreachable();
+
+        // Assert
+        expect((caught as TsgitError).data.code).toBe('INVALID_REFTABLE');
+        expect((caught as TsgitError).data).toMatchObject({
+          check: 'version',
+          reason: expect.any(String),
+        });
       });
     });
   });
