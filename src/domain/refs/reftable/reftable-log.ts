@@ -45,6 +45,7 @@ export const REVERSE_INT64_MAX = 0xffffffffffffffffn;
 
 const LOG_KEY_UPDATE_INDEX_WIDTH = 8;
 const LOG_KEY_SEPARATOR_WIDTH = 1;
+const TZ_OFFSET_WIDTH = 2;
 
 export interface ReftableLogRecord {
   readonly name: RefName;
@@ -128,6 +129,17 @@ function decodeLogData(
   readonly message: string;
   readonly nextOffset: number;
 } {
+  // `readPrefixedName`'s own overflow-guard shape: bound a fixed-width read
+  // against `bytes.length` BEFORE taking it, rather than letting a short
+  // subarray reach `ObjectId.fromRaw` (which validates length, but too late
+  // to carry a `ReftableCheck`) or a `DataView` read run past the buffer.
+  const idsEnd = offset + 2 * digestLength;
+  if (idsEnd > bytes.length) {
+    throw invalidReftable(
+      'record-overrun',
+      `log record at byte ${offset} needs ${2 * digestLength} bytes for old_id + new_id, past the ${bytes.length}-byte payload`,
+    );
+  }
   const oldId = ObjectId.fromRaw(bytes.subarray(offset, offset + digestLength));
   const newIdOffset = offset + digestLength;
   const newId = ObjectId.fromRaw(bytes.subarray(newIdOffset, newIdOffset + digestLength));
@@ -145,9 +157,15 @@ function decodeLogData(
     bytes,
     afterEmailLen + emailLen,
   );
+  if (afterTimestamp + TZ_OFFSET_WIDTH > bytes.length) {
+    throw invalidReftable(
+      'record-overrun',
+      `log record tz_offset at byte ${afterTimestamp} runs past the ${bytes.length}-byte payload`,
+    );
+  }
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const timezoneOffset = decodeTzOffset(view.getInt16(afterTimestamp));
-  const afterTz = afterTimestamp + 2;
+  const afterTz = afterTimestamp + TZ_OFFSET_WIDTH;
 
   const { value: messageLen, nextOffset: afterMessageLen } = readVarint(bytes, afterTz);
   const message = decode(bytes.subarray(afterMessageLen, afterMessageLen + messageLen));
@@ -329,6 +347,12 @@ const FOOTER_LENGTH_BY_HEADER_LENGTH: ReadonlyMap<24 | 28, 68 | 72> = new Map([
  *  the footer's own start. */
 function logSectionEnd(table: Reftable): number {
   if (table.footer.logIndexPosition !== 0) {
+    if (table.footer.logIndexPosition > table._bytes.length) {
+      throw invalidReftable(
+        'block-bounds',
+        `footer log_index_position ${table.footer.logIndexPosition} exceeds the table's ${table._bytes.length}-byte length`,
+      );
+    }
     return table.footer.logIndexPosition;
   }
   const footerLength = FOOTER_LENGTH_BY_HEADER_LENGTH.get(table.header.headerLength)!;
@@ -381,6 +405,18 @@ async function collectLogBlocks(
   if (table.footer.logPosition === 0) {
     return [];
   }
+  // Bounded BEFORE the loop below ever reads at this offset: an unvalidated
+  // `logPosition` past the file's own length would otherwise either read
+  // garbage as a block header (offset still inside `sectionEnd`, itself
+  // derived from an equally unvalidated `logIndexPosition`) or, when
+  // `sectionEnd` happens to fall short of it, silently produce zero log
+  // blocks for a table that declares having log data — neither is a refusal.
+  if (table.footer.logPosition > table._bytes.length) {
+    throw invalidReftable(
+      'block-bounds',
+      `footer log_position ${table.footer.logPosition} exceeds the table's ${table._bytes.length}-byte length`,
+    );
+  }
 
   const sectionEnd = logSectionEnd(table);
   const blocks: Uint8Array[] = [];
@@ -388,6 +424,16 @@ async function collectLogBlocks(
   let totalInflatedBytes = 0;
   while (offset < sectionEnd) {
     const declaredPayloadBytes = readUint24(table._view, offset + 1) - LOG_BLOCK_HEADER_LENGTH;
+    // A `block_len` under the header's own 4 bytes makes this negative,
+    // which would otherwise slip past the `> maxBlockBytes` check below (a
+    // negative number is never greater than a positive budget) and reach
+    // `inflateAt` with a negative output bound instead of a refusal.
+    if (declaredPayloadBytes < 0) {
+      throw invalidReftable(
+        'block-bounds',
+        `log block at file offset ${offset} declares block_len ${declaredPayloadBytes + LOG_BLOCK_HEADER_LENGTH}, shorter than the ${LOG_BLOCK_HEADER_LENGTH}-byte header it must contain`,
+      );
+    }
     if (declaredPayloadBytes > budget.maxBlockBytes) {
       throw invalidReftable(
         'block-bounds',

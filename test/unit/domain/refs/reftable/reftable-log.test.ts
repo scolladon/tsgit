@@ -11,6 +11,7 @@ import {
   iterateReftableLogs,
   LOG_BLOCK_HEADER_LENGTH,
   LOG_TYPE_DELETION,
+  LOG_TYPE_ENTRY,
   type LogInflationBudget,
   loadReftable,
   logBlockBounds,
@@ -110,6 +111,66 @@ async function buildShortKeyLogBlock(keyBytes: Uint8Array): Promise<Uint8Array> 
   const view = new DataView(bytes.buffer);
   bytes[0] = 'g'.charCodeAt(0);
   const declared = LOG_BLOCK_HEADER_LENGTH + payload.length;
+  view.setUint8(1, (declared >>> 16) & 0xff);
+  view.setUint16(2, declared & 0xffff);
+  bytes.set(compressed, LOG_BLOCK_HEADER_LENGTH);
+  return bytes;
+}
+
+/** A single log-record `'r\0' + 8×0xFF` key, matched with `packed = (10 <<
+ *  3) | LOG_TYPE_ENTRY` — the exact key/packed pair a real writer never
+ *  produces standalone (`encodeLogKey` always pairs it with a full
+ *  `log_data`), but a hostile table can. */
+function entryKeyRecordPrefix(): ReadonlyArray<number> {
+  const keyBytes = [0x72, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff];
+  const packed = (keyBytes.length << 3) | LOG_TYPE_ENTRY;
+  return [...encodeOfsDistance(0), ...encodeOfsDistance(packed), ...keyBytes];
+}
+
+/** One raw `'g'`-type log block payload holding a single ENTRY record whose
+ *  `log_data` ends immediately after `time_seconds`, with no `tz_offset`
+ *  bytes at all — no separate restart array is appended, so the block's
+ *  trailing bytes ARE the record's own last two (`email_len` and
+ *  `time_seconds`, both `0x00`), which `logBlockBounds` mis-reads as a
+ *  `restart_count` of 0 and lets the walk reach this record regardless. The
+ *  shape `decodeLogData`'s unguarded `getInt16` timezone read used to crash
+ *  on. */
+async function buildTruncatedTzLogBlock(): Promise<Uint8Array> {
+  const ids = new Uint8Array(40); // old_id + new_id, all zero
+  const record = new Uint8Array([
+    ...entryKeyRecordPrefix(),
+    ...ids,
+    0x00, // name_len = 0
+    0x00, // email_len = 0
+    0x00, // time_seconds (single-byte varint) — the record's final byte
+  ]);
+  const compressed = await deflate(record);
+
+  const bytes = new Uint8Array(LOG_BLOCK_HEADER_LENGTH + compressed.length);
+  const view = new DataView(bytes.buffer);
+  bytes[0] = 'g'.charCodeAt(0);
+  const declared = LOG_BLOCK_HEADER_LENGTH + record.length;
+  view.setUint8(1, (declared >>> 16) & 0xff);
+  view.setUint16(2, declared & 0xffff);
+  bytes.set(compressed, LOG_BLOCK_HEADER_LENGTH);
+  return bytes;
+}
+
+/** One raw `'g'`-type log block payload holding a single ENTRY record whose
+ *  `log_data` is truncated to 18 zero bytes — short of the 40
+ *  (`old_id` + `new_id`) a real record commits to — and, again, no separate
+ *  restart array. The shape `decodeLogData`'s unguarded `ObjectId.fromRaw`
+ *  subarray reads used to hand off silently truncated bytes to instead of
+ *  refusing at the parse boundary. */
+async function buildTruncatedIdsLogBlock(): Promise<Uint8Array> {
+  const shortIds = new Uint8Array(18);
+  const record = new Uint8Array([...entryKeyRecordPrefix(), ...shortIds]);
+  const compressed = await deflate(record);
+
+  const bytes = new Uint8Array(LOG_BLOCK_HEADER_LENGTH + compressed.length);
+  const view = new DataView(bytes.buffer);
+  bytes[0] = 'g'.charCodeAt(0);
+  const declared = LOG_BLOCK_HEADER_LENGTH + record.length;
   view.setUint8(1, (declared >>> 16) & 0xff);
   view.setUint16(2, declared & 0xffff);
   bytes.set(compressed, LOG_BLOCK_HEADER_LENGTH);
@@ -656,6 +717,59 @@ describe('reftable-log', () => {
         });
       });
     });
+
+    describe('Given a log block declaring block_len shorter than its own 4-byte header', () => {
+      describe('When loading the table', () => {
+        it('Then refuses with block-bounds instead of an unclassified decompress failure', async () => {
+          // Arrange — block_len 0 makes declaredPayloadBytes negative
+          // (0 - LOG_BLOCK_HEADER_LENGTH), which used to slip past the
+          // `> maxBlockBytes` check (a negative number is never greater
+          // than a positive budget) and reach `inflateAt` with a negative
+          // output bound instead.
+          const block = await buildRawLogBlock(0, 0);
+          const bytes = buildLogOnlyReftable([block]);
+          const sut = loadReftable;
+
+          // Act & Assert
+          await expectReftableRefusal(sut(bytes, inflateAt), 'shorter than');
+        });
+      });
+    });
+  });
+
+  describe('Given a footer whose log-section positions point past the end of the file', () => {
+    describe('When log_position alone overruns the file', () => {
+      it('Then refuses with block-bounds before ever reading at that offset', async () => {
+        // Arrange — the measured repro: valid magic, valid version, a valid
+        // footer CRC, no blocks at all (header + footer only, 92 bytes at
+        // v1) — every gate before this one passes, and log_position simply
+        // points past the end of the file.
+        const bytes = buildReftable({ version: 1, blocks: [], logPosition: 1000 });
+        const sut = loadReftable;
+
+        // Act & Assert
+        await expectReftableRefusal(sut(bytes, inflateAt), 'log_position');
+      });
+    });
+
+    describe('When log_index_position alone overruns the file', () => {
+      it('Then refuses with block-bounds before computing the log section end', async () => {
+        // Arrange — log_position itself is in-bounds (right after the
+        // header, on a table with no blocks), so only log_index_position's
+        // own guard (inside logSectionEnd) can be what fires here.
+        const header = buildReftableHeader({ version: 1 });
+        const bytes = buildReftable({
+          version: 1,
+          blocks: [],
+          logPosition: header.length,
+          logIndexPosition: 2000,
+        });
+        const sut = loadReftable;
+
+        // Act & Assert
+        await expectReftableRefusal(sut(bytes, inflateAt), 'log_index_position');
+      });
+    });
   });
 
   describe('log-block record-grammar bounds', () => {
@@ -750,6 +864,57 @@ describe('reftable-log', () => {
           // `keyBytes.byteOffset + keyBytes.length - 8` before checking the
           // key was even 8 bytes long.
           const block = await buildShortKeyLogBlock(new Uint8Array(0));
+          const bytes = buildLogOnlyReftable([block]);
+          const table = await loadReftable(bytes, inflateAt);
+          const sut = iterateReftableLogs;
+
+          // Act
+          let caught: unknown;
+          try {
+            Array.from(sut(table));
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect((caught as { data: { code: string } }).data.code).toBe('INVALID_REFTABLE');
+          expect((caught as { data: { check: string } }).data.check).toBe('record-overrun');
+        });
+      });
+    });
+
+    describe('Given a log entry record whose log_data ends immediately after time_seconds, with no tz_offset bytes', () => {
+      describe('When iterating via iterateReftableLogs (the unfiltered, materialising walk)', () => {
+        it('Then refuses with record-overrun instead of reading the timezone past the payload', async () => {
+          // Arrange — the measured repro: a 55-byte log payload that loads
+          // cleanly (loadReftable never inspects record content), then the
+          // audit walk's own materialise branch — the one path a name
+          // filter cannot route around — throws.
+          const block = await buildTruncatedTzLogBlock();
+          const bytes = buildLogOnlyReftable([block]);
+          const table = await loadReftable(bytes, inflateAt);
+          const sut = iterateReftableLogs;
+
+          // Act
+          let caught: unknown;
+          try {
+            Array.from(sut(table));
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect((caught as { data: { code: string } }).data.code).toBe('INVALID_REFTABLE');
+          expect((caught as { data: { check: string } }).data.check).toBe('record-overrun');
+        });
+      });
+    });
+
+    describe('Given a log entry record whose log_data is truncated to 18 bytes, short of old_id + new_id', () => {
+      describe('When iterating via iterateReftableLogs (the unfiltered, materialising walk)', () => {
+        it('Then refuses with record-overrun instead of handing ObjectId.fromRaw a silently truncated subarray', async () => {
+          // Arrange
+          const block = await buildTruncatedIdsLogBlock();
           const bytes = buildLogOnlyReftable([block]);
           const table = await loadReftable(bytes, inflateAt);
           const sut = iterateReftableLogs;
