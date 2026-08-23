@@ -52155,7 +52155,37 @@
 									},
 									{
 										"kind": "text",
-										"text": " is the metric vector, oldest\nto newest. A stack of zero or one table never compacts."
+										"text": " is the metric vector, oldest\nto newest. A stack of zero or one table never compacts — not via an\nexplicit guard, but because "
+									},
+									{
+										"kind": "inline-tag",
+										"tag": "@link",
+										"text": "findMergeBoundary",
+										"target": {
+											"packageName": "@scolladon/tsgit",
+											"packagePath": "src/domain/refs/reftable/reftable-compaction.ts",
+											"qualifiedName": "findMergeBoundary"
+										}
+									},
+									{
+										"kind": "text",
+										"text": "'s own loop bound\n("
+									},
+									{
+										"kind": "code",
+										"text": "`sizes.length - 1 >= 1`"
+									},
+									{
+										"kind": "text",
+										"text": ") already never runs for either length, returning\n"
+									},
+									{
+										"kind": "code",
+										"text": "`undefined`"
+									},
+									{
+										"kind": "text",
+										"text": " and falling through to the same empty segment below."
 									}
 								]
 							},
