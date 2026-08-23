@@ -206,10 +206,19 @@ describe('reftable-stack', () => {
         // Act
         const result = Array.from(sut());
 
-        // Assert — same name set as names(), and every entry is the exact
+        // Assert — entries() reproduces the merge's actual name ORDER (not
+        // just names()'s set, which is derived from this same generator and
+        // so cannot independently confirm it), and every entry is the exact
         // record a separate lookup(name) call would independently return —
         // proving entries() never has to be re-resolved through lookup().
-        expect(result.map((entry) => entry.name).sort()).toEqual(Array.from(stack.names()).sort());
+        expect(result.map((entry) => entry.name)).toStrictEqual([
+          'HEAD',
+          'refs/heads/feature',
+          'refs/heads/main',
+          'refs/heads/symbolic',
+          'refs/tags/lightweight',
+          'refs/tags/v1',
+        ]);
         for (const entry of result) {
           expect(entry).toStrictEqual(stack.lookup(entry.name));
         }
