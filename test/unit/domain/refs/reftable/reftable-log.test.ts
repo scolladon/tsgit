@@ -177,7 +177,11 @@ async function buildTruncatedIdsLogBlock(): Promise<Uint8Array> {
   return bytes;
 }
 
-function expectReftableRefusal(promise: Promise<unknown>, reasonContains: string): Promise<void> {
+function expectReftableRefusal(
+  promise: Promise<unknown>,
+  reasonContains: string,
+  check?: string,
+): Promise<void> {
   return promise.then(
     () => {
       expect.fail('Should have thrown');
@@ -185,6 +189,9 @@ function expectReftableRefusal(promise: Promise<unknown>, reasonContains: string
     (err: unknown) => {
       expect((err as { data: { code: string } }).data.code).toBe('INVALID_REFTABLE');
       expect((err as { data: { reason: string } }).data.reason).toContain(reasonContains);
+      if (check !== undefined) {
+        expect((err as { data: { check: string } }).data.check).toBe(check);
+      }
     },
   );
 }
@@ -737,6 +744,66 @@ describe('reftable-log', () => {
     });
   });
 
+  describe('Given log-section positions that are individually in bounds', () => {
+    describe('When the last block offset leaves no room for its own 4-byte header', () => {
+      it('Then refuses with block-bounds instead of reading past the table', async () => {
+        // Arrange — both positions pass a bound stated against the file
+        // length: on a 92-byte v1 table, log_position 91 and
+        // log_index_position 92 are each <= 92. Only a bound stated against
+        // the READ catches that offset 91 leaves 1 byte where the block
+        // header needs 4.
+        const bytes = buildReftable({
+          version: 1,
+          blocks: [],
+          logPosition: 91,
+          logIndexPosition: 92,
+        });
+        const sut = loadReftable;
+
+        // Act & Assert
+        await expectReftableRefusal(sut(bytes, inflateAt), 'header bytes', 'block-bounds');
+      });
+    });
+
+    describe('When log_position sits exactly at the end of the file', () => {
+      it('Then reads no log blocks rather than refusing', async () => {
+        // Arrange — a log section starting at EOF declares no log data at
+        // all, which is legal; the bound is on positions PAST the end, so
+        // equality must not refuse.
+        const bytes = buildReftable({ version: 1, blocks: [], logPosition: 92 });
+        const sut = loadReftable;
+
+        // Act
+        const result = await sut(bytes, inflateAt);
+
+        // Assert
+        expect(result.logBlocks).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a log block whose deflate stream cannot be inflated', () => {
+    describe('When the table is loaded', () => {
+      it('Then refuses with block-bounds rather than an unclassifiable decompression fault', async () => {
+        // Arrange — a well-framed 'g' block whose payload is not a zlib
+        // stream at all. DECOMPRESS_FAILED is a TsgitError but carries no
+        // ReftableCheck, so it would deny the whole ref-integrity audit
+        // instead of marking this one table bad.
+        const garbage = new Uint8Array(LOG_BLOCK_HEADER_LENGTH + 6);
+        const view = new DataView(garbage.buffer);
+        garbage[0] = 'g'.charCodeAt(0);
+        view.setUint8(1, 0);
+        view.setUint16(2, LOG_BLOCK_HEADER_LENGTH + 6);
+        garbage.fill(0xff, LOG_BLOCK_HEADER_LENGTH);
+        const bytes = buildLogOnlyReftable([garbage]);
+        const sut = loadReftable;
+
+        // Act & Assert
+        await expectReftableRefusal(sut(bytes, inflateAt), 'failed to inflate', 'block-bounds');
+      });
+    });
+  });
+
   describe('Given a footer whose log-section positions point past the end of the file', () => {
     describe('When log_position alone overruns the file', () => {
       it('Then refuses with block-bounds before ever reading at that offset', async () => {
@@ -748,7 +815,7 @@ describe('reftable-log', () => {
         const sut = loadReftable;
 
         // Act & Assert
-        await expectReftableRefusal(sut(bytes, inflateAt), 'log_position');
+        await expectReftableRefusal(sut(bytes, inflateAt), 'log_position', 'block-bounds');
       });
     });
 
@@ -767,7 +834,7 @@ describe('reftable-log', () => {
         const sut = loadReftable;
 
         // Act & Assert
-        await expectReftableRefusal(sut(bytes, inflateAt), 'log_index_position');
+        await expectReftableRefusal(sut(bytes, inflateAt), 'log_index_position', 'block-bounds');
       });
     });
   });

@@ -397,6 +397,46 @@ const DEFAULT_LOG_INFLATION_BUDGET: LogInflationBudget = {
   maxTableBytes: 256 * 1024 * 1024,
 };
 
+/**
+ * Inflates one log block, restating a decompression fault as a structured
+ * reftable refusal. `DECOMPRESS_FAILED` is a `TsgitError`, but it carries no
+ * `ReftableCheck`, so `invalidReftableCheck` cannot classify it and
+ * `verifyOneTable` rethrows instead of recording ONE bad table — which
+ * denies the whole ref-integrity audit over a single damaged table, the
+ * opposite of the per-table tiering. Corrupt deflate bytes and a payload
+ * that outruns its own declared size are both structural faults in the
+ * table, so `'block-bounds'` is their check; the original reason is carried
+ * through so the cause is not lost.
+ */
+async function inflateLogBlock(
+  table: Reftable,
+  offset: number,
+  declaredPayloadBytes: number,
+  inflateAt: InflateAt,
+): Promise<{ readonly output: Uint8Array; readonly bytesConsumed: number }> {
+  try {
+    return await inflateAt(table._bytes, offset + LOG_BLOCK_HEADER_LENGTH, declaredPayloadBytes);
+  } catch (err) {
+    if (errorCodeOf(err) !== 'DECOMPRESS_FAILED') throw err;
+    throw invalidReftable(
+      'block-bounds',
+      `log block at file offset ${offset} failed to inflate: ${reasonOf(err)}`,
+    );
+  }
+}
+
+/** The `data.code` of a `TsgitError`, or `undefined` for any other throw —
+ *  narrowing without importing the error class into the domain codec. */
+function errorCodeOf(err: unknown): string | undefined {
+  const data = (err as { readonly data?: { readonly code?: unknown } } | null)?.data;
+  return typeof data?.code === 'string' ? data.code : undefined;
+}
+
+function reasonOf(err: unknown): string {
+  const data = (err as { readonly data?: { readonly reason?: unknown } } | null)?.data;
+  return typeof data?.reason === 'string' ? data.reason : 'unknown cause';
+}
+
 async function collectLogBlocks(
   table: Reftable,
   inflateAt: InflateAt,
@@ -423,6 +463,18 @@ async function collectLogBlocks(
   let offset = table.footer.logPosition;
   let totalInflatedBytes = 0;
   while (offset < sectionEnd) {
+    // The guards above bound the two footer POSITIONS; this bounds the READ
+    // they lead to. `sectionEnd` may legitimately equal the file length, so
+    // an offset in the last three bytes still leaves no room for the 4-byte
+    // header — bounding the positions alone cannot express that, and the
+    // `readUint24` below would run past the DataView with a raw RangeError
+    // that carries no ReftableCheck for the tiering to classify.
+    if (offset + LOG_BLOCK_HEADER_LENGTH > table._bytes.length) {
+      throw invalidReftable(
+        'block-bounds',
+        `log block at file offset ${offset} needs ${LOG_BLOCK_HEADER_LENGTH} header bytes, past the table's ${table._bytes.length}-byte length`,
+      );
+    }
     const declaredPayloadBytes = readUint24(table._view, offset + 1) - LOG_BLOCK_HEADER_LENGTH;
     // A `block_len` under the header's own 4 bytes makes this negative,
     // which would otherwise slip past the `> maxBlockBytes` check below (a
@@ -440,10 +492,11 @@ async function collectLogBlocks(
         `log block at file offset ${offset} declares ${declaredPayloadBytes} inflated bytes, exceeding the ${budget.maxBlockBytes}-byte per-block limit`,
       );
     }
-    const { output, bytesConsumed } = await inflateAt(
-      table._bytes,
-      offset + LOG_BLOCK_HEADER_LENGTH,
+    const { output, bytesConsumed } = await inflateLogBlock(
+      table,
+      offset,
       declaredPayloadBytes,
+      inflateAt,
     );
     if (output.length !== declaredPayloadBytes) {
       throw invalidReftable(
