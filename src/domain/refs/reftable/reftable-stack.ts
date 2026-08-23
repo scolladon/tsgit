@@ -87,6 +87,10 @@ function nextOrUndefined(iterator: Iterator<ReftableRefRecord>): ReftableRefReco
 function minName(heads: readonly (ReftableRefRecord | undefined)[]): RefName | undefined {
   let min: RefName | undefined;
   for (const head of heads) {
+    // Stryker disable next-line EqualityOperator: equivalent — RefName is a
+    // branded primitive string; when head.name === min, `<` vs `<=` only
+    // changes whether `min` is reassigned to a value equal to itself, which
+    // is unobservable.
     if (head !== undefined && (min === undefined || head.name < min)) {
       min = head.name;
     }
@@ -104,6 +108,11 @@ function resolveAndAdvance(
   name: RefName,
 ): ReftableRefRecord {
   let winner: ReftableRefRecord | undefined;
+  // Stryker disable next-line EqualityOperator: equivalent — `index <=
+  // heads.length` only adds one more iteration at index === heads.length;
+  // `heads[heads.length]` is `undefined` (JS array read past the end), so
+  // the loop body's own `head === undefined` guard immediately `continue`s
+  // without ever touching `iterators[index]`.
   for (let index = 0; index < heads.length; index += 1) {
     const head = heads[index];
     if (head === undefined || head.name !== name) {

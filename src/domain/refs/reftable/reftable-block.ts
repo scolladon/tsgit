@@ -359,6 +359,10 @@ function readPositionDeltas(
   let previous = 0;
   for (let i = 0; i < count; i += 1) {
     const { value: delta, nextOffset } = readVarint(bytes, cursor);
+    // Stryker disable next-line ConditionalExpression: equivalent — `previous`
+    // is freshly initialised to 0 above, so at i===0 `previous + delta` and
+    // the `i === 0 ? delta : …` branch both evaluate to `delta`; forcing the
+    // condition to `false` cannot change any iteration's result.
     previous = i === 0 ? delta : previous + delta;
     positions.push(previous);
     cursor = nextOffset;

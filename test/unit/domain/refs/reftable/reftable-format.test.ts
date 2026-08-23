@@ -414,6 +414,45 @@ describe('reftable-format', () => {
         });
       });
     });
+
+    describe('Given a file length exactly equal to HEADER_LENGTH_V1', () => {
+      describe('When reading it', () => {
+        it('Then the header-length gate does not refuse — the SECOND (header+footer) gate does instead', () => {
+          // Arrange — fileByteLength === HEADER_LENGTH_V1 (24) is the
+          // boundary between `<` and `<=`: the first gate must accept it
+          // (not `< 24`) and let the header+footer floor gate refuse
+          // instead, with its own, differently-worded reason.
+          const bytes = buildReftable({ version: 1, blocks: [] });
+          const sut = readMagicAndVersion;
+
+          // Act & Assert
+          expectRefusal(
+            () => sut(bytes.subarray(0, 5), HEADER_LENGTH_V1),
+            'truncated',
+            'header and footer',
+          );
+        });
+      });
+    });
+
+    describe('Given a v1 file long enough for exactly its header and footer', () => {
+      describe('When reading it', () => {
+        it('Then the truncation reason names the real combined byte requirement (92), not a bogus one', () => {
+          // Arrange — the message's own `${a + b}` must read 92, not the
+          // header/footer difference (-44) an ArithmeticOperator mutant on
+          // that expression would report instead.
+          const bytes = buildReftable({ version: 1, blocks: [] });
+          const sut = readMagicAndVersion;
+
+          // Act & Assert
+          expectRefusal(
+            () => sut(bytes.subarray(0, 5), HEADER_LENGTH_V1 + FOOTER_LENGTH_V1 - 1),
+            'truncated',
+            'needs at least 92',
+          );
+        });
+      });
+    });
   });
 
   describe('readVarint', () => {

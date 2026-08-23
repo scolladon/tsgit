@@ -403,4 +403,27 @@ describe('reftable-stack', () => {
       });
     });
   });
+
+  describe('Given the older table holding an alphabetically LATER name than the newer table', () => {
+    const older = buildTableWithLiveRef('refs/heads/zzz', 0x11, 1n);
+    const newer = buildTableWithLiveRef('refs/heads/aaa', 0x22, 2n);
+    const stack = createReftableStack([older, newer]);
+
+    describe('When listing every name in the merged view', () => {
+      it('Then names() are still yielded in ascending sort order, not table iteration order', () => {
+        // Arrange — minName must keep comparing every later head against
+        // the running min, not stop updating after the first table.
+        const sut = stack.names;
+
+        // Act
+        const result = Array.from(sut());
+
+        // Assert
+        expect(result).toStrictEqual([
+          RefName.from('refs/heads/aaa'),
+          RefName.from('refs/heads/zzz'),
+        ]);
+      });
+    });
+  });
 });

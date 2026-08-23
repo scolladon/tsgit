@@ -10,10 +10,16 @@ import {
   iterateReftableRefs,
   lookupReftableRef,
   type ReftableRefRecord,
+  readPrefixedName,
   refRecordDecoder,
+  SUFFIX_SHIFT,
   walkBlockRecords,
 } from '../../../../../src/domain/refs/reftable/reftable-block.js';
-import { parseReftable } from '../../../../../src/domain/refs/reftable/reftable-format.js';
+import {
+  parseReftable,
+  type Reftable,
+  type ReftableFooter,
+} from '../../../../../src/domain/refs/reftable/reftable-format.js';
 import {
   DEFAULT_RESTART_INTERVAL,
   type ReftableWriteOptions,
@@ -86,6 +92,30 @@ function expectRefusal(act: () => void, check: ReftableCheck, reasonContains: st
   }
   expect(data.check).toBe(check);
   expect(data.reason).toContain(reasonContains);
+}
+
+/** A `Reftable` view over hand-assembled `bytes` with no real footer —
+ *  `header` is borrowed from a normally-parsed minimal table (so
+ *  `headerLength`/`digestLength` etc. are real), only `_bytes`/`_view` and
+ *  `footer` are the caller's own. Lets boundary tests place a block's framing
+ *  bytes at the exact physical end of an array, which `buildReftable`'s
+ *  always-appended footer would otherwise make impossible. */
+function reftableFrom(bytes: Uint8Array, footerOverrides: Partial<ReftableFooter> = {}): Reftable {
+  const base = parseReftable(buildReftable({ version: 1, blocks: [] }));
+  return {
+    header: base.header,
+    footer: {
+      refIndexPosition: 0,
+      objPosition: 0,
+      objIdLength: 0,
+      objIndexPosition: 0,
+      logPosition: 0,
+      logIndexPosition: 0,
+      ...footerOverrides,
+    },
+    _bytes: bytes,
+    _view: new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength),
+  };
 }
 
 /**
@@ -678,11 +708,14 @@ describe('reftable-block', () => {
           });
           const reftable = parseReftable(buildReftable({ version: 1, blocks: [block] }));
 
-          // Act & Assert
+          // Act & Assert — reasonContains folds in the 'ref name' subject
+          // text so a StringLiteral mutant on that subject (used only in
+          // this message, decoupled from any `data.check`) still fails the
+          // assertion.
           expectRefusal(
             () => Array.from(iterateReftableRefs(reftable)),
             'record-overrun',
-            'dangerous',
+            'ref name is dangerous',
           );
         });
       });
@@ -708,11 +741,13 @@ describe('reftable-block', () => {
           });
           const reftable = parseReftable(buildReftable({ version: 1, blocks: [block] }));
 
-          // Act & Assert
+          // Act & Assert — reasonContains folds in the 'symbolic ref target'
+          // subject text so a StringLiteral mutant on that subject (used
+          // only in this message) still fails the assertion.
           expectRefusal(
             () => Array.from(iterateReftableRefs(reftable)),
             'record-overrun',
-            'dangerous',
+            'symbolic ref target is dangerous',
           );
         });
       });
@@ -1305,6 +1340,297 @@ describe('reftable-block', () => {
         it('Then refuses with cycle rather than overflowing the stack', () => {
           // Arrange
           const reftable = buildCyclicIndexReftable();
+          const sut = iterateReftableRefs;
+
+          // Act & Assert
+          expectRefusal(() => Array.from(sut(reftable)), 'cycle', 'ref index descent');
+        }, 2000);
+      });
+    });
+  });
+
+  describe('exact-boundary bounds checks', () => {
+    describe('Given a first block whose declared length reaches exactly to the end of the byte range', () => {
+      describe('When reading block bounds', () => {
+        it('Then it does not refuse — blockEnd === file length is in-bounds, not out-of-bounds', () => {
+          // Arrange — no real footer follows: blockEnd lands exactly on
+          // `_bytes.length`, the boundary between `>` and `>=`.
+          const header = buildReftableHeader({ version: 1 });
+          const recordBytes = new Uint8Array(10).fill(0xaa);
+          const restartOffsets = [header.length + 4];
+          const ownLength = 1 + 3 + recordBytes.length + 3 + 2;
+          const block = buildReftableBlock({
+            type: 'r',
+            recordBytes,
+            restartOffsets,
+            declaredLength: header.length + ownLength,
+          });
+          const bytes = new Uint8Array(header.length + block.length);
+          bytes.set(header, 0);
+          bytes.set(block, header.length);
+          const reftable = reftableFrom(bytes);
+          const sut = blockBoundsAt;
+
+          // Act
+          const bounds = sut(reftable, header.length);
+
+          // Assert
+          expect(bounds.blockEnd).toBe(bytes.length);
+        });
+      });
+    });
+
+    describe('Given a block whose restart array starts exactly at the record area (zero records)', () => {
+      describe('When reading block bounds', () => {
+        it('Then it does not refuse — restartArrayStart === recordsStart is in-bounds, not overlapping', () => {
+          // Arrange
+          const header = buildReftableHeader({ version: 1 });
+          const recordBytes = new Uint8Array(0);
+          const restartOffsets = [header.length + 4];
+          const block = buildReftableBlock({
+            type: 'r',
+            recordBytes,
+            restartOffsets,
+            declaredLength: header.length + (1 + 3 + 0 + 3 + 2),
+          });
+          const reftable = parseReftable(buildReftable({ version: 1, blocks: [block] }));
+          const sut = blockBoundsAt;
+
+          // Act
+          const bounds = sut(reftable, header.length);
+
+          // Assert
+          expect(bounds.recordsStart).toBe(bounds.recordsEnd);
+        });
+      });
+    });
+
+    describe('Given a prefixed name whose suffix runs exactly to the end of the byte range', () => {
+      describe('When decoding it', () => {
+        it('Then it does not refuse — afterPacked + suffixLength === bytes.length is in-bounds', () => {
+          // Arrange
+          const suffix = new TextEncoder().encode('exact');
+          const packed = (suffix.length << SUFFIX_SHIFT) | 0x1;
+          const bytes = Uint8Array.from([0x00, packed, ...suffix]);
+          const sut = readPrefixedName;
+
+          // Act
+          const result = sut(bytes, 0, undefined);
+
+          // Assert
+          expect(result.nextOffset).toBe(bytes.length);
+          expect(new TextDecoder().decode(result.nameBytes)).toBe('exact');
+        });
+      });
+    });
+
+    describe('Given a ref index position with fewer than 4 bytes remaining before the byte range ends', () => {
+      describe('When descending into it', () => {
+        it('Then refuses with block-bounds naming the position outside the file', () => {
+          // Arrange
+          const header = buildReftableHeader({ version: 1 });
+          const refBlock = buildRefBlock({
+            records: [{ name: 'refs/heads/aaa', value: { kind: 'direct', id: oid(0x01) } }],
+            restartIndices: [0],
+            isFirstBlock: true,
+            headerLength: header.length,
+          });
+          const indexBlockStart = header.length + refBlock.length;
+          const bytes = new Uint8Array(indexBlockStart + 2);
+          bytes.set(header, 0);
+          bytes.set(refBlock, header.length);
+          bytes[indexBlockStart] = 0x69; // 'i'
+          const reftable = reftableFrom(bytes, { refIndexPosition: indexBlockStart });
+          const sut = lookupReftableRef;
+
+          // Act & Assert
+          expectRefusal(
+            () => sut(reftable, RefName.from('refs/heads/aaa')),
+            'block-bounds',
+            'outside the file',
+          );
+        });
+      });
+    });
+
+    describe('Given a ref index position whose 4-byte block header ends exactly at the byte range boundary', () => {
+      describe('When descending into it', () => {
+        it('Then the position bound itself does not refuse — only the deeper restart-array guard does', () => {
+          // Arrange — offset + BLOCK_HEADER_SIZE === bytes.length exactly:
+          // the position check must pass here, so whatever refuses next
+          // must be a DIFFERENT guard, distinguishable by its own reason.
+          const header = buildReftableHeader({ version: 1 });
+          const refBlock = buildRefBlock({
+            records: [{ name: 'refs/heads/aaa', value: { kind: 'direct', id: oid(0x01) } }],
+            restartIndices: [0],
+            isFirstBlock: true,
+            headerLength: header.length,
+          });
+          const indexBlockStart = header.length + refBlock.length;
+          const fakeIndexHeader = Uint8Array.from([0x69, 0x00, 0x00, 0x04]); // 'i', block_len=4
+          const bytes = new Uint8Array(indexBlockStart + 4);
+          bytes.set(header, 0);
+          bytes.set(refBlock, header.length);
+          bytes.set(fakeIndexHeader, indexBlockStart);
+          const reftable = reftableFrom(bytes, { refIndexPosition: indexBlockStart });
+          const sut = lookupReftableRef;
+
+          // Act & Assert
+          expectRefusal(
+            () => sut(reftable, RefName.from('refs/heads/aaa')),
+            'block-bounds',
+            'restart array',
+          );
+        });
+      });
+    });
+
+    describe('Given a dangerous decoded name longer than 80 characters', () => {
+      describe('When iterating', () => {
+        it('Then the refusal reason echoes only the first 80 characters, not the full name', () => {
+          // Arrange
+          const longPrefix = 'a'.repeat(80);
+          const header = buildReftableHeader({ version: 1 });
+          const block = buildRefBlock({
+            records: [
+              { name: `${longPrefix}ZZZZZ\nmore`, value: { kind: 'direct', id: oid(0x01) } },
+            ],
+            restartIndices: [0],
+            isFirstBlock: true,
+            headerLength: header.length,
+          });
+          const reftable = parseReftable(buildReftable({ version: 1, blocks: [block] }));
+          const sut = iterateReftableRefs;
+
+          // Act
+          let caught: unknown;
+          try {
+            Array.from(sut(reftable));
+          } catch (e) {
+            caught = e;
+          }
+
+          // Assert
+          const reason = (caught as TsgitError).data as { reason: string };
+          expect(reason.reason).toContain(longPrefix);
+          expect(reason.reason).not.toContain('ZZZZZ');
+        });
+      });
+    });
+
+    describe('Given a restart-point record (prefix_length 0) decoded via readPrefixedName', () => {
+      describe('When the source bytes are mutated after decoding', () => {
+        it('Then the returned name bytes are unaffected — an independent copy, not a view into the source buffer', () => {
+          // Arrange
+          const suffix = new TextEncoder().encode('stable');
+          const packed = (suffix.length << SUFFIX_SHIFT) | 0x1;
+          const bytes = Uint8Array.from([0x00, packed, ...suffix]);
+          const sut = readPrefixedName;
+
+          // Act
+          const result = sut(bytes, 0, undefined);
+          const before = new TextDecoder().decode(result.nameBytes);
+          bytes.fill(0xff, 2);
+          const after = new TextDecoder().decode(result.nameBytes);
+
+          // Assert
+          expect(before).toBe('stable');
+          expect(after).toBe('stable');
+        });
+      });
+    });
+  });
+
+  describe('refSectionEnd (no ref index, obj/log positions disagree on which comes first)', () => {
+    describe('Given a syntactically valid second ref block sitting where the obj section actually starts', () => {
+      describe('When iterating every ref with no ref index present', () => {
+        it('Then the ref section stops at the SMALLEST following position, not the largest', () => {
+          // Arrange — block2 is real 'r' bytes, but objPosition marks the
+          // ref section as ending right after block1; logPosition is a
+          // larger, unrelated candidate that must NOT win.
+          const header = buildReftableHeader({ version: 1 });
+          const block1 = buildRefBlock({
+            records: [{ name: 'refs/heads/aaa', value: { kind: 'direct', id: oid(0x01) } }],
+            isFirstBlock: true,
+            headerLength: header.length,
+          });
+          const objPosition = header.length + block1.length;
+          const block2 = buildRefBlock({
+            records: [{ name: 'refs/heads/bbb', value: { kind: 'direct', id: oid(0x02) } }],
+            isFirstBlock: false,
+          });
+          const logPosition = objPosition + block2.length;
+          const bytes = buildReftable({
+            version: 1,
+            blockSize: 0,
+            blocks: [block1, block2],
+            objPosition,
+            logPosition,
+          });
+          const reftable = parseReftable(bytes);
+          const sut = iterateReftableRefs;
+
+          // Act
+          const names = Array.from(sut(reftable)).map((r) => r.name);
+
+          // Assert
+          expect(names).toStrictEqual([RefName.from('refs/heads/aaa')]);
+        });
+      });
+    });
+  });
+
+  describe('ref index descent depth — exact boundary', () => {
+    /** A `levels`-deep, strictly non-cyclic chain of index blocks topped by
+     *  one real leaf ref block: level 1 (innermost) points at the leaf,
+     *  level `k` points at level `k-1`, and `footer.refIndexPosition` names
+     *  the outermost (level `levels`). Descending it costs exactly `levels`
+     *  hops — the number the boundary tests below tune precisely against
+     *  `MAX_REF_INDEX_DEPTH` (64) to distinguish `<`/`<=` and `>`/`>=`,
+     *  which an actually-cyclic index (looping forever either way) cannot. */
+    function buildIndexChain(levels: number): ReturnType<typeof parseReftable> {
+      const header = buildReftableHeader({ version: 1 });
+      const leaf = buildRefBlock({
+        records: [{ name: 'refs/heads/leaf', value: { kind: 'direct', id: oid(0x09) } }],
+        isFirstBlock: true,
+        headerLength: header.length,
+      });
+      const blocks: Uint8Array[] = [leaf];
+      let offset = header.length + leaf.length;
+      let childPosition = header.length;
+      for (let i = 0; i < levels; i += 1) {
+        const idx = buildIndexBlock({
+          records: [{ key: 'refs/heads/leaf', blockPosition: childPosition }],
+          isFirstBlock: false,
+        });
+        blocks.push(idx);
+        childPosition = offset;
+        offset += idx.length;
+      }
+      const bytes = buildReftable({ version: 1, blocks, refIndexPosition: childPosition });
+      return parseReftable(bytes);
+    }
+
+    describe('Given a legitimately deep (non-cyclic) index chain of exactly 65 levels', () => {
+      describe('When looking a name up via the iterative descent', () => {
+        it('Then refuses with cycle — the 65th level sits past the 64-level bound', () => {
+          // Arrange
+          const reftable = buildIndexChain(65);
+          const sut = lookupReftableRef;
+
+          // Act & Assert
+          expectRefusal(
+            () => sut(reftable, RefName.from('refs/heads/leaf')),
+            'cycle',
+            'ref index descent',
+          );
+        }, 2000);
+      });
+
+      describe('When iterating every ref via the recursive index-leaf walk', () => {
+        it('Then refuses with cycle — the 65th level sits past the 64-level bound', () => {
+          // Arrange
+          const reftable = buildIndexChain(65);
           const sut = iterateReftableRefs;
 
           // Act & Assert

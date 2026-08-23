@@ -495,9 +495,13 @@ describe('reftable-log', () => {
           caught = e;
         }
 
-        // Assert
+        // Assert — folds in the 'reflog ref name' subject text so a
+        // StringLiteral mutant on that subject (decoupled from `data.check`)
+        // still fails the assertion.
         expect((caught as { data: { code: string } }).data.code).toBe('INVALID_REFTABLE');
-        expect((caught as { data: { reason: string } }).data.reason).toContain('dangerous');
+        expect((caught as { data: { reason: string } }).data.reason).toContain(
+          'reflog ref name is dangerous',
+        );
       });
     });
   });
@@ -738,8 +742,10 @@ describe('reftable-log', () => {
           const bytes = buildLogOnlyReftable([block]);
           const sut = loadReftable;
 
-          // Act & Assert
-          await expectReftableRefusal(sut(bytes, inflateAt), 'shorter than');
+          // Act & Assert — 'declares block_len 0' pins the message's own
+          // `declaredPayloadBytes + LOG_BLOCK_HEADER_LENGTH` arithmetic
+          // (0 + 4 - 4 = 0), not just the surrounding prose.
+          await expectReftableRefusal(sut(bytes, inflateAt), 'declares block_len 0, shorter than');
         });
       });
     });
@@ -899,6 +905,9 @@ describe('reftable-log', () => {
           // Assert
           expect((caught as { data: { code: string } }).data.code).toBe('INVALID_REFTABLE');
           expect((caught as { data: { check: string } }).data.check).toBe('block-bounds');
+          expect((caught as { data: { reason: string } }).data.reason).toContain(
+            'log block payload of 0 bytes is too short to hold its own restart_count',
+          );
         });
       });
     });
@@ -926,6 +935,9 @@ describe('reftable-log', () => {
           // Assert
           expect((caught as { data: { code: string } }).data.code).toBe('INVALID_REFTABLE');
           expect((caught as { data: { check: string } }).data.check).toBe('block-bounds');
+          expect((caught as { data: { reason: string } }).data.reason).toContain(
+            'log block declares restart_count 5, overrunning its 10-byte payload',
+          );
         });
       });
     });
@@ -982,6 +994,9 @@ describe('reftable-log', () => {
           // Assert
           expect((caught as { data: { code: string } }).data.code).toBe('INVALID_REFTABLE');
           expect((caught as { data: { check: string } }).data.check).toBe('record-overrun');
+          expect((caught as { data: { reason: string } }).data.reason).toContain(
+            'log key of 0 bytes is too short to hold the 9-byte separator',
+          );
         });
       });
     });
@@ -1009,6 +1024,9 @@ describe('reftable-log', () => {
           // Assert
           expect((caught as { data: { code: string } }).data.code).toBe('INVALID_REFTABLE');
           expect((caught as { data: { check: string } }).data.check).toBe('record-overrun');
+          expect((caught as { data: { reason: string } }).data.reason).toContain(
+            'tz_offset at byte 55 runs past the 55-byte payload',
+          );
         });
       });
     });
@@ -1033,6 +1051,268 @@ describe('reftable-log', () => {
           // Assert
           expect((caught as { data: { code: string } }).data.code).toBe('INVALID_REFTABLE');
           expect((caught as { data: { check: string } }).data.check).toBe('record-overrun');
+          expect((caught as { data: { reason: string } }).data.reason).toContain(
+            'needs 40 bytes for old_id + new_id, past the 30-byte payload',
+          );
+        });
+      });
+    });
+  });
+
+  describe('exact-boundary bounds checks', () => {
+    describe('Given a log key exactly the width of its own separator + reversed update_index suffix', () => {
+      describe('When iterating', () => {
+        it('Then the width guard does not refuse — the empty ref name it decodes to refuses instead', async () => {
+          // Arrange — keyBytes.length === suffixWidth (9) exactly, the
+          // boundary between `<` and `<=`: the width guard must NOT report
+          // "too short" here; the empty name it decodes to is what a later,
+          // different guard refuses.
+          const block = await buildShortKeyLogBlock(new Uint8Array(9));
+          const bytes = buildLogOnlyReftable([block]);
+          const table = await loadReftable(bytes, inflateAt);
+          const sut = iterateReftableLogs;
+
+          // Act
+          let caught: unknown;
+          try {
+            Array.from(sut(table));
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect((caught as { data: { code: string } }).data.code).toBe('INVALID_REFTABLE');
+          expect((caught as { data: { check: string } }).data.check).toBe('record-overrun');
+          expect((caught as { data: { reason: string } }).data.reason).not.toContain('too short');
+          expect((caught as { data: { reason: string } }).data.reason).toContain('dangerous');
+        });
+      });
+    });
+
+    describe('Given a log entry whose log_data is exactly old_id + new_id, with nothing after', () => {
+      describe('When iterating via iterateReftableLogs', () => {
+        it('Then the ids guard does not refuse — the next read (name_len) refuses as truncated instead', async () => {
+          // Arrange — idsEnd === bytes.length exactly, the boundary between
+          // `>` and `>=`.
+          const ids = new Uint8Array(40);
+          const record = new Uint8Array([...entryKeyRecordPrefix(), ...ids]);
+          const compressed = await deflate(record);
+          const raw = new Uint8Array(LOG_BLOCK_HEADER_LENGTH + compressed.length);
+          const view = new DataView(raw.buffer);
+          raw[0] = 'g'.charCodeAt(0);
+          const declared = LOG_BLOCK_HEADER_LENGTH + record.length;
+          view.setUint8(1, (declared >>> 16) & 0xff);
+          view.setUint16(2, declared & 0xffff);
+          raw.set(compressed, LOG_BLOCK_HEADER_LENGTH);
+          const bytes = buildLogOnlyReftable([raw]);
+          const table = await loadReftable(bytes, inflateAt);
+          const sut = iterateReftableLogs;
+
+          // Act
+          let caught: unknown;
+          try {
+            Array.from(sut(table));
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert — a DIFFERENT check (`truncated`, from readVarint's own
+          // guard) proves the ids guard itself passed silently at the
+          // boundary.
+          expect((caught as { data: { code: string } }).data.code).toBe('INVALID_REFTABLE');
+          expect((caught as { data: { check: string } }).data.check).toBe('truncated');
+        });
+      });
+    });
+
+    describe('Given a log entry whose log_data ends exactly after tz_offset, with nothing after', () => {
+      describe('When iterating via iterateReftableLogs', () => {
+        it('Then the tz guard does not refuse — the next read (message_len) refuses as truncated instead', async () => {
+          // Arrange — afterTimestamp + TZ_OFFSET_WIDTH === bytes.length
+          // exactly, the boundary between `>` and `>=`.
+          const ids = new Uint8Array(40);
+          const record = new Uint8Array([
+            ...entryKeyRecordPrefix(),
+            ...ids,
+            0x00, // name_len = 0
+            0x00, // email_len = 0
+            0x00, // time_seconds
+            0x00,
+            0x00, // tz_offset, exactly filling to the end
+          ]);
+          const compressed = await deflate(record);
+          const raw = new Uint8Array(LOG_BLOCK_HEADER_LENGTH + compressed.length);
+          const view = new DataView(raw.buffer);
+          raw[0] = 'g'.charCodeAt(0);
+          const declared = LOG_BLOCK_HEADER_LENGTH + record.length;
+          view.setUint8(1, (declared >>> 16) & 0xff);
+          view.setUint16(2, declared & 0xffff);
+          raw.set(compressed, LOG_BLOCK_HEADER_LENGTH);
+          const bytes = buildLogOnlyReftable([raw]);
+          const table = await loadReftable(bytes, inflateAt);
+          const sut = iterateReftableLogs;
+
+          // Act
+          let caught: unknown;
+          try {
+            Array.from(sut(table));
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect((caught as { data: { code: string } }).data.code).toBe('INVALID_REFTABLE');
+          expect((caught as { data: { check: string } }).data.check).toBe('truncated');
+        });
+      });
+    });
+
+    describe('Given a log block payload exactly 2 bytes (only its own restart_count, zero records)', () => {
+      describe('When resolving its bounds', () => {
+        it('Then it does not refuse — payload.length === RESTART_COUNT_SIZE is in-bounds, not too short', () => {
+          // Arrange
+          const payload = new Uint8Array(2);
+          const sut = logBlockBounds;
+
+          // Act
+          const bounds = sut(payload);
+
+          // Assert
+          expect(bounds.recordsEnd).toBe(0);
+          expect(bounds.restartOffsets).toStrictEqual([]);
+        });
+      });
+    });
+
+    describe('Given a log block whose restart array starts exactly at payload offset 0 (fills the whole payload)', () => {
+      describe('When resolving its bounds', () => {
+        it('Then it does not refuse — restartArrayStart === 0 is in-bounds, not negative', () => {
+          // Arrange — 2 restart entries (6 bytes) + the trailing restart_count
+          // (2 bytes) exactly fill an 8-byte payload, leaving 0 bytes for
+          // records: restartArrayStart computes to exactly 0.
+          const payload = new Uint8Array(8);
+          new DataView(payload.buffer).setUint16(6, 2);
+          const sut = logBlockBounds;
+
+          // Act
+          const bounds = sut(payload);
+
+          // Assert
+          expect(bounds.recordsEnd).toBe(0);
+          expect(bounds.restartOffsets).toHaveLength(2);
+        });
+      });
+    });
+
+    describe('Given a log block payload with two restart entries at known offsets', () => {
+      describe('When resolving its bounds', () => {
+        it('Then each entry is read from its OWN position, not a mis-indexed shared one', () => {
+          // Arrange — deterministic, hand-placed restart entries (never real
+          // record bytes) so the expected offsets are known exactly, rather
+          // than inferred from record encoding.
+          function writeUint24(view: DataView, offset: number, value: number): void {
+            view.setUint8(offset, (value >>> 16) & 0xff);
+            view.setUint16(offset + 1, value & 0xffff);
+          }
+          const arrayStart = 20;
+          const payload = new Uint8Array(arrayStart + 3 + 3 + 2);
+          const view = new DataView(payload.buffer);
+          writeUint24(view, arrayStart, 4);
+          writeUint24(view, arrayStart + 3, 777);
+          view.setUint16(arrayStart + 6, 2);
+          const sut = logBlockBounds;
+
+          // Act
+          const bounds = sut(payload);
+
+          // Assert
+          expect(bounds.restartOffsets).toStrictEqual([4, 777]);
+        });
+      });
+    });
+
+    describe('Given a log block with a tombstone for one name and a filter for a different name', () => {
+      describe('When iterating filtered to the other name', () => {
+        it('Then the non-matching tombstone is not yielded', async () => {
+          // Arrange
+          const block = await buildReftableLogBlock(
+            {
+              records: [
+                { refName: 'refs/heads/gone', updateIndex: 1n, entry: { kind: 'deletion' } },
+              ],
+            },
+            deflate,
+          );
+          const bytes = buildLogOnlyReftable([block]);
+          const table = await loadReftable(bytes, inflateAt);
+          const sut = iterateReftableLogs;
+
+          // Act
+          const records = Array.from(sut(table, RefName.from('refs/heads/other')));
+
+          // Assert
+          expect(records).toStrictEqual([]);
+        });
+      });
+    });
+
+    describe('Given a log-block position exactly 4 bytes before the end of the file (touching the footer)', () => {
+      describe('When loading the table', () => {
+        it('Then the header-room guard does not refuse — a later guard (the per-block budget) does instead', async () => {
+          // Arrange — offset + LOG_BLOCK_HEADER_LENGTH === table._bytes.length
+          // exactly, the boundary between `>` and `>=`. The 3 header bytes
+          // read from this position land inside the footer's CRC field,
+          // deterministically producing a declared size far past the
+          // default per-block budget — never the header-room guard's own
+          // ('needs 4 header bytes, past the') message.
+          const bytes = buildReftable({
+            version: 1,
+            blocks: [],
+            logPosition: 88,
+            logIndexPosition: 92,
+          });
+          const sut = loadReftable;
+
+          // Act & Assert
+          await expectReftableRefusal(sut(bytes, inflateAt), 'per-block limit', 'block-bounds');
+        });
+      });
+    });
+
+    describe('Given a log block whose declared size is exactly the per-block budget', () => {
+      describe('When loading the table', () => {
+        it('Then it does not refuse — declaredPayloadBytes === maxBlockBytes is in-bounds, not over budget', async () => {
+          // Arrange
+          const block = await buildRawLogBlock(50);
+          const bytes = buildLogOnlyReftable([block]);
+          const budget: LogInflationBudget = { maxBlockBytes: 50, maxTableBytes: 1000 };
+          const sut = loadReftable;
+
+          // Act
+          const table = await sut(bytes, inflateAt, budget);
+
+          // Assert
+          expect(table.logBlocks).toHaveLength(1);
+          expect(table.logBlocks[0]).toHaveLength(50);
+        });
+      });
+    });
+
+    describe('Given log blocks whose combined size is exactly the per-table budget', () => {
+      describe('When loading the table', () => {
+        it('Then it does not refuse — totalInflatedBytes === maxTableBytes is in-bounds, not over budget', async () => {
+          // Arrange
+          const block = await buildRawLogBlock(50);
+          const bytes = buildLogOnlyReftable([block]);
+          const budget: LogInflationBudget = { maxBlockBytes: 1000, maxTableBytes: 50 };
+          const sut = loadReftable;
+
+          // Act
+          const table = await sut(bytes, inflateAt, budget);
+
+          // Assert
+          expect(table.logBlocks).toHaveLength(1);
+          expect(table.logBlocks[0]).toHaveLength(50);
         });
       });
     });
