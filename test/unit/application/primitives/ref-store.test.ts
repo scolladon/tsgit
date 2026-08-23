@@ -754,9 +754,9 @@ describe('ref-store', () => {
     });
   });
 
-  describe('Given a prefix that is a single, unslashed segment directly under refs/', () => {
+  describe('Given a prefix that is a single segment directly under refs/, with no further slash', () => {
     describe('When listing refs with that prefix', () => {
-      it('Then the walk root pushes down only to refs itself, not the unslashed segment', async () => {
+      it('Then the walk root pushes down only to refs itself, not the slash-free segment', async () => {
         // Arrange — isolates `lastSlash === -1` (no further `/` after
         // `refs/`), never exercised by the mid-segment fixture below (which
         // always has a further `/` to find).
