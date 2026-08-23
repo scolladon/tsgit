@@ -94,8 +94,11 @@ describe('enumerateRefs', () => {
         // Act
         await enumerateRefs(ctx);
 
-        // Assert
-        expect(readUtf8Calls).toEqual([]);
+        // Assert — scoped to the loose refs tree: an unrelated legitimate
+        // readUtf8 (a `core.*` config read, say) is not this test's concern
+        // and must not turn it red for an unrelated reason.
+        const looseRefsDir = `${base.layout.gitDir}/refs/`;
+        expect(readUtf8Calls.filter((path) => path.startsWith(looseRefsDir))).toEqual([]);
       });
     });
   });

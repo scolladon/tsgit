@@ -837,9 +837,14 @@ describe('ref-store', () => {
         // Act
         const names = await sut.listRefNames();
 
-        // Assert
+        // Assert — scoped to the loose refs tree: an unrelated legitimate
+        // readUtf8 (a `core.*` config read, say) is not this test's concern
+        // and must not turn it red for an unrelated reason.
         expect(names).toEqual(['refs/heads/main', 'refs/heads/other']);
-        expect(calls().some((c) => c.method === 'readUtf8')).toBe(false);
+        const looseRefsDir = `${ctx.layout.gitDir}/refs/`;
+        expect(
+          calls().some((c) => c.method === 'readUtf8' && c.path.startsWith(looseRefsDir)),
+        ).toBe(false);
       });
     });
   });
