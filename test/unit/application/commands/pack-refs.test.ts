@@ -178,6 +178,64 @@ describe('packRefs — files backend', () => {
     });
   });
 
+  describe('Given a files repository with a normal branch and a per-worktree direct ref', () => {
+    describe('When packRefs runs', () => {
+      it('Then the per-worktree ref is excluded from packing and stays loose', async () => {
+        // Arrange — `refs/bisect/*` is a per-worktree namespace holding a
+        // direct (non-symbolic) oid, unlike HEAD which the plain
+        // kind-filter already excludes on its own.
+        const { ctx, commitId } = await seedOneCommit();
+        const bisectPath = `${gitDirOf(ctx)}/refs/bisect/bad`;
+        await ctx.fs.writeUtf8(bisectPath, `${commitId}\n`);
+        const sut = packRefs;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result.packedRefCount).toBe(1);
+        const packed = await ctx.fs.readUtf8(packedRefsPathOf(ctx));
+        expect(packed).not.toContain('refs/bisect/bad');
+        expect(await ctx.fs.exists(bisectPath)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a files repository with a plain branch and no tags', () => {
+    describe('When packRefs runs', () => {
+      it('Then the packed entry carries no peeled line', async () => {
+        // Arrange
+        const { ctx } = await seedOneCommit();
+        const sut = packRefs;
+
+        // Act
+        await sut(ctx);
+
+        // Assert
+        const packed = await ctx.fs.readUtf8(packedRefsPathOf(ctx));
+        const lines = packed.split('\n').filter((line) => line.length > 0);
+        expect(lines.some((line) => line.startsWith('^'))).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a files repository with commits', () => {
+    describe('When packRefs runs', () => {
+      it('Then the packed-refs header declares the sorted trait', async () => {
+        // Arrange
+        const { ctx } = await seedOneCommit();
+        const sut = packRefs;
+
+        // Act
+        await sut(ctx);
+
+        // Assert
+        const packed = await ctx.fs.readUtf8(packedRefsPathOf(ctx));
+        expect(packed.split('\n')[0]).toBe('# pack-refs with: peeled fully-peeled sorted ');
+      });
+    });
+  });
+
   describe('Given an annotated tag', () => {
     describe('When packRefs runs', () => {
       it('Then the packed-refs entry carries the peeled commit oid on its own ^ line', async () => {

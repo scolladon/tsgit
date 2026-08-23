@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import {
   assertRenamableTrackingRef,
@@ -7,7 +7,7 @@ import {
 } from '../../../../src/application/primitives/ref-store.js';
 import { appendReflog, readReflog } from '../../../../src/application/primitives/reflog-store.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
-import type { TsgitError } from '../../../../src/domain/error.js';
+import { permissionDenied, type TsgitError } from '../../../../src/domain/error.js';
 import type { AuthorIdentity, ObjectId, RefName } from '../../../../src/domain/objects/index.js';
 import type { ReflogEntry } from '../../../../src/domain/reflog/index.js';
 import type { Context } from '../../../../src/ports/context.js';
@@ -410,6 +410,20 @@ describe('ref-store', () => {
     });
   });
 
+  describe('Given a tracking ref that exists in neither loose nor packed storage', () => {
+    describe('When assertRenamableTrackingRef is called', () => {
+      it('Then it does not throw — a missing ref is the caller’s own concern', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+
+        // Act + Assert
+        await expect(
+          assertRenamableTrackingRef(ctx, 'refs/remotes/origin/ghost' as RefName),
+        ).resolves.toBeUndefined();
+      });
+    });
+  });
+
   describe('Given packed-refs containing multiple entries and resolveDirect of the SECOND one', () => {
     describe('When called', () => {
       it('Then returns the second id (not the first)', async () => {
@@ -591,6 +605,30 @@ describe('ref-store', () => {
     });
   });
 
+  describe('Given packed refs listed in descending name order', () => {
+    describe('When listRefNames runs with no prefix', () => {
+      it('Then the result is still sorted ascending — the comparator actually swaps', async () => {
+        // Arrange — descending insertion order forces `.sort` to actually
+        // reorder elements; an already-ascending fixture would pass even
+        // with a comparator that never returns 1.
+        const ctx = await buildSeededContext({
+          packedRefs: [
+            { name: 'refs/heads/zebra' as RefName, id: 'a'.repeat(40) as ObjectId },
+            { name: 'refs/heads/mango' as RefName, id: 'b'.repeat(40) as ObjectId },
+            { name: 'refs/heads/apple' as RefName, id: 'c'.repeat(40) as ObjectId },
+          ],
+        });
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.listRefNames();
+
+        // Assert
+        expect(result).toEqual(['refs/heads/apple', 'refs/heads/mango', 'refs/heads/zebra']);
+      });
+    });
+  });
+
   describe('Given a repository with a loose ref, a packed ref and a nested loose ref', () => {
     describe('When listing refs with no prefix', () => {
       it('Then all three are returned sorted by name', async () => {
@@ -698,6 +736,47 @@ describe('ref-store', () => {
     });
   });
 
+  describe('Given a prefix that is exactly refs, with no trailing slash', () => {
+    describe('When listing refs with that prefix', () => {
+      it('Then the whole refs tree is still walked — the boundary itself still matches', async () => {
+        // Arrange
+        const ctx = await buildSeededContext({
+          refs: [{ name: 'refs/heads/main' as RefName, id: 'a'.repeat(40) as ObjectId }],
+        });
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.listRefs('refs' as RefName);
+
+        // Assert
+        expect(result.map((entry) => entry.name)).toEqual(['refs/heads/main']);
+      });
+    });
+  });
+
+  describe('Given a prefix that is a single, unslashed segment directly under refs/', () => {
+    describe('When listing refs with that prefix', () => {
+      it('Then the walk root pushes down only to refs itself, not the unslashed segment', async () => {
+        // Arrange — isolates `lastSlash === -1` (no further `/` after
+        // `refs/`), never exercised by the mid-segment fixture below (which
+        // always has a further `/` to find).
+        const ctx = await buildSeededContext({
+          refs: [
+            { name: 'refs/tags/v1' as RefName, id: 'a'.repeat(40) as ObjectId },
+            { name: 'refs/heads/main' as RefName, id: 'b'.repeat(40) as ObjectId },
+          ],
+        });
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.listRefs('refs/tags' as RefName);
+
+        // Assert
+        expect(result.map((entry) => entry.name)).toEqual(['refs/tags/v1']);
+      });
+    });
+  });
+
   describe('Given a prefix that ends mid-segment inside refs/heads/', () => {
     describe('When listing refs with that prefix', () => {
       it('Then only names sharing that partial segment are returned', async () => {
@@ -737,6 +816,28 @@ describe('ref-store', () => {
 
         // Assert
         expect(names).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given the refs root cannot be statted for a reason other than FILE_NOT_FOUND', () => {
+    describe('When listing refs', () => {
+      it('Then the fault propagates rather than reading as an absent refs directory', async () => {
+        // Arrange
+        const ctx = await buildSeededContext({
+          refs: [{ name: 'refs/heads/main' as RefName, id: 'a'.repeat(40) as ObjectId }],
+        });
+        const refsRoot = `${ctx.layout.gitDir}/refs`;
+        const fault = permissionDenied(refsRoot);
+        const originalStat = ctx.fs.stat.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'stat').mockImplementation(async (path: string) => {
+          if (path === refsRoot) throw fault;
+          return originalStat(path);
+        });
+        const sut = createRefStore(ctx);
+
+        // Act + Assert
+        await expect(sut.listRefs()).rejects.toBe(fault);
       });
     });
   });
@@ -846,6 +947,31 @@ describe('ref-store', () => {
         expect(
           calls().some((c) => c.method === 'readUtf8' && c.path.startsWith(looseRefsDir)),
         ).toBe(false);
+      });
+    });
+  });
+
+  describe('Given resolveDirect throws something other than a TsgitError while listing', () => {
+    describe('When listing refs', () => {
+      it('Then the fault propagates rather than silently excluding the ref', async () => {
+        // Arrange — distinct from the malformed-loose-ref case below, which
+        // is a recognised TsgitError parse failure the enumeration is
+        // designed to tolerate; an UNEXPECTED failure shape must still
+        // surface as a bug, not vanish from the listing.
+        const ctx = await buildSeededContext({
+          refs: [{ name: 'refs/heads/main' as RefName, id: 'a'.repeat(40) as ObjectId }],
+        });
+        const loosePath = `${ctx.layout.gitDir}/refs/heads/main`;
+        const fault = new Error('boom');
+        const originalReadUtf8 = ctx.fs.readUtf8.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'readUtf8').mockImplementation(async (path: string) => {
+          if (path === loosePath) throw fault;
+          return originalReadUtf8(path);
+        });
+        const sut = createRefStore(ctx);
+
+        // Act + Assert
+        await expect(sut.listRefs()).rejects.toBe(fault);
       });
     });
   });
@@ -1087,6 +1213,27 @@ describe('ref-store', () => {
 
         // Assert
         expect(result).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a reflog stat fails for a reason other than FILE_NOT_FOUND', () => {
+    describe('When hasReflog is called on the store', () => {
+      it('Then the fault propagates rather than reading as no reflog', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await appendReflog(ctx, 'refs/heads/main' as RefName, reflogEntry());
+        const reflogFilePath = `${ctx.layout.gitDir}/logs/refs/heads/main`;
+        const fault = permissionDenied(reflogFilePath);
+        const originalStat = ctx.fs.stat.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'stat').mockImplementation(async (path: string) => {
+          if (path === reflogFilePath) throw fault;
+          return originalStat(path);
+        });
+        const sut = createRefStore(ctx);
+
+        // Act + Assert
+        await expect(sut.hasReflog('refs/heads/main' as RefName)).rejects.toBe(fault);
       });
     });
   });
