@@ -241,14 +241,16 @@ describe('packRefs — files backend', () => {
         await ctx.fs.writeUtf8(`${gitDirOf(ctx)}/refs/tags/deep`, `${chainTip}\n`);
         const sut = packRefs;
 
-        // Act
+        // Act — captured OUTSIDE the try: an `expect.unreachable()` thrown
+        // inside it would be swallowed by this same `catch` and resurface as
+        // a confusing downstream TypeError instead of the intended message.
         let caught: unknown;
         try {
           await sut(ctx);
-          expect.unreachable();
         } catch (err) {
           caught = err;
         }
+        if (caught === undefined) expect.unreachable();
 
         // Assert
         const data = (caught as TsgitError).data;
@@ -379,6 +381,58 @@ describe('packRefs — reftable backend', () => {
         for (const name of namesAfter) {
           expect(await ctx.fs.exists(`${dir}/${name}`)).toBe(true);
         }
+      });
+    });
+  });
+
+  describe('Given a directory (not a file) inside the reftable directory named like an orphan table', () => {
+    describe('When packRefs runs', () => {
+      it('Then the directory is left alone — never mistaken for a stray table file', async () => {
+        // Arrange — nothing on disk prevents a directory from landing under
+        // `.git/reftable/` (a stray tool, a manual mkdir); `isOrphanCandidate`
+        // matches purely on name suffix, so only the sweep's own
+        // `entry.isDirectory` guard stops this from being unlinked as though
+        // it were a genuine `*.ref` file.
+        const ctx = await seedReftableRepo();
+        const dir = commonReftableDir(ctx);
+        const t1 = await buildFixtureTable(ctx, [liveRef('refs/heads/a', 1, 1)], [], 1n, 1n);
+        await writeReftableFiles(ctx, dir, [{ name: 't1.ref', bytes: t1 }]);
+        const strayDir = `${dir}/0x000000000099-0x000000000099-deadbeef.ref`;
+        await ctx.fs.mkdir(strayDir);
+        const sut = packRefs;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result.removedOrphanCount).toBe(0);
+        expect(await ctx.fs.exists(strayDir)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a directory named like a *.ref.lock file alongside an orphan *.temp file', () => {
+    describe('When packRefs runs', () => {
+      it('Then the directory is never read as a compaction-in-flight signal — the temp file is still swept', async () => {
+        // Arrange — the compaction-in-flight check matches purely on name
+        // suffix too; only `!entry.isDirectory` stops a same-suffixed
+        // directory from falsely signalling a mid-flight compaction and
+        // suppressing this pass's `*.temp` cleanup.
+        const ctx = await seedReftableRepo();
+        const dir = commonReftableDir(ctx);
+        const t1 = await buildFixtureTable(ctx, [liveRef('refs/heads/a', 1, 1)], [], 1n, 1n);
+        await writeReftableFiles(ctx, dir, [{ name: 't1.ref', bytes: t1 }]);
+        const tempPath = `${dir}/0x000000000099-0x000000000099-cafebabe.temp`;
+        await ctx.fs.write(tempPath, t1);
+        await ctx.fs.mkdir(`${dir}/0x000000000042-0x000000000042-aaaaaaaa.ref.lock`);
+        const sut = packRefs;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result.removedOrphanCount).toBe(1);
+        expect(await ctx.fs.exists(tempPath)).toBe(false);
       });
     });
   });
