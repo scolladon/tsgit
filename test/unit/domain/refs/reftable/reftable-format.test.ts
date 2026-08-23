@@ -242,17 +242,22 @@ describe('reftable-format', () => {
           // oracle over whatever file it resolves to.
           const bytes = new Uint8Array(HEADER_LENGTH_V1 + FOOTER_LENGTH_V1);
           bytes.set([0xde, 0xad, 0xbe, 0xef], 0);
+          const sut = parseReftable;
 
-          // Act
+          // Act & Assert — routed through the shared refusal helper, so a
+          // mutation that swaps which ReftableCheck fires (or drops the
+          // magic guard entirely, letting a downstream refusal or a raw
+          // RangeError surface instead) is caught, not just any throw.
+          expectRefusal(() => sut(bytes), 'magic', 'magic');
+
+          // Assert — the byte-echo oracle itself: the reason text must
+          // never surface the raw bytes it read, upper- or lowercase.
           let caught: unknown;
           try {
-            parseReftable(bytes);
+            sut(bytes);
           } catch (e) {
             caught = e;
           }
-
-          // Assert
-          expect(caught).toBeInstanceOf(Object);
           const reason = (caught as TsgitError).data as { reason: string };
           expect(reason.reason).not.toContain('deadbeef');
           expect(reason.reason).not.toContain('DEADBEEF');
