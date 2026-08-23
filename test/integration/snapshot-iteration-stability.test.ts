@@ -63,7 +63,7 @@ const makeFallback = (): RuntimeFallback => ({
   compressor: new MemoryCompressor(),
   transport: new MemoryHttpTransport(),
   runtime: 'memory',
-  layout: { workDir: '/repo', gitDir: '/repo/.git', bare: false },
+  layout: { workDir: '/repo', gitDir: '/repo/.git', bare: false, refStorage: 'files' },
   hashConfig: SHA1_CONFIG,
   deltaCache: createLruCache<Uint8Array>(1024),
 });

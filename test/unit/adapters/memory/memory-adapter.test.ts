@@ -38,6 +38,7 @@ describe('createMemoryContext', () => {
         expect(sut.layout.workDir).toBe('/repo');
         expect(sut.layout.gitDir).toBe('/repo/.git');
         expect(sut.layout.bare).toBe(false);
+        expect(sut.layout.refStorage).toBe('files');
       });
     });
     describe('When reading layout.homeDir', () => {
@@ -68,6 +69,15 @@ describe('createMemoryContext', () => {
 
         // Assert
         expect(sut.layout.bare).toBe(false);
+      });
+    });
+    describe('When reading layout.refStorage', () => {
+      it("Then it stays 'files' — the homeDir branch builds the layout independently", () => {
+        // Arrange / Act
+        const sut = createMemoryContext({ homeDir: '/home/me' });
+
+        // Assert
+        expect(sut.layout.refStorage).toBe('files');
       });
     });
   });

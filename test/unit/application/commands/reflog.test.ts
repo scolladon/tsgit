@@ -192,6 +192,24 @@ describe('reflog command', () => {
         });
       });
     });
+
+    describe('Given a ref whose reflog was emptied by a prior delete (file present, no entries)', () => {
+      describe('When reflog exists', () => {
+        it('Then still returns true — a present-but-empty log is not "no reflog" (matches real git)', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx, {});
+          await writeReflog(ctx, BRANCH, [entry()]);
+          await reflog(ctx, { action: 'delete', ref: 'refs/heads/main', index: 0 });
+
+          // Act
+          const result = await reflog(ctx, { action: 'exists', ref: 'refs/heads/main' });
+
+          // Assert
+          expect(result).toEqual({ kind: 'exists', exists: true });
+        });
+      });
+    });
   });
 
   describe('delete', () => {
@@ -352,6 +370,34 @@ describe('reflog command', () => {
           expect((caught as TsgitError).data).toEqual({
             code: 'REFLOG_NOT_FOUND',
             ref: 'refs/heads/missing',
+          });
+        });
+      });
+    });
+
+    describe('Given a reflog path that is a directory because a sibling ref nests under it', () => {
+      describe('When delete', () => {
+        it('Then throws REFLOG_NOT_FOUND rather than a raw filesystem read error', async () => {
+          // Arrange — measured against git 2.55.0: `refs/heads/feature/x`
+          // having a reflog makes `.git/logs/refs/heads/feature` a
+          // directory (holding `x`'s own file), not `feature`'s own reflog.
+          const ctx = createMemoryContext();
+          await seedRepo(ctx, {});
+          await appendReflog(ctx, 'refs/heads/feature/x' as RefName, entry());
+
+          // Act
+          let caught: unknown;
+          try {
+            await reflog(ctx, { action: 'delete', ref: 'refs/heads/feature', index: 0 });
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data).toEqual({
+            code: 'REFLOG_NOT_FOUND',
+            ref: 'refs/heads/feature',
           });
         });
       });

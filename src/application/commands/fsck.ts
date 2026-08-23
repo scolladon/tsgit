@@ -35,19 +35,31 @@ import type { FsckFinding, FsckOptions, FsckResult } from './internal/fsck/types
 // Main command
 // ---------------------------------------------------------------------------
 
-/** A cache that holds nothing — fsck's audit reads always reach the store. */
-const NO_DELTA_CACHE: LruCache<Uint8Array> = {
-  get: () => undefined,
-  set: () => undefined,
-  // Stryker disable next-line BooleanLiteral: equivalent — nothing in src/** ever calls .has() on a Context's deltaCache (only .get()/.set(), via object-resolver.ts and blob-source.ts), so this arm's return value is unobservable.
-  has: () => false,
-  // Stryker disable next-line BooleanLiteral: equivalent — nothing in src/** ever calls .delete() on a Context's deltaCache, so this arm's return value is unobservable.
-  delete: () => false,
-  clear: () => undefined,
-  currentSize: 0,
-  maxSize: 0,
-  entryCount: 0,
-};
+/** A cache that holds nothing — fsck's audit reads always reach the store.
+ *  Built fresh per call, never a shared module-level singleton: a
+ *  `Context`'s `deltaCache` is also the identity anchor
+ *  `load-reftable-stack.ts`'s stack memo keys on, so one process-wide
+ *  instance reused across every `fsck` call would alias independent
+ *  repositories that route ref reads through this audit Context and happen
+ *  to share a `reftableDir` path string (the memory and browser/OPFS
+ *  adapters routinely do). Currently latent — nothing in this module hands
+ *  `auditCtx` to `getRefStore`/`loadReftableStack` — but the per-call
+ *  allocation is free enough that closing the door outright beats relying
+ *  on that staying true. */
+function createNoDeltaCache(): LruCache<Uint8Array> {
+  return {
+    get: () => undefined,
+    set: () => undefined,
+    // Stryker disable next-line BooleanLiteral: equivalent — nothing in src/** ever calls .has() on a Context's deltaCache (only .get()/.set(), via object-resolver.ts and blob-source.ts), so this arm's return value is unobservable.
+    has: () => false,
+    // Stryker disable next-line BooleanLiteral: equivalent — nothing in src/** ever calls .delete() on a Context's deltaCache, so this arm's return value is unobservable.
+    delete: () => false,
+    clear: () => undefined,
+    currentSize: 0,
+    maxSize: 0,
+    entryCount: 0,
+  };
+}
 
 export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckResult> {
   await assertOperationalRepository(ctx);
@@ -61,7 +73,7 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
   // per-Context read cache (loose fanout, commit graph, config) is left to
   // rebuild: bounded rework, no handles, no correctness stake. Frozen like
   // every Context the factories hand out.
-  const auditCtx: Context = Object.freeze({ ...ctx, deltaCache: NO_DELTA_CACHE });
+  const auditCtx: Context = Object.freeze({ ...ctx, deltaCache: createNoDeltaCache() });
   adoptPackRegistry(ctx, auditCtx);
 
   const allIds = await enumerateObjects(ctx, {

@@ -60,6 +60,21 @@ const buildSafeEnv = (): NodeJS.ProcessEnv => {
   env.HOME = ISOLATED_HOME;
   env.GIT_CONFIG_NOSYSTEM = '1';
   env.XDG_CONFIG_HOME = path.join(ISOLATED_HOME, '.config');
+  // Same guarantee `disableAutoMaintenance` gives one repo, given to every
+  // repo any interop test spawns git against — including the ones that never
+  // call it. A detached `gc --auto` / `maintenance run --auto` mutates
+  // `.git/objects` (creating and removing `objects/maintenance.lock`) while
+  // the test is still copying or asserting over that directory, so a plain
+  // `fs.cp` of a fixture repo can lose an `lstat` race against a process it
+  // never started. Carried on the env rather than per-repo config because the
+  // env is the one chokepoint every helper here already funnels through.
+  env.GIT_CONFIG_COUNT = '3';
+  env.GIT_CONFIG_KEY_0 = 'gc.auto';
+  env.GIT_CONFIG_VALUE_0 = '0';
+  env.GIT_CONFIG_KEY_1 = 'gc.autoDetach';
+  env.GIT_CONFIG_VALUE_1 = 'false';
+  env.GIT_CONFIG_KEY_2 = 'maintenance.auto';
+  env.GIT_CONFIG_VALUE_2 = 'false';
   return env;
 };
 

@@ -389,6 +389,16 @@
         "default": "./dist/cjs/commands/pack-objects.cjs"
       }
     },
+    "./commands/pack-refs": {
+      "import": {
+        "types": "./dist/types/commands/pack-refs.d.ts",
+        "default": "./dist/esm/commands/pack-refs.js"
+      },
+      "require": {
+        "types": "./dist/types/commands/pack-refs.d.cts",
+        "default": "./dist/cjs/commands/pack-refs.cjs"
+      }
+    },
     "./commands/pull": {
       "import": {
         "types": "./dist/types/commands/pull.d.ts",
@@ -1328,7 +1338,7 @@
     "@arethetypeswrong/cli": "0.18.5",
     "@biomejs/biome": "2.5.10",
     "@cloudflare/vitest-pool-workers": "0.22.0",
-    "@cloudflare/workers-types": "5.20260821.1",
+    "@cloudflare/workers-types": "5.20260823.1",
     "@commitlint/cli": "21.2.2",
     "@commitlint/config-conventional": "21.2.2",
     "@ls-lint/ls-lint": "2.3.1",
@@ -1342,11 +1352,11 @@
     "@stryker-mutator/vitest-runner": "10.0.0",
     "@types/node": "26.2.0",
     "@vitest/coverage-v8": "4.1.11",
-    "cspell": "10.0.1",
+    "cspell": "10.1.0",
     "dependency-cruiser": "18.2.0",
     "fast-check": "4.9.0",
     "husky": "9.1.7",
-    "isomorphic-git": "1.41.7",
+    "isomorphic-git": "1.41.9",
     "jscpd": "5.0.16",
     "knip": "6.32.2",
     "lint-staged": "17.3.0",

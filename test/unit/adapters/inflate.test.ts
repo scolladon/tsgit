@@ -2,7 +2,11 @@ import { randomBytes } from 'node:crypto';
 import { deflateSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
 import { adler32 } from '../../../src/adapters/adler32.js';
-import { inflateZlibMember } from '../../../src/adapters/inflate.js';
+import {
+  boundedInflateCap,
+  inflateZlibMember,
+  MAX_INFLATED_OUTPUT_BYTES,
+} from '../../../src/adapters/inflate.js';
 import { TsgitError } from '../../../src/domain/index.js';
 
 const ZLIB_CMF_CM8_CINFO7 = 0x78;
@@ -1123,6 +1127,44 @@ describe('inflateZlibMember', () => {
         // Assert
         expect(Array.from(result.output)).toEqual(Array.from(payload));
         expect(result.bytesConsumed).toBe(member.length);
+      });
+    });
+  });
+});
+
+describe('boundedInflateCap', () => {
+  describe('Given no caller-supplied bound', () => {
+    describe('When computing the effective cap', () => {
+      it('Then the decoder default applies', () => {
+        // Arrange & Act
+        const result = boundedInflateCap(undefined);
+
+        // Assert
+        expect(result).toBe(MAX_INFLATED_OUTPUT_BYTES);
+      });
+    });
+  });
+
+  describe('Given a caller-supplied bound smaller than the decoder default', () => {
+    describe('When computing the effective cap', () => {
+      it('Then the caller bound applies — narrowing is honoured', () => {
+        // Arrange & Act
+        const result = boundedInflateCap(1024);
+
+        // Assert
+        expect(result).toBe(1024);
+      });
+    });
+  });
+
+  describe('Given a caller-supplied bound larger than the decoder default', () => {
+    describe('When computing the effective cap', () => {
+      it('Then the decoder default still applies — a caller cannot raise the cap', () => {
+        // Arrange & Act
+        const result = boundedInflateCap(MAX_INFLATED_OUTPUT_BYTES + 1);
+
+        // Assert
+        expect(result).toBe(MAX_INFLATED_OUTPUT_BYTES);
       });
     });
   });

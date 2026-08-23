@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { TsgitErrorData } from '../../../../src/domain/error.js';
-import { invalidPackedRefs, invalidRef } from '../../../../src/domain/refs/error.js';
+import {
+  invalidPackedRefs,
+  invalidRef,
+  invalidReftable,
+  reftableLocked,
+} from '../../../../src/domain/refs/error.js';
 import { assertExhaustiveSwitch } from '../exhaustiveness.js';
 
 describe('refs error', () => {
@@ -25,6 +30,34 @@ describe('refs error', () => {
 
           // Assert
           expect(result.data).toEqual({ code: 'INVALID_PACKED_REFS', reason: 'corrupt line' });
+        });
+      });
+    });
+
+    describe("Given invalidReftable('magic', 'bad')", () => {
+      describe('When checking error.data', () => {
+        it("Then code is 'INVALID_REFTABLE', check is 'magic' and reason matches", () => {
+          // Arrange & Act
+          const result = invalidReftable('magic', 'bad');
+
+          // Assert
+          expect(result.data).toEqual({ code: 'INVALID_REFTABLE', check: 'magic', reason: 'bad' });
+        });
+      });
+    });
+
+    describe("Given reftableLocked('.git/reftable', 'held by another writer')", () => {
+      describe('When checking error.data', () => {
+        it("Then code is 'REFTABLE_LOCKED', stack and reason match", () => {
+          // Arrange & Act
+          const result = reftableLocked('.git/reftable', 'held by another writer');
+
+          // Assert
+          expect(result.data).toEqual({
+            code: 'REFTABLE_LOCKED',
+            stack: '.git/reftable',
+            reason: 'held by another writer',
+          });
         });
       });
     });

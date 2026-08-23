@@ -8,13 +8,12 @@
  * Design: `docs/design/phase-20-8-crud-porcelain-nested-namespace.md`.
  */
 import { invalidOption, remoteExists, remoteNotConfigured } from '../../domain/commands/error.js';
-import { unsupportedOperation } from '../../domain/error.js';
 import { type ObjectId, type RefName, zeroOid } from '../../domain/objects/object-id.js';
 import type { Context } from '../../ports/context.js';
 import { readConfig } from '../primitives/config-read.js';
 import { enumerateRefs } from '../primitives/enumerate-refs.js';
 import { assertAcceptedRepository } from '../primitives/internal/repo-state.js';
-import { getRefStore } from '../primitives/ref-store.js';
+import { assertRenamableTrackingRef, getRefStore } from '../primitives/ref-store.js';
 import { type ConfigOperation, updateConfigOperations } from '../primitives/update-config.js';
 import { updateRef } from '../primitives/update-ref.js';
 import { parseRefspec } from './internal/refspec.js';
@@ -213,18 +212,12 @@ const moveTrackingRef = async (
   target: RefName,
   reflogMessage: string,
 ): Promise<void> => {
-  const store = getRefStore(ctx);
-  const direct = await store.resolveDirect(source);
+  const direct = await getRefStore(ctx).resolveDirect(source);
   if (direct.kind !== 'direct') return;
   // Packed-only refs must surface BEFORE the target write — otherwise the
   // subsequent delete throws and leaves a partial move (target written,
   // source still packed). Mirrors `remove`'s packed-only error path.
-  if (!(await store.isLoose(source))) {
-    throw unsupportedOperation(
-      'rename-packed-tracking-ref',
-      `cannot rename packed-only ref ${source} — run \`git pack-refs --unpack\` and retry`,
-    );
-  }
+  await assertRenamableTrackingRef(ctx, source);
   await updateRef(ctx, target, direct.id, { expected: 'absent', reflogMessage });
   await updateRef(ctx, source, zeroOid(ctx.hashConfig), { delete: true });
 };

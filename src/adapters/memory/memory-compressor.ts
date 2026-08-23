@@ -1,6 +1,6 @@
 import { compressFailed, decompressFailed } from '../../domain/index.js';
 import type { Compressor, InflateStreamResult } from '../../ports/compressor.js';
-import { inflateZlibMember } from '../inflate.js';
+import { boundedInflateCap, inflateZlibMember } from '../inflate.js';
 
 export class MemoryCompressor implements Compressor {
   constructor() {
@@ -42,8 +42,12 @@ export class MemoryCompressor implements Compressor {
   // The zero-dependency decoder is synchronous and whole-member, and already
   // maps every failure to `decompressFailed` — the rejected promise here
   // carries that typed error as-is, no re-wrap needed.
-  streamInflate = async (bytes: Uint8Array, offset: number): Promise<InflateStreamResult> =>
-    inflateZlibMember(bytes, offset);
+  streamInflate = async (
+    bytes: Uint8Array,
+    offset: number,
+    maxOutputBytes?: number,
+  ): Promise<InflateStreamResult> =>
+    inflateZlibMember(bytes, offset, boundedInflateCap(maxOutputBytes));
 
   createInflateStream = (): TransformStream<Uint8Array, Uint8Array> => {
     return new DecompressionStream('deflate') as unknown as TransformStream<Uint8Array, Uint8Array>;

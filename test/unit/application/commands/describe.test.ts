@@ -235,7 +235,9 @@ describe('describe', () => {
         const c1 = await commitFile(ctx, 'c1');
         await annotatedTag(ctx, 'v1.0', c1, clock);
         const c2 = await commitFile(ctx, 'c2');
-        await getRefStore(ctx).writeLoose(RefName.from('refs/heads/feat'), c2);
+        await getRefStore(ctx).applyRefUpdates([
+          { kind: 'set', name: RefName.from('refs/heads/feat'), id: c2 },
+        ]);
 
         // Act
         const result = await describeCmd(ctx, c2, { all: true });

@@ -237,33 +237,6 @@ const buildOneBlobPack = async (
   return { packBytes: built.packBytes, blobId: built.ids[0] as ObjectId };
 };
 
-/**
- * Wrap `ctx.fs` so `readdir` on `dirPath` yields one extra file entry named
- * `entryName`. The matching `readUtf8` returns an empty string so the
- * have-derivation walk (`collectFromDir`) skips the phantom as a non-oid;
- * only the prune walk acts on it. Used to drive `deleteUnadvertised`'s
- * unsafe-name and packed-only-ref branches deterministically.
- */
-const withPhantomDirEntry = (
-  ctx: ReturnType<typeof createMemoryContext>,
-  dirPath: string,
-  entryName: string,
-): ReturnType<typeof createMemoryContext>['fs'] => {
-  const phantomPath = `${dirPath}/${entryName}`;
-  return {
-    ...ctx.fs,
-    readdir: async (path: string) => {
-      const real = await ctx.fs.readdir(path);
-      if (path !== dirPath) return real;
-      return [
-        ...real,
-        { name: entryName, isFile: true, isDirectory: false, isSymbolicLink: false },
-      ];
-    },
-    readUtf8: async (path: string) => (path === phantomPath ? '' : ctx.fs.readUtf8(path)),
-  };
-};
-
 describe('fetch', () => {
   describe('config + advertisement guards', () => {
     describe('Given no remote configured', () => {
@@ -1914,6 +1887,39 @@ describe('fetch', () => {
         });
       });
     });
+
+    describe('Given a PACKED-ONLY remote-tracking ref already at the advertised oid', () => {
+      describe('When fetch', () => {
+        it('Then readExistingRef sees it as existing (oldId === newId), not rewritten as new', async () => {
+          // Arrange — a remote-tracking ref that survived a `git gc` (packed,
+          // no loose file) must be read by `readExistingRef` the same as a
+          // loose one; without consulting packed storage it would look absent
+          // and be rewritten as brand new (oldId undefined).
+          const ctx = createMemoryContext();
+          const { packBytes, blobId } = await buildOneBlobPack(ctx, 'packed already-at\n');
+          await seedRepo(ctx, {});
+          await ctx.fs.writeUtf8(
+            `${ctx.layout.gitDir}/packed-refs`,
+            `# pack-refs with: peeled fully-peeled sorted\n${blobId} refs/remotes/origin/main\n`,
+          );
+          await writeOriginConfig(ctx);
+          const { transport } = fakeRemote({
+            url: 'https://example.com/r.git',
+            advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+            packBytes,
+          });
+
+          // Act
+          const result = await fetch({ ...ctx, transport });
+
+          // Assert — exactly one entry, oldId === newId (seen as existing).
+          const entries = result.updatedRefs.filter((r) => r.name === 'refs/remotes/origin/main');
+          expect(entries).toHaveLength(1);
+          expect(entries[0]?.oldId).toBe(blobId);
+          expect(entries[0]?.newId).toBe(blobId);
+        });
+      });
+    });
   });
 
   describe('hostile tag ref defenses', () => {
@@ -1947,61 +1953,16 @@ describe('fetch', () => {
     });
   });
 
-  describe('prune packed-only + unsafe ref handling', () => {
-    describe('Given a prune walk hitting an unsafe ref name', () => {
-      describe('When fetch', () => {
-        it('Then it is skipped with a warn and the fetch succeeds', async () => {
-          // Arrange — kills L350 (ConditionalExpression + BlockStatement) and the
-          // L351 warn-call StringLiteral/ObjectLiteral mutants. A phantom `..`
-          // entry from readdir composes an unsafe ref name; the guard must skip
-          // it (warn + continue) instead of letting updateRef throw.
-          const ctx = createMemoryContext();
-          await seedRepo(ctx, { refs: { 'refs/remotes/origin/main': FAKE_OID('a') } });
-          await writeOriginConfig(ctx);
-          const { packBytes, blobId } = await buildOneBlobPack(ctx, 'unsafe prune\n');
-          const { transport } = fakeRemote({
-            url: 'https://example.com/r.git',
-            advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
-            packBytes,
-          });
-          const remoteDir = `${ctx.layout.gitDir}/refs/remotes/origin`;
-          const warnings: Array<{
-            message: string;
-            context: Readonly<Record<string, unknown>> | undefined;
-          }> = [];
-          const logger = {
-            warn: (message: string, context?: Readonly<Record<string, unknown>>): void => {
-              warnings.push({ message, context });
-            },
-          };
-          const fsWithPhantom = withPhantomDirEntry(ctx, remoteDir, '..');
-
-          // Act
-          const result = await fetch(
-            { ...ctx, transport, fs: fsWithPhantom, logger },
-            { prune: true },
-          );
-
-          // Assert — fetch succeeded; the unsafe entry was warned about, not deleted.
-          expect(result.prunedRefs).toEqual([]);
-          const unsafeWarn = warnings.find(
-            (w) => w.message === 'fetch.prune: skipping unsafe ref name',
-          );
-          expect(unsafeWarn).toBeDefined();
-          expect(unsafeWarn?.context).toEqual({ name: 'refs/remotes/origin/..' });
-        });
-      });
-    });
-
+  describe('prune packed-only ref handling', () => {
     describe('Given a prune walk reaching a packed-only ref', () => {
       describe('When fetch', () => {
         it('Then updateRef raises UNSUPPORTED_OPERATION and the ref is skipped with a warn naming the ref', async () => {
           // Arrange — kills the catch-block mutants, the isPackedRefDeleteError
           // checks, and the warn-call `{ name: refName }` ObjectLiteral mutant.
-          // A phantom readdir entry names a ref that exists ONLY in packed-refs
-          // (no loose file); updateRef's delete path then throws
-          // UNSUPPORTED_OPERATION/delete-packed-ref, which isPackedRefDeleteError
-          // must recognise so the loop continues.
+          // `ghost` exists ONLY in packed-refs (no loose file); `listRefs`
+          // surfaces it as a prune candidate, and `updateRef`'s delete path
+          // then throws UNSUPPORTED_OPERATION/delete-packed-ref, which
+          // isPackedRefDeleteError must recognise so the loop continues.
           const ctx = createMemoryContext();
           await seedRepo(ctx, { refs: { 'refs/remotes/origin/main': FAKE_OID('a') } });
           const packedOnly = 'c'.repeat(40);
@@ -2016,7 +1977,6 @@ describe('fetch', () => {
             advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
             packBytes,
           });
-          const remoteDir = `${ctx.layout.gitDir}/refs/remotes/origin`;
           const warnings: Array<{
             message: string;
             context: Readonly<Record<string, unknown>> | undefined;
@@ -2026,13 +1986,9 @@ describe('fetch', () => {
               warnings.push({ message, context });
             },
           };
-          const fsWithPhantom = withPhantomDirEntry(ctx, remoteDir, 'ghost');
 
           // Act
-          const result = await fetch(
-            { ...ctx, transport, fs: fsWithPhantom, logger },
-            { prune: true },
-          );
+          const result = await fetch({ ...ctx, transport, logger }, { prune: true });
 
           // Assert — packed-only ref skipped, not crashed, and not listed as pruned.
           expect(result.prunedRefs).toEqual([]);
@@ -2044,38 +2000,47 @@ describe('fetch', () => {
         });
       });
     });
+  });
 
-    describe('Given a prune walk where updateRef throws a non-packed TsgitError', () => {
-      describe('When fetch', () => {
-        it('Then the error is rethrown', async () => {
-          // Arrange — kills L364 `ConditionalExpression -> true` (always-skip)
-          // and pins isPackedRefDeleteError's code/operation checks. A phantom
-          // readdir entry names a ref that is neither loose nor packed; updateRef
-          // delete then throws REF_NOT_FOUND, which is NOT a packed-ref error and
-          // must propagate out of fetch.
+  describe('prune refuses a dangerous packed-refs entry', () => {
+    describe('Given packed-refs carries a dangerous name under refs/remotes/<remote>/', () => {
+      describe('When fetch prunes', () => {
+        it('Then it refuses (throws INVALID_PACKED_REFS) rather than deleting or traversing', async () => {
+          // Arrange — re-pins the adversarial property covered, pre-listRefs,
+          // by a phantom-readdir-entry test at the prune walk itself: a
+          // dangerous name reachable under refs/remotes/<remote>/ must never
+          // reach a delete. Now that enumeration is backed by packed-refs
+          // parsing, the seam moved to read time — `listRefs` (called from
+          // `prune`) loads packed-refs via `parsePackedRefs`, which refuses
+          // the whole read the way git does, so the dangerous entry never
+          // becomes a prune candidate in the first place.
           const ctx = createMemoryContext();
           await seedRepo(ctx, { refs: { 'refs/remotes/origin/main': FAKE_OID('a') } });
+          const dangerous = 'refs/remotes/origin/../../../../tmp/pwned';
+          await ctx.fs.writeUtf8(
+            `${ctx.layout.gitDir}/packed-refs`,
+            `# pack-refs with: peeled fully-peeled sorted\n${'c'.repeat(40)} ${dangerous}\n`,
+          );
           await writeOriginConfig(ctx);
-          const { packBytes, blobId } = await buildOneBlobPack(ctx, 'rethrow prune\n');
+          const { packBytes, blobId } = await buildOneBlobPack(ctx, 'dangerous packed prune\n');
           const { transport } = fakeRemote({
             url: 'https://example.com/r.git',
             advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
             packBytes,
           });
-          const remoteDir = `${ctx.layout.gitDir}/refs/remotes/origin`;
-          const fsWithPhantom = withPhantomDirEntry(ctx, remoteDir, 'phantom');
 
           // Act
           let caught: unknown;
           try {
-            await fetch({ ...ctx, transport, fs: fsWithPhantom }, { prune: true });
+            await fetch({ ...ctx, transport }, { prune: true });
           } catch (err) {
             caught = err;
           }
 
-          // Assert — REF_NOT_FOUND (non-packed) is rethrown, not swallowed.
+          // Assert — refused at read time, not silently skipped or traversed.
           expect(caught).toBeInstanceOf(TsgitError);
-          expect((caught as TsgitError).data.code).toBe('REF_NOT_FOUND');
+          expect((caught as TsgitError).data.code).toBe('INVALID_PACKED_REFS');
+          expect(((caught as TsgitError).data as { reason: string }).reason).toContain(dangerous);
         });
       });
     });

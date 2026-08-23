@@ -37,6 +37,7 @@ describe('readRepositoryFormat', () => {
           worktree: undefined,
           worktreeConfig: false,
           objectFormat: 'sha1',
+          refStorage: 'files',
           refusal: undefined,
         });
       });
@@ -110,6 +111,7 @@ describe('readRepositoryFormat', () => {
           worktree: undefined,
           worktreeConfig: true,
           objectFormat: 'sha1',
+          refStorage: 'files',
           refusal: undefined,
         });
       });
@@ -164,6 +166,7 @@ describe('readRepositoryFormat', () => {
           worktree: undefined,
           worktreeConfig: false,
           objectFormat: 'sha1',
+          refStorage: 'files',
           refusal: undefined,
         });
       });
@@ -302,6 +305,7 @@ describe('readRepositoryFormat', () => {
           worktree: undefined,
           worktreeConfig: false,
           objectFormat: 'sha1',
+          refStorage: 'files',
           refusal: undefined,
         });
       });
@@ -335,6 +339,7 @@ describe('readRepositoryFormat', () => {
           worktree: undefined,
           worktreeConfig: false,
           objectFormat: 'sha1',
+          refStorage: 'files',
           refusal: undefined,
         });
       });
@@ -432,6 +437,7 @@ describe('readRepositoryFormat', () => {
           worktree: undefined,
           worktreeConfig: false,
           objectFormat: 'sha1',
+          refStorage: 'files',
           refusal: undefined,
         });
       });
@@ -1070,12 +1076,12 @@ describe('readRepositoryFormat', () => {
 
   // ───────────────────────────────────────────────────────────────────────
   // The two extension arms — git's nine known names × {absent, v0, v1},
-  // plus an unknown name in the same three states. The two remaining
-  // UNBACKED_EXTENSIONS members (compatObjectFormat, refStorage) are
-  // excluded at v1 (they throw, asserted separately below) rather than
-  // folded into this sweep's oracle. `objectFormat` left that set (its own
-  // dedicated test below covers its v1 row) but keeps its undefined/v0 rows
-  // here for parity with the sibling sweeps.
+  // plus an unknown name in the same three states. The one remaining
+  // UNBACKED_EXTENSIONS member (compatObjectFormat) is excluded at v1 (it
+  // throws, asserted separately below) rather than folded into this sweep's
+  // oracle. `objectFormat` and `refStorage` both left that set (their own
+  // dedicated tests below cover their v1 rows) but keep their undefined/v0
+  // rows here for parity with the sibling sweeps.
   // ───────────────────────────────────────────────────────────────────────
 
   describe('The two extension arms', () => {
@@ -1090,12 +1096,16 @@ describe('readRepositoryFormat', () => {
       return `${versionBlock}[extensions]\n\t${name} = ${value}\n`;
     };
 
-    // `objectFormat` alone now carries its own value grammar (this part);
+    // `objectFormat` and `refStorage` alone carry their own value grammar;
     // every other known extension name stays a grammar-free placeholder —
     // measured against git 2.55.0: `objectFormat = true` refuses with
     // CONFIG_INVALID_ENUM_VALUE before the acceptance gate ever runs, so
     // the generic placeholder would falsify the 'accept'/'v1only' rows below.
-    const plantedValueFor = (name: string): string => (name === 'objectFormat' ? 'sha256' : 'true');
+    const ENUM_VALUE_FOR: Readonly<Record<string, string>> = {
+      objectFormat: 'sha256',
+      refStorage: 'reftable',
+    };
+    const plantedValueFor = (name: string): string => ENUM_VALUE_FOR[name] ?? 'true';
 
     describe('Given each git-known extension planted alone at absent, v0, and v1', () => {
       describe('When readRepositoryFormat runs', () => {
@@ -1365,10 +1375,7 @@ describe('readRepositoryFormat', () => {
 
     describe('Given extensions.<name> = <value> at version 1, for each unbacked-extension member', () => {
       describe('When readRepositoryFormat runs', () => {
-        it.each([
-          ['compatObjectFormat', 'sha1'],
-          ['refStorage', 'reftable'],
-        ])(
+        it.each([['compatObjectFormat', 'sha1']])(
           'Then extensions.%s throws REPOSITORY_EXTENSION_UNSUPPORTED naming the value %s',
           async (name, value) => {
             // Arrange
@@ -1424,6 +1431,31 @@ describe('readRepositoryFormat', () => {
           // Assert
           expect(result.refusal).toBeUndefined();
           expect(result.objectFormat).toBe('sha256');
+        });
+      });
+    });
+
+    describe('Given a repository declaring extensions.refStorage = reftable at version 1', () => {
+      describe('When readRepositoryFormat runs', () => {
+        it('Then it succeeds — refStorage left the unbacked-extension refuse set', async () => {
+          // Arrange
+          const fs = new MemoryFileSystem({ rootDir: '/repo' });
+          await fs.writeUtf8(
+            '/repo/.git/config',
+            '[core]\n\trepositoryformatversion = 1\n[extensions]\n\trefStorage = reftable\n',
+          );
+
+          // Act
+          const result = await readRepositoryFormat(
+            fileSystemLayoutProbe(fs),
+            '/repo/.git',
+            '/repo/.git',
+            posixPolicy,
+          );
+
+          // Assert
+          expect(result.refusal).toBeUndefined();
+          expect(result.refStorage).toBe('reftable');
         });
       });
     });
@@ -1910,6 +1942,184 @@ describe('readRepositoryFormat', () => {
 
           // Assert
           expect(result.objectFormat).toBe('sha1');
+        });
+      });
+    });
+  });
+
+  // ───────────────────────────────────────────────────────────────────────
+  // extensions.refStorage — the value grammar and version gating, mirroring
+  // extensions.objectFormat's own section above (`resolveEnum` is shared
+  // between the two). A declared `reftable` at version 1 alone is NOT
+  // exercised here — it is already pinned by 'The unbacked-extension refuse
+  // set' above (extensions.refStorage stays in that set, so it still throws
+  // REPOSITORY_EXTENSION_UNSUPPORTED at version 1; adoption is proved once
+  // that refusal lifts).
+  // ───────────────────────────────────────────────────────────────────────
+
+  describe('extensions.refStorage — the value grammar and version gating', () => {
+    /** Run readRepositoryFormat against a local config, catching a throw. */
+    const catchRefStorage = async (config: string): Promise<unknown> => {
+      const fs = new MemoryFileSystem({ rootDir: '/repo' });
+      await fs.writeUtf8('/repo/.git/config', config);
+      try {
+        await readRepositoryFormat(
+          fileSystemLayoutProbe(fs),
+          '/repo/.git',
+          '/repo/.git',
+          posixPolicy,
+        );
+        return undefined;
+      } catch (err) {
+        return err;
+      }
+    };
+
+    describe('Given no extensions section at all', () => {
+      describe('When readRepositoryFormat runs', () => {
+        it("Then refStorage is 'files'", async () => {
+          // Arrange
+          const fs = new MemoryFileSystem({ rootDir: '/repo' });
+
+          // Act
+          const result = await readRepositoryFormat(
+            fileSystemLayoutProbe(fs),
+            '/repo/.git',
+            '/repo/.git',
+            posixPolicy,
+          );
+
+          // Assert
+          expect(result.refStorage).toBe('files');
+        });
+      });
+    });
+
+    describe('Given extensions.refstorage = reftable with NO core.repositoryformatversion key', () => {
+      describe('When readRepositoryFormat runs', () => {
+        it("Then the extension is inert and refStorage stays 'files' — git ignores extensions below version 1", async () => {
+          // Arrange — measured on git 2.55.0: `extensions.*` is only honoured
+          // from `core.repositoryformatversion` 1 up, mirroring objectFormat.
+          const fs = new MemoryFileSystem({ rootDir: '/repo' });
+          await fs.writeUtf8('/repo/.git/config', '[extensions]\n\trefstorage = reftable\n');
+
+          // Act
+          const result = await readRepositoryFormat(
+            fileSystemLayoutProbe(fs),
+            '/repo/.git',
+            '/repo/.git',
+            posixPolicy,
+          );
+
+          // Assert
+          expect(result.refStorage).toBe('files');
+          expect(result.refusal).toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given no extensions.refStorage at v1', () => {
+      describe('When readRepositoryFormat runs', () => {
+        it("Then refStorage is 'files'", async () => {
+          // Arrange
+          const fs = new MemoryFileSystem({ rootDir: '/repo' });
+          await fs.writeUtf8('/repo/.git/config', '[core]\n\trepositoryformatversion = 1\n');
+
+          // Act
+          const result = await readRepositoryFormat(
+            fileSystemLayoutProbe(fs),
+            '/repo/.git',
+            '/repo/.git',
+            posixPolicy,
+          );
+
+          // Assert
+          expect(result.refStorage).toBe('files');
+        });
+      });
+    });
+
+    describe('Given extensions.refstorage = banana', () => {
+      describe('When readRepositoryFormat runs', () => {
+        it('Then it throws CONFIG_INVALID_ENUM_VALUE naming the lower-cased key and the verbatim value', async () => {
+          // Arrange & Act — measured against git 2.55.0: `error: invalid
+          // value for 'extensions.refstorage': 'banana'`.
+          const caught = await catchRefStorage('[extensions]\n\trefstorage = banana\n');
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data).toEqual({
+            code: 'CONFIG_INVALID_ENUM_VALUE',
+            key: 'extensions.refstorage',
+            source: '/repo/.git/config',
+            value: 'banana',
+            line: 2,
+          });
+        });
+      });
+    });
+
+    describe('Given extensions.refstorage = Reftable (mixed case)', () => {
+      describe('When readRepositoryFormat runs', () => {
+        it('Then it throws CONFIG_INVALID_ENUM_VALUE with value Reftable — the value grammar is case-sensitive', async () => {
+          // Arrange & Act — measured against git 2.55.0: `Reftable` is
+          // refused the same way `SHA256` is for extensions.objectFormat.
+          const caught = await catchRefStorage('[extensions]\n\trefstorage = Reftable\n');
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data).toEqual({
+            code: 'CONFIG_INVALID_ENUM_VALUE',
+            key: 'extensions.refstorage',
+            source: '/repo/.git/config',
+            value: 'Reftable',
+            line: 2,
+          });
+        });
+      });
+    });
+
+    describe('Given a valueless extensions.refstorage', () => {
+      describe('When readRepositoryFormat runs', () => {
+        it('Then it throws CONFIG_MISSING_VALUE naming extensions.refstorage and the line', async () => {
+          // Arrange & Act — measured against git 2.55.0: `error: missing
+          // value for 'extensions.refstorage'`.
+          const caught = await catchRefStorage('[extensions]\n\trefstorage\n');
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data).toEqual({
+            code: 'CONFIG_MISSING_VALUE',
+            key: 'extensions.refstorage',
+            source: '/repo/.git/config',
+            line: 2,
+          });
+        });
+      });
+    });
+
+    describe('Given extensions.refstorage = reftable planted only in config.worktree, with worktreeConfig true', () => {
+      describe('When readRepositoryFormat runs', () => {
+        it('Then it is inert and refStorage stays files — the key is never scoped to config.worktree', async () => {
+          // Arrange — the key is read from <commonDir>/config only, the same
+          // scope `objectFormat` and `core.repositoryformatversion` use.
+          const fs = new MemoryFileSystem({ rootDir: '/repo' });
+          await fs.writeUtf8('/repo/.git/config', '[extensions]\n\tworktreeConfig = true\n');
+          await fs.writeUtf8(
+            '/repo/.git/config.worktree',
+            '[core]\n\trepositoryformatversion = 1\n[extensions]\n\trefstorage = reftable\n',
+          );
+
+          // Act
+          const result = await readRepositoryFormat(
+            fileSystemLayoutProbe(fs),
+            '/repo/.git',
+            '/repo/.git',
+            posixPolicy,
+          );
+
+          // Assert
+          expect(result.refStorage).toBe('files');
         });
       });
     });

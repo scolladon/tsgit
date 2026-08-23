@@ -20,8 +20,8 @@ import type { ParsedConfig } from '../primitives/config-read.js';
 import { readConfig } from '../primitives/config-read.js';
 import { createTag } from '../primitives/create-tag.js';
 import { assertValidBooleanConfig } from '../primitives/internal/boolean-config-guard.js';
-import { commonGitDir, perWorktreeRefDir } from '../primitives/path-layout.js';
 import { readObject } from '../primitives/read-object.js';
+import { getRefStore, refExists } from '../primitives/ref-store.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import { updateRef } from '../primitives/update-ref.js';
 import { resolveCurrentIdentity } from './internal/current-identity.js';
@@ -66,17 +66,15 @@ const TAGS_PREFIX = 'refs/tags/';
 
 export const tagList = async (ctx: Context): Promise<TagListResult> => {
   await assertOperationalRepository(ctx);
-  const dir = `${commonGitDir(ctx)}/refs/tags`;
-  if (!(await ctx.fs.exists(dir))) return { tags: [] };
-  const entries = await ctx.fs.readdir(dir);
+  const entries = await getRefStore(ctx).listRefs(TAGS_PREFIX as RefName);
   const tags: TagInfo[] = [];
   for (const entry of entries) {
-    if (!entry.isFile) continue;
-    const name = `${TAGS_PREFIX}${entry.name}` as RefName;
-    const id = await resolveRef(ctx, name);
-    tags.push({ name, id });
+    // A tag ref is always direct in practice; a hand-crafted symbolic one
+    // still resolves faithfully via the general (chain-following) resolver.
+    const id = entry.value.kind === 'direct' ? entry.value.id : await resolveRef(ctx, entry.name);
+    tags.push({ name: entry.name, id });
   }
-  // readdir yields distinct entry names, so a.name === b.name never occurs:
+  // `listRefs` yields distinct entry names, so a.name === b.name never occurs:
   // a binary -1/1 comparator is sufficient (no equal-case to disambiguate).
   // Stryker disable next-line EqualityOperator: equivalent — names are distinct, so < and <= behave identically
   tags.sort((a, b) => (a.name < b.name ? -1 : 1));
@@ -211,7 +209,7 @@ const updateTagRef = async (
 export const tagDelete = async (ctx: Context, input: TagDeleteInput): Promise<TagDeleteResult> => {
   await assertOperationalRepository(ctx);
   const name = validateRefName(`${TAGS_PREFIX}${input.name}`);
-  if (!(await ctx.fs.exists(`${perWorktreeRefDir(ctx, name)}/${name}`))) {
+  if (!(await refExists(ctx, name))) {
     throw tagNotFound(name);
   }
   await updateRef(ctx, name, zeroOid(ctx.hashConfig), { delete: true });

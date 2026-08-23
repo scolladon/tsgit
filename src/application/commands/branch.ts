@@ -12,8 +12,9 @@ import { branchCreatedFrom, branchRenamed } from '../../domain/reflog/reflog-mes
 import { validateRefName } from '../../domain/refs/index.js';
 import { HEADS_PREFIX } from '../../domain/refs/ref-prefixes.js';
 import type { Context } from '../../ports/context.js';
-import { commonGitDir, perWorktreeRefDir } from '../primitives/path-layout.js';
-import { readReflog, writeReflog } from '../primitives/reflog-store.js';
+import { errorDataCode } from '../primitives/internal/error-data-code.js';
+import { getRefStore, refExists } from '../primitives/ref-store.js';
+import { readReflog } from '../primitives/reflog-store.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import { updateRef } from '../primitives/update-ref.js';
 import { writeSymbolicRef } from '../primitives/write-symbolic-ref.js';
@@ -63,21 +64,38 @@ export interface BranchRenameResult {
 
 export const branchList = async (ctx: Context): Promise<BranchListResult> => {
   await assertOperationalRepository(ctx);
-  const headsDir = `${commonGitDir(ctx)}/refs/heads`;
-  if (!(await ctx.fs.exists(headsDir))) return { branches: [] };
-  const head = await readHeadRaw(ctx);
-  const ref = branchRefFromHead(head);
-  const currentTarget = ref?.startsWith(HEADS_PREFIX) ? ref : undefined;
-  const entries = await ctx.fs.readdir(headsDir);
+  const currentTarget = await resolveCurrentBranchTarget(ctx);
+  const entries = await getRefStore(ctx).listRefs(HEADS_PREFIX as RefName);
   const branches: BranchInfo[] = [];
   for (const entry of entries) {
-    if (!entry.isFile) continue;
-    const name = `${HEADS_PREFIX}${entry.name}` as RefName;
-    const id = await resolveRef(ctx, name);
-    branches.push({ name, id, current: name === currentTarget });
+    // A branch ref is always direct in practice; a hand-crafted symbolic one
+    // still resolves faithfully via the general (chain-following) resolver.
+    const id = entry.value.kind === 'direct' ? entry.value.id : await resolveRef(ctx, entry.name);
+    branches.push({ name: entry.name, id, current: entry.name === currentTarget });
   }
   branches.sort((a, b) => compareRefName(a.name, b.name));
   return { branches };
+};
+
+/**
+ * The current branch's full ref, or `undefined` when HEAD is detached — or
+ * does not resolve at all. Measured against git 2.55.0: `git branch --list`
+ * against a repository whose `HEAD` is a dangling symlink still exits 0 and
+ * lists every branch, simply marking none current — git treats an
+ * unresolvable `HEAD` as "no current branch", not as a failure to list. A
+ * `HEAD` that resolves to malformed content is a different, harder refusal
+ * in real git (`fatal: failed to resolve HEAD as a valid ref`), so only the
+ * "does not resolve" code (`REF_NOT_FOUND`) is folded here; anything else
+ * — including a malformed `HEAD` (`INVALID_REF`) — still propagates.
+ */
+const resolveCurrentBranchTarget = async (ctx: Context): Promise<RefName | undefined> => {
+  try {
+    const ref = branchRefFromHead(await readHeadRaw(ctx));
+    return ref?.startsWith(HEADS_PREFIX) ? ref : undefined;
+  } catch (err) {
+    if (errorDataCode(err) === 'REF_NOT_FOUND') return undefined;
+    throw err;
+  }
 };
 
 /**
@@ -129,7 +147,7 @@ export const branchDelete = async (
   if (head.kind === 'symbolic' && head.target === name) {
     throw cannotDeleteCheckedOutBranch(name);
   }
-  if (!(await ctx.fs.exists(`${perWorktreeRefDir(ctx, name)}/${name}`))) {
+  if (!(await refExists(ctx, name))) {
     throw branchNotFound(name);
   }
   await updateRef(ctx, name, zeroOid(ctx.hashConfig), { delete: true });
@@ -147,13 +165,20 @@ export const branchRename = async (
   const reflogMessage = branchRenamed(from, to);
   // Capture the source log before any write so the rename preserves history.
   const movedLog = await readReflog(ctx, from);
+  const store = getRefStore(ctx);
   try {
-    await updateRef(
-      ctx,
-      to,
-      id,
-      input.force === true ? { reflogMessage } : { expected: 'absent', reflogMessage },
-    );
+    // A rename entry notes the rename without moving the ref's value, so
+    // old/new are both the resolved tip (measured against real git's files
+    // backend) — not the zero id `updateRef`'s own creation path would infer.
+    await store.applyRefUpdates([
+      {
+        kind: 'set',
+        name: to,
+        id,
+        ...(input.force === true ? {} : { expected: 'absent' as const }),
+        reflog: { oldId: id, newId: id, message: reflogMessage },
+      },
+    ]);
   } catch (err) {
     if (err instanceof TsgitError && err.data.code === 'REF_UPDATE_CONFLICT') {
       throw branchExists(to);
@@ -163,9 +188,11 @@ export const branchRename = async (
   // Re-attach `from`'s history to `to` BEFORE deleting `from`: were the
   // merged-log write to fail, `from`'s reflog must still be intact.
   if (movedLog.length > 0) {
-    await writeReflog(ctx, to, [...movedLog, ...(await readReflog(ctx, to))]);
+    await store.applyRefUpdates([
+      { kind: 'reflogReplace', name: to, entries: [...movedLog, ...(await readReflog(ctx, to))] },
+    ]);
   }
-  // updateRef's delete path drops `from`'s log; its history is already on `to`.
+  // The delete update drops `from`'s log; its history is already on `to`.
   await updateRef(ctx, from, zeroOid(ctx.hashConfig), { delete: true });
   const head = await readHeadRaw(ctx);
   if (head.kind === 'symbolic' && head.target === from) {

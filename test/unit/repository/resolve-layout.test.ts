@@ -54,6 +54,7 @@ describe('resolveLayout', () => {
             gitDir: '/repo/bare.git',
             bare: true,
             objectFormat: 'sha1',
+            refStorage: 'files',
           });
         });
       });
@@ -84,6 +85,7 @@ describe('resolveLayout', () => {
             bare: true,
             workTreeConfigBogus: true,
             objectFormat: 'sha1',
+            refStorage: 'files',
           });
         });
       });
@@ -110,6 +112,7 @@ describe('resolveLayout', () => {
             workDir: '/repo/custom-wt',
             bare: false,
             objectFormat: 'sha1',
+            refStorage: 'files',
           });
         });
       });
@@ -137,6 +140,7 @@ describe('resolveLayout', () => {
             workDir: '/repo/other-wt',
             bare: false,
             objectFormat: 'sha1',
+            refStorage: 'files',
           });
         });
       });
@@ -162,6 +166,7 @@ describe('resolveLayout', () => {
             workDir: '/repo/normal',
             bare: false,
             objectFormat: 'sha1',
+            refStorage: 'files',
           });
         });
       });
@@ -186,6 +191,7 @@ describe('resolveLayout', () => {
             gitDir: '/repo/bare.git',
             bare: true,
             objectFormat: 'sha1',
+            refStorage: 'files',
           });
         });
       });
@@ -220,6 +226,7 @@ describe('resolveLayout', () => {
             workDir: '/repo/sha256',
             bare: false,
             objectFormat: 'sha256',
+            refStorage: 'files',
           });
         });
       });
@@ -244,6 +251,7 @@ describe('resolveLayout', () => {
             workDir: '/repo/sha1',
             bare: false,
             objectFormat: 'sha1',
+            refStorage: 'files',
           });
         });
       });
@@ -277,6 +285,7 @@ describe('resolveLayout', () => {
           workDir: '/repo/wt',
           bare: false,
           objectFormat: 'sha1',
+          refStorage: 'files',
         });
       });
     });
@@ -326,6 +335,7 @@ describe('resolveLayout', () => {
             gitDir: '/repo/dotgit',
             bare: false,
             objectFormat: 'sha1',
+            refStorage: 'files',
           });
         });
       });
@@ -399,6 +409,7 @@ describe('resolveLayout', () => {
           workDir: '/repo/normal',
           bare: false,
           objectFormat: 'sha1',
+          refStorage: 'files',
         });
       });
     });
@@ -428,6 +439,7 @@ describe('resolveLayout', () => {
             workDir: '/repo/elsewhere',
             bare: false,
             objectFormat: 'sha1',
+            refStorage: 'files',
           });
         });
       });
@@ -477,6 +489,7 @@ describe('resolveLayout', () => {
             workDir: '/repo/elsewhere/wt',
             bare: false,
             objectFormat: 'sha1',
+            refStorage: 'files',
           });
         });
       });
@@ -505,6 +518,7 @@ describe('resolveLayout', () => {
             gitDir: '/repo/target',
             bare: true,
             objectFormat: 'sha1',
+            refStorage: 'files',
           });
         });
       });
@@ -535,6 +549,7 @@ describe('resolveLayout', () => {
             workDir: '/repo/target',
             bare: false,
             objectFormat: 'sha1',
+            refStorage: 'files',
           });
         });
       });
@@ -557,6 +572,7 @@ describe('resolveLayout', () => {
             workDir: '/repo',
             bare: false,
             objectFormat: 'sha1',
+            refStorage: 'files',
           });
         });
       });
@@ -580,6 +596,7 @@ describe('resolveLayout', () => {
             workDir: '/repo',
             bare: false,
             objectFormat: 'sha1',
+            refStorage: 'files',
           });
         });
       });
@@ -698,6 +715,7 @@ describe('resolveLayout', () => {
             workDir: '/repo/wt',
             bare: false,
             objectFormat: 'sha1',
+            refStorage: 'files',
           });
         });
       });
@@ -726,6 +744,7 @@ describe('resolveLayout', () => {
             workDir: '/repo/wt',
             bare: false,
             objectFormat: 'sha1',
+            refStorage: 'files',
           });
         });
       });
@@ -755,6 +774,7 @@ describe('resolveLayout', () => {
             workDir: '/repo/wt2',
             bare: false,
             objectFormat: 'sha1',
+            refStorage: 'files',
           });
         });
       });
@@ -782,6 +802,7 @@ describe('resolveLayout', () => {
             gitDir: '/repo/bare.git',
             bare: true,
             objectFormat: 'sha1',
+            refStorage: 'files',
           });
         });
       });
@@ -811,6 +832,7 @@ describe('resolveLayout', () => {
             workDir: '/repo/wt',
             bare: false,
             objectFormat: 'sha1',
+            refStorage: 'files',
           });
         });
       });
@@ -844,6 +866,7 @@ describe('resolveLayout', () => {
             commonDir: '/repo/bare.git',
             bare: true,
             objectFormat: 'sha1',
+            refStorage: 'files',
           });
         });
       });
@@ -881,6 +904,7 @@ describe('resolveLayout', () => {
           workDir: '/repo/physical-wt',
           bare: false,
           objectFormat: 'sha1',
+          refStorage: 'files',
         });
       });
     });
@@ -956,8 +980,16 @@ describe('resolveLayout', () => {
           // Assert — no objectFormat: the bootstrap path reads nothing from
           // disk, so the format is genuinely unknown, not defaulted to sha1
           // (unlike `finishLayout`, which always resolves a definite answer
-          // for an ALREADY-EXISTING repository).
-          expect(result).toStrictEqual({ gitDir: '/repo/.git', workDir: '/repo', bare: false });
+          // for an ALREADY-EXISTING repository). refStorage IS defaulted —
+          // `bootstrapRepository` writes no `[extensions]` unless asked, so
+          // 'files' is the correct, unambiguous answer even for a
+          // not-yet-existing repository.
+          expect(result).toStrictEqual({
+            gitDir: '/repo/.git',
+            workDir: '/repo',
+            bare: false,
+            refStorage: 'files',
+          });
         });
       });
     });
@@ -972,7 +1004,7 @@ describe('resolveLayout', () => {
           const result = sut('/repo/.git', '/repo', '/repo', { bare: true }, posixPolicy);
 
           // Assert
-          expect(result).toStrictEqual({ gitDir: '/repo/.git', bare: true });
+          expect(result).toStrictEqual({ gitDir: '/repo/.git', bare: true, refStorage: 'files' });
         });
       });
     });
@@ -991,6 +1023,7 @@ describe('resolveLayout', () => {
             gitDir: '/repo/.git',
             workDir: '/repo/deep/wt',
             bare: false,
+            refStorage: 'files',
           });
         });
       });
@@ -1016,6 +1049,7 @@ describe('resolveLayout', () => {
             gitDir: '/repo/.git',
             workDir: '/elsewhere',
             bare: false,
+            refStorage: 'files',
           });
         });
       });
@@ -1048,6 +1082,7 @@ describe('resolveLayout', () => {
             bare: false,
             formatRefusal: { kind: 'version', version: 99 },
             objectFormat: 'sha1',
+            refStorage: 'files',
           });
         });
       });

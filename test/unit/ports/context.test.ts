@@ -14,7 +14,12 @@ const sentinelHash = {} as HashService;
 const sentinelCompressor = {} as Compressor;
 const sentinelTransport = {} as HttpTransport;
 const sentinelProgress = {} as ProgressReporter;
-const sentinelLayout: RepositoryLayout = { workDir: '/w', gitDir: '/w/.git', bare: false };
+const sentinelLayout: RepositoryLayout = {
+  workDir: '/w',
+  gitDir: '/w/.git',
+  bare: false,
+  refStorage: 'files',
+};
 const sentinelRuntime = 'node' as const;
 const sentinelHashConfig = SHA1_CONFIG;
 const sentinelDeltaCache = createLruCache<Uint8Array>(1024);
@@ -87,7 +92,12 @@ describe('Context', () => {
         const sut = createContext(options);
 
         // Assert
-        expect(sut.layout).toEqual({ workDir: '/w', gitDir: '/w/.git', bare: false });
+        expect(sut.layout).toEqual({
+          workDir: '/w',
+          gitDir: '/w/.git',
+          bare: false,
+          refStorage: 'files',
+        });
       });
     });
   });
@@ -225,7 +235,11 @@ describe('Context', () => {
       it('Then ctx.cwd falls back to layout.gitDir', () => {
         // Arrange — matches git, whose `--show-prefix` is empty and
         // `--is-inside-git-dir` is `true` in exactly this shape.
-        const bareLayout: RepositoryLayout = { gitDir: '/bare.git', bare: true };
+        const bareLayout: RepositoryLayout = {
+          gitDir: '/bare.git',
+          bare: true,
+          refStorage: 'files',
+        };
         const options = {
           fs: sentinelFs,
           hash: sentinelHash,

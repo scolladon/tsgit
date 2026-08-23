@@ -742,6 +742,27 @@ describe('NodeFileSystem', () => {
 
     // chmod 0o000 lockdown + open(dir)-EISDIR tests live in
     // `test/integration/posix-only/node-fs-locked-directory.test.ts`.
+
+    describe('Given a node file system', () => {
+      describe('When atomicRename is invoked', () => {
+        it('Then the destination holds the source bytes and the source is gone', async () => {
+          // Arrange
+          const { fs, rootDir, cleanup } = await makeFs();
+          const src = nodePath.join(rootDir, 'atomic-src.bin');
+          const dst = nodePath.join(rootDir, 'atomic-dst.bin');
+          const data = Buffer.from([7, 8, 9]);
+          await fsPromises.writeFile(src, data);
+
+          // Act
+          await fs.atomicRename(src, dst);
+
+          // Assert
+          expect(await fsPromises.readFile(dst)).toEqual(data);
+          await expect(fsPromises.access(src)).rejects.toThrow();
+          await cleanup();
+        });
+      });
+    });
   });
 
   describe('internal helpers', () => {

@@ -1,21 +1,23 @@
 /**
  * Enumerate the repository's worktrees — the main worktree first, then each
  * linked worktree registered under `<commonDir>/worktrees/<id>/`, sorted by
- * path. A pure read over the admin pointer files; the shared branch refs resolve
- * through the common-dir ref store.
+ * path. A pure read over the admin pointer files; each worktree's own HEAD
+ * and the shared branch refs both resolve through the ref backend (never a
+ * raw HEAD-file read), scoped to that worktree's own admin dir.
  */
 import type { ObjectId, RefName } from '../../domain/objects/index.js';
 import type { FilePath } from '../../domain/objects/object-id.js';
-import { parseLooseRef } from '../../domain/refs/index.js';
+import { refNotFound } from '../../domain/refs/error.js';
 import { resolveWorktreePath } from '../../domain/worktree/resolve-path.js';
 import type { Context } from '../../ports/context.js';
 import { readConfig } from './config-read.js';
-import { worktreeScopedFs } from './internal/worktree-context.js';
+import { deriveWorktreeContext, worktreeScopedFs } from './internal/worktree-context.js';
 import { commonGitDir } from './path-layout.js';
 import { getRefStore } from './ref-store.js';
 
 const GIT_SUFFIX = '/.git';
 const PRUNABLE_REASON = 'gitdir file points to non-existent location';
+const HEAD_REF = 'HEAD' as RefName;
 
 export interface WorktreeEntry {
   /** Admin-directory id (`<commonDir>/worktrees/<id>`); absent for the main worktree. */
@@ -42,19 +44,37 @@ interface ResolvedHead {
   readonly detached: boolean;
 }
 
-/** Resolve a `HEAD` file's content into oid + branch (peeling the symref). */
-const resolveHead = async (ctx: Context, content: string): Promise<ResolvedHead> => {
-  const parsed = parseLooseRef(content);
-  if (parsed.type === 'direct') {
-    return { head: parsed.target, detached: true };
+/**
+ * Resolve `worktreeCtx`'s own HEAD into oid + branch (peeling one symbolic
+ * hop). `worktreeCtx` must be rooted at the worktree being described — never
+ * the calling Context — so this reads through the ref backend rather than a
+ * raw file, the seam that keeps a reftable repository's HEAD stub file from
+ * ever being mistaken for the real answer.
+ */
+const resolveHead = async (worktreeCtx: Context): Promise<ResolvedHead> => {
+  const head = await getRefStore(worktreeCtx).resolveDirect(HEAD_REF);
+  if (head.kind === 'missing') throw refNotFound(HEAD_REF);
+  if (head.kind === 'direct') {
+    return { head: head.id, detached: true };
   }
-  const target = await getRefStore(ctx).resolveDirect(parsed.target);
+  const target = await getRefStore(worktreeCtx).resolveDirect(head.target);
   return {
-    branch: parsed.target,
+    branch: head.target,
     detached: false,
     ...(target.kind === 'direct' ? { head: target.id } : {}),
   };
 };
+
+/**
+ * A Context rooted at the main checkout's own admin dir — the main
+ * worktree's per-worktree state (HEAD, index, …) lives there, never under
+ * the opened Context's own `gitDir` when that Context was opened from
+ * inside a linked worktree.
+ */
+const deriveMainContext = (ctx: Context): Context => ({
+  ...ctx,
+  layout: { ...ctx.layout, gitDir: commonGitDir(ctx) },
+});
 
 /**
  * Strip a trailing `/.git` from `dir`; absent means `dir` itself. Shared by
@@ -100,8 +120,10 @@ const mainEntry = async (ctx: Context): Promise<WorktreeEntry> => {
   if (await isMainCheckoutBare(ctx)) {
     return { path, detached: false, bare: true, main: true };
   }
-  const content = await ctx.fs.readUtf8(`${commonGitDir(ctx)}/HEAD`);
-  const resolved = await resolveHead(ctx, content);
+  // Verdict: foreign-worktree — resolved against a Context rooted at the
+  // main checkout's own admin dir, never the opened (possibly linked)
+  // Context, and never a raw HEAD-file read.
+  const resolved = await resolveHead(deriveMainContext(ctx));
   return { path, bare: false, main: true, ...resolved };
 };
 
@@ -126,7 +148,11 @@ const linkedEntry = async (ctx: Context, id: string, adminDir: string): Promise<
     (await ctx.fs.readUtf8(`${adminDir}/gitdir`)).trim(),
   );
   const path = stripGitSuffix(gitdirPointer) as FilePath;
-  const resolved = await resolveHead(ctx, await ctx.fs.readUtf8(`${adminDir}/HEAD`));
+  // Verdict: foreign-worktree — each linked worktree owns its own HEAD;
+  // resolved against a Context derived for THIS worktree's admin dir
+  // (reusing the same derivation `worktree.ts` uses to operate on a linked
+  // worktree), never the calling Context and never a raw HEAD-file read.
+  const resolved = await resolveHead(deriveWorktreeContext(ctx, id, path));
   const locked = await readLocked(ctx, adminDir);
   // The worktree dir lives outside workDir, so probe it through the worktree fs
   // (confined to the worktree path + common dir; ADR-298).

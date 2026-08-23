@@ -35,7 +35,6 @@ import { readConfig } from '../primitives/config-read.js';
 import { fetchPack } from '../primitives/fetch-pack.js';
 import { hasObject } from '../primitives/has-object.js';
 import { assertNoValuelessConfig } from '../primitives/internal/valueless-config-guard.js';
-import { commonGitDir, perWorktreeRefDir } from '../primitives/path-layout.js';
 import { getRefStore } from '../primitives/ref-store.js';
 import { updateShallow } from '../primitives/shallow-file.js';
 import { MAX_HAVES, MAX_WALK_SEEDS } from '../primitives/types.js';
@@ -249,9 +248,9 @@ const resolveRemoteUrl = async (
 /**
  * Collect haves from the local object graph. Strategy:
  *
- *  1. Read every loose ref tip under `refs/remotes/<remote>/` and
- *  `refs/tags/`. These tips ARE the first-class haves — the server uses
- *  them to filter the pack without needing their ancestors.
+ *  1. Read every ref tip under `refs/remotes/<remote>/` and `refs/tags/`
+ *  (loose or packed). These tips ARE the first-class haves — the server
+ *  uses them to filter the pack without needing their ancestors.
  *  2. Walk the commit graph from those tips (ignoring missing objects) and
  *  append the reachable commits in BFS order until `MAX_HAVES` is
  *  reached.
@@ -291,48 +290,19 @@ const collectRefTips = async (
   ctx: Context,
   remoteName: string,
 ): Promise<ReadonlyArray<ObjectId>> => {
-  // Loose refs first: walk the on-disk tree under each ref prefix.
+  // `listRefs` already merges loose and packed storage, so repos that have
+  // packed their refs (e.g. after `git gc`) contribute haves the same as an
+  // unpacked one — without it, every fetch of a packed repo would send zero
+  // haves and the server would resend a full pack.
+  const store = getRefStore(ctx);
+  const remoteEntries = await store.listRefs(`refs/remotes/${remoteName}/` as RefName);
+  const tagEntries = await store.listRefs('refs/tags/' as RefName);
   const ids: ObjectId[] = [];
-  // equivalent-mutant: replacing the `refs/remotes/` template literal head
-  // with an empty backtick changes `fullDir` to `${commonGitDir(ctx)}/origin`,
-  // which does not exist in any test fixture, so `fs.exists` returns false and
-  // `collectFromDir` is never reached — observable-equivalent on real-world
-  // repositories (the common dir literally never has a sibling named `origin`).
-  const looseDirs = [`refs/remotes/${remoteName}`, 'refs/tags'];
-  for (const dir of looseDirs) {
-    const fullDir = `${commonGitDir(ctx)}/${dir}`;
-    if (!(await ctx.fs.exists(fullDir))) continue;
-    await collectFromDir(ctx, fullDir, ids);
-  }
-  // Packed refs second: consult `.git/packed-refs` so repos that have packed
-  // their refs (e.g., after `git gc`) still contribute haves. Without this,
-  // every fetch would send zero haves and the server would resend a full pack.
-  const refPrefix = `refs/remotes/${remoteName}/`;
-  const tagPrefix = 'refs/tags/';
-  const packed = await getRefStore(ctx).getPackedRefs();
-  for (const entry of packed.entries) {
-    if (entry.name.startsWith(refPrefix) || entry.name.startsWith(tagPrefix)) {
-      ids.push(entry.id);
-    }
+  for (const entry of [...remoteEntries, ...tagEntries]) {
+    if (entry.value.kind === 'direct') ids.push(entry.value.id);
   }
   return ids;
 };
-
-const collectFromDir = async (ctx: Context, dir: string, out: ObjectId[]): Promise<void> => {
-  const entries = await ctx.fs.readdir(dir);
-  for (const entry of entries) {
-    const path = `${dir}/${entry.name}`;
-    if (entry.isDirectory) {
-      await collectFromDir(ctx, path, out);
-      continue;
-    }
-    const content = (await ctx.fs.readUtf8(path)).trim();
-    if (isOid(content)) out.push(content as ObjectId);
-  }
-};
-
-const OID_RE = /^[0-9a-f]{40}([0-9a-f]{24})?$/i;
-const isOid = (s: string): boolean => OID_RE.test(s);
 
 const applyRemoteRefs = async (
   ctx: Context,
@@ -387,20 +357,20 @@ const readExistingRef = async (ctx: Context, name: RefName): Promise<ObjectId | 
   // future refactor that loses the guard cannot reintroduce the
   // path-traversal vulnerability. validateRefName throws if invalid.
   validateRefName(name);
-  // `perWorktreeRefDir` is defensive here: today's only caller passes refspec
-  // destinations (`refs/remotes/**`, shared ⇒ common dir), so the per-worktree
-  // branch is unreachable through the current call graph — it exists so a new
-  // caller passing a per-worktree name (e.g. FETCH_HEAD) resolves correctly.
-  const path = `${perWorktreeRefDir(ctx, name)}/${name}`;
-  if (!(await ctx.fs.exists(path))) return undefined;
-  const content = (await ctx.fs.readUtf8(path)).trim();
-  return isOid(content) ? (content as ObjectId) : undefined;
+  // `resolveDirect` checks loose AND packed storage — a remote-tracking ref
+  // that survived a `git gc` (packed, no loose file) is seen as existing, not
+  // rewritten as brand new.
+  const result = await getRefStore(ctx).resolveDirect(name);
+  return result.kind === 'direct' ? result.id : undefined;
 };
 
 /**
  * Delete any `refs/remotes/<remote>/<branch>` ref whose `<branch>` is not
  * present in the advertisement's `refs/heads/*` set. Local refs
- * (`refs/heads/*`, `refs/tags/*`) are NEVER deleted.
+ * (`refs/heads/*`, `refs/tags/*`) are NEVER deleted. Candidates come from
+ * `listRefs`, which only ever yields names that resolve to a real ref — a
+ * hostile or phantom directory entry that resolves to nothing is invisible
+ * here, not a candidate that needs a runtime safety check.
  */
 const prune = async (
   ctx: Context,
@@ -412,64 +382,27 @@ const prune = async (
       .filter((r) => r.name.startsWith(HEADS_PREFIX))
       .map((r) => r.name.slice(HEADS_PREFIX.length)),
   );
-  const remoteDir = `${commonGitDir(ctx)}/refs/remotes/${remoteName}`;
-  if (!(await ctx.fs.exists(remoteDir))) return [];
+  const prefix = `refs/remotes/${remoteName}/` as RefName;
+  const tracked = await getRefStore(ctx).listRefs(prefix);
   const deleted: RefName[] = [];
-  await deleteUnadvertised(ctx, remoteDir, '', advertisedBranches, remoteName, deleted);
-  return deleted;
-};
-
-const deleteUnadvertised = async (
-  ctx: Context,
-  dir: string,
-  prefix: string,
-  advertised: ReadonlySet<string>,
-  remoteName: string,
-  deleted: RefName[],
-): Promise<void> => {
-  const entries = await ctx.fs.readdir(dir);
-  for (const entry of entries) {
-    const path = `${dir}/${entry.name}`;
-    const branch = prefix === '' ? entry.name : `${prefix}/${entry.name}`;
-    if (entry.isDirectory) {
-      await deleteUnadvertised(ctx, path, branch, advertised, remoteName, deleted);
-      continue;
-    }
-    if (advertised.has(branch)) continue;
-    const composed = `refs/remotes/${remoteName}/${branch}`;
-    // Defense in depth: `entry.name` came from `readdir`, which we trust, but
-    // a hostile actor with local write access could have deposited a
-    // directory named `..` or worse. `updateRef` itself calls
-    // `validateRefName`, but we also short-circuit here so the prune loop
-    // never asks `updateRef` to delete a path-traversal ref name.
-    // equivalent-mutant: in the test fixtures `entry.name` always passes
-    // `validateRefName` (file names come from controlled seeds), so the
-    // false branch is unreachable through `vitest`. The guard exists as
-    // defense-in-depth — keep it; equivalent under non-hostile fs state.
-    if (!isSafeRefName(composed)) {
-      ctx.logger?.warn?.('fetch.prune: skipping unsafe ref name', { name: composed });
-      continue;
-    }
-    const refName = composed as RefName;
+  for (const entry of tracked) {
+    const branch = entry.name.slice(prefix.length);
+    if (advertisedBranches.has(branch)) continue;
     // `updateRef(..., { delete: true })` throws `UNSUPPORTED_OPERATION` when
     // the ref is packed-only (packed-refs rewrite is follow-up).
-    // The loose-walk path can only reach loose refs, so under normal usage
-    // we never hit this. We still guard defensively in case a packed-only
-    // ref happens to live at the same path as a directory entry on a
-    // case-folding filesystem (unlikely but possible).
     try {
-      await updateRef(ctx, refName, zeroOid(ctx.hashConfig), { delete: true });
+      await updateRef(ctx, entry.name, zeroOid(ctx.hashConfig), { delete: true });
     } catch (err) {
       if (isPackedRefDeleteError(err)) {
         // Skip packed-only refs rather than crashing the whole fetch.
-        // Documented in's Neutral consequences.
-        ctx.logger?.warn?.('fetch.prune: skipping packed-only ref', { name: refName });
+        ctx.logger?.warn?.('fetch.prune: skipping packed-only ref', { name: entry.name });
         continue;
       }
       throw err;
     }
-    deleted.push(refName);
+    deleted.push(entry.name);
   }
+  return deleted;
 };
 
 const isPackedRefDeleteError = (err: unknown): boolean =>

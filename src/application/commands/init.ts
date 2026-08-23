@@ -28,6 +28,8 @@ export interface InitResult {
 export const init = async (ctx: Context, opts: InitOptions = {}): Promise<InitResult> => {
   const initialBranch = opts.initialBranch ?? 'main';
   const bare = opts.bare ?? false;
+  // Verdict: discovery-tier — a presence probe (already-initialised guard),
+  // not a content read; unaffected by what HEAD's content becomes on any backend.
   if (await ctx.fs.exists(`${ctx.layout.gitDir}/HEAD`)) {
     throw alreadyInitialized(ctx.layout.gitDir as FilePath);
   }

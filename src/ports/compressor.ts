@@ -29,11 +29,23 @@ export interface Compressor {
    * separate zlib stream concatenated with other entries; the resolver does
    * not know the compressed length of a single entry a priori.
    *
+   * `maxOutputBytes`, when given, bounds this one call's inflated output: the
+   * adapter must abort as soon as cumulative output exceeds it, incrementally
+   * during decode — never by inflating in full and then checking the result's
+   * length. The effective cap is always the minimum of `maxOutputBytes` and
+   * the adapter's own default cap; a caller can only narrow the cap, never
+   * raise it. Omitting it preserves the adapter's own default behaviour.
+   *
    * Returns the inflated output and the number of input bytes consumed
    * (measured from `offset`). Throws DECOMPRESS_FAILED when the input at
-   * `offset` is not a valid zlib stream.
+   * `offset` is not a valid zlib stream, or when the output exceeds the
+   * effective cap.
    */
-  readonly streamInflate: (bytes: Uint8Array, offset: number) => Promise<InflateStreamResult>;
+  readonly streamInflate: (
+    bytes: Uint8Array,
+    offset: number,
+    maxOutputBytes?: number,
+  ) => Promise<InflateStreamResult>;
 
   /**
    * Create a streaming inflate transform.

@@ -225,6 +225,7 @@ function extractDetail(data: TsgitErrorData): string {
     case 'INVALID_PACK_BITMAP':
     case 'INVALID_REF':
     case 'INVALID_PACKED_REFS':
+    case 'INVALID_REFTABLE':
     case 'INVALID_INDEX_HEADER':
     case 'INVALID_INDEX_ENTRY':
     case 'INVALID_COMMIT_GRAPH_HEADER':
@@ -286,6 +287,8 @@ function extractDetail(data: TsgitErrorData): string {
       return `ref locked: ${data.name}`;
     case 'REF_UPDATE_CONFLICT':
       return `ref update conflict: name=${data.name} expected=${data.expected} actual=${data.actual}`;
+    case 'REFTABLE_LOCKED':
+      return `reftable stack locked: stack=${data.stack} ${data.reason}`;
     case 'INVALID_WALK_INPUT':
       return `invalid walk input: ${data.reason}`;
     case 'OPERATION_ABORTED':

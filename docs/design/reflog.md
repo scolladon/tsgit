@@ -420,7 +420,7 @@ runs as `updateRef` create-`to` + delete-`from`; the defaults would write a
 fresh single-entry log for `to` and `deleteReflog` the history of `from`.
 Instead `branch.ts` moves the log explicitly — `readReflog(from)` →
 `writeReflog(to, …)` → `deleteReflog(from)` — then `recordRefUpdate(to, …,
-'branch: renamed <old> to <new>')`. The create-`to`/delete-`from` `updateRef`
+'Branch: renamed <old> to <new>')`. The create-`to`/delete-`from` `updateRef`
 calls still run for the ref files; the create passes a `reflogMessage` but its
 `recordRefUpdate` simply appends one more entry after the moved history.
 
@@ -434,7 +434,7 @@ Matches canonical git wording so third-party reflog readers stay happy:
 | `commit` | branch, HEAD | `commit: <subject>` |
 | `commit` resolving a conflicted merge | branch, HEAD | `commit (merge): <subject>` |
 | `branch` create | `refs/heads/<n>` | `branch: Created from <start-point>` |
-| `branch` rename | `refs/heads/<new>` | log moved (§6.3); `branch: renamed <old> to <new>` |
+| `branch` rename | `refs/heads/<new>` | log moved (§6.3); `Branch: renamed <old> to <new>` |
 | `checkout` switch | HEAD | `checkout: moving from <A> to <B>` |
 | `reset` (soft/mixed/hard) | branch, HEAD | `reset: moving to <target>` |
 | `merge` fast-forward | branch, HEAD | `merge <name>: Fast-forward` |

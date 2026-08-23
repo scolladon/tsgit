@@ -15,6 +15,7 @@ const layout = (over: Partial<RepositoryLayout> = {}): RepositoryLayout => ({
   workDir: '/repo',
   gitDir: '/repo/.git',
   bare: false,
+  refStorage: 'files',
   ...over,
 });
 

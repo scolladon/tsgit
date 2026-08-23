@@ -36,6 +36,11 @@ async function resolveDirectChain(
       // validateRefName rejects every filesystem path-escape vector — `..`,
       // `:`, `\`, and a leading `/` — before `current` is used to build a
       // path in resolveDirect, so no separate path-containment check is needed.
+      // Under the reftable backend that path-escape justification goes
+      // vacuous (its resolveDirect looks a name up in a loaded stack, never
+      // builds a filesystem path from it) — but the call stays: this is
+      // still the shared ref-name grammar gate, and dropping it here would
+      // weaken the files backend that walks the same chain.
       validateRefName(current);
     }
     if (chain.includes(current)) {

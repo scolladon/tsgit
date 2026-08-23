@@ -47,6 +47,7 @@ export function createBrowserContext(options: BrowserAdapterOptions): Context {
       workDir: ROOT_WORK_DIR,
       gitDir: `${ROOT_WORK_DIR}${gitDirName}`,
       bare: options.bare ?? false,
+      refStorage: 'files',
     },
     runtime: 'browser',
     hashConfig: configFor(algorithm),

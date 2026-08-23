@@ -19,7 +19,7 @@ import { readIndex } from '../primitives/read-index.js';
 import { readObject } from '../primitives/read-object.js';
 import { readTree } from '../primitives/read-tree.js';
 import { getRefStore } from '../primitives/ref-store.js';
-import { readReflog, reflogExists } from '../primitives/reflog-store.js';
+import { listReflogs, readReflog } from '../primitives/reflog-store.js';
 import { resolveOidPrefix } from '../primitives/resolve-oid-prefix.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
@@ -102,11 +102,12 @@ const currentBranchRef = async (ctx: Context): Promise<RefName> => {
  */
 const canonicalizeRef = async (ctx: Context, base: string): Promise<RefName> => {
   // Validate before any candidate reaches the filesystem: an unchecked `base`
-  // carrying `..` would otherwise be probed on disk by reflogExists/refResolves.
+  // carrying `..` would otherwise be probed on disk by listReflogs/refResolves.
   const validated = validateBaseRef(base);
   const candidates = refCandidates(validated);
+  const knownReflogs = new Set(await listReflogs(ctx));
   for (const candidate of candidates) {
-    if (await reflogExists(ctx, candidate as RefName)) return candidate as RefName;
+    if (knownReflogs.has(candidate as RefName)) return candidate as RefName;
   }
   // The loop below picks a "sensible ref" for the empty-log case, but once the
   // loop above proves no candidate has a reflog file, its chosen ref is never

@@ -1,0 +1,1642 @@
+import { describe, expect, it } from 'vitest';
+import type { TsgitError } from '../../../../../src/domain/error.js';
+import { ObjectId, RefName } from '../../../../../src/domain/objects/index.js';
+import type { ReftableCheck } from '../../../../../src/domain/refs/error.js';
+import {
+  blockBoundsAt,
+  decodeIndexRecord,
+  decodeObjRecord,
+  findInBlock,
+  iterateReftableRefs,
+  lookupReftableRef,
+  type ReftableRefRecord,
+  readPrefixedName,
+  refRecordDecoder,
+  SUFFIX_SHIFT,
+  walkBlockRecords,
+} from '../../../../../src/domain/refs/reftable/reftable-block.js';
+import {
+  parseReftable,
+  type Reftable,
+  type ReftableFooter,
+} from '../../../../../src/domain/refs/reftable/reftable-format.js';
+import {
+  DEFAULT_RESTART_INTERVAL,
+  type ReftableWriteOptions,
+  serializeReftable,
+} from '../../../../../src/domain/refs/reftable/reftable-writer.js';
+import { encodeOfsDistance } from '../../../../../src/domain/storage/pack-entry.js';
+import type { RefRecordSpec } from './arbitraries.js';
+import {
+  buildIndexBlock,
+  buildObjBlock,
+  buildRefBlock,
+  buildReftable,
+  buildReftableBlock,
+  buildReftableHeader,
+  HEAD_SYMREF_RECORD_BYTES,
+} from './arbitraries.js';
+
+// --- Fixture helpers -----------------------------------------------------
+
+function oid(fill: number): Uint8Array {
+  return new Uint8Array(20).fill(fill);
+}
+
+const identityDeflate = async (data: Uint8Array): Promise<Uint8Array> => data;
+
+/** `n` sequentially-named direct refs (`refs/heads/b0000`, `b0001`, …) — the
+ *  same shape `reftable-writer.test.ts`'s own `makeRefs` uses to cross the
+ *  writer's measured block-count thresholds. */
+function makeSequentialRefs(n: number): ReftableRefRecord[] {
+  return Array.from({ length: n }, (_, i) => ({
+    name: RefName.from(`refs/heads/b${i.toString().padStart(4, '0')}`),
+    updateIndex: 0n,
+    value: { kind: 'direct' as const, id: ObjectId.fromRaw(oid(i % 256)) },
+  }));
+}
+
+/** `blockSize: 200` with `n` sequential refs, run through the real writer —
+ *  measured at 7-13 refs for exactly 2 ref blocks and 14-20 for exactly 3,
+ *  both comfortably under the 21-ref threshold where a ref index appears
+ *  (`reftable-writer.test.ts`'s own 20-vs-21 threshold pair). */
+async function buildNoIndexRefSection(refCount: number) {
+  const options: ReftableWriteOptions = {
+    hashId: 'sha1',
+    blockSize: 200,
+    restartInterval: DEFAULT_RESTART_INTERVAL,
+    indexObjects: true,
+    minUpdateIndex: 0n,
+    maxUpdateIndex: 1000n,
+  };
+  const bytes = await serializeReftable(makeSequentialRefs(refCount), [], options, identityDeflate);
+  return parseReftable(bytes);
+}
+
+function expectRefusal(act: () => void, check: ReftableCheck, reasonContains: string): void {
+  // Captured OUTSIDE the try: an expect.fail thrown inside it would be
+  // swallowed by this function's own catch and resurface as a confusing
+  // downstream TypeError instead of the intended message.
+  let caught: unknown;
+  try {
+    act();
+  } catch (e) {
+    caught = e;
+  }
+  if (caught === undefined) {
+    expect.fail('Should have thrown');
+  }
+  const data = (caught as TsgitError).data;
+  if (data.code !== 'INVALID_REFTABLE') {
+    expect.fail(`expected INVALID_REFTABLE, got ${data.code}`);
+  }
+  expect(data.check).toBe(check);
+  expect(data.reason).toContain(reasonContains);
+}
+
+/** A `Reftable` view over hand-assembled `bytes` with no real footer —
+ *  `header` is borrowed from a normally-parsed minimal table (so
+ *  `headerLength`/`digestLength` etc. are real), only `_bytes`/`_view` and
+ *  `footer` are the caller's own. Lets boundary tests place a block's framing
+ *  bytes at the exact physical end of an array, which `buildReftable`'s
+ *  always-appended footer would otherwise make impossible. */
+function reftableFrom(bytes: Uint8Array, footerOverrides: Partial<ReftableFooter> = {}): Reftable {
+  const base = parseReftable(buildReftable({ version: 1, blocks: [] }));
+  return {
+    header: base.header,
+    footer: {
+      refIndexPosition: 0,
+      objPosition: 0,
+      objIdLength: 0,
+      objIndexPosition: 0,
+      logPosition: 0,
+      logIndexPosition: 0,
+      ...footerOverrides,
+    },
+    _bytes: bytes,
+    _view: new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength),
+  };
+}
+
+/**
+ * The design's measured five-ref repository, decoded byte-by-byte: `HEAD`
+ * (symref), `refs/heads/{deleted,feature,main,symbolic}` and
+ * `refs/tags/{lightweight,v1}` — 7 records, restarts at indices 0 and 1
+ * (`HEAD` and `refs/heads/deleted`), single ref block.
+ */
+const REFERENCE_RECORDS: ReadonlyArray<RefRecordSpec> = [
+  { name: 'HEAD', value: { kind: 'symbolic', target: 'refs/heads/main' } },
+  { name: 'refs/heads/deleted', updateIndexDelta: 6, value: { kind: 'direct', id: oid(0x01) } },
+  { name: 'refs/heads/feature', updateIndexDelta: 4, value: { kind: 'direct', id: oid(0x02) } },
+  { name: 'refs/heads/main', updateIndexDelta: 1, value: { kind: 'direct', id: oid(0x03) } },
+  {
+    name: 'refs/heads/symbolic',
+    updateIndexDelta: 5,
+    value: { kind: 'symbolic', target: 'refs/heads/main' },
+  },
+  { name: 'refs/tags/lightweight', updateIndexDelta: 3, value: { kind: 'direct', id: oid(0x04) } },
+  {
+    name: 'refs/tags/v1',
+    updateIndexDelta: 2,
+    value: { kind: 'peeled', id: oid(0x05), peeled: oid(0x06) },
+  },
+];
+
+function buildReferenceReftable(version: 1 | 2): Uint8Array {
+  const headerSpec = version === 2 ? { version, hashId: 'sha1' as const } : { version };
+  const header = buildReftableHeader(headerSpec);
+  const block = buildRefBlock({
+    records: REFERENCE_RECORDS,
+    restartIndices: [0, 1],
+    isFirstBlock: true,
+    headerLength: header.length,
+  });
+  return buildReftable({ ...headerSpec, blocks: [block] });
+}
+
+describe('reftable-block', () => {
+  describe('iterateReftableRefs', () => {
+    describe('Given the measured seven-record reference block', () => {
+      describe('When iterating all records', () => {
+        it('Then direct records (value_type 0x1) decode name, updateIndex and id', () => {
+          // Arrange
+          const reftable = parseReftable(buildReferenceReftable(1));
+          const sut = iterateReftableRefs;
+
+          // Act
+          const records = Array.from(sut(reftable));
+          const deleted = records.find((r) => r.name === RefName.from('refs/heads/deleted'))!;
+          const main = records.find((r) => r.name === RefName.from('refs/heads/main'))!;
+
+          // Assert
+          expect(deleted.updateIndex).toBe(7n);
+          expect(deleted.value).toStrictEqual({ kind: 'direct', id: ObjectId.fromRaw(oid(0x01)) });
+          expect(main.updateIndex).toBe(2n);
+          expect(main.value).toStrictEqual({ kind: 'direct', id: ObjectId.fromRaw(oid(0x03)) });
+        });
+
+        it('Then symbolic records (value_type 0x3) decode name, updateIndex and target', () => {
+          // Arrange
+          const reftable = parseReftable(buildReferenceReftable(1));
+          const sut = iterateReftableRefs;
+
+          // Act
+          const records = Array.from(sut(reftable));
+          const head = records.find((r) => r.name === RefName.from('HEAD'))!;
+          const symbolic = records.find((r) => r.name === RefName.from('refs/heads/symbolic'))!;
+
+          // Assert
+          expect(head.updateIndex).toBe(1n);
+          expect(head.value).toStrictEqual({
+            kind: 'symbolic',
+            target: RefName.from('refs/heads/main'),
+          });
+          expect(symbolic.updateIndex).toBe(6n);
+          expect(symbolic.value).toStrictEqual({
+            kind: 'symbolic',
+            target: RefName.from('refs/heads/main'),
+          });
+        });
+
+        it('Then the peeled record (value_type 0x2) decodes id and peeled', () => {
+          // Arrange
+          const reftable = parseReftable(buildReferenceReftable(1));
+          const sut = iterateReftableRefs;
+
+          // Act
+          const records = Array.from(sut(reftable));
+          const v1 = records.find((r) => r.name === RefName.from('refs/tags/v1'))!;
+
+          // Assert
+          expect(v1.updateIndex).toBe(3n);
+          expect(v1.value).toStrictEqual({
+            kind: 'peeled',
+            id: ObjectId.fromRaw(oid(0x05)),
+            peeled: ObjectId.fromRaw(oid(0x06)),
+          });
+        });
+
+        it('Then records are yielded sorted by name, not creation order (deleted precedes feature)', () => {
+          // Arrange
+          const reftable = parseReftable(buildReferenceReftable(1));
+          const sut = iterateReftableRefs;
+
+          // Act
+          const names = Array.from(sut(reftable)).map((r) => r.name);
+
+          // Assert
+          expect(names).toStrictEqual([
+            'HEAD',
+            'refs/heads/deleted',
+            'refs/heads/feature',
+            'refs/heads/main',
+            'refs/heads/symbolic',
+            'refs/tags/lightweight',
+            'refs/tags/v1',
+          ]);
+        });
+
+        it('Then HEAD is an ordinary ref record inside the stack, not a special stub', () => {
+          // Arrange
+          const reftable = parseReftable(buildReferenceReftable(1));
+          const sut = iterateReftableRefs;
+
+          // Act
+          const head = Array.from(sut(reftable)).find((r) => r.name === RefName.from('HEAD'));
+
+          // Assert
+          expect(head?.value.kind).toBe('symbolic');
+        });
+
+        it('Then the block totals the measured 270 bytes at v1 header framing', () => {
+          // Arrange
+          const bytes = buildReferenceReftable(1);
+          const header = buildReftableHeader({ version: 1 });
+          const sut = blockBoundsAt;
+
+          // Act
+          const bounds = sut(parseReftable(bytes), header.length);
+
+          // Assert
+          expect(bounds.blockEnd).toBe(270);
+        });
+      });
+    });
+
+    describe('Given the HEAD-symref ref_record git 2.55.0 itself wrote (captured verbatim, never re-derived from SUFFIX_SHIFT/VALUE_TYPE_*)', () => {
+      describe('When iterating the default single-block table built from it', () => {
+        it('Then it decodes as a symbolic HEAD pointing at refs/heads/main', () => {
+          // Arrange — `HEAD_SYMREF_RECORD_BYTES` is opaque, real-git-produced
+          // bytes; a `SUFFIX_SHIFT`/`VALUE_TYPE_*` mutant that stays
+          // self-consistent between this suite's own writer and reader would
+          // still corrupt decoding of THESE bytes, because they were never
+          // encoded through those constants in the first place. Framed
+          // explicitly (not via `buildReftable`'s own default block) so the
+          // dependency on the captured constant is visible here, not buried
+          // in the fixture's own default wiring.
+          const header = buildReftableHeader({ version: 1 });
+          const ownLength = 1 + 3 + HEAD_SYMREF_RECORD_BYTES.length + 3 + 2;
+          const block = buildReftableBlock({
+            type: 'r',
+            recordBytes: HEAD_SYMREF_RECORD_BYTES,
+            restartOffsets: [header.length + 4],
+            declaredLength: header.length + ownLength,
+          });
+          const reftable = parseReftable(buildReftable({ version: 1, blocks: [block] }));
+          const sut = iterateReftableRefs;
+
+          // Act
+          const records = Array.from(sut(reftable));
+
+          // Assert
+          expect(records).toStrictEqual<ReftableRefRecord[]>([
+            {
+              name: RefName.from('HEAD'),
+              updateIndex: 1n,
+              value: { kind: 'symbolic', target: RefName.from('refs/heads/main') },
+            },
+          ]);
+        });
+      });
+    });
+
+    describe('Given a block with a single deletion record', () => {
+      describe('When iterating', () => {
+        it('Then the deletion record (value_type 0x0) decodes with no value bytes', () => {
+          // Arrange
+          const header = buildReftableHeader({ version: 1 });
+          const block = buildRefBlock({
+            records: [{ name: 'refs/heads/gone', value: { kind: 'deletion' } }],
+            isFirstBlock: true,
+            headerLength: header.length,
+          });
+          const reftable = parseReftable(buildReftable({ version: 1, blocks: [block] }));
+          const sut = iterateReftableRefs;
+
+          // Act
+          const [record] = Array.from(sut(reftable));
+
+          // Assert
+          expect(record!.value).toStrictEqual({ kind: 'deletion' });
+        });
+      });
+    });
+
+    describe('Given a restart run followed by a fresh restart boundary', () => {
+      const header = buildReftableHeader({ version: 1 });
+      const block = buildRefBlock({
+        records: [
+          { name: 'refs/heads/apple', value: { kind: 'direct', id: oid(0x11) } },
+          { name: 'refs/heads/apricot', value: { kind: 'direct', id: oid(0x12) } },
+          { name: 'zzz', value: { kind: 'direct', id: oid(0x13) } },
+        ],
+        restartIndices: [0, 2],
+        isFirstBlock: true,
+        headerLength: header.length,
+      });
+      const reftable = parseReftable(buildReftable({ version: 1, blocks: [block] }));
+
+      describe('When iterating', () => {
+        it("Then a record within the first run inherits its predecessor's prefix", () => {
+          // Arrange
+          const sut = iterateReftableRefs;
+
+          // Act
+          const apricot = Array.from(sut(reftable)).find(
+            (r) => r.name === RefName.from('refs/heads/apricot'),
+          );
+
+          // Assert
+          expect(apricot).toBeDefined();
+        });
+
+        it('Then the first record of the next run does not inherit across the boundary', () => {
+          // Arrange
+          const sut = iterateReftableRefs;
+
+          // Act
+          const zzz = Array.from(sut(reftable)).find((r) => r.name === RefName.from('zzz'));
+
+          // Assert
+          expect(zzz).toBeDefined();
+        });
+      });
+    });
+  });
+
+  describe('blockBoundsAt', () => {
+    describe('Given the measured seven-record reference block at v1', () => {
+      describe('When reading block bounds', () => {
+        it('Then both restart points carry prefix_length 0', () => {
+          // Arrange
+          const bytes = buildReferenceReftable(1);
+          const reftable = parseReftable(bytes);
+          const bounds = blockBoundsAt(reftable, reftable.header.headerLength);
+          const decodeRecord = refRecordDecoder(reftable.header);
+          const sut = decodeRecord;
+
+          // Act
+          const first = sut(reftable._bytes, bounds.restartOffsets[0]!, undefined);
+          const second = sut(reftable._bytes, bounds.restartOffsets[1]!, undefined);
+
+          // Assert
+          expect(first.payload.name).toBe(RefName.from('HEAD'));
+          expect(second.payload.name).toBe(RefName.from('refs/heads/deleted'));
+        });
+
+        it('Then the first restart offset is 28 (headerLength 24 + 4)', () => {
+          // Arrange
+          const bytes = buildReferenceReftable(1);
+          const reftable = parseReftable(bytes);
+          const sut = blockBoundsAt;
+
+          // Act
+          const bounds = sut(reftable, reftable.header.headerLength);
+
+          // Assert
+          expect(bounds.restartOffsets[0]).toBe(28);
+        });
+      });
+    });
+
+    describe('Given the measured seven-record reference block at v2', () => {
+      describe('When reading block bounds', () => {
+        it('Then the first restart offset is 32 (headerLength 28 + 4)', () => {
+          // Arrange
+          const bytes = buildReferenceReftable(2);
+          const reftable = parseReftable(bytes);
+          const sut = blockBoundsAt;
+
+          // Act
+          const bounds = sut(reftable, reftable.header.headerLength);
+
+          // Assert
+          expect(bounds.restartOffsets[0]).toBe(32);
+        });
+      });
+    });
+
+    describe('Given a ref block whose restart_count is 0', () => {
+      describe('When reading block bounds', () => {
+        it('Then refuses with restart-count', () => {
+          // Arrange
+          const header = buildReftableHeader({ version: 1 });
+          const block = buildRefBlock({
+            records: [{ name: 'refs/heads/aaa', value: { kind: 'direct', id: oid(0x01) } }],
+            restartIndices: [],
+            isFirstBlock: true,
+            headerLength: header.length,
+          });
+          const reftable = parseReftable(buildReftable({ version: 1, blocks: [block] }));
+
+          // Act & Assert
+          expectRefusal(
+            () => blockBoundsAt(reftable, header.length),
+            'restart-count',
+            'restart_count',
+          );
+        });
+      });
+    });
+
+    describe('Given a block declaring block_len 0xFFFFFF, far past the end of the file', () => {
+      describe('When reading block bounds', () => {
+        it('Then refuses with block-bounds rather than escaping as a RangeError', () => {
+          // Arrange — the security reviewer's PoC: patching a real table's
+          // first block_len to 0xFFFFFF made `iterateReftableRefs` escape
+          // with a raw `RangeError`, bypassing the INVALID_REFTABLE contract
+          // and the corrupt-stack refuse/degrade tiering entirely.
+          const header = buildReftableHeader({ version: 1 });
+          const block = buildRefBlock({
+            records: [{ name: 'refs/heads/aaa', value: { kind: 'direct', id: oid(0x01) } }],
+            restartIndices: [0],
+            isFirstBlock: true,
+            headerLength: header.length,
+          });
+          const bytes = buildReftable({ version: 1, blocks: [block] });
+          const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+          view.setUint8(header.length + 1, 0xff);
+          view.setUint8(header.length + 2, 0xff);
+          view.setUint8(header.length + 3, 0xff);
+          const reftable = parseReftable(bytes);
+
+          // Act & Assert
+          expectRefusal(
+            () => blockBoundsAt(reftable, header.length),
+            'block-bounds',
+            'out-of-bounds',
+          );
+        });
+      });
+    });
+
+    describe('Given a non-first block declaring block_len 0', () => {
+      describe('When reading block bounds', () => {
+        it('Then refuses with block-bounds rather than reading the preceding block as its own trailer', () => {
+          // Arrange — the shape behind the reviewer's second PoC:
+          // `enumerateRefBlocks` derives the next block's start from this
+          // block's own `blockEnd`, so a zero-length non-first block that
+          // silently "succeeded" would make `nextBlockStart` return the same
+          // position forever.
+          const header = buildReftableHeader({ version: 1 });
+          const block0 = buildRefBlock({
+            records: [{ name: 'refs/heads/aaa', value: { kind: 'direct', id: oid(0x01) } }],
+            restartIndices: [0],
+            isFirstBlock: true,
+            headerLength: header.length,
+          });
+          const block1 = buildRefBlock({
+            records: [{ name: 'refs/heads/bbb', value: { kind: 'direct', id: oid(0x02) } }],
+            restartIndices: [0],
+          });
+          const bytes = buildReftable({ version: 1, blockSize: 0, blocks: [block0, block1] });
+          const secondBlockStart = header.length + block0.length;
+          const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+          view.setUint8(secondBlockStart + 1, 0);
+          view.setUint8(secondBlockStart + 2, 0);
+          view.setUint8(secondBlockStart + 3, 0);
+          const reftable = parseReftable(bytes);
+
+          // Act & Assert
+          expectRefusal(
+            () => blockBoundsAt(reftable, secondBlockStart),
+            'block-bounds',
+            'out-of-bounds',
+          );
+        });
+      });
+    });
+
+    describe('Given a block whose restart_count claims far more entries than the block has room for', () => {
+      describe('When reading block bounds', () => {
+        it('Then refuses with block-bounds rather than reading restart offsets from before the block', () => {
+          // Arrange — the block is built (and self-consistently sized) with
+          // one real restart entry, then its trailer's `restart_count` field
+          // is patched to a much larger value, mirroring a `block_len`-style
+          // single-field corruption rather than hand-assembling raw bytes.
+          const header = buildReftableHeader({ version: 1 });
+          const recordBytes = new Uint8Array(10).fill(0xaa);
+          const rawBlock = buildReftableBlock({
+            type: 'r',
+            recordBytes,
+            restartOffsets: [header.length + 4],
+            declaredLength: header.length + 1 + 3 + recordBytes.length + 3 + 2,
+          });
+          const patched = rawBlock.slice();
+          new DataView(patched.buffer).setUint16(patched.length - 2, 5000);
+          const reftable = parseReftable(buildReftable({ version: 1, blocks: [patched] }));
+
+          // Act & Assert
+          expectRefusal(
+            () => blockBoundsAt(reftable, header.length),
+            'block-bounds',
+            'restart array',
+          );
+        });
+      });
+    });
+  });
+
+  describe('ref record grammar refusals', () => {
+    describe('Given a ref record with reserved value_type 0x4', () => {
+      describe('When iterating', () => {
+        it('Then refuses with record-overrun', () => {
+          // Arrange
+          const header = buildReftableHeader({ version: 1 });
+          const name = new TextEncoder().encode('refs/heads/x');
+          const packed = (name.length << 3) | 0x4;
+          const recordBytes = Uint8Array.from([0x00, packed, ...name, 0x00]);
+          const block = buildReftableBlock({
+            type: 'r',
+            recordBytes,
+            restartOffsets: [header.length + 4],
+            declaredLength: header.length + 1 + 3 + recordBytes.length + 3 + 2,
+          });
+          const reftable = parseReftable(buildReftable({ version: 1, blocks: [block] }));
+
+          // Act & Assert
+          expectRefusal(
+            () => Array.from(iterateReftableRefs(reftable)),
+            'record-overrun',
+            'reserved ref value_type',
+          );
+        });
+      });
+    });
+
+    describe('Given a record named by a restart_offset that carries a non-zero prefix', () => {
+      describe('When iterating', () => {
+        it('Then refuses with record-overrun', () => {
+          // Arrange
+          const header = buildReftableHeader({ version: 1 });
+          const suffix = new TextEncoder().encode('xyz');
+          const packed = (suffix.length << 3) | 0x1;
+          const recordBytes = Uint8Array.from([0x05, packed, ...suffix, 0x00, ...oid(0x01)]);
+          const block = buildReftableBlock({
+            type: 'r',
+            recordBytes,
+            restartOffsets: [header.length + 4],
+            declaredLength: header.length + 1 + 3 + recordBytes.length + 3 + 2,
+          });
+          const reftable = parseReftable(buildReftable({ version: 1, blocks: [block] }));
+
+          // Act & Assert
+          expectRefusal(
+            () => Array.from(iterateReftableRefs(reftable)),
+            'record-overrun',
+            'prefix_length',
+          );
+        });
+      });
+    });
+
+    describe('Given a record whose packed (suffix_length << 3 | tag) field is 2**31', () => {
+      describe('When iterating', () => {
+        it('Then refuses with record-overrun naming the overrunning suffix_length, never a RangeError', () => {
+          // Arrange — packed = 2**31 exceeds JS's 32-bit signed bitwise
+          // domain, so the production `packed >> 3` computation (ToInt32
+          // first) wraps to a negative suffix_length instead of the true
+          // 268435456. A negative suffix_length previously slipped past
+          // `subarray`'s silent clamping and produced a corrupt
+          // `nextOffset` rather than a classified refusal.
+          const header = buildReftableHeader({ version: 1 });
+          const hugePacked = 2 ** 31;
+          const recordBytes = Uint8Array.from([0x00, ...encodeOfsDistance(hugePacked)]);
+          const block = buildReftableBlock({
+            type: 'r',
+            recordBytes,
+            restartOffsets: [header.length + 4],
+            declaredLength: header.length + 1 + 3 + recordBytes.length + 3 + 2,
+          });
+          const reftable = parseReftable(buildReftable({ version: 1, blocks: [block] }));
+
+          // Act & Assert
+          expectRefusal(
+            () => Array.from(iterateReftableRefs(reftable)),
+            'record-overrun',
+            'suffix_length',
+          );
+        }, 2000);
+      });
+    });
+
+    describe('Given a record whose decode makes no forward progress', () => {
+      /** A hand-built decoder that always reports `nextOffset` equal to the
+       *  cursor it was handed — the shape a wrapped/negative length field
+       *  could produce upstream of any real record grammar, isolating
+       *  `walkBlockRecords`'/`findInBlock`'s own forward-progress guard from
+       *  the ref-record grammar that normally feeds them. */
+      function stuckDecoder(): (
+        bytes: Uint8Array,
+        offset: number,
+      ) => { nameBytes: Uint8Array; payload: null; nextOffset: number } {
+        return (_bytes, offset) => ({
+          nameBytes: new Uint8Array(1),
+          payload: null,
+          nextOffset: offset,
+        });
+      }
+
+      describe('When walking every record', () => {
+        it('Then refuses with record-overrun rather than looping forever', () => {
+          // Arrange
+          const header = buildReftableHeader({ version: 1 });
+          const block = buildRefBlock({
+            records: [{ name: 'refs/heads/a', value: { kind: 'direct', id: oid(0x01) } }],
+            restartIndices: [0],
+            isFirstBlock: true,
+            headerLength: header.length,
+          });
+          const reftable = parseReftable(buildReftable({ version: 1, blocks: [block] }));
+          const bounds = blockBoundsAt(reftable, header.length);
+          const sut = walkBlockRecords;
+
+          // Act & Assert
+          expectRefusal(
+            () => Array.from(sut(reftable._bytes, bounds, stuckDecoder())),
+            'record-overrun',
+            'forward progress',
+          );
+        }, 2000);
+      });
+
+      describe('When finding a target that sorts past the stuck record', () => {
+        it('Then refuses with record-overrun rather than looping forever', () => {
+          // Arrange
+          const header = buildReftableHeader({ version: 1 });
+          const block = buildRefBlock({
+            records: [{ name: 'refs/heads/a', value: { kind: 'direct', id: oid(0x01) } }],
+            restartIndices: [0],
+            isFirstBlock: true,
+            headerLength: header.length,
+          });
+          const reftable = parseReftable(buildReftable({ version: 1, blocks: [block] }));
+          const bounds = blockBoundsAt(reftable, header.length);
+          const target = new TextEncoder().encode('zzz');
+          const sut = findInBlock;
+
+          // Act & Assert
+          expectRefusal(
+            () => sut(reftable._bytes, bounds, target, stuckDecoder()),
+            'record-overrun',
+            'forward progress',
+          );
+        }, 2000);
+      });
+    });
+
+    describe('Given a direct ref record whose name embeds a newline', () => {
+      describe('When iterating', () => {
+        it('Then refuses with record-overrun rather than yielding a name that could forge a line downstream', () => {
+          // Arrange — `RefName.from` rejects only the empty string, and a
+          // reftable-decoded name reaches line-oriented output verbatim
+          // (`serialize-bundle-header.ts`'s `${ref.oid} ${ref.name}\n`, no
+          // escaping) — an embedded newline injects a forged line into a
+          // bundle built from a hostile repo. Mirrors the guard
+          // `parsePackedRefs` already applies to its own entries.
+          const header = buildReftableHeader({ version: 1 });
+          const block = buildRefBlock({
+            records: [
+              {
+                name: 'refs/heads/evil\nfake-injected-line',
+                value: { kind: 'direct', id: oid(0x01) },
+              },
+            ],
+            restartIndices: [0],
+            isFirstBlock: true,
+            headerLength: header.length,
+          });
+          const reftable = parseReftable(buildReftable({ version: 1, blocks: [block] }));
+
+          // Act & Assert — reasonContains folds in the 'ref name' subject
+          // text so a StringLiteral mutant on that subject (used only in
+          // this message, decoupled from any `data.check`) still fails the
+          // assertion.
+          expectRefusal(
+            () => Array.from(iterateReftableRefs(reftable)),
+            'record-overrun',
+            'ref name is dangerous',
+          );
+        });
+      });
+    });
+
+    describe('Given a symbolic ref record whose target embeds a newline', () => {
+      describe('When iterating', () => {
+        it('Then refuses with record-overrun, isolated from the name-side guard', () => {
+          // Arrange — the target is decoded and validated independently of
+          // the record's own (here safe) name, since `readSymbolicValue` is
+          // a separate parse site from `refRecordDecoder`'s own name cursor.
+          const header = buildReftableHeader({ version: 1 });
+          const block = buildRefBlock({
+            records: [
+              {
+                name: 'refs/heads/symbolic',
+                value: { kind: 'symbolic', target: 'refs/heads/evil\nfake-injected-line' },
+              },
+            ],
+            restartIndices: [0],
+            isFirstBlock: true,
+            headerLength: header.length,
+          });
+          const reftable = parseReftable(buildReftable({ version: 1, blocks: [block] }));
+
+          // Act & Assert — reasonContains folds in the 'symbolic ref target'
+          // subject text so a StringLiteral mutant on that subject (used
+          // only in this message) still fails the assertion.
+          expectRefusal(
+            () => Array.from(iterateReftableRefs(reftable)),
+            'record-overrun',
+            'symbolic ref target is dangerous',
+          );
+        });
+      });
+    });
+
+    describe('Given a ref record with an ordinary safe name', () => {
+      describe('When iterating', () => {
+        it('Then it still decodes — regression guard against over-rejection', () => {
+          // Arrange
+          const header = buildReftableHeader({ version: 1 });
+          const block = buildRefBlock({
+            records: [{ name: 'refs/heads/feature/x', value: { kind: 'direct', id: oid(0x01) } }],
+            restartIndices: [0],
+            isFirstBlock: true,
+            headerLength: header.length,
+          });
+          const reftable = parseReftable(buildReftable({ version: 1, blocks: [block] }));
+          const sut = iterateReftableRefs;
+
+          // Act
+          const [record] = Array.from(sut(reftable));
+
+          // Assert
+          expect(record?.name).toBe(RefName.from('refs/heads/feature/x'));
+        });
+      });
+    });
+  });
+
+  describe('lookupReftableRef', () => {
+    describe('Given the measured seven-record reference block', () => {
+      const reftable = parseReftable(buildReferenceReftable(1));
+
+      describe('When looking up refs/heads/main', () => {
+        it('Then finds the direct record', () => {
+          // Arrange
+          const sut = lookupReftableRef;
+
+          // Act
+          const result = sut(reftable, RefName.from('refs/heads/main'));
+
+          // Assert
+          expect(result?.value).toStrictEqual({ kind: 'direct', id: ObjectId.fromRaw(oid(0x03)) });
+        });
+      });
+
+      describe('When looking up an absent name', () => {
+        it('Then returns undefined', () => {
+          // Arrange
+          const sut = lookupReftableRef;
+
+          // Act
+          const result = sut(reftable, RefName.from('refs/heads/nope'));
+
+          // Assert
+          expect(result).toBeUndefined();
+        });
+      });
+
+      describe('When looking up a name that sorts after every record in the block', () => {
+        it('Then returns undefined without a false match', () => {
+          // Arrange — 'zzz' sorts after 'refs/tags/v1', the block's last
+          // record, so findInBlock runs off the end of the (only, unindexed)
+          // ref block and findRefBlockContaining's own scan completes empty.
+          const sut = lookupReftableRef;
+
+          // Act
+          const result = sut(reftable, RefName.from('zzz'));
+
+          // Assert
+          expect(result).toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given a restart point whose value is corrupt but whose target name is not needed', () => {
+      describe('When looking up a later name in the SAME block', () => {
+        it("Then the lookup succeeds — the binary-search probe never decodes the corrupt restart record's value", () => {
+          // Arrange — restart 0 (`refs/heads/aaa`, alphabetically first) is a
+          // symbolic ref whose target embeds a newline: `record-overrun`
+          // ("dangerous") the moment its VALUE is actually decoded. A
+          // two-restart binary search always probes index 0 first, so the
+          // old "decode the full record just to compare its name" probe
+          // would throw here regardless of what name is being looked up;
+          // the key-only probe never touches the poisoned value at all.
+          const header = buildReftableHeader({ version: 1 });
+          const block = buildRefBlock({
+            records: [
+              {
+                name: 'refs/heads/aaa',
+                value: { kind: 'symbolic', target: 'refs/heads/evil\nfake-injected-line' },
+              },
+              { name: 'refs/heads/zzz', value: { kind: 'direct', id: oid(0x09) } },
+            ],
+            restartIndices: [0, 1],
+            isFirstBlock: true,
+            headerLength: header.length,
+          });
+          const reftable = parseReftable(buildReftable({ version: 1, blocks: [block] }));
+          const sut = lookupReftableRef;
+
+          // Act
+          const result = sut(reftable, RefName.from('refs/heads/zzz'));
+
+          // Assert
+          expect(result?.value).toStrictEqual({ kind: 'direct', id: ObjectId.fromRaw(oid(0x09)) });
+        });
+      });
+    });
+
+    describe('Given a block whose only record is a tombstone', () => {
+      describe('When looking up that name', () => {
+        it("Then returns the 'deletion' record faithfully", () => {
+          // Arrange
+          const header = buildReftableHeader({ version: 1 });
+          const block = buildRefBlock({
+            records: [{ name: 'refs/heads/gone', value: { kind: 'deletion' } }],
+            isFirstBlock: true,
+            headerLength: header.length,
+          });
+          const reftable = parseReftable(buildReftable({ version: 1, blocks: [block] }));
+          const sut = lookupReftableRef;
+
+          // Act
+          const result = sut(reftable, RefName.from('refs/heads/gone'));
+
+          // Assert
+          expect(result?.value).toStrictEqual({ kind: 'deletion' });
+        });
+      });
+    });
+
+    describe('Given a footer refIndexPosition that points far past the end of the file', () => {
+      describe('When looking up any name', () => {
+        it('Then refuses with block-bounds rather than escaping as a RangeError', () => {
+          // Arrange — `resolveRefBlockPosition` treats `refIndexPosition`
+          // as trusted the moment it dereferences it; an unvalidated huge
+          // position drives straight into a raw `RangeError` the same way
+          // an oversized `block_len` does.
+          const header = buildReftableHeader({ version: 1 });
+          const block = buildRefBlock({
+            records: [{ name: 'refs/heads/aaa', value: { kind: 'direct', id: oid(0x01) } }],
+            restartIndices: [0],
+            isFirstBlock: true,
+            headerLength: header.length,
+          });
+          const bytes = buildReftable({
+            version: 1,
+            blocks: [block],
+            refIndexPosition: 10_000_000,
+          });
+          const reftable = parseReftable(bytes);
+          const sut = lookupReftableRef;
+
+          // Act & Assert
+          expectRefusal(
+            () => sut(reftable, RefName.from('refs/heads/aaa')),
+            'block-bounds',
+            'outside the file',
+          );
+        });
+      });
+    });
+  });
+
+  describe('index records', () => {
+    describe('Given the measured index head (two entries sharing a 20-byte prefix)', () => {
+      describe('When walking the block', () => {
+        it('Then prefix, suffix and block_position all decode correctly', () => {
+          // Arrange
+          const header = buildReftableHeader({ version: 1 });
+          const block = buildIndexBlock({
+            records: [
+              { key: 'refs/heads/wide/br00154', blockPosition: 0 },
+              { key: 'refs/heads/wide/br00312', blockPosition: 4096 },
+            ],
+            restartIndices: [0],
+            isFirstBlock: true,
+            headerLength: header.length,
+          });
+          const reftable = parseReftable(buildReftable({ version: 1, blocks: [block] }));
+          const bounds = blockBoundsAt(reftable, header.length);
+          const sut = walkBlockRecords;
+
+          // Act
+          const records = Array.from(sut(reftable._bytes, bounds, decodeIndexRecord));
+
+          // Assert
+          expect(records.map((r) => r.payload)).toStrictEqual([0, 4096]);
+          expect(new TextDecoder().decode(records[1]!.nameBytes)).toBe('refs/heads/wide/br00312');
+        });
+      });
+    });
+
+    describe('Given a two-level ref index whose first-level entry targets another index block', () => {
+      const header = buildReftableHeader({ version: 1 });
+      const block0 = buildRefBlock({
+        records: [{ name: 'refs/heads/aaa', value: { kind: 'direct', id: oid(0x21) } }],
+        isFirstBlock: true,
+        headerLength: header.length,
+      });
+      // `pos0` is the byte offset block0 actually starts at in the file
+      // (the header). The index-record `block_position` NAMING block0 is a
+      // different value — `0`, not `header.length` — measured against a
+      // real git-produced multi-block index (git 2.55.0): the writer's
+      // block-boundary arithmetic treats the file header as part of the
+      // first block's own span, so an index record naming the first block
+      // always carries `block_position: 0`, never its true file offset.
+      // `resolveRefBlockPosition`/`collectIndexLeaves` translate that `0`
+      // back to `header.length` before reading a block-type byte there.
+      const pos0 = header.length;
+      const block0IndexPosition = 0;
+      const block1 = buildRefBlock({
+        records: [{ name: 'refs/heads/zzz', value: { kind: 'direct', id: oid(0x22) } }],
+        isFirstBlock: false,
+      });
+      const pos1 = pos0 + block0.length;
+      const leafIndex = buildIndexBlock({
+        records: [
+          { key: 'refs/heads/aaa', blockPosition: block0IndexPosition },
+          { key: 'refs/heads/zzz', blockPosition: pos1 },
+        ],
+        isFirstBlock: false,
+      });
+      const posLeaf = pos1 + block1.length;
+      const topIndex = buildIndexBlock({
+        records: [{ key: 'refs/heads/zzz', blockPosition: posLeaf }],
+        isFirstBlock: false,
+      });
+      const posTop = posLeaf + leafIndex.length;
+      const reftable = parseReftable(
+        buildReftable({
+          version: 1,
+          blocks: [block0, block1, leafIndex, topIndex],
+          refIndexPosition: posTop,
+        }),
+      );
+
+      describe('When looking up a name in the second ref block', () => {
+        it('Then recurses through the top-level index into the leaf index to the ref block', () => {
+          // Arrange
+          const sut = lookupReftableRef;
+
+          // Act
+          const result = sut(reftable, RefName.from('refs/heads/zzz'));
+
+          // Assert
+          expect(result?.value).toStrictEqual({ kind: 'direct', id: ObjectId.fromRaw(oid(0x22)) });
+        });
+      });
+
+      describe('When iterating every ref', () => {
+        it('Then yields records from both leaf ref blocks', () => {
+          // Arrange
+          const sut = iterateReftableRefs;
+
+          // Act
+          const names = Array.from(sut(reftable)).map((r) => r.name);
+
+          // Assert
+          expect(names).toStrictEqual(['refs/heads/aaa', 'refs/heads/zzz']);
+        });
+      });
+
+      describe('When looking up a name that sorts after every entry in the top index', () => {
+        it('Then returns undefined without descending into a leaf', () => {
+          // Arrange — 'zzzzz' sorts after 'refs/heads/zzz', the top index's
+          // only (and last) entry, so findInBlock on the index itself comes
+          // back empty and resolveRefBlockPosition reports absence directly.
+          const sut = lookupReftableRef;
+
+          // Act
+          const result = sut(reftable, RefName.from('zzzzz'));
+
+          // Assert
+          expect(result).toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given a footer refIndexPosition pointing at a ref block instead of an index block', () => {
+      describe('When looking up a name', () => {
+        it('Then refuses with block-type', () => {
+          // Arrange
+          const header = buildReftableHeader({ version: 1 });
+          const block = buildRefBlock({
+            records: [{ name: 'refs/heads/aaa', value: { kind: 'direct', id: oid(0x31) } }],
+            isFirstBlock: true,
+            headerLength: header.length,
+          });
+          const reftable = parseReftable(
+            buildReftable({ version: 1, blocks: [block], refIndexPosition: header.length }),
+          );
+
+          // Act & Assert
+          expectRefusal(
+            () => lookupReftableRef(reftable, RefName.from('refs/heads/aaa')),
+            'block-type',
+            'expected block type',
+          );
+        });
+      });
+    });
+  });
+
+  describe('obj records', () => {
+    for (const count of [1, 2, 3, 4, 5, 6, 7]) {
+      describe(`Given an obj record with cnt_3 = ${count}`, () => {
+        describe('When walking the block', () => {
+          it('Then decodes that many positions, the first absolute and the rest relative', () => {
+            // Arrange
+            const positions = Array.from({ length: count }, (_, i) => (i + 1) * 4096);
+            const header = buildReftableHeader({ version: 1 });
+            const block = buildObjBlock({
+              records: [{ key: Uint8Array.from([0xab, 0xcd]), positions }],
+              isFirstBlock: true,
+              headerLength: header.length,
+            });
+            const reftable = parseReftable(buildReftable({ version: 1, blocks: [block] }));
+            const bounds = blockBoundsAt(reftable, header.length);
+            const sut = walkBlockRecords;
+
+            // Act
+            const [record] = Array.from(sut(reftable._bytes, bounds, decodeObjRecord));
+
+            // Assert
+            expect(record!.payload).toStrictEqual(positions);
+          });
+        });
+      });
+    }
+
+    describe('Given an obj record with more than 7 positions (cnt_3 === 0 defers to cnt_large)', () => {
+      describe('When walking the block', () => {
+        it('Then decodes the full position list via the trailing cnt_large varint', () => {
+          // Arrange
+          const positions = [0, 4096, 8192, 12288, 16384, 20480, 24576, 28672, 32768, 36864];
+          const header = buildReftableHeader({ version: 1 });
+          const block = buildObjBlock({
+            records: [{ key: Uint8Array.from([0x01, 0x02]), positions }],
+            isFirstBlock: true,
+            headerLength: header.length,
+          });
+          const reftable = parseReftable(buildReftable({ version: 1, blocks: [block] }));
+          const bounds = blockBoundsAt(reftable, header.length);
+          const sut = walkBlockRecords;
+
+          // Act
+          const [record] = Array.from(sut(reftable._bytes, bounds, decodeObjRecord));
+
+          // Assert
+          expect(record!.payload).toStrictEqual(positions);
+        });
+      });
+    });
+
+    describe('Given an obj record with cnt_3 === 0 and cnt_large === 0 (scan all refs)', () => {
+      describe('When walking the block', () => {
+        it('Then decodes an empty position list', () => {
+          // Arrange
+          const header = buildReftableHeader({ version: 1 });
+          const block = buildObjBlock({
+            records: [{ key: Uint8Array.from([0xff, 0xee]), positions: [] }],
+            isFirstBlock: true,
+            headerLength: header.length,
+          });
+          const reftable = parseReftable(buildReftable({ version: 1, blocks: [block] }));
+          const bounds = blockBoundsAt(reftable, header.length);
+          const sut = walkBlockRecords;
+
+          // Act
+          const [record] = Array.from(sut(reftable._bytes, bounds, decodeObjRecord));
+
+          // Assert
+          expect(record!.payload).toStrictEqual([]);
+        });
+      });
+    });
+  });
+
+  describe('parser obligations git never emits', () => {
+    describe('Given an unaligned (block_size 0) file with two ref blocks and a mandatory ref index', () => {
+      describe('When iterating every ref', () => {
+        it('Then walking by block_len yields every record from both blocks', () => {
+          // Arrange
+          const header = buildReftableHeader({ version: 1, blockSize: 0 });
+          const block0 = buildRefBlock({
+            records: [{ name: 'refs/heads/aaa', value: { kind: 'direct', id: oid(0x41) } }],
+            isFirstBlock: true,
+            headerLength: header.length,
+          });
+          const pos0 = header.length;
+          const block1 = buildRefBlock({
+            records: [{ name: 'refs/heads/bbb', value: { kind: 'direct', id: oid(0x42) } }],
+            isFirstBlock: false,
+          });
+          const pos1 = pos0 + block0.length;
+          const index = buildIndexBlock({
+            records: [
+              { key: 'refs/heads/aaa', blockPosition: pos0 },
+              { key: 'refs/heads/bbb', blockPosition: pos1 },
+            ],
+            isFirstBlock: false,
+          });
+          const reftable = parseReftable(
+            buildReftable({
+              version: 1,
+              blockSize: 0,
+              blocks: [block0, block1, index],
+              refIndexPosition: pos1 + block1.length,
+            }),
+          );
+          const sut = iterateReftableRefs;
+
+          // Act
+          const names = Array.from(sut(reftable)).map((r) => r.name);
+
+          // Assert
+          expect(names).toStrictEqual(['refs/heads/aaa', 'refs/heads/bbb']);
+        });
+      });
+    });
+
+    describe('Given a log-only file (footer.logPosition set, no ref section)', () => {
+      const reftable = parseReftable(buildReftable({ version: 1, blocks: [], logPosition: 500 }));
+
+      describe('When iterating every ref', () => {
+        it('Then yields nothing — dispatched by content, not by a filename extension', () => {
+          // Arrange
+          const sut = iterateReftableRefs;
+
+          // Act
+          const records = Array.from(sut(reftable));
+
+          // Assert
+          expect(reftable.footer.logPosition).toBe(500);
+          expect(records).toStrictEqual([]);
+        });
+      });
+
+      describe('When looking up any name', () => {
+        it('Then returns undefined', () => {
+          // Arrange
+          const sut = lookupReftableRef;
+
+          // Act
+          const result = sut(reftable, RefName.from('refs/heads/anything'));
+
+          // Assert
+          expect(result).toBeUndefined();
+        });
+      });
+    });
+  });
+
+  describe('no ref index, multi-block ref sections', () => {
+    describe('Given a real-writer table packing into 2 ref blocks with no ref index', () => {
+      describe('When iterating every ref', () => {
+        it('Then yields every record, including those in block 2', async () => {
+          // Arrange
+          const table = await buildNoIndexRefSection(10);
+          const sut = iterateReftableRefs;
+
+          // Act
+          const names = Array.from(sut(table)).map((r) => r.name);
+
+          // Assert
+          expect(table.footer.refIndexPosition).toBe(0);
+          expect(names).toStrictEqual(makeSequentialRefs(10).map((r) => r.name));
+        });
+      });
+
+      describe('When looking up a ref that lives in block 2', () => {
+        it('Then finds it rather than reading as absent', async () => {
+          // Arrange
+          const table = await buildNoIndexRefSection(10);
+          const sut = lookupReftableRef;
+
+          // Act
+          const result = sut(table, RefName.from('refs/heads/b0009'));
+
+          // Assert
+          expect(table.footer.refIndexPosition).toBe(0);
+          expect(result?.value).toStrictEqual({
+            kind: 'direct',
+            id: ObjectId.fromRaw(oid(9)),
+          });
+        });
+      });
+    });
+
+    describe('Given a real-writer table packing into 3 ref blocks with no ref index', () => {
+      describe('When iterating every ref', () => {
+        it('Then round-trips every record across all three blocks', async () => {
+          // Arrange
+          const table = await buildNoIndexRefSection(17);
+          const sut = iterateReftableRefs;
+
+          // Act
+          const names = Array.from(sut(table)).map((r) => r.name);
+
+          // Assert
+          expect(table.footer.refIndexPosition).toBe(0);
+          expect(names).toStrictEqual(makeSequentialRefs(17).map((r) => r.name));
+        });
+      });
+    });
+
+    describe('Given a second ref block declaring block_len 0, with no ref index', () => {
+      describe('When iterating every ref', () => {
+        it('Then refuses with block-bounds rather than enumerateRefBlocks looping forever', () => {
+          // Arrange — `enumerateRefBlocks` derives each next block's start
+          // from the previous one's own `blockEnd`; a zero-length non-first
+          // block made that position stand still, forever, with no ref
+          // index anywhere in the picture.
+          const header = buildReftableHeader({ version: 1 });
+          const block0 = buildRefBlock({
+            records: [{ name: 'refs/heads/aaa', value: { kind: 'direct', id: oid(0x01) } }],
+            restartIndices: [0],
+            isFirstBlock: true,
+            headerLength: header.length,
+          });
+          const block1 = buildRefBlock({
+            records: [{ name: 'refs/heads/bbb', value: { kind: 'direct', id: oid(0x02) } }],
+            restartIndices: [0],
+          });
+          const bytes = buildReftable({ version: 1, blockSize: 0, blocks: [block0, block1] });
+          const secondBlockStart = header.length + block0.length;
+          const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+          view.setUint8(secondBlockStart + 1, 0);
+          view.setUint8(secondBlockStart + 2, 0);
+          view.setUint8(secondBlockStart + 3, 0);
+          const reftable = parseReftable(bytes);
+          const sut = iterateReftableRefs;
+
+          // Act & Assert
+          expectRefusal(() => Array.from(sut(reftable)), 'block-bounds', 'out-of-bounds');
+        }, 2000);
+      });
+    });
+  });
+
+  describe('ref index descent bound', () => {
+    /** A ref block (holding the only real record) immediately followed by an
+     *  index block whose own single record's `block_position` points back at
+     *  the index block itself — the self-referential shape the security
+     *  reviewer's PoC patched into real writer output, one field at a time,
+     *  leaving the footer CRC (which only covers the footer's own bytes)
+     *  valid throughout. `resolveRefBlockPosition`'s iterative descent and
+     *  `collectIndexLeaves`'s recursive one both walk straight back into this
+     *  same block forever without a depth bound. */
+    function buildCyclicIndexReftable(): ReturnType<typeof parseReftable> {
+      const header = buildReftableHeader({ version: 1 });
+      const refBlock = buildRefBlock({
+        records: [{ name: 'refs/heads/aaa', value: { kind: 'direct', id: oid(0x01) } }],
+        restartIndices: [0],
+        isFirstBlock: true,
+        headerLength: header.length,
+      });
+      const indexBlockStart = header.length + refBlock.length;
+      const indexBlock = buildIndexBlock({
+        records: [{ key: 'refs/heads/aaa', blockPosition: indexBlockStart }],
+        restartIndices: [0],
+      });
+      const bytes = buildReftable({
+        version: 1,
+        blocks: [refBlock, indexBlock],
+        refIndexPosition: indexBlockStart,
+      });
+      return parseReftable(bytes);
+    }
+
+    describe('Given a ref index whose only record points back at itself', () => {
+      describe('When looking up a name via the iterative descent', () => {
+        it('Then refuses with cycle rather than looping forever', () => {
+          // Arrange
+          const reftable = buildCyclicIndexReftable();
+          const sut = lookupReftableRef;
+
+          // Act & Assert
+          expectRefusal(
+            () => sut(reftable, RefName.from('refs/heads/aaa')),
+            'cycle',
+            'ref index descent',
+          );
+        }, 2000);
+      });
+
+      describe('When iterating every ref via the recursive index-leaf walk', () => {
+        it('Then refuses with cycle rather than overflowing the stack', () => {
+          // Arrange
+          const reftable = buildCyclicIndexReftable();
+          const sut = iterateReftableRefs;
+
+          // Act & Assert
+          expectRefusal(() => Array.from(sut(reftable)), 'cycle', 'ref index descent');
+        }, 2000);
+      });
+    });
+  });
+
+  describe('exact-boundary bounds checks', () => {
+    describe('Given a first block whose declared length reaches exactly to the end of the byte range', () => {
+      describe('When reading block bounds', () => {
+        it('Then it does not refuse — blockEnd === file length is in-bounds, not out-of-bounds', () => {
+          // Arrange — no real footer follows: blockEnd lands exactly on
+          // `_bytes.length`, the boundary between `>` and `>=`.
+          const header = buildReftableHeader({ version: 1 });
+          const recordBytes = new Uint8Array(10).fill(0xaa);
+          const restartOffsets = [header.length + 4];
+          const ownLength = 1 + 3 + recordBytes.length + 3 + 2;
+          const block = buildReftableBlock({
+            type: 'r',
+            recordBytes,
+            restartOffsets,
+            declaredLength: header.length + ownLength,
+          });
+          const bytes = new Uint8Array(header.length + block.length);
+          bytes.set(header, 0);
+          bytes.set(block, header.length);
+          const reftable = reftableFrom(bytes);
+          const sut = blockBoundsAt;
+
+          // Act
+          const bounds = sut(reftable, header.length);
+
+          // Assert
+          expect(bounds.blockEnd).toBe(bytes.length);
+        });
+      });
+    });
+
+    describe('Given a block whose restart array starts exactly at the record area (zero records)', () => {
+      describe('When reading block bounds', () => {
+        it('Then it does not refuse — restartArrayStart === recordsStart is in-bounds, not overlapping', () => {
+          // Arrange
+          const header = buildReftableHeader({ version: 1 });
+          const recordBytes = new Uint8Array(0);
+          const restartOffsets = [header.length + 4];
+          const block = buildReftableBlock({
+            type: 'r',
+            recordBytes,
+            restartOffsets,
+            declaredLength: header.length + (1 + 3 + 0 + 3 + 2),
+          });
+          const reftable = parseReftable(buildReftable({ version: 1, blocks: [block] }));
+          const sut = blockBoundsAt;
+
+          // Act
+          const bounds = sut(reftable, header.length);
+
+          // Assert
+          expect(bounds.recordsStart).toBe(bounds.recordsEnd);
+        });
+      });
+    });
+
+    describe('Given a prefixed name whose suffix runs exactly to the end of the byte range', () => {
+      describe('When decoding it', () => {
+        it('Then it does not refuse — afterPacked + suffixLength === bytes.length is in-bounds', () => {
+          // Arrange
+          const suffix = new TextEncoder().encode('exact');
+          const packed = (suffix.length << SUFFIX_SHIFT) | 0x1;
+          const bytes = Uint8Array.from([0x00, packed, ...suffix]);
+          const sut = readPrefixedName;
+
+          // Act
+          const result = sut(bytes, 0, undefined);
+
+          // Assert
+          expect(result.nextOffset).toBe(bytes.length);
+          expect(new TextDecoder().decode(result.nameBytes)).toBe('exact');
+        });
+      });
+    });
+
+    describe('Given a ref index position with fewer than 4 bytes remaining before the byte range ends', () => {
+      describe('When descending into it', () => {
+        it('Then refuses with block-bounds naming the position outside the file', () => {
+          // Arrange
+          const header = buildReftableHeader({ version: 1 });
+          const refBlock = buildRefBlock({
+            records: [{ name: 'refs/heads/aaa', value: { kind: 'direct', id: oid(0x01) } }],
+            restartIndices: [0],
+            isFirstBlock: true,
+            headerLength: header.length,
+          });
+          const indexBlockStart = header.length + refBlock.length;
+          const bytes = new Uint8Array(indexBlockStart + 2);
+          bytes.set(header, 0);
+          bytes.set(refBlock, header.length);
+          bytes[indexBlockStart] = 0x69; // 'i'
+          const reftable = reftableFrom(bytes, { refIndexPosition: indexBlockStart });
+          const sut = lookupReftableRef;
+
+          // Act & Assert
+          expectRefusal(
+            () => sut(reftable, RefName.from('refs/heads/aaa')),
+            'block-bounds',
+            'outside the file',
+          );
+        });
+      });
+    });
+
+    describe('Given a ref index position whose 4-byte block header ends exactly at the byte range boundary', () => {
+      describe('When descending into it', () => {
+        it('Then the position bound itself does not refuse — only the deeper restart-array guard does', () => {
+          // Arrange — offset + BLOCK_HEADER_SIZE === bytes.length exactly:
+          // the position check must pass here, so whatever refuses next
+          // must be a DIFFERENT guard, distinguishable by its own reason.
+          const header = buildReftableHeader({ version: 1 });
+          const refBlock = buildRefBlock({
+            records: [{ name: 'refs/heads/aaa', value: { kind: 'direct', id: oid(0x01) } }],
+            restartIndices: [0],
+            isFirstBlock: true,
+            headerLength: header.length,
+          });
+          const indexBlockStart = header.length + refBlock.length;
+          const fakeIndexHeader = Uint8Array.from([0x69, 0x00, 0x00, 0x04]); // 'i', block_len=4
+          const bytes = new Uint8Array(indexBlockStart + 4);
+          bytes.set(header, 0);
+          bytes.set(refBlock, header.length);
+          bytes.set(fakeIndexHeader, indexBlockStart);
+          const reftable = reftableFrom(bytes, { refIndexPosition: indexBlockStart });
+          const sut = lookupReftableRef;
+
+          // Act & Assert
+          expectRefusal(
+            () => sut(reftable, RefName.from('refs/heads/aaa')),
+            'block-bounds',
+            'restart array',
+          );
+        });
+      });
+    });
+
+    describe('Given a dangerous decoded name longer than 80 characters', () => {
+      describe('When iterating', () => {
+        it('Then the refusal reason echoes only the first 80 characters, not the full name', () => {
+          // Arrange
+          const longPrefix = 'a'.repeat(80);
+          const header = buildReftableHeader({ version: 1 });
+          const block = buildRefBlock({
+            records: [
+              { name: `${longPrefix}ZZZZZ\nmore`, value: { kind: 'direct', id: oid(0x01) } },
+            ],
+            restartIndices: [0],
+            isFirstBlock: true,
+            headerLength: header.length,
+          });
+          const reftable = parseReftable(buildReftable({ version: 1, blocks: [block] }));
+          const sut = iterateReftableRefs;
+
+          // Act
+          let caught: unknown;
+          try {
+            Array.from(sut(reftable));
+          } catch (e) {
+            caught = e;
+          }
+
+          // Assert
+          const reason = (caught as TsgitError).data as { reason: string };
+          expect(reason.reason).toContain(longPrefix);
+          expect(reason.reason).not.toContain('ZZZZZ');
+        });
+      });
+    });
+
+    describe('Given a restart-point record (prefix_length 0) decoded via readPrefixedName', () => {
+      describe('When the source bytes are mutated after decoding', () => {
+        it('Then the returned name bytes are unaffected — an independent copy, not a view into the source buffer', () => {
+          // Arrange
+          const suffix = new TextEncoder().encode('stable');
+          const packed = (suffix.length << SUFFIX_SHIFT) | 0x1;
+          const bytes = Uint8Array.from([0x00, packed, ...suffix]);
+          const sut = readPrefixedName;
+
+          // Act
+          const result = sut(bytes, 0, undefined);
+          const before = new TextDecoder().decode(result.nameBytes);
+          bytes.fill(0xff, 2);
+          const after = new TextDecoder().decode(result.nameBytes);
+
+          // Assert
+          expect(before).toBe('stable');
+          expect(after).toBe('stable');
+        });
+      });
+    });
+  });
+
+  describe('refSectionEnd (no ref index, obj/log positions disagree on which comes first)', () => {
+    describe('Given a syntactically valid second ref block sitting where the obj section actually starts', () => {
+      describe('When iterating every ref with no ref index present', () => {
+        it('Then the ref section stops at the SMALLEST following position, not the largest', () => {
+          // Arrange — block2 is real 'r' bytes, but objPosition marks the
+          // ref section as ending right after block1; logPosition is a
+          // larger, unrelated candidate that must NOT win.
+          const header = buildReftableHeader({ version: 1 });
+          const block1 = buildRefBlock({
+            records: [{ name: 'refs/heads/aaa', value: { kind: 'direct', id: oid(0x01) } }],
+            isFirstBlock: true,
+            headerLength: header.length,
+          });
+          const objPosition = header.length + block1.length;
+          const block2 = buildRefBlock({
+            records: [{ name: 'refs/heads/bbb', value: { kind: 'direct', id: oid(0x02) } }],
+            isFirstBlock: false,
+          });
+          const logPosition = objPosition + block2.length;
+          const bytes = buildReftable({
+            version: 1,
+            blockSize: 0,
+            blocks: [block1, block2],
+            objPosition,
+            logPosition,
+          });
+          const reftable = parseReftable(bytes);
+          const sut = iterateReftableRefs;
+
+          // Act
+          const names = Array.from(sut(reftable)).map((r) => r.name);
+
+          // Assert
+          expect(names).toStrictEqual([RefName.from('refs/heads/aaa')]);
+        });
+      });
+    });
+  });
+
+  describe('ref index descent depth — exact boundary', () => {
+    /** A `levels`-deep, strictly non-cyclic chain of index blocks topped by
+     *  one real leaf ref block: level 1 (innermost) points at the leaf,
+     *  level `k` points at level `k-1`, and `footer.refIndexPosition` names
+     *  the outermost (level `levels`). Descending it costs exactly `levels`
+     *  hops — the number the boundary tests below tune precisely against
+     *  `MAX_REF_INDEX_DEPTH` (64) to distinguish `<`/`<=` and `>`/`>=`,
+     *  which an actually-cyclic index (looping forever either way) cannot. */
+    function buildIndexChain(levels: number): ReturnType<typeof parseReftable> {
+      const header = buildReftableHeader({ version: 1 });
+      const leaf = buildRefBlock({
+        records: [{ name: 'refs/heads/leaf', value: { kind: 'direct', id: oid(0x09) } }],
+        isFirstBlock: true,
+        headerLength: header.length,
+      });
+      const blocks: Uint8Array[] = [leaf];
+      let offset = header.length + leaf.length;
+      let childPosition = header.length;
+      for (let i = 0; i < levels; i += 1) {
+        const idx = buildIndexBlock({
+          records: [{ key: 'refs/heads/leaf', blockPosition: childPosition }],
+          isFirstBlock: false,
+        });
+        blocks.push(idx);
+        childPosition = offset;
+        offset += idx.length;
+      }
+      const bytes = buildReftable({ version: 1, blocks, refIndexPosition: childPosition });
+      return parseReftable(bytes);
+    }
+
+    describe('Given a legitimately deep (non-cyclic) index chain of exactly 65 levels', () => {
+      describe('When looking a name up via the iterative descent', () => {
+        it('Then refuses with cycle — the 65th level sits past the 64-level bound', () => {
+          // Arrange
+          const reftable = buildIndexChain(65);
+          const sut = lookupReftableRef;
+
+          // Act & Assert
+          expectRefusal(
+            () => sut(reftable, RefName.from('refs/heads/leaf')),
+            'cycle',
+            'ref index descent',
+          );
+        }, 2000);
+      });
+
+      describe('When iterating every ref via the recursive index-leaf walk', () => {
+        it('Then refuses with cycle — the 65th level sits past the 64-level bound', () => {
+          // Arrange
+          const reftable = buildIndexChain(65);
+          const sut = iterateReftableRefs;
+
+          // Act & Assert
+          expectRefusal(() => Array.from(sut(reftable)), 'cycle', 'ref index descent');
+        }, 2000);
+      });
+    });
+  });
+});

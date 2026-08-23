@@ -68,7 +68,9 @@ describe('common-dir ref + reflog split', () => {
         const sut = asWorktreeChild(ctx);
 
         // Act
-        await getRefStore(sut).writeLoose('refs/heads/feature' as RefName, OID_A);
+        await getRefStore(sut).applyRefUpdates([
+          { kind: 'set', name: 'refs/heads/feature' as RefName, id: OID_A },
+        ]);
 
         // Assert
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/heads/feature`)).toBe(true);
@@ -83,7 +85,9 @@ describe('common-dir ref + reflog split', () => {
         const sut = asWorktreeChild(ctx);
 
         // Act
-        await getRefStore(sut).writeLoose('ORIG_HEAD' as RefName, OID_A);
+        await getRefStore(sut).applyRefUpdates([
+          { kind: 'set', name: 'ORIG_HEAD' as RefName, id: OID_A },
+        ]);
 
         // Assert
         expect(await ctx.fs.exists(`${adminDir(ctx)}/ORIG_HEAD`)).toBe(true);
@@ -128,6 +132,25 @@ describe('common-dir ref + reflog split', () => {
         // Assert
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/logs/refs/heads/main`)).toBe(true);
         expect(await ctx.fs.exists(`${adminDir(ctx)}/logs/refs/heads/main`)).toBe(false);
+      });
+    });
+
+    describe('When listRefs is called with a shared ref in the common dir and a per-worktree ref in the admin dir', () => {
+      it('Then the shared ref resolves against the common dir and the per-worktree ref against the worktree gitdir', async () => {
+        // Arrange
+        const ctx = await buildSeededContext({
+          refs: [{ name: 'refs/heads/main' as RefName, id: OID_A }],
+        });
+        const sut = asWorktreeChild(ctx);
+        await ctx.fs.writeUtf8(`${adminDir(ctx)}/refs/bisect/bad`, `${OID_B}\n`);
+
+        // Act
+        const result = await getRefStore(sut).listRefs();
+
+        // Assert
+        const byName = new Map(result.map((entry) => [entry.name, entry.value]));
+        expect(byName.get('refs/heads/main' as RefName)).toEqual({ kind: 'direct', id: OID_A });
+        expect(byName.get('refs/bisect/bad' as RefName)).toEqual({ kind: 'direct', id: OID_B });
       });
     });
   });

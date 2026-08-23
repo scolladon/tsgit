@@ -632,6 +632,21 @@ emits **one log tombstone per entry**, each at that entry's own index — a dele
 `n` reflog entries writes `n` log tombstones. A writer that emits a single tombstone at the new
 index leaves the old reflog entries visible.
 
+**A table's log records can legitimately fall outside its own declared `min`/`max_update_index`
+range — deliberately, and reader-safe.** The deletion example above already shows it: the table's
+own bounds are `[4, 4]` (a fresh append, per the row above), yet the log tombstone it carries sits
+at index 3. `reflogReplace` (`reflog delete`/`expire`, stash drop) does the same on a larger scale:
+every existing entry is tombstoned at *its own* original index first, and only the replacement
+entries land inside the new table's declared range. This is safe for a reader because a log
+record's key is absolute (`refname '\0' reverse_int64(update_index)`) and never re-derived from the
+table's own header bounds — measured against real git in the interop run, it reads a tsgit-written
+table shaped this way without complaint. What it would not do is *write* one itself: git's own
+reftable writer library validates that every record passed to it falls inside the `update_index`
+bounds the writer was opened with, and refuses an off-range call with `REFTABLE_API_ERROR` — a
+constraint git places on its own writer's *API*, not one its reader enforces on the *file format*.
+tsgit's writer carries no such internal constraint, so it emits this shape freely; a correct
+deletion or replace has no other way to express "cancel this specific old entry."
+
 #### 1.14 Determinism, and the exact limit of byte-identity
 
 **Table content is deterministic.** The 5-ref fixture was built twice, from scratch, with fixed

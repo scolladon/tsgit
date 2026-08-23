@@ -87,6 +87,19 @@ export interface RepositoryLayout {
    * refuses a contradiction between the two.
    */
   readonly objectFormat?: 'sha1' | 'sha256';
+  /**
+   * The repository's ref-storage backend — `extensions.refStorage`'s
+   * resolved value, defaulting to `'files'` (git's default when the key is
+   * unset). REQUIRED, unlike every other optional field on this interface:
+   * an optional field whose absence means `'files'` would reintroduce the
+   * exact misread this field exists to close on any path that builds a
+   * `Context` without the facade — the raw adapter constructors
+   * (`createNodeContext`, `createMemoryContext`, `createBrowserContext`)
+   * set it by explicit assignment for this reason. Populated by
+   * `finishLayout` at open time; readable synchronously, consumed by no
+   * command surface yet.
+   */
+  readonly refStorage: 'files' | 'reftable';
 }
 
 /**

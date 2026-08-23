@@ -21,12 +21,14 @@ import { nameRevScenario } from './name-rev.scenario.ts';
 import { notesScenario } from './notes.scenario.ts';
 import { packDegradedIdxScenario } from './pack-degraded-idx.scenario.ts';
 import { packObjectsScenario } from './pack-objects.scenario.ts';
+import { packRefsScenario } from './pack-refs.scenario.ts';
 import { packV3ReadScenario } from './pack-v3-read.scenario.ts';
 import { phase202PrimitivesScenario } from './phase-20-2-primitives.scenario.ts';
 import { rangeDiffScenario } from './range-diff.scenario.ts';
 import { readPipelineScenario } from './read-pipeline.scenario.ts';
 import { rebaseScenario } from './rebase.scenario.ts';
 import { refsPipelineScenario } from './refs-pipeline.scenario.ts';
+import { reftableRefsScenario } from './reftable-refs.scenario.ts';
 import { remoteCrudScenario } from './remote-crud.scenario.ts';
 import { resetRmReflogScenario } from './reset-rm-reflog.scenario.ts';
 import { revListScenario } from './rev-list.scenario.ts';
@@ -88,6 +90,8 @@ export const SCENARIOS: ReadonlyArray<Scenario<unknown>> = [
   midxReadScenario,
   midxReadDegradedScenario,
   packObjectsScenario,
+  packRefsScenario,
   trustDefaultsScenario,
   sha256ObjectFormatScenario,
+  reftableRefsScenario,
 ];

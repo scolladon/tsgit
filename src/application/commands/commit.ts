@@ -29,7 +29,7 @@ import {
 import { assertNoValuelessConfig } from '../primitives/internal/valueless-config-guard.js';
 import { readIndex } from '../primitives/read-index.js';
 import { readObject } from '../primitives/read-object.js';
-import { recordRefUpdate } from '../primitives/record-ref-update.js';
+import { getRefStore } from '../primitives/ref-store.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import { runInformationalHook } from '../primitives/run-hook.js';
 import { updateRef } from '../primitives/update-ref.js';
@@ -239,14 +239,14 @@ const writeCommitRef = async (ctx: Context, update: CommitRefUpdate): Promise<vo
     );
     return;
   }
-  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `${id}\n`);
-  await recordRefUpdate(
-    ctx,
-    'HEAD' as RefName,
-    parentId ?? zeroOid(ctx.hashConfig),
-    id,
-    reflogMessage,
-  );
+  await getRefStore(ctx).applyRefUpdates([
+    {
+      kind: 'set',
+      name: 'HEAD' as RefName,
+      id,
+      reflog: { oldId: parentId ?? zeroOid(ctx.hashConfig), newId: id, message: reflogMessage },
+    },
+  ]);
 };
 
 interface PendingMarkers {

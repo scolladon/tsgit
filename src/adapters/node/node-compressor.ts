@@ -25,6 +25,14 @@ export class NodeCompressor implements Compressor {
     this.maxInflatedBytes = options?.maxInflatedBytes ?? MAX_INFLATED_OBJECT_BYTES;
   }
 
+  /** Clamps a caller-supplied `streamInflate` bound to this instance's own
+   *  cap: a caller may narrow it, never raise it above the instance default. */
+  private effectiveCap(maxOutputBytes: number | undefined): number {
+    return maxOutputBytes === undefined
+      ? this.maxInflatedBytes
+      : Math.min(maxOutputBytes, this.maxInflatedBytes);
+  }
+
   deflate = async (data: Uint8Array, level?: number): Promise<Uint8Array> => {
     try {
       // Stryker disable next-line ConditionalExpression: equivalent — forcing the else arm calls `deflateSync(data, { level: undefined })`, which Node treats identically to the no-options `deflateSync(data)`, byte-for-byte across all inputs.
@@ -53,12 +61,16 @@ export class NodeCompressor implements Compressor {
     }
   };
 
-  streamInflate = async (bytes: Uint8Array, offset: number): Promise<InflateStreamResult> => {
+  streamInflate = async (
+    bytes: Uint8Array,
+    offset: number,
+    maxOutputBytes?: number,
+  ): Promise<InflateStreamResult> => {
     // Node's createInflate is stream-aware: when the zlib stream ends, it emits
     // 'end'. We additionally count bytes here because createInflate's
     // maxOutputLength enforcement is unreliable for streaming use (it caps
     // the *internal* buffer rather than the cumulative output).
-    const cap = this.maxInflatedBytes;
+    const cap = this.effectiveCap(maxOutputBytes);
     return new Promise<InflateStreamResult>((resolve, reject) => {
       const inflate = createInflate();
       const chunks: Uint8Array[] = [];

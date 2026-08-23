@@ -53,9 +53,9 @@ describe('Given the reflog message builders', () => {
       expect(branchCreatedFrom('main')).toBe('branch: Created from main');
     });
 
-    it('Then branchRenamed renders "branch: renamed <from> to <to>"', () => {
+    it('Then branchRenamed renders "Branch: renamed <from> to <to>"', () => {
       // Arrange / Act / Assert
-      expect(branchRenamed('old', 'new')).toBe('branch: renamed old to new');
+      expect(branchRenamed('old', 'new')).toBe('Branch: renamed old to new');
     });
   });
 

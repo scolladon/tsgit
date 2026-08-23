@@ -18,7 +18,6 @@ import {
   type WorktreeHead,
   worktreeGitdirPointer,
   worktreeGitfile,
-  worktreeHeadContent,
 } from '../../domain/worktree/admin-files.js';
 import { isUnsafeWorktreeId, worktreeAdminId } from '../../domain/worktree/admin-id.js';
 import {
@@ -40,8 +39,7 @@ import { materializeTree } from '../primitives/materialize-tree.js';
 import { commonGitDir } from '../primitives/path-layout.js';
 import { readIndex } from '../primitives/read-index.js';
 import { readTree } from '../primitives/read-tree.js';
-import { recordRefUpdate } from '../primitives/record-ref-update.js';
-import { getRefStore } from '../primitives/ref-store.js';
+import { getRefStore, type RefUpdate } from '../primitives/ref-store.js';
 import { branchCreate } from './branch.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
 import { resolveCommit } from './internal/resolve-rev.js';
@@ -146,6 +144,12 @@ const allocateAdminId = async (ctx: Context, worktreePath: string): Promise<stri
   return worktreeAdminId(worktreePathBasename(worktreePath), new Set(taken));
 };
 
+/** The linked worktree's admin-dir `HEAD` as a `RefUpdate` — a branch symref or a detached oid. */
+const adminHeadUpdate = (head: WorktreeHead): RefUpdate =>
+  head.kind === 'branch'
+    ? { kind: 'setSymbolic', name: HEAD_REF, target: head.ref }
+    : { kind: 'set', name: HEAD_REF, id: head.oid };
+
 /** Write the admin pointer files + the worktree `.git` gitfile. Returns the admin dir. */
 const writeAdmin = async (
   ctx: Context,
@@ -157,7 +161,8 @@ const writeAdmin = async (
   const admin = `${commonGitDir(ctx)}/worktrees/${id}`;
   await ctx.fs.writeUtf8(`${admin}/commondir`, `${WORKTREE_COMMONDIR}\n`);
   await ctx.fs.writeUtf8(`${admin}/gitdir`, `${worktreeGitdirPointer(worktreePath)}\n`);
-  await ctx.fs.writeUtf8(`${admin}/HEAD`, `${worktreeHeadContent(head)}\n`);
+  const child = deriveWorktreeContext(ctx, id, worktreePath);
+  await getRefStore(child).applyRefUpdates([adminHeadUpdate(head)]);
   await ctx.fs.writeUtf8(`${admin}/${ORIG_HEAD}`, `${oid}\n`);
   await worktreeScopedFs(ctx, worktreePath).writeUtf8(
     `${worktreePath}/.git`,
@@ -181,13 +186,23 @@ const materializeWorktree = async (child: Context, treeId: ObjectId): Promise<vo
 /**
  * Write the worktree `logs/HEAD`. git logs an empty-message HEAD set, then —
  * when HEAD is a branch (or an existing branch checkout) — a `reset: moving to
- * HEAD` entry; a detached add logs only the first.
+ * HEAD` entry; a detached add logs only the first. Both entries genuinely log
+ * without writing (the ref itself was already set by `writeAdmin`, well
+ * before `materializeWorktree`), so each rides `reflogOnly` on the seam.
  */
 const writeHeadReflog = async (child: Context, mode: AddMode, oid: ObjectId): Promise<void> => {
-  await recordRefUpdate(child, HEAD_REF, zeroOid(child.hashConfig), oid, '');
+  const zero = zeroOid(child.hashConfig);
+  const updates: RefUpdate[] = [
+    { kind: 'reflogOnly', name: HEAD_REF, reflog: { oldId: zero, newId: oid, message: '' } },
+  ];
   if (mode.kind !== 'detached') {
-    await recordRefUpdate(child, HEAD_REF, oid, oid, resetMovingTo('HEAD'));
+    updates.push({
+      kind: 'reflogOnly',
+      name: HEAD_REF,
+      reflog: { oldId: oid, newId: oid, message: resetMovingTo('HEAD') },
+    });
   }
+  await getRefStore(child).applyRefUpdates(updates);
 };
 
 /**

@@ -22,9 +22,12 @@ export const commitReflog = (subject: string): string => `commit: ${subject}`;
 export const branchCreatedFrom = (startPoint: string): string =>
   `branch: Created from ${startPoint}`;
 
-/** `branch: renamed <from> to <to>`. */
+/** `Branch: renamed <from> to <to>` — capitalised `Branch`, unlike every
+ *  sibling `branch: …` message here; measured against git 2.55.0, both
+ *  backends (`refs/files-backend.c` and `refs/reftable-backend.c` share the
+ *  one literal), not a typo to "normalise" away. */
 export const branchRenamed = (from: string, to: string): string =>
-  `branch: renamed ${from} to ${to}`;
+  `Branch: renamed ${from} to ${to}`;
 
 /** `reset: moving to <target>` — pass `HEAD` for the symbolic-HEAD reset. */
 export const resetMovingTo = (target: string): string => `reset: moving to ${target}`;

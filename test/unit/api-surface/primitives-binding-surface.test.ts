@@ -21,7 +21,8 @@ import { openRepository, type RuntimeFallback } from '../../../src/repository.js
 const EXCLUDED_PRIMITIVES: ReadonlyArray<{ readonly name: string; readonly reason: string }> = [
   {
     name: 'appendReflog',
-    reason: 'internal reflog-store primitive reused by record-ref-update/update-ref/stash-ref',
+    reason:
+      'internal reflog-store primitive with no current internal consumer — the files backend and record-ref-update.ts own private copies to avoid an import cycle through ref-store.ts',
   },
   {
     name: 'applyChangeset',
@@ -43,7 +44,8 @@ const EXCLUDED_PRIMITIVES: ReadonlyArray<{ readonly name: string; readonly reaso
   { name: 'createTag', reason: 'internal tag-object primitive reused by the tag command' },
   {
     name: 'deleteReflog',
-    reason: 'internal reflog-store primitive reused by update-ref/stash-ref',
+    reason:
+      'internal reflog-store primitive with no current internal consumer — the files backend owns a private copy (applyRefUpdates delete) to avoid an import cycle through ref-store.ts',
   },
   { name: 'enumerateObjects', reason: 'internal object-enumeration primitive reused by fsck' },
   {
@@ -76,7 +78,10 @@ const EXCLUDED_PRIMITIVES: ReadonlyArray<{ readonly name: string; readonly reaso
     name: 'isWorkingTreeDirty',
     reason: 'internal dirty-check primitive reused by apply-sparse-checkout',
   },
-  { name: 'listReflogs', reason: 'internal reflog-store primitive reused by reflog/fsck roots' },
+  {
+    name: 'listReflogs',
+    reason: 'internal reflog-store primitive reused by reflog/rev-parse/fsck-roots',
+  },
   { name: 'loadNotesTree', reason: 'internal notes-tree primitive reused by the notes command' },
   {
     name: 'loadSparseMatcher',
@@ -99,7 +104,8 @@ const EXCLUDED_PRIMITIVES: ReadonlyArray<{ readonly name: string; readonly reaso
   { name: 'readHeadTree', reason: 'internal HEAD-tree primitive reused by status/rm' },
   {
     name: 'readReflog',
-    reason: 'internal reflog-store primitive reused by branch/reflog/rev-parse/fsck roots',
+    reason:
+      'internal reflog-store primitive reused by branch/reflog/rev-parse/fsck-roots/stash/snapshot-factory',
   },
   {
     name: 'readShallow',
@@ -109,7 +115,11 @@ const EXCLUDED_PRIMITIVES: ReadonlyArray<{ readonly name: string; readonly reaso
     name: 'readSparsePatternText',
     reason: 'internal sparse-checkout primitive reused by the sparseCheckout command',
   },
-  { name: 'reflogExists', reason: 'internal reflog-store primitive reused by reflog/rev-parse' },
+  {
+    name: 'reflogExists',
+    reason:
+      'internal reflog-store primitive with no current internal consumer — reflog/rev-parse route the same question through the backend-neutral listReflogs instead',
+  },
   { name: 'resolveNotesRef', reason: 'internal notes-ref primitive reused by the notes command' },
   {
     name: 'resolveReflogIdentity',
@@ -142,7 +152,11 @@ const EXCLUDED_PRIMITIVES: ReadonlyArray<{ readonly name: string; readonly reaso
     name: 'writeNotesTree',
     reason: 'internal notes-tree-write primitive reused by the notes command',
   },
-  { name: 'writeReflog', reason: 'internal reflog-store primitive reused by branch/reflog' },
+  {
+    name: 'writeReflog',
+    reason:
+      'internal reflog-store primitive with no current internal consumer — branch/reflog/stash route whole-reflog rewrites through applyRefUpdates(reflogReplace) instead',
+  },
   {
     name: 'writeSparsePatternText',
     reason: 'internal sparse-checkout-write primitive reused by sparseCheckout',
@@ -172,7 +186,7 @@ const makeFallback = (): RuntimeFallback => ({
   compressor: new MemoryCompressor(),
   transport: new MemoryHttpTransport(),
   runtime: 'memory',
-  layout: { workDir: '/repo', gitDir: '/repo/.git', bare: false },
+  layout: { workDir: '/repo', gitDir: '/repo/.git', bare: false, refStorage: 'files' },
   hashConfig: SHA1_CONFIG,
   deltaCache: createLruCache<Uint8Array>(1024),
 });

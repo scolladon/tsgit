@@ -16,7 +16,7 @@ import { cloneFrom } from '../../domain/reflog/reflog-messages.js';
 import { isSafeRefName } from '../../domain/refs/ref-validation.js';
 import type { Context } from '../../ports/context.js';
 import { fetchPack } from '../primitives/fetch-pack.js';
-import { recordRefUpdate } from '../primitives/record-ref-update.js';
+import { getRefStore } from '../primitives/ref-store.js';
 import { updateShallow } from '../primitives/shallow-file.js';
 import { updateConfigEntries } from '../primitives/update-config.js';
 import { bootstrapRepository } from './internal/bootstrap.js';
@@ -92,6 +92,8 @@ export const clone = async (ctx: Context, opts: CloneOptions): Promise<CloneResu
   // client-only and reaches its source through a transport, so it has no
   // analogue for the source-side read; a destination-side gate would refuse
   // where git succeeds.
+  // Verdict: discovery-tier — a presence probe (target-not-empty guard), not
+  // a content read; unaffected by what HEAD's content becomes on any backend.
   if (await ctx.fs.exists(`${ctx.layout.gitDir}/HEAD`)) {
     // A bare clone's target IS the gitDir — there is no work tree to name.
     throw targetDirectoryNotEmpty((ctx.layout.workDir ?? ctx.layout.gitDir) as FilePath);
@@ -298,10 +300,13 @@ const writeFetchedRefs = async (
   return written;
 };
 
+const HEAD = 'HEAD' as RefName;
+
 /**
  * Write a ref file and record its creation in the reflog. `recordRefUpdate`
- * self-gates: only default-loggable refs (heads, remotes) actually log; tags
- * are skipped under the default config.
+ * (invoked internally by `applyRefUpdates`) self-gates: only default-loggable
+ * refs (heads, remotes) actually log; tags are skipped under the default
+ * config.
  */
 const writeRef = async (
   ctx: Context,
@@ -309,9 +314,14 @@ const writeRef = async (
   id: ObjectId,
   reflogUrl: string,
 ): Promise<void> => {
-  const refPath = `${ctx.layout.gitDir}/${name}`;
-  await ctx.fs.writeUtf8(refPath, `${id}\n`);
-  await recordRefUpdate(ctx, name, zeroOid(ctx.hashConfig), id, cloneFrom(reflogUrl));
+  await getRefStore(ctx).applyRefUpdates([
+    {
+      kind: 'set',
+      name,
+      id,
+      reflog: { oldId: zeroOid(ctx.hashConfig), newId: id, message: cloneFrom(reflogUrl) },
+    },
+  ]);
 };
 
 const headTrackedBranch = (ad: Advertisement): string | undefined => {
@@ -319,6 +329,16 @@ const headTrackedBranch = (ad: Advertisement): string | undefined => {
   if (symref === undefined) return undefined;
   return symref.slice('symref=HEAD:refs/heads/'.length);
 };
+
+/** `.git/logs/HEAD`'s initial entry — only when the advertisement carries HEAD's oid. */
+const clonedHeadReflog = (
+  ctx: Context,
+  headOid: ObjectId | undefined,
+  reflogUrl: string,
+): { readonly oldId: ObjectId; readonly newId: ObjectId; readonly message: string } | undefined =>
+  headOid === undefined
+    ? undefined
+    : { oldId: zeroOid(ctx.hashConfig), newId: headOid, message: cloneFrom(reflogUrl) };
 
 const applyRemoteHead = async (
   ctx: Context,
@@ -328,36 +348,27 @@ const applyRemoteHead = async (
   const branch = headTrackedBranch(advertisement);
   // `advertisement.head` carries HEAD's oid in both the symref and the
   // detached case; it is the newId for the `.git/logs/HEAD` initial entry.
-  const headOid = advertisement.head?.id;
+  const reflog = clonedHeadReflog(ctx, advertisement.head?.id, reflogUrl);
   if (branch !== undefined) {
     const ref = `refs/heads/${branch}` as RefName;
-    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `ref: ${ref}\n`);
-    await logClonedHead(ctx, headOid, reflogUrl);
+    await getRefStore(ctx).applyRefUpdates([
+      { kind: 'setSymbolic', name: HEAD, target: ref, ...(reflog !== undefined ? { reflog } : {}) },
+    ]);
     return ref;
   }
   // Detached HEAD — write the HEAD oid directly. The advertisement carries it
   // via head.id even when symref is missing (e.g., for a server that does not
   // expose the symref capability).
   if (advertisement.head !== undefined) {
-    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `${advertisement.head.id}\n`);
-    await logClonedHead(ctx, headOid, reflogUrl);
+    await getRefStore(ctx).applyRefUpdates([
+      {
+        kind: 'set',
+        name: HEAD,
+        id: advertisement.head.id,
+        ...(reflog !== undefined ? { reflog } : {}),
+      },
+    ]);
     return undefined;
   }
   return undefined;
-};
-
-/** Record the initial `.git/logs/HEAD` entry for a clone, when HEAD has an oid. */
-const logClonedHead = async (
-  ctx: Context,
-  headOid: ObjectId | undefined,
-  reflogUrl: string,
-): Promise<void> => {
-  if (headOid === undefined) return;
-  await recordRefUpdate(
-    ctx,
-    'HEAD' as RefName,
-    zeroOid(ctx.hashConfig),
-    headOid,
-    cloneFrom(reflogUrl),
-  );
 };

@@ -53,7 +53,6 @@ import { materializeWorktreeFromHead } from '../primitives/materialize-worktree-
 import { type GitmodulesRow, parseGitmodules } from '../primitives/parse-gitmodules.js';
 import { readIndex } from '../primitives/read-index.js';
 import { readObject } from '../primitives/read-object.js';
-import { recordRefUpdate } from '../primitives/record-ref-update.js';
 import { getRefStore } from '../primitives/ref-store.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import {
@@ -650,14 +649,18 @@ const headBranchName = (head: { kind: string; target?: string }): string =>
 const checkoutTrackingBranch = async (child: Context, branch: string): Promise<void> => {
   const oid = await resolveRef(child, `refs/remotes/origin/${branch}` as RefName);
   const ref = `${HEADS_PREFIX}${branch}` as RefName;
-  await child.fs.writeUtf8(`${child.layout.gitDir}/${ref}`, `${oid}\n`);
-  await recordRefUpdate(
-    child,
-    ref,
-    zeroOid(child.hashConfig),
-    oid,
-    branchCreatedFrom(`origin/${branch}`),
-  );
+  await getRefStore(child).applyRefUpdates([
+    {
+      kind: 'set',
+      name: ref,
+      id: oid,
+      reflog: {
+        oldId: zeroOid(child.hashConfig),
+        newId: oid,
+        message: branchCreatedFrom(`origin/${branch}`),
+      },
+    },
+  ]);
   await updateConfigOperations(child, [
     { kind: 'set', section: 'branch', subsection: branch, key: 'remote', value: 'origin' },
     { kind: 'set', section: 'branch', subsection: branch, key: 'merge', value: ref },
@@ -847,6 +850,8 @@ export const submoduleUpdate = async (
     }
     const url = config.submodule?.get(row.name)?.url ?? row.url ?? '';
     const child = deriveSubmoduleCloneContext(ctx, row.name, row.path as FilePath);
+    // Verdict: discovery-tier — a presence probe (already-cloned guard), not
+    // a content read; unaffected by what HEAD's content becomes on any backend.
     const cloned = !(await ctx.fs.exists(`${child.layout.gitDir}/HEAD`));
     if (cloned) {
       await cloneSubmoduleInto(ctx, workDir, child, url, row.name, row.path);

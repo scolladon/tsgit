@@ -11,10 +11,17 @@ import {
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
 import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
-import { readReflog, reflogExists } from '../../../../src/application/primitives/reflog-store.js';
-import { TsgitError } from '../../../../src/domain/index.js';
+import { getRefStore } from '../../../../src/application/primitives/ref-store.js';
+import {
+  listReflogs,
+  readReflog,
+  reflogExists,
+} from '../../../../src/application/primitives/reflog-store.js';
+import { fileNotFound, TsgitError } from '../../../../src/domain/index.js';
 import type { AuthorIdentity, RefName } from '../../../../src/domain/objects/index.js';
+import { ObjectId, zeroOid } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
+import { withReftableStorage } from '../primitives/reftable-fixtures.js';
 
 const author: AuthorIdentity = {
   name: 'Ada',
@@ -30,6 +37,39 @@ const seedWithCommit = async () => {
   await add(ctx, ['a.txt']);
   const c = await commit(ctx, { message: 'first', author });
   return { ctx, commitId: c.id };
+};
+
+/**
+ * A reftable-backed repository with `refs/heads/main` live and one reflog
+ * entry — seeded through the real `RefStore` write path (`applyRefUpdates`),
+ * never hand-built binary tables. `init` bootstraps the files-style
+ * compatibility state (`.git/HEAD`, `.git/config`) `assertOperationalRepository`
+ * needs; tsgit's `init` never PRODUCES a reftable repository on its own
+ * (that stack is populated here, standing in for one created by real git),
+ * so HEAD and `refs/heads/main` are written directly into the stack.
+ */
+const seedReftableWithCommit = async (): Promise<{
+  readonly ctx: Context;
+  readonly tip: ObjectId;
+}> => {
+  const ctx = withReftableStorage(createMemoryContext());
+  await init(ctx);
+  const tip = ObjectId.fromRaw(new Uint8Array(20).fill(0x01));
+  await getRefStore(ctx).applyRefUpdates([
+    { kind: 'setSymbolic', name: 'HEAD' as RefName, target: 'refs/heads/main' as RefName },
+    {
+      kind: 'set',
+      name: 'refs/heads/main' as RefName,
+      id: tip,
+      reflog: {
+        oldId: zeroOid(ctx.hashConfig),
+        newId: tip,
+        message: 'commit (initial): first',
+        unconditional: true,
+      },
+    },
+  ]);
+  return { ctx, tip };
 };
 
 const expectError = async (fn: () => Promise<unknown>, code: string): Promise<TsgitError> => {
@@ -168,8 +208,61 @@ describe('branch', () => {
         const movedLog = await readReflog(ctx, 'refs/heads/trunk' as RefName);
         expect(movedLog).toHaveLength(2);
         expect(movedLog[0]).toEqual(before[0]);
-        expect(movedLog[1]?.message).toBe('branch: renamed refs/heads/main to refs/heads/trunk');
+        expect(movedLog[1]?.message).toBe('Branch: renamed refs/heads/main to refs/heads/trunk');
         expect(await reflogExists(ctx, 'refs/heads/main' as RefName)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a branch with reflog history', () => {
+    describe('When branch rename', () => {
+      it('Then the rename entry carries the current tip as both oldId and newId', async () => {
+        // Arrange — the rename entry notes the rename; it does not move the
+        // ref's value, so old/new are both the tip resolveRef found before
+        // the write (measured against real git's files-backend `branch -m`).
+        const { ctx } = await seedWithCommit();
+        const before = await readReflog(ctx, 'refs/heads/main' as RefName);
+        const tip = before[0]?.newId;
+
+        // Act
+        await branchRename(ctx, { from: 'main', to: 'trunk' });
+
+        // Assert
+        const movedLog = await readReflog(ctx, 'refs/heads/trunk' as RefName);
+        const renameEntry = movedLog[movedLog.length - 1];
+        expect(renameEntry?.oldId).toBe(tip);
+        expect(renameEntry?.newId).toBe(tip);
+      });
+    });
+  });
+
+  describe('Given a reftable-backed branch with reflog history', () => {
+    describe('When branch rename runs', () => {
+      it('Then the old branch is gone, the new branch exists, and history moved — never a half-applied rename', async () => {
+        // Arrange — the reftable reflogReplace decomposition used to throw
+        // UNSUPPORTED_OPERATION here, after `to` had already been created
+        // and before `from` was deleted, leaving both branches on disk.
+        const { ctx } = await seedReftableWithCommit();
+        const before = await readReflog(ctx, 'refs/heads/main' as RefName);
+        expect(before).toHaveLength(1);
+
+        // Act
+        const result = await branchRename(ctx, { from: 'main', to: 'trunk' });
+
+        // Assert — the two branches never coexist.
+        expect(result).toEqual({ from: 'refs/heads/main', to: 'refs/heads/trunk' });
+        const names = (await branchList(ctx)).branches.map((b) => b.name);
+        expect(names).not.toContain('refs/heads/main');
+        expect(names).toContain('refs/heads/trunk');
+
+        // Assert — moved history precedes the rename entry, matching the
+        // files backend's own contract; the source reflog is gone entirely.
+        const movedLog = await readReflog(ctx, 'refs/heads/trunk' as RefName);
+        expect(movedLog).toHaveLength(2);
+        expect(movedLog[0]).toEqual(before[0]);
+        expect(movedLog[1]?.message).toBe('Branch: renamed refs/heads/main to refs/heads/trunk');
+        expect(await readReflog(ctx, 'refs/heads/main' as RefName)).toEqual([]);
+        expect(await listReflogs(ctx)).not.toContain('refs/heads/main');
       });
     });
   });
@@ -302,6 +395,66 @@ describe('branch', () => {
     });
   });
 
+  /**
+   * Simulates a dangling-symlink HEAD (the shape real git's discovery
+   * accepts by link text alone — measured against git 2.55.0): `readlink`
+   * succeeds so discovery's `hasUsableHead` passes, but the loose-ref lookup
+   * `resolveDirect` reads the target through `readUtf8` — which a
+   * stat-following read reports as `FILE_NOT_FOUND` for a dangling target,
+   * exactly like the node adapter does for a real dangling symlink (`exists`
+   * is faked the same way, for the same reason). `resolveDirect(HEAD)`
+   * therefore answers `{ kind: 'missing' }`, and `readHeadRaw` throws
+   * `REF_NOT_FOUND`.
+   */
+  const withUnresolvableHead = (ctx: Context): Context => {
+    const headPath = `${ctx.layout.gitDir}/HEAD`;
+    return {
+      ...ctx,
+      fs: {
+        ...ctx.fs,
+        readlink: async (path: string) =>
+          path === headPath ? 'refs/heads/does-not-exist' : ctx.fs.readlink(path),
+        exists: async (path: string) => (path === headPath ? false : ctx.fs.exists(path)),
+        readUtf8: async (path: string) => {
+          if (path === headPath) throw fileNotFound(headPath);
+          return ctx.fs.readUtf8(path);
+        },
+      },
+    };
+  };
+
+  describe('Given a repository with branches whose HEAD does not resolve', () => {
+    describe('When branch list', () => {
+      it('Then every branch is listed with current: false, instead of throwing', async () => {
+        // Arrange — measured: git 2.55.0 `branch --list` against a dangling
+        // HEAD symlink exits 0 and lists branches, marking none current.
+        const { ctx } = await seedWithCommit();
+
+        // Act
+        const result = await branchList(withUnresolvableHead(ctx));
+
+        // Assert
+        expect(result.branches.map((b) => b.name)).toContain('refs/heads/main');
+        expect(result.branches.every((b) => b.current === false)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a repository with no branches and an unresolvable HEAD', () => {
+    describe('When branch list', () => {
+      it('Then returns an empty array without throwing', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+
+        // Act
+        const result = await branchList(withUnresolvableHead(ctx));
+
+        // Assert
+        expect(result.branches).toEqual([]);
+      });
+    });
+  });
+
   describe('Given an existing target branch + force=true', () => {
     describe('When branch rename', () => {
       it('Then force overrides the BRANCH_EXISTS guard', async () => {
@@ -332,19 +485,28 @@ describe('branch', () => {
     });
   });
 
-  describe('Given refs/heads holding a sub-directory + a file', () => {
+  describe('Given a nested branch and a packed-only branch', () => {
     describe('When branch list', () => {
-      it('Then directory entries are skipped', async () => {
-        // Arrange — `nested/leaf` creates a `nested` DIRECTORY entry under refs/heads;
-        // resolveRef on that directory would throw if the `!entry.isFile` skip is removed.
-        const { ctx } = await seedWithCommit();
+      it('Then both the nested branch and the packed-only branch appear', async () => {
+        // Arrange — `nested/leaf` creates a `nested` DIRECTORY entry under
+        // refs/heads (a flat readdir would have skipped it); `packed` exists
+        // only in packed-refs, with no loose file at all.
+        const { ctx, commitId } = await seedWithCommit();
         await branchCreate(ctx, { name: 'nested/leaf' });
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/packed-refs`,
+          `# pack-refs with: peeled fully-peeled sorted\n${commitId} refs/heads/packed\n`,
+        );
 
         // Act
         const result = await branchList(ctx);
 
         // Assert
-        expect(result.branches.map((b) => b.name)).toEqual(['refs/heads/main']);
+        expect(result.branches.map((b) => b.name)).toEqual([
+          'refs/heads/main',
+          'refs/heads/nested/leaf',
+          'refs/heads/packed',
+        ]);
       });
     });
   });

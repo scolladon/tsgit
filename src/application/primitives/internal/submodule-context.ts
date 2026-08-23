@@ -24,6 +24,12 @@ const buildChildContext = (ctx: Context, name: string, treeRelPath: FilePath): C
       workDir,
       gitDir,
       bare: false,
+      // A submodule is its own repository and can declare its own
+      // `extensions.refStorage`, independent of the parent's — this
+      // derivation does not run the Stage-2 scan, so it defaults to
+      // 'files' by explicit assignment rather than copying the parent's
+      // value (unlike the worktree derivation, which shares one repository).
+      refStorage: 'files',
       // Stryker disable next-line ConditionalExpression,BooleanLiteral,EqualityOperator,ObjectLiteral: equivalent — when `homeDir` is undefined the always-true mutant yields `{ homeDir: undefined }`, indistinguishable from the `{}` branch on `layout.homeDir`; the conditional only exists to satisfy `exactOptionalPropertyTypes`. The killable always-`{}` half is covered by the homeDir-propagation tests.
       ...(ctx.layout.homeDir !== undefined ? { homeDir: ctx.layout.homeDir } : {}),
       ...inheritedAcceptanceVerdicts(ctx.layout),
@@ -57,6 +63,9 @@ export const deriveSubmoduleContext = async (
   // present to catch future contract changes (e.g. a relaxed name rule).
   // Stryker disable next-line ConditionalExpression,BooleanLiteral: equivalent — visited.has(gitDir) is always false under the current contract, so replacing it with `false` produces identical behaviour; the guard's value is defensive, not behavioral.
   if (visited.has(gitDir)) return undefined;
+  // Verdict: discovery-tier — a presence probe (uninitialised-submodule
+  // detection), not a content read; a reftable repository's HEAD file still
+  // exists as the routing stub, so `exists()` remains a valid signal.
   // Stryker disable next-line ConditionalExpression: equivalent — when the HEAD probe is false (uninitialised), removing the early `return undefined` lets the child Context be returned; downstream reads then surface the resulting `OBJECT_NOT_FOUND` and yield the same "no children" outcome.
   if (!(await ctx.fs.exists(`${gitDir}/HEAD`))) return undefined;
   return buildChildContext(ctx, name, treeRelPath);

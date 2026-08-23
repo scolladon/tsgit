@@ -54,6 +54,7 @@ describe('openRepository (memory shim) — layout discovery', () => {
           gitDir: '/repo/.git',
           bare: false,
           objectFormat: 'sha1',
+          refStorage: 'files',
         });
       });
     });
@@ -70,6 +71,7 @@ describe('openRepository (memory shim) — layout discovery', () => {
           workDir: '/repo',
           gitDir: '/repo/.git',
           bare: false,
+          refStorage: 'files',
         });
       });
     });
@@ -95,6 +97,7 @@ describe('openRepository (memory shim) — layout discovery', () => {
           gitDir: '/repo',
           bare: true,
           objectFormat: 'sha1',
+          refStorage: 'files',
         });
       });
     });

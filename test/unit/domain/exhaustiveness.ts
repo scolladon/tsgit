@@ -28,6 +28,7 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'INVALID_PACK_BITMAP':
     case 'INVALID_REF':
     case 'INVALID_PACKED_REFS':
+    case 'INVALID_REFTABLE':
     case 'INVALID_INDEX_HEADER':
     case 'INVALID_INDEX_ENTRY':
     case 'INVALID_COMMIT_GRAPH_HEADER':
@@ -59,6 +60,7 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'REF_CYCLE_DETECTED':
     case 'REF_LOCKED':
     case 'REF_UPDATE_CONFLICT':
+    case 'REFTABLE_LOCKED':
     case 'INVALID_WALK_INPUT':
     case 'OPERATION_ABORTED':
     case 'INVALID_PKT_LENGTH':

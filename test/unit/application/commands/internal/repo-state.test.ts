@@ -344,12 +344,14 @@ describe('internal/repo-state', () => {
       });
     });
 
-    describe('Given readUtf8 rejects with a non-TsgitError', () => {
+    describe('Given readUtf8 rejects with a non-TsgitError on a HEAD that exists', () => {
       describe('When readHeadRaw', () => {
-        it('Then the original error is rethrown unchanged (not mapped to REF_NOT_FOUND)', async () => {
-          // Arrange — the guard is `err instanceof TsgitError && ...`; a plain
-          // Error must fail the first operand and be rethrown verbatim.
+        it('Then the original error is rethrown unchanged (not swallowed by the backend)', async () => {
+          // Arrange — HEAD must exist (the backend's loose lookup gates the
+          // read behind an `exists()` probe), so the stubbed `readUtf8`
+          // rejection is actually reached rather than short-circuited.
           const ctx = createMemoryContext();
+          await seedRepo(ctx);
           const original = new Error('disk exploded');
           const ctxStub: Context = {
             ...ctx,
@@ -370,12 +372,13 @@ describe('internal/repo-state', () => {
       });
     });
 
-    describe('Given readUtf8 rejects with a TsgitError whose code is not FILE_NOT_FOUND', () => {
+    describe('Given readUtf8 rejects with a TsgitError whose code is not FILE_NOT_FOUND, on a HEAD that exists', () => {
       describe('When readHeadRaw', () => {
         it('Then that error is rethrown unchanged (not mapped to REF_NOT_FOUND)', async () => {
-          // Arrange — the guard's second operand is `err.data.code === 'FILE_NOT_FOUND'`;
-          // a different code must fail it so the error passes through untouched.
+          // Arrange — same existence-gating as above; a different code must
+          // still pass through untouched.
           const ctx = createMemoryContext();
+          await seedRepo(ctx);
           const original = new TsgitError({ code: 'PERMISSION_DENIED', path: '/repo/.git/HEAD' });
           const ctxStub: Context = {
             ...ctx,
@@ -397,9 +400,32 @@ describe('internal/repo-state', () => {
       });
     });
 
+    describe('Given a repository whose HEAD lives only in the backend, not as a loose file', () => {
+      describe('When readHeadRaw is called', () => {
+        it('Then it returns the backend answer', async () => {
+          // Arrange — no loose HEAD file; only a packed-refs entry answers
+          // for it, proving readHeadRaw defers to the general ref-store
+          // lookup (loose-then-packed) rather than a hardcoded single-file
+          // read of `<gitDir>/HEAD`.
+          const ctx = createMemoryContext();
+          const oid = '0123456789abcdef0123456789abcdef01234567';
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/packed-refs`, `${oid} HEAD\n`);
+
+          // Act
+          const result = await readHeadRaw(ctx);
+
+          // Assert
+          expect(result.kind).toBe('direct');
+          if (result.kind === 'direct') {
+            expect(result.id).toBe(oid);
+          }
+        });
+      });
+    });
+
     describe('Given missing HEAD', () => {
       describe('When readHeadRaw', () => {
-        it('Then throws REF_NOT_FOUND', async () => {
+        it('Then throws REF_NOT_FOUND with the HEAD name', async () => {
           // Arrange
           const ctx = createMemoryContext();
 
@@ -411,9 +437,14 @@ describe('internal/repo-state', () => {
             caught = err;
           }
 
-          // Assert
+          // Assert — mutation-tight: both the code AND the payload field,
+          // pinning the 'missing' → REF_NOT_FOUND mapping precisely.
           expect(caught).toBeInstanceOf(TsgitError);
-          expect((caught as TsgitError).data.code).toBe('REF_NOT_FOUND');
+          const data = (caught as TsgitError).data;
+          expect(data.code).toBe('REF_NOT_FOUND');
+          if (data.code === 'REF_NOT_FOUND') {
+            expect(data.name).toBe('HEAD');
+          }
         });
       });
     });

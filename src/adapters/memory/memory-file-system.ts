@@ -274,6 +274,13 @@ export class MemoryFileSystem implements FileSystem {
     this.times.set(normalizedDst, timestamp);
   };
 
+  // `rename` above is synchronous `Map` surgery with no `await` between the
+  // deletes and the sets, so it is already atomic with respect to the event
+  // loop; the capability is that guarantee exposed under its own name.
+  atomicRename = async (src: string, dst: string): Promise<void> => {
+    await this.rename(src, dst);
+  };
+
   /**
    * Move a directory subtree by re-keying every files/symlinks/times/directories
    * entry at `src` or under `src/` to the corresponding `dst` path. Mirrors a

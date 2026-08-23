@@ -125,7 +125,7 @@ describe('integration — reflog writers', () => {
         'commit (initial): first',
         'commit: second',
       ]);
-      expect(renamed.at(-1)?.message).toBe('branch: renamed refs/heads/main to refs/heads/trunk');
+      expect(renamed.at(-1)?.message).toBe('Branch: renamed refs/heads/main to refs/heads/trunk');
     });
   });
 

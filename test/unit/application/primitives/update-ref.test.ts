@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
+import { getRefStore } from '../../../../src/application/primitives/ref-store.js';
 import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
 import { resolveRef } from '../../../../src/application/primitives/resolve-ref.js';
 import { updateRef } from '../../../../src/application/primitives/update-ref.js';
 import { writeSymbolicRef } from '../../../../src/application/primitives/write-symbolic-ref.js';
 import type { TsgitError } from '../../../../src/domain/error.js';
 import type { ObjectId, RefName } from '../../../../src/domain/objects/index.js';
+import type { Context } from '../../../../src/ports/context.js';
 import { buildSeededContext } from './fixtures.js';
 
 const ID_A = 'a'.repeat(40) as ObjectId;
@@ -16,6 +18,29 @@ const ZERO_SHA256 = '0'.repeat(64) as ObjectId;
 const MAIN = 'refs/heads/main' as RefName;
 const HEAD = 'HEAD' as RefName;
 const REASON = 'commit: test';
+
+/**
+ * Recursively read every file under `dir` (sorted, path + UTF-8 content
+ * pairs) so a test can compare a directory's contents byte-for-byte before
+ * and after an operation. `dir` itself may not exist — that's "no files".
+ */
+async function snapshotDir(
+  ctx: Context,
+  dir: string,
+): Promise<ReadonlyArray<readonly [string, string]>> {
+  if (!(await ctx.fs.exists(dir))) return [];
+  const entries = await ctx.fs.readdir(dir);
+  const files: Array<readonly [string, string]> = [];
+  for (const entry of entries) {
+    const path = `${dir}/${entry.name}`;
+    if (entry.isDirectory) {
+      files.push(...(await snapshotDir(ctx, path)));
+    } else {
+      files.push([path, await ctx.fs.readUtf8(path)]);
+    }
+  }
+  return files.slice().sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+}
 
 describe('updateRef', () => {
   describe('Given a fresh ref', () => {
@@ -145,6 +170,90 @@ describe('updateRef', () => {
         } catch (error) {
           expect((error as TsgitError).data.code).toBe('INVALID_REF');
         }
+      });
+    });
+  });
+
+  describe('Given HEAD content is malformed', () => {
+    describe('When updateRef writes a branch', () => {
+      it('Then it succeeds and writes the branch ref and its reflog', async () => {
+        // Arrange
+        const ctx = await buildSeededContext({ refs: [{ name: MAIN, id: ID_A }] });
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/.invalid\n');
+
+        // Act
+        await updateRef(ctx, MAIN, ID_B, { reflogMessage: REASON });
+
+        // Assert
+        expect(await resolveRef(ctx, MAIN)).toBe(ID_B);
+        const reflog = await readReflog(ctx, MAIN);
+        expect(reflog).toHaveLength(1);
+        expect(reflog[0]?.oldId).toBe(ID_A);
+        expect(reflog[0]?.newId).toBe(ID_B);
+      });
+
+      it('Then the coupled HEAD reflog entry is not written', async () => {
+        // Arrange
+        const ctx = await buildSeededContext({ refs: [{ name: MAIN, id: ID_A }] });
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/.invalid\n');
+
+        // Act
+        await updateRef(ctx, MAIN, ID_B, { reflogMessage: REASON });
+
+        // Assert
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/logs/HEAD`)).toBe(false);
+      });
+    });
+
+    describe('When updateRef deletes a ref', () => {
+      it('Then it succeeds and the ref is gone', async () => {
+        // Arrange
+        const ctx = await buildSeededContext({ refs: [{ name: MAIN, id: ID_A }] });
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/.invalid\n');
+
+        // Act
+        await updateRef(ctx, MAIN, ID_A, { delete: true });
+
+        // Assert
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/${MAIN}`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given HEAD cannot be read due to a non-INVALID_REF I/O error', () => {
+    describe('When updateRef writes a branch', () => {
+      it('Then it throws and leaves refs and logs byte-unchanged', async () => {
+        // Arrange
+        const ctx = await buildSeededContext({ refs: [{ name: MAIN, id: ID_A }] });
+        const headPath = `${ctx.layout.gitDir}/HEAD`;
+        await ctx.fs.writeUtf8(headPath, 'ref: refs/heads/main\n');
+        const ioError = new Error('EIO: simulated read failure');
+        const failingCtx: Context = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            readUtf8: async (path: string): Promise<string> => {
+              if (path === headPath) throw ioError;
+              return ctx.fs.readUtf8(path);
+            },
+          },
+        };
+        const refsBefore = await snapshotDir(ctx, `${ctx.layout.gitDir}/refs`);
+        const logsBefore = await snapshotDir(ctx, `${ctx.layout.gitDir}/logs`);
+
+        // Act
+        let thrown: unknown;
+        try {
+          await updateRef(failingCtx, MAIN, ID_B, { reflogMessage: REASON });
+          expect.unreachable();
+        } catch (error) {
+          thrown = error;
+        }
+
+        // Assert
+        expect(thrown).toBe(ioError);
+        expect(await snapshotDir(ctx, `${ctx.layout.gitDir}/refs`)).toEqual(refsBefore);
+        expect(await snapshotDir(ctx, `${ctx.layout.gitDir}/logs`)).toEqual(logsBefore);
       });
     });
   });
@@ -312,6 +421,26 @@ describe('updateRef', () => {
           expect(result).toHaveLength(1);
           expect(result[0]?.newId).toBe(ID_A);
           expect(result[0]?.message).toBe(REASON);
+        });
+
+        it('Then the branch and the coupled HEAD reflog land in one applyRefUpdates call', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          await writeSymbolicRef(ctx, HEAD, MAIN);
+          const store = getRefStore(ctx);
+          const calls: unknown[][] = [];
+          const originalApply = store.applyRefUpdates.bind(store);
+          store.applyRefUpdates = async (updates) => {
+            calls.push([...updates]);
+            return originalApply(updates);
+          };
+
+          // Act
+          await updateRef(ctx, MAIN, ID_A, { reflogMessage: REASON });
+
+          // Assert
+          expect(calls).toHaveLength(1);
+          expect(calls[0]).toHaveLength(2);
         });
       });
     });

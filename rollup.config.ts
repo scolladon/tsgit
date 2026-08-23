@@ -40,6 +40,7 @@ const entryPoints = {
   'commands/name-rev': 'src/application/commands/name-rev.ts',
   'commands/notes': 'src/application/commands/notes.ts',
   'commands/pack-objects': 'src/application/commands/pack-objects.ts',
+  'commands/pack-refs': 'src/application/commands/pack-refs.ts',
   'commands/pull': 'src/application/commands/pull.ts',
   'commands/push': 'src/application/commands/push.ts',
   'commands/range-diff': 'src/application/commands/range-diff.ts',

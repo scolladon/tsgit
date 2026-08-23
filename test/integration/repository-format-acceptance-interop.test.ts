@@ -608,12 +608,10 @@ describe.skipIf(!GIT_AVAILABLE)(
 
     // ─────────────────────────────────────────────────────────────────────
     // Row 7 — the nine-name acceptance sweep: the regression detector for
-    // the registry constant against a future git. Six names are backed and
-    // fully operate in both tools; `objectFormat`/`refStorage` are backed by
-    // real git but tsgit has not yet implemented them here (TRANSIENT —
-    // each sibling PR removes one row when its support lands);
-    // `compatObjectFormat` is refused by real git itself on this build (no
-    // Rust support) and is a PERMANENT co-refusal.
+    // the registry constant against a future git. Eight names are backed
+    // and fully operate in both tools; `compatObjectFormat` is refused by
+    // real git itself on this build (no Rust support) and is a PERMANENT
+    // co-refusal.
     // ─────────────────────────────────────────────────────────────────────
 
     describe("Given each of git's nine known extensions planted alone at version 1", () => {
@@ -658,11 +656,12 @@ describe.skipIf(!GIT_AVAILABLE)(
             }
 
             // Assert — tsgit: the names it can act on carry no refusal.
-            // `objectFormat` left the refuse set when SHA-256 support landed.
-            // The two that remain are `refStorage` (no reftable backend yet)
-            // and `compatObjectFormat`, which git itself refuses on a non-Rust
-            // build — refusing that one IS the faithful behaviour, not a gap.
-            const unbacked = new Set(['refStorage', 'compatObjectFormat']);
+            // `objectFormat` left the refuse set when SHA-256 support
+            // landed, and `refStorage` left it when the reftable backend
+            // landed. The one that remains is `compatObjectFormat`, which
+            // git itself refuses on a non-Rust build — refusing that one IS
+            // the faithful behaviour, not a gap.
+            const unbacked = new Set(['compatObjectFormat']);
             if (unbacked.has(name)) {
               let caught: unknown;
               try {
@@ -1037,27 +1036,26 @@ describe.skipIf(!GIT_AVAILABLE)(
       'Given a real git init --ref-format=reftable repository',
       () => {
         describe('When openRepository runs', () => {
-          it('Then tsgit refuses at the gate — TRANSIENT until reftable support lands', async () => {
-            // Arrange
+          it('Then the gate accepts it and the repository reports the reftable backend', async () => {
+            // Arrange — the gate refused this repository while `refStorage`
+            // sat in the point-of-use refuse set. Reftable support removed
+            // that entry, so the same repository must now open and carry
+            // its declared backend through to the layout.
             const root = await mkdtemp(path.join(os.tmpdir(), 'tsgit-format-reftable-'));
             rowDirs.push(root);
             const dir = path.join(root, 'repo');
             runGit(['init', '-q', '--ref-format=reftable', dir]);
 
             // Act
-            let caught: unknown;
-            try {
-              await openRow(dir);
-            } catch (err) {
-              caught = err;
-            }
+            const repo = await openRow(dir);
 
             // Assert
-            expect(caught).toBeInstanceOf(TsgitError);
-            expect((caught as TsgitError).data).toMatchObject({
-              code: 'REPOSITORY_EXTENSION_UNSUPPORTED',
-              extension: 'refstorage',
-            });
+            try {
+              expect(repo.ctx.layout.formatRefusal).toBeUndefined();
+              expect(repo.ctx.layout.refStorage).toBe('reftable');
+            } finally {
+              await repo.dispose();
+            }
           });
         });
       },

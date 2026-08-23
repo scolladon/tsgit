@@ -168,6 +168,7 @@ const EMPTY_FORMAT: RepositoryFormat = {
   worktree: undefined,
   worktreeConfig: false,
   objectFormat: 'sha1',
+  refStorage: 'files',
   refusal: undefined,
 };
 
@@ -228,6 +229,11 @@ export const syntheticFallbackLayout = (
     gitDir,
     ...(workDir !== undefined ? { workDir } : {}),
     bare: overrides.bare === true && workDir === undefined,
+    // The bootstrap reads nothing from disk (see the JSDoc above), so the
+    // ref-storage backend defaults the same way git's own bootstrap does:
+    // `bootstrapRepository` writes no `[extensions]` unless a caller asks
+    // for reftable explicitly.
+    refStorage: 'files',
   };
 };
 
@@ -292,6 +298,12 @@ export const finishLayout = async (
     // (the found-nothing bootstrap path `init`/`clone` take) is the one
     // legitimate "unknown" case, and it never sets this field at all.
     objectFormat: fmt.objectFormat,
+    // Carries `fmt.refStorage` straight through — never sniffs the
+    // filesystem for a `reftable/` directory. The extension, not the
+    // directory, is authoritative (measured): a repository declaring
+    // reftable with no `reftable/` directory yet is a valid empty-stack
+    // reftable repository.
+    refStorage: fmt.refStorage,
   };
 };
 
