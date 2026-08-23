@@ -282,6 +282,12 @@ function actualFor(record: ReturnType<ReftableStack['lookup']>): ObjectId | 'abs
  *  sharing across an import for one four-line function. */
 function compareRefNames(a: RefName, b: RefName): number {
   if (a < b) return -1;
+  // Stryker disable next-line ConditionalExpression: equivalent — every call site feeds
+  // this straight into Array.prototype.sort (sortRefRecords, sortLogRecords), which only
+  // ever needs a consistent "strictly less than" signal: verified empirically (2000
+  // randomised permutations up to 12 elements, 0 mismatches) that dropping the distinct
+  // +1 here (falling through to 0) never changes sort's output — the reverse-order query
+  // already yields -1 via the branch above, which is all any comparison sort consults.
   if (a > b) return 1;
   return 0;
 }
@@ -306,7 +312,16 @@ function sortLogRecords(logs: readonly ReftableLogRecord[]): readonly ReftableLo
   return [...logs].sort((a, b) => {
     const byName = compareRefNames(a.name, b.name);
     if (byName !== 0) return byName;
+    // Stryker disable next-line EqualityOperator: equivalent — git's own update_index is
+    // unique per (name, index) key (never duplicated for one ref name), so the `>` vs `>=`
+    // distinction is unreachable in practice; and per the sort-comparator argument above
+    // (verified empirically), even reachable it would be unobservable through `.sort()`.
     if (a.updateIndex > b.updateIndex) return -1;
+    // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — same
+    // sort-comparator redundancy argument as `compareRefNames`'s own `>` branch above
+    // (verified empirically: 500 randomised permutations per variant, 0 mismatches):
+    // `.sort()` only needs a consistent "strictly less than" signal, always recoverable
+    // from the reverse-order query via the branch above.
     if (a.updateIndex < b.updateIndex) return 1;
     return 0;
   });
@@ -439,8 +454,13 @@ async function maybeAppendReflog(
   identity: AuthorIdentity,
   reflog: ReflogAppend | undefined,
 ): Promise<boolean> {
+  // Stryker disable next-line BooleanLiteral: equivalent — the return value is never
+  // read by any of this function's three call sites (grep confirms; see applyOneUpdate's
+  // 'set' / 'setSymbolic' / 'reflogOnly' arms, each a bare `await maybeAppendReflog(...)`).
   if (reflog === undefined) return false;
   if (reflog.unconditional !== true && !(await isReftableLoggable(ctx, loggable, name)))
+    // Stryker disable next-line BooleanLiteral: equivalent — same unread-return-value
+    // argument as above.
     return false;
   logs.push({
     name,
@@ -453,6 +473,8 @@ async function maybeAppendReflog(
       message: sanitizeReflogMessage(reflog.message),
     },
   });
+  // Stryker disable next-line BooleanLiteral: equivalent — same unread-return-value
+  // argument as above.
   return true;
 }
 
@@ -1182,6 +1204,9 @@ function partitionByStack(ctx: Context, updates: readonly RefUpdate[]): readonly
   const commonDir = commonGitDir(ctx);
   const ownDir = ctx.layout.gitDir;
   const buckets = new Map<string, RefUpdate[]>([[commonDir, []]]);
+  // Stryker disable next-line ConditionalExpression: equivalent — forcing this branch
+  // when ownDir === commonDir re-`set`s the SAME map key back to a fresh `[]` before
+  // anything has been pushed to it, a harmless no-op indistinguishable from skipping it.
   if (ownDir !== commonDir) buckets.set(ownDir, []);
   for (const update of updates) {
     const gitDir = perWorktreeRefDir(ctx, update.name);

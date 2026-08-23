@@ -1719,4 +1719,1211 @@ describe('reftable-transaction', () => {
       }, 2000);
     });
   });
+
+  describe('Given the lock path write fails with a fault unrelated to name collision', () => {
+    describe('When a transaction is attempted', () => {
+      it('Then the fault propagates rather than being treated as a held lock', async () => {
+        // Arrange
+        const ctx = withReftableStorage(createMemoryContext());
+        const lockPath = tablesListLockPath(ctx.layout.gitDir);
+        const fault = new Error('synthetic disk fault acquiring the lock');
+        const original = ctx.fs.writeExclusive.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'writeExclusive').mockImplementation(async (path: string, data) => {
+          if (path === lockPath) throw fault;
+          return original(path, data);
+        });
+
+        // Act + Assert
+        await expect(
+          applyReftableUpdates(ctx, [{ kind: 'set', name: ref('refs/heads/a'), id: oid(0x01) }]),
+        ).rejects.toBe(fault);
+      });
+    });
+  });
+
+  describe('Given a merged table fails to unlink with a fault unrelated to absence', () => {
+    describe('When a transaction commits', () => {
+      it('Then the fault propagates rather than being swallowed as an already-gone file', async () => {
+        // Arrange
+        const ctx = withReftableStorage(createMemoryContext());
+        const dir = commonReftableDir(ctx);
+        const oldBytes = await buildFixtureTable(
+          ctx,
+          [liveRef('refs/heads/old', 1, 1)],
+          [],
+          1n,
+          1n,
+        );
+        await writeReftableFiles(ctx, dir, [{ name: 'old.ref', bytes: oldBytes }]);
+        const fault = new Error('synthetic unlink fault');
+        const original = ctx.fs.rm.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'rm').mockImplementation(async (path: string) => {
+          if (path.endsWith('old.ref')) throw fault;
+          return original(path);
+        });
+
+        // Act + Assert
+        await expect(
+          applyReftableUpdates(ctx, [{ kind: 'set', name: ref('refs/heads/newRef'), id: oid(2) }]),
+        ).rejects.toBe(fault);
+      });
+    });
+  });
+
+  describe('Given a held tables.list.lock and a mocked backoff jitter', () => {
+    describe('When the retry loop sleeps between attempts', () => {
+      it('Then the backoff delay is base + jitter*base, not base - jitter*base nor jitter/base', async () => {
+        // Arrange
+        const ctx = withReftableStorage(createMemoryContext());
+        const lockPath = tablesListLockPath(ctx.layout.gitDir);
+        await ctx.fs.writeExclusive(lockPath, new Uint8Array(0));
+        const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(1);
+        const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout');
+
+        try {
+          // Act
+          await expectReftableLocked(() =>
+            applyReftableUpdates(ctx, [{ kind: 'set', name: ref('refs/heads/a'), id: oid(0x01) }]),
+          );
+
+          // Assert — LOCK_RETRY_BASE_MS(10) + jitter(1)*LOCK_RETRY_BASE_MS(10) = 20,
+          // not 10-1*10=0 (subtraction) nor 1/10=0.1 (division).
+          const delays = setTimeoutSpy.mock.calls
+            .map(([, ms]) => ms)
+            .filter((ms): ms is number => typeof ms === 'number' && ms > 0);
+          expect(delays.length).toBeGreaterThan(0);
+          expect(delays.every((ms) => ms === 20)).toBe(true);
+        } finally {
+          randomSpy.mockRestore();
+          setTimeoutSpy.mockRestore();
+        }
+      }, 2000);
+    });
+  });
+
+  describe('Given a transaction whose random suffix draws the smallest possible value', () => {
+    describe('When the table name is generated', () => {
+      it('Then the hex suffix stays zero-padded to 8 characters', async () => {
+        // Arrange
+        const ctx = withReftableStorage(createMemoryContext());
+        const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0);
+
+        try {
+          // Act
+          await applyReftableUpdates(ctx, [
+            { kind: 'set', name: ref('refs/heads/a'), id: oid(0x01) },
+          ]);
+
+          // Assert
+          const body = await ctx.fs.readUtf8(tablesListPath(ctx.layout.gitDir));
+          const [line] = body.trim().split('\n');
+          expect(line).toMatch(/^0x[0-9a-f]{12}-0x[0-9a-f]{12}-00000000\.ref$/);
+        } finally {
+          randomSpy.mockRestore();
+        }
+      });
+    });
+  });
+
+  describe('Given the degraded path with a stranded lock whose body cannot be read', () => {
+    describe('When a transaction is attempted', () => {
+      it('Then an unreadable lock body refuses REFTABLE_LOCKED rather than hanging or crashing', async () => {
+        // Arrange
+        const ctx = withReftableStorage(createMemoryContext());
+        await applyReftableUpdates(ctx, [
+          { kind: 'set', name: ref('refs/heads/a'), id: oid(0x01) },
+        ]);
+        const lockPath = tablesListLockPath(ctx.layout.gitDir);
+        await ctx.fs.writeExclusive(lockPath, new Uint8Array(0));
+        const degraded = withoutAtomicRename(ctx);
+        const fault = new Error('synthetic read fault on the lock body');
+        const original = degraded.fs.read.bind(degraded.fs);
+        vi.spyOn(degraded.fs, 'read').mockImplementation(async (path: string) => {
+          if (path === lockPath) throw fault;
+          return original(path);
+        });
+
+        // Act + Assert
+        await expectReftableLocked(() =>
+          applyReftableUpdates(degraded, [
+            { kind: 'set', name: ref('refs/heads/b'), id: oid(0x02) },
+          ]),
+        );
+      }, 2000);
+    });
+  });
+
+  describe('Given a stale lock on the degraded path whose body matches tables.list, with the backoff sleep observed', () => {
+    describe('When the lock is broken', () => {
+      it('Then it is broken and retried on the same loop iteration, with no jittered sleep first', async () => {
+        // Arrange
+        const ctx = withReftableStorage(createMemoryContext());
+        await applyReftableUpdates(ctx, [
+          { kind: 'set', name: ref('refs/heads/a'), id: oid(0x01) },
+        ]);
+        const listBody = await ctx.fs.read(tablesListPath(ctx.layout.gitDir));
+        const lockPath = tablesListLockPath(ctx.layout.gitDir);
+        await ctx.fs.writeExclusive(lockPath, listBody);
+        const degraded = withoutAtomicRename(ctx);
+        const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout');
+
+        try {
+          // Act
+          await applyReftableUpdates(degraded, [
+            { kind: 'set', name: ref('refs/heads/b'), id: oid(0x02) },
+          ]);
+
+          // Assert — a false "not broken" verdict would fall through to the
+          // jittered backoff sleep before retrying.
+          const backoffSleeps = setTimeoutSpy.mock.calls.filter(
+            ([, ms]) => typeof ms === 'number' && ms > 0,
+          );
+          expect(backoffSleeps).toHaveLength(0);
+        } finally {
+          setTimeoutSpy.mockRestore();
+        }
+      });
+    });
+  });
+
+  describe('Given a held lock with no stale-lock signal at all', () => {
+    describe('When a transaction is attempted', () => {
+      it('Then the deadline allows more than one retry before refusing', async () => {
+        // Arrange
+        const ctx = withReftableStorage(createMemoryContext());
+        const lockPath = tablesListLockPath(ctx.layout.gitDir);
+        await ctx.fs.writeExclusive(lockPath, new Uint8Array(0));
+        const writeExclusiveSpy = vi.spyOn(ctx.fs, 'writeExclusive');
+
+        // Act
+        await expectReftableLocked(() =>
+          applyReftableUpdates(ctx, [{ kind: 'set', name: ref('refs/heads/a'), id: oid(0x01) }]),
+        );
+
+        // Assert — a deadline computed as `now MINUS the budget` would expire
+        // before the very first retry.
+        const lockAttempts = writeExclusiveSpy.mock.calls.filter(([path]) => path === lockPath);
+        expect(lockAttempts.length).toBeGreaterThan(1);
+      }, 2000);
+    });
+  });
+
+  describe('Given a held lock whose deadline lands on an exact millisecond match', () => {
+    describe('When a transaction is attempted', () => {
+      it('Then an exact match refuses on the spot, not only once time has strictly passed it', async () => {
+        // Arrange
+        const ctx = withReftableStorage(createMemoryContext());
+        const lockPath = tablesListLockPath(ctx.layout.gitDir);
+        await ctx.fs.writeExclusive(lockPath, new Uint8Array(0));
+        const base = Date.now();
+        const lockRetryBudgetMs = 100; // git's own `reftable.lockTimeout` default
+        // Pinned to `base` until the first lock attempt fires (covers any
+        // Date.now() calls made before the retry loop, e.g. identity
+        // resolution), THEN pinned to exactly the deadline — an exact
+        // millisecond match on every subsequent check.
+        let lockAttempted = false;
+        const dateNowSpy = vi
+          .spyOn(Date, 'now')
+          .mockImplementation(() => (lockAttempted ? base + lockRetryBudgetMs : base));
+        const originalWriteExclusive = ctx.fs.writeExclusive.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'writeExclusive').mockImplementation(async (path: string, data) => {
+          if (path === lockPath) lockAttempted = true;
+          return originalWriteExclusive(path, data);
+        });
+        const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout');
+
+        try {
+          // Act
+          await expectReftableLocked(() =>
+            applyReftableUpdates(ctx, [{ kind: 'set', name: ref('refs/heads/a'), id: oid(0x01) }]),
+          );
+
+          // Assert — a strictly-greater-than check would not fire on an exact
+          // match, falling through to a jittered sleep first.
+          expect(setTimeoutSpy).not.toHaveBeenCalled();
+        } finally {
+          dateNowSpy.mockRestore();
+          setTimeoutSpy.mockRestore();
+        }
+      }, 2000);
+    });
+  });
+
+  describe('Given a non-FILE_NOT_FOUND fault reading tables.list before a write', () => {
+    describe('When a transaction reads the fresh stack', () => {
+      it('Then the fault propagates rather than degrading to an empty stack', async () => {
+        // Arrange
+        const ctx = withReftableStorage(createMemoryContext());
+        const listPath = tablesListPath(ctx.layout.gitDir);
+        const fault = new Error('synthetic tables.list read fault');
+        const original = ctx.fs.readUtf8.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'readUtf8').mockImplementation(async (path: string) => {
+          if (path === listPath) throw fault;
+          return original(path);
+        });
+
+        // Act + Assert
+        await expect(
+          applyReftableUpdates(ctx, [{ kind: 'set', name: ref('refs/heads/a'), id: oid(0x01) }]),
+        ).rejects.toBe(fault);
+      });
+    });
+  });
+
+  describe('Given a non-FILE_NOT_FOUND fault reading tables.list during packRefs', () => {
+    describe('When packRefs compacts the whole stack', () => {
+      it('Then the fault propagates rather than degrading to an empty table list', async () => {
+        // Arrange
+        const ctx = withReftableStorage(createMemoryContext());
+        const dir = commonReftableDir(ctx);
+        const bytes = await buildFixtureTable(ctx, [liveRef('refs/heads/a', 1, 1)], [], 1n, 1n);
+        await writeReftableFiles(ctx, dir, [{ name: 'a.ref', bytes }]);
+        const listPath = tablesListPath(ctx.layout.gitDir);
+        const fault = new Error('synthetic tables.list read fault');
+        let callCount = 0;
+        const original = ctx.fs.readUtf8.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'readUtf8').mockImplementation(async (path: string) => {
+          if (path === listPath) {
+            callCount += 1;
+            if (callCount === 1) throw fault;
+          }
+          return original(path);
+        });
+
+        // Act + Assert
+        await expect(packReftableStack(ctx, ctx.layout.gitDir)).rejects.toBe(fault);
+      });
+    });
+  });
+
+  describe('Given a FILE_NOT_FOUND reading tables.list during auto-compaction sizing, after the write itself already committed', () => {
+    describe('When a second transaction commits', () => {
+      it('Then it degrades to an empty table list rather than refusing the whole write', async () => {
+        // Arrange
+        const ctx = withReftableStorage(createMemoryContext());
+        await applyReftableUpdates(ctx, [
+          { kind: 'set', name: ref('refs/heads/a'), id: oid(0x01) },
+        ]);
+        const listPath = tablesListPath(ctx.layout.gitDir);
+        let callCount = 0;
+        const original = ctx.fs.readUtf8.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'readUtf8').mockImplementation(async (path: string) => {
+          if (path === listPath) {
+            callCount += 1;
+            if (callCount === 2) throw new TsgitError({ code: 'FILE_NOT_FOUND', path: listPath });
+          }
+          return original(path);
+        });
+
+        // Act
+        await applyReftableUpdates(ctx, [
+          { kind: 'set', name: ref('refs/heads/b'), id: oid(0x02) },
+        ]);
+
+        // Assert
+        const store = createReftableRefStore(ctx);
+        expect(await store.resolveDirect(ref('refs/heads/b'))).toEqual({
+          kind: 'direct',
+          id: oid(0x02),
+        });
+      });
+    });
+  });
+
+  describe('Given a stack with a peeled (annotated-tag) ref record', () => {
+    describe('When an update carries a mismatched expected id', () => {
+      it('Then the CAS check reads the peeled record’s own id as the actual value, not absent', async () => {
+        // Arrange
+        const ctx = withReftableStorage(createMemoryContext());
+        const dir = commonReftableDir(ctx);
+        const tagId = oid(0x01);
+        const peeledId = oid(0x02);
+        const peeledRecord: ReftableRefRecord = {
+          name: ref('refs/tags/v1'),
+          updateIndex: 1n,
+          value: { kind: 'peeled', id: tagId, peeled: peeledId },
+        };
+        const bytes = await buildFixtureTable(ctx, [peeledRecord], [], 1n, 1n);
+        await writeReftableFiles(ctx, dir, [{ name: 'tags.ref', bytes }]);
+
+        // Act
+        let caught: unknown;
+        try {
+          await applyReftableUpdates(ctx, [
+            { kind: 'set', name: ref('refs/tags/v1'), id: oid(0x03), expected: oid(0x99) },
+          ]);
+        } catch (err) {
+          caught = err;
+        }
+        if (caught === undefined) expect.unreachable('expected REF_UPDATE_CONFLICT');
+
+        // Assert
+        const data = (caught as TsgitError).data;
+        if (data.code !== 'REF_UPDATE_CONFLICT')
+          expect.fail(`expected REF_UPDATE_CONFLICT, got ${data.code}`);
+        expect(data.actual).toBe(tagId);
+      });
+    });
+  });
+
+  describe('Given an existing ref and a delete update carrying a mismatched expected', () => {
+    describe('When the transaction is applied', () => {
+      it('Then a delete also refuses on an expected mismatch, not only a set', async () => {
+        // Arrange
+        const ctx = withReftableStorage(createMemoryContext());
+        await applyReftableUpdates(ctx, [
+          { kind: 'set', name: ref('refs/heads/a'), id: oid(0x01) },
+        ]);
+
+        // Act
+        let caught: unknown;
+        try {
+          await applyReftableUpdates(ctx, [
+            { kind: 'delete', name: ref('refs/heads/a'), expected: oid(0x99) },
+          ]);
+        } catch (err) {
+          caught = err;
+        }
+        if (caught === undefined) expect.unreachable('expected REF_UPDATE_CONFLICT');
+
+        // Assert
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('REF_UPDATE_CONFLICT');
+      });
+    });
+  });
+
+  describe('Given an existing ref and a setSymbolic update carrying a mismatched expected', () => {
+    describe('When the transaction is applied', () => {
+      it('Then a setSymbolic also refuses on an expected mismatch', async () => {
+        // Arrange
+        const ctx = withReftableStorage(createMemoryContext());
+        await applyReftableUpdates(ctx, [
+          { kind: 'set', name: ref('refs/heads/a'), id: oid(0x01) },
+        ]);
+
+        // Act
+        let caught: unknown;
+        try {
+          await applyReftableUpdates(ctx, [
+            {
+              kind: 'setSymbolic',
+              name: ref('refs/heads/a'),
+              target: ref('refs/heads/main'),
+              expected: oid(0x99),
+            },
+          ]);
+        } catch (err) {
+          caught = err;
+        }
+        if (caught === undefined) expect.unreachable('expected REF_UPDATE_CONFLICT');
+
+        // Assert
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('REF_UPDATE_CONFLICT');
+      });
+    });
+  });
+
+  describe('Given three refs committed in reverse alphabetical order', () => {
+    describe('When the transaction commits', () => {
+      it('Then the written table lists them in ascending byte order', async () => {
+        // Arrange
+        const ctx = withReftableStorage(createMemoryContext());
+        const dir = commonReftableDir(ctx);
+
+        // Act
+        await applyReftableUpdates(ctx, [
+          { kind: 'set', name: ref('refs/heads/c'), id: oid(3) },
+          { kind: 'set', name: ref('refs/heads/a'), id: oid(1) },
+          { kind: 'set', name: ref('refs/heads/b'), id: oid(2) },
+        ]);
+
+        // Assert
+        const stack = await loadReftableStack(ctx, dir);
+        const names = [...iterateReftableRefs(stack.tables[0]!)].map((r) => r.name);
+        expect(names).toEqual(['refs/heads/a', 'refs/heads/b', 'refs/heads/c']);
+      });
+    });
+  });
+
+  describe('Given a reflogReplace with three entries submitted oldest-to-newest', () => {
+    describe('When the transaction commits', () => {
+      it('Then the table lists them index-DESCENDING, reversing the submission order', async () => {
+        // Arrange
+        const ctx = withReftableStorage(createMemoryContext());
+        const dir = commonReftableDir(ctx);
+        const name = ref('refs/heads/topic');
+        const identity: AuthorIdentity = {
+          name: 'Ada',
+          email: 'ada@example.com',
+          timestamp: 1_700_000_000,
+          timezoneOffset: '+0000',
+        };
+        const entries: ReflogEntry[] = [0, 1, 2].map((i) => ({
+          oldId: oid(i),
+          newId: oid(i + 1),
+          identity,
+          message: `e${i}`,
+        }));
+
+        // Act
+        await applyReftableUpdates(ctx, [{ kind: 'reflogReplace', name, entries }]);
+
+        // Assert
+        const stack = await loadReftableStack(ctx, dir);
+        const logs = [...iterateReftableLogs(stack.tables[0]!)].filter((l) => l.name === name);
+        const messages = logs.map((l) => (l.entry.kind === 'entry' ? l.entry.message.trim() : 'x'));
+        expect(messages).toEqual(['e2', 'e1', 'e0']);
+      });
+    });
+  });
+
+  describe('Given one transaction logging two ref names submitted in descending order', () => {
+    describe('When the transaction commits', () => {
+      it('Then the table lists their log records in ascending name order', async () => {
+        // Arrange
+        const ctx = withReftableStorage(createMemoryContext());
+        const dir = commonReftableDir(ctx);
+
+        // Act
+        await applyReftableUpdates(ctx, [
+          {
+            kind: 'set',
+            name: ref('refs/heads/b'),
+            id: oid(2),
+            reflog: { oldId: oid(0), newId: oid(2), message: 'b', unconditional: true },
+          },
+          {
+            kind: 'set',
+            name: ref('refs/heads/a'),
+            id: oid(1),
+            reflog: { oldId: oid(0), newId: oid(1), message: 'a', unconditional: true },
+          },
+        ]);
+
+        // Assert
+        const stack = await loadReftableStack(ctx, dir);
+        const logs = [...iterateReftableLogs(stack.tables[0]!)];
+        expect(logs.map((l) => l.name)).toEqual([ref('refs/heads/a'), ref('refs/heads/b')]);
+      });
+    });
+  });
+
+  describe('Given the same (name, update_index) log key recurring in an older and a newer table', () => {
+    describe('When a multi-name batch queries loggability', () => {
+      it('Then the newest table’s record decides the verdict, not iteration order', async () => {
+        // Arrange
+        const ctx = withReftableStorage(createMemoryContext());
+        const dir = commonReftableDir(ctx);
+        const dup = ref('refs/tags/dup');
+        const oldBytes = await buildFixtureTable(
+          ctx,
+          [liveRef('refs/tags/dup', 1, 1)],
+          [liveLog('refs/tags/dup', 1, 'stale duplicate')],
+          1n,
+          1n,
+        );
+        const newBytes = await buildFixtureTable(
+          ctx,
+          [tombstoneRef('refs/tags/dup', 2)],
+          [tombstoneLog('refs/tags/dup', 1)],
+          2n,
+          2n,
+        );
+        await writeReftableFiles(ctx, dir, [
+          { name: 'old.ref', bytes: oldBytes },
+          { name: 'new.ref', bytes: newBytes },
+        ]);
+
+        // Act — re-create `dup` without an unconditional reflog, alongside an
+        // unrelated fresh name so the batch's candidate set has size > 1.
+        await applyReftableUpdates(ctx, [
+          {
+            kind: 'set',
+            name: dup,
+            id: oid(3),
+            reflog: { oldId: oid(0), newId: oid(3), message: 'recreated' },
+          },
+          {
+            kind: 'set',
+            name: ref('refs/tags/fresh'),
+            id: oid(9),
+            reflog: { oldId: oid(0), newId: oid(9), message: 'fresh' },
+          },
+        ]);
+
+        // Assert — the newest table's record at that key is a tombstone, so
+        // `dup` must NOT be treated as loggable from stale history.
+        const stack = await loadReftableStack(ctx, dir);
+        const allLogs = stack.tables.flatMap((t) => [...iterateReftableLogs(t)]);
+        const recreated = allLogs.filter(
+          (l) => l.name === dup && l.entry.kind === 'entry' && l.entry.message === 'recreated',
+        );
+        expect(recreated).toHaveLength(0);
+      });
+    });
+  });
+
+  describe('Given two ref names with prior reflog history in different tables', () => {
+    describe('When one transaction batches non-unconditional reflog entries for both', () => {
+      it('Then both names — not only the newest table’s — are recognised as loggable', async () => {
+        // Arrange
+        const ctx = withReftableStorage(createMemoryContext());
+        const dir = commonReftableDir(ctx);
+        const oldBytes = await buildFixtureTable(
+          ctx,
+          [liveRef('refs/tags/old', 1, 1)],
+          [liveLog('refs/tags/old', 1, 'old created')],
+          1n,
+          1n,
+        );
+        const newBytes = await buildFixtureTable(
+          ctx,
+          [liveRef('refs/tags/new', 2, 2)],
+          [liveLog('refs/tags/new', 2, 'new created')],
+          2n,
+          2n,
+        );
+        await writeReftableFiles(ctx, dir, [
+          { name: 'old.ref', bytes: oldBytes },
+          { name: 'new.ref', bytes: newBytes },
+        ]);
+
+        // Act
+        await applyReftableUpdates(ctx, [
+          {
+            kind: 'set',
+            name: ref('refs/tags/old'),
+            id: oid(3),
+            reflog: { oldId: oid(1), newId: oid(3), message: 'old moved' },
+          },
+          {
+            kind: 'set',
+            name: ref('refs/tags/new'),
+            id: oid(4),
+            reflog: { oldId: oid(2), newId: oid(4), message: 'new moved' },
+          },
+        ]);
+
+        // Assert
+        const store = createReftableRefStore(ctx);
+        expect(await store.readReflog(ref('refs/tags/old'))).toHaveLength(2);
+        expect(await store.readReflog(ref('refs/tags/new'))).toHaveLength(2);
+      });
+    });
+  });
+
+  describe('Given a name whose only log history anywhere in the stack is a tombstone, batched with a second candidate', () => {
+    describe('When the transaction commits with a non-unconditional reflog', () => {
+      it('Then a deletion is never counted as live — no new entry is appended for it', async () => {
+        // Arrange
+        const ctx = withReftableStorage(createMemoryContext());
+        const dir = commonReftableDir(ctx);
+        const doomed = ref('refs/tags/doomed');
+        const bytes = await buildFixtureTable(
+          ctx,
+          [tombstoneRef('refs/tags/doomed', 1)],
+          [tombstoneLog('refs/tags/doomed', 1)],
+          1n,
+          1n,
+        );
+        await writeReftableFiles(ctx, dir, [{ name: 'doomed.ref', bytes }]);
+
+        // Act
+        await applyReftableUpdates(ctx, [
+          {
+            kind: 'set',
+            name: doomed,
+            id: oid(2),
+            reflog: { oldId: oid(0), newId: oid(2), message: 'recreated' },
+          },
+          {
+            kind: 'set',
+            name: ref('refs/tags/fresh'),
+            id: oid(9),
+            reflog: { oldId: oid(0), newId: oid(9), message: 'fresh with no history either' },
+          },
+        ]);
+
+        // Assert
+        const stack = await loadReftableStack(ctx, dir);
+        const allLogs = stack.tables.flatMap((t) => [...iterateReftableLogs(t)]);
+        const recreated = allLogs.filter((l) => l.name === doomed && l.entry.kind === 'entry');
+        expect(recreated).toHaveLength(0);
+      });
+    });
+  });
+
+  describe('Given a single ref with live reflog history, updated alone with a non-unconditional reflog', () => {
+    describe('When the transaction commits', () => {
+      it('Then the single-candidate lookup finds the live history and appends a new entry', async () => {
+        // Arrange
+        const ctx = withReftableStorage(createMemoryContext());
+        const name = ref('refs/tags/solo');
+        await applyReftableUpdates(ctx, [
+          {
+            kind: 'set',
+            name,
+            id: oid(1),
+            reflog: { oldId: oid(0), newId: oid(1), message: 'created', unconditional: true },
+          },
+        ]);
+
+        // Act
+        await applyReftableUpdates(ctx, [
+          {
+            kind: 'set',
+            name,
+            id: oid(2),
+            reflog: { oldId: oid(1), newId: oid(2), message: 'moved' },
+          },
+        ]);
+
+        // Assert
+        const store = createReftableRefStore(ctx);
+        expect(await store.readReflog(name)).toHaveLength(2);
+      });
+    });
+  });
+
+  describe('Given a ref with two prior reflog entries, replaced by two new entries in one transaction', () => {
+    describe('When the transaction commits', () => {
+      it('Then the table header bounds span from the oldest tombstoned index to the newest replacement index', async () => {
+        // Arrange — the prior history is seeded as a fixture (not through two
+        // separate `applyReftableUpdates` calls) alongside a large filler
+        // table: both keep this write's own new table from qualifying for
+        // an immediate auto-compaction merge, which would otherwise recompute
+        // the header bounds via `mergeSegment`'s own path instead of
+        // `boundingIndices`.
+        const ctx = withReftableStorage(createMemoryContext());
+        const dir = commonReftableDir(ctx);
+        const name = ref('refs/heads/topic');
+        // The prior history sits INSIDE the large filler table (not a
+        // second small table of its own) — a small sibling would qualify
+        // for an immediate merge with the write's own new table, and a
+        // merged table's bounds come from `mergeSegment`'s own header
+        // extraction, not from `boundingIndices` at all.
+        const bigBytes = await buildFixtureTable(
+          ctx,
+          [...fillerRefs(50, 1), liveRef('refs/heads/topic', 1, 1)],
+          [liveLog('refs/heads/topic', 1, 'a')],
+          1n,
+          1n,
+        );
+        await writeReftableFiles(ctx, dir, [{ name: 'big.ref', bytes: bigBytes }]);
+        const identity: AuthorIdentity = {
+          name: 'Ada',
+          email: 'ada@example.com',
+          timestamp: 1_700_000_000,
+          timezoneOffset: '+0000',
+        };
+        const entries: ReflogEntry[] = [
+          { oldId: oid(1), newId: oid(2), identity, message: 'r0' },
+          { oldId: oid(2), newId: oid(3), identity, message: 'r1' },
+        ];
+
+        // Act
+        await applyReftableUpdates(ctx, [{ kind: 'reflogReplace', name, entries }]);
+
+        // Assert — the reflogReplace's own new base index is 2 (the batch's
+        // updateIndex); the one tombstoned prior entry sits at index 1,
+        // below it.
+        const stack = await loadReftableStack(ctx, dir);
+        const newest = stack.tables[stack.tables.length - 1]!;
+        expect(newest.header.minUpdateIndex).toBe(1n);
+        expect(newest.header.maxUpdateIndex).toBe(3n);
+      });
+    });
+  });
+
+  describe('Given the temp table write fails with a non-collision fault', () => {
+    describe('When a transaction commits', () => {
+      it('Then the fault propagates rather than being retried as a name collision', async () => {
+        // Arrange
+        const ctx = withReftableStorage(createMemoryContext());
+        const fault = new Error('synthetic disk fault writing the temp table');
+        const original = ctx.fs.writeExclusive.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'writeExclusive').mockImplementation(
+          async (path: string, data: Uint8Array) => {
+            if (path.endsWith('.temp')) throw fault;
+            return original(path, data);
+          },
+        );
+
+        // Act + Assert
+        await expect(
+          applyReftableUpdates(ctx, [{ kind: 'set', name: ref('refs/heads/a'), id: oid(0x01) }]),
+        ).rejects.toBe(fault);
+      }, 2000);
+    });
+  });
+
+  describe('Given a genuine temp table name collision on the very first attempt', () => {
+    describe('When a transaction commits', () => {
+      it('Then it retries with a freshly-drawn random suffix rather than refusing', async () => {
+        // Arrange
+        const ctx = withReftableStorage(createMemoryContext());
+        let collided = false;
+        const original = ctx.fs.writeExclusive.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'writeExclusive').mockImplementation(
+          async (path: string, data: Uint8Array) => {
+            if (!collided && path.endsWith('.temp')) {
+              collided = true;
+              throw new TsgitError({ code: 'FILE_EXISTS', path });
+            }
+            return original(path, data);
+          },
+        );
+
+        // Act
+        await applyReftableUpdates(ctx, [
+          { kind: 'set', name: ref('refs/heads/a'), id: oid(0x01) },
+        ]);
+
+        // Assert
+        const store = createReftableRefStore(ctx);
+        expect(await store.resolveDirect(ref('refs/heads/a'))).toEqual({
+          kind: 'direct',
+          id: oid(0x01),
+        });
+      });
+    });
+  });
+
+  describe('Given a context configured for the SHA-256 object format', () => {
+    describe('When a transaction commits', () => {
+      it('Then the written table header encodes hashId s256, not the sha1 default', async () => {
+        // Arrange
+        const ctx = withReftableStorage(createMemoryContext({ algorithm: 'sha256' }));
+        const dir = commonReftableDir(ctx);
+        const sha256Id = ObjectId.fromRaw(new Uint8Array(32).fill(7));
+
+        // Act
+        await applyReftableUpdates(ctx, [{ kind: 'set', name: ref('refs/heads/a'), id: sha256Id }]);
+
+        // Assert
+        const stack = await loadReftableStack(ctx, dir);
+        expect(stack.tables[0]!.header.hashId).toBe('s256');
+      });
+    });
+  });
+
+  describe('Given a transaction with enough refs to warrant a ref index', () => {
+    describe('When the table is written', () => {
+      it('Then the ref index is present — indexObjects stays enabled', async () => {
+        // Arrange
+        const ctx = withReftableStorage(createMemoryContext());
+        const dir = commonReftableDir(ctx);
+        const updates = Array.from({ length: 2000 }, (_, i) => ({
+          kind: 'set' as const,
+          name: ref(`refs/heads/filler${String(i).padStart(4, '0')}`),
+          id: oid((i % 250) + 1),
+        }));
+
+        // Act
+        await applyReftableUpdates(ctx, updates);
+
+        // Assert
+        const stack = await loadReftableStack(ctx, dir);
+        expect(stack.tables[0]!.footer.refIndexPosition).toBeGreaterThan(0);
+      });
+    });
+  });
+
+  describe('Given a reflogOnly update whose target has no history and no unconditional flag', () => {
+    describe('When the transaction commits', () => {
+      it('Then no table is written at all — an inactive write is skipped entirely', async () => {
+        // Arrange
+        const ctx = withReftableStorage(createMemoryContext());
+        const dir = commonReftableDir(ctx);
+
+        // Act
+        await applyReftableUpdates(ctx, [
+          {
+            kind: 'reflogOnly',
+            name: ref('refs/tags/never-logged'),
+            reflog: { oldId: oid(0), newId: oid(1), message: 'ignored' },
+          },
+        ]);
+
+        // Assert
+        const entries = await ctx.fs.readdir(dir).catch(() => []);
+        expect(entries.filter((e) => e.name.endsWith('.ref'))).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given one transaction spanning an inactive common-stack write and an active worktree write', () => {
+    describe('When the transaction commits', () => {
+      it('Then only the active worktree stack gets a table — the inactive common write is not written empty', async () => {
+        // Arrange
+        const mainCtx = withReftableStorage(createMemoryContext());
+        const worktreeCtx = asWorktreeChild(mainCtx);
+        const commonDir = commonReftableDir(mainCtx);
+
+        // Act
+        await applyReftableUpdates(worktreeCtx, [
+          {
+            kind: 'reflogOnly',
+            name: ref('refs/tags/never-logged'),
+            reflog: { oldId: oid(0), newId: oid(1), message: 'ignored' },
+          },
+          { kind: 'set', name: ref('refs/bisect/bad'), id: oid(2) },
+        ]);
+
+        // Assert
+        const commonEntries = await mainCtx.fs.readdir(commonDir);
+        expect(commonEntries.filter((e) => e.name.endsWith('.ref'))).toEqual([]);
+        const store = createReftableRefStore(worktreeCtx);
+        expect(await store.resolveDirect(ref('refs/bisect/bad'))).toEqual({
+          kind: 'direct',
+          id: oid(2),
+        });
+      });
+    });
+  });
+
+  describe('Given a compaction whose probed stack sees a same-length name list changed at only its middle position', () => {
+    describe('When packRefs re-verifies before merging', () => {
+      it('Then the compaction still aborts — a match at the other two positions is not mistaken for the whole list matching', async () => {
+        // Arrange — `packReftableStack` always targets segment [0, n) (the
+        // whole stack), unlike auto-compaction's own geometric pick, so the
+        // set of tables being merged is deterministic here.
+        const ctx = withReftableStorage(createMemoryContext());
+        const dir = commonReftableDir(ctx);
+        const t1 = await buildFixtureTable(ctx, [liveRef('refs/heads/t1', 1, 1)], [], 1n, 1n);
+        const t2 = await buildFixtureTable(ctx, [liveRef('refs/heads/t2', 2, 2)], [], 2n, 2n);
+        const t3 = await buildFixtureTable(ctx, [liveRef('refs/heads/t3', 3, 3)], [], 3n, 3n);
+        await writeReftableFiles(ctx, dir, [
+          { name: 't1.ref', bytes: t1 },
+          { name: 't2.ref', bytes: t2 },
+          { name: 't3.ref', bytes: t3 },
+        ]);
+        const listPath = tablesListPath(ctx.layout.gitDir);
+        const original = ctx.fs.writeExclusive.bind(ctx.fs);
+        let tempWritten = false;
+        vi.spyOn(ctx.fs, 'writeExclusive').mockImplementation(async (path: string, data) => {
+          const result = await original(path, data);
+          if (!tempWritten && path.endsWith('.temp')) {
+            tempWritten = true;
+            // Only the MIDDLE name changes; the first and last still match
+            // at their own positions — a `.some` match at either of those
+            // would wrongly read as "the whole list still matches".
+            await ctx.fs.writeUtf8(listPath, 't1.ref\nintruder.ref\nt3.ref\n');
+          }
+          return result;
+        });
+
+        // Act
+        await packReftableStack(ctx, ctx.layout.gitDir);
+
+        // Assert — the injected list is left untouched; a merged table would
+        // have been spliced in had the re-verification wrongly passed.
+        const namesAfter = (await ctx.fs.readUtf8(listPath)).trim().split('\n');
+        expect(namesAfter).toEqual(['t1.ref', 'intruder.ref', 't3.ref']);
+      });
+    });
+  });
+
+  describe('Given two tables that both qualify for a whole-stack pack, with the table-lock removals observed', () => {
+    describe('When packRefs compacts the stack', () => {
+      it('Then every locked table’s own lock is released by the end', async () => {
+        // Arrange
+        const ctx = withReftableStorage(createMemoryContext());
+        const dir = commonReftableDir(ctx);
+        const t1 = await buildFixtureTable(ctx, [liveRef('refs/heads/t1', 1, 1)], [], 1n, 1n);
+        const t2 = await buildFixtureTable(ctx, [liveRef('refs/heads/t2', 2, 2)], [], 2n, 2n);
+        await writeReftableFiles(ctx, dir, [
+          { name: 't1.ref', bytes: t1 },
+          { name: 't2.ref', bytes: t2 },
+        ]);
+        const rmSpy = vi.spyOn(ctx.fs, 'rm');
+
+        // Act
+        await packReftableStack(ctx, ctx.layout.gitDir);
+
+        // Assert — both original tables' own lock paths must have been
+        // acquired (implied by removal) and released; a dropped push or an
+        // emptied lock-path array would leave one, or both, still present.
+        const lockRemovals = rmSpy.mock.calls
+          .map(([path]) => path as string)
+          .filter((path) => path.endsWith('.ref.lock'));
+        expect(new Set(lockRemovals)).toEqual(
+          new Set([
+            reftableTableLockPath(ctx.layout.gitDir, 't1.ref'),
+            reftableTableLockPath(ctx.layout.gitDir, 't2.ref'),
+          ]),
+        );
+        expect(await ctx.fs.exists(reftableTableLockPath(ctx.layout.gitDir, 't1.ref'))).toBe(false);
+        expect(await ctx.fs.exists(reftableTableLockPath(ctx.layout.gitDir, 't2.ref'))).toBe(false);
+      });
+    });
+  });
+
+  describe('Given the locked table’s own name entirely disappears from tables.list before compaction re-verifies', () => {
+    describe('When a transaction commits', () => {
+      it('Then the compaction aborts instead of splicing at a not-found index', async () => {
+        // Arrange
+        const ctx = withReftableStorage(createMemoryContext());
+        const dir = commonReftableDir(ctx);
+        const t1 = await buildFixtureTable(ctx, [liveRef('refs/heads/t1', 1, 1)], [], 1n, 1n);
+        const t2 = await buildFixtureTable(ctx, [liveRef('refs/heads/t2', 2, 2)], [], 2n, 2n);
+        await writeReftableFiles(ctx, dir, [
+          { name: 't1.ref', bytes: t1 },
+          { name: 't2.ref', bytes: t2 },
+        ]);
+        const listPath = tablesListPath(ctx.layout.gitDir);
+        const original = ctx.fs.writeExclusive.bind(ctx.fs);
+        let tempWrites = 0;
+        vi.spyOn(ctx.fs, 'writeExclusive').mockImplementation(async (path: string, data) => {
+          const result = await original(path, data);
+          if (path.endsWith('.temp')) {
+            tempWrites += 1;
+            if (tempWrites === 2) {
+              await ctx.fs.writeUtf8(listPath, 'unrelated.ref\n');
+            }
+          }
+          return result;
+        });
+
+        // Act
+        await applyReftableUpdates(ctx, [
+          { kind: 'set', name: ref('refs/heads/newRef'), id: oid(3) },
+        ]);
+
+        // Assert — a concurrent writer's own rewrite (simulated here by the
+        // injected `unrelated.ref` marker) must be left exactly as it was:
+        // the merged temp table must not have been spliced into a list that
+        // no longer names any of the tables it merged.
+        const namesAfter = (await ctx.fs.readUtf8(listPath)).trim().split('\n');
+        expect(namesAfter).toEqual(['unrelated.ref']);
+      });
+    });
+  });
+
+  describe('Given tables.list changes between compaction planning and re-verifying, with the lock path observed', () => {
+    describe('When a transaction commits', () => {
+      it('Then the aborted compaction still releases its own list-lock', async () => {
+        // Arrange
+        const ctx = withReftableStorage(createMemoryContext());
+        const dir = commonReftableDir(ctx);
+        const oldBytes = await buildFixtureTable(
+          ctx,
+          [liveRef('refs/heads/old', 1, 1)],
+          [],
+          1n,
+          1n,
+        );
+        await writeReftableFiles(ctx, dir, [{ name: 'old.ref', bytes: oldBytes }]);
+        const listPath = tablesListPath(ctx.layout.gitDir);
+        const lockPath = tablesListLockPath(ctx.layout.gitDir);
+        const original = ctx.fs.writeExclusive.bind(ctx.fs);
+        let tempWrites = 0;
+        vi.spyOn(ctx.fs, 'writeExclusive').mockImplementation(async (path: string, data) => {
+          const result = await original(path, data);
+          if (path.endsWith('.temp')) {
+            tempWrites += 1;
+            if (tempWrites === 2) {
+              const names = (await ctx.fs.readUtf8(listPath)).trim().split('\n');
+              await ctx.fs.writeUtf8(
+                listPath,
+                [...names]
+                  .reverse()
+                  .map((n) => `${n}\n`)
+                  .join(''),
+              );
+            }
+          }
+          return result;
+        });
+
+        // Act
+        await applyReftableUpdates(ctx, [
+          { kind: 'set', name: ref('refs/heads/newRef'), id: oid(2) },
+        ]);
+
+        // Assert
+        expect(await ctx.fs.exists(lockPath)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a reftable stack with a single table', () => {
+    describe('When packRefs compacts the whole stack', () => {
+      it('Then it never acquires the list lock for compaction — fewer than two tables has nothing to compact', async () => {
+        // Arrange
+        const ctx = withReftableStorage(createMemoryContext());
+        const dir = commonReftableDir(ctx);
+        const bytes = await buildFixtureTable(ctx, [liveRef('refs/heads/only', 1, 1)], [], 1n, 1n);
+        await writeReftableFiles(ctx, dir, [{ name: 'only.ref', bytes }]);
+        const listLockPath = tablesListLockPath(ctx.layout.gitDir);
+        const writeExclusiveSpy = vi.spyOn(ctx.fs, 'writeExclusive');
+
+        // Act
+        await packReftableStack(ctx, ctx.layout.gitDir);
+
+        // Assert — `sweepOrphanTables` legitimately acquires this lock once
+        // of its own; compaction planning must not add a second, wasted
+        // acquisition for a stack too small to compact.
+        const listLockAttempts = writeExclusiveSpy.mock.calls.filter(
+          ([path]) => path === listLockPath,
+        );
+        expect(listLockAttempts).toHaveLength(1);
+      });
+    });
+  });
+
+  describe('Given a Context whose stack memo was primed before packRefs compacts', () => {
+    describe('When packRefs runs and a same-key mtime collision is forced', () => {
+      it('Then the per-Context stack memo is invalidated after packRefs, not only after a plain write', async () => {
+        // Arrange
+        const ctx = withReftableStorage(createMemoryContext());
+        const dir = commonReftableDir(ctx);
+        const oldBytes = await buildFixtureTable(
+          ctx,
+          [liveRef('refs/heads/old', 1, 1)],
+          [],
+          1n,
+          1n,
+        );
+        const newBytes = await buildFixtureTable(
+          ctx,
+          [liveRef('refs/heads/other', 2, 2)],
+          [],
+          2n,
+          2n,
+        );
+        await writeReftableFiles(ctx, dir, [
+          { name: 'old.ref', bytes: oldBytes },
+          { name: 'other.ref', bytes: newBytes },
+        ]);
+        const listPath = tablesListPath(ctx.layout.gitDir);
+        const fixedStat = await ctx.fs.stat(listPath);
+        const originalStat = ctx.fs.stat.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'stat').mockImplementation(async (path: string) =>
+          path === listPath ? fixedStat : originalStat(path),
+        );
+        const primed = await loadReftableStack(ctx, dir);
+        expect(primed.tables).toHaveLength(2);
+
+        // Act
+        await packReftableStack(ctx, ctx.layout.gitDir);
+        const reloaded = await loadReftableStack(ctx, dir);
+
+        // Assert
+        expect(reloaded.tables).toHaveLength(1);
+      });
+    });
+  });
+
+  describe('Given an orphan .ref file and a held table lock, simulating a possible mid-flight compaction', () => {
+    describe('When packRefs sweeps orphans', () => {
+      it('Then the orphan .ref is still removed — only .temp files are held back', async () => {
+        // Arrange
+        const ctx = withReftableStorage(createMemoryContext());
+        const dir = commonReftableDir(ctx);
+        const keptBytes = await buildFixtureTable(
+          ctx,
+          [liveRef('refs/heads/kept', 1, 1)],
+          [],
+          1n,
+          1n,
+        );
+        await writeReftableFiles(ctx, dir, [{ name: 'kept.ref', bytes: keptBytes }]);
+        const orphanBytes = await buildFixtureTable(
+          ctx,
+          [liveRef('refs/heads/orphan', 2, 2)],
+          [],
+          2n,
+          2n,
+        );
+        await ctx.fs.write(`${dir}/orphan.ref`, orphanBytes);
+        await ctx.fs.writeExclusive(
+          reftableTableLockPath(ctx.layout.gitDir, 'somewhere.ref'),
+          new Uint8Array(0),
+        );
+
+        // Act
+        const result = await packReftableStack(ctx, ctx.layout.gitDir);
+
+        // Assert
+        const entries = (await ctx.fs.readdir(dir)).map((e) => e.name);
+        expect(entries).not.toContain('orphan.ref');
+        expect(result.removedOrphanCount).toBe(1);
+      });
+    });
+  });
+
+  describe('Given a transaction with updates for a linked worktree only, none for the common stack', () => {
+    describe('When the transaction commits', () => {
+      it('Then the common stack is never locked at all — an empty bucket is filtered before acquiring anything', async () => {
+        // Arrange
+        const mainCtx = withReftableStorage(createMemoryContext());
+        const worktreeCtx = asWorktreeChild(mainCtx);
+        const commonLockPath = tablesListLockPath(mainCtx.layout.gitDir);
+        const writeExclusiveSpy = vi.spyOn(mainCtx.fs, 'writeExclusive');
+
+        // Act
+        await applyReftableUpdates(worktreeCtx, [
+          { kind: 'set', name: ref('refs/bisect/bad'), id: oid(0x02) },
+        ]);
+
+        // Assert
+        const commonLockAttempts = writeExclusiveSpy.mock.calls.filter(
+          ([path]) => path === commonLockPath,
+        );
+        expect(commonLockAttempts).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a two-stack transaction that fails after acquiring both locks, with lock removals observed', () => {
+    describe('When the transaction fails before committing', () => {
+      it('Then both locks release in reverse acquisition order — worktree first, then common', async () => {
+        // Arrange
+        const mainCtx = withReftableStorage(createMemoryContext());
+        const worktreeCtx = asWorktreeChild(mainCtx);
+        const commonLockPath = tablesListLockPath(mainCtx.layout.gitDir);
+        const worktreeLockPath = tablesListLockPath(worktreeCtx.layout.gitDir);
+        const fault = new Error('synthetic failure after both locks acquired');
+        const originalRead = mainCtx.fs.readUtf8.bind(mainCtx.fs);
+        vi.spyOn(mainCtx.fs, 'readUtf8').mockImplementation(async (path: string) => {
+          if (path === tablesListPath(worktreeCtx.layout.gitDir)) throw fault;
+          return originalRead(path);
+        });
+        const rmSpy = vi.spyOn(mainCtx.fs, 'rm');
+
+        // Act
+        await expect(
+          applyReftableUpdates(worktreeCtx, [
+            { kind: 'set', name: ref('refs/heads/shared'), id: oid(1) },
+            { kind: 'set', name: ref('refs/bisect/bad'), id: oid(2) },
+          ]),
+        ).rejects.toBe(fault);
+
+        // Assert
+        const lockRemovals = rmSpy.mock.calls
+          .map(([path]) => path as string)
+          .filter((path) => path === commonLockPath || path === worktreeLockPath);
+        expect(lockRemovals).toEqual([worktreeLockPath, commonLockPath]);
+      });
+    });
+  });
+
+  describe('Given an empty update list', () => {
+    describe('When applyReftableUpdates is called', () => {
+      it('Then it returns immediately without resolving reflog identity or touching the filesystem', async () => {
+        // Arrange
+        const ctx = withReftableStorage(createMemoryContext());
+        const readUtf8Spy = vi.spyOn(ctx.fs, 'readUtf8');
+
+        // Act
+        await applyReftableUpdates(ctx, []);
+
+        // Assert
+        expect(readUtf8Spy).not.toHaveBeenCalled();
+      });
+    });
+  });
 });
