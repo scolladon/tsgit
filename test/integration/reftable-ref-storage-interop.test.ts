@@ -1166,8 +1166,12 @@ describe.skipIf(!GIT_AVAILABLE)('reftable-ref-storage interop', () => {
    *  satisfies git's own compaction rule. Restates that rule directly
    *  (adjacent pair check) rather than calling `suggestCompactionSegment` —
    *  the exact function `planCompaction` uses to decide what to merge — so
-   *  this stays an INDEPENDENT oracle, not a tautology that a bug in that
-   *  function's own decision would pass right along to. */
+   *  this is independent of that SEGMENT-SELECTION decision, not a
+   *  tautology a bug in it would pass right along to. It still calls
+   *  `compactionMetric`/`DEFAULT_GEOMETRIC_FACTOR` from the same production
+   *  module, since re-deriving the metric here would itself be a tautology
+   *  against a metric bug; `compactionMetric`'s own correctness is pinned
+   *  separately, by `reftable-compaction.test.ts`. */
   const isStackGeometric = async (ctx: Context, reftableDirPath: string): Promise<boolean> => {
     const stack = await loadReftableStack(ctx, reftableDirPath);
     const sizes = stack.tables.map((table) =>
@@ -1346,18 +1350,25 @@ describe.skipIf(!GIT_AVAILABLE)('reftable-ref-storage interop', () => {
         writeFileSync(`${stackDir}/tables.list.lock`, '');
         const before = snapshotDir(stackDir);
 
-        // Act + Assert — tsgit
+        // Act — tsgit. Captured OUTSIDE the try: an `expect.unreachable()`/
+        // `expect.fail()` thrown inside it would be swallowed by this same
+        // `catch` and resurface as a confusing downstream TypeError instead
+        // of the intended message.
+        let caughtTsgit: unknown;
         try {
           await getRefStore(ctx).applyRefUpdates([
             { kind: 'set', name: 'refs/heads/locked' as RefName, id: mainId as ObjectId },
           ]);
-          expect.unreachable('expected REFTABLE_LOCKED');
         } catch (err) {
-          const data = (err as TsgitError).data;
-          if (data.code !== 'REFTABLE_LOCKED')
-            expect.fail(`expected REFTABLE_LOCKED, got ${data.code}`);
-          expect(data.reason).toContain('tables.list.lock');
+          caughtTsgit = err;
         }
+        if (caughtTsgit === undefined) expect.unreachable('expected REFTABLE_LOCKED');
+
+        // Assert — tsgit
+        const lockedData = (caughtTsgit as TsgitError).data;
+        if (lockedData.code !== 'REFTABLE_LOCKED')
+          expect.fail(`expected REFTABLE_LOCKED, got ${lockedData.code}`);
+        expect(lockedData.reason).toContain('tables.list.lock');
 
         // Act + Assert — git
         const gitResult = tryRunGitWithExit(
@@ -1468,12 +1479,12 @@ describe.skipIf(!GIT_AVAILABLE)('reftable-ref-storage interop', () => {
           await updateRef(ctx, 'refs/heads/main' as RefName, newId as ObjectId, {
             reflogMessage: 'commit: c2',
           });
-          expect.unreachable();
         } catch (err) {
           caught = err;
         } finally {
           chmodSync(headPath, 0o644);
         }
+        if (caught === undefined) expect.unreachable();
         const data = (caught as TsgitError).data;
         expect(data.code).toBe('PERMISSION_DENIED');
         if (data.code === 'PERMISSION_DENIED') {
@@ -1525,10 +1536,10 @@ describe.skipIf(!GIT_AVAILABLE)('reftable-ref-storage interop', () => {
           await updateRef(worktreeCtx, 'refs/heads/main' as RefName, newId as ObjectId, {
             reflogMessage: 'commit: c2',
           });
-          expect.unreachable();
         } catch (err) {
           caught = err;
         }
+        if (caught === undefined) expect.unreachable();
         const data = (caught as TsgitError).data;
         expect(data.code).toBe('INVALID_REFTABLE');
         if (data.code === 'INVALID_REFTABLE') {
@@ -1644,16 +1655,22 @@ describe.skipIf(!GIT_AVAILABLE)('reftable-ref-storage interop', () => {
 
         // Act + Assert
         if (fixture.outcome === 'refuse') {
+          // Captured OUTSIDE the try: an `expect.unreachable()` thrown
+          // inside it would be swallowed by this same `catch` and resurface
+          // as a confusing downstream TypeError instead of the intended
+          // message.
+          let caught: unknown;
           try {
             await sut(fixture.ctx, dir);
-            expect.unreachable();
           } catch (err) {
-            expect((err as TsgitError).data.code).toBe('INVALID_REFTABLE');
-            expect((err as TsgitError).data).toMatchObject({
-              check: fixture.check,
-              reason: expect.any(String),
-            });
+            caught = err;
           }
+          if (caught === undefined) expect.unreachable();
+          expect((caught as TsgitError).data.code).toBe('INVALID_REFTABLE');
+          expect((caught as TsgitError).data).toMatchObject({
+            check: fixture.check,
+            reason: expect.any(String),
+          });
           return;
         }
         const stack = await sut(fixture.ctx, dir);
