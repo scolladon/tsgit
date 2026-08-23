@@ -492,9 +492,17 @@ export function findInBlock<T>(
  * footer position, or an index record's own `block_position`), and reading
  * a block's type-plus-length header needs room for all `BLOCK_HEADER_SIZE`
  * bytes, not just the one the type check itself touches.
+ *
+ * Only an UPPER bound is checked: both of this module's own sources for
+ * `offset` are provably non-negative by construction, not merely by
+ * convention, so a lower-bound check would be dead code — `refIndexPosition`
+ * is `Number(getBigUint64(...))` (BigUint64 is unsigned), and an index
+ * record's `block_position` is a `readVarint` result, which accumulates via
+ * `(value + 1) * 128 + byte` (never JS's sign-wrapping `<<`/`|`) and so can
+ * only grow, starting from a non-negative first byte.
  */
 function boundedBlockTypeAt(reftable: Reftable, offset: number): string {
-  if (offset < 0 || offset + BLOCK_HEADER_SIZE > reftable._bytes.length) {
+  if (offset + BLOCK_HEADER_SIZE > reftable._bytes.length) {
     throw invalidReftable(
       'block-bounds',
       `block position ${offset} is outside the file (length ${reftable._bytes.length})`,
