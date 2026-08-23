@@ -736,18 +736,21 @@ describe('reftable-transaction', () => {
         fromRawSpy.mockClear();
 
         // Act
-        await applyReftableUpdates(ctx, [
-          {
-            kind: 'set',
-            name: ref('refs/tags/new'),
-            id: newId,
-            reflog: { oldId: zeroId, newId, message: 'created' },
-          },
-        ]);
+        try {
+          await applyReftableUpdates(ctx, [
+            {
+              kind: 'set',
+              name: ref('refs/tags/new'),
+              id: newId,
+              reflog: { oldId: zeroId, newId, message: 'created' },
+            },
+          ]);
 
-        // Assert
-        expect(fromRawSpy).not.toHaveBeenCalled();
-        fromRawSpy.mockRestore();
+          // Assert
+          expect(fromRawSpy).not.toHaveBeenCalled();
+        } finally {
+          fromRawSpy.mockRestore();
+        }
       });
     });
   });
@@ -790,11 +793,14 @@ describe('reftable-transaction', () => {
         fromRawSpy.mockClear();
 
         // Act
-        await applyReftableUpdates(ctx, [{ kind: 'delete', name: targetName }]);
+        try {
+          await applyReftableUpdates(ctx, [{ kind: 'delete', name: targetName }]);
 
-        // Assert
-        expect(fromRawSpy).not.toHaveBeenCalled();
-        fromRawSpy.mockRestore();
+          // Assert
+          expect(fromRawSpy).not.toHaveBeenCalled();
+        } finally {
+          fromRawSpy.mockRestore();
+        }
       });
     });
   });

@@ -457,13 +457,14 @@ describe('ref-store', () => {
     });
   });
 
-  describe('Given listRefNames already ran once and never touched the packed name index', () => {
+  describe('Given listRefNames already ran once', () => {
     describe('When resolveDirect looks up a packed-only ref afterward', () => {
-      it('Then it still resolves correctly — the lazy index builds on its own first use', async () => {
+      it('Then it still resolves correctly — resolution does not depend on listRefNames having run first', async () => {
         // Arrange — `listRefNames`/`listRefs` scan `packed.entries` directly
-        // and never call `packed.byName()`; the index is built lazily, on
-        // ITS OWN first call, memoised inside the same cached `loaded`
-        // instance both paths share.
+        // and never call `packed.byName()`, so this only proves the two
+        // paths coexist correctly against the same cached `loaded` instance,
+        // not that `byName()`'s index is built lazily (that stays an
+        // internal memoisation detail, unobserved here).
         const ctx = await buildSeededContext({
           refs: [{ name: 'refs/heads/main' as RefName, id: 'a'.repeat(40) as ObjectId }],
           packedRefs: [{ name: 'refs/tags/v1' as RefName, id: 'b'.repeat(40) as ObjectId }],
