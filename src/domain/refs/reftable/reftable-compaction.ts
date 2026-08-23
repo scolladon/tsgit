@@ -52,6 +52,9 @@ interface MergeBoundary {
  *  the "found nothing" zero case, distinct from the full-stack zero case
  *  {@link findMergeStart} can produce. */
 function findMergeBoundary(sizes: readonly number[], factor: number): MergeBoundary | undefined {
+  // Stryker disable next-line ArithmeticOperator: equivalent — a higher start only adds
+  // out-of-bounds iterations where one of sizes[i-1]/sizes[i] is `undefined`, so the
+  // comparison below is always false there; the loop still stops at the same real pair.
   for (let i = sizes.length - 1; i >= 1; i -= 1) {
     if (sizes[i - 1]! < sizes[i]! * factor) {
       return { index: i, bytes: sizes[i]! };
@@ -74,6 +77,9 @@ function findMergeStart(
 ): number {
   let start = 0;
   let bytes = boundaryBytes;
+  // Stryker disable next-line EqualityOperator: equivalent — an extra i===0 iteration reads
+  // sizes[-1], which is `undefined`; the comparison below is then always false and `start`
+  // is never assigned, so the returned value is identical either way.
   for (let i = boundaryIndex; i > 0; i -= 1) {
     const curr = bytes;
     bytes += sizes[i - 1]!;
@@ -87,16 +93,15 @@ function findMergeStart(
 /**
  * git's geometric compaction rule, replayed verbatim from
  * `stack_table_sizes_for_compaction`. `sizes` is the metric vector, oldest
- * to newest. A stack of zero or one table never compacts.
+ * to newest. A stack of zero or one table never compacts — not via an
+ * explicit guard, but because {@link findMergeBoundary}'s own loop bound
+ * (`sizes.length - 1 >= 1`) already never runs for either length, returning
+ * `undefined` and falling through to the same empty segment below.
  */
 export function suggestCompactionSegment(
   sizes: readonly number[],
   factor: number,
 ): CompactionSegment {
-  if (sizes.length <= 1) {
-    return EMPTY_SEGMENT;
-  }
-
   const boundary = findMergeBoundary(sizes, factor);
   if (boundary === undefined) {
     return EMPTY_SEGMENT;

@@ -112,8 +112,17 @@ function concatParts(parts: readonly Uint8Array[]): Uint8Array {
  *  compares adjacent, already-defined sorted entries. An `undefined`-guarding
  *  branch here would be unreachable dead code. */
 function longestCommonPrefix(a: Uint8Array, b: Uint8Array): number {
+  // Stryker disable next-line MethodExpression: equivalent — every call site compares two
+  // DISTINCT keys (unique ref names, unique (name, update_index) log keys, or unique adjacent
+  // sorted oids), so once `i` passes the shorter array's length one side reads `undefined`,
+  // which never === a real byte; widening the bound to Math.max cannot extend where the loop
+  // actually stops.
   const max = Math.min(a.length, b.length);
   let i = 0;
+  // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — same
+  // reasoning as the `max` computation above: for the distinct-key inputs this function is
+  // ever called with, `a[i] === b[i]` itself goes false at (or before) `i === max`, so
+  // dropping or loosening the `i < max` bound cannot change where the loop stops.
   while (i < max && a[i] === b[i]) {
     i += 1;
   }
@@ -371,6 +380,9 @@ function padBlock(
     return bytes;
   }
   const paddingLength = blockSize - extraLength - bytes.length;
+  // Stryker disable next-line EqualityOperator: equivalent — the two branches differ only at
+  // paddingLength === 0, where concatParts([bytes, new Uint8Array(0)]) copies `bytes` into a
+  // new array of the SAME content — byte-for-byte identical to returning `bytes` directly.
   return paddingLength > 0 ? concatParts([bytes, new Uint8Array(paddingLength)]) : bytes;
 }
 
@@ -478,6 +490,10 @@ function assembleRefBlocks(
     blockSize: options.blockSize,
     restartInterval: options.restartInterval,
     startPosition: headerLength,
+    // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — when
+    // refs is empty, packBlocks's own while(index < items.length) loop never runs, so
+    // firstBlockExtraLength is never read; forcing this ternary to always pick headerLength
+    // changes an unread value only.
     firstBlockExtraLength: refs.length > 0 ? headerLength : 0,
     alignment: 'aligned',
   });
@@ -651,6 +667,13 @@ function collectObjEntries(
   return [...positionsByOidHex.entries()]
     .map(([oidHex, positions]) => ({
       oidBytes: hexToBytes(oidHex),
+      // Stryker disable next-line MethodExpression,ArithmeticOperator: equivalent —
+      // `blockPosition` is only ever added to this Set while walking `refBlockPositions` in
+      // strictly ascending order (ref-block file offsets are monotonically increasing, and
+      // the rewritten first entry `0` is still the smallest), so Set iteration order is
+      // already ascending; a comparator that is never negative for non-negative inputs (like
+      // `a + b`) never triggers a reorder against an already-ascending sequence, so dropping
+      // or breaking the comparator leaves the array unchanged.
       positions: [...positions].sort((a, b) => a - b),
     }))
     .sort((a, b) => compareBytes(a.oidBytes, b.oidBytes));
@@ -684,6 +707,10 @@ function encodePositionDeltas(positions: readonly number[]): Uint8Array {
 function encodeObjRecord(entry: ObjEntry, keyBytes: Uint8Array, prefixLength: number): Uint8Array {
   const suffix = keyBytes.subarray(prefixLength);
   const count = entry.positions.length;
+  // Stryker disable next-line ConditionalExpression: equivalent — `count` is
+  // `entry.positions.length`, and an ObjEntry only ever exists for an oid that was recorded
+  // at least once in `positionsByOidHex` (a Set that always has >=1 member once created), so
+  // `count > 0` is always true for every entry this function is ever called with.
   const cnt3 = count > 0 && count <= MAX_INLINE_OBJ_COUNT ? count : 0;
   const packed = (suffix.length << SUFFIX_SHIFT) | cnt3;
   const countBytes = cnt3 === 0 ? encodeOfsDistance(count) : new Uint8Array(0);

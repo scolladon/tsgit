@@ -535,7 +535,11 @@ function collectObjRecords(
   const records: { nameBytes: Uint8Array; positions: readonly number[] }[] = [];
   const sectionStart = table.footer.objPosition;
   let blockStart = sectionStart;
-  const boundary = table.footer.objIndexPosition;
+  const footerLength = table.header.version === 1 ? 68 : 72;
+  const boundary =
+    table.footer.objIndexPosition !== 0
+      ? table.footer.objIndexPosition
+      : table._bytes.length - footerLength;
   while (blockStart < boundary) {
     const bounds = blockBoundsAt(table, blockStart);
     for (const record of walkBlockRecords(table._bytes, bounds, decodeObjRecord)) {
@@ -805,6 +809,402 @@ describe('Given a deletion ref and value kinds beyond direct', () => {
 
       // Assert
       expect([...iterateReftableRefs(table)]).toEqual(refs);
+    });
+  });
+});
+
+// --- writeUint24 width genericity -----------------------------------------
+
+describe('Given a block_size whose top byte is nonzero', () => {
+  describe('When building the ref section', () => {
+    it('Then the header block_size round-trips through all three bytes of the uint24', () => {
+      // Arrange — a value >= 0x10000 requires the top byte writeUint24 sets
+      // via setUint8; a sole block is never padded, so the output stays small.
+      const options = baseOptions({ blockSize: 0x10203 });
+
+      // Act
+      const bytes = buildReftableRefSection([directRef('refs/heads/main', 0n, 1)], options);
+      const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+
+      // Assert
+      expect(readUint24(view, 5)).toBe(0x10203);
+    });
+  });
+});
+
+// --- Restart on zero shared prefix, off the interval -----------------------
+
+describe('Given a ref sharing no prefix at all with its predecessor, off the restart interval', () => {
+  describe('When building the ref section', () => {
+    it('Then it restarts anyway — the interval is not the only trigger', async () => {
+      // Arrange — 'HEAD' then 'refs/heads/aaa': zero shared prefix, and
+      // position 1 is not a multiple of restartInterval 16.
+      const refs: ReftableRefRecord[] = [
+        {
+          name: RefName.from('HEAD'),
+          updateIndex: 0n,
+          value: { kind: 'symbolic', target: RefName.from('refs/heads/main') },
+        },
+        directRef('refs/heads/aaa', 0n, 1),
+      ];
+      const options = baseOptions({ restartInterval: 16 });
+
+      // Act
+      const bytes = await serializeReftable(refs, [], options, identityDeflate);
+      const table = parseReftable(bytes);
+      const bounds = blockBoundsAt(table, table.header.headerLength);
+
+      // Assert — both records are restart points
+      expect(bounds.restartOffsets.length).toBe(2);
+    });
+  });
+});
+
+// --- Exact-boundary overflow (STRICTLY over, not equal) --------------------
+
+describe('Given ref records whose total (unaligned) length lands exactly at block_size', () => {
+  describe('When building the ref section', () => {
+    it('Then the exact-fit record stays in the same block — only a size STRICTLY over block_size overflows', () => {
+      // Arrange — measure the unaligned (never-split) declared length for 5
+      // refs, then use it as block_size: the last record's trial length is
+      // then exactly block_size, which must still fit (only `>` splits).
+      const refs = makeRefs(5);
+      const restartInterval = 1000; // no interior restarts at this scale
+      const unalignedOptions = baseOptions({ blockSize: 0, restartInterval });
+      const exactLength = buildReftableRefSection(refs, unalignedOptions).length;
+      const options = baseOptions({ blockSize: exactLength, restartInterval });
+
+      // Act
+      const bytes = buildReftableRefSection(refs, options);
+
+      // Assert — a sole, unpadded block of exactly the measured length: no split occurred
+      expect(bytes.length).toBe(exactLength);
+    });
+  });
+});
+
+// --- Obj/index emission at the exact threshold ------------------------------
+
+describe('Given an obj section that packs into exactly 4 blocks at block_size 200', () => {
+  describe('When building the ref section', () => {
+    it('Then an obj index is still emitted — the threshold is inclusive', async () => {
+      // Arrange — measured: 70 distinct-object refs at block_size 200 packs
+      // the obj section into exactly 4 blocks.
+      const options = baseOptions({ blockSize: 200 });
+
+      // Act
+      const bytes = await serializeReftable(makeRefs(70), [], options, identityDeflate);
+      const table = parseReftable(bytes);
+
+      // Assert
+      expect(table.footer.objIndexPosition).not.toBe(0);
+    });
+  });
+});
+
+// --- Peeled refs contribute an object id ------------------------------------
+
+describe('Given refs whose values are all peeled (not direct)', () => {
+  describe('When building an obj-indexed ref section', () => {
+    it('Then the peeled refs still populate the obj section', async () => {
+      // Arrange — 21 peeled refs clears the ref-index threshold at block_size 200
+      const refs: ReftableRefRecord[] = Array.from({ length: 21 }, (_, i) => ({
+        name: RefName.from(`refs/heads/b${i.toString().padStart(4, '0')}`),
+        updateIndex: 0n,
+        value: {
+          kind: 'peeled',
+          id: ObjectId.fromRaw(oid(i)),
+          peeled: ObjectId.fromRaw(oid(i + 100)),
+        },
+      }));
+      const options = baseOptions({ blockSize: 200 });
+
+      // Act
+      const bytes = await serializeReftable(refs, [], options, identityDeflate);
+      const table = parseReftable(bytes);
+
+      // Assert
+      expect(table.footer.objPosition).not.toBe(0);
+    });
+  });
+});
+
+// --- Obj record order: by ascending oid, never by insertion order ----------
+
+describe('Given refs whose objects are inserted out of oid order', () => {
+  describe('When building an obj-indexed ref section', () => {
+    it('Then obj records are still emitted in ascending oid order, not ref/insertion order', async () => {
+      // Arrange — 'refs/heads/a1' (oid 0xff) is walked before 'refs/heads/a2'
+      // (oid 0x00) since refs are name-sorted, but the obj section must be
+      // oid-sorted: the smaller oid's record must come first regardless.
+      const highOidRef = directRef('refs/heads/a1', 0n, 0xff);
+      const lowOidRef = directRef('refs/heads/a2', 0n, 0x00);
+      const filler = Array.from({ length: 19 }, (_, i) =>
+        directRef(`refs/heads/f${i.toString().padStart(4, '0')}`, 0n, 50 + i),
+      );
+      const refs = [highOidRef, lowOidRef, ...filler];
+      const options = baseOptions({ blockSize: 200 });
+
+      // Act
+      const bytes = await serializeReftable(refs, [], options, identityDeflate);
+      const table = parseReftable(bytes);
+      const objRecords = collectObjRecords(table, options.blockSize);
+
+      // Assert
+      expect(objRecords[0]!.nameBytes[0]).toBe(0x00);
+    });
+  });
+});
+
+// --- Obj position-delta encoding: exact values, not raw/garbled ------------
+
+describe('Given an object shared between two non-first ref blocks', () => {
+  describe('When building an obj-indexed ref section', () => {
+    it('Then the second position decodes exactly, not against the wrong baseline', async () => {
+      // Arrange — refs at index 10 and 15 (of 21, at block_size 200) land in
+      // the second and third ref blocks (measured: positions 200 and 400),
+      // so `previous` is genuinely nonzero when the second delta is computed
+      // — unlike an object first seen in the rewritten-to-0 first block.
+      const popularId = ObjectId.fromRaw(new Uint8Array(20).fill(0xaa));
+      const refs: ReftableRefRecord[] = Array.from({ length: 21 }, (_, i) => ({
+        name: RefName.from(`refs/heads/b${i.toString().padStart(4, '0')}`),
+        updateIndex: 0n,
+        value:
+          i === 10 || i === 15
+            ? { kind: 'direct', id: popularId }
+            : { kind: 'direct', id: ObjectId.fromRaw(oid(i + 1)) },
+      }));
+      const options = baseOptions({ blockSize: 200 });
+
+      // Act
+      const bytes = await serializeReftable(refs, [], options, identityDeflate);
+      const table = parseReftable(bytes);
+      const objRecords = collectObjRecords(table, options.blockSize);
+      const popularRecord = objRecords.find((r) => r.positions.length === 2);
+
+      // Assert
+      expect(popularRecord?.positions).toStrictEqual([200, 400]);
+    });
+  });
+});
+
+// --- Log-index padding: an 'unaligned' block must never be padded ----------
+
+describe('Given a log index that itself needs more than one (unaligned) block', () => {
+  describe('When building the log section', () => {
+    it('Then every log-index block stays unpadded, ending exactly at the footer', async () => {
+      // Arrange — measured: 15 logs at block_size 100 gives a 2-block log index.
+      const options = baseOptions({ blockSize: 100 });
+
+      // Act
+      const bytes = await serializeReftable([], makeLogs(15), options, identityDeflate);
+      const table = parseReftable(bytes);
+      const footerLength = 68;
+      const footerStart = bytes.length - footerLength;
+      let blockStart = table.footer.logIndexPosition;
+      for (let i = 0; i < 10 && blockStart < footerStart; i += 1) {
+        const bounds = blockBoundsAt(table, blockStart);
+        blockStart = bounds.blockEnd;
+      }
+
+      // Assert
+      expect(blockStart).toBe(footerStart);
+    });
+  });
+});
+
+// --- Log-block exact-boundary overflow (mirrors the ref-block case) --------
+
+describe('Given log records whose total (unaligned) length lands exactly at the block budget', () => {
+  describe('When building the log section', () => {
+    it('Then the exact-fit record stays in the same block — only a size STRICTLY over budget overflows', async () => {
+      // Arrange — measure the unaligned (budget = Infinity) declared length
+      // for 4 restart-forced log records, then halve it into block_size so
+      // budget (block_size * 2) exactly equals that measured length.
+      const logs = makeLogs(4);
+      const restartInterval = 1; // every record restarts, exercising restartCount arithmetic
+      const measureOptions = baseOptions({ blockSize: 0, restartInterval });
+      const measured = await serializeReftable([], logs, measureOptions, identityDeflate);
+      const headerLength = 24;
+      const footerLength = 68;
+      const exactLength = measured.length - headerLength - footerLength;
+      const options = baseOptions({ blockSize: exactLength / 2, restartInterval });
+
+      // Act
+      const bytes = await serializeReftable([], logs, options, identityDeflate);
+      const table = parseReftable(bytes);
+
+      // Assert — a single log block (well under the 4-block index threshold),
+      // ending exactly at the measured length: the 4th record did not overflow
+      expect(table.footer.logIndexPosition).toBe(0);
+      expect(bytes.length - headerLength - footerLength).toBe(exactLength);
+    });
+  });
+});
+
+describe('Given log records whose total (unaligned) length lands just over the block budget', () => {
+  describe('When building the log section', () => {
+    it('Then the last record overflows into a new block — restartCount must be counted, not miscounted', async () => {
+      // Arrange — same measured length as above, minus 2: the 4th record's
+      // trial length is then 2 bytes OVER budget, which must overflow. A
+      // wrong restartCount (mis-added, mis-multiplied or halved instead of
+      // tripled) shrinks the trial length enough to hide this overflow.
+      const logs = makeLogs(4);
+      const restartInterval = 1;
+      const measureOptions = baseOptions({ blockSize: 0, restartInterval });
+      const measured = await serializeReftable([], logs, measureOptions, identityDeflate);
+      const headerLength = 24;
+      const footerLength = 68;
+      const exactLength = measured.length - headerLength - footerLength;
+      const options = baseOptions({ blockSize: (exactLength - 2) / 2, restartInterval });
+
+      // Act
+      const bytes = await serializeReftable([], logs, options, identityDeflate);
+      const table = parseReftable(bytes);
+
+      // Assert — two log blocks: the total now carries a second block header
+      expect(table.footer.logIndexPosition).toBe(0);
+      expect(bytes.length - headerLength - footerLength).toBeGreaterThan(exactLength);
+    });
+  });
+});
+
+// --- The first record in a (new) log block is never rejected ---------------
+
+describe('Given a single log record whose own encoding exceeds a tiny budget', () => {
+  describe('When building the log section', () => {
+    it('Then it is still emitted as the sole record — the first record in a block is never rejected', async () => {
+      // Arrange — block_size 1 makes budget (block_size * 2) tiny enough
+      // that any real log record exceeds it.
+      const options = baseOptions({ blockSize: 1 });
+      const logs = makeLogs(1);
+
+      // Act
+      const bytes = await serializeReftable([], logs, options, compressor.deflate);
+      const loaded = await loadReftable(bytes, compressor.streamInflate);
+      const readLogs = [...iterateReftableLogs(loaded)];
+
+      // Assert
+      expect(readLogs).toHaveLength(1);
+    }, 3000);
+  });
+});
+
+// --- Log block type tag ------------------------------------------------------
+
+describe('Given a log record', () => {
+  describe('When building the log section', () => {
+    it('Then the block type tag is the literal byte for "g"', async () => {
+      // Arrange
+      const options = baseOptions();
+
+      // Act
+      const bytes = await serializeReftable([], makeLogs(1), options, identityDeflate);
+      const table = parseReftable(bytes);
+
+      // Assert
+      expect(bytes[table.footer.logPosition]).toBe('g'.charCodeAt(0));
+    });
+  });
+});
+
+// --- Unaligned (block_size 0) log budget is unbounded, not zero ------------
+
+describe('Given several log records and an unaligned (block_size 0) budget', () => {
+  describe('When building the log section', () => {
+    it('Then they all pack into fewer than the index threshold — unaligned means unbounded, not zero', async () => {
+      // Arrange — a zero budget would reject every record past the first in
+      // each block (positionInBlock > 0 always overflows against budget 0),
+      // scattering 5 logs across 5 one-record blocks and crossing the
+      // 4-block index threshold; an unbounded budget keeps them in one block.
+      const options = baseOptions({ blockSize: 0 });
+
+      // Act
+      const bytes = await serializeReftable([], makeLogs(5), options, identityDeflate);
+      const table = parseReftable(bytes);
+
+      // Assert
+      expect(table.footer.logIndexPosition).toBe(0);
+    });
+  });
+});
+
+// --- Log block cursor advances forward, and every entry round-trips --------
+
+describe('Given log records that split into multiple log blocks', () => {
+  describe('When building then reading back the log section', () => {
+    it('Then every log entry round-trips — a backward cursor would corrupt subsequent block positions', async () => {
+      // Arrange
+      const options = baseOptions({ blockSize: 100 });
+      const logs = makeLogs(7);
+
+      // Act
+      const bytes = await serializeReftable([], logs, options, compressor.deflate);
+      const loaded = await loadReftable(bytes, compressor.streamInflate);
+      const readNames = [...iterateReftableLogs(loaded)].map((r) => r.name);
+
+      // Assert
+      expect(readNames).toHaveLength(7);
+    });
+  });
+});
+
+describe('Given log records that trigger a log index', () => {
+  describe('When building the log section', () => {
+    it('Then the log index block itself ends exactly at the footer — totalLength/startPosition are exact', async () => {
+      // Arrange — a wrong totalLength or startPosition places the index at
+      // the wrong byte offset; footer.logIndexPosition would then either
+      // fail to decode as a block or leave a gap/overlap before the footer.
+      const options = baseOptions({ blockSize: 100 });
+      const footerLength = 68;
+
+      // Act
+      const bytes = await serializeReftable([], makeLogs(7), options, identityDeflate);
+      const table = parseReftable(bytes);
+      const bounds = blockBoundsAt(table, table.footer.logIndexPosition);
+
+      // Assert
+      expect(bounds.blockEnd).toBe(bytes.length - footerLength);
+    });
+  });
+});
+
+// --- Empty logs: log_position stays 0 ---------------------------------------
+
+describe('Given a ref-only table with no log records', () => {
+  describe('When building the log section', () => {
+    it('Then log_position stays 0, not the offset an (empty) log section would have started at', async () => {
+      // Arrange
+      const options = baseOptions();
+
+      // Act
+      const bytes = await serializeReftable(makeRefs(3), [], options, identityDeflate);
+      const table = parseReftable(bytes);
+
+      // Assert
+      expect(table.footer.logPosition).toBe(0);
+    });
+  });
+});
+
+// --- Footer header-echo bytes -----------------------------------------------
+
+describe('Given a serialized reftable', () => {
+  describe('When the footer is inspected', () => {
+    it('Then its leading header-echo bytes exactly match the file header', async () => {
+      // Arrange
+      const options = baseOptions();
+      const headerLength = 24;
+      const footerLength = 68;
+
+      // Act
+      const bytes = await serializeReftable(makeRefs(1), [], options, identityDeflate);
+      const footerStart = bytes.length - footerLength;
+
+      // Assert
+      expect(bytes.slice(footerStart, footerStart + headerLength)).toEqual(
+        bytes.slice(0, headerLength),
+      );
     });
   });
 });

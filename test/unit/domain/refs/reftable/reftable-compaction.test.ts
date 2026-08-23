@@ -238,6 +238,39 @@ describe('reftable-compaction', () => {
     });
   });
 
+  describe('Given a predecessor exactly equal to its successor times the factor', () => {
+    describe('When suggesting a compaction segment', () => {
+      it('Then the boundary is not found there — only a STRICTLY smaller predecessor qualifies', () => {
+        // Arrange — 100 === 50 * 2 exactly: git's rule is strict `<`, so this
+        // pair does not end a merge segment.
+        const sut = suggestCompactionSegment;
+
+        // Act
+        const result = sut([100, 50], GEOMETRIC_FACTOR);
+
+        // Assert
+        expect(result).toStrictEqual({ start: 0, end: 0 });
+      });
+    });
+  });
+
+  describe('Given an accumulated predecessor exactly equal to the running total times the factor', () => {
+    describe('When suggesting a compaction segment', () => {
+      it('Then the second loop stops extending start there — only a STRICTLY smaller predecessor qualifies', () => {
+        // Arrange — boundary found at i=2 (30 < 40*2); the second loop then
+        // accumulates 40+30=70, and sizes[0]=140 === 70*2 exactly, so start
+        // must stay 1, not extend to 0.
+        const sut = suggestCompactionSegment;
+
+        // Act
+        const result = sut([140, 30, 40], GEOMETRIC_FACTOR);
+
+        // Assert
+        expect(result).toStrictEqual({ start: 1, end: 3 });
+      });
+    });
+  });
+
   describe('Given a size vector where the second loop must resume at the break index, not one below it', () => {
     describe('When suggesting a compaction segment', () => {
       it('Then the merge stops at the first qualifying predecessor and does not skip it', () => {
