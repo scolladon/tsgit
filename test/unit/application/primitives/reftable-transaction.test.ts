@@ -241,21 +241,26 @@ describe('reftable-transaction', () => {
         const before = await ctx.fs.readUtf8(tablesListPath(ctx.layout.gitDir));
         const entriesBefore = (await ctx.fs.readdir(dir)).map((e) => e.name).sort();
 
-        // Act
+        // Act — captured OUTSIDE the try: an `expect.unreachable()`/`expect.fail()`
+        // thrown inside it would be swallowed by this same `catch` and
+        // resurface as a confusing downstream TypeError instead of the
+        // intended message.
+        let caught: unknown;
         try {
           await applyReftableUpdates(ctx, [
             { kind: 'set', name: ref('refs/heads/a'), id: oid(0x02), expected: oid(0x99) },
           ]);
-          expect.unreachable('expected REF_UPDATE_CONFLICT');
         } catch (err) {
-          const data = (err as TsgitError).data;
-          if (data.code !== 'REF_UPDATE_CONFLICT')
-            expect.fail(`expected REF_UPDATE_CONFLICT, got ${data.code}`);
-          expect(data.expected).toBe(oid(0x99));
-          expect(data.actual).toBe(oid(0x01));
+          caught = err;
         }
+        if (caught === undefined) expect.unreachable('expected REF_UPDATE_CONFLICT');
 
         // Assert
+        const conflictData = (caught as TsgitError).data;
+        if (conflictData.code !== 'REF_UPDATE_CONFLICT')
+          expect.fail(`expected REF_UPDATE_CONFLICT, got ${conflictData.code}`);
+        expect(conflictData.expected).toBe(oid(0x99));
+        expect(conflictData.actual).toBe(oid(0x01));
         const after = await ctx.fs.readUtf8(tablesListPath(ctx.layout.gitDir));
         const entriesAfter = (await ctx.fs.readdir(dir)).map((e) => e.name).sort();
         expect(after).toBe(before);
@@ -446,10 +451,10 @@ describe('reftable-transaction', () => {
         let caught: unknown;
         try {
           await applyReftableUpdates(ctx, [{ kind: 'delete', name: ref('refs/heads/never') }]);
-          expect.unreachable();
         } catch (err) {
           caught = err;
         }
+        if (caught === undefined) expect.unreachable();
 
         // Assert
         const data = (caught as TsgitError).data;
@@ -1428,17 +1433,33 @@ describe('reftable-transaction', () => {
         );
         await writeReftableFiles(ctx, dir, [{ name: 'old.ref', bytes: oldBytes }]);
         const original = ctx.fs.read.bind(ctx.fs);
-        let refReads = 0;
+        const originalWriteExclusive = ctx.fs.writeExclusive.bind(ctx.fs);
+        const listLockPath = tablesListLockPath(ctx.layout.gitDir);
         const fault = new Error('synthetic merge fault');
+        // Keyed on the call's IDENTITY, not a raw read count: the write's
+        // own commit acquires `tables.list.lock` once (before `prepareStackWrite`
+        // reads `old.ref` for its CAS pass), then RELEASES it; compaction's
+        // `acquireCompactionLocks` re-acquires that same lock a second time
+        // for its own steps 1-3, then releases it again right before
+        // `mergeSegment` runs. Arming on that second acquisition — rather
+        // than counting `.ref` reads — means a future extra `.ref` read
+        // added anywhere else in the write or probe path leaves this
+        // unaffected; only a change to the locking protocol itself would.
+        let listLockAcquisitions = 0;
+        let armed = false;
+        vi.spyOn(ctx.fs, 'writeExclusive').mockImplementation(
+          async (path: string, data: Uint8Array) => {
+            if (path === listLockPath) {
+              listLockAcquisitions += 1;
+              if (listLockAcquisitions === 2) armed = true;
+            }
+            return originalWriteExclusive(path, data);
+          },
+        );
         vi.spyOn(ctx.fs, 'read').mockImplementation(async (path: string) => {
-          if (path.endsWith('.ref')) {
-            refReads += 1;
-            // The write's own CAS pass (`prepareStackWrite`) reads `old.ref`
-            // once; compaction's size probe no longer reads table bytes at
-            // all (a `stat` + a 5-byte `readSlice` instead), so the very
-            // next `.ref` read is `mergeSegment`'s own — the merge step this
-            // test targets.
-            if (refReads > 1) throw fault;
+          if (armed && path.endsWith('.ref')) {
+            armed = false;
+            throw fault;
           }
           return original(path);
         });
