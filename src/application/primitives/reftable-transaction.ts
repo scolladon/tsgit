@@ -440,11 +440,10 @@ async function isReftableLoggable(
   return shouldAutocreateReflog(name, config.core ?? {});
 }
 
-/** Appends `reflog` when it applies, reporting whether it did — the
- *  `reflogOnly` caller needs that signal to decide whether it also owes the
- *  table a same-table ref record (see {@link applyOneUpdate}'s `reflogOnly`
- *  arm). Returns `false` without appending when there is nothing to log or
- *  the loggability gate is closed. */
+/** Appends `reflog` when it applies. Does nothing when there is nothing to
+ *  log or the loggability gate is closed — a logs-only table is legal, so no
+ *  caller owes the table a companion ref record on the strength of whether a
+ *  reflog was written. */
 async function maybeAppendReflog(
   ctx: Context,
   loggable: (name: RefName) => boolean,
@@ -453,15 +452,9 @@ async function maybeAppendReflog(
   updateIndex: bigint,
   identity: AuthorIdentity,
   reflog: ReflogAppend | undefined,
-): Promise<boolean> {
-  // Stryker disable next-line BooleanLiteral: equivalent — the return value is never
-  // read by any of this function's three call sites (grep confirms; see applyOneUpdate's
-  // 'set' / 'setSymbolic' / 'reflogOnly' arms, each a bare `await maybeAppendReflog(...)`).
-  if (reflog === undefined) return false;
-  if (reflog.unconditional !== true && !(await isReftableLoggable(ctx, loggable, name)))
-    // Stryker disable next-line BooleanLiteral: equivalent — same unread-return-value
-    // argument as above.
-    return false;
+): Promise<void> {
+  if (reflog === undefined) return;
+  if (reflog.unconditional !== true && !(await isReftableLoggable(ctx, loggable, name))) return;
   logs.push({
     name,
     updateIndex,
@@ -473,9 +466,6 @@ async function maybeAppendReflog(
       message: sanitizeReflogMessage(reflog.message),
     },
   });
-  // Stryker disable next-line BooleanLiteral: equivalent — same unread-return-value
-  // argument as above.
-  return true;
 }
 
 /** Tombstones every log record `stack.logs(name)` currently reports as
