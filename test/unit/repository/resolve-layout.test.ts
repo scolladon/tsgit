@@ -1317,6 +1317,61 @@ describe('resolveLayout', () => {
       });
     });
 
+    describe('Given an explicit bare: true argument alongside a commonDir override, on the EXPLICIT route', () => {
+      describe('When resolveLayout runs', () => {
+        it('Then bare wins — the marker-driven bypass yields to the more specific argument', async () => {
+          // Arrange
+          const fs = new MemoryFileSystem({ rootDir: '/repo' });
+          await makeGitDir(fs, '/repo/bare.git');
+          await makeGitDir(fs, '/repo/alt');
+
+          // Act
+          const result = await resolveLayout(
+            fileSystemLayoutProbe(fs),
+            '/repo/elsewhere',
+            posixPolicy,
+            {
+              gitDir: '/repo/bare.git',
+              commonDir: '/repo/alt',
+              bare: true,
+            },
+          );
+
+          // Assert — without bare: true the same fixture resolves a work
+          // tree at cwd; the explicit argument must keep none.
+          expect(result?.bare).toBe(true);
+          expect('workDir' in (result as object)).toBe(false);
+          expect(result?.commonDir).toBe('/repo/alt');
+        });
+      });
+    });
+
+    describe('Given an explicit bare: true argument alongside a commonDir override, on the DISCOVERED route', () => {
+      describe('When resolveLayout runs', () => {
+        it('Then bare wins here too — the suppression is route-independent', async () => {
+          // Arrange
+          const fs = new MemoryFileSystem({ rootDir: '/repo' });
+          await makeGitDir(fs, '/repo/normal/.git');
+          await makeGitDir(fs, '/repo/alt');
+
+          // Act
+          const result = await resolveLayout(
+            fileSystemLayoutProbe(fs),
+            '/repo/normal',
+            posixPolicy,
+            {
+              commonDir: '/repo/alt',
+              bare: true,
+            },
+          );
+
+          // Assert
+          expect(result?.bare).toBe(true);
+          expect('workDir' in (result as object)).toBe(false);
+        });
+      });
+    });
+
     describe('Given /repo/.git with a clean config, and a valid /repo/alt whose config sets an unsupported version', () => {
       describe('When resolveLayout runs with the override', () => {
         it('Then the acceptance gate reads the OVERRIDDEN config and reports its fields', async () => {

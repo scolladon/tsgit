@@ -124,6 +124,7 @@ const resolveWorkTree = async (
   outcome: WalkOutcome,
   fmt: RepositoryFormat,
   bareCfg: boolean | undefined,
+  bareExplicit: boolean,
   pathPolicy: PathPolicy,
   cwd: string,
   explicitWorkDir: string | undefined,
@@ -132,7 +133,13 @@ const resolveWorkTree = async (
   if (explicitWorkDir !== undefined) {
     return { workDir: resolveAgainst(cwd, explicitWorkDir, pathPolicy) };
   }
-  if (bareCfg === true && !isLinkedWorktreeAdmin(outcome)) {
+  // The marker-driven bypass yields to an explicit `bare: true` ARGUMENT:
+  // two caller arguments in tension resolve to the more specific one, so a
+  // caller who asked for no work tree keeps none. Only the caller-supplied
+  // marker is suppressed — a real linked worktree's file-derived bypass
+  // (marker absent) behaves exactly as before.
+  const bypassSuppressed = bareExplicit && outcome.commonDirSupplied === true;
+  if (bareCfg === true && (bypassSuppressed || !isLinkedWorktreeAdmin(outcome))) {
     return fmt.worktree !== undefined ? { workTreeConfigBogus: true } : {};
   }
   if (fmt.worktree !== undefined) {
@@ -287,6 +294,7 @@ export const finishLayout = async (
     outcome,
     fmt,
     bareCfg,
+    overrides.bare === true,
     pathPolicy,
     cwd,
     overrides.workDir,
@@ -362,7 +370,11 @@ const resolveExplicitOutcome = async (
   return {
     route: 'EXPLICIT',
     gitDir,
-    ...(commonDir !== gitDir ? { commonDir } : {}),
+    // `normalizeForCompare`, not raw `!==` — a case-mismatched spelling of
+    // the same directory must normalise away like any other degenerate value.
+    ...(pathPolicy.normalizeForCompare(commonDir) !== pathPolicy.normalizeForCompare(gitDir)
+      ? { commonDir }
+      : {}),
     ...(commonDirOverride !== undefined ? { commonDirSupplied: true as const } : {}),
   };
 };

@@ -1296,7 +1296,7 @@ describe('findLayout', () => {
 
     describe('Given /repo/bare.git valid (no enclosing .git), and a valid /repo/alt', () => {
       describe('When findLayout runs with a commonDir override', () => {
-        it('Then the outcome is BARE_DIR with the override commonDir, marked supplied', async () => {
+        it('Then the outcome is BARE_DIR with the override commonDir and no supplied marker', async () => {
           // Arrange
           const fs = new MemoryFileSystem({ rootDir: '/repo' });
           await makeGitDir(fs, '/repo/bare.git');
@@ -1311,12 +1311,12 @@ describe('findLayout', () => {
             '/repo/alt',
           );
 
-          // Assert
+          // Assert — no commonDirSupplied: BARE_DIR is override-inert for
+          // bareness, so the marker would be dead data on this arm.
           expect(result).toStrictEqual({
             route: 'BARE_DIR',
             gitDir: '/repo/bare.git',
             commonDir: '/repo/alt',
-            commonDirSupplied: true,
           });
         });
       });
@@ -1324,7 +1324,7 @@ describe('findLayout', () => {
 
     describe('Given /repo/inner/.git valid, an enclosing /repo/.git also valid, and /repo/alt containing only refs/', () => {
       describe('When findLayout runs with the override', () => {
-        it('Then the result is undefined — the override invalidates every candidate, and the walk never climbs to a usable repo', async () => {
+        it('Then the walk refuses with NOT_A_REPOSITORY at the first valid-HEAD candidate — it neither climbs nor falls through to a bootstrap', async () => {
           // Arrange
           const fs = new MemoryFileSystem({ rootDir: '/repo' });
           await makeGitDir(fs, '/repo/.git');
@@ -1332,23 +1332,33 @@ describe('findLayout', () => {
           await fs.mkdir('/repo/alt/refs');
 
           // Act
-          const result = await findLayout(
-            fileSystemLayoutProbe(fs),
-            '/repo/inner',
-            posixPolicy,
-            undefined,
-            '/repo/alt',
-          );
+          let caught: unknown;
+          try {
+            await findLayout(
+              fileSystemLayoutProbe(fs),
+              '/repo/inner',
+              posixPolicy,
+              undefined,
+              '/repo/alt',
+            );
+          } catch (err) {
+            caught = err;
+          }
 
-          // Assert
-          expect(result).toBeUndefined();
+          // Assert — refusing (not returning undefined) is what stops the
+          // shims' found-nothing fallback from adopting the real .git with
+          // the override silently dropped.
+          expect(caught).toBeDefined();
+          const data = (caught as { data: { code: string; path: string } }).data;
+          expect(data.code).toBe('NOT_A_REPOSITORY');
+          expect(data.path).toBe('/repo/inner/.git');
         });
       });
     });
 
     describe('Given /repo/inner/.git valid, an enclosing /repo/.git also valid, and /repo/alt containing only objects/', () => {
       describe('When findLayout runs with the override', () => {
-        it('Then the result is undefined — the missing refs/ guard alone invalidates every candidate', async () => {
+        it('Then the walk refuses with NOT_A_REPOSITORY — the missing refs/ guard alone triggers the refusal', async () => {
           // Arrange
           const fs = new MemoryFileSystem({ rootDir: '/repo' });
           await makeGitDir(fs, '/repo/.git');
@@ -1356,16 +1366,24 @@ describe('findLayout', () => {
           await fs.mkdir('/repo/alt/objects');
 
           // Act
-          const result = await findLayout(
-            fileSystemLayoutProbe(fs),
-            '/repo/inner',
-            posixPolicy,
-            undefined,
-            '/repo/alt',
-          );
+          let caught: unknown;
+          try {
+            await findLayout(
+              fileSystemLayoutProbe(fs),
+              '/repo/inner',
+              posixPolicy,
+              undefined,
+              '/repo/alt',
+            );
+          } catch (err) {
+            caught = err;
+          }
 
           // Assert
-          expect(result).toBeUndefined();
+          expect(caught).toBeDefined();
+          const data = (caught as { data: { code: string; path: string } }).data;
+          expect(data.code).toBe('NOT_A_REPOSITORY');
+          expect(data.path).toBe('/repo/inner/.git');
         });
       });
     });

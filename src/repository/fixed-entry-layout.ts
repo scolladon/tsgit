@@ -50,7 +50,11 @@ const locateFixedEntry = async (
   }
   return {
     gitDir,
-    ...(commonDirOverride !== undefined && commonDirOverride !== gitDir
+    // `normalizeForCompare`, not raw `!==` — the same degenerate-value rule
+    // the walk and explicit routes apply.
+    ...(commonDirOverride !== undefined &&
+    portablePosixPolicy.normalizeForCompare(commonDirOverride) !==
+      portablePosixPolicy.normalizeForCompare(gitDir)
       ? { commonDir: commonDirOverride }
       : {}),
   };
@@ -83,11 +87,16 @@ export const resolveFixedEntryLayout = async (
   overrides: FixedEntryOverrides = {},
 ): Promise<RepositoryLayoutInput> => {
   const probe = fileSystemLayoutProbe(fs);
-  const commonDirOverride =
+  const resolvedOverride =
     overrides.commonDir === undefined
       ? undefined
       : resolveAgainst(workDir, overrides.commonDir, portablePosixPolicy);
   const entry = await probe.stat(gitDir);
+  // Bootstrap shape (nothing at the entry yet): the override — value AND
+  // marker — is inert, matching the walk shims' found-nothing doctrine.
+  // `init`/`clone` create a normal repository, never the split layout git
+  // itself cannot reopen.
+  const commonDirOverride = entry === undefined ? undefined : resolvedOverride;
   const located = await locateFixedEntry(probe, workDir, gitDir, entry, commonDirOverride);
   const outcome: WalkOutcome = {
     ...located,

@@ -94,27 +94,31 @@ describe('browser shim — openRepository', () => {
     });
   });
 
-  describe('Given an explicit absolute commonDir', () => {
+  describe('Given an explicit absolute commonDir and nothing at the fixed entry (bootstrap shape)', () => {
     describe('When openRepository runs', () => {
-      it('Then repo.layout.commonDir reflects it — the option reaches resolveFixedEntryLayout', async () => {
-        // Arrange / Act — nothing exists under fakeHandle, so this pins that
-        // index.browser.ts actually forwards the option down.
+      it('Then the option is inert — no commonDir on the layout, matching the walk shims found-nothing doctrine', async () => {
+        // Arrange / Act — nothing exists under fakeHandle, so this is the
+        // bootstrap shape init/clone open; the override must not survive it,
+        // or init would write the split layout git itself cannot reopen.
         const sut = await openRepository({ rootHandle: fakeHandle, commonDir: '/shared' });
 
         // Assert
-        expect(sut.ctx.layout.commonDir).toBe('/shared');
+        expect('commonDir' in sut.ctx.layout).toBe(false);
       });
     });
   });
 
-  describe('Given a relative commonDir', () => {
+  describe('Given a relative commonDir and nothing at the fixed entry (bootstrap shape)', () => {
     describe('When openRepository runs', () => {
-      it('Then it resolves against the fixed root work dir', async () => {
-        // Arrange / Act
+      it('Then the option is inert for a relative spelling too — resolution happens before the bootstrap check, dropping both alike', async () => {
+        // Arrange / Act — forwarding and relative-vs-root resolution on a
+        // POPULATED entry are pinned by the resolveFixedEntryLayout unit
+        // rows; this pins only the bootstrap-inert half at the openRepository
+        // surface.
         const sut = await openRepository({ rootHandle: fakeHandle, commonDir: 'shared' });
 
         // Assert
-        expect(sut.ctx.layout.commonDir).toBe('/shared');
+        expect('commonDir' in sut.ctx.layout).toBe(false);
       });
     });
   });

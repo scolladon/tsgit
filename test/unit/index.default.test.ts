@@ -203,6 +203,34 @@ describe('memory shim — openRepository', () => {
     });
   });
 
+  describe('Given a valid repository at cwd and an unusable commonDir override, on the discovery route', () => {
+    describe('When openRepository runs', () => {
+      it('Then it refuses with NOT_A_REPOSITORY instead of silently adopting the repository un-overridden', async () => {
+        // Arrange — cwd IS the repo root: without the refusal, the walk
+        // returns nothing and the found-nothing fallback synthesises the
+        // very same {cwd}/.git, opening the repo with the override dropped.
+        const files = {
+          '/repo/self/.git/HEAD': new TextEncoder().encode('ref: refs/heads/main\n'),
+          '/repo/self/.git/objects/.keep': new Uint8Array(0),
+          '/repo/self/.git/refs/.keep': new Uint8Array(0),
+        };
+
+        // Act
+        let caught: unknown;
+        try {
+          await openRepository({ cwd: '/repo/self', commonDir: '/repo/nowhere', files });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeDefined();
+        const data = (caught as { data: { code: string } }).data;
+        expect(data.code).toBe('NOT_A_REPOSITORY');
+      });
+    });
+  });
+
   describe('Given a discoverable repository above cwd', () => {
     const gitDirFiles = {
       '/repo/a/.git/HEAD': new TextEncoder().encode('ref: refs/heads/main\n'),

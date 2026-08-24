@@ -296,6 +296,30 @@ describe('Given an explicit commonDir override reached through a symlink', () =>
   });
 });
 
+describe('Given a commonDir that is a symlink alias OF the gitDir itself', () => {
+  describe('When openRepository resolves its roots', () => {
+    it('Then realpathing collapses them and the degenerate field is dropped — presence still means "differs from gitDir"', async () => {
+      // Arrange — lexically the two paths differ, so the lexical
+      // normalisation upstream keeps the field; only the post-realpath
+      // re-check can catch the collapse.
+      const gitDir = path.join(tmpdir, 'aliased', '.git');
+      await makeGitDir(gitDir);
+      const aliasCommon = path.join(tmpdir, 'alias-of-gitdir');
+      await symlink(gitDir, aliasCommon);
+
+      // Act
+      const repo = await openRepository({ cwd: tmpdir, gitDir, commonDir: aliasCommon });
+
+      try {
+        // Assert
+        expect('commonDir' in repo.ctx.layout).toBe(false);
+      } finally {
+        await repo.dispose();
+      }
+    });
+  });
+});
+
 describe('Given cwd nested (a true descendant, not equal) inside the discovered workDir', () => {
   describe('When openRepository resolves its roots', () => {
     it("Then the workDir shortcut still avoids its own realpath (isDerivedFromCanonicalCwd's startsWith, not endsWith)", async () => {

@@ -132,8 +132,11 @@ export const findLayout = async (
     // directory (the candidate branch above fell through rather than
     // returning) — never after a `.git` file, which always returns or throws.
     // The same validator asks whether `current` ITSELF is a git directory.
+    // No `...marker` here: BARE_DIR is measured override-inert (bareness
+    // follows `core.bare` alone) and its sole reader early-returns on the
+    // route, so setting the field would be dead data on that arm.
     const bareLocated = await layoutFor(probe, current, pathPolicy, commonDirOverride);
-    if (bareLocated !== undefined) return { ...bareLocated, route: 'BARE_DIR', ...marker };
+    if (bareLocated !== undefined) return { ...bareLocated, route: 'BARE_DIR' };
     const parent = pathPolicy.dirname(current);
     if (parent === current) return undefined; // reached filesystem root
     current = parent;
@@ -269,7 +272,17 @@ const layoutFor = async (
     commonDirOverride === undefined
       ? await resolveCommonDir(probe, gitDir, pathPolicy)
       : commonDirOverride;
-  if (!(await sharedDirsValid(probe, commonDir, pathPolicy))) return undefined;
+  if (!(await sharedDirsValid(probe, commonDir, pathPolicy))) {
+    // An unusable OVERRIDE past a valid `HEAD` refuses rather than climbs:
+    // measured, git refuses (exit 128) and never reaches an enclosing
+    // repository — the same override invalidates every level equally, so
+    // climbing could only end at the shims' found-nothing fallback, which
+    // would adopt this very gitDir un-overridden: a privilege-relevant
+    // argument silently dropped. A failing FILE-derived common dir keeps
+    // today's skip-and-climb.
+    if (commonDirOverride !== undefined) throw notARepository(gitDir as FilePath);
+    return undefined;
+  }
   return {
     gitDir,
     // Omitted (not set to undefined) when equal to gitDir — exactOptionalPropertyTypes
@@ -277,7 +290,11 @@ const layoutFor = async (
     // layout byte-identical to today's. This also performs the degenerate-
     // override normalisation for free: an override resolving equal to
     // gitDir is omitted here exactly like a same-valued file-derived one.
-    ...(commonDir !== gitDir ? { commonDir } : {}),
+    // Compared via `normalizeForCompare` so a case-mismatched spelling of
+    // the same directory cannot smuggle a degenerate value onto the layout.
+    ...(pathPolicy.normalizeForCompare(commonDir) !== pathPolicy.normalizeForCompare(gitDir)
+      ? { commonDir }
+      : {}),
   };
 };
 
