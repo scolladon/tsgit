@@ -111,7 +111,9 @@ export const resolveFixedEntryLayout = async (
   // `fileSystemLayoutProbe` omits `isOwnedByCaller`, so both gates are inert
   // by construction — a parameter here could only ever be ignored.
   const layout = await finishLayout(probe, outcome, portablePosixPolicy, workDir, {
+    // Stryker disable next-line ConditionalExpression: equivalent — `finishLayout` reads `overrides.bare` only via `?? fmt.bare` / `=== true` (resolve-layout.ts); a spread `{ bare: undefined }` is indistinguishable from an omitted key to either reader.
     ...(overrides.bare !== undefined ? { bare: overrides.bare } : {}),
+    // Stryker disable next-line ConditionalExpression: equivalent — the only reader is `explicitWorkDir !== undefined` in `resolveWorkTree` (resolve-layout.ts); a spread `{ workDir: undefined }` reads identically to an omitted key there.
     ...(overrides.workDir !== undefined ? { workDir: overrides.workDir } : {}),
   });
   if (entry !== undefined) return layout;

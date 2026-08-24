@@ -262,6 +262,7 @@ const buildLayoutOptions = (
   trustedDirectories: ReadonlyArray<string> | undefined,
 ): ExplicitLayoutOptions => ({
   ...(opts.gitDir !== undefined ? { gitDir: opts.gitDir } : {}),
+  // Stryker disable next-line ConditionalExpression: equivalent — this result feeds `resolveLayout` directly, whose sole reader is `opts.commonDir === undefined` (resolve-layout.ts); a spread `{ commonDir: undefined }` is indistinguishable from an omitted key there.
   ...(opts.commonDir !== undefined ? { commonDir: opts.commonDir } : {}),
   ...explicit,
   ...(ceilingDirs !== undefined ? { ceilingDirs } : {}),

@@ -436,6 +436,26 @@ describe('fixed-entry layout resolution (the browser shim path)', () => {
     });
   });
 
+  describe('Given a /.git directory whose config says core.bare = true, AND a degenerate override commonDir equal to gitDir', () => {
+    describe('When resolveFixedEntryLayout runs', () => {
+      it('Then the marker-driven bypass still keeps the work tree — the degenerate VALUE carries no signal, only the caller-supplied marker does', async () => {
+        // Arrange
+        const fs = stubFsOver({
+          '/.git': { kind: 'dir' },
+          '/.git/config': { kind: 'file', content: '[core]\n\tbare = true\n' },
+        });
+        const sut = resolveFixedEntryLayout;
+
+        // Act
+        const result = await sut(fs, '/', '/.git', { commonDir: '/.git' });
+
+        // Assert
+        expect(result.bare).toBe(false);
+        expect(result.workDir).toBe('/');
+      });
+    });
+  });
+
   describe('Given a /.git gitfile and a bare:true option', () => {
     describe('When resolveFixedEntryLayout runs', () => {
       it('Then the caller-supplied bare overrides the resolver default', async () => {

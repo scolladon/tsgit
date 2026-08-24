@@ -83,6 +83,7 @@ interface WorkTreeResolution {
  * reporting the bogus-config warning.
  */
 const isLinkedWorktreeAdmin = (outcome: WalkOutcome): boolean => {
+  // Stryker disable next-line ConditionalExpression: equivalent — the sole `BARE_DIR` construction site (find-layout.ts, `layoutFor`'s bare-dir return) never spreads `commonDirSupplied`, so for a BARE_DIR outcome both fall-through checks below (`commonDirSupplied === true`, `route === 'DISCOVERED'`) already evaluate false; removing this guard cannot change the return value.
   if (outcome.route === 'BARE_DIR') return false;
   if (outcome.commonDirSupplied === true) return true;
   return outcome.route === 'DISCOVERED' && outcome.commonDir !== undefined;

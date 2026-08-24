@@ -79,6 +79,7 @@ export const openRepository = async (
   const layout =
     (await resolveLayout(probe, cwd, portablePosixPolicy, {
       ...(opts.gitDir !== undefined ? { gitDir: opts.gitDir } : {}),
+      // Stryker disable next-line ConditionalExpression: equivalent — the sole reader is `opts.commonDir === undefined` in `resolveLayout` (resolve-layout.ts); a spread `{ commonDir: undefined }` is indistinguishable from an omitted key there.
       ...(opts.commonDir !== undefined ? { commonDir: opts.commonDir } : {}),
       ...explicit,
       ...(opts.ceilingDirs !== undefined ? { ceilingDirs: opts.ceilingDirs } : {}),
