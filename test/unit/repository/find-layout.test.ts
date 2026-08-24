@@ -1200,4 +1200,218 @@ describe('findLayout', () => {
       });
     });
   });
+
+  describe('The commonDir override', () => {
+    describe('Given /repo/.git valid with a commondir file naming /repo/other, and a valid /repo/alt', () => {
+      describe('When findLayout runs with a commonDir override', () => {
+        it('Then the outcome uses the override in place of the file-derived value, marked supplied', async () => {
+          // Arrange
+          const fs = new MemoryFileSystem({ rootDir: '/repo' });
+          await makeGitDir(fs, '/repo/.git');
+          await makeGitDir(fs, '/repo/other');
+          await fs.writeUtf8('/repo/.git/commondir', '/repo/other\n');
+          await makeGitDir(fs, '/repo/alt');
+
+          // Act
+          const result = await findLayout(
+            fileSystemLayoutProbe(fs),
+            '/repo',
+            posixPolicy,
+            undefined,
+            '/repo/alt',
+          );
+
+          // Assert
+          expect(result).toStrictEqual({
+            route: 'DISCOVERED',
+            origin: '/repo',
+            gitDir: '/repo/.git',
+            commonDir: '/repo/alt',
+            commonDirSupplied: true,
+          });
+        });
+      });
+    });
+
+    describe('Given /repo/.git valid whose commondir file is ZERO-BYTE, and a valid /repo/alt', () => {
+      describe('When findLayout runs with a commonDir override', () => {
+        it('Then it does not throw — the commondir file is never read when an override is supplied', async () => {
+          // Arrange
+          const fs = new MemoryFileSystem({ rootDir: '/repo' });
+          await makeGitDir(fs, '/repo/.git');
+          await fs.writeUtf8('/repo/.git/commondir', '');
+          await makeGitDir(fs, '/repo/alt');
+
+          // Act
+          const result = await findLayout(
+            fileSystemLayoutProbe(fs),
+            '/repo',
+            posixPolicy,
+            undefined,
+            '/repo/alt',
+          );
+
+          // Assert
+          expect(result).toStrictEqual({
+            route: 'DISCOVERED',
+            origin: '/repo',
+            gitDir: '/repo/.git',
+            commonDir: '/repo/alt',
+            commonDirSupplied: true,
+          });
+        });
+      });
+    });
+
+    describe('Given a .git file pointing at an admin dir, and a valid /repo/alt', () => {
+      describe('When findLayout runs with a commonDir override', () => {
+        it('Then commonDir is the override, not the file-derived value', async () => {
+          // Arrange
+          const fs = new MemoryFileSystem({ rootDir: '/repo' });
+          await fs.writeUtf8('/repo/.git/worktrees/wt/HEAD', 'ref: refs/heads/main\n');
+          await fs.writeUtf8('/repo/.git/worktrees/wt/commondir', '/repo/.git\n');
+          await fs.writeUtf8('/repo/wt/.git', 'gitdir: /repo/.git/worktrees/wt\n');
+          await makeGitDir(fs, '/repo/alt');
+
+          // Act
+          const result = await findLayout(
+            fileSystemLayoutProbe(fs),
+            '/repo/wt',
+            posixPolicy,
+            undefined,
+            '/repo/alt',
+          );
+
+          // Assert
+          expect(result).toStrictEqual({
+            route: 'DISCOVERED',
+            origin: '/repo/wt',
+            gitDir: '/repo/.git/worktrees/wt',
+            commonDir: '/repo/alt',
+            commonDirSupplied: true,
+          });
+        });
+      });
+    });
+
+    describe('Given /repo/bare.git valid (no enclosing .git), and a valid /repo/alt', () => {
+      describe('When findLayout runs with a commonDir override', () => {
+        it('Then the outcome is BARE_DIR with the override commonDir, marked supplied', async () => {
+          // Arrange
+          const fs = new MemoryFileSystem({ rootDir: '/repo' });
+          await makeGitDir(fs, '/repo/bare.git');
+          await makeGitDir(fs, '/repo/alt');
+
+          // Act
+          const result = await findLayout(
+            fileSystemLayoutProbe(fs),
+            '/repo/bare.git',
+            posixPolicy,
+            undefined,
+            '/repo/alt',
+          );
+
+          // Assert
+          expect(result).toStrictEqual({
+            route: 'BARE_DIR',
+            gitDir: '/repo/bare.git',
+            commonDir: '/repo/alt',
+            commonDirSupplied: true,
+          });
+        });
+      });
+    });
+
+    describe('Given /repo/inner/.git valid, an enclosing /repo/.git also valid, and /repo/alt containing only refs/', () => {
+      describe('When findLayout runs with the override', () => {
+        it('Then the result is undefined — the override invalidates every candidate, and the walk never climbs to a usable repo', async () => {
+          // Arrange
+          const fs = new MemoryFileSystem({ rootDir: '/repo' });
+          await makeGitDir(fs, '/repo/.git');
+          await makeGitDir(fs, '/repo/inner/.git');
+          await fs.mkdir('/repo/alt/refs');
+
+          // Act
+          const result = await findLayout(
+            fileSystemLayoutProbe(fs),
+            '/repo/inner',
+            posixPolicy,
+            undefined,
+            '/repo/alt',
+          );
+
+          // Assert
+          expect(result).toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given /repo/inner/.git valid, an enclosing /repo/.git also valid, and /repo/alt containing only objects/', () => {
+      describe('When findLayout runs with the override', () => {
+        it('Then the result is undefined — the missing refs/ guard alone invalidates every candidate', async () => {
+          // Arrange
+          const fs = new MemoryFileSystem({ rootDir: '/repo' });
+          await makeGitDir(fs, '/repo/.git');
+          await makeGitDir(fs, '/repo/inner/.git');
+          await fs.mkdir('/repo/alt/objects');
+
+          // Act
+          const result = await findLayout(
+            fileSystemLayoutProbe(fs),
+            '/repo/inner',
+            posixPolicy,
+            undefined,
+            '/repo/alt',
+          );
+
+          // Assert
+          expect(result).toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given /repo/.git valid, and an override equal to the gitDir itself (degenerate)', () => {
+      describe('When findLayout runs with the override', () => {
+        it('Then the commonDir key is omitted but commonDirSupplied is true', async () => {
+          // Arrange
+          const fs = new MemoryFileSystem({ rootDir: '/repo' });
+          await makeGitDir(fs, '/repo/.git');
+
+          // Act
+          const result = await findLayout(
+            fileSystemLayoutProbe(fs),
+            '/repo',
+            posixPolicy,
+            undefined,
+            '/repo/.git',
+          );
+
+          // Assert
+          expect(result !== undefined && 'commonDir' in result).toBe(false);
+          expect(result?.commonDirSupplied).toBe(true);
+        });
+      });
+    });
+
+    describe('Given a plain /repo/.git and no override at all', () => {
+      describe('When findLayout runs', () => {
+        it('Then the outcome carries no commonDirSupplied key — byte-identical to today', async () => {
+          // Arrange
+          const fs = new MemoryFileSystem({ rootDir: '/repo' });
+          await makeGitDir(fs, '/repo/.git');
+
+          // Act
+          const result = await findLayout(fileSystemLayoutProbe(fs), '/repo', posixPolicy);
+
+          // Assert
+          expect(result).toStrictEqual({
+            route: 'DISCOVERED',
+            gitDir: '/repo/.git',
+            origin: '/repo',
+          });
+          expect(result !== undefined && 'commonDirSupplied' in result).toBe(false);
+        });
+      });
+    });
+  });
 });

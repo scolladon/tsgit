@@ -729,4 +729,77 @@ describe('resolveLayout — the ownership-trust gate', () => {
       });
     });
   });
+
+  describe('The commonDir override', () => {
+    describe('Given a valid /repo/.git and a valid /repo/alt, owned false only for /repo/alt', () => {
+      describe('When resolveLayout runs with the override on the discovery route', () => {
+        it('Then untrusted is true, foreignPath names the override, and the checked set includes it third', async () => {
+          // Arrange
+          const fs = new MemoryFileSystem({ rootDir: '/repo' });
+          await makeGitDir(fs, '/repo/.git');
+          await makeGitDir(fs, '/repo/alt');
+          const { probe, ownershipQueries, reads } = recordingProbe(
+            fs,
+            (path) => path !== '/repo/alt',
+          );
+
+          // Act
+          const result = await resolveLayout(probe, '/repo', posixPolicy, {
+            commonDir: '/repo/alt',
+          });
+
+          // Assert
+          expect(result?.untrusted).toBe(true);
+          expect(result?.foreignPath).toBe('/repo/alt');
+          expect(ownershipQueries).toStrictEqual(['/repo', '/repo/.git', '/repo/alt']);
+          expect(ranStage2(reads)).toBe(false);
+        });
+      });
+    });
+
+    describe('Given the same fixture with every checked path owned', () => {
+      describe('When resolveLayout runs with the override on the discovery route', () => {
+        it('Then untrusted is absent and the override still appears in the checked set', async () => {
+          // Arrange — proves the OVERRIDE, not the file-derived gitDir, was
+          // the third checked path.
+          const fs = new MemoryFileSystem({ rootDir: '/repo' });
+          await makeGitDir(fs, '/repo/.git');
+          await makeGitDir(fs, '/repo/alt');
+          const { probe, ownershipQueries } = recordingProbe(fs, () => true);
+
+          // Act
+          const result = await resolveLayout(probe, '/repo', posixPolicy, {
+            commonDir: '/repo/alt',
+          });
+
+          // Assert
+          expect(result?.untrusted).toBeUndefined();
+          expect(ownershipQueries).toStrictEqual(['/repo', '/repo/.git', '/repo/alt']);
+        });
+      });
+    });
+
+    describe('Given the same probe and owned predicate, entered via the EXPLICIT route', () => {
+      describe('When resolveLayout runs with { gitDir, commonDir }', () => {
+        it('Then the EXPLICIT route stays ungated — no ownership query at all', async () => {
+          // Arrange — pins that the option adds a second path into the
+          // pre-existing EXPLICIT-route hole, rather than a new gate.
+          const fs = new MemoryFileSystem({ rootDir: '/repo' });
+          await makeGitDir(fs, '/repo/.git');
+          await makeGitDir(fs, '/repo/alt');
+          const { probe, ownershipQueries } = recordingProbe(fs, (path) => path !== '/repo/alt');
+
+          // Act
+          const result = await resolveLayout(probe, '/repo', posixPolicy, {
+            gitDir: '/repo/.git',
+            commonDir: '/repo/alt',
+          });
+
+          // Assert
+          expect(ownershipQueries).toStrictEqual([]);
+          expect(result?.untrusted).toBeUndefined();
+        });
+      });
+    });
+  });
 });
