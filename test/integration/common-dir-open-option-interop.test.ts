@@ -101,7 +101,10 @@ describe.skipIf(!GIT_AVAILABLE)('commonDir open option interop', () => {
 
     describe('When opened at the worktree with commonDir naming the real common dir (scenario A)', () => {
       it('Then layout.gitDir/commonDir match git rev-parse --git-dir --git-common-dir, and reads agree', async () => {
-        // Arrange
+        // Arrange — NOTE: the supplied value equals what the commondir file
+        // already implies, so this is an agreement pin (R1), deliberately
+        // non-discriminating: every assertion would pass with the option
+        // dropped. The discriminating pins are scenarios B–H.
         const [expectedGitDir, expectedCommonDir] = gitDirPair(wt);
         const repo = await openRepository({ cwd: wt, commonDir: path.join(main, '.git') });
 
@@ -147,28 +150,48 @@ describe.skipIf(!GIT_AVAILABLE)('commonDir open option interop', () => {
           const committed = await repo.commit({ message: 'c2', author: AUTHOR });
           await repo.packRefs();
 
-          // Assert — the override carries the new refs, reflogs and packed-refs
+          // Assert — the override carries the new refs, reflogs and packed-refs.
+          // Content, not mere existence: `worktree add` pre-creates feature's
+          // reflog in the real common dir, and the alt copy was taken after,
+          // so only the NEW entry's id discriminates.
           const peerShowRef = runGit(['--git-dir', alt, 'show-ref']);
           expect(peerShowRef).toContain(`refs/heads/extra-branch`);
           expect(peerShowRef).toContain(`refs/tags/extra-tag`);
           expect(peerShowRef).toContain(`${committed.id} refs/heads/feature`);
-          expect(existsSync(path.join(alt, 'logs', 'refs', 'heads', 'feature'))).toBe(true);
+          const altFeatureReflog = await readFile(
+            path.join(alt, 'logs', 'refs', 'heads', 'feature'),
+            'utf8',
+          );
+          expect(altFeatureReflog).toContain(committed.id);
+          expect(existsSync(path.join(alt, 'packed-refs'))).toBe(true);
+          const altPackedRefs = await readFile(path.join(alt, 'packed-refs'), 'utf8');
+          expect(altPackedRefs).toContain('refs/heads/extra-branch');
 
           // Assert — nothing NEW appears under the real common dir (main/.git):
-          // extra-branch/extra-tag never existed there at all, and feature's
-          // pre-existing loose ref (created by `worktree add`) is left stale.
+          // extra-branch/extra-tag never existed there at all, feature's
+          // pre-existing loose ref (created by `worktree add`) is left stale,
+          // and its pre-existing reflog never gains the new entry.
           expect(existsSync(path.join(main, '.git', 'refs', 'heads', 'extra-branch'))).toBe(false);
           expect(existsSync(path.join(main, '.git', 'refs', 'tags', 'extra-tag'))).toBe(false);
           expect(existsSync(path.join(main, '.git', 'packed-refs'))).toBe(false);
           expect(runGit(['--git-dir', path.join(main, '.git'), 'rev-parse', 'feature'])).toBe(
             `${featureBefore}\n`,
           );
+          const mainFeatureReflog = await readFile(
+            path.join(main, '.git', 'logs', 'refs', 'heads', 'feature'),
+            'utf8',
+          );
+          expect(mainFeatureReflog).not.toContain(committed.id);
 
-          // Assert — per-worktree state (HEAD, index, its own reflog) stays
-          // under the admin dir, not the override.
-          expect(existsSync(path.join(adminDir, 'HEAD'))).toBe(true);
-          expect(existsSync(path.join(adminDir, 'index'))).toBe(true);
-          expect(existsSync(path.join(adminDir, 'logs', 'HEAD'))).toBe(true);
+          // Assert — per-worktree state stays under the admin dir, not the
+          // override: the admin dir's OWN reflog gains the new entry while the
+          // override's pre-existing copy does not, and the override's HEAD is
+          // left exactly as the copy created it.
+          const adminHeadReflog = await readFile(path.join(adminDir, 'logs', 'HEAD'), 'utf8');
+          expect(adminHeadReflog).toContain(committed.id);
+          const altHeadReflog = await readFile(path.join(alt, 'logs', 'HEAD'), 'utf8');
+          expect(altHeadReflog).not.toContain(committed.id);
+          expect(await readFile(path.join(alt, 'HEAD'), 'utf8')).toBe('ref: refs/heads/main\n');
 
           // Assert — the peer proves the SAME split shape independently, via
           // a real linked worktree with no override at all: a branch created
@@ -185,24 +208,37 @@ describe.skipIf(!GIT_AVAILABLE)('commonDir open option interop', () => {
     });
 
     describe('When tsgit commits through the explicit commonDir naming the value the commondir file already implies (scenario J)', () => {
-      it('Then git, run with no override at all, reads the identical oid', async () => {
-        // Arrange
+      it('Then git, run with no override at all, reads the identical commit and its tree content', async () => {
+        // Arrange — an isolated fixture: J must not depend on scenario C's
+        // mutations (C leaves a staged entry whose blob exists only under
+        // its diverging override, which would make this repository fail
+        // fsck while the ref-level assertions happened not to notice).
+        const jMain = path.join(root, 'j-isolated', 'main');
+        runGit(['init', '-q', '-b', 'main', jMain]);
+        await writeFile(path.join(jMain, 'a.txt'), 'one\n');
+        git(jMain, 'add', 'a.txt');
+        commit(jMain, 'c1');
+        const jWt = path.join(root, 'j-isolated', 'wt');
+        runGit(['-C', jMain, 'worktree', 'add', '-q', '-b', 'feature', jWt]);
+        const jAdmin = path.join(jMain, '.git', 'worktrees', 'wt');
         const repo = await openRepository({
-          cwd: wt,
-          gitDir: adminDir,
-          workDir: wt,
-          commonDir: path.join(main, '.git'),
+          cwd: jWt,
+          gitDir: jAdmin,
+          workDir: jWt,
+          commonDir: path.join(jMain, '.git'),
         });
 
         try {
           // Act
-          await writeFile(path.join(wt, 'j.txt'), 'round-trip\n');
+          await writeFile(path.join(jWt, 'j.txt'), 'round-trip\n');
           await repo.add(['j.txt']);
           const committed = await repo.commit({ message: 'j', author: AUTHOR });
 
-          // Assert
-          expect(git(wt, 'rev-parse', 'feature').trim()).toBe(committed.id);
-          expect(git(wt, 'cat-file', '-t', committed.id).trim()).toBe('commit');
+          // Assert — the tree read surfaces a missing object where the bare
+          // ref lookup would not.
+          expect(git(jWt, 'rev-parse', 'feature').trim()).toBe(committed.id);
+          expect(git(jWt, 'cat-file', '-t', committed.id).trim()).toBe('commit');
+          expect(git(jWt, 'log', '--stat', '-1')).toContain('j.txt');
         } finally {
           await repo.dispose();
         }
@@ -337,6 +373,9 @@ describe.skipIf(!GIT_AVAILABLE)('commonDir open option interop', () => {
         await writeFile(path.join(localAlt, 'info', 'exclude'), 'ignored.txt\n');
         await writeFile(path.join(localPlain, '.git', 'info', 'exclude'), 'other.txt\n');
         await writeFile(path.join(localPlain, 'ignored.txt'), 'x\n');
+        // A positive control matched by neither pattern, so an empty
+        // untracked set (a silently broken walk) cannot pass.
+        await writeFile(path.join(localPlain, 'visible.txt'), 'y\n');
 
         // Act
         const peerStatus = tryRunGitWithExit(['-C', localPlain, 'status', '--porcelain'], {
@@ -349,7 +388,9 @@ describe.skipIf(!GIT_AVAILABLE)('commonDir open option interop', () => {
           // Assert
           expect(peerStatus.exitCode).toBe(0);
           expect(peerStatus.stdout).not.toContain('ignored.txt');
+          expect(peerStatus.stdout).toContain('visible.txt');
           expect(status.untracked).not.toContain('ignored.txt');
+          expect(status.untracked).toContain('visible.txt');
         } finally {
           await repo.dispose();
         }
@@ -462,6 +503,12 @@ describe.skipIf(!GIT_AVAILABLE)('commonDir open option interop', () => {
       });
     });
 
+    // Scenario I pins GIT'S OWN classification of the split (rev-parse
+    // --git-path under the env override); tsgit participates only on the ref
+    // rows, whose side is cross-checked against isPerWorktreeRef. The
+    // non-ref rows document the measured design matrix — tsgit's own
+    // placement of the load-bearing ones (objects, config, shallow, info,
+    // hooks, refs, reflogs, packed-refs) is proven by scenarios B–E and C.
     describe('When git rev-parse --git-path is walked over the per-worktree/common split under the override (scenario I)', () => {
       interface Row {
         readonly gitPath: string;
@@ -490,8 +537,11 @@ describe.skipIf(!GIT_AVAILABLE)('commonDir open option interop', () => {
         { gitPath: 'worktrees', side: 'common' },
         // Counter-intuitive: the rest of info/ is common, this is not.
         { gitPath: 'info/sparse-checkout', side: 'perWorktree' },
-        // Counter-intuitive: the rest of logs/ is common, this is not.
+        // Counter-intuitive: the rest of logs/ is common, these are not.
         { gitPath: 'logs/HEAD', side: 'perWorktree' },
+        { gitPath: 'logs/refs/bisect', side: 'perWorktree' },
+        { gitPath: 'logs/refs/worktree', side: 'perWorktree' },
+        { gitPath: 'logs/refs/rewritten', side: 'perWorktree' },
         { gitPath: 'HEAD', side: 'perWorktree', refName: 'HEAD' },
         { gitPath: 'index', side: 'perWorktree' },
         { gitPath: 'ORIG_HEAD', side: 'perWorktree', refName: 'ORIG_HEAD' },
@@ -520,7 +570,7 @@ describe.skipIf(!GIT_AVAILABLE)('commonDir open option interop', () => {
       ];
 
       it.each(rows)(
-        'Then git-path $gitPath resolves to the $side directory, and ref rows agree with isPerWorktreeRef',
+        'Then git classifies git-path $gitPath as $side, and ref rows agree with isPerWorktreeRef',
         ({ gitPath, side, refName }) => {
           // Arrange
           const expectedBase = side === 'common' ? altDir : plainGitDir;
@@ -784,7 +834,7 @@ describe.skipIf(!GIT_AVAILABLE)('commonDir open option interop', () => {
       };
 
       it.each(['nonexistent', 'file', 'objects-only', 'refs-only'] as const)(
-        'Then git co-refuses on both routes (exit 128), and tsgit defers on the explicit route while surfacing NOT_A_REPOSITORY on the discovery route: %s',
+        'Then git co-refuses on both routes (exit 128), tsgit defers on the explicit route and refuses at open on the discovery route: %s',
         async (label) => {
           // Arrange — explicit route: a real, self-sufficient gitDir paired
           // with the unusable override.
@@ -821,27 +871,24 @@ describe.skipIf(!GIT_AVAILABLE)('commonDir open option interop', () => {
             expect(explicitData.code).toBe('OBJECT_NOT_FOUND');
           }
 
-          // Arrange — discovery route: cwd has no .git of its own anywhere,
-          // so the override's shape never even needs consulting to fail.
-          const emptyDir = path.join(root, `h-empty-${label}`);
-          await mkdir(emptyDir, { recursive: true });
+          // Arrange — discovery route: cwd IS a valid repository, so the
+          // unusable override is the ONLY discriminator — with the option
+          // dropped this open succeeds. (An empty cwd would refuse with or
+          // without the override, proving nothing about it.)
+          const discDir = await copyPlainRow(`h-disc-${label}`);
           const badDiscovery = await makeBadCommon(root, label, `disc-${label}`);
 
-          // Act — discovery route peer + tsgit
-          const discoveryPeer = tryRunGitWithExit(['-C', emptyDir, 'rev-parse', 'HEAD'], {
+          // Act — discovery route peer + tsgit (which refuses at open: the
+          // walk refuses rather than let the found-nothing fallback adopt
+          // the repository with the override silently dropped)
+          const discoveryPeer = tryRunGitWithExit(['-C', discDir, 'rev-parse', 'HEAD'], {
             env: { ...runGitEnv(), GIT_COMMON_DIR: badDiscovery },
-          });
-          const discoveryRepo = await openRepository({
-            cwd: emptyDir,
-            commonDir: badDiscovery,
           });
           let discoveryCaught: unknown;
           try {
-            await discoveryRepo.revParse('HEAD');
+            await openRepository({ cwd: discDir, commonDir: badDiscovery });
           } catch (err) {
             discoveryCaught = err;
-          } finally {
-            await discoveryRepo.dispose();
           }
 
           // Assert — discovery route
@@ -849,9 +896,10 @@ describe.skipIf(!GIT_AVAILABLE)('commonDir open option interop', () => {
           expect(discoveryPeer.stderr).toContain(
             'not a git repository (or any of the parent directories): .git',
           );
+          expect(discoveryCaught).toBeDefined();
           const discoveryData = (discoveryCaught as { data: { code: string; path: string } }).data;
           expect(discoveryData.code).toBe('NOT_A_REPOSITORY');
-          expect(discoveryData.path).toBe(emptyDir);
+          expect(discoveryData.path).toBe(path.join(discDir, '.git'));
         },
       );
     });

@@ -231,6 +231,73 @@ describe('memory shim — openRepository', () => {
     });
   });
 
+  describe('Given no repository anywhere and a VALID commonDir, on the found-nothing bootstrap', () => {
+    describe('When openRepository runs', () => {
+      it('Then the option is inert — the bootstrap layout carries no commonDir', async () => {
+        // Arrange — a valid common dir but nothing to discover: the walk
+        // finds no valid-HEAD candidate, so the bootstrap engages and must
+        // ignore the option (init/clone create a normal repository).
+        const files = {
+          '/repo/shared/objects/.keep': new Uint8Array(0),
+          '/repo/shared/refs/.keep': new Uint8Array(0),
+        };
+
+        // Act
+        const sut = await openRepository({ cwd: '/repo/empty', commonDir: '/repo/shared', files });
+
+        try {
+          // Assert — the memory shim's bootstrap location is its fixed
+          // /repo root, and the option must not survive onto it.
+          expect('commonDir' in sut.ctx.layout).toBe(false);
+          expect(sut.ctx.layout.gitDir).toBe('/repo/.git');
+        } finally {
+          await sut.dispose();
+        }
+      });
+    });
+  });
+
+  describe('Given a sha256-declaring commonDir override and a contradicting algorithm argument', () => {
+    describe('When openRepository runs', () => {
+      it('Then it refuses with OBJECT_FORMAT_CONFLICT naming both formats', async () => {
+        // Arrange — the override's config declares sha256; the caller pins
+        // sha1: the declared-vs-requested contradiction must keep refusing
+        // through the override exactly as through a repository's own config.
+        const files = {
+          '/repo/w/.git/HEAD': new TextEncoder().encode('ref: refs/heads/main\n'),
+          '/repo/w/.git/objects/.keep': new Uint8Array(0),
+          '/repo/w/.git/refs/.keep': new Uint8Array(0),
+          '/repo/shared/objects/.keep': new Uint8Array(0),
+          '/repo/shared/refs/.keep': new Uint8Array(0),
+          '/repo/shared/config': new TextEncoder().encode(
+            '[core]\n\trepositoryformatversion = 1\n[extensions]\n\tobjectformat = sha256\n',
+          ),
+        };
+
+        // Act
+        let caught: unknown;
+        try {
+          await openRepository({
+            cwd: '/repo/w',
+            commonDir: '/repo/shared',
+            algorithm: 'sha1',
+            files,
+          });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeDefined();
+        const data = (caught as { data: { code: string; declared: string; requested: string } })
+          .data;
+        expect(data.code).toBe('OBJECT_FORMAT_CONFLICT');
+        expect(data.declared).toBe('sha256');
+        expect(data.requested).toBe('sha1');
+      });
+    });
+  });
+
   describe('Given a discoverable repository above cwd', () => {
     const gitDirFiles = {
       '/repo/a/.git/HEAD': new TextEncoder().encode('ref: refs/heads/main\n'),

@@ -1317,6 +1317,32 @@ describe('resolveLayout', () => {
       });
     });
 
+    describe('Given a commonDir with a trailing slash', () => {
+      describe('When resolveLayout runs', () => {
+        it('Then the layout carries the normalised path — a deliberate, cosmetic-only divergence from git, which echoes the slash verbatim', async () => {
+          // Arrange
+          const fs = new MemoryFileSystem({ rootDir: '/repo' });
+          await makeGitDir(fs, '/repo/bare.git');
+          await makeGitDir(fs, '/repo/alt');
+
+          // Act
+          const result = await resolveLayout(
+            fileSystemLayoutProbe(fs),
+            '/repo/elsewhere',
+            posixPolicy,
+            {
+              gitDir: '/repo/bare.git',
+              commonDir: '/repo/alt/',
+            },
+          );
+
+          // Assert — layout paths are data other paths join onto, never
+          // display strings.
+          expect(result?.commonDir).toBe('/repo/alt');
+        });
+      });
+    });
+
     describe('Given an explicit bare: true argument alongside a commonDir override, on the EXPLICIT route', () => {
       describe('When resolveLayout runs', () => {
         it('Then bare wins — the marker-driven bypass yields to the more specific argument', async () => {

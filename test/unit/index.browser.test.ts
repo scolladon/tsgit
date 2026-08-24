@@ -324,12 +324,11 @@ describe('fixed-entry layout resolution (the browser shim path)', () => {
     describe('When resolveFixedEntryLayout runs', () => {
       it('Then no commondir file is ever read and the layout commonDir is the override', async () => {
         // Arrange — no `/.git/commondir` entry exists at all; the override
-        // must be honoured without probing for one.
-        const fs = stubFsOver({
-          '/.git': { kind: 'dir' },
-          '/shared/objects': { kind: 'dir' },
-          '/shared/refs': { kind: 'dir' },
-        });
+        // must be honoured without probing for one. Deliberately NO
+        // objects/refs entries under /shared either: the directory branch
+        // performs no structural validation (see the sibling test below),
+        // so seeding them would imply a check that does not happen.
+        const fs = stubFsOver({ '/.git': { kind: 'dir' } });
         const sut = resolveFixedEntryLayout;
 
         // Act
@@ -337,6 +336,23 @@ describe('fixed-entry layout resolution (the browser shim path)', () => {
 
         // Assert
         expect(result.commonDir).toBe('/shared');
+      });
+    });
+  });
+
+  describe('Given a plain /.git directory entry, AND an override naming a nonexistent directory', () => {
+    describe('When resolveFixedEntryLayout runs', () => {
+      it('Then the override still lands — the directory branch is deliberately unvalidated, refusals surface at first command', async () => {
+        // Arrange — this shim mirrors the explicit-gitDir route's leniency:
+        // no sharedDirsValid check on the directory branch.
+        const fs = stubFsOver({ '/.git': { kind: 'dir' } });
+        const sut = resolveFixedEntryLayout;
+
+        // Act
+        const result = await sut(fs, '/', '/.git', { commonDir: '/nowhere' });
+
+        // Assert
+        expect(result.commonDir).toBe('/nowhere');
       });
     });
   });
