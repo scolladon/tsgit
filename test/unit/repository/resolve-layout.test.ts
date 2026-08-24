@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { MemoryFileSystem } from '../../../src/adapters/memory/memory-file-system.js';
-import { posixPolicy } from '../../../src/adapters/node/path-policy.js';
+import { posixPolicy, windowsPolicy } from '../../../src/adapters/node/path-policy.js';
 import { TsgitError } from '../../../src/domain/error.js';
 import { fileSystemLayoutProbe } from '../../../src/repository/file-system-layout-probe.js';
 import { resolveLayout, syntheticFallbackLayout } from '../../../src/repository/resolve-layout.js';
@@ -287,6 +287,52 @@ describe('resolveLayout', () => {
           objectFormat: 'sha1',
           refStorage: 'files',
         });
+      });
+    });
+  });
+
+  describe('Given a linked worktree admin dir (commondir file, NO commonDir argument) opened with bare: true', () => {
+    describe('When resolveLayout runs at the worktree path', () => {
+      it('Then the file-derived bypass still wins — the work tree is kept, exactly as before the option existed', async () => {
+        // Arrange — the marker-ABSENT arm of the bypass-suppression guard:
+        // an explicit bare: true suppresses only the caller-supplied-marker
+        // bypass, never the file-derived linked-worktree one.
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await makeGitDir(fs, '/repo/bare.git');
+        await fs.writeUtf8('/repo/bare.git/config', '[core]\n\tbare = true\n');
+        await fs.writeUtf8('/repo/bare.git/worktrees/wt/HEAD', 'ref: refs/heads/main\n');
+        await fs.writeUtf8('/repo/bare.git/worktrees/wt/commondir', '../..\n');
+        await fs.writeUtf8('/repo/wt/.git', 'gitdir: /repo/bare.git/worktrees/wt\n');
+
+        // Act
+        const result = await resolveLayout(fileSystemLayoutProbe(fs), '/repo/wt', posixPolicy, {
+          bare: true,
+        });
+
+        // Assert
+        expect(result?.bare).toBe(false);
+        expect(result?.workDir).toBe('/repo/wt');
+      });
+    });
+  });
+
+  describe('Given a case-mismatched spelling of the gitDir supplied as commonDir, under the windows policy', () => {
+    describe('When resolveLayout runs on the lenient EXPLICIT route', () => {
+      it('Then the degenerate value normalises away — presence still means "differs from gitDir" under case-folding too', async () => {
+        // Arrange — no fs entries needed: the EXPLICIT route validates
+        // nothing structurally, which is exactly what lets this row pin the
+        // normalizeForCompare comparison in isolation.
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+
+        // Act
+        const result = await resolveLayout(fileSystemLayoutProbe(fs), 'C:\\cwd', windowsPolicy, {
+          gitDir: 'C:\\repo\\bare.git',
+          commonDir: 'C:\\REPO\\BARE.GIT',
+        });
+
+        // Assert
+        expect(result).toBeDefined();
+        expect('commonDir' in (result as object)).toBe(false);
       });
     });
   });
@@ -1105,6 +1151,431 @@ describe('resolveLayout', () => {
 
           // Assert — proves the conditional spread, not just an undefined read.
           expect('formatRefusal' in (result as object)).toBe(false);
+        });
+      });
+    });
+  });
+
+  describe('The commonDir override', () => {
+    describe('Given a repo whose .git carries a commondir file naming /repo/other, and a valid /repo/alt', () => {
+      describe('When resolveLayout runs with opts.commonDir', () => {
+        it('Then the override wins over the present commondir file', async () => {
+          // Arrange
+          const fs = new MemoryFileSystem({ rootDir: '/repo' });
+          await makeGitDir(fs, '/repo/.git');
+          await makeGitDir(fs, '/repo/other');
+          await fs.writeUtf8('/repo/.git/commondir', '/repo/other\n');
+          await makeGitDir(fs, '/repo/alt');
+
+          // Act
+          const result = await resolveLayout(fileSystemLayoutProbe(fs), '/repo', posixPolicy, {
+            commonDir: '/repo/alt',
+          });
+
+          // Assert
+          expect(result?.commonDir).toBe('/repo/alt');
+        });
+      });
+    });
+
+    describe('Given a repo at /repo, cwd at /repo/sub, a valid /repo/sub/alt and a decoy valid /repo/.git/alt', () => {
+      describe("When resolveLayout runs with a RELATIVE opts.commonDir ('alt')", () => {
+        it('Then it resolves against cwd, never against the gitDir', async () => {
+          // Arrange — the two candidate bases must be distinguishable, so a
+          // bare '../shared' would not do (both bases collapse to the same
+          // path); 'alt' joined onto each base stays distinct.
+          const fs = new MemoryFileSystem({ rootDir: '/repo' });
+          await makeGitDir(fs, '/repo/.git');
+          await makeGitDir(fs, '/repo/sub/alt');
+          await makeGitDir(fs, '/repo/.git/alt');
+
+          // Act
+          const result = await resolveLayout(fileSystemLayoutProbe(fs), '/repo/sub', posixPolicy, {
+            commonDir: 'alt',
+          });
+
+          // Assert
+          expect(result?.commonDir).toBe('/repo/sub/alt');
+          expect(result?.commonDir).not.toBe('/repo/.git/alt');
+        });
+      });
+    });
+
+    describe('Given nothing at /repo/missing-common and a valid /repo/.git', () => {
+      describe('When resolveLayout runs with { gitDir, commonDir } naming the missing directory', () => {
+        it('Then it still resolves — the explicit route stays lenient, no throw', async () => {
+          // Arrange
+          const fs = new MemoryFileSystem({ rootDir: '/repo' });
+          await makeGitDir(fs, '/repo/.git');
+
+          // Act
+          const result = await resolveLayout(fileSystemLayoutProbe(fs), '/repo', posixPolicy, {
+            gitDir: '/repo/.git',
+            commonDir: '/repo/missing-common',
+          });
+
+          // Assert
+          expect(result?.commonDir).toBe('/repo/missing-common');
+          expect(result?.workDir).toBe('/repo');
+        });
+      });
+    });
+
+    describe('Given a valid /repo/.git', () => {
+      describe('When resolveLayout runs with commonDir equal to the gitDir (degenerate)', () => {
+        it('Then the degenerate value is normalised off the layout', async () => {
+          // Arrange
+          const fs = new MemoryFileSystem({ rootDir: '/repo' });
+          await makeGitDir(fs, '/repo/.git');
+
+          // Act
+          const result = await resolveLayout(fileSystemLayoutProbe(fs), '/repo', posixPolicy, {
+            commonDir: '/repo/.git',
+          });
+
+          // Assert
+          expect('commonDir' in (result as object)).toBe(false);
+        });
+      });
+    });
+
+    describe('Given a DISCOVERED repo whose config AND override config both set core.bare = true', () => {
+      describe('When resolveLayout runs with the override', () => {
+        it('Then the discovery origin still resolves as the work tree and bare is false', async () => {
+          // Arrange
+          const fs = new MemoryFileSystem({ rootDir: '/repo' });
+          await makeGitDir(fs, '/repo/.git');
+          await fs.writeUtf8('/repo/.git/config', '[core]\n\tbare = true\n');
+          await makeGitDir(fs, '/repo/alt');
+          await fs.writeUtf8('/repo/alt/config', '[core]\n\tbare = true\n');
+
+          // Act
+          const result = await resolveLayout(fileSystemLayoutProbe(fs), '/repo', posixPolicy, {
+            commonDir: '/repo/alt',
+          });
+
+          // Assert — this row is the R1/R3 behavioural pin, not proof of the
+          // new bareness rule: the OLD isLinkedWorktreeAdmin rule already
+          // returns true here (route DISCOVERED, commonDir set). The rows
+          // below discriminate the new rule.
+          expect(result?.workDir).toBe('/repo');
+          expect(result?.bare).toBe(false);
+        });
+      });
+    });
+
+    describe('Given the same bare config, entered via the EXPLICIT route (opts.gitDir)', () => {
+      describe('When resolveLayout runs with the override', () => {
+        it('Then the marker bypasses core.bare on the EXPLICIT route too — cwd resolves as the work tree', async () => {
+          // Arrange
+          const fs = new MemoryFileSystem({ rootDir: '/repo' });
+          await makeGitDir(fs, '/repo/.git');
+          await fs.writeUtf8('/repo/.git/config', '[core]\n\tbare = true\n');
+          await makeGitDir(fs, '/repo/alt');
+          await fs.writeUtf8('/repo/alt/config', '[core]\n\tbare = true\n');
+
+          // Act
+          const result = await resolveLayout(fileSystemLayoutProbe(fs), '/elsewhere', posixPolicy, {
+            gitDir: '/repo/.git',
+            commonDir: '/repo/alt',
+          });
+
+          // Assert
+          expect(result?.workDir).toBe('/elsewhere');
+          expect(result?.bare).toBe(false);
+        });
+      });
+    });
+
+    describe('Given core.bare = true, entered via EXPLICIT with a DEGENERATE override (commonDir === gitDir)', () => {
+      describe('When resolveLayout runs', () => {
+        it('Then the marker — not the field — still drives the bypass', async () => {
+          // Arrange — this is the row that kills a bypass keyed on
+          // outcome.commonDir !== undefined instead of the marker: the
+          // degenerate value is normalised off the outcome, yet the bypass
+          // must still fire because the caller DID supply a value.
+          const fs = new MemoryFileSystem({ rootDir: '/repo' });
+          await makeGitDir(fs, '/repo/.git');
+          await fs.writeUtf8('/repo/.git/config', '[core]\n\tbare = true\n');
+
+          // Act
+          const result = await resolveLayout(fileSystemLayoutProbe(fs), '/elsewhere', posixPolicy, {
+            gitDir: '/repo/.git',
+            commonDir: '/repo/.git',
+          });
+
+          // Assert
+          expect('commonDir' in (result as object)).toBe(false);
+          expect(result?.bare).toBe(false);
+          expect(result?.workDir).toBe('/elsewhere');
+        });
+      });
+    });
+
+    describe('Given a BARE_DIR repo and a valid /repo/alt whose (overridden, actually-read) config sets core.bare = true', () => {
+      describe('When resolveLayout runs with the override', () => {
+        it('Then the override is honoured but the bareness bypass is inert on this route', async () => {
+          // Arrange — config lives at the OVERRIDDEN common dir, never
+          // gitDir, so the fixture must seed it there to actually exercise
+          // the read rather than pass on the unset-is-truthy default.
+          const fs = new MemoryFileSystem({ rootDir: '/repo' });
+          await makeGitDir(fs, '/repo/bare.git');
+          await makeGitDir(fs, '/repo/alt');
+          await fs.writeUtf8('/repo/alt/config', '[core]\n\tbare = true\n');
+
+          // Act
+          const result = await resolveLayout(
+            fileSystemLayoutProbe(fs),
+            '/repo/bare.git',
+            posixPolicy,
+            { commonDir: '/repo/alt' },
+          );
+
+          // Assert
+          expect(result?.bare).toBe(true);
+          expect('workDir' in (result as object)).toBe(false);
+          expect(result?.commonDir).toBe('/repo/alt');
+        });
+      });
+    });
+
+    describe('Given a BARE_DIR repo and a valid /repo/alt whose (overridden) config sets core.bare = true AND core.worktree', () => {
+      describe('When resolveLayout runs with the override', () => {
+        it('Then it keeps reporting workTreeConfigBogus — the bypass never applies on this route', async () => {
+          // Arrange
+          const fs = new MemoryFileSystem({ rootDir: '/repo' });
+          await makeGitDir(fs, '/repo/bare.git');
+          await makeGitDir(fs, '/repo/alt');
+          await fs.writeUtf8('/repo/alt/config', '[core]\n\tbare = true\n\tworktree = /repo/wt\n');
+
+          // Act
+          const result = await resolveLayout(
+            fileSystemLayoutProbe(fs),
+            '/repo/bare.git',
+            posixPolicy,
+            { commonDir: '/repo/alt' },
+          );
+
+          // Assert
+          expect(result?.workTreeConfigBogus).toBe(true);
+          expect('workDir' in (result as object)).toBe(false);
+        });
+      });
+    });
+
+    describe('Given a commonDir with a trailing slash', () => {
+      describe('When resolveLayout runs', () => {
+        it('Then the layout carries the normalised path — a deliberate, cosmetic-only divergence from git, which echoes the slash verbatim', async () => {
+          // Arrange
+          const fs = new MemoryFileSystem({ rootDir: '/repo' });
+          await makeGitDir(fs, '/repo/bare.git');
+          await makeGitDir(fs, '/repo/alt');
+
+          // Act
+          const result = await resolveLayout(
+            fileSystemLayoutProbe(fs),
+            '/repo/elsewhere',
+            posixPolicy,
+            {
+              gitDir: '/repo/bare.git',
+              commonDir: '/repo/alt/',
+            },
+          );
+
+          // Assert — layout paths are data other paths join onto, never
+          // display strings.
+          expect(result?.commonDir).toBe('/repo/alt');
+        });
+      });
+    });
+
+    describe('Given an explicit bare: true argument alongside a commonDir override, on the EXPLICIT route', () => {
+      describe('When resolveLayout runs', () => {
+        it('Then bare wins — the marker-driven bypass yields to the more specific argument', async () => {
+          // Arrange
+          const fs = new MemoryFileSystem({ rootDir: '/repo' });
+          await makeGitDir(fs, '/repo/bare.git');
+          await makeGitDir(fs, '/repo/alt');
+
+          // Act
+          const result = await resolveLayout(
+            fileSystemLayoutProbe(fs),
+            '/repo/elsewhere',
+            posixPolicy,
+            {
+              gitDir: '/repo/bare.git',
+              commonDir: '/repo/alt',
+              bare: true,
+            },
+          );
+
+          // Assert — without bare: true the same fixture resolves a work
+          // tree at cwd; the explicit argument must keep none.
+          expect(result?.bare).toBe(true);
+          expect('workDir' in (result as object)).toBe(false);
+          expect(result?.commonDir).toBe('/repo/alt');
+        });
+      });
+    });
+
+    describe('Given an explicit bare: true argument alongside a commonDir override, on the DISCOVERED route', () => {
+      describe('When resolveLayout runs', () => {
+        it('Then bare wins here too — the suppression is route-independent', async () => {
+          // Arrange
+          const fs = new MemoryFileSystem({ rootDir: '/repo' });
+          await makeGitDir(fs, '/repo/normal/.git');
+          await makeGitDir(fs, '/repo/alt');
+
+          // Act
+          const result = await resolveLayout(
+            fileSystemLayoutProbe(fs),
+            '/repo/normal',
+            posixPolicy,
+            {
+              commonDir: '/repo/alt',
+              bare: true,
+            },
+          );
+
+          // Assert
+          expect(result?.bare).toBe(true);
+          expect('workDir' in (result as object)).toBe(false);
+        });
+      });
+    });
+
+    describe('Given /repo/.git with a clean config, and a valid /repo/alt whose config sets an unsupported version', () => {
+      describe('When resolveLayout runs with the override', () => {
+        it('Then the acceptance gate reads the OVERRIDDEN config and reports its fields', async () => {
+          // Arrange
+          const fs = new MemoryFileSystem({ rootDir: '/repo' });
+          await makeGitDir(fs, '/repo/.git');
+          await makeGitDir(fs, '/repo/alt');
+          await fs.writeUtf8('/repo/alt/config', '[core]\n\trepositoryformatversion = 99\n');
+
+          // Act
+          const result = await resolveLayout(fileSystemLayoutProbe(fs), '/repo', posixPolicy, {
+            commonDir: '/repo/alt',
+          });
+
+          // Assert — fields, not mere presence.
+          expect(result?.formatRefusal).toStrictEqual({ kind: 'version', version: 99 });
+        });
+      });
+    });
+
+    describe('Given /repo/.git with a clean config, and a valid /repo/alt with a clean config too', () => {
+      describe('When resolveLayout runs with the override', () => {
+        it('Then formatRefusal is absent', async () => {
+          // Arrange
+          const fs = new MemoryFileSystem({ rootDir: '/repo' });
+          await makeGitDir(fs, '/repo/.git');
+          await makeGitDir(fs, '/repo/alt');
+
+          // Act
+          const result = await resolveLayout(fileSystemLayoutProbe(fs), '/repo', posixPolicy, {
+            commonDir: '/repo/alt',
+          });
+
+          // Assert
+          expect('formatRefusal' in (result as object)).toBe(false);
+        });
+      });
+    });
+
+    describe("Given /repo/.git declaring nothing, and /repo/alt's config declaring extensions.objectFormat = sha256", () => {
+      describe('When resolveLayout runs with the override', () => {
+        it('Then objectFormat follows the override', async () => {
+          // Arrange
+          const fs = new MemoryFileSystem({ rootDir: '/repo' });
+          await makeGitDir(fs, '/repo/.git');
+          await makeGitDir(fs, '/repo/alt');
+          await fs.writeUtf8(
+            '/repo/alt/config',
+            '[core]\n\trepositoryformatversion = 1\n[extensions]\n\tobjectformat = sha256\n',
+          );
+
+          // Act
+          const result = await resolveLayout(fileSystemLayoutProbe(fs), '/repo', posixPolicy, {
+            commonDir: '/repo/alt',
+          });
+
+          // Assert
+          expect(result?.objectFormat).toBe('sha256');
+        });
+      });
+    });
+
+    describe("Given /repo/.git declaring nothing, and /repo/alt's config declaring extensions.refStorage = reftable", () => {
+      describe('When resolveLayout runs with the override', () => {
+        it('Then refStorage follows the override', async () => {
+          // Arrange
+          const fs = new MemoryFileSystem({ rootDir: '/repo' });
+          await makeGitDir(fs, '/repo/.git');
+          await makeGitDir(fs, '/repo/alt');
+          await fs.writeUtf8(
+            '/repo/alt/config',
+            '[core]\n\trepositoryformatversion = 1\n[extensions]\n\trefstorage = reftable\n',
+          );
+
+          // Act
+          const result = await resolveLayout(fileSystemLayoutProbe(fs), '/repo', posixPolicy, {
+            commonDir: '/repo/alt',
+          });
+
+          // Assert
+          expect(result?.refStorage).toBe('reftable');
+        });
+      });
+    });
+
+    describe('Given no repository anywhere above /repo/lonely, and a perfectly valid /repo/alt', () => {
+      describe('When resolveLayout runs with the override', () => {
+        it('Then it still returns undefined — the override does not conjure a repository', async () => {
+          // Arrange
+          const fs = new MemoryFileSystem({ rootDir: '/repo' });
+          await fs.mkdir('/repo/lonely');
+          await makeGitDir(fs, '/repo/alt');
+
+          // Act
+          const result = await resolveLayout(
+            fileSystemLayoutProbe(fs),
+            '/repo/lonely',
+            posixPolicy,
+            { commonDir: '/repo/alt' },
+          );
+
+          // Assert
+          expect(result).toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given route DISCOVERED with nothing above (a plain repo), no commonDir option at all', () => {
+      describe('When resolveLayout runs with {}', () => {
+        it('Then it re-runs the existing golden exactly — no new key appears', async () => {
+          // Arrange — exactOptionalPropertyTypes makes omission the only
+          // legal way to signal "not supplied" for `commonDir`, so the pin
+          // is that `{}` still reproduces the pre-Part-1 golden byte for byte.
+          const fs = new MemoryFileSystem({ rootDir: '/repo' });
+          await makeGitDir(fs, '/repo/normal/.git');
+
+          // Act
+          const withEmptyOpts = await resolveLayout(
+            fileSystemLayoutProbe(fs),
+            '/repo/normal',
+            posixPolicy,
+            {},
+          );
+
+          // Assert
+          expect(withEmptyOpts).toStrictEqual({
+            gitDir: '/repo/normal/.git',
+            workDir: '/repo/normal',
+            bare: false,
+            objectFormat: 'sha1',
+            refStorage: 'files',
+          });
         });
       });
     });

@@ -47,7 +47,9 @@ export interface RepositoryLayout {
    * worktree (it equals `gitDir`); set only for a linked worktree, whose
    * `gitDir` is its own admin dir while shared state lives here. Resolve via
    * `commonGitDir(ctx)` (or `commonDirOf(layout)` when holding a bare
-   * layout) rather than reading this field directly — both are exported.
+   * layout) rather than reading this field directly — both are exported as
+   * `import { commonGitDir, commonDirOf } from '@scolladon/tsgit/primitives'`,
+   * with `commonGitDir` also bound at `repo.primitives.commonGitDir`.
    */
   readonly commonDir?: string;
   /** git's `is_bare_repository()`: `core.bare` is not false AND there is no work tree. */

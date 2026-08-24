@@ -124,6 +124,28 @@ describe('layoutRootsOf', () => {
     });
   });
 
+  describe('Given a commonDir strictly UNDER workDir (a caller pointing at a sibling inside their own checkout)', () => {
+    describe('When layoutRootsOf runs', () => {
+      it('Then it minimises away, exactly like a normal repo with no split', () => {
+        // Arrange — both gitDir and commonDir are contained in workDir, so
+        // neither survives as its own root.
+        const layout = {
+          workDir: '/repo',
+          gitDir: '/repo/wt/.git',
+          bare: false,
+          commonDir: '/repo/shared',
+          refStorage: 'files' as const,
+        };
+
+        // Act
+        const result = layoutRootsOf(layout);
+
+        // Assert
+        expect(result).toStrictEqual(['/repo']);
+      });
+    });
+  });
+
   describe('Given a commonDir that sorts alphabetically before workDir', () => {
     describe('When layoutRootsOf runs', () => {
       it('Then first-seen order is preserved rather than re-sorted', () => {

@@ -262,6 +262,8 @@ const buildLayoutOptions = (
   trustedDirectories: ReadonlyArray<string> | undefined,
 ): ExplicitLayoutOptions => ({
   ...(opts.gitDir !== undefined ? { gitDir: opts.gitDir } : {}),
+  // Stryker disable next-line ConditionalExpression: equivalent — this result feeds `resolveLayout` directly, whose sole reader is `opts.commonDir === undefined` (resolve-layout.ts); a spread `{ commonDir: undefined }` is indistinguishable from an omitted key there.
+  ...(opts.commonDir !== undefined ? { commonDir: opts.commonDir } : {}),
   ...explicit,
   ...(ceilingDirs !== undefined ? { ceilingDirs } : {}),
   ...(opts.trust !== undefined ? { trust: opts.trust } : {}),
@@ -298,8 +300,18 @@ const resolveNodeLayout = async (
     };
   }
   const gitDir = await canonicalize(resolved.gitDir);
-  const commonDir =
+  const commonDirCanonical =
     resolved.commonDir === undefined ? undefined : await canonicalize(resolved.commonDir);
+  // Realpathing can collapse a lexically-distinct common dir onto the gitDir
+  // (`/tmp` vs `/private/tmp`, case-insensitive filesystems): re-apply the
+  // presence-iff-different invariant AFTER canonicalisation, or two spellings
+  // of the same directory would leave the field present-and-equal.
+  const commonDir =
+    commonDirCanonical !== undefined &&
+    nativePolicy.normalizeForCompare(commonDirCanonical.path) !==
+      nativePolicy.normalizeForCompare(gitDir.path)
+      ? commonDirCanonical
+      : undefined;
   const workDir =
     resolved.workDir === undefined
       ? undefined
@@ -308,9 +320,10 @@ const resolveNodeLayout = async (
         : await canonicalize(resolved.workDir);
   const canonical =
     gitDir.canonical && (commonDir?.canonical ?? true) && (workDir?.canonical ?? true);
+  const { commonDir: _lexicalCommonDir, ...resolvedSansCommonDir } = resolved;
   return {
     layout: {
-      ...resolved,
+      ...resolvedSansCommonDir,
       gitDir: gitDir.path,
       ...(commonDir !== undefined ? { commonDir: commonDir.path } : {}),
       ...(workDir !== undefined ? { workDir: workDir.path } : {}),

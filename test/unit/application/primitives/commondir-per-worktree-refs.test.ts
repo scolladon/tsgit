@@ -51,6 +51,25 @@ const seedAdminHead = (ctx: Context): Promise<void> =>
   ctx.fs.writeUtf8(`${adminDir(ctx)}/HEAD`, 'ref: refs/heads/main\n');
 
 /**
+ * Reframe a seeded main-repo Context so gitDir and commonDir sit in
+ * unrelated, disjoint subtrees — proving the split is parameterised on
+ * `ctx.layout.commonDir` alone, never hard-coded to the `worktrees/<id>`
+ * admin-dir shape `asWorktreeChild` uses.
+ */
+const asOverriddenCommonDir = (ctx: Context): Context => ({
+  ...ctx,
+  layout: {
+    ...ctx.layout,
+    gitDir: `${ctx.layout.workDir}/wt/.git`,
+    commonDir: `${ctx.layout.workDir}/shared`,
+  },
+});
+
+/** Give the disjoint child's own gitdir the `HEAD` file operational commands require. */
+const seedOverriddenAdminHead = (ctx: Context): Promise<void> =>
+  ctx.fs.writeUtf8(`${ctx.layout.workDir}/wt/.git/HEAD`, 'ref: refs/heads/main\n');
+
+/**
  * Smart-HTTP v1 advertisement + NAK/side-band-1 pack response for one branch.
  * The service-header line and the ref-advertisement body are each their own
  * flush-terminated pkt-line block — that's the wire shape upload-pack.ts
@@ -124,6 +143,40 @@ describe('common-dir per-worktree-ref sweep', () => {
           // Assert
           expect(await ctx.fs.exists(`${adminDir(ctx)}/refs/bisect/bad`)).toBe(true);
           expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/bisect/bad`)).toBe(false);
+        });
+      });
+    });
+
+    describe('Given a Context whose gitDir and commonDir sit in unrelated, disjoint subtrees', () => {
+      describe('When updateRef writes a shared ref', () => {
+        it('Then the ref lands under the commonDir, not the gitDir', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const sut = asOverriddenCommonDir(ctx);
+          await seedOverriddenAdminHead(ctx);
+
+          // Act
+          await updateRef(sut, 'refs/heads/x' as RefName, ID_A, { reflogMessage: 'test' });
+
+          // Assert
+          expect(await ctx.fs.exists(`${sut.layout.commonDir}/refs/heads/x`)).toBe(true);
+          expect(await ctx.fs.exists(`${sut.layout.gitDir}/refs/heads/x`)).toBe(false);
+        });
+      });
+
+      describe('When updateRef writes a per-worktree ref', () => {
+        it('Then the ref lands under the gitDir, not the commonDir', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const sut = asOverriddenCommonDir(ctx);
+          await seedOverriddenAdminHead(ctx);
+
+          // Act
+          await updateRef(sut, 'refs/bisect/bad' as RefName, ID_A, { reflogMessage: 'test' });
+
+          // Assert
+          expect(await ctx.fs.exists(`${sut.layout.gitDir}/refs/bisect/bad`)).toBe(true);
+          expect(await ctx.fs.exists(`${sut.layout.commonDir}/refs/bisect/bad`)).toBe(false);
         });
       });
     });

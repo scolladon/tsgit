@@ -97,6 +97,62 @@ export interface OpenRepositoryOptions {
    */
   readonly workDir?: string;
   /**
+   * Explicit shared/common git directory — the argument equivalent of git's
+   * `GIT_COMMON_DIR`. Relative values resolve against `cwd`. No environment
+   * variable is ever read.
+   *
+   * What follows it: objects, `packed-refs`, shared refs and their reflogs,
+   * `config`, `shallow`, `info/exclude`, `info/attributes`, `hooks/`, the
+   * commit-graph, the midx and `worktrees/`. Per-worktree state stays at
+   * `gitDir`: `HEAD`, `index`, `logs/HEAD`, `config.worktree`,
+   * `info/sparse-checkout`, the pseudo-refs and
+   * `refs/bisect|worktree|rewritten/*`.
+   *
+   * Precedence: it replaces any on-disk `<gitDir>/commondir` file; the file
+   * is not read at all when the argument is given.
+   *
+   * Bareness: supplying it makes `core.bare` inert and keeps a work tree
+   * (the discovered top level on the discovery route, `cwd` on the explicit
+   * route), matching git; on the cwd-is-gitdir route it has no bareness
+   * effect. The kept work tree becomes a filesystem containment root — so
+   * supplying the option, even a degenerate value, can add `cwd` to the
+   * root set where the same open without it stayed gitDir-only. An explicit
+   * `bare: true` argument wins over this rule and keeps no work tree —
+   * over THIS rule only: at a real linked worktree (a `commondir` file, no
+   * argument) the file-derived bypass still wins over `bare: true`, as it
+   * always has, so adding `commonDir` there is what makes `bare: true`
+   * effective.
+   *
+   * Degenerate value: a value resolving to `gitDir` is accepted and carries
+   * the bareness rule, but is not reported on `repo.layout`
+   * (`layout.commonDir` is present if and only if it differs from `gitDir`).
+   *
+   * Inert on bootstrap: when discovery finds no repository, the option is
+   * ignored and `init`/`clone` create a normal repository at `cwd`.
+   *
+   * Unusable values: an override lacking `objects/` or `refs/` makes the
+   * discovery route refuse at open with `NOT_A_REPOSITORY` (matching git's
+   * exit-128 condition — the walk never falls back to opening a repository
+   * with the override dropped); the explicit-`gitDir` route stays lenient
+   * and defers the refusal to the first command. The browser's fixed-entry
+   * route follows the lenient posture too: its directory branch performs no
+   * structural check on the override.
+   *
+   * WARNING: naming a common dir widens the filesystem containment root set
+   * to that subtree, chooses which `config` is authoritative (and therefore
+   * which `merge.<driver>.driver` commands, `core.excludesFile` reads,
+   * `core.worktree` — which can widen the root set again, up to `/` — hash
+   * algorithm and ref backend the repository runs with), and chooses which
+   * `hooks/` directory is spawned with the caller's environment. The
+   * ownership gate is off on the explicit-`gitDir` route, so
+   * `openRepository({ gitDir, commonDir })` against another user's
+   * directory is accepted without an ownership check, exactly as
+   * `openRepository({ gitDir })` already is. Pass `hooks: false` /
+   * `command: false` to close the two code-execution channels. `commonDir`
+   * is not a sandbox.
+   */
+  readonly commonDir?: string;
+  /**
    * Force bareness. `true` behaves as `core.bare = true`; `false` as
    * `core.bare = false`. Omit to take the answer from config + layout.
    */

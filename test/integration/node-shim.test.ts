@@ -410,6 +410,51 @@ describe('Node shim — bare-repo containment', () => {
   });
 });
 
+describe('Node shim — explicit commonDir', () => {
+  describe('Given a real repository AND a separate hand-built valid common dir, When openRepository opens the repository with commonDir set', () => {
+    it('Then layout.commonDir is the realpathed override and the raw adapter reaches it while their common ancestor is refused', async () => {
+      // Arrange — <root>/main is a real repository; <root>/alt is a
+      // hand-built valid common dir (objects/, refs/, HEAD), unrelated to it.
+      const realTmpdir = await realpath(tmpdir);
+      const mainDir = path.join(realTmpdir, 'main');
+      const altDir = path.join(realTmpdir, 'alt');
+      const setup = await openRepository({ cwd: mainDir });
+      await setup.init();
+      await setup.dispose();
+      await mkdir(path.join(altDir, 'objects'), { recursive: true });
+      await mkdir(path.join(altDir, 'refs'), { recursive: true });
+      await writeFile(path.join(altDir, 'HEAD'), 'ref: refs/heads/main\n');
+      await writeFile(path.join(altDir, 'marker.txt'), 'alt\n');
+      await writeFile(path.join(realTmpdir, 'between.txt'), 'x\n');
+
+      // Act
+      const sut = await openRepository({
+        cwd: mainDir,
+        gitDir: path.join(mainDir, '.git'),
+        commonDir: altDir,
+        unsafeRawAdapters: true,
+      });
+
+      try {
+        // Assert — the layout reports the realpathed override.
+        expect(sut.ctx.layout.commonDir).toBe(altDir);
+        // Assert — a raw read reaches a file under the override root.
+        expect(await sut.ctx.fs.readUtf8(path.join(altDir, 'marker.txt'))).toBe('alt\n');
+        // Assert — the roots' common ancestor is refused.
+        let caught: unknown;
+        try {
+          await sut.ctx.fs.readUtf8(path.join(realTmpdir, 'between.txt'));
+        } catch (err) {
+          caught = err;
+        }
+        expect((caught as { data?: { code?: string } })?.data?.code).toBe('PERMISSION_DENIED');
+      } finally {
+        await sut.dispose();
+      }
+    });
+  });
+});
+
 describe('Node shim — explicit gitDir + workDir containment', () => {
   describe('Given explicit gitDir and workDir in disjoint subtrees, When openRepository opens both', () => {
     it('Then both roots are reachable and a path between them (their common ancestor) is refused', async () => {

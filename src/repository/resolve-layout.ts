@@ -21,6 +21,8 @@ import {
 export interface ExplicitLayoutOptions {
   readonly gitDir?: string;
   readonly workDir?: string;
+  /** The argument-tier equivalent of git's `GIT_COMMON_DIR`, resolved against `cwd` by `resolveLayout` before either route sees it. */
+  readonly commonDir?: string;
   readonly bare?: boolean;
   readonly ceilingDirs?: ReadonlyArray<string>;
   readonly trust?: 'ownership' | 'always';
@@ -65,12 +67,27 @@ interface WorkTreeResolution {
  * is `false` from inside a linked worktree of a bare repo even though the
  * shared config's `core.bare` reads `true`.
  *
- * Scoped to the `DISCOVERED` route only — no measured row extends this
- * bypass to an explicit gitDir naming a worktree admin dir directly, so the
- * EXPLICIT route falls through to the plain `core.bare` precedence instead.
+ * A caller-supplied common dir extends the bypass further: measured, setting
+ * the value AT ALL — even to a value identical to the gitDir — makes git
+ * ignore `core.bare` and keep a work tree, on both the `DISCOVERED` route
+ * (mirroring the `commondir`-file case above) and the `EXPLICIT` route
+ * (where no `commondir` file could ever produce this bypass, since that
+ * route never reads one for this purpose — only the argument can). It is the
+ * MARKER that drives this, not the field: a supplied value equal to the
+ * gitDir is normalised off the outcome by the walk, yet still carries the
+ * semantics. The one route where it is inert is `BARE_DIR` — measured, the
+ * override changes nothing there; bareness follows `core.bare` alone. This
+ * is guarded explicitly (not left to `resolveWorkTree`'s `BARE_DIR`
+ * fall-through) because it matters for `core.bare = true` combined with
+ * `core.worktree` set, where bypassing would resolve a work tree instead of
+ * reporting the bogus-config warning.
  */
-const isLinkedWorktreeAdmin = (outcome: WalkOutcome): boolean =>
-  outcome.route === 'DISCOVERED' && outcome.commonDir !== undefined;
+const isLinkedWorktreeAdmin = (outcome: WalkOutcome): boolean => {
+  // Stryker disable next-line ConditionalExpression: equivalent — the sole `BARE_DIR` construction site (find-layout.ts, `layoutFor`'s bare-dir return) never spreads `commonDirSupplied`, so for a BARE_DIR outcome both fall-through checks below (`commonDirSupplied === true`, `route === 'DISCOVERED'`) already evaluate false; removing this guard cannot change the return value.
+  if (outcome.route === 'BARE_DIR') return false;
+  if (outcome.commonDirSupplied === true) return true;
+  return outcome.route === 'DISCOVERED' && outcome.commonDir !== undefined;
+};
 
 /**
  * Resolve `value` against `base`: absolute verbatim (normalized), relative
@@ -108,6 +125,7 @@ const resolveWorkTree = async (
   outcome: WalkOutcome,
   fmt: RepositoryFormat,
   bareCfg: boolean | undefined,
+  bareExplicit: boolean,
   pathPolicy: PathPolicy,
   cwd: string,
   explicitWorkDir: string | undefined,
@@ -116,7 +134,13 @@ const resolveWorkTree = async (
   if (explicitWorkDir !== undefined) {
     return { workDir: resolveAgainst(cwd, explicitWorkDir, pathPolicy) };
   }
-  if (bareCfg === true && !isLinkedWorktreeAdmin(outcome)) {
+  // The marker-driven bypass yields to an explicit `bare: true` ARGUMENT:
+  // two caller arguments in tension resolve to the more specific one, so a
+  // caller who asked for no work tree keeps none. Only the caller-supplied
+  // marker is suppressed — a real linked worktree's file-derived bypass
+  // (marker absent) behaves exactly as before.
+  const bypassSuppressed = bareExplicit && outcome.commonDirSupplied === true;
+  if (bareCfg === true && (bypassSuppressed || !isLinkedWorktreeAdmin(outcome))) {
     return fmt.worktree !== undefined ? { workTreeConfigBogus: true } : {};
   }
   if (fmt.worktree !== undefined) {
@@ -271,6 +295,7 @@ export const finishLayout = async (
     outcome,
     fmt,
     bareCfg,
+    overrides.bare === true,
     pathPolicy,
     cwd,
     overrides.workDir,
@@ -320,13 +345,18 @@ export const finishLayout = async (
  * the truly-absent shape, while a present-but-malformed gitdir fails later,
  * inside the primitives tier, with object-level errors rather than git's
  * up-front `not a git repository` fatal — a documented refusal-shape
- * divergence confined to the caller's own named directory.
+ * divergence confined to the caller's own named directory. `commonDirOverride`,
+ * when given, replaces the file-derived common dir here exactly as it does
+ * on the walk's routes — the route's documented leniency is unchanged, so an
+ * override naming a nonexistent directory still produces a layout and
+ * refuses only at first command.
  */
 const resolveExplicitOutcome = async (
   probe: LayoutProbe,
   gitDirOpt: string,
   cwd: string,
   pathPolicy: PathPolicy,
+  commonDirOverride?: string,
 ): Promise<WalkOutcome> => {
   const entry = resolveAgainst(cwd, gitDirOpt, pathPolicy);
   const stat = await probe.stat(entry);
@@ -334,11 +364,19 @@ const resolveExplicitOutcome = async (
     stat?.isFile === true
       ? await resolvePointer(probe, entry, pathPolicy.dirname(entry), pathPolicy, stat.size)
       : entry;
-  const commonDir = await resolveCommonDir(probe, gitDir, pathPolicy);
+  const commonDir =
+    commonDirOverride === undefined
+      ? await resolveCommonDir(probe, gitDir, pathPolicy)
+      : commonDirOverride;
   return {
     route: 'EXPLICIT',
     gitDir,
-    ...(commonDir !== gitDir ? { commonDir } : {}),
+    // `normalizeForCompare`, not raw `!==` — a case-mismatched spelling of
+    // the same directory must normalise away like any other degenerate value.
+    ...(pathPolicy.normalizeForCompare(commonDir) !== pathPolicy.normalizeForCompare(gitDir)
+      ? { commonDir }
+      : {}),
+    ...(commonDirOverride !== undefined ? { commonDirSupplied: true as const } : {}),
   };
 };
 
@@ -352,6 +390,12 @@ const resolveExplicitOutcome = async (
  * `init`/`clone` to bootstrap into, or surface `NOT_A_REPOSITORY` at first
  * command. The explicit route never returns `undefined`: an unresolvable
  * gitDir still produces a layout, leniently (see `resolveExplicitOutcome`).
+ * `opts.commonDir`, when given, is resolved against `cwd` ONCE, before
+ * dispatching — the same base `gitDir` and `workDir` resolve against — and
+ * fed to whichever route runs. `portablePosixPolicy` has no multi-arg
+ * "later absolute wins" semantics, so `resolveAgainst` (not a two-arg
+ * `pathPolicy.resolve`) is required to keep the base consistent across
+ * every adapter.
  */
 export const resolveLayout = async (
   probe: LayoutProbe,
@@ -360,10 +404,12 @@ export const resolveLayout = async (
   opts: ExplicitLayoutOptions = {},
   caps: LayoutCapabilities = {},
 ): Promise<RepositoryLayoutInput | undefined> => {
+  const commonDirOverride =
+    opts.commonDir === undefined ? undefined : resolveAgainst(cwd, opts.commonDir, pathPolicy);
   const outcome =
     opts.gitDir !== undefined
-      ? await resolveExplicitOutcome(probe, opts.gitDir, cwd, pathPolicy)
-      : await findLayout(probe, cwd, pathPolicy, opts.ceilingDirs);
+      ? await resolveExplicitOutcome(probe, opts.gitDir, cwd, pathPolicy, commonDirOverride)
+      : await findLayout(probe, cwd, pathPolicy, opts.ceilingDirs, commonDirOverride);
   if (outcome === undefined) return undefined;
   return finishLayout(
     probe,

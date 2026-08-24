@@ -94,6 +94,63 @@ describe('browser shim — openRepository', () => {
     });
   });
 
+  describe('Given an explicit absolute commonDir and nothing at the fixed entry (bootstrap shape)', () => {
+    describe('When openRepository runs', () => {
+      it('Then the option is inert — no commonDir on the layout, matching the walk shims found-nothing doctrine', async () => {
+        // Arrange / Act — nothing exists under fakeHandle, so this is the
+        // bootstrap shape init/clone open; the override must not survive it,
+        // or init would write the split layout git itself cannot reopen.
+        const sut = await openRepository({ rootHandle: fakeHandle, commonDir: '/shared' });
+
+        // Assert
+        expect('commonDir' in sut.ctx.layout).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a rootHandle whose /.git entry RESOLVES as a directory, and an explicit commonDir', () => {
+    describe('When openRepository runs', () => {
+      it('Then layout.commonDir carries the override — the shim forwards the option into the fixed-entry resolution', async () => {
+        // Arrange — a minimal resolving handle: only `.git` exists (any
+        // other access rejects, which the adapter maps to FILE_NOT_FOUND).
+        // This is the populated-entry path the bootstrap tests below cannot
+        // reach, and it is what keeps index.browser.ts's conditional spread
+        // of opts.commonDir observable.
+        const gitDirStub = {} as unknown as FileSystemDirectoryHandle;
+        const resolvingHandle = {
+          getFileHandle: async () => {
+            throw new Error('absent');
+          },
+          getDirectoryHandle: async (name: string) => {
+            if (name === '.git') return gitDirStub;
+            throw new Error('absent');
+          },
+        } as unknown as FileSystemDirectoryHandle;
+
+        // Act
+        const sut = await openRepository({ rootHandle: resolvingHandle, commonDir: '/shared' });
+
+        // Assert
+        expect(sut.ctx.layout.commonDir).toBe('/shared');
+      });
+    });
+  });
+
+  describe('Given a relative commonDir and nothing at the fixed entry (bootstrap shape)', () => {
+    describe('When openRepository runs', () => {
+      it('Then the option is inert for a relative spelling too — resolution happens before the bootstrap check, dropping both alike', async () => {
+        // Arrange / Act — forwarding and relative-vs-root resolution on a
+        // POPULATED entry are pinned by the resolveFixedEntryLayout unit
+        // rows; this pins only the bootstrap-inert half at the openRepository
+        // surface.
+        const sut = await openRepository({ rootHandle: fakeHandle, commonDir: 'shared' });
+
+        // Assert
+        expect('commonDir' in sut.ctx.layout).toBe(false);
+      });
+    });
+  });
+
   describe('Given gitDir: "" (empty string)', () => {
     describe('When openRepository runs', () => {
       it('Then it throws INVALID_OPTION{option: "gitDir"} rather than resolving a layout', async () => {
@@ -226,7 +283,7 @@ describe('fixed-entry layout resolution (the browser shim path)', () => {
         const sut = resolveFixedEntryLayout;
 
         // Act
-        const result = await sut(fs, '/', '/.git', false);
+        const result = await sut(fs, '/', '/.git', { bare: false });
 
         // Assert
         expect(result).toEqual({
@@ -254,7 +311,7 @@ describe('fixed-entry layout resolution (the browser shim path)', () => {
         const sut = resolveFixedEntryLayout;
 
         // Act
-        const result = await sut(fs, '/', '/.git', false);
+        const result = await sut(fs, '/', '/.git', { bare: false });
 
         // Assert
         expect(result).toEqual({
@@ -265,6 +322,136 @@ describe('fixed-entry layout resolution (the browser shim path)', () => {
           objectFormat: 'sha1',
           refStorage: 'files',
         });
+      });
+    });
+  });
+
+  describe('Given a /.git gitfile whose admin dir carries a commondir, AND an override commonDir', () => {
+    describe('When resolveFixedEntryLayout runs', () => {
+      it('Then the override wins — the layout commonDir is the override, never the file-derived decoy', async () => {
+        // Arrange
+        const fs = stubFsOver({
+          '/.git': { kind: 'file', content: 'gitdir: /admin\n' },
+          '/admin/HEAD': { kind: 'file', content: 'ref: refs/heads/main\n' },
+          '/admin/commondir': { kind: 'file', content: '/decoy\n' },
+          '/shared/objects': { kind: 'dir' },
+          '/shared/refs': { kind: 'dir' },
+        });
+        const sut = resolveFixedEntryLayout;
+
+        // Act
+        const result = await sut(fs, '/', '/.git', { commonDir: '/shared' });
+
+        // Assert
+        expect(result.commonDir).toBe('/shared');
+      });
+    });
+  });
+
+  describe('Given a plain /.git directory entry with a commondir DECOY file, AND an override commonDir', () => {
+    describe('When resolveFixedEntryLayout runs', () => {
+      it('Then the decoy commondir file is never read and the layout commonDir is the override', async () => {
+        // Arrange — a decoy `/.git/commondir` naming another directory: if
+        // the directory branch read it, the layout would carry the decoy.
+        // Deliberately NO objects/refs entries under /shared: the directory
+        // branch performs no structural validation (see the sibling below),
+        // so seeding them would imply a check that does not happen.
+        const fs = stubFsOver({
+          '/.git': { kind: 'dir' },
+          '/.git/commondir': { kind: 'file', content: '/decoy\n' },
+        });
+        const sut = resolveFixedEntryLayout;
+
+        // Act
+        const result = await sut(fs, '/', '/.git', { commonDir: '/shared' });
+
+        // Assert
+        expect(result.commonDir).toBe('/shared');
+      });
+    });
+  });
+
+  describe('Given a plain /.git directory entry, AND a relative override commonDir', () => {
+    describe('When resolveFixedEntryLayout runs', () => {
+      it('Then the override resolves against the fixed root work dir', async () => {
+        // Arrange
+        const fs = stubFsOver({ '/.git': { kind: 'dir' } });
+        const sut = resolveFixedEntryLayout;
+
+        // Act
+        const result = await sut(fs, '/', '/.git', { commonDir: 'shared' });
+
+        // Assert
+        expect(result.commonDir).toBe('/shared');
+      });
+    });
+  });
+
+  describe('Given a non-root work dir, AND a relative override commonDir', () => {
+    describe('When resolveFixedEntryLayout runs', () => {
+      it('Then the override resolves against THAT work dir — the base is the parameter, not a hard-wired root', async () => {
+        // Arrange
+        const fs = stubFsOver({ '/w/.git': { kind: 'dir' } });
+        const sut = resolveFixedEntryLayout;
+
+        // Act
+        const result = await sut(fs, '/w', '/w/.git', { commonDir: 'shared' });
+
+        // Assert
+        expect(result.commonDir).toBe('/w/shared');
+      });
+    });
+  });
+
+  describe('Given a plain /.git directory entry, AND an override naming a nonexistent directory', () => {
+    describe('When resolveFixedEntryLayout runs', () => {
+      it('Then the override still lands — the directory branch is deliberately unvalidated, refusals surface at first command', async () => {
+        // Arrange — this shim mirrors the explicit-gitDir route's leniency:
+        // no sharedDirsValid check on the directory branch.
+        const fs = stubFsOver({ '/.git': { kind: 'dir' } });
+        const sut = resolveFixedEntryLayout;
+
+        // Act
+        const result = await sut(fs, '/', '/.git', { commonDir: '/nowhere' });
+
+        // Assert
+        expect(result.commonDir).toBe('/nowhere');
+      });
+    });
+  });
+
+  describe('Given a plain /.git directory entry, AND an override commonDir equal to gitDir (degenerate)', () => {
+    describe('When resolveFixedEntryLayout runs', () => {
+      it('Then the layout carries no commonDir key', async () => {
+        // Arrange
+        const fs = stubFsOver({ '/.git': { kind: 'dir' } });
+        const sut = resolveFixedEntryLayout;
+
+        // Act
+        const result = await sut(fs, '/', '/.git', { commonDir: '/.git' });
+
+        // Assert
+        expect('commonDir' in result).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a /.git directory whose config says core.bare = true, AND a degenerate override commonDir equal to gitDir', () => {
+    describe('When resolveFixedEntryLayout runs', () => {
+      it('Then the marker-driven bypass still keeps the work tree — the degenerate VALUE carries no signal, only the caller-supplied marker does', async () => {
+        // Arrange
+        const fs = stubFsOver({
+          '/.git': { kind: 'dir' },
+          '/.git/config': { kind: 'file', content: '[core]\n\tbare = true\n' },
+        });
+        const sut = resolveFixedEntryLayout;
+
+        // Act
+        const result = await sut(fs, '/', '/.git', { commonDir: '/.git' });
+
+        // Assert
+        expect(result.bare).toBe(false);
+        expect(result.workDir).toBe('/');
       });
     });
   });
@@ -283,7 +470,7 @@ describe('fixed-entry layout resolution (the browser shim path)', () => {
         const sut = resolveFixedEntryLayout;
 
         // Act
-        const result = await sut(fs, '/', '/.git', true);
+        const result = await sut(fs, '/', '/.git', { bare: true });
 
         // Assert
         expect(result.bare).toBe(true);
@@ -303,7 +490,7 @@ describe('fixed-entry layout resolution (the browser shim path)', () => {
         const sut = resolveFixedEntryLayout;
 
         // Act
-        const result = await sut(fs, '/', '/.git', undefined, '/custom-wt');
+        const result = await sut(fs, '/', '/.git', { workDir: '/custom-wt' });
 
         // Assert
         expect(result).toStrictEqual({
@@ -325,7 +512,7 @@ describe('fixed-entry layout resolution (the browser shim path)', () => {
         const sut = resolveFixedEntryLayout;
 
         // Act
-        const result = await sut(fs, '/', '/.git', false);
+        const result = await sut(fs, '/', '/.git', { bare: false });
 
         // Assert
         expect(result).toEqual({
@@ -351,7 +538,7 @@ describe('fixed-entry layout resolution (the browser shim path)', () => {
         const sut = resolveFixedEntryLayout;
 
         // Act
-        const result = await sut(fs, '/', '/.git', undefined);
+        const result = await sut(fs, '/', '/.git', {});
 
         // Assert
         expect(result).toStrictEqual({
@@ -375,7 +562,7 @@ describe('fixed-entry layout resolution (the browser shim path)', () => {
         const sut = resolveFixedEntryLayout;
 
         // Act
-        const result = await sut(fs, '/', '/.git', undefined);
+        const result = await sut(fs, '/', '/.git', {});
 
         // Assert
         expect(result).toStrictEqual({

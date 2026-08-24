@@ -246,6 +246,41 @@ describe('listWorktrees', () => {
     });
   });
 
+  describe('Given a core.bare = true repository opened with a DEGENERATE commonDir override (normalised off the layout, bareness suppressed)', () => {
+    describe('When listWorktrees runs', () => {
+      it('Then the main entry follows the suppressed layout.bare — not the config it can no longer see through an absent commonDir', async () => {
+        // Arrange — the degenerate override leaves NO commonDir on the
+        // layout, so isMainCheckoutBare falls back to layout.bare, which the
+        // supplied-marker bypass resolved to false. Faithful: git under
+        // GIT_COMMON_DIR equal to the gitdir reports not-bare too.
+        const ctx = await buildSeededContext({
+          refs: [{ name: 'refs/heads/main' as RefName, id: OID_MAIN }],
+        });
+        await seedMainHead(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tbare = true\n');
+        // Precondition, not a mutation: the seeded layout already resolved
+        // bare: false — exactly the state the suppressed open produces.
+        expect(ctx.layout.bare).toBe(false);
+        const sut: Context = ctx;
+
+        // Act
+        const result = await listWorktrees(sut);
+
+        // Assert
+        expect(result).toEqual([
+          {
+            path: ctx.layout.workDir,
+            head: OID_MAIN,
+            branch: 'refs/heads/main',
+            detached: false,
+            bare: false,
+            main: true,
+          },
+        ]);
+      });
+    });
+  });
+
   describe('Given a Context opened at a linked worktree of a bare main repo', () => {
     describe('When listWorktrees runs', () => {
       it('Then the main entry reports bare:true even though this worktree itself is not bare', async () => {

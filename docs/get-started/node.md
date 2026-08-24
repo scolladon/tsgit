@@ -37,7 +37,7 @@ await bare.log({ limit: 10 });   // read commands work fine
 await bare.status();             // throws WORK_TREE_REQUIRED — there is no work tree
 ```
 
-`gitDir`, `workDir`, `bare`, and `ceilingDirs` — the argument equivalents of git's `--git-dir`, `--work-tree`, and `GIT_CEILING_DIRECTORIES` — let a caller pin the layout instead of relying on discovery. None of them read an environment variable; every input is an explicit argument.
+`gitDir`, `workDir`, `commonDir`, `bare`, and `ceilingDirs` — the argument equivalents of git's `--git-dir`, `--work-tree`, `GIT_COMMON_DIR`, and `GIT_CEILING_DIRECTORIES` — let a caller pin the layout instead of relying on discovery. None of them read an environment variable; every input is an explicit argument.
 
 An existing repository's hash algorithm (SHA-1 or SHA-256) is detected automatically from its own `extensions.objectFormat` — you never need to pass `algorithm` to open one. Pass it explicitly only when there is no repository yet to detect a format from — `init` or `clone` into a fresh target:
 
@@ -58,6 +58,13 @@ const repo = await openRepository({
 
 // Bound the discovery walk instead of climbing to the filesystem root
 const bounded = await openRepository({ cwd: '/tmp/nested/deep', ceilingDirs: ['/tmp/nested'] });
+
+// A linked worktree's admin dir, pointed at a common dir shared with the main checkout
+const linked = await openRepository({
+  cwd: '/tmp/elsewhere',
+  gitDir: '/srv/repo.git/worktrees/feature',
+  commonDir: '/srv/repo.git',
+});
 ```
 
 `trust`, `trustedDirectories`, and `bareRepositories` gate a repository reached by discovery, the way git's `safe.directory` gates one:
@@ -106,11 +113,13 @@ await fresh.init({ bare: true });
 `repo.layout` exposes the resolved layout as structured data — `gitDir`, `commonDir`, `workDir` (absent when the repository has none), and `bare`:
 
 ```ts
-const { workDir, bare } = repo.layout;
+const { commonDir, workDir, bare } = repo.layout;
 if (workDir === undefined) {
   // every work-tree-requiring command (status, add, commit, …) throws WORK_TREE_REQUIRED
 }
 ```
+
+`commonDir` is present only when it differs from `gitDir` — a linked worktree's admin dir, or a caller-supplied `commonDir` override; a normal repository's main worktree omits it.
 
 See [errors](../use/errors.md) for the refusal codes a missing or misconfigured work tree can raise.
 

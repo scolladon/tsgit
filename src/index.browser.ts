@@ -71,8 +71,14 @@ export const openRepository = async (opts: OpenBrowserRepositoryOptions): Promis
     fs,
     ROOT_WORK_DIR,
     resolveGitDirEntry(opts.gitDir, gitDirName),
-    opts.bare,
-    opts.workDir,
+    {
+      // Stryker disable next-line ConditionalExpression: equivalent — chains into fixed-entry-layout.ts's own equivalent `overrides.bare !== undefined` spread, which only ever reaches `?? fmt.bare` / `=== true` readers; a spread `{ bare: undefined }` is indistinguishable from an omitted key end to end.
+      ...(opts.bare !== undefined ? { bare: opts.bare } : {}),
+      // Stryker disable next-line ConditionalExpression: equivalent — chains into fixed-entry-layout.ts's own equivalent `overrides.workDir !== undefined` spread, which only ever reaches the `explicitWorkDir !== undefined` reader; a spread `{ workDir: undefined }` reads identically to an omitted key end to end.
+      ...(opts.workDir !== undefined ? { workDir: opts.workDir } : {}),
+      // Stryker disable next-line ConditionalExpression: equivalent — the sole reader is `overrides.commonDir === undefined` in `resolveFixedEntryLayout` (fixed-entry-layout.ts); a spread `{ commonDir: undefined }` is indistinguishable from an omitted key there.
+      ...(opts.commonDir !== undefined ? { commonDir: opts.commonDir } : {}),
+    },
   );
   const algorithm = opts.algorithm ?? 'sha1';
   const fallback = {

@@ -17,23 +17,34 @@ import { longestStrictAncestor } from './ceiling-stop.js';
  * directory holding the `.git` entry — is not-undefined by construction; the
  * discriminant itself is why `route` carries literal types here rather than a
  * named `WalkRoute` alias, which could not narrow the two arms apart.
+ *
+ * `commonDirSupplied` carries the FACT that a caller named a common dir,
+ * separately from the value itself — a degenerate override (one resolving
+ * equal to `gitDir`) is normalised OFF the outcome, so `commonDir !==
+ * undefined` alone can no longer answer "did the caller supply one". Read
+ * only by `resolveWorkTree` (`resolve-layout.ts`'s `isLinkedWorktreeAdmin`)
+ * and never emitted onto `RepositoryLayoutInput` — `finishLayout` emits
+ * `outcome.commonDir` alone.
  */
 export type WalkOutcome =
   | {
       readonly route: 'DISCOVERED';
       readonly gitDir: string;
       readonly commonDir?: string;
+      readonly commonDirSupplied?: true;
       readonly origin: string;
     }
   | {
       readonly route: 'BARE_DIR';
       readonly gitDir: string;
       readonly commonDir?: string;
+      readonly commonDirSupplied?: true;
     }
   | {
       readonly route: 'EXPLICIT';
       readonly gitDir: string;
       readonly commonDir?: string;
+      readonly commonDirSupplied?: true;
     };
 
 /** A resolved gitDir location — the shared output of the `.git`-directory and cwd-is-gitdir checks. */
@@ -74,32 +85,59 @@ interface GitDirLocation {
  * computed ONCE before the loop starts (never per level), and the loop head
  * refuses to examine — or look past — that directory. Omitted entirely, the
  * walk behaves exactly as before.
+ *
+ * `commonDirOverride`, when given, replaces the file-derived common dir at
+ * EVERY level's candidate check — before validation, not after. An override
+ * lacking `objects/` or `refs/` makes the walk REFUSE at the first
+ * valid-`HEAD` candidate with `NOT_A_REPOSITORY` rather than climb (see the
+ * rationale at the throw site in `layoutFor`): the same override
+ * invalidates every level equally, so climbing could only end at the
+ * found-nothing bootstrap adopting a repository with the override silently
+ * dropped. The override is resolved against `cwd` by the
+ * caller before reaching here; every route this walk can take honours it,
+ * including the cwd-is-gitdir branch (git reports it there too via
+ * `rev-parse --git-common-dir`) — only the *bareness* rule is inert on that
+ * route, which the work-tree resolution stage handles, not the walk.
  */
 export const findLayout = async (
   probe: LayoutProbe,
   cwd: string,
   pathPolicy: PathPolicy,
   ceilingDirs?: ReadonlyArray<string>,
+  commonDirOverride?: string,
 ): Promise<WalkOutcome | undefined> => {
   let current = pathPolicy.resolve(cwd);
   const atCeiling = ceilingTest(ceilingDirs, current, pathPolicy);
+  const marker = suppliedMarker(commonDirOverride);
   while (true) {
     if (atCeiling(current)) return undefined;
     const candidate = pathPolicy.join(current, '.git');
     // stat, not lstat — a .git symlink to a real gitdir behaves as a directory.
     const stat = await probe.stat(candidate);
     if (stat?.isDirectory === true) {
-      const located = await layoutFor(probe, candidate, pathPolicy);
-      if (located !== undefined) return { ...located, route: 'DISCOVERED', origin: current };
+      const located = await layoutFor(probe, candidate, pathPolicy, commonDirOverride);
+      if (located !== undefined) {
+        return { ...located, route: 'DISCOVERED', origin: current, ...marker };
+      }
     } else if (stat?.isFile === true) {
-      const located = await layoutFromGitfile(probe, current, candidate, pathPolicy, stat.size);
-      return { ...located, route: 'DISCOVERED', origin: current };
+      const located = await layoutFromGitfile(
+        probe,
+        current,
+        candidate,
+        pathPolicy,
+        stat.size,
+        commonDirOverride,
+      );
+      return { ...located, route: 'DISCOVERED', origin: current, ...marker };
     }
     // Reached when `current` holds no `.git` entry, or an invalid `.git`
     // directory (the candidate branch above fell through rather than
     // returning) — never after a `.git` file, which always returns or throws.
     // The same validator asks whether `current` ITSELF is a git directory.
-    const bareLocated = await layoutFor(probe, current, pathPolicy);
+    // No `...marker` here: BARE_DIR is measured override-inert (bareness
+    // follows `core.bare` alone) and its sole reader early-returns on the
+    // route, so setting the field would be dead data on that arm.
+    const bareLocated = await layoutFor(probe, current, pathPolicy, commonDirOverride);
     if (bareLocated !== undefined) return { ...bareLocated, route: 'BARE_DIR' };
     const parent = pathPolicy.dirname(current);
     if (parent === current) return undefined; // reached filesystem root
@@ -125,6 +163,10 @@ const ceilingTest = (
   return (current) => pathPolicy.normalizeForCompare(current) === ceilKey;
 };
 
+/** The caller-supplied marker, spread onto whichever outcome the walk returns. */
+const suppliedMarker = (commonDirOverride: string | undefined): { commonDirSupplied?: true } =>
+  commonDirOverride === undefined ? {} : { commonDirSupplied: true };
+
 /**
  * Resolves a worktree's `.git` gitfile to its git-directory location.
  * Extracted so the browser shim can reuse the exact same pointer-resolution
@@ -133,7 +175,8 @@ const ceilingTest = (
  * the entry to learn it IS a file, so threading the size avoids a redundant
  * probe. `workDir` is used only to name the directory in a thrown
  * `NOT_A_REPOSITORY` — the caller decides how it participates in the
- * eventual layout.
+ * eventual layout. `commonDirOverride`, when given, is forwarded straight
+ * through to the shared candidate check — see `layoutFor`.
  */
 export const layoutFromGitfile = async (
   probe: LayoutProbe,
@@ -141,9 +184,10 @@ export const layoutFromGitfile = async (
   gitfilePath: string,
   pathPolicy: PathPolicy,
   gitfileSize: number,
+  commonDirOverride?: string,
 ): Promise<GitDirLocation> => {
   const gitDir = await resolvePointer(probe, gitfilePath, workDir, pathPolicy, gitfileSize);
-  const located = await layoutFor(probe, gitDir, pathPolicy);
+  const located = await layoutFor(probe, gitDir, pathPolicy, commonDirOverride);
   if (located === undefined) throw notARepository(workDir as FilePath);
   return located;
 };
@@ -192,14 +236,25 @@ export const resolvePointer = async (
 /**
  * Git's `is_git_directory`, shared by every walk and gitfile route: `HEAD`
  * is validated first (a directory that is simply not a git directory returns
- * `undefined` and the walk climbs), then the `commondir` pointer is resolved
- * — an unusable one past a valid `HEAD` is a HARD refusal on every route,
- * exactly as git dies there — then the shared dirs are checked.
+ * `undefined` and the walk climbs), then the common dir is resolved — an
+ * unusable one past a valid `HEAD` is a HARD refusal on every route, exactly
+ * as git dies there — then the shared dirs are checked.
+ *
+ * `commonDirOverride`, when given, REPLACES the file-derived common dir
+ * outright rather than out-ranking it: the `<gitDir>/commondir` file is
+ * never read at all — not parsed, not size-checked, not refused — because
+ * the argument is standing in for the file, not a higher-priority value
+ * layered on top of it. A malformed `commondir` file therefore cannot
+ * refuse an open the caller has already re-pointed elsewhere. Whatever the
+ * source, the resulting value is validated identically: an override lacking
+ * `objects/` or `refs/` invalidates the candidate exactly as a bad
+ * `commondir` file would.
  */
 const layoutFor = async (
   probe: LayoutProbe,
   gitDir: string,
   pathPolicy: PathPolicy,
+  commonDirOverride?: string,
 ): Promise<GitDirLocation | undefined> => {
   // HEAD first, on every walk/gitfile route — git's `is_git_directory` validates the head
   // before touching the common dir, so a garbage-`HEAD` directory (a planted
@@ -210,15 +265,38 @@ const layoutFor = async (
   // An unusable `commondir` past a valid `HEAD` is a HARD refusal, not a
   // skip: measured, git dies (`fatal: failed to read <dir>/commondir` /
   // `Invalid path`) and does NOT climb to an enclosing repository — on the
-  // walk routes exactly as on the gitfile/explicit ones.
-  const commonDir = await resolveCommonDir(probe, gitDir, pathPolicy);
-  if (!(await sharedDirsValid(probe, commonDir, pathPolicy))) return undefined;
+  // walk routes exactly as on the gitfile/explicit ones. Not `??`: the
+  // override is never the empty string, so the explicit-undefined test and
+  // `??` agree everywhere they can be exercised, but only the explicit form
+  // says outright that a supplied value (however unlikely) is never treated
+  // as "absent".
+  const commonDir =
+    commonDirOverride === undefined
+      ? await resolveCommonDir(probe, gitDir, pathPolicy)
+      : commonDirOverride;
+  if (!(await sharedDirsValid(probe, commonDir, pathPolicy))) {
+    // An unusable OVERRIDE past a valid `HEAD` refuses rather than climbs:
+    // measured, git refuses (exit 128) and never reaches an enclosing
+    // repository — the same override invalidates every level equally, so
+    // climbing could only end at the shims' found-nothing fallback, which
+    // would adopt this very gitDir un-overridden: a privilege-relevant
+    // argument silently dropped. A failing FILE-derived common dir keeps
+    // today's skip-and-climb.
+    if (commonDirOverride !== undefined) throw notARepository(gitDir as FilePath);
+    return undefined;
+  }
   return {
     gitDir,
     // Omitted (not set to undefined) when equal to gitDir — exactOptionalPropertyTypes
     // forbids the explicit-undefined form, and omission keeps a normal repo's
-    // layout byte-identical to today's.
-    ...(commonDir !== gitDir ? { commonDir } : {}),
+    // layout byte-identical to today's. This also performs the degenerate-
+    // override normalisation for free: an override resolving equal to
+    // gitDir is omitted here exactly like a same-valued file-derived one.
+    // Compared via `normalizeForCompare` so a case-mismatched spelling of
+    // the same directory cannot smuggle a degenerate value onto the layout.
+    ...(pathPolicy.normalizeForCompare(commonDir) !== pathPolicy.normalizeForCompare(gitDir)
+      ? { commonDir }
+      : {}),
   };
 };
 

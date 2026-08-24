@@ -11,6 +11,7 @@ interface ValidatableOptions {
   readonly config?: RepositoryConfig;
   readonly gitDir?: string;
   readonly workDir?: string;
+  readonly commonDir?: string;
   readonly bare?: boolean;
   readonly ceilingDirs?: ReadonlyArray<string>;
   readonly trust?: 'ownership' | 'always';
@@ -39,6 +40,7 @@ export const validateOptions = (opts: ValidatableOptions): void => {
   }
   validateGitDir(opts.gitDir);
   validateWorkDir(opts.workDir);
+  validateCommonDir(opts.commonDir);
   validateCeilingDirs(opts.ceilingDirs);
   validateTrust(opts.trust);
   validateTrustedDirectories(opts.trustedDirectories);
@@ -69,6 +71,11 @@ const validateGitDir = (value: string | undefined): void => {
 const validateWorkDir = (value: string | undefined): void => {
   if (value === undefined) return;
   if (value.length === 0) throw invalidOption('workDir', 'must not be empty');
+};
+
+const validateCommonDir = (value: string | undefined): void => {
+  if (value === undefined) return;
+  if (value.length === 0) throw invalidOption('commonDir', 'must not be empty');
 };
 
 const validateCeilingDirs = (value: ReadonlyArray<string> | undefined): void => {

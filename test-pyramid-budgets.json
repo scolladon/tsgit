@@ -81,10 +81,13 @@
       "tiers": ["unit", "integration", "parity", "runtime-parity", "perf"],
       "allowlist": [
         "openRepository",
+        "openMemoryRepository",
+        "openNodeRepository",
         "createNodeContext",
         "createMemoryContext",
         "createContext",
         "asWorktreeChild",
+        "asOverriddenCommonDir",
         "buildSeededContext",
         "seedRepo",
         "open",
