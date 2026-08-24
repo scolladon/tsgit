@@ -26,6 +26,15 @@ legitimately shadow an enclosing repository — that is git's behaviour too.
 `ceilingDirs` bounds the climb: the longest entry that is a *strict* ancestor of the
 resolved `cwd` is never examined or passed.
 
+A `commonDir` argument — the argument equivalent of git's `GIT_COMMON_DIR` — is
+honoured on all three routes: it replaces the file-derived common dir (the
+`commondir` pointer's own resolution) wherever a route would otherwise apply one,
+rather than adding a second candidate to validate. On the discovery route it feeds
+into the same `objects/` + `refs/` check described above, so a candidate naming an
+unusable override still fails and the walk keeps climbing past it; the explicit
+route stays lenient, exactly as it already is for `gitDir` — an unusable override
+still produces a layout, refusing only later, at first command.
+
 ## Work-tree precedence
 
 Once the git directory is known, the working tree is decided by the first matching
@@ -34,16 +43,22 @@ row — each row wins over everything below it:
 | # | Condition | Work tree |
 |---|---|---|
 | 1 | explicit `workDir` argument | that path (relative values resolve against `cwd`) — it may not exist yet |
-| 2 | `core.bare = true` (and no `workDir` argument) | **none**; if `core.worktree` is *also* set the configuration is bogus and work-tree commands refuse |
-| 3 | `core.worktree` set, absolute | that path |
-| 4 | `core.worktree` set, relative | resolved **physically against the git directory** — a missing or non-directory target refuses at open (`WORK_TREE_UNRESOLVABLE`) |
-| 5 | explicit route, nothing above | **the cwd** |
-| 6 | discovered route, nothing above | the directory holding the `.git` entry |
-| 7 | bare route, nothing above | **none** |
+| 2 | `commonDir` supplied, explicit or discovered route | row 3 (`core.bare = true`) is skipped — falls through to rows 4–7 as though `core.bare` were unset; the bare route (cwd-is-gitdir) is unaffected, row 8 still applies there unchanged |
+| 3 | `core.bare = true` (no `workDir` argument, row 2 not in effect) | **none**; if `core.worktree` is *also* set the configuration is bogus and work-tree commands refuse |
+| 4 | `core.worktree` set, absolute | that path |
+| 5 | `core.worktree` set, relative | resolved **physically against the git directory** — a missing or non-directory target refuses at open (`WORK_TREE_UNRESOLVABLE`) |
+| 6 | explicit route, nothing above | **the cwd** |
+| 7 | discovered route, nothing above | the directory holding the `.git` entry |
+| 8 | bare route, nothing above | **none** |
 
-Two rows surprise people, and both are measured git behaviour:
+Three rows surprise people, and all three are measured git behaviour:
 
-- **Row 5**: `openRepository({ gitDir: bareShaped })` from an unrelated directory
+- **Row 2**: setting `commonDir` **at all** — even to a value equal to `gitDir` —
+  makes a bare-configured repository keep a work tree, on both the explicit and
+  discovered routes; the cwd-is-gitdir route is unaffected because its own row
+  (8) never looks at a work tree in the first place. Which work tree it then
+  keeps is exactly what rows 6/7 already return once row 3 is bypassed.
+- **Row 6**: `openRepository({ gitDir: bareShaped })` from an unrelated directory
   defaults a working tree *at the cwd* when the config carries no `core.bare` —
   discovering the very same directory by `cwd` yields none. The route decides, not
   the directory's shape.
@@ -64,7 +79,10 @@ outright, in both directions.
 ## Reading the result
 
 `repo.layout` (the same deep-frozen object as `repo.ctx.layout`) carries the
-resolved `gitDir`, optional `commonDir` (linked worktrees), optional `workDir`
+resolved `gitDir`, optional `commonDir` — present for a linked worktree, or when
+the caller supplied a `commonDir` override, and always omitted when the resolved
+value equals `gitDir` (a caller-supplied value equal to `gitDir` normalises away
+the same as an absent one) — optional `workDir`
 (absent = no working tree), `bare`, `workTreeConfigBogus`, optional `untrusted`
 and `implicitBare` (present only when `true` — the ownership-trust gate's
 verdict, see Refusals below), optional `foreignPath` (the first checked path
@@ -137,7 +155,15 @@ the missing-intermediate refusal (its parent may be outside a sandbox's containm
 root — a relative pointer gets the full stepwise check); `ceilingDirs` *refuses*
 non-absolute entries where git silently ignores them; and environment variables
 (`GIT_DIR`, `GIT_WORK_TREE`, `GIT_COMMON_DIR`, `GIT_CEILING_DIRECTORIES`) are never
-read — every input is an explicit argument. Trust configuration follows the
+read — every input is an explicit argument. `commonDir` is one such argument: it
+mirrors `GIT_COMMON_DIR`'s *value*, never its wiring — the variable stays on the
+never-read list above. Two further divergences from that variable are deliberate:
+git's `GIT_COMMON_DIR` moves the object database, `config`, `shallow`, `info/*` and
+`hooks/`, but the ref store still follows the gitDir's own `commondir` file — tsgit's
+`commonDir` applies **uniformly**, ref store included, matching the `commondir`
+*file*'s own behaviour rather than the environment variable's internal split; and a
+relative value is **normalised** against `cwd` where git echoes the value back
+verbatim, trailing slash included. Trust configuration follows the
 same rule: it comes from `openRepository` arguments only, never from any
 config file — global and system config are unreachable by the FS port by
 design, and repository-local config is the attacker's own file, so a

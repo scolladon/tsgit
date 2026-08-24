@@ -103,12 +103,17 @@ That entry can be a directory or a `gitdir:` pointer file — e.g. a submodule's
 
 The browser has no discovery walk — OPFS's root is `/`, so `dirname('/') === '/'` terminates on the first step (ADR-538). `gitDir` and `workDir` therefore don't skip a walk the way they do on Node/Memory; instead `gitDir` **overrides the fixed entry itself** (superseding `gitDirName` when both are given), and `workDir` names a working tree elsewhere in the sandbox. Relative values resolve against the root work dir, the same "relative resolves against cwd" rule the Node/Memory adapters follow.
 
+`commonDir` rides the same fixed-entry resolution: it overrides whichever common dir the fixed entry would otherwise resolve — the file-derived value, or a `gitdir:` pointer's own `commondir` — and a relative value resolves against the root work dir the same way `gitDir`/`workDir` do. Unlike `ceilingDirs` below, `commonDir` **does** take effect here: there's no walk to skip, but the fixed entry itself still honours the override.
+
 ```ts
 // Bare repository — no working tree
 const bare = await openRepository({ rootHandle, gitDir: 'repo.git', bare: true });
 
 // Explicit work tree alongside the gitdir
 const repo = await openRepository({ rootHandle, gitDir: 'repo.git', workDir: 'work' });
+
+// Common dir shared with another checkout
+const linked = await openRepository({ rootHandle, gitDir: 'checkout/.git', commonDir: 'shared/.git' });
 ```
 
 `ceilingDirs` exists on the option type (inherited from the core `OpenRepositoryOptions`) but has no effect here — with no walk to bound, there's nothing for a ceiling to stop.

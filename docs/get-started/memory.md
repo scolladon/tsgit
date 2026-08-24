@@ -41,7 +41,7 @@ await repo.init();
 
 ## Bare repositories and explicit layout
 
-The memory adapter honours the same `gitDir` / `workDir` / `bare` / `ceilingDirs` options as Node, forwarded lexically (no realpath step — the sandboxed filesystem has no symlinks to resolve). A `gitDir` / `workDir` / ceiling entry that resolves outside `rootDir` reads as absent rather than escaping the sandbox.
+The memory adapter honours the same `gitDir` / `workDir` / `commonDir` / `bare` / `ceilingDirs` options as Node, forwarded lexically (no realpath step — the sandboxed filesystem has no symlinks to resolve). A `gitDir` / `workDir` / `commonDir` / ceiling entry that resolves outside `rootDir` reads as absent rather than escaping the sandbox.
 
 ```ts
 // gitDir === cwd so init writes a layout with no work tree
