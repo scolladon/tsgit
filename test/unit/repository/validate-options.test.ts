@@ -102,6 +102,12 @@ describe('validateOptions — invalid option values', () => {
           reasonContains: 'must not be empty',
         },
         {
+          label: 'an empty-string commonDir',
+          fn: () => validateOptions({ commonDir: '' }),
+          option: 'commonDir',
+          reasonContains: 'must not be empty',
+        },
+        {
           label: 'a ceilingDirs entry that is an empty string',
           fn: () => validateOptions({ ceilingDirs: [''] }),
           option: 'ceilingDirs',
@@ -224,6 +230,14 @@ describe('validateOptions — valid option values', () => {
         {
           label: 'an absolute workDir',
           fn: () => validateOptions({ workDir: '/abs/wt' }),
+        },
+        {
+          label: 'a relative commonDir (resolves against cwd, not required absolute)',
+          fn: () => validateOptions({ commonDir: 'rel/common' }),
+        },
+        {
+          label: 'an absolute commonDir',
+          fn: () => validateOptions({ commonDir: '/abs/common' }),
         },
         {
           label: 'ceilingDirs with only absolute, non-empty entries',

@@ -79,6 +79,7 @@ export const openRepository = async (
   const layout =
     (await resolveLayout(probe, cwd, portablePosixPolicy, {
       ...(opts.gitDir !== undefined ? { gitDir: opts.gitDir } : {}),
+      ...(opts.commonDir !== undefined ? { commonDir: opts.commonDir } : {}),
       ...explicit,
       ...(opts.ceilingDirs !== undefined ? { ceilingDirs: opts.ceilingDirs } : {}),
       ...(opts.trust !== undefined ? { trust: opts.trust } : {}),

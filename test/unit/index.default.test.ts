@@ -151,6 +151,58 @@ describe('memory shim — openRepository', () => {
     });
   });
 
+  describe('Given a linked-worktree-shaped gitDir plus a separate valid commonDir', () => {
+    const files = {
+      '/repo/wt/.git/HEAD': new TextEncoder().encode('ref: refs/heads/main\n'),
+      '/repo/wt/.git/config': new TextEncoder().encode('[core]\n\tbare = true\n'),
+      '/repo/shared/objects/.keep': new Uint8Array(0),
+      '/repo/shared/refs/.keep': new Uint8Array(0),
+      '/repo/shared/config': new TextEncoder().encode('[core]\n\tbare = true\n'),
+    };
+
+    describe('When openRepository runs with commonDir set', () => {
+      it('Then layout.commonDir is the given value and core.bare from the decoy is suppressed', async () => {
+        // Arrange & Act
+        const sut = await openRepository({
+          cwd: '/repo',
+          gitDir: '/repo/wt/.git',
+          commonDir: '/repo/shared',
+          files,
+        });
+
+        try {
+          // Assert
+          expect(sut.ctx.layout.commonDir).toBe('/repo/shared');
+          expect(sut.ctx.layout.bare).toBe(false);
+          expect(sut.ctx.layout.workDir).toBe('/repo');
+        } finally {
+          await sut.dispose();
+        }
+      });
+    });
+
+    describe('When openRepository runs with commonDir equal to gitDir (degenerate)', () => {
+      it('Then layout carries no commonDir key, yet bareness is still suppressed', async () => {
+        // Arrange & Act
+        const sut = await openRepository({
+          cwd: '/repo',
+          gitDir: '/repo/wt/.git',
+          commonDir: '/repo/wt/.git',
+          files,
+        });
+
+        try {
+          // Assert
+          expect('commonDir' in sut.ctx.layout).toBe(false);
+          expect(sut.ctx.layout.bare).toBe(false);
+          expect(sut.ctx.layout.workDir).toBe('/repo');
+        } finally {
+          await sut.dispose();
+        }
+      });
+    });
+  });
+
   describe('Given a discoverable repository above cwd', () => {
     const gitDirFiles = {
       '/repo/a/.git/HEAD': new TextEncoder().encode('ref: refs/heads/main\n'),

@@ -270,6 +270,32 @@ describe('Given a linked worktree whose commondir is reached through a symlink',
   });
 });
 
+describe('Given an explicit commonDir override reached through a symlink', () => {
+  describe('When openRepository resolves its roots', () => {
+    it("Then layout.commonDir is the realpathed target, not the symlink's own lexical path", async () => {
+      // Arrange
+      const gitDir = path.join(tmpdir, 'main', '.git');
+      await makeGitDir(gitDir);
+      const realCommon = path.join(tmpdir, 'real-common');
+      await mkdir(realCommon, { recursive: true });
+      const linkCommon = path.join(tmpdir, 'link-common');
+      await symlink(realCommon, linkCommon);
+      const resolvedRealCommon = await realpath(realCommon);
+
+      // Act
+      const repo = await openRepository({ cwd: tmpdir, gitDir, commonDir: linkCommon });
+
+      try {
+        // Assert
+        expect(repo.ctx.layout.commonDir).toBe(resolvedRealCommon);
+        expect(repo.ctx.layout.commonDir).not.toBe(linkCommon);
+      } finally {
+        await repo.dispose();
+      }
+    });
+  });
+});
+
 describe('Given cwd nested (a true descendant, not equal) inside the discovered workDir', () => {
   describe('When openRepository resolves its roots', () => {
     it("Then the workDir shortcut still avoids its own realpath (isDerivedFromCanonicalCwd's startsWith, not endsWith)", async () => {

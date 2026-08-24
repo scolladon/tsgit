@@ -94,6 +94,31 @@ describe('browser shim — openRepository', () => {
     });
   });
 
+  describe('Given an explicit absolute commonDir', () => {
+    describe('When openRepository runs', () => {
+      it('Then repo.layout.commonDir reflects it — the option reaches resolveFixedEntryLayout', async () => {
+        // Arrange / Act — nothing exists under fakeHandle, so this pins that
+        // index.browser.ts actually forwards the option down.
+        const sut = await openRepository({ rootHandle: fakeHandle, commonDir: '/shared' });
+
+        // Assert
+        expect(sut.ctx.layout.commonDir).toBe('/shared');
+      });
+    });
+  });
+
+  describe('Given a relative commonDir', () => {
+    describe('When openRepository runs', () => {
+      it('Then it resolves against the fixed root work dir', async () => {
+        // Arrange / Act
+        const sut = await openRepository({ rootHandle: fakeHandle, commonDir: 'shared' });
+
+        // Assert
+        expect(sut.ctx.layout.commonDir).toBe('/shared');
+      });
+    });
+  });
+
   describe('Given gitDir: "" (empty string)', () => {
     describe('When openRepository runs', () => {
       it('Then it throws INVALID_OPTION{option: "gitDir"} rather than resolving a layout', async () => {
@@ -226,7 +251,7 @@ describe('fixed-entry layout resolution (the browser shim path)', () => {
         const sut = resolveFixedEntryLayout;
 
         // Act
-        const result = await sut(fs, '/', '/.git', false);
+        const result = await sut(fs, '/', '/.git', { bare: false });
 
         // Assert
         expect(result).toEqual({
@@ -254,7 +279,7 @@ describe('fixed-entry layout resolution (the browser shim path)', () => {
         const sut = resolveFixedEntryLayout;
 
         // Act
-        const result = await sut(fs, '/', '/.git', false);
+        const result = await sut(fs, '/', '/.git', { bare: false });
 
         // Assert
         expect(result).toEqual({
@@ -265,6 +290,65 @@ describe('fixed-entry layout resolution (the browser shim path)', () => {
           objectFormat: 'sha1',
           refStorage: 'files',
         });
+      });
+    });
+  });
+
+  describe('Given a /.git gitfile whose admin dir carries a commondir, AND an override commonDir', () => {
+    describe('When resolveFixedEntryLayout runs', () => {
+      it('Then the override wins — the layout commonDir is the override, never the file-derived decoy', async () => {
+        // Arrange
+        const fs = stubFsOver({
+          '/.git': { kind: 'file', content: 'gitdir: /admin\n' },
+          '/admin/HEAD': { kind: 'file', content: 'ref: refs/heads/main\n' },
+          '/admin/commondir': { kind: 'file', content: '/decoy\n' },
+          '/shared/objects': { kind: 'dir' },
+          '/shared/refs': { kind: 'dir' },
+        });
+        const sut = resolveFixedEntryLayout;
+
+        // Act
+        const result = await sut(fs, '/', '/.git', { commonDir: '/shared' });
+
+        // Assert
+        expect(result.commonDir).toBe('/shared');
+      });
+    });
+  });
+
+  describe('Given a plain /.git directory entry, AND an override commonDir', () => {
+    describe('When resolveFixedEntryLayout runs', () => {
+      it('Then no commondir file is ever read and the layout commonDir is the override', async () => {
+        // Arrange — no `/.git/commondir` entry exists at all; the override
+        // must be honoured without probing for one.
+        const fs = stubFsOver({
+          '/.git': { kind: 'dir' },
+          '/shared/objects': { kind: 'dir' },
+          '/shared/refs': { kind: 'dir' },
+        });
+        const sut = resolveFixedEntryLayout;
+
+        // Act
+        const result = await sut(fs, '/', '/.git', { commonDir: '/shared' });
+
+        // Assert
+        expect(result.commonDir).toBe('/shared');
+      });
+    });
+  });
+
+  describe('Given a plain /.git directory entry, AND an override commonDir equal to gitDir (degenerate)', () => {
+    describe('When resolveFixedEntryLayout runs', () => {
+      it('Then the layout carries no commonDir key', async () => {
+        // Arrange
+        const fs = stubFsOver({ '/.git': { kind: 'dir' } });
+        const sut = resolveFixedEntryLayout;
+
+        // Act
+        const result = await sut(fs, '/', '/.git', { commonDir: '/.git' });
+
+        // Assert
+        expect('commonDir' in result).toBe(false);
       });
     });
   });
@@ -283,7 +367,7 @@ describe('fixed-entry layout resolution (the browser shim path)', () => {
         const sut = resolveFixedEntryLayout;
 
         // Act
-        const result = await sut(fs, '/', '/.git', true);
+        const result = await sut(fs, '/', '/.git', { bare: true });
 
         // Assert
         expect(result.bare).toBe(true);
@@ -303,7 +387,7 @@ describe('fixed-entry layout resolution (the browser shim path)', () => {
         const sut = resolveFixedEntryLayout;
 
         // Act
-        const result = await sut(fs, '/', '/.git', undefined, '/custom-wt');
+        const result = await sut(fs, '/', '/.git', { workDir: '/custom-wt' });
 
         // Assert
         expect(result).toStrictEqual({
@@ -325,7 +409,7 @@ describe('fixed-entry layout resolution (the browser shim path)', () => {
         const sut = resolveFixedEntryLayout;
 
         // Act
-        const result = await sut(fs, '/', '/.git', false);
+        const result = await sut(fs, '/', '/.git', { bare: false });
 
         // Assert
         expect(result).toEqual({
@@ -351,7 +435,7 @@ describe('fixed-entry layout resolution (the browser shim path)', () => {
         const sut = resolveFixedEntryLayout;
 
         // Act
-        const result = await sut(fs, '/', '/.git', undefined);
+        const result = await sut(fs, '/', '/.git', {});
 
         // Assert
         expect(result).toStrictEqual({
@@ -375,7 +459,7 @@ describe('fixed-entry layout resolution (the browser shim path)', () => {
         const sut = resolveFixedEntryLayout;
 
         // Act
-        const result = await sut(fs, '/', '/.git', undefined);
+        const result = await sut(fs, '/', '/.git', {});
 
         // Assert
         expect(result).toStrictEqual({

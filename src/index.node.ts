@@ -262,6 +262,7 @@ const buildLayoutOptions = (
   trustedDirectories: ReadonlyArray<string> | undefined,
 ): ExplicitLayoutOptions => ({
   ...(opts.gitDir !== undefined ? { gitDir: opts.gitDir } : {}),
+  ...(opts.commonDir !== undefined ? { commonDir: opts.commonDir } : {}),
   ...explicit,
   ...(ceilingDirs !== undefined ? { ceilingDirs } : {}),
   ...(opts.trust !== undefined ? { trust: opts.trust } : {}),

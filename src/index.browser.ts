@@ -71,8 +71,11 @@ export const openRepository = async (opts: OpenBrowserRepositoryOptions): Promis
     fs,
     ROOT_WORK_DIR,
     resolveGitDirEntry(opts.gitDir, gitDirName),
-    opts.bare,
-    opts.workDir,
+    {
+      ...(opts.bare !== undefined ? { bare: opts.bare } : {}),
+      ...(opts.workDir !== undefined ? { workDir: opts.workDir } : {}),
+      ...(opts.commonDir !== undefined ? { commonDir: opts.commonDir } : {}),
+    },
   );
   const algorithm = opts.algorithm ?? 'sha1';
   const fallback = {
