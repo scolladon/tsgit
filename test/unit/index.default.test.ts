@@ -223,10 +223,13 @@ describe('memory shim — openRepository', () => {
           caught = err;
         }
 
-        // Assert
+        // Assert — the path pins the throw site: the walk's candidate
+        // refusal names the invalidated gitDir, where a fallback-level
+        // NOT_A_REPOSITORY would name something else.
         expect(caught).toBeDefined();
-        const data = (caught as { data: { code: string } }).data;
+        const data = (caught as { data: { code: string; path: string } }).data;
         expect(data.code).toBe('NOT_A_REPOSITORY');
+        expect(data.path).toBe('/repo/self/.git');
       });
     });
   });

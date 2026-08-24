@@ -50,8 +50,10 @@ const locateFixedEntry = async (
   }
   return {
     gitDir,
-    // `normalizeForCompare`, not raw `!==` — the same degenerate-value rule
-    // the walk and explicit routes apply.
+    // `normalizeForCompare` for idiom-consistency with the walk and explicit
+    // routes. Under the hard-wired `portablePosixPolicy` it is the identity,
+    // so this compare is exactly `!==` today — kept in this form so a future
+    // policy change cannot silently reopen the degenerate-value hole here.
     ...(commonDirOverride !== undefined &&
     portablePosixPolicy.normalizeForCompare(commonDirOverride) !==
       portablePosixPolicy.normalizeForCompare(gitDir)

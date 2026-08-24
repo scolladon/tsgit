@@ -87,11 +87,13 @@ interface GitDirLocation {
  * walk behaves exactly as before.
  *
  * `commonDirOverride`, when given, replaces the file-derived common dir at
- * EVERY level's candidate check — before validation, not after: an override
- * lacking `objects/` or `refs/` invalidates that candidate exactly as a bad
- * `commondir` file would, so an unusable value invalidates every candidate
- * and the walk climbs straight past them all, exactly as git's own
- * structural check does. The override is resolved against `cwd` by the
+ * EVERY level's candidate check — before validation, not after. An override
+ * lacking `objects/` or `refs/` makes the walk REFUSE at the first
+ * valid-`HEAD` candidate with `NOT_A_REPOSITORY` rather than climb (see the
+ * rationale at the throw site in `layoutFor`): the same override
+ * invalidates every level equally, so climbing could only end at the
+ * found-nothing bootstrap adopting a repository with the override silently
+ * dropped. The override is resolved against `cwd` by the
  * caller before reaching here; every route this walk can take honours it,
  * including the cwd-is-gitdir branch (git reports it there too via
  * `rev-parse --git-common-dir`) — only the *bareness* rule is inert on that

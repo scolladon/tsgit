@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { MemoryFileSystem } from '../../../src/adapters/memory/memory-file-system.js';
-import { posixPolicy } from '../../../src/adapters/node/path-policy.js';
+import { posixPolicy, windowsPolicy } from '../../../src/adapters/node/path-policy.js';
 import { TsgitError } from '../../../src/domain/error.js';
 import { fileSystemLayoutProbe } from '../../../src/repository/file-system-layout-probe.js';
 import { resolveLayout, syntheticFallbackLayout } from '../../../src/repository/resolve-layout.js';
@@ -287,6 +287,52 @@ describe('resolveLayout', () => {
           objectFormat: 'sha1',
           refStorage: 'files',
         });
+      });
+    });
+  });
+
+  describe('Given a linked worktree admin dir (commondir file, NO commonDir argument) opened with bare: true', () => {
+    describe('When resolveLayout runs at the worktree path', () => {
+      it('Then the file-derived bypass still wins — the work tree is kept, exactly as before the option existed', async () => {
+        // Arrange — the marker-ABSENT arm of the bypass-suppression guard:
+        // an explicit bare: true suppresses only the caller-supplied-marker
+        // bypass, never the file-derived linked-worktree one.
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await makeGitDir(fs, '/repo/bare.git');
+        await fs.writeUtf8('/repo/bare.git/config', '[core]\n\tbare = true\n');
+        await fs.writeUtf8('/repo/bare.git/worktrees/wt/HEAD', 'ref: refs/heads/main\n');
+        await fs.writeUtf8('/repo/bare.git/worktrees/wt/commondir', '../..\n');
+        await fs.writeUtf8('/repo/wt/.git', 'gitdir: /repo/bare.git/worktrees/wt\n');
+
+        // Act
+        const result = await resolveLayout(fileSystemLayoutProbe(fs), '/repo/wt', posixPolicy, {
+          bare: true,
+        });
+
+        // Assert
+        expect(result?.bare).toBe(false);
+        expect(result?.workDir).toBe('/repo/wt');
+      });
+    });
+  });
+
+  describe('Given a case-mismatched spelling of the gitDir supplied as commonDir, under the windows policy', () => {
+    describe('When resolveLayout runs on the lenient EXPLICIT route', () => {
+      it('Then the degenerate value normalises away — presence still means "differs from gitDir" under case-folding too', async () => {
+        // Arrange — no fs entries needed: the EXPLICIT route validates
+        // nothing structurally, which is exactly what lets this row pin the
+        // normalizeForCompare comparison in isolation.
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+
+        // Act
+        const result = await resolveLayout(fileSystemLayoutProbe(fs), 'C:\\cwd', windowsPolicy, {
+          gitDir: 'C:\\repo\\bare.git',
+          commonDir: 'C:\\REPO\\BARE.GIT',
+        });
+
+        // Assert
+        expect(result).toBeDefined();
+        expect('commonDir' in (result as object)).toBe(false);
       });
     });
   });

@@ -258,7 +258,10 @@ describe('listWorktrees', () => {
         });
         await seedMainHead(ctx);
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tbare = true\n');
-        const sut: Context = { ...ctx, layout: { ...ctx.layout, bare: false } };
+        // Precondition, not a mutation: the seeded layout already resolved
+        // bare: false — exactly the state the suppressed open produces.
+        expect(ctx.layout.bare).toBe(false);
+        const sut: Context = ctx;
 
         // Act
         const result = await listWorktrees(sut);
