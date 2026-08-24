@@ -216,6 +216,42 @@ describe('findLayout', () => {
     });
   });
 
+  describe('Given a .git file pointing at a valid admin dir, and an unusable commonDir override', () => {
+    describe('When findLayout runs', () => {
+      it('Then it refuses with NOT_A_REPOSITORY naming the pointer target — the same payload semantics as the walk-candidate refusal', async () => {
+        // Arrange — git prints `fatal: not a git repository: (null)` here, so
+        // no path value is dictated by faithfulness; the pointer target is
+        // pinned deliberately for consistency with the candidate branch.
+        const fs = new MemoryFileSystem({ rootDir: '/repo' });
+        await makeGitDir(fs, '/repo/main/.git');
+        await fs.writeUtf8('/repo/main/.git/worktrees/wt/HEAD', 'ref: refs/heads/main\n');
+        await fs.writeUtf8('/repo/main/.git/worktrees/wt/commondir', '../..\n');
+        await fs.writeUtf8('/repo/wt/.git', 'gitdir: /repo/main/.git/worktrees/wt\n');
+        await fs.mkdir('/repo/bad/refs');
+
+        // Act
+        let caught: unknown;
+        try {
+          await findLayout(
+            fileSystemLayoutProbe(fs),
+            '/repo/wt',
+            posixPolicy,
+            undefined,
+            '/repo/bad',
+          );
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeDefined();
+        const data = (caught as { data: { code: string; path: string } }).data;
+        expect(data.code).toBe('NOT_A_REPOSITORY');
+        expect(data.path).toBe('/repo/main/.git/worktrees/wt');
+      });
+    });
+  });
+
   describe('Given a .git file with a pointer relative to the directory holding it', () => {
     describe('When findLayout runs', () => {
       it('Then resolves gitDir with no ".." segment surviving', async () => {

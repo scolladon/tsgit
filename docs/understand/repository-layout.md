@@ -37,7 +37,9 @@ override fails that check makes the walk **refuse at open** with
 only end at the found-nothing bootstrap, which would open the very repository the
 caller was re-pointing, with the override silently dropped. The explicit route
 stays lenient, exactly as it already is for `gitDir` — an unusable override still
-produces a layout, refusing only later, at first command.
+produces a layout, refusing only later, at first command. The browser's fixed-entry
+route follows that lenient posture too: its directory branch performs no structural
+check on the override at all.
 
 ## Work-tree precedence
 

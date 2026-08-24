@@ -117,7 +117,11 @@ export interface OpenRepositoryOptions {
    * effect. The kept work tree becomes a filesystem containment root — so
    * supplying the option, even a degenerate value, can add `cwd` to the
    * root set where the same open without it stayed gitDir-only. An explicit
-   * `bare: true` argument wins over this rule and keeps no work tree.
+   * `bare: true` argument wins over this rule and keeps no work tree —
+   * over THIS rule only: at a real linked worktree (a `commondir` file, no
+   * argument) the file-derived bypass still wins over `bare: true`, as it
+   * always has, so adding `commonDir` there is what makes `bare: true`
+   * effective.
    *
    * Degenerate value: a value resolving to `gitDir` is accepted and carries
    * the bareness rule, but is not reported on `repo.layout`
@@ -130,7 +134,9 @@ export interface OpenRepositoryOptions {
    * discovery route refuse at open with `NOT_A_REPOSITORY` (matching git's
    * exit-128 condition — the walk never falls back to opening a repository
    * with the override dropped); the explicit-`gitDir` route stays lenient
-   * and defers the refusal to the first command.
+   * and defers the refusal to the first command. The browser's fixed-entry
+   * route follows the lenient posture too: its directory branch performs no
+   * structural check on the override.
    *
    * WARNING: naming a common dir widens the filesystem containment root set
    * to that subtree, chooses which `config` is authoritative (and therefore

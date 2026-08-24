@@ -55666,7 +55666,39 @@
 									},
 									{
 										"kind": "text",
-										"text": " argument wins over this rule and keeps no work tree.\n\nDegenerate value: a value resolving to "
+										"text": " argument wins over this rule and keeps no work tree —\nover THIS rule only: at a real linked worktree (a "
+									},
+									{
+										"kind": "code",
+										"text": "`commondir`"
+									},
+									{
+										"kind": "text",
+										"text": " file, no\nargument) the file-derived bypass still wins over "
+									},
+									{
+										"kind": "code",
+										"text": "`bare: true`"
+									},
+									{
+										"kind": "text",
+										"text": ", as it\nalways has, so adding "
+									},
+									{
+										"kind": "code",
+										"text": "`commonDir`"
+									},
+									{
+										"kind": "text",
+										"text": " there is what makes "
+									},
+									{
+										"kind": "code",
+										"text": "`bare: true`"
+									},
+									{
+										"kind": "text",
+										"text": "\neffective.\n\nDegenerate value: a value resolving to "
 									},
 									{
 										"kind": "code",
@@ -55754,7 +55786,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " route stays lenient\nand defers the refusal to the first command.\n\nWARNING: naming a common dir widens the filesystem containment root set\nto that subtree, chooses which "
+										"text": " route stays lenient\nand defers the refusal to the first command. The browser's fixed-entry\nroute follows the lenient posture too: its directory branch performs no\nstructural check on the override.\n\nWARNING: naming a common dir widens the filesystem containment root set\nto that subtree, chooses which "
 									},
 									{
 										"kind": "code",
@@ -63786,7 +63818,39 @@
 									},
 									{
 										"kind": "text",
-										"text": " argument wins over this rule and keeps no work tree.\n\nDegenerate value: a value resolving to "
+										"text": " argument wins over this rule and keeps no work tree —\nover THIS rule only: at a real linked worktree (a "
+									},
+									{
+										"kind": "code",
+										"text": "`commondir`"
+									},
+									{
+										"kind": "text",
+										"text": " file, no\nargument) the file-derived bypass still wins over "
+									},
+									{
+										"kind": "code",
+										"text": "`bare: true`"
+									},
+									{
+										"kind": "text",
+										"text": ", as it\nalways has, so adding "
+									},
+									{
+										"kind": "code",
+										"text": "`commonDir`"
+									},
+									{
+										"kind": "text",
+										"text": " there is what makes "
+									},
+									{
+										"kind": "code",
+										"text": "`bare: true`"
+									},
+									{
+										"kind": "text",
+										"text": "\neffective.\n\nDegenerate value: a value resolving to "
 									},
 									{
 										"kind": "code",
@@ -63874,7 +63938,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " route stays lenient\nand defers the refusal to the first command.\n\nWARNING: naming a common dir widens the filesystem containment root set\nto that subtree, chooses which "
+										"text": " route stays lenient\nand defers the refusal to the first command. The browser's fixed-entry\nroute follows the lenient posture too: its directory branch performs no\nstructural check on the override.\n\nWARNING: naming a common dir widens the filesystem containment root set\nto that subtree, chooses which "
 									},
 									{
 										"kind": "code",
@@ -95219,7 +95283,39 @@
 									},
 									{
 										"kind": "text",
-										"text": " argument wins over this rule and keeps no work tree.\n\nDegenerate value: a value resolving to "
+										"text": " argument wins over this rule and keeps no work tree —\nover THIS rule only: at a real linked worktree (a "
+									},
+									{
+										"kind": "code",
+										"text": "`commondir`"
+									},
+									{
+										"kind": "text",
+										"text": " file, no\nargument) the file-derived bypass still wins over "
+									},
+									{
+										"kind": "code",
+										"text": "`bare: true`"
+									},
+									{
+										"kind": "text",
+										"text": ", as it\nalways has, so adding "
+									},
+									{
+										"kind": "code",
+										"text": "`commonDir`"
+									},
+									{
+										"kind": "text",
+										"text": " there is what makes "
+									},
+									{
+										"kind": "code",
+										"text": "`bare: true`"
+									},
+									{
+										"kind": "text",
+										"text": "\neffective.\n\nDegenerate value: a value resolving to "
 									},
 									{
 										"kind": "code",
@@ -95307,7 +95403,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " route stays lenient\nand defers the refusal to the first command.\n\nWARNING: naming a common dir widens the filesystem containment root set\nto that subtree, chooses which "
+										"text": " route stays lenient\nand defers the refusal to the first command. The browser's fixed-entry\nroute follows the lenient posture too: its directory branch performs no\nstructural check on the override.\n\nWARNING: naming a common dir widens the filesystem containment root set\nto that subtree, chooses which "
 									},
 									{
 										"kind": "code",
@@ -154897,7 +154993,39 @@
 									},
 									{
 										"kind": "text",
-										"text": " argument wins over this rule and keeps no work tree.\n\nDegenerate value: a value resolving to "
+										"text": " argument wins over this rule and keeps no work tree —\nover THIS rule only: at a real linked worktree (a "
+									},
+									{
+										"kind": "code",
+										"text": "`commondir`"
+									},
+									{
+										"kind": "text",
+										"text": " file, no\nargument) the file-derived bypass still wins over "
+									},
+									{
+										"kind": "code",
+										"text": "`bare: true`"
+									},
+									{
+										"kind": "text",
+										"text": ", as it\nalways has, so adding "
+									},
+									{
+										"kind": "code",
+										"text": "`commonDir`"
+									},
+									{
+										"kind": "text",
+										"text": " there is what makes "
+									},
+									{
+										"kind": "code",
+										"text": "`bare: true`"
+									},
+									{
+										"kind": "text",
+										"text": "\neffective.\n\nDegenerate value: a value resolving to "
 									},
 									{
 										"kind": "code",
@@ -154985,7 +155113,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " route stays lenient\nand defers the refusal to the first command.\n\nWARNING: naming a common dir widens the filesystem containment root set\nto that subtree, chooses which "
+										"text": " route stays lenient\nand defers the refusal to the first command. The browser's fixed-entry\nroute follows the lenient posture too: its directory branch performs no\nstructural check on the override.\n\nWARNING: naming a common dir widens the filesystem containment root set\nto that subtree, chooses which "
 									},
 									{
 										"kind": "code",
