@@ -581,7 +581,7 @@ describe.skipIf(!GIT_AVAILABLE)('commonDir open option interop', () => {
       return dir;
     };
 
-    describe('Given repositoryformatversion = 99 planted in the override config (scenario F)', () => {
+    describe('When repositoryformatversion = 99 is planted in the override config (scenario F)', () => {
       it('Then both refuse, naming the parsed version 99', async () => {
         // Arrange
         const dir = await copyPlainRow('f1');
@@ -611,7 +611,7 @@ describe.skipIf(!GIT_AVAILABLE)('commonDir open option interop', () => {
       });
     });
 
-    describe('Given the same key planted only in the gitdir config, with a clean override (scenario F)', () => {
+    describe('When the same key is planted only in the gitdir config, with a clean override (scenario F)', () => {
       it('Then neither refuses — the gitdir config never participates under the override', async () => {
         // Arrange
         const dir = await copyPlainRow('f2');
@@ -637,7 +637,7 @@ describe.skipIf(!GIT_AVAILABLE)('commonDir open option interop', () => {
       });
     });
 
-    describe('Given a sha256 override over a sha1 gitdir (scenario F)', () => {
+    describe('When a sha256 override sits over a sha1 gitdir (scenario F)', () => {
       it('Then both resolve sha256 — the mismatched pair being unreadable is out of scope', async () => {
         // Arrange
         const dir = await copyPlainRow('f3');
@@ -661,7 +661,7 @@ describe.skipIf(!GIT_AVAILABLE)('commonDir open option interop', () => {
       });
     });
 
-    describe('Given core.bare = true and a commonDir supplied, on the discovery route (scenario G)', () => {
+    describe('When core.bare = true meets a supplied commonDir on the discovery route (scenario G)', () => {
       it('Then both report not-bare / inside-work-tree, top level the discovered origin', async () => {
         // Arrange
         const dir = await copyPlainRow('g-disc');
@@ -695,7 +695,7 @@ describe.skipIf(!GIT_AVAILABLE)('commonDir open option interop', () => {
       });
     });
 
-    describe('Given core.bare = true and a commonDir supplied, on the explicit gitDir route (scenario G)', () => {
+    describe('When core.bare = true meets a supplied commonDir on the explicit gitDir route (scenario G)', () => {
       it('Then both report not-bare / inside-work-tree, top level the caller cwd', async () => {
         // Arrange
         const dir = await copyPlainRow('g-explicit');
@@ -741,7 +741,7 @@ describe.skipIf(!GIT_AVAILABLE)('commonDir open option interop', () => {
       });
     });
 
-    describe('Given core.bare = true and a commonDir supplied, on the cwd-is-gitdir route (scenario G)', () => {
+    describe('When core.bare = true meets a supplied commonDir on the cwd-is-gitdir route (scenario G)', () => {
       it('Then both stay bare, with no work tree', async () => {
         // Arrange
         const dir = path.join(root, 'g-bare');
@@ -768,7 +768,7 @@ describe.skipIf(!GIT_AVAILABLE)('commonDir open option interop', () => {
       });
     });
 
-    describe('Given four unusable commonDir shapes (scenario H)', () => {
+    describe('When the supplied commonDir is unusable (scenario H)', () => {
       /** Builds `shape`'s unusable commonDir under `dir`, named uniquely by `suffix`. */
       const makeBadCommon = async (dir: string, shape: string, suffix: string): Promise<string> => {
         const bad = path.join(dir, `bad-${suffix}`);
