@@ -114,7 +114,10 @@ export interface OpenRepositoryOptions {
    * Bareness: supplying it makes `core.bare` inert and keeps a work tree
    * (the discovered top level on the discovery route, `cwd` on the explicit
    * route), matching git; on the cwd-is-gitdir route it has no bareness
-   * effect.
+   * effect. The kept work tree becomes a filesystem containment root — so
+   * supplying the option, even a degenerate value, can add `cwd` to the
+   * root set where the same open without it stayed gitDir-only. An explicit
+   * `bare: true` argument wins over this rule and keeps no work tree.
    *
    * Degenerate value: a value resolving to `gitDir` is accepted and carries
    * the bareness rule, but is not reported on `repo.layout`
@@ -123,14 +126,16 @@ export interface OpenRepositoryOptions {
    * Inert on bootstrap: when discovery finds no repository, the option is
    * ignored and `init`/`clone` create a normal repository at `cwd`.
    *
-   * Unusable values: an override lacking `objects/` or `refs/` invalidates
-   * every discovery candidate, so a read command throws
-   * `NOT_A_REPOSITORY`; the explicit-`gitDir` route stays lenient and defers
-   * the refusal to the first command.
+   * Unusable values: an override lacking `objects/` or `refs/` makes the
+   * discovery route refuse at open with `NOT_A_REPOSITORY` (matching git's
+   * exit-128 condition — the walk never falls back to opening a repository
+   * with the override dropped); the explicit-`gitDir` route stays lenient
+   * and defers the refusal to the first command.
    *
    * WARNING: naming a common dir widens the filesystem containment root set
    * to that subtree, chooses which `config` is authoritative (and therefore
-   * which `merge.<driver>.driver` commands, `core.excludesFile` reads, hash
+   * which `merge.<driver>.driver` commands, `core.excludesFile` reads,
+   * `core.worktree` — which can widen the root set again, up to `/` — hash
    * algorithm and ref backend the repository runs with), and chooses which
    * `hooks/` directory is spawned with the caller's environment. The
    * ownership gate is off on the explicit-`gitDir` route, so

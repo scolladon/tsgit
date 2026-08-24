@@ -36,10 +36,18 @@ refusal-shape divergence. The new argument must slot into one of those postures.
 
 **Option 1 — ratified by the user, as recommended.**
 
-An unusable `commonDir` invalidates discovery candidates (the walk climbs past them,
-matching git's condition); the explicit-`gitDir` route stays lenient and defers refusal to
-first command. The typo'd-value bootstrap edge is accepted and must be stated in the
-option's JSDoc.
+An unusable `commonDir` invalidates discovery candidates; the explicit-`gitDir` route
+stays lenient and defers refusal to first command. The typo'd-value bootstrap edge is
+accepted and must be stated in the option's JSDoc.
+
+*Mechanism refined during review (within the ratified option):* the walk **refuses at
+open** with `NOT_A_REPOSITORY` at the first valid-`HEAD` candidate the override
+invalidates, rather than climbing — the same override invalidates every level equally, so
+climbing can only end at the found-nothing bootstrap, which (when `cwd` is itself the
+repository root) would adopt that very repository with the override silently dropped.
+Refusing preserves git's exit-128 condition on both cwd shapes; the bootstrap remains
+reachable only when discovery genuinely finds no valid-`HEAD` candidate anywhere, which
+keeps ADR-716's ignore-on-bootstrap behaviour intact.
 
 ## Consequences
 

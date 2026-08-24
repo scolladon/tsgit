@@ -30,10 +30,14 @@ A `commonDir` argument — the argument equivalent of git's `GIT_COMMON_DIR` —
 honoured on all three routes: it replaces the file-derived common dir (the
 `commondir` pointer's own resolution) wherever a route would otherwise apply one,
 rather than adding a second candidate to validate. On the discovery route it feeds
-into the same `objects/` + `refs/` check described above, so a candidate naming an
-unusable override still fails and the walk keeps climbing past it; the explicit
-route stays lenient, exactly as it already is for `gitDir` — an unusable override
-still produces a layout, refusing only later, at first command.
+into the same `objects/` + `refs/` check described above — and because the same
+override invalidates every level equally, a candidate with a valid `HEAD` whose
+override fails that check makes the walk **refuse at open** with
+`NOT_A_REPOSITORY` (git's exit-128 condition) instead of climbing: climbing could
+only end at the found-nothing bootstrap, which would open the very repository the
+caller was re-pointing, with the override silently dropped. The explicit route
+stays lenient, exactly as it already is for `gitDir` — an unusable override still
+produces a layout, refusing only later, at first command.
 
 ## Work-tree precedence
 
@@ -119,6 +123,7 @@ Work-tree-requiring commands refuse the way git does, as structured errors:
 | `reset --mixed` in a bare repository | `BARE_REPOSITORY { operation }` — the one refusal git keys on bareness itself |
 | present-but-malformed git directory (garbage `HEAD`) | `NOT_A_REPOSITORY { path }`, at the first command |
 | unusable `commondir` pointer (zero-byte, or a relative path with a missing intermediate component) | `GITFILE_INVALID_FORMAT { path }`, at open |
+| unusable `commonDir` **argument** past a valid-`HEAD` candidate, discovery route | `NOT_A_REPOSITORY { path }`, at open |
 | repository metadata not owned by the caller (`trust: 'ownership'`, the default) | `DUBIOUS_OWNERSHIP { path, foreignPath? }` — see [errors](../use/errors.md#repository-state) |
 | gitdir reached by the cwd-is-a-gitdir route under a name other than `.git` (`bareRepositories: 'explicit'`) | `IMPLICIT_BARE_REPOSITORY { gitDir }` — see [errors](../use/errors.md#repository-state) |
 

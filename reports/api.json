@@ -55650,7 +55650,23 @@
 									},
 									{
 										"kind": "text",
-										"text": " on the explicit\nroute), matching git; on the cwd-is-gitdir route it has no bareness\neffect.\n\nDegenerate value: a value resolving to "
+										"text": " on the explicit\nroute), matching git; on the cwd-is-gitdir route it has no bareness\neffect. The kept work tree becomes a filesystem containment root — so\nsupplying the option, even a degenerate value, can add "
+									},
+									{
+										"kind": "code",
+										"text": "`cwd`"
+									},
+									{
+										"kind": "text",
+										"text": " to the\nroot set where the same open without it stayed gitDir-only. An explicit\n"
+									},
+									{
+										"kind": "code",
+										"text": "`bare: true`"
+									},
+									{
+										"kind": "text",
+										"text": " argument wins over this rule and keeps no work tree.\n\nDegenerate value: a value resolving to "
 									},
 									{
 										"kind": "code",
@@ -55722,7 +55738,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " invalidates\nevery discovery candidate, so a read command throws\n"
+										"text": " makes the\ndiscovery route refuse at open with "
 									},
 									{
 										"kind": "code",
@@ -55730,7 +55746,7 @@
 									},
 									{
 										"kind": "text",
-										"text": "; the explicit-"
+										"text": " (matching git's\nexit-128 condition — the walk never falls back to opening a repository\nwith the override dropped); the explicit-"
 									},
 									{
 										"kind": "code",
@@ -55738,7 +55754,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " route stays lenient and defers\nthe refusal to the first command.\n\nWARNING: naming a common dir widens the filesystem containment root set\nto that subtree, chooses which "
+										"text": " route stays lenient\nand defers the refusal to the first command.\n\nWARNING: naming a common dir widens the filesystem containment root set\nto that subtree, chooses which "
 									},
 									{
 										"kind": "code",
@@ -55762,7 +55778,23 @@
 									},
 									{
 										"kind": "text",
-										"text": " reads, hash\nalgorithm and ref backend the repository runs with), and chooses which\n"
+										"text": " reads,\n"
+									},
+									{
+										"kind": "code",
+										"text": "`core.worktree`"
+									},
+									{
+										"kind": "text",
+										"text": " — which can widen the root set again, up to "
+									},
+									{
+										"kind": "code",
+										"text": "`/`"
+									},
+									{
+										"kind": "text",
+										"text": " — hash\nalgorithm and ref backend the repository runs with), and chooses which\n"
 									},
 									{
 										"kind": "code",
@@ -63738,7 +63770,23 @@
 									},
 									{
 										"kind": "text",
-										"text": " on the explicit\nroute), matching git; on the cwd-is-gitdir route it has no bareness\neffect.\n\nDegenerate value: a value resolving to "
+										"text": " on the explicit\nroute), matching git; on the cwd-is-gitdir route it has no bareness\neffect. The kept work tree becomes a filesystem containment root — so\nsupplying the option, even a degenerate value, can add "
+									},
+									{
+										"kind": "code",
+										"text": "`cwd`"
+									},
+									{
+										"kind": "text",
+										"text": " to the\nroot set where the same open without it stayed gitDir-only. An explicit\n"
+									},
+									{
+										"kind": "code",
+										"text": "`bare: true`"
+									},
+									{
+										"kind": "text",
+										"text": " argument wins over this rule and keeps no work tree.\n\nDegenerate value: a value resolving to "
 									},
 									{
 										"kind": "code",
@@ -63810,7 +63858,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " invalidates\nevery discovery candidate, so a read command throws\n"
+										"text": " makes the\ndiscovery route refuse at open with "
 									},
 									{
 										"kind": "code",
@@ -63818,7 +63866,7 @@
 									},
 									{
 										"kind": "text",
-										"text": "; the explicit-"
+										"text": " (matching git's\nexit-128 condition — the walk never falls back to opening a repository\nwith the override dropped); the explicit-"
 									},
 									{
 										"kind": "code",
@@ -63826,7 +63874,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " route stays lenient and defers\nthe refusal to the first command.\n\nWARNING: naming a common dir widens the filesystem containment root set\nto that subtree, chooses which "
+										"text": " route stays lenient\nand defers the refusal to the first command.\n\nWARNING: naming a common dir widens the filesystem containment root set\nto that subtree, chooses which "
 									},
 									{
 										"kind": "code",
@@ -63850,7 +63898,23 @@
 									},
 									{
 										"kind": "text",
-										"text": " reads, hash\nalgorithm and ref backend the repository runs with), and chooses which\n"
+										"text": " reads,\n"
+									},
+									{
+										"kind": "code",
+										"text": "`core.worktree`"
+									},
+									{
+										"kind": "text",
+										"text": " — which can widen the root set again, up to "
+									},
+									{
+										"kind": "code",
+										"text": "`/`"
+									},
+									{
+										"kind": "text",
+										"text": " — hash\nalgorithm and ref backend the repository runs with), and chooses which\n"
 									},
 									{
 										"kind": "code",
@@ -95139,7 +95203,23 @@
 									},
 									{
 										"kind": "text",
-										"text": " on the explicit\nroute), matching git; on the cwd-is-gitdir route it has no bareness\neffect.\n\nDegenerate value: a value resolving to "
+										"text": " on the explicit\nroute), matching git; on the cwd-is-gitdir route it has no bareness\neffect. The kept work tree becomes a filesystem containment root — so\nsupplying the option, even a degenerate value, can add "
+									},
+									{
+										"kind": "code",
+										"text": "`cwd`"
+									},
+									{
+										"kind": "text",
+										"text": " to the\nroot set where the same open without it stayed gitDir-only. An explicit\n"
+									},
+									{
+										"kind": "code",
+										"text": "`bare: true`"
+									},
+									{
+										"kind": "text",
+										"text": " argument wins over this rule and keeps no work tree.\n\nDegenerate value: a value resolving to "
 									},
 									{
 										"kind": "code",
@@ -95211,7 +95291,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " invalidates\nevery discovery candidate, so a read command throws\n"
+										"text": " makes the\ndiscovery route refuse at open with "
 									},
 									{
 										"kind": "code",
@@ -95219,7 +95299,7 @@
 									},
 									{
 										"kind": "text",
-										"text": "; the explicit-"
+										"text": " (matching git's\nexit-128 condition — the walk never falls back to opening a repository\nwith the override dropped); the explicit-"
 									},
 									{
 										"kind": "code",
@@ -95227,7 +95307,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " route stays lenient and defers\nthe refusal to the first command.\n\nWARNING: naming a common dir widens the filesystem containment root set\nto that subtree, chooses which "
+										"text": " route stays lenient\nand defers the refusal to the first command.\n\nWARNING: naming a common dir widens the filesystem containment root set\nto that subtree, chooses which "
 									},
 									{
 										"kind": "code",
@@ -95251,7 +95331,23 @@
 									},
 									{
 										"kind": "text",
-										"text": " reads, hash\nalgorithm and ref backend the repository runs with), and chooses which\n"
+										"text": " reads,\n"
+									},
+									{
+										"kind": "code",
+										"text": "`core.worktree`"
+									},
+									{
+										"kind": "text",
+										"text": " — which can widen the root set again, up to "
+									},
+									{
+										"kind": "code",
+										"text": "`/`"
+									},
+									{
+										"kind": "text",
+										"text": " — hash\nalgorithm and ref backend the repository runs with), and chooses which\n"
 									},
 									{
 										"kind": "code",
@@ -154785,7 +154881,23 @@
 									},
 									{
 										"kind": "text",
-										"text": " on the explicit\nroute), matching git; on the cwd-is-gitdir route it has no bareness\neffect.\n\nDegenerate value: a value resolving to "
+										"text": " on the explicit\nroute), matching git; on the cwd-is-gitdir route it has no bareness\neffect. The kept work tree becomes a filesystem containment root — so\nsupplying the option, even a degenerate value, can add "
+									},
+									{
+										"kind": "code",
+										"text": "`cwd`"
+									},
+									{
+										"kind": "text",
+										"text": " to the\nroot set where the same open without it stayed gitDir-only. An explicit\n"
+									},
+									{
+										"kind": "code",
+										"text": "`bare: true`"
+									},
+									{
+										"kind": "text",
+										"text": " argument wins over this rule and keeps no work tree.\n\nDegenerate value: a value resolving to "
 									},
 									{
 										"kind": "code",
@@ -154857,7 +154969,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " invalidates\nevery discovery candidate, so a read command throws\n"
+										"text": " makes the\ndiscovery route refuse at open with "
 									},
 									{
 										"kind": "code",
@@ -154865,7 +154977,7 @@
 									},
 									{
 										"kind": "text",
-										"text": "; the explicit-"
+										"text": " (matching git's\nexit-128 condition — the walk never falls back to opening a repository\nwith the override dropped); the explicit-"
 									},
 									{
 										"kind": "code",
@@ -154873,7 +154985,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " route stays lenient and defers\nthe refusal to the first command.\n\nWARNING: naming a common dir widens the filesystem containment root set\nto that subtree, chooses which "
+										"text": " route stays lenient\nand defers the refusal to the first command.\n\nWARNING: naming a common dir widens the filesystem containment root set\nto that subtree, chooses which "
 									},
 									{
 										"kind": "code",
@@ -154897,7 +155009,23 @@
 									},
 									{
 										"kind": "text",
-										"text": " reads, hash\nalgorithm and ref backend the repository runs with), and chooses which\n"
+										"text": " reads,\n"
+									},
+									{
+										"kind": "code",
+										"text": "`core.worktree`"
+									},
+									{
+										"kind": "text",
+										"text": " — which can widen the root set again, up to "
+									},
+									{
+										"kind": "code",
+										"text": "`/`"
+									},
+									{
+										"kind": "text",
+										"text": " — hash\nalgorithm and ref backend the repository runs with), and chooses which\n"
 									},
 									{
 										"kind": "code",
