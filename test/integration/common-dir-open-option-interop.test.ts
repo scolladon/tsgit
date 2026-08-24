@@ -223,7 +223,7 @@ describe.skipIf(!GIT_AVAILABLE)('commonDir open option interop', () => {
     let c2: string;
 
     beforeAll(async () => {
-      root = await mkRoot('bdei');
+      root = await mkRoot('shared-state');
       plainDir = path.join(root, 'plain');
       runGit(['init', '-q', '-b', 'main', plainDir]);
       await writeFile(path.join(plainDir, 'a.txt'), 'one\n');
@@ -276,17 +276,17 @@ describe.skipIf(!GIT_AVAILABLE)('commonDir open option interop', () => {
 
         try {
           // Act
-          await repo.config.set({ key: 'probe.scenariod', value: 'landed', scope: 'local' });
+          await repo.config.set({ key: 'probe.override', value: 'landed', scope: 'local' });
 
           // Assert
           const configText = await readFile(path.join(altDir, 'config'), 'utf8');
-          expect(configText).toContain('scenariod = landed');
+          expect(configText).toContain('override = landed');
           const peerList = tryRunGitWithExit(
             ['-C', plainDir, 'config', '--list', '--show-origin', '--local'],
             { env: { ...runGitEnv(), GIT_COMMON_DIR: altDir } },
           );
           expect(peerList.exitCode).toBe(0);
-          expect(peerList.stdout).toContain(`file:${altDir}/config\tprobe.scenariod=landed`);
+          expect(peerList.stdout).toContain(`file:${altDir}/config\tprobe.override=landed`);
         } finally {
           await repo.dispose();
         }
@@ -698,11 +698,11 @@ describe.skipIf(!GIT_AVAILABLE)('commonDir open option interop', () => {
     describe('Given core.bare = true and a commonDir supplied, on the explicit gitDir route (scenario G)', () => {
       it('Then both report not-bare / inside-work-tree, top level the caller cwd', async () => {
         // Arrange
-        const dir = await copyPlainRow('g-expl');
+        const dir = await copyPlainRow('g-explicit');
         git(dir, 'config', 'core.bare', 'true');
-        const alt = path.join(root, 'g-expl-alt');
+        const alt = path.join(root, 'g-explicit-alt');
         await cp(path.join(dir, '.git'), alt, { recursive: true });
-        const elsewhere = path.join(root, 'g-expl-elsewhere');
+        const elsewhere = path.join(root, 'g-explicit-elsewhere');
         await mkdir(elsewhere, { recursive: true });
 
         // Act
@@ -790,7 +790,7 @@ describe.skipIf(!GIT_AVAILABLE)('commonDir open option interop', () => {
           // with the unusable override.
           const dir = await copyPlainRow(`h-${label}`);
           const gitDir = path.join(dir, '.git');
-          const badExplicit = await makeBadCommon(root, label, `expl-${label}`);
+          const badExplicit = await makeBadCommon(root, label, `explicit-${label}`);
 
           // Act — explicit route peer + tsgit
           const explicitPeer = tryRunGitWithExit(['rev-parse', 'HEAD'], {
