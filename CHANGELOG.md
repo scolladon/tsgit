@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.6.0](https://github.com/scolladon/tsgit/compare/v3.5.0...v3.6.0) (2026-08-24)
+
+
+### Features
+
+* accept an explicit commonDir on openRepository across every runtime ([#283](https://github.com/scolladon/tsgit/issues/283)) ([acfe17e](https://github.com/scolladon/tsgit/commit/acfe17e3117b530c3a0063737c75e73ca25e7f92))
+
 ## [3.5.0](https://github.com/scolladon/tsgit/compare/v3.4.0...v3.5.0) (2026-08-23)
 
 
