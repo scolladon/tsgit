@@ -7,9 +7,10 @@
 > stages from core count, I/O-bound stages from threadpool width / storage characteristics — never
 > from a single magic constant, with the platform knowledge living in adapters behind a port.
 > Status: draft → self-reviewed ×3 → revised against ADRs 718–730 → revised against ADR-731 →
-> **revised against ADR-732 (DC-17's consolidation half folded)**
+> revised against ADR-732 (DC-17's consolidation half folded) →
+> **revised against ADR-733 (DC-18 ratified (b) — full promisor parity)**
 >
-> **All seventeen original decision candidates are settled** and authored as ADRs **718–732**.
+> **All eighteen decision candidates are settled** and authored as ADRs **718–733**.
 > Every gate resolved to "do it": P5 ships F3 **and** F4, P7's progress shape is completion-ordered,
 > P9 is in scope at **full breadth** (commit-graph write *and* gc), and **DC-17 resolved to (c) plus
 > consolidation** — full cruft-pack parity (ADR-731) *and* full default-gc consolidation of
@@ -17,14 +18,16 @@
 > Decision-candidates section is retained below as the historical record, each row carrying its
 > settled outcome.
 >
-> ⚠️ **One new candidate is open: DC-18** — how consolidation treats a `.promisor`-marked pack.
-> It surfaced from **Pin Z**, run for this revision: git repacks promisor and non-promisor objects
-> into *two separate* packs and carries the `.promisor` marker onto the new one. Folding them into
-> one pack — the naive reading of "all reachable objects repack into one new pack" — would silently
-> break partial clone. The design below is written to the conservative branch (exclude promisor
-> packs from consolidation exactly as `.keep` packs are excluded, which keeps every object in the
-> same *file class* and so leaves ADR-731/732's pinned surface untouched) and carries the written
-> delta for the other. **The designer does not decide it.**
+> **DC-18 is settled as (b): full promisor parity (ADR-733, refining ADR-732).** It surfaced from
+> **Pin Z**, run for the ADR-732 revision: git repacks promisor and non-promisor objects into *two
+> separate* packs and carries the `.promisor` marker onto the new one. The designer recommended the
+> conservative branch — exclude promisor packs as `*.keep` packs are excluded — and the user took
+> parity instead, for the third time in this document. gc therefore consolidates **per file class**:
+> promisor objects repack into a fresh promisor pack with its own `.promisor` sidecar, superseded
+> promisor packs retire under the same sibling and ordering rules as normal ones, and the two are
+> **never** merged — Pin Z shows git never merges them, and merging would tell a later `git` that
+> lazily-fetchable objects are fully present locally. `*.keep` exclusion is unchanged and remains the
+> only total exclusion.
 >
 > ⚠️ **One earlier pin is amended, not added to: Pin F.** Its bitmap clause was measured in a
 > working-tree repository and does not generalise — with `repack.writeBitmaps` unset, git's default
@@ -693,7 +696,7 @@ half is the reason this matters at all: because gc rewrites the normal pack on e
 that is *reachable* has its pack mtime refreshed each time, and only starts aging from the run at
 which it became unreachable.
 
-### Pin Z — a `.promisor` pack is repacked **separately**, keeping its marker ⚠️ **DC-18**
+### Pin Z — a `.promisor` pack is repacked **separately**, keeping its marker (ADR-733)
 
 ```text
 $ : > .git/objects/pack/pack-27818d03….promisor    # mark the existing pack promisor
@@ -709,8 +712,17 @@ git produces **two** packs, never one: promisor and non-promisor objects are nev
 `.promisor` marker follows the objects onto the new promisor pack. Merging them — the naive reading
 of "all reachable objects repack into one new pack" — would tell a later `git` that objects it must
 lazily fetch are already present locally, which is a partial-clone correctness break, not a size
-trade. ADR-732 names `*.keep` as the exclusion and is silent on `.promisor`. **This is DC-18** and
-the designer does not settle it; §P9 is written to the conservative branch and carries the delta.
+trade. ADR-732 named `*.keep` as the exclusion and was silent on `.promisor`; **ADR-733 settles it
+as (b)** — §P9 consolidates the promisor class in its own right, exactly as this probe shows git
+doing, and `*.keep` stays the only total exclusion.
+
+**What this probe does *not* pin** is the reachability question: every object in the probe's
+promisor pack was reachable, so it says nothing about an *unreachable* promisor object. §P9 takes
+the only direction that cannot break anything — such an object is carried into the fresh promisor
+pack rather than crufted, because a cruft pack has no `.promisor` marker and moving it there is the
+same "present locally" lie as merging. **An implementer-owed pin** (§Test strategy → Cross-cutting)
+resolves whether git instead crufts or expires it; the carrying direction is the recoverable one to
+be wrong about, since the alternative destroys data.
 
 ### Pin AA — `gc.cruftPacks=false` **loosens** unreachable objects out of the packs it consolidates
 
@@ -779,23 +791,26 @@ statements. `Rn` numbers are referenced by the parts.
   readable before the call whose recorded mtime is strictly newer than the expiry cutoff —
   reachable or not, loose or packed — `readObject` succeeds after it, and `git fsck` on the
   resulting repository is silent at exit 0. Consolidation moves objects **between file classes**
-  (loose → pack, superseded pack → new pack, superseded pack → cruft pack) but destroys none: the
-  single class of object the call may destroy is named in R28 and nowhere else.
+  (loose → pack, superseded pack → new pack, superseded pack → cruft pack, superseded promisor pack
+  → new promisor pack) but destroys none: the single class of object the call may destroy is named
+  in R28 and nowhere else.
 - **R24** gc unlinks a file **only** after every object it holds is present at a final path in a
   pack the call has just written **and verified** (Pin X's overlap window). The complete set of
   files the call may delete is:
   1. loose objects present in a pack that survives the call (§P9 step 9's `survivingPacks`);
   2. a superseded **normal** pack's `.pack`/`.idx`/`.rev`/`.bitmap`;
   3. a superseded **cruft** pack's `.pack`/`.idx`/`.rev`/`.mtimes`;
-  4. `objects/pack/multi-pack-index` when it names any pack retired by 2 or 3.
+  4. a superseded **promisor** pack's `.pack`/`.idx`/`.rev`/`.promisor` (ADR-733);
+  5. `objects/pack/multi-pack-index` when it names any pack retired by 2, 3 or 4.
 
   Nothing else, ever. In particular: **no `*.keep`-marked pack, and no file belonging to one, is
-  ever read for repacking, rewritten or deleted** (Pin V); **no `.promisor` file is ever removed,
-  and — under DC-18's conservative branch, which this design is written to — no `.promisor`-marked
-  pack is consolidated either** (Pin Z); no ref, reflog or index file is
+  ever read for repacking, rewritten or deleted** (Pin V) — that is now the *only* total exclusion;
+  no ref, reflog or index file is
   touched (R26). Within a superseded pack the **`.idx` is unlinked first**, which removes the pack
   from git's and tsgit's readers in one step and leaves every later unlink operating on litter
-  (Pin X); within a superseded cruft pack the `.mtimes` is unlinked **last** (§P9).
+  (Pin X); within a superseded cruft pack the `.mtimes` is unlinked **last**, and within a
+  superseded promisor pack the `.promisor` is unlinked **last**, for the same reason in both cases —
+  a pack findable *without* its class marker reads as an ordinary normal pack (§P9).
 - **R25** After gc, a host `git` reads the repository unchanged: `git fsck`, `git log`,
   `git cat-file -p` on a packed oid and `git rev-list --all --objects` all succeed, and
   `git count-objects -v` reports the expected `count` / `in-pack` / `packs` split.
@@ -833,22 +848,28 @@ statements. `Rn` numbers are referenced by the parts.
   the cruft pack, how many were carried forward, how many were destroyed by expiry, and whether a
   cruft pack exists afterwards. No rendered text, no formatted date, no human-readable age
   (ADR-249).
-- **R32** Consolidation is total on the objects it owns and inert on the ones it does not. After a
-  `gc` with a non-empty input set: every reachable object **outside** a `*.keep`- or
-  `.promisor`-marked pack lives in exactly **one** newly-written normal pack, whatever file class it
-  started in; every unreachable object outside those packs is in the cruft pack or was destroyed by
-  R28; every object **inside** a kept or promisor pack is exactly where it was, in a file whose
-  bytes and inode are unchanged. Superseded packs and their siblings are gone (R24). The mtime an
+- **R32** Consolidation is total on the objects it owns, **per file class**, and inert on the ones
+  it does not. After a `gc` with a non-empty input set: every reachable object outside a
+  `*.keep`-marked pack and outside a promisor pack lives in exactly **one** newly-written normal
+  pack, whatever file class it started in; **every object of every promisor pack lives in exactly
+  one newly-written promisor pack carrying its own `.promisor` sidecar, and no oid appears in both
+  the new normal pack and the new promisor pack** (ADR-733); every unreachable non-promisor object
+  outside a kept pack is in the cruft pack or was destroyed by R28; every object **inside a kept
+  pack** is exactly where it was, in a file whose bytes and inode are unchanged. Superseded packs
+  and their siblings are gone (R24). The mtime an
   object migrating out of a superseded pack carries into the sidecar is that pack's `lstat` mtime
-  **read before supersession** (Pin Y) — never the run clock. When the input set is empty, gc writes
-  **no pack at all**, not a zero-object one (Pin V); when it is non-empty gc always writes, with no
-  "already consolidated" short-circuit (Pin W).
+  **read before supersession** (Pin Y) — never the run clock. When a class's input set is empty, gc
+  writes **no pack at all** for it, not a zero-object one (Pin V) — a repository with no promisor
+  pack gets no promisor pack; when it is non-empty gc always writes, with no "already consolidated"
+  short-circuit (Pin W).
 - **R33** The size trade is **observable, measured and non-gating**. `MaintenanceResult` carries
   `packBytesBefore` / `packBytesAfter` (summed `.pack` bytes in `objects/pack/`, from the `lstat`
   R32 already requires), so a caller can compute the inflation without re-stating the directory. A
   bench scenario records the ratio on the delta-chain fixture and it is reported as a **budget**,
   never as a regression gate — the measured bracket is `×1.29` … `×6.91` (§P9) and no CI gate reads
-  it. The delta-writing pack writer that retires the trade is recorded as the follow-up.
+  it. The pair sums **every** `.pack`, so under ADR-733 a partial clone pays the same bracket on its
+  promisor pack too, and the ratio stays readable because both classes are inside both sums. The
+  delta-writing pack writer that retires the trade is recorded as the follow-up.
 
 **Artifacts / observability**
 
@@ -946,7 +967,7 @@ post-canonicalisation re-entry — and record the walk in the part's commit body
 | P8's containment relaxation | the discovery walk (before any adapter exists); `worktreeFs(path)` (a fresh adapter per call); submodule child contexts; the config-scope allowlist paths; `unsafeRawAdapters`; user-supplied `opts.fs` (must be unaffected) |
 | P8's session token | all seven derivation sites, in both directions — write through the derived Context and read through the original, **and** the reverse |
 | P9's loose-object unlink | `internal/loose-oid-cache.ts` states the invariant **"tsgit never prunes loose objects"** twice in prose (`:13-15`, `:61`) and its only mutator is add-only (`invalidateLooseOid :67-69`). `gc` falsifies it: every fanout prefix it unlinks from must go through `forgetLooseOidPrefix` (`:76-78`) — or gain a remove-member helper — **in the same commit that adds the unlink**, and the two prose blocks must be rewritten. Also walk: `object-resolver.ts:197/203` (the probe + stale-HIT recovery), `write-object.ts:49/54`, and `refreshPackRegistry` after **both** new packs land — the cruft pack is a pack registry member like any other, and forgetting it makes step 8's verify read the wrong file |
-| **P9's pack retirement** (ADR-732) | The packs gc deletes are **guaranteed to be open**: step 6 read every object out of them through `RegisteredPack.readSlice`, which holds a persistent `FileHandle` (`pack-registry.ts:113`, closed only by `close()`). Walk: `refresh()` (`:784-802`) — it *does* close the outgoing generation's handles, but it hands the close batch to `trackClose` and returns **`void`**, so the handles are closed *eventually*, and only `dispose()` drains `pendingCloses`; `dispose()` (`:825-844`) is **terminal** (`disposed = true`, `all()` keeps returning the retired set) so gc cannot use it mid-run. **gc must be able to await the drain before step 10/10b** — the minimal honest change is one new registry member exposing the existing private `drainPendingCloses` (a `settleRefresh(): Promise<void>`), with gc as its only caller. ⚠️ **Pin owed by the implementer on the Windows CI job** (`ci.yml:252` runs `windows-latest`): whether Node's `unlink` refuses a `.pack` with a live `FileHandle`. Draining first is correct on every platform regardless — on POSIX an unlinked-but-open pack keeps its bytes allocated until the fd closes, so `packBytesAfter` would report space the filesystem has not yet reclaimed |
+| **P9's pack retirement** (ADR-732, ADR-733) | The packs gc deletes — normal, cruft **and, under ADR-733, promisor** — are **guaranteed to be open**: steps 6 and 6b read every object out of them through `RegisteredPack.readSlice`, which holds a persistent `FileHandle` (`pack-registry.ts:113`, closed only by `close()`). Walk: `refresh()` (`:784-802`) — it *does* close the outgoing generation's handles, but it hands the close batch to `trackClose` and returns **`void`**, so the handles are closed *eventually*, and only `dispose()` drains `pendingCloses`; `dispose()` (`:825-844`) is **terminal** (`disposed = true`, `all()` keeps returning the retired set) so gc cannot use it mid-run. **gc must be able to await the drain before steps 10 / 10b / 10c** — the minimal honest change is one new registry member exposing the existing private `drainPendingCloses` (a `settleRefresh(): Promise<void>`), with gc as its only caller. ⚠️ **Pin owed by the implementer on the Windows CI job** (`ci.yml:252` runs `windows-latest`): whether Node's `unlink` refuses a `.pack` with a live `FileHandle`. Draining first is correct on every platform regardless — on POSIX an unlinked-but-open pack keeps its bytes allocated until the fd closes, so `packBytesAfter` would report space the filesystem has not yet reclaimed |
 
 Every cache added here is also **write-path symmetric**: the part that adds the read cache adds
 its invalidation in the same commit, never in a follow-up.
@@ -2150,7 +2171,7 @@ plus a fresh `NodeFileSystem` + validator each — and the loop is sequential.
 
 ---
 
-### P9 — Maintenance (F11) — full breadth (ADR-724, ADR-731, ADR-732)
+### P9 — Maintenance (F11) — full breadth (ADR-724, ADR-731, ADR-732, ADR-733)
 
 **The situation, verified.** tsgit reads commit-graph, midx, `.rev` and bitmaps. It **writes**
 `.rev` and nothing else: no commit-graph writer, no midx writer, no bitmap writer, no
@@ -2189,6 +2210,19 @@ The divergence row is therefore gone from the placement table below, replaced by
 `MaintenanceResult` gains the two scalars that make the inflation observable (R33). Nothing else in
 P9 changes shape — the fold is additive, exactly as the deferral note predicted it would be.
 
+**And ADR-733 closed the last row of the table.** ADR-732 named `*.keep` as the exclusion and was
+silent on `.promisor`; the revision that folded it flagged the gap as DC-18, wrote P9 to the
+conservative branch (exclude promisor packs like kept ones) and carried the delta for the other.
+The user ratified **(b): full promisor parity**. Consolidation is therefore **per file class** — the
+promisor objects repack into their own fresh pack with its `.promisor` sidecar, the superseded
+promisor pack retires with its siblings like any other, and the two output packs are never merged.
+There are now **four** file classes in this task and every lifecycle rule below states which of them
+it covers: **normal** (consolidated), **cruft** (lifecycle per ADR-731), **promisor** (consolidated
+in its own class) and **kept** (untouched — the only total exclusion). The delta is the one this
+document already predicted: one classification branch at step 1b, a second `buildPack` +
+`.promisor` write at step 6b, one more retirement group at step 10c, and one more scalar on the
+result. The placement table below is now **all parity, no ⚠️**.
+
 #### Anchors (verified with Serena)
 
 | Thing | Anchor | Shape |
@@ -2204,7 +2238,7 @@ P9 changes shape — the fold is additive, exactly as the deferral note predicte
 | loose membership cache | `primitives/internal/loose-oid-cache.ts:22,32-51,54-57,67-69,76-78` | `WeakMap<Context, Map<prefix, Set<suffix>>>`; **`invalidateLooseOid` is add-only**; `forgetLooseOidPrefix` is the only removal escape hatch |
 | single-file delete | `ports/file-system.ts:107` `rm(path)` | **not idempotent** — throws `FILE_NOT_FOUND`. `unlink`/`remove` do **not** exist on the port |
 | **pack enumeration** | `primitives/pack-registry.ts:261-263` `isCandidate` | the scan is keyed on **`.idx`** entries (`entry.isFile && name.endsWith('.idx') && isSafePackName(name)`) — so an `.idx`-first unlink retires a pack from tsgit's view in one step (Pin X) |
-| **pack sibling presence** | `pack-registry.ts:559` (`const fileNames = new Set(…)`), consumed by `loadPack(ctx, dir, entryName, fileNames)` `:280-292` | one shared `readdir` already builds the file-name set; `hasRevIndex` `:290` and `hasBitmap` `:292` are `fileNames.has(…)` lookups. **`.keep`, `.promisor` and `.mtimes` detection is the same lookup at zero extra I/O** — this is the anchor the exclusion rules attach to |
+| **pack sibling presence** | `pack-registry.ts:559` (`const fileNames = new Set(…)`), consumed by `loadPack(ctx, dir, entryName, fileNames)` `:280-292` | one shared `readdir` already builds the file-name set; `hasRevIndex` `:290` and `hasBitmap` `:292` are `fileNames.has(…)` lookups. **`.keep`, `.promisor` and `.mtimes` detection is the same lookup at zero extra I/O** — this is the anchor all four file classes attach to |
 | **orphan-sibling tolerance** | `pack-registry.ts:461-470` `loadCandidatePack` — `:464` `if (!fileNames.has(\`${name}.pack\`))` | an `.idx` with no `.pack` is already skipped, so the crash windows Pin X measured are already inert to tsgit, not just to git |
 | packed-object enumeration | `RegisteredPack.index()` `:86` → `PackIndex`; `packPositions()` `:141` | the per-pack oid list consolidation walks. `enumerateObjects(ctx, { includePacks: true })` (`enumerate-objects.ts:23-39`) is the ready-made union of loose + packed |
 | reachability closure | `primitives/internal/closure-engine.ts:260` `computeClosure(ctx, { wants, not, objects, tier })` | tier `'bitmap' \| 'walk'`, **no engine-side default**; takes **oids, not refs**; materialised `ClosureResult` |
@@ -2251,6 +2285,8 @@ export interface MaintenanceResult {
   readonly packsRetired: number;
   readonly packBytesBefore: number;
   readonly packBytesAfter: number;
+  // --- promisor consolidation (ADR-733) ---
+  readonly promisorPackId: ObjectId | undefined;
 }
 ```
 
@@ -2299,7 +2335,30 @@ The pair is **free**: Pin Y already forces an `lstat` of every pack before it is
 source the mtime an object migrating out of it carries), and `FileStat` carries `size` `:10` beside
 `mtimeMs` `:4` on the same result (`ports/file-system.ts:2-17`, `lstat` `:98`). `packBytesBefore` is
 a sum over stats gc must take anyway; `packBytesAfter` is a sum over the artefacts it just wrote
-plus the untouched kept/promisor/cruft packs it already stat'd. Neither adds a syscall.
+plus the untouched kept/cruft packs it already stat'd. Neither adds a syscall.
+
+**One more is forced by ADR-733** (R32), and the choice follows the rationale already applied above
+rather than opening a new axis:
+
+| Field | Means | Why this one |
+|---|---|---|
+| `promisorPackId` | the fresh promisor pack's sha, or `undefined` when the repository has no promisor objects | **exact symmetry with `packId` and `cruftPackId`.** gc now writes at most one pack per class it owns, and each class's id answers the same two questions the other two already answer for their own class — *does one exist afterwards*, and *which one*. Neither `packsAfter` nor `packsRetired` can answer either: they are totals across classes, so a caller reading them cannot tell a repository that grew a promisor pack from one that grew a cruft pack |
+
+**What deliberately does *not* land is a promisor object count.** The three `cruftObjects*` counts
+exist because the cruft lifecycle has three distinguishable *outcomes* (Pin S) a caller must tell
+apart; the promisor class has no lifecycle branches at all — its objects are consolidated wholesale,
+never expired, never crufted — so a count would carry no information `promisorPackId` plus the
+existing pack scalars do not. It is the same reason exclusion **(1)** above gave for consolidation:
+counts are flat where the interesting quantity is bytes, and the bytes are already in
+`packBytesBefore`/`packBytesAfter`, which sum every `.pack` regardless of class.
+
+**The three pack ids are now a set and must read as one.** `packId` is the **normal** pack's sha —
+it predates the other two and its name stays, because renaming a field on a surface the ADR-724
+sketch already endorsed would be churn, but the docs page names it *the normal pack* rather than
+*the pack*. Each of the three is `undefined` under its own class's empty-input branch, and the three
+branches are independent: an ordinary repository reports `packId` set and the other two `undefined`;
+a partial clone with no garbage reports two set and `cruftPackId` `undefined`; a repository whose
+only pack is `.keep`-marked reports all three `undefined` and is not an error.
 
 `tasks` is required and non-empty; an unknown task is an `invalidOption('tasks', …)` refusal
 mirroring `git maintenance run --task=bogus` → `error: 'bogus' is not a valid task` (Pin D).
@@ -2486,6 +2545,9 @@ grammar. Neither substitutes for the other.
 Every step is ordered so that a crash at any point leaves a repository git still reads. **Steps 2,
 5, 7 and 10 arrived with ADR-731**; **steps 1b, 6b and 10b arrived with ADR-732**, and steps 4 and 9
 were *simplified* by consolidation rather than complicated by it — see the note under step 9.
+**ADR-733 activates step 6b** — it was a placeholder answering "no" under DC-18's conservative
+branch and is now a real pack build — and **adds step 10c**, the promisor pack's retirement. No
+other step gains a branch.
 
 1. **Count.** `enumerateObjects(ctx, { includePacks: false })` → the loose set.
    `looseObjectsBefore`. If `auto` is set and the count does not exceed `gc.auto`, return with
@@ -2497,11 +2559,18 @@ were *simplified* by consolidation rather than complicated by it — see the not
    lookup, at zero extra I/O:
 
    ```text
-   kept        fileNames.has(`${name}.keep`)        → untouchable        (Pin V)
-   promisor    fileNames.has(`${name}.promisor`)    → untouchable        (Pin Z / DC-18)
+   kept        fileNames.has(`${name}.keep`)        → untouchable            (Pin V)
+   promisor    fileNames.has(`${name}.promisor`)    → CONSOLIDATED, own class (Pin Z / ADR-733)
    cruft       fileNames.has(`${name}.mtimes`)      → step 2 / step 7
    normal      otherwise                            → CONSOLIDATED
    ```
+
+   The four classes are **checked in that order and are mutually exclusive**: `.keep` wins over
+   everything (it is the caller's opt-out and Pin V shows it is total), `.promisor` wins over
+   `.mtimes` and over the default, and only a pack with none of the three markers is normal. A pack
+   carrying two markers is not a contradiction to refuse but a precedence to apply — and it is the
+   pair a classifier is most likely to get wrong, which is why §Test strategy asks for a test per
+   *pair* as well as per class.
 
    `lstat` each `.pack` **now**, before anything is written: the `mtimeMs` is the only source for an
    object that migrates out of a superseded pack (Pin Y — after the rename it is wrong, after the
@@ -2519,20 +2588,50 @@ were *simplified* by consolidation rather than complicated by it — see the not
    **candidate universe** — which under ADR-732 is everything gc owns, not just the loose half:
 
    ```text
+   keptOids        = ⋃{ oids of each KEPT pack }                            ← Pin V
+   ownedPromisor   = ⋃{ oids of each PROMISOR pack }                        ← ADR-733
    owned           = looseSet ∪ existingCruft.keys ∪ ⋃{ oids of each NORMAL pack }
-                     ── kept and promisor packs contribute NOTHING (Pins V, Z)
-   toNormalPack    = reachable ∩ owned
-   cruftCandidates = owned \ reachable
+                     ── kept and promisor packs contribute NOTHING to `owned`
+   toPromisorPack  = ownedPromisor                    ← whole, reachability irrelevant
+   toNormalPack    = (reachable ∩ owned) \ (ownedPromisor ∪ keptOids)
+   cruftCandidates = owned \ (reachable ∪ ownedPromisor ∪ keptOids)
    mtime(o)        = max( lstat(loose path).mtimeMs  if o ∈ looseSet,
                           existingCruft.get(o)       if o ∈ existingCruft,
                           lstat(containing .pack)    if o ∈ some normal pack )   ← Pins Q, Y
    ```
 
-   Two things changed here and both are load-bearing. **The universe gained the normal packs'
+   `keptOids` and `ownedPromisor` are subtracted **again** from the two output sets even though
+   neither contributed to `owned`, and that is not redundancy: an object can be inside a kept or
+   promisor pack *and* loose *and* inside a normal pack at the same time, in which case it entered
+   `owned` by the third route. The subtraction is what keeps it out of the new normal pack, and the
+   prose below says why each class needs it.
+
+   Three things changed here and all are load-bearing. **The universe gained the normal packs'
    object lists** — that is the whole of consolidation, and it is what turns the old ⚠️ divergence
    row into a parity row: an object packed while reachable and since made unreachable is now in
    `cruftCandidates` and migrates. **The mtime `max` gained a third source**, the containing pack's
-   `lstat` from step 1b, which is Pin Q row 2 and Pin Y.
+   `lstat` from step 1b, which is Pin Q row 2 and Pin Y. **And ADR-733 added a second, disjoint
+   output partition** — `toPromisorPack` — subtracted out of both non-promisor sets, so a given oid
+   lands in **exactly one** of `toNormalPack`, `toPromisorPack` and `cruftCandidates`, never two.
+   That three-way disjointness is the property the interop and unit suites assert directly; it is
+   also what makes step 8's verify a partition of the repository rather than a re-read of parts of
+   it twice.
+
+   **`toPromisorPack` is not intersected with `reachable`, and that is deliberate.** A promisor
+   object that is unreachable cannot go to the cruft pack, because a cruft pack has no `.promisor`
+   marker: moving it there would announce that a lazily-fetchable object is fully present locally,
+   which is the same correctness break as merging the two packs. Carrying it forward is the only
+   direction that cannot lose anything, and it makes the promisor class the one class with no
+   expiry — `cruftObjectsExpired` never counts a promisor object. Pin Z did not probe this case
+   (its promisor objects were all reachable); the probe is owed by the implementer (§Cross-cutting),
+   and if git turns out to cruft or expire them, the correction is a subtraction here, not a
+   redesign.
+
+   The subtraction also decides the **overlap** case — an oid that is both loose (or in a normal
+   pack) *and* inside a promisor pack. The promisor class wins and the object is not duplicated into
+   the new normal pack, which is the rule Pin V already pinned for kept packs ("its objects are
+   neither duplicated into the new pack"), applied to the other non-normal class. The loose copy is
+   still unlinked at step 9, since it lives in a surviving pack.
 
    Reachability is computed over the whole `owned` set every run, which subsumes Pin S's
    resurrection rule as a special case rather than needing a dedicated intersection: a cruft object
@@ -2547,12 +2646,14 @@ were *simplified* by consolidation rather than complicated by it — see the not
    prevent: it would make aged garbage immortal. A loose object or pack whose `lstat` fails is a
    refusal, not a `Date.now()` fallback.
 
-   **An object present in a kept or promisor pack is never a cruft candidate**, even when it is
-   also loose or also in a normal pack: Pin V's second probe shows git writes no cruft pack for an
-   unreachable object living in a kept pack. Subtract those packs' oid sets from
-   `cruftCandidates`, and note that this subtraction is *not* symmetric with the `owned` exclusion
-   above — a kept pack's objects are excluded from being **repacked**, and separately excluded from
-   being **crufted**.
+   **An object present in a kept or a promisor pack is never a cruft candidate**, even when it is
+   also loose or also in a normal pack — but for two *different* reasons, and a reader who collapses
+   them will get the next case wrong. For **kept** packs it is Pin V's second probe: git writes no
+   cruft pack for an unreachable object living in a kept pack, and the exclusion is total, so a kept
+   pack's objects are excluded from being **repacked** and separately excluded from being
+   **crufted**. For **promisor** packs it is the marker argument above: they are very much repacked
+   — into their own class — and are kept out of the cruft pack only because it cannot carry
+   the marker. Both subtractions land on `cruftCandidates`; only the kept one also lands on `owned`.
 5. **Apply the expiry cutoff.** `cutoff = expiryCutoff(config, now)`, where `now` comes from the
    **injectable clock** (below). Partition `cruftCandidates` on Pin R's strict rule:
 
@@ -2564,6 +2665,11 @@ were *simplified* by consolidation rather than complicated by it — see the not
    `gc.pruneExpire=never` ⇒ `cutoff = -Infinity`, `doomed` empty. `--prune=now` semantics
    ⇒ `cutoff = now`, and per Pin R **no cruft pack is written at all** — the surviving set is
    empty and step 7 takes its delete branch.
+
+   **This step covers the cruft class alone.** `cruftCandidates` excludes kept and promisor objects
+   by construction at step 4, so no expiry cutoff — however aggressive, `--prune=now` included —
+   can destroy an object of either class. That is a property of the *input set*, not a guard here,
+   and it is the reason there is no promisor-shaped branch in this step to get wrong.
 6. **Build and write the normal pack.** `buildPack(ctx, { oids: toNormalPack })` →
    `writePackArtifacts(ctx, { packDir: packsDir(commonGitDir(ctx)), … })` — `.pack`, `.idx`, and
    `.rev` **if `pack.writeReverseIndex` allows** (the gate at `:80-83,145` is inherited, not
@@ -2581,10 +2687,25 @@ were *simplified* by consolidation rather than complicated by it — see the not
    gc on an unchanged object set reproduces the same `<sha>` — the same fixed point git reaches, at
    different bytes.
 
-   **Step 6b — write the new pack's `.promisor`?** No. Promisor packs are excluded from `owned` at
-   step 1b, so `toNormalPack` never contains a promisor object and the new pack is never a promisor
-   pack. Under DC-18's other branch this step becomes "build a **second** pack from the promisor
-   objects and write its `.promisor` marker", which is where that delta lands.
+   **Step 6b — build the promisor pack (ADR-733).** Skipped entirely when `toPromisorPack` is empty,
+   which is every repository that is not a partial clone. Otherwise it is step 6 again, one class
+   over: `buildPack(ctx, { oids: toPromisorPack })` → `writePackArtifacts(ctx, { packDir, …,
+   promisor: true })`, into the same `objects/pack/` directory. The `promisor` flag already exists on
+   the writer (`write-pack-artifacts.ts:141-163`) and already emits `pack-<sha>.promisor` between the
+   `.idx` and the `.rev` — this step supplies no new artefact code, it supplies a second call. The
+   `.rev` gate (`pack.writeReverseIndex`) applies identically, which is why Pin Z's git output shows
+   `{idx,pack,promisor,rev}` on the new promisor pack.
+
+   **The new normal pack is never a promisor pack and vice versa**: step 4 subtracts `ownedPromisor`
+   out of `toNormalPack`, so `writePackArtifacts` is called with `promisor: false` at step 6 and
+   `promisor: true` at step 6b, over disjoint oid sets. That disjointness is the whole of Pin Z and
+   the one property no branch of DC-18 was ever allowed to break.
+
+   One inherited window is worth naming rather than discovering later: `writePackArtifacts` creates
+   `.pack`, then `.idx`, then `.promisor`, so between the second and third writes the pack is
+   findable and reads as an **ordinary** pack. That is not new — it is exactly what `clone` and
+   `fetch` already do when they write a promisor pack — and gc neither widens it nor is entitled to
+   fix it here; a reordering would be a change to a writer three commands share.
 7. **Decide the cruft pack's fate** — Pin S's three-way branch, evaluated as a **set comparison**,
    never as a schedule:
 
@@ -2603,7 +2724,8 @@ were *simplified* by consolidation rather than complicated by it — see the not
    ages live in the sidecar. **The interop assertion therefore compares name and bytes, never inode
    or mtime** — an assertion on `st_mtime` would fail against git for the wrong reason.
 8. **Refresh, then verify.** `refreshPackRegistry(ctx)`, then read **every** oid just packed — into
-   either pack — back out with **`verifyHash: true` passed explicitly**. This is the one place in
+   **any** of the three packs this run can write (normal, cruft, promisor) — back out with
+   **`verifyHash: true` passed explicitly**. This is the one place in
    the codebase that must opt back in after ADR-718's flip: gc is about to delete the only other
    copy, so "trust the bytes" is exactly wrong here. R23/R24 hang on this step, and under ADR-731 it
    covers the **cruft** pack too — the objects with the weakest claim on being kept are exactly
@@ -2613,18 +2735,25 @@ were *simplified* by consolidation rather than complicated by it — see the not
    Pin X `[166]` lives — old and new coexisting — and it must be a **read through the registry**,
    not a trust of the bytes just serialised in memory.
 9. **Prune loose.** Only now unlink the loose files, via `ctx.fs.rm`. Consolidation *simplifies*
-   this set rather than growing it, because after step 6 every reachable object gc owns is packed:
+   this set rather than growing it, because after steps 6 and 6b every object gc owns is packed —
+   in the pack of its own class:
 
    ```text
-   survivingPacks = { the new normal pack } ∪ { the cruft pack, if one exists after step 7 }
-                    ∪ { every kept pack } ∪ { every promisor pack }
+   survivingPacks = { the new normal pack }   if step 6  wrote one
+                  ∪ { the new promisor pack } if step 6b wrote one
+                  ∪ { the cruft pack, if one exists after step 7 }
+                  ∪ { every kept pack }
    unlink         = looseSet ∩ ⋃{ oids of each pack in survivingPacks }
                   ∪ (doomed ∩ looseSet)      # expired and loose ⇒ destroyed HERE
    ```
 
-   `survivingPacks` is decided, not observed — the retirement at step 10/10b has not happened
+   `survivingPacks` is decided, not observed — the retirement at step 10/10b/10c has not happened
    yet — and that is what makes the first clause safe: it names only packs already written and
-   verified (step 8) or excluded from retirement by construction (step 1b). It subsumes the three
+   verified (step 8) or excluded from retirement by construction (step 1b). Under ADR-733 the set
+   gained a member (the new promisor pack) and lost one (the *old* promisor packs, which are now
+   retired rather than surviving) — the same substitution consolidation already made for normal
+   packs, and the reason the two entries must be written as *"the new one, if written"* rather than
+   *"every promisor pack"*. It subsumes the three
    classes the pre-consolidation design had to enumerate (just-packed, just-crufted, and git's
    `prune-packable`) into one predicate, and it stays correct for the packs gc does **not** own: a
    loose copy of an object that lives only in a `*.keep` pack is still unlinked, which is what
@@ -2632,7 +2761,8 @@ were *simplified* by consolidation rather than complicated by it — see the not
    measured directly: two aged loose danglers were **gone from disk** after `git gc`, having entered
    no pack at all. A doomed object that was *loose* is destroyed by this unlink; a doomed object
    that was in a superseded pack — normal or cruft — is destroyed by step 10/10b instead, and needs
-   no unlink of its own. `cruftObjectsExpired` counts all of them.
+   no unlink of its own. `cruftObjectsExpired` counts all of them. **No promisor object is ever
+   doomed** (step 4), so step 10c destroys nothing.
 
    git's `count-objects -v` names the redundant class `prune-packable` and `repack -d` removes it.
    `prunedLooseObjects` counts every unlink and may exceed `looseObjectsPacked`; the fields stay
@@ -2641,8 +2771,9 @@ were *simplified* by consolidation rather than complicated by it — see the not
    **Step 9b — release the handles on every pack about to be retired.** `refresh()`
    (`pack-registry.ts:784`) closes the outgoing generation's persistent `FileHandle`s, but it
    returns `void` and parks the close batch in `pendingCloses`, which only `dispose()` — terminal,
-   unusable mid-run — drains. Since step 6 read every reachable object *out of* the packs step 10b
-   is about to delete, those handles are guaranteed live. gc awaits the drain here, through a new
+   unusable mid-run — drains. Since steps 6 and 6b read every reachable object *out of* the packs
+   steps 10b and 10c are about to delete, those handles are guaranteed live — for the promisor packs
+   exactly as for the normal ones. gc awaits the drain here, through a new
    registry member exposing the existing private `drainPendingCloses` (§0.1). Correct on every
    platform; possibly **required** on Windows, which the implementer pins on the `windows-latest`
    CI job.
@@ -2659,20 +2790,35 @@ were *simplified* by consolidation rather than complicated by it — see the not
     Pin X observed git deleting `pack-d0142cdc….bitmap` **with** its pack, so a superseded pack's
     bitmap goes with it rather than being orphaned; an orphan `.bitmap` is tolerated by git
     (`fsck` silent, `rev-list` exit 0) but leaving one is litter, not a divergence tsgit gets to
-    take. **Kept and promisor packs are not in this set and never can be** (Pins V, Z) — the
+    take. **Kept packs are not in this set and never can be** (Pin V) — the
     classification at step 1b is the single gate, so there is one place to get it right and one
     place to test it.
 
-    Steps 10 and 10b together discharge ADR-724's two carried constraints, and ADR-732 makes both
-    routine rather than occasional:
+    **Step 10c — retire every superseded promisor pack (ADR-733).** The same unlink set with
+    `.promisor` in place of `.bitmap` — `pack-<oldSha>.{idx,rev,promisor,pack}` — under the same two
+    ordering rules, for the same two reasons: the **`.idx` first**, which retires the pack from both
+    readers in one unlink (Pin X), and the **`.promisor` last**, which is the `.mtimes` rule of step
+    10 applied to the other class-carrying marker. A pack findable *without* its marker reads as an
+    ordinary normal pack, and a later gc would then merge its objects into the normal pack — the one
+    outcome Pin Z forbids — so the marker must outlive the `.idx` that makes the pack findable at
+    all. Skipped entirely when step 6b was skipped: with no promisor objects there is nothing to
+    supersede. `.bitmap` is tolerated here too if one is present, on the same "an orphan is litter"
+    grounds as step 10b.
+
+    Steps 10, 10b and 10c together discharge ADR-724's two carried constraints, and ADR-732 makes
+    both routine rather than occasional:
     - the `.rev`-sibling rule (Pin F) fires on **every** consolidating run, not only when the
-      unreachable set happens to change;
+      unreachable set happens to change — and under ADR-733 on the promisor pack's `.rev` as well,
+      which Pin Z's output shows git writing;
     - and `objects/pack/multi-pack-index` is **deleted** whenever it names any retired pack
-      (Pin T; Pin G row 1) — which, since consolidation retires every normal pack, is now the
-      ordinary case rather than the exception. Deletion is the only available verb (tsgit has no
-      midx writer, and none is in scope), and it is what git does when it removes a pack the midx
-      covers. A midx naming **only** surviving kept/promisor packs is left alone — Pin G row 2, and
-      the case is now rare enough to deserve its own test rather than being assumed unreachable.
+      (Pin T; Pin G row 1) — which, since consolidation retires every normal **and every promisor**
+      pack, is now the ordinary case rather than the exception. Deletion is the only available verb
+      (tsgit has no midx writer, and none is in scope), and it is what git does when it removes a
+      pack the midx covers. A midx naming **only** surviving **kept** packs is left alone — Pin G
+      row 2, and the case is now rare enough to deserve its own test rather than being assumed
+      unreachable. **ADR-733 narrowed that survivor set**: a midx naming a promisor pack used to be
+      left alone under DC-18's conservative branch and must now be deleted, because that pack is
+      retired.
 
     Doomed objects that lived in a superseded pack need no unlink of their own — retiring the pack
     is what destroys them. Doomed objects that were **loose** were already unlinked at step 9.
@@ -2708,10 +2854,12 @@ a fixed clock will catch only if the test's clock is also in milliseconds; write
 
 ##### Object placement by file class — the pinned surface
 
-ADR-731 names object placement by file class as a faithfulness surface and ADR-732 completes it.
-Here it is, exhaustively. **Every row is a parity row**: the ⚠️ divergence the previous revision
-carried — an object packed while reachable and since made unreachable staying in its normal pack —
-is gone, because consolidation puts that object in `cruftCandidates` like any other.
+ADR-731 names object placement by file class as a faithfulness surface, ADR-732 completes it for the
+normal class and ADR-733 for the promisor one. Here it is, exhaustively. **Every pinned row is a
+parity row and no ⚠️ remains**: the divergence the ADR-732 revision carried — an object packed while
+reachable and since made unreachable staying in its normal pack — is gone, because consolidation
+puts that object in `cruftCandidates` like any other; and the promisor row it left open is now
+parity plus one row that is not a divergence but a probe nobody has run yet.
 
 | Object class | git default `gc` | tsgit `maintenance({tasks:['gc']})` | Same? |
 |---|---|---|---|
@@ -2726,27 +2874,39 @@ is gone, because consolidation puts that object in `cruftCandidates` like any ot
 | **in a normal pack, since become unreachable, newer than cutoff** | → **cruft pack**, carrying the source `.pack`'s mtime (Pins Q row 2, Y) | identical | ✅ |
 | **in a normal pack, since become unreachable, `mtime <= cutoff`** | **destroyed** with the pack | **destroyed** with the pack | ✅ |
 | **anything inside a `*.keep` pack** (reachable or not) | untouched — not repacked, not crufted, not duplicated (Pin V) | identical | ✅ |
-| **anything inside a `.promisor` pack** | → a **new promisor pack**, marker carried; old promisor pack deleted (Pin Z) | untouched — the whole promisor pack is excluded | ⚠️ **DC-18, open** |
+| **reachable, inside a `.promisor` pack** | → a **new promisor pack**, marker carried; old promisor pack deleted (Pin Z) | identical (ADR-733) | ✅ |
+| **unreachable, inside a `.promisor` pack** | *unpinned by Pin Z* — see below | → the **new promisor pack**, never the cruft pack, never destroyed | ⏳ pin owed |
 
-**The only remaining ⚠️ in this table is DC-18, and it is a *pack-identity* difference, not a
-placement one.** (One divergence sits outside the table because it is not about placement at
-all: git's default `gc` writes a `.bitmap` in a **bare** repository and tsgit has no bitmap
-writer — Pin F, amended.)
-Under the conservative branch a promisor object stays in **a promisor pack** — the same file class
-git would put it in — so ADR-731/732's pinned surface ("which objects live in which file class") is
-satisfied; what differs is that tsgit does not rebuild the promisor pack, so its objects are never
-re-deltified and a promisor object that becomes unreachable is never crufted. The alternative
-branch is a second `buildPack` + a `.promisor` write at step 6b and changes nothing else. **The
-user owns this; the designer records both.** Whichever lands, the one thing neither branch may do
-is merge promisor and non-promisor objects into a single pack — Pin Z shows git never does, and the
-result would tell a later `git` that lazily-fetchable objects are present locally.
+**No ⚠️ remains in this table.** Every placement row is parity, and the `.promisor` row that
+carried the last one is now two rows: the reachable half is pinned parity by Pin Z, and the
+unreachable half is the sub-case Pin Z's probe could not reach, where tsgit takes the retain
+direction because the alternative — a cruft pack that cannot carry the marker — is the same
+"present locally" lie as merging, and because retaining is recoverable while destroying is not. It
+is listed as **⏳ pin owed**, not ⚠️: the probe is an implementer obligation of the kind this design
+already carries two of (§Cross-cutting), not an open decision.
 
-##### Consolidation — the ADR-732 half
+Two divergences sit **outside** the table because they are not about placement at all: git's default
+`gc` writes a `.bitmap` in a **bare** repository and tsgit has no bitmap writer (Pin F, amended);
+and tsgit's pack bytes are base-only where git's are deltified, which ADR-731 puts outside the
+pinned surface and §the size trade measures.
+
+The one thing no branch of this design may ever do is merge promisor and non-promisor objects into
+a single pack — Pin Z shows git never does, and the result would tell a later `git` that
+lazily-fetchable objects are present locally. Step 4's `\ ownedPromisor` subtraction is the single
+line that guarantees it, and the interop suite asserts it directly rather than inferring it from
+pack counts.
+
+##### Consolidation — the ADR-732 half, per class under ADR-733
 
 Default `git gc` does two things: it runs the cruft lifecycle **and** it repacks every pack it owns
 into one. **ADR-732 ratified both**, over the previous revision's recommendation to defer the
 second. What follows is the design of that half; the pipeline above already carries it (steps 1b,
 4, 6, 10b) and this section is the argument, the measurement and the boundaries.
+
+**ADR-733 extends this section rather than amending it.** Everything below — the walk, the no-op
+boundary, the deletion ordering, the crash table, the size trade — applies to the promisor class
+verbatim, one class over, because the promisor pack is built by the same `buildPack` and written by
+the same `writePackArtifacts`. Where a rule differs by class, the class is named.
 
 **The walk.** Consolidation needs one thing the loose-only design did not: the oid list of every
 pack it owns. That is not new machinery — `enumerateObjects(ctx, { includePacks: true })`
@@ -2757,13 +2917,16 @@ second walk, it widens the set the one walk is intersected against (step 4's `ow
 the fold is additive: one wider set, one extra `lstat` per pack (already required by Pin Y), one
 extra unlink group (step 10b).
 
-**Exclusions, and why they are exclusions rather than special cases.** `*.keep` is git's own opt-out
-and Pin V shows it is total — a kept pack is not read for repacking, not rewritten, not deleted, and
-its objects are neither duplicated into the new pack nor migrated into the cruft pack even when
-unreachable. `.promisor` is DC-18, open, and defaults to the same treatment. Both are decided at
-step 1b by a `fileNames.has(…)` lookup on the readdir the registry already performs, in the same
-place `hasRevIndex` and `hasBitmap` are decided (`pack-registry.ts:290,:292`) — so there is exactly
-one classification site, and the exclusions cannot drift apart from each other.
+**The one exclusion, and why it is an exclusion rather than a special case.** `*.keep` is git's own
+opt-out and Pin V shows it is total — a kept pack is not read for repacking, not rewritten, not
+deleted, and its objects are neither duplicated into the new pack nor migrated into the cruft pack
+even when unreachable. Under ADR-733 it is the **only** total exclusion: `.promisor` is not an
+exclusion at all but a *second consolidation class*, which is a materially different thing and
+should not be filed next to `.keep` in a reader's head. Both markers are nevertheless decided in
+the same place — step 1b's `fileNames.has(…)` lookup on the readdir the registry already performs,
+beside where `hasRevIndex` and `hasBitmap` are decided (`pack-registry.ts:290,:292`) — so there is
+exactly one classification site for all four classes, and the rules cannot drift apart from each
+other. **One site, four verdicts, one test file.**
 
 **The no-op boundary — there isn't one, and that is pinned.** The obvious optimisation is "if there
 is already exactly one normal pack and nothing loose, do nothing". Pin W says git does not do that:
@@ -2771,9 +2934,13 @@ one pack, zero loose, `git gc` rewrites the pack (same `<sha>`, **new inode**, n
 run. Skipping it would be observable twice over — the file's `st_mtime` would stay stale, and Pin Y
 makes that mtime the expiry clock for every object in the pack that later becomes unreachable, so a
 skipped rewrite silently ages objects git would have kept young. The **only** genuine no-op is the
-empty-input one: when the reachable set outside kept/promisor packs is empty, git writes **no pack
-at all** rather than a zero-object pack (Pin V), and step 6 must take that branch rather than
-serialising an empty pack.
+empty-input one, and under ADR-733 it is **per class**: when the reachable set outside kept packs is
+empty, git writes **no** normal pack at all rather than a zero-object one (Pin V), and step 6 must
+take that branch rather than serialising an empty pack; when there are no promisor packs — every
+repository that is not a partial clone — step 6b takes the identical branch and writes nothing.
+Neither branch implies the other: a partial clone whose non-promisor half is entirely `.keep`-marked
+writes a promisor pack and no normal pack, and the two guards must therefore be independent rather
+than one guard shared.
 
 **Deletion order and crash safety.** Pin X is the authority and it was observed live, not reasoned:
 git streams the replacement into `tmp_pack_<6>`/`tmp_idx_<6>`, renames both to their final
@@ -2797,13 +2964,25 @@ inherited here rather than improved on.
 | mid step 9 | partially pruned loose set, every pruned object in a surviving pack | benign; re-running completes it |
 | mid step 10 (cruft) | sidecar gone, pack present | reads as an ordinary pack — objects survive, ages forgotten. `.mtimes` **last** makes this the only reachable partial state |
 | mid step 10b (normal) | `.idx` gone, `.pack`/`.rev`/`.bitmap` present | the pack is invisible to both readers and counted as `garbage`; its objects are already in the replacement. `.idx` **first** makes this the only reachable partial state |
-| between step 10b and step 11 | packs retired, registry generation stale in memory | in-process only; `refresh()` at step 11, and any new `Context` re-scans |
+| after step 6 but before step 6b (promisor) | a new normal pack written, the promisor packs untouched | redundant, not corrupt, and **not** a merge: the normal pack never held a promisor oid (step 4's subtraction), so the partial state is a partial clone with its promisor packs intact. The next run completes it |
+| mid step 10c (promisor) | `.idx` gone, `.pack`/`.rev`/`.promisor` present | same as 10b: invisible to both readers, counted as `garbage`, objects already in the replacement promisor pack. The `.promisor` outliving the `.idx` is what stops a later gc from ever seeing a marker-less pack |
+| between step 10b/10c and step 11 | packs retired, registry generation stale in memory | in-process only; `refresh()` at step 11, and any new `Context` re-scans |
 
-The two sibling orders point in opposite directions **on purpose**, and the asymmetry is the tell
-that they are solving different problems. A cruft pack must never be findable **without** its
-sidecar's meaning intact in a way that *refuses* — so the sidecar dies last and the fallback state
-is "reads as a normal pack, garbage retained". A normal pack has no such payload, so the goal is
-to make it stop being a pack as early as possible — hence `.idx` first.
+**One rule, three retirements, and one deliberate asymmetry.** The `.idx` is unlinked **first** in
+all three classes — it is the single unlink that retires a pack from both readers, so everything
+after it operates on litter. What differs is the *last* unlink, and the difference is the tell that
+the classes are solving different problems:
+
+| Retired class | Unlinked last | Because the fallback state must be… |
+|---|---|---|
+| normal (10b) | `.bitmap` — no ordering constraint, it is litter either way | there is no class-carrying sidecar, so the only goal is "stop being a pack as early as possible" |
+| cruft (10) | `.mtimes` | "reads as an ordinary pack — objects retained, ages forgotten", never "a sidecar with no pack", which step 2 would have to *refuse* |
+| promisor (10c) | `.promisor` | "invisible, or still marked" — never "findable and marker-less", because a marker-less promisor pack is one a later gc would merge into the normal pack, which is the one outcome Pin Z forbids |
+
+The cruft and promisor rules are the same rule reached from different directions: a marker that
+carries a pack's *class* must outlive the `.idx` that makes the pack findable, so that no window
+exists in which the pack is visible and mis-classified. A normal pack has no class to lose, which is
+why it is the one with no last-unlink constraint.
 
 **Interaction with Pin S's four branches — walked, not assumed.** Consolidation and the cruft
 lifecycle now run in the same call over an overlapping candidate set, so each of Pin S's four
@@ -2826,8 +3005,10 @@ load-bearing; ADR-732 turns them from occasional into routine:
   pack takes its `.rev` with it — not only on runs where the unreachable set happened to change.
 - **midx expiry** fires for the same reason: consolidation retires the packs a midx names, so
   `objects/pack/multi-pack-index` is deleted on essentially every run (Pin T; Pin G row 1). The
-  surviving Pin G row 2 case — a midx naming only kept/promisor packs, left alone — is now the rare
-  branch and gets its own test rather than being assumed unreachable. Deletion remains the only verb
+  surviving Pin G row 2 case — a midx naming only **kept** packs, left alone — is now the rare
+  branch and gets its own test rather than being assumed unreachable. **ADR-733 shrank it further**:
+  a promisor pack is retired now, so a midx naming one must be deleted, and only `.keep` still puts
+  a pack beyond the midx's reach. Deletion remains the only verb
   (no midx writer exists, none is in scope) and it is what git does.
 - **`.bitmap` follows its pack.** Pin X observed `pack-d0142cdc….bitmap` disappearing with the pack
   it belonged to, so tsgit must **delete** an artefact it has no writer for. R24 is amended
@@ -2839,7 +3020,10 @@ load-bearing; ADR-732 turns them from occasional into routine:
   silent.
 - **`packsAfter` / `packsBefore` became genuinely informative**, and `packsRetired` was added
   because the pair still cannot express "5 packs became 1" versus "2 became 1". The pair now spans
-  a wide range; assert the arithmetic per branch rather than a fixed delta.
+  a wide range; assert the arithmetic per branch rather than a fixed delta. Under ADR-733 both
+  totals and `packsRetired` span **all three** retirable classes — normal, cruft and promisor — so a
+  partial clone's steady state is "N packs became 2" (normal + promisor), not 1, and a test asserting
+  a hard-coded `packsAfter === 1` would be asserting the absence of a partial clone.
 
 ##### The size trade, measured
 
@@ -2865,6 +3049,13 @@ exists precisely to manufacture 43-deep chains — and `×1.29` is the floor for
 deltified anyway. **`×3.17` on a real repository is the number to plan against**, and it is the one
 the docs page should quote. The absolute floor is set by zlib, which still runs per object: a
 delta-free pack is not an uncompressed one.
+
+**ADR-733 widens the exposure without changing the bracket.** A partial clone's promisor pack is now
+re-emitted base-only too, so its objects pay the same per-object ratio the table measures — the
+DC-18 row predicted exactly this ("it also doubles the inflation exposure"). What it does *not* do
+is move the bracket: the ratio is a property of how deltifiable the content is, not of which class
+it sits in, and the same `×3.17`-on-real-history planning number applies. Both classes are inside
+`packBytesBefore`/`packBytesAfter`, so the caller's computed ratio stays whole-repository.
 
 **What the caller does about it.** `packBytesBefore` / `packBytesAfter` (R33) make the ratio
 computable from the result of the call the caller just made — no directory walk, no formatting, no
@@ -2899,7 +3090,9 @@ measures it. Pre-ADR-732 the dominant term was the loose scan; now it is `buildP
 reachable object in the repository**, each of which is inflated from its delta chain (a `cpuBound`
 read that may walk up to `--depth` bases) and re-deflated (`cpuBound` again). Pin W removes the
 escape: there is no "nothing changed, skip it" branch, so this is what **every** `gc` costs, not
-just the first. That makes P1's `cpuBound` bound the one that matters here — a bound derived from
+just the first. ADR-733 adds a second `buildPack` over a *disjoint* object set, so it widens the
+total work by the promisor half's share and adds no repeated work — the two builds partition the
+repository, they do not overlap it. That makes P1's `cpuBound` bound the one that matters here — a bound derived from
 `min(cores, threadpoolWidth)` rather than a constant is worth more in this task than anywhere else
 in the change, because the work is embarrassingly parallel per object and bounded by the same
 libuv pool zlib runs on.
@@ -2952,7 +3145,13 @@ surviving unreachable set to *loose* instead of to a cruft pack:
 gc.cruftPacks = true   survivors → cruft pack + .mtimes      (steps 2, 7, 10 run)
 gc.cruftPacks = false  survivors → LOOSE files, written back out of the superseded packs
                        doomed    → destroyed with their pack, as always
+both settings          promisor  → the fresh promisor pack   (steps 6b, 10c, unconditionally)
 ```
+
+**The flag governs the cruft class only.** A promisor object is never a cruft candidate (step 4), so
+`gc.cruftPacks=false` neither loosens it nor destroys it — steps 6b and 10c run identically under
+both settings. That is not an omission to justify but the direct consequence of the marker argument:
+loosening a promisor object would strip its provenance exactly as moving it to the cruft pack would.
 
 **Step 5 still runs** in both modes — the cutoff is computed and applied identically; only the
 destination of `survivors` moves. An implementation that merely *skipped* the cruft steps would
@@ -2974,7 +3173,7 @@ Budget every row; `npm run validate` catches only some of them, and `reports/api
 | 3 | facade interface | `src/repository.ts` (`packRefs` at `:380`) | `readonly maintenance: BindCtx<typeof commands.maintenance>;`, alphabetical |
 | 4 | facade impl | `src/repository.ts` (`packRefs` at `:797-800`, `packObjects` at `:793-796`) | the **options-taking** arrow shape (like `packObjects`), not the no-arg shape |
 | 5 | binding-integrity key list | `test/unit/repository/repository.test.ts:249-…` (array), assertion `:248`, `it` at `:242` | add `'maintenance'` in sorted position — this test asserts `Object.keys(sut)` **exactly** |
-| 6 | docs page | `docs/use/commands/maintenance.md` + the index row | both tasks, the `auto` semantics, the exact-count note, the **object-placement table** above (now all-parity, plus DC-18's row once ruled), the three `gc.*` keys, an explicit warning that `gc` **destroys** aged unreachable objects — the first tsgit command that can — and the **size trade**: that consolidation re-emits delta chains as base entries, the measured `×3.17` on real history, the `packBytesBefore`/`packBytesAfter` pair that exposes it, and `*.keep` as the escape hatch |
+| 6 | docs page | `docs/use/commands/maintenance.md` + the index row | both tasks, the `auto` semantics, the exact-count note, the **object-placement table** above (now all-parity, promisor rows included), the **four file classes** and what gc does to each, the three `gc.*` keys, an explicit warning that `gc` **destroys** aged unreachable objects — the first tsgit command that can — and the **size trade**: that consolidation re-emits delta chains as base entries, the measured `×3.17` on real history, the `packBytesBefore`/`packBytesAfter` pair that exposes it, and `*.keep` as the escape hatch |
 | 7 | parity scenario | `test/parity/scenarios/maintenance.scenario.ts`; registered in `test/parity/scenarios/index.ts` (import ≈`:24`, array entry ≈`:93`) | runs on node **and** memory adapters (`test/parity/{node,memory}.test.ts`) |
 | 8 | README count | `README.md:47` — "**46** Tier-1 commands · 20+ AsyncIterable primitives · …" | 46 → **47** |
 | 9 | `reports/api.json` | prepush gate | `npm run docs:json`, committed **in this part** |
@@ -3003,7 +3202,10 @@ Every row becomes a case in a new `test/integration/maintenance-interop.test.ts`
 | **deletion ordering / crash safety** | with a fault injected between the new pack's write and the retirement of the old ones, every object is readable through **both** tsgit and `git`, `git fsck` is silent and `rev-list --all --objects` exits 0 — the Pin X `[166]` overlap state. Second case: fault injected mid-retirement after the `.idx` unlink, asserting the half-deleted pack is invisible to the registry and counted by git as `garbage`, never as a pack |
 | **`.bitmap` follows its pack** | a pre-existing `pack-<sha>.bitmap` on a pack tsgit supersedes is deleted with it, matching git (Pin X); no orphan `.bitmap` is left, and tsgit writes none of its own (Pin F) |
 | **`gc.cruftPacks=false` loosens** | unreachable objects living **inside** a superseded pack are written back out as **loose files** and survive; aged ones are destroyed with the pack. Compared against `git -c gc.cruftPacks=false gc` on a twin — the row that catches an implementation which merely skips the cruft steps and silently deletes them (Pin AA) |
-| ⚠️ **`.promisor` pack (DC-18)** | asserted to whichever branch the user rules. Under the conservative branch: the promisor pack's bytes and inode are unchanged and no object of it enters the new pack, with the test *documenting* that git instead rebuilds it as a new promisor pack (Pin Z). Under the other branch: two output packs, `.promisor` on the second. **Neither branch may produce a single merged pack** — that assertion belongs in the suite whichever way DC-18 goes |
+| **`.promisor` pack is rebuilt, not merged** ⭐ (ADR-733) | a partial-clone-shaped repo — one `.promisor`-marked pack plus a normal pack plus loose objects: after tsgit `gc` there are **exactly two** new packs, the second carrying a `pack-<sha>.promisor` sidecar; every promisor oid is in the promisor pack and **no promisor oid is in the normal pack**; the old promisor pack and all its siblings are gone; the object→file-class partition equals `git gc`'s on a twin (Pin Z). The no-merge half is asserted by **oid membership**, never by pack count — a count passes an implementation that writes two packs with the wrong objects in them |
+| **`.promisor` retirement ordering** | a fault injected mid-step-10c after the `.idx` unlink: the half-retired pack is invisible to `createPackRegistry`, counted by git as `garbage`, and its `.promisor` is **still present** — the assertion that catches a marker-first unlink, which would leave a findable marker-less pack a later gc would merge |
+| **promisor + `.keep` precedence** | a pack carrying **both** `.keep` and `.promisor`: `.keep` wins, the pack is untouched, and its objects are in neither output pack (Pin V's totality). Its twin case — a `.keep`-marked pack in a partial clone — must not suppress the promisor pack for the *other* promisor packs |
+| **no promisor pack, no promisor output** | an ordinary (non-partial) repository: tsgit `gc` writes **one** pack and **no** `.promisor` file anywhere, proving step 6b's empty-input branch is independent of step 6's |
 | gc retention roots | an index-only blob and a reflog-only commit both survive and are **packed** into the normal pack (Pin H) |
 | no ref mutation | `packed-refs`, every loose ref file and every reflog byte-identical across the call (Pin J is the contrast: git's `gc` **does** pack refs) |
 | artefact siblings | the normal pack carries `.idx` and `.rev` and **no** `.mtimes`; the cruft pack carries `.idx`, `.rev` **and** `.mtimes`; neither carries `.bitmap`. In a **working-tree** repo that is parity with git; in a **bare** repo it is the recorded bitmap divergence (Pin F, amended) and the test asserts *both* sides explicitly, as the retired divergence row used to (Pins F, T) |
@@ -3018,15 +3220,17 @@ Every row becomes a case in a new `test/integration/maintenance-interop.test.ts`
 | **existing cruft, next gc** | all four Pin S branches, **each on a run that also consolidates a multi-pack repository** — the shape the fold makes ordinary: (1) new garbage ⇒ rewritten under a new sha, **old mtimes byte-identical** in the new sidecar; (2) partial expiry ⇒ rewritten with survivors only, old siblings gone; (3) total expiry ⇒ cruft pack **and all four siblings** absent; (4) unchanged set ⇒ sidecar **content-identical, same file name, even though the normal packs around it were just replaced** — the row that fails an implementation coupling "wrote a new normal pack" to "rewrite the cruft pack". Each mirrored against real git on a twin repository |
 | **resurrection** | an object in the cruft pack made reachable again moves to the normal pack and leaves the cruft set (Pin S) |
 | **`.rev` sibling + midx deletion** | retiring a pack — cruft **or** normal — deletes its `.rev` with it, and deletes `objects/pack/multi-pack-index` when that midx names any retired pack (Pins F, T, G row 1). **This is the row that proves the two carried backlog constraints are discharged for real**, and under ADR-732 it fires on the ordinary consolidating run, not only on a cruft rewrite |
-| midx survival | a pre-existing midx naming **only** kept/promisor packs is untouched and still readable by git afterwards (Pin G row 2). Rare under consolidation — which is exactly why it needs its own case rather than being assumed unreachable |
+| midx survival | a pre-existing midx naming **only kept** packs is untouched and still readable by git afterwards (Pin G row 2). Rare under consolidation — which is exactly why it needs its own case rather than being assumed unreachable. Its counter-case is now explicit: a midx naming a **promisor** pack **is** deleted, because ADR-733 retires that pack |
 | **the size trade is real and bounded** | on the delta-chain fixture, `packBytesAfter > packBytesBefore` after tsgit `gc` while the **object set is unchanged** — `git rev-list --all --objects` returns the identical oid set before and after, and `git fsck` is silent. The assertion is directional (inflation happens, nothing is lost), never a threshold on the ratio |
 | **SHA-256 cruft** | the whole lifecycle in an `--object-format=sha256` repository: sidecar hash id `2`, 32-byte trailers, 80-byte file for one entry (Pin U) |
 | **malformed prune expiry** | an unparseable `gc.pruneExpire` refuses with typed data **and writes nothing** — no pack, no sidecar, no deletion — mirroring `fatal: failed to parse prune expiry value bogus` / exit 128 (Pin R) |
 
-The previous revision's ⚠️ *"the one divergence, asserted"* row is **retired**: consolidation closed
-the behaviour it pinned, and the *consolidation placement* row above is its replacement. Retiring a
-divergence test is only safe because a parity test replaces it in the same suite — the case is still
-covered, with the opposite expectation.
+Two ⚠️ rows have now been retired the same way, and the pattern is worth stating once: the ADR-732
+revision retired *"the one divergence, asserted"* and replaced it with the *consolidation placement*
+row; this revision retires *"`.promisor` pack (DC-18)"* and replaces it with the four promisor rows
+above. **Retiring a divergence test is only ever safe because a parity test replaces it in the same
+suite** — the case stays covered, with the opposite expectation. Neither row was deleted without a
+successor.
 
 Parity scenarios prove cross-adapter consistency only; **none of the above is provable by a parity
 test**. Interop is the only faithfulness proof.
@@ -3090,12 +3294,11 @@ Recorded so the corrections do not have to be re-derived:
 
 ## Decision candidates
 
-**DC-1 … DC-17 are all settled — see ADRs 718–732.** The table is retained verbatim as the
+**DC-1 … DC-18 are all settled — see ADRs 718–733.** The table is retained verbatim as the
 historical record of what was weighed, with a **Settled** column carrying each outcome. The
-designer decided none of them. **One new candidate, DC-18, is open** — it surfaced from Pin Z while
-folding ADR-732 and is the only open question in this document.
+designer decided none of them. **There is no open decision left in this document.**
 
-**ADRs authored.** Fifteen, numbered **718–732** (`docs/adr/` held 727 files, highest 717, when
+**ADRs authored.** Sixteen, numbered **718–733** (`docs/adr/` held 727 files, highest 717, when
 this design was first written). The mapping is one ADR per load-bearing decision, with the
 concurrency seam's four sub-shapes collapsed into one:
 
@@ -3116,7 +3319,7 @@ concurrency seam's four sub-shapes collapsed into one:
 | **730** — remediation ships as one PR | DC-16 | **user-ratified (a)** — all ten parts, P9 included | — |
 | **731** — gc uses cruft packs | DC-17 | **user-ratified (c) — above the recommendation.** The design recommended (a), reachable-only; the user took full cruft-pack parity | **supersedes ADR-724** (the gc task's prune-loose semantics only) |
 | **732** — gc consolidates existing packs | DC-17 (clarification) | **user-ratified — above the recommendation again.** The revision that folded 731 read (c) as the cruft lifecycle alone and deferred consolidation of pre-existing normal packs on delta-free-packer grounds; the user took consolidation, inflation and all | **refines ADR-731** (adds the consolidation half of default gc) |
-| **DC-18** — how consolidation treats a `.promisor` pack | — | ⚠️ **OPEN.** Surfaced from Pin Z during the ADR-732 fold; no ADR yet | would refine ADR-732 |
+| **733** — gc repacks promisor objects separately | DC-18 | **user-ratified (b) — above the recommendation, a third time.** The designer recommended (a), exclude promisor packs as `*.keep` packs are excluded; the user took full promisor parity | **refines ADR-732** (promisor packs join the consolidation, in their own class) |
 
 **Three supersessions, all narrow.** ADR-389 → 718 gives up only the *default-on posture* and the
 premise that dropping verification weakens faithfulness (Pin A shows that premise is backwards);
@@ -3135,6 +3338,14 @@ the eleven-row Tier-1 surface gate set. ADR-724's status line reads *superseded 
 semantics; the command and commit-graph task stand)*, and its header carries the forward pointer,
 so a reader arriving at 724 first is not misled about which parts still bind.
 
+**ADR-732 → 733 is a refinement of a refinement**, and it removes nothing either: the cruft
+lifecycle, the consolidation of normal packs, the `*.keep` exclusion, the deletion ordering and the
+size trade all bind unchanged. What 733 adds is a fourth file class with its own build and its own
+retirement. The clauses it *does* invalidate live in this design, not in an ADR — R24's
+"no `.promisor` file is ever removed", R32's "every object inside a kept **or promisor** pack is
+exactly where it was", the placement table's ⚠️ row and the "midx naming only kept/promisor packs"
+survivor set — and all four are rewritten above.
+
 **ADR-731 → 732 is a refinement, not a supersession**, and the distinction matters: 732 removes
 nothing from 731. The cruft lifecycle, the `.mtimes` format, the expiry arithmetic, the injectable
 clock and the four-branch existing-cruft rule all bind unchanged; 732 adds the second half of
@@ -3143,23 +3354,27 @@ default gc — consolidation — and with it the deletion of superseded normal p
 rewritten or removed / no `.bitmap` is ever removed", which was a consequence of the deferral rather
 than a decision, and is rewritten above.
 
-**Three deviations from the design's recommendation, all in P9's direction:** DC-2, DC-17, and
-DC-17's consolidation clarification. The design recommended commit-graph write alone (DC-2 (a)), on
+**Four deviations from the design's recommendation, all in P9's direction:** DC-2, DC-17, DC-17's
+consolidation clarification, and DC-18. The design recommended commit-graph write alone (DC-2 (a)), on
 the grounds that gc "is a phase, not a slice"; the user took (b). The design then recommended the
 reachable-only gc (DC-17 (a)), on the grounds that a whole new on-disk format is a second phase
 inside that phase; the user took (c). The revision that folded (c) then read it as the cruft
 lifecycle alone and deferred consolidation on delta-free-packer grounds — flagging in that same
 section that *"if the user meant full `repack -A -d` parity, this is the cheap place to say so"* —
-and the user said so; ADR-732 is the answer. All three were product-scope calls and all three went
-the same way, toward the honest full answer to the parked backlog entry. P9 above is written to the
-ratified scope; the recommendations' reasoning is retained in the DC-17 row below only as the record
-of what was weighed and rejected.
+and the user said so; ADR-732 is the answer. The fourth is DC-18: the design recommended excluding
+promisor packs and the user took parity there too, which is ADR-733. All four were product-scope
+calls and all four went the same way, toward the honest full answer to the parked backlog entry. P9
+above is written to the ratified scope; the recommendations' reasoning is retained in the DC-17 and
+DC-18 rows below only as the record of what was weighed and rejected.
 
-**One ADR is outstanding: DC-18.** DC-17's outcomes are ADR-731 and ADR-732, both authored. DC-18 —
-whether consolidation rebuilds a `.promisor` pack (git's behaviour, Pin Z) or excludes it as it
-excludes `*.keep` (the conservative branch this design is written to) — has no ADR and is not the
-designer's to settle. It is cheap either way: one classification predicate at pipeline step 1b and,
-under the parity branch, one extra `buildPack` + `.promisor` write at step 6b.
+**The pattern is worth naming, because it is a calibration signal, not a coincidence.** On every
+P9 gate where the designer weighed *scope cost* against *parity*, the user chose parity — four times
+out of four. The prime directive is the tiebreak this document should reach for first, and a future
+revision proposing a conservative branch on a faithfulness surface should expect the same answer
+unless the divergence is genuinely unavoidable rather than merely cheaper.
+
+**No ADR is outstanding.** DC-17's outcomes are ADR-731 and ADR-732; DC-18's is ADR-733. All three
+are authored, and every decision this document surfaced has a ratified answer.
 
 | # | Choice | Alternatives (≤3) | Recommendation | Why | Settled |
 |---|---|---|---|---|---|
@@ -3180,7 +3395,7 @@ under the parity branch, one extra `buildPack` + `.promisor` write at step 6b.
 | **DC-15** | **P0.1 baseline schema change** — `baseline.json` is a committed artifact | (a) Add `ticks` per frame + `totalTicks` per command, and mark under-sampled commands. (b) Keep the schema; record tick totals in a separate `docs/perf/sampling.md`. (c) Keep the schema; raise iterations until every command clears the floor and say so in the commit message. | **(a)** | The whole defect is that a share with no denominator cannot be read; putting the denominator in a sibling document reproduces the problem for the next reader (b). (c) fixes today's artifact but not the next regeneration on a different machine, where the same command may fall under the floor again. (a) is a one-field change to a file nothing gates on, and `tooling/test/unit/profile-digest.test.ts` already pins the shape so the migration is mechanical. | **(a)** · adopted as recommended · **ADR-729** |
 | **DC-16** | **Delivery shape** | (a) All ten parts in one PR, sequential commits, decision-gated parts dropped if their decision says no. (b) Split: P0–P4 in one PR, P5–P9 in a second. (c) One PR per part. | **(a)** | The repo's workflow is trunk-based with one PR per run, and the parts share oracles: P0's harness fixes are what make P3/P4/P6/P7's numbers readable, and P1's policy is consumed by P6/P7. Splitting (b) means the second PR re-derives the first's measurement context. (c) multiplies the mutation/validate/nightly cost by ten for a change whose parts are individually small. The risk (a) carries is a large diff for the review phase, mitigated by atomic per-part commits. **If DC-2 adopts F11**, P9 alone is plausibly its own PR — it adds a command surface, not a perf fix. | **(a)** · user-ratified · **ADR-730** |
 | **DC-17** 🆕 | **How gc-lite treats unreachable objects** — git 2.55's *default* `gc` writes a **cruft pack** with an mtime sidecar, a format tsgit neither reads nor writes (Pin E) | (a) **Reachable-only, additive**: pack only *reachable* loose objects, prune only those (plus `prune-packable` loose-already-in-a-pack); never touch existing packs; never touch unreachable loose objects; never delete on age. Equivalent to `git -c gc.cruftPacks=false -c gc.pruneExpire=never gc`, restricted to the loose→pack direction. (b) **Consolidating, cruft-free**: `git repack -A -d` with cruft packs off — one new pack of all reachable objects, unreachable objects loosened out of superseded packs first, superseded packs removed with `.idx`/`.rev`/`.bitmap`/`.promisor`, `objects/pack/multi-pack-index` deleted. (c) **Default parity**: (b) plus a cruft-pack writer (mtime sidecar, read **and** write) and `gc.pruneExpire=2.weeks.ago` age-based deletion. | **(a)** | `buildPack` is **delta-free** (`build-pack.ts:1-12`: every oid becomes a base entry). Under (b) gc-lite would read existing packs' delta chains and re-emit them as full base entries — a `gc` that **inflates** the repository, which is the opposite of the point. (b) becomes sane only once a delta-capable pack writer exists, and that is a phase of its own. (a) is strictly more conservative than git in every row of the Pin E table: it never deletes an object git keeps, and it keeps objects git would delete after two weeks — nothing is ever lost, at the cost of unreachable garbage accumulating indefinitely in a tsgit-only repository. (c) is byte-faithful to git's default and is the only option that ever *reclaims* space from unreachable objects, but it adds a whole on-disk format to both the reader and the writer, and its age-based deletion is the one operation in this design that can destroy data. **The cost of (a) is honesty about what it is**: ADR-724's two carried constraints (midx expiry, `.rev` sibling deletion) are then discharged *vacuously* — nothing is removed, so nothing can be orphaned — and `packsBefore`/`packsAfter` only ever differ by one. If that reads as under-delivering against the ratified scope, (b) is the answer and P9 carries the written delta for it. | **(c) + consolidation** · user-ratified **above the recommendation, twice** · **ADR-731** (supersedes 724's prune semantics) **+ ADR-732** (refines 731). The "vacuous discharge" cost the recommendation flagged is exactly what the user declined to accept. The first fold read (c) as the cruft lifecycle alone and deferred consolidation of pre-existing *normal* packs on the delta-free-packer grounds this row gives; **ADR-732 overturned that deferral** — (c) is now taken as *"(b) plus a cruft-pack writer"*, exactly as this row's own option text defines it, so the tension the previous revision recorded between DC-17's wording and ADR-731's is resolved in favour of this table. The inflation the row predicted is real and is now measured rather than feared: **×1.29 … ×6.91**, ×3.17 on real history (§the size trade). It is accepted, exposed through `packBytesBefore`/`packBytesAfter`, and retired by the delta-writing packer follow-up. |
-| **DC-18** 🆕 ⚠️ **OPEN** | **How consolidation treats a `.promisor`-marked pack.** ADR-732 names `*.keep` as the exclusion and is silent on `.promisor`. **Pin Z** (run for this revision) shows git repacks promisor and non-promisor objects into **two separate** packs, deleting the old promisor pack and carrying its marker onto the new one — it never merges them | (a) **Exclude promisor packs**, exactly as `*.keep` packs are excluded (Pin V): never read for repacking, never rewritten, never deleted, their objects never crufted. (b) **Full parity**: a second `buildPack` over the promisor objects at step 6b, written with its own `.promisor` marker, the old promisor pack retired like any other. (c) Merge everything into one pack. | **(a)**, but the user owns it | **(c) is not an option and is listed only to be excluded**: it would tell a later `git` that lazily-fetchable objects are present locally, which is a partial-clone correctness break, not a size trade — no branch may produce a single merged pack. Between (a) and (b): (a) costs one predicate at step 1b, is the same shape the `*.keep` exclusion already needs, and **satisfies ADR-731/732's pinned surface as written** — "which objects live in which file class" is unchanged, because a promisor object stays in *a promisor pack*. What (a) gives up is pack *identity* parity: tsgit never rebuilds the promisor pack, so its objects are never re-consolidated and a promisor object that becomes unreachable is never crufted — a bounded, conservative shortfall of the same family as the deferral ADR-732 just overturned, which is precisely why the designer must not settle it a second time. (b) is genuinely cheap — one extra `buildPack` and one extra marker write — and is the answer if the user wants placement parity to mean *total* parity. It also doubles the inflation exposure, since the promisor pack is re-emitted base-only too. The size and lifecycle machinery is shared either way, so this is a late-bindable choice: **the design is written to (a) and the delta to (b) is one pipeline step**. | ⚠️ **OPEN — no ADR.** Design written to (a); interop row and placement-table row both carry the ⚠️ until ruled |
+| **DC-18** 🆕 | **How consolidation treats a `.promisor`-marked pack.** ADR-732 names `*.keep` as the exclusion and is silent on `.promisor`. **Pin Z** (run for this revision) shows git repacks promisor and non-promisor objects into **two separate** packs, deleting the old promisor pack and carrying its marker onto the new one — it never merges them | (a) **Exclude promisor packs**, exactly as `*.keep` packs are excluded (Pin V): never read for repacking, never rewritten, never deleted, their objects never crufted. (b) **Full parity**: a second `buildPack` over the promisor objects at step 6b, written with its own `.promisor` marker, the old promisor pack retired like any other. (c) Merge everything into one pack. | **(a)**, but the user owns it | **(c) is not an option and is listed only to be excluded**: it would tell a later `git` that lazily-fetchable objects are present locally, which is a partial-clone correctness break, not a size trade — no branch may produce a single merged pack. Between (a) and (b): (a) costs one predicate at step 1b, is the same shape the `*.keep` exclusion already needs, and **satisfies ADR-731/732's pinned surface as written** — "which objects live in which file class" is unchanged, because a promisor object stays in *a promisor pack*. What (a) gives up is pack *identity* parity: tsgit never rebuilds the promisor pack, so its objects are never re-consolidated and a promisor object that becomes unreachable is never crufted — a bounded, conservative shortfall of the same family as the deferral ADR-732 just overturned, which is precisely why the designer must not settle it a second time. (b) is genuinely cheap — one extra `buildPack` and one extra marker write — and is the answer if the user wants placement parity to mean *total* parity. It also doubles the inflation exposure, since the promisor pack is re-emitted base-only too. The size and lifecycle machinery is shared either way, so this is a late-bindable choice: **the design is written to (a) and the delta to (b) is one pipeline step**. | **(b)** · user-ratified **above the recommendation** · **ADR-733** (refines 732). The "bounded, conservative shortfall" this row warned against declining a second time is exactly what the user declined. The delta landed as predicted — one classification verdict at step 1b, a second `buildPack` + `.promisor` write at step 6b, one retirement group at step 10c, one `promisorPackId` scalar — and the placement table's last ⚠️ became a parity row. The doubled inflation exposure the row predicted is real and is absorbed by the same `packBytesBefore`/`packBytesAfter` pair, which sums every class |
 
 ---
 
@@ -3199,7 +3414,7 @@ under the parity branch, one extra `buildPack` + `.promisor` write at step 6b.
 | P6 | index cache hit/miss/invalidate keyed on `(size,mtimeMs,mtimeNs,ino)`; every syscall-count pin in the table above re-asserted through the new mechanism; FlatTree cache key incl. `maxDepth`; gitlink preservation | — | `status`/`add` interop suites unchanged; `git-parity-containment-interop` untouched | `status`, `status-dirty`, `add` |
 | P7 | wave ordering (deletes → dirs → children); pool drain on first throw before `lock.commit`; `checkDirty` refusal arrays byte-order-identical under a pool; quarantine rename + failure unlink; zlib threshold both sides | — | clone/fetch network interop (`test/integration/network/*`, real `git-http-backend`); `test/browser/decompression-stream.spec.ts` | **new** `checkout.bench.ts`; `clone-small-repo`; `bench-memory` clone workload at two pack sizes |
 | P8 | provenance brand in `composeAdapters`; verdict identity between wrapper and adapter over a path corpus; `deriveContext` preserving/renewing the session token per dimension; `listWorktrees` ref-store reuse count | **new** containment verdict-identity property (lens 2, ADR-485 already asks for one) | `git-parity-containment-interop`, `worktree-interop`, `linked-worktree-discovery-interop`, `ownership-trust-gate-interop` | `merge` (the `guard` frame), `status` |
-| P9 | **commit-graph writer**: chunk table layout, `numChunks` 4 vs 5 (octopus ⇒ `EDGE`), `OIDF` 1024-byte fanout, oid-sorted `OIDL` positions, `CDAT` field-by-field incl. the `(genWord & 3) << 32 \| dateWord` split, `GDA2` corrected-date offsets, `NO_PARENT` / `OCTOPUS_FLAG` encoding, SHA-1 **and** SHA-256 header, the GDO2-overflow **refusal**, the ≥2³⁴ committer-date refusal, lock-file contention on `commit-graph.lock`, refs-only root set. **gc**: `auto` gate on / off × `gc.auto` 0 / default / exceeded; the reachable-vs-unreachable partition; `prune-packable` unlink; unlink-after-verify ordering (a fault injected between write and prune must leave every object readable); `forgetLooseOidPrefix` called for every touched prefix; `ctx.fs.rm` `FILE_NOT_FOUND` narrowed and every other code rethrown; malformed `gc.auto` **and** malformed `gc.pruneExpire` refusals, each asserted on `.data` not on the error class; refs, reflogs and index byte-identical (R26); `MaintenanceResult` carries no rendered text. **cruft (ADR-731)**: `serializeCruftMtimes` header/body/trailer field-by-field incl. both hash widths and the `digestLength ∉ {20,32}` refusal; `.idx`-order (**not** offset-order) indexing, with a fixture whose mtimes are deliberately non-monotonic so an offset-indexed implementation fails; `parseCruftMtimes` on a count/`.idx` mismatch and on a bad self-checksum — **separate tests per guard**, since `if (A \|\| B) throw` needs each condition triggered alone; mtime provenance from loose `lstat` vs carried-forward sidecar entry, **and the `max` when both are present** (a lookup-with-fallback implementation must fail this test in both orderings — carried-newer and loose-newer); the expiry predicate at `cutoff−1` / `cutoff` / `cutoff+1` with an injected clock (the at-cutoff case is its own test — a StringLiteral/boundary mutant survives a two-sided test); `never` / `now` / `@epoch` / `<n>.<unit>.ago` cutoff derivation and the refusal for unsupported grammar; ms→s conversion at the seam; all four Pin S branches incl. the **byte-identical no-op**; the two-cruft-packs crash-recovery state; `.rev`+midx deletion on cruft retirement (R30); every cruft count in `MaintenanceResult` (R31). **consolidation (ADR-732)**: the step-1b classifier over the `fileNames` set — kept / promisor / cruft / normal, one test per class **and** one per pair that could be confused (a cruft pack is not a normal pack; a pack carrying both `.keep` and `.mtimes`); `owned` excluding kept and promisor packs, asserted by *absence* of their oids from the new pack rather than by a count; the mtime `max` over **three** sources with all three present and each one newest in turn (Pins Q, Y) — a two-source implementation must fail; the empty-input branch writing **no** pack (Pin V) as its own test, distinct from the single-pack branch writing one (Pin W), because a guard collapsing them is exactly the mutant this pair kills; **no** short-circuit on an already-consolidated repo, asserted by a second `gc` still writing (Pin W); `.idx`-first unlink ordering with a fault injected after it, proving the half-retired pack is invisible to `createPackRegistry` and readable-through nowhere; `.bitmap` deleted with its pack and no orphan left; `packsRetired` / `packBytesBefore` / `packBytesAfter` (R32, R33) incl. `packBytesAfter > packBytesBefore` on a deltified fixture; `gc.cruftPacks=false` **loosening** survivors out of a superseded pack rather than dropping them (Pin AA) — its own test, since a skip-the-cruft-steps implementation passes every other case and destroys data in this one | serializer ↔ parser round-trip for the commit-graph writer over an arbitrary commit DAG — `parseCommitGraphLayer(serializeCommitGraph(dag)) ≡ dag` incl. octopus merges and multi-root DAGs (lens 1); `commit-graph-writer.properties.test.ts`, reusing `test/unit/domain/commit/arbitraries.ts`. **new** `cruft-pack.properties.test.ts` (R27, lens 1): `parseCruftMtimes(serializeCruftMtimes(x)) ≡ x` over arbitrary object counts, arbitrary `u32` mtime vectors and both hash widths; `numRuns` **200** (cheap round-trip tier); generators in the directory's `arbitraries.ts` | **new** `test/integration/maintenance-interop.test.ts` — every row of the "Faithfulness pins this part owes" table: commit-graph byte identity (linear / merge / **octopus**), SHA-256 header, `git commit-graph verify` exit 0, refs-only root set (Pin O), index-only + reflog-only retention (Pin H), ref/reflog immutability (Pin J), artefact siblings (Pins F, T), **cruft creation, `.mtimes` byte format against git's own sidecar, mtime provenance, the expiry boundary, `--prune=never` / `--prune=now` / `gc.cruftPacks=false` equivalences, all four existing-cruft branches, resurrection, `.rev`+midx deletion, SHA-256 cruft, the prune-expiry refusal** (Pins P–U), **plus the ADR-732 rows: consolidation placement (three packs + loose ⇒ one), packed-then-unreachable migrating with its source pack's mtime, `*.keep` survival and its empty-input boundary, the single-pack no-op boundary, the cruft no-op compared on bytes-not-inodes, deletion ordering under injected faults, `.bitmap` following its pack, `gc.cruftPacks=false` loosening, the directional size-trade row, and DC-18's ⚠️ promisor row** (Pins V–AA). Twin-repository comparison — tsgit on one, real git on its clone — is the shape for every placement row. One shared `beforeAll` repo, 60 s timeout, `GIT_*` scrubbed, `HOME` isolated, signing off | **new** `maintenance.bench.ts`: (1) commit-graph write over `MEDIUM_FIXTURE_WITH_COMMIT_GRAPH`'s commit count; (2) `gc` over a few thousand **reachable** loose objects; (3) **repeat** `gc` over a few thousand **unreachable** loose objects plus an existing cruft pack; (4) **repeat** `gc` over `DELTA_CHAIN_FIXTURE` — the ADR-732 ceiling, where every object is inflated through a chain up to 43 deep and re-deflated as a base entry, and where Pin W's "no skip branch" makes that a **per-run** cost. Scenarios 3 and 4 are cost ceilings, not wins; scenario 4 reports **two** budgets — wall-clock ms *and* `packBytesAfter / packBytesBefore` (measured ×6.91 on this fixture) — neither of which is a gate (R33). Absolute wall-clock through P0.5's driver. Plus the **transitive** oracle — `log.bench.ts` must show the commit-graph fast path engaging on a tsgit-created repo after the write, i.e. F12's prefetcher stops being dead code |
+| P9 | **commit-graph writer**: chunk table layout, `numChunks` 4 vs 5 (octopus ⇒ `EDGE`), `OIDF` 1024-byte fanout, oid-sorted `OIDL` positions, `CDAT` field-by-field incl. the `(genWord & 3) << 32 \| dateWord` split, `GDA2` corrected-date offsets, `NO_PARENT` / `OCTOPUS_FLAG` encoding, SHA-1 **and** SHA-256 header, the GDO2-overflow **refusal**, the ≥2³⁴ committer-date refusal, lock-file contention on `commit-graph.lock`, refs-only root set. **gc**: `auto` gate on / off × `gc.auto` 0 / default / exceeded; the reachable-vs-unreachable partition; `prune-packable` unlink; unlink-after-verify ordering (a fault injected between write and prune must leave every object readable); `forgetLooseOidPrefix` called for every touched prefix; `ctx.fs.rm` `FILE_NOT_FOUND` narrowed and every other code rethrown; malformed `gc.auto` **and** malformed `gc.pruneExpire` refusals, each asserted on `.data` not on the error class; refs, reflogs and index byte-identical (R26); `MaintenanceResult` carries no rendered text. **cruft (ADR-731)**: `serializeCruftMtimes` header/body/trailer field-by-field incl. both hash widths and the `digestLength ∉ {20,32}` refusal; `.idx`-order (**not** offset-order) indexing, with a fixture whose mtimes are deliberately non-monotonic so an offset-indexed implementation fails; `parseCruftMtimes` on a count/`.idx` mismatch and on a bad self-checksum — **separate tests per guard**, since `if (A \|\| B) throw` needs each condition triggered alone; mtime provenance from loose `lstat` vs carried-forward sidecar entry, **and the `max` when both are present** (a lookup-with-fallback implementation must fail this test in both orderings — carried-newer and loose-newer); the expiry predicate at `cutoff−1` / `cutoff` / `cutoff+1` with an injected clock (the at-cutoff case is its own test — a StringLiteral/boundary mutant survives a two-sided test); `never` / `now` / `@epoch` / `<n>.<unit>.ago` cutoff derivation and the refusal for unsupported grammar; ms→s conversion at the seam; all four Pin S branches incl. the **byte-identical no-op**; the two-cruft-packs crash-recovery state; `.rev`+midx deletion on cruft retirement (R30); every cruft count in `MaintenanceResult` (R31). **consolidation (ADR-732)**: the step-1b classifier over the `fileNames` set — kept / promisor / cruft / normal, one test per class **and** one per pair that could be confused (a cruft pack is not a normal pack; a pack carrying both `.keep` and `.mtimes`; a pack carrying both `.keep` and `.promisor`, where `.keep` must win); `owned` excluding kept packs, asserted by *absence* of their oids from the new pack rather than by a count; the mtime `max` over **three** sources with all three present and each one newest in turn (Pins Q, Y) — a two-source implementation must fail; the empty-input branch writing **no** pack (Pin V) as its own test, distinct from the single-pack branch writing one (Pin W), because a guard collapsing them is exactly the mutant this pair kills; **no** short-circuit on an already-consolidated repo, asserted by a second `gc` still writing (Pin W); `.idx`-first unlink ordering with a fault injected after it, proving the half-retired pack is invisible to `createPackRegistry` and readable-through nowhere; `.bitmap` deleted with its pack and no orphan left; `packsRetired` / `packBytesBefore` / `packBytesAfter` (R32, R33) incl. `packBytesAfter > packBytesBefore` on a deltified fixture; `gc.cruftPacks=false` **loosening** survivors out of a superseded pack rather than dropping them (Pin AA) — its own test, since a skip-the-cruft-steps implementation passes every other case and destroys data in this one. **promisor (ADR-733)**: step 4's three-way partition asserted as *disjoint* — no oid in two of `toNormalPack` / `toPromisorPack` / `cruftCandidates`, with an overlap fixture where the same oid is loose **and** inside a promisor pack (the promisor class must win and the normal pack must not carry it); an **unreachable** promisor object landing in `toPromisorPack` and **not** in `cruftCandidates`, and surviving a cutoff that would destroy any other unreachable object — the test that fails a `reachable ∩ ownedPromisor` implementation; step 6b's empty-input branch (no promisor packs ⇒ no `.promisor` written anywhere) as its own test, independent of step 6's, because one guard serving both is exactly the mutant this pair kills; `writePackArtifacts` called with `promisor: true` at 6b and `promisor: false` at 6, asserted on the captured argument rather than on the resulting file list; step 10c's unlink set and its `.idx`-first / `.promisor`-last ordering, with a fault after the `.idx` proving the marker is still present; `promisorPackId` `undefined` on an ordinary repo and equal to the new pack's sha on a partial-clone-shaped one; `packsRetired` spanning all three retirable classes | serializer ↔ parser round-trip for the commit-graph writer over an arbitrary commit DAG — `parseCommitGraphLayer(serializeCommitGraph(dag)) ≡ dag` incl. octopus merges and multi-root DAGs (lens 1); `commit-graph-writer.properties.test.ts`, reusing `test/unit/domain/commit/arbitraries.ts`. **new** `cruft-pack.properties.test.ts` (R27, lens 1): `parseCruftMtimes(serializeCruftMtimes(x)) ≡ x` over arbitrary object counts, arbitrary `u32` mtime vectors and both hash widths; `numRuns` **200** (cheap round-trip tier); generators in the directory's `arbitraries.ts` | **new** `test/integration/maintenance-interop.test.ts` — every row of the "Faithfulness pins this part owes" table: commit-graph byte identity (linear / merge / **octopus**), SHA-256 header, `git commit-graph verify` exit 0, refs-only root set (Pin O), index-only + reflog-only retention (Pin H), ref/reflog immutability (Pin J), artefact siblings (Pins F, T), **cruft creation, `.mtimes` byte format against git's own sidecar, mtime provenance, the expiry boundary, `--prune=never` / `--prune=now` / `gc.cruftPacks=false` equivalences, all four existing-cruft branches, resurrection, `.rev`+midx deletion, SHA-256 cruft, the prune-expiry refusal** (Pins P–U), **plus the ADR-732 rows: consolidation placement (three packs + loose ⇒ one), packed-then-unreachable migrating with its source pack's mtime, `*.keep` survival and its empty-input boundary, the single-pack no-op boundary, the cruft no-op compared on bytes-not-inodes, deletion ordering under injected faults, `.bitmap` following its pack, `gc.cruftPacks=false` loosening and the directional size-trade row, **plus the ADR-733 rows: the promisor pack rebuilt-not-merged (two output packs, oid-membership asserted both ways), step 10c's retirement ordering under an injected fault, `.keep`-over-`.promisor` precedence, and the no-promisor-pack-no-promisor-output boundary** (Pins V–AA). Twin-repository comparison — tsgit on one, real git on its clone — is the shape for every placement row. One shared `beforeAll` repo, 60 s timeout, `GIT_*` scrubbed, `HOME` isolated, signing off | **new** `maintenance.bench.ts`: (1) commit-graph write over `MEDIUM_FIXTURE_WITH_COMMIT_GRAPH`'s commit count; (2) `gc` over a few thousand **reachable** loose objects; (3) **repeat** `gc` over a few thousand **unreachable** loose objects plus an existing cruft pack; (4) **repeat** `gc` over `DELTA_CHAIN_FIXTURE` — the ADR-732 ceiling, where every object is inflated through a chain up to 43 deep and re-deflated as a base entry, and where Pin W's "no skip branch" makes that a **per-run** cost. Scenarios 3 and 4 are cost ceilings, not wins; scenario 4 reports **two** budgets — wall-clock ms *and* `packBytesAfter / packBytesBefore` (measured ×6.91 on this fixture) — neither of which is a gate (R33). Absolute wall-clock through P0.5's driver. Plus the **transitive** oracle — `log.bench.ts` must show the commit-graph fast path engaging on a tsgit-created repo after the write, i.e. F12's prefetcher stops being dead code |
 
 ### Cross-cutting
 
@@ -3207,19 +3422,26 @@ under the parity branch, one extra `buildPack` + `.promisor` write at step 6b.
   about git. Every refusal-adjacent change (P3's `INVALID_PACK_INDEX` layering, P5's flip, P7's
   quarantine, P8's containment) and every new on-disk artefact (P9's commit-graph and pack)
   gets an interop pin or an explicit ADR line saying why not.
-- **Two pins are owed *by implementers*, not by this design**, and each blocks a parity claim
-  until it is run: git's behaviour on a **handled** clone failure (ADR-728 / P7), and whether git
-  emits a **`GDO2`** chunk under corrected-date overflow (P9 task 1). Record each matrix in this
-  document when run. *(The cruft-pack sidecar layout is **discharged** by Pins P–U — format,
-  ordering, mtime provenance, expiry arithmetic, existing-cruft lifecycle, naming and the SHA-256
-  variant. The consolidation lifecycle is **discharged** by Pins V–AA — `.keep` exclusion, the
-  no-op boundary, live-observed creation/deletion ordering and crash states, migrating-object mtime
-  provenance, promisor handling and the `gc.cruftPacks=false` loosening. Both against git 2.55.0.)*
+- **Three pins are owed *by implementers*, not by this design**, and each blocks a parity claim
+  until it is run: git's behaviour on a **handled** clone failure (ADR-728 / P7); whether git
+  emits a **`GDO2`** chunk under corrected-date overflow (P9 task 1); and **what default `gc` does
+  with an *unreachable* object inside a `.promisor` pack** (ADR-733 / P9 task 2) — Pin Z's probe had
+  only reachable promisor objects, so it pins the rebuild but not the reachability filter. The probe
+  is Pin Z's setup with the promisor pack's objects made unreachable before `git gc`, asserting
+  whether they land in the new promisor pack, the cruft pack, or nowhere. §P9 takes the *retain*
+  direction meanwhile, which is the recoverable way to be wrong; a correction is one subtraction at
+  step 4. Record each matrix in this document when run. *(The cruft-pack sidecar layout is
+  **discharged** by Pins P–U — format, ordering, mtime provenance, expiry arithmetic,
+  existing-cruft lifecycle, naming and the SHA-256 variant. The consolidation lifecycle is
+  **discharged** by Pins V–AA — `.keep` exclusion, the no-op boundary, live-observed
+  creation/deletion ordering and crash states, migrating-object mtime provenance, the separate
+  promisor repack and the `gc.cruftPacks=false` loosening. Both against git 2.55.0.)*
 - **`gc` is the first tsgit command that deletes a file it did not write.** ADR-731 made it destroy
   aged *objects*; ADR-732 makes it delete whole *packs* — including a `.bitmap` tsgit has no writer
-  for. Every deletion in this change is bounded by R24's enumerated set and by the step-1b
-  classification, and both are tested by *absence* assertions (the kept pack's inode is unchanged;
-  no promisor oid appears in the new pack), never by counting what was deleted.
+  for; ADR-733 extends that to promisor packs and their markers. Every deletion in this change is
+  bounded by R24's enumerated set and by the step-1b classification, and both are tested by
+  *absence* assertions (the kept pack's inode is unchanged; no promisor oid appears in the new
+  **normal** pack), never by counting what was deleted.
 - **The expiry clock must be injected in tests, never mocked globally.** Every cruft test drives
   `now` through the internal options seam (`index-lock.ts:7-8,:50`'s pattern). A test that reaches
   for fake timers to move the expiry boundary is testing the wrong thing and will not survive a
@@ -3268,11 +3490,12 @@ under the parity branch, one extra `buildPack` + `.promisor` write at step 6b.
   caller's escape hatch for a pack they want left alone.
 - **A multi-pack-index writer.** None exists (`src/` has no `serializeMultiPackIndex`). P9's only
   midx verb is *delete*, which consolidation now exercises on essentially every run — the midx names
-  the normal packs being retired (Pins T, G row 1) — while a midx naming only kept/promisor packs is
-  left alone, exactly as `git repack -d` does (Pin G row 2).
-- **Rebuilding a `.promisor` pack.** ⚠️ **DC-18, open** — out of scope only under the conservative
-  branch this design is written to. Pin Z pins git's behaviour (two separate output packs, marker
-  carried); the delta is one pipeline step and the user rules.
+  the normal **and promisor** packs being retired (Pins T, G row 1) — while a midx naming only
+  `*.keep` packs is left alone, exactly as `git repack -d` does (Pin G row 2).
+- ~~**Rebuilding a `.promisor` pack.**~~ **Moved into scope by ADR-733** — P9 repacks every promisor
+  object into a fresh promisor pack with its `.promisor` sidecar (step 6b) and retires the
+  superseded one with its siblings (step 10c). Pin Z carries git's behaviour. What stays out of
+  scope is *merging* the two classes, which no branch was ever allowed to do.
 - **Pack bitmaps.** tsgit reads them and does not write them. ⚠️ **Pin F, amended** while pinning
   ADR-732: git's default `gc` writes `pack-<sha>.bitmap` in a **bare** repository with
   `repack.writeBitmaps` unset, and not in a working-tree one — so P9 matches the default only in the
