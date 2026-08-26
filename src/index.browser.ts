@@ -6,9 +6,11 @@
  * `openRepository(opts)` call to the core factory with the fallback pre-bound.
  */
 import { BrowserCompressor } from './adapters/browser/browser-compressor.js';
+import { nativeMachineFacts } from './adapters/browser/browser-concurrency.js';
 import { BrowserFileSystem } from './adapters/browser/browser-file-system.js';
 import { BrowserHashService } from './adapters/browser/browser-hash-service.js';
 import { BrowserHttpTransport } from './adapters/browser/browser-http-transport.js';
+import { deriveLimits } from './domain/concurrency/derive-limits.js';
 import { configFor } from './domain/objects/hash-config.js';
 import { createLruCache } from './domain/storage/lru-cache.js';
 import { resolveFixedEntryLayout } from './repository/fixed-entry-layout.js';
@@ -93,6 +95,7 @@ export const openRepository = async (opts: OpenBrowserRepositoryOptions): Promis
       opts.deltaCacheMaxBytes ?? DEFAULT_DELTA_CACHE_BYTES,
       opts.deltaCacheMaxEntries ?? DEFAULT_DELTA_CACHE_ENTRIES,
     ),
+    concurrency: deriveLimits(nativeMachineFacts()),
   };
   // Strip the browser-only opts before forwarding so the core sees only its
   // own option surface.

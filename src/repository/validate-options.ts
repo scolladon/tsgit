@@ -114,7 +114,17 @@ const validateTrustedDirectories = (value: ReadonlyArray<string> | undefined): v
   }
 };
 
-const validateParallelism = (value: number | undefined): void => {
+const validateParallelism = (value: RepositoryConfig['parallelism']): void => {
+  if (value === undefined) return;
+  if (typeof value === 'number') {
+    validateParallelismMember(value);
+    return;
+  }
+  validateParallelismMember(value.cpu);
+  validateParallelismMember(value.io);
+};
+
+const validateParallelismMember = (value: number | undefined): void => {
   if (value === undefined) return;
   if (!Number.isInteger(value)) {
     throw invalidOption('parallelism', 'must be an integer');

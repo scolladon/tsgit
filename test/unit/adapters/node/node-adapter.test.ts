@@ -206,6 +206,21 @@ describe('createNodeContext', () => {
     });
   });
 
+  describe('Given default options (concurrency)', () => {
+    describe('When creating context', () => {
+      it('Then ctx.concurrency carries a derived cpuBound and ioBound', () => {
+        // Arrange / Act
+        const sut = createNodeContext({ workDir: '/tmp/tsgit-concurrency' });
+
+        // Assert — this host has real machine facts, so the policy is populated,
+        // not left for every consumer to fall back to the floor.
+        expect(sut.concurrency).toBeDefined();
+        expect(sut.concurrency?.cpuBound).toBeGreaterThanOrEqual(1);
+        expect(sut.concurrency?.ioBound).toBeGreaterThanOrEqual(1);
+      });
+    });
+  });
+
   describe("Given algorithm 'sha256'", () => {
     describe('When creating context', () => {
       it("Then ctx.hash.algorithm is 'sha256' and ctx.hashConfig is SHA256_CONFIG", () => {

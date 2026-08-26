@@ -53,6 +53,24 @@ describe('validateOptions — invalid option values', () => {
           reasonContains: 'integer',
         },
         {
+          label: 'parallelism = { cpu: 0 }',
+          fn: () => validateOptions({ config: { parallelism: { cpu: 0 } } }),
+          option: 'parallelism',
+          reasonContains: 'must be in 1..32 (got 0)',
+        },
+        {
+          label: 'parallelism = { io: 33 }',
+          fn: () => validateOptions({ config: { parallelism: { io: 33 } } }),
+          option: 'parallelism',
+          reasonContains: 'must be in 1..32 (got 33)',
+        },
+        {
+          label: 'parallelism = { cpu: 1.5 } (non-integer member)',
+          fn: () => validateOptions({ config: { parallelism: { cpu: 1.5 } } }),
+          option: 'parallelism',
+          reasonContains: 'integer',
+        },
+        {
           label: 'maxResponseBytes = 1023',
           fn: () => validateOptions({ config: { maxResponseBytes: 1023 } }),
           option: 'maxResponseBytes',
@@ -190,6 +208,14 @@ describe('validateOptions — valid option values', () => {
         {
           label: 'parallelism = 32 (upper boundary)',
           fn: () => validateOptions({ config: { parallelism: 32 } }),
+        },
+        {
+          label: 'parallelism = { cpu: 1, io: 32 } (object form, both boundaries)',
+          fn: () => validateOptions({ config: { parallelism: { cpu: 1, io: 32 } } }),
+        },
+        {
+          label: 'parallelism = {} (object form, both members absent)',
+          fn: () => validateOptions({ config: { parallelism: {} } }),
         },
         {
           label: 'maxResponseBytes = 1024 (boundary)',

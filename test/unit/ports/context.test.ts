@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { ConcurrencyLimits } from '../../../src/domain/concurrency/derive-limits.js';
 import { SHA1_CONFIG } from '../../../src/domain/objects/hash-config.js';
 import { createLruCache } from '../../../src/domain/storage/lru-cache.js';
 import type { Compressor } from '../../../src/ports/compressor.js';
@@ -226,6 +227,58 @@ describe('Context', () => {
 
         // Assert
         expect(sut.cwd).toBe(sentinelLayout.workDir);
+      });
+    });
+  });
+
+  describe('Given parts without concurrency', () => {
+    describe('When creating context', () => {
+      it('Then ctx.concurrency is undefined', () => {
+        // Arrange
+        const options = {
+          fs: sentinelFs,
+          hash: sentinelHash,
+          compressor: sentinelCompressor,
+          transport: sentinelTransport,
+          progress: sentinelProgress,
+          layout: sentinelLayout,
+          runtime: sentinelRuntime,
+          hashConfig: sentinelHashConfig,
+          deltaCache: sentinelDeltaCache,
+        };
+
+        // Act
+        const sut = createContext(options);
+
+        // Assert
+        expect(sut.concurrency).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given parts with concurrency', () => {
+    describe('When creating context', () => {
+      it('Then ctx.concurrency carries it', () => {
+        // Arrange
+        const concurrency: ConcurrencyLimits = { cpuBound: 4, ioBound: 32 };
+        const options = {
+          fs: sentinelFs,
+          hash: sentinelHash,
+          compressor: sentinelCompressor,
+          transport: sentinelTransport,
+          progress: sentinelProgress,
+          layout: sentinelLayout,
+          runtime: sentinelRuntime,
+          hashConfig: sentinelHashConfig,
+          deltaCache: sentinelDeltaCache,
+          concurrency,
+        };
+
+        // Act
+        const sut = createContext(options);
+
+        // Assert
+        expect(sut.concurrency).toBe(concurrency);
       });
     });
   });

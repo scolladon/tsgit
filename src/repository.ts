@@ -15,6 +15,7 @@ import {
 } from './application/primitives/snapshot/snapshot-factory.js';
 import { disposeAdapters } from './dispose-adapters.js';
 import { repositoryDisposed } from './domain/commands/error.js';
+import type { ConcurrencyLimits } from './domain/concurrency/derive-limits.js';
 import type { StatTreeDiff, TreeDiff } from './domain/diff/index.js';
 import { unsupportedOperation } from './domain/error.js';
 import { configFor } from './domain/objects/hash-config.js';
@@ -317,6 +318,12 @@ export interface RuntimeFallback {
   readonly hashConfig: Context['hashConfig'];
   readonly deltaCache: Context['deltaCache'];
   /**
+   * Optional resolved concurrency policy for this host. Absent on runtimes
+   * with no machine facts to report (memory, workerd) — `limitFor` falls
+   * back to the safe floor in that case.
+   */
+  readonly concurrency?: ConcurrencyLimits;
+  /**
    * Build a raw (adapter-level) `FileSystem` able to reach `worktreePaths`
    * (which may lie outside `workDir`) as well as the repository itself — for the
    * worktree containment escape (ADR-298). The node shim roots a fresh adapter
@@ -517,6 +524,7 @@ interface OptionalCtxInputs {
   readonly command: CommandRunner | undefined;
   readonly env: EnvReader | undefined;
   readonly ssh: SshTransport | undefined;
+  readonly concurrency: ConcurrencyLimits | undefined;
 }
 
 /**
@@ -532,6 +540,7 @@ const buildOptionalCtxFields = (inputs: OptionalCtxInputs) => ({
   ...(inputs.command !== undefined ? { command: inputs.command } : {}),
   ...(inputs.env !== undefined ? { env: inputs.env } : {}),
   ...(inputs.ssh !== undefined ? { ssh: inputs.ssh } : {}),
+  ...(inputs.concurrency !== undefined ? { concurrency: inputs.concurrency } : {}),
 });
 
 /**
@@ -660,6 +669,7 @@ export const openRepository = async (
       command,
       env: fallback.env,
       ssh: fallback.ssh,
+      concurrency: fallback.concurrency,
     }),
     promisor,
   });

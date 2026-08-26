@@ -246,6 +246,21 @@ describe('browser shim — openRepository', () => {
       });
     });
   });
+
+  describe('Given the browser runtime (concurrency)', () => {
+    describe('When openRepository runs', () => {
+      it('Then ctx.concurrency carries a derived cpuBound and ioBound', async () => {
+        // Arrange / Act
+        const sut = await openRepository({ rootHandle: fakeHandle });
+
+        // Assert — a real hardwareConcurrency reading populates the policy,
+        // not left for every consumer to fall back to the floor.
+        expect(sut.ctx.concurrency).toBeDefined();
+        expect(sut.ctx.concurrency?.cpuBound).toBeGreaterThanOrEqual(1);
+        expect(sut.ctx.concurrency?.ioBound).toBeGreaterThanOrEqual(1);
+      });
+    });
+  });
 });
 
 type StubEntry = { readonly kind: 'file'; readonly content: string } | { readonly kind: 'dir' };

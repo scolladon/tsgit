@@ -39,6 +39,24 @@ describe('createBrowserContext', () => {
     });
   });
 
+  describe('Given default options (concurrency)', () => {
+    describe('When creating context', () => {
+      it('Then ctx.concurrency carries a derived cpuBound and ioBound', () => {
+        // Arrange
+        const sut = createBrowserContext;
+
+        // Act
+        const result = sut({ rootHandle });
+
+        // Assert — a real hardwareConcurrency reading populates the policy,
+        // not left for every consumer to fall back to the floor.
+        expect(result.concurrency).toBeDefined();
+        expect(result.concurrency?.cpuBound).toBeGreaterThanOrEqual(1);
+        expect(result.concurrency?.ioBound).toBeGreaterThanOrEqual(1);
+      });
+    });
+  });
+
   describe("Given algorithm 'sha256'", () => {
     describe('When creating context', () => {
       it("Then ctx.hash.algorithm is 'sha256' and ctx.hashConfig is SHA256_CONFIG", () => {

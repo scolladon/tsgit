@@ -4,8 +4,9 @@ import { operationAborted } from '../../../domain/error.js';
 import type { Commit, ObjectId } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
 import { type BoundedReader, createBoundedReader } from './bounded-reader.js';
+import { limitFor } from './concurrency.js';
 import { readCommit } from './read-commit.js';
-import { commitHeader, DEFAULT_PREFETCH_CONCURRENCY } from './read-commit-graph.js';
+import { commitHeader } from './read-commit-graph.js';
 import { resolveShallow } from './shallow-set.js';
 
 type CommitBodies = BoundedReader<Commit | undefined>;
@@ -88,7 +89,7 @@ export async function* commitDateWalk(
   // `seen` already prevents any re-read, so the reader's missing-memo is inert
   // here; it satisfies the shared contract without a second set.
   const missing = new Set<string>();
-  const bound = ctx.config?.parallelism ?? DEFAULT_PREFETCH_CONCURRENCY;
+  const bound = limitFor(ctx, 'ioBound');
   const walk: DateWalk = {
     heap: new BinaryHeap<QueueEntry<Promise<Commit | undefined>>>(precedes),
     seen: new Set<ObjectId>(options.from),

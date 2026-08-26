@@ -1,3 +1,4 @@
+import type { ConcurrencyLimits } from '../domain/concurrency/derive-limits.js';
 import type { HashConfig } from '../domain/objects/hash-config.js';
 import type { RefName } from '../domain/objects/object-id.js';
 import type { LruCache } from '../domain/storage/lru-cache.js';
@@ -127,8 +128,13 @@ export type AuthStrategy =
 export interface RepositoryConfig {
   readonly user?: AuthorIdentity;
   readonly auth?: AuthStrategy;
-  /** Bounded parallelism for fan-out work. 1..32, default 8 (enforced by facade validation). */
-  readonly parallelism?: number;
+  /**
+   * Bounded parallelism for fan-out work, overriding the concurrency policy's
+   * derived bound (each 1..32, enforced by facade validation). A bare number
+   * applies to both buckets; `{ cpu, io }` overrides them independently.
+   * Absent members keep taking the derived bound for that bucket.
+   */
+  readonly parallelism?: number | { readonly cpu?: number; readonly io?: number };
   readonly upstreamRef?: RefName;
   readonly allowInsecure?: boolean;
   readonly allowPrivateNetworks?: boolean;
@@ -181,6 +187,12 @@ export interface Context {
   readonly hashConfig: HashConfig;
   /** Shared delta-base LRU cache; consumed by primitives' iterative delta walker. */
   readonly deltaCache: LruCache<Uint8Array>;
+  /**
+   * Resolved concurrency policy for this host, derived from machine facts by
+   * the composition root. Absent means "unknown" — consumers resolve it via
+   * `limitFor`, which falls back to the safe floor rather than a fast guess.
+   */
+  readonly concurrency?: ConcurrencyLimits;
   /** Optional facade-tier configuration (auth, parallelism, SSRF, …). Populated by openRepository. */
   readonly config?: RepositoryConfig;
   /** Optional sanitized logger. Populated by openRepository. */
@@ -232,6 +244,7 @@ export interface CreateContextParts {
   readonly runtime: 'node' | 'browser' | 'memory';
   readonly hashConfig: HashConfig;
   readonly deltaCache: LruCache<Uint8Array>;
+  readonly concurrency?: ConcurrencyLimits;
   readonly config?: RepositoryConfig;
   readonly logger?: Logger;
   readonly signal?: AbortSignal;

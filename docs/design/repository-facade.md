@@ -219,7 +219,7 @@ export interface OpenRepositoryOptions {
 export interface RepositoryConfig {
   readonly user?: AuthorIdentity;
   readonly auth?: AuthConfig;
-  readonly parallelism?: number;            // 1..32, default 8
+  readonly parallelism?: number | { cpu?: number; io?: number };  // each 1..32; overrides the derived concurrency policy per-bucket (bare number applies to both)
   readonly upstreamRef?: RefName;
   readonly allowInsecure?: boolean;          // default false
   readonly allowPrivateNetworks?: boolean;   // default false
@@ -592,7 +592,7 @@ Phase 10 is purely additive. No existing exports change shape. The Phase 9 `tsgi
   - **Node FS:** `path.isAbsolute(cwd)` (POSIX `'/'`-rooted on macOS/Linux; drive-letter or UNC on Windows).
   - **Browser OPFS / memory FS:** any string starting with `'/'`.
   - The default (`defaultCwd()`) is `process.cwd()` on Node and `'/'` on browser/memory — both pass their respective check trivially.
-- `opts.config.parallelism`, when set, MUST be in `[1, 32]`. Throws `INVALID_OPTION`.
+- `opts.config.parallelism`, when set, MUST be in `[1, 32]` — a bare number, or each member of the `{ cpu, io }` form independently. Throws `INVALID_OPTION`.
 - `opts.config.maxResponseBytes`, when set, MUST be ≥ 1024. Throws `INVALID_OPTION`.
 
 `INVALID_OPTION` is a new variant (added to `CommandError` family per §10.1) so the facade does not introduce a new tier-private error union.
