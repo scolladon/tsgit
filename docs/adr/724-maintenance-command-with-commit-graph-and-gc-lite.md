@@ -6,7 +6,12 @@ subjects:
 ---
 # 724 — `maintenance` command with commit-graph write and gc-lite
 
-- **Status:** accepted
+> Superseded by [ADR-731](731-gc-uses-cruft-packs.md) for the gc task's prune-loose
+> semantics (replaced by git's cruft-pack lifecycle). The command, explicit-only
+> invocation, the commit-graph task, the structured result shape, the midx/`.rev`
+> constraints and the Tier-1 surface gates are carried forward unchanged.
+
+- **Status:** superseded by ADR-731 (prune semantics; the command and commit-graph task stand)
 - **Date:** 2026-08-26
 - **Design:** docs/design/perf-remediation-2026-08.md (DC-2) · **Supersedes/Refines:** un-parks the gc/repack/prune backlog entry (docs/BACKLOG.md)
 
