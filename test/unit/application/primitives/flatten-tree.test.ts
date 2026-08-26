@@ -297,6 +297,10 @@ describe('flattenTree', () => {
         for await (const _ of walkTree(walkInstrument.ctx, rootId)) {
           // drain
         }
+        // F2.3 populates the shared delta cache on every loose read; clear it
+        // so flattenTree's drain below pays the same cold-cache cost walkTree
+        // just did, keeping this a fair, independent comparison.
+        base.deltaCache.clear();
         const flattenInstrument = instrumentedContext(base);
 
         // Act

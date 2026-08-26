@@ -15,6 +15,7 @@ import type {
   ObjectId,
   Tree,
 } from '../../../../../src/domain/objects/index.js';
+import type { Context } from '../../../../../src/ports/context.js';
 import { buildSeededContext, writeCommitGraph } from '../fixtures.js';
 
 const AUTHOR: AuthorIdentity = {
@@ -324,6 +325,10 @@ describe('commitDateWalk — early graph-confirmed push under ignoreMissing=fals
       const { computeLooseObjectPath } = await import(
         '../../../../../src/domain/storage/loose-path.js'
       );
+      // F2.3 also populates the delta cache on the arrange-phase pre-read
+      // above; drop that entry so removing the loose file below produces a
+      // genuine miss instead of a cache-served hit.
+      ctx.deltaCache.delete(stale);
       await ctx.fs.rm(`${ctx.layout.gitDir}/objects/${computeLooseObjectPath(stale)}`);
       const sut = commitDateWalk(ctx, { from: [stale, fresh] });
 
@@ -380,6 +385,10 @@ describe('commitDateWalk — stale commit-graph under ignoreMissing', () => {
       const { computeLooseObjectPath } = await import(
         '../../../../../src/domain/storage/loose-path.js'
       );
+      // F2.3 also populates the delta cache on the arrange-phase pre-read
+      // above; drop that entry so removing the loose file below produces a
+      // genuine miss instead of a cache-served hit.
+      ctx.deltaCache.delete(pruned);
       await ctx.fs.rm(`${ctx.layout.gitDir}/objects/${computeLooseObjectPath(pruned)}`);
       const sut = commitDateWalk(ctx, { from: [tip], ignoreMissing: true });
 
@@ -398,6 +407,246 @@ describe('commitDateWalk — stale commit-graph under ignoreMissing', () => {
       expect(yielded).toEqual([tip, merge, kept]);
       expect(frontiers).not.toContain(pruned);
       expect(empties.at(-1)).toBe(true);
+    });
+  });
+});
+
+describe('commitDateWalk — parallel parent body reads (F12)', () => {
+  describe('Given a commit with three parents', () => {
+    describe('When the walk enqueues them', () => {
+      it('Then all three body reads are started before any is awaited', async () => {
+        // Arrange — an octopus merge whose three parents are loose objects;
+        // reads are gated so overlap is observable via a read spy.
+        const ctx = await buildSeededContext();
+        const treeId = await emptyTree(ctx);
+        const commit = async (msg: string, ts: number, parents: ObjectId[]): Promise<ObjectId> =>
+          createCommit(ctx, {
+            tree: treeId,
+            parents,
+            author: { ...AUTHOR, timestamp: ts },
+            committer: { ...AUTHOR, timestamp: ts },
+            message: msg,
+          });
+        const p1 = await commit('p1', 1, []);
+        const p2 = await commit('p2', 2, []);
+        const p3 = await commit('p3', 3, []);
+        const merge = await commit('merge', 4, [p1, p2, p3]);
+        const { computeLooseObjectPath } = await import(
+          '../../../../../src/domain/storage/loose-path.js'
+        );
+        const parentPaths = new Set(
+          [p1, p2, p3].map((id) => `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(id)}`),
+        );
+        let active = 0;
+        let maxActive = 0;
+        const starts: string[] = [];
+        const stubCtx: Context = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            read: async (path: string) => {
+              if (!parentPaths.has(path)) return ctx.fs.read(path);
+              starts.push(path);
+              active += 1;
+              maxActive = Math.max(maxActive, active);
+              await new Promise<void>((resolve) => setTimeout(resolve, 5));
+              const bytes = await ctx.fs.read(path);
+              active -= 1;
+              return bytes;
+            },
+          },
+        };
+
+        // Act
+        await collectIds(commitDateWalk(stubCtx, { from: [merge] }));
+
+        // Assert — every parent read started, and at least two overlapped.
+        expect(starts.length).toBe(3);
+        expect(maxActive).toBeGreaterThanOrEqual(2);
+      });
+    });
+  });
+});
+
+describe('commitDateWalk — parent rejection order is array order, not first-in-time (F12, R5)', () => {
+  describe('Given two missing parents where the second one fails first in time', () => {
+    describe('When the walk enqueues them', () => {
+      it("Then the propagated rejection is the first parent's", async () => {
+        // Arrange — `first`'s loose-membership probe is artificially slowed
+        // so `second` (no matching fanout dir, fast) rejects first in real
+        // time; a `Promise.all`-based implementation would surface
+        // `second`'s rejection instead of `first`'s.
+        const ctx = await buildSeededContext();
+        const treeId = await emptyTree(ctx);
+        const first = 'a'.repeat(40) as ObjectId;
+        const second = 'b'.repeat(40) as ObjectId;
+        const merge = await createCommit(ctx, {
+          tree: treeId,
+          parents: [first, second],
+          author: AUTHOR,
+          committer: AUTHOR,
+          message: 'merge',
+        });
+        const firstPrefixDir = `${ctx.layout.gitDir}/objects/${first.slice(0, 2)}`;
+        const stubCtx: Context = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            readdir: async (path: string) => {
+              if (path === firstPrefixDir) {
+                await new Promise<void>((resolve) => setTimeout(resolve, 20));
+              }
+              return ctx.fs.readdir(path);
+            },
+          },
+        };
+
+        // Act
+        let caught: unknown;
+        try {
+          await collectIds(commitDateWalk(stubCtx, { from: [merge] }));
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('OBJECT_NOT_FOUND');
+        if (data.code !== 'OBJECT_NOT_FOUND') {
+          expect.fail(`expected OBJECT_NOT_FOUND, got ${data.code}`);
+        }
+        expect(data.id).toBe(first);
+      });
+    });
+  });
+});
+
+describe('commitDateWalk — sibling push order matches parent-array order, not completion order (F12, trap 1)', () => {
+  describe('Given siblings whose reads complete out of array order', () => {
+    describe('When the walk enqueues them', () => {
+      it('Then the heap receives them in parent-array order', async () => {
+        // Arrange — q0 is the newest of the four (pops first); the merge
+        // lists them [q0,q1,q2,q3] but their reads are timed to COMPLETE in
+        // a different order ([q1,q0,q3,q2]). `entries()` returns the heap's
+        // backing array by reference, so a push-in-completion-order bug
+        // would leave it in a different shape than push-in-array-order.
+        const ctx = await buildSeededContext();
+        const treeId = await emptyTree(ctx);
+        const commit = async (msg: string, ts: number, parents: ObjectId[]): Promise<ObjectId> =>
+          createCommit(ctx, {
+            tree: treeId,
+            parents,
+            author: { ...AUTHOR, timestamp: ts },
+            committer: { ...AUTHOR, timestamp: ts },
+            message: msg,
+          });
+        const q0 = await commit('q0', 40, []);
+        const q1 = await commit('q1', 10, []);
+        const q2 = await commit('q2', 30, []);
+        const q3 = await commit('q3', 20, []);
+        const merge = await commit('merge', 100, [q0, q1, q2, q3]);
+        const { computeLooseObjectPath } = await import(
+          '../../../../../src/domain/storage/loose-path.js'
+        );
+        const pathOf = (id: ObjectId): string =>
+          `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(id)}`;
+        const delayFor = new Map<string, number>([
+          [pathOf(q1), 0],
+          [pathOf(q0), 15],
+          [pathOf(q3), 30],
+          [pathOf(q2), 45],
+        ]);
+        const stubCtx: Context = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            read: async (path: string) => {
+              const delay = delayFor.get(path);
+              if (delay !== undefined) {
+                await new Promise<void>((resolve) => setTimeout(resolve, delay));
+              }
+              return ctx.fs.read(path);
+            },
+          },
+        };
+        const sut = commitDateWalk(stubCtx, { from: [merge] });
+        const iterator = sut[Symbol.asyncIterator]();
+
+        // Act
+        const mergeStep = await iterator.next(); // merge — parents not enqueued yet
+        if (mergeStep.done) throw new Error('expected the merge step');
+        const bestStep = await iterator.next(); // q0 — the best of the four, popped next
+        if (bestStep.done) throw new Error('expected the q0 step');
+
+        // Assert — array order [q0,q1,q2,q3] survives the pop's re-sift as
+        // [q2,q3,q1]; a completion-order push would instead settle as
+        // [q2,q1,q3].
+        expect(bestStep.value.commit.id).toBe(q0);
+        expect(bestStep.value.frontier()).toEqual([q2, q3, q1]);
+      });
+    });
+  });
+});
+
+describe('commitDateWalk — graph-present parent push stays body-await-free (F12, trap 3)', () => {
+  describe('Given a graph-covered merge whose parents are a fresh one and a stale one missing its body', () => {
+    describe('When walking by date', () => {
+      it('Then the fresher parent is yielded before the stale one aborts the walk', async () => {
+        // Arrange — pins that resolving a parent for push never awaits its
+        // body when the commit-graph already knows the date: if it did, a
+        // sequential resolve would reject on `stale` before `fresh` is ever
+        // pushed/yielded.
+        const ctx = await buildSeededContext();
+        const treeId = await emptyTree(ctx);
+        const commit = async (msg: string, ts: number, parents: ObjectId[]): Promise<ObjectId> =>
+          createCommit(ctx, {
+            tree: treeId,
+            parents,
+            author: { ...AUTHOR, timestamp: ts },
+            committer: { ...AUTHOR, timestamp: ts },
+            message: msg,
+          });
+        const stale = await commit('stale', 1, []);
+        const fresh = await commit('fresh', 2, []);
+        const merge = await commit('merge', 3, [stale, fresh]);
+        const readOpts = {
+          verifyHash: false,
+          ignoreMissing: false,
+          missing: new Set<string>(),
+          shallow: new Set<ObjectId>(),
+        };
+        const commits = await Promise.all(
+          [stale, fresh, merge].map(async (id) => (await readCommit(ctx, id, readOpts))!),
+        );
+        await writeCommitGraph(ctx, [commits]);
+        const { computeLooseObjectPath } = await import(
+          '../../../../../src/domain/storage/loose-path.js'
+        );
+        // F2.3 also populates the delta cache on the arrange-phase pre-read
+        // above; drop that entry so removing the loose file below produces a
+        // genuine miss instead of a cache-served hit.
+        ctx.deltaCache.delete(stale);
+        await ctx.fs.rm(`${ctx.layout.gitDir}/objects/${computeLooseObjectPath(stale)}`);
+        const sut = commitDateWalk(ctx, { from: [merge] });
+
+        // Act
+        const yielded: ObjectId[] = [];
+        let caught: unknown;
+        try {
+          for await (const step of sut) {
+            yielded.push(step.commit.id);
+          }
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert — merge and fresh are yielded before the walk aborts on
+        // stale's missing body.
+        expect(yielded).toEqual([merge, fresh]);
+        expect((caught as TsgitError).data.code).toBe('OBJECT_NOT_FOUND');
+      });
     });
   });
 });

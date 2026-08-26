@@ -1053,6 +1053,10 @@ describe('walkCommits', () => {
           const { computeLooseObjectPath } = await import(
             '../../../../src/domain/storage/loose-path.js'
           );
+          // F2.3 also populates the delta cache on `asCommits`'s pre-read
+          // above; drop that entry so removing the loose file below produces
+          // a genuine miss instead of a cache-served hit.
+          ctx.deltaCache.delete(missingId);
           await ctx.fs.rm(`${ctx.layout.gitDir}/objects/${computeLooseObjectPath(missingId)}`);
 
           // Act

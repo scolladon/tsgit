@@ -121,6 +121,8 @@ export async function* commitDateWalk(
   }
 }
 
+type HeapEntry = QueueEntry<Promise<Commit | undefined>>;
+
 // Iterate the deduped `seen` set, not raw `from`, so a duplicate seed enqueues
 // once — the pop loop has no visited check by design.
 const enqueueSeeds = async (ctx: Context, walk: DateWalk): Promise<void> => {
@@ -130,31 +132,61 @@ const enqueueSeeds = async (ctx: Context, walk: DateWalk): Promise<void> => {
   }
 };
 
+/**
+ * Every selected parent is resolved concurrently (each one's date comes from
+ * the commit-graph, with no body await, or from its own body), but pushed
+ * onto the heap only once ALL of them have settled — and in parent-array
+ * order, not completion order. `entries()` returns the heap's backing array
+ * by reference, so sibling push order becomes observable frontier order; a
+ * naive "push as each resolves" fan-out would leak completion timing into
+ * it. Rejections likewise rethrow in array order, not first-in-time —
+ * `Promise.allSettled` already waited for every read.
+ */
 const enqueueParents = async (ctx: Context, walk: DateWalk, commit: Commit): Promise<void> => {
-  for (const parent of selectParents(commit, walk.firstParent)) {
-    if (walk.seen.has(parent) || walk.until.has(parent)) continue;
+  const parents = selectParents(commit, walk.firstParent).filter((parent) => {
+    if (walk.seen.has(parent) || walk.until.has(parent)) return false;
     walk.seen.add(parent);
-    await enqueueCommit(ctx, walk, parent);
+    return true;
+  });
+  const settled = await Promise.allSettled(
+    parents.map((parent) => resolveHeapEntry(ctx, walk, parent)),
+  );
+  for (const result of settled) {
+    if (result.status === 'rejected') throw result.reason;
+  }
+  for (const result of settled) {
+    if (result.status === 'fulfilled' && result.value !== undefined) {
+      walk.heap.push(result.value);
+    }
   }
 };
 
 const enqueueCommit = async (ctx: Context, walk: DateWalk, id: ObjectId): Promise<void> => {
+  const entry = await resolveHeapEntry(ctx, walk, id);
+  if (entry !== undefined) {
+    walk.heap.push(entry);
+  }
+};
+
+const resolveHeapEntry = async (
+  ctx: Context,
+  walk: DateWalk,
+  id: ObjectId,
+): Promise<HeapEntry | undefined> => {
   const header = await commitHeader(ctx, id);
   const bodyPromise = walk.bodies.start(id);
   if (header !== undefined && !walk.ignoreMissing) {
-    // Graph-confirmed: the date is known without awaiting the body, so the
-    // push (and any downstream enqueue it enables) does not wait on I/O.
-    // (A missing body without `ignoreMissing` rejects at pop and aborts the
-    // walk, so pushing early is unobservable.)
-    walk.heap.push({ oid: id, date: header.committerDate, value: bodyPromise });
-    return;
+    // Graph-confirmed: the date is known without awaiting the body, so
+    // resolving (and any downstream enqueue it enables) does not wait on
+    // I/O. (A missing body without `ignoreMissing` rejects at pop and aborts
+    // the walk, so resolving early is unobservable.)
+    return { oid: id, date: header.committerDate, value: bodyPromise };
   }
   // Graph-absent fallback — and, under `ignoreMissing`, the stale-graph
   // guard: a commit whose body is gone must never enter the heap (it would
   // leak into `frontierEmpty`/`frontier()` snapshots the old walk never saw).
   const commit = await bodyPromise;
-  if (commit !== undefined) {
-    const date = header?.committerDate ?? commit.data.committer.timestamp;
-    walk.heap.push({ oid: id, date, value: bodyPromise });
-  }
+  if (commit === undefined) return undefined;
+  const date = header?.committerDate ?? commit.data.committer.timestamp;
+  return { oid: id, date, value: bodyPromise };
 };

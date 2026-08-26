@@ -62,6 +62,7 @@ export async function resolveObjectBytes(
   if (loose !== undefined) {
     checkAborted(ctx);
     enforceLooseCap(id, loose, maxBytes);
+    cacheEntry(ctx.deltaCache, id, loose);
     return verifyAndReturn(ctx, id, loose, verifyHash);
   }
 

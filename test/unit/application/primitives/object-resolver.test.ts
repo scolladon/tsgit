@@ -830,6 +830,61 @@ describe('object-resolver', () => {
     });
   });
 
+  describe('F2.3 — loose reads populate the delta cache', () => {
+    describe('Given a loose object read once', () => {
+      describe('When resolveObject returns', () => {
+        it('Then the delta cache holds its raw loose-format bytes', async () => {
+          // Arrange
+          const blob: Blob = {
+            type: 'blob',
+            content: ENC.encode('loose-cache-population content'),
+            id: '' as ObjectId,
+          };
+          const ctx = await buildSeededContext({ objects: [blob] });
+          const { serializeObject } = await import('../../../../src/domain/objects/index.js');
+          const id = (await ctx.hash.hashHex(serializeObject(blob, ctx.hashConfig))) as ObjectId;
+          const registry = createPackRegistry(ctx);
+          expect(ctx.deltaCache.get(id)).toBeUndefined();
+
+          // Act
+          await resolveObject(ctx, registry, id, true);
+
+          // Assert — cacheEntry must have populated the cache from the loose
+          // return path, not just the pack/REF_DELTA-base paths.
+          const cached = ctx.deltaCache.get(id);
+          expect(cached).toBeDefined();
+          expect(cached!.length).toBeGreaterThan(0);
+        });
+      });
+    });
+
+    describe('Given a loose object read twice on one Context', () => {
+      describe('When the second read runs', () => {
+        it('Then the compressor inflates once', async () => {
+          // Arrange
+          const blob: Blob = {
+            type: 'blob',
+            content: ENC.encode('loose-cache-warm-read content'),
+            id: '' as ObjectId,
+          };
+          const ctx = await buildSeededContext({ objects: [blob] });
+          const { serializeObject } = await import('../../../../src/domain/objects/index.js');
+          const id = (await ctx.hash.hashHex(serializeObject(blob, ctx.hashConfig))) as ObjectId;
+          const registry = createPackRegistry(ctx);
+          const inflateSpy = vi.spyOn(ctx.compressor, 'inflate');
+
+          // Act
+          const first = await resolveObject(ctx, registry, id, true);
+          const second = await resolveObject(ctx, registry, id, true);
+
+          // Assert — a warm read hits the cache instead of re-inflating.
+          expect((second as Blob).content).toEqual((first as Blob).content);
+          expect(inflateSpy.mock.calls.length).toBe(1);
+        });
+      });
+    });
+  });
+
   describe('Given a cold Context whose requested object is loose', () => {
     describe('When resolveObject reads it', () => {
       it('Then no readdir targets objects/pack and no .idx path is ever statted or read', async () => {
@@ -1074,6 +1129,10 @@ describe('object-resolver', () => {
           const id = (await ctx.hash.hashHex(serializeObject(blob, ctx.hashConfig))) as ObjectId;
           const registry = createPackRegistry(ctx);
           await resolveObject(ctx, registry, id, true);
+          // F2.3 also populates the delta cache on a loose read; drop that
+          // entry so this probe exercises the fanout MEMBERSHIP cache's own
+          // stale-hit degradation, not the (separately-tested) delta cache.
+          ctx.deltaCache.delete(id);
           const { computeLooseObjectPath } = await import(
             '../../../../src/domain/storage/loose-path.js'
           );

@@ -304,6 +304,11 @@ describe('bundleVerify', () => {
           revs: [{ range: ['refs/heads/main~1', 'refs/heads/main'] }],
         });
         await ctx.fs.write(BUNDLE_PATH, createResult.bytes);
+        // F2.3 also populates the delta cache when `bundleCreate` reads
+        // commit1's loose bytes above; drop that entry so the injected
+        // PERMISSION_DENIED below is actually reached instead of being
+        // masked by a cache hit.
+        ctx.deltaCache.delete(commit1);
 
         const prereqLoosePath = `${ctx.layout.gitDir}/objects/${commit1.slice(0, 2)}/${commit1.slice(2)}`;
         const spyCtx: Context = {
@@ -790,7 +795,7 @@ describe('bundleVerify', () => {
     };
 
     describe('When bundleVerify is called in a repo where the base object is present', () => {
-      it('Then the external base object is read from the object store exactly twice — prereq check plus one memoized resolver lookup', async () => {
+      it('Then the external base object is read from the object store exactly once — the prereq check warms the shared delta cache and every resolver lookup hits it', async () => {
         // Arrange
         const ctx = await initRepo();
         const baseContent = enc.encode('shared external base blob');
@@ -820,9 +825,10 @@ describe('bundleVerify', () => {
 
         // Assert — verify succeeds with both prerequisites present
         expect(result.prerequisitesPresent).toBe(true);
-        // Assert — base is read twice: once by the prereq check, once by the memoized
-        // resolver (second REF_DELTA entry hits cache — no extra read)
-        expect(baseReadCount).toBe(2);
+        // Assert — the prereq check's loose read populates the shared delta
+        // cache (F2.3), so both the resolver's own memo and every REF_DELTA
+        // entry's base lookup thereafter are cache hits — one physical read.
+        expect(baseReadCount).toBe(1);
       });
     });
   });
