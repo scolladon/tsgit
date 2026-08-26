@@ -10,9 +10,11 @@ import { layoutFailsAcceptance } from './internal/layout-verdict.js';
 
 // Per-scope sections cache, single-flight by Context identity. Lives apart from
 // `readConfig`'s ParsedConfig cache (in `config-read.ts`) because the porcelain
-// readers walk the raw `IniSection[]` directly; both caches share invalidation
-// through `invalidateConfigCache(ctx)` which delegates to this module's
-// `invalidateScopedConfigCache(ctx)`.
+// readers walk the raw `IniSection[]` directly. `invalidateConfigCache(ctx)`
+// does NOT delegate here — the two caches are invalidated independently, and
+// every config writer calls both `invalidateConfigCache` and
+// `invalidateScopedConfigCache` explicitly (see `update-config.ts` and
+// `update-config-sections.ts`).
 let sectionsCache: WeakMap<
   Context,
   Map<ConfigScope, Promise<ReadonlyArray<IniSection>>>
@@ -24,9 +26,11 @@ export const __resetSectionsCacheForTests = (): void => {
 };
 
 /**
- * Drop the per-scope sections cache for a single `Context`. Called by
- * `invalidateConfigCache` in `config-read.ts` so writers can invalidate both
- * caches atomically.
+ * Drop the per-scope sections cache for a single `Context`. NOT called by
+ * `invalidateConfigCache` in `config-read.ts` — every config writer calls
+ * both invalidators explicitly (see `update-config.ts` and
+ * `update-config-sections.ts`); this function only runs when a writer, or a
+ * test, calls it directly.
  */
 export const invalidateScopedConfigCache = (ctx: Context): void => {
   sectionsCache.delete(ctx);
@@ -99,7 +103,8 @@ const safeReadScopeOrSkip = async (
  *
  * Per-Context, per-scope cached: a second call with the same `(ctx, scope)`
  * shares the in-flight promise of the first. `invalidateConfigCache(ctx)` (from
- * `config-read.ts`) drops the cached entries here too.
+ * `config-read.ts`) does NOT drop these entries — callers that write the
+ * config file must call `invalidateScopedConfigCache(ctx)` too.
  *
  * In the merged-read path (`scope` omitted), scopes that are unavailable on
  * the current adapter (`CONFIG_SCOPE_NOT_AVAILABLE`, `CONFIG_SYSTEM_PATH_UNRESOLVED`)

@@ -8,6 +8,7 @@ import {
   tokenizeConfig,
 } from '../../domain/config/config-ini.js';
 import { TsgitError } from '../../domain/error.js';
+import type { FilePath } from '../../domain/objects/object-id.js';
 import type { Context } from '../../ports/context.js';
 import { layoutFailsTrustGate } from './internal/layout-verdict.js';
 import { commonGitDir } from './path-layout.js';
@@ -156,6 +157,35 @@ interface ConfigCacheEntry {
 let cache: WeakMap<Context, Promise<ConfigCacheEntry>> = new WeakMap();
 
 /**
+ * The operational gate-verdict memo `internal/repo-state.ts` populates via
+ * `memoizeGateVerdict`, below — owned HERE rather than there so
+ * `invalidateConfigCache` can drop it without `repo-state.ts` importing this
+ * module's own invalidator: `repo-state.ts` already imports the finders
+ * above, and the reverse import would cycle. The verdict shape (`FilePath`)
+ * is the only thing this module knows about it; `compute` — supplied by the
+ * caller — is what actually builds one.
+ */
+let gateVerdictCache: WeakMap<Context, Promise<FilePath>> = new WeakMap();
+
+/**
+ * Get-or-populate the per-Context gate-verdict memo: a second call with the
+ * same, unchanged `ctx` joins the promise the first call started rather than
+ * re-running `compute`. `invalidateConfigCache` (below) drops this memo
+ * alongside its own, so a config write observed through that invalidator is
+ * observed here too.
+ */
+export const memoizeGateVerdict = (
+  ctx: Context,
+  compute: (ctx: Context) => Promise<FilePath>,
+): Promise<FilePath> => {
+  const existing = gateVerdictCache.get(ctx);
+  if (existing !== undefined) return existing;
+  const pending = compute(ctx);
+  gateVerdictCache.set(ctx, pending);
+  return pending;
+};
+
+/**
  * Read and cache the scope-merged config (`system → global → local →
  * worktree`, matching git's own resolution order). A scope whose file is
  * missing, or whose file lives at a path this adapter cannot reach (e.g. the
@@ -184,22 +214,28 @@ const readConfigEntry = (ctx: Context): Promise<ConfigCacheEntry> => {
   return pending;
 };
 
-/** @internal — test-only cache reset between cases. Replaces the entire WeakMap. */
+/**
+ * @internal — test-only cache reset between cases. Replaces both WeakMaps
+ * this module owns (the parse cache and the gate-verdict memo), mirroring
+ * what `invalidateConfigCache` drops in production.
+ */
 export const __resetConfigCacheForTests = (): void => {
   cache = new WeakMap();
+  gateVerdictCache = new WeakMap();
 };
 
 /**
  * Drop the cached `readConfig` entry for a single `Context`, AND the
- * per-scope sections cache `readConfig` now builds its merged parse from
- * (`config-scoped-read.ts`'s own cache — shared with the porcelain `config`
- * command's readers) — one call invalidates both, so they can never drift
- * out of sync. The production invalidator: a config write (`updateCoreConfig`)
- * calls this so a subsequent `readConfig` on the same context re-reads
- * instead of serving the stale parse.
+ * gate-verdict memo `internal/repo-state.ts` populates via
+ * `memoizeGateVerdict` (owned here — see that export's docstring for why).
+ * This does NOT drop the per-scope sections cache
+ * (`config-scoped-read.ts`'s `invalidateScopedConfigCache`) — that cache is
+ * invalidated independently; every config writer that needs it calls both
+ * (see `update-config.ts` and `update-config-sections.ts`).
  */
 export const invalidateConfigCache = (ctx: Context): void => {
   cache.delete(ctx);
+  gateVerdictCache.delete(ctx);
 };
 
 /**

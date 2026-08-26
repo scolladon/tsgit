@@ -21,6 +21,7 @@ import { fileNotFound, TsgitError } from '../../../../src/domain/index.js';
 import type { AuthorIdentity, RefName } from '../../../../src/domain/objects/index.js';
 import { ObjectId, zeroOid } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
+import type { FileStat } from '../../../../src/ports/file-system.js';
 import { withReftableStorage } from '../primitives/reftable-fixtures.js';
 
 const author: AuthorIdentity = {
@@ -406,12 +407,34 @@ describe('branch', () => {
    * therefore answers `{ kind: 'missing' }`, and `readHeadRaw` throws
    * `REF_NOT_FOUND`.
    */
+  const FAKE_SYMLINK_STAT: FileStat = {
+    ctimeMs: 0,
+    mtimeMs: 0,
+    dev: 0,
+    ino: 0,
+    mode: 0o120000,
+    uid: 0,
+    gid: 0,
+    size: 0,
+    isFile: false,
+    isDirectory: false,
+    isSymbolicLink: true,
+  };
+
   const withUnresolvableHead = (ctx: Context): Context => {
     const headPath = `${ctx.layout.gitDir}/HEAD`;
     return {
       ...ctx,
       fs: {
         ...ctx.fs,
+        // `hasUsableHead` discriminates on `lstat` before choosing `readlink`
+        // vs `readUtf8` — report the symlink shape this fake simulates (a
+        // literal stat, not the underlying real one, since one of the two
+        // callers below has no real HEAD file at all) so it takes the
+        // `readlink` branch, exactly as it did before that discrimination
+        // existed.
+        lstat: async (path: string): Promise<FileStat> =>
+          path === headPath ? FAKE_SYMLINK_STAT : ctx.fs.lstat(path),
         readlink: async (path: string) =>
           path === headPath ? 'refs/heads/does-not-exist' : ctx.fs.readlink(path),
         exists: async (path: string) => (path === headPath ? false : ctx.fs.exists(path)),

@@ -39,6 +39,7 @@ import {
   findLastInvalidMaxTreeDepth,
   type InvalidBooleanEntry,
   type InvalidCompressionEntry,
+  memoizeGateVerdict,
   type ValuelessEntry,
 } from '../config-read.js';
 import { getRefStore, type ResolveDirectResult } from '../ref-store.js';
@@ -98,9 +99,18 @@ export const assertRepository = async (ctx: Context): Promise<FilePath> => {
   if (!(await hasUsableHead(ctx))) {
     throw notARepository((ctx.layout.workDir ?? ctx.layout.gitDir) as FilePath);
   }
+  return assertDiscoveryAndRoot(ctx);
+};
+
+/**
+ * `assertDiscoveryBooleansValid` plus the resolved repo root — the part of
+ * `assertRepository` that runs once `hasUsableHead` has passed. Extracted so
+ * the memoised operational verdict (`computeGateVerdict`, below) can share it
+ * without re-running `hasUsableHead`, which stays per-command.
+ */
+const assertDiscoveryAndRoot = async (ctx: Context): Promise<FilePath> => {
   await assertDiscoveryBooleansValid(ctx);
-  const root = ctx.layout.workDir ?? ctx.layout.gitDir;
-  return root as FilePath;
+  return (ctx.layout.workDir ?? ctx.layout.gitDir) as FilePath;
 };
 
 /**
@@ -108,10 +118,14 @@ export const assertRepository = async (ctx: Context): Promise<FilePath> => {
  * `HEAD` is judged by its LINK TEXT — `refs/…` qualifies even when dangling —
  * and a regular file by its content. Keeping the two tiers on one rule is
  * what stops a directory from passing discovery and then refusing every
- * command. The catch arms deliberately collapse EVERY read failure (absent,
- * EACCES, EISDIR, EIO) into "no usable head": git's own `validate_headref`
- * returns the same -1 for a failed `open`, so the refusal outcome matches
- * regardless of the failure class.
+ * command. A single `lstat` discriminates which follow-up read to make —
+ * `readlink` for a symlink, `readUtf8` for anything else — so at most ONE
+ * content read ever runs, down from the two blind attempts (`readlink`
+ * always tried first, `readUtf8` as a fallback) this used to make. The catch
+ * arms deliberately collapse EVERY read failure (absent, EACCES, EISDIR,
+ * EIO) into "no usable head": git's own `validate_headref` returns the same
+ * -1 for a failed `open`, so the refusal outcome matches regardless of the
+ * failure class.
  */
 const hasUsableHead = async (ctx: Context): Promise<boolean> => {
   const headPath = `${ctx.layout.gitDir}/HEAD`;
@@ -119,8 +133,12 @@ const hasUsableHead = async (ctx: Context): Promise<boolean> => {
   // what decides whether one can be built at all), so it stays a raw
   // files-layout probe; a reftable repository satisfies it through the stub
   // file exactly as git intends.
-  const linkText = await ctx.fs.readlink(headPath).catch(() => undefined);
-  if (linkText !== undefined) return isRefsLinkText(linkText);
+  const stat = await ctx.fs.lstat(headPath).catch(() => undefined);
+  if (stat === undefined) return false;
+  if (stat.isSymbolicLink) {
+    const linkText = await ctx.fs.readlink(headPath).catch(() => undefined);
+    return linkText !== undefined && isRefsLinkText(linkText);
+  }
   const head = await ctx.fs.readUtf8(headPath).catch(() => undefined);
   return head !== undefined && isValidHeadContent(head);
 };
@@ -259,9 +277,34 @@ const assertTrusted = (ctx: Context, path: FilePath): void => {
  */
 export const assertAcceptedRepository = async (ctx: Context): Promise<FilePath> => {
   const root = await assertRepository(ctx);
+  return assertTrustedAndFormat(ctx, root);
+};
+
+/** `assertTrusted` plus the format-version refusal, both synchronous/zero-I/O — shared by `assertAcceptedRepository` and the memoised operational verdict below. */
+const assertTrustedAndFormat = (ctx: Context, root: FilePath): FilePath => {
   assertTrusted(ctx, root);
   const refusal = ctx.layout.formatRefusal;
   if (refusal !== undefined) throwFormatRefusal(refusal);
+  return root;
+};
+
+/**
+ * The config-derived half of the operational gate:
+ * `assertDiscoveryBooleansValid`, `assertTrusted`, the format-version
+ * refusal, and `assertEagerConfigValid` — plus the resolved repo root. Pure
+ * given `ctx.layout` (frozen at open time) and the token stream
+ * `config-read.ts` already caches per Context, so a second command against
+ * the SAME, unchanged Context does not re-run the eight finder walks —
+ * `assertOperationalRepository`, below, memoises this via
+ * `memoizeGateVerdict` (defined in `config-read.ts`, alongside
+ * `invalidateConfigCache`, so the memo drops whenever that invalidator
+ * fires without this module importing it back). `hasUsableHead` is
+ * deliberately OUTSIDE the memo — it is what notices an externally deleted
+ * or rewritten HEAD between two commands on the same Context.
+ */
+const computeGateVerdict = async (ctx: Context): Promise<FilePath> => {
+  const root = assertTrustedAndFormat(ctx, await assertDiscoveryAndRoot(ctx));
+  await assertEagerConfigValid(ctx);
   return root;
 };
 
@@ -270,12 +313,15 @@ export const assertAcceptedRepository = async (ctx: Context): Promise<FilePath> 
  * the `[core]` section passes full validation, then return the repo root.
  * Operational commands take this; the config porcelain stays on the bare
  * `assertRepository` so it survives a valueless or invalid `[core]` entry
- * (git's split).
+ * (git's split). `hasUsableHead` runs fresh on every call — it is the one
+ * part of this gate that must notice a change made outside `updateConfig*`
+ * — then the rest of the verdict is served from the per-Context memo.
  */
 export const assertOperationalRepository = async (ctx: Context): Promise<FilePath> => {
-  const root = await assertAcceptedRepository(ctx);
-  await assertEagerConfigValid(ctx);
-  return root;
+  if (!(await hasUsableHead(ctx))) {
+    throw notARepository((ctx.layout.workDir ?? ctx.layout.gitDir) as FilePath);
+  }
+  return memoizeGateVerdict(ctx, computeGateVerdict);
 };
 
 /**

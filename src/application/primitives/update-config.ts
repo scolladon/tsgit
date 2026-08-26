@@ -432,6 +432,7 @@ export const updateConfigEntries = async (
   );
   await ctx.fs.writeUtf8(path, updated);
   invalidateConfigCache(ctx);
+  invalidateScopedConfigCache(ctx);
 };
 
 /** Fold a batch of `[core]` `key = value` writes via `updateConfigEntries`. */
@@ -559,6 +560,7 @@ export const updateConfigOperations = async (
   const updated = ops.reduce(applyConfigOpInText, original);
   await ctx.fs.writeUtf8(path, updated);
   invalidateConfigCache(ctx);
+  invalidateScopedConfigCache(ctx);
 };
 
 /**
