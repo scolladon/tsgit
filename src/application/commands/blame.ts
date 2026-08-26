@@ -19,16 +19,31 @@ import { precedes, type QueueEntry } from '../../domain/commit/priority-queue.js
 import { diffLines, splitLines } from '../../domain/diff/line-diff.js';
 import type { CommitData } from '../../domain/objects/commit.js';
 import { subjectLine } from '../../domain/objects/commit-message.js';
+import { encode } from '../../domain/objects/encoding.js';
 import { FILE_MODE } from '../../domain/objects/file-mode.js';
-import type { AuthorIdentity, FilePath, ObjectId } from '../../domain/objects/index.js';
+import {
+  type AuthorIdentity,
+  type FilePath,
+  invalidTreeEntry,
+  type ObjectId,
+  type TreeEntry,
+} from '../../domain/objects/index.js';
 import { FilePath as FilePathFactory } from '../../domain/objects/object-id.js';
+import {
+  advanceCursor,
+  cursorMode,
+  cursorName,
+  cursorNameEquals,
+  cursorOid,
+  openTreeCursor,
+} from '../../domain/objects/tree-cursor.js';
 import { validateWorkingTreePath } from '../../domain/working-tree-path.js';
 import type { Context } from '../../ports/context.js';
 import { diffTrees } from '../primitives/diff-trees.js';
 import { joinPath } from '../primitives/internal/join-working-tree-path.js';
-import { findTreeEntry } from '../primitives/internal/resolve-tree-path.js';
 import { readBlob } from '../primitives/read-blob.js';
 import { readIndex } from '../primitives/read-index.js';
+import { readRawObject } from '../primitives/read-object.js';
 import { resolveCommitIsh } from './internal/commit-ish.js';
 import { readCommitData } from './internal/history-rewrite.js';
 import { assertOperationalRepository, requireWorkTree } from './internal/repo-state.js';
@@ -97,13 +112,25 @@ export interface BlameResult {
   readonly lines: ReadonlyArray<BlameLine>;
 }
 
-/** A suspect (commit, path) with its blob and the lines still blamed on it. */
+/**
+ * A suspect (commit, path) with its blob and the lines still blamed on it.
+ * `lines` is the blob split once and carried forward — a TREESAME hop reuses
+ * the same array, and a changed hop reuses the diff's own split rather than
+ * re-splitting. `oidChain` is `[rootTree, subtree…, blob]` for `path` in
+ * `commit`, letting an ancestor's resolution stop at the first level whose
+ * oid matches (git's content-addressing: an equal oid means byte-identical
+ * content below it). `commitData` is this suspect's own commit, already read
+ * by whoever discovered it — never re-read when the suspect is processed.
+ */
 interface Suspect {
   readonly commit: ObjectId;
   readonly path: FilePath;
   readonly blob: Uint8Array;
   readonly blobId: ObjectId;
   readonly entries: ReadonlyArray<BlameEntry>;
+  readonly lines: ReadonlyArray<Uint8Array>;
+  readonly oidChain: ReadonlyArray<ObjectId>;
+  readonly commitData: CommitData;
 }
 
 interface Scoreboard {
@@ -148,6 +175,115 @@ export const blame = async (
   return { path: filePath, lines: applyRange(lines, opts.range) };
 };
 
+/** `path` split into its `/`-separated segments, for the tree descent below. */
+const pathSegments = (path: FilePath): ReadonlyArray<string> => path.split('/');
+
+/** DIRECTORY and GITLINK leaves are not blameable — the same filter `blobTreeEntry` used to apply. */
+const isBlameableEntry = (entry: TreeEntry): boolean =>
+  entry.mode !== FILE_MODE.DIRECTORY && entry.mode !== FILE_MODE.GITLINK;
+
+/**
+ * Read one raw tree object and scan its entries for `name` — the byte-level,
+ * refusal-preserving descent primitive Part 10 built for `findTreeEntry`
+ * (`resolve-tree-path.ts`), reimplemented here (rather than shared) so the
+ * two parts stay independently reviewable. Preserves both of its
+ * faithfulness constraints: a per-directory duplicate-name refusal
+ * byte-identical to `parseTreeContent`'s, and eager mode validation on every
+ * visited sibling (a malformed mode throws immediately, not lazily).
+ */
+const descendOneTreeLevel = async (
+  ctx: Context,
+  treeId: ObjectId,
+  name: string,
+): Promise<TreeEntry | undefined> => {
+  const raw = await readRawObject(ctx, treeId);
+  if (raw.type !== 'tree') return undefined;
+  return scanTreeLevelFor(ctx, raw.content, name);
+};
+
+const scanTreeLevelFor = (
+  ctx: Context,
+  content: Uint8Array,
+  name: string,
+): TreeEntry | undefined => {
+  const cursor = openTreeCursor(content, ctx.hashConfig);
+  const target = encode(name);
+  const seenNames = new Set<string>();
+  let matched: TreeEntry | undefined;
+  while (!cursor.done) {
+    const mode = cursorMode(cursor);
+    const entryName = cursorName(cursor);
+    if (seenNames.has(entryName)) {
+      throw invalidTreeEntry(cursor.offset, `duplicate entry name: ${entryName}`);
+    }
+    seenNames.add(entryName);
+    if (cursorNameEquals(cursor, target))
+      matched = { mode, name: entryName, id: cursorOid(cursor) };
+    advanceCursor(cursor);
+  }
+  return matched;
+};
+
+interface ChainDescent {
+  readonly entry: TreeEntry;
+  readonly oidChain: ReadonlyArray<ObjectId>;
+}
+
+/**
+ * Full descent from `rootTreeId` to `segments`' entry, building the per-level
+ * oid chain as it goes — used when there is no child chain to compare
+ * against (the initial seed, and a renamed source path).
+ */
+const descendTreeChain = async (
+  ctx: Context,
+  rootTreeId: ObjectId,
+  segments: ReadonlyArray<string>,
+): Promise<ChainDescent | undefined> => {
+  const chain: ObjectId[] = [rootTreeId];
+  let currentId = rootTreeId;
+  for (let i = 0; i < segments.length - 1; i += 1) {
+    const dirEntry = await descendOneTreeLevel(ctx, currentId, segments[i] as string);
+    if (dirEntry === undefined) return undefined;
+    chain.push(dirEntry.id);
+    currentId = dirEntry.id;
+  }
+  const leaf = await descendOneTreeLevel(ctx, currentId, segments[segments.length - 1] as string);
+  if (leaf === undefined) return undefined;
+  chain.push(leaf.id);
+  return { entry: leaf, oidChain: chain };
+};
+
+/**
+ * The per-level oid short-circuit: descend `segments` from `rootTreeId`, but
+ * bail the instant a visited level's oid equals the same position in
+ * `childChain`. Git's content-addressing means that level, and everything
+ * below it, is byte-identical to the child's, so the path is TREESAME with
+ * no further tree reads — a match at position 0 (the root itself) needs no
+ * read at all.
+ */
+const descendMatchingChain = async (
+  ctx: Context,
+  rootTreeId: ObjectId,
+  segments: ReadonlyArray<string>,
+  childChain: ReadonlyArray<ObjectId>,
+): Promise<'treesame' | ChainDescent | undefined> => {
+  if (rootTreeId === childChain[0]) return 'treesame';
+  const chain: ObjectId[] = [rootTreeId];
+  let currentId = rootTreeId;
+  for (let i = 0; i < segments.length - 1; i += 1) {
+    const dirEntry = await descendOneTreeLevel(ctx, currentId, segments[i] as string);
+    if (dirEntry === undefined) return undefined;
+    chain.push(dirEntry.id);
+    if (dirEntry.id === childChain[chain.length - 1]) return 'treesame';
+    currentId = dirEntry.id;
+  }
+  const leaf = await descendOneTreeLevel(ctx, currentId, segments[segments.length - 1] as string);
+  if (leaf === undefined) return undefined;
+  chain.push(leaf.id);
+  if (leaf.id === childChain[chain.length - 1]) return 'treesame';
+  return { entry: leaf, oidChain: chain };
+};
+
 /**
  * Seed the working-tree pseudo-commit (git's bare `git blame <file>`). Resolves
  * HEAD first (an unborn HEAD refuses here, as git does), reads the working file,
@@ -167,10 +303,21 @@ const seedWorkingTree = async (sb: Scoreboard, workDir: string, path: FilePath):
   // Stryker disable next-line ConditionalExpression: equivalent — count===0 only for an empty working file; without the guard the zero-count entry flows through splitAgainstParent/finalize and yields no lines, the same empty result (mirrors the committed-rev seed guard below)
   if (count === 0) return;
   const whole: ReadonlyArray<BlameEntry> = [{ finalStart: 0, count, sourceStart: 0 }];
-  const headEntry = await blobEntryAtPath(sb.ctx, data.tree, path);
-  if (headEntry !== undefined) {
-    const { passed, kept } = splitAgainstParent(whole, diffLines(headEntry.content, workingBlob));
-    schedule(sb, head, path, data.committer.timestamp, headEntry.content, headEntry.id, passed);
+  const resolved = await descendTreeChain(sb.ctx, data.tree, pathSegments(path));
+  if (resolved !== undefined && isBlameableEntry(resolved.entry)) {
+    const headContent = (await readBlob(sb.ctx, resolved.entry.id)).content;
+    const diff = diffLines(headContent, workingBlob);
+    const { passed, kept } = splitAgainstParent(whole, diff);
+    schedule(sb, {
+      commit: head,
+      path,
+      blob: headContent,
+      blobId: resolved.entry.id,
+      entries: passed,
+      lines: diff.oursLines,
+      oidChain: resolved.oidChain,
+      commitData: data,
+    });
     finalizeUncommitted(sb, path, workingBlob, kept, { commit: head, path });
     return;
   }
@@ -236,14 +383,22 @@ const seed = async (
   rev: string,
 ): Promise<void> => {
   const data = await readCommitData(sb.ctx, commit);
-  const entry = await blobEntryAtPath(sb.ctx, data.tree, path);
-  if (entry === undefined) throw pathNotInTree(rev, path);
-  const count = splitLines(entry.content).length;
-  // Stryker disable next-line ConditionalExpression: equivalent — count===0 only for an empty blob; without the guard the zero-count entry is scheduled and finalizes no lines, the same empty result
-  if (count === 0) return;
-  schedule(sb, commit, path, data.committer.timestamp, entry.content, entry.id, [
-    { finalStart: 0, count, sourceStart: 0 },
-  ]);
+  const resolved = await descendTreeChain(sb.ctx, data.tree, pathSegments(path));
+  if (resolved === undefined || !isBlameableEntry(resolved.entry)) throw pathNotInTree(rev, path);
+  const blob = (await readBlob(sb.ctx, resolved.entry.id)).content;
+  const lines = splitLines(blob);
+  // Stryker disable next-line ConditionalExpression: equivalent — lines.length===0 only for an empty blob; without the guard the zero-count entry is scheduled and finalizes no lines, the same empty result
+  if (lines.length === 0) return;
+  schedule(sb, {
+    commit,
+    path,
+    blob,
+    blobId: resolved.entry.id,
+    entries: [{ finalStart: 0, count: lines.length, sourceStart: 0 }],
+    lines,
+    oidChain: resolved.oidChain,
+    commitData: data,
+  });
 };
 
 const walk = async (sb: Scoreboard): Promise<void> => {
@@ -254,19 +409,17 @@ const walk = async (sb: Scoreboard): Promise<void> => {
 };
 
 const processSuspect = async (sb: Scoreboard, suspect: Suspect): Promise<void> => {
-  const data = await readCommitData(sb.ctx, suspect.commit);
-  const childLines = splitLines(suspect.blob);
   let remaining = suspect.entries;
   let previous: BlameLine['previous'];
-  for (const parent of data.parents) {
-    const resolved = await resolveInParent(sb.ctx, parent, data.tree, suspect.path, suspect.blobId);
+  for (const parent of suspect.commitData.parents) {
+    const resolved = await resolveInParent(sb.ctx, parent, suspect.commitData.tree, suspect);
     if (resolved === undefined) continue;
     previous ??= { commit: parent, path: resolved.sourcePath };
     remaining = applyParentResolution(sb, suspect, parent, resolved, remaining);
     // Stryker disable next-line ConditionalExpression: equivalent — dropping the break only descends more ancestors with an empty remaining; splitAgainstParent([], anyDiff) and schedule(…, []) are no-ops on an empty entry list, so the scoreboard ends up byte-identical either way, timing-only
     if (remaining.length === 0) break;
   }
-  finalize(sb, suspect, data, childLines, remaining, previous);
+  finalize(sb, suspect, remaining, previous);
 };
 
 /** Apply one resolved parent to the still-open lines: pass-through on TREESAME, diff otherwise. */
@@ -278,30 +431,40 @@ const applyParentResolution = (
   remaining: ReadonlyArray<BlameEntry>,
 ): ReadonlyArray<BlameEntry> => {
   if (resolved.kind === 'treesame') {
-    schedule(
-      sb,
-      parent,
-      resolved.sourcePath,
-      resolved.date,
-      suspect.blob,
-      suspect.blobId,
-      remaining,
-    );
+    schedule(sb, {
+      commit: parent,
+      path: resolved.sourcePath,
+      blob: suspect.blob,
+      blobId: suspect.blobId,
+      entries: remaining,
+      lines: suspect.lines,
+      oidChain: suspect.oidChain,
+      commitData: resolved.commitData,
+    });
     return [];
   }
-  const { passed, kept } = splitAgainstParent(remaining, diffLines(resolved.blob, suspect.blob));
-  schedule(sb, parent, resolved.sourcePath, resolved.date, resolved.blob, resolved.blobId, passed);
+  const diff = diffLines(resolved.blob, suspect.blob);
+  const { passed, kept } = splitAgainstParent(remaining, diff);
+  schedule(sb, {
+    commit: parent,
+    path: resolved.sourcePath,
+    blob: resolved.blob,
+    blobId: resolved.blobId,
+    entries: passed,
+    lines: diff.oursLines,
+    oidChain: resolved.oidChain,
+    commitData: resolved.commitData,
+  });
   return kept;
 };
 
 const finalize = (
   sb: Scoreboard,
   suspect: Suspect,
-  data: CommitData,
-  childLines: ReadonlyArray<Uint8Array>,
   entries: ReadonlyArray<BlameEntry>,
   previous: BlameLine['previous'],
 ): void => {
+  const data = suspect.commitData;
   const boundary = data.parents.length === 0;
   const summary = subjectLine(data.message);
   for (const entry of entries) {
@@ -313,7 +476,7 @@ const finalize = (
         committer: data.committer,
         summary,
         boundary,
-        ...baseLine(entry, offset, childLines, suspect.path, previous),
+        ...baseLine(entry, offset, suspect.lines, suspect.path, previous),
       });
     }
   }
@@ -339,42 +502,70 @@ const offsets = (count: number): ReadonlyArray<number> =>
   Array.from({ length: count }, (_, index) => index);
 
 type ResolvedParent =
-  | { readonly kind: 'treesame'; readonly sourcePath: FilePath; readonly date: number }
+  | { readonly kind: 'treesame'; readonly sourcePath: FilePath; readonly commitData: CommitData }
   | {
       readonly kind: 'changed';
       readonly blob: Uint8Array;
       readonly blobId: ObjectId;
       readonly sourcePath: FilePath;
-      readonly date: number;
+      readonly oidChain: ReadonlyArray<ObjectId>;
+      readonly commitData: CommitData;
     };
 
 /**
- * Resolve the suspect's path in one parent. The tree-entry oid is compared to the
- * suspect's blob oid BEFORE any blob is read: an equal oid means the parent's blob
- * is byte-identical (git's content-addressing), so the diff would be a no-op — that
- * TREESAME case skips `readBlob` and the diff entirely (`kind: 'treesame'`). A
- * changed or renamed path reads the parent blob and returns it (`kind: 'changed'`).
+ * Resolve the suspect's path in one parent. The per-level oid chain is
+ * compared to the suspect's BEFORE any blob is read: a match at any level
+ * means the parent's content from there down is byte-identical to the
+ * child's (git's content-addressing), so the diff would be a no-op — that
+ * TREESAME case skips every remaining tree read and the diff entirely
+ * (`kind: 'treesame'`). A changed or renamed path reads the parent blob and
+ * returns it (`kind: 'changed'`), carrying its own oid chain forward for the
+ * next generation.
  */
 const resolveInParent = async (
   ctx: Context,
   parent: ObjectId,
   childTree: ObjectId,
-  path: FilePath,
-  suspectBlobId: ObjectId,
+  suspect: Suspect,
 ): Promise<ResolvedParent | undefined> => {
-  const data = await readCommitData(ctx, parent);
-  const date = data.committer.timestamp;
-  const entry = await blobTreeEntry(ctx, data.tree, path);
-  if (entry !== undefined) {
-    // Stryker disable next-line ConditionalExpression: equivalent — forcing this false takes the 'changed' arm on the parent blob, byte-identical (equal oid ⇒ equal content), which diffs all-common so passed/kept and the scheduled suspect match the skip byte-for-byte; only the avoided read differs, timing-only
-    if (entry.id === suspectBlobId) return { kind: 'treesame', sourcePath: path, date };
-    const blob = (await readBlob(ctx, entry.id)).content;
-    return { kind: 'changed', blob, blobId: entry.id, sourcePath: path, date };
+  const commitData = await readCommitData(ctx, parent);
+  const resolution = await descendMatchingChain(
+    ctx,
+    commitData.tree,
+    pathSegments(suspect.path),
+    suspect.oidChain,
+  );
+  if (resolution === 'treesame') {
+    return { kind: 'treesame', sourcePath: suspect.path, commitData };
   }
-  const renamed = await renamedSource(ctx, data.tree, childTree, path);
+  if (resolution !== undefined && isBlameableEntry(resolution.entry)) {
+    const blob = (await readBlob(ctx, resolution.entry.id)).content;
+    return {
+      kind: 'changed',
+      blob,
+      blobId: resolution.entry.id,
+      sourcePath: suspect.path,
+      oidChain: resolution.oidChain,
+      commitData,
+    };
+  }
+  const renamed = await renamedSource(ctx, commitData.tree, childTree, suspect.path);
   if (renamed === undefined) return undefined;
+  const renamedChain = await descendTreeChain(
+    ctx,
+    commitData.tree,
+    pathSegments(renamed.sourcePath),
+  );
+  if (renamedChain === undefined) return undefined;
   const blob = (await readBlob(ctx, renamed.blobId)).content;
-  return { kind: 'changed', blob, blobId: renamed.blobId, sourcePath: renamed.sourcePath, date };
+  return {
+    kind: 'changed',
+    blob,
+    blobId: renamed.blobId,
+    sourcePath: renamed.sourcePath,
+    oidChain: renamedChain.oidChain,
+    commitData,
+  };
 };
 
 /**
@@ -401,39 +592,12 @@ const renamedSource = async (
 };
 
 /** Queue a suspect for the lines now blamed on it (newest commit date pops first). */
-const schedule = (
-  sb: Scoreboard,
-  commit: ObjectId,
-  path: FilePath,
-  date: number,
-  blob: Uint8Array,
-  blobId: ObjectId,
-  entries: ReadonlyArray<BlameEntry>,
-): void => {
+const schedule = (sb: Scoreboard, suspect: Suspect): void => {
   // Stryker disable next-line ConditionalExpression: equivalent — an empty entry list would enqueue a suspect that finalizes no lines; the guard only avoids needlessly walking ancestors, so output is identical
-  if (entries.length === 0) return;
-  sb.queue.push({ oid: commit, date, value: { commit, path, blob, blobId, entries } });
-};
-
-/** Descend to `path`'s tree entry, rejecting a non-blob leaf (directory/gitlink) as absent. */
-const blobTreeEntry = async (
-  ctx: Context,
-  tree: ObjectId,
-  path: FilePath,
-): ReturnType<typeof findTreeEntry> => {
-  const entry = await findTreeEntry(ctx, tree, path);
-  if (entry === undefined) return undefined;
-  if (entry.mode === FILE_MODE.DIRECTORY || entry.mode === FILE_MODE.GITLINK) return undefined;
-  return entry;
-};
-
-/** Descend to `path`'s blob, returning its bytes AND oid together (seed sites need both). */
-const blobEntryAtPath = async (
-  ctx: Context,
-  tree: ObjectId,
-  path: FilePath,
-): Promise<{ readonly id: ObjectId; readonly content: Uint8Array } | undefined> => {
-  const entry = await blobTreeEntry(ctx, tree, path);
-  if (entry === undefined) return undefined;
-  return { id: entry.id, content: (await readBlob(ctx, entry.id)).content };
+  if (suspect.entries.length === 0) return;
+  sb.queue.push({
+    oid: suspect.commit,
+    date: suspect.commitData.committer.timestamp,
+    value: suspect,
+  });
 };
