@@ -1,8 +1,13 @@
 # ADR-389: `streamBlob` verifies the object hash incrementally, default-on
 
+> Superseded by [ADR-718](718-read-path-hash-verification-is-opt-in.md) for the
+> default-on posture and its consistency-with-`readObject` premise. The incremental
+> end-of-stream verification mechanism and the `{ verifyHash }` option surface are
+> carried forward and remain in force when a caller opts in.
+
 ## Status
 
-Accepted
+- **Status:** superseded by ADR-718 (default posture; the incremental mechanism stands)
 
 - **Date:** 2026-06-20
 - **Design:** [design/blob-streaming.md](../design/blob-streaming.md)
