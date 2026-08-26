@@ -412,6 +412,16 @@ export class NodeFileSystem implements FileSystem {
   private readonly rootsArePreResolved: boolean;
 
   /**
+   * Bound on concurrent child removals in `removeTree`'s `mapConcurrent`
+   * fan-out. `mapConcurrent` lives here (the adapter cannot import from
+   * `application/`, where the ioBound concurrency policy lives), so a
+   * caller that HAS resolved that policy passes it in; the default
+   * (`REMOVE_TREE_CONCURRENCY`) preserves this adapter's historical
+   * behaviour for every caller that does not.
+   */
+  private readonly removeTreeConcurrency: number;
+
+  /**
    * Memoised realpath of an *existing* parent directory, keyed by the raw
    * (pre-realpath) parent path. Every write surface shares this one cache
    * via `realpathForCreation`: a clone/checkout writing N files into the
@@ -466,6 +476,7 @@ export class NodeFileSystem implements FileSystem {
     pathPolicy: PathPolicy = nativePolicy,
     fsOps: FsOperations = realFsOps,
     rootsArePreResolved = false,
+    removeTreeConcurrency: number = REMOVE_TREE_CONCURRENCY,
   ) {
     const roots = typeof rootDir === 'string' ? [rootDir] : rootDir;
     const [primary] = roots;
@@ -480,6 +491,7 @@ export class NodeFileSystem implements FileSystem {
     this.pathPolicy = pathPolicy;
     this.fsOps = fsOps;
     this.rootsArePreResolved = rootsArePreResolved;
+    this.removeTreeConcurrency = removeTreeConcurrency;
   }
 
   /**
@@ -860,7 +872,7 @@ export class NodeFileSystem implements FileSystem {
       () => this.fsOps.readdir(real, { withFileTypes: true }),
       originalPath,
     );
-    await mapConcurrent(entries, REMOVE_TREE_CONCURRENCY, (entry) =>
+    await mapConcurrent(entries, this.removeTreeConcurrency, (entry) =>
       this.removeTree(this.pathPolicy.join(real, entry.name), originalPath),
     );
     await runFs(() => this.fsOps.rmdir(real), originalPath);

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { add } from '../../../../src/application/commands/add.js';
 import { commit } from '../../../../src/application/commands/commit.js';
@@ -9,6 +9,7 @@ import {
   grep,
 } from '../../../../src/application/commands/grep.js';
 import { init } from '../../../../src/application/commands/init.js';
+import * as readBlobMod from '../../../../src/application/primitives/read-blob.js';
 import { MAX_LINE_BYTES } from '../../../../src/domain/diff/index.js';
 import { TsgitError } from '../../../../src/domain/error.js';
 import {
@@ -1194,6 +1195,46 @@ describe('Given a repository with no work tree', () => {
 
       // Assert
       expect(result.paths.map((p) => p.path as string)).toEqual(['a.txt']);
+    });
+  });
+});
+
+describe('Given more index blobs than the ioBound limit', () => {
+  describe('When grep scans them', () => {
+    it('Then concurrent blob loads peak at exactly the bound', async () => {
+      // Arrange — an explicit ioBound distinct from cpuBound so a
+      // bucket-swap regression (deriving the pool from the wrong bucket)
+      // fails loudly. Every path matches, so every candidate reaches its
+      // own `readBlob` call inside the boundedMapFor fan-out.
+      const ioBound = 3;
+      const width = ioBound + 4;
+      const base = await seedRepo();
+      for (let i = 0; i < width; i++) {
+        await writeAndStage(base, `f${i}.txt`, 'needle\n');
+      }
+      const ctx: Context = { ...base, concurrency: { cpuBound: 1, ioBound } };
+      let inFlight = 0;
+      let maxInFlight = 0;
+      const realReadBlob = readBlobMod.readBlob;
+      const spy = vi.spyOn(readBlobMod, 'readBlob').mockImplementation(async (spyCtx, id, opts) => {
+        inFlight += 1;
+        if (inFlight > maxInFlight) maxInFlight = inFlight;
+        await Promise.resolve();
+        inFlight -= 1;
+        return realReadBlob(spyCtx, id, opts);
+      });
+      const sut = grep;
+
+      // Act
+      try {
+        const result = await sut(ctx, { patterns: [{ fixed: 'needle' }], target: 'index' });
+
+        // Assert
+        expect(result.paths).toHaveLength(width);
+        expect(maxInFlight).toBe(ioBound);
+      } finally {
+        spy.mockRestore();
+      }
     });
   });
 });

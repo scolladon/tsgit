@@ -29,9 +29,6 @@ import {
 } from '../path-layout.js';
 import { isShallowRepository } from './shallow-set.js';
 
-/** `RepositoryConfig.parallelism`'s own default — reused as the prefetch bound. */
-export const DEFAULT_PREFETCH_CONCURRENCY = 8;
-
 /** Parents/root-tree/generation/date for one commit, sourced from the commit-graph. */
 export interface CommitHeader {
   readonly rootTree: ObjectId;

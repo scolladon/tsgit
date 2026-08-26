@@ -45,14 +45,14 @@ import { advanceCursor, cursorOid, openTreeCursor } from '../../../domain/object
 import type { Context } from '../../../ports/context.js';
 import { readRawObject } from '../read-object.js';
 import type { RawObject } from '../types.js';
-import { MAX_CONCURRENT_OBJECT_LOADS } from './bounded-map.js';
+import { limitFor } from './concurrency.js';
 import type { ConcurrencyLimiter } from './concurrency-limiter.js';
 
 export type SubtreePrefetch = ReadonlyMap<ObjectId, Promise<RawObject>>;
 
-// A small multiple of the shared concurrency cap: wide enough that the
-// limiter itself, not this window, is normally the binding constraint.
-const PRESCAN_WINDOW = MAX_CONCURRENT_OBJECT_LOADS * 2;
+// A small multiple of the ioBound policy: wide enough that the limiter
+// itself, not this window, is normally the binding constraint.
+const PRESCAN_WINDOW_MULTIPLE = 2;
 
 export function prefetchSubtreeChildren(
   ctx: Context,
@@ -61,7 +61,7 @@ export function prefetchSubtreeChildren(
   remainingEntries?: number,
 ): SubtreePrefetch {
   const prefetch = new Map<ObjectId, Promise<RawObject>>();
-  const window = prescanWindow(remainingEntries);
+  const window = prescanWindow(ctx, remainingEntries);
   try {
     scanForPrefetch(ctx, content, limiter, prefetch, window);
   } catch {
@@ -71,10 +71,9 @@ export function prefetchSubtreeChildren(
   return prefetch;
 }
 
-function prescanWindow(remainingEntries: number | undefined): number {
-  return remainingEntries === undefined
-    ? PRESCAN_WINDOW
-    : Math.min(PRESCAN_WINDOW, remainingEntries);
+function prescanWindow(ctx: Context, remainingEntries: number | undefined): number {
+  const window = limitFor(ctx, 'ioBound') * PRESCAN_WINDOW_MULTIPLE;
+  return remainingEntries === undefined ? window : Math.min(window, remainingEntries);
 }
 
 function scanForPrefetch(

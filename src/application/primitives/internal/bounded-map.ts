@@ -1,11 +1,10 @@
-// Shared cap for concurrent object loads (was duplicated in grep, materialise-patch-files,
-// detect-similarity-renames, the raw subtree walkers, and the subtree prefetch).
-export const MAX_CONCURRENT_OBJECT_LOADS = 32;
-
 /**
  * Run `worker` over `items` with at most `limit` in flight, returning results in
  * INPUT ORDER. Rejection propagates (Promise.all semantics); in-flight tasks are not
  * cancelled. `items` must be a concrete array (no `undefined` holes).
+ *
+ * `limit` always comes from the concurrency policy (`internal/concurrency.ts`'s
+ * `boundedMapFor`/`limitFor`) — no call site keeps a bare numeric bound of its own.
  */
 export async function boundedMap<T, R>(
   items: ReadonlyArray<T>,

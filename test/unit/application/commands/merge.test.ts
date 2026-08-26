@@ -25,6 +25,7 @@ import { readReflog } from '../../../../src/application/primitives/reflog-store.
 import { resolveRef } from '../../../../src/application/primitives/resolve-ref.js';
 import * as streamBlobMod from '../../../../src/application/primitives/stream-blob.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
+import * as writeTreeMod from '../../../../src/application/primitives/write-tree.js';
 import { checkoutOverwriteDirty } from '../../../../src/domain/commands/error.js';
 import { DEFAULT_MAX_TREE_DEPTH } from '../../../../src/domain/diff/flat-tree.js';
 import { TsgitError } from '../../../../src/domain/error.js';
@@ -2200,6 +2201,52 @@ describe('writeNestedTree (direct)', () => {
         const data = (caught as { data?: { code?: string; depth?: number } })?.data;
         expect(data?.code).toBe('TREE_DEPTH_EXCEEDED');
         expect(data?.depth).toBe(FIXTURE_DEPTH);
+      });
+    });
+  });
+
+  describe('Given more top-level leaf directories than the ioBound limit', () => {
+    describe('When writeNestedTree runs', () => {
+      it('Then subtree writes at the same trie level peak at exactly the bound', async () => {
+        // Arrange — an explicit ioBound distinct from cpuBound so a
+        // bucket-swap regression fails loudly. Each leaf sits in its own
+        // top-level directory, so every one becomes a sibling frame at the
+        // trie's deepest level, all writeTree calls fanning out together.
+        const ioBound = 3;
+        const base = await buildSeededContext();
+        const ctx: typeof base = { ...base, concurrency: { cpuBound: 1, ioBound } };
+        const width = ioBound + 4;
+        const leaves = await Promise.all(
+          Array.from({ length: width }, async (_unused, i) => ({
+            path: `d${String(i).padStart(3, '0')}/f.txt` as FilePath,
+            id: await writeBlob(ctx, `content-${i}`),
+            mode: FILE_MODE.REGULAR,
+          })),
+        );
+        let inFlight = 0;
+        let maxInFlight = 0;
+        const realWriteTree = writeTreeMod.writeTree;
+        const spy = vi
+          .spyOn(writeTreeMod, 'writeTree')
+          .mockImplementation(async (spyCtx, entries) => {
+            inFlight += 1;
+            if (inFlight > maxInFlight) maxInFlight = inFlight;
+            await Promise.resolve();
+            inFlight -= 1;
+            return realWriteTree(spyCtx, entries);
+          });
+
+        // Act
+        try {
+          const result = await writeNestedTree(ctx, leaves);
+
+          // Assert
+          const tree = await readObject(ctx, result);
+          expect(tree.type).toBe('tree');
+          expect(maxInFlight).toBe(ioBound);
+        } finally {
+          spy.mockRestore();
+        }
       });
     });
   });

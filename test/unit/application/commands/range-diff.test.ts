@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { add } from '../../../../src/application/commands/add.js';
 import { branchCreate } from '../../../../src/application/commands/branch.js';
@@ -9,6 +9,7 @@ import { mergeRun } from '../../../../src/application/commands/merge.js';
 import { mv } from '../../../../src/application/commands/mv.js';
 import { rangeDiff } from '../../../../src/application/commands/range-diff.js';
 import { createCommit } from '../../../../src/application/primitives/create-commit.js';
+import * as diffTreesMod from '../../../../src/application/primitives/diff-trees.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
 import type { LineDiff } from '../../../../src/domain/diff/index.js';
 import { TsgitError } from '../../../../src/domain/error.js';
@@ -308,6 +309,66 @@ describe('rangeDiff', () => {
       // without it the patch degrades to separate `(deleted)`/`(new)` headers.
       expect(result.map((e) => e.status)).toEqual(['changed']);
       expect(patchLinesInclude(result[0]?.diffOfDiffs, 'f.txt => g.txt')).toBe(true);
+    });
+  });
+
+  describe('Given a series with more commits than the ioBound limit, When rangeDiff runs', () => {
+    it('Then commit hydration peaks at exactly the bound', async () => {
+      // Arrange — an explicit ioBound distinct from cpuBound so a bucket-swap
+      // regression (deriving the pool from the wrong bucket) fails loudly.
+      // Each commit touches its own file, so every commit's `hydrate` call
+      // reaches `diffTrees` and none is filtered out as a no-op.
+      const ioBound = 3;
+      const base = createMemoryContext();
+      await init(base);
+      const clock = makeClock();
+      const seed = await commitFile(base, clock, 'seed.txt', 'seed', 'seed');
+      const width = ioBound + 4;
+      let tip = seed;
+      for (let i = 0; i < width; i++) {
+        tip = await commitFile(base, clock, `f${i}.txt`, `content-${i}`, `commit ${i}`);
+      }
+      const ctx: Context = { ...base, concurrency: { cpuBound: 1, ioBound } };
+      let inFlight = 0;
+      let maxInFlight = 0;
+      let openGate!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        openGate = resolve;
+      });
+      const realDiffTrees = diffTreesMod.diffTrees;
+      const spy = vi
+        .spyOn(diffTreesMod, 'diffTrees')
+        .mockImplementation(async (spyCtx, a, b, opts) => {
+          inFlight += 1;
+          if (inFlight > maxInFlight) maxInFlight = inFlight;
+          await gate;
+          inFlight -= 1;
+          return realDiffTrees(spyCtx, a, b, opts);
+        });
+
+      // Act
+      try {
+        const consumer = rangeDiff(ctx, {
+          old: { base: seed, tip },
+          new: { base: seed, tip: seed },
+        });
+        // Real repository plumbing (resolveCommit, walkCommitsByDate) precedes
+        // hydration and spans a variable number of macrotask hops of its own
+        // before any gated call is even reached, so poll until the bound is
+        // hit rather than assuming a fixed number of ticks.
+        for (let attempt = 0; attempt < 200 && maxInFlight < ioBound; attempt++) {
+          await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+        const peakWhileBlocked = maxInFlight;
+        openGate();
+        const result = await consumer;
+
+        // Assert
+        expect(result).toHaveLength(width);
+        expect(peakWhileBlocked).toBe(ioBound);
+      } finally {
+        spy.mockRestore();
+      }
     });
   });
 });

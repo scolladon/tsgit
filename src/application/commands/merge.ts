@@ -35,7 +35,7 @@ import { readConfig } from '../primitives/config-read.js';
 import { createCommit } from '../primitives/create-commit.js';
 import { changedPaths, findWouldOverwrite } from '../primitives/find-would-overwrite.js';
 import { flattenTree } from '../primitives/flatten-tree.js';
-import { boundedMap } from '../primitives/internal/bounded-map.js';
+import { boundedMapFor } from '../primitives/internal/concurrency.js';
 import { resolveMaxTreeDepth } from '../primitives/internal/resolve-max-tree-depth.js';
 import {
   createLeadingPathScanner,
@@ -496,7 +496,7 @@ const leavesToTreeEntries = (files: ReadonlyArray<LeafRecord>): TreeEntry[] =>
  * `Promise.all` had over one parent's direct children, generalised to a
  * whole level (a strictly wider, still-correct parallelism: entries from
  * unrelated parents at the same depth now overlap too). Swapping this
- * `Promise.all` for a sequential `for` loop would still produce the exact
+ * bounded fan-out for a sequential `for` loop would still produce the exact
  * same final tree oid — the write order across independent branches never
  * affects any individual branch's content-addressed id — so unit-level
  * output assertions cannot distinguish parallel from serial without timing
@@ -508,12 +508,10 @@ const writeLeafTrie = async (ctx: Context, trie: LeafTrie): Promise<ObjectId> =>
   const rootTreeEntries = leavesToTreeEntries(trie.rootFiles);
   const treeEntries = trie.frames.map((frame) => leavesToTreeEntries(frame.files));
   for (let level = trie.levels.length - 1; level >= 0; level -= 1) {
-    const written = await Promise.all(
-      trie.levels[level]!.map(async (index) => ({
-        index,
-        id: await writeTree(ctx, treeEntries[index]!),
-      })),
-    );
+    const written = await boundedMapFor(ctx, 'ioBound', trie.levels[level]!, async (index) => ({
+      index,
+      id: await writeTree(ctx, treeEntries[index]!),
+    }));
     for (const { index, id } of written) {
       const frame = trie.frames[index]!;
       const parentEntries =
@@ -613,11 +611,6 @@ export const rejectUnsupportedConflicts = (conflicts: ReadonlyArray<MergeConflic
   }
 };
 
-// Hard cap on concurrent path writes during a conflicting merge. Without it
-// large merges (thousands of paths) blow past the default `ulimit -n`
-// (256 on macOS, 1024 on most Linux) and surface as EMFILE.
-const MAX_CONCURRENT_PATH_WRITES = 32;
-
 /** True iff a sparse matcher is active AND rejects the path. */
 const isExcluded = (matcher: SparseMatcher | undefined, path: FilePath): boolean =>
   matcher !== undefined && !matcher(path);
@@ -643,29 +636,26 @@ const writeConflictingWorkingTree = async (
   // one per path.
   const scanner = createLeadingPathScanner(ctx);
   // Bounded parallelism — independent path writes overlap, but the pool
-  // caps in-flight at MAX_CONCURRENT_PATH_WRITES so a 10k-path merge
-  // doesn't exhaust file descriptors.
-  await runBounded(touched, MAX_CONCURRENT_PATH_WRITES, (outcome) =>
-    writeOutcomeToTree(ctx, outcome, matcher, scanner),
-  );
+  // caps in-flight at the ioBound policy so a 10k-path merge doesn't
+  // exhaust file descriptors.
+  await runBounded(ctx, touched, (outcome) => writeOutcomeToTree(ctx, outcome, matcher, scanner));
   // Conflicted paths are materialised even when sparse-excluded — a conflict
   // the user cannot see is unresolvable, so `writeConflictToTree` takes no
   // matcher.
-  await runBounded(conflicts, MAX_CONCURRENT_PATH_WRITES, (conflict) =>
-    writeConflictToTree(ctx, conflict, scanner),
-  );
+  await runBounded(ctx, conflicts, (conflict) => writeConflictToTree(ctx, conflict, scanner));
 };
 
 /**
- * Bounded parallel for-each: run side-effecting `fn` over `items` with at most
- * `limit` in flight. A thin void specialization of `boundedMap` (discards results).
+ * Bounded parallel for-each: run side-effecting `fn` over `items` with at
+ * most the ioBound policy in flight. A thin void specialization of
+ * `boundedMapFor` (discards results).
  */
 const runBounded = async <T>(
+  ctx: Context,
   items: ReadonlyArray<T>,
-  limit: number,
   fn: (item: T) => Promise<void>,
 ): Promise<void> => {
-  await boundedMap(items, limit, fn);
+  await boundedMapFor(ctx, 'ioBound', items, fn);
 };
 
 /**

@@ -19,6 +19,7 @@ import {
 } from '../../domain/range-diff/index.js';
 import type { Context } from '../../ports/context.js';
 import { diffTrees } from '../primitives/diff-trees.js';
+import { boundedMapFor } from '../primitives/internal/concurrency.js';
 import { materialisePatchFiles } from '../primitives/materialise-patch-files.js';
 import { readObject } from '../primitives/read-object.js';
 import { walkCommitsByDate } from '../primitives/walk-commits-by-date.js';
@@ -47,8 +48,6 @@ export interface RangeDiffOptions {
 }
 
 const DEFAULT_CREATION_FACTOR = 60;
-/** Bound on commit hydrations in flight while reading a series. */
-const MAX_CONCURRENT_COMMITS = 16;
 
 const resolveCreationFactor = (value: number | undefined): number => {
   if (value === undefined) return DEFAULT_CREATION_FACTOR;
@@ -83,24 +82,11 @@ const hydrate = async (ctx: Context, commit: Commit): Promise<CommitPatchInput> 
 };
 
 /** Hydrate the series with bounded concurrency, preserving series order. */
-const hydrateSeries = async (
+const hydrateSeries = (
   ctx: Context,
   commits: ReadonlyArray<Commit>,
-): Promise<ReadonlyArray<CommitPatchInput>> => {
-  // Stryker disable next-line ArrayDeclaration: equivalent — the length only pre-sizes; workers assign every index 0..length-1 via the shared cursor, so an unsized array grown by those same assignments ends identical in length and contents.
-  const results = new Array<CommitPatchInput>(commits.length);
-  let cursor = 0;
-  const worker = async (): Promise<void> => {
-    while (cursor < commits.length) {
-      const index = cursor++;
-      results[index] = await hydrate(ctx, commits[index]!);
-    }
-  };
-  // Stryker disable next-line MethodExpression: equivalent — min vs max only resizes the worker pool; the shared cursor hands each index to exactly one worker and surplus workers exit at once, so `results` is identical for any pool size — the bound only caps in-flight I/O, an unobservable resource property.
-  const concurrency = Math.min(MAX_CONCURRENT_COMMITS, commits.length);
-  await Promise.all(Array.from({ length: concurrency }, () => worker()));
-  return results;
-};
+): Promise<ReadonlyArray<CommitPatchInput>> =>
+  boundedMapFor(ctx, 'ioBound', commits, (commit) => hydrate(ctx, commit));
 
 /** Walk `base..tip` (date order), drop merges, reverse to a patch series. */
 const readSeries = async (

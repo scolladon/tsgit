@@ -1,5 +1,6 @@
 import { operationAborted } from '../../../domain/error.js';
 import type { FilePath } from '../../../domain/objects/index.js';
+import { defaultLimitFor } from '../internal/concurrency.js';
 import { assertOrdered } from '../snapshot/path-merge.js';
 
 export interface HashSlotOptions {
@@ -22,7 +23,7 @@ type SlotKeyedRow = { readonly path: FilePath };
  */
 export const hashSlot = <R extends SlotKeyedRow>(slot: string, opts: HashSlotOptions = {}) =>
   async function* (source: AsyncIterable<R>): AsyncIterable<R> {
-    const concurrency = opts.concurrency ?? 4;
+    const concurrency = opts.concurrency ?? defaultLimitFor('cpuBound');
     type Pending = { readonly row: R; readonly task: Promise<unknown> };
     const inflight: Pending[] = [];
 

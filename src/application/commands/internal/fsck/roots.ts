@@ -5,6 +5,7 @@ import type { ObjectId } from '../../../../domain/objects/index.js';
 import { zeroOid } from '../../../../domain/objects/index.js';
 import type { Context } from '../../../../ports/context.js';
 import { enumerateRefs } from '../../../primitives/enumerate-refs.js';
+import { boundedMapFor } from '../../../primitives/internal/concurrency.js';
 import { readIndex } from '../../../primitives/read-index.js';
 import { listReflogs, readReflog } from '../../../primitives/reflog-store.js';
 import { resolveRef } from '../../../primitives/resolve-ref.js';
@@ -103,22 +104,20 @@ async function addRefRoots(
 async function addReflogRoots(ctx: Context, roots: Set<ObjectId>): Promise<void> {
   const reflogNames = await listReflogs(ctx);
   const zero = zeroOid(ctx.hashConfig);
-  await Promise.all(
-    reflogNames.map(async (ref) => {
-      try {
-        const entries = await readReflog(ctx, ref);
-        for (const entry of entries) {
-          // The zero oid is the "no object" sentinel git writes for creation
-          // events (first reflog entry of any ref). It is not a real object
-          // reference and must never be treated as a reachability root.
-          if (entry.oldId !== zero) roots.add(entry.oldId);
-          if (entry.newId !== zero) roots.add(entry.newId);
-        }
-      } catch {
-        // Unreadable reflog — tolerated
+  await boundedMapFor(ctx, 'ioBound', reflogNames, async (ref) => {
+    try {
+      const entries = await readReflog(ctx, ref);
+      for (const entry of entries) {
+        // The zero oid is the "no object" sentinel git writes for creation
+        // events (first reflog entry of any ref). It is not a real object
+        // reference and must never be treated as a reachability root.
+        if (entry.oldId !== zero) roots.add(entry.oldId);
+        if (entry.newId !== zero) roots.add(entry.newId);
       }
-    }),
-  );
+    } catch {
+      // Unreadable reflog — tolerated
+    }
+  });
 }
 
 /**

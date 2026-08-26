@@ -24,6 +24,7 @@ import {
 import type { Context } from '../../ports/context.js';
 import type { FileStat } from '../../ports/file-system.js';
 import { atomicWriteRef } from './atomic-write.js';
+import { boundedMapFor } from './internal/concurrency.js';
 import { errorDataCode } from './internal/error-data-code.js';
 import {
   commonGitDir,
@@ -766,7 +767,7 @@ function createFilesRefStore(ctx: Context): RefStore {
         toPrune.push(entry.name);
       }
     }
-    const entries = await Promise.all(packable.map(buildPackedEntry));
+    const entries = await boundedMapFor(ctx, 'ioBound', packable, buildPackedEntry);
     const content = serializePackedRefs({ entries, peeling: 'fully', sorted: true });
     await ctx.fs.writeUtf8(packedRefsPath(commonGitDir(ctx)), content);
     packedCache = undefined;

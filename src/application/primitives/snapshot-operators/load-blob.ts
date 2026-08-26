@@ -1,5 +1,6 @@
 import { operationAborted } from '../../../domain/error.js';
 import type { FilePath } from '../../../domain/objects/index.js';
+import { defaultLimitFor } from '../internal/concurrency.js';
 import { assertOrdered } from '../snapshot/path-merge.js';
 
 const DEFAULT_MAX_INFLIGHT_BYTES = 64 * 1024 * 1024;
@@ -69,7 +70,7 @@ const drainOldest = async <R>(state: QueueState<R>): Promise<R> => {
  */
 export const loadBlob = <R extends SlotKeyedRow>(slot: string, opts: LoadBlobOptions = {}) =>
   async function* (source: AsyncIterable<R>): AsyncIterable<R> {
-    const concurrency = opts.concurrency ?? 4;
+    const concurrency = opts.concurrency ?? defaultLimitFor('ioBound');
     const maxInflightBytes = opts.maxInflightBytes ?? DEFAULT_MAX_INFLIGHT_BYTES;
     const state: QueueState<R> = { inflight: [], bytes: 0 };
 

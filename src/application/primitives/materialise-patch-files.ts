@@ -9,7 +9,7 @@ import type { CommandRunner } from '../../ports/command-runner.js';
 import type { Context } from '../../ports/context.js';
 import { applyTextconv } from './apply-textconv.js';
 import { readConfig } from './config-read.js';
-import { boundedMap, MAX_CONCURRENT_OBJECT_LOADS } from './internal/bounded-map.js';
+import { boundedMapFor } from './internal/concurrency.js';
 import { type AttributeProvider, buildAttributeProvider } from './internal/read-gitattributes.js';
 import { readBlob } from './read-blob.js';
 import { type BinaryOverridePair, resolveBinaryOverride } from './resolve-binary-override.js';
@@ -353,7 +353,7 @@ export async function materialisePatchFiles(
         }
       : undefined;
 
-  return boundedMap(changes, MAX_CONCURRENT_OBJECT_LOADS, (c) => materialiseOne(ctx, c, config));
+  return boundedMapFor(ctx, 'ioBound', changes, (c) => materialiseOne(ctx, c, config));
 }
 
 export async function materialiseOne(

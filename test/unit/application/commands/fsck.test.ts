@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { type FsckFinding, fsck } from '../../../../src/application/commands/fsck.js';
 import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
@@ -14,6 +14,7 @@ import {
   disposePackRegistry,
   refreshPackRegistry,
 } from '../../../../src/application/primitives/read-object.js';
+import * as reflogStoreMod from '../../../../src/application/primitives/reflog-store.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import {
   decompressFailed,
@@ -769,6 +770,54 @@ describe('Given a commit reachable only via reflog (reset --hard scenario)', () 
       const isDanglingOld = dangling.some((f) => (f as { id: ObjectId }).id === oldCommitId);
       expect(isDanglingOld).toBe(true);
       expect(result.exitCode).toBe(0);
+    });
+  });
+});
+
+describe('Given more reflogs than the ioBound limit', () => {
+  describe('When fsck collects reflog roots', () => {
+    it('Then reflog reads peak at exactly the bound', async () => {
+      // Arrange — an explicit ioBound distinct from cpuBound so a
+      // bucket-swap regression (deriving the pool from the wrong bucket)
+      // fails loudly. Each branch carries its own reflog file, so every
+      // one becomes a sibling `readReflog` call fanning out together.
+      const ioBound = 3;
+      const width = ioBound + 4;
+      const ZERO_OID_STR = '0000000000000000000000000000000000000000';
+      const base = await initBareCtx();
+      const treeId = await writeObject(base, makeTree([]));
+      await base.fs.mkdir(`${base.layout.gitDir}/logs/refs/heads`);
+      for (let i = 0; i < width; i++) {
+        const commitId = await writeObject(base, makeCommit(treeId, [], `c${i}`));
+        await base.fs.writeUtf8(`${base.layout.gitDir}/refs/heads/br${i}`, `${commitId}\n`);
+        const reflogLine = `${ZERO_OID_STR} ${commitId} Ada <ada@example.com> 1700000000 +0000\tcommit (initial): c${i}\n`;
+        await base.fs.writeUtf8(`${base.layout.gitDir}/logs/refs/heads/br${i}`, reflogLine);
+      }
+      await base.fs.writeUtf8(`${base.layout.gitDir}/HEAD`, 'ref: refs/heads/br0\n');
+      const ctx: Context = { ...base, concurrency: { cpuBound: 1, ioBound } };
+      let inFlight = 0;
+      let maxInFlight = 0;
+      const realReadReflog = reflogStoreMod.readReflog;
+      const spy = vi
+        .spyOn(reflogStoreMod, 'readReflog')
+        .mockImplementation(async (spyCtx, name) => {
+          inFlight += 1;
+          if (inFlight > maxInFlight) maxInFlight = inFlight;
+          await Promise.resolve();
+          inFlight -= 1;
+          return realReadReflog(spyCtx, name);
+        });
+
+      // Act
+      try {
+        const result = await fsck(ctx);
+
+        // Assert
+        expect(result.exitCode).toBe(0);
+        expect(maxInFlight).toBe(ioBound);
+      } finally {
+        spy.mockRestore();
+      }
     });
   });
 });
