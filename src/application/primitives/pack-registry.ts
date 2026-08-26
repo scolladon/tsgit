@@ -6,7 +6,6 @@ import { TsgitError, type TsgitErrorData } from '../../domain/error.js';
 import type { ObjectId } from '../../domain/objects/index.js';
 import { invalidPackHeader, invalidPackIndex } from '../../domain/storage/error.js';
 import {
-  entryOffsets,
   lookupPackIndex,
   type MultiPackIndex,
   type PackIndex,
@@ -43,7 +42,7 @@ import {
 import {
   nextOffsetForEntry,
   type PackOffsetTable,
-  resolveSortedOffsets,
+  resolveOffsetTable,
 } from './internal/pack-offset-table.js';
 import { packPositionMap, revIndexPositions } from './internal/pack-positions.js';
 import {
@@ -325,11 +324,15 @@ function loadPack(
   // Pack position -> index position, read straight out of the same `.rev`
   // load `revIndexMemo` already memoises — one `Uint32Array` filled in
   // place, since the body already stores exactly this table. An
-  // out-of-range value falls back to `packPositionMap`, exactly as
-  // `resolveSortedOffsets` falls back for the offset table. Never warns
-  // here: `buildOffsetTable`'s own fallback already warns once for the SAME
-  // `.rev` fault when it runs, and this memo has no independent finding to
-  // report.
+  // out-of-range value falls back to `packPositionMap`, the same posture
+  // `buildOffsetTable`'s successor lookup takes for a corrupt `.rev` value.
+  // Never warns here for a REFUSED artefact: `buildOffsetTable`'s own
+  // `resolveOffsetTable` call already warns once for that fault when it
+  // runs, and this memo has no independent finding to report. An
+  // out-of-range STORED VALUE is different — `buildOffsetTable`'s lazy
+  // successor discovers that lazily, per query, and does not warn at all, so
+  // this memo's own silent fallback here is this pack's only signal a
+  // `fsck` pass, not a log line, is expected to surface it.
   const packPositionsMemo = createPromiseMemo(async (): Promise<Uint32Array> => {
     const index = await indexMemo.get();
     const load = await revIndexMemo.get();
@@ -355,18 +358,18 @@ function loadPack(
     const index = await indexMemo.get();
     const stat = await ctx.fs.stat(packPath);
     const packFileSize = stat.size;
-    const raw = entryOffsets(index);
-    // The memo is handed over UNFORCED: below its object-count threshold
-    // `resolveSortedOffsets` sorts without ever calling it, so a small pack
-    // pays no `.rev` read at all.
-    const sortedOffsets = await resolveSortedOffsets(ctx, name, raw, revIndexMemo.get);
     // The pack file trailer is a single pack-checksum digest (SHA-1: 20 bytes,
     // SHA-256: 32 bytes). The last entry's data ends exactly at trailerStart.
     const trailerStart = packFileSize - ctx.hashConfig.digestLength;
     if (trailerStart < 0) {
       throw invalidPackIndex('pack file too small to contain a trailer');
     }
-    return { sortedOffsets, packFileSize, trailerStart };
+    // A present, loadable `.rev` always wins — resolveOffsetTable answers
+    // with a lazy, `.rev`-backed table and never materialises an O(n) sorted
+    // array for it. `revIndexMemo.get` is passed through rather than
+    // awaited here, so the SAME single-flight `.rev` load this pack's other
+    // consumers (packPositionsMemo) share is reused, not duplicated.
+    return resolveOffsetTable(ctx, name, index, revIndexMemo.get, packFileSize, trailerStart);
   };
   const offsetTable = createPromiseMemo(buildOffsetTable).get;
 

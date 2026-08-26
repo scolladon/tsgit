@@ -59,10 +59,12 @@ export {
 export type { PackIndex } from './pack-index.js';
 export {
   entryOffsets,
+  entryOffsetsF64,
   findByPrefix,
   lookupPackIndex,
   lookupPackIndexPosition,
   objectIdAt,
+  offsetAtPackPosition,
   parsePackIndex,
 } from './pack-index.js';
 export { type SortedEntry, sortPackIndexEntries } from './pack-order.js';

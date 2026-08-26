@@ -4,6 +4,7 @@ import { resolveObject } from '../../../../src/application/primitives/object-res
 import {
   createPackRegistry,
   type PackLookupHit,
+  type PackOffsetTable,
   type PackRegistry,
   type RegisteredPack,
 } from '../../../../src/application/primitives/pack-registry.js';
@@ -23,6 +24,19 @@ import { buildSeededContext, instrumentedContext } from './fixtures.js';
 import { buildSyntheticPack, type EntrySpec, writeSyntheticPack } from './pack-fixture.js';
 
 const ENC = new TextEncoder();
+
+/**
+ * Narrows a resolved offset table to its no-`.rev` fallback arm and returns
+ * the materialised offsets — every describe below that reads `sortedOffsets`
+ * from a REAL table is exercising a pack `writeSyntheticPack` never gave a
+ * `.rev`, so the fallback arm is the only one it can ever observe.
+ */
+function expectSortedOffsets(table: PackOffsetTable): Float64Array {
+  if (table.kind !== 'sorted') {
+    expect.unreachable(`expected the sorted fallback table, got kind=${table.kind}`);
+  }
+  return table.sortedOffsets;
+}
 
 function midxPath(ctx: Context): string {
   return `${ctx.layout.gitDir}/objects/pack/multi-pack-index`;
@@ -138,6 +152,7 @@ async function stubRegistry(
         const stat = await ctx.fs.stat(packPath);
         const packFileSize = stat.size;
         return {
+          kind: 'sorted' as const,
           sortedOffsets: Float64Array.of(match.offset),
           packFileSize,
           trailerStart: packFileSize - 20,
@@ -1470,7 +1485,7 @@ describe('object-resolver', () => {
           // Compute expected slice length from the real offset table before the act.
           const packs = await registry.all();
           const table = await packs[0]!.offsetTable();
-          const entryOffset = table.sortedOffsets[0]!;
+          const entryOffset = expectSortedOffsets(table)[0]!;
           const expectedSliceLength = table.trailerStart - entryOffset;
           const readSliceSpy = vi.spyOn(packs[0]!, 'readSlice');
 
@@ -1503,11 +1518,12 @@ describe('object-resolver', () => {
           const id = ids[0] as ObjectId;
           const realPack = (await createPackRegistry(ctx).all())[0]!;
           const realTable = await realPack.offsetTable();
-          const entryOffset = realTable.sortedOffsets[0]!;
+          const entryOffset = expectSortedOffsets(realTable)[0]!;
           const boundary = realTable.trailerStart; // the entry's real end
           const pack: RegisteredPack = {
             ...realPack,
             offsetTable: async () => ({
+              kind: 'sorted' as const,
               sortedOffsets: Float64Array.of(entryOffset, boundary),
               packFileSize: boundary,
               trailerStart: boundary - ctx.hashConfig.digestLength,
@@ -1576,6 +1592,7 @@ describe('object-resolver', () => {
             idxPath: `${packPath}.idx`,
             header: async () => ({ version: 2, objectCount: fillerIndex.objectCount }),
             offsetTable: async () => ({
+              kind: 'sorted' as const,
               sortedOffsets: Float64Array.of(entryOffset),
               packFileSize: entryOffset + 5,
               trailerStart: entryOffset + 5 - 20, // = entryOffset - 15 → next is trailerStart < entryOffset
@@ -1650,6 +1667,7 @@ describe('object-resolver', () => {
             idxPath: `${packPath}.idx`,
             header: async () => ({ version: 2, objectCount: fillerIndex.objectCount }),
             offsetTable: async () => ({
+              kind: 'sorted' as const,
               sortedOffsets: Float64Array.of(entryOffset),
               packFileSize: entryOffset + digestLength,
               trailerStart: entryOffset, // = entryOffset + digestLength - digestLength
@@ -1720,6 +1738,7 @@ describe('object-resolver', () => {
             idxPath: `${packPath}.idx`,
             header: async () => ({ version: 2, objectCount: fillerIndex.objectCount }),
             offsetTable: async () => ({
+              kind: 'sorted' as const,
               sortedOffsets: Float64Array.of(entryOffset, entryOffset + 1000),
               packFileSize: entryOffset + 500,
               trailerStart: entryOffset + 500 - 20,
@@ -1780,7 +1799,7 @@ describe('object-resolver', () => {
           // Compute expected slice lengths from the real offset table before resolveObject runs.
           const packs = await registry.all();
           const table = await packs[0]!.offsetTable();
-          const [off0, off1] = table.sortedOffsets;
+          const [off0, off1] = expectSortedOffsets(table);
           // delta entry (off1) is resolved first, then base (off0).
           const expectedDeltaSlice = table.trailerStart - off1!;
           const expectedBaseSlice = off1! - off0!;

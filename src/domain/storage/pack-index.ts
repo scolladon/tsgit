@@ -1,6 +1,7 @@
 import { bytesToHex, hexToBytes } from '../objects/encoding.js';
 import type { ObjectId } from '../objects/index.js';
 import { invalidPackIndex } from './error.js';
+import { type PackRevIndex, revIndexPositionAt } from './rev-index.js';
 
 const IDX_MAGIC = 0xff744f63;
 const IDX_VERSION = 2;
@@ -147,6 +148,43 @@ export function entryOffsets(index: PackIndex): ReadonlyArray<number> {
     offsets.push(readOffset(index, i));
   }
   return offsets;
+}
+
+/**
+ * `entryOffsets`'s boxed-array-free counterpart: every offset read straight
+ * into a `Float64Array`, index-position order — no per-element `push` and no
+ * intermediate `number[]` for a caller that is about to sort or scan the
+ * result numerically. `Float64Array` covers the full safe-integer offset
+ * range where a 32-bit typed array would truncate a large-pack offset.
+ */
+export function entryOffsetsF64(index: PackIndex): Float64Array {
+  const offsets = new Float64Array(index.objectCount);
+  for (let i = 0; i < index.objectCount; i += 1) {
+    offsets[i] = readOffset(index, i);
+  }
+  return offsets;
+}
+
+/**
+ * The byte offset of the pack entry at pack position `p`, read through a
+ * `.rev`'s own pack-position → index-position map — `readOffset` behind one
+ * call, so the large-offset indirection stays hidden in this module rather
+ * than being re-exported for a caller to reimplement. `undefined` when the
+ * position `.rev` stores for `p` names no object of THIS index (a corrupt or
+ * mismatched reverse index) — the caller's signal to stop trusting this
+ * `.rev` rather than let an out-of-range read reach `readOffset` itself.
+ * `p` itself is bounds-checked by `revIndexPositionAt` against the `.rev`'s
+ * own `objectCount`, which every production caller has already confirmed
+ * agrees with `index.objectCount`.
+ */
+export function offsetAtPackPosition(
+  index: PackIndex,
+  rev: PackRevIndex,
+  p: number,
+): number | undefined {
+  const indexPosition = revIndexPositionAt(rev, p);
+  if (indexPosition >= index.objectCount) return undefined;
+  return readOffset(index, indexPosition);
 }
 
 /**
