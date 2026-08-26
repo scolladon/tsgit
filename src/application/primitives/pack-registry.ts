@@ -6,8 +6,11 @@ import { TsgitError, type TsgitErrorData } from '../../domain/error.js';
 import type { ObjectId } from '../../domain/objects/index.js';
 import { invalidPackHeader, invalidPackIndex } from '../../domain/storage/error.js';
 import {
+  createLruCache,
+  type LruCache,
   lookupPackIndex,
   type MultiPackIndex,
+  type PackEntryHeader,
   type PackIndex,
   type PackRevIndex,
   parsePackIndex,
@@ -175,6 +178,24 @@ export interface PackLookupHit {
 }
 
 /**
+ * A resolved OFS/REF-delta chain level's `(type, content)` — already
+ * header-split, so a hit never re-runs the loose-format split a raw-bytes
+ * cache would need. `(packName, offset)` is only meaningful within the
+ * generation that produced it, which is exactly the registry's lifetime
+ * between one `refresh()` and the next.
+ */
+export interface DeltaBaseCacheEntry {
+  readonly type: PackEntryHeader['type'];
+  readonly content: Uint8Array;
+}
+
+/** The one key shape for {@link PackRegistry.deltaBaseCache} — a pack name and
+ *  an on-disk byte offset are only meaningful together, within one generation. */
+export function deltaBaseCacheKey(packName: string, offset: number): string {
+  return `${packName}:${offset}`;
+}
+
+/**
  * A pack or index `health()` could not use, and at which layer. `data` is the
  * raw fault and may carry an absolute `path` — never forward it across the
  * library boundary; project to `code`/`reason` as the fsck pack pass does.
@@ -255,6 +276,16 @@ export interface PackRegistry {
    * to.
    */
   midxBitmap(): Promise<MidxBitmapLoad | undefined>;
+  /**
+   * Offset-keyed cache for delta-chain intermediates — every OFS/REF-delta
+   * level `collectDeltaChain`/`resolvePackChain` (object-resolver.ts) walks
+   * through, not just a chain's tip. Lives here, per-registry, rather than
+   * on a `Context`: `(packName, offset)` is only meaningful within the
+   * generation that produced it, and `refresh()`/`dispose()` clear it
+   * alongside everything else generation-scoped. Sized once, from the
+   * Context that first creates this registry — see `createPackRegistry`.
+   */
+  readonly deltaBaseCache: LruCache<DeltaBaseCacheEntry>;
 }
 
 function isCandidate(entry: { isFile: boolean; name: string }): boolean {
@@ -521,6 +552,9 @@ function createStoreGate(ctx: Context): PromiseMemo<MidxLoadResult> {
 
 export function createPackRegistry(ctx: Context): PackRegistry {
   const storeGate = createStoreGate(ctx);
+  // Shares the ordinary delta cache's own byte budget rather than a second,
+  // independently-configured cap — one `deltaCacheMaxBytes` governs both.
+  const deltaBaseCache = createLruCache<DeltaBaseCacheEntry>(ctx.deltaCache.maxSize);
 
   const scanPacks = async (): Promise<PackGeneration> => {
     const dir = packsDir(commonGitDir(ctx));
@@ -788,6 +822,11 @@ export function createPackRegistry(ctx: Context): PackRegistry {
       if (disposed) return;
       healthMemo.clear();
       midxHealthMemo.clear();
+      // (packName, offset) pairs are only meaningful within the generation
+      // that produced them — a replaced pack can reuse the same name and
+      // offset for entirely different bytes, so this MUST clear alongside
+      // the scan, not survive into the next generation.
+      deltaBaseCache.clear();
       // Cleared before the early return below: a Context that only ever
       // called assertLoadable (a loose-only read) never forces the scan, so
       // clearing the gate here — not after the guard — is the only way a
@@ -825,8 +864,10 @@ export function createPackRegistry(ctx: Context): PackRegistry {
       return healthMemo.get();
     },
     indexFaults: indexFaultEntries,
+    deltaBaseCache,
     async dispose(): Promise<void> {
       disposed = true;
+      deltaBaseCache.clear();
       // A registry that never scanned the pack directory has no handles to
       // close — skip the scan entirely rather than triggering one just to
       // find nothing. Peek, not clear: all() keeps returning the closed,

@@ -25,7 +25,13 @@ import {
 } from '../../domain/storage/index.js';
 import type { Context } from '../../ports/context.js';
 import { forgetLooseOidPrefix, probeLooseOid } from './internal/loose-oid-cache.js';
-import { nextOffsetForEntry, type PackLookupHit, type PackRegistry } from './pack-registry.js';
+import {
+  type DeltaBaseCacheEntry,
+  deltaBaseCacheKey,
+  nextOffsetForEntry,
+  type PackLookupHit,
+  type PackRegistry,
+} from './pack-registry.js';
 import { commonGitDir, looseObjectPath } from './path-layout.js';
 
 /**
@@ -240,12 +246,22 @@ async function verifyAndReturn(
 interface DeltaStep {
   readonly instructions: Uint8Array;
   readonly resolvedBaseId: ObjectId | undefined; // for REF_DELTA we know the base id; for OFS we don't necessarily
+  /** Offset this step's entry was found at — the key `resolvePackChain`
+   *  caches this level's reconstructed content under. */
+  readonly offset: number;
 }
 
 interface Phase1Result {
   readonly deltas: ReadonlyArray<DeltaStep>;
   readonly baseContent: Uint8Array;
   readonly baseType: PackEntryHeader['type'];
+  /**
+   * Offset `baseContent` was freshly read from, or `undefined` when it came
+   * from a cache hit (already cached — re-caching would be redundant) or
+   * from a REF_DELTA's base (resolved by id, possibly from a different pack
+   * or a loose object — no single `(pack, offset)` applies).
+   */
+  readonly baseOffset: number | undefined;
 }
 
 async function collectDeltaChain(
@@ -264,6 +280,13 @@ async function collectDeltaChain(
 
   for (;;) {
     checkAborted(ctx);
+    // Probe BEFORE descending: a level cached by an earlier chain (this
+    // offset reached as someone else's intermediate) short-circuits the
+    // whole rest of the walk exactly as reaching a real base entry would.
+    const cached = probeDeltaBaseCache(ctx, registry, currentHit, targetId, maxBytes);
+    if (cached !== undefined) {
+      return { deltas, baseContent: cached.content, baseType: cached.type, baseOffset: undefined };
+    }
     const nextOffset = nextOffsetForEntry(table, currentHit.offset);
     if (nextOffset > table.packFileSize) {
       throw invalidPackIndex('next offset exceeds pack file size: corrupt index');
@@ -280,6 +303,7 @@ async function collectDeltaChain(
         deltas,
         baseContent: inflated,
         baseType: header.type,
+        baseOffset: currentHit.offset,
       };
     }
     depth += 1;
@@ -290,26 +314,33 @@ async function collectDeltaChain(
     enforcePackDeltaPreApplyCap(targetId, instructions, maxBytes, depth);
 
     if (header.type === PACK_ENTRY_TYPE.OFS_DELTA) {
-      const baseOffset = currentHit.offset - header.baseDistance;
-      if (baseOffset < 0) {
-        throw objectNotFound(targetId);
-      }
-      deltas.push({ instructions, resolvedBaseId: undefined });
+      const baseOffset = ofsDeltaBaseOffset(targetId, currentHit.offset, header.baseDistance);
+      deltas.push({ instructions, resolvedBaseId: undefined, offset: currentHit.offset });
       currentHit = { pack: currentHit.pack, offset: baseOffset };
       continue;
     }
     if (header.type === PACK_ENTRY_TYPE.REF_DELTA) {
       const refDeltaBaseId = header.baseId;
-      deltas.push({ instructions, resolvedBaseId: refDeltaBaseId });
+      deltas.push({ instructions, resolvedBaseId: refDeltaBaseId, offset: currentHit.offset });
       // Cap propagates into the REF_DELTA base resolution so an oversized
       // base never inflates fully. The cap applies to the BASE object now,
       // not just the delta's target — tightens the OBJECT_TOO_LARGE
       // contract beyond what originally documented.
       const base = await resolveBaseForRefDelta(ctx, registry, refDeltaBaseId, maxBytes);
-      return { deltas, baseContent: base.content, baseType: base.type };
+      return { deltas, baseContent: base.content, baseType: base.type, baseOffset: undefined };
     }
     throw objectNotFound(targetId);
   }
+}
+
+/** An OFS_DELTA's base offset is a distance BACK from the entry's own offset
+ *  — never forward, and never off the front of the pack. */
+function ofsDeltaBaseOffset(targetId: ObjectId, entryOffset: number, baseDistance: number): number {
+  const baseOffset = entryOffset - baseDistance;
+  if (baseOffset < 0) {
+    throw objectNotFound(targetId);
+  }
+  return baseOffset;
 }
 
 export async function resolvePackChain(
@@ -321,16 +352,18 @@ export async function resolvePackChain(
 ): Promise<Uint8Array> {
   const phase1 = await collectDeltaChain(ctx, registry, hit, targetId, maxBytes);
 
-  // apply deltas bottom-up. The REF_DELTA terminator already cached
-  // its base in `resolveBaseForRefDelta`; intermediate results are NOT cached
-  // here because their ObjectId is unknown (mid-chain intermediates do not
-  // correspond to step.resolvedBaseId — that id refers to the base, not the
-  // post-apply result).
+  // Apply deltas bottom-up. The REF_DELTA terminator already cached its base
+  // (by id) in `resolveBaseForRefDelta`; every OFS/REF level here is cached
+  // too, now by (pack, offset) — the fix for the gap the old comment
+  // documented: mid-chain intermediates have no known ObjectId, so a REF's
+  // own id-keyed cache could only ever hold a chain's tip.
   let current = phase1.baseContent;
+  cacheDeltaBase(ctx, registry, hit.pack.name, phase1.baseOffset, phase1.baseType, current);
   for (let i = phase1.deltas.length - 1; i >= 0; i -= 1) {
     const step = phase1.deltas[i];
     if (step === undefined) break;
     current = applyDelta(current, step.instructions);
+    cacheDeltaBase(ctx, registry, hit.pack.name, step.offset, phase1.baseType, current);
   }
   // Post-apply cap on the reconstructed object (delta resolution is the only
   // place a payload can grow beyond what the base entry declared). The check
@@ -478,4 +511,68 @@ function cacheEntry(cache: LruCache<Uint8Array>, id: ObjectId, bytes: Uint8Array
   // bytes always contains a loose-format header (`<type> <size>\0...`), so the
   // array is non-empty by construction — no zero-length guard needed.
   cache.set(id, bytes, bytes.length);
+}
+
+/**
+ * fsck's audit Context swaps in a zero-budget `deltaCache`
+ * (`createNoDeltaCache()`, `maxSize: 0`) while still sharing the ordinary
+ * registry via `adoptPackRegistry` — a second registry would double the scan
+ * and duplicate every persistent pack handle. That means the offset-keyed
+ * cache below is reachable through BOTH Contexts even though it is sized
+ * once, at registry creation, from whichever Context created it first (almost
+ * always the real one, not the audit view). Per-Context disablement can only
+ * be honoured by checking THIS call's own budget, so a zero-budget Context
+ * never probes or populates it — the store-only guarantee `fsck` needs, not
+ * just a memory-budget preference.
+ */
+function deltaBaseCachingEnabled(ctx: Context): boolean {
+  return ctx.deltaCache.maxSize > 0;
+}
+
+/**
+ * The `collectDeltaChain` loop's probe, extracted so the loop body stays
+ * flat: a hit enforces the same size cap a freshly-read base entry would,
+ * so a warm chain cannot bypass a cap a cold one would have rejected at.
+ */
+function probeDeltaBaseCache(
+  ctx: Context,
+  registry: PackRegistry,
+  hit: PackLookupHit,
+  targetId: ObjectId,
+  maxBytes: number | undefined,
+): DeltaBaseCacheEntry | undefined {
+  if (!deltaBaseCachingEnabled(ctx)) return undefined;
+  const cached = registry.deltaBaseCache.get(deltaBaseCacheKey(hit.pack.name, hit.offset));
+  if (cached === undefined) return undefined;
+  enforcePackBaseCap(targetId, cached.content.length, maxBytes);
+  return cached;
+}
+
+/** Floors at 1: `LruCache.set` requires a positive `byteSize`, and a
+ *  genuinely empty reconstructed intermediate (an empty blob mid-chain) is
+ *  still worth caching. */
+function deltaBaseCacheEntrySize(content: Uint8Array): number {
+  return Math.max(1, content.length);
+}
+
+/**
+ * Populate one delta-chain level's offset-keyed entry. `offset` is
+ * `undefined` for a level that came from a cache hit (already cached) or a
+ * REF_DELTA base (resolved by id, not by this pack's offset) — both no-op
+ * here rather than re-deriving an offset that doesn't apply.
+ */
+function cacheDeltaBase(
+  ctx: Context,
+  registry: PackRegistry,
+  packName: string,
+  offset: number | undefined,
+  type: PackEntryHeader['type'],
+  content: Uint8Array,
+): void {
+  if (offset === undefined || !deltaBaseCachingEnabled(ctx)) return;
+  registry.deltaBaseCache.set(
+    deltaBaseCacheKey(packName, offset),
+    { type, content },
+    deltaBaseCacheEntrySize(content),
+  );
 }

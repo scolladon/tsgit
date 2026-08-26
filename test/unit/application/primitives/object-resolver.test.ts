@@ -1,8 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
-import { resolveObject } from '../../../../src/application/primitives/object-resolver.js';
+import {
+  resolveObject,
+  resolveObjectBytes,
+} from '../../../../src/application/primitives/object-resolver.js';
 import {
   createPackRegistry,
+  deltaBaseCacheKey,
   type PackLookupHit,
   type PackOffsetTable,
   type PackRegistry,
@@ -12,6 +16,7 @@ import { writeObject } from '../../../../src/application/primitives/write-object
 import { permissionDenied, TsgitError } from '../../../../src/domain/error.js';
 import { type Blob, EMPTY_TREE_OID, type ObjectId } from '../../../../src/domain/objects/index.js';
 import {
+  createLruCache,
   encodeOfsDistance,
   encodePackEntryHeader,
   PACK_ENTRY_TYPE,
@@ -179,6 +184,7 @@ async function stubRegistry(
       checksumOk: undefined,
     }),
     midxBitmap: async () => undefined,
+    deltaBaseCache: createLruCache(1024),
   };
 }
 
@@ -1293,6 +1299,189 @@ describe('object-resolver', () => {
     });
   });
 
+  describe('offset-keyed delta base cache', () => {
+    describe('Given an OFS delta chain read twice', () => {
+      describe('When the second read runs', () => {
+        it('Then the mid-chain bases are not re-inflated', async () => {
+          // Arrange — base ← mid ← {tip1, tip2}: two tips share the SAME
+          // mid-chain base. Reading tip1 first should populate the mid
+          // level's offset-keyed entry; reading tip2 should then reuse it
+          // instead of re-walking down to mid and base.
+          const ctx = await buildSeededContext();
+          const baseContent = ENC.encode('shared base content');
+          const midContent = ENC.encode('shared mid content');
+          const tip1Content = ENC.encode('tip one content');
+          const tip2Content = ENC.encode('tip two content — different');
+          const ids = await writeSyntheticPack(ctx, 'shared-mid', [
+            { kind: 'base', type: 'blob', content: baseContent },
+            { kind: 'ofs-delta', baseIndex: 0, targetContent: midContent },
+            { kind: 'ofs-delta', baseIndex: 1, targetContent: tip1Content },
+            { kind: 'ofs-delta', baseIndex: 1, targetContent: tip2Content },
+          ]);
+          const tip1Id = ids[2]! as ObjectId;
+          const tip2Id = ids[3]! as ObjectId;
+          const registry = createPackRegistry(ctx);
+          await resolveObject(ctx, registry, tip1Id, true);
+          const inflateSpy = vi.spyOn(ctx.compressor, 'inflate');
+
+          // Act
+          const result = await resolveObject(ctx, registry, tip2Id, true);
+
+          // Assert — only tip2's own delta instructions are inflated; the
+          // shared mid level (and the base beneath it) come from the
+          // offset-keyed cache.
+          expect((result as Blob).content).toEqual(tip2Content);
+          expect(inflateSpy.mock.calls.length).toBe(1);
+        });
+      });
+    });
+
+    describe('Given a chain whose base was cached under (pack, offset)', () => {
+      describe('When a different chain descends to that same offset', () => {
+        it('Then the cached type is reused without re-splitting the header', async () => {
+          // Arrange — base type 'tree' (not 'blob'): a hit that re-derived
+          // (or defaulted) the type instead of reusing the cached one would
+          // fail this. resolveObjectBytes is used so the reconstructed
+          // target need not be a structurally valid tree body.
+          const ctx = await buildSeededContext();
+          const midContent = ENC.encode('tree-typed mid content');
+          const tip1Content = ENC.encode('tip one');
+          const tip2Content = ENC.encode('tip two — different');
+          const ids = await writeSyntheticPack(ctx, 'tree-typed-mid', [
+            { kind: 'base', type: 'tree', content: new Uint8Array() },
+            { kind: 'ofs-delta', baseIndex: 0, targetContent: midContent },
+            { kind: 'ofs-delta', baseIndex: 1, targetContent: tip1Content },
+            { kind: 'ofs-delta', baseIndex: 1, targetContent: tip2Content },
+          ]);
+          const tip1Id = ids[2]! as ObjectId;
+          const tip2Id = ids[3]! as ObjectId;
+          const registry = createPackRegistry(ctx);
+          await resolveObjectBytes(ctx, registry, tip1Id, false);
+
+          // Act
+          const bytes = await resolveObjectBytes(ctx, registry, tip2Id, false);
+
+          // Assert — header carries the propagated 'tree' type.
+          const header = new TextDecoder().decode(bytes.subarray(0, bytes.indexOf(0)));
+          expect(header).toBe(`tree ${tip2Content.length}`);
+        });
+      });
+    });
+
+    describe('Given the pack registry is refreshed', () => {
+      describe('When the same (pack, offset) is read again', () => {
+        it('Then the stale entry is not served', async () => {
+          // Arrange — gen1's base entry occupies the pack's very first
+          // offset (always right after the fixed-size pack header,
+          // regardless of entry count or content). Reading its tip caches
+          // that offset under gen1's content; a Context-scoped cache would
+          // keep serving it after the pack is replaced — refresh() must drop
+          // the binding instead.
+          const ctx = await buildSeededContext();
+          const contentA = ENC.encode('generation one base content');
+          const gen1 = await writeSyntheticPack(ctx, 'swap', [
+            { kind: 'base', type: 'blob', content: contentA },
+            { kind: 'ofs-delta', baseIndex: 0, targetContent: ENC.encode('generation one tip') },
+          ]);
+          const tip1Id = gen1[1]! as ObjectId;
+          const registry = createPackRegistry(ctx);
+          await resolveObject(ctx, registry, tip1Id, true);
+
+          // Act — refresh, then replace the SAME pack name with a new
+          // generation whose first entry (the same on-disk offset) is a base
+          // with different bytes and no delta at all.
+          registry.refresh();
+          const contentB = ENC.encode('generation two — completely different bytes');
+          const gen2 = await writeSyntheticPack(ctx, 'swap', [
+            { kind: 'base', type: 'blob', content: contentB },
+          ]);
+          const newBaseId = gen2[0]! as ObjectId;
+          const result = await resolveObject(ctx, registry, newBaseId, true);
+
+          // Assert
+          expect((result as Blob).content).toEqual(contentB);
+        });
+      });
+    });
+
+    describe('Given an intermediate larger than the byte cap', () => {
+      describe('When resolveObject is called', () => {
+        it('Then it is not cached and the read still succeeds', async () => {
+          // Arrange — a tiny deltaCacheMaxBytes so the mid-chain intermediate
+          // (far over the cap) is silently dropped by LruCache.set rather
+          // than thrown from, and the read still completes correctly.
+          const ctx = createMemoryContext({ deltaCacheMaxBytes: 4 });
+          const baseContent = ENC.encode('a');
+          const midContent = new Uint8Array(64).fill(0x42);
+          const tipContent = ENC.encode('tip content');
+          const built = await buildSyntheticPack(ctx, [
+            { kind: 'base', type: 'blob', content: baseContent },
+            { kind: 'ofs-delta', baseIndex: 0, targetContent: midContent },
+            { kind: 'ofs-delta', baseIndex: 1, targetContent: tipContent },
+          ]);
+          const packBase = `${ctx.layout.gitDir}/objects/pack/pack-oversize-mid`;
+          await ctx.fs.write(`${packBase}.pack`, built.packBytes);
+          await ctx.fs.write(`${packBase}.idx`, built.idxBytes);
+          const tipId = built.ids[2]! as ObjectId;
+          const baseOffset = built.offsets[0]!;
+          const midOffset = built.offsets[1]!;
+          const registry = createPackRegistry(ctx);
+
+          // Act
+          const result = await resolveObject(ctx, registry, tipId, true);
+
+          // Assert — the 1-byte base fits under the cap and IS cached
+          // (proving the key/pack-name shape used below is right, so the
+          // mid's absence is the size cap, not a lookup miss); the 64-byte
+          // mid is not.
+          expect((result as Blob).content).toEqual(tipContent);
+          expect(
+            registry.deltaBaseCache.get(deltaBaseCacheKey('pack-oversize-mid', baseOffset)),
+          ).toBeDefined();
+          expect(
+            registry.deltaBaseCache.get(deltaBaseCacheKey('pack-oversize-mid', midOffset)),
+          ).toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given a zero-length intermediate', () => {
+      describe('When resolveObject is called', () => {
+        it('Then the sizer floors at 1 and set does not throw', async () => {
+          // Arrange — mid reconstructs to an EMPTY blob. LruCache.set throws
+          // on byteSize <= 0; a naive `content.length` sizer would pass 0
+          // straight through and crash the read instead of merely caching it
+          // at the floor.
+          const ctx = await buildSeededContext();
+          const baseContent = ENC.encode('non-empty base');
+          const emptyMid = new Uint8Array(0);
+          const tipContent = ENC.encode('tip content');
+          const built = await buildSyntheticPack(ctx, [
+            { kind: 'base', type: 'blob', content: baseContent },
+            { kind: 'ofs-delta', baseIndex: 0, targetContent: emptyMid },
+            { kind: 'ofs-delta', baseIndex: 1, targetContent: tipContent },
+          ]);
+          const packBase = `${ctx.layout.gitDir}/objects/pack/pack-zero-mid`;
+          await ctx.fs.write(`${packBase}.pack`, built.packBytes);
+          await ctx.fs.write(`${packBase}.idx`, built.idxBytes);
+          const tipId = built.ids[2]! as ObjectId;
+          const midOffset = built.offsets[1]!;
+          const registry = createPackRegistry(ctx);
+
+          // Act
+          const result = await resolveObject(ctx, registry, tipId, true);
+
+          // Assert — the read succeeds AND the floored entry is retained,
+          // not merely "didn't crash".
+          expect((result as Blob).content).toEqual(tipContent);
+          const cached = registry.deltaBaseCache.get(deltaBaseCacheKey('pack-zero-mid', midOffset));
+          expect(cached).toBeDefined();
+          expect(cached!.content.length).toBe(0);
+        });
+      });
+    });
+  });
+
   describe('Given a REF_DELTA whose base is a %s', () => {
     describe('When resolveObject is called', () => {
       it.each([
@@ -1547,6 +1736,7 @@ describe('object-resolver', () => {
               checksumOk: undefined,
             }),
             midxBitmap: async () => undefined,
+            deltaBaseCache: createLruCache(1024),
           };
           const sut = resolveObject;
 
@@ -1616,6 +1806,7 @@ describe('object-resolver', () => {
               checksumOk: undefined,
             }),
             midxBitmap: async () => undefined,
+            deltaBaseCache: createLruCache(1024),
           };
           const sut = resolveObject;
 
@@ -1691,6 +1882,7 @@ describe('object-resolver', () => {
               checksumOk: undefined,
             }),
             midxBitmap: async () => undefined,
+            deltaBaseCache: createLruCache(1024),
           };
           const sut = resolveObject;
 
@@ -1762,6 +1954,7 @@ describe('object-resolver', () => {
               checksumOk: undefined,
             }),
             midxBitmap: async () => undefined,
+            deltaBaseCache: createLruCache(1024),
           };
           const sut = resolveObject;
 

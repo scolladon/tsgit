@@ -2505,6 +2505,48 @@ describe('PackRegistry.refresh', () => {
   });
 });
 
+describe('Given a registry whose delta-base cache holds an entry from an OFS chain read', () => {
+  describe('When refresh() runs', () => {
+    it('Then the delta-base cache is cleared', async () => {
+      // Arrange
+      const ctx = await buildSeededContext();
+      const ids = await writeSyntheticPack(ctx, 'delta-cache-refresh', [
+        { kind: 'base', type: 'blob', content: new TextEncoder().encode('base') },
+        { kind: 'ofs-delta', baseIndex: 0, targetContent: new TextEncoder().encode('tip') },
+      ]);
+      const registry = getPackRegistry(ctx);
+      await readObject(ctx, ids[1] as ObjectId);
+      expect(registry.deltaBaseCache.entryCount).toBeGreaterThan(0);
+
+      // Act
+      registry.refresh();
+
+      // Assert
+      expect(registry.deltaBaseCache.entryCount).toBe(0);
+    });
+  });
+
+  describe('When dispose() is awaited', () => {
+    it('Then the delta-base cache is cleared', async () => {
+      // Arrange
+      const ctx = await buildSeededContext();
+      const ids = await writeSyntheticPack(ctx, 'delta-cache-dispose', [
+        { kind: 'base', type: 'blob', content: new TextEncoder().encode('base') },
+        { kind: 'ofs-delta', baseIndex: 0, targetContent: new TextEncoder().encode('tip') },
+      ]);
+      const registry = getPackRegistry(ctx);
+      await readObject(ctx, ids[1] as ObjectId);
+      expect(registry.deltaBaseCache.entryCount).toBeGreaterThan(0);
+
+      // Act
+      await registry.dispose();
+
+      // Assert
+      expect(registry.deltaBaseCache.entryCount).toBe(0);
+    });
+  });
+});
+
 describe('PackRegistry.dispose', () => {
   describe('Given two packs that were each read once (persistent handles opened)', () => {
     describe('When dispose is called', () => {

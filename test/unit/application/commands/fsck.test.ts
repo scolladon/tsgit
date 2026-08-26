@@ -12,6 +12,7 @@ import {
 } from '../../../../src/application/primitives/path-layout.js';
 import {
   disposePackRegistry,
+  getPackRegistry,
   refreshPackRegistry,
 } from '../../../../src/application/primitives/read-object.js';
 import * as reflogStoreMod from '../../../../src/application/primitives/reflog-store.js';
@@ -6828,6 +6829,36 @@ describe('Given a .gitmodules blob with a disallowed URL nested below the root t
         { type: 'root', id: commitId },
       ]);
       expect(result.exitCode).toBe(1);
+    });
+  });
+});
+
+describe('Given fsck audit reads through the shared registry with createNoDeltaCache()', () => {
+  describe('When fsck runs over an OFS chain shared across two objects', () => {
+    it('Then no offset-keyed delta-base cache entry is retained', async () => {
+      // Arrange — base ← mid ← {tip1, tip2}: fsck's own decode-once walk
+      // touches the shared mid level from two different objects, exactly the
+      // shape that would populate the offset-keyed cache on an ordinary
+      // read. fsck's audit Context swaps in a zero-budget deltaCache while
+      // still sharing the ordinary registry (adoptPackRegistry) — the new
+      // cache must honour that same zero budget, not just the audit
+      // Context's own (unused) deltaCache.
+      const ctx = await initBareCtx();
+      const baseContent = enc.encode('shared base content');
+      const midContent = enc.encode('shared mid content');
+      await writeSyntheticPack(ctx, 'audit-ofs', [
+        { kind: 'base', type: 'blob', content: baseContent },
+        { kind: 'ofs-delta', baseIndex: 0, targetContent: midContent },
+        { kind: 'ofs-delta', baseIndex: 1, targetContent: enc.encode('tip one') },
+        { kind: 'ofs-delta', baseIndex: 1, targetContent: enc.encode('tip two — different') },
+      ]);
+
+      // Act
+      await fsck(ctx);
+
+      // Assert
+      const registry = getPackRegistry(ctx);
+      expect(registry.deltaBaseCache.entryCount).toBe(0);
     });
   });
 });
